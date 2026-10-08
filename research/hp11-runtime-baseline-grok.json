@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "runtime": "grok",
+  "created": "2026-10-08T13:25:11Z",
+  "hq_root": "/home/ec2-user/hq/workspace/worktrees/hq-core-staging/hp11-baseline-2d27e2903",
+  "corpus": "core/scripts/bench-hook-corpus-default.json",
+  "items": [
+    {
+      "id": "session-start",
+      "event": "SessionStart",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p1-project-memory",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p2-company-data",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p3-startwork-slack",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p4-external-lookup",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p5-teammate-secret",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p6-startwork-creative-deploy",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p7-startwork-linear",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p8-startwork-sources",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p9-startwork-board",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p10-startwork-workers",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "p11-startwork-knowledge",
+      "event": "UserPromptSubmit",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "c1-ls",
+      "event": "PostToolUse",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "c2-git-status",
+      "event": "PostToolUse",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "c3-cat",
+      "event": "PostToolUse",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "c4-grep",
+      "event": "PostToolUse",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    },
+    {
+      "id": "c5-python",
+      "event": "PostToolUse",
+      "supported": false,
+      "status": "unsupported",
+      "unsupported_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+    }
+  ],
+  "totals": {
+    "secs": null,
+    "bytes": null,
+    "policy_lines": null
+  },
+  "provenance": {
+    "baseline_commit": "2d27e2903cb370c9ce0f85e5444c4af8a82b6a42",
+    "candidate_commit": "1de583f28e6a5bf8518c120a8e861dc6f3eadbf3",
+    "captured_commit": "2d27e2903cb370c9ce0f85e5444c4af8a82b6a42",
+    "machine": "ip-172-31-47-133.ec2.internal, Linux 6.1.176-221.367.amzn2023.x86_64, GNU bash 5.2.15",
+    "corpus_inputs": 16,
+    "report_rows_including_session_start": 17,
+    "comparison": "Single-box cross-commit comparison on the EC2 Linux box; these values are not the owner-machine benchmark number."
+  },
+  "capture_status": "unsupported",
+  "capture_status_reason": "The Grok adapter produced zero benchmark-visible bytes for every captured event. This bench rejects --runtime grok until it can observe the adapter result."
+}

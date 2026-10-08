@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Overnight
+  short_description: >-
+    Triage team DMs and channels inside a running conductor, answer what HQ knows, route work to the owning session, queue the rest for the owner

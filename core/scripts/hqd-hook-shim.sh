@@ -55,8 +55,8 @@ while IFS= read -r payload_line || [ -n "$payload_line" ]; do
   payload_line=''
 done
 
-# The shim is inert until the hq-flags gate is explicitly enabled. Lookup
-# failures default off; no environment variable can turn this feature on.
+# The shim follows the HQ Anywhere flag reader's default-on fail-safe. The
+# local false/0 override keeps the shim inert; unreachable company writes remain blocked.
 case "$0" in */*) SHIM_DIR=${0%/*} ;; *) SHIM_DIR=. ;; esac
 if [ ! -f "$SHIM_DIR/hq-anywhere-runtime-flag.cjs" ] \
   || [ ! -f "$SHIM_DIR/hqd-hook-flag-cache-lib.sh" ]; then

@@ -223,5 +223,9 @@ if ! grep -Fq "github.event_name == 'push'" <<< "$windows_job"; then
   echo 'FAIL: shell-smoke-windows must remain unconditional on main pushes' >&2
   exit 1
 fi
+if ! grep -Fq 'bash core/scripts/tests/session-title-windows-argv.test.sh' <<< "$windows_job"; then
+  echo 'FAIL: shell-smoke-windows must execute the Git Bash session-title argv regression' >&2
+  exit 1
+fi
 
 echo 'ALL PASS: shell-smoke-macos-paths'

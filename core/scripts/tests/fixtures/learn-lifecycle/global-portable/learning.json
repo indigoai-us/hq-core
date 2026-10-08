@@ -1,0 +1,11 @@
+{
+  "today": "2026-10-07",
+  "scope": "global",
+  "slug": "verify-backup-before-destructive-migration",
+  "title": "Verify a restorable backup before a destructive migration",
+  "when": "migration && (drop || truncate)",
+  "source": "success-pattern",
+  "rule": "ALWAYS confirm a restorable backup exists before running a migration that drops or truncates data.",
+  "mechanism": "A dropped table cannot be recovered without a backup, and confirming the backup costs one command.",
+  "context": ""
+}

@@ -5,6 +5,8 @@
 # preserves the existing evaluator and dedupe behavior.
 
 set -euo pipefail
+# This fixture specifically exercises historical PreToolUse evaluation.
+export HQ_POLICY_TOOL_EVENTS=legacy
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"

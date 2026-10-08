@@ -6,7 +6,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const FLAG_KEY = "hq-anywhere-runtime";
-const DEFAULT_VALUE = false;
+const DEFAULT_VALUE = true;
 const REQUEST_TIMEOUT_MS = 150;
 
 function findCliPackageRoot(cliBin) {
@@ -59,11 +59,14 @@ function packageImportPath(cliRoot, packageName) {
 function reportFailure(error) {
   const name = error instanceof Error ? error.name : "UnknownError";
   const safeName = /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(name) ? name : "UnknownError";
-  process.stderr.write(`hq-anywhere-runtime flag lookup failed (${safeName}); using default-off behavior.\n`);
+  process.stderr.write(`hq-anywhere-runtime flag lookup failed (${safeName}); using default-on behavior.\n`);
 }
 
 async function anywhereRuntimeEnabled(dependencies = {}) {
   const env = dependencies.env ?? process.env;
+  const localOverride = env.HQ_FLAG_HQ_ANYWHERE_RUNTIME;
+  if (localOverride === "false" || localOverride === "0") return false;
+
   const endpoint = env.HQ_FLAGS_API_URL?.trim() || "";
   const companyUid = env.HQ_COMPANY_UID?.trim() || "";
   if (!endpoint || !/^cmp_[A-Za-z0-9]{3,128}$/.test(companyUid)) return DEFAULT_VALUE;
@@ -111,13 +114,20 @@ async function anywhereRuntimeEnabled(dependencies = {}) {
     });
     await client.ready();
     const flags = client.snapshot()?.flags;
-    if (!deadline.aborted && !failed && flags && typeof flags === "object") {
-      enabled = flags[FLAG_KEY] === true;
+    if (flags && typeof flags === "object" && flags[FLAG_KEY] === false) {
+      enabled = false;
+    } else if (!deadline.aborted && !failed) {
+      enabled = true;
     } else if (deadline.aborted) {
       reportOnce(deadline.reason ?? new Error("flag lookup timed out"));
     }
   } catch (error) {
     reportOnce(error);
+    try {
+      if (client?.snapshot()?.flags?.[FLAG_KEY] === false) enabled = false;
+    } catch (snapshotError) {
+      reportOnce(snapshotError);
+    }
   } finally {
     try {
       client?.close();
@@ -125,7 +135,7 @@ async function anywhereRuntimeEnabled(dependencies = {}) {
       reportOnce(error);
     }
   }
-  return !failed && !deadline.aborted && enabled === true;
+  return enabled;
 }
 
 module.exports = { FLAG_KEY, DEFAULT_VALUE, REQUEST_TIMEOUT_MS, anywhereRuntimeEnabled };
@@ -135,6 +145,6 @@ if (require.main === module) {
     .then((enabled) => process.stdout.write(enabled ? "true" : "false"))
     .catch((error) => {
       reportFailure(error);
-      process.stdout.write("false");
+      process.stdout.write(DEFAULT_VALUE ? "true" : "false");
     });
 }

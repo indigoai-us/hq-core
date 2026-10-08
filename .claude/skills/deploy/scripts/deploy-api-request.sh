@@ -193,10 +193,32 @@ if [ "$USE_AUTH" -eq 1 ] && [ "$STATUS" = 401 ]; then
   fi
 fi
 
+DB_WAIT_LIMIT="${HQ_DEPLOY_DB_WAIT_SECS:-600}"
+DB_WAITED=0
+while [ "$STATUS" = 503 ] \
+  && [ "$(json_string '.code? // .error?.code? // empty')" = DATABASE_PROVISIONING ]; do
+  DB_DELAY="$(json_string '(.retryAfterSeconds? // 5) | if type == "number" then floor else 5 end')"
+  [[ "$DB_DELAY" =~ ^[0-9]+$ ]] || DB_DELAY=5
+  [ "$DB_DELAY" -ge 2 ] || DB_DELAY=2
+  [ "$DB_DELAY" -le 30 ] || DB_DELAY=30
+  [ $((DB_WAITED + DB_DELAY)) -le "$DB_WAIT_LIMIT" ] || break
+  echo "[deploy] stage=$STAGE the app database is being created (about two minutes the first time); repeating the same deploy in ${DB_DELAY}s" >&2
+  "${HQ_DEPLOY_SLEEP_CMD:-sleep}" "$DB_DELAY"
+  DB_WAITED=$((DB_WAITED + DB_DELAY))
+  request_once
+  if [ "$CURL_EXIT" -ne 0 ] || ! [[ "$STATUS" =~ ^[0-9]{3}$ ]]; then
+    diagnostic "${STATUS:-000}" "TRANSPORT_ERROR" "request failed before an HTTP response" "-"
+    exit 1
+  fi
+done
+
 if [[ "$STATUS" != 2* ]]; then
   ERROR_CODE="$(json_string '(.error?.code? // .code? // .errorCode? // "HTTP_ERROR") | if type == "string" or type == "number" then tostring else "HTTP_ERROR" end')"
-  ERROR_MESSAGE="$(json_string '(.error?.message? // .message? // .errorMessage? // "request failed") | if type == "string" then . else "request failed" end')"
+  ERROR_MESSAGE="$(json_string '((if (.error | type) == "string" then .error else (.error?.message? // empty) end) // .message? // .errorMessage? // "request failed") | if type == "string" and length > 0 then . else "request failed" end')"
   REQUEST_ID="$(json_string '(.requestId? // .request_id? // .error?.requestId? // .meta?.requestId? // "-") | if type == "string" or type == "number" then tostring else "-" end')"
+  [ -n "$ERROR_CODE" ] || ERROR_CODE="HTTP_ERROR"
+  [ -n "$ERROR_MESSAGE" ] || ERROR_MESSAGE="request failed"
+  [ -n "$REQUEST_ID" ] || REQUEST_ID="-"
   if [ "$RETRIED" -eq 1 ]; then
     AUTH_DIAGNOSTIC=" auth=refresh-retry-failed action=live-content-not-updated"
     ERROR_MESSAGE="$ERROR_MESSAGE; live content was not updated"

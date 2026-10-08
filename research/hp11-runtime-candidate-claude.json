@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "runtime": "claude",
+  "created": "2026-10-08T13:33:49Z",
+  "hq_root": "/home/ec2-user/hq/workspace/worktrees/hq-core-staging/hp11-runtime-bench",
+  "corpus": "core/scripts/bench-hook-corpus-default.json",
+  "items": [
+    {
+      "bytes": 1639,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [
+        "hq-worktree-block",
+        "local-context"
+      ],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "session-start",
+      "event": "SessionStart",
+      "secs": 16.432,
+      "supported": true
+    },
+    {
+      "bytes": 5259,
+      "policy_lines": 3,
+      "hard_ids": [
+        "hq-project-work-mesh-reporting",
+        "learned-rules-never-in-claude-md"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "search",
+        "project"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p1-project-memory",
+      "event": "UserPromptSubmit",
+      "secs": 12.376,
+      "text": "what happened to the project where we were aging out old policies as part of the core upgrade",
+      "kind": "question",
+      "supported": true
+    },
+    {
+      "bytes": 2788,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [
+        "natural-language-routing"
+      ],
+      "hints_hit": [
+        "deploy"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p2-company-data",
+      "event": "UserPromptSubmit",
+      "secs": 11.069,
+      "text": "check the stats on our deploys for the past 24 hours",
+      "kind": "lookup",
+      "supported": true
+    },
+    {
+      "bytes": 5870,
+      "policy_lines": 11,
+      "hard_ids": [
+        "hq-announce-before-irreversible",
+        "hq-deep-plan-skill-routing",
+        "hq-no-worktree-for-repo-work",
+        "hq-project-work-mesh-reporting",
+        "hq-slack",
+        "humanize-generated-content"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "slack",
+        "integrations"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p3-startwork-slack",
+      "event": "UserPromptSubmit",
+      "secs": 9.487,
+      "text": "/startwork acme summarize everything that happened in slack",
+      "kind": "command",
+      "supported": true
+    },
+    {
+      "bytes": 3149,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [
+        "intent-hints"
+      ],
+      "hints_hit": [
+        "search",
+        "web"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p4-external-lookup",
+      "event": "UserPromptSubmit",
+      "secs": 10.333,
+      "text": "get me links to all the posts about our product on x from the last week",
+      "kind": "external-lookup",
+      "supported": true
+    },
+    {
+      "bytes": 7505,
+      "policy_lines": 17,
+      "hard_ids": [
+        "credential-access-protocol",
+        "hq-company-scoped-writes-verify-company",
+        "hq-detect-secrets-echo-escape-testing",
+        "hq-env-file-no-trailing-newline",
+        "hq-load-company-hard-policies-on-mid-session-bind",
+        "hq-never-echo-tokens-stdout",
+        "hq-prefer-native-capabilities",
+        "hq-redact-structural-plus-regex-pass",
+        "hq-secure-link-render-as-markdown",
+        "hq-share-session-urls-are-capabilities",
+        "hq-surface-hq-secrets-on-secret-discussion",
+        "hq-write-tool-blocked-on-repos",
+        "humanize-generated-content"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "hq-secrets",
+        "secrets"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p5-teammate-secret",
+      "event": "UserPromptSubmit",
+      "secs": 10.528,
+      "text": "from a teammate: could you run hq secrets generate-link --company acme ADS_ACCESS_TOKEN so I can write the ads token",
+      "kind": "pasted-request",
+      "supported": true
+    },
+    {
+      "bytes": 5954,
+      "policy_lines": 10,
+      "hard_ids": [
+        "hq-announce-before-irreversible",
+        "hq-deep-plan-skill-routing",
+        "hq-deploy-reinforcement",
+        "hq-no-worktree-for-repo-work",
+        "hq-prefer-native-capabilities",
+        "hq-project-work-mesh-reporting",
+        "hq-vercel"
+      ],
+      "blocks": [
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "deploy"
+      ],
+      "hints_missed": [
+        "brand"
+      ],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p6-startwork-creative-deploy",
+      "event": "UserPromptSubmit",
+      "secs": 12.052,
+      "text": "/startwork acme '/deploy an on brand investor pitch about our product'",
+      "kind": "creative-ops",
+      "supported": true
+    },
+    {
+      "bytes": 4156,
+      "policy_lines": 4,
+      "hard_ids": [
+        "hq-deep-plan-skill-routing",
+        "hq-linear",
+        "hq-no-worktree-for-repo-work",
+        "hq-project-work-mesh-reporting"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "integrations"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p7-startwork-linear",
+      "event": "UserPromptSubmit",
+      "secs": 11.997,
+      "text": "/startwork acme check linear for open issues on the site",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 3174,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [
+        "intent-hints"
+      ],
+      "hints_hit": [
+        "search"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p8-startwork-sources",
+      "event": "UserPromptSubmit",
+      "secs": 12.646,
+      "text": "what sources do we have for this client, meetings and transcripts",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 4177,
+      "policy_lines": 2,
+      "hard_ids": [
+        "hq-project-work-mesh-reporting"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "board"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p9-startwork-board",
+      "event": "UserPromptSubmit",
+      "secs": 11.394,
+      "text": "what is on the board for this project and what is still queued",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 7446,
+      "policy_lines": 4,
+      "hard_ids": [
+        "hq-company-scoped-writes-verify-company",
+        "hq-load-company-hard-policies-on-mid-session-bind"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "workers"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p10-startwork-workers",
+      "event": "UserPromptSubmit",
+      "secs": 11.292,
+      "text": "which workers can do design work for this company",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 7748,
+      "policy_lines": 4,
+      "hard_ids": [
+        "hq-company-scoped-writes-verify-company",
+        "hq-customizations-live-in-personal-or-company",
+        "hq-load-company-hard-policies-on-mid-session-bind"
+      ],
+      "blocks": [
+        "intent-hints",
+        "policy-reminder"
+      ],
+      "hints_hit": [
+        "search"
+      ],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 2,
+      "id": "p11-startwork-knowledge",
+      "event": "UserPromptSubmit",
+      "secs": 9.597,
+      "text": "where is the brand knowledge for this company kept",
+      "kind": "startwork-followup",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c1-ls",
+      "event": "PostToolUse",
+      "secs": 1.577,
+      "text": "ls .claude/hooks",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c2-git-status",
+      "event": "PostToolUse",
+      "secs": 1.855,
+      "text": "git status --short | head",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c3-cat",
+      "event": "PostToolUse",
+      "secs": 1.93,
+      "text": "cat core/core.yaml | head -20",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c4-grep",
+      "event": "PostToolUse",
+      "secs": 1.983,
+      "text": "grep -n hqVersion core/core.yaml",
+      "supported": true
+    },
+    {
+      "bytes": 0,
+      "policy_lines": 0,
+      "hard_ids": [],
+      "blocks": [],
+      "hints_hit": [],
+      "hints_missed": [],
+      "unwanted_hit": [],
+      "status": "completed",
+      "exit_code": 0,
+      "id": "c5-python",
+      "event": "PostToolUse",
+      "secs": 1.697,
+      "text": "python3 -c 'print(1+1)'",
+      "supported": true
+    }
+  ],
+  "totals": {
+    "secs": 148.25,
+    "bytes": 58865,
+    "policy_lines": 55
+  },
+  "provenance": {
+    "baseline_commit": "2d27e2903cb370c9ce0f85e5444c4af8a82b6a42",
+    "candidate_commit": "1de583f28e6a5bf8518c120a8e861dc6f3eadbf3",
+    "captured_commit": "1de583f28e6a5bf8518c120a8e861dc6f3eadbf3",
+    "machine": "ip-172-31-47-133.ec2.internal, Linux 6.1.176-221.367.amzn2023.x86_64, GNU bash 5.2.15",
+    "corpus_inputs": 16,
+    "report_rows_including_session_start": 17,
+    "comparison": "Single-box cross-commit comparison on the EC2 Linux box; these values are not the owner-machine benchmark number."
+  }
+}

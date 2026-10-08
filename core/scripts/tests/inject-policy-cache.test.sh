@@ -108,9 +108,15 @@ run_hook() {
 
 assert_full_output() {
   local out="$1"
-  for marker in COMPANY_HARD_BODY_V1 CORE_HARD_BODY_V1 "$CORE_SOFT_EXPECTED" PERSONAL_SOFT_V1; do
+  for marker in COMPANY_HARD_BODY_V1 CORE_HARD_BODY_V1 "$CORE_SOFT_EXPECTED"; do
     grep -Fq "$marker" "$out" || fail "expected $marker in output: $(cat "$out"); stderr: $(cat "$out.stderr")"
   done
+  # D4: personal soft policies are off by default; HQ_INJECT_PERSONAL_SOFT=1 opts in.
+  if [ "${HQ_INJECT_PERSONAL_SOFT:-0}" = "1" ]; then
+    grep -Fq PERSONAL_SOFT_V1 "$out" || fail "expected opted-in PERSONAL_SOFT_V1 in output: $(cat "$out"); stderr: $(cat "$out.stderr")"
+  elif grep -Fq PERSONAL_SOFT_V1 "$out"; then
+    fail "personal soft policy injected without HQ_INJECT_PERSONAL_SOFT=1: $(cat "$out")"
+  fi
 }
 
 cache_dir() { printf '%s\n' "$ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"; }
@@ -120,7 +126,7 @@ assert_cache_written() {
   count="$({ find "$(cache_dir)" -type f -name '*.cache' 2>/dev/null || true; } | wc -l | tr -d ' ')"
   [ "$count" -gt 0 ] || fail "expected parsed-policy cache file in $(cache_dir)"
   cache_file="$(find "$(cache_dir)" -type f -name '*.cache' -print -quit)"
-  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v1' \
+  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v3' \
     || fail "cache file is missing its complete-version header"
 }
 
@@ -128,7 +134,7 @@ assert_evaluation_cache_written() {
   local eval_file
   eval_file="$(find "$(cache_dir)" -type f -name '*.eval' -print -quit)"
   [ -n "$eval_file" ] || fail "expected per-session evaluation cache file"
-  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v4' \
+  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v5' \
     || fail "evaluation cache file is missing its complete-version header"
 }
 
@@ -139,6 +145,8 @@ setup_tree
 [ ! -d "$(cache_dir)" ] || fail "fixture cache directory must start absent"
 run_hook cold "$TMPROOT/cold.out"
 assert_full_output "$TMPROOT/cold.out"
+HQ_INJECT_PERSONAL_SOFT=1 run_hook personal-soft-opt-in "$TMPROOT/personal-soft-opt-in.out"
+HQ_INJECT_PERSONAL_SOFT=1 assert_full_output "$TMPROOT/personal-soft-opt-in.out"
 grep -Fxq 'UserPromptSubmit --with-assistant-intent' "$TMPROOT/derive-calls.log" \
   || fail "hook did not request paired primary and AssistantIntent facts"
 grep -Fxq 'AssistantIntent' "$TMPROOT/derive-calls.log" \
@@ -186,12 +194,13 @@ assert_cache_written
 ok "symlink target content modification invalidates the cache"
 
 # 4. Added and deleted files both change the cache input set.
-write_policy personal/policies/personal-added.md personal-added soft PERSONAL_ADDED_V1
+# D4 keeps personal soft policies out of default output, so the add/delete fixture is a core soft policy.
+write_policy core/policies/core-added.md core-added soft CORE_ADDED_V1
 run_hook added "$TMPROOT/added.out"
-grep -Fq PERSONAL_ADDED_V1 "$TMPROOT/added.out" || fail "added policy was not surfaced"
-rm -f "$ROOT/personal/policies/personal-added.md"
+grep -Fq CORE_ADDED_V1 "$TMPROOT/added.out" || fail "added policy was not surfaced"
+rm -f "$ROOT/core/policies/core-added.md"
 run_hook deleted "$TMPROOT/deleted.out"
-grep -Fq PERSONAL_ADDED_V1 "$TMPROOT/deleted.out" && fail "deleted policy remained cached"
+grep -Fq CORE_ADDED_V1 "$TMPROOT/deleted.out" && fail "deleted policy remained cached"
 assert_cache_written
 ok "add and delete invalidate the cache"
 
@@ -226,7 +235,7 @@ ok "concurrent fires never emit a partial cache result"
 for n in $(seq 1 80); do
   run_hook "bounded-$n" "$TMPROOT/bounded-$n.out" tsv
 done
-eval_count="$({ find "$(cache_dir)/eval-v4" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+eval_count="$({ find "$(cache_dir)/eval-v5" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
 [ "$eval_count" -gt 0 ] || fail "expected bounded evaluation cache entries"
 [ "$eval_count" -le 64 ] \
   || fail "evaluation cache grew to $eval_count entries; expected at most 64 per scope"
@@ -253,20 +262,20 @@ EOF
 run_hook parser-revision "$TMPROOT/parser-revision-first.out"
 : > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
 run_hook parser-revision "$TMPROOT/parser-revision-second.out"
-v4_file="$(find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit)"
-[ -n "$v4_file" ] || fail "expected a v4 evaluation cache before stale-cache test"
+cur_file="$(find "$(cache_dir)/eval-v5" -type f -name '*.eval' -print -quit)"
+[ -n "$cur_file" ] || fail "expected a v5 evaluation cache before stale-cache test"
 mkdir -p "$(cache_dir)/eval-v2"
-v2_file="$(cache_dir)/eval-v2/$(basename "$v4_file")"
-sed '1s/hq-policy-eval-v4/hq-policy-eval-v2/' "$v4_file" > "$v2_file"
+v2_file="$(cache_dir)/eval-v2/$(basename "$cur_file")"
+sed '1s/hq-policy-eval-v5/hq-policy-eval-v2/' "$cur_file" > "$v2_file"
 printf 'legacy-permissive\tcore\t%s\tsoft\tOLD_PARSER_CACHE_MARKER\treactive\tonce\tok\t2\n' \
   "$ROOT/core/policies/legacy-permissive.md" >> "$v2_file"
-rm -rf "$(cache_dir)/eval-v4"
+rm -rf "$(cache_dir)/eval-v5"
 : > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
 run_hook parser-revision "$TMPROOT/parser-revision-stale-v2.out"
 grep -Fq OLD_PARSER_CACHE_MARKER "$TMPROOT/parser-revision-stale-v2.out" \
   && fail "a v2 evaluation-cache verdict survived the parser revision"
-find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit | grep -q . \
-  || fail "parser revision did not create a v4 evaluation cache"
+find "$(cache_dir)/eval-v5" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "parser revision did not create a v5 evaluation cache"
 ok "parser revision ignores stale v2 evaluation-cache verdicts"
 
 # A case-sensitive v3 cache can contain an empty verdict for a policy whose
@@ -298,19 +307,19 @@ CASE_FOLD_TURN="$ROOT/workspace/orchestrator/policy-trigger-state/$CASE_FOLD_SES
 run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-cache-seed.out" tsv "enoent" "enoent"
 grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-cache-seed.out" \
   || fail "case-insensitive trigger did not match after parsed-cache warmup"
-case_v4="$(find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit)"
-[ -n "$case_v4" ] || fail "expected v4 evaluation entry for case-folded facts"
+case_cur="$(find "$(cache_dir)/eval-v5" -type f -name '*.eval' -print -quit)"
+[ -n "$case_cur" ] || fail "expected v5 evaluation entry for case-folded facts"
 mkdir -p "$(cache_dir)/eval-v3"
-case_v3="$(cache_dir)/eval-v3/$(basename "$case_v4")"
-sed -n '1p' "$case_v4" | sed 's/hq-policy-eval-v4/hq-policy-eval-v3/' > "$case_v3"
-rm -rf "$(cache_dir)/eval-v4"
+case_v3="$(cache_dir)/eval-v3/$(basename "$case_cur")"
+sed -n '1p' "$case_cur" | sed 's/hq-policy-eval-v5/hq-policy-eval-v3/' > "$case_v3"
+rm -rf "$(cache_dir)/eval-v5"
 : > "$CASE_FOLD_DEDUPE"
 : > "$CASE_FOLD_TURN"
 run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-stale-v3.out" tsv "enoent" "enoent"
 grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-stale-v3.out" \
   || fail "stale case-sensitive v3 cache suppressed a case-insensitive policy match"
-find "$(cache_dir)/eval-v4" -type f -name '*.eval' -print -quit | grep -q . \
-  || fail "case-folded evaluation did not replace the stale namespace with v4"
+find "$(cache_dir)/eval-v5" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "case-folded evaluation did not replace the stale namespace with v5"
 ok "case-folding evaluator ignores stale v3 no-match verdicts"
 
 # The evaluation cache key includes both derived fact channels. Clearing the

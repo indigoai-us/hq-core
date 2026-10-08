@@ -3,6 +3,45 @@
 Newest release first. `## Release: TBD` collects promotions staged for the next
 release; the release workflow stamps it with the version at tag time.
 
+## Release: v16.0.0-beta.19
+
+- promote 2026-09-18 (/conduct session link): new command `/conduct-join`
+  (`.claude/skills/conduct-join/SKILL.md`) joins an already-running session to a
+  `/conduct` session as a child. `/conduct` gains `adopt` and
+  `tell <child> <message>` (Step 7) plus the helper
+  `core/scripts/conduct-link.sh` (mailbox under `workspace/conduct-links/`).
+  `.claude/hooks/conduct-lane-inbox.sh` now also delivers to linked sessions,
+  and `.claude/hooks/hook-registry.json` registers it a second time per event
+  with `args: ["--link"]`, prefiltered on `workspace/conduct-links/by-session`
+  existing. Arrives with `/update-hq`; no manual step. Ride-along fixes:
+  `protect-core.sh` honours the tighten-only `HQ_IGNORE_CORE_PROTECT_BYPASS=1`;
+  `validate-agent-runtime-contracts.mjs` treats `<scope>:<skill>` mirror
+  directories as distinct skills. Regression: `core/scripts/tests/conduct-link.test.sh`.
+## Release: v16.0.0-beta.12
+
+- Keep the generated `derive-trigger-facts.sh` forwarder fail-closed and prompt when POSIX stdin is closed, matching the bundled shell behavior on macOS.
+
+## Release: v16.0.0-beta.6
+
+- feat 2026-10-07 (policy lifecycle): policies can carry optional lifecycle
+  frontmatter: `status` (`active`, `retired`, `superseded`), `retired_at`,
+  `retired_by`, `retired_reason`, `last_confirmed`, `retire_when`, and
+  `supersedes`. A new `enforcement: gate` tier with a `gate:` block (`tools`,
+  `bash`, `requires`, `freshness`, `override`) is documented and validated.
+  Policies without these fields stay valid and behave as `active`.
+  Every policy retrieval is appended to
+  `workspace/orchestrator/policy-retrieval-ledger.jsonl`, which PreCompact
+  leaves in place. The injector uses it to order equally specific matches by
+  staleness: superseded policies last, `retire_when` adds 180 days, otherwise
+  days since the last retrieval or since `created:`. Exempt from reordering:
+  `enforcement: gate`, `inject: always`, and hard policies about credentials,
+  secrets, destructive actions, or tenant isolation. Personal soft policies
+  are no longer injected unless `HQ_INJECT_PERSONAL_SOFT=1` is set; core and
+  company soft policies are unchanged. `/garden` can retire personal and
+  company policies by evidence and never retires core policies. Nothing is
+  deleted: retirement sets `status: retired` and the file stays in place.
+  No action needed on update.
+
 ## Release: v15.0.191-beta.7
 
 - feat 2026-10-06 (sessions know which connected apps they can use):

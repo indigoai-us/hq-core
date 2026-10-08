@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Conduct Join
+  short_description: >-
+    Join this running session to a /conduct session as a child so the conductor can send instructions and receive reports

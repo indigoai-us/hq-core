@@ -38,13 +38,14 @@ done
 
 command -v node >/dev/null 2>&1 || exit 0
 
-HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" CMD="$COMMAND" SESSION_CWD="$SESSION_CWD" node - <<'JS'
+HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" SESSION_CWD="$SESSION_CWD" \
+  MSYS2_ARG_CONV_EXCL="*" node - "$COMMAND" <<'JS'
 const fs = require("fs");
 const path = require("path");
 
 const hq = process.env.HQ_ROOT || "";
 const sid = process.env.SESSION_ID || "default";
-let command = (process.env.CMD || "").trim().replace(/^\/+/, "");
+let command = (process.argv[2] || "").trim().replace(/^\/+/, "");
 
 const key = sid.replace(/[^A-Za-z0-9._-]/g, "_") || "default";
 const state = path.join(hq, ".claude", "state");

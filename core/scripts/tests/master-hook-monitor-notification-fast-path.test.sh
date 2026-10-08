@@ -45,6 +45,7 @@ done
 cat > "$ROOT/.claude/hooks/inject-policy-on-trigger.sh" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null
+[ "${HQ_HOOK_MONITOR_EXPIRY_NOTIFICATION:-0}" = "1" ] && exit 0
 printf 'inject\n' >> "$HQ_TEST_MARKER"
 SH
 cat > "$TMP/bin/hq_hook_profile_allows" <<'SH'
@@ -123,8 +124,8 @@ run_prompt() {
 
 : > "$MARKER"
 run_prompt '[Monitor timed out — re-arm if needed.]' monitor-expiry-exact
-[ "$(cat "$MARKER")" = $'inject\nturn-start' ] \
-  || fail "bare expiry notification did not retain injection and turn-start: $(cat "$MARKER")"
+[ "$(cat "$MARKER")" = 'turn-start' ] \
+  || fail "bare expiry notification did not skip policy injection and retain turn-start: $(cat "$MARKER")"
 grep -Fq 'skip rewrite-resume-sentinel (monitor-expiry-notification)' "$TMP/err" \
   || fail "trace did not identify skipped resume-rewrite hook: $(cat "$TMP/err")"
 grep -Fq 'skip route-deep-plan-to-skill (monitor-expiry-notification)' "$TMP/err" \
@@ -152,14 +153,15 @@ grep -Fq 'skip 70-work-mesh-ground.sh (monitor-expiry-notification)' "$TMP/err" 
 run_prompt '[Monitor timed out — re-arm if needed.] Then check why the deploy stopped.' monitor-expiry-action
 [ "$(cat "$MARKER")" = $'rewrite\nroute-deep-plan-to-skill\nauto-session-project\nnatural-language-router\ntitle\ninject\ncli\ndesktop\nturn-start\ncore-skill\nmonitor\nground\npersonal-skill\nsync' ] \
   || fail "actionable prompt failed to preserve normal dispatch: $(cat "$MARKER")"
-printf 'PASS: bare Monitor notification retained policy injection and skipped irrelevant enrichers; actionable prompt dispatched normally\n'
+printf 'PASS: bare Monitor notification skipped policy injection and irrelevant enrichers; actionable prompt dispatched normally\n'
 
 # The always-on directory dispatcher must keep the same fast path when the
-# project hook registry is absent. Put a session-title hook in the directory
-# population so the V6 mutation is observable through this public dispatch path.
+# project hook registry is absent. The notification signal must suppress the
+# directory policy injector while preserving the turn-start hook.
 cat > "$ROOT/core/hooks/UserPromptSubmit/inject-policy-on-trigger.sh" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null
+[ "${HQ_HOOK_MONITOR_EXPIRY_NOTIFICATION:-0}" = "1" ] && exit 0
 printf 'inject\n' >> "$HQ_TEST_MARKER"
 SH
 cat > "$ROOT/core/hooks/UserPromptSubmit/session-title.sh" <<'SH'
@@ -179,12 +181,12 @@ directory_counts="$(awk '
   $0 == "turn-start" { turn_start++ }
   END { printf "%d %d %d\n", NR, inject, turn_start }
 ' "$MARKER")"
-[ "$directory_counts" = "2 1 1" ] \
-  || fail "non-registry expiry dispatch must run only policy injection and turn-start; counts=$directory_counts markers=$(cat "$MARKER")"
+[ "$directory_counts" = "1 0 1" ] \
+  || fail "non-registry expiry dispatch must skip policy injection and retain turn-start; counts=$directory_counts markers=$(cat "$MARKER")"
 for skipped_hook in session-title.sh 30-ensure-hq-cli.sh 31-ensure-hq-desktop.sh \
   40-skill-command-script.sh repos-sync.sh 45-lanes-senior-monitor.sh \
   70-work-mesh-ground.sh; do
   grep -Fq "skip $skipped_hook (monitor-expiry-notification)" "$TMP/err" \
     || fail "non-registry trace did not identify skipped $skipped_hook: $(cat "$TMP/err")"
 done
-printf 'PASS: non-registry Monitor dispatch skipped irrelevant directory hooks and retained policy injection plus turn-start\n'
+printf 'PASS: non-registry Monitor dispatch skipped irrelevant directory hooks and policy injection while retaining turn-start\n'

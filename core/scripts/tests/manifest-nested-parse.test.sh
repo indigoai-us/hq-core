@@ -147,6 +147,19 @@ assert_equals "$empty_title_rc" "0" "empty manifest session-title exits cleanly"
 # and no information-free `chat`.
 assert_equals "$empty_title" "" "empty manifest yields no title at all"
 
+# Git Bash can convert a slash-prefixed command in an environment variable to
+# a filesystem path. Keep the command in argv with MSYS conversion disabled.
+grep -Fq 'MSYS2_ARG_CONV_EXCL="*" node - "$COMMAND"' "$TITLE" \
+  || fail "session-title must pass the mode command as argv under Git Bash"
+grep -Fq 'process.argv[2]' "$TITLE" \
+  || fail "session-title must read the mode command from argv"
+mode_title_rc=0
+mode_title="$(env -u CLAUDE_PROJECT_DIR HQ_ROOT="$SINGLE" \
+  bash "$TITLE" --session-id "manifest-nested-parse-$$-mode" --command /handoff \
+  --cwd "$SINGLE/repos/public/probe-console/src" 2>&1)" || mode_title_rc=$?
+assert_equals "$mode_title_rc" "0" "mode session-title exits cleanly"
+assert_contains "$mode_title" "📝" "session-title keeps slash-prefixed mode command"
+
 echo "manifest-nested-parse: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
 

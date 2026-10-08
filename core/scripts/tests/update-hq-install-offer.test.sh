@@ -81,9 +81,8 @@ echo "PASS: existing global install suppresses the offer without writing state"
 
 setup_case old-cli
 rm -rf "$CASE/cli/node_modules/@indigoai-us/hq-flags-client"
-[[ "$(check)" == off ]] || fail "CLI without the flag reader package must fail closed"
-[[ ! -e "$HOME/.hq/anywhere" ]] || fail "old CLI check must write no state"
-echo "PASS: missing flag support is treated as off"
+[[ "$(check)" == offer ]] || fail "CLI without the flag reader package should use the flag's on fallback"
+echo "PASS: missing flag support defaults on"
 
 setup_case resolved-context
 cat > "$CASE/cli/node_modules/@indigoai-us/hq-flags-client/index.js" <<'JS'

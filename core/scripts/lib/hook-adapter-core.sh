@@ -105,8 +105,8 @@ hqad_policy_prefilter_now() {
 # that no tool-event policy can match. Unknown policy syntax always runs it.
 hqad_policy_prefilter_check() {
   local root="$1" ev="$2" active_company="$3" cwd="$4" session_id="$5" text="$6"
-  local dir dirs=() key="" cache stale=0 now line rest company repo f
-  local ledger_session ledger_path ledger="" derived_facts="" branch=""
+  local dir dirs=() existing_dirs=() key="" cache stale=0 now line rest company repo f policy_mode=default
+  local ledger_session ledger_path ledger="" branch="" fact_status=0
   case "$ev" in PreToolUse|PostToolUse) ;; *) return 0 ;; esac
   case "${HQ_POLICY_COMPANY:-}" in *[!A-Za-z0-9_-]*|.|..) return 0 ;; esac
   case "$cwd" in
@@ -137,20 +137,29 @@ hqad_policy_prefilter_check() {
   done < <(hqad_policy_prefilter_dirs "$root" "$cwd" "$active_company")
   key="${key//\//_}"; key="${key//|/+}"
   case "$key" in *[!A-Za-z0-9_.+-]*) return 0 ;; esac
-  cache="$root/workspace/orchestrator/hook-state/policy-prefilter/${key}${ev}.v1"
+  [ "${HQ_POLICY_TOOL_EVENTS:-}" = "legacy" ] && policy_mode=legacy
+  cache="$root/workspace/orchestrator/hook-state/policy-prefilter/${key}${ev}.${policy_mode}.v3"
   now="$(hqad_policy_prefilter_now)"
   if [ -f "$cache" ]; then
     for dir in "${dirs[@]}"; do
       [ -d "$dir" ] || continue
       [ "$cache" -nt "$dir" ] || stale=1
-      for f in "$dir"/*.md; do
-        [ -f "$f" ] || continue
-        case "${f##*/}" in
-          example-policy.md|README.md|*" "*|*.sync-conflict-*.md|*.conflict-*) continue ;;
-        esac
-        [ "$cache" -nt "$f" ] || stale=1
-      done
+      existing_dirs+=("$dir")
     done
+    if [ "$stale" -eq 0 ] && [ "${#existing_dirs[@]}" -gt 0 ]; then
+      # Keep edits detectable without 6,000 shell-level stat checks. Prune
+      # nested directories to match the prior top-level *.md glob.
+      local changed_policy_files=""
+      for dir in "${existing_dirs[@]}"; do
+        if ! changed_policy_files="$(find "$dir" -type d ! -path "$dir" -prune -o \
+          -type f -name '*.md' ! -name 'example-policy.md' ! -name 'README.md' \
+          ! -name '* *' ! -name '*.sync-conflict-*.md' ! -name '*.conflict-*' \
+          -newer "$cache" -print -quit 2>/dev/null)"; then
+          return 0
+        fi
+        [ -z "$changed_policy_files" ] || { stale=1; break; }
+      done
+    fi
     if [ "$stale" -eq 0 ]; then
       IFS= read -r line < "$cache" || line=""
       case "$line" in
@@ -174,7 +183,7 @@ hqad_policy_prefilter_check() {
         files+=("$f")
       done
     done
-    if ! awk -v ev="$ev" -v now="$now" '
+    if ! awk -v ev="$ev" -v legacy="${HQ_POLICY_TOOL_EVENTS:-}" -v now="$now" '
       function tokenize(s,    n, m) {
         split("", tok); ntok = 0
         while (length(s) > 0) {
@@ -214,11 +223,6 @@ hqad_policy_prefilter_check() {
         }
         return l
       }
-      function esc(t,    o, i, c) {
-        o = ""
-        for (i = 1; i <= length(t); i++) { c = substr(t, i, 1); if (c ~ /[.\/]/) o = o "\\" c; else o = o c }
-        return o
-      }
       BEGIN { print "built=" now }
       FNR == 1 { infm = 0; onl = ""; whenl = ""; fm_done = 0 }
       FNR == 1 && $0 == "---" { infm = 1; next }
@@ -227,7 +231,7 @@ hqad_policy_prefilter_check() {
       infm && /^when:/ { whenl = $0; sub(/^when:[[:space:]]*/, "", whenl); sub(/[[:space:]]+$/, "", whenl) }
       fm_done && !seen[FILENAME]++ {
         slug = FILENAME; sub(/.*\//, "", slug); sub(/\.md$/, "", slug)
-        if (index(onl, ev) == 0) next
+        if (index(onl, ev) == 0 && !(onl == "" && ((ev == "PostToolUse" && legacy != "legacy") || (ev == "PreToolUse" && legacy == "legacy")))) next
         if (whenl == "") { print "unsafe=" slug; next }
         gsub(/^"|"$/, "", whenl)
         tokenize(whenl); pos = 1; bad = 0; structural = ""
@@ -243,28 +247,27 @@ hqad_policy_prefilter_check() {
         n = split(res, rt, " ")
         for (i = 1; i <= n; i++) {
           t = rt[i]
-          if (t == "secret" || t == "shared_branch") vocab[t] = 1
-          else vocab[esc(t)] = 1
+          vocab[t] = 1
         }
       }
       END {
-        re = ""
-        for (t in vocab) re = (re == "" ? t : re "|" t)
-        if (re != "") print "re=" re
+        if (vocab["shared_branch"]) print "needs_branch=1"
+        for (t in vocab) print "token=" t
       }
     ' ${files[@]+"${files[@]}"} > "$cache.tmp.$$" 2>/dev/null; then
       rm -f "$cache.tmp.$$" 2>/dev/null; return 0
     fi
     mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || { rm -f "$cache.tmp.$$" 2>/dev/null; return 0; }
   fi
-  local re="" slug tokn bound=0
+  local needs_branch=0 slug tokn bound=0
   [ -n "$active_company" ] && bound=1
   case "$cwd" in *companies/*) bound=1 ;; esac
   [ -n "${HQ_POLICY_COMPANY:-}" ] && bound=1
   while IFS= read -r line; do
     case "$line" in
       unsafe=*) return 0 ;;
-      re=*) re="${line#re=}" ;;
+      needs_branch=1) needs_branch=1 ;;
+      token=*) break ;;
       struct=*)
         slug="${line#struct=}"; tokn="${slug##*:}"; slug="${slug%:*}"
         case "$tokn" in
@@ -276,21 +279,19 @@ hqad_policy_prefilter_check() {
         ;;
     esac
   done < "$cache"
-  [ -n "$re" ] || return 1
-  case "|$re|" in
-    *"|shared_branch|"*) branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" ;;
-  esac
-  if ! derived_facts="$(printf '%s\n' "$text" | awk -v mode=derived -v branch="$branch" -f "$root/core/scripts/lib/trigger-fact-text.awk")"; then
-    # Missing or unreadable shared fact source cannot justify a prefilter skip.
-    return 0
+  if [ "$needs_branch" -eq 1 ]; then
+    branch="$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
-  shopt -s nocasematch
-  if [[ "$text" =~ $re ]] || [[ " $derived_facts " =~ [[:space:]]($re)[[:space:]] ]]; then
-    shopt -u nocasematch
+  if printf '%s\n' "$text" | awk -v branch="$branch" -v policy_vocab_cache="$cache" \
+    -f "$root/core/scripts/lib/trigger-fact-text.awk"; then
     return 0
+  else
+    fact_status=$?
   fi
-  shopt -u nocasematch
-  return 1
+  # Only an explicit no-match from the shared fact tokenizer justifies a skip.
+  # Parse errors, unreadable caches, and other failures keep the injector on.
+  [ "$fact_status" -eq 1 ] && return 1
+  return 0
 }
 
 # hqad_registry_prefilter_match sets HQAD_PREFILTER_REASON and returns 1 only

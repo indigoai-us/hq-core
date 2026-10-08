@@ -12,8 +12,8 @@
 #   (A) `when:`/`on:` frontmatter on policy files — boolean expressions over an
 #       open token set, evaluated by core/scripts/eval-trigger.sh against facts
 #       derived by core/scripts/derive-trigger-facts.sh. This is the primary,
-#       data-driven path. Runs for whatever event fired (PreToolUse,
-#       UserPromptSubmit, PostToolUse).
+#       data-driven path. Runs on UserPromptSubmit and PostToolUse by default;
+#       PreToolUse is available for explicit policies and legacy rollback.
 #   (B) Legacy hardcoded regex map (below) — for precise patterns a coarse
 #       boolean token can't express (e.g. `git checkout {ref} -- .`, `pgrep`,
 #       `IFS=":"`). PreToolUse only. Kept so migrating policies to `when:` is
@@ -26,7 +26,10 @@
 #          silent.
 #   soft/unset → the one-line `## Rule` excerpt, as always.
 #
-# Event: taken from `hook_event_name` in the stdin JSON (default PreToolUse).
+# Event: taken from `hook_event_name` in stdin (default PreToolUse). Passive
+# evaluation defaults to PostToolUse; the one-release
+# HQ_POLICY_TOOL_EVENTS=legacy switch restores passive Bash PreToolUse
+# evaluation and the historical omitted-on default.
 # Scope (tenant-safe) and precedence: worker > company > repo > personal > core.
 #   Company worker policies load only when their company is the session's own
 #   active tenant. Repo policies load only when the session cwd is in that repo;
@@ -115,25 +118,58 @@ if [ -n "$JQ" ]; then
       scalar(["session_id"]) + "\u0000",
       scalar(["tool_name"]) + "\u0000",
       scalar(["cwd"]) + "\u0000",
-      scalar(["tool_input", "command"]) + "\u0000"
+      scalar(["tool_input", "command"]) + "\u0000",
+      scalar(["prompt"]) + "\u0000"
     ' 2>/dev/null
   )
 fi
-if [ "${#INITIAL_FIELDS[@]}" -eq 5 ]; then
+if [ "${#INITIAL_FIELDS[@]}" -eq 6 ]; then
   EVENT="${INITIAL_FIELDS[0]}"
   SESSION_ID="${INITIAL_FIELDS[1]}"
   TOOL_NAME="${INITIAL_FIELDS[2]}"
   CWD="${INITIAL_FIELDS[3]}"
   ARG="${INITIAL_FIELDS[4]}"
+  PROMPT="${INITIAL_FIELDS[5]}"
 else
   EVENT="$(extract hook_event_name)"
   SESSION_ID="$(extract session_id)"
   TOOL_NAME="$(extract tool_name)"
   CWD="$(extract cwd)"
   ARG="$(extract tool_input.command)"
+  PROMPT="$(extract prompt)"
 fi
 [ -z "$EVENT" ] && EVENT="PreToolUse"
 [ -z "$CWD" ] && CWD="$HQ_ROOT"
+
+# Background Bash completions and task-notification blocks are harness
+# messages, not user requests. The Monitor expiry signal is classified once
+# by master-hook.sh and handed down through the environment to keep its exact
+# fast-path predicate as the single source of truth.
+if [ "$EVENT" = "UserPromptSubmit" ]; then
+  if [ "${HQ_HOOK_MONITOR_EXPIRY_NOTIFICATION:-0}" = "1" ]; then
+    exit 0
+  fi
+  case "$PROMPT" in
+    '<task-notification>'*'</task-notification>'|\
+    'The following task has completed:'*'<task-notification>'*'</task-notification>'*|\
+    'The following task has failed:'*'<task-notification>'*'</task-notification>'*|\
+    'The following background task has completed:'*'<task-notification>'*'</task-notification>'*|\
+    'The following background task has failed:'*'<task-notification>'*'</task-notification>'*)
+      exit 0
+      ;;
+  esac
+fi
+
+# Plain PreToolUse stdout is not delivered as model context. Avoid passive
+# policy scans there unless the one-release rollback switch is active. Blocking
+# hooks are separate registry entries and remain unaffected. Grok does not
+# deliver PostToolUse context, so do not evaluate or ledger policy slugs there.
+if [ "$EVENT" = "PreToolUse" ] && [ "${HQ_POLICY_TOOL_EVENTS:-}" != "legacy" ]; then
+  exit 0
+fi
+if [ "$EVENT" = "PostToolUse" ] && [ "${HQ_HARNESS:-}" = "grok" ]; then
+  exit 0
+fi
 
 # Tool-event trigger evaluation is scoped to CLI/Bash only — the frequent
 # Read/Write/Edit/Glob tool calls don't pay the policy scan. The message path
@@ -323,9 +359,9 @@ record_slug() {
 # Record a batch of evaluator rows with one lock and append per ledger. The
 # evaluator already returns unique policy slugs in its established order.
 record_match_rows() {
-  local rows="$1" slug scope path enf rule kind injv ws spec
+  local rows="$1" slug scope path enf rule kind injv ws spec stale exempt
   local once_slugs="" always_slugs=""
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
     [ -n "$slug" ] || continue
     if [ "$injv" = "always" ]; then
       always_slugs+="$slug"$'\n'
@@ -641,7 +677,7 @@ resolve_policy_fact_helper() {
 }
 
 run_derive_trigger_facts() {
-  local event="$1" with_intent="${2:-0}" helper=""
+  local event="$1" with_intent="${2:-0}" helper="" helper_status=0
   resolve_policy_fact_helper
   helper="${POLICY_FACT_HELPER:-$HELPERS/derive-trigger-facts.sh}"
   # The companion derives HQ_ROOT from its own location, which inside the CLI
@@ -649,15 +685,32 @@ run_derive_trigger_facts() {
   # reason; here the env carries it.
   if [ -n "$STDIN_FILE" ]; then
     if [ "$with_intent" = "1" ]; then
-      HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent < "$STDIN_FILE" || true
+      if HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent < "$STDIN_FILE"; then
+        :
+      else
+        helper_status=$?
+      fi
     else
-      HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" < "$STDIN_FILE" || true
+      if HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" < "$STDIN_FILE"; then
+        :
+      else
+        helper_status=$?
+      fi
     fi
   elif [ "$with_intent" = "1" ]; then
-    printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent || true
+    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent; then
+      :
+    else
+      helper_status=$?
+    fi
   else
-    printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" || true
+    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event"; then
+      :
+    else
+      helper_status=$?
+    fi
   fi
+  return "$helper_status"
 }
 
 spill_policy_facts() {
@@ -683,19 +736,23 @@ spill_policy_facts() {
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
 add_match() {
-  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always] [ok|malformed] [specificity]
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always] [ok|malformed] [specificity] [staleness] [exempt 0|1]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
-  local slug="$1" scope rule path enf kind injv ws spec
+  local slug="$1" scope rule path enf kind injv ws spec stale exempt
   if [ "$#" -ge 5 ]; then
     scope="$2"; path="$3"; enf="$4"; rule="$5"
     kind="${6:-reactive}"
     injv="${7:-once}"
     ws="${8:-ok}"
     spec="${9:-0}"
+    stale="${10:-0}"
+    exempt="${11:-0}"
   else
-    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"; spec=0
+    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"; spec=0; stale=0; exempt=0
   fi
   case "$spec" in ''|*[!0-9]*) spec=0 ;; esac
+  case "$stale" in ''|*[!0-9]*) stale=0 ;; esac
+  [ "$exempt" = "1" ] || exempt=0
   [ -n "$slug" ] || return 0
   [ "$injv" = "always" ] || injv="once"
   already "$slug" "$injv" && return 0
@@ -705,7 +762,7 @@ add_match() {
   [ "$ws" = "malformed" ] || ws="ok"
   # Tabs inside rule would break the field layout — collapse them.
   rule="${rule//$'\t'/ }"
-  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}	${spec}
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}	${spec}	${stale}	${exempt}
 "
 }
 
@@ -730,7 +787,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     # 200 KB first line and can consume the entire adapter deadline.
     FACT_PAIR_FILE="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-pair.XXXXXX" 2>/dev/null || true)"
     if [ -n "$FACT_PAIR_FILE" ]; then
-      run_derive_trigger_facts "$EVENT" 1 > "$FACT_PAIR_FILE"
+      run_derive_trigger_facts "$EVENT" 1 > "$FACT_PAIR_FILE" || true
       FACTS=""
       INTENT_FACTS=""
       pair_lines=0
@@ -745,14 +802,29 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         fi
       done < "$FACT_PAIR_FILE"
       if [ "$pair_lines" -lt 2 ]; then
-        INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)"
+        INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)" || true
       fi
     else
-      FACTS="$(run_derive_trigger_facts "$EVENT")"
-      INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)"
+      FACTS="$(run_derive_trigger_facts "$EVENT")" || true
+      INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)" || true
     fi
   else
-    FACTS="$(run_derive_trigger_facts "$EVENT")"
+    DERIVE_EVENT_OK=0
+    if FACTS="$(run_derive_trigger_facts "$EVENT")"; then
+      DERIVE_EVENT_OK=1
+    else
+      :
+    fi
+    if [ "$EVENT" = "PostToolUse" ] && [ "$DERIVE_EVENT_OK" = "1" ]; then
+      # The PostToolUse payload retains tool_input.command. Include those
+      # command facts as well as output facts so omitted-on policies that only
+      # match a pre-call command still reach a delivering event. Drop
+      # run_in_background because that host-provided marker is PreToolUse-only.
+      COMMAND_FACTS="$(run_derive_trigger_facts PreToolUse)" || true
+      COMMAND_FACTS=" ${COMMAND_FACTS} "
+      COMMAND_FACTS="${COMMAND_FACTS// run_in_background / }"
+      FACTS="$FACTS $COMMAND_FACTS"
+    fi
   fi
 
   # Keep large fact sets out of awk -v. Derived facts are ASCII tokens, so the
@@ -1051,11 +1123,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       scope_key="${scope_hash%% *}"
       CACHE_DIR="$HQ_ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"
       if [ -n "$scope_key" ]; then
-        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v4" "$STATS_DIR" 2>/dev/null || true
+        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v5" "$STATS_DIR" 2>/dev/null || true
       fi
       if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
-        CACHE_HEADER="hq-policy-cache-v1${CACHE_SEP}${POLICY_FINGERPRINT}"
+        # The parser cache now stores PostToolUse as the omitted-on default;
+        # invalidate v2 records, which baked in PreToolUse.
+        CACHE_HEADER="hq-policy-cache-v3${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
         if [ -r "$CACHE_FILE" ]; then
           IFS= read -r cache_header < "$CACHE_FILE" || true
@@ -1123,11 +1197,11 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # v3 entries were produced by a case-sensitive evaluator. Keep parsed
       # records at v1, but namespace evaluation results by evaluator semantics
       # so old verdicts cannot survive case-insensitive trigger matching.
-      EVAL_CACHE_DIR="$CACHE_DIR/eval-v4"
+      EVAL_CACHE_DIR="$CACHE_DIR/eval-v5"
       if [ -d "$EVAL_CACHE_DIR" ]; then
         eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))")"
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
-        EVAL_CACHE_HEADER="hq-policy-eval-v4${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+        EVAL_CACHE_HEADER="hq-policy-eval-v5${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
           IFS= read -r eval_cache_header < "$EVAL_CACHE_FILE" || true
@@ -1146,6 +1220,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       fi
     fi
   fi
+  # Staleness inputs (see staleness() in the evaluator): today's UTC date and
+  # the durable retrieval ledger written by record-policy-retrieval.sh.
+  # HQ_INJECT_PERSONAL_SOFT=1 re-enables personal soft policies (default 0, D4).
+  STALE_TODAY="${HQ_POLICY_STALE_TODAY:-$(date -u +%Y-%m-%d 2>/dev/null || true)}"
+  STALE_LEDGER="$HQ_ROOT/workspace/orchestrator/policy-retrieval-ledger.jsonl"
+  [ -r "$STALE_LEDGER" ] || STALE_LEDGER=""
+  INJECT_PERSONAL_SOFT="${HQ_INJECT_PERSONAL_SOFT:-0}"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
     policy_evaluator() {
       # The ledgers are read from files with getline. This preserves the
@@ -1156,13 +1237,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind.
       # `kind` is consumed only inside this hook before prose emission; the
       # public HQ_POLICY_EMIT=tsv path continues to print five fields below.
-      awk -v EVENT="$EVENT" -v INTENT_MODE="$INTENT_MODE" \
+      awk -v EVENT="$EVENT" -v LEGACY_TOOL_EVENTS="${HQ_POLICY_TOOL_EVENTS:-}" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS_INLINE" -v AIFACTS="$INTENT_FACTS_INLINE" \
           -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
           -v ALREADY_FILE="$DEDUPE_FILE" -v ALREADY_TURN_FILE="$TURN_FILE" \
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
-          -v CSEP="$CACHE_SEP" '
+          -v CSEP="$CACHE_SEP" -v TODAY="$STALE_TODAY" \
+          -v RETRIEVAL_LEDGER="$STALE_LEDGER" -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" '
       # Keep this hot-path parser structurally identical to eval-trigger.sh.
       # In particular, an opening paren needs a closing paren: accepting it
       # here while --check rejects it makes authoring and runtime disagree.
@@ -1249,15 +1331,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule) {
         if (whenx=="") return
         if (id=="") id=base(fname)
-        if (onx=="") onx="PreToolUse"                              # default when on: omitted
+        if (onx=="") onx=(LEGACY_TOOL_EVENTS=="legacy" ? "PreToolUse" : "PostToolUse")
         # On a cache miss, write the parsed record while this same pass has the
         # policy file open. A malformed cache record is never published: the
         # parent only renames the temp file when END writes an "ok" status.
         if (CACHE_WRITE) {
           cache_rule=rule
           gsub(/\t/," ",cache_rule)
-          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(cache_rule,CSEP)) cache_unsafe=1
-          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP cache_rule CSEP "." >> CACHE_TMP
+          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(crx,CSEP) || index(tagx,CSEP) || index(cache_rule,CSEP)) cache_unsafe=1
+          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP crx CSEP rwx CSEP tagx CSEP cache_rule CSEP "." >> CACHE_TMP
         }
         onpad=" " onx " "
         ev_on = (index(onpad," " EVENT " ")>0)
@@ -1277,6 +1359,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         else { if (id in already) return }                         # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
         if (statx=="retired") return                               # retired policies never inject (policy-retire.sh)
+        # Owner decision D4: personal soft/unset policies are not emitted unless
+        # HQ_INJECT_PERSONAL_SOFT=1. Core and company soft policies are unchanged.
+        if (PERSONAL_SOFT!="1" && scopeof(fname)=="personal" && enf!="hard" && enf!="gate") return
         matched=0; degraded=0; spec=0
         if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0) { matched=1; spec=specificity(whenx,"ev") } else if(r==2) degraded=1 }
         if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0) { matched=1; spec=specificity(whenx,"ai") } else if(r==2) degraded=1 }
@@ -1303,10 +1388,44 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           # Only the unconditional SessionStart backfill is baseline.
           kind=((degraded || (ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx))) ? "baseline" : "reactive")
           gsub(/\t/," ",rule)
-          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij "\t" ws "\t" spec
+          print id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij "\t" ws "\t" spec "\t" staleness() "\t" stale_exempt(ij)
         }
       }
-      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; rule=""; rsec=0; rcap=0 }
+      # staleness(): integer score, higher = more likely out of date. Used only
+      # to order equally specific matches; it never removes a match.
+      #   status retired|superseded -> 1000000 (maximum). Retired rows are still
+      #                                filtered above, so in practice this ranks
+      #                                superseded rules last.
+      #   otherwise                  -> base + (retire_when present ? 180 : 0)
+      #   base = days since the newest retrieval in the durable ledger
+      #          (workspace/orchestrator/policy-retrieval-ledger.jsonl), or, when
+      #          never retrieved, days since `created:`. 0 when neither is known,
+      #          so undated legacy policies keep their current order.
+      function civil(dt,   y,m,dd) {
+        if (dt !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) return -1
+        y=substr(dt,1,4)+0; m=substr(dt,6,2)+0; dd=substr(dt,9,2)+0
+        if (m<=2) { y--; m+=12 }
+        return 365*y + int(y/4) - int(y/100) + int(y/400) + int((153*(m-3)+2)/5) + dd
+      }
+      function staleness(   st,base,t,c) {
+        st=statx; gsub(/[^a-z]/,"",st)
+        if (st=="retired" || st=="superseded") return 1000000
+        base=0
+        if (TODAY_D>0) {
+          if (id in lastret) { t=civil(lastret[id]); if (t>0 && TODAY_D>t) base=TODAY_D-t }
+          else { c=civil(crx); if (c>0 && TODAY_D>c) base=TODAY_D-c }
+        }
+        return base + (rwx ? 180 : 0)
+      }
+      # stale_exempt(): 1 keeps the row at its current position. Safety-critical
+      # hard rules, gate policies, and inject: always policies are never reordered.
+      function stale_exempt(ij,   hay) {
+        if (enf=="gate" || ij=="always") return 1
+        hay=tolower(whenx " " tagx)
+        if (enf=="hard" && hay ~ /credential|secret|destructive|company-isolation|tenant|cross-company/) return 1
+        return 0
+      }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; crx=""; rwx=0; tagx=""; tsec=0; rule=""; rsec=0; rcap=0 }
       # specificity(expr, which): how many distinct identifiers in the `when:`
       # expression are present in the fact set. A policy keyed on
       # `deploy && vercel && indigo` outranks one keyed on `deploy` alone when
@@ -1346,6 +1465,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         close(ALREADY_FILE)
         while ((getline turnline < ALREADY_TURN_FILE) > 0) if(turnline!="") turnalready[turnline]=1
         close(ALREADY_TURN_FILE)
+        TODAY_D=civil(TODAY)
+        if (RETRIEVAL_LEDGER!="") {
+          while ((getline rl < RETRIEVAL_LEDGER) > 0) {
+            if (match(rl, /"policy":"[^"]*"/)) rp=substr(rl,RSTART+10,RLENGTH-11); else continue
+            if (match(rl, /"ts":"[0-9-]*/)) rt=substr(rl,RSTART+6,10); else continue
+            if (!(rp in lastret) || rt > lastret[rp]) lastret[rp]=rt
+          }
+          close(RETRIEVAL_LEDGER)
+        }
         reset_file()
       }
       # Cache files have one validated header followed by parsed records. The
@@ -1354,15 +1482,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       CACHE_RECORDS {
         if (FNR==1) next
         n=split($0,cr,CSEP)
-        if (n < 10) next
+        if (n < 13) next
         id=cr[1]; fname=cr[3]; whenx=cr[4]; onx=cr[5]; enf=cr[6]
-        injx=cr[7]; statx=cr[8]; rule=cr[9]
+        injx=cr[7]; statx=cr[8]; crx=cr[9]; rwx=cr[10]; tagx=cr[11]; rule=cr[12]
         finalize()
         next
       }
       FNR==1 { if (seen) finalize(); reset_file(); seen=1 }
       { fname=FILENAME }
       /^---[ \t]*$/ { if (d<2) { d++; next } }
+      d==1 && tsec && /^[^ \t-]/ { tsec=0 }
       d==1 && /^id:/   { s=$0; sub(/^id:[ \t]*/,"",s);   gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
       d==1 && /^status:/ { s=$0; sub(/^status:[ \t]*/,"",s); gsub(/[ \t"]/,"",s); statx=s; next }
       d==1 && /^when:/ { s=$0; sub(/^when:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); whenx=s; next }
@@ -1371,6 +1500,11 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         s=$0; sub(/^enforcement:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s)
         gsub(/^["'"'"']|["'"'"']$/,"",s); enf=s; next
       }
+      d==1 && /^created:/ { s=$0; sub(/^created:[ \t]*/,"",s); gsub(/[ \t"\047]/,"",s); crx=s; tsec=0; next }
+      d==1 && /^retire_when:/ { s=$0; sub(/^retire_when:[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); if (s!="") rwx=1; tsec=0; next }
+      d==1 && /^tags:/ { s=$0; sub(/^tags:[ \t]*/,"",s); gsub(/[][,"\047]/," ",s); tagx=s; tsec=1; next }
+      d==1 && tsec && /^[ \t]+-/ { s=$0; sub(/^[ \t]+-[ \t]*/,"",s); gsub(/["\047]/,"",s); tagx=tagx " " s; next }
+      d==1 && /^[^ \t]/ { tsec=0 }
       d==1 && /^inject:/ {
         s=$0; sub(/^inject:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s)
         gsub(/^["'"'"']|["'"'"']$/,"",s); injx=s; next
@@ -1391,12 +1525,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     POLICY_EVALUATION_OK=1
     if [ "$EVAL_CACHE_HIT" = "1" ]; then
       eval_cache_first_line=1
-      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
         if [ "$eval_cache_first_line" = "1" ]; then
           eval_cache_first_line=0
           continue
         fi
-        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt"
       done < "$EVAL_CACHE_FILE"
     elif [ "$EVAL_CACHE_WRITE" = "1" ]; then
       EVAL_RESULTS_TMP="${EVAL_CACHE_TMP}.results"
@@ -1410,13 +1544,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           POLICY_EVALUATION_OK=0
         fi
       fi
-      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
-        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt"
       done < "$EVAL_RESULTS_TMP"
       rm -f "$EVAL_RESULTS_TMP" 2>/dev/null || true
     else
-      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
-        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec"
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt"
       done < <(policy_evaluator)
     fi
     # The evaluator has completed before the process substitution returns. A
@@ -1487,7 +1621,7 @@ fi
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
   record_match_rows "$MATCHES"
-  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
   done
@@ -1521,7 +1655,7 @@ for match_kind in reactive baseline; do
         *$'\t'"$match_kind"$'\t'*) ;;
         *) continue ;;
       esac
-      IFS=$'\t' read -r _m_slug _m_scope _m_path _m_enf _m_rule _m_kind _m_inj _m_ws _m_spec <<< "$match"
+      IFS=$'\t' read -r _m_slug _m_scope _m_path _m_enf _m_rule _m_kind _m_inj _m_ws _m_spec _m_stale _m_exempt <<< "$match"
       if [ "$match_tier" = "hard" ]; then
         [ "$_m_enf" = "hard" ] || continue
       else
@@ -1552,6 +1686,49 @@ for match_kind in reactive baseline; do
     done <<< "$MATCHES"
     # Stable insertion order matches `sort -s -k9,9nr`: descending numeric
     # specificity, while equal values retain their original scope order.
+    #
+    # Staleness (policy-lifecycle US-003): inside each run of equal
+    # specificity, non-exempt rows are stable-sorted by staleness ascending
+    # and refill the slots non-exempt rows held. Exempt rows (safety-critical
+    # hard rules, gate policies, inject: always) keep their exact index. This
+    # only reorders; no row is ever removed here, so staleness cannot drop a
+    # match on its own — the byte ceiling simply cuts stale rules first.
+    run_start=0
+    while [ "$run_start" -lt "$GROUP_COUNT" ]; do
+      run_end="$run_start"
+      while [ $((run_end + 1)) -lt "$GROUP_COUNT" ] \
+        && [ "${GROUP_SPECS[$((run_end + 1))]}" = "${GROUP_SPECS[$run_start]}" ]; do
+        run_end=$((run_end + 1))
+      done
+      if [ "$run_end" -gt "$run_start" ]; then
+        STALE_SLOTS=()
+        STALE_ROWS=()
+        STALE_KEYS=()
+        stale_n=0
+        for ((group_index=run_start; group_index<=run_end; group_index++)); do
+          IFS=$'\t' read -r _s1 _s2 _s3 _s4 _s5 _s6 _s7 _s8 _s9 _s_stale _s_exempt <<< "${GROUP_ROWS[$group_index]}"
+          [ "$_s_exempt" = "1" ] && continue
+          case "$_s_stale" in ''|*[!0-9]*) _s_stale=0 ;; esac
+          # Stable insertion sort by staleness ascending.
+          ins="$stale_n"
+          for ((k=0; k<stale_n; k++)); do
+            if [ "$_s_stale" -lt "${STALE_KEYS[$k]}" ]; then ins="$k"; break; fi
+          done
+          for ((k=stale_n; k>ins; k--)); do
+            STALE_ROWS[$k]="${STALE_ROWS[$((k - 1))]}"
+            STALE_KEYS[$k]="${STALE_KEYS[$((k - 1))]}"
+          done
+          STALE_ROWS[$ins]="${GROUP_ROWS[$group_index]}"
+          STALE_KEYS[$ins]="$_s_stale"
+          STALE_SLOTS[$stale_n]="$group_index"
+          stale_n=$((stale_n + 1))
+        done
+        for ((k=0; k<stale_n; k++)); do
+          GROUP_ROWS[${STALE_SLOTS[$k]}]="${STALE_ROWS[$k]}"
+        done
+      fi
+      run_start=$((run_end + 1))
+    done
     for ((group_index=0; group_index<GROUP_COUNT; group_index++)); do
       ORDERED_MATCHES+="${GROUP_ROWS[$group_index]}"$'\n'
     done
@@ -1606,7 +1783,7 @@ if [ -n "$WITHHELD_MATCHES" ]; then
   # session; preserve that existing contract. Output-ceiling omissions are
   # handled separately after the final reminder is assembled.
   record_match_rows "$WITHHELD_MATCHES"
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
     [ -n "$slug" ] || continue
     if [ "$WITHHELD_NAMED" -lt 10 ]; then
       WITHHELD_NAMES="${WITHHELD_NAMES}${WITHHELD_NAMES:+, }${slug}"
@@ -1669,7 +1846,7 @@ BODY_STOP="${HQ_POLICY_BODY_STOP-^#+[[:space:]]*(rationale|rationale and context
 POLICY_BODY_BATCH_MODE=0
 POLICY_BODY_SIZES=()
 prepare_policy_bodies() {
-  local map_file="" size_file="" row_index=0 slug scope path enf rule kind injv ws spec
+  local map_file="" size_file="" row_index=0 slug scope path enf rule kind injv ws spec stale exempt
   [ "$HARD_FULL" != "0" ] || return 0
   [ -n "$MATCHES" ] || return 0
   [ -n "$FACTS_TMP_DIR" ] || FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
@@ -1679,7 +1856,7 @@ prepare_policy_bodies() {
   map_file="$POLICY_BODY_TMP_DIR/map.tsv"
   size_file="$POLICY_BODY_TMP_DIR/sizes.tsv"
   : > "$map_file" || return 0
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
     [ -n "$slug" ] || continue
     row_index=$((row_index + 1))
     if [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
@@ -1789,7 +1966,7 @@ printf '%s' "$MATCHES" | {
   shortened=""
   oversize=""
   malformed=""
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
     [ -z "$slug" ] && continue
     match_index=$((match_index + 1))
     [ "$ws" = "malformed" ] && malformed="${malformed:+$malformed, }$slug"
@@ -1829,11 +2006,11 @@ printf '%s' "$MATCHES" | {
       [ -n "$body" ] && shortened="${shortened:+$shortened, }$slug"
     fi
     if [ "$enf" = "hard" ]; then
-      printf '> Policy `%s` applies here: %s  [HARD · %s]\n' "$slug" "$rule" "$scope"
+      printf '> Policy `%s` applies here: %s  [HARD · %s] (`%s`)\n' "$slug" "$rule" "$scope" "${path#"$HQ_ROOT"/}"
     elif [[ "$scope" == worker:* ]]; then
-      printf '> Policy `%s` applies here: %s  [%s]\n' "$slug" "$rule" "$scope"
+      printf '> Policy `%s` applies here: %s  [%s] (`%s`)\n' "$slug" "$rule" "$scope" "${path#"$HQ_ROOT"/}"
     else
-      printf '> Policy `%s` applies here: %s\n' "$slug" "$rule"
+      printf '> Policy `%s` applies here: %s (`%s`)\n' "$slug" "$rule" "${path#"$HQ_ROOT"/}"
     fi
   done
   if [ -n "$shortened" ]; then
@@ -1859,7 +2036,6 @@ if [ "$WITHHELD" -gt 0 ]; then
   printf '> Session policy cap withheld %s policies (cap %s): %s%s. Reactive matches were prioritized over the SessionStart baseline.\n' \
     "$WITHHELD" "$SESSION_POLICY_CAP" "$WITHHELD_NAMES" "$more"
 fi
-printf '> This is an index. Before acting in an area a HARD rule covers, read that rule in full: `qmd get <slug>` or the policy file (personal/workers/<id>/policies, companies/<co>/workers/<id>/policies, companies/<co>/policies, repo policies, personal/policies, core/policies). One-line entries are summaries, not the rule.\n'
 printf '</policy-reminder>\n'
 }
 

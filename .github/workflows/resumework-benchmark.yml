@@ -1,0 +1,107 @@
+name: resumework-benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale_only:
+        description: Run the lock-step growth comparison only
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+    paths:
+      - '.github/workflows/resumework-benchmark.yml'
+      - 'core/scripts/tests/resumework-lock-scale.mjs'
+      - 'core/scripts/tests/resumework-benchmark.mjs'
+      - 'core/scripts/tests/resumework-benchmark-workflow.test.sh'
+      - 'core/scripts/tests/resumework-timing.test.sh'
+      - '.claude/skills/resumework/**'
+      - '.claude/hooks/**'
+      - 'core/scripts/handoff-sync-prefetch.sh'
+      - 'core/scripts/handoff-open-steps.sh'
+      - 'core/scripts/hq-session.sh'
+      - 'core/scripts/resume-thread-lock.sh'
+      - 'core/policies/**'
+      - 'core/scripts/eval-trigger.sh'
+      - 'core/scripts/derive-trigger-facts.sh'
+      - 'core/scripts/lib/hook-lib.sh'
+      - '.claude/settings.json'
+      - '.claude/hooks/hook-registry.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resumework-benchmark-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    if: github.event_name != 'workflow_dispatch' || inputs.scale_only != true
+    name: resumework benchmark (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install jq on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install jq -y --no-progress
+          $jqExe = @(
+            "$env:ChocolateyInstall\bin\jq.exe",
+            "$env:ChocolateyInstall\lib\jq\tools\jq.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $jqExe) { throw 'jq.exe was not found after Chocolatey install' }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $jqExe)
+      - name: Install pinned HQ CLI for the prefetch phase
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Check the benchmark workflow contract
+        run: bash core/scripts/tests/resumework-benchmark-workflow.test.sh
+      - name: Run the resumework benchmark against a 6,000-file fixture
+        run: node core/scripts/tests/resumework-benchmark.mjs
+
+  lock-scale:
+    if: github.event_name == 'workflow_dispatch' && inputs.scale_only == true
+    name: resumework lock scale (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install jq on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install jq -y --no-progress
+          $jqExe = @(
+            "$env:ChocolateyInstall\bin\jq.exe",
+            "$env:ChocolateyInstall\lib\jq\tools\jq.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $jqExe) { throw 'jq.exe was not found after Chocolatey install' }
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $jqExe)
+      - name: Install pinned HQ CLI for the same command path
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: Measure the lock step at 6,000 and 18,000 files
+        run: node core/scripts/tests/resumework-lock-scale.mjs

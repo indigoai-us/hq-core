@@ -60,7 +60,8 @@ make_fixture() {
     .claude/hooks/hook-timeout-probe.sh \
     .claude/hooks/hook-timeout-watchdog.sh \
     .claude/hooks/hook-gate.sh \
-    .claude/hooks/block-hq-root-git-mutation.sh; do
+    .claude/hooks/block-hq-root-git-mutation.sh \
+    .claude/hooks/block-hq-root-git-mutation-flag.cjs; do
     cp "$ROOT/$relative" "$root/$relative"
   done
   cp "$ROOT/core/core.yaml" "$root/core/core.yaml"
@@ -128,6 +129,9 @@ run_measured_migrator() {
   printf '%s\n' "$calls"
 }
 
+# The fixture policies are personal soft rules. Candidate injectors leave those
+# out unless HQ_INJECT_PERSONAL_SOFT=1 (D4); base ignores the variable, so the
+# opt-in keeps this an output-equivalence check of the same policy set.
 run_equivalence_case() {
   local root="$1" payload="$2" event="$3" name="$4" variant="$5" rc
   local out="$TMP/$name.$variant.out" err="$TMP/$name.$variant.err"
@@ -135,7 +139,7 @@ run_equivalence_case() {
   set +e
   timeout 30s env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH="$TEST_PATH" HOME="$root/home" \
     XDG_STATE_HOME="$root/home/.local/state" HQ_ROOT="$root" \
-    CLAUDE_PROJECT_DIR="$root" HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 \
+    CLAUDE_PROJECT_DIR="$root" HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 HQ_INJECT_PERSONAL_SOFT=1 \
     bash "$root/.claude/hooks/master-hook.sh" "$event" \
     <<<"$payload" >"$out" 2>"$err"
   rc=$?
@@ -168,25 +172,24 @@ SESSION_PAYLOAD="$(jq -cn --arg cwd "$EQUIV_ROOT" '{hook_event_name:"SessionStar
 ALLOW_PAYLOAD="$(jq -cn --arg cwd "$EQUIV_ROOT" --arg cmd "git -C $EQUIV_ROOT status --short" '{hook_event_name:"PreToolUse",session_id:"equiv-allow",tool_name:"Bash",cwd:$cwd,tool_input:{command:$cmd}}')"
 BLOCK_PAYLOAD="$(jq -cn --arg cwd "$EQUIV_ROOT" '{hook_event_name:"PreToolUse",session_id:"equiv-block",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git push origin main"}}')"
 
-install_source "$EQUIV_ROOT" "$BASE_SOURCE"
-run_equivalence_case "$EQUIV_ROOT" "$SESSION_PAYLOAD" SessionStart session base
-run_equivalence_case "$EQUIV_ROOT" "$ALLOW_PAYLOAD" PreToolUse allow base
-run_equivalence_case "$EQUIV_ROOT" "$BLOCK_PAYLOAD" PreToolUse block base
 install_source "$EQUIV_ROOT" "$CANDIDATE_SOURCE"
 run_equivalence_case "$EQUIV_ROOT" "$SESSION_PAYLOAD" SessionStart session candidate
-run_equivalence_case "$EQUIV_ROOT" "$ALLOW_PAYLOAD" PreToolUse allow candidate
-run_equivalence_case "$EQUIV_ROOT" "$BLOCK_PAYLOAD" PreToolUse block candidate
+# Compare rollback-mode PreToolUse output with base. Default-mode PreToolUse is
+# intentionally silent now and is covered by inject-policy-tool-events.test.sh.
+HQ_POLICY_TOOL_EVENTS=legacy run_equivalence_case "$EQUIV_ROOT" "$ALLOW_PAYLOAD" PreToolUse allow candidate
+HQ_POLICY_TOOL_EVENTS=legacy run_equivalence_case "$EQUIV_ROOT" "$BLOCK_PAYLOAD" PreToolUse block candidate
 
 for name in session allow block; do
-  cmp -s "$TMP/$name.base.out" "$TMP/$name.candidate.out" \
-    || { echo "FAIL: $name injected/guard stdout differs between base and candidate" >&2; exit 1; }
-  cmp -s "$TMP/$name.base.err" "$TMP/$name.candidate.err" \
-    || { echo "FAIL: $name guard stderr differs between base and candidate" >&2; exit 1; }
-  cmp -s "$TMP/$name.base.rc" "$TMP/$name.candidate.rc" \
-    || { echo "FAIL: $name block/allow exit differs between base and candidate" >&2; exit 1; }
+  fixture="$TEST_DIR/fixtures/sessionstart-policy-latency-$name"
+  cmp -s "$fixture.stdout.expected.txt" "$TMP/$name.candidate.out" \
+    || { echo "FAIL: $name stdout differs from committed golden" >&2; exit 1; }
+  cmp -s "$fixture.stderr.expected.txt" "$TMP/$name.candidate.err" \
+    || { echo "FAIL: $name stderr differs from committed golden" >&2; exit 1; }
+  cmp -s "$fixture.exit.expected.txt" "$TMP/$name.candidate.rc" \
+    || { echo "FAIL: $name exit code differs from committed golden" >&2; exit 1; }
 done
 [ "$(cat "$TMP/allow.candidate.rc")" -eq 0 ] || { echo 'FAIL: anchored read was not allowed' >&2; exit 1; }
 [ "$(cat "$TMP/block.candidate.rc")" -eq 2 ] || { echo 'FAIL: unanchored root push was not blocked' >&2; exit 1; }
 
-printf 'PASS: 300-policy PreToolUse execve count %s -> %s; migration execve count %s -> %s; output and allow/block decisions match base\n' \
+printf 'PASS: 300-policy PreToolUse execve count %s -> %s; migration execve count %s -> %s; output matches goldens and allow/block decisions are correct\n' \
   "$BASE_EXECS" "$CANDIDATE_EXECS" "$BASE_MIGRATE_EXECS" "$CANDIDATE_MIGRATE_EXECS"

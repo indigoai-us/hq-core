@@ -336,6 +336,42 @@ check_required_command_hooks() {
 
 check_required_command_hooks
 
+DIRECT_REGISTRY_HOOK_ISSUES=()
+check_direct_registry_hooks() {
+  local registry="$HQ_ROOT/.claude/hooks/hook-registry.json" file label ids id
+  [ -f "$registry" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  if ! jq empty "$registry" >/dev/null 2>&1; then
+    DIRECT_REGISTRY_HOOK_ISSUES+=(".claude/hooks/hook-registry.json is not valid JSON; direct hook duplicates could not be checked")
+    return 0
+  fi
+  for file in "$HQ_ROOT/.claude/settings.json" "$HQ_ROOT/.claude/settings.local.json"; do
+    [ -f "$file" ] || continue
+    jq empty "$file" >/dev/null 2>&1 || continue
+    case "$file" in */settings.json) label=".claude/settings.json" ;; *) label=".claude/settings.local.json" ;; esac
+    if ! ids="$(jq -r --slurpfile reg "$registry" --arg label "$label" '
+      .hooks // {} | to_entries[] as $event_entry
+      | $event_entry.key as $event
+      | [ $reg[0].hooks[$event] // [] | .. | objects
+          | select((.id | type) == "string" and (.script | type) == "string") | {id, script} ] as $rows
+      | [ $event_entry.value[]?.hooks[]?.command? | select(type == "string") as $cmd
+          | $rows[] as $row
+          | select(($cmd | contains($row.script))
+              or (($cmd | contains("hook-gate.sh")) and ($cmd | contains($row.id))))
+          | $row.id ] | unique[] | "\($label) re-registers registry hook id \(.)"
+    ' "$file" 2>&1)"; then
+      DIRECT_REGISTRY_HOOK_ISSUES+=("$label could not be checked for registry duplicates: $ids")
+      continue
+    fi
+    if [ -n "$ids" ]; then
+      while IFS= read -r id; do [ -n "$id" ] && DIRECT_REGISTRY_HOOK_ISSUES+=("$id"); done <<EOF
+$ids
+EOF
+    fi
+  done
+}
+check_direct_registry_hooks
+
 # Rescue relocates master-hook.sh into settings.local.json and can empty
 # settings.json (feedback 2282). Claude Code unions the overlay, so doctor
 # still PASSed while the release contract was broken — and deleting the
@@ -506,7 +542,7 @@ render_from_doctor() {
   local json="$1"
   local settings_issues runtime_status runtime_message
   local AGENTS_V2_ATTESTED=0
-  local -a issues=("${CLI_FLOOR_ISSUES[@]+"${CLI_FLOOR_ISSUES[@]}"}" "${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}" "${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}" "${HOOK_HELPER_ISSUES[@]+"${HOOK_HELPER_ISSUES[@]}"}")
+  local -a issues=("${CLI_FLOOR_ISSUES[@]+"${CLI_FLOOR_ISSUES[@]}"}" "${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}" "${DIRECT_REGISTRY_HOOK_ISSUES[@]+"${DIRECT_REGISTRY_HOOK_ISSUES[@]}"}" "${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}" "${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}" "${HOOK_HELPER_ISSUES[@]+"${HOOK_HELPER_ISSUES[@]}"}")
 
   settings_issues="$(printf '%s' "$json" | jq -r --argjson scope "$DOCTOR_SETTINGS_SCOPE" '
     .results[]
@@ -683,6 +719,7 @@ run_inline() {
   fi
 
   ISSUES+=("${REQUIRED_COMMAND_HOOK_ISSUES[@]+"${REQUIRED_COMMAND_HOOK_ISSUES[@]}"}")
+  ISSUES+=("${DIRECT_REGISTRY_HOOK_ISSUES[@]+"${DIRECT_REGISTRY_HOOK_ISSUES[@]}"}")
   ISSUES+=("${LOCAL_HOOK_SHADOW_ISSUES[@]+"${LOCAL_HOOK_SHADOW_ISSUES[@]}"}")
   ISSUES+=("${GUARD_HELPER_ISSUES[@]+"${GUARD_HELPER_ISSUES[@]}"}")
   ISSUES+=("${HOOK_HELPER_ISSUES[@]+"${HOOK_HELPER_ISSUES[@]}"}")

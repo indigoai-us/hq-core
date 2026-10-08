@@ -275,11 +275,15 @@ title: {Rule title}
 when: {boolean trigger expr over context words, or `always`}
 on: {[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent] | [SessionStart]}
 enforcement: {hard|soft}
-public: {true|false}
+public: {true|false — see Lifecycle stamping below}
+status: active
 version: 1
 created: {YYYY-MM-DD}
 updated: {YYYY-MM-DD}
 source: {back-pressure-failure|user-correction|success-pattern|task-completion|hook-observation}
+notes: {only when a global or command policy gets public: false — the portability reason}
+retire_when: {workaround rules only — the fix condition in plain words}
+last_confirmed: {workaround rules only — today's date, YYYY-MM-DD}
 ---
 
 ## Rule
@@ -288,8 +292,41 @@ source: {back-pressure-failure|user-correction|success-pattern|task-completion|h
 
 ## Rationale
 
-{Why this rule exists — from context/failure/correction}
+{Mechanism and trade-offs only: why the rule works and what it costs}
+
+## Provenance
+
+{Company slugs, customer or person names, ticket or PR numbers, and specific dates from the source learning. Omit the section when there are none.}
 ```
+
+**Lifecycle stamping (set at authoring time, no confirmation prompt):** `/learn`
+fills these fields itself and never asks the user about them
+(`hq-learn-auto-no-confirmation`).
+
+- `status: active` on every policy `/learn` writes.
+- `public:`
+  - Company- and repo-scoped policies: always `public: false`.
+  - Global and command-scoped policies: `public: true` only when the `## Rule`
+    body passes the portability check in `hq-public-policy-rule-body-generic`:
+    no HQ-internal paths (HQ top-level directories such as the company, personal,
+    workspace, repos, or core trees, the `.claude` directory, home-relative or
+    absolute paths), no company, worker, or repo slugs, and no internal infra
+    names (account IDs, bucket, stack, or host names). Otherwise
+    `public: false` with the failing check in `notes:`, for example
+    `notes: public false because the Rule names an HQ-internal path`.
+- Workaround rules: classify the learning as a workaround when it works around
+  a named tool, a specific version, or a known defect. Signals are a tool or
+  package name with a version number, or the words bug, defect, regression,
+  workaround, upstream issue, or until a named tool fixes something. For these,
+  write `retire_when:` with the fix condition in plain words (for example
+  `retire_when: the CLI ships the native fix for the stale session cache`; no
+  quotes or regex symbols, per `policies-spec.md`) and `last_confirmed:` with
+  today's date. Rules that are not workarounds omit both fields.
+- Provenance routing: when the source learning mentions a company slug, a
+  customer or person name, a ticket or PR number, or a specific date, write that
+  text under `## Provenance`. `## Rationale` keeps only the mechanism and the
+  trade-offs. `## Provenance` is archival: it is not injected and does not count
+  toward the hard-body size limit.
 
 **Enforcement mapping:**
 - `source: user-correction` → `enforcement: hard`
@@ -309,8 +346,9 @@ every session it fires in, so its length is a recurring context cost, and the
 write hook blocks a binding body over `HQ_POLICY_HARD_RULE_MAX_BYTES` (default
 6144). Only the text above the first archival heading counts and is injected:
 put the rule and its exceptions under `## Rule`, and move worked examples,
-incident write-ups, API detail, and provenance under `## Rationale`,
-`## Examples`, `## Reference`, or `## Related`. Nothing is lost — the agent gets
+incident write-ups, and API detail under `## Rationale`, `## Examples`,
+`## Reference`, or `## Related`, and who/when/which-ticket detail under
+`## Provenance`. Nothing is lost — the agent gets
 the file path and can read the rest when it needs the reasoning.
 
 **Policy frontmatter validation:** `when:` and `on:` are required and automatically checked by the `validate-policy-frontmatter.sh` write/edit hook. For stack-specific rules, express the service token in `when:` (for example, `when: vercel`); do not add retired applicability metadata. See `core/knowledge/public/hq-core/policies-spec.md` for the complete schema.

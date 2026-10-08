@@ -22,6 +22,9 @@
 # two very different sizes, and fails if the count tracks the corpus.
 
 set -euo pipefail
+# This performance contract exercises policy parsing on the legacy PreToolUse
+# path; default event delivery is tested separately.
+export HQ_POLICY_TOOL_EVENTS=legacy
 
 HQ_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="$HQ_SRC/.claude/hooks/inject-policy-on-trigger.sh"

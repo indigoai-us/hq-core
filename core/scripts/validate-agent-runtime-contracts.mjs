@@ -889,16 +889,27 @@ function formatError(error) {
   return `ERROR ${String(error)}`;
 }
 
+// The name a host exposes a skill under. A directory called `<scope>:<skill>`
+// is a scoped mirror written by the pack and company installers, and the host
+// lists it as `<scope>:<skill>` no matter what `name:` says inside. So
+// `.claude/skills/architect` and `.claude/skills/hq-pack-engineering:architect`
+// are two skills with two names, not one name declared twice.
+function exposedSkillName(skillPath, declaredName) {
+  const dirName = path.basename(path.dirname(skillPath));
+  return dirName.endsWith(`:${declaredName}`) ? dirName : declaredName;
+}
+
 function validateSurface(rootPath, surface, seenSummaries) {
   const names = new Map();
   let validatedCount = 0;
 
   for (const skillPath of surface.skillFiles) {
     const metadata = parseSkillMetadata(skillPath);
-    const duplicatePath = names.get(metadata.name);
+    const exposedName = exposedSkillName(skillPath, metadata.name);
+    const duplicatePath = names.get(exposedName);
     if (duplicatePath) {
       throw new ValidationError(
-        `duplicate skill name "${metadata.name}" within shipped surface ${surface.label}; already declared in ${path.relative(rootPath, duplicatePath)}`,
+        `duplicate skill name "${exposedName}" within shipped surface ${surface.label}; already declared in ${path.relative(rootPath, duplicatePath)}`,
         {
           filePath: skillPath,
           field: "name",
@@ -906,7 +917,7 @@ function validateSurface(rootPath, surface, seenSummaries) {
       );
     }
 
-    names.set(metadata.name, skillPath);
+    names.set(exposedName, skillPath);
     validateOpenAiYaml(path.dirname(skillPath), metadata);
     validatedCount += 1;
   }

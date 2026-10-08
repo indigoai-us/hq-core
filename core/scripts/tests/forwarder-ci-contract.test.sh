@@ -134,8 +134,8 @@ test_command_pattern = re.compile(
     r"(?:^|[;&|]\s*|\n\s*)"
     r"(?:timeout\s+[0-9]+s\s+)?"
     r"(?:HQ_CLI_REQUIRED_IN_CI=1\s+)?"
-    r"(?:bash|sh)\s+['\"]?"
-    r"(core/scripts/tests/[A-Za-z0-9_.-]+)['\"]?(?=\s|$)"
+    r"(?:bash|sh|node)\s+['\"]?"
+    r"(core/scripts/tests/[A-Za-z0-9_.-]+\.(?:sh|mjs))['\"]?(?=\s|$)"
 )
 required_install_tokens = ("bash core/scripts/ci/install-pinned-hq-cli.sh",)
 required_cli_env_jobs: dict[str, set[str]] = defaultdict(set)

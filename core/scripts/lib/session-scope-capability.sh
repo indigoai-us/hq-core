@@ -8,14 +8,19 @@
 session_scope_multi_company_enabled() {
   local root="${1:-}" primary="${2:-}" flag_script
   flag_script="$root/.codex/hooks/codex-explicit-path-flag.cjs"
-  if ! command -v hqd_hook_flag_enabled_for >/dev/null 2>&1 && [ -f "$root/core/scripts/hqd-hook-flag-cache-lib.sh" ]; then
+  # This flag is a kill switch: absent local state is not an explicit false.
+  # Keep this default-on branch local and cheap on the event path.
+  [ -n "$root" ] && [ -n "$primary" ] && [ -n "${HOME:-}" ] \
+    && [ -f "$root/core/scripts/hqd-hook-flag-cache-lib.sh" ] && [ -f "$flag_script" ] \
+    || return 0
+  if ! command -v hqd_hook_flag_state_for >/dev/null 2>&1 && [ -f "$root/core/scripts/hqd-hook-flag-cache-lib.sh" ]; then
     # shellcheck source=../hqd-hook-flag-cache-lib.sh
     . "$root/core/scripts/hqd-hook-flag-cache-lib.sh"
   fi
-  if command -v hqd_hook_flag_enabled_for >/dev/null 2>&1; then
-    hqd_hook_flag_enabled_for multi-company-session-lock hooks.multi-company-session-lock \
-      "$flag_script" "$root" "$primary"
-    [ "${HQD_FLAG_ENABLED:-false}" = true ]
+  if command -v hqd_hook_flag_state_for >/dev/null 2>&1; then
+    hqd_hook_flag_state_for multi-company-session-lock hooks.multi-company-session-lock \
+      "$flag_script" "$root" "$primary" "$primary"
+    [ "${HQD_FLAG_STATE:-unknown}" != false ]
     return $?
   fi
   # The cache library is part of the live HQ tree. Missing it is a lookup error,

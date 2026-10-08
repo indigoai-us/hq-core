@@ -107,6 +107,7 @@ Run `hq <command> --help` for options. Commonly used:
 | `hq integrations` | Connected company apps |
 | `hq billing status --company <slug>` | Plan and subscription status |
 | `hq db status\|sql\|migrate --company {co}` | Local vault SQLite database. Guide: [vault-databases.md](../../knowledge/public/hq-core/vault-databases.md) |
+| `hq db usage\|sql\|dump\|destroy --company {co} --app {app}` | Database of a deployed app (`database: true`, Team plan). Guide: [app-databases.md](../../knowledge/public/hq-core/app-databases.md) |
 
 Share-session URLs are encrypted single-use 15-minute capabilities. Never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
 

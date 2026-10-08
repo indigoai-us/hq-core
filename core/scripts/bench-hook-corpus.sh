@@ -32,6 +32,7 @@ done
 
 MODE="${1:-run}"; shift || true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/bench-runtime.sh"
 CORPUS="$SCRIPT_DIR/bench-hook-corpus-default.json"
 OUT=""
 RUNTIME="claude"
@@ -41,6 +42,10 @@ if [ "$MODE" = "compare" ]; then
   node - "$1" "$2" <<'JS'
 const fs = require('fs');
 const [a, b] = process.argv.slice(2).map(p => JSON.parse(fs.readFileSync(p, 'utf8')));
+if ((a.runtime || 'claude') !== (b.runtime || 'claude')) {
+  console.error(`cannot compare different runtimes: ${a.runtime || 'claude'} vs ${b.runtime || 'claude'}`);
+  process.exit(2);
+}
 const byId = r => Object.fromEntries(r.items.map(x => [x.id, x]));
 const A = byId(a), B = byId(b);
 const fail = [];
@@ -51,6 +56,15 @@ for (const [k, x] of Object.entries(A)) {
   const y = B[k];
   if (!y) { fail.push(`${k}: missing in candidate`); continue; }
   const notes = [];
+  const xStatus = x.status || 'completed', yStatus = y.status || 'completed';
+  if (['failed', 'timeout'].includes(xStatus) || ['failed', 'timeout'].includes(yStatus)) {
+    fail.push(`${k}: execution status ${xStatus} -> ${yStatus}`);
+    notes.push(yStatus === 'timeout' ? 'TIMEOUT' : 'EXECUTION FAILED');
+  }
+  if ((x.supported === false) !== (y.supported === false)) {
+    fail.push(`${k}: support changed (${x.supported === false ? 'unsupported' : 'supported'} -> ${y.supported === false ? 'unsupported' : 'supported'})`);
+    notes.push('SUPPORT CHANGED');
+  }
   const lost = (x.hints_hit || []).filter(h => !(y.hints_hit || []).includes(h));
   if (lost.length) { fail.push(`${k}: lost routing hints ${JSON.stringify(lost)}`); notes.push('HINT LOST'); }
   const gained = (y.unwanted_hit || []).filter(u => !(x.unwanted_hit || []).includes(u));
@@ -75,19 +89,36 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -f "$CORPUS" ] || { echo "bench-hook-corpus: corpus not found: $CORPUS" >&2; exit 2; }
+bench_runtime_valid "$RUNTIME" || { echo "bench-hook-corpus: unsupported runtime: $RUNTIME" >&2; exit 2; }
+if [ "$RUNTIME" = "grok" ]; then
+  echo "bench-hook-corpus: --runtime grok is unsupported: the adapter does not expose benchmark-visible output" >&2
+  exit 2
+fi
 [ -n "$OUT" ] || OUT="$HQ_ROOT/workspace/reports/bench-hook-corpus/$(date -u +%Y%m%dT%H%M%SZ)-$RUNTIME.json"
 mkdir -p "$(dirname "$OUT")"
-[ "$RUNTIME" = "claude" ] || { echo "runtime $RUNTIME not implemented yet (HP-11)" >&2; exit 2; }
 
 TMP="$(mktemp -d -t bench-hook-corpus.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
 
 run_event() { # $1 event, $2 payload json, $3 outfile -> prints secs
-  local s e
+  local event="$1" output="$3" error="$3.stderr" s e root="$HQ_ROOT" rc=0 runtime_home="${HOME:-/tmp}"
+  if [ "$RUNTIME" = "hq-agent" ]; then
+    root="$TMP/agent-root"
+    runtime_home="$TMP/home"
+    mkdir -p "$runtime_home"
+    if [ ! -d "$root" ]; then bench_runtime_agent_root "$HQ_ROOT" "$root" || rc=125; fi
+  fi
+  local payload
+  if [ "$rc" -eq 0 ]; then
+    payload="$(bench_runtime_payload "$RUNTIME" "$event" "$root" "${SID:-bench-session}" "Bash" "${COMMAND_TEXT:-echo bench}" "${PROMPT_TEXT:-bench prompt}")" || rc=125
+  fi
   s=$(now_ms)
-  printf '%s' "$2" | env BASH_ENV=/dev/null bash .claude/hooks/master-hook.sh "$1" > "$3" 2>/dev/null
+  if [ "$rc" -eq 0 ]; then
+    bench_runtime_dispatch "$RUNTIME" "$root" "$event" "$payload" "$output" "$error" "$runtime_home" "${BENCH_RUNTIME_TIMEOUT_SEC:-30}" || rc=$?
+  fi
   e=$(now_ms)
+  printf '%s\n' "$rc" > "$output.rc"
   perl -e 'printf "%.3f\n", ($ARGV[1]-$ARGV[0])/1000' "$s" "$e"
 }
 
@@ -95,16 +126,16 @@ SID_BASE="bench-$(date +%s)"
 
 # SessionStart
 SID="$SID_BASE-start"
-PAYLOAD=$(jq -cn --arg sid "$SID" --arg cwd "$HQ_ROOT" '{session_id:$sid,hook_event_name:"SessionStart",source:"startup",cwd:$cwd}')
-SECS=$(run_event SessionStart "$PAYLOAD" "$TMP/start.out")
+PROMPT_TEXT="session start"
+SECS=$(run_event SessionStart '' "$TMP/start.out")
 printf 'session-start\t%s\n' "$SECS" > "$TMP/start.meta"
 
 # Prompts
 : > "$TMP/prompts.meta"
 jq -r '.prompts[] | [.id, .prompt] | @tsv' "$CORPUS" | while IFS=$'\t' read -r pid prompt; do
   SID="$SID_BASE-$pid"
-  PAYLOAD=$(jq -cn --arg sid "$SID" --arg p "$prompt" --arg cwd "$HQ_ROOT" '{session_id:$sid,hook_event_name:"UserPromptSubmit",prompt:$p,cwd:$cwd}')
-  SECS=$(run_event UserPromptSubmit "$PAYLOAD" "$TMP/$pid.out")
+  PROMPT_TEXT="$prompt"
+  SECS=$(run_event UserPromptSubmit '' "$TMP/$pid.out")
   printf '%s\t%s\n' "$pid" "$SECS" >> "$TMP/prompts.meta"
 done
 
@@ -112,8 +143,13 @@ done
 : > "$TMP/commands.meta"
 jq -r '.commands[] | [.id, .command] | @tsv' "$CORPUS" | while IFS=$'\t' read -r cid cmd; do
   SID="$SID_BASE-$cid"
-  PAYLOAD=$(jq -cn --arg sid "$SID" --arg c "$cmd" --arg cwd "$HQ_ROOT" '{session_id:$sid,hook_event_name:"PostToolUse",tool_name:"Bash",tool_input:{command:$c},tool_response:{stdout:"x"},cwd:$cwd}')
-  SECS=$(run_event PostToolUse "$PAYLOAD" "$TMP/$cid.out")
+  if [ "$RUNTIME" = "hq-agent" ]; then
+    : > "$TMP/$cid.out"
+    printf '%s\t0\n' "$cid" >> "$TMP/commands.meta"
+    continue
+  fi
+  COMMAND_TEXT="$cmd"
+  SECS=$(run_event PostToolUse '' "$TMP/$cid.out")
   printf '%s\t%s\n' "$cid" "$SECS" >> "$TMP/commands.meta"
 done
 
@@ -148,15 +184,23 @@ function analyze(file, hints = [], unwanted = []) {
   };
 }
 const items = [];
+const agentCommandUnsupported = runtime === 'hq-agent';
+const eventStatus = id => {
+  const rcPath = path.join(tmp, `${id}.out.rc`);
+  const rc = fs.existsSync(rcPath) ? Number(fs.readFileSync(rcPath, 'utf8').trim()) : 1;
+  return { status: rc === 142 ? 'timeout' : (rc === 125 ? 'failed' : 'completed'), exit_code: rc };
+};
 const start = readMeta('start.meta');
-items.push({ ...analyze('start.out'), id: 'session-start', event: 'SessionStart', secs: start['session-start'] || 0 });
+items.push({ ...analyze('start.out'), ...eventStatus('start'), id: 'session-start', event: 'SessionStart', secs: start['session-start'] || 0, supported: true });
 const pm = readMeta('prompts.meta');
 for (const p of corpus.prompts || []) {
-  items.push({ ...analyze(`${p.id}.out`, p.expect_hints || [], p.expect_no_blocks || []), id: p.id, event: 'UserPromptSubmit', secs: pm[p.id] || 0, text: p.prompt, kind: p.kind });
+  items.push({ ...analyze(`${p.id}.out`, p.expect_hints || [], p.expect_no_blocks || []), ...eventStatus(p.id), id: p.id, event: 'UserPromptSubmit', secs: pm[p.id] || 0, text: p.prompt, kind: p.kind, supported: true });
 }
 const cm = readMeta('commands.meta');
 for (const c of corpus.commands || []) {
-  items.push({ ...analyze(`${c.id}.out`), id: c.id, event: 'PostToolUse', secs: cm[c.id] || 0, text: c.command });
+  const item = { ...analyze(`${c.id}.out`), ...(agentCommandUnsupported ? { status: 'unsupported' } : eventStatus(c.id)), id: c.id, event: 'PostToolUse', secs: cm[c.id] || 0, text: c.command, supported: !agentCommandUnsupported };
+  if (agentCommandUnsupported) item.unsupported_reason = 'hq-agent-session.sh accepts session requests and has no PostToolUse entrypoint';
+  items.push(item);
 }
 const totals = {
   secs: Math.round(items.reduce((a, i) => a + i.secs, 0) * 100) / 100,

@@ -150,9 +150,9 @@ fi
 
 run_master "$FIX/.claude/hooks/master-hook.sh"
 [ "$RC" = "2" ] || fail "perl fallback via master-hook: expected exit 2, got $RC stderr=$ERR"
-printf '%s' "$ERR" | grep -q 'fixture guard blocked' \
+grep -q 'fixture guard blocked' <<<"$ERR" \
   || fail "perl fallback lost guard stderr: $ERR"
-printf '%s' "$ERR" | grep -q 'run guard rc=2' \
+grep -q 'run guard rc=2' <<<"$ERR" \
   || fail "perl fallback trace did not record rc=2: $ERR"
 pass "argless registry guard blocks through perl fallback on a spaced HQ root"
 

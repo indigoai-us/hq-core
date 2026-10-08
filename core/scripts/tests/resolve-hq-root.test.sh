@@ -77,15 +77,27 @@ set -e
 [ "$rc" -eq 0 ] || fail "master-hook exited $rc from foreign cwd: $(head -5 "$TMP/master.err")"
 pass "master-hook runs from foreign cwd without crashing"
 
-# 8. With no hq-flags configuration, foreign-cwd binding stays off.
-payload="$(jq -cn --arg cwd "$FOREIGN" '{hook_event_name:"SessionStart",session_id:"resolve-hq-root-flag-off",cwd:$cwd,source:"startup"}')"
+# 8. With no hq-flags configuration, the default-on fail-safe keeps the hook
+# path on; the resolver binds personal, never a company.
+payload="$(jq -cn --arg cwd "$FOREIGN" '{hook_event_name:"SessionStart",session_id:"resolve-hq-root-flag-on",cwd:$cwd,source:"startup"}')"
 set +e
 (cd "$FOREIGN" && env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID HQ_ROOT="$ROOT" HOME="$TMP/home-ptr" HQ_HOOK_PROFILE=minimal \
-  bash "$MASTER" SessionStart <<<"$payload" >"$TMP/flag-off.out" 2>"$TMP/flag-off.err")
+  bash "$MASTER" SessionStart <<<"$payload" >"$TMP/flag-on.out" 2>"$TMP/flag-on.err")
 rc=$?
 set -e
-[ "$rc" -eq 0 ] || fail "flag-off master-hook exited $rc"
-[ -z "$(HQ_ROOT="$ROOT" bash "$ROOT/core/scripts/hq-session.sh" --session-id resolve-hq-root-flag-off get company_slug 2>/dev/null)" ] || fail "flag-off master-hook bound a foreign session"
-pass "hq-anywhere flag missing leaves foreign bind off"
+[ "$rc" -eq 0 ] || fail "default-on master-hook exited $rc"
+[ "$(HQ_ROOT="$ROOT" bash "$ROOT/core/scripts/hq-session.sh" --session-id resolve-hq-root-flag-on get company_slug 2>/dev/null)" = "personal" ] || fail "default-on master-hook did not bind the foreign session to personal"
+pass "missing hq-flags configuration keeps foreign bind on and binds personal"
+
+# 8b. The explicit local kill switch keeps the old off behavior covered.
+payload="$(jq -cn --arg cwd "$FOREIGN" '{hook_event_name:"SessionStart",session_id:"resolve-hq-root-local-off",cwd:$cwd,source:"startup"}')"
+set +e
+(cd "$FOREIGN" && env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID HQ_FLAG_HQ_ANYWHERE_RUNTIME=0 HQ_ROOT="$ROOT" HOME="$TMP/home-ptr" HQ_HOOK_PROFILE=minimal \
+  bash "$MASTER" SessionStart <<<"$payload" >"$TMP/local-off.out" 2>"$TMP/local-off.err")
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "local-kill-switch master-hook exited $rc"
+[ -z "$(HQ_ROOT="$ROOT" bash "$ROOT/core/scripts/hq-session.sh" --session-id resolve-hq-root-local-off get company_slug 2>/dev/null)" ] || fail "local-kill-switch master-hook bound a foreign session"
+pass "local kill switch keeps foreign bind off"
 
 echo "PASS: resolve-hq-root"

@@ -4,6 +4,9 @@
 # caps (SESSION_PREFLIGHT_MAX_POLICIES=16) against a synthetic oversize tree,
 # and that truncation is non-silent.
 set -euo pipefail
+# Preserve the legacy PreToolUse baseline cases; the new default is covered by
+# inject-policy-tool-events.test.sh.
+export HQ_POLICY_TOOL_EVENTS=legacy
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"

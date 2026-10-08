@@ -80,8 +80,8 @@ run_hook() {
   local root="$1" home="$2" trace="$3" payload rc
   payload="$(printf '{"session_id":"process-budget-session","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"true"}}' "$root")"
   set +e
-  env -u BASH_ENV -u ENV PATH="$TOOLS" HOME="$home" HQ_HOOK_TIMEOUT_SENTRY=1 \
-    HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=0 \
+  env -u BASH_ENV -u ENV PATH="$TOOLS" HOME="$home" \
+    HQ_HOOK_TIMEOUT_SENTRY=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=0 \
     HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=600 \
     timeout 10s "$STRACE" -f -qq -e trace=execve,clone,clone3,fork,vfork \
       -o "$trace" "$BASH_BIN" "$root/.claude/hooks/master-hook.sh" PreToolUse \

@@ -25,9 +25,22 @@ command -v jq >/dev/null 2>&1 || { echo "handoff-open-steps: jq required" >&2; e
 CMD="${1:-list}"; shift || true
 
 thread_files() { # newest first, handoffs and checkpoints only
-  find "$THREADS" -name 'T-*.json' ! -name '*.changeset.json' ! -path '*/resume-locks/*' 2>/dev/null \
-    | while IFS= read -r f; do printf '%s\t%s\n' "$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f")" "$f"; done \
-    | sort -rn | cut -f2
+  if find "$HQ_ROOT" -prune -printf '' >/dev/null 2>&1; then
+    find "$THREADS" -type f -name 'T-*.json' ! -name '*.changeset.json' ! -path '*/resume-locks/*' -printf '%T@\t%p\n' 2>/dev/null \
+      | sort -rn | cut -f2-
+  else
+    perl -MFile::Find -e '
+      my $root = shift;
+      find({ no_chdir => 1, wanted => sub {
+        my $file = $File::Find::name;
+        return unless $file =~ m{(?:^|/)T-[^/]*\.json\z};
+        return if $file =~ /\.changeset\.json\z/ || $file =~ m{/resume-locks/};
+        return unless -f $file;
+        my $mtime = (stat($file))[9];
+        print "$mtime\t$file\n" if defined $mtime;
+      }}, $root);
+    ' "$THREADS" | sort -rn | cut -f2-
+  fi
 }
 normalize_thread() { # <file> -> ensure every step has id/status (in memory)
   jq -c '.next_steps = ((.next_steps // []) | to_entries | map(.key as $k |

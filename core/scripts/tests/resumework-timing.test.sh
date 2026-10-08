@@ -3,8 +3,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# Keep standalone timing at 20 samples; the benchmark opts into 5 for hosted runner limits.
 RUNS="${RESUMEWORK_TIMING_RUNS:-20}"
-SESSION_ID="bench-resumework-$(date +%s)-$$"
+MIN_RUNS="${RESUMEWORK_TIMING_MIN_RUNS:-20}"
+SESSION_ID="${RESUMEWORK_TIMING_SESSION_ID:-bench-resumework-$(date +%s)-$$}"
 # Each operational Bash code block is a separate Bash tool call and therefore
 # starts another master-hook process. Four includes the confirmed re-resume path.
 HOOK_CALL_LIMIT=4
@@ -129,7 +131,7 @@ labels=("thread-resolution-prefetch" "lock-inspect-acquire-open-steps" "git-sess
 
 command -v jq >/dev/null 2>&1 || { echo "resumework timing: jq is required" >&2; exit 2; }
 command -v perl >/dev/null 2>&1 || { echo "resumework timing: perl is required" >&2; exit 2; }
-[[ "$RUNS" =~ ^[0-9]+$ ]] && (( RUNS >= 20 )) || { echo "resumework timing: RUNS must be at least 20" >&2; exit 2; }
+[[ "$RUNS" =~ ^[0-9]+$ && "$MIN_RUNS" =~ ^[0-9]+$ ]] && (( MIN_RUNS >= 5 && RUNS >= MIN_RUNS )) || { echo "resumework timing: RUNS must be at least MIN_RUNS (minimum allowed is 5)" >&2; exit 2; }
 
 mkdir -p "$ROOT/workspace/threads" "$ROOT/workspace/threads/resume-locks" "$ROOT/workspace/sessions"
 mkdir -p "$(dirname "$CURRENT_POINTER")"

@@ -4,6 +4,9 @@
 # asserts which policy slugs get injected. Exercises the full path:
 #   hook event -> derive-trigger-facts.sh -> eval-trigger.sh -> <policy-reminder>.
 set -uo pipefail
+# This broad trigger corpus verifies historical pre-call coverage through the
+# explicit one-release rollback; the new PostToolUse default has its own test.
+export HQ_POLICY_TOOL_EVENTS=legacy
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"

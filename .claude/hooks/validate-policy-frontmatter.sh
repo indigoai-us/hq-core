@@ -45,6 +45,88 @@
 
 set -uo pipefail
 
+# --all: batch mode for quality gates. Replays every policy file under
+# core/policies, personal/policies, and companies/<co>/policies through this
+# same hook as a Write, naming each offending file and field.
+# Symlinks in core/policies are personal overlay mirrors and are skipped.
+#
+# The gate is baseline-aware. Base is $HQ_POLICY_BASELINE_REF, else the merge
+# base of HEAD and origin/main. A failing file that is unchanged since base is
+# pre-existing and prints as WARN. A failing file that is new or changed prints
+# as FAIL. Exit 1 when any FAIL is printed or the failing-file count rises
+# over base. With no resolvable base, or with --strict, every failure is FAIL.
+if [ "${1:-}" = "--all" ]; then
+  ALL_STRICT=0
+  [ "${2:-}" = "--strict" ] && ALL_STRICT=1
+  ALL_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)}"
+  SELF="$ALL_ROOT/.claude/hooks/validate-policy-frontmatter.sh"
+  [ -f "$SELF" ] || SELF="${BASH_SOURCE[0]:-$0}"
+  command -v jq >/dev/null 2>&1 || { echo "validate-policy-frontmatter --all: jq is required" >&2; exit 2; }
+
+  all_check() {  # $1 path, $2 file holding content -> stdout first error line; rc 0 = valid
+    local out
+    out="$(jq -n --arg fp "$1" --rawfile c "$2" '{tool_input:{file_path:$fp, content:$c}}' \
+      | HQ_ROOT="$ALL_ROOT" HQ_ALLOW_POLICY_NO_TRIGGER= bash "$SELF" 2>&1 >/dev/null)" && return 0
+    printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | head -1
+    return 1
+  }
+
+  BASE=""
+  if [ "$ALL_STRICT" -eq 0 ] && git -C "$ALL_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -n "${HQ_POLICY_BASELINE_REF:-}" ]; then
+      BASE="$(git -C "$ALL_ROOT" rev-parse --verify -q "${HQ_POLICY_BASELINE_REF}^{commit}" 2>/dev/null)"
+    elif git -C "$ALL_ROOT" rev-parse --verify -q 'origin/main^{commit}' >/dev/null 2>&1; then
+      BASE="$(git -C "$ALL_ROOT" merge-base HEAD origin/main 2>/dev/null)"
+    fi
+  fi
+  PREFIX=""; CHANGED=""
+  if [ -n "$BASE" ]; then
+    PREFIX="$(git -C "$ALL_ROOT" rev-parse --show-prefix 2>/dev/null)"
+    ALL_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vpf-all.XXXXXX")" || ALL_TMP=""
+    if [ -n "$ALL_TMP" ]; then
+      trap 'rm -rf "$ALL_TMP"' EXIT
+      CHANGED="$ALL_TMP/changed"
+      # Paths relative to ALL_ROOT that differ from base, including untracked.
+      { git -C "$ALL_ROOT" diff --name-only --relative "$BASE" -- core/policies personal/policies 'companies/*/policies' 2>/dev/null
+        git -C "$ALL_ROOT" ls-files --others --exclude-standard -- core/policies personal/policies 'companies/*/policies' 2>/dev/null
+      } | sort -u > "$CHANGED"
+    else
+      BASE=""
+    fi
+  fi
+
+  scanned=0; failed=0; warned=0; base_failed=0
+  for f in "$ALL_ROOT"/core/policies/*.md "$ALL_ROOT"/personal/policies/*.md "$ALL_ROOT"/companies/*/policies/*.md; do
+    [ -f "$f" ] || continue
+    case "$f" in "$ALL_ROOT"/core/policies/*) [ -L "$f" ] && continue ;; esac
+    case "$(basename "$f" | tr '[:upper:]' '[:lower:]')" in readme.md) continue ;; esac
+    scanned=$((scanned + 1))
+    rel="${f#"$ALL_ROOT"/}"
+    err="$(all_check "$f" "$f")" && continue
+    if [ -n "$BASE" ] && ! grep -Fxq "$rel" "$CHANGED"; then
+      warned=$((warned + 1)); base_failed=$((base_failed + 1))
+      printf 'WARN %s: %s (pre-existing)\n' "$rel" "$err"
+    else
+      failed=$((failed + 1))
+      printf 'FAIL %s: %s\n' "$rel" "$err"
+    fi
+  done
+  current=$((failed + warned))
+  if [ -n "$BASE" ]; then
+    # Changed or removed files: count their base copy if it failed too.
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      git -C "$ALL_ROOT" show "$BASE:$PREFIX$rel" > "$ALL_TMP/base.md" 2>/dev/null || continue
+      all_check "$ALL_ROOT/$rel" "$ALL_TMP/base.md" >/dev/null || base_failed=$((base_failed + 1))
+    done < "$CHANGED"
+    printf 'policies validated: %d | failed: %d | pre-existing: %d | baseline failing: %d | current failing: %d\n' \
+      "$scanned" "$failed" "$warned" "$base_failed" "$current"
+    [ "$failed" -eq 0 ] && [ "$current" -le "$base_failed" ] && exit 0 || exit 1
+  fi
+  printf 'policies validated: %d | failed: %d\n' "$scanned" "$failed"
+  [ "$failed" -eq 0 ] && exit 0 || exit 1
+fi
+
 INPUT="$(cat)"
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
@@ -119,6 +201,61 @@ const whenLines = [...fm.matchAll(/^[ \t]*when:[ \t]*(.*)$/gm)].map((match) => m
 if (!whenLines.some((expr) => /\S/.test(expr))) missing.push("when");
 if (!/^[ \t]*on:[ \t]*\S/m.test(fm)) missing.push("on");
 if (missing.length) { console.log("BLOCK|" + missing.join(",")); process.exit(0); }
+
+// ── Lifecycle and gate fields (policies-spec.md "Lifecycle Fields") ───────
+// Optional, but when present they must be well-formed: /garden, the injector,
+// policy-retire.sh, and the gate hook all read them as data.
+const fmVal = (key) => {
+  const r = fm.match(new RegExp("^" + key + ":[ \\t]*(.*)$", "m"));
+  return r ? r[1].replace(/[ \t]+#.*$/, "").trim().replace(/^["']|["']$/g, "") : null;
+};
+const lc = (field, detail) => { console.log("BLOCK|lifecycle|" + field + "|" + detail); process.exit(0); };
+const status = fmVal("status");
+if (status !== null && !/^(active|retired|superseded)$/.test(status))
+  lc("status", "'" + status + "' is not one of active, retired, superseded");
+for (const k of ["retired_at", "retired_by", "retired_reason"]) {
+  if (fmVal(k) !== null && status !== "retired")
+    lc(k, k + " requires status: retired (status is " + (status === null ? "absent" : status) + ")");
+}
+const lastConfirmed = fmVal("last_confirmed");
+if (lastConfirmed !== null && !/^\d{4}-\d{2}-\d{2}([T ][0-9:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(lastConfirmed))
+  lc("last_confirmed", "'" + lastConfirmed + "' is not an ISO date (YYYY-MM-DD)");
+const retireWhenM = fm.match(/^retire_when:[ \t]*(.*)$/m);
+const retireWhenRaw = retireWhenM ? retireWhenM[1].replace(/[ \t]+#.*$/, "") : undefined;
+if (retireWhenRaw !== undefined && /["'*+?\[\](){}|\\^$]/.test(retireWhenRaw))
+  lc("retire_when", "contains a quote or regex metacharacter; write a plain-text condition");
+const supersedes = fmVal("supersedes");
+if (supersedes !== null) {
+  const ids = supersedes.replace(/^\[|\]$/g, "").split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  // YAML block list form: supersedes:, then indented "- id" lines
+  const supLines = fm.split("\n");
+  for (let j = supLines.findIndex((l) => /^supersedes:/.test(l)) + 1; j > 0 && j < supLines.length; j++) {
+    const item = supLines[j].match(/^[ \t]+-[ \t]*(.*)$/);
+    if (!item) break;
+    ids.push(item[1].replace(/[ \t]+#.*$/, "").trim().replace(/^["']|["']$/g, ""));
+  }
+  const bad = ids.find((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id));
+  if (bad !== undefined) lc("supersedes", "'" + bad + "' is not a policy id");
+}
+const enfRaw = fmVal("enforcement");
+const fmLines = fm.split("\n");
+const gateIdx = fmLines.findIndex((l) => /^gate:[ \t]*(#.*)?$/.test(l));
+if ((enfRaw || "").toLowerCase() === "gate" || gateIdx >= 0) {
+  if (gateIdx < 0) lc("gate", "enforcement: gate requires a gate: block");
+  const gate = {};
+  for (const l of fmLines.slice(gateIdx + 1)) {
+    if (!/^[ \t]+\S/.test(l)) break;
+    const g = l.match(/^[ \t]+([A-Za-z_]+):[ \t]*(.*)$/);
+    if (g) gate[g[1]] = g[2].replace(/[ \t]+#.*$/, "").trim().replace(/^["']|["']$/g, "");
+  }
+  const unknown = Object.keys(gate).find((k) => !["tools", "bash", "requires", "freshness", "override"].includes(k));
+  if (unknown) lc("gate." + unknown, "unknown gate field; allowed: tools, bash, requires, freshness, override");
+  const empty = (v) => v === undefined || /^\[?[ \t]*\]?$/.test(v);
+  if (empty(gate.tools) && empty(gate.bash)) lc("gate.tools", "gate block needs tools or bash (at least one)");
+  if (empty(gate.requires)) lc("gate.requires", "gate block needs at least one required fact");
+  if (gate.freshness !== undefined && !/^\d+$/.test(gate.freshness)) lc("gate.freshness", "must be whole minutes");
+  if (gate.override !== undefined && !/^(allowed|denied)$/.test(gate.override)) lc("gate.override", "must be allowed or denied");
+}
 
 // ── Strictness rules for enforcement: hard ────────────────────────────────
 // A hard policy is injected in FULL TEXT and, when its trigger is loose, on
@@ -247,16 +384,56 @@ analyze_with_jq() {
           if (wx !~ /[&!]/ && wx ~ /(^|[^A-Za-z0-9_.\/-])always([^A-Za-z0-9_.\/-]|$)/) taut=1
         }
         if (L[i] ~ /^[ \t]*on:[ \t]*[^ \t]/) { o=1; onx=L[i] }
-        if (L[i] ~ /^[ \t]*enforcement:[ \t]*[^ \t]/) {
+        if (enf == "" && L[i] ~ /^[ \t]*enforcement:[ \t]*[^ \t]/) {
           enf=L[i]; sub(/^[ \t]*enforcement:[ \t]*/, "", enf)
           gsub(/["'"'"']/, "", enf); sub(/[ \t].*$/, "", enf); enf=tolower(enf)
         }
+        # lifecycle and gate fields — mirrors the node engine
+        if (L[i] ~ /^[a-z_]+:/) {
+          k=L[i]; sub(/:.*$/, "", k); v=L[i]; sub(/^[a-z_]+:[ \t]*/, "", v)
+          raw=v; sub(/[ \t]+#.*$/, "", v); gsub(/^[ \t]+|[ \t]+$/, "", v)
+          gsub(/^["'"'"']|["'"'"']$/, "", v)
+          ingate=(k=="gate")
+          # first occurrence wins, matching fm.match in the node engine
+          if (!(k in HAS)) { F[k]=v; HAS[k]=1; if (k=="retire_when") { RW=raw; sub(/[ \t]+#.*$/, "", RW) } }
+          gr=raw; sub(/[ \t]+$/, "", gr)
+          if (k=="gate" && gr !~ /^(#.*)?$/) { ingate=0; delete HAS["gate"] }
+          insup=(k=="supersedes")
+        } else if (insup && L[i] ~ /^[ \t]+-/) {
+          v=L[i]; sub(/^[ \t]+-[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v); gsub(/[ \t]+$/, "", v)
+          SUPB=SUPB "," v
+        } else if (ingate && L[i] ~ /^[ \t]+[A-Za-z_]+:/) {
+          k=L[i]; sub(/^[ \t]+/, "", k); sub(/:.*$/, "", k)
+          v=L[i]; sub(/^[ \t]+[A-Za-z_]+:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v); gsub(/[ \t]+$/, "", v)
+          gsub(/^["'"'"']|["'"'"']$/, "", v)
+          G[k]=v; GH[k]=1
+        } else if (L[i] !~ /^[ \t]/) { ingate=0; insup=0 }
       }
       if (!closed) { print "BLOCK|no-frontmatter"; exit }
       m=""
       if (!w) m="when"
       if (!o) m=(m=="" ? "on" : m ",on")
       if (m!="") { print "BLOCK|" m; exit }
+      st=F["status"]
+      if (HAS["status"] && st !~ /^(active|retired|superseded)$/) { print "BLOCK|lifecycle|status|'"'"'" st "'"'"' is not one of active, retired, superseded"; exit }
+      split("retired_at retired_by retired_reason", rk, " ")
+      for (k=1; k<=3; k++) if (HAS[rk[k]] && st != "retired") { print "BLOCK|lifecycle|" rk[k] "|" rk[k] " requires status: retired (status is " (HAS["status"] ? st : "absent") ")"; exit }
+      if (HAS["last_confirmed"] && F["last_confirmed"] !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]([T ][0-9:.]+(Z|[+-][0-9][0-9]:?[0-9][0-9])?)?$/) { print "BLOCK|lifecycle|last_confirmed|'"'"'" F["last_confirmed"] "'"'"' is not an ISO date (YYYY-MM-DD)"; exit }
+      if (HAS["retire_when"] && RW ~ /["'"'"'*+?\[\](){}|\\^$]/) { print "BLOCK|lifecycle|retire_when|contains a quote or regex metacharacter; write a plain-text condition"; exit }
+      if (HAS["supersedes"]) {
+        sv=F["supersedes"]; gsub(/^\[|\]$/, "", sv); sv=sv SUPB; n=split(sv, ids, ",")
+        for (k=1; k<=n; k++) { id=ids[k]; gsub(/^[ \t"'"'"']+|[ \t"'"'"']+$/, "", id)
+          if (id != "" && id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) { print "BLOCK|lifecycle|supersedes|'"'"'" id "'"'"' is not a policy id"; exit } }
+      }
+      if (enf == "gate" || HAS["gate"]) {
+        if (!HAS["gate"]) { print "BLOCK|lifecycle|gate|enforcement: gate requires a gate: block"; exit }
+        for (k in GH) if (k !~ /^(tools|bash|requires|freshness|override)$/) { print "BLOCK|lifecycle|gate." k "|unknown gate field; allowed: tools, bash, requires, freshness, override"; exit }
+        te=(!GH["tools"] || G["tools"] ~ /^\[?[ \t]*\]?$/); be=(!GH["bash"] || G["bash"] ~ /^\[?[ \t]*\]?$/)
+        if (te && be) { print "BLOCK|lifecycle|gate.tools|gate block needs tools or bash (at least one)"; exit }
+        if (!GH["requires"] || G["requires"] ~ /^\[?[ \t]*\]?$/) { print "BLOCK|lifecycle|gate.requires|gate block needs at least one required fact"; exit }
+        if (GH["freshness"] && G["freshness"] !~ /^[0-9]+$/) { print "BLOCK|lifecycle|gate.freshness|must be whole minutes"; exit }
+        if (GH["override"] && G["override"] !~ /^(allowed|denied)$/) { print "BLOCK|lifecycle|gate.override|must be allowed or denied"; exit }
+      }
       if (enf == "hard") {
         # (1) unconditional trigger on a reactive event — see the node engine
         react=""
@@ -391,6 +568,22 @@ case "$RESULT" in
     fi
     reason="${RESULT#BLOCK|}"
     case "$reason" in
+      lifecycle\|*)
+        rest="${reason#lifecycle|}"
+        cat >&2 <<MSG
+BLOCKED: invalid policy frontmatter field \`${rest%%|*}\`: ${rest#*|}
+
+Lifecycle fields (status, retired_at, retired_by, retired_reason,
+last_confirmed, retire_when, supersedes) and the enforcement: gate block are
+optional, but must be well-formed when present. See
+core/knowledge/public/hq-core/policies-spec.md ("Lifecycle Fields" and
+"Gate Block"). Fix the field, then retry.
+
+(The HQ_ALLOW_POLICY_NO_TRIGGER override requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
+MSG
+        exit 2
+        ;;
       hard-always-reactive*)
         events="${reason#hard-always-reactive|}"
         cat >&2 <<MSG

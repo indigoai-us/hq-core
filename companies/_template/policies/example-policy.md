@@ -4,6 +4,8 @@ title: Example Policy Title
 when: always                  # boolean trigger expression — see policies-spec.md
 on: [SessionStart]            # sites: PreToolUse|PostToolUse|UserPromptSubmit|AssistantIntent|SessionStart
 enforcement: soft
+public: false                 # true only if the rule body is generic enough to publish
+status: active                # active | retired | superseded (lifecycle fields, see policies-spec.md)
 version: 1
 created: {YYYY-MM-DD}
 updated: {YYYY-MM-DD}
@@ -28,3 +30,5 @@ Explain why this policy exists. What problem does it prevent? What outcome does 
 
 **Incorrect:**
 - Agent completes a feature without updating documentation
+
+## Provenance

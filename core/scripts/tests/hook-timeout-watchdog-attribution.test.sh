@@ -964,8 +964,9 @@ contract_cli_probe() {
     fi
     return 0
   fi
+  # These dry-run probes verify the sentry CLI schema, independent of Anywhere dispatch.
   probe='{"type":"hook_timeout","message":"m","fingerprint":"f","level":"warning","metadata":{"hook_sequence":[{"script":"a.sh","event":"PreToolUse","ms":5}]}}'
-  if printf '%s\n' "$probe" | run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/hq-cli-probe.out" 2> "$TMP/hq-cli-probe.err" \
+  if printf '%s\n' "$probe" | HQ_FLAG_HQ_ANYWHERE_RUNTIME=false run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/hq-cli-probe.out" 2> "$TMP/hq-cli-probe.err" \
     && jq -e '.extra.hook_sequence == [{script:"a.sh",event:"PreToolUse",ms:5}]' "$TMP/hq-cli-probe.out" >/dev/null 2>&1; then
     HQ_CLI_CONTRACT_AVAILABLE=1
   else
@@ -975,7 +976,7 @@ contract_cli_probe() {
     return 0
   fi
   debug_probe="$(jq -cn '{type:"hook_timeout_warning",message:"m",fingerprint:"f",level:"warning",metadata:{hook_sequence:[],hook_timeout_debug_context:{hook_name:"master-hook.sh",hook_event:"SessionStart",budget_ms:30000,elapsed_ms:5000,remaining_ms:25000,phase_timings:[],wait_point:"parse",waiting_child_basename:"other",waiting_child_elapsed_ms:0,load_average:1.2,spawn_ms:"unavailable",process_count:"unavailable"}}}')"
-  if printf '%s\n' "$debug_probe" | run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/hq-cli-debug-probe.out" 2> "$TMP/hq-cli-debug-probe.err" \
+  if printf '%s\n' "$debug_probe" | HQ_FLAG_HQ_ANYWHERE_RUNTIME=false run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/hq-cli-debug-probe.out" 2> "$TMP/hq-cli-debug-probe.err" \
     && jq -e '.tags.timeout_debug_wait_point == "parse"' "$TMP/hq-cli-debug-probe.out" >/dev/null 2>&1; then
     HQ_CLI_DEBUG_CONTEXT_ENABLED=1
   fi
@@ -1023,7 +1024,7 @@ assert_cli_event_contract() {
   fi
   if [ "$HQ_CLI_CONTRACT_AVAILABLE" -eq 1 ]; then
     sequence="$(jq -c '.metadata.hook_sequence' <<<"$event")"
-    if ! printf '%s\n' "$event" | run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/$label.cli-output" 2> "$TMP/$label.cli-stderr"; then
+    if ! printf '%s\n' "$event" | HQ_FLAG_HQ_ANYWHERE_RUNTIME=false run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run > "$TMP/$label.cli-output" 2> "$TMP/$label.cli-stderr"; then
       cat "$TMP/$label.cli-stderr" "$TMP/$label.cli-output" >&2
       fail "$label event was rejected by hq core sentry report --dry-run"
     fi
@@ -1549,7 +1550,7 @@ HQ
   if [ "$HQ_CLI_DEBUG_CONTEXT_ENABLED" -eq 1 ]; then
     report="$(jq -cn --argjson context "$(cat "$root/debug-context.json")" \
       '{type:"hook_timeout_warning",message:"m",fingerprint:"f",level:"warning",metadata:{hook_sequence:[],hook_timeout_debug_context:$context}}')"
-    printf '%s\n' "$report" | run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run \
+    printf '%s\n' "$report" | HQ_FLAG_HQ_ANYWHERE_RUNTIME=false run_bounded 15 "$REAL_HQ_BIN" core sentry report --dry-run \
       > "$root/cli-event.json" 2> "$root/cli-event.err" \
       || { cat "$root/cli-event.err" "$root/cli-event.json" >&2; fail "phase tags were rejected by hq sentry report"; }
     jq -e '

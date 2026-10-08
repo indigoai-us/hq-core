@@ -24,21 +24,38 @@ trap 'rm -rf "$FIX"' EXIT
 mkdir -p "$FIX/personal/policies" "$FIX/workspace/orchestrator"
 # A reactive personal policy keyed on a unique nonce token so nothing else can
 # match it. NOTE: there is intentionally NO $FIX/core/policies directory.
+# It is HARD because personal SOFT policies are off by default (D4); case 3
+# covers the soft path and its HQ_INJECT_PERSONAL_SOFT=1 opt-in.
 cat > "$FIX/personal/policies/zz-personal-overlay-probe.md" <<'MD'
 ---
 id: zz-personal-overlay-probe
 title: Personal overlay probe policy
 when: frobnicatexyz
 on: [UserPromptSubmit]
-enforcement: soft
+enforcement: hard
 public: true
 ---
 Personal-overlay policy read directly from personal/policies (no mirror).
 MD
+cat > "$FIX/personal/policies/zz-personal-soft-probe.md" <<'MD'
+---
+id: zz-personal-soft-probe
+title: Personal soft probe policy
+when: quuxsoftxyz
+on: [UserPromptSubmit]
+enforcement: soft
+public: true
+---
+Personal soft policy, off unless HQ_INJECT_PERSONAL_SOFT=1.
+MD
 
 emit() { # <session-id> <prompt>
   printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","cwd":"%s","prompt":"%s"}' "$1" "$FIX" "$2" \
-    | HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" bash "$HOOK" 2>/dev/null || true
+    | env -u HQ_INJECT_PERSONAL_SOFT HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" bash "$HOOK" 2>/dev/null || true
+}
+emit_soft_on() { # <session-id> <prompt>
+  printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","cwd":"%s","prompt":"%s"}' "$1" "$FIX" "$2" \
+    | HQ_INJECT_PERSONAL_SOFT=1 HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" bash "$HOOK" 2>/dev/null || true
 }
 
 # 1. The personal policy surfaces when its trigger token appears in the prompt.
@@ -57,6 +74,22 @@ case "$OUT2" in
     FAIL=$((FAIL+1)); echo "FAIL[negative]: personal policy surfaced on unrelated prompt; got: [$OUT2]" >&2 ;;
   *)
     PASS=$((PASS+1)); echo "ok: personal policy stays quiet on unrelated prompt" ;;
+esac
+
+# 3. A personal SOFT policy stays out by default and injects with the opt-in.
+OUT3="$(emit "ppo-$$-3" "please quuxsoftxyz the widget")"
+case "$OUT3" in
+  *zz-personal-soft-probe*)
+    FAIL=$((FAIL+1)); echo "FAIL[soft-default]: personal soft policy injected by default; got: [$OUT3]" >&2 ;;
+  *)
+    PASS=$((PASS+1)); echo "ok: personal soft policy not injected by default" ;;
+esac
+OUT4="$(emit_soft_on "ppo-$$-4" "please quuxsoftxyz the widget")"
+case "$OUT4" in
+  *zz-personal-soft-probe*)
+    PASS=$((PASS+1)); echo "ok: personal soft policy injects with HQ_INJECT_PERSONAL_SOFT=1" ;;
+  *)
+    FAIL=$((FAIL+1)); echo "FAIL[soft-optin]: personal soft policy did not inject with HQ_INJECT_PERSONAL_SOFT=1; got: [$OUT4]" >&2 ;;
 esac
 
 echo "personal-policy-overlay: $PASS passed, $FAIL failed"

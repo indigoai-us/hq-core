@@ -233,6 +233,29 @@ assert_contains "$SUITE_DIR/dup.err" "duplicate skill name \"shared-skill\""
 assert_contains "$SUITE_DIR/dup.err" "hq-pack-dup"
 pass "duplicate names are rejected per shipped surface"
 
+echo "[8b] a scoped mirror directory is a different skill from the unscoped one"
+# The pack and company installers write `<scope>:<skill>` directories next to a
+# core skill of the same `name:`, and the host lists them under the directory
+# name. Treating those as one name declared twice made the live corpus fail on
+# any install with hq-pack-engineering present.
+SCOPED_ROOT="$SUITE_DIR/scoped-mirror"
+write_hq_root "$SCOPED_ROOT"
+write_skill "$SCOPED_ROOT" "architect" $'name: architect\ndescription: Core architect skill.\nallowed-tools: Read'
+write_skill "$SCOPED_ROOT" "hq-pack-engineering:architect" $'name: architect\ndescription: Pack architect skill.\nallowed-tools: Read'
+run_validator --root "$SCOPED_ROOT" >"$SUITE_DIR/scoped.out" 2>"$SUITE_DIR/scoped.err" \
+  || fail "a scoped mirror beside the unscoped skill should validate: $(cat "$SUITE_DIR/scoped.err")"
+# The scope only counts when the directory really is `<scope>:<name>`. Two
+# unscoped directories, or two mirrors under one scope, still collide.
+ROOT_DUP_ROOT="$SUITE_DIR/root-duplicate"
+write_hq_root "$ROOT_DUP_ROOT"
+write_skill "$ROOT_DUP_ROOT" "alpha" $'name: shared-skill\ndescription: Alpha.\nallowed-tools: Read'
+write_skill "$ROOT_DUP_ROOT" "scope:beta" $'name: shared-skill\ndescription: Beta in a directory that does not end in its name.\nallowed-tools: Read'
+if run_validator --root "$ROOT_DUP_ROOT" >"$SUITE_DIR/root-dup.out" 2>"$SUITE_DIR/root-dup.err"; then
+  fail "a scoped directory whose suffix is not the declared name must not escape the duplicate check"
+fi
+assert_contains "$SUITE_DIR/root-dup.err" "duplicate skill name \"shared-skill\""
+pass "scoped mirrors are distinct; mismatched scopes still collide"
+
 echo "[9] blocked convert-codex generation leaves no partial openai.yaml behind"
 FAILED_GEN_ROOT="$SUITE_DIR/failed-generated-openai"
 write_hq_root "$FAILED_GEN_ROOT"

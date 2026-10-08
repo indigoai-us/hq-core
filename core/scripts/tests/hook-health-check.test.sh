@@ -179,7 +179,7 @@ cat >"$DUP/.claude/settings.local.json" <<'JSON'
 {"permissions":{"allow":["Bash(ls:*)"]},"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" inject-policy-on-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh\""},{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" some-local-only-hook \"$CLAUDE_PROJECT_DIR/.claude/hooks/some-local-only-hook.sh\""}]}]}}
 JSON
 out="$(run_expect 2 "$DUP")"
-assert_contains "$out" 're-registers 1 hook(s) that master-hook.sh already dispatches' \
+assert_contains "$out" '.claude/settings.local.json re-registers registry hook id inject-policy-on-trigger' \
   || fail "duplicate local dispatch was not reported: $out"
 assert_contains "$out" 'restore-hook-settings.sh' \
   || fail "duplicate local dispatch did not name the healer: $out"
@@ -197,6 +197,19 @@ out="$(PATH="$INLINE_STUB_BIN:$PATH" bash "$CHECKER" --root "$NODUP" 2>&1)"
 set -e
 case "$out" in *"re-registers"*) fail "non-overlapping local hook was counted as a duplicate: $out" ;; esac
 pass "duplicate per-hook overlay fails with restore guidance; non-overlapping overlay is not flagged"
+
+echo "[1e] a direct registration in settings.json is named with its hook id"
+DIRECT="$TMP/project-settings-dup"
+make_healthy_root "$DIRECT"
+mkdir -p "$DIRECT/.claude/hooks"
+cp "$DUP/.claude/hooks/hook-registry.json" "$DIRECT/.claude/hooks/hook-registry.json"
+cat >"$DIRECT/.claude/settings.json" <<'JSON'
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SessionStart"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" PreToolUse"}]}],"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh\""}]}]}}
+JSON
+out="$(run_expect 2 "$DIRECT")"
+assert_contains "$out" '.claude/settings.json re-registers registry hook id inject-policy-on-trigger' \
+  || fail "direct settings.json registration was not reported: $out"
+pass "direct settings.json registration fails with file and registry id"
 
 echo "[2] a missing settings file produces an actionable desktop/SDK repair"
 MISSING="$TMP/missing"

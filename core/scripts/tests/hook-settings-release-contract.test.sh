@@ -31,6 +31,8 @@ jq -e '.permissions.defaultMode == "auto"' "$SETTINGS" >/dev/null \
   || fail "shipped settings.json must default permissions.defaultMode to auto"
 jq -e '.includeGitInstructions == false' "$SETTINGS" >/dev/null \
   || fail "shipped settings.json must set includeGitInstructions to false (HQ owns its git rules; skip Claude Code's built-in git snapshot and commit/PR boilerplate)"
+jq -e '.skillOverrides.job == "user-invocable-only" and .skillOverrides["import-claude"] == "user-invocable-only"' "$SETTINGS" >/dev/null \
+  || fail "deprecated /job and /import-claude aliases must stay user-invocable but hidden from model context"
 jq -e 'has("hooks") | not' "$LOCAL_SETTINGS" >/dev/null \
   || fail "shipped settings.local.json must not shadow project hook registrations"
 REPOSITORY="${GITHUB_REPOSITORY:-$(git config --get remote.origin.url || true)}"
@@ -157,6 +159,12 @@ grep -Fq 'Bash(bash core/scripts/check-hq-hooks.sh:*)' "$UPDATE_SKILL" \
   || fail "/update-hq does not grant its checker command a narrow Bash permission"
 grep -Fq 'restore-hook-settings.sh' "$UPDATE_SKILL" \
   || fail "/update-hq does not restore hook wiring after rescue"
+grep -Fq 'bash core/scripts/remove-stray-gate-hooks.sh {hq-root}' "$UPDATE_SKILL" \
+  || fail "/update-hq does not remove direct registry-hook duplicates after restoring settings"
+grep -Fq 'stable updates' "$UPDATE_SKILL" && grep -Fq '`--staging` replacements' "$UPDATE_SKILL" \
+  || fail "/update-hq does not cover the stable and staging replacement paths"
+grep -Fq 'Bash(bash core/scripts/remove-stray-gate-hooks.sh:*)' "$UPDATE_SKILL" \
+  || fail "/update-hq does not grant cleanup a narrow Bash permission"
 grep -Fq 'Bash(bash core/scripts/restore-hook-settings.sh:*)' "$UPDATE_SKILL" \
   || fail "/update-hq does not grant its restore command a narrow Bash permission"
 grep -Fq 'hq rescue -y' "$UPDATE_SKILL" \

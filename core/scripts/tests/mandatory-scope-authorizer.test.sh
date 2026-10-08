@@ -1075,6 +1075,16 @@ expect_exit 2 "$rc" "malformed company_slugs capability fails closed"
 payload="$(jq -cn --arg cwd "$TMP" '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/indigo")}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "malformed company_slugs capability blocks primary company root"
+cat >"$TMP/flagbin/node" <<'NODE'
+#!/bin/sh
+printf 'false\n'
+NODE
+chmod +x "$TMP/flagbin/node"
+session_scope_mint_set "$TMP" sess-bound indigo,otherco
+rm -f "$HOME/.hq/hook-flag.multi-company-session-lock.indigo"
+payload="$(jq -cn --arg cwd "$TMP" '{tool_name:"Write",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/otherco/settings/blocked.yaml")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "explicit multi-company false keeps authorizer on primary only"
 export PATH="$ORIGINAL_PATH"
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"

@@ -60,38 +60,7 @@ run_hook() {
     HQ_ROOT="$TMP" bash "$HOOK" 2>/dev/null || true
 }
 
-echo "[1] payload session_id wins over .current"
+echo "[1] PreToolUse infra reminders are silent because this event does not deliver stdout"
 out="$(run_hook sess-live)"
-grep -q 'co="indigo"' <<<"$out" \
-  || fail "expected the payload session's company (indigo), got: ${out:-<empty>}"
-if grep -q 'otherco' <<<"$out"; then
-  fail "leaked the .current session's company into this session: $out"
-fi
-
-echo "[2] the .current session still resolves to its own company"
-rm -rf "$TMP/workspace/orchestrator"
-out="$(run_hook sess-other)"
-grep -q 'co="otherco"' <<<"$out" \
-  || fail "expected otherco for sess-other, got: ${out:-<empty>}"
-
-echo "[3] an unbound session surfaces nothing, even when .current is bound"
-rm -rf "$TMP/workspace/orchestrator"
-printf 'session_id: sess-unbound\n' > "$TMP/workspace/sessions/sess-live/meta.yaml"
-out="$(run_hook sess-live)"
-[ -z "$out" ] || fail "expected no output for an unbound session, got: $out"
-
-echo "[4] dedupe still fires once per (session, company)"
-printf 'company_slug: indigo\n' > "$TMP/workspace/sessions/sess-live/meta.yaml"
-rm -rf "$TMP/workspace/orchestrator"
-first="$(run_hook sess-live)"
-[ -n "$first" ] || fail "expected a first-fire reminder"
-second="$(run_hook sess-live)"
-[ -z "$second" ] || fail "expected dedupe to suppress the second fire, got: $second"
-
-echo "[5] non-infra commands are ignored"
-rm -rf "$TMP/workspace/orchestrator"
-out="$(printf '%s' '{"session_id":"sess-live","tool_name":"Bash","tool_input":{"command":"ls -la"}}' \
-  | HQ_ROOT="$TMP" bash "$HOOK" 2>/dev/null || true)"
-[ -z "$out" ] || fail "expected no output for a non-infra command, got: $out"
-
+[ -z "$out" ] || fail "expected silent PreToolUse output, got: $out"
 echo "PASS: surface-company-infra-policy.test.sh"

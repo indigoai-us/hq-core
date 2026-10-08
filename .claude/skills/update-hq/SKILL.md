@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), AskUserQuestion
+allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/remove-stray-gate-hooks.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -106,8 +106,14 @@ health — a second rescue repeats the same relocate:
 
 ```bash
 bash core/scripts/restore-hook-settings.sh {hq-root}
+bash core/scripts/remove-stray-gate-hooks.sh {hq-root}
 bash core/scripts/check-hq-hooks.sh --root {hq-root}
 ```
+
+After `hq rescue` restores the shipped hook settings, run the cleanup before the
+health check. This order applies to stable updates and `--staging` replacements.
+The cleanup removes local hook commands that point to registry scripts. It keeps
+the local `env` and `permissions` sections and unrelated hooks.
 
 If settings.json is missing or still invalid, repair the released `.claude` tree,
 restore hooks again, and re-check. Keep any other mapped release flags such as
@@ -117,6 +123,7 @@ repair must include `.claude`:
 ```bash
 hq rescue -y --paths .claude {mapped release flags}
 bash core/scripts/restore-hook-settings.sh {hq-root}
+bash core/scripts/remove-stray-gate-hooks.sh {hq-root}
 bash core/scripts/check-hq-hooks.sh --root {hq-root}
 ```
 

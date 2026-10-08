@@ -210,6 +210,43 @@ if [ "${1:-}" = "--remediate" ]; then
       cat >/dev/null 2>&1 || true
     }
 
+    # Extract only completed refresh-sync outcomes from the --fix JSON. A
+    # missing or malformed refreshSync array is not evidence that a check was
+    # unreached, so callers keep every remaining finding in that case.
+    refresh_sync_attempted_ids() {
+      local document="$1"
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        printf '%s\n' "$document" | "$HQ_LIB_JQ" -e \
+          'type == "object" and (.refreshSync | type == "array") and
+           all(.refreshSync[]; (.checkId | type == "string") and
+             (.outcome == "pull-succeeded" or .outcome == "pull-timeout" or
+              .outcome == "pull-failed:4xx" or .outcome == "pull-failed:5xx" or
+              .outcome == "pull-failed:network" or .outcome == "pull-failed:other"))' \
+          >/dev/null 2>&1 || return 1
+        printf '%s\n' "$document" | "$HQ_LIB_JQ" -r '.refreshSync[].checkId' 2>/dev/null || return 1
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        printf '%s\n' "$document" | "$HQ_LIB_NODE" -e '
+          let input = "";
+          process.stdin.on("data", chunk => input += chunk).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(input); } catch { process.exit(1); }
+            if (!doc || typeof doc !== "object" || !Array.isArray(doc.refreshSync)) process.exit(1);
+            const outcomes = new Set([
+              "pull-succeeded", "pull-timeout", "pull-failed:4xx",
+              "pull-failed:5xx", "pull-failed:network", "pull-failed:other"
+            ]);
+            if (!doc.refreshSync.every(item => item && typeof item.checkId === "string" && outcomes.has(item.outcome))) {
+              process.exit(1);
+            }
+            for (const item of doc.refreshSync) process.stdout.write(item.checkId + "\n");
+          });' 2>/dev/null || return 1
+        return 0
+      fi
+      return 1
+    }
+
     doctor_degraded() {
       # Newer CLI versions resolve the opt-in hq-flags gate. Older versions
       # reject the private option, so fall back to ordinary JSON output. Both
@@ -231,8 +268,76 @@ if [ "${1:-}" = "--remediate" ]; then
 
     # Attempt the allowlisted safe repairs, then re-verify. Only findings that
     # SURVIVE the fix pass are report-worthy — a fixed issue files no bug.
-    ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
+    UNREACHED_FILTER_ENABLED=false
+    FLAG_READER="$HQ_ROOT/.claude/hooks/client-health-unreached-checks-flag.cjs"
+    if [ -f "$FLAG_READER" ] && [ -n "${HQ_LIB_NODE:-}" ]; then
+      FLAG_VALUE=$(HQ_CLI_BIN="${HQ_CLI_BIN:-$(command -v hq 2>/dev/null)}" "$HQ_LIB_NODE" "$FLAG_READER" 2>/dev/null) || FLAG_VALUE=false
+      [ "$FLAG_VALUE" = true ] && UNREACHED_FILTER_ENABLED=true
+    fi
+    FIX_RESULT=""
+    if [ "$UNREACHED_FILTER_ENABLED" = true ]; then
+      # Capture to a private state file: on the portable watchdog path, a killed
+      # command can leave a grandchild holding stdout open. A command
+      # substitution around bounded would then wait for that pipe after the
+      # deadline. Reading the completed file keeps the same deadline and output.
+      FIX_RESULT_FILE="$STATE_DIR/fix-result.$$"
+      ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json \
+          > "$FIX_RESULT_FILE" 2>/dev/null ) || true
+      FIX_RESULT=$(cat "$FIX_RESULT_FILE" 2>/dev/null || true)
+      rm -f "$FIX_RESULT_FILE" 2>/dev/null || true
+    else
+      ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
+    fi
     REMAINING=$(doctor_degraded)
+    UNREACHED_COMPANY_JOURNAL_COUNT=0
+    if [ "$UNREACHED_FILTER_ENABLED" = true ]; then
+      if ATTEMPTED_REFRESH_IDS=$(refresh_sync_attempted_ids "$FIX_RESULT"); then
+        FILTERED_REMAINING=""
+        SEEN_UNREACHED=""
+        while IFS= read -r finding; do
+          [ -n "$finding" ] || continue
+          finding_id="${finding%%:*}"
+          finding_slug="${finding_id#sync.journal.}"
+          case "$finding_id" in
+            sync.journal.*)
+              case "$finding_slug" in
+                ""|personal|__hq_personal_vault__) ;;
+                *)
+                  case $'\n'"$ATTEMPTED_REFRESH_IDS"$'\n' in
+                    *$'\n'"$finding_id"$'\n'*) ;;
+                    *)
+                      case $'\n'"$SEEN_UNREACHED"$'\n' in
+                        *$'\n'"$finding_id"$'\n'*) ;;
+                        *)
+                          SEEN_UNREACHED="${SEEN_UNREACHED}${finding_id}"$'\n'
+                          UNREACHED_COMPANY_JOURNAL_COUNT=$((UNREACHED_COMPANY_JOURNAL_COUNT + 1))
+                          continue
+                          ;;
+                      esac
+                      ;;
+                  esac
+                  ;;
+              esac
+              ;;
+          esac
+          FILTERED_REMAINING="${FILTERED_REMAINING}${finding}"$'\n'
+        done <<EOF_FINDINGS
+$REMAINING
+EOF_FINDINGS
+        REMAINING="${FILTERED_REMAINING%$'\n'}"
+      fi
+    fi
+    if [ "$UNREACHED_COMPANY_JOURNAL_COUNT" -gt 0 ]; then
+      printf '%s\tunreached_company_journal_checks=%s\n' "$(date +%s)" \
+        "$UNREACHED_COMPANY_JOURNAL_COUNT" >> "$STATE_DIR/repair-pass.log" 2>/dev/null || true
+      PENDING_TMP="$STATE_DIR/unreached-count.pending.$$"
+      if (umask 077; printf '%s\n' "$UNREACHED_COMPANY_JOURNAL_COUNT" > "$PENDING_TMP") 2>/dev/null \
+          && mv -f "$PENDING_TMP" "$STATE_DIR/unreached-count.pending" 2>/dev/null; then
+        :
+      else
+        rm -f "$PENDING_TMP" 2>/dev/null
+      fi
+    fi
     [ -n "$REMAINING" ] || exit 0
 
     # One bounded attempt per install, not one attempt per company/check.
@@ -323,6 +428,37 @@ command -v hq >/dev/null 2>&1 || exit 0
 # any hooks-only copy of the tree.
 [ -f "$HQ_ROOT/core/core.yaml" ] || exit 0
 [ -f "$HQ_ROOT/companies/manifest.yaml" ] || exit 0
+
+# Surface counts from the last bounded repair in the same SessionStart
+# diagnostics stream as the local next step. The remediation itself is detached,
+# so the count is delivered on the next human-visible client-health check.
+show_unreached_count_once() {
+  local pending_file="$STATE_DIR/unreached-count.pending"
+  local lock_file="$STATE_DIR/unreached-count-show.lock"
+  local count now lock_mtime
+  [ -f "$pending_file" ] || return 0
+  if [ -f "$lock_file" ]; then
+    now=$(date +%s)
+    lock_mtime=$(stat -c %Y "$lock_file" 2>/dev/null || stat -f %m "$lock_file" 2>/dev/null || echo "$now")
+    [ "$((now - lock_mtime))" -gt 300 ] && rm -f "$lock_file" 2>/dev/null
+  fi
+  ( set -C; : > "$lock_file" ) 2>/dev/null || return 0
+  if [ ! -f "$pending_file" ]; then
+    rm -f "$lock_file" 2>/dev/null
+    return 0
+  fi
+  count=$(cat "$pending_file" 2>/dev/null || true)
+  case "$count" in
+    ""|*[!0-9]*) rm -f "$lock_file" 2>/dev/null; return 0 ;;
+  esac
+  if [ "$count" = 1 ]; then
+    printf '<hq-client-health-result>\n1 company journal check was not reached by the last automatic repair and was left out of its report.\n</hq-client-health-result>\n'
+  else
+    printf '<hq-client-health-result>\n%s company journal checks were not reached by the last automatic repair and were left out of its report.\n</hq-client-health-result>\n' "$count"
+  fi
+  rm -f "$pending_file" "$lock_file" 2>/dev/null || true
+}
+show_unreached_count_once
 
 # Display the latest locally stored next step once. The display claim uses a
 # lock and a result id, so parallel SessionStarts cannot print it twice.
