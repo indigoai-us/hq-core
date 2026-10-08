@@ -1,6 +1,21 @@
 ## [Unreleased]
 
+## [16.0.0] — BREAKING — conduct by default; v15 deprecations removed
+
+### Removed — deprecations announced in 15.x
+- **`/plan` stub removed.** `/prd` is the command for creating a PRD. Any script, policy, or habit that still calls `/plan` must call `/prd` with the same arguments.
+- **`CONTEXT.md` fallback removed** from `/tdd`, `/diagnose`, `/architect`, `/to-tickets`, `/wayfinder`, and `/domain-modeling`. These skills read `GLOSSARY.md` (and `GLOSSARY-MAP.md`) only. Rename a repo's glossary with `git mv CONTEXT.md GLOSSARY.md` (and `git mv CONTEXT-MAP.md GLOSSARY-MAP.md`) before upgrading.
+
+### Changed — session default
+- **Conduct mode is on by default.** `conduct.default_enabled: true` in `core/settings/orchestrator.yaml`; every fresh session opens in `/conduct` mode. Unattended sessions (local bots, fleet boxes, scheduled jobs) are unaffected. Off switches: `personal/settings/orchestrator.yaml` with `default_enabled: false`, `HQ_AUTO_CONDUCT=0`, `HQ_DISABLED_HOOKS=auto-conduct`, or `/conduct off`. Details in MIGRATION.md.
+
 - `hooks.multi-company-session-lock` now defaults on whenever its company-scoped flag snapshot or live lookup is unavailable. An explicit server-side `false` remains the kill switch; other flags retain their current fallback behavior.
+
+### Added - streaming scan events for the desktop first-run setup (2026-10-08)
+- **`scan.sh --progress-json`** (`.claude/skills/import-context/scan.sh`) prints JSON Lines on stdout while the /import-context scanner runs: a `start` event listing the sources present on the machine (HQ companies, code repositories, Claude Code, Codex, Grok, a claude.ai export, skills and settings), per-source `scanning`/`done` events, running `count` events, `company` and `project` events from a deterministic rule pass (HQ manifest companies, then git remote orgs, then shared work folders; repos and Claude Code/Codex session working directories grouped into projects), non-fatal `error` events, and a final `done` event with the report path and a summary. Every event has `"v":1`. Events carry names and counts only, never file contents, prompts or paths other than the report path, and the stream is identical across runs of the same machine state. The flag requires `--output`; `report.json` is byte-identical with and without it, and the default output is unchanged. Contract: `.claude/skills/import-context/progress-json.md`. The HQ CLI relays the stream as `hq import scan --json --stream`.
+- Git remotes are reduced to host, org and repo name: credentials, query strings and fragments are dropped, and remotes with URL syntax left in the org or name are ignored. Project ids hash the remote identity or the HOME-relative path with a fixed salt, so they match across machines.
+- `scan.sh` (with or without the flag) now stops its child processes, deletes its temp directory and exits 143/130 on SIGTERM/SIGINT, and writes `report.json` through a temp file and rename.
+- Regression suite `core/scripts/tests/import-context-progress-json.test.sh` (fixture HOME with Claude Code, Codex and Grok stores and git repos; event order and schema, milestones, rule pass, no content leakage, hostile remotes, byte-identical report, determinism, ids across machines, SIGTERM cleanup). Runs in pr-checks on Linux and under stock macOS Bash.
 
 ### Added — /conduct can adopt sessions that are already running (2026-09-18)
 - **New command `/conduct-join`** (`.claude/skills/conduct-join/SKILL.md`). A session that is already open — Claude desktop, or a Codex or Grok session in a terminal — runs `/conduct-join <link id>` to register itself as a child of a `/conduct` session. From then on the conductor's instructions reach it mid-task and its reports reach the conductor. `leave` detaches; `status` shows the link.

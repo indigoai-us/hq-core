@@ -15,11 +15,8 @@ for skill in brainstorm prd; do
   grep -q 'type: "auto-checkpoint"' "$f" || fail "$skill: marker present but no auto-checkpoint thread instruction"
   grep -q 'workspace/threads/' "$f" || fail "$skill: no workspace/threads/ checkpoint path"
 done
-# /plan is a deprecated stub that forwards to /prd, so it inherits the prd
-# checkpoint instead of carrying its own.
-stub="$ROOT/.claude/skills/plan/SKILL.md"
-[ "$(wc -l < "$stub")" -lt 20 ] || fail "plan: stub is 20 lines or more"
-grep -qi 'deprecated' "$stub" || fail "plan: stub does not say deprecated"
-grep -q 'prd' "$stub" || fail "plan: stub does not forward to the prd skill"
-grep -q 'same arguments' "$stub" || fail "plan: stub does not pass its arguments to prd"
-echo "auto-checkpoint-planning-cmds: ok (brainstorm + prd auto-checkpoint on completion; plan forwards to prd)"
+# The deprecated /plan stub was removed in hq-core 16.0.0; /prd is the
+# planning command and carries the checkpoint. A reappearing stub would
+# need its own checkpoint contract, so its absence is asserted here.
+[ ! -e "$ROOT/.claude/skills/plan" ] || fail "plan: the deprecated stub was removed in 16.0.0; /prd is the planning command"
+echo "auto-checkpoint-planning-cmds: ok (brainstorm + prd auto-checkpoint on completion; no /plan stub)"

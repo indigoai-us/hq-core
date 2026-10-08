@@ -17,6 +17,7 @@ contributes:
     - diagnose
     - domain-modeling
     - finish-estimate
+    - handoff-all
     - hq-access
     - hq-logout
     - hq-whoami

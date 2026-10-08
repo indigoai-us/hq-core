@@ -9,15 +9,25 @@
 #
 # Settings file (first one that exists wins):
 #   personal/settings/orchestrator.yaml   # per-machine override
-#   core/settings/orchestrator.yaml       # shipped default (off)
+#   core/settings/orchestrator.yaml       # shipped default (on since v16)
 #
 #   conduct:
-#     default_enabled: false
+#     default_enabled: true
 #
 # Per-session override:
-#   HQ_AUTO_CONDUCT=1            force on
+#   HQ_AUTO_CONDUCT=1            force on (also the only way an unattended
+#                                session gets conduct mode; its brief then
+#                                names the engine with `/conduct <engine>`)
 #   HQ_AUTO_CONDUCT=0            force off
 #   HQ_DISABLED_HOOKS=auto-conduct
+#
+# Unattended sessions: a local bot (`hq bot run` launches `claude -p` /
+# `grok -p` with the HQ root as cwd), a fleet box turn (pty claude, codex
+# exec, grok -p under hq-agent-session), an Outpost job, a scheduled task, or
+# any `claude -p` marked headless. These fire SessionStart with source=startup
+# like a person's terminal does, but there is nobody to answer the engine
+# question and nothing should spawn lanes from a bot turn. The hook no-ops
+# when it sees one of the markers below unless HQ_AUTO_CONDUCT=1 is set.
 
 set -euo pipefail
 
@@ -65,9 +75,31 @@ read_conduct_key() {
 
 enabled="$(read_conduct_key default_enabled)"
 
+# Unattended detection. Explicit flags first, then the markers each runtime
+# already exports on a bot or box turn:
+#   HQ_UNATTENDED / HQ_SESSION_UNATTENDED  HQ-wide unattended flags
+#   CLAUDE_HEADLESS=1                       detached `claude -p` launchers
+#   HQ_BOT_AGENT_UID                        local personal bot turn (hq bot run)
+#   HQ_MACHINE_CREDS_FILE                   local company bot / machine identity
+#   HQ_AGENT_CLAUDE_TASKFILE                fleet box claude dispatch
+#   HQ_AGENT_COMPANY_DIR, HQ_AGENT_STATUS_FILE  fleet box session runner
+#                                           (inherited by codex exec / grok -p)
+is_unattended() {
+  case "${HQ_UNATTENDED:-}${HQ_SESSION_UNATTENDED:-}${CLAUDE_HEADLESS:-}" in
+    *1*|*true*|*TRUE*|*yes*|*YES*|*on*|*ON*) return 0 ;;
+  esac
+  [ -n "${HQ_BOT_AGENT_UID:-}" ] && return 0
+  [ -n "${HQ_MACHINE_CREDS_FILE:-}" ] && return 0
+  [ -n "${HQ_AGENT_CLAUDE_TASKFILE:-}" ] && return 0
+  [ -n "${HQ_AGENT_COMPANY_DIR:-}" ] && return 0
+  [ -n "${HQ_AGENT_STATUS_FILE:-}" ] && return 0
+  return 1
+}
+
 case "${HQ_AUTO_CONDUCT:-}" in
   1|true|TRUE|on|ON|yes|YES) enabled="true" ;;
   0|false|FALSE|off|OFF|no|NO) exit 0 ;;
+  *) if is_unattended; then exit 0; fi ;;
 esac
 
 case "$enabled" in
