@@ -1,6 +1,6 @@
 # Public Workers
 
-> Auto-generated. Updated: 2026-10-01
+> Auto-generated. Updated: 2026-10-08
 
 | Name | Description |
 |------|-------------|

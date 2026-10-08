@@ -647,12 +647,12 @@ hqad_fallback_records() {
   local event="$1" tool="$2" ids="" id script
   [ "$event" = "PreToolUse" ] || return 0
   case "$tool" in
-    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download" ;;
-    Read) ids="mandatory-scope-authorizer warn-cross-company-settings" ;;
-    Grep) ids="mandatory-scope-authorizer block-hq-grep" ;;
-    Glob) ids="mandatory-scope-authorizer block-hq-glob" ;;
-    Edit|Write|MultiEdit) ids="protect-core block-core-writes block-company-git-metadata block-inline-story-impl env-file-no-trailing-newline" ;;
-    *) return 0 ;;
+    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download policy-enforcement-gate" ;;
+    Read) ids="mandatory-scope-authorizer warn-cross-company-settings policy-enforcement-gate" ;;
+    Grep) ids="mandatory-scope-authorizer block-hq-grep policy-enforcement-gate" ;;
+    Glob) ids="mandatory-scope-authorizer block-hq-glob policy-enforcement-gate" ;;
+    Edit|Write|MultiEdit) ids="protect-core block-core-writes block-company-git-metadata block-inline-story-impl env-file-no-trailing-newline policy-enforcement-gate" ;;
+    *) ids="policy-enforcement-gate" ;;
   esac
   for id in $ids; do
     script="$HQ_ROOT/.claude/hooks/$id.sh"
@@ -666,7 +666,10 @@ hqad_iter_registry() {
   local event="$1" tool="$2" payload="${3:-}"
   [ -n "$payload" ] || payload='{}'
   local registry="$HQ_ROOT/.claude/hooks/hook-registry.json"
-  [ -f "$registry" ] || return 0
+  if [ -z "$HQ_ROOT" ] || [ ! -f "$registry" ]; then
+    hqad_fallback_records "$event" "$tool"
+    return 0
+  fi
   local fields="" payload_cwd="" session_id="" prefilter_text="" active_company=""
   local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab
   if ! fields="$(hqad_prefilter_payload_fields "$event" "$payload")"; then

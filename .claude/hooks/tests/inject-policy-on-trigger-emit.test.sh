@@ -75,8 +75,24 @@ EOF
   printf '#!/bin/bash\nexit 0\n' > "$ROOT/core/scripts/eval-trigger.sh"
   chmod +x "$ROOT/core/scripts/"*.sh
   cp "$HOOK" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
+  cp "$HQ_SRC/.claude/hooks/hook-gate.sh" "$ROOT/.claude/hooks/hook-gate.sh"
   cp "$HQ_SRC/.claude/hooks/purge-policy-ledger-precompact.sh" "$ROOT/.claude/hooks/purge-policy-ledger-precompact.sh"
   HOOK_COPY="$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
+}
+
+run_pretool() {
+  # run_pretool <cwd> <command> [env assignments...]
+  local cwd="$1" command="$2"
+  shift 2 || true
+  local sid="disabled-gate-test-$$-$RANDOM" input status=0
+  input="$(jq -cn --arg sid "$sid" --arg cwd "$cwd" --arg command "$command" \
+    '{session_id:$sid,hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$command}}')"
+  printf '%s\n' "$sid" > "$ROOT/.last-run-hook-session-id"
+  env HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" "$@" \
+    bash "$HOOK_COPY" <<<"$input" >"$ROOT/.last-run-hook-output" 2>"$ROOT/.last-run-hook-diagnostic" || status=$?
+  printf '%s\n' "$status" > "$ROOT/.last-run-hook-status"
+  cat "$ROOT/.last-run-hook-output"
+  return "$status"
 }
 
 run_hook() {
@@ -695,6 +711,46 @@ grep -Eq $'^uppercase-trigger\tcore\t.*UPPERCASE_TRIGGER_MARKER' <<<"$OUT29" \
 ok "inline trigger evaluator matches uppercase identifiers"
 
 timeout 60s bash "$HQ_SRC/.claude/hooks/tests/inject-policy-on-trigger-match-process-budget.test.sh"
+
+# Disabled enforcement gate must disable both the PreToolUse scan and the
+# injector's direct gate call, using the same profile helper as master-hook.
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/core/policies/disabled-gate.md" \
+  "disabled-gate" "always" "[PreToolUse]" "hard" "DISABLED_GATE_MATCH_MARKER"
+cat > "$ROOT/.claude/hooks/policy-enforcement-gate.sh" <<'EOF'
+#!/usr/bin/env bash
+input="$(cat)"
+sid="$(printf '%s' "$input" | jq -r '.session_id')"
+matches="$HQ_ROOT/workspace/orchestrator/policy-enforcement/$sid.policies.tsv"
+if [ -s "$matches" ] && awk -F '\t' '$1 == "disabled-gate" { found=1 } END { exit !found }' "$matches"; then
+  printf '%s\n' "$1" >> "$HQ_ROOT/gate-calls"
+  echo '{"reason":"blocked matching gated policy"}'
+  exit 2
+fi
+exit 0
+EOF
+chmod +x "$ROOT/.claude/hooks/policy-enforcement-gate.sh"
+set +e
+ENABLED_OUT="$(run_pretool "$ROOT" 'echo gated action')"
+ENABLED_RC=$?
+set -e
+ENABLED_SID="$(cat "$ROOT/.last-run-hook-session-id")"
+[ "$ENABLED_RC" -eq 2 ] || fail "enabled gate did not block the fixture match (rc=$ENABLED_RC): $ENABLED_OUT"
+awk -F '\t' '$1 == "disabled-gate" { found=1 } END { exit !found }' "$ROOT/workspace/orchestrator/policy-enforcement/$ENABLED_SID.policies.tsv" \
+  || fail "enabled control did not persist the matching policy"
+[ "$(cat "$ROOT/gate-calls")" = PreToolUse ] || fail "enabled control did not invoke the gate"
+rm -f "$ROOT/gate-calls"
+set +e
+DISABLED_OUT="$(run_pretool "$ROOT" 'echo gated action' HQ_DISABLED_HOOKS=policy-enforcement-gate)"
+DISABLED_RC=$?
+set -e
+DISABLED_SID="$(cat "$ROOT/.last-run-hook-session-id")"
+[ "$DISABLED_RC" -eq 0 ] || fail "disabled policy gate blocked PreToolUse (rc=$DISABLED_RC): $DISABLED_OUT"
+[ ! -e "$ROOT/gate-calls" ] || fail "injector directly invoked disabled policy gate"
+[ ! -e "$ROOT/workspace/orchestrator/policy-enforcement/$DISABLED_SID.policies.tsv" ] \
+  || fail "disabled policy gate still ran the PreToolUse scan"
+ok "disabled policy gate skips PreToolUse scan and direct invocation"
 
 echo
 echo "PASS ($pass assertions)"

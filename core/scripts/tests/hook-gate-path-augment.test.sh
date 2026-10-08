@@ -11,7 +11,7 @@
 # these tests only rely on directory probing.
 set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
-GATE="$ROOT/.claude/hooks/hook-gate.sh"
+GATE="${HQ_TEST_HOOK_GATE:-$ROOT/.claude/hooks/hook-gate.sh}"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 [ -f "$GATE" ] || fail "hook-gate.sh not found at $GATE"
@@ -156,3 +156,10 @@ grep -q "$APPDATA_FIX/npm/qmd" "$TMP/probe.out" \
 pass "Windows APPDATA/npm path discovered under simulated MINGW"
 
 echo "ALL PASS: hook-gate-path-augment"
+
+. "$GATE" --lib
+HQ_HOOK_PROFILE=minimal HQ_DISABLED_HOOKS= hq_hook_profile_allows policy-enforcement-gate \
+  || fail "minimal profile must keep the policy enforcement gate enabled"
+HQ_HOOK_PROFILE=minimal HQ_DISABLED_HOOKS= hq_hook_profile_allows inject-policy-on-trigger \
+  || fail "minimal profile must enable the injector that supplies gate policy rows"
+pass "minimal profile enables both policy enforcement and policy injection"

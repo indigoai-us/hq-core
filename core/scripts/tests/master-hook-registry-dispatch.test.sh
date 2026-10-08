@@ -120,8 +120,11 @@ echo "[5] disabled list and minimal profile are honoured in-process"
 HQ_HOOK_TRACE=1 HQ_DISABLED_HOOKS=detect-secrets run_master PreToolUse "$(payload_bash "echo ${K1}${K2} > note.txt")"
 [ "$RC" = "0" ] && pass "HQ_DISABLED_HOOKS skips detect-secrets" || fail "HQ_DISABLED_HOOKS not honoured (rc=$RC)"
 HQ_HOOK_TRACE=1 HQ_HOOK_PROFILE=minimal run_master PreToolUse "$(payload_bash "echo bench")"
-grep -q "run inject-policy-on-trigger" <<<"$ERR" && fail "minimal profile still ran inject-policy-on-trigger" \
-  || pass "minimal profile drops non-safety hooks"
+injector_runs="$(grep -c "run inject-policy-on-trigger" <<<"$ERR" || true)"
+gate_runs="$(grep -c "run policy-enforcement-gate" <<<"$ERR" || true)"
+[ "$injector_runs" = "$gate_runs" ] && [ "$gate_runs" = "1" ] \
+  && pass "minimal profile runs injector only with policy-enforcement-gate" \
+  || fail "minimal profile broke injector/gate pairing (injector=$injector_runs gate=$gate_runs)"
 HQ_HOOK_PROFILE=bogus run_master PreToolUse "$(payload_bash "echo bench")"
 grep -q "Unknown profile" <<<"$ERR" && pass "unknown profile reports an error" || fail "unknown profile silently accepted"
 
