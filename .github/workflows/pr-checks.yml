@@ -243,6 +243,8 @@ jobs:
         run: bash core/scripts/tests/startwork-context.test.sh
       - name: /import-context redactor and synthetic scan output
         run: bash core/scripts/tests/import-context-redact.test.sh
+      - name: /import-context scanner --progress-json event stream
+        run: bash core/scripts/tests/import-context-progress-json.test.sh
       - name: /conduct session worker pool (cap, resume, recycle)
         run: bash core/scripts/tests/conduct-pool.test.sh
       - name: /conduct lane drop box (queue, claim, per-event hook output)
@@ -1318,6 +1320,8 @@ jobs:
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Hook benchmarks dispatch through every supported runtime
         run: bash core/scripts/tests/bench-hooks-runtime.test.sh
+      - name: Hook corpus benchmark same-session replay
+        run: bash core/scripts/tests/bench-hook-corpus-replay.test.sh
       - name: hq-anywhere hook and resolver regressions
         run: |
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
@@ -1745,6 +1749,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/import-context-redact.test.sh
+      - name: /import-context scanner --progress-json under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/import-context-progress-json.test.sh
       - name: Mandatory scope authorizer globstar fallback under stock macOS Bash
         env:
           BASH_BIN: /bin/bash

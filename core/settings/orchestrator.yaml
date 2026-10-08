@@ -88,8 +88,10 @@ repo_coordination:
 #                                      /conduct first)
 # There is no default engine on purpose: /conduct asks which engine to use
 # (codex, grok, or claude) unless one is named in the argument.
-# Per-machine override: copy this file to personal/settings/orchestrator.yaml.
+# On by default since v16 (owner decision 2026-10-08: v16 comes with conduct).
+# Per-machine override: copy this file to personal/settings/orchestrator.yaml
+# and set default_enabled: false.
 # Per-session override: HQ_AUTO_CONDUCT=1|0, or HQ_DISABLED_HOOKS=auto-conduct.
 # Leave the mode mid-session with `/conduct off`.
 conduct:
-  default_enabled: false
+  default_enabled: true

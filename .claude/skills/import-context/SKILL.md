@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Task
 
 Hydrate a fresh HQ install from the user's existing AI footprint. Two complementary sources:
 
-1. **Artifacts on disk** — skills, hooks, policies, MCP configs, CLAUDE.md files, knowledge-bearing repos, claude-bearing repos, and prior `/plan` outputs.
+1. **Artifacts on disk** — skills, hooks, policies, MCP configs, CLAUDE.md files, knowledge-bearing repos, claude-bearing repos, and prior `/prd` outputs.
 2. **Conversation history** — Claude Code sessions, Codex sessions, Grok sessions, and (via export) claude.ai chat threads. Sub-agents mine sampled threads and **propose** HQ context to bootstrap company setup: candidate companies, knowledge seeds, policies, and projects. Everything is a proposal — nothing lands without an explicit accept.
 
 Discovers artifacts, infers work ontology from prior plans and conversations, and guides a per-category import — creating missing companies and synthesizing workers on demand.
@@ -228,7 +228,7 @@ On `Accept`, route by type — never hand-place company content outside its tena
 | `company` | inline-invoke `/newcompany {slug}`, then seed `companies/{slug}/knowledge/context.md` from the proposal's knowledge seed |
 | `knowledge` | write the proposal's draft to `companies/{co}/knowledge/{slug}.md` (frontmatter per knowledge spec) |
 | `policy` | validate frontmatter against `core/knowledge/public/hq-core/policies-spec.md`; write to `companies/{co}/policies/{slug}.md` — company scope only, never `core/policies/` |
-| `project` | create `companies/{co}/projects/{name}/README.md` seeded with the proposal summary and open threads; recommend `/plan` to grow it into a PRD — never fabricate a `prd.json` from thread inference |
+| `project` | create `companies/{co}/projects/{name}/README.md` seeded with the proposal summary and open threads; recommend `/prd` to grow it into a PRD — never fabricate a `prd.json` from thread inference |
 | `worker` | feed into Phase 6 cluster detection as a proposed cluster |
 
 Record every decision in `$SCAN_DIR/conversation-proposals.json` and add accepted proposals to `workspace/imports/index.json` keyed by sha256 of `(source, type, company, title)` — re-runs skip already-triaged proposals silently.
@@ -439,6 +439,7 @@ Print the summary path + `git status` diff preview (not commit — user commits)
 ## See also
 
 - Scanner: `.claude/skills/import-context/scan.sh`
+- Streaming scan events for apps (`scan.sh --progress-json`, relayed by `hq import scan --json --stream`): `.claude/skills/import-context/progress-json.md`. This skill does not use the flag; Phase 1 runs the scanner as shown above.
 - Redactor: `.claude/skills/import-context/redact.sh`
 - Ontology prompt: `.claude/skills/import-context/ontology.md`
 - Conversation-mining prompt: `.claude/skills/import-context/conversations.md`
