@@ -31,8 +31,6 @@ Same pattern as `/investigate` and `/brainstorm`:
 
 Load GLOSSARY-style domain glossary if the target repo has one (`<repo>/GLOSSARY.md`). Check ADRs in the area being touched (`<repo>/docs/adr/`).
 
-Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
-
 ## Redact
 
 This skill has you show commands, outputs and captured artifacts. **Redact every secret first**: write `<REDACTED>` in its place. Build loops against env vars (inject them with `hq run` or `hq secrets exec`), so the credential stays in the environment rather than in what you show. Captured artifacts carry auth headers: quote only the lines that carry the signal.

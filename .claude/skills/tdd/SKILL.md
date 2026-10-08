@@ -87,8 +87,6 @@ export function validateEmail(email: string): boolean {
 
 Read `<repo>/GLOSSARY.md` if present so test names and interface vocabulary match the project's domain language (ties into `/domain-modeling`).
 
-Fallback (removed in hq-core 16.0.0): if `GLOSSARY.md` is absent and `CONTEXT.md` exists, read `CONTEXT.md` instead (and `CONTEXT-MAP.md` in place of `GLOSSARY-MAP.md`), and print one line suggesting `git mv CONTEXT.md GLOSSARY.md`.
-
 Write comprehensive test suite BEFORE implementation:
 
 **Test types to include:**

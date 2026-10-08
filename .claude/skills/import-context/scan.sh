@@ -10,6 +10,7 @@ OUTPUT=""
 SCOPES=()
 CLAUDE_EXPORT=""
 NO_DEFAULT_SCOPES=false
+PROGRESS_JSON=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hq-root=*) HQ_ROOT="${1#*=}" ;;
@@ -17,14 +18,22 @@ while [[ $# -gt 0 ]]; do
     --scope=*) SCOPES+=("${1#*=}") ;;
     --claude-export=*) CLAUDE_EXPORT="${1#*=}" ;;
     --no-default-scopes) NO_DEFAULT_SCOPES=true ;;
+    --progress-json) PROGRESS_JSON=true ;;
     -h|--help)
       cat <<'EOF'
 Usage: scan.sh --hq-root=<path> [--output=<json>] [--scope=<dir>]... [--claude-export=<path>]
+               [--progress-json]
 
 Emits a JSON catalog of AI artifacts discovered across allowlisted parents
 plus any --scope dirs, and store-level entries for conversation history
 (Claude Code, Codex, Grok, and an optional claude.ai data export).
 HQ root is self-excluded.
+
+--progress-json  Print JSON Lines progress events on stdout while scanning
+                 (sources, counts, companies, projects, then a final "done"
+                 event naming the report). Requires --output; the report file
+                 is byte-identical to a run without the flag. Contract:
+                 progress-json.md next to this script.
 EOF
       exit 0
       ;;
@@ -35,6 +44,9 @@ done
 
 if [[ -z "$HQ_ROOT" ]]; then
   echo "scan.sh: --hq-root is required" >&2; exit 2
+fi
+if $PROGRESS_JSON && [[ -z "$OUTPUT" ]]; then
+  echo "scan.sh: --progress-json requires --output=<report.json> (stdout carries the event stream)" >&2; exit 2
 fi
 HQ_ROOT="$(cd "$HQ_ROOT" && pwd)"
 
@@ -150,7 +162,7 @@ DISCOVERY_LOG=""
 find_capture() {
   local outf="$1" label="$2"; shift 2
   local errf rc=0
-  errf="$(mktemp)"
+  errf="$(scan_mktemp)"
   find "$@" >"$outf" 2>"$errf" || rc=$?
   if [[ $rc -ne 0 || -s "$errf" ]]; then
     local detail; detail="$(tr '\n' ' ' < "$errf")"
@@ -271,7 +283,7 @@ scan_trees() {
     return 0
   fi
 
-  local outf; outf="$(mktemp)"
+  local outf; outf="$(scan_mktemp)"
   for parent in "${PARENTS[@]}"; do
     # .claude directories
     find_capture "$outf" "discover .claude dirs under $(sub_home "$parent")" \
@@ -324,7 +336,7 @@ emit_claude_tree_artifacts() { # <tree-json-output> <parts-dir>
   if [[ ${#CLAUDE_DIRS[@]} -eq 0 ]]; then
     : # leave all arrays empty
   else
-  local tf; tf="$(mktemp)"
+  local tf; tf="$(scan_mktemp)"
   for d in "${CLAUDE_DIRS[@]}"; do
     # commands
     if [[ -d "$d/commands" ]]; then
@@ -506,16 +518,76 @@ emit_conversation_stores() {
   fi
 }
 
+# ──────────────────────── interruption ────────────────────────
+# On TERM/INT: stop every descendant (find, awk, grep, process-substitution
+# subshells), remove the temp dir (it holds file and session path lists), and
+# exit 143 (TERM) or 130 (INT). Without this, a killed scan left orphaned
+# children and its temp lists behind.
+SCAN_TMPD=""
+SCAN_PARTIAL=""
+scan_descendants() { # <pid> -> descendant pids, one per line
+  ps -A -o pid= -o ppid= 2>/dev/null | awk -v root="$1" '
+    { par[$1] = $2; pids[++n] = $1 }
+    END {
+      d[root] = 1; changed = 1
+      while (changed) {
+        changed = 0
+        for (i = 1; i <= n; i++) { p = pids[i]; if (!(p in d) && (par[p] in d)) { d[p] = 1; changed = 1 } }
+      }
+      for (p in d) if (p != root) print p
+    }'
+}
+# Helper temp file inside the scan's private dir. Always pass an explicit
+# template: macOS mktemp ignores TMPDIR, so a bare "mktemp" would land in the
+# per-user temp dir and survive a cancel.
+scan_mktemp() { mktemp "$SCAN_TMPD/t/tmp.XXXXXX"; }
+scan_cleanup() {
+  if [[ -n "$SCAN_TMPD" ]]; then rm -rf "$SCAN_TMPD"; fi
+  if [[ -n "$SCAN_PARTIAL" ]]; then rm -f "$SCAN_PARTIAL"; fi
+  return 0
+}
+scan_abort() { # <exit code>
+  trap - TERM INT
+  # The trap can fire inside "while IFS= read", so do not rely on IFS.
+  local p
+  while read -r p; do
+    [[ -n "$p" ]] && { kill -TERM "$p" 2>/dev/null || true; }
+  done <<< "$(scan_descendants "$$")"
+  [[ -n "$SCAN_TMPD" ]] && rm -rf "$SCAN_TMPD"
+  [[ -n "$SCAN_PARTIAL" ]] && rm -f "$SCAN_PARTIAL"
+  exit "$1"
+}
+
 # ──────────────────────── assemble report ────────────────────────
 main() {
-  local tmpd
-  tmpd="$(mktemp -d 2>/dev/null || mktemp -d -t import-context)"
-  trap 'rm -rf "$tmpd"' RETURN
+  local tmpd base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  # Explicit template: macOS mktemp ignores TMPDIR without one.
+  tmpd="$(mktemp -d "$base/import-context.XXXXXX" 2>/dev/null || mktemp -d /tmp/import-context.XXXXXX)"
+  SCAN_TMPD="$tmpd"
+  # EXIT, not RETURN: bash runs a function's RETURN trap when a file sourced
+  # inside that function finishes, which deleted the temp dir mid-scan.
+  trap scan_cleanup EXIT
+  trap 'scan_abort 143' TERM
+  trap 'scan_abort 130' INT
+  # Every helper temp file is created by scan_mktemp inside $tmpd/t, so an
+  # interrupted scan cleans up all of them with one rm. TMPDIR points there
+  # too, for tools such as sort that honor it.
+  mkdir -p "$tmpd/t"
+  export TMPDIR="$tmpd/t"
 
   # Authoritative discovery-error log — must exist BEFORE any find_capture call
   # so failures from subshell emitters (command substitutions) are recorded.
   DISCOVERY_LOG="$tmpd/discovery_errors.log"
   : > "$DISCOVERY_LOG"
+
+  # Streaming progress (--progress-json). Runs its own read-only passes before
+  # the report is built and never touches report state, so report.json stays
+  # byte-identical with and without the flag.
+  if $PROGRESS_JSON; then
+    pj_begin "$tmpd/progress"
+    pj_run_sources
+  fi
 
   scan_trees
 
@@ -619,11 +691,26 @@ main() {
 
   if [[ -n "$OUTPUT" ]]; then
     mkdir -p "$(dirname "$OUTPUT")"
-    cp "$tmpd/report.json" "$OUTPUT"
-    echo "$OUTPUT"
+    # Atomic publish: a reader never sees a half-written report.
+    SCAN_PARTIAL="$(dirname "$OUTPUT")/.$(basename "$OUTPUT").tmp.$$"
+    cp "$tmpd/report.json" "$SCAN_PARTIAL"
+    mv -f "$SCAN_PARTIAL" "$OUTPUT"
+    SCAN_PARTIAL=""
+    if $PROGRESS_JSON; then
+      pj_finish "$tmpd/report.json" "$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
+    else
+      echo "$OUTPUT"
+    fi
   else
     cat "$tmpd/report.json"
   fi
 }
+
+# Source the progress emitters at top level, never inside a function (see the
+# EXIT trap note in main).
+if $PROGRESS_JSON; then
+  # shellcheck source=.claude/skills/import-context/scan-progress.sh
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scan-progress.sh"
+fi
 
 main

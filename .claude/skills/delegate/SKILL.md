@@ -47,11 +47,11 @@ If either is still unknown, ask — one structured question, not a guess. Verify
 the project has a source of truth: `companies/<co>/projects/<project>/prd.json`
 (PRD stage), or, when there is no PRD yet, `brainstorm.md` (brainstorm stage,
 policy `hq-brainstorm-leaves-handoffable-project-folder`). If neither exists,
-stop and say so plainly — the project needs `/brainstorm` or `/plan` first.
+stop and say so plainly — the project needs `/brainstorm` or `/prd` first.
 
 A brainstorm-stage delegation hands over `brainstorm.md`, every note under
 `research/`, and the newest journal entry; the brief and pickup prompt say
-"brainstorm stage, no PRD yet" and name `/plan <project>` as the next step; the
+"brainstorm stage, no PRD yet" and name `/prd <project>` as the next step; the
 transfer updates the board's `status: exploring` entry (matched by
 `brainstorm_path`) and writes `owner` / `delegated_from` / `delegated_at` into
 the brainstorm.md frontmatter instead of PRD metadata. Every later step reads

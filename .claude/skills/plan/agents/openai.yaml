@@ -1,3 +1,0 @@
-interface:
-  display_name: "Plan (deprecated)"
-  short_description: "Deprecated alias that forwards to /prd."
