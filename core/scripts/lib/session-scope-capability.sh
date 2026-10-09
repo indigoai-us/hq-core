@@ -135,10 +135,47 @@ session_scope_resolve_agent_companies() {
   fi
 }
 
+# Per-session lock shared with hq-session.sh company lock-set updates
+# (company_lock_update_acquire). Same mkdir protocol and stale-owner rule.
+__session_scope_lock_acquire() {
+  local lock="$1" owner tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    owner="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf -- "$lock" 2>/dev/null || true
+      continue
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -lt 300 ] || { echo "session-scope-capability: timed out waiting for company lock update" >&2; return 1; }
+    sleep 0.1
+  done
+  printf '%s\n' "$$" > "$lock/pid"
+}
+
 # session_scope_mint <root> <session_id> <company_slug> [agent_id]
 #   Write scope-capability.json for the exact caller. Main-thread writes retain
 #   the legacy shape/path for one-restart compatibility.
+#   Automatic re-mints read and rewrite the capability under the session's
+#   company lock, so a concurrent `hq-session.sh add company` cannot be
+#   overwritten by a stale preserved set. session_scope_mint_set runs while
+#   hq-session.sh already holds that lock and skips it.
 session_scope_mint() {
+  local root="${1:-}" sid="${2:-}" rc lock
+  if [ "${__session_scope_mint_replace:-0}" = 1 ]; then
+    __session_scope_mint_unlocked "$@"
+    return
+  fi
+  [ -n "$root" ] && session_scope_identity_is_valid "$sid" || return 1
+  mkdir -p "$root/workspace/sessions/$sid" || return 1
+  lock="$root/workspace/sessions/$sid/.company-lock-set.lock"
+  __session_scope_lock_acquire "$lock" || return 1
+  rc=0
+  __session_scope_mint_unlocked "$@" || rc=$?
+  rm -rf -- "$lock"
+  return "$rc"
+}
+
+__session_scope_mint_unlocked() {
   local root="${1:-}" sid="${2:-}" slug="${3:-}" aid="${4:-}"
   [ -n "$root" ] && session_scope_identity_is_valid "$sid" && [ -n "$slug" ] || return 1
   if [ -n "$aid" ]; then
@@ -155,10 +192,46 @@ session_scope_mint() {
       ;;
   esac
 
-  local cap dir tmp minted_at
+  local cap dir tmp minted_at existing_companies existing_count recorded_count existing_json same_primary has_set
   cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 1
   dir="$(dirname "$cap")"
   mkdir -p "$dir" || return 1
+
+  # Auto-bind and hook re-registration re-mint the primary company. Preserve a
+  # previously validated capability only when the primary is unchanged, every
+  # member still resolves to a real company directory, and the feature flag is
+  # on. A changed primary or explicit false falls back to primary-only scope.
+  # A malformed or incomplete same-primary set stays untouched and fail-closed.
+  # session_scope_mint_set replaces the whole record with an explicit set, so it
+  # sets __session_scope_mint_replace and skips the preservation path.
+  existing_json=null
+  same_primary=false
+  if [ "${__session_scope_mint_replace:-0}" != 1 ] && [ -f "$cap" ] \
+    && [ "$(session_scope_read "$root" "$sid" "$aid" 2>/dev/null || true)" = "$slug" ]; then
+    same_primary=true
+  fi
+  if [ "$same_primary" = true ] && session_scope_multi_company_enabled "$root" "$slug"; then
+    has_set="$(jq -r --arg sid "$sid" --arg aid "$aid" '
+      select(.session_id == $sid and (.agent_id // "") == $aid) | has("company_slugs")
+    ' "$cap" 2>/dev/null || true)"
+    if [ "$has_set" = true ]; then
+      existing_companies="$(session_scope_read_companies "$root" "$sid" "$aid" 2>/dev/null || true)"
+      existing_count="$(printf '%s\n' "$existing_companies" | awk 'NF { count++ } END { print count + 0 }')"
+      recorded_count="$(jq -er --arg sid "$sid" --arg aid "$aid" --arg slug "$slug" '
+        select(.session_id == $sid and (.agent_id // "") == $aid and .company_slug == $slug
+          and (.company_slugs | type) == "array")
+        | .company_slugs | length
+      ' "$cap" 2>/dev/null || true)"
+      if [ -z "$recorded_count" ] || [ "$recorded_count" -lt 1 ] 2>/dev/null \
+        || [ "$existing_count" != "$recorded_count" ]; then
+        # Do not turn a malformed or incomplete set into a primary-only grant.
+        # Explicit company changes use session_scope_mint_set with a new
+        # primary; same-primary automatic re-mints leave the fail-closed record.
+        return 1
+      fi
+      existing_json="$(jq -nc --arg companies "$existing_companies" '$companies | split("\n")')" || return 1
+    fi
+  fi
 
   minted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%S'Z')"
   tmp="$(mktemp)"
@@ -167,7 +240,10 @@ session_scope_mint() {
     --arg aid "$aid" \
     --arg slug "$slug" \
     --arg minted_at "$minted_at" \
-    '{session_id: $sid, company_slug: $slug, minted_at: $minted_at} + (if $aid == "" then {} else {agent_id: $aid} end)' >"$tmp" \
+    --argjson company_slugs "$existing_json" \
+    '{session_id: $sid, company_slug: $slug, minted_at: $minted_at}
+      + (if $aid == "" then {} else {agent_id: $aid} end)
+      + (if $company_slugs == null then {} else {company_slugs: $company_slugs} end)' >"$tmp" \
     || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$cap"
 }
@@ -187,6 +263,7 @@ session_scope_mint_set() {
     [ "$rest" = "$slug" ] && break
   done
   json="$(jq -nc --arg slugs "$slugs" '$slugs | split(",") | reduce .[] as $slug ([]; if index($slug) == null then . + [$slug] else . end)')" || return 1
+  local __session_scope_mint_replace=1
   session_scope_mint "$root" "$sid" "$first" "$aid" || return 1
   local cap tmp minted_at
   cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 1

@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- SessionStart and auto-bind keep a valid multi-company lock set when the primary company stays the same. Re-adding a company listed in session metadata repairs a capability that fell behind. A primary-company change resets the set; an explicit disable flag keeps primary-only behavior.
+
 - The hqd hook shim (Codex hooks and the Claude plugin launcher) no longer blocks work on machines where hqd is not set up. hqd runs only when HQ Anywhere is turned on in settings, but since the anywhere-runtime flag defaulted on (#1186) the shim treated every machine as hqd-enabled and refused company reads, company writes and unparseable patches with "HQ daemon unreachable". The shim now stays inert when there is no hqd socket and no daemon `hqd.enabled` marker beside it. A socket file or the marker still means hqd should answer, so an unreachable daemon keeps failing closed. Tests: four new cases in `core/scripts/hqd-hook-shim.test.sh`.
 ### Added — `/conduct --workers`: role lanes pinned to one engine (2026-10-09)
 - **`/conduct --workers <roles>`** (comma list, e.g. `frontend,designer,qa,orchestrator`) with optional `--engine`, `--model` and `--effort`. The engine, model and effort are resolved once at startup and stored in session meta (`conduct_engine`, `conduct_child_model`, `conduct_child_effort`, `conduct_lane_roles`); every lane the session launches uses them. Each task goes to a role slot `conduct:<role>`, or `conduct:<role>-<slug>` for an independent second task while the role is busy, within the pool cap.

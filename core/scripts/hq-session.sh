@@ -241,6 +241,38 @@ read_company_lock_set() {
   if [ -n "$capset" ]; then printf '%s' "$capset"; else printf '%s' "$fallback"; fi
 }
 
+# When meta.yaml has a valid lock set that includes the requested company but
+# the capability has drifted to a narrower valid set, an explicit add repairs
+# the capability from that metadata. Require the capability to still bind the
+# same primary and validate every metadata member against the real company
+# directories; malformed capabilities remain fail-closed in the authorizer.
+read_meta_company_lock_set_for_repair() {
+  local id="$1" primary="$2" requested="$3" capset="$4" meta raw rest entry seen="," cap_primary
+  cap_primary="$(session_scope_read "$REPO_ROOT" "$id" 2>/dev/null || true)"
+  [ -n "$cap_primary" ] && [ "$cap_primary" = "$primary" ] || return 0
+  [ -n "$capset" ] || return 0
+  case ",$capset," in *",$requested,"*) return 0 ;; esac
+  meta="$SESSIONS_DIR/$id/meta.yaml"
+  # Trim only the surrounding YAML formatting: outer whitespace and one pair of
+  # enclosing double quotes. Whitespace or quotes inside an entry make it fail
+  # the per-entry check below instead of being normalized into another slug.
+  raw="$(awk '$1 == "company_slugs:" { sub(/^[^:]+:[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); if ($0 ~ /^".*"$/) { $0 = substr($0, 2, length($0) - 2) } print; exit }' "$meta" 2>/dev/null || true)"
+  [ -n "$raw" ] && [ "${raw%%,*}" = "$primary" ] || return 0
+  rest="$raw"
+  while [ -n "$rest" ]; do
+    entry="${rest%%,*}"
+    case "$entry" in
+      ''|*[!a-zA-Z0-9_-]*) return 0 ;;
+    esac
+    [ "${#entry}" -le 64 ] || return 0
+    case "$seen" in *",$entry,"*) return 0 ;; esac
+    validate_company_slug "$entry" >/dev/null 2>&1 || return 0
+    seen="${seen}${entry},"
+    case "$rest" in *,*) rest="${rest#*,}" ;; *) rest="" ;; esac
+  done
+  case ",$raw," in *",$requested,"*) printf '%s' "$raw" ;; esac
+}
+
 emit_lock_set_context() {
   local sid="$1" slugs="$2" slug
   IFS=, read -r -a __session_slugs <<< "$slugs"
@@ -252,7 +284,7 @@ emit_lock_set_context() {
 }
 
 cmd_add_company() {
-  local slug="${1:-}" id meta current slugs next
+  local slug="${1:-}" id meta current slugs next capset repair_set
   [ -n "$slug" ] || { echo "usage: hq-session.sh add company <slug>" >&2; exit 1; }
   if ! multi_company_enabled; then
     echo "hq-session: add company is disabled; hooks.multi-company-session-lock is off" >&2
@@ -267,6 +299,9 @@ cmd_add_company() {
   slugs="$(read_company_lock_set "$id" "$(cmd_get company_slug)")"
   current="${slugs%%,*}"
   [ -n "$current" ] || { company_lock_update_release "$id"; echo "hq-session: session is not company-bound" >&2; exit 1; }
+  capset="$(session_scope_read_companies "$REPO_ROOT" "$id" 2>/dev/null | paste -sd, -)"
+  repair_set="$(read_meta_company_lock_set_for_repair "$id" "$current" "$slug" "$capset")"
+  [ -z "$repair_set" ] || slugs="$repair_set"
   if [ "$current" = personal ]; then next="$slug"; else
     case ",$slugs," in *",$slug,"*) next="$slugs" ;; *) next="$slugs,$slug" ;; esac
   fi
