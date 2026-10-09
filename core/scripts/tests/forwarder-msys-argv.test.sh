@@ -26,6 +26,11 @@ if (args.length === 1 && args[0] === '--version') {
   process.stdout.write('5.400.0\n');
   process.exit(0);
 }
+if (args.includes('derive-trigger-facts')) {
+  fs.writeFileSync(process.env.HQ_STDIN_RECORD, process.env.HQ_CORE_STDIN_CLOSED ?? '<unset>');
+  process.stdout.write('stdin-ok\n');
+  process.exit(0);
+}
 const record = process.env.HQ_STUB_RECORD;
 const exists = (value) => fs.existsSync(value.startsWith('WIN_PATH:') ? value.slice('WIN_PATH:'.length) : value);
 if (process.env.MSYS2_ARG_CONV_EXCL !== '*') throw new Error(`MSYS2_ARG_CONV_EXCL was not scoped to hq: ${process.env.MSYS2_ARG_CONV_EXCL}`);
@@ -114,6 +119,32 @@ SH
   real_path="$TMP/fixture/real-path"
   expected_path="$real_path"
 fi
+
+# The derive-trigger-facts forwarder must distinguish a closed descriptor 0
+# from an open pipe or /dev/null before Node can replace it with /dev/null.
+stdin_record="$TMP/stdin-state"
+stdin_forwarder="$generated_root/core/scripts/derive-trigger-facts.sh"
+rm -f "$stdin_record"
+HQ_CORE_STDIN_CLOSED= HQ_STUB_SCRIPT="$TMP/capture.cjs" HQ_STUB_RECORD="$TMP/argv.json" HQ_STDIN_RECORD="$stdin_record" \
+  PATH="$TMP/bin:$PATH" bash "$stdin_forwarder" UserPromptSubmit <&- > "$TMP/stdout" 2> "$TMP/stderr"
+[ "$(cat "$stdin_record")" = "1" ] || {
+  printf 'FAIL: closed fd 0 was not marked for derive-trigger-facts (state=%s)\n' "$(cat "$stdin_record" 2>/dev/null || printf missing)" >&2
+  exit 1
+}
+[ "$(cat "$TMP/stdout")" = "stdin-ok" ] || fail "closed fd 0 stub did not run"
+rm -f "$stdin_record"
+printf '{}\n' | HQ_CORE_STDIN_CLOSED= HQ_STUB_SCRIPT="$TMP/capture.cjs" HQ_STUB_RECORD="$TMP/argv.json" HQ_STDIN_RECORD="$stdin_record" \
+  PATH="$TMP/bin:$PATH" bash "$stdin_forwarder" UserPromptSubmit > "$TMP/stdout" 2> "$TMP/stderr"
+[ -f "$stdin_record" ] || fail "open pipe stdin did not reach the stub"
+[ ! -s "$stdin_record" ] || fail "open pipe stdin was incorrectly marked closed"
+[ "$(cat "$TMP/stdout")" = "stdin-ok" ] || fail "open pipe stdin stub did not run"
+rm -f "$stdin_record"
+HQ_CORE_STDIN_CLOSED= HQ_STUB_SCRIPT="$TMP/capture.cjs" HQ_STUB_RECORD="$TMP/argv.json" HQ_STDIN_RECORD="$stdin_record" \
+  PATH="$TMP/bin:$PATH" bash "$stdin_forwarder" UserPromptSubmit < /dev/null > "$TMP/stdout" 2> "$TMP/stderr"
+[ -f "$stdin_record" ] || fail "/dev/null stdin did not reach the stub"
+[ ! -s "$stdin_record" ] || fail "/dev/null stdin was incorrectly marked closed"
+[ "$(cat "$TMP/stdout")" = "stdin-ok" ] || fail "/dev/null stdin stub did not run"
+printf 'PASS: generated derive-trigger-facts detects closed fd 0 and leaves pipe and /dev/null open\n'
 
 unset MSYS2_ARG_CONV_EXCL MSYS_NO_PATHCONV || true
 forwarder_status=0

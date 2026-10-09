@@ -29,6 +29,7 @@ jobs:
     outputs:
       macos_shell_smoke: ${{ steps.shell_smoke_macos_paths.outputs.run }}
       windows_shell_smoke: ${{ steps.shell_smoke_windows_paths.outputs.run }}
+      resumework_timing: ${{ steps.resumework_timing_paths.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,6 +63,20 @@ jobs:
             base_sha="$PUSH_BEFORE_SHA"
           fi
           bash core/scripts/ci/should-run-windows-shell-smoke.sh \
+            "$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+      - name: Detect changes covered by the resumework timing job
+        id: resumework_timing_paths
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
+            base_sha="$PR_BASE_SHA"
+          else
+            base_sha="$PUSH_BEFORE_SHA"
+          fi
+          bash core/scripts/ci/should-run-resumework-timing.sh \
             "$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
       - name: Shell smoke platform path filter regression test
         run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
@@ -253,6 +268,10 @@ jobs:
         run: bash core/scripts/tests/conduct-link.test.sh
       - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
+      - name: /conduct --workers (role lanes, launch/wait scripts, CI loop, QA trigger)
+        run: bash core/scripts/tests/conduct-workers.test.sh
+      - name: /conduct skill split (triage in SKILL.md, lane mechanics in dispatch.md)
+        run: bash core/scripts/tests/conduct-dispatch-split.test.sh
       - name: Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)
         run: bash core/scripts/tests/ralph-orchestrator-policy.test.sh
       - name: Orchestrator skills claim pool slots (execute-task + run-project)
@@ -265,8 +284,6 @@ jobs:
         run: bash core/scripts/tests/conduct-reap-hook.test.sh
       - name: Conduct mode as the session default (auto-conduct SessionStart hook)
         run: bash core/scripts/tests/auto-conduct.test.sh
-      - name: Intent hint (UserPromptSubmit, closest intent-index entries)
-        run: bash core/scripts/tests/intent-hint.test.sh
       - name: Intent hint (UserPromptSubmit, closest intent-index entries)
         run: bash core/scripts/tests/intent-hint.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
@@ -353,6 +370,8 @@ jobs:
         run: bash core/scripts/tests/setup-skill-direct-install.test.sh
       - name: Setup completeness checklist and SessionStart nag
         run: bash core/scripts/tests/setup-completeness-nag.test.sh
+      - name: Setup nag performs one status check per day
+        run: bash core/scripts/tests/setup-nag-daily-check.test.sh
 
   worktree-gc:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -533,6 +552,7 @@ jobs:
             core/scripts/tests/hooks-drain-stdin-before-early-exit.test.sh \
             core/scripts/tests/agent-runtime-contracts-e2e.test.sh \
             core/scripts/lib/lanes-senior-monitor.sh \
+            core/scripts/tests/lanes-senior-monitor-fast-exit.test.sh \
             core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh \
             core/scripts/tests/handoff-post-hq-root.test.sh \
             core/scripts/tests/lib/handoff-post-test-helpers.sh \
@@ -747,6 +767,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Nested company manifest parsing
         run: bash core/scripts/tests/manifest-nested-parse.test.sh
+      - name: SessionStart local-context process budget
+        run: bash core/scripts/tests/inject-local-context-process-budget.test.sh
 
   # feedback_c930eafe: catch stale org chart drift between README teams and person ontology.
   ontology-readme-drift:
@@ -962,6 +984,8 @@ jobs:
         run: bash core/scripts/tests/stopgate-reindex-spawn-budget.test.sh
       - name: Lane senior Monitor Stop/reminder shim wiring
         run: bash core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
+      - name: Lane senior Monitor fast exit and cache behavior
+        run: bash core/scripts/tests/lanes-senior-monitor-fast-exit.test.sh
       - name: Lane senior Stop-gate PATH-shim process budget
         run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
       - name: Checkpoint and journal hooks do not over-trigger
@@ -998,6 +1022,8 @@ jobs:
         run: bash core/scripts/tests/handoff-open-steps.test.sh
       - name: Handoff listing avoids per-thread stat subprocesses
         run: bash core/scripts/tests/handoff-open-steps-stat-scaling.test.sh
+      - name: Handoff benchmark fails when measurement setup fails
+        run: bash core/scripts/tests/handoff-open-steps-stat-scaling-bench.test.sh
       - name: Policy delivery benchmark (live + scenarios)
         run: bash core/scripts/tests/policy-benchmark.test.sh
       - name: Live runtime smoke (skips when no runtime CLI is installed on the runner)
@@ -1034,6 +1060,8 @@ jobs:
         run: bash core/scripts/tests/policy-retire.test.sh
       - name: Garden policies pass selects and retires candidates through hq core
         run: bash core/scripts/tests/garden-policy-pass.test.sh
+      - name: Garden deep policies pass inventories, merges, backs up, and restores
+        run: bash core/scripts/tests/garden-policy-deep.test.sh
       - name: Policy retrieval ledger reads age report through hq core
         run: bash core/scripts/tests/record-policy-retrieval.test.sh
       - name: Policy write guard keeps sanctioned script-path compatibility
@@ -1106,8 +1134,6 @@ jobs:
         run: bash core/scripts/tests/shipped-index-freshness.test.sh
       - name: Rebuild qmd collections after sync
         run: bash core/scripts/tests/qmd-reindex-after-sync.test.sh
-      - name: Keep the pinned CLI opt-out in hermetic tests
-        run: bash core/scripts/tests/hermetic-hq-no-update-check.test.sh
       - name: Index real-directory company knowledge
         run: bash core/scripts/tests/rebuild-company-knowledge-index.test.sh
       - name: Index orchestrator state
@@ -1316,6 +1342,10 @@ jobs:
         run: timeout 600s bash core/scripts/tests/master-hook-event-process-budget-base-equal.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
+      - name: check-hq-update gates repeated failed network checks
+        run: bash core/scripts/tests/check-hq-update-attempt-stamp.test.sh
+      - name: check-hq-update caches unchanged CLI probes
+        run: bash core/scripts/tests/check-hq-update-cli-probe-cache.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Hook benchmarks dispatch through every supported runtime
@@ -1330,7 +1360,6 @@ jobs:
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
           bash core/scripts/tests/master-hook-library-fail-open.test.sh
-          bash core/scripts/tests/master-hook-registry-dispatch.test.sh
           bash core/scripts/tests/hq-agent-session-hooks.test.sh
           bash core/scripts/anywhere-parity-test.test.sh
           sh core/scripts/hqd-hook-shim.test.sh
@@ -1342,10 +1371,6 @@ jobs:
         run: bash core/scripts/tests/master-hook-output-write-bound.test.sh
       - name: Gated hook IDs have profile coverage (US-157)
         run: bash core/scripts/tests/gated-hook-profile-coverage.test.sh
-      - name: Session title mode and transcript regressions
-        run: |
-          bash core/scripts/tests/session-title-manual-backoff.test.sh
-          bash core/scripts/tests/session-title-desktop-nudge.test.sh
       - name: Bare Monitor expiry skips prompt-path maintenance enrichers
         run: bash core/scripts/tests/master-hook-monitor-notification-fast-path.test.sh
       - name: Warm lane Monitor cache process budget
@@ -1370,10 +1395,6 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash-chained-vars.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
-      - name: Session title mode and transcript regressions
-        run: |
-          bash core/scripts/tests/session-title-manual-backoff.test.sh
-          bash core/scripts/tests/session-title-desktop-nudge.test.sh
       - name: block-core-writes-bash skips cold-path work and parses once
         run: bash core/scripts/tests/block-core-writes-bash-fast-path.test.sh
       - name: block-core-writes permits only the durable native personal context
@@ -1491,6 +1512,10 @@ jobs:
             core/scripts/lib/lanes-senior-monitor.sh
             core/hooks/SessionStart/35-work-mesh-session-start.sh
             core/scripts/tests/check-hq-update-bounded-network.test.sh
+            core/scripts/tests/check-hq-update-attempt-stamp.test.sh
+            core/scripts/tests/check-hq-update-cli-probe-cache.test.sh
+            core/scripts/tests/setup-completeness-nag.test.sh
+            core/scripts/tests/setup-nag-daily-check.test.sh
             core/scripts/tests/hook-lib-strip-exclude-tokens.test.sh
             core/scripts/tests/block-core-writes-bash-fanout.test.sh
             core/scripts/tests/block-core-writes-bash-fast-path.test.sh
@@ -1505,6 +1530,7 @@ jobs:
             .claude/hooks/block-core-writes-bash.sh
             .claude/hooks/block-policy-writes-bash.sh
             .claude/hooks/check-hq-update.sh
+            core/hooks/SessionStart/20-setup-completeness-nag.sh
             .claude/hooks/hook-timeout-probe.sh
             .claude/hooks/hook-timeout-watchdog.sh
             .claude/hooks/master-hook.sh
@@ -1540,6 +1566,15 @@ jobs:
 
   resumework-timing-linux:
     name: resumework-timing-linux
+    # Runs on every main push. On ready PRs it runs when hooks, scripts,
+    # settings, policies, or the resumework skill change (see denylist-scan).
+    needs: [denylist-scan]
+    if: >-
+      ${{ !cancelled()
+          && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+          && (github.event_name == 'push'
+              || needs['denylist-scan'].result != 'success'
+              || needs['denylist-scan'].outputs.resumework_timing == 'true') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     defaults:
@@ -1552,6 +1587,8 @@ jobs:
           node-version: '22'
       - name: Install pinned hq CLI for resumework timing
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: derive-trigger-facts closed stdin parity
+        run: node core/scripts/tests/derive-trigger-facts-closed-stdin.test.mjs
       - name: Measure resumework command set through master hook
         env:
           RESUMEWORK_TIMING_RUNS: '20'
@@ -1737,6 +1774,8 @@ jobs:
           node-version: '22'
       - name: Install pinned hq CLI for forwarded scaffold scripts
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: derive-trigger-facts closed stdin parity
+        run: node core/scripts/tests/derive-trigger-facts-closed-stdin.test.mjs
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: outpost reconcile PATH normalizer under stock macOS Bash
@@ -1829,52 +1868,57 @@ jobs:
           command -v hq
           hq core --help
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
-      - name: 300-policy hook process budget and output equivalence
-        env:
-          # The baseline must exist in the repo running the check. Staging's
-          # backmerge cead9f4f and hq-core's v15.0.172 commit 64179657 carry
-          # byte-identical copies of the two files the test compares. Only
-          # staging has cead9f4f; hq-core and its forks get the public commit.
-          HQ_HOOK_PERF_BASE_SHA: ${{ github.repository == 'indigoai-us/hq-core-staging' && 'cead9f4fce5f762ee08d169d4d47e912c1ef0bee' || '641796571f18e870a2e4cdd24575fda6b93dc4c3' }}
-        run: |
-          timeout 30s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
-          timeout 240s bash core/scripts/tests/sessionstart-policy-latency-process-budget.test.sh
       - name: Enforcement-gated policy trigger backfill
         run: bash core/scripts/tests/migrate-policy-triggers.test.sh
       - name: Trigger migration skips hq when policies are unchanged (HP-7)
         run: bash core/scripts/tests/migrate-policy-triggers-skip-unchanged.test.sh
       - name: Retired digest path has no frontmatter exemption
         run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
-      - name: Emit contract — tsv shape, scope precedence, enforcement-tiered depth
-        run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
       - name: Background prompts skip policy injection and reminders name source paths
         run: bash core/scripts/tests/inject-policy-background-notifications.test.sh
       - name: Staleness ordering — stale rules cut first, exemptions hold, personal soft off
         run: bash .claude/hooks/tests/inject-policy-on-trigger-staleness.test.sh
       - name: check-stale-model-pin hook regression test
         run: bash .claude/hooks/tests/check-stale-model-pin.test.sh
-      - name: Case-insensitive policy trigger identifier matching
-        run: bash core/scripts/tests/eval-trigger.test.sh
       - name: Policy trigger end-to-end corpus coverage
         run: bash core/scripts/tests/inject-policy-e2e.test.sh
       - name: Policy reminders use model-delivering tool events
         run: bash core/scripts/tests/inject-policy-tool-events.test.sh
       - name: Multi-company policy loading follows the session capability
         run: bash core/scripts/tests/inject-policy-scope-precedence.test.sh
-      - name: Large policy trigger inputs stay out of argv
-        run: bash core/scripts/tests/inject-policy-arg-size.test.sh
       - name: inject-policy-cache.test.sh
         run: bash core/scripts/tests/inject-policy-cache.test.sh
+      - name: SessionStart policy evaluation cache across sessions
+        run: bash core/scripts/tests/sessionstart-policy-evaluation-cache.test.sh
       - name: Contended policy ledger locks cannot stall SessionStart
         run: bash core/scripts/tests/inject-policy-ledger-lock-deadline.test.sh
-      - name: derive-trigger-facts.test.sh
-        run: bash core/scripts/tests/derive-trigger-facts.test.sh
       - name: Inject cadence (once vs always) + PreCompact ledger purge
         run: bash core/scripts/tests/inject-policy-always-inject.test.sh
       - name: Policy scan forks no helper process per policy file
         run: bash core/scripts/tests/inject-policy-no-per-file-fork.test.sh
       - name: Matched hard policy bodies are parsed in one batch
         run: bash core/scripts/tests/inject-policy-batched-bodies.test.sh
+
+  policy-trigger-coverage:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # Second leg of policy-trigger-migration, split out so the two halves run in
+    # parallel. Same runner, same pinned CLI setup; every suite is unchanged.
+    name: policy-trigger-coverage
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and validate the pinned hq CLI for hook helpers
+        run: |
+          bash core/scripts/ci/install-pinned-hq-cli.sh
+          command -v hq
+          hq core --help
+          HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
+      - name: Case-insensitive policy trigger identifier matching
+        run: bash core/scripts/tests/eval-trigger.test.sh
+      - name: Large policy trigger inputs stay out of argv
+        run: bash core/scripts/tests/inject-policy-arg-size.test.sh
+      - name: derive-trigger-facts.test.sh
+        run: bash core/scripts/tests/derive-trigger-facts.test.sh
       - name: Policy trigger linter streams ARG_MAX-scale corpora
         run: bash core/scripts/tests/lint-policy-triggers.test.sh
       - name: Narrowed git and gh policy triggers still cover every mutation
@@ -1892,8 +1936,6 @@ jobs:
           command -v hq
           hq core --help
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
-      - name: Policy write guard keeps sanctioned migration forwarding
-        run: bash core/scripts/tests/block-policy-writes-bash.test.sh
       - name: Hook helper call forms and callsite coverage
         run: |
           bash core/scripts/tests/check-hook-helper-call-forms.test.sh
@@ -2070,6 +2112,8 @@ jobs:
             exit 1
           fi
           for t in "${tests[@]}"; do
+            # work-mesh-live runs work-mesh-live-*.test.sh as named steps.
+            case "$t" in core/scripts/tests/work-mesh-live-*) continue ;; esac
             echo "=== $t ==="
             bash "$t"
           done

@@ -356,8 +356,119 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
     PREFLIGHT_REPAIR=false
     [ -f "$WORK_CONTEXT_ROOT/sessions/$SID.json" ] && PREFLIGHT_STATE_EXISTED=1
     PREFLIGHT_STATUS=0
-    PREFLIGHT_RESULT="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
-      "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine --offline 2>/dev/null)" || PREFLIGHT_STATUS=$?
+    # Five-minute fallback TTL; the checksummed device config invalidates a
+    # changed default on the very next SessionStart instead of waiting for it.
+    PREFLIGHT_CACHE_TTL_SECONDS=300
+    PREFLIGHT_CACHE_FILE="$WORK_CONTEXT_ROOT/sessionstart-preflight-cache.json"
+    PREFLIGHT_CACHEABLE=0
+    PREFLIGHT_CACHE_KEY=""
+    PREFLIGHT_CACHE_HIT=""
+    PREFLIGHT_GIT_INCLUDES=0
+    if [ "$PREFLIGHT_STATE_EXISTED" -eq 0 ] && command -v jq >/dev/null 2>&1; then
+      PREFLIGHT_CACHEABLE=1
+      _wm_preflight_checksum() {
+        [ -f "$1" ] || { REPLY=missing; return 0; }
+        REPLY="$(cksum < "$1" 2>/dev/null)" || REPLY=unreadable
+      }
+      _wm_preflight_git_config() {
+        # A config include can change effective company/remote scope without
+        # changing the including file. Such repositories bypass the cache.
+        local dir="$CWD" git_entry git_dir common_dir config_path config_fingerprint worktree_fingerprint
+        while [ -n "$dir" ] && [ "$dir" != / ]; do
+          git_entry="$dir/.git"
+          if [ -d "$git_entry" ]; then
+            config_path="$git_entry/config"
+            common_dir="$git_entry/commondir"
+            if [ -f "$common_dir" ]; then
+              IFS= read -r common_dir < "$common_dir" || common_dir=""
+              case "$common_dir" in /*) ;; *) common_dir="$git_entry/$common_dir" ;; esac
+              [ -f "$common_dir/config" ] && config_path="$common_dir/config"
+            fi
+            if grep -Eiq '^[[:space:]]*\[include(if)?([[:space:]]|\])' "$config_path" 2>/dev/null; then PREFLIGHT_GIT_INCLUDES=1; fi
+            _wm_preflight_checksum "$config_path"; config_fingerprint=$REPLY
+            if [ -f "$git_entry/config.worktree" ]; then
+              if grep -Eiq '^[[:space:]]*\[include(if)?([[:space:]]|\])' "$git_entry/config.worktree" 2>/dev/null; then PREFLIGHT_GIT_INCLUDES=1; fi
+              _wm_preflight_checksum "$git_entry/config.worktree"; worktree_fingerprint=$REPLY
+              REPLY="$git_entry:$config_fingerprint:worktree:$worktree_fingerprint"
+            else
+              REPLY="$git_entry:$config_fingerprint"
+            fi
+            return 0
+          elif [ -f "$git_entry" ]; then
+            git_dir="$(sed -n 's/^gitdir: //p' "$git_entry" 2>/dev/null | head -n 1)"
+            case "$git_dir" in /*) ;; *) git_dir="$dir/$git_dir" ;; esac
+            config_path="$git_dir/config"
+            common_dir="$git_dir/commondir"
+            if [ -f "$common_dir" ]; then
+              IFS= read -r common_dir < "$common_dir" || common_dir=""
+              case "$common_dir" in /*) ;; *) common_dir="$git_dir/$common_dir" ;; esac
+              [ -f "$common_dir/config" ] && config_path="$common_dir/config"
+            fi
+            if grep -Eiq '^[[:space:]]*\[include(if)?([[:space:]]|\])' "$config_path" 2>/dev/null; then PREFLIGHT_GIT_INCLUDES=1; fi
+            _wm_preflight_checksum "$config_path"; config_fingerprint=$REPLY
+            if [ -f "$git_dir/config.worktree" ]; then
+              if grep -Eiq '^[[:space:]]*\[include(if)?([[:space:]]|\])' "$git_dir/config.worktree" 2>/dev/null; then PREFLIGHT_GIT_INCLUDES=1; fi
+              _wm_preflight_checksum "$git_dir/config.worktree"; worktree_fingerprint=$REPLY
+              REPLY="$git_dir:$config_fingerprint:worktree:$worktree_fingerprint"
+            else
+              REPLY="$git_dir:$config_fingerprint"
+            fi
+            return 0
+          fi
+          dir="${dir%/*}"
+        done
+        REPLY=none
+      }
+      _wm_preflight_checksum "$WORK_CONTEXT_ROOT/config.json"; PREFLIGHT_CONFIG_FINGERPRINT=$REPLY
+      _wm_preflight_checksum "$HQ_ROOT/companies/manifest.yaml"; PREFLIGHT_MANIFEST_FINGERPRINT=$REPLY
+      PREFLIGHT_IDENTITY_FILE="${HQ_AGENT_IDENTITY_FILE:-/var/lib/hq-agent/identity.json}"
+      _wm_preflight_checksum "$PREFLIGHT_IDENTITY_FILE"; PREFLIGHT_IDENTITY_FINGERPRINT="$PREFLIGHT_IDENTITY_FILE:$REPLY"
+      _wm_preflight_git_config; PREFLIGHT_GIT_FINGERPRINT=$REPLY
+      [ "$PREFLIGHT_GIT_INCLUDES" -eq 0 ] || PREFLIGHT_CACHEABLE=0
+      PREFLIGHT_CACHE_KEY="$(jq -cn \
+        --arg cwd "$CWD" --arg root "$HQ_ROOT" --arg project "$PROJECT" --arg task "$TASK" \
+        --arg config "$PREFLIGHT_CONFIG_FINGERPRINT" --arg manifest "$PREFLIGHT_MANIFEST_FINGERPRINT" \
+        --arg git "$PREFLIGHT_GIT_FINGERPRINT" --arg identity "$PREFLIGHT_IDENTITY_FINGERPRINT" \
+        '{cwd:$cwd,hqRoot:$root,project:$project,task:$task,deviceConfig:$config,manifest:$manifest,gitConfig:$git,agentIdentity:$identity}' 2>/dev/null)" || PREFLIGHT_CACHE_KEY=""
+      if [ -n "$PREFLIGHT_CACHE_KEY" ] && [ -r "$PREFLIGHT_CACHE_FILE" ]; then
+        PREFLIGHT_CACHE_NOW="$(date +%s 2>/dev/null || true)"
+        case "$PREFLIGHT_CACHE_NOW" in ''|*[!0-9]*) PREFLIGHT_CACHE_NOW="" ;; esac
+        if [ -n "$PREFLIGHT_CACHE_NOW" ]; then
+          PREFLIGHT_CACHE_HIT="$(jq -cer --arg key "$PREFLIGHT_CACHE_KEY" --argjson now "$PREFLIGHT_CACHE_NOW" \
+            --argjson ttl "$PREFLIGHT_CACHE_TTL_SECONDS" '
+              select(.version == 1 and .key == $key and (.createdAt | type == "number")
+                and ($now >= .createdAt) and (($now - .createdAt) <= $ttl)
+                and (.repair == true or .repair == false) and (.result | type == "object"))
+              | {repair:.repair,result:.result,artifacts:(.artifacts // {})}
+            ' "$PREFLIGHT_CACHE_FILE" 2>/dev/null)" || PREFLIGHT_CACHE_HIT=""
+        fi
+      fi
+    fi
+    if [ -n "$PREFLIGHT_CACHE_HIT" ]; then
+      PREFLIGHT_RESULT="$(printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -c --arg sid "$SID" --arg op "$CLIENT_OP" \
+        '.result | .sessionId=$sid | .clientOperationId=$op' 2>/dev/null)" || PREFLIGHT_RESULT=""
+      PREFLIGHT_REPAIR="$(printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -r 'if .repair then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
+      PREFLIGHT_CACHED_STATE="$(printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -r '.artifacts.sessionState // empty' 2>/dev/null)" || PREFLIGHT_CACHED_STATE=""
+      if [ -n "$PREFLIGHT_CACHED_STATE" ]; then
+        mkdir -p -- "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
+        chmod 700 -- "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
+        printf '%s' "$PREFLIGHT_CACHED_STATE" | jq -c --arg sid "$SID" --arg op "$CLIENT_OP" \
+          'if type == "object" then .sessionId=$sid | .clientOperationId=$op else . end' \
+          > "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" 2>/dev/null && \
+          chmod 600 -- "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" 2>/dev/null && \
+          mv -f -- "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" "$WORK_CONTEXT_ROOT/sessions/$SID.json" 2>/dev/null || true
+      fi
+      if [ "$(printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -r '.artifacts.board // empty' 2>/dev/null)" ]; then
+        mkdir -p -- "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
+        printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -jr '.artifacts.board // empty' \
+          > "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" 2>/dev/null && \
+          chmod 600 -- "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" 2>/dev/null && \
+          mv -f -- "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" "$WORK_CONTEXT_ROOT/sessions/$SID/board.md" 2>/dev/null || true
+      fi
+    else
+      PREFLIGHT_RESULT="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
+        "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine --offline 2>/dev/null)" || PREFLIGHT_STATUS=$?
+    fi
     PREFLIGHT_CLASSIFICATION=""
     PREFLIGHT_SLUG=""
     PREFLIGHT_UID=""
@@ -382,9 +493,40 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
       ' 2>/dev/null)" || PREFLIGHT_CLASSIFICATION=""
       PREFLIGHT_SLUG="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.companySlug | select(type == "string" and length > 0)' 2>/dev/null)" || PREFLIGHT_SLUG=""
       PREFLIGHT_UID="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.companyUid | select(type == "string" and length > 0)' 2>/dev/null)" || PREFLIGHT_UID=""
-      PREFLIGHT_REPAIR="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
-        "$HQ_BIN" mesh context default get --json 2>/dev/null \
-        | jq -er '(.repairHeldWithDefault // (.defaultCompany.repairHeldWithDefault // false)) | if . == true then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
+      if [ -z "$PREFLIGHT_CACHE_HIT" ]; then
+        PREFLIGHT_REPAIR="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
+          "$HQ_BIN" mesh context default get --json 2>/dev/null \
+          | jq -er '(.repairHeldWithDefault // (.defaultCompany.repairHeldWithDefault // false)) | if . == true then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
+      fi
+      if [ "$PREFLIGHT_CACHEABLE" -eq 1 ] && [ -n "$PREFLIGHT_CACHE_KEY" ] && [ -z "$PREFLIGHT_CACHE_HIT" ]; then
+        case "$PREFLIGHT_CLASSIFICATION" in
+          company_conflict|bound|needs_project|needs_task|needs_company|unresolved|untracked)
+            case "$PREFLIGHT_REPAIR" in true) PREFLIGHT_REPAIR_JSON=true ;; *) PREFLIGHT_REPAIR_JSON=false ;; esac
+            if PREFLIGHT_CACHE_NOW="$(date +%s 2>/dev/null)" && [[ "$PREFLIGHT_CACHE_NOW" =~ ^[0-9]+$ ]]; then
+              mkdir -p -- "$WORK_CONTEXT_ROOT" 2>/dev/null || true
+              chmod 700 -- "$WORK_CONTEXT_ROOT" 2>/dev/null || true
+              PREFLIGHT_CACHE_TMP="$(mktemp "$WORK_CONTEXT_ROOT/.sessionstart-preflight-cache.XXXXXX" 2>/dev/null)" || PREFLIGHT_CACHE_TMP=""
+              if [ -n "$PREFLIGHT_CACHE_TMP" ]; then
+                PREFLIGHT_CACHE_STATE_FILE="$WORK_CONTEXT_ROOT/sessions/$SID.json"
+                PREFLIGHT_CACHE_BOARD_FILE="$WORK_CONTEXT_ROOT/sessions/$SID/board.md"
+                [ -r "$PREFLIGHT_CACHE_STATE_FILE" ] || PREFLIGHT_CACHE_STATE_FILE=/dev/null
+                [ -r "$PREFLIGHT_CACHE_BOARD_FILE" ] || PREFLIGHT_CACHE_BOARD_FILE=/dev/null
+                if printf '%s' "$PREFLIGHT_RESULT" | jq -cer --arg key "$PREFLIGHT_CACHE_KEY" \
+                  --argjson now "$PREFLIGHT_CACHE_NOW" --argjson repair "$PREFLIGHT_REPAIR_JSON" \
+                  --rawfile state "$PREFLIGHT_CACHE_STATE_FILE" \
+                  --rawfile board "$PREFLIGHT_CACHE_BOARD_FILE" \
+                  '{version:1,createdAt:$now,key:$key,repair:$repair,result:.,artifacts:{sessionState:($state | select(length > 0) // null),board:($board | select(length > 0) // null)}}' \
+                  > "$PREFLIGHT_CACHE_TMP" 2>/dev/null; then
+                  chmod 600 -- "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true
+                  mv -f -- "$PREFLIGHT_CACHE_TMP" "$PREFLIGHT_CACHE_FILE" 2>/dev/null || rm -f -- "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true
+                else
+                  rm -f -- "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true
+                fi
+              fi
+            fi
+            ;;
+        esac
+      fi
     fi
     case "$PREFLIGHT_CLASSIFICATION" in
       company_conflict|bound|needs_project|needs_task)

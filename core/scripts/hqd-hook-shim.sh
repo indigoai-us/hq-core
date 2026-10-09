@@ -19,7 +19,7 @@
 #
 # Usage: sh hqd-hook-shim.sh [Event] [--runtime claude|codex]
 #   Event defaults to the payload's hook_event_name.
-# Env:   HQ_HQD_SOCKET (socket path), HQ_REGISTRY_DIR (dir holding hqd.sock),
+# Env:   HQ_HQD_SOCKET (socket path), HQ_REGISTRY_DIR (parent of daemon/),
 #        HQ_HQD_SHIM_TIMEOUT_MS (default 500).
 # POSIX sh; the JSON and socket work runs in perl (core JSON::PP and
 # IO::Socket::UNIX, present on macOS and mainstream Linux).
@@ -42,9 +42,9 @@ done
 if [ -n "${HQ_HQD_SOCKET:-}" ]; then
   sock="$HQ_HQD_SOCKET"
 elif [ -n "${HQ_REGISTRY_DIR:-}" ]; then
-  sock="$HQ_REGISTRY_DIR/hqd.sock"
+  sock="$HQ_REGISTRY_DIR/daemon/hqd.sock"
 else
-  sock="${HOME:-}/.hq/hqd.sock"
+  sock="${HOME:-}/.hq/daemon/hqd.sock"
 fi
 budget="${HQ_HQD_SHIM_TIMEOUT_MS:-500}"
 case "$budget" in ''|*[!0-9]*) budget=500 ;; esac
@@ -67,6 +67,16 @@ FLAG_DIR=$SHIM_DIR
 . "$SHIM_DIR/hqd-hook-flag-cache-lib.sh"
 hqd_hook_flag_enabled
 [ "$HQD_FLAG_ENABLED" = true ] || exit 0
+
+# hqd runs only for people who turned HQ Anywhere on (hq-cli
+# anywhereRuntimeAllowed: flag on AND person setting true). With no socket and
+# no daemon "hqd.enabled" marker beside it, hqd is not meant to run on this
+# machine, so there is nothing to enforce through it: stay inert. A socket file
+# (live or stale) or the marker means hqd should answer, so an unreachable
+# daemon still fails closed below.
+if [ ! -e "$sock" ] && [ ! -e "${sock%/*}/hqd.enabled" ]; then
+  exit 0
+fi
 
 # No perl: the payload cannot be parsed and hqd cannot be reached. A
 # PreToolUse event may contain a relative company write that a string search

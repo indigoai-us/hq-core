@@ -55,7 +55,7 @@ skills:
     args: "<link id> [name] | leave | status"
   - name: "/conduct"
     use: "Orchestrator mode: route every task to a pooled HQ worker lane on Codex, Grok, or Claude so this session stays free. Triggers: \"/conduct\", \"run everything in th"
-    args: "[engine] [task description] | adopt [session] | tell <child> <message> | status | off"
+    args: "[--workers <roles>] [--engine e] [--model m] [--effort f] | [engine] [task description] | adopt [session] | tell <child> <message> | status | off"
   - name: "/convert-codex"
     use: "Add Codex support to older Claude-first HQ roots without breaking Claude setup."
   - name: "/create-skill"

@@ -1,13 +1,43 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 const root = process.cwd();
 let forwarder = path.join(root, "core/scripts/derive-trigger-facts.sh");
 const bash = process.platform === "win32" ? "bash" : "/bin/bash";
-// TODO(CM-PARITY-PLATFORM-GREEN): after the hq-cli closed-stdin signal change merges and is released, bump the staging pin and assert status/stdout/stderr parity with that release's bundled asset on every OS.
+
+function resolveCliPackageRoot() {
+  if (process.env.HQ_CLI_ROOT) return process.env.HQ_CLI_ROOT;
+
+  const npmRoot = spawnSync(bash, ["-c", "npm root -g"], {
+    cwd: root,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(npmRoot.error, undefined, `could not locate global hq-cli: ${npmRoot.error?.message ?? "unknown error"}`);
+  assert.equal(npmRoot.status, 0, `npm root -g failed: ${npmRoot.stderr}`);
+  return path.join(npmRoot.stdout.trim(), "@indigoai-us", "hq-cli");
+}
+
+const cliPackageRoot = resolveCliPackageRoot();
+const packageMetadata = JSON.parse(fs.readFileSync(path.join(cliPackageRoot, "package.json"), "utf8"));
+const resolvedPin = spawnSync(bash, ["core/scripts/ci/install-pinned-hq-cli.sh", "--resolve-only"], {
+  cwd: root,
+  env: process.env,
+  stdio: ["ignore", "pipe", "pipe"],
+  encoding: "utf8",
+  timeout: 10_000,
+});
+assert.equal(resolvedPin.error, undefined, `could not resolve pinned hq-cli version: ${resolvedPin.error?.message ?? "unknown error"}`);
+assert.equal(resolvedPin.status, 0, `pinned hq-cli resolution failed: ${resolvedPin.stderr}`);
+assert.equal(packageMetadata.version, resolvedPin.stdout.trim(), "global hq-cli must match the resolved CI pin");
+
+const bundledScript = toBashPath(path.join(cliPackageRoot, "assets/scaffold/core/scripts/derive-trigger-facts.sh"));
 function toBashPath(nativePath) {
   if (process.platform !== "win32") return nativePath;
   const converted = spawnSync(bash, ["-c", 'cygpath -u "$1"', "closed-stdin-test", nativePath], {
@@ -37,7 +67,6 @@ function runClosedStdin(script) {
       HQ_NO_UPDATE_CHECK: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
     timeout: 10_000,
   });
   const elapsedMs = performance.now() - startedAt;
@@ -80,8 +109,23 @@ function percentile(samples, fraction) {
 }
 
 const forwarded = runClosedStdin(forwarder);
-assert.equal(typeof forwarded.status, "number", "closed-stdin forwarder must return an exit status");
-console.log(`closed-stdin forwarder returned promptly: status=${forwarded.status}, stdout=${JSON.stringify(forwarded.stdout)}, stderr=${JSON.stringify(forwarded.stderr)}, elapsed=${forwarded.elapsedMs.toFixed(1)} ms (under 10000 ms)`);
+const released = runClosedStdin(bundledScript);
+const closedStdinParity = {
+  status: forwarded.status === released.status,
+  stdout: forwarded.stdout.equals(released.stdout),
+  stderr: forwarded.stderr.equals(released.stderr),
+};
+console.log(
+  `derive-trigger-facts closed-stdin comparison ${process.platform}: hq-cli=${packageMetadata.version} `
+  + `status=${closedStdinParity.status}, stdoutBytes=${forwarded.stdout.length}/${released.stdout.length} `
+  + `equal=${closedStdinParity.stdout}, stderrBytes=${forwarded.stderr.length}/${released.stderr.length} `
+  + `equal=${closedStdinParity.stderr}; forwarder=${forwarded.elapsedMs.toFixed(1)} ms, `
+  + `bundled=${released.elapsedMs.toFixed(1)} ms (each under 10000 ms)`,
+);
+assert.equal(forwarded.status, released.status, "closed-stdin exit code parity");
+assert.deepEqual(forwarded.stdout, released.stdout, "closed-stdin stdout byte parity");
+assert.deepEqual(forwarded.stderr, released.stderr, "closed-stdin stderr byte parity");
+console.log(`derive-trigger-facts closed-stdin parity ${process.platform}: matched exit, stdout bytes, and stderr bytes`);
 
 const openStdinRuns = [];
 for (let warmup = 0; warmup < 3; warmup += 1) {

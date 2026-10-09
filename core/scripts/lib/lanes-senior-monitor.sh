@@ -7,8 +7,7 @@
 
 set -uo pipefail
 
-# UserPromptSubmit may reuse a session-scoped monitor result for this many
-# seconds. SessionStart always bypasses this cache and refreshes the result.
+# UserPromptSubmit may reuse a session-scoped monitor result for this many seconds.
 LANES_MONITOR_CHECK_CACHE_TTL_SECONDS=180
 
 # Drain before any early exit so the dispatcher's payload writer cannot receive
@@ -63,6 +62,42 @@ if [ -z "$HQ_BIN" ]; then
   printf 'ERROR: lanes-senior-monitor reminder shim: hq CLI is missing from PATH.\n' >&2
   exit 1
 fi
+
+current_session_has_lane_record() {
+  local lane_dir="$HQ_ROOT/workspace/lanes/lanes" grep_rc
+  local -a lane_records=()
+
+  # A missing store is the same empty set readAllLanes returns for ENOENT.
+  [ -e "$lane_dir" ] || return 1
+  # An unreadable or malformed store must reach the CLI so its normal error
+  # handling remains visible rather than being mistaken for an empty set.
+  [ -d "$lane_dir" ] && [ -r "$lane_dir" ] && [ -x "$lane_dir" ] || return 2
+  shopt -s nullglob
+  lane_records=("$lane_dir"/*.json)
+  shopt -u nullglob
+  [ "${#lane_records[@]}" -gt 0 ] || return 1
+
+  # Lane records name their senior session as a plain JSON string. A no-match
+  # proves monitor-check would have no lane for this session; false positives
+  # (for example an old lane record) fall through to the authoritative CLI.
+  grep -Fq -- "\"$SESSION_ID\"" "${lane_records[@]}" 2>/dev/null
+  grep_rc=$?
+  [ "$grep_rc" -eq 0 ] && return 0
+  [ "$grep_rc" -eq 1 ] || return 2
+
+  # A fast empty result is safe only when every candidate can be parsed.
+  # Validate all files in one jq process; corrupt records reach the CLI's
+  # regular error handling instead of being mistaken for an empty store.
+  jq -e -n 'all(inputs; type == "object")' "${lane_records[@]}" >/dev/null 2>&1 || return 2
+  return 1
+}
+
+# EMPTY_SESSION_MUST_SKIP_HQ: monitor-check reads the same lane-record store.
+# Avoid starting the CLI when no record can belong to this senior session.
+SESSION_LANE_STATUS=0
+current_session_has_lane_record || SESSION_LANE_STATUS=$?
+# EMPTY_SESSION_GUARD_MUST_STAY_QUIET
+[ "$SESSION_LANE_STATUS" -eq 1 ] && exit 0
 
 if [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
   # Keep monitor-check bounded on both SessionStart and UserPromptSubmit; a
@@ -144,8 +179,10 @@ CACHE_CACHED_REMINDER=""
 load_monitor_cache() {
   local checked_at now age fields_file cache_field
   local -a cache_fields=()
-  # SESSION_START_MUST_BYPASS_CACHE
-  [ "$EVENT" = "UserPromptSubmit" ] || return 0
+  case "$EVENT" in
+    UserPromptSubmit) ;;
+    *) return 0 ;;
+  esac
   [ -n "$HQ_FINGERPRINT" ] || return 0
   [ -f "$MONITOR_CACHE_FILE" ] || return 0
 
@@ -202,6 +239,7 @@ load_monitor_cache() {
     CACHE_CACHED_REMINDER=""
     return 0
   fi
+  # SESSION_START_MUST_REUSE_FRESH_CACHE
   CACHE_HIT=1
 }
 

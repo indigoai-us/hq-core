@@ -59,6 +59,7 @@ HQ_CLI_VERSION_TIMEOUT="${HQ_CLI_VERSION_TIMEOUT:-1}"
 HQ_NPM_PREFIX_TIMEOUT="${HQ_NPM_PREFIX_TIMEOUT:-1}"
 HQ_CLI_SHADOW_SCAN_TIMEOUT="${HQ_CLI_SHADOW_SCAN_TIMEOUT:-4}"
 HQ_SETTINGS_HEAL_TIMEOUT="${HQ_SETTINGS_HEAL_TIMEOUT:-1}"
+CLI_STATE_DIR="${HQ_UPDATE_CHECK_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/hq-update-check}"
 stop_cli_watchdog() {
   local watchdog_pid="$1"
   if command -v pkill >/dev/null 2>&1; then pkill -P "$watchdog_pid" 2>/dev/null || true; fi
@@ -235,7 +236,29 @@ bounded_gh_command() {
 # that run every guard on every tool call and block Bash, Skill and Read.
 # Remove exactly those, with a backup. Runs first so the next session starts
 # healed. See core/scripts/remove-stray-gate-hooks.sh.
-STRAY_OUT="$(capture_bounded_output "$HQ_SETTINGS_HEAL_TIMEOUT" settings-heal bash "$HQ_ROOT/core/scripts/remove-stray-gate-hooks.sh" "$HQ_ROOT")" || STRAY_OUT=""
+settings_heal_identity() {
+  local path
+  local -a paths=()
+  for path in "$HQ_ROOT/.claude/settings.json" "$HQ_ROOT/.claude/settings.local.json" "$HQ_ROOT/.claude/hooks/hook-registry.json" "$HQ_ROOT/core/scripts/remove-stray-gate-hooks.sh" "$HQ_ROOT/core/scripts/hook-lib.sh"; do
+    if [ -f "$path" ]; then paths+=("$path"); else printf '%s:missing\n' "$path"; fi
+  done
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  stat -c '%n:%Y:%s:%i' "${paths[@]}" 2>/dev/null || stat -f '%N:%m:%z:%i' "${paths[@]}" 2>/dev/null || return 1
+}
+SETTINGS_HEAL_STAMP="$CLI_STATE_DIR/settings-heal-check.tsv"
+SETTINGS_HEAL_IDENTITY="$(settings_heal_identity)"
+LAST_SETTINGS_HEAL_IDENTITY=""
+if [ -f "$SETTINGS_HEAL_STAMP" ]; then LAST_SETTINGS_HEAL_IDENTITY="$(< "$SETTINGS_HEAL_STAMP")"; fi
+STRAY_OUT=""
+if [ "$SETTINGS_HEAL_IDENTITY" != "$LAST_SETTINGS_HEAL_IDENTITY" ]; then
+  SETTINGS_HEAL_RC=0
+  STRAY_OUT="$(capture_bounded_output "$HQ_SETTINGS_HEAL_TIMEOUT" settings-heal bash "$HQ_ROOT/core/scripts/remove-stray-gate-hooks.sh" "$HQ_ROOT")" || SETTINGS_HEAL_RC=$?
+  if [ "$SETTINGS_HEAL_RC" -eq 0 ]; then
+    SETTINGS_HEAL_IDENTITY="$(settings_heal_identity)"
+    mkdir -p "$CLI_STATE_DIR" 2>/dev/null || true
+    printf '%s\n' "$SETTINGS_HEAL_IDENTITY" > "$SETTINGS_HEAL_STAMP" 2>/dev/null || true
+  fi
+fi
 if [ -n "$STRAY_OUT" ]; then
   printf '<hq-settings-healed>\n%s\nThese entries were written by an older hq doctor --fix and blocked tools with "Glob needs a path" or "Edit to locked path". If tools were blocked in this session, restart it. Tell the user in one plain sentence.\n</hq-settings-healed>\n' "$STRAY_OUT"
 fi
@@ -253,7 +276,51 @@ CLI_STAMP="$CACHE_DIR/hq-cli-autoupdate.stamp"
 if command -v hq >/dev/null 2>&1 && { command -v pnpm >/dev/null 2>&1 || command -v npm >/dev/null 2>&1; }; then
   CLI_BIN="$(command -v hq 2>/dev/null)"
   CLI_VER=""
-  CLI_VER="$(capture_cli_version "$CLI_BIN")"
+  CLI_PROBE_CACHE="$CLI_STATE_DIR/cli-version-probe.tsv"
+  resolve_cli_target() {
+    local target="$1" link dir hops=0
+    case "$target" in
+      /*|*/*) ;;
+      *) target="$(type -P "$target" 2>/dev/null)" || return 1 ;;
+    esac
+    while [ -L "$target" ]; do
+      hops=$((hops + 1))
+      [ "$hops" -le 40 ] || return 1
+      link="$(readlink "$target" 2>/dev/null)" || return 1
+      case "$link" in
+        /*) target="$link" ;;
+        *)
+          dir="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)" || return 1
+          target="$dir/$link"
+          ;;
+      esac
+    done
+    dir="$(cd -P "$(dirname "$target")" 2>/dev/null && pwd)" || return 1
+    printf '%s/%s\n' "$dir" "$(basename "$target")"
+  }
+  CLI_BIN_TARGET="$(resolve_cli_target "$CLI_BIN" 2>/dev/null || printf '%s' "$CLI_BIN")"
+  CLI_BIN_STAT="$(stat -c '%Y:%s:%i' "$CLI_BIN_TARGET" 2>/dev/null || stat -f '%m:%z:%i' "$CLI_BIN_TARGET" 2>/dev/null || true)"
+  if [ -n "$CLI_BIN_STAT" ] && [ -f "$CLI_PROBE_CACHE" ]; then
+    IFS=$'\t' read -r CACHED_CLI_BIN CACHED_CLI_STAT CACHED_CLI_VER CACHED_CLI_TIME < "$CLI_PROBE_CACHE"
+    CLI_CACHE_NOW="$(date +%s 2>/dev/null || echo 0)"
+    if [ "$CACHED_CLI_BIN" = "$CLI_BIN" ] \
+      && [ "$CACHED_CLI_STAT" = "$CLI_BIN_STAT" ] \
+      && [[ "$CACHED_CLI_TIME" =~ ^[0-9]+$ ]] \
+      && [[ "$CLI_CACHE_NOW" =~ ^[0-9]+$ ]] \
+      && [ "$((CLI_CACHE_NOW - CACHED_CLI_TIME))" -ge 0 ] \
+      && [ "$((CLI_CACHE_NOW - CACHED_CLI_TIME))" -lt "$CACHE_TTL_SECONDS" ] \
+      && [[ "$CACHED_CLI_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      CLI_VER="$CACHED_CLI_VER"
+    fi
+  fi
+  if [ -z "$CLI_VER" ]; then
+    CLI_VER="$(capture_cli_version "$CLI_BIN")"
+    if [ -n "$CLI_VER" ] && [ -n "$CLI_BIN_STAT" ]; then
+      mkdir -p "$CLI_STATE_DIR" 2>/dev/null || true
+      printf '%s\t%s\t%s\t%s\n' "$CLI_BIN" "$CLI_BIN_STAT" "$CLI_VER" "$(date +%s 2>/dev/null || echo 0)" \
+        > "$CLI_PROBE_CACHE" 2>/dev/null || true
+    fi
+  fi
   if [ -n "$CLI_VER" ] && version_gt "$HQ_CLI_FLOOR" "$CLI_VER"; then
     SHADOW_RC=0
     has_equal_or_newer_hq "$CLI_BIN" "$CLI_VER" || SHADOW_RC=$?
@@ -304,9 +371,23 @@ fi
 [ -f "$CORE_YAML" ] || exit 0
 
 # --- Local version ---
-LOCAL_VERSION=$(grep -E '^hqVersion:' "$CORE_YAML" 2>/dev/null \
-  | head -1 \
-  | sed -E 's/^hqVersion:[[:space:]]*["'"'"']?([0-9]+\.[0-9]+\.[0-9]+)["'"'"']?.*/\1/')
+LOCAL_VERSION=""
+while IFS= read -r CORE_LINE; do
+  case "$CORE_LINE" in
+    hqVersion:*)
+      LOCAL_VERSION="${CORE_LINE#hqVersion:}"
+      LOCAL_VERSION="${LOCAL_VERSION//[[:space:]]/}"
+      LOCAL_VERSION="${LOCAL_VERSION//\"/}"
+      LOCAL_VERSION="${LOCAL_VERSION//\'/}"
+      if [[ "$LOCAL_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+        LOCAL_VERSION="${BASH_REMATCH[1]}"
+      else
+        LOCAL_VERSION=""
+      fi
+      break
+      ;;
+  esac
+done < "$CORE_YAML"
 [ -n "$LOCAL_VERSION" ] || exit 0
 
 # --- Latest release (cached) ---
@@ -315,24 +396,78 @@ USE_CACHE=0
 
 if [ -f "$CACHE_FILE" ]; then
   CACHE_MTIME=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null || echo 0)
-  NOW=$(date +%s)
+  NOW="${EPOCHSECONDS:-$(date +%s)}"
   AGE=$((NOW - CACHE_MTIME))
   if [ "$AGE" -lt "$CACHE_TTL_SECONDS" ]; then
     USE_CACHE=1
-    LATEST_VERSION=$(grep -oE '"latest":[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"' "$CACHE_FILE" 2>/dev/null \
-      | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/' | head -1)
+    CACHE_JSON="$(< "$CACHE_FILE")"
+    if [[ "$CACHE_JSON" =~ \"latest\":[[:space:]]*\"([0-9]+\.[0-9]+\.[0-9]+)\" ]]; then
+      LATEST_VERSION="${BASH_REMATCH[1]}"
+    fi
   fi
 fi
 
+network_attempt_stamp_path() {
+  local state_home
+  state_home="${HQ_UPDATE_CHECK_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/hq-update-check}"
+  printf '%s/release-network-attempt.last\n' "$state_home"
+}
+
+network_attempt_stamp_is_fresh() {
+  local stamp="$1" mtime now age
+  [ -f "$stamp" ] || return 1
+  mtime="$(stat -c %Y "$stamp" 2>/dev/null || stat -f %m "$stamp" 2>/dev/null || echo 0)"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s 2>/dev/null || echo 0)"
+  [[ "$now" =~ ^[0-9]+$ ]] || return 1
+  age=$((now - mtime))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$CACHE_TTL_SECONDS" ]
+}
+
+network_cache_identity() {
+  if [ -f "$CACHE_FILE" ]; then
+    stat -c '%Y:%s:%i' "$CACHE_FILE" 2>/dev/null \
+      || stat -f '%m:%z:%i' "$CACHE_FILE" 2>/dev/null \
+      || printf 'present\n'
+  else
+    printf 'missing\n'
+  fi
+}
+
+network_attempt_stamp_should_skip() {
+  local stamp="$1" attempted_cache current_cache
+  network_attempt_stamp_is_fresh "$stamp" || return 1
+  IFS= read -r attempted_cache < "$stamp" || attempted_cache=""
+  # Older empty stamps retain their cooldown behavior. New stamps record the
+  # cache identity so removing last-check.json remains an explicit recheck.
+  [ -n "$attempted_cache" ] || return 0
+  current_cache="$(network_cache_identity)" || return 0
+  [ "$attempted_cache" = "$current_cache" ]
+}
+
+write_network_attempt_stamp() {
+  local stamp="$1"
+  mkdir -p "${stamp%/*}" 2>/dev/null || return 0
+  network_cache_identity > "$stamp" 2>/dev/null || : > "$stamp" 2>/dev/null || true
+}
+
 if [ "$USE_CACHE" -eq 0 ]; then
   command -v gh >/dev/null 2>&1 || exit 0
-  bounded_gh_command 2 gh auth status >/dev/null 2>&1 || exit 0
+  NETWORK_ATTEMPT_STAMP="$(network_attempt_stamp_path)" || exit 0
+  if network_attempt_stamp_should_skip "$NETWORK_ATTEMPT_STAMP"; then exit 0; fi
+  bounded_gh_command 2 gh auth status >/dev/null 2>&1 || {
+    write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
+    exit 0
+  }
 
-  RAW_TAG=$(bounded_gh_command 2 gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null) || exit 0
-  [ -n "$RAW_TAG" ] || exit 0
+  RAW_TAG=$(bounded_gh_command 2 gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null) || {
+    write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
+    exit 0
+  }
+  [ -n "$RAW_TAG" ] || { write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"; exit 0; }
 
   LATEST_VERSION=$(echo "$RAW_TAG" | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-  [ -n "$LATEST_VERSION" ] || exit 0
+  [ -n "$LATEST_VERSION" ] || { write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"; exit 0; }
 
   mkdir -p "$CACHE_DIR"
   printf '{"latest":"%s","checkedAt":"%s"}\n' \

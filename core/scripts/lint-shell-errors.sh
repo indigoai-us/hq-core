@@ -38,5 +38,10 @@ done < "$tracked_list"
 
 printf 'ShellCheck checking %d tracked shell scripts at error severity\n' "$shell_script_count"
 if ((shell_script_count > 0)); then
-  (cd "$repo_root" && shellcheck -S error -- "${shell_scripts[@]}")
+  # ShellCheck checks each file independently, so fixed-size batches can run
+  # in parallel. xargs exits non-zero when any batch reports an error.
+  jobs="${HQ_SHELLCHECK_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+  [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || jobs=2
+  (cd "$repo_root" && printf '%s\0' "${shell_scripts[@]}" \
+    | xargs -0 -n 32 -P "$jobs" shellcheck -S error --)
 fi

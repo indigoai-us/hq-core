@@ -504,6 +504,34 @@ set -e
 assert_eq "$code" "3" "per-session cap unaffected"
 ok "cap 0 disables; CONDUCT_POOL_CAP unchanged"
 
+echo "conduct-pool: the machine scan stays fast with thousands of idle sessions"
+# The scan used to read every meta.yaml line by line in bash, which took
+# minutes on a machine with ~9,000 session dirs. Pool-less sessions and pools
+# with only idle slots must cost one grep pass, and still not be counted.
+i=0
+while [ "$i" -lt 3000 ]; do
+  mkdir -p "$MC/workspace/sessions/test-mc-bulk-$i"
+  printf 'session_id: test-mc-bulk-%s\ncompany_slug: acme\nnote: status: running\n' "$i" \
+    > "$MC/workspace/sessions/test-mc-bulk-$i/meta.yaml"
+  i=$((i + 1))
+done
+mkdir -p "$MC/workspace/sessions/test-mc-idle"
+printf 'conduct_pool:\n  - worker_id: "z"\n    status: "idle"\n' > "$MC/workspace/sessions/test-mc-idle/meta.yaml"
+# A running-looking line outside the conduct_pool block must not count either.
+mkdir -p "$MC/workspace/sessions/test-mc-other"
+printf 'other_block:\n  - worker_id: "q"\n    status: "running"\n' > "$MC/workspace/sessions/test-mc-other/meta.yaml"
+started=$(date +%s)
+set +e
+CONDUCT_MACHINE_CAP=4 mpool test-mc-two assign --worker-id g >/dev/null 2>&1; code=$?
+set -e
+took=$(( $(date +%s) - started ))
+[ "$took" -le 10 ] || fail "assign took ${took}s over 3,000 sessions; the machine scan must not read every meta.yaml in bash"
+assert_eq "$code" "6" "the same live lanes are counted (cap 4 is full), and the bulk, idle and other-block sessions add nothing"
+out="$(CONDUCT_MACHINE_CAP=5 mpool test-mc-two assign --worker-id g)"
+assert_contains "$out" '"action":"spawn"' "one more slot under cap 5"
+mpool test-mc-two cancel --worker-id g >/dev/null 2>&1 || true
+ok "machine scan: ${took}s over 3,000 sessions; counts unchanged"
+
 # ---- reconcile ----------------------------------------------------------------
 echo "conduct-pool: reconcile idles a finished one-shot lane only"
 RS=test-mc-rec

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-SCRIPT="$ROOT/core/scripts/handoff-open-steps.sh"
+SCRIPT="${HANDOFF_OPEN_STEPS_SCRIPT:-$ROOT/core/scripts/handoff-open-steps.sh}"
 TEMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 TMP="$(mktemp -d "$TEMP_ROOT/handoff-stat-scaling-bench.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
@@ -49,7 +49,7 @@ measure_size() {
   root="$TMP/fixture-$count"
   elapsed_file="$TMP/elapsed-$count"
   stats_file="$TMP/stats-$count"
-  make_fixture "$count" "$root"
+  make_fixture "$count" "$root" || return 1
   : > "$elapsed_file"
   : > "$stats_file"
 
@@ -57,13 +57,13 @@ measure_size() {
     stat_count="$TMP/stat-count-$count-$run"
     : > "$stat_count"
     local start end elapsed stat_calls
-    start="$(now_ms)"
+    start="$(now_ms)" || return 1
     HQ_ROOT="$root" \
       PATH="$BIN:$PATH" \
       STAT_COUNT_FILE="$stat_count" \
       REAL_STAT="$REAL_STAT" \
-      bash "$SCRIPT" list --limit 10 >/dev/null
-    end="$(now_ms)"
+      bash "$SCRIPT" list --limit 10 >/dev/null || return 1
+    end="$(now_ms)" || return 1
     elapsed=$((end - start))
     stat_calls="$(wc -l < "$stat_count" | tr -d '[:space:]')"
     printf '%s\n' "$elapsed" >> "$elapsed_file"
@@ -90,8 +90,8 @@ case "$platform" in
   *) platform_label="$(printf '%s' "$platform" | tr '[:upper:]' '[:lower:]')" ;;
 esac
 
-sample_6000="$(measure_size 6000)"
-sample_18000="$(measure_size 18000)"
+sample_6000="$(measure_size 6000)" || exit 1
+sample_18000="$(measure_size 18000)" || exit 1
 printf '%s\n' "$sample_6000" "$sample_18000"
 printf 'platform=%s\n' "$platform_label"
 

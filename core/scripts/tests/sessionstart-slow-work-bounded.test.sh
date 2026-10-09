@@ -311,6 +311,9 @@ dispatch() {
   local sid="$1" lanes_mode="$2" company="${3:-indigo}" preflight_mode="${4:-fast}" \
     mesh_mode="${5:-slow}" repair_mode="${6:-fast}" cwd="${7:-$FIX}" start end payload
   make_session "$sid" "$company"
+  mkdir -p "$FIX/workspace/lanes/lanes"
+  printf '{"lane_id":"fixture-%s","state":"running","senior":{"kind":"session","id":"%s"}}\n' \
+    "$sid" "$sid" > "$FIX/workspace/lanes/lanes/fixture-$sid.json"
   payload="$(jq -nc --arg sid "$sid" --arg cwd "$cwd" \
     '{hook_event_name:"SessionStart",source:"startup",session_id:$sid,cwd:$cwd,engine:"claude"}')"
   start="$(now_ms)"

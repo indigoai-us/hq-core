@@ -104,7 +104,7 @@ chmod +x "$TMP/root/core/scripts/remove-stray-gate-hooks.sh"
 
 # Keep hq and npm under test in the first PATH directory while keeping the
 # updater from discovering unrelated host-installed hq/pnpm binaries.
-for utility in awk bash cat date dirname grep head mkdir mktemp mv nohup perl pkill rm sed setsid sh sleep stat timeout tr uname; do
+for utility in awk bash cat cksum date dirname grep head mkdir mktemp mv nohup perl pkill rm sed setsid sh sleep stat timeout tr uname; do
   add_shadow_tool "$utility"
 done
 TEST_PATH="$TMP/bin:$TMP/shadow-tools"
@@ -118,6 +118,7 @@ run_timed() {
   timeout "${seconds}s" env \
     BASH_ENV= \
     HQ_ROOT="$TMP/root" \
+    HQ_UPDATE_CHECK_STATE_DIR="$TMP/$label.update-state" \
     CLAUDE_PROJECT_DIR="$TMP/root" \
     HQ_CHECKPOINT_RUNTIME=codex \
     HQ_TEST_HQ_MODE="$mode" \

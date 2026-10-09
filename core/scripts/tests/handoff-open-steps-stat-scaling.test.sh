@@ -87,19 +87,25 @@ perl_large="$(measure_stat_calls 300 perl-large perl)"
 assert_non_scaling 'Perl File::Find fallback branch' "$perl_small" "$perl_large"
 
 # A missing thread directory must not make a supported GNU find look unsupported.
-missing_root="$TMP/missing-thread-root"
-perl_call_file="$TMP/perl-called-for-missing-threads"
-mkdir -p "$missing_root"
-: > "$perl_call_file"
-HQ_ROOT="$missing_root" \
-  PATH="$NO_PERL_BIN:$BIN:$PATH" \
-  STAT_COUNT_FILE="$TMP/missing-root.stat-count" \
-  REAL_STAT="$REAL_STAT" \
-  REAL_FIND="$REAL_FIND" \
-  PERL_CALL_FILE="$perl_call_file" \
-  bash "$SCRIPT" list --limit 10 >/dev/null
-if [[ -s "$perl_call_file" ]]; then
-  printf 'FAIL: missing thread directory caused GNU find capability probe to invoke Perl\n' >&2
+# Probe the capability directly, matching handoff-open-steps.sh rather than guessing by OS.
+if "$REAL_FIND" "$TMP" -prune -printf '' >/dev/null 2>&1; then
+  missing_root="$TMP/missing-thread-root"
+  perl_call_file="$TMP/perl-called-for-missing-threads"
+  mkdir -p "$missing_root"
+  : > "$perl_call_file"
+  HQ_ROOT="$missing_root" \
+    PATH="$NO_PERL_BIN:$BIN:$PATH" \
+    STAT_COUNT_FILE="$TMP/missing-root.stat-count" \
+    REAL_STAT="$REAL_STAT" \
+    REAL_FIND="$REAL_FIND" \
+    PERL_CALL_FILE="$perl_call_file" \
+    bash "$SCRIPT" list --limit 10 >/dev/null
+  if [[ -s "$perl_call_file" ]]; then
+    printf 'FAIL: missing thread directory caused GNU find capability probe to invoke Perl\n' >&2
+    exit 1
+  fi
+  printf 'PASS: GNU find -printf capability probe succeeds when the thread directory is missing\n'
+else
+  printf 'FAIL: GNU find -printf is required by the handoff stat-scaling test; this find lacks that capability\n' >&2
   exit 1
 fi
-printf 'PASS: GNU find -printf capability probe succeeds when the thread directory is missing\n'

@@ -1186,7 +1186,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       scope_key="${scope_hash%% *}"
       CACHE_DIR="$HQ_ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"
       if [ -n "$scope_key" ]; then
-        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v5" "$STATS_DIR" 2>/dev/null || true
+        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v5" "$CACHE_DIR/eval-v6" "$STATS_DIR" 2>/dev/null || true
       fi
       if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
@@ -1241,12 +1241,38 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   EVAL_CACHE_STATUS=""
   EVAL_CACHE_FILE=""
   EVAL_CACHE_DIR=""
+  # Staleness inputs (see staleness() in the evaluator): today's UTC date and
+  # the durable retrieval ledger written by record-policy-retrieval.sh.
+  # HQ_INJECT_PERSONAL_SOFT=1 re-enables personal soft policies (default 0, D4).
+  STALE_TODAY="${HQ_POLICY_STALE_TODAY:-$(date -u +%Y-%m-%d 2>/dev/null || true)}"
+  STALE_LEDGER="$HQ_ROOT/workspace/orchestrator/policy-retrieval-ledger.jsonl"
+  [ -r "$STALE_LEDGER" ] || STALE_LEDGER=""
+  INJECT_PERSONAL_SOFT="${HQ_INJECT_PERSONAL_SOFT:-0}"
   if [ -n "$CACHE_FILE" ] && [ "$CACHE_WRITE" != "1" ]; then
-    eval_session_hash="$(printf '%s' "${SESSION_ID:-default}" | policy_hash 2>/dev/null || true)"
-    eval_session_key="${eval_session_hash%% *}"
+    eval_session_key=""
+    eval_slot=""
+    if [ "$EVENT" = "SessionStart" ]; then
+      # SessionStart work repeats in each new session. Share only when every
+      # input that can change the evaluator result is identical. The session
+      # ledgers remain inputs, so a non-empty or otherwise distinct ledger
+      # never reuses another session's answer.
+      eval_session_key="sessionstart"
+      eval_slot="sessionstart"
+    else
+      eval_session_hash="$(printf '%s' "${SESSION_ID:-default}" | policy_hash 2>/dev/null || true)"
+      eval_session_key="${eval_session_hash%% *}"
+      eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))" 2>/dev/null || true)"
+    fi
+    retrieval_ledger_key="none"
+    if [ -n "$STALE_LEDGER" ]; then
+      retrieval_ledger_hash="$(policy_hash "$STALE_LEDGER" 2>/dev/null || true)"
+      retrieval_ledger_key="${retrieval_ledger_hash%% *}"
+    fi
     eval_input_hash="$(
       {
-        printf '%s\034%s\034%s\034%s\034' "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS"
+        printf '%s\034%s\034%s\034%s\034%s\034%s\034%s\034%s\034' \
+          "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" \
+          "${HQ_POLICY_TOOL_EVENTS:-}" "$STALE_TODAY" "$INJECT_PERSONAL_SOFT" "$retrieval_ledger_key"
         append_policy_ledger "$DEDUPE_FILE"
         printf '\034'
         append_policy_ledger "$TURN_FILE"
@@ -1254,17 +1280,25 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       } | policy_hash 2>/dev/null || true
     )"
     eval_input_key="${eval_input_hash%% *}"
-    if [ -n "$eval_session_key" ] && [ -n "$eval_input_key" ]; then
+    if [ -n "$eval_session_key" ] && [ -n "$eval_slot" ] && [ -n "$eval_input_key" ] \
+      && { [ -z "$STALE_LEDGER" ] || [ -n "$retrieval_ledger_key" ]; }; then
       # Evaluation entries contain grammar verdicts, unlike the parsed-policy
       # cache above. A parser change can therefore make an otherwise matching
       # v3 entries were produced by a case-sensitive evaluator. Keep parsed
       # records at v1, but namespace evaluation results by evaluator semantics
       # so old verdicts cannot survive case-insensitive trigger matching.
-      EVAL_CACHE_DIR="$CACHE_DIR/eval-v5"
+      if [ "$EVENT" = "SessionStart" ]; then
+        EVAL_CACHE_DIR="$CACHE_DIR/eval-v6"
+      else
+        EVAL_CACHE_DIR="$CACHE_DIR/eval-v5"
+      fi
       if [ -d "$EVAL_CACHE_DIR" ]; then
-        eval_slot="$(printf '%02x' "$((16#${eval_session_key:0:2} % 64))")"
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
-        EVAL_CACHE_HEADER="hq-policy-eval-v5${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+        if [ "$EVENT" = "SessionStart" ]; then
+          EVAL_CACHE_HEADER="hq-policy-eval-v6${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_input_key}"
+        else
+          EVAL_CACHE_HEADER="hq-policy-eval-v5${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+        fi
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
           IFS= read -r eval_cache_header < "$EVAL_CACHE_FILE" || true
@@ -1283,13 +1317,6 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       fi
     fi
   fi
-  # Staleness inputs (see staleness() in the evaluator): today's UTC date and
-  # the durable retrieval ledger written by record-policy-retrieval.sh.
-  # HQ_INJECT_PERSONAL_SOFT=1 re-enables personal soft policies (default 0, D4).
-  STALE_TODAY="${HQ_POLICY_STALE_TODAY:-$(date -u +%Y-%m-%d 2>/dev/null || true)}"
-  STALE_LEDGER="$HQ_ROOT/workspace/orchestrator/policy-retrieval-ledger.jsonl"
-  [ -r "$STALE_LEDGER" ] || STALE_LEDGER=""
-  INJECT_PERSONAL_SOFT="${HQ_INJECT_PERSONAL_SOFT:-0}"
   if [ "${#POLICY_FILES[@]}" -gt 0 ]; then
     policy_evaluator() {
       # The ledgers are read from files with getline. This preserves the

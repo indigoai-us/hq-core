@@ -248,6 +248,23 @@ escape check, the inherited `HQ_SPAWN_*` and `HQ_PARENT_SESSION_ID` exports,
 waiter. `/run-project` dispatches its stories the same way, so the launch block
 lives in one file rather than drifting between two.
 
+In practice that block is two scripts (protocol §3 to §5 name them), driven
+with literal arguments. Scope hooks reject Bash commands whose path arguments
+are unexpanded `$VAR`s or heredocs that write into a run dir, so never build
+the run dir path in a variable:
+
+1. `bash core/scripts/conduct-lane-launch.sh mint --lane {worker}` prints the
+   fresh run dir.
+2. Write `{run dir}/brief.md` with the file tool (Write), using the literal path
+   it printed.
+3. `bash core/scripts/conduct-lane-launch.sh start --run-dir {run dir} --worker {worker} --tier {tier} --timeout {secs} --cd {absolute work dir}`.
+   It reads the session's engine, model and effort pins, resolves the company
+   from session state, launches through `hq-detach.sh`, proves the escape and
+   records the slot running. Exit 2 means no company is bound.
+4. `bash core/scripts/conduct-lane-wait.sh --run-dir {run dir}` as a background
+   call. It exits 0 on a clean finish; 10, 11, 12 for died, never-started and
+   deadline; 13 when an engine process survived and the slot stays running.
+
 The conduct-specific parts are only these:
 
 - **Run dir:** the protocol mints it — `{caller}` = `conduct`,
@@ -391,6 +408,69 @@ bash core/scripts/conduct-pool.sh list
 Render it as worker id, status, last task, and run id — the JSON is for you, not
 for the user. Then render the lane rows (Step 7). Decisions never go inside a
 widget; they follow it through `/decision-queue`.
+
+## Step 6R: Role lanes (`/conduct --workers`)
+
+When the session was started with `--workers`, `conduct_lane_roles` is set in
+session meta and these rules replace Step 2's registry match. Read the roles
+and pins with `bash core/scripts/conduct-workers.sh roles`. The engine, model
+and effort were fixed at startup; `conduct-lane-launch.sh start` applies them to
+every lane, so never pass a different model to one lane.
+
+**Route each task to a role.** Pick the one role from the session's list whose
+work the task is: UI behavior → `frontend`, visual polish → `designer`,
+services and data → `backend`, verification → `qa`, release batching →
+`orchestrator`. A task that fits no listed role goes to the closest one; say
+which in the one-line reply. Get the slot id with
+`bash core/scripts/conduct-workers.sh lane-id --role {role}`. When that slot is
+running (assign exit 4) and the new task is independent of the running one,
+open a second slot for the same role with `--slug {short-task-slug}` — it
+prints `conduct:{role}-{slug}` — within the pool cap. Dependent tasks queue
+behind the running lane instead.
+
+**Brief from the role template.** `bash core/scripts/conduct-workers.sh template --role {role}`
+prints the template path (`roles/{role}.md`, else `roles/generic.md`). Read it,
+fill every `{placeholder}` (goal, done criteria, repo path, GitHub repo, branch,
+worktree slug, company, run dir, files to avoid that other lanes own), delete
+what does not apply, and write it to the run dir with the file tool. The
+templates already carry the standing rules: worktree off `origin/main` under
+`workspace/worktrees/{repo}/{slug}`, repo-anchored git, push through the gh
+login credential helper, the company's UI rules, a changelog entry when the
+repo requires one, targeted tests plus typecheck and lint, harness screenshots
+into `{run dir}/shots/` for UI work, one PR that is never merged by the lane.
+
+**CI check after every PR.** When a lane reports a PR URL, verify it exists,
+then run the bounded check as a background call:
+
+```bash
+bash core/scripts/conduct-workers.sh ci --pr "{pr url}" --timeout 1200
+```
+
+Exit 0 is green. Exit 1 lists the failing checks: count the round with
+`bash core/scripts/conduct-workers.sh ci-round --pr "{pr url}"`, pull a short
+log excerpt (`gh run view {run id} -R {owner/repo} --log-failed`, last 60
+lines), and resume the **same role slot** with a brief that names the PR, the
+branch, the failing check names and the excerpt. Exit 4 from `ci-round` means
+three fix rounds are spent: stop resuming and take it to the owner through
+`/decision-queue`. Exit 2 (still pending at the timeout) re-arms the check
+once; exit 3 means gh could not report checks, which is never a pass.
+
+**QA lane for UI work.** After a PR's CI is green, run
+`bash core/scripts/conduct-workers.sh needs-qa --role {role} --pr "{pr url}"`. Exit 0
+means the change touches UI (a frontend or designer lane, or svelte, tsx, jsx,
+vue, css or html files): dispatch a `qa` lane from `roles/qa.md` with the PR
+URL, the original ask and its done criteria. The QA lane is read-only. Its
+findings go back to the role slot that owns the PR as a new brief; a QA `fail`
+counts as a CI round. Skip this when the session has no `qa` role, and say so
+once.
+
+**Orchestrator and release.** When the session's PRs are green (and QA passed
+where it ran), dispatch the `orchestrator` role from `roles/orchestrator.md`
+with the list of PRs. It dispatches the full CI suite on each head — PR CI
+often skips most jobs — and returns one readiness summary. Merge and release
+are the owner's: relay the summary, ask once through `/decision-queue`, and
+only after an explicit yes send a new brief that quotes the approval and
+carries the merge.
 
 ## Step 7: End every turn with one row per running lane
 

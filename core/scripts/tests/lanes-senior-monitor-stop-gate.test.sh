@@ -54,6 +54,11 @@ NODE_ONLY_DIR="$TMP/node-only"
 mkdir -p "$FIX/.claude/hooks" "$FIX/core/hooks" "$FIX/core/scripts/lib" "$BIN" "$NODE_ONLY_DIR"
 ln -s "$NODE_BIN" "$NODE_ONLY_DIR/node"
 cp "$AUTO_BIND_SRC" "$FIX/core/scripts/lib/session-auto-bind.sh"
+# Keep this shell-wiring fixture on the CLI path. Lane-presence behavior is
+# exercised separately by lanes-senior-monitor-fast-exit.test.sh.
+mkdir -p "$FIX/workspace/lanes/lanes"
+printf '%s\n' '{"lane_id":"fixture-lane","state":"running","senior":{"kind":"session","id":"senior-1"}}' \
+  > "$FIX/workspace/lanes/lanes/fixture-lane.json"
 cp "$MASTER_SRC" "$FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ADAPTER_CORE_SRC" "$FIX/core/scripts/lib/hook-adapter-core.sh"
@@ -321,7 +326,13 @@ run_reminder "$WRAP_SS" SessionStart
 assert_empty "$ROUT" "SessionStart refresh output"
 SESSION_START_CALLS_AFTER="$(stub_call_count)"
 [ "$SESSION_START_CALLS_AFTER" = "$((SESSION_START_CALLS_BEFORE + 1))" ] \
-  && pass "SessionStart always launches hq" || fail "SessionStart reused the monitor cache"
+  && pass "SessionStart refreshes despite a fresh monitor cache" || fail "SessionStart did not refresh a fresh monitor cache"
+make_monitor_cache_stale "$MONITOR_CACHE"
+SESSION_START_STALE_CALLS_BEFORE="$(stub_call_count)"
+run_reminder "$WRAP_SS" SessionStart
+SESSION_START_STALE_CALLS_AFTER="$(stub_call_count)"
+[ "$SESSION_START_STALE_CALLS_AFTER" = "$((SESSION_START_STALE_CALLS_BEFORE + 1))" ] \
+  && pass "SessionStart refreshes an expired monitor cache" || fail "SessionStart reused an expired monitor cache"
 
 echo "[2a] SessionStart monitor-check timeout is a quiet skip; prompt path still reminds"
 rm -rf "$TMP/cache"
@@ -508,7 +519,7 @@ assert_not_contains "$MOUT" 'CLI-REMINDER' "master no-lane reminder silence"
 echo "[2c] named master sibling mutation"
 REM_MUT="$TMP/mutation-reminder-master-sibling.sh"
 cp "$REMINDER_SRC" "$REM_MUT"
-sed -i '/# ACTIVE_LANES_EMPTY_MUST_STAY_SILENT/{n;s/exit 0/exit 1;/;}' "$REM_MUT"
+sed -i '/# EMPTY_SESSION_GUARD_MUST_STAY_QUIET/{n;s/\[ "$SESSION_LANE_STATUS" -eq 1 \] \&\& exit 0/exit 1;/;}' "$REM_MUT"
 MUT_SIBLING_FIX="$TMP/reminder-master-mut"
 mkdir -p "$MUT_SIBLING_FIX"
 cp -R "$SIBLING_FIX/." "$MUT_SIBLING_FIX/"
@@ -667,15 +678,23 @@ fi
 
 REM_MUT="$TMP/mutation-monitor-cache-session-start.sh"
 cp "$REMINDER_SRC" "$REM_MUT"
-sed -i '/# SESSION_START_MUST_BYPASS_CACHE/{n;s/|| return 0/\&\& return 0/;}' "$REM_MUT"
+sed -i 's/    UserPromptSubmit) ;;/    SessionStart|UserPromptSubmit) ;;/;' "$REM_MUT"
 rm -rf "$TMP/direct-cache"
 reset_stub active-a
 run_direct "$REMINDER_SRC" "$REMINDER_PAYLOAD_SS" "$PATH_WITH_HQ" claude
 CACHE_SESSION_START_CALLS_BEFORE="$(stub_call_count)"
-run_direct "$REM_MUT" "$REMINDER_PAYLOAD_SS" "$PATH_WITH_HQ" claude
+run_direct "$REMINDER_SRC" "$REMINDER_PAYLOAD_SS" "$PATH_WITH_HQ" claude
 CACHE_SESSION_START_CALLS_AFTER="$(stub_call_count)"
-if [ "$CACHE_SESSION_START_CALLS_AFTER" = "$CACHE_SESSION_START_CALLS_BEFORE" ]; then
-  echo "MUTATION_RED: monitor_cache_session_start / SessionStart must refresh"
+if [ "$CACHE_SESSION_START_CALLS_AFTER" = "$((CACHE_SESSION_START_CALLS_BEFORE + 1))" ]; then
+  pass "SessionStart refreshes rather than reusing a fresh result"
+else
+  fail "SessionStart reused a fresh monitor-check result"
+fi
+MUTANT_CALLS_BEFORE="$(stub_call_count)"
+run_direct "$REM_MUT" "$REMINDER_PAYLOAD_SS" "$PATH_WITH_HQ" claude
+MUTANT_CALLS_AFTER="$(stub_call_count)"
+if [ "$MUTANT_CALLS_AFTER" = "$MUTANT_CALLS_BEFORE" ]; then
+  echo "MUTATION_RED: monitor_cache_session_start / SessionStart must bypass fresh cache"
   pass "monitor_cache_session_start"
 else
   fail "mutation monitor_cache_session_start did not go red"

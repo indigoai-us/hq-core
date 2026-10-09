@@ -8,6 +8,7 @@ PASS=0
 FAIL=0
 fail() { echo "FAIL: $*" >&2; FAIL=$((FAIL + 1)); }
 pass() { echo "PASS: $*"; PASS=$((PASS + 1)); }
+now_ms() { perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000'; }
 
 SESSION_START="$REPO_ROOT/core/hooks/SessionStart/35-work-mesh-session-start.sh"
 TURN_START="$REPO_ROOT/core/hooks/UserPromptSubmit/35-work-mesh-turn-start.sh"
@@ -66,35 +67,41 @@ if [ "$1" = "mesh" ] && [ "$2" = "daemon" ] && [ "$3" = "status" ] && [ "$4" = "
   [ -z "${HQ_DAEMON_STATUS_CALLS:-}" ] || printf 'status\n' >> "$HQ_DAEMON_STATUS_CALLS"
   printf '%s\n' "${HQ_DAEMON_STATUS_JSON:-}"
 elif [ "$1" = "mesh" ] && [ "$2" = "context" ] && [ "$3" = "default" ] && [ "$4" = "get" ] && [ "$5" = "--json" ]; then
+  [ -z "${HQ_PREFLIGHT_DEFAULT_CALLS:-}" ] || printf 'default\n' >> "$HQ_PREFLIGHT_DEFAULT_CALLS"
   printf '%s\n' "${HQ_DEFAULT_COMPANY_JSON:-}"
 elif [ "$1" = "mesh" ] && [ "$2" = "context" ] && [ "$3" = "reconcile" ]; then
   [ -z "${HQ_RECONCILE_PID_FILE:-}" ] || printf '%s\n' "$$" >> "$HQ_RECONCILE_PID_FILE"
   observation=""
+  offline=0
   shift 3
   while [ $# -gt 0 ]; do
     case "$1" in
       --observation-file) observation="${2:-}"; shift 2 ;;
+      --offline) offline=1; shift ;;
       *) shift ;;
     esac
   done
+  if [ "$offline" -eq 1 ]; then
+    [ -z "${HQ_PREFLIGHT_CALLS:-}" ] || printf 'offline\n' >> "$HQ_PREFLIGHT_CALLS"
+    [ -z "${HQ_PREFLIGHT_DELAY:-}" ] || sleep "$HQ_PREFLIGHT_DELAY"
+  fi
   if [ -n "${HQ_RECONCILE_CAPTURE:-}" ] && [ -n "$observation" ]; then
     cat "$observation" >> "$HQ_RECONCILE_CAPTURE"
   fi
   if [ "${HQ_RECONCILE_SLEEP:-0}" != "0" ]; then
     sleep "$HQ_RECONCILE_SLEEP"
   fi
-  if [ "${HQ_RECONCILE_WRITE_STATE:-}" = "1" ] && [ -n "$observation" ]; then
-    sid="$(jq -r '.identity.sessionId // empty' "$observation")"
-    if [ -n "$sid" ]; then
-      mkdir -p "${HQ_WORK_CONTEXT_ROOT}/sessions"
-      printf '{"sessionId":"%s","contextStatus":"needs_project"}\n' "$sid" > "${HQ_WORK_CONTEXT_ROOT}/sessions/$sid.json"
-    fi
-  fi
   result="${HQ_RECONCILE_RESULT:-}"
   if [ -n "$observation" ] && command -v jq >/dev/null 2>&1; then
     sid="$(jq -r '.identity.sessionId // empty' "$observation")"
     op="$(jq -r '.clientOperationId // empty' "$observation")"
     result="$(printf '%s' "$result" | jq -c --arg sid "$sid" --arg op "$op" 'if type == "object" then .sessionId = $sid | .clientOperationId = $op else . end' 2>/dev/null || printf '%s' "$result")"
+  fi
+  if [ "$offline" -eq 1 ] && [ "${HQ_RECONCILE_WRITE_STATE:-}" = "1" ] && [ -n "$observation" ]; then
+    sid="$(jq -r '.identity.sessionId // empty' "$observation")"
+    mkdir -p "${HQ_WORK_CONTEXT_ROOT}/sessions/$sid"
+    printf '%s\n' "$result" > "${HQ_WORK_CONTEXT_ROOT}/sessions/$sid.json"
+    printf '%s\n' "${HQ_RECONCILE_BOARD:-board context}" > "${HQ_WORK_CONTEXT_ROOT}/sessions/$sid/board.md"
   fi
   printf '%s\n' "$result"
 fi
@@ -364,7 +371,177 @@ jq -e '.company_slug == "acme"' "$HQ/workspace/sessions/$SID/scope-capability.js
   && pass "preflight-created state does not block new-session scope binding" \
   || fail "preflight-created state blocked new-session scope binding"
 
-# --- 2f) every CLI preflight fixture is accepted; shapes outside the set are not ---
+# --- 2f) SessionStart cache keeps synchronous binding output and caches only fresh results ---
+reset_spool
+cp "$SESSION_START" "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh"
+cache_calls="$SANDBOX/preflight-cache-calls"
+cache_default_calls="$SANDBOX/preflight-cache-default-calls"
+cache_conflict_cwd="$HQ/companies/otherco/projects/cache-conflict"
+cache_project_cwd="$HQ/companies/acme/projects/cache-project"
+cache_run() {
+  local cache_case=$1 cache_mode=$2 cache_sid="sid-cache-${1}-${2}" cache_cwd="$cache_project_cwd"
+  if [ "${3:-}" ]; then cache_cwd=$3
+  elif [ "$cache_case" = company_conflict ]; then cache_cwd="$cache_conflict_cwd"; fi
+  rm -f "$HOME_DIR/.hq/work-context/sessions/$cache_sid.json" "$HOME_DIR/.hq/work-context/sessions/$cache_sid/board.md"
+  rm -f "$HQ/workspace/sessions/$cache_sid/meta.yaml" "$HQ/workspace/sessions/$cache_sid/scope-capability.json"
+  local fixture
+  fixture="$(preflight_fixture "$cache_case")"
+  if [ "$cache_case" = needs_project ]; then
+    fixture="$(printf '%s' "$fixture" | jq -c '. + {decision:{decisionId:"decision-fixture",askAfter:true,options:[{optionId:"existing",label:"Existing project"}]}}')"
+  fi
+  env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" \
+    WORK_MESH_SPOOL="$WORK_MESH_SPOOL" WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" \
+    HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
+    HQ_AGENT_IDENTITY_FILE="$SANDBOX/agent-identity.json" \
+    HQ_WORK_MESH_RECONCILE_STUB=0 HQ_RECONCILE_RESULT="$fixture" HQ_RECONCILE_WRITE_STATE=1 \
+    HQ_PREFLIGHT_CALLS="$cache_calls" HQ_PREFLIGHT_DEFAULT_CALLS="$cache_default_calls" HQ_PREFLIGHT_DELAY=0.35 \
+    HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
+    CLAUDE_CODE_SESSION_ID="$cache_sid" \
+    bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
+    <<<"{\"session_id\":\"$cache_sid\",\"cwd\":\"$cache_cwd\"}" \
+    >"$SANDBOX/$cache_case-$cache_mode.out" 2>"$SANDBOX/$cache_case-$cache_mode.err" || local hook_rc=$?
+  printf '%s\n' "${hook_rc:-0}" >"$SANDBOX/$cache_case-$cache_mode.rc"
+  if [ -f "$HQ/workspace/sessions/$cache_sid/meta.yaml" ]; then
+    grep -E '^(company_slug|company_source):' "$HQ/workspace/sessions/$cache_sid/meta.yaml" >"$SANDBOX/$cache_case-$cache_mode.meta"
+  else
+    : >"$SANDBOX/$cache_case-$cache_mode.meta"
+  fi
+}
+cache_turn_start() {
+  local sid=$1 output=$2
+  env HOME="$HOME_DIR" WORK_MESH_HOME="$HOME_DIR" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
+    WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" CLAUDE_CODE_SESSION_ID="$sid" \
+    bash "$TURN_START" <<<"{\"session_id\":\"$sid\",\"prompt\":\"help me choose project\"}" \
+    >"$output" 2>"$output.err"
+}
+: >"$cache_calls"
+: >"$cache_default_calls"
+for cache_case in needs_project company_conflict; do
+  mkdir -p "$HOME_DIR/.hq/work-context"
+  printf '{"defaultCompany":"initial-%s"}\n' "$cache_case" > "$HOME_DIR/.hq/work-context/config.json"
+  mkdir -p "$cache_project_cwd/.git"
+  git -C "$cache_project_cwd" init -q
+  if [ "$cache_case" = company_conflict ]; then
+    mkdir -p "$cache_conflict_cwd"
+    git -C "$cache_conflict_cwd" init -q
+  fi
+  cache_run "$cache_case" missing
+  cp "$SANDBOX/$cache_case-missing.out" "$SANDBOX/$cache_case-reference.out"
+  cp "$SANDBOX/$cache_case-missing.err" "$SANDBOX/$cache_case-reference.err"
+  cp "$SANDBOX/$cache_case-missing.meta" "$SANDBOX/$cache_case-reference.meta"
+  cp "$SANDBOX/$cache_case-missing.rc" "$SANDBOX/$cache_case-reference.rc"
+  cp "$HOME_DIR/.hq/work-context/sessions/sid-cache-$cache_case-missing.json" "$SANDBOX/$cache_case-reference.state"
+  cp "$HOME_DIR/.hq/work-context/sessions/sid-cache-$cache_case-missing/board.md" "$SANDBOX/$cache_case-reference.board"
+  if [ "$cache_case" = needs_project ]; then
+    cache_turn_start "sid-cache-$cache_case-missing" "$SANDBOX/$cache_case-reference.turn"
+  fi
+  jq '.createdAt -= 60' "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json" \
+    > "$SANDBOX/aged-cache.json" && mv "$SANDBOX/aged-cache.json" "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json"
+  cache_created_before="$(jq -r '.createdAt' "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json")"
+  cache_run "$cache_case" fresh
+  cmp -s "$SANDBOX/$cache_case-reference.out" "$SANDBOX/$cache_case-fresh.out" \
+    && cmp -s "$SANDBOX/$cache_case-reference.err" "$SANDBOX/$cache_case-fresh.err" \
+    && cmp -s "$SANDBOX/$cache_case-reference.meta" "$SANDBOX/$cache_case-fresh.meta" \
+    && cmp -s "$SANDBOX/$cache_case-reference.rc" "$SANDBOX/$cache_case-fresh.rc" \
+    && pass "$cache_case fresh-cache output matches synchronous reference" \
+    || fail "$cache_case fresh-cache output differs from synchronous reference"
+  fresh_state="$HOME_DIR/.hq/work-context/sessions/sid-cache-$cache_case-fresh.json"
+  fresh_board="$HOME_DIR/.hq/work-context/sessions/sid-cache-$cache_case-fresh/board.md"
+  state_cmp=missing
+  board_cmp=missing
+  [ -f "$fresh_state" ] && [ -f "$fresh_board" ] \
+    && jq -S 'del(.sessionId,.clientOperationId)' "$fresh_state" >"$SANDBOX/$cache_case-fresh.state.norm" \
+    && jq -S 'del(.sessionId,.clientOperationId)' "$SANDBOX/$cache_case-reference.state" >"$SANDBOX/$cache_case-reference.state.norm" \
+    && { cmp -s "$SANDBOX/$cache_case-fresh.state.norm" "$SANDBOX/$cache_case-reference.state.norm" && state_cmp=match || state_cmp=differ; } \
+    && { cmp -s "$fresh_board" "$SANDBOX/$cache_case-reference.board" && board_cmp=match || board_cmp=differ; } \
+    && [ "$state_cmp" = match ] && [ "$board_cmp" = match ] \
+    && pass "$cache_case cache hit materializes session and board artifacts" \
+    || fail "$cache_case cache hit missed synchronous session or board artifacts"
+  if [ "$cache_case" = needs_project ]; then
+    cache_turn_start "sid-cache-$cache_case-fresh" "$SANDBOX/$cache_case-fresh.turn"
+    sed 's/sid-cache-needs_project-missing/__SID__/g' "$SANDBOX/$cache_case-reference.turn" > "$SANDBOX/$cache_case-reference.turn.norm"
+    sed 's/sid-cache-needs_project-fresh/__SID__/g' "$SANDBOX/$cache_case-fresh.turn" > "$SANDBOX/$cache_case-fresh.turn.norm"
+    cmp -s "$SANDBOX/$cache_case-reference.turn.norm" "$SANDBOX/$cache_case-fresh.turn.norm" \
+      && pass "first UserPromptSubmit matches synchronous decision and board output" \
+      || fail "first UserPromptSubmit differs after cached SessionStart"
+  fi
+  cache_created_after="$(jq -r '.createdAt' "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json")"
+  [ "$cache_created_before" = "$cache_created_after" ] \
+    && pass "$cache_case cache hit preserves original TTL timestamp" \
+    || fail "$cache_case cache hit refreshed the TTL timestamp"
+  before_stale="$(wc -l < "$cache_calls")"
+  mkdir -p "$HOME_DIR/.hq/work-context"
+  printf '{"defaultCompany":"changed-%s"}\n' "$cache_case" > "$HOME_DIR/.hq/work-context/config.json"
+  printf '{"companyUid":"agt_fixture"}\n' > "$SANDBOX/agent-identity.json"
+  cache_run "$cache_case" stale
+  after_stale="$(wc -l < "$cache_calls")"
+  cmp -s "$SANDBOX/$cache_case-reference.out" "$SANDBOX/$cache_case-stale.out" \
+    && cmp -s "$SANDBOX/$cache_case-reference.err" "$SANDBOX/$cache_case-stale.err" \
+    && cmp -s "$SANDBOX/$cache_case-reference.meta" "$SANDBOX/$cache_case-stale.meta" \
+    && cmp -s "$SANDBOX/$cache_case-reference.rc" "$SANDBOX/$cache_case-stale.rc" \
+    && pass "$cache_case stale-cache output matches synchronous reference" \
+    || fail "$cache_case stale-cache output differs from synchronous reference"
+  [ "$after_stale" -gt "$before_stale" ] \
+    && pass "$cache_case config or agent-identity change invalidates preflight cache" \
+    || fail "$cache_case config or agent-identity change reused stale preflight cache"
+  before_ttl_expiry="$(wc -l < "$cache_calls")"
+  jq '.createdAt -= 301' "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json" \
+    > "$SANDBOX/expired-cache.json" && mv "$SANDBOX/expired-cache.json" "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json"
+  cache_run "$cache_case" ttl_expired
+  after_ttl_expiry="$(wc -l < "$cache_calls")"
+  [ "$after_ttl_expiry" -gt "$before_ttl_expiry" ] \
+    && pass "$cache_case expired TTL forces synchronous preflight" \
+    || fail "$cache_case expired TTL reused the preflight cache"
+done
+
+# A cache created with include.path must not survive an included target change.
+include_cwd="$HQ/companies/acme/projects/include-config"
+mkdir -p "$include_cwd"
+git -C "$include_cwd" init -q
+printf '[remote "origin"]\n  url = https://example.test/initial.git\n' > "$SANDBOX/git-include.config"
+git -C "$include_cwd" config include.path "$SANDBOX/git-include.config"
+printf '{"defaultCompany":"include-case"}\n' > "$HOME_DIR/.hq/work-context/config.json"
+before_include_seed="$(wc -l < "$cache_calls")"
+cache_run needs_project include_seed "$include_cwd"
+after_include_seed="$(wc -l < "$cache_calls")"
+printf '[remote "origin"]\n  url = https://example.test/changed.git\n' > "$SANDBOX/git-include.config"
+cache_run needs_project include_changed "$include_cwd"
+after_include_change="$(wc -l < "$cache_calls")"
+[ "$after_include_seed" -gt "$before_include_seed" ] && \
+  [ "$after_include_change" -gt "$after_include_seed" ] \
+  && pass "included git config target change forces synchronous preflight" \
+  || fail "included git config target change reused stale preflight cache"
+
+# Measure the five fresh calls end-to-end, using a single CWD/classification so
+# the first missing run above has populated the same cache key.
+git -C "$cache_project_cwd" config --unset include.path 2>/dev/null || true
+git -C "$cache_conflict_cwd" config --unset include.path 2>/dev/null || true
+git -C "$include_cwd" config --unset include.path 2>/dev/null || true
+mkdir -p "$HOME_DIR/.hq/work-context"
+printf '{"defaultCompany":"timing-key"}\n' > "$HOME_DIR/.hq/work-context/config.json"
+before_timing_seed="$(wc -l < "$cache_calls")"
+cache_run needs_project timing_seed
+expected_cache_calls=$((before_timing_seed + 1))
+cache_times=()
+for cache_sample in 1 2 3 4 5; do
+  cache_started="$(now_ms)"
+  cache_run needs_project "timing-$cache_sample"
+  cache_finished="$(now_ms)"
+  cache_times+=("$((cache_finished - cache_started))")
+done
+cache_median="$(printf '%s\n' "${cache_times[@]}" | sort -n | sed -n '3p')"
+cache_times_text="$(printf '%s,' "${cache_times[@]}")"
+printf 'fresh preflight-cache samples ms=%s median=%s\n' "${cache_times_text%,}" "$cache_median"
+actual_cache_calls="$(wc -l < "$cache_calls")"
+[ "$actual_cache_calls" -eq "$expected_cache_calls" ] \
+  && pass "fresh-cache repeats skip synchronous preflight" \
+  || fail "fresh-cache repeats invoked preflight $actual_cache_calls times, expected $expected_cache_calls"
+actual_default_calls="$(wc -l < "$cache_default_calls")"
+[ "$actual_default_calls" -eq "$expected_cache_calls" ] \
+  && pass "fresh-cache repeats skip device-default lookup" \
+  || fail "fresh-cache repeats invoked device-default lookup $actual_default_calls times, expected $expected_cache_calls"
+
+# --- 2g) every CLI preflight fixture is accepted; shapes outside the set are not ---
 # contractVersion pin is 1. To bump: change this assertion, preflight-fixtures.json,
 # and hq-cli WORK_CONTEXT_CONTRACT_VERSION plus contracts/preflight/v<N>/. A bump
 # on only one side fails that side's pin (and check-preflight-fixtures.sh when
