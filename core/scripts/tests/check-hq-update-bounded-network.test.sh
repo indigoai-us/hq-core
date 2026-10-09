@@ -88,6 +88,7 @@ run_hook() {
     CLAUDE_PROJECT_DIR="$TMP" \
     HQ_TEST_GH_MODE="$mode" \
     HQ_TEST_GH_CALLS="$TMP/$label.gh.calls" \
+    HQ_UPDATE_CHECK_STATE_DIR="$TMP/$label.update-state" \
     PATH="$hook_path" \
     "$BASH_BIN" "$HOOK" > "$TMP/$label.out" 2> "$TMP/$label.err"
   rc=$?
@@ -163,6 +164,7 @@ timeout 8s env \
   BASH_ENV= \
   CLAUDE_PROJECT_DIR="$TMP" \
   HQ_TEST_GH_CALLS="$TMP/no-bounds.gh.calls" \
+  HQ_UPDATE_CHECK_STATE_DIR="$TMP/no-bounds.update-state" \
   PATH="$TMP/no-bounds-bin" \
   "$BASH_BIN" "$HOOK" > "$TMP/no-bounds.out" 2> "$TMP/no-bounds.err" || no_bounds_rc=$?
 [ ! -s "$TMP/no-bounds.gh.calls" ] \

@@ -528,7 +528,15 @@ machine_counts() {
     n=$((n + 1))
   done < "$TMP_POOL/own.pids"
   [ "$n" -eq 0 ] || printf '%s %s\n' "$SESSION_ID" "$n"
-  for meta in "$SESSIONS_DIR"/*/meta.yaml; do
+  # A machine can hold thousands of session dirs, and reading each meta.yaml
+  # line by line in bash made assign take minutes. Only a file with a running or
+  # claimed slot line can add to the count, so one grep pass (batched by find,
+  # so no argument-length limit) narrows the walk to those files. The block
+  # parse below still decides what counts.
+  find "$SESSIONS_DIR" -mindepth 2 -maxdepth 2 -name meta.yaml -type f \
+    -exec grep -l -E '^    status: "?(running|claimed)' {} + 2>/dev/null \
+    > "$TMP_POOL/live-metas" || true
+  while IFS= read -r meta || [ -n "$meta" ]; do
     [ -f "$meta" ] || continue
     sid="$(basename "$(dirname "$meta")")"
     [ "$sid" = "$SESSION_ID" ] && continue
@@ -556,7 +564,7 @@ machine_counts() {
       if [ -z "$pd" ] || pid_alive "$pd"; then n=$((n + 1)); fi
     fi
     [ "$n" -eq 0 ] || printf '%s %s\n' "$sid" "$n"
-  done
+  done < "$TMP_POOL/live-metas"
 }
 
 # Refuse (exit 6, lock released) when one more claimed slot would put the

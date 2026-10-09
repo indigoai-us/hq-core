@@ -20,6 +20,7 @@ Multi-worker audit pipeline: Scout → Auditor → Curator. Detects stale conten
 /garden --resume {run-id}              # Resume interrupted run
 /garden --status                       # Show active/past garden runs
 /garden policies [--dry-run]           # Retire personal + active-company policies by evidence
+/garden policies --deep                # Reviewed trim: full-read every policy, approve per group, delete with backup
 ```
 
 ---
@@ -62,6 +63,95 @@ below. The approval gates there do not apply to this pass.
 `--dry-run` lists candidates without retiring anything. Use it for a first
 run on a new machine, review the list against the rules above yourself, then
 run for real.
+
+---
+
+## Deep Policies Pass (`/garden policies --deep`)
+
+A reviewed trim for a policy corpus that has grown past what usage evidence
+can thin out. Subagents read every policy in full and assign a verdict; the
+user approves each verdict group; approved files are backed up and deleted.
+Unlike the evidence pass above, every destructive step waits for the user.
+The mechanical steps run through `core/scripts/garden-policy-deep.py`; the
+judgment is yours and the reviewers'.
+
+### Scope
+
+- `personal/policies`, plus `companies/<co>/policies` only for companies in
+  the session's locked company set. Ask before adding a company folder.
+- Never `core/policies`. The script refuses it. Core rules change through
+  hq-core-staging.
+- Never move a rule from one company's folder into another's. A rule that
+  belongs to a different company is a delete candidate or stays put.
+
+### Steps
+
+1. **Warn about sync first.** Before any delete, tell the user that deletes
+   in a synced folder propagate to their other machines on the next sync,
+   and that every round is backed up to a tarball that can be restored.
+2. **Inventory.**
+   `python3 core/scripts/garden-policy-deep.py inventory --dir personal/policies [--dir companies/<co>/policies] --out workspace/reports/garden/deep-<YYYY-MM-DD>`
+   It prints counts, already-retired files, frontmatter that does not parse,
+   retrieval bands, and creation months, and writes review batches.
+   Retrieval counts mostly measure how broad a trigger is, not whether a rule
+   helps; do not treat a high count as a reason to keep.
+3. **Repair broken frontmatter** before review, with Edit (quote values that
+   contain `: `, fix orphan lists and invalid `when:` expressions). A policy
+   whose frontmatter does not parse never fires; that is a repair, not a trim.
+4. **Interview** the user with one `AskUserQuestion` about tools, flows, and
+   companies they no longer use. Pass the answers into every reviewer brief.
+5. **Review.** Spawn one `general-purpose` subagent per batch (about 175
+   files each), in parallel, read-only except its output file
+   `<run>/review-NN.json`. The brief must require:
+   - reading every file's full text (print files whole from one python script,
+     in chunks; per-file `cat` may be hook-blocked), never judging from a title
+     or digest line, because a title is not enough to justify a deletion;
+   - one verdict per file from this rubric:
+     - `personal-keep`: the user's own preference, voice, taste, or workflow
+       choice, or something specific to this machine;
+     - `core-policy`: an HQ rule every install would benefit from;
+     - `core-fix`: works around a bug or rough edge in an HQ script, hook, or
+       skill; name the real path (skills live in `.claude/skills/<name>`);
+     - `delete-covered`: core, the charter, or a skill already says it; name it;
+     - `delete-dup`: repeats another kept policy; name the twin;
+     - `delete-generic`: practice a strong model follows unprompted;
+     - `delete-narrow`: an incident note or a one-time API or tool quirk;
+     - `delete-stale`: depends on something gone; cite the missing file,
+       flag, or tool;
+   - keeping hard rules about deletes, secrets, outbound sends, deploy gates,
+     production writes, or company isolation unless a twin or the missing
+     dependency is named;
+   - never writing a `companies/` path literally in a Bash command.
+6. **Merge.** `python3 core/scripts/garden-policy-deep.py merge --out <run>`
+   fails if any file lacks a verdict, and keeps a duplicate whose twin is
+   also flagged. Spot-check a sample of `delete-covered` and `delete-stale`
+   claims yourself before presenting them.
+7. **Decide, one group at a time.** One `AskUserQuestion` per group,
+   recommended option first, with counts and two or three concrete examples:
+   stale and covered; duplicates; narrow soft; narrow hard (read these
+   yourself and propose which to keep); `core-policy` and `core-fix`. For
+   the core groups, offer: delete the personal copies; file them as core work
+   (`/hq-bug` for most users; an hq-core-staging project for maintainers),
+   then delete; or keep until the core change lands. An approval covers only
+   the group asked about.
+8. **Apply each approved group.**
+   `python3 core/scripts/garden-policy-deep.py apply --out <run> --verdict <v> [--verdict <v>] [--enforcement hard|soft] [--exclude <file>]`
+   prints a dry run. Re-run with `--confirm` to tar the files into
+   `workspace/orchestrator/policy-lifecycle/backups/garden-deep-<ts>.tar.gz`,
+   verify the tarball, delete, and log the list to `<run>/applied.log`. This
+   deletes through a script, which bypasses the policy-folder write guard, so
+   say so in the question that asks for approval. If the user prefers, retire
+   instead with `core/scripts/policy-retire.sh`.
+9. **Undo** with `python3 core/scripts/garden-policy-deep.py restore --backup <tarball>`.
+10. **Report.** Write `<run>/report.md`: before and after counts (hard and
+    soft), each round's decision, backup path, and every removed file with
+    its verdict and reason. If the install keeps a generated `_digest.md` for
+    the folder, regenerate it. Give the user the counts, the backup paths,
+    and the report link in plain words.
+
+The pass can repeat: after a first round, run it again on the keeps with a
+stricter bar (keep only personal preferences and safety gates that core does
+not already cover).
 
 ---
 

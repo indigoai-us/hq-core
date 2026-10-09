@@ -156,7 +156,7 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
       if [ "$command" = "derive-trigger-facts" ]; then
         printf '%s\n' \
           '# Node replaces an inherited closed fd 0 with /dev/null; tell the CLI to run its own bundled shell with fd 0 closed.' \
-          'if ! { true <&0; } 2>/dev/null; then' \
+          'if ! { true 3<&0; } 2>/dev/null; then' \
           '  HQ_CORE_STDIN_CLOSED=1' \
           '  export HQ_CORE_STDIN_CLOSED' \
           'fi' \

@@ -126,12 +126,54 @@ Keep two things running:
    ```
    run with `run_in_background: true` and a tool timeout longer than the wait.
    Re-arm it after every read.
-2. `ScheduleWakeup` every 20–30 minutes with this skill's prompt, so the DM
-   inbox and `list_sessions` are checked even when no child reports.
+2. `ScheduleWakeup` every 60 seconds while the owner is present (never
+   slower than 5 minutes; 20–30 minutes only when the owner is away), so the
+   DM inbox and `list_sessions` are checked even when no child reports.
 
 On each wakeup: read the waiter output, drain the link, run the collision
 pass, check comms, invite any new session, append to the overnight log,
 re-arm both. Mark the wakeup `noop: true` when nothing changed.
+
+## Step 8: Delivery and the continuous decision queue
+
+A `conduct-link.sh send` only lands when the child next takes a turn, and a
+child that is blocked waiting on the owner does not take a turn. These rules
+are hard:
+
+- Every relayed answer, instruction, or standing order is sent twice in the
+  same turn: once on the link (the durable record) and once as a direct
+  `send_message` to the child's desktop session id (the wake). The direct
+  message carries the full quoted answer, never a pointer to the mailbox.
+  A link send alone is not delivery.
+- Record each child's desktop session id (the `local_…` value from its
+  join or from `list_sessions`) in the overnight log at join time so wakes
+  never need a lookup.
+- On every wakeup read `conduct-link.sh list`. Any child showing
+  `undelivered > 0` for more than one tick gets a direct `send_message` that
+  repeats the pending instruction and tells it to drain the mailbox. A child
+  whose `send_message` returns "archived" is dropped from the board and
+  logged.
+- Children receive a standing order at join: never ask the owner in their
+  own window; send every decision to the conductor as the exact question,
+  two or three options, recommended option first. On every wakeup, sweep
+  each running child's transcript (`list_events`, small limit) for an open
+  `AskUserQuestion`; if one is found, ask the owner here and wake the child
+  with the quoted answer.
+
+While the owner is in the window, `/decision-queue` runs continuously:
+
+- The moment any report, DM, CI result, or collision produces something only
+  the owner can decide (merge, deploy, publish, release, grant, delete,
+  product choice, unblock), ask it right then with one `AskUserQuestion`,
+  recommended option first. Do not batch, do not wait for the next wakeup,
+  do not park it in the log first.
+- Two or more pending decisions are asked one at a time, in arrival order.
+- Every answer is relayed to the owning child per the delivery rule above,
+  then logged.
+- A wakeup with no pending decision asks nothing.
+
+When the owner is away (`/overnight` running), decisions queue under
+`## Waiting on the owner` and are walked the moment the owner is back.
 
 ## Logging and the morning queue
 

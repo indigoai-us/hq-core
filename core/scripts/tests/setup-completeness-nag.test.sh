@@ -5,7 +5,6 @@
 set -euo pipefail
 
 SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-REPO_ROOT="$(cd "$SRC_ROOT/.." && pwd)"
 STATUS="$SRC_ROOT/scripts/setup-status.sh"
 HOOK="$SRC_ROOT/hooks/SessionStart/20-setup-completeness-nag.sh"
 TMP_ROOT="$(mktemp -d)"
@@ -74,6 +73,13 @@ EOF
 [ -x "$STATUS" ] || fail "status script is not executable: $STATUS"
 [ -x "$HOOK" ] || fail "hook is not executable: $HOOK"
 mkdir -p "$TMP_HOME"
+export HQ_SETUP_NAG_STATE_DIR="$TMP_HOME/state"
+
+state_key() {
+  local state_key
+  state_key="$(printf '%s\n' "$1" | cksum)"
+  printf '%s\n' "${state_key%% *}"
+}
 
 # 1. Empty installs report every required check and the hook points to /setup.
 empty_root="$TMP_ROOT/empty"
@@ -166,8 +172,9 @@ assert_json "$context_after_json" '.checks[] | select(.id == "context-import") |
 # 9. A lock left by an interrupted process expires and does not suppress the nag.
 stale_lock_root="$TMP_ROOT/stale-lock"
 make_hook_root "$stale_lock_root"
-mkdir -p "$stale_lock_root/.claude/state/setup-completeness-nag.lock"
-touch -d '6 minutes ago' "$stale_lock_root/.claude/state/setup-completeness-nag.lock"
+stale_lock="$HQ_SETUP_NAG_STATE_DIR/setup-completeness-nag.$(state_key "$stale_lock_root").lock"
+mkdir -p "$stale_lock"
+touch -d '6 minutes ago' "$stale_lock"
 stale_lock_nag="$(env -u CI HOME="$TMP_HOME" CLAUDE_PROJECT_DIR="$stale_lock_root" \
   HQ_SETUP_NAG_INTERVAL_HOURS=0 bash "$HOOK" </dev/null)"
 assert_contains "$stale_lock_nag" "/setup" "stale setup nag lock recovery"
@@ -175,27 +182,26 @@ assert_contains "$stale_lock_nag" "/setup" "stale setup nag lock recovery"
 # 10. Decimal intervals accept leading zeroes without octal parsing or errors.
 interval_root="$TMP_ROOT/interval"
 make_hook_root "$interval_root"
-mkdir -p "$interval_root/.claude/state"
+mkdir -p "$HQ_SETUP_NAG_STATE_DIR"
 now="$(date +%s)"
-printf '%s\n' "$((now - 9 * 3600))" > "$interval_root/.claude/state/setup-completeness-nag.last"
+interval_stamp="$HQ_SETUP_NAG_STATE_DIR/setup-completeness-nag.$(state_key "$interval_root").last"
+printf '%s\n' "$((now - 9 * 3600))" > "$interval_stamp"
 interval_ten_nag="$(env -u CI HOME="$TMP_HOME" CLAUDE_PROJECT_DIR="$interval_root" \
   HQ_SETUP_NAG_INTERVAL_HOURS=010 bash "$HOOK" </dev/null)"
 assert_empty "$interval_ten_nag" "zero-padded ten-hour interval"
-printf '%s\n' "$((now - 9 * 3600))" > "$interval_root/.claude/state/setup-completeness-nag.last"
+printf '%s\n' "$((now - 9 * 3600))" > "$interval_stamp"
 interval_eight_nag="$(env -u CI HOME="$TMP_HOME" CLAUDE_PROJECT_DIR="$interval_root" \
   HQ_SETUP_NAG_INTERVAL_HOURS=08 bash "$HOOK" </dev/null)"
 assert_contains "$interval_eight_nag" "/setup" "zero-padded eight-hour interval"
-printf '%s\n' "$((now - 9 * 3600))" > "$interval_root/.claude/state/setup-completeness-nag.last"
+printf '%s\n' "$((now - 9 * 3600))" > "$interval_stamp"
 invalid_interval_nag="$(env -u CI HOME="$TMP_HOME" CLAUDE_PROJECT_DIR="$interval_root" \
   HQ_SETUP_NAG_INTERVAL_HOURS=not-a-number bash "$HOOK" </dev/null)"
 assert_empty "$invalid_interval_nag" "non-numeric interval falls back to default"
 
-# 11. The nag throttle and its lock are local hook runtime state, never changes.
-for state_path in \
-  .claude/state/setup-completeness-nag.last \
-  .claude/state/setup-completeness-nag.lock/; do
-  git -C "$REPO_ROOT" check-ignore -q -- "$state_path" \
-    || fail "runtime state is not ignored: $state_path"
-done
+# 11. The nag throttle and its lock stay under host-local state, outside the root.
+[ -f "$HQ_SETUP_NAG_STATE_DIR/setup-completeness-nag.$(state_key "$empty_root").last" ] \
+  || fail 'setup nag did not write its host-local state stamp'
+[ ! -e "$empty_root/.claude/state/setup-completeness-nag.last" ] \
+  || fail 'setup nag wrote per-host runtime state inside the root'
 
 echo "setup-completeness-nag smoke: ok"

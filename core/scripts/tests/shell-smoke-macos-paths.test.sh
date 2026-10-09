@@ -228,4 +228,75 @@ if ! grep -Fq 'bash core/scripts/tests/session-title-windows-argv.test.sh' <<< "
   exit 1
 fi
 
+# --- resumework-timing-linux path filter ---------------------------------
+RESUMEWORK_FILTER="$ROOT/core/scripts/ci/should-run-resumework-timing.sh"
+if [[ ! -x "$RESUMEWORK_FILTER" ]]; then
+  echo 'FAIL: resumework timing filter must exist and be executable' >&2
+  exit 1
+fi
+
+assert_resumework_result() {
+  local expected="$1" label="$2" base="$3" head="$4" actual
+  actual="$(bash "$RESUMEWORK_FILTER" "$base" "$head" "$FIXTURE")"
+  if [[ "$actual" != "run=$expected" ]]; then
+    echo "FAIL: resumework $label expected run=$expected, got: $actual" >&2
+    exit 1
+  fi
+}
+
+resumework_case() {
+  local path="$1" label="$2" expected="$3" base head
+  base="$(git -C "$FIXTURE" rev-parse HEAD)"
+  mkdir -p "$(dirname "$FIXTURE/$path")"
+  printf '%s\n' "$label" > "$FIXTURE/$path"
+  commit_fixture "$label"
+  head="$(git -C "$FIXTURE" rev-parse HEAD)"
+  assert_single_path "$base" "$head" "$path"
+  assert_resumework_result "$expected" "$label" "$base" "$head"
+}
+
+assert_resumework_result false 'documentation-only change' "$doc_base" "$doc_head"
+assert_resumework_result true 'missing base history fails open' '0000000000000000000000000000000000000000' "$(git -C "$FIXTURE" rev-parse HEAD)"
+resumework_case 'tools/timing-input.sh' 'shell source' true
+resumework_case 'core/policies/example-rule.md' 'core policy' true
+resumework_case 'companies/acme/policies/acme-rule.md' 'company policy' true
+resumework_case 'personal/policies/own-rule.md' 'personal policy' true
+resumework_case '.claude/skills/resumework/SKILL.md' 'resumework skill' true
+resumework_case 'core/settings/intent-index.yaml' 'core settings' true
+resumework_case 'core/scripts/derive-helper.mjs' 'node helper under core/scripts' true
+resumework_case '.claude/skills/other-skill/SKILL.md' 'unrelated skill' false
+resumework_case 'core/knowledge/public/notes.md' 'knowledge page' false
+
+resumework_detection_step="$(sed -n '/id: resumework_timing_paths/,/GITHUB_OUTPUT/p' "$WORKFLOW")"
+if ! grep -Fq 'should-run-resumework-timing.sh' <<< "$resumework_detection_step"; then
+  echo 'FAIL: denylist-scan must run the resumework timing path detector' >&2
+  exit 1
+fi
+if ! grep -Fq "resumework_timing: \${{ steps.resumework_timing_paths.outputs.run }}" "$WORKFLOW"; then
+  echo 'FAIL: denylist-scan must expose the resumework timing path decision' >&2
+  exit 1
+fi
+resumework_job="$(awk '
+  /^  resumework-timing-linux:$/ { in_job=1; print; next }
+  in_job && /^  [[:alnum:]_-]+:$/ { exit }
+  in_job { print }
+' "$WORKFLOW")"
+for required in \
+  '    needs: [denylist-scan]' \
+  '!cancelled()' \
+  "github.event_name == 'push'" \
+  "needs['denylist-scan'].result != 'success'" \
+  "needs['denylist-scan'].outputs.resumework_timing == 'true'" \
+  "RESUMEWORK_TIMING_RUNS: '20'" \
+  'run: bash core/scripts/tests/resumework-timing.test.sh'; do
+  if ! grep -Fq -- "$required" <<< "$resumework_job"; then
+    echo "FAIL: resumework-timing-linux must keep: $required" >&2
+    exit 1
+  fi
+done
+if grep -Fq 'always()' <<< "$resumework_job"; then
+  echo 'FAIL: resumework-timing-linux must not override workflow cancellation' >&2
+  exit 1
+fi
+
 echo 'ALL PASS: shell-smoke-macos-paths'

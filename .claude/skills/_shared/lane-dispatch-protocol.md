@@ -70,6 +70,26 @@ prefer codex.
 
 ## 3. The brief goes on disk; the command line carries a path
 
+**The blocks in §3 to §5 ship as two scripts.** `/conduct` drives them, and any
+caller may:
+
+| Step | Script |
+|---|---|
+| §3 mint the run dir | `bash core/scripts/conduct-lane-launch.sh mint --lane {lane} [--caller {caller}]` (prints the dir) |
+| §3 write the brief | the file tool (Write) on `{run dir}/brief.md` — never a heredoc |
+| §4 launch, §5 record | `bash core/scripts/conduct-lane-launch.sh start --run-dir {run dir} --worker {lane-id} --tier {tier} --timeout {secs} --cd {abs dir}` |
+| §5 wait | `bash core/scripts/conduct-lane-wait.sh --run-dir {run dir}` (background call) |
+
+Pass every argument as a literal value. Scope hooks reject Bash commands whose
+path arguments are unexpanded `$VAR`s and heredocs that write into a run dir,
+which is why the brief goes through the file tool. `start` also applies the
+session's engine pins: for `claude` it exports `HQ_WORKFLOW_CLAUDE_PLAN_MODEL`,
+`HQ_WORKFLOW_CLAUDE_EXEC_MODEL` and `HQ_WORKFLOW_CLAUDE_EFFORT` from
+`conduct_child_model` / `conduct_child_effort` in session meta; for `codex` and
+`grok` it exports `HQ_WORKFLOW_MODEL` and `HQ_WORKFLOW_EFFORT`. Flags override
+the meta values. The scripts implement the blocks below exactly; the prose here
+stays the specification, and a change to one is a change to both.
+
 The runner takes `--args` as a JSON string on the command line, so inlining a
 brief there is what makes the invocation fragile under nested quoting and long
 inputs. A lane can read files. Give it a path.

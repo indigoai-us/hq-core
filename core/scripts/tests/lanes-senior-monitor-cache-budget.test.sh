@@ -19,7 +19,7 @@ BIN="$TMP/bin"
 SHIMS="$TMP/shims"
 COUNT="$TMP/jq-count"
 REAL_JQ="$(command -v jq)"
-mkdir -p "$ROOT/core/scripts/lib" "$BIN" "$SHIMS" "$TMP/cache/hq-cli/lanes-senior-monitor"
+mkdir -p "$ROOT/core/scripts/lib" "$ROOT/workspace/lanes/lanes" "$BIN" "$SHIMS" "$TMP/cache/hq-cli/lanes-senior-monitor"
 cp "$SCRIPT" "$ROOT/core/scripts/lib/lanes-senior-monitor.sh"
 cp "$HQ_SRC/core/scripts/lib/session-auto-bind.sh" "$ROOT/core/scripts/lib/session-auto-bind.sh"
 
@@ -44,6 +44,8 @@ RESULT="$("$REAL_JQ" -cn --arg sid "$SESSION" \
   --argjson checked_at_epoch "$NOW" --argjson result "$RESULT" --arg reminder '' \
   '{schema:1,session_id:$sid,engine:"claude",hq_fingerprint:$fingerprint,checked_at_epoch:$checked_at_epoch,result:$result,reminder:$reminder}' \
   > "$TMP/cache/hq-cli/lanes-senior-monitor/$SESSION.$FINGERPRINT.monitor.json"
+printf '%s\n' '{"lane_id":"cache-budget-fixture","state":"running","senior":{"kind":"session","id":"'"$SESSION"'"}}' \
+  > "$ROOT/workspace/lanes/lanes/$SESSION.json"
 PAYLOAD="$("$REAL_JQ" -cn --arg sid "$SESSION" '{session_id:$sid,engine:"claude"}')"
 
 : > "$COUNT"
@@ -78,6 +80,8 @@ cache_exists() {
 }
 run_hook() {
   local event="$1" sid="$2" delay="$3" marker="$4" err="$5" payload rc=0
+  printf '{"lane_id":"fixture-%s","state":"done","senior":{"kind":"session","id":"%s"}}\n' \
+    "$sid" "$sid" > "$ROOT/workspace/lanes/lanes/fixture-$sid.json"
   payload="$("$REAL_JQ" -cn --arg sid "$sid" '{session_id:$sid,engine:"claude"}')"
   printf '%s' "$payload" | env \
     HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HOME="$TMP/home" \

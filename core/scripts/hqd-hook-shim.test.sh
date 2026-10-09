@@ -80,14 +80,68 @@ PROMPT='{"session_id":"s1","hook_event_name":"UserPromptSubmit","cwd":"/tmp","pr
 
 # ---------------------------------------------------------------- part 1
 NOSOCK="$TMP/absent.sock"
+# hqd is expected on this machine (the daemon's enabled marker sits beside the
+# socket path), so an absent socket below means "hqd unreachable".
+: >"$TMP/hqd.enabled"
 
 HQ_TEST_FLAG=false run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
 if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ]; then pass "flag off: shim is inert"
 else fail "flag off: shim is inert" "rc=$RC out=$OUT err=$ERR"; fi
+
 HQ_TEST_FLAG=true
 export HQ_TEST_FLAG
 rm -f "$HOME/.hq/hq-anywhere-runtime.flag.cmp_123456"
 sh "$HERE/hqd-hook-flag-cache.sh" --refresh
+
+# hqd not set up on this machine (HQ Anywhere off in settings): no socket and no
+# enabled marker. The shim must not block work it has no daemon to route to.
+mkdir -p "$TMP/hqd-off"
+run_shim "$TMP/hqd-off/hqd.sock" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ]; then pass "hqd not set up (no socket, no marker): company write is not blocked"
+else fail "hqd not set up (no socket, no marker): company write is not blocked" "rc=$RC out=$OUT err=$ERR"; fi
+run_shim "$TMP/hqd-off/hqd.sock" "$READ_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ]; then pass "hqd not set up: company read is not blocked"
+else fail "hqd not set up: company read is not blocked" "rc=$RC out=$OUT err=$ERR"; fi
+# A stale socket file without the marker still means hqd was running: fail closed.
+mkdir -p "$TMP/hqd-stale"
+perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => IO::Socket::UNIX::SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "listen: $!"' "$TMP/hqd-stale/hqd.sock"
+run_shim "$TMP/hqd-stale/hqd.sock" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "stale hqd socket without marker: company write still fails closed"
+else fail "stale hqd socket without marker: company write still fails closed" "rc=$RC err=$ERR"; fi
+# The marker alone (daemon says hqd should run, socket gone): fail closed.
+mkdir -p "$TMP/hqd-marker"
+: >"$TMP/hqd-marker/hqd.enabled"
+run_shim "$TMP/hqd-marker/hqd.sock" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "enabled marker without socket: company write fails closed"
+else fail "enabled marker without socket: company write fails closed" "rc=$RC err=$ERR"; fi
+
+# Exercise the packaged Claude launcher without an explicit socket override.
+# hqd's default socket is under <HOME>/.hq/daemon, matching hqdSocketPath().
+LAUNCHER_ROOT="$TMP/plugin"
+mkdir -p "$LAUNCHER_ROOT/scripts/hq" "$HOME/.hq/daemon"
+cp "$HERE/hq-claude-plugin-launch.sh" "$LAUNCHER_ROOT/scripts/hq-claude-plugin-launch.sh"
+cp "$SHIM" "$HERE/hq-anywhere-runtime-flag.cjs" "$HERE/hqd-hook-flag-cache-lib.sh" "$LAUNCHER_ROOT/scripts/hq/"
+unset HQ_HQD_SOCKET HQ_HQD_SHIM_TIMEOUT_MS
+run_plugin_launcher() {
+  _payload="$1"
+  printf '%s' "$_payload" | /bin/sh "$LAUNCHER_ROOT/scripts/hq-claude-plugin-launch.sh" hook PreToolUse >"$TMP/out" 2>"$TMP/err"
+  RC=$?
+  OUT=$(cat "$TMP/out")
+  ERR=$(cat "$TMP/err")
+}
+ALLOW='{"id":1,"ok":true,"result":{"decision":"allow","reasons":[],"additionalContext":""}}'
+start_stub "$HOME/.hq/daemon/hqd.sock" "$ALLOW"
+run_plugin_launcher "$BASH_OTHERCO"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "Claude plugin launcher: default hqd socket under .hq/daemon reaches hqd"
+else fail "Claude plugin launcher: default hqd socket under .hq/daemon reaches hqd" "rc=$RC err=$ERR"; fi
+stop_stub
+
+mkdir -p "$TMP/registry/daemon"
+start_stub "$TMP/registry/daemon/hqd.sock" "$ALLOW"
+HQ_REGISTRY_DIR="$TMP/registry" run_plugin_launcher "$BASH_OTHERCO"
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "Claude plugin launcher: HQ_REGISTRY_DIR socket under daemon reaches hqd"
+else fail "Claude plugin launcher: HQ_REGISTRY_DIR socket under daemon reaches hqd" "rc=$RC err=$ERR"; fi
+stop_stub
 
 mkdir -p "$TMP/no-perl-modules"
 cat > "$TMP/no-perl-modules/perl" <<'NO_PERL_MODULES'

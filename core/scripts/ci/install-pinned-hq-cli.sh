@@ -8,7 +8,7 @@ RESOLVE_ONLY=0
 REQUESTED_VERSION=""
 # CI pin: newest published hq-cli containing every forwarded utility, policy and hook helper command.
 # Keep this at least as high as the largest manifest/core requirement.
-HQ_CI_MIN_CLI="5.345.37"
+HQ_CI_MIN_CLI="5.345.56"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in

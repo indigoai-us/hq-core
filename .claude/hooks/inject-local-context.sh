@@ -14,7 +14,9 @@
 set -euo pipefail
 
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-.}"
-HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HOOK_DIR="${BASH_SOURCE[0]%/*}"
+[ "$HOOK_DIR" != "${BASH_SOURCE[0]}" ] || HOOK_DIR=.
+HOOK_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
 
 MANIFEST="$HQ_ROOT/companies/manifest.yaml"
 REGISTRY="$HQ_ROOT/core/workers/registry.yaml"
@@ -30,8 +32,14 @@ fi
 # --- Owner name ---
 OWNER="(not configured)"
 if [ -f "$PROFILE" ]; then
-  # Extract name from first heading: "# Firstname Lastname - Profile"
-  OWNER=$(head -1 "$PROFILE" | sed 's/^# \(.*\) - Profile$/\1/' | sed 's/^# //')
+  # Extract the first heading without spawning head/sed processes.
+  OWNER_LINE=""
+  IFS= read -r OWNER_LINE < "$PROFILE" || true
+  case "$OWNER_LINE" in
+    '# '*" - Profile") OWNER="${OWNER_LINE#\# }"; OWNER="${OWNER% - Profile}" ;;
+    '# '*) OWNER="${OWNER_LINE#\# }" ;;
+    *) OWNER="$OWNER_LINE" ;;
+  esac
 fi
 
 # --- Standing challenges (Phase 1 Q4 from /setup) ---
@@ -43,8 +51,14 @@ if [ -f "$PROFILE" ]; then
   CHALLENGES=$(awk '
     /^## Challenges[[:space:]]*$/ { flag=1; next }
     /^## / && flag { flag=0 }
-    flag && NF { print }
-  ' "$PROFILE" | head -5 | paste -sd ';' - | sed 's/;/; /g' || true)
+    flag && NF && count < 5 {
+      line=$0
+      gsub(/;/, "; ", line)
+      if (count) printf "; "
+      printf "%s", line
+      count++
+    }
+  ' "$PROFILE" || true)
 fi
 
 # --- Company slugs ---
@@ -52,7 +66,11 @@ COMPANIES=""
 COMPANY_COUNT=0
 if [ -f "$MANIFEST" ]; then
   # Direct child keys under the top-level companies: block.
-  COMPANY_SLUGS=$(awk '
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    COMPANIES="${COMPANIES:+$COMPANIES, }$slug"
+    COMPANY_COUNT=$((COMPANY_COUNT + 1))
+  done < <(awk '
     /^[[:space:]]*$/ { next }
     /^[[:space:]]*#/ { next }
     in_companies && /^[^[:space:]#]/ { exit }
@@ -64,10 +82,6 @@ if [ -f "$MANIFEST" ]; then
       if (slug != "_template") print slug
     }
   ' "$MANIFEST")
-  if [ -n "$COMPANY_SLUGS" ]; then
-    COMPANIES=$(printf '%s\n' "$COMPANY_SLUGS" | paste -sd ',' - | sed 's/,/, /g')
-    COMPANY_COUNT=$(printf '%s\n' "$COMPANY_SLUGS" | awk 'NF { n++ } END { print n+0 }')
-  fi
 fi
 
 # --- Company worker counts ---
@@ -77,7 +91,19 @@ if [ -f "$REGISTRY" ]; then
   # Filter out template-placeholder company values ({product}, {company}) that
   # leak in from core/workers/public/ entries imported from the starter kit without
   # per-company substitution. Don't surface noise in the local-context banner.
-  WORKER_COUNTS=$(grep -E '^\s+company:' "$REGISTRY" | sed 's/.*company: *//' | grep -v '{' | sort | uniq -c | sort -rn | awk '{printf "%s (%d), ", $2, $1}' | sed 's/, $//' || true)
+  WORKER_COUNTS=$(awk '
+    /^[[:space:]]+company:/ {
+      company=$0
+      sub(/.*company:[[:space:]]*/, "", company)
+      if (company !~ /\{/) counts[company]++
+    }
+    END {
+      for (company in counts) printf "%d\t%s\n", counts[company], company
+    }
+  ' "$REGISTRY" | sort -rn | awk -F '\t' '
+    { printf "%s%s (%d)", (NR == 1 ? "" : ", "), $2, $1 }
+    END { if (NR) printf "\n" }
+  ' || true)
 fi
 
 # --- QMD collections ---
