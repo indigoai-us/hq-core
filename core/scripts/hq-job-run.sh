@@ -323,8 +323,12 @@ classify_failure() {
   local lower
   lower="$(printf '%s' "$tail_txt" | tr '[:upper:]' '[:lower:]')"
 
+  # Claude CLI expired-OAuth text is "Failed to authenticate: OAuth session
+  # expired and could not be refreshed" — not "authentication failed" / "not
+  # logged in". Cached ~/.claude/.credentials.json still exists, so the
+  # pre-run auth skip does not catch it.
   if printf '%s' "$lower" | grep -E \
-    'not logged in|please log in|authentication (failed|required)|unauthorized|401|invalid.*(token|credential)|credentials? (missing|expired|invalid)|device.?code|login required' >/dev/null; then
+    'failed to authenticate|oauth.{0,80}expired|session expired|not logged in|please log in|authentication (failed|required)|unauthorized|401|invalid.*(token|credential)|credentials? (missing|expired|invalid)|device.?code|login required' >/dev/null; then
     printf 'auth'
     return
   fi

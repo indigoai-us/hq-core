@@ -34,6 +34,23 @@ classified="$(HQ_JOB_RUN_TEST_SOURCE="$CLASSIFY_SOURCE" bash -c \
 [ "$classified" = "auth" ] || fail "large log classifier should preserve an early auth match, got: $classified"
 pass "large failure logs classify without pipefail SIGPIPE"
 
+classify_log() {
+  local log="$1" exit_code="${2:-1}"
+  HQ_JOB_RUN_TEST_SOURCE="$CLASSIFY_SOURCE" bash -c \
+    'set -euo pipefail; source <(sed -n "/^classify_failure()/,/^}/p" "$HQ_JOB_RUN_TEST_SOURCE"); classify_failure "$2" "$1" ""' \
+    _ "$log" "$exit_code"
+}
+
+printf 'Failed to authenticate: OAuth session expired and could not be refreshed\n' >"$TMP/oauth-expired.log"
+classified="$(classify_log "$TMP/oauth-expired.log")"
+[ "$classified" = "auth" ] || fail "expired Claude OAuth should classify as auth, got: $classified"
+pass "expired Claude OAuth log classifies as auth"
+
+printf 'error: prompt skill blew up\n' >"$TMP/agent-err.log"
+classified="$(classify_log "$TMP/agent-err.log")"
+[ "$classified" = "agent_error" ] || fail "generic runtime failure should stay agent_error, got: $classified"
+pass "generic runtime failure stays agent_error"
+
 HQ="$TMP/hqroot"
 HOME_DIR="$TMP/home"
 BIN="$TMP/bin"

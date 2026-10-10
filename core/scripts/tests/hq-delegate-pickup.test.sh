@@ -12,6 +12,25 @@ mk() { # <status> <sentAt> [repo] [branch]
 echo "[1] --ack records picked-up"
 mk sent 2026-09-01T00:00:00Z; bash "$S" --manifest "$FX/m.json" --ack "got it, starting today" >/dev/null || fail "ack rc"
 [ "$(jq -r .status "$FX/m.json")" = picked-up ] && [ "$(jq -r .pickup.kind "$FX/m.json")" = ack ] || fail "ack state"
+mode="$(stat -c '%a' "$FX/m.json" 2>/dev/null || stat -f '%Lp' "$FX/m.json")"
+[ "$mode" = 600 ] || fail "ack must keep the manifest private (mode 600), got $mode"
+echo "[1b] failed-rewrite temp files are cleaned without changing the current status"
+REAL_JQ="$(command -v jq)"
+mkdir -p "$FX/bin"
+cat > "$FX/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    *'.status = "picked-up"'*|*'.status = "failed"'*) exit 23 ;;
+  esac
+done
+exec "$REAL_JQ" "$@"
+EOF
+chmod +x "$FX/bin/jq"
+mk sent 2026-09-01T00:00:00Z
+rc=0; REAL_JQ="$REAL_JQ" PATH="$FX/bin:$PATH" bash "$S" --manifest "$FX/m.json" --ack x >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail "failed ack rewrite changed the existing exit status to $rc"
+if compgen -G "$FX/m.json.tmp.*" >/dev/null; then fail "failed ack rewrite left a temporary manifest"; fi
 echo "[2] not-sent manifest is refused"
 mk verified ""; rc=0; bash "$S" --manifest "$FX/m.json" --ack x >/dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || fail "expected 2, got $rc"
 echo "[3] --check inside window waits (6)"
@@ -20,7 +39,13 @@ mk sent 2026-09-01T00:00:00Z; rc=0; HQ_DELEGATE_NOW=2026-09-02T00:00:00Z bash "$
 echo "[4] --check past window fails (5) with a reason"
 rc=0; err="$(HQ_DELEGATE_NOW=2026-09-05T00:00:00Z bash "$S" --manifest "$FX/m.json" --check 2>&1 >/dev/null)" || rc=$?
 [ "$rc" = 5 ] || fail "expected 5, got $rc"; [ "$(jq -r .status "$FX/m.json")" = failed ] || fail "status failed"
+mode="$(stat -c '%a' "$FX/m.json" 2>/dev/null || stat -f '%Lp' "$FX/m.json")"
+[ "$mode" = 600 ] || fail "failure receipt must keep the manifest private (mode 600), got $mode"
 grep -q 'no pickup evidence from Win' <<<"$err" || fail "reason: $err"
+echo "[4b] failed failure-receipt rewrite cleans its temp and keeps exit 5"
+rc=0; REAL_JQ="$REAL_JQ" PATH="$FX/bin:$PATH" HQ_DELEGATE_NOW=2026-09-05T00:00:00Z bash "$S" --manifest "$FX/m.json" --check >/dev/null 2>&1 || rc=$?
+[ "$rc" = 5 ] || fail "failed failure-receipt rewrite changed exit status to $rc"
+if compgen -G "$FX/m.json.tmp.*" >/dev/null; then fail "failed failure-receipt rewrite left a temporary manifest"; fi
 echo "[5] --check finds a recipient commit on the branch and records picked-up"
 git -C "$FX" init -q repo; git -C "$FX/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git -C "$FX/repo" checkout -q -b feature/x; git -C "$FX/repo" -c user.email=win@example.com -c user.name=Win commit -q --allow-empty -m "win starts" --date="2026-09-03T12:00:00Z"

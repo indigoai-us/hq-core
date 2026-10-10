@@ -1,4 +1,5 @@
 ## [Unreleased]
+- Delegate pickup and failure receipts now replace private manifests with mode-0600 temporary files, preserving the manifest's permissions.
 - The hq-core release gate retries cancelled or stale checks on the current head without applying a
   release hold, and skips failures when a newer head has replaced the checked SHA.
 - Stop and SubagentStop blocks now include the event name Claude Code requires.
