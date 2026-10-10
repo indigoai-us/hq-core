@@ -94,11 +94,11 @@ for ENGINE in jq node; do
     || fail "$ENGINE: every restored event neutralizes BASH_ENV before entry Bash" "$UNNEUTRALIZED"
 
   EMPTY=0
-  for e in PostToolUse PreCompact Stop UserPromptSubmit Notification SubagentStop SessionEnd; do
+  for e in PostToolUse PreCompact Stop UserPromptSubmit Notification SubagentStart SubagentStop SessionEnd; do
     has_master "$T" "$e" || EMPTY=1
   done
-  [ "$EMPTY" -eq 0 ] && ok "$ENGINE: all nine events have master-hook" \
-    || fail "$ENGINE: all nine events have master-hook" "$(jq -c '.hooks | keys' "$T/.claude/settings.json")"
+  [ "$EMPTY" -eq 0 ] && ok "$ENGINE: all ten events have master-hook" \
+    || fail "$ENGINE: all ten events have master-hook" "$(jq -c '.hooks | keys' "$T/.claude/settings.json")"
 
   [ "$(jq -r '.env.PATH' "$T/.claude/settings.json")" = "/machine/bin:/usr/bin" ] \
     && ok "$ENGINE: machine PATH preserved" \

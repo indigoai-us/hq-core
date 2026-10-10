@@ -399,6 +399,63 @@ for ev in StopCancelled StopFailure PostToolUseFailure PermissionDenied Subagent
   fi
 done
 
+# 18) Linked-session delivery follows the shared registry for PostToolUse and
+# Stop. The Stop result is accumulated and emitted only while Grok can continue.
+LANE_TMP="$(mktemp -d)"
+mkdir -p "$LANE_TMP/bin" "$ROOT/workspace/lanes-links/by-session"
+LANE_SID="grok-lanes-hook-$$"
+: > "$ROOT/workspace/lanes-links/by-session/$LANE_SID"
+cat > "$LANE_TMP/bin/hq" <<'FAKE_HQ'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$GROK_LANES_CALLS"
+cat > "$GROK_LANES_INPUT"
+case "${1:-}" in
+  lanes)
+    case "${2:-}" in
+      link) printf '%s\n' "$GROK_LANES_OUTPUT" ;;
+    esac
+    ;;
+esac
+FAKE_HQ
+chmod +x "$LANE_TMP/bin/hq"
+export GROK_LANES_CALLS="$LANE_TMP/calls" GROK_LANES_INPUT="$LANE_TMP/input"
+export PATH="$LANE_TMP/bin:$PATH"
+export CLAUDE_PROJECT_DIR="$ROOT" HQ_ROOT="$ROOT"
+export HQAD_PATH_AUGMENTED=1
+export HQ_HOOK_PROFILE=strict HQ_DISABLED_HOOKS=
+export HQ_GROK_ADAPTER_TRACE="$LANE_TMP/trace"
+export GROK_LANES_OUTPUT='{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"Grok linked context"}}'
+: > "$GROK_LANES_CALLS"
+run_adapter '{"hookEventName":"PostToolUse","toolName":"Execute","cwd":"'"$ROOT"'","sessionId":"'"$LANE_SID"'","toolInput":{"command":"true"}}'
+assert_exit "$ADAPTER_ST" 0 "linked-session PostToolUse exit 0"
+assert_contains "$ADAPTER_OUT" 'Grok linked context' "linked-session PostToolUse context reaches Grok"
+grep -Fxq 'PostToolUse Execute' "$HQ_GROK_ADAPTER_TRACE" || {
+  echo "FAIL: Grok did not dispatch PostToolUse for the tool (trace: $(cat "$HQ_GROK_ADAPTER_TRACE" 2>/dev/null))" >&2; FAIL=$((FAIL + 1));
+}
+grep -Fxq 'lanes link _deliver --event PostToolUse' "$GROK_LANES_CALLS" || {
+  echo "FAIL: Grok did not route PostToolUse through hq lanes link _deliver (calls: $(cat "$GROK_LANES_CALLS" 2>/dev/null); stderr: $ADAPTER_ERR)" >&2; FAIL=$((FAIL + 1));
+}
+
+export GROK_LANES_OUTPUT='{"decision":"block","reason":"Grok linked Stop block"}'
+run_adapter '{"hookEventName":"Stop","reason":"end_turn","stopHookActive":true,"cwd":"'"$ROOT"'","sessionId":"'"$LANE_SID"'"}'
+assert_exit "$ADAPTER_ST" 0 "linked-session Stop exit 0"
+assert_contains "$ADAPTER_OUT" '"decision":"block"' "linked-session Stop block is emitted"
+assert_contains "$ADAPTER_OUT" 'Grok linked Stop block' "linked-session Stop reason is preserved"
+grep -Fxq 'Stop ANY' "$HQ_GROK_ADAPTER_TRACE" || {
+  echo "FAIL: Grok did not dispatch Stop (trace: $(cat "$HQ_GROK_ADAPTER_TRACE" 2>/dev/null))" >&2; FAIL=$((FAIL + 1));
+}
+grep -Fxq 'lanes link _deliver --event Stop' "$GROK_LANES_CALLS" || {
+  echo "FAIL: Grok did not route Stop through hq lanes link _deliver (calls: $(cat "$GROK_LANES_CALLS" 2>/dev/null); stderr: $ADAPTER_ERR)" >&2; FAIL=$((FAIL + 1));
+}
+jq -e '.stop_hook_active == true' "$GROK_LANES_INPUT" >/dev/null || {
+  echo "FAIL: linked-session Stop payload lost Grok's stopHookActive value" >&2; FAIL=$((FAIL + 1));
+}
+rm -f "$ROOT/workspace/lanes-links/by-session/$LANE_SID"
+rm -rf "$LANE_TMP"
+unset GROK_LANES_CALLS GROK_LANES_INPUT GROK_LANES_OUTPUT
+unset HQ_GROK_ADAPTER_TRACE HQAD_PATH_AUGMENTED HQ_ROOT CLAUDE_PROJECT_DIR HQ_HOOK_PROFILE HQ_DISABLED_HOOKS
+
 # Leave the checkout clean: remove the runtime hook-state dir if the test emptied
 # it (it is also gitignored, so residue never dirties a checkout regardless).
 rmdir "$STATE_DIR" 2>/dev/null || true

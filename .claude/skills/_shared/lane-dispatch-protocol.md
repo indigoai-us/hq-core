@@ -1,614 +1,150 @@
-# Lane dispatch protocol — how a brief becomes a detached lane
+# Shared lane dispatch protocol
 
-`/conduct` and `/run-project` both hand work to a **detached lane**: a
-`core/scripts/workflow-runner.mjs` process running one `agent()` call against a
-headless coding-agent CLI. This file is the single description of that
-mechanism. Both skills defer to it rather than restating it, because the last
-time this protocol lived in two places one copy was wrong for three review
-rounds.
+`/conduct`, `/execute-task`, and `/run-project` create worker lanes through
+`hq lanes`. The calling session remains the senior. This file is the shared
+mapping; each skill supplies its own brief and verifies its own result.
 
-Slot accounting is a separate concern and lives in
-`.claude/skills/_shared/pool-lane-protocol.md`. Claim the slot there, dispatch
-into it here. The two are ordered: **assign → dispatch → record running →
-wait → record idle.**
+| Former conduct operation | Lane-native operation |
+|---|---|
+| Assign a named worker and brief | `hq lanes create --worker W --brief-file F --senior session:<id> --json` |
+| List and record worker state | `hq lanes list --json`, filtered to lanes launched by this senior |
+| Stop or preserve a worker thread | `hq lanes stop <lane>` or `hq lanes interrupt <lane>` |
+| Read pending questions and answers | `hq lanes questions list --json` and `hq lanes questions answer` |
+| Send a worker instruction | `hq lanes message <lane> --text <instruction>` |
+| Send or close a linked session | `hq lanes link send` or `hq lanes link close` with the same session flags |
+| Wait for a lane change | `hq lanes wait --any <lane...> --for envelope --for question --for state --timeout <seconds> --json` |
+| Read results | `hq lanes show <lane> --json` and the lane envelope |
+| Run directory and lifecycle state | hq-cli lane registry and lane artifacts; callers do not read a private run directory when a CLI command exposes the data |
 
 ## 1. Why detached, and what it buys
 
-- **A lane is an OS process, not an in-session sub-agent.** It keeps running
-  when the parent session compacts, restarts, or ends. Nothing in this protocol
-  uses the `Agent` tool.
-- **A host with no in-session sub-agent primitive can still dispatch.** That is
-  the reason `/run-project` defaults here rather than to `spawn_agent`.
-- **A lane can be corrected while it runs** (§6) instead of being killed and
-  relaunched.
-- **Detaching is mandatory, not decorative.** A child left inside the session's
-  process tree is swept at the turn boundary, minutes after the turn that
-  launched it — which reads as an unexplained silent failure. Launching through
-  `core/scripts/hq-detach.sh` puts the lane in its own process session, where
-  the sweep cannot reach it. Always go through that helper, never through a bare
-  `setsid`: stock macOS does not ship `setsid(1)` at all, and when Homebrew
-  util-linux provides it, it is keg-only and absent from a non-interactive
-  PATH — so a literal `setsid …` here fails with `command not found` on every
-  Mac. The helper probes both keg prefixes and otherwise detaches via node, so
-  the same block works on Linux and macOS.
+`hq lanes create` registers and launches a worker lane asynchronously. The
+senior session stays responsive, while hq-cli records the lane state, envelope,
+questions, and result. Do not start a second runner beside hq-cli.
 
 ## 2. Resolve one engine per run, before you brief anything
 
-```bash
-command -v codex grok claude
-```
-
-Configuration is not availability: an engine whose CLI resolves can still refuse
-on a quota or balance error, and a refusal costs the same sixty seconds whether
-it interrupts a throwaway probe or a fully briefed lane.
-
-**If no engine CLI resolves, this protocol is unavailable.** Say so and fall
-back to the caller's in-session path (`/run-project` §3b's `spawn_agent`
-fallback), or hand the blocker to the user naming which engines were tried. Do
-not discover this at dispatch time, once per story.
+Resolve the provider once from explicit user choice, saved session choice, or
+the worker profile. For `/conduct --workers`, resolve provider, model, and
+effort once and pass the same pins to each role lane. Ask once only if no
+configured provider is available.
 
 ### The roster
 
-| Choice | `{engine}` | Best for |
-|---|---|---|
-| `codex` (default) | `codex` | implementation, landing work, CI babysitting, fixes |
-| `grok` | `grok` | fast implementation, a cheap second opinion |
-| `claude` | `claude` | review, design, judgment-heavy work |
-
-**Resolution is deterministic, and happens once.** In order: an engine the user
-named explicitly; else the caller's own default if it declares one; else the
-first of `codex`, `grok`, `claude` that resolves. Never leave `{engine}`
-unexpanded, and never re-resolve per lane — **record the choice for the run and
-reuse it for every lane in that run.** Mixed engines across the lanes of one run
-give you results that are not comparable and a failure you cannot attribute.
-
-One difference that is not about quality: all three can be corrected while they
-run (§6), but only codex and claude take a message quietly. A grok lane has to be
-interrupted — the message arrives as a denied tool call — which costs it the step
-it was about to take. For work you expect to steer often, that is a reason to
-prefer codex.
+| Provider | CLI value |
+|---|---|
+| Codex | `codex` |
+| Claude | `claude` |
+| Grok | `grok` |
 
 ## 3. The brief goes on disk; the command line carries a path
 
-**The blocks in §3 to §5 ship as two scripts.** `/conduct` drives them, and any
-caller may:
-
-| Step | Script |
-|---|---|
-| §3 mint the run dir | `bash core/scripts/conduct-lane-launch.sh mint --lane {lane} [--caller {caller}]` (prints the dir) |
-| §3 write the brief | the file tool (Write) on `{run dir}/brief.md` — never a heredoc |
-| §4 launch, §5 record | `bash core/scripts/conduct-lane-launch.sh start --run-dir {run dir} --worker {lane-id} --tier {tier} --timeout {secs} --cd {abs dir}` |
-| §5 wait | `bash core/scripts/conduct-lane-wait.sh --run-dir {run dir}` (background call) |
-
-Pass every argument as a literal value. Scope hooks reject Bash commands whose
-path arguments are unexpanded `$VAR`s and heredocs that write into a run dir,
-which is why the brief goes through the file tool. `start` also applies the
-session's engine pins: for `claude` it exports `HQ_WORKFLOW_CLAUDE_PLAN_MODEL`,
-`HQ_WORKFLOW_CLAUDE_EXEC_MODEL` and `HQ_WORKFLOW_CLAUDE_EFFORT` from
-`conduct_child_model` / `conduct_child_effort` in session meta; for `codex` and
-`grok` it exports `HQ_WORKFLOW_MODEL` and `HQ_WORKFLOW_EFFORT`. Flags override
-the meta values. The scripts implement the blocks below exactly; the prose here
-stays the specification, and a change to one is a change to both.
-
-The runner takes `--args` as a JSON string on the command line, so inlining a
-brief there is what makes the invocation fragile under nested quoting and long
-inputs. A lane can read files. Give it a path.
-
-**The run dir is session-scoped and minted atomically.** Both halves are load
-bearing. A timestamp alone collides: `explorer` and `regression-gate` are
-constant lane ids and story ids like `US-001` repeat across projects, so two
-sessions dispatching within the same second computed the *same* path — and the
-second silently overwrote the first's brief, args, pids, deadline and log. Pools
-are session-scoped, so nothing serialises those launches. That is a lane reading
-another tenant's brief, not just a clobbered log. `$SID` separates the sessions;
-`mktemp -d` closes the race inside one.
-
-**The run dir belongs to the session that minted it, and so does the pool
-slot.** `conduct-pool.sh` resolves the session from the environment, and the run
-dir is under `$SID`, so a *different* session inspecting the same project sees
-an empty pool and no run dirs while the lanes are still live. Any caller that
-supports resuming across sessions has to persist the originating `$SID`
-somewhere durable and pass it back with `conduct-pool.sh --session-id <sid>`.
-Session scoping is what stops two sessions colliding; it is also what makes
-recovery an explicit act.
-
-**Callers name `{caller}` and `{lane}`, never a path.** The run dir is minted
-here and only here; a caller that writes its own path reintroduces the collision
-the moment this template changes under it. Read the minted `$RUN_DIR` back if you
-need it.
-
-**Every dispatch mints a fresh run dir — including a resume.** Reusing a
-completed lane's directory looks tidy and is a race: its `lane.log` still holds
-`CONDUCT_EXIT=` and its pid files still name the finished process, while the new
-child does not truncate that log until it is already detached and running. A
-waiter armed in between reads the *old* marker, calls the new lane finished, and
-releases a slot that is still live. Clearing the files first only narrows the
-window. Lane continuity does not live here anyway — it lives in the slot's
-`handoffs.jsonl` (pool protocol §5), which is keyed by worker, survives the run
-dir, and is what a resumed lane actually reads.
-
-**`$SID` is the run's owner, not "whoever is dispatching".** For a first
-dispatch those are the same session and the line below is right. For a dispatch
-that belongs to a run some *earlier* session started — a resumed story, a retry
-after recovery — they are not, and recomputing it is how the recovery fix above
-gets undone: the lane would export the new session's id, mint its run dir there,
-and an unqualified `record` would write into a pool that never assigned the
-slot, leaving a live lane untracked while the original slot stays `claimed`. A
-caller that persists an owning session id (`/run-project` keeps it in
-`state.json`) uses that value here instead, and passes `--session-id <owner>` on
-every `conduct-pool.sh` call for the lane. One session id per run, chosen once,
-end to end.
-
-```bash
-SID="$(bash core/scripts/hq-session.sh current)"   # or the run's recorded owner
-BASE="workspace/tmp/workflow-runner/$SID"
-mkdir -p "$BASE"
-RUN_DIR="$(mktemp -d "$BASE/{caller}-{lane}-XXXXXX")"
-
-cat > "$RUN_DIR/brief.md" <<'BRIEF'
-{the brief}
-BRIEF
-
-jq -n --arg brief "$PWD/$RUN_DIR/brief.md" --arg cd "{absolute work dir}" \
-  '{brief:$brief, cd:$cd}' > "$RUN_DIR/args.json"
-```
-
-**Build `args.json` with an encoder, not with `printf`.** A `%s` substitution
-emits whatever the path contains: a double quote or a backslash in the HQ
-install path or the target work dir produces invalid JSON, and the runner fails
-on `--args` before the lane exists — with the failure in a log nobody is
-watching yet. `jq -n --arg` escapes both, and it is already a dependency here
-(§5 and §7 use it).
+Write a complete brief to a new file before creating the lane. Include company,
+project, story, worker, repo/worktree, acceptance criteria, tests, constraints,
+and the output envelope path. Never inline a long task prompt in the CLI call.
 
 ## 4. Launch
 
+Create the lane from the HQ root. Worker lanes use the caller as senior:
+
 ```bash
-LANE_TIMEOUT={worker max_runtime in seconds, else 900}   # $SID and $RUN_DIR are from §3
-
-# The real bound (§5). Write it to disk, do not keep it in a shell variable:
-# the waiter is a separate background call in a separate process, and a
-# variable set here is empty there.
-echo $(( $(date +%s) + LANE_TIMEOUT )) > "$RUN_DIR/deadline"
-
-# Everything the detached body needs goes through the ENVIRONMENT. Nothing is
-# interpolated into the nested shell string — see below.
-# The caller resolves company from trusted session state before this block. A
-# detached lane never guesses a company from its cwd: without a resolved slug,
-# do not launch it. Project may be carried as parent-session context. A task is
-# forwarded only when the dispatching launcher explicitly exports
-# HQ_SPAWN_TASK for this lane.
-# A caller that does not own a task must not export one, including a task it
-# inherited from its own lane environment. For example, a /conduct session that
-# is itself a lane must `unset HQ_SPAWN_TASK` before dispatching unrelated work.
-[ -n "${HQ_SPAWN_COMPANY:-}" ] || {
-  echo "refusing detached lane without HQ_SPAWN_COMPANY" >&2
-  exit 1
-}
-export LANE_RUN_DIR="$RUN_DIR"
-export LANE_RUN_DIR_ABS="$PWD/$RUN_DIR"
-export LANE_TIMEOUT
-export HQ_SESSION_ID="$SID"
-export HQ_PARENT_SESSION_ID="${HQ_PARENT_SESSION_ID:-$SID}"
-# Detached lanes mint a new engine session. Carry the parent's company so
-# Codex SessionStart can bind it; without a slug, PreToolUse is fail-closed.
-if [ -z "${HQ_SPAWN_COMPANY:-}" ] && [ -n "$SID" ]; then
-  HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh --session-id "$SID" get company_slug 2>/dev/null || true)"
-fi
-[ -n "${HQ_SPAWN_COMPANY:-}" ] && export HQ_SPAWN_COMPANY
-[ -n "${HQ_SPAWN_PROJECT:-}" ] && export HQ_SPAWN_PROJECT
-[ -n "${HQ_SPAWN_TASK:-}" ] && export HQ_SPAWN_TASK
-export HQ_CONDUCT_ENGINE='{engine}'
-export LANE_WORKER_ID='{lane-id}'   # the pool slot; the body records it idle on exit
-
-bash core/scripts/hq-detach.sh --owner-pidfile "$RUN_DIR/owner.pid" -- bash -c '
-  echo $$ > "$LANE_RUN_DIR/lane.pid"
-  export HQ_CONDUCT_RUN_DIR="$LANE_RUN_DIR_ABS"
-  node core/scripts/workflow-runner.mjs --eval \
-    "return await agent(\"Read your brief at \" + args.brief + \" and carry it out now.\", { engine: \"$HQ_CONDUCT_ENGINE\", tier: \"{tier}\", cd: args.cd, label: \"{lane}\", timeoutSecs: $LANE_TIMEOUT })" \
-    --args "$(cat "$LANE_RUN_DIR/args.json")" --run-dir "$LANE_RUN_DIR" > "$LANE_RUN_DIR/lane.log" 2>&1 &
-  echo $! > "$LANE_RUN_DIR/runner.pid"
-  wait $(cat "$LANE_RUN_DIR/runner.pid")
-  echo "CONDUCT_EXIT=$?" >> "$LANE_RUN_DIR/lane.log"
-  # A one-shot lane is finished once the runner exits: free its slot now, so a
-  # gate or aux lane never leaves it running. The waiter (section 5) does the
-  # same and puts it back to running if the engine group survived.
-  bash core/scripts/conduct-pool.sh --session-id "$HQ_SESSION_ID" record --worker-id "$LANE_WORKER_ID" \
-    --subagent-id "$(basename "$LANE_RUN_DIR")" --status idle >/dev/null 2>&1 || true
-'
-
-# Proof of escape: pgid and sid must equal the child's own pid.
-#
-# Two pids are recorded, and §5 needs both. lane.pid is the wrapper and, because
-# hq-detach.sh made it a session leader, also the pgid. runner.pid is node — the ONLY
-# process that can shut this lane down cleanly, because the engine CLI is
-# spawned detached: true (its own process group) and the runner's killTree is
-# the only code that holds that group id.
-ps -eo pid,pgid,sid,args= | grep workflow-runner | grep -v grep
+hq lanes create --company <company> --project <project> --story <story> \
+  --worker <worker> --brief-file <brief> --senior session:<session-id> \
+  --json
 ```
 
-**The nested body is single-quoted and interpolates nothing.** It used to be a
-double-quoted string with `$PWD`, `$RUN_DIR` and `$SID` substituted into
-single-quoted values inside it. An apostrophe anywhere in the HQ checkout path —
-the one value here a user genuinely controls — closes those quotes early, and
-the lane dies before it starts, in a log nobody is watching yet. Passing them
-through the environment removes the whole class: the outer shell sets the
-variables, the inner shell reads them, and no path text is ever parsed as shell.
-It also removes the two-level escaping that made this the most error-prone block
-in the protocol.
+Pass every set session pin on every `/conduct` lane: `--provider` from
+`conduct_engine`, `--model` from `conduct_child_model`, and `--effort` from
+`conduct_child_effort`. An explicit flag overrides its matching session pin.
+Repeating create for the same worker under the same
+senior continues that worker's thread. When the lane is still live, use
+`hq lanes message <lane> --text <instruction>`.
 
-**`{tier}` is the caller's choice and is never implicit.** `exec` is the
-throughput model, `plan` the flagship one. Execution work takes `exec`; analysis,
-review, planning and design take `plan`. A preflight dispatched at `exec` quietly
-does its thinking on the wrong model.
-
-**`timeoutSecs` is a *soft* timeout.** `workflow-runner.mjs` prints a repeating
-`TIMEOUT WARNING` and explicitly **does not kill** the child. It is a diagnostic,
-not a bound. The wall-clock bound is the `deadline` file, enforced by the waiter
-in §5 — without it a hung lane blocks its caller forever, waiting for a
-`CONDUCT_EXIT` marker the runner will never write.
-
-**The deadline goes on disk because the waiter is a different process.** Launch
-and wait are two separate Bash calls, so a shell variable set at launch is empty
-in the waiter — and `[ "$(date +%s)" -ge "" ]` errors on every iteration, which
-loops silently and bounds nothing. On disk it also survives the parent
-restarting and re-arming a waiter against a lane that is already running.
-
-**`HQ_SESSION_ID` is exported deliberately.** The runner passes its environment
-through to the engine, and anything the lane runs that touches the pool —
-`/execute-task` claiming phase lanes inside a story lane, most of all — resolves
-its session from `HQ_SESSION_ID` first and the `.current` file only as a
-fallback. Without the export, a lane that outlives its parent session reads
-whatever `.current` names by then and claims slots in a **different session's**
-pool, which is how the cap silently stops holding.
-
-**Spawn context is separate from the pool owner.** `HQ_SESSION_ID` remains the
-parent run owner for pool accounting. `HQ_PARENT_SESSION_ID` plus
-`HQ_SPAWN_COMPANY` (and an optional project or task) tell the child engine's
-SessionStart hook what to bind to its own engine session id. Resolve the
-company with `hq-session.sh --session-id "$SID" get company_slug`, never from
-the lane cwd. The workflow runner never reads a task from the parent session's
-`meta.yaml`. A task reaches the child only when the dispatching launcher exports
-`HQ_SPAWN_TASK` explicitly for that lane. `/run-project` does this for story
-lanes so their `/execute-task` children stay bound to the assigned story.
-
-Codex and Grok lanes do not run the Claude Code hooks, so they would otherwise
-be invisible on the Board. When `HQ_SPAWN_COMPANY` is set, `workflow-runner.mjs`
-enqueues that lane's presence itself (`--enqueue`, fail-soft): `session_start`
-before the engine starts, `task_status in_progress` once it is up, `turn_end`
-when it exits, then `task_status review` if the reply contains a pull-request
-URL or a `note` with the first 200 characters of the reply, then `session_end`.
-The lane session id is the run-dir basename, the harness is the engine name,
-and `--task-id` is `HQ_SPAWN_TASK` when the launcher bound one. Each lane must
-export its own `HQ_SPAWN_TASK`; a parent lane's task is not inherited. Claude
-lanes still report only through their hooks. The runner records each emit as
-`{"event":"mesh-emit","kind":...,"ok":bool}` in the run dir's `journal.jsonl`.
+The detached lane launcher captures its owner PID and start time with
+`bash core/scripts/hq-detach.sh --owner-pidfile "$RUN_DIR/owner.pid" -- ...`.
+The reaper uses that record to keep lanes whose owning session is still alive.
 
 ## 5. Record, then wait in the background
 
-```bash
-bash core/scripts/conduct-pool.sh record --worker-id "{lane-id}" \
-  --subagent-id "$(basename "$RUN_DIR")" --status running
-```
-
-The run-dir basename is the lane's handle. Add `--session-id "$SID"` when `$SID`
-is a run's recorded owner rather than the current session — `record`, `recycle`
-and `cancel` all take it, and without it the write lands in the dispatching
-session's pool while the slot lives in the owner's. Record it **immediately after
-launch** — a slot left `claimed` while a lane is live is one `cancel` may retire
-as undispatched (pool protocol §4).
-
-**A one-shot lane's slot goes `idle` when the lane exits.** The launcher body in
-§4 records it `idle` right after it writes `CONDUCT_EXIT=`, and the waiter below
-records it again when it sees the marker, so a finished regression-gate or aux
-lane never leaves its slot `running` (a `running` slot makes the next `assign`
-for that worker exit 4). If the engine-group confirmation reports
-`engine_gone=no`, the waiter puts the slot back to `running` and a human
-decides. `conduct-pool.sh reconcile [--session-id <id>]` catches lanes whose
-waiter was swept: it marks `idle` every `running` one-shot slot whose run dir
-has `CONDUCT_EXIT=` in `lane.log` and whose `lane.pid` and `runner.pid` are
-dead. It never touches a loop lane, a lane without the marker, or a live one,
-and it never recycles. The pipeline driver runs it at start. Loop lanes
-(`workflow-runner --loop`) are recorded with `--pid` and `--run-dir` and follow
-their own process instead.
-
-**Two caps apply to every `assign`.** `CONDUCT_POOL_CAP` (default 8) bounds this
-session's pool. `CONDUCT_MACHINE_CAP` (default 16, `0` disables) bounds the
-running and claimed slots of every session pool under `workspace/sessions/` on
-the machine; a slot whose recorded pid is dead is not counted. Past it `assign`
-exits 6 and names the count, the cap and the sessions holding the most slots.
-Treat exit 6 like exit 3: wait for a lane to finish, do not spawn around it.
-
-Then arm a waiter as a **background** call so the harness notifies you when it
-exits. Never poll in the foreground:
-
-```bash
-D="{run dir}"
-L="$D/lane.log"
-P="$D/lane.pid"
-deadline="$(cat "$D/deadline" 2>/dev/null)"
-[ -n "$deadline" ] || { echo "no deadline file — refusing to wait unbounded"; exit 1; }
-starts=0
-outcome=exited
-until grep -q 'CONDUCT_EXIT=' "$L" 2>/dev/null; do
-  if [ "$(date +%s)" -ge "$deadline" ]; then outcome=deadline; break; fi
-  if [ -s "$P" ]; then
-    # Ask whether the lane's own group still has members, not whether the
-    # wrapper is alive. This cannot see the engine (spawned detached, its own
-    # group) and does not need to: if the runner is gone the wrapper writes
-    # CONDUCT_EXIT, so an empty group with no marker means the lane died.
-    pgrep -g "$(cat "$P")" >/dev/null 2>&1 || { outcome=died; break; }
-  else
-    starts=$((starts + 1))
-    [ "$starts" -gt 6 ] && { outcome=never-started; break; }
-  fi
-  sleep 10
-done
-echo "lane outcome: $outcome"
-if [ "$outcome" = exited ]; then
-  # one-shot lane: the marker means it finished; free the slot now
-  bash core/scripts/conduct-pool.sh --session-id "{owner session}" record --worker-id "{lane-id}" \
-    --subagent-id "$(basename "$D")" --status idle >/dev/null 2>&1 || true
-fi
-tail -30 "$L"
-```
-
-Reading the missing-deadline case as "wait forever" would reintroduce exactly the
-bug the file is there to prevent, so the waiter refuses to start without one.
-
-**No outcome releases the slot until the engine group is confirmed empty.**
-Every one of the four exits below is a statement about the *wrapper* or the
-*runner*, and the engine is in neither of their groups — the runner spawns it
-`detached: true`. The confirmation that closes that gap is below the branches,
-and it runs **last**, after whatever teardown the branch called for.
-
-Four ways out, and they are not interchangeable:
-
-- **`exited`** — the marker is there. Confirm the group, then read the outcome
-  (§7). The marker is the *runner's* exit, not the tree's: `child.on('close')`
-  fires when the engine's group leader goes, so a descendant can outlive it.
-- **`died`** / **`never-started`** — the *wrapper* is gone with no marker. The
-  liveness clause is load-bearing: without it these cases leave the loop
-  unsatisfied forever, and silence must never read as success. But the wrapper
-  disappearing says nothing about the engine — a SIGKILLed wrapper cannot take
-  its runner's detached child with it — so these are exactly the paths where
-  confirming the group matters most. Releasing on `died` without it starts a
-  replacement worker on top of a live engine.
-- **`deadline`** — **the lane is still running.** This is the only exit that
-  leaves a live process behind, and it is the case `timeoutSecs` does not cover:
-  the runner's soft timeout warns and keeps going, so a hung lane would otherwise
-  hold its caller forever. Stop it explicitly, and confirm:
-
-  **Ask the runner to stop; do not try to out-kill it.** Signal
-  `runner.pid` — node — and wait for the wrapper's `CONDUCT_EXIT` marker as
-  proof:
-
-  ```bash
-  kill -TERM "$(cat "$D/runner.pid")" 2>/dev/null
-  stopped=no
-  for _ in $(seq 1 30); do
-    grep -q 'CONDUCT_EXIT=' "$L" 2>/dev/null && { stopped=yes; break; }
-    sleep 1
-  done
-
-  if [ "$stopped" = no ]; then
-    kill -KILL -- -"$(cat "$P")" 2>/dev/null
-    echo "WARNING: the runner never acknowledged. Do NOT recycle this slot."
-  fi
-  ```
-
-  Then run the confirmation below with `graceful_attempted=yes`. This is the
-  only branch that sets it, and only *here* — after the runner has had its
-  30 seconds — because that flag is what authorises a SIGKILL of the engine
-  group. The marker plus `engine_gone=yes` is the clean stop; anything else is
-  unconfirmed.
-
-  **Why the runner and not the group.** `workflow-runner.mjs` spawns the engine
-  CLI with `detached: true`, so the engine leads *its own* process group — not
-  the wrapper's. Signalling the wrapper group therefore never reaches the engine,
-  and `pgrep -g "$pgid"` cannot see it either, so a group that looks empty proves
-  nothing. The runner's `killTree` is the only code that holds the engine's group
-  id. Signal the runner and it does the teardown correctly.
-
-  **Why wait for the marker, and why 30s.** The runner's own SIGTERM handler
-  SIGTERMs the engine tree and escalates to SIGKILL after **5 seconds**. A waiter
-  that sleeps 5s and then SIGKILLs the runner races that timer dead-on: kill the
-  runner at t=5s and its escalation may never fire, orphaning the engine. So the
-  grace must be comfortably longer than the runner's.
-
-  **But the marker alone is not proof the tree is down.** The runner's
-  `child.on('close')` fires when the engine's group *leader* exits and then calls
-  `onAllChildrenGone` immediately — so a descendant that outlives the leader
-  retires the runner before its own SIGKILL escalation ever runs, and
-  `CONDUCT_EXIT` appears over a group that still has members. Verify it, using
-  the pgid the runner journals at spawn — the runner is the only party that can
-  name a group it created with `detached: true`:
-
-  A marker with an empty group is a clean stop. A marker with survivors is not:
-  the shared confirmation SIGKILLs that group directly — safe there, because
-  unlike the wrapper group this *is* the engine — and only reports
-  `engine_gone=no` if something survives even that, which downgrades this stop
-  to unconfirmed.
-
-  **The unconfirmed case is a real state; do not paper over it.** It is reached
-  from every branch, not just this one: any outcome with `engine_gone=no`, and
-  any `deadline` whose marker never came. If the marker
-  never arrives, SIGKILLing the wrapper group is a last resort that explicitly
-  does *not* clear the engine — a SIGKILLed runner cannot run `killTree`. Leave
-  the slot `running`, say so, and let a human decide. Retiring it
-  (`recycle --force`) would put a second worker in a lane the first is still
-  writing to, which is the exact failure `recycle`'s running-lane guard exists to
-  prevent; forcing past that guard on an unverified process defeats it. Only a
-  clean stop earns the recycle. Test the **recorded pid**, not `pgrep -f "{run id}"` — `-f` matches
-the whole command line, and the waiter's own `bash -c` contains the run id, so
-`pgrep` finds the waiter itself and the killed-lane branch never fires (bash
-discipline rule 14).
+The lane registry is the record. Parse the create JSON for `ok`, `lane_id`, and
+the admission result. Admission or capacity refusal leaves the task queued for a
+later tick. Claude parents arm `Monitor(hq lanes watch <lane>)` or a bounded
+background `hq lanes wait`. Codex parents generate a unique
+`round_id="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"` before every
+dispatch, then capture
+`since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` immediately before the create, message,
+resume, or question-answer call. After the call, start one watcher for that lane
+and round with
+`bash core/scripts/lanes-completion-watch.sh start --lane <lane-id> --provider
+codex --session-id "$CODEX_SESSION_ID" --since "$since" --round-id "$round_id"`.
+That starts a persistent `hq monitor` targeted to the parent session; it checks
+`hq lanes show` before and after each bounded `hq lanes wait --any <lane> --for
+envelope --for state --for question --timeout <seconds> --json` call. Receipt
+and monitor files under `workspace/lanes-runs/<lane-id>/codex-completion/` key
+by `since` and unique round ID. Different IDs keep same-second dispatches
+separate; reusing an ID suppresses duplicate starts and events. The start
+command rejects a mismatched owner. Each event includes its `since` value,
+outcome, lane state, and current envelope reference or worker log path. If
+monitor startup fails, report dispatch failure and do not say a notification
+was scheduled. Codex sees the event on its next tool call or user message; it
+cannot answer while idle. Arm one watcher per lane per round. Read
+the wait JSON and do not use the exit code as the delivery verdict.
 
 ### Confirming the engine group — run this last, on every outcome
 
-```bash
-# yes ONLY on the deadline branch, after the runner has had its 30s. That flag
-# is what authorises the SIGKILL: killing an engine we never asked to stop
-# takes it down mid-write, in a half-finished file or a half-made commit.
-graceful_attempted={yes on the deadline branch after its wait, else no}
-
-engine_gone=yes
-epgid="$(jq -r 'select(.event=="agent-spawned")|.pgid' "$D/journal.jsonl" 2>/dev/null | tail -1)"
-if [ -n "$epgid" ] && pgrep -g "$epgid" >/dev/null 2>&1; then
-  if [ "$graceful_attempted" = yes ]; then
-    kill -KILL -- -"$epgid" 2>/dev/null   # safe: this IS the engine's group,
-    sleep 2                               # named by the process that made it,
-  fi                                      # and it has already refused SIGTERM
-  pgrep -g "$epgid" >/dev/null 2>&1 && engine_gone=no
-fi
-echo "engine group: $engine_gone"
-if [ "$engine_gone" = no ]; then
-  # an engine survived: hold the slot that the exit marker freed
-  bash core/scripts/conduct-pool.sh --session-id "{owner session}" record --worker-id "{lane-id}" \
-    --subagent-id "$(basename "$D")" --status running >/dev/null 2>&1 || true
-fi
-```
-
-**Observation first, force only after a refused request.** The runner is the
-only thing that can stop the engine politely — `killTree` SIGTERMs the tree and
-escalates on its own timer — so the sequence is always: ask the runner, wait,
-*then* consider force. A confirmation that SIGKILLs on sight would run before
-the deadline branch ever signalled the runner and would defeat the graceful path
-it exists to protect, tearing a timed-out worker down mid-write. On `exited`,
-`died` and `never-started` there was no request to refuse, so a survivor is
-observed and reported, never killed.
-
-`engine_gone=no` means a process is still working in the lane's repo. Whatever
-the outcome said, the slot stays `running` and a human decides. An absent
-`epgid` — the lane died before the runner spawned an engine — is not a survivor:
-that is `never-started`, and there is nothing to confirm.
-
-Never build the waiter as `tail -f | sed | grep`: `sed` block-buffers into a
-pipe, the completion line never reaches the last stage, and a healthy lane looks
-like a hung one.
-
-The waiter is a convenience, not the source of truth. If it is swept, the lane
-keeps running and the run dir still holds the outcome.
+The lane registry and its state are authoritative; do not kill or recycle
+process groups based on a missing envelope. If a lane is stuck, inspect
+`hq lanes show <lane> --json` and use `hq lanes interrupt` when its session must
+be preserved, or `hq lanes stop` when it must be ended.
 
 ## 6. Correcting a lane mid-flight
 
-A launched lane is not sealed. Each carries a drop box, and a hook inside the
-lane delivers from it on the lane's next tool event, so a correction reaches the
-worker without killing it and without waiting for it to finish:
-
-```bash
-bash core/scripts/conduct-inbox.sh send --run-dir "{run dir}" --text "{correction}"
-```
-
-Codex and claude lanes take a message quietly. A grok lane has to be interrupted
-— the message arrives as a denied tool call — which costs it the step it was
-about to take. For work you expect to steer often, that is a reason to prefer
-codex. Use `--text-file <path>` for anything long rather than fighting shell
-quoting, and `conduct-inbox.sh list --run-dir …` to see what is still pending.
+Use `hq lanes message <lane> --text <instruction>` or `--text-file <path>` for
+worker lanes. The message is an instruction and can replace earlier scope. Use
+`hq lanes link send` for linked sessions.
 
 ## 7. Reading the outcome
 
-The lane's return value is in the run dir, not in a tool result. Read it there,
-compactly — never by pasting a full log into the parent transcript.
-
-**Do not read the payload out of `lane.log`.** That file is the runner's whole
-stdout: narration, warnings, and — last — `JSON.stringify(result)`
-(`workflow-runner.mjs:1526`). A schema-less `agent()` returns the engine's reply
-as *text*, so what lands there is a JSON **string** whose content is the worker's
-JSON, not the worker's object. `jq -e .` on it succeeds and every field access
-then comes back empty, which reads as "the worker returned nothing" when the
-worker in fact returned everything. `lane.log` is for the `CONDUCT_EXIT` marker
-and for a human tail when something went wrong; it is not the result channel.
-
-**Read `agent-1.result.json`.** Each lane runs exactly one `agent()` call, so
-`n` is always 1. The runner writes `{ key, label, value }` there
-(`workflow-runner.mjs:1169-1173`), where `value` is precisely what `agent()`
-returned:
-
-```bash
-raw="$(jq -r '.value' "$D/agent-1.result.json")"     # the worker's reply, as text
-printf '%s' "$raw" | jq -e '.'                        # now parse it as the contract
-```
-
-Two calls, not one: the outer `jq` unwraps the runner's envelope, the inner one
-parses the worker's JSON. Collapsing them into a single `jq` is the exact
-mistake described above.
-
-If `agent-1.result.json` is missing — the runner writes it best-effort, and a
-lane that died before finishing never gets one — fall back to
-`agent-1.last.md`, the engine's raw final reply
-(`workflow-runner.mjs:922`, `:1108`). A repair pass writes
-`agent-1.repair.last.md` alongside it; when both exist the repair one is the
-reply that was accepted.
-
-A caller that imposed a return contract (`/run-project` requires story JSON)
-validates it here, at the same point an in-session caller would have validated a
-`wait_agent` return. Everything downstream of that — the retry on malformed
-JSON, the proof gates, the release of the slot — is unchanged by the lane being
-detached.
-
-**Release the slot as soon as the lane is gone,** before branching on what it
-returned (pool protocol §6). A failed lane's slot is just as reusable as a
-successful one's, and every recovery path re-`assign`s.
-
-"Gone" means both halves of §5: the waiter reached an outcome **and**
-`engine_gone=yes`. A slot released on the outcome alone can be handed to a
-replacement worker while the old engine is still committing to the same repo.
+Read the envelope and artifact paths reported by the lane. Inspect the diff,
+commit, and tests directly. For a PR, verify the remote head and all check runs
+against that head. `decision: "done"` and a process exit code are claims to
+verify, not delivery evidence.
 
 ## 8. Phase envelope and handoff shape
 
-Every pipeline phase, on every engine, takes one **phase envelope** and returns
-one **phase handoff**. claude, codex, and grok lanes all use this one shape, so
-a backend phase on one engine can hand to a QA phase on another without
-translation. The envelope starts from the `/execute-task` filesystem phase
-envelope.
+Loop lanes carry phase envelopes and handoffs. `/execute-task` and `/run-project`
+own the run state; this schema is the shared shape. A loop lane is created with
+`--loop` and still uses the caller as senior. Preserve each phase's story id,
+worker id, acceptance criteria, and result path in its envelope.
 
 ### Phase envelope (`schema: "hq-phase-envelope/v1"`)
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `schema` | string `hq-phase-envelope/v1` | yes | Shape tag |
-| `story_id` | string | yes | Story id, e.g. `run-project-pipeline-lanes/US-005` |
-| `phase` | string | yes | Phase name, e.g. `backend`, `qa` |
-| `worker_id` | string | yes | Worker running the phase, e.g. `backend-dev` |
-| `worktree` | string (path) | yes | Absolute path the phase works in |
-| `incoming_handoff` | string (path) or null | yes | Previous phase's handoff file; null for the first phase |
-| `acceptance_criteria` | array of strings | yes | Criteria this phase must meet |
-| `deadline` | string (ISO8601 UTC, e.g. `2026-10-03T23:59:00Z`) | yes | Time after which the runner treats the phase as timed out |
-| `fresh_call` | boolean | yes | Fresh-call override: true starts a new engine session instead of resuming |
+| `story_id` | string | yes | Project-qualified story id |
+| `phase` | string | yes | Phase name |
+| `worker_id` | string | yes | Worker assigned to this phase |
+| `worktree` | absolute path | yes | Repo worktree for the phase |
+| `incoming_handoff` | path or null | yes | Previous phase output, if any |
+| `acceptance_criteria` | string array | yes | Checks the phase must satisfy |
+| `deadline` | ISO-8601 UTC string | yes | Phase deadline |
+| `fresh_call` | boolean | yes | Whether to start a new provider session |
 | `project` | string | no | Project slug |
 | `engine` | string | no | `claude`, `codex`, or `grok` |
-| `result_path` | string | no | Where the runner writes the normalized handoff |
-| `story_title` | string | no | Story title from the PRD, quoted in the phase prompt |
-| `story_description` | string | no | Story description from the PRD, quoted in the phase prompt |
-| `constraints` | array of strings | no | Run-wide hard limits, quoted verbatim in the phase prompt. `route` copies them from `{state}/constraints.txt` (one per line, blank lines ignored) when that file exists, then appends the lines below that apply |
-| `repo` | string (path) | no | The story's resolved repo |
-| `branch` | string | no | The branch checked out in `worktree`; a constraint line tells the worker to commit there |
-| `reopen_note` | string | no | Why a verified story was reopened at this phase; a constraint line quotes it |
-| `resumed_after_interrupt` | boolean | no | `true` when this phase was interrupted by a run stop and is routed again; a constraint line tells the worker to check the worktree for partial work |
-| `prior_handoff` | string (path) | no | The partial handoff the interrupted phase left (`handoffs/<id>-<phase>.interrupted.<n>.json`), when there is one |
+| `result_path` | path | no | Where the phase writes its handoff |
+| `story_title` | string | no | Story title |
+| `story_description` | string | no | Story description |
+| `constraints` | string array | no | Run-wide hard limits |
+| `repo` | string | no | Resolved repo path |
+| `branch` | string | no | Branch checked out in `worktree` |
+| `reopen_note` | string | no | Why a verified story was reopened |
+| `resumed_after_interrupt` | boolean | no | Whether this phase continues after a stop |
+| `prior_handoff` | path | no | Partial output from the interrupted phase |
 
-Constraint lines `route` may append:
-
-- the branch line (`Commit this phase's work on branch {branch} in {worktree}; ...`) when `branch` is set;
-- the reopen line (`This story was {verified} and has been reopened at this phase. Why: {reopen_note}`);
-- the interrupt line (`This phase was interrupted at {time} when the run stopped; check the worktree for partial work ... before starting over.`);
-- the repos-worktree line, only on a run started with `--allow-repos-worktree` whose worktree resolves under `repos/`: `This worktree is under repos/, where the core Write/Edit guard blocks the editor tools: make every file edit through the shell or apply_patch, never with the Write or Edit tool.`
-
-A loop lane (`workflow-runner.mjs --loop`) takes this envelope directly. It
-builds the phase prompt itself: the worker's `worker.yaml` name, description,
-instructions and `skills[].file` paths (worker dirs found under
-`core/workers` and `personal/workers`, any depth, or `PC_WORKERS_ROOT`), the
-story id, title, description and phase, the worktree as working directory, the
-literal acceptance criteria, the constraints, the incoming handoff path, and
-the required handoff reply. The phase runs at tier `exec` on `engine` when set,
-else the lane's own engine (`HQ_CONDUCT_ENGINE`) and HQ_WORKFLOW_* pins, with
-`cd` = `worktree`; `story_id` drives session resume and `fresh_call: true`
-forces a fresh call. The runner then runs `normalize` and `validate --kind
-handoff` on the reply (and checks `story_id`, `phase`, `worker_id` match) and
-writes the handoff to `result_path`. If the engine errors, stalls twice, or the
-reply is not a valid handoff, it writes a valid handoff with `status: "failed"`
-and the reason in `summary` and `notes`. The lane's run record still goes to
-`inbox/results/<stem>.json`.
+When a worktree lives under `repos/`, the `repos-worktree line` tells the
+worker that shell or patch edits are required by the repo Write/Edit guard.
+Retain the branch, reopen, interruption, and prior handoff fields when present.
 
 ### Phase handoff (`schema: "hq-phase-handoff/v1"`)
 
@@ -616,56 +152,15 @@ and the reason in `summary` and `notes`. The lane's run record still goes to
 |---|---|---|---|
 | `schema` | string `hq-phase-handoff/v1` | yes | Shape tag |
 | `story_id`, `phase`, `worker_id` | string | yes | Copied from the envelope |
-| `status` | `passed` \| `failed` \| `blocked` | yes | Phase outcome |
+| `status` | `passed`, `failed`, or `blocked` | yes | Phase result |
 | `summary` | string | yes | What the phase did |
-| `files_changed` | array of strings | yes | Paths changed (may be empty) |
-| `commits` | array of strings | yes | Commit shas made (may be empty) |
-| `back_pressure` | object | yes | `tests`, `lint`, `typecheck`, `build`, each `pass` \| `fail` \| `skip` |
-| `context_for_next` | string | yes | What the next phase needs to know |
-| `engine` | string | no | Engine that ran the phase |
-| `notes` | string | no | Free text |
+| `files_changed` | string array | yes | Changed paths |
+| `commits` | string array | yes | Commits made |
+| `back_pressure` | object | yes | Test, lint, typecheck, and build state |
+| `context_for_next` | string | yes | Information for the next phase |
+| `engine` | string | no | Provider used |
+| `notes` | string | no | Additional detail |
 
-Optional handoff field used by the pipeline conductor's acceptance re-check
-(`pipeline-conductor.sh recheck`):
-
-| Field | Type | Required | Meaning |
-|---|---|---|---|
-| `ac_evidence` | array of `{index, met, evidence, criterion?}` | no | `index` is the 0-based position in the story's `acceptanceCriteria`; `met` is a boolean; `evidence` names the test, command output, or file that shows it; `criterion`, when present, must equal the literal criterion text or the entry is ignored |
-
-A story is verified only when, across its handoffs, every criterion has one
-`ac_evidence` entry with `met: true` and non-empty `evidence`. `status: passed`
-alone is not enough.
-
-### Validating and normalizing
-
-```bash
-core/scripts/pipeline-envelope.sh validate [--kind envelope|handoff] <file|->
-core/scripts/pipeline-envelope.sh normalize <raw-reply-file|-> > handoff.json
-```
-
-- `validate` detects the kind from `schema` when `--kind` is omitted. It exits
-  0 when valid. Otherwise it exits non-zero and prints each problem to stderr as
-  `missing field: <name>` or `wrong type: <name> (want <type>)`. Unparseable
-  JSON, an empty file, a missing file, or a non-object top level never exit 0.
-- `normalize` is the runner-side step for engines that wrap their reply. It
-  extracts the one JSON object from a ```` ```json ```` fence or surrounding
-  prose and prints it. It exits non-zero when no object, or more than one
-  untagged object, is found.
-- The runner always runs `normalize` then `validate` on the engine's final
-  message before advancing to the next phase.
-
-### Adapter notes per engine
-
-The same adapter prompt (envelope embedded plus the handoff field list,
-"reply with only the JSON object") produced a valid handoff on all three
-engines; see
-`personal/projects/run-project-pipeline-lanes/evidence/handoff-parity/`.
-
-- claude: `claude -p --model <m> --effort low --tools "" < prompt.md`. Pass
-  the prompt on stdin; `--tools` is variadic and swallows a positional prompt.
-- codex: `codex exec -m <model> -s read-only -o <final.txt> - < prompt.md`.
-  Read the `-o` file, not stdout. Pass `-m` explicitly; the configured default
-  model can be rejected for ChatGPT-account auth.
-- grok: `grok -p "<prompt>"`; stdout is the reply.
-
-Tests: `core/scripts/tests/pipeline-envelope.test.sh`.
+Acceptance evidence is optional but, when supplied, each entry names the
+acceptance criterion index, a boolean result, and non-empty evidence. A passing
+status alone does not prove that all acceptance criteria were met.

@@ -6,6 +6,7 @@ SCRIPTS="$ROOT/core/scripts"
 INSTALLER="$SCRIPTS/ci/install-pinned-hq-cli.sh"
 GUARD="$SCRIPTS/check-cli-hosted.sh"
 GENERATOR="$SCRIPTS/generate-forwarders.sh"
+source "$SCRIPTS/lib/hq-cli-floor.sh"
 TMP="$(mktemp -d /tmp/cli-hosted-pinned-cli.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -17,19 +18,32 @@ fail() {
 pass() { printf 'PASS: %s\n' "$1"; }
 
 ACTUAL_CORE_FLOOR="$(awk -F '[:\"]' '$1 == "requiresHqCli" { gsub(/[[:space:]]/, "", $3); print $3 }' "$ROOT/core/core.yaml")"
-if [ "$ACTUAL_CORE_FLOOR" = ">=5.342.7" ]; then
-  pass 'core CLI floor matches the minimum Windows-safe hook helper and policy batching CLI'
+if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.67" ]; then
+  pass 'core CLI floor includes the HQ lanes command contract'
 else
-  fail "core CLI floor is >=5.342.7 for hook helper and policy batching compatibility: got $ACTUAL_CORE_FLOOR"
+  fail "core CLI floor is >=5.345.67 because hq lanes session-start records Codex session defaults: got $ACTUAL_CORE_FLOOR"
 fi
 POLICY_MIN_CLI="$(awk '
   /^  - path: core\/scripts\/read-policy-frontmatter\.sh$/ { found=1; next }
   found && /^    min_cli:/ { print $2; exit }
 ' "$ROOT/core/scripts/cli-hosted.yaml")"
-if [ -n "$POLICY_MIN_CLI" ] && [ "$ACTUAL_CORE_FLOOR" = ">=$POLICY_MIN_CLI" ]; then
-  pass 'core CLI floor matches the forwarded policy minimum'
+if [ -n "$POLICY_MIN_CLI" ] && awk -v actual="${ACTUAL_CORE_FLOOR#>=}" -v required="$POLICY_MIN_CLI" 'BEGIN {
+  split(actual, a, "."); split(required, r, ".")
+  for (i = 1; i <= 3; i++) {
+    if ((a[i] + 0) > (r[i] + 0)) exit 0
+    if ((a[i] + 0) < (r[i] + 0)) exit 1
+  }
+  exit 0
+}'; then
+  pass 'core CLI floor satisfies the forwarded policy minimum'
 else
-  fail "core CLI floor should match forwarded policy min_cli $POLICY_MIN_CLI: got $ACTUAL_CORE_FLOOR"
+  fail "core CLI floor should be at least forwarded policy min_cli $POLICY_MIN_CLI: got $ACTUAL_CORE_FLOOR"
+fi
+if [ -n "$POLICY_MIN_CLI" ] && [ -n "$ACTUAL_CORE_FLOOR" ] && \
+  [ "$(printf '%s\n%s\n' "${ACTUAL_CORE_FLOOR#>=}" "$POLICY_MIN_CLI" | sort -V | tail -1)" = "${ACTUAL_CORE_FLOOR#>=}" ]; then
+  pass 'core CLI floor is at least the forwarded policy minimum'
+else
+  fail "core CLI floor should be at least forwarded policy min_cli $POLICY_MIN_CLI: got $ACTUAL_CORE_FLOOR"
 fi
 MOCK_BIN="$TMP/mock-bin"
 MOCK_PREFIX="$TMP/global"

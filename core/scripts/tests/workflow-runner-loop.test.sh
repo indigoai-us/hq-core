@@ -1,7 +1,7 @@
 #!/bin/bash
 # hq-core: public
 # Regression test for `workflow-runner.mjs --loop` — a persistent worker lane
-# that takes phase envelopes from its conduct-inbox queue.
+# that takes phase envelopes from the run directory's pending queue.
 #
 # Uses a FAKE claude binary (HQ_WORKFLOW_CLAUDE_BIN) that records each call, so
 # no real agent runs, and a synthetic HQ root. Covered behaviors:
@@ -27,7 +27,6 @@ export HQ_SESSION_ID="test-workflow-runner-loop-$$"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$REPO_ROOT/core/scripts/workflow-runner.mjs"
-INBOX_SH="$REPO_ROOT/core/scripts/conduct-inbox.sh"
 
 pass=0
 fail=0
@@ -86,7 +85,15 @@ export HQ_CONDUCT_RUN_DIR="$TMP/lane"
 LANE="$TMP/lane"
 mkdir -p "$LANE"
 
-send() { bash "$INBOX_SH" send --run-dir "$LANE" --text "$1" >/dev/null; }
+QUEUE_SEQ=0
+send() {
+  local stamp target
+  mkdir -p "$LANE/inbox/pending"
+  QUEUE_SEQ=$((QUEUE_SEQ + 1))
+  stamp="$(date -u +%Y%m%d%H%M%S)"
+  target="$LANE/inbox/pending/$stamp-$$-$QUEUE_SEQ.msg"
+  printf '%s\n' "$1" > "$target"
+}
 phase() { printf '{"kind":"phase","engine":"claude","tier":"exec","id":"%s","prompt":"TAG=%s %s"}' "$1" "$1" "${2:-}"; }
 calls() { [ -f "$TMP/rec/calls" ] && wc -l < "$TMP/rec/calls" | tr -d ' ' || echo 0; }
 wait_for() { # wait_for <secs> <command...>

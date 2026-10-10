@@ -1948,9 +1948,10 @@ function terminateAndExit(code) {
 
 // ------------------------------------------------------------------ loop mode
 //
+// Pipeline mode now runs phases through hq-cli loop lanes. The loop runner is
+// retained for direct workflow-runner integrations and tests.
 // `--loop` turns the runner into a persistent worker lane. The process stays
-// alive and takes phase envelopes from the lane's conduct-inbox queue
-// (<run-dir>/inbox/pending/, written with `conduct-inbox.sh send`), one at a
+// alive and takes phase envelopes from <run-dir>/inbox/pending/, one at a
 // time, oldest first. Each envelope is one bounded agent() call. The lifecycle
 // of an envelope is:
 //
@@ -1992,17 +1993,18 @@ function terminateAndExit(code) {
 // lane, envelope, elapsed_s, deadline_s and attempt. Per-envelope counts live
 // in <run-dir>/stalls.json.
 //   - First stall: the lane restarts in place. The envelope stays in active/,
-//     the process spawns a copy of itself with the same argv and run dir (the
-//     same pool slot: loop.json is rewritten with the new pid, which
-//     conduct-pool.sh adopts) and exits 75. The copy puts the envelope back at
+//     the process spawns a copy of itself with the same argv and run dir
+//     (loop.json is rewritten with the new pid, so a supervisor that tracks
+//     the lane by loop.json follows the copy) and exits 75. The copy puts the envelope back at
 //     the head of pending/ and reruns it as a fresh engine call, no resume.
 //     Queued envelopes are not touched.
 //   - Second stall of the same envelope: no restart. The envelope moves to
 //     inbox/stalled/, its result file gets status "stalled", a decision item
 //     is appended to <run-dir>/decisions.jsonl (and to
 //     $HQ_PIPELINE_DECISIONS_FILE when set), and the lane exits 76. pending/
-//     is left exactly as it was. conduct-pool.sh forwards decision items to
-//     workspace/sessions/<id>/decisions.jsonl, which the parent session reads.
+//     is left exactly as it was. The runner does not forward decision items
+//     itself; a caller that wants them in the parent session reads
+//     <run-dir>/decisions.jsonl or sets $HQ_PIPELINE_DECISIONS_FILE.
 // Other lanes are separate processes and keep running throughout.
 //
 // The wait is an in-process directory read on a timer. It spawns no shell and
@@ -2019,7 +2021,7 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(tmp, file);
 }
 
-// Arrival order. conduct-inbox names files <UTC second>-<sender pid>.msg, so
+// Arrival order. Pending messages are named <UTC second>-<sender pid>.msg, so
 // two sends inside one second would sort by pid, not by arrival. The file's
 // mtime is set when the sender wrote it, just before the rename into pending/,
 // so it orders sends that share a second; the name breaks exact ties.
@@ -2596,10 +2598,10 @@ async function runLoop(rt, cli = {}) {
   };
   for (const d of Object.values(dirs)) fs.mkdirSync(d, { recursive: true });
 
-  // The conduct-lane-inbox hook drains HQ_CONDUCT_RUN_DIR's pending/ on every
-  // tool call of an engine child. In loop mode that directory is this lane's
-  // work queue, so an inherited value would let the engine swallow envelopes
-  // queued behind the one it is running. Children never see it.
+  // HQ_CONDUCT_RUN_DIR names this lane's work queue. A hook that drains a
+  // run dir's pending/ on an engine child's tool calls (the retired
+  // conduct-lane-inbox hook did) would swallow envelopes queued behind the one
+  // the engine is running, so children never see it.
   delete process.env.HQ_CONDUCT_RUN_DIR;
 
   // An envelope left in active/ belongs to a lane that died mid-phase. Put it

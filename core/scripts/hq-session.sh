@@ -451,11 +451,27 @@ cmd_set() {
   # company afterward (this path) otherwise surfaces nothing, so an agent can
   # do company infra/deploy/credential work blind to hard rules. This closes
   # that gap. Emits policy text only — never secrets.
+  #
+  # The scope capability is rewritten on every company_slug set, not only on a
+  # change. The authorizer trusts the capability before meta.yaml, and the line
+  # above has just rewritten meta.yaml to a singleton lock set. Skipping the
+  # capability when the primary is unchanged would leave it enforcing an older
+  # lock set (after `add company`) or an older company (after an unbind that
+  # blanked only meta.yaml). An empty value is an unbind and removes it.
+  if [ "$key" = "company_slug" ]; then
+    if [ -n "$value" ]; then
+      session_scope_mint_set "$REPO_ROOT" "$id" "$value" || {
+        echo "hq-session: failed to mint scope-capability for session $id" >&2
+        exit 1
+      }
+    else
+      session_scope_clear "$REPO_ROOT" "$id" || {
+        echo "hq-session: failed to clear scope-capability for session $id" >&2
+        exit 1
+      }
+    fi
+  fi
   if [ "$key" = "company_slug" ] && [ -n "$value" ] && [ "$value" != "$prev" ]; then
-    session_scope_mint_set "$REPO_ROOT" "$id" "$value" || {
-      echo "hq-session: failed to mint scope-capability for session $id" >&2
-      exit 1
-    }
     # `personal` is the reserved scope for work that belongs to no company. It
     # binds the session — satisfying the checkpoint company gate and scoping the
     # authorizer to personal/ — but it has no tenant directory, so there are no

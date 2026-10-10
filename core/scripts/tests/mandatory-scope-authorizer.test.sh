@@ -765,8 +765,9 @@ rc="$(run_hook "$(caller_payload agent-B general-purpose indigo)")"
 expect_exit 2 "$rc" "agent B cannot write within A"
 
 echo "[64] unbound and malformed subagent identities fail closed"
-rc="$(run_hook "$(caller_payload agent-unbound general-purpose indigo)")"
-expect_exit 2 "$rc" "unbound subagent tuple is denied"
+mkdir -p "$TMP/workspace/sessions/sess-nocap"
+rc="$(run_hook "$(caller_payload agent-unbound general-purpose indigo sess-nocap)")"
+expect_exit 2 "$rc" "unbound subagent tuple with no parent capability is denied"
 grep -qi 'restart or respawn the subagent' "$TMP/err.txt" || fail "valid but unbound subagent denial tells the caller to restart or respawn"
 rc="$(run_hook "$(caller_payload '../agent-A' general-purpose indigo)")"
 expect_exit 2 "$rc" "malformed agent_id is denied"
@@ -789,20 +790,73 @@ echo "[65] main thread keeps its legacy session binding"
 rc="$(run_hook "$(caller_payload '' '' indigo)")"
 expect_exit 0 "$rc" "main thread without agent identity uses session binding"
 
-echo "[66] legacy session-only capability is main-thread-only"
+echo "[66] Task subagent inherits its parent's capability on first use"
+# Claude Code fires no SessionStart for a Task subagent (feedback_284bc210), so
+# the child tuple is pinned from the parent's main-thread capability.
+FX_SUBAGENT="$ROOT/core/scripts/tests/fixtures/scope-authorizer/pretooluse-task-subagent.json"
+FX_SID="$(jq -r '.session_id' "$FX_SUBAGENT")"
+FX_AID="$(jq -r '.agent_id' "$FX_SUBAGENT")"
+FX_TUPLE="$TMP/workspace/sessions/$FX_SID/agents/$FX_AID/scope-capability.json"
+fixture_payload() {
+  local company="$1"
+  sed -e "s#__HQ_ROOT__#$TMP#g" -e "s#__COMPANY__#$company#g" "$FX_SUBAGENT" | jq -c .
+}
+install_fixture ""
+. "$ROOT/core/scripts/lib/session-scope-capability.sh"
+mkdir -p "$TMP/workspace/sessions/$FX_SID"
+session_scope_mint "$TMP" "$FX_SID" "indigo"
+[ ! -e "$FX_TUPLE" ] || fail "fixture tuple must not exist before the first call"
+rc="$(run_hook "$(fixture_payload indigo)")"
+expect_exit 0 "$rc" "new subagent reads its parent's company"
+[ "$(jq -r '.company_slug' "$FX_TUPLE" 2>/dev/null)" = "indigo" ] || fail "child tuple should record the parent's company"
+[ "$(jq -r '.agent_id' "$FX_TUPLE" 2>/dev/null)" = "$FX_AID" ] || fail "child tuple should name the subagent"
+rc="$(run_hook "$(fixture_payload otherco)")"
+expect_exit 2 "$rc" "new subagent cannot read outside its parent's company"
+[ "$(jq -r '.company_slug' "$FX_TUPLE")" = "indigo" ] || fail "denied call must not change the child tuple"
+
+echo "[66a] meta.yaml without a parent capability never binds a subagent"
+install_fixture ""
+mkdir -p "$TMP/workspace/sessions/$FX_SID"
+printf 'company_slug: indigo\n' > "$TMP/workspace/sessions/$FX_SID/meta.yaml"
+rc="$(run_hook "$(fixture_payload indigo)")"
+expect_exit 2 "$rc" "subagent with only parent meta.yaml is denied"
+grep -qi 'restart or respawn the subagent' "$TMP/err.txt" || fail "unbound subagent denial tells the caller to respawn"
+[ ! -e "$FX_TUPLE" ] || fail "no child tuple may be minted from meta.yaml"
+
+echo "[66b] parent rebind after the child's first call does not move the child"
+install_fixture ""
+mkdir -p "$TMP/workspace/sessions/$FX_SID"
+session_scope_mint "$TMP" "$FX_SID" "indigo"
+rc="$(run_hook "$(fixture_payload indigo)")"
+expect_exit 0 "$rc" "child first call pins the parent's company"
+session_scope_mint_set "$TMP" "$FX_SID" "otherco"
+rc="$(run_hook "$(fixture_payload otherco)")"
+expect_exit 2 "$rc" "child cannot follow the parent's rebind"
+rc="$(run_hook "$(fixture_payload indigo)")"
+expect_exit 0 "$rc" "child keeps its original company"
+[ "$(jq -r '.company_slug' "$FX_TUPLE")" = "indigo" ] || fail "child tuple must not be rewritten after a parent rebind"
+main_payload="$(fixture_payload otherco | jq -c 'del(.agent_id, .agent_type)')"
+rc="$(run_hook "$main_payload")"
+expect_exit 0 "$rc" "parent main thread uses its new binding"
+
+echo "[66c] an existing malformed child tuple is never overwritten"
+install_fixture ""
+mkdir -p "$TMP/workspace/sessions/$FX_SID/agents/$FX_AID"
+session_scope_mint "$TMP" "$FX_SID" "indigo"
+printf '{"session_id":"%s","agent_id":"%s","company_slug":"../x"}\n' "$FX_SID" "$FX_AID" > "$FX_TUPLE"
+rc="$(run_hook "$(fixture_payload indigo)")"
+expect_exit 2 "$rc" "malformed child tuple fails closed"
+[ "$(jq -r '.company_slug' "$FX_TUPLE")" = "../x" ] || fail "malformed child tuple must not be replaced by inheritance"
+
+echo "[66d] legacy session-only capability still authorizes the main thread"
+install_fixture ""
 mkdir -p "$TMP/workspace/sessions/legacy-sid"
 jq -n '{session_id:"legacy-sid",company_slug:"indigo",minted_at:"2026-10-05T00:00:00Z"}' \
   > "$TMP/workspace/sessions/legacy-sid/scope-capability.json"
-legacy_payload() {
-  local aid="$1" atype="$2"
-  jq -cn --arg cwd "$TMP" --arg aid "$aid" --arg atype "$atype" \
-    '{tool_name:"Write",session_id:"legacy-sid",cwd:$cwd,agent_id:$aid,agent_type:$atype,
-      tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}'
-}
-rc="$(run_hook "$(legacy_payload '' '')")"
+payload="$(jq -cn --arg cwd "$TMP" \
+  '{tool_name:"Write",session_id:"legacy-sid",cwd:$cwd,tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}')"
+rc="$(run_hook "$payload")"
 expect_exit 0 "$rc" "legacy capability still authorizes main thread"
-rc="$(run_hook "$(legacy_payload agent-new general-purpose)")"
-expect_exit 2 "$rc" "legacy capability never falls back to a new subagent tuple"
 
 echo "[67] quoted cat heredoc body is data written to an allowed workspace target"
 install_fixture "indigo"

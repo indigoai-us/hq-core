@@ -32,7 +32,7 @@ node - "$output" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 const root = process.argv[2];
-const events = ['PreToolUse','PostToolUse','PreCompact','Stop','SessionStart','UserPromptSubmit','Notification','SubagentStop','SessionEnd'];
+const events = ['PreToolUse','PostToolUse','PreCompact','Stop','SessionStart','UserPromptSubmit','Notification','SubagentStart','SubagentStop','SessionEnd'];
 const hooks = Object.fromEntries(events.map(event => [event, [{ hooks: [{
   type: 'command',
   command: `"\u0024{CLAUDE_PLUGIN_ROOT}/scripts/hq-claude-plugin-launch.sh" hook ${event} --runtime claude`,

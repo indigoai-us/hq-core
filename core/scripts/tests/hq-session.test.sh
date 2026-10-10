@@ -183,6 +183,62 @@ PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-multi remove company beta >"
 [ "$rc" -ne 0 ] || fail "removing the last company should be refused"
 pass "add and remove maintain ordered lock and protect last entry"
 
+# Unbinding removes the capability. The scope authorizer reads the capability
+# before meta.yaml, so an unbind that only blanked meta.yaml left the old
+# company enforced while `get company_slug` reported the session unbound.
+"$HS" --session-id sess-unbind set company_slug indigo >/dev/null
+unbind_cap="$TMP/workspace/sessions/sess-unbind/scope-capability.json"
+[ -f "$unbind_cap" ] || fail "bind before unbind did not mint a capability"
+"$HS" --session-id sess-unbind set company_slug "" >/dev/null
+[ ! -e "$unbind_cap" ] || fail "unbind left scope-capability.json behind: $(cat "$unbind_cap")"
+assert_eq "$("$HS" --session-id sess-unbind get company_slug)" "" "meta unbound after unbind"
+pass "unbind removes the scope capability"
+
+# Setting the primary company again resets the lock set in the capability as
+# well as in meta.yaml. Before, the capability was rewritten only when the
+# primary changed, so it kept enforcing companies added with `add company`.
+"$HS" --session-id sess-reset set company_slug indigo >/dev/null
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-reset add company beta >/dev/null
+assert_eq "$(jq -c '.company_slugs' "$TMP/workspace/sessions/sess-reset/scope-capability.json")" '["indigo","beta"]' "add widened the capability before reset"
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-reset set company_slug indigo >/dev/null
+assert_eq "$(jq -c '.company_slugs' "$TMP/workspace/sessions/sess-reset/scope-capability.json")" '["indigo"]' "same-company set resets the capability lock set"
+assert_eq "$(PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-reset get company_slugs)" "indigo" "same-company set resets the reported lock set"
+pass "same-company set resets a widened capability"
+
+# A capability that drifted from meta.yaml is repaired by setting the same
+# company again rather than skipped because meta.yaml already matched.
+"$HS" --session-id sess-drift set company_slug indigo >/dev/null
+drift_cap="$TMP/workspace/sessions/sess-drift/scope-capability.json"
+jq '.company_slug = "stale" | .company_slugs = ["stale"]' "$drift_cap" > "$drift_cap.tmp" && mv "$drift_cap.tmp" "$drift_cap"
+"$HS" --session-id sess-drift set company_slug indigo >/dev/null
+assert_eq "$(jq -r '.company_slug' "$drift_cap")" "indigo" "same-company set repairs a drifted capability"
+pass "same-company set repairs a drifted capability"
+
+# Re-minting the main thread on every set and clearing it on unbind leave a
+# subagent's pinned tuple alone (#1245: an existing tuple is never overwritten),
+# and after an unbind a new subagent has nothing to inherit.
+"$HS" --session-id sess-pin set company_slug indigo >/dev/null
+( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent "$TMP" sess-pin agent-P ) \
+  || fail "subagent did not inherit the bound parent"
+pin_cap="$TMP/workspace/sessions/sess-pin/agents/agent-P/scope-capability.json"
+pin_before="$(cat "$pin_cap")"
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-pin add company beta >/dev/null
+PATH="$TMP/multi-bin:$PATH" "$HS" --session-id sess-pin set company_slug indigo >/dev/null
+assert_eq "$(cat "$pin_cap")" "$pin_before" "same-company re-mint leaves a pinned subagent tuple untouched"
+"$HS" --session-id sess-pin set company_slug "" >/dev/null
+[ ! -e "$TMP/workspace/sessions/sess-pin/scope-capability.json" ] || fail "unbind left the main-thread capability"
+assert_eq "$(cat "$pin_cap")" "$pin_before" "unbind leaves a pinned subagent tuple untouched"
+if ( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent "$TMP" sess-pin agent-Q ); then
+  fail "a subagent inherited from an unbound parent"
+fi
+[ ! -e "$TMP/workspace/sessions/sess-pin/agents/agent-Q/scope-capability.json" ] \
+  || fail "unbound parent minted a subagent tuple"
+"$HS" --session-id sess-pin set company_slug indigo >/dev/null
+( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent "$TMP" sess-pin agent-Q ) \
+  || fail "subagent did not inherit after the parent rebound"
+assert_eq "$(jq -r '.company_slug' "$TMP/workspace/sessions/sess-pin/agents/agent-Q/scope-capability.json")" "indigo" "rebound parent passes its company to a new subagent"
+pass "re-mint and unbind keep subagent pins; unbound parents give nothing"
+
 # Two concurrent additions must serialize around the same session snapshot.
 "$HS" --session-id sess-concurrent set company_slug indigo >/dev/null
 mkdir -p "$TMP/workspace/sessions/sess-concurrent/.company-lock-set.lock"

@@ -20,6 +20,7 @@ The enforcement twin of this document is
 | Stop | native | adapter (can block) | adapter (can block) | full parity; all three translate a Stop hook's `decision: block` into their own stop protocol |
 | PreCompact | native | adapter | adapter (+ bridge) | full parity |
 | SessionEnd | native | adapter (Codex clamps hook budget to 3s) | adapter (+ bridge) | master-hook fan-out runs in all three |
+| SubagentStart | native | not mapped | not mapped | Claude: binds an Agent-tool subagent's company scope from the parent session |
 | SubagentStop | native | adapter | adapter (+ bridge, can block) | master-hook fan-out runs in all three; Grok gates it like Stop |
 | Notification | native | **unsupported by Codex hooks** | adapter (+ bridge) | Codex: essential gap, declared in the parity test |
 

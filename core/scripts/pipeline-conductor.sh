@@ -2,8 +2,8 @@
 # hq-core: public
 # pipeline-conductor.sh - deterministic helpers for the pipeline-conductor
 # worker (/run-project --pipeline). The conductor owns a story queue and routes
-# each phase of each story to a pooled worker lane through conduct-pool.sh. It
-# never spawns a child agent: every phase runs in a lane the pool owns.
+# each phase of each story to an hq-cli loop lane. It never spawns a child
+# agent: every phase runs in a lane the loop controller owns.
 #
 # Usage (every subcommand takes --state <dir>; most take --prd <prd.json>):
 #   next     --prd P --state S [--limit N]       eligible story ids, one per line
@@ -103,7 +103,7 @@
 #
 # State dir layout:
 #   stories/<id>.json        phases, current index, state, reroutes, worktree
-#   envelopes/<id>-<phase>.json   envelopes handed to conduct-pool.sh assign
+#   envelopes/<id>-<phase>.json   envelopes queued to hq lanes
 #   handoffs/<id>-<phase>.json    accepted phase handoffs
 #   decisions/<id>-<worker>.md    approval items for the parent session
 #   decisions/<id>-blocked-<phase>.md  a worker returned status blocked
@@ -195,16 +195,15 @@
 # handoff, handoffs/<id>-<phase>.failed.<n>.json, says blocked) is read as
 # blocked_needs_owner, so resolve works on it without hand edits.
 #
-# Exit codes: 0 ok; 1 refused or failed; 2 usage; 3 pool busy (retry next tick);
+# Exit codes: 0 ok; 1 refused or failed; 2 usage; 3 lane capacity/admission (retry next tick);
 #   10 held for a parent decision (approval hold, or a blocked handoff on accept);
-#   11 lane down: `route` got a pool answer other than an enqueue into a live
-#      loop lane (spawn or resume means the worker's loop lane is gone). The
-#      claim is released with `cancel`, the story stays queued, and route prints
-#      LANE_DOWN <id> <phase> <worker> ...; tick stops there.
+#   11 lane down: `hq lanes enqueue` returned `loop_not_running` or a terminal
+#      lane state. The worker mapping is dropped, the story stays queued, and
+#      route prints LANE_DOWN <id> <phase> <worker> ...; tick stops there.
 #   12 no lane: the phase's worker has no row in the run's worker table (NO_LANE);
 #      tick stops there.
 #
-# Env: PC_POOL (default core/scripts/conduct-pool.sh), PC_ENVELOPE (default
+# Env: PC_HQ (default hq), PC_ENVELOPE (default
 #   core/scripts/pipeline-envelope.sh), PC_WORKERS_ROOT (colon-separated worker
 #   roots, default below), PC_GATE_EVERY (default 3,
 #   the /run-project regression cadence), PC_NOW (epoch seconds, for tests),
@@ -222,7 +221,7 @@ set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PC_HQ_ROOT="${PC_HQ_ROOT:-$(cd "$HERE/../.." && pwd)}"
 export PC_HQ_ROOT
-export PC_POOL="${PC_POOL:-$HERE/conduct-pool.sh}"
+export PC_HQ="${PC_HQ:-hq}"
 export PC_ENVELOPE="${PC_ENVELOPE:-$HERE/pipeline-envelope.sh}"
 if [ -z "${PC_WORKERS_ROOT:-}" ]; then
   PC_WORKERS_ROOT="$PC_HQ_ROOT/core/workers"
@@ -1605,30 +1604,79 @@ function do_route(p, sid) {
   if (!ok) {
     fs.unlinkSync(ep); die("built an invalid envelope for " + sid + "/" + S(ph.phase) + ": " + why);
   }
-  const r = run(E.PC_POOL, ["assign", "--worker-id", ph.worker, "--task", sid + " " + ph.phase, "--envelope", abspath(ep)]);
-  if (r.returncode === 3 || r.returncode === 4) {
-    st.state = "queued"; jsave(sfile(sid), st);
-    print("RETRY " + sid + " " + S(ph.phase) + " pool-exit-" + r.returncode); exit(3);
+  const sessionEnv = process.env.HQ_SESSION_ID ? ["HQ_SESSION_ID=" + process.env.HQ_SESSION_ID] : [];
+  const session = strip(run("env", ["HQ_ROOT=" + E.PC_HQ_ROOT].concat(sessionEnv, ["bash", pjoin(E.PC_HQ_ROOT, "core/scripts/hq-session.sh"), "current"])).stdout);
+  const company = strip(run("env", ["HQ_ROOT=" + E.PC_HQ_ROOT, "bash", pjoin(E.PC_HQ_ROOT, "core/scripts/hq-session.sh"), "--session-id", session, "get", "company_slug"]).stdout);
+  if (!company || company === "personal") die("cannot route pipeline phase: no company is bound in session state");
+  const project = S(or(get(p, "name"), or(get(p, "project"), "")));
+  if (!project) die("cannot route pipeline phase: project name is missing");
+  const runState = or(jload(sp("run.json"), {}), {});
+  if ((T(get(runState, "company_slug")) && runState.company_slug !== company) ||
+      (T(get(runState, "project")) && runState.project !== project)) {
+    die("cannot resume pipeline lane mapping: bound company or project differs from the run owner");
   }
-  if (r.returncode !== 0)
-    die("conduct-pool assign failed for " + sid + "/" + S(ph.phase) + " (exit " + r.returncode + "): " + strip(r.stderr));
-  // Only an enqueue into a live loop lane is routed. spawn or resume means the
-  // worker's loop lane is gone: the pool claimed a slot for a lane nobody will
-  // start. Release that claim, keep the story queued, and tell the driver.
-  let ans;
-  try {
-    const ls = splitlines(strip(r.stdout));
-    if (!ls.length) throw new Error("empty");
-    ans = JSON.parse(ls[ls.length - 1]);
-  } catch (e) { ans = {}; }
-  if (!isDict(ans) || get(ans, "action") !== "enqueue") {
-    const act = isDict(ans) ? get(ans, "action", "unreadable") : "unreadable";
-    const c = run(E.PC_POOL, ["cancel", "--worker-id", ph.worker]);
-    st.state = "queued"; jsave(sfile(sid), st);
-    try { fs.unlinkSync(ep); } catch (e) { /* gone */ }
-    print("LANE_DOWN " + sid + " " + S(ph.phase) + " " + S(ph.worker) + " pool-answered-" + S(act) + " claim-" +
-          (c.returncode === 0 ? "released" : "release-failed-exit-" + c.returncode));
-    exit(11);
+  runState.company_slug = company; runState.project = project; jsave(sp("run.json"), runState);
+  const lanesFile = sp("lanes.json");
+  const laneMap = or(jload(lanesFile, {}), {});
+  let lane = laneMap[ph.worker];
+  if (lane) {
+    let rows;
+    try {
+      const listed = JSON.parse(run(E.PC_HQ, ["lanes", "list", "--json"], { timeout: 30000 }).stdout || "{}");
+      rows = Array.isArray(listed) ? listed : get(listed, "lanes", null);
+    } catch (e) { die("cannot verify mapped pipeline lane ownership: hq lanes list returned invalid JSON"); }
+    if (!Array.isArray(rows)) die("cannot verify mapped pipeline lane ownership: hq lanes list omitted lanes");
+    const row = rows.find(x => isDict(x) && get(x, "lane_id") === lane);
+    if (!row) { delete laneMap[ph.worker]; jsave(lanesFile, laneMap); lane = null; }
+    else if (get(get(row, "company", {}), "slug") !== company || get(row, "project_id") !== project || get(row, "worker") !== ph.worker) {
+      die("refusing to reuse mapped pipeline lane owned by a different company, project, or worker");
+    }
+  }
+  if (!lane) {
+    const meta = or(get(p, "metadata"), {});
+    const createArgs = ["lanes", "create", "--loop", "--company", company, "--project", project,
+      "--story", sid, "--worker", ph.worker, "--senior", "session:" + session, "--json"];
+    const table = get(or(jload(sp("run.json"), {}), {}), "table", "");
+    if (T(table) && exists(table)) {
+      const row = splitlines(readText(table)).map(x => x.split("\t")).find(x => x[0] === ph.worker);
+      if (row) { if (row[1]) createArgs.push("--provider", row[1]); if (row[2]) createArgs.push("--model", row[2]); if (row[3]) createArgs.push("--effort", row[3]); }
+    }
+    const created = run(E.PC_HQ, createArgs, { timeout: 120000 });
+    let answer; try { answer = JSON.parse(created.stdout); } catch (e) { answer = {}; }
+    if (!isDict(answer) || get(answer, "ok") !== true) {
+      const createError = get(answer, "error", null);
+      const code = S(isDict(createError) ? get(createError, "code", get(answer, "code", "create_failed")) : (createError || get(answer, "code", "create_failed")));
+      if (/admission|capacity|full|limit/i.test(code)) { st.state = "queued"; jsave(sfile(sid), st); print("RETRY " + sid + " " + S(ph.phase) + " lanes-" + code); exit(3); }
+      die("hq lanes create refused pipeline phase: " + code + " " + strip(created.stderr));
+    }
+    lane = get(answer, "lane_id", get(answer, "lane"));
+    if (!T(lane)) die("hq lanes create returned no lane_id");
+    laneMap[ph.worker] = lane;
+    jsave(lanesFile, laneMap);
+  }
+  const envData = jload(ep, {}); const baseEnvelopeId = sid + "-" + ph.phase;
+  const suffixes = or(get(st, "envelope_suffixes"), {});
+  envData.id = baseEnvelopeId + (suffixes[ph.phase] ? ".r" + suffixes[ph.phase] : "");
+  envData.result_path = abspath(sp("handoffs", sid + "-" + ph.phase + ".json")); jsave(ep, envData);
+  let r = run(E.PC_HQ, ["lanes", "enqueue", lane, "--envelope", abspath(ep)], { timeout: 30000 });
+  let ans; try { ans = JSON.parse(r.stdout); } catch (e) { ans = {}; }
+  let enqueueError = get(ans, "error", null);
+  let code = S(isDict(enqueueError) ? get(enqueueError, "code", get(ans, "code", "enqueue_failed")) : (enqueueError || get(ans, "code", "enqueue_failed")));
+  if ((!isDict(ans) || get(ans, "ok") !== true) && /already.*used|envelope_id_reused/i.test(code)) {
+    const n = Number(suffixes[ph.phase] || 0) + 1;
+    suffixes[ph.phase] = n; st.envelope_suffixes = suffixes; envData.id = baseEnvelopeId + ".r" + n;
+    jsave(sfile(sid), st); jsave(ep, envData);
+    r = run(E.PC_HQ, ["lanes", "enqueue", lane, "--envelope", abspath(ep)], { timeout: 30000 });
+    try { ans = JSON.parse(r.stdout); } catch (e) { ans = {}; }
+    enqueueError = get(ans, "error", null);
+    code = S(isDict(enqueueError) ? get(enqueueError, "code", get(ans, "code", "enqueue_failed")) : (enqueueError || get(ans, "code", "enqueue_failed")));
+  }
+  if (!isDict(ans) || get(ans, "ok") !== true) {
+    if (code === "loop_not_running" || ["stopped", "failed", "parked"].includes(get(ans, "loop_state"))) {
+      delete laneMap[ph.worker]; jsave(lanesFile, laneMap); st.state = "queued"; jsave(sfile(sid), st);
+      print("LANE_DOWN " + sid + " " + S(ph.phase) + " " + S(ph.worker) + " lanes-" + code); exit(11);
+    }
+    die("hq lanes enqueue failed for " + sid + "/" + S(ph.phase) + ": " + code + " " + strip(r.stderr));
   }
   st.state = "in_flight"; st.started = true; st.routed_at = now(); pop(st, "held_for");
   pop(st, "owner_retry");
@@ -2296,30 +2344,16 @@ function interrupted_list(ss) {
 }
 
 function lane_runs() {
-  // Map{worker_id: run_dir} from the pool's own list.
-  let rows;
-  try {
-    const r = run(E.PC_POOL, ["list"], { timeout: 30000 });
-    rows = JSON.parse(r.stdout || "[]");
-  } catch (e) {
-    return new Map();
-  }
-  const out = new Map();
-  if (Array.isArray(rows)) for (const x of rows) if (isDict(x) && T(get(x, "run_dir"))) out.set(get(x, "worker_id"), x.run_dir);
-  return out;
+  return new Map(Object.entries(or(jload(sp("lanes.json"), {}), {})));
 }
 
-function withdraw(run_dir, sid, ph) {
-  const pend = pjoin(run_dir || "", "inbox", "pending");
-  if (!T(run_dir) || !isdir(pend)) return false;
-  for (const n of sortedStr(listdir(pend))) {
-    const f = pjoin(pend, n);
-    const e = jload(f);
-    if (isDict(e) && S(get(e, "story_id")) === sid && get(e, "phase") === ph) {
-      try { fs.unlinkSync(f); return true; } catch (x) { return false; }
-    }
-  }
-  return false;
+function withdraw(lane, sid, ph) {
+  if (!T(lane)) return false;
+  const r = run(E.PC_HQ, ["lanes", "interrupt", lane, "--story", sid, "--phase", ph, "--json"], { timeout: 30000 });
+  let ans; try { ans = JSON.parse(r.stdout); } catch (e) { return false; }
+  const id = sid + "-" + ph;
+  if ((get(ans, "withdrawn", []) || []).includes(id)) return true;
+  return (get(ans, "already_picked_up", []) || []).includes(id) ? false : false;
 }
 
 function interrupted_aside(sid, phase) {
@@ -2373,7 +2407,19 @@ function do_stop() {
     print("STOP_REQUESTED " + sp("driver", "stop.json")); return;
   }
   do_interrupt("stop: " + (note() || "parent stop command"));
-  print("STOPPED no live driver");
+  const lanes = Array.from(lane_runs().values());
+  for (const lane of lanes) run(E.PC_HQ, ["lanes", "stop", lane], { timeout: 30000 });
+  let listed = null;
+  try {
+    const parsed = JSON.parse(run(E.PC_HQ, ["lanes", "list", "--json"], { timeout: 30000 }).stdout || "{}");
+    listed = Array.isArray(parsed) ? parsed : get(parsed, "lanes", null);
+  } catch (e) { listed = null; }
+  const stopped = Array.isArray(listed) && lanes.every(id => {
+    const row = listed.find(item => isDict(item) && get(item, "lane_id") === id);
+    return !row || get(get(row, "loop", {}), "state") === "stopped";
+  });
+  if (stopped) jsave(sp("lanes.json"), {});
+  print(stopped ? "STOPPED no live driver" : "STOP_REQUESTED no live driver; waiting for every loop lane to stop");
 }
 
 // ---------- tick ----------
@@ -2382,7 +2428,7 @@ const ACTIVE_STATES = ["queued", "in_flight", "held", "awaiting_recheck"];
 function do_tick(p) {
   const m = wt_mapping(E.PC_WT); const sb = E.PC_STORY_BRANCHES === "1";
   const prev = or(jload(sp("run.json"), {}), {});
-  const runj = { prd: abspath(PRD), worktrees: m, story_branches: sb,
+    const runj = { ...prev, prd: abspath(PRD), worktrees: m, story_branches: sb,
                  allow_repos_worktree: E.PC_ALLOW_REPOS === "1",
                  table: E.PC_TABLE ? abspath(E.PC_TABLE) : get(prev, "table", "") };
   let cap = pyInt(E.PC_MAX_STORIES); let capnote = "";

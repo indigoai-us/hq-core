@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests for core/scripts/pipeline-conductor.sh (bash 3.2 portable).
 # shellcheck disable=SC2016,SC2034  # check() evals single-quoted assertions on purpose
-# Uses a stub conduct-pool (logs every assign, copies the envelope) and the real
-# pipeline-envelope.sh validator.
+# Uses a fake hq executable (logs every lanes call, copies enqueued envelopes)
+# and the real pipeline-envelope.sh validator.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PC="${PC_UNDER_TEST:-$HERE/../pipeline-conductor.sh}"
@@ -15,21 +15,53 @@ bad() { fail=$((fail+1)); echo "FAIL: $1"; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 # ---- fixtures ----
-mkdir -p "$T/queued" "$T/workers"
-cat > "$T/pool" <<EOF
+mkdir -p "$T/queued" "$T/workers" "$T/bin" "$T/hq/core/scripts"
+: > "$T/lanes.txt"
+cat > "$T/hq/core/scripts/hq-session.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "\$*" >> "$T/pool.log"
-cmd="\$1"; env=""; wid=""
-while [ \$# -gt 0 ]; do case "\$1" in --envelope) env="\$2"; shift 2;; --worker-id) wid="\$2"; shift 2;; *) shift;; esac; done
-rc=\$(cat "$T/pool.rc" 2>/dev/null || echo 0)
-[ "\$rc" = 0 ] || exit "\$rc"
-case "\$cmd" in cancel) exit 0;; esac
-# a live loop lane takes the envelope; pool.answer overrides (spawn/resume = the lane is down)
-ans=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
-[ "\$ans" = enqueue ] && cp "\$env" "$T/queued/"
-echo "{\"action\":\"\$ans\",\"worker_id\":\"\$wid\"}"
+case "$*" in current) printf 'test-session\n' ;; *company_slug*) printf 'indigo\n' ;; esac
 EOF
-chmod +x "$T/pool"
+chmod +x "$T/hq/core/scripts/hq-session.sh"
+cat > "$T/bin/hq" <<EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$T/hq.log"
+printf '%s\n' "\$*" >> "$T/pool.log"
+case "\$1 \$2" in
+  'lanes create')
+    rc=\$(cat "$T/pool.rc" 2>/dev/null || echo 0)
+    worker=''; project=''; company=''; while [ \$# -gt 0 ]; do case "\$1" in --worker) worker="\$2"; shift 2;; --project) project="\$2"; shift 2;; --company) company="\$2"; shift 2;; *) shift;; esac; done
+    if [ "\$rc" = 3 ]; then printf '{"ok":false,"error":"admission_denied"}\\n'; exit 0; fi
+    if [ "\$rc" = 4 ]; then printf '{"ok":false,"error":"capacity_reached"}\\n'; exit 0; fi
+    lane="lane-\$worker-\$(wc -l < "$T/lanes.txt")"
+    printf '%s\\n' "\$lane" >> "$T/lanes.txt"
+    printf '"company":{"slug":"%s"},"project_id":"%s","worker":"%s"' "\$company" "\$project" "\$worker" > "$T/owner.\$lane"
+    printf '{"ok":true,"lane_id":"%s"}\\n' "\$lane" ;;
+  'lanes enqueue')
+    envelope=''; while [ \$# -gt 0 ]; do [ "\$1" = --envelope ] && { envelope="\$2"; shift 2; continue; }; shift; done
+    answer=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
+    if [ "\$answer" != enqueue ]; then printf '{"ok":false,"error":"loop_not_running"}\\n'; exit 0; fi
+    cp "\$envelope" "$T/queued/"
+    printf '{"ok":true,"action":"enqueue"}\\n' ;;
+  'lanes interrupt')
+    story=''; phase=''; while [ \$# -gt 0 ]; do case "\$1" in --story) story="\$2"; shift 2;; --phase) phase="\$2"; shift 2;; *) shift;; esac; done
+    answer=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
+    if [ "\$answer" = picked_up ] || [ "\$story" = I2 ]; then printf '{"ok":true,"withdrawn":[],"already_picked_up":["%s-%s"]}\\n' "\$story" "\$phase"
+    else printf '{"ok":true,"withdrawn":["%s-%s"],"already_picked_up":[]}\\n' "\$story" "\$phase"; fi ;;
+  'lanes stop') touch "$T/stopped.\$3"; printf '{"ok":true}\\n' ;;
+  'lanes list')
+    printf '['; sep=''
+    if [ -f "$T/lanes.txt" ]; then while IFS= read -r lane; do
+      state=waiting; [ -f "$T/stopped.\$lane" ] && state=stopped
+      owner=\$(cat "$T/owner.\$lane")
+      printf '%s{"lane_id":"%s",%s,"loop":{"state":"%s","queue_depth":0}}' "\$sep" "\$lane" "\$owner" "\$state"; sep=,
+    done < "$T/lanes.txt"; fi
+    printf ']\\n' ;;
+  'lanes questions') printf '[]\\n' ;;
+  *) printf '{"ok":false,"error":"unexpected_call"}\\n'; exit 1 ;;
+esac
+EOF
+chmod +x "$T/bin/hq"
 mkw() { mkdir -p "$T/workers/$1"; printf '%s\n' "$2" > "$T/workers/$1/worker.yaml"; }
 mkw backend-dev 'worker:
   id: backend-dev
@@ -48,7 +80,7 @@ verification:
   human_checkpoints:
     - before_deploy'
 
-export PC_POOL="$T/pool" PC_WORKERS_ROOT="$T/workers" PC_NOW=1790000000 PC_HQ_ROOT="$T/hq"
+export PC_HQ="$T/bin/hq" PC_WORKERS_ROOT="$T/workers" PC_NOW=1790000000 PC_HQ_ROOT="$T/hq"
 mkdir -p "$T/hq" "$T/wt"
 
 cat > "$T/prd.json" <<'EOF'
@@ -94,12 +126,12 @@ for s in d["userStories"]:
 json.dump(d, open(sys.argv[2], "w"))' "$T/prd.json" "$T/prd-two.json" "$T"
 PC_MAX_STORIES=2 run tick --prd "$T/prd-two.json" --worktree "$T/repoA=$T/wt" --worktree "$T/repoB=$T/wt2" --worktree "$T/wt"
 check "tick exits 0" '[ "$(rc)" = 0 ]'
-check "two assigns in one tick" '[ "$(wc -l < "$T/pool.log" | tr -d " ")" = 2 ]'
+check "two stories enqueue into a shared worker lane" '[ "$(grep -c "^lanes enqueue " "$T/pool.log")" = 2 ] && [ "$(grep -c "^lanes create " "$T/pool.log")" = 1 ]'
 check "each story routed to the worktree of its repo" \
   '[ "$(pyget "$S/stories/S2.json" "d[\"worktree\"]")" = "$T/wt2" ] && [ "$(pyget "$S/stories/S1.json" "d[\"repo\"]")" = "$T/repoA" ]'
 check "both stories in_flight at once" 'grep -q "\"in_flight\"" "$S/stories/S1.json" && grep -q "\"in_flight\"" "$S/stories/S2.json"'
 check "S3 not started" '[ ! -f "$S/stories/S3.json" ]'
-check "envelopes queued through pool assign --envelope" '[ -f "$T/queued/S1-backend.json" ] && [ -f "$T/queued/S2-backend.json" ] && grep -q -- "--envelope" "$T/pool.log"'
+check "envelopes queued through hq lanes enqueue --envelope" '[ -f "$T/queued/S1-backend.json" ] && [ -f "$T/queued/S2-backend.json" ] && grep -q "lanes enqueue .*--envelope" "$T/pool.log"'
 check "envelope carries literal ACs and worktree" 'python3 -c "import json,sys;d=json.load(open(\"$T/queued/S1-backend.json\"));sys.exit(0 if d[\"acceptance_criteria\"]==[\"A one\",\"A two\"] and d[\"worktree\"]==\"$T/wt\" else 1)"'
 
 # Different stories, different workers in the same tick: S1 moves to qa while S2 stays on backend.
@@ -108,7 +140,7 @@ run accept --story S1 --handoff "$(handoff S1 backend backend-dev passed '[]')"
 check "accept advances to qa" 'grep -q "NEXT S1 qa" "$T/out"'
 run route --prd "$T/prd.json" --story S1
 check "qa routed with incoming handoff" '[ "$(rc)" = 0 ] && grep -q "\"incoming_handoff\": \"$S/handoffs/S1-backend.json\"" "$S/envelopes/S1-qa.json"'
-check "qa-tester and backend-dev lanes both busy (distinct worker ids)" 'grep -q "worker-id qa-tester" "$T/pool.log" && grep -q "\"in_flight\"" "$S/stories/S2.json"'
+check "qa-tester phase creates and uses its worker lane" 'grep -q -- "--worker qa-tester" "$T/pool.log" && grep -q "\"in_flight\"" "$S/stories/S2.json"'
 
 # ---- invalid previous handoff refuses assign ----
 : > "$T/pool.log"
@@ -124,9 +156,10 @@ check "failed previous handoff refuses route" '[ "$(rc)" = 1 ] && grep -q "did n
 
 # ---- pool busy -> retry ----
 cp "$(handoff S2 backend backend-dev passed '[]')" "$S/handoffs/S2-backend.json"
+ jq 'del(."qa-tester")' "$S/lanes.json" > "$T/lanes.tmp" && mv "$T/lanes.tmp" "$S/lanes.json"
 echo 3 > "$T/pool.rc"
 run route --prd "$T/prd.json" --story S2
-check "pool exit 3 -> RETRY, exit 3, story stays queued" '[ "$(rc)" = 3 ] && grep -q RETRY "$T/out" && grep -q "\"queued\"" "$S/stories/S2.json"'
+check "lane admission refusal -> RETRY, exit 3, story stays queued" '[ "$(rc)" = 3 ] && grep -q "RETRY S2 qa lanes-admission_denied" "$T/out" && grep -q "\"queued\"" "$S/stories/S2.json"'
 rm -f "$T/pool.rc"
 run route --prd "$T/prd.json" --story S2
 check "retry on next attempt routes" '[ "$(rc)" = 0 ]'
@@ -258,7 +291,7 @@ run route --prd "$T/prd2.json" --story P1
 check "blocked story is not routed again" '[ "$(rc)" = 1 ] && [ ! -s "$T/pool.log" ]'
 run tick --prd "$T/prd2.json" --worktree "$T/wt"
 check "tick routes the independent story, not the blocked one or its dependent" \
-  'grep -q "worker-id backend-dev" "$T/pool.log" && grep -q "ROUTED P4 " "$T/out" && ! grep -q "P1\|P2" "$T/out" && [ ! -f "$S/stories/P2.json" ]'
+  'grep -q -- "lanes enqueue" "$T/pool.log" && grep -q "ROUTED P4 " "$T/out" && ! grep -q "P1\|P2" "$T/out" && [ ! -f "$S/stories/P2.json" ]'
 
 # refusals and usage
 run resolve --story P1 --as accepted-partial
@@ -375,7 +408,7 @@ run tick --prd "$T/prd3.json"
 check "legacy state: tick does not re-route the blocked story" '[ ! -s "$T/pool.log" ] && [ "$(pyget "$S/stories/P1.json" "d[\"state\"]")" = blocked_needs_owner ]'
 S="$T/state"
 
-# ---- lane down: any pool answer other than an enqueue into a live loop lane ----
+# ---- lane down: enqueue reports loop_not_running ----
 S="$T/state-lanedown"
 cat > "$T/prd-ld.json" <<'EOF'
 {"name":"ld","userStories":[
@@ -387,19 +420,26 @@ for ans in resume spawn; do
   echo "$ans" > "$T/pool.answer"
   run classify --prd "$T/prd-ld.json" --story L1 --worktree "$T/wt"
   run route --prd "$T/prd-ld.json" --story L1
-  check "lane down ($ans): route exits 11 and names the lane" \
-    '[ "$(rc)" = 11 ] && grep -q "^LANE_DOWN L1 backend backend-dev pool-answered-$ans claim-released" "$T/out"'
-  check "lane down ($ans): story stays queued, nothing queued, claim released with cancel" \
-    '[ "$(pyget "$S/stories/L1.json" "d[\"state\"]")" = queued ] && [ ! -f "$T/queued/L1-backend.json" ] && grep -q "^cancel --worker-id backend-dev" "$T/pool.log"'
+  check "lane down ($ans): route exits 11 and names the worker lane" \
+    '[ "$(rc)" = 11 ] && grep -q "^LANE_DOWN L1 backend backend-dev lanes-loop_not_running" "$T/out"'
+  check "lane down ($ans): story stays queued and the worker mapping is dropped" \
+    '[ "$(pyget "$S/stories/L1.json" "d[\"state\"]")" = queued ] && [ ! -f "$T/queued/L1-backend.json" ] && [ "$(pyget "$S/lanes.json" "d.get(\"backend-dev\")")" = None ]'
 done
 rm -rf "$S"; : > "$T/pool.log"
 PC_MAX_STORIES=2 run tick --prd "$T/prd-ld.json" --worktree "$T/wt"
 check "lane down: tick prints LANE_DOWN once and stops routing" \
-  '[ "$(rc)" = 0 ] && [ "$(grep -c "^LANE_DOWN" "$T/out")" = 1 ] && [ "$(grep -c "^assign" "$T/pool.log")" = 1 ] && ! grep -q ERROR "$T/out"'
+  '[ "$(rc)" = 0 ] && [ "$(grep -c "^LANE_DOWN" "$T/out")" = 1 ] && [ "$(grep -c "^lanes enqueue " "$T/pool.log")" = 1 ] && ! grep -q ERROR "$T/out"'
 rm -f "$T/pool.answer"
 run tick --prd "$T/prd-ld.json" --worktree "$T/wt"
 check "lane back: the next tick routes the queued story normally" \
   'grep -q "^ROUTED L1 backend backend-dev" "$T/out" && [ "$(pyget "$S/stories/L1.json" "d[\"state\"]")" = in_flight ]'
+lane="$(pyget "$S/lanes.json" 'd["backend-dev"]')"
+printf '"company":{"slug":"another-company"},"project_id":"ld","worker":"backend-dev"' > "$T/owner.$lane"
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["state"]="queued"; json.dump(d,open(p,"w"))' "$S/stories/L1.json"
+before="$(grep -c '^lanes enqueue ' "$T/pool.log")"
+run route --prd "$T/prd-ld.json" --story L1
+check "mapped lane owned by another company is refused before enqueue" \
+  '[ "$(rc)" != 0 ] && grep -q "different company, project, or worker" "$T/err" && [ "$(grep -c "^lanes enqueue " "$T/pool.log")" = "$before" ]'
 
 # ---- failcap: a phase that failed too often is held for the owner ----
 S="$T/state-failcap"; rm -rf "$S"; : > "$T/pool.log"
@@ -733,37 +773,23 @@ check "the repos/ check lives in one function" '[ "$(grep -c "^function repos_wo
 # ---- interrupt / stop ----
 IS="$T/istate"; mkdir -p "$T/ilane/inbox/pending" "$T/ilane/inbox/active"
 printf '{"name":"idemo","userStories":[{"id":"I1","title":"i1","passes":false,"dependsOn":[],"worker_preference":["backend-dev","qa-tester"],"acceptanceCriteria":["i"]},{"id":"I2","title":"i2","passes":false,"dependsOn":[],"worker_preference":["backend-dev"],"acceptanceCriteria":["j"]}]}\n' > "$T/prd-i.json"
-# a pool whose list names the lane's run dir and whose assign queues the envelope there
-cat > "$T/ipool" <<EOF
-#!/usr/bin/env bash
-cmd="\$1"; env=""
-while [ \$# -gt 0 ]; do case "\$1" in --envelope) env="\$2"; shift 2;; *) shift;; esac; done
-case "\$cmd" in
-  list) echo '[{"worker_id":"backend-dev","status":"waiting","pid":1,"run_dir":"$T/ilane","queue_depth":0}]' ;;
-  assign) n="\$(date +%s%N)-\$RANDOM.msg"; cp "\$env" "$T/ilane/inbox/pending/\$n"; echo '{"action":"enqueue","worker_id":"backend-dev"}' ;;
-  *) exit 0 ;;
-esac
-EOF
-chmod +x "$T/ipool"
-# one worktree runs one story per tick, so route both by hand
+# One worker loop lane receives both in-flight phases.
 for i in I1 I2; do
   "$PC" classify --prd "$T/prd-i.json" --state "$IS" --story "$i" --worktree "$T/wt" >/dev/null 2>&1
-  PC_POOL="$T/ipool" "$PC" route --prd "$T/prd-i.json" --state "$IS" --story "$i" >/dev/null 2>&1
+  PC_HQ="$T/bin/hq" "$PC" route --prd "$T/prd-i.json" --state "$IS" --story "$i" >/dev/null 2>&1
 done
-# I2's envelope was picked up by the lane; I1's still waits in pending
-for f in "$T"/ilane/inbox/pending/*.msg; do grep -q '"I2"' "$f" && mv "$f" "$T/ilane/inbox/active/"; done
-PC_POOL="$T/ipool" "$PC" interrupt --state "$IS" --note "test stop" > "$T/out" 2>&1
+PC_HQ="$T/bin/hq" "$PC" interrupt --state "$IS" --note "test stop" > "$T/out" 2>&1
 check "interrupt: both in-flight stories marked interrupted" \
   '[ "$(pyget "$IS/stories/I1.json" "d[\"state\"]")" = interrupted ] && [ "$(pyget "$IS/stories/I2.json" "d[\"state\"]")" = interrupted ]'
 check "interrupt: phase, time and reason recorded" \
   '[ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"phase\"]")" = backend ] && [ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"at\"]")" = 2026-09-21T14:13:20Z ] && [ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"reason\"]")" = "test stop" ]'
 check "interrupt: the unpicked envelope is withdrawn, the picked-up one is left" \
-  'grep -q "^INTERRUPTED I1 backend withdrawn" "$T/out" && grep -q "^INTERRUPTED I2 backend picked_up" "$T/out" && ! grep -qs "\"I1\"" "$T"/ilane/inbox/pending/*.msg && grep -qs "\"I2\"" "$T"/ilane/inbox/active/*.msg'
+  'grep -q "^INTERRUPTED I1 backend withdrawn" "$T/out" && grep -q "^INTERRUPTED I2 backend picked_up" "$T/out" && grep -q "lanes interrupt .*--story I1 --phase backend" "$T/pool.log" && grep -q "lanes interrupt .*--story I2 --phase backend" "$T/pool.log"'
 "$PC" report final --state "$IS" > "$T/out" 2>&1
 check "interrupt: FINAL counts and lists the interrupted stories" \
   'grep -q "interrupted 2," "$T/out" && grep -q "interrupted, routed first on the next driver start: I1 at backend (2026-09-21T14:13:20Z), I2 at backend" "$T/out"'
 printf '{"schema":"hq-phase-handoff/v1","story_id":"I2","phase":"backend","worker_id":"backend-dev","status":"failed","summary":"late"}\n' > "$IS/handoffs/I2-backend.json"
-PC_POOL="$T/ipool" PC_MAX_STORIES=2 "$PC" tick --prd "$T/prd-i.json" --state "$IS" --worktree "$T/wt" > "$T/out" 2>&1
+PC_HQ="$T/bin/hq" PC_MAX_STORIES=2 "$PC" tick --prd "$T/prd-i.json" --state "$IS" --worktree "$T/wt" > "$T/out" 2>&1
 check "tick: interrupted stories are routed again at the interrupted phase" \
   'grep -q "^ROUTED I1 backend" "$T/out" && grep -q "^ROUTED I2 backend" "$T/out" && [ "$(pyget "$IS/stories/I1.json" "d[\"state\"]")" = in_flight ]'
 check "tick: the envelope says resumed_after_interrupt and validates" \
@@ -774,12 +800,12 @@ check "tick: once routed again it is no longer listed as interrupted" \
   '[ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"routed\"]")" = True ] && ! "$PC" report final --state "$IS" 2>&1 | grep -q "routed first"'
 # interrupt keeps a phase whose handoff already finished it; stop with no live driver interrupts in place
 printf '{"schema":"hq-phase-handoff/v1","story_id":"I1","phase":"backend","worker_id":"backend-dev","status":"passed","summary":"done"}\n' > "$IS/handoffs/I1-backend.json"
-PC_POOL="$T/ipool" "$PC" stop --state "$IS" --note "owner stop" > "$T/out" 2>&1
+PC_HQ="$T/bin/hq" "$PC" stop --state "$IS" --note "owner stop" > "$T/out" 2>&1
 check "stop with no live driver: interrupts here; a finished phase is kept for accept" \
   'grep -q "^STOPPED no live driver" "$T/out" && grep -q "^KEPT I1 backend handoff-present" "$T/out" && [ "$(pyget "$IS/stories/I1.json" "d[\"state\"]")" = in_flight ] && [ "$(pyget "$IS/stories/I2.json" "d[\"state\"]")" = interrupted ] && [ ! -f "$IS/driver/stop.json" ]'
 sleep 30 & lpid=$!
 mkdir -p "$IS/driver"; echo "$lpid" > "$IS/driver/driver.pid"
-PC_POOL="$T/ipool" "$PC" stop --state "$IS" --note "owner stop" > "$T/out" 2>&1
+PC_HQ="$T/bin/hq" "$PC" stop --state "$IS" --note "owner stop" > "$T/out" 2>&1
 check "stop with a live driver: writes driver/stop.json as a stop envelope" \
   'grep -q "^STOP_REQUESTED " "$T/out" && [ "$(pyget "$IS/driver/stop.json" "d[\"kind\"]")" = stop ] && [ "$(pyget "$IS/driver/stop.json" "d[\"note\"]")" = "owner stop" ]'
 kill "$lpid" 2>/dev/null; wait "$lpid" 2>/dev/null

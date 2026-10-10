@@ -48,7 +48,7 @@ const [plugin, repo] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(path.join(plugin, '.claude-plugin/plugin.json'), 'utf8'));
 assert.equal(manifest.name, 'hq');
 const hooks = JSON.parse(fs.readFileSync(path.join(plugin, 'hooks/hooks.json'), 'utf8')).hooks;
-for (const event of ['PreToolUse','PostToolUse','PreCompact','Stop','SessionStart','UserPromptSubmit','Notification','SubagentStop','SessionEnd']) {
+for (const event of ['PreToolUse','PostToolUse','PreCompact','Stop','SessionStart','UserPromptSubmit','Notification','SubagentStart','SubagentStop','SessionEnd']) {
   const eventHooks = hooks[event].flatMap(group => group.hooks);
   const commands = eventHooks.map(hook => hook.command);
   assert.ok(commands.length, `missing ${event} hook`);

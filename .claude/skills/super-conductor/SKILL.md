@@ -1,7 +1,7 @@
 ---
 name: super-conductor
 description: Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a self-paced watch loop running until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
-allowed-tools: Bash(bash core/scripts/conduct-link.sh:*), Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-lane-status.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(pgrep:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
+allowed-tools: Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(pgrep:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
 argument-hint: "[off | status | <note for the team>]"
 ---
 
@@ -12,19 +12,20 @@ are already open, reads their working sets, prevents them from colliding,
 answers teammates who ask for something, and queues anything that only the
 owner can decide. It stays alive on a self-paced wakeup loop until `off`.
 
-This is `/conduct` turned outward: `/conduct` launches lanes for tasks the
-owner types here; `/super-conductor` takes custody of sessions the owner already
-launched elsewhere, plus the team's inbound comms.
+This is `/conduct` turned outward: `/super-conductor` links sessions the owner
+already has open and handles the team's inbound comms. It does not launch
+manager lanes.
 
 ## Step 1: Parse the argument
 
 - `off` → close the link, stop the loop, say the sessions are on their own:
   ```bash
-  bash core/scripts/conduct-link.sh close
+  hq lanes link close
   ```
   then call `ScheduleWakeup` with `stop: true`.
-- `status` → render the session board (Step 6) from `conduct-link.sh list` and
-  the DM inbox. Launch nothing, send nothing.
+- `status` → render the session board (Step 6) from the JSON returned by
+  `hq lanes link list`, `hq lanes list --json --senior session:<this session id>`,
+  and the DM inbox. Launch nothing, send nothing.
 - Anything else, or no argument → full start (Steps 2–7). Free text is a
   standing note to pass to every adopted session (for example "no merges until
   I'm back").
@@ -32,14 +33,13 @@ launched elsewhere, plus the team's inbound comms.
 ## Step 2: Open the link and name this session
 
 ```bash
-bash core/scripts/conduct-link.sh open --engine claude --host-session "<this session's desktop id>"
+hq lanes link open --engine claude --host-session "<this session's desktop id>"
 ```
 
 The desktop id is the `local_…` value other sessions see in the `from=` field
-of a cross-session message. If it is not known yet, open the link without it
-and patch `workspace/conduct-links/<link>/meta.json` →
-`conductor_host_session` the first time a child pings back, otherwise children
-cannot wake this session.
+of a cross-session message. If it is not known yet, omit `--host-session`. The
+open response JSON provides `.link` and `.join`; do not edit link storage by
+hand.
 
 Rename this session in HQ grammar, for example
 `🎛 HQ · Conduct · Coordinate open desktop sessions`.
@@ -66,7 +66,9 @@ Rename this session in HQ grammar, for example
 
 ## Step 4: Collision pass on every report
 
-Read reports with `bash core/scripts/conduct-link.sh read --link <link>`.
+Read reports with `hq lanes link read --link <link>` and use the JSON
+`.messages` value. The list response provides `.children`, `.unread_reports`,
+and each child's `name`, `state`, `note`, and `undelivered` fields.
 Compare each new working set against every other child's. Flag and resolve:
 
 | Signal | Action |
@@ -74,11 +76,12 @@ Compare each new working set against every other child's. Flag and resolve:
 | Two sessions in one repo | Confirm separate worktrees and branches. Warn both about merge-time conflicts in shared directories. Ask for PR numbers so merges can be sequenced. |
 | Two sessions editing the same HQ-root path (a skill, a hook, `core/scripts`) | Assign one owner. Tell the other to stop writing there until released. |
 | One session delegating or handing off a project another session is still running | Pause the runner, push everything, verify the branch head matches before handover. |
-| A session stopping lanes, reaping, or killing processes | Enforce: only pids recorded in its own pool or run_dir, never argument-pattern matches, never `conduct-reap.sh --kill` while another session's run is live. |
+| A request to stop or reap lanes | The conductor does not stop child-owned lanes. `hq lanes reap --json` reports stale local lanes by default. Read its JSON candidates first; use `hq lanes stop <lane-id>` only for a lane this session owns and with authorization. |
 | Shared machine state changed (hook settings, `settings.local.json`, global config) | Record it in the overnight log, tell every child, and ask the author not to change it again without a go. |
 | Any merge, deploy, publish, release, force-push, or delete | Hold. The session prepares and reports. Only the owner says go. |
 
-Send resolutions with `conduct-link.sh send --child <name>` (or `all`). A
+Send resolutions with `hq lanes link send --child <name>` (or `all`). Read
+`.queued` and `.children` from its JSON response. A
 message to a child is an instruction that outranks its brief.
 
 Independently verify any claim that matters before relaying it: check live
@@ -122,21 +125,25 @@ Keep two things running:
 
 1. A background waiter on the link:
    ```bash
-   bash core/scripts/conduct-link.sh wait --link <link> --timeout 1500; bash core/scripts/conduct-link.sh read --link <link>
+   hq lanes link wait --link <link> --timeout 1500
    ```
-   run with `run_in_background: true` and a tool timeout longer than the wait.
-   Re-arm it after every read.
+   Run it as a background task with a timeout longer than 1500 seconds. The
+   JSON response is `pending: true` on a report (exit 0), or
+   `pending: false, timeout: true` on timeout (exit 3). Read the response, then
+   run `hq lanes link read --link <link>` when a report is pending. Re-arm the
+   wait after each check.
 2. `ScheduleWakeup` every 60 seconds while the owner is present (never
    slower than 5 minutes; 20–30 minutes only when the owner is away), so the
    DM inbox and `list_sessions` are checked even when no child reports.
 
-On each wakeup: read the waiter output, drain the link, run the collision
-pass, check comms, invite any new session, append to the overnight log,
-re-arm both. Mark the wakeup `noop: true` when nothing changed.
+On each wakeup: read the wait result, drain the link when a report is pending,
+run the collision pass, check comms, invite any new session, append to the
+overnight log, and re-arm both. Mark the wakeup `noop: true` when nothing
+changed.
 
 ## Step 8: Delivery and the continuous decision queue
 
-A `conduct-link.sh send` only lands when the child next takes a turn, and a
+A `hq lanes link send` returns JSON with `queued: true`; it only lands when the child next takes a turn, and a
 child that is blocked waiting on the owner does not take a turn. These rules
 are hard:
 
@@ -148,7 +155,11 @@ are hard:
 - Record each child's desktop session id (the `local_…` value from its
   join or from `list_sessions`) in the overnight log at join time so wakes
   never need a lookup.
-- On every wakeup read `conduct-link.sh list`. Any child showing
+- On every wakeup read `hq lanes link list` and
+  `hq lanes list --json --senior session:<this session id>`. Link JSON uses
+  `.children` and `.unread_reports`; lane JSON supplies status for this
+  session's lanes (`state`, `last_line`, `pr`, `inbox_pending`, `elapsed_s`,
+  and `exit`). Any child showing
   `undelivered > 0` for more than one tick gets a direct `send_message` that
   repeats the pending instruction and tells it to drain the mailbox. A child
   whose `send_message` returns "archived" is dropped from the board and
@@ -210,4 +221,5 @@ Green working, yellow waiting on the owner or on CI, blue done or idle.
 
 - `/conduct` — launch detached lanes for tasks typed here
 - `/conduct-join` — the child's half of the link
-- `core/scripts/conduct-link.sh` — the mailbox both sides use
+- `hq lanes link` — the session mailbox; data lives in `workspace/lanes-links/`
+  only while its sessions remain

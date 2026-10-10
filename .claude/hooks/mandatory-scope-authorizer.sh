@@ -824,6 +824,13 @@ scope_load_bound_company() {
   [ -n "$SESSION_ID" ] || return 0
   [ -z "$CALLER_IDENTITY_ERROR" ] || return 0
   scope_apply_bound_scope
+  # Claude Code fires no SessionStart for a Task subagent, so its tuple is
+  # minted here on first use from the parent's main-thread capability only.
+  # No parent capability means no inheritance and the deny stands.
+  if [ -z "$BOUND_CO" ] && [ "$CALLER_KIND" = "subagent" ] && [ -n "$CALLER_AGENT_ID" ] \
+    && session_scope_inherit_parent "$HQ_ROOT" "$SESSION_ID" "$CALLER_AGENT_ID"; then
+    scope_apply_bound_scope
+  fi
   # SessionStart bind can land in the same turn as the first company path.
   # Re-read once rather than weakening the deny.
   if [ -z "$BOUND_CO" ]; then
@@ -1001,7 +1008,7 @@ child must not inherit its parent's tenant. If this is an agent you spawned, run
 it so the host reports a session of its own (a \`claude -p --session-id <uuid>\`
 child does not)."
   elif [ "$CALLER_KIND" = "subagent" ] && [ -n "$CALLER_AGENT_ID" ] && [ -z "$BOUND_CO" ]; then
-    bound_msg="This subagent has no company binding for its agent_id, so its company access is denied. Restart or respawn the subagent so the host can bind its company scope."
+    bound_msg="This subagent has no company binding for its agent_id, and its parent session has no company capability to inherit, so its company access is denied. Bind the parent session (core/scripts/hq-session.sh set company_slug <slug>), then restart or respawn the subagent."
   elif [ -z "$BOUND_CO" ]; then
     bound_msg="Session has no company_slug bound."
     bind_msg="Bind the correct company with: core/scripts/hq-session.sh set company_slug <slug>

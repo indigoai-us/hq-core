@@ -260,16 +260,18 @@ jobs:
         run: bash core/scripts/tests/import-context-redact.test.sh
       - name: /import-context scanner --progress-json event stream
         run: bash core/scripts/tests/import-context-progress-json.test.sh
-      - name: /conduct session worker pool (cap, resume, recycle)
-        run: bash core/scripts/tests/conduct-pool.test.sh
-      - name: /conduct lane drop box (queue, claim, per-event hook output)
-        run: bash core/scripts/tests/conduct-inbox.test.sh
-      - name: /conduct session link (adopt, join, send, report, hook delivery)
-        run: bash core/scripts/tests/conduct-link.test.sh
+      - name: Legacy conduct runtime is absent
+        run: bash core/scripts/tests/conduct-runtime-absent.test.sh
+      - name: Conduct SessionStart and linked-session hook contracts
+        run: bash core/scripts/tests/conduct-lanes-hooks.test.sh
+      - name: Conduct SessionStart preserves Codex model and effort payload
+        run: bash core/scripts/tests/conduct-session-start-payload.test.sh
+      - name: /conduct session links use hq lanes
+        run: bash core/scripts/tests/conduct-session-links-use-hq-lanes.test.sh
       - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
-      - name: /conduct --workers (role lanes, launch/wait scripts, CI loop, QA trigger)
-        run: bash core/scripts/tests/conduct-workers.test.sh
+      - name: /conduct lane workers and completion watcher
+        run: bash core/scripts/tests/lanes-workers.test.sh
       - name: /conduct skill split (triage in SKILL.md, lane mechanics in dispatch.md)
         run: bash core/scripts/tests/conduct-dispatch-split.test.sh
       - name: Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)
@@ -278,12 +280,6 @@ jobs:
         run: bash core/scripts/tests/orchestrator-skills-use-pool.test.sh
       - name: Orchestrator skills dispatch detached lanes (run-project + conduct)
         run: bash core/scripts/tests/orchestrator-skills-dispatch-lanes.test.sh
-      - name: Detached lanes are reaped when their orchestrator is gone
-        run: bash core/scripts/tests/conduct-reap.test.sh
-      - name: SessionStart reap hook is non-blocking, single-flight and rate-limited
-        run: bash core/scripts/tests/conduct-reap-hook.test.sh
-      - name: Conduct mode as the session default (auto-conduct SessionStart hook)
-        run: bash core/scripts/tests/auto-conduct.test.sh
       - name: Intent hint (UserPromptSubmit, closest intent-index entries)
         run: bash core/scripts/tests/intent-hint.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
@@ -374,6 +370,8 @@ jobs:
         run: bash core/scripts/tests/setup-completeness-nag.test.sh
       - name: Setup nag performs one status check per day
         run: bash core/scripts/tests/setup-nag-daily-check.test.sh
+      - name: Setup worker reads the desktop first-run handoff
+        run: bash core/scripts/tests/setup-worker-first-run-handoff.test.sh
 
   worktree-gc:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

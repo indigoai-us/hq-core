@@ -579,8 +579,8 @@ if [ "$rc" = 0 ] && jq -e '.decision == "block" and (.reason | contains("STOP-GA
 
 # Codex review P1: a later gate's block used to be discarded by a first-wins
 # guard. Every Stop gate has already had its side effects by then —
-# conduct-lane-inbox has DRAINED its queue — so dropping the reason destroys the
-# message it just consumed.
+# Stop gates may already have performed side effects, so dropping their reason
+# can lose an actionable message.
 jq --arg a ".claude/hooks/test-stop-block.sh" --arg b ".claude/hooks/test-stop-block-second.sh" \
   '.hooks.Stop = [{matcher:"",hooks:[
      {id:"hq-monitor-session-start",script:$a,timeout:30,gated:true},
@@ -658,7 +658,7 @@ rc="$(run_grok_stop Stop false '' grok-stop-loop)"
 if jq -e '.decision == "block"' "$TMP/stdout" >/dev/null 2>&1; then ok 'a new stop chain resets the block budget'; else bad "a new stop chain resets the block budget (stdout=$(cat "$TMP/stdout"))"; fi
 
 # PostToolUse must dispatch for tools the adapter has no special payload shape
-# for, or a matcher-`*` hook (conduct-lane-inbox) never fires for a lane that
+# for, or a matcher-`*` hook never fires for a lane that
 # spends a stretch doing nothing but greps.
 cat > "$TMP_ROOT/.claude/hooks/test-post-context.sh" <<'SH'
 #!/bin/bash

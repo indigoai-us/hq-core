@@ -16,21 +16,14 @@ Workers are autonomous AI assistants with specialized roles. This knowledge base
 - Back pressure verification before completion
 - Simple loops over complex orchestration
 
-**Where HQ diverges: workers persist in the session pool.** `/conduct`, and
-`/run-project` in its default inline and ralph modes, do *not* start a fresh
-worker per task. Each task is matched to an HQ worker id that holds a long-lived
-slot in the session pool (`core/scripts/conduct-pool.sh`, cap
-`CONDUCT_POOL_CAP`, default 8), and the same kind of task returns to the same
-worker.
+**Where HQ diverges: workers persist in HQ lanes. `/conduct`, `/execute-task`,
+and `/run-project` create worker lanes under the invoking session, company,
+project, and story. A later phase for the same worker and senior continues its
+thread; a live lane receives follow-up work through `hq lanes message`. Lane
+admission and capacity are managed by HQ lanes, and the caller reads completed
+work from the lane envelope.
 
-This is a deliberate departure, not an oversight. Fresh-context-per-task exists
-to stop context rot, and it is not the only way to stop it: a resumed slot reuses
-its prompt cache and keeps the worker identity the operator chose, where a cold
-start pays for both again every time. Rot is bounded instead by **compacting or
-recycling the slot** — least-recently-used slots are retired at cap — which
-keeps context bounded without discarding the worker after one task.
-
-What still holds unchanged: one task at a time per slot, back-pressure
+What still holds unchanged: one task at a time per worker lane, back-pressure
 verification before completion, a thin parent, and JSON returns. Those are the
 mechanisms that keep the orchestrator small. See
 `core/policies/ralph-orchestrator-context-discipline.md`, rules 6 and 8.

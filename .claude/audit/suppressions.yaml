@@ -66,3 +66,11 @@
 - path: "core/scripts/tests/inject-policy-always-inject.test.sh"
   rules: [pii/phone]
   reason: "The INT_MAX value is a synthetic stale-lock PID sentinel in a test, not a phone number or personal data."
+
+- path: "core/scripts/tests/pipeline-classify.test.sh"
+  rules: [pii/phone]
+  reason: "PC_NOW is a fixed Unix timestamp used to make classification tests deterministic, not a phone number."
+
+- path: "core/scripts/tests/pipeline-conductor.test.sh"
+  rules: [pii/phone]
+  reason: "PC_NOW is a fixed Unix timestamp used to make routing tests deterministic, not a phone number."

@@ -6,8 +6,8 @@
 #
 #   printf '%s' "$payload" | "$hook"
 #
-# A hook that exits before reading stdin (conduct-lane-inbox's
-# `[ -n "${HQ_CONDUCT_RUN_DIR:-}" ] || exit 0` guard is the canonical shape)
+# A hook that exits before reading stdin can close its pipe while the writer is
+# still sending the payload.
 # closes the read end while printf is still writing. printf dies with SIGPIPE,
 # and `pipefail` — set by hook-gate.sh, master-hook.sh, and both cross-runtime
 # adapters — promotes 141 to the pipeline status. The hook is then reported as
@@ -17,7 +17,7 @@
 # company read on a fresh session and failed 2 of 3 v1->v2 migration probes:
 #
 #   PROBE_FAIL - pre-bind: first company read on a fresh session was refused
-#   (rc=141): Hook 'conduct-lane-inbox' exited 141.
+#   (rc=141): A hook exited 141 while the payload writer was still active.
 #
 # The race needs the payload to exceed the pipe buffer (64 KiB on Linux, 8 KiB
 # on stock macOS), so these cases use 1 MiB and are deterministic.
@@ -38,7 +38,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 PAYLOAD="$(head -c 1048576 /dev/zero | tr '\0' 'x')"
 [ "${#PAYLOAD}" -eq 1048576 ] || fail "payload builder produced ${#PAYLOAD} bytes, expected 1048576"
 
-# Exits 0 without reading stdin — conduct-lane-inbox's guard shape.
+# Exits 0 without reading stdin.
 cat > "$TMP/early-exit.sh" <<'HOOK'
 #!/usr/bin/env bash
 exit 0

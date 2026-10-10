@@ -2,20 +2,20 @@
 # Tests for interrupted phases on a pipeline-driver.sh stop (bash 3.2 portable).
 #
 # Real pieces: pipeline-driver.sh, pipeline-conductor.sh, pipeline-envelope.sh.
-# Stub: the pool. Its list names one loop lane's run dir and its assign queues
-# the envelope in that lane's inbox/pending, so a routed phase stays in flight
+# Stub: fake hq. Its lanes list returns the mapped loop lane and enqueue puts
+# the envelope in the lane's pending queue, so a routed phase stays in flight
 # (no lane runs it) until the test stops the driver.
 #
 # Each stop path marks the in-flight story `interrupted` (phase, time) and
 # withdraws a queued envelope no lane picked up: driver/stop.json from
 # `pipeline-conductor.sh stop` (exit 29), SIGTERM (143), SIGINT (130), and a
-# loop lane that exited on a stop envelope (journal loop-done). A restarted
+# loop lane that reports stopped after a stop envelope. A restarted
 # driver routes interrupted stories first, before reopened ones, with
 # resumed_after_interrupt in the envelope; TICK lines and FINAL list them
 # until then.
 # shellcheck disable=SC2016  # check() evals single-quoted assertions on purpose
 set -u
-unset HQ_SPAWN_COMPANY HQ_PARENT_SESSION_ID PC_NOW PC_MAX_STORIES PIPELINE_DRIVER_POOL
+unset HQ_SPAWN_COMPANY HQ_PARENT_SESSION_ID PC_NOW PC_MAX_STORIES PC_HQ
 export HQ_SESSION_ID="test-pipeline-interrupt-$$"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(cd "$HERE/.." && pwd)"
@@ -34,21 +34,39 @@ wait_for() { # wait_for <secs> <command...>
 }
 pyget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-mkdir -p "$T/hq" "$T/wt" "$T/workers/backend-dev"
-printf 'worker:\n  id: backend-dev\nverification:\n  approval_required: false\n' > "$T/workers/backend-dev/worker.yaml"
-export PC_WORKERS_ROOT="$T/workers" PC_HQ_ROOT="$T/hq" PC_POOL="$T/pool" PIPELINE_DRIVER_POOL="$T/pool"
-LANE="$T/lane"
-cat > "$T/pool" <<EOF
+mkdir -p "$T/hq/core/scripts" "$T/wt" "$T/workers/backend-dev" "$T/bin"
+cat > "$T/hq/core/scripts/hq-session.sh" <<'EOF'
 #!/usr/bin/env bash
-cmd="\$1"; env=""
-while [ \$# -gt 0 ]; do case "\$1" in --envelope) env="\$2"; shift 2;; *) shift;; esac; done
-case "\$cmd" in
-  list) echo '[{"worker_id":"backend-dev","subagent_id":"loop-backend-dev","status":"waiting","pid":1,"run_dir":"$LANE","queue_depth":0,"updated_at":""}]' ;;
-  assign) mkdir -p "$LANE/inbox/pending"; cp "\$env" "$LANE/inbox/pending/\$(date +%s)-\$RANDOM.msg"; echo '{"action":"enqueue","worker_id":"backend-dev"}' ;;
-  *) exit 0 ;;
+case "$*" in current) printf 'test-session\n' ;; *company_slug*) printf 'indigo\n' ;; esac
+EOF
+chmod +x "$T/hq/core/scripts/hq-session.sh"
+printf 'worker:\n  id: backend-dev\nverification:\n  approval_required: false\n' > "$T/workers/backend-dev/worker.yaml"
+export PC_WORKERS_ROOT="$T/workers" PC_HQ_ROOT="$T/hq"
+LANE="$T/lane"
+cat > "$T/bin/hq" <<EOF
+#!/usr/bin/env bash
+set -eu
+case "\$1 \$2" in
+  'lanes create') printf '{"ok":true,"lane_id":"lane-backend-dev"}\\n' ;;
+  'lanes enqueue')
+    envfile=''; while [ \$# -gt 0 ]; do case "\$1" in --envelope) envfile="\$2"; shift 2;; *) shift;; esac; done
+    mkdir -p "$LANE/inbox/pending"; cp "\$envfile" "$LANE/inbox/pending/\$(date +%s)-\$RANDOM.json"; printf '{"ok":true}\\n' ;;
+  'lanes list')
+    state=waiting; [ -f "$T/stopped" ] && state=stopped
+    depth=0; for f in "$LANE"/inbox/pending/*.json; do [ -f "\$f" ] && depth=1; done
+    project=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name",""))' "$T/prd.json")
+    printf '{"ok":true,"action":"list","lanes":[{"lane_id":"lane-backend-dev","company":{"slug":"indigo"},"project_id":"%s","worker":"backend-dev","loop":{"state":"%s","pid":1,"queue_depth":%s}}]}\\n' "\$project" "\$state" "\$depth" ;;
+  'lanes interrupt')
+    story=''; phase=''; while [ \$# -gt 0 ]; do case "\$1" in --story) story="\$2"; shift 2;; --phase) phase="\$2"; shift 2;; *) shift;; esac; done
+    pending=''; for f in "$LANE"/inbox/pending/*.json; do [ -f "\$f" ] || continue; if jq -e --arg s "\$story" --arg p "\$phase" '.story_id == \$s and .phase == \$p' "\$f" >/dev/null; then pending="\$f"; break; fi; done
+    if [ -n "\$pending" ]; then rm -f "\$pending"; printf '{"ok":true,"withdrawn":["%s-%s"],"already_picked_up":[]}\\n' "\$story" "\$phase"
+    else printf '{"ok":true,"withdrawn":[],"already_picked_up":["%s-%s"]}\\n' "\$story" "\$phase"; fi ;;
+  'lanes stop') touch "$T/stopped"; printf '{"ok":true}\\n' ;;
+  *) printf '{"ok":false,"error":"unexpected_call"}\\n'; exit 1 ;;
 esac
 EOF
-chmod +x "$T/pool"
+chmod +x "$T/bin/hq"
+export PC_HQ="$T/bin/hq" PATH="$T/bin:$PATH"
 cat > "$T/prd.json" <<'EOF'
 {"name":"idemo","userStories":[
  {"id":"S1","title":"one","priority":1,"passes":false,"dependsOn":[],"worker_preference":["backend-dev"],"acceptanceCriteria":["a"]}
@@ -67,7 +85,7 @@ fresh() { # fresh <name>: a new state dir and an empty lane, the driver started,
   wait_for 20 grep -qs "ROUTED S1 backend" "$S/driver/driver.log"
 }
 code() { cut -d' ' -f1 "$S/driver/exit" 2>/dev/null; }
-pending_has() { grep -qs "\"$1\"" "$LANE"/inbox/pending/*.msg; }
+pending_has() { grep -qs "\"$1\"" "$LANE"/inbox/pending/*.json; }
 
 # ---- stop.json through pipeline-conductor.sh stop ----
 fresh stopjson
@@ -94,12 +112,12 @@ kill -9 "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null; DPID=""
 
 # ---- SIGTERM, envelope already picked up by the lane ----
 fresh term
-for f in "$LANE"/inbox/pending/*.msg; do mv "$f" "$LANE/inbox/active/"; done
+for f in "$LANE"/inbox/pending/*.json; do mv "$f" "$LANE/inbox/active/"; done
 kill -TERM "$DPID"; wait_for 20 test -f "$S/driver/exit"; wait "$DPID" 2>/dev/null; DPID=""
 check "SIGTERM: exit 143, S1 interrupted at backend" \
   '[ "$(code)" = 143 ] && [ "$(pyget "$S/stories/S1.json" "d[\"state\"]")" = interrupted ] && [ "$(pyget "$S/stories/S1.json" "d[\"interrupted\"][\"phase\"]")" = backend ]'
 check "SIGTERM: an envelope the lane picked up is left alone" \
-  '[ "$(pyget "$S/stories/S1.json" "d[\"interrupted\"][\"withdrawn\"]")" = False ] && grep -qs "\"S1\"" "$LANE"/inbox/active/*.msg'
+  '[ "$(pyget "$S/stories/S1.json" "d[\"interrupted\"][\"withdrawn\"]")" = False ] && grep -qs "\"S1\"" "$LANE"/inbox/active/*.json'
 
 # ---- SIGINT ----
 fresh int
@@ -109,8 +127,9 @@ check "SIGINT: exit 130, S1 interrupted, envelope withdrawn" \
 
 # ---- a loop lane that exited on a stop envelope ----
 fresh lanestop
-for f in "$LANE"/inbox/pending/*.msg; do mv "$f" "$LANE/inbox/active/"; done
+for f in "$LANE"/inbox/pending/*.json; do mv "$f" "$LANE/inbox/active/"; done
 printf '{"ts":"%s","event":"loop-done","processed":1}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LANE/journal.jsonl"
+touch "$T/stopped"
 wait_for 20 grep -q "LANE_STOPPED S1 backend" "$S/driver/driver.log"
 wait_for 20 eval '[ "$(grep -c "ROUTED S1 backend" "$S/driver/driver.log")" = 2 ]'
 check "lane stop envelope: the driver marks S1 interrupted" \

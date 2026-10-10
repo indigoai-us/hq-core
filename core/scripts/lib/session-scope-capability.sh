@@ -135,6 +135,42 @@ session_scope_resolve_agent_companies() {
   fi
 }
 
+# session_scope_clear <root> <session_id> [agent_id]
+#   Remove the exact caller's capability. The authorizer reads the capability
+#   before meta.yaml, so an unbind that only blanks meta.yaml leaves the old
+#   company enforced while hq-session reports the session as unbound.
+session_scope_clear() {
+  local root="${1:-}" sid="${2:-}" aid="${3:-}" cap
+  cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 1
+  rm -f "$cap"
+}
+
+# session_scope_inherit_parent <root> <session_id> <agent_id>
+#   Pin a Task subagent's tuple to its parent's main-thread capability. Claude
+#   Code fires no SessionStart for a Task subagent, so without this the tuple is
+#   never minted and every company path is denied. The only source is the
+#   parent's validated scope-capability.json: never meta.yaml or a resolver, so a
+#   parent with no capability leaves the child unbound. An existing tuple file,
+#   valid or not, is never overwritten; the first mint pins the child, and a
+#   later parent rebind does not move it. Returns 0 only when it minted.
+session_scope_inherit_parent() {
+  local root="${1:-}" sid="${2:-}" aid="${3:-}" cap parent lock companies rc=1
+  [ -n "$root" ] && session_scope_identity_is_valid "$sid" && session_scope_identity_is_valid "$aid" || return 1
+  cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 1
+  parent="$(session_scope_capability_path "$root" "$sid" "")" || return 1
+  [ ! -e "$cap" ] && [ -f "$parent" ] || return 1
+  lock="$root/workspace/sessions/$sid/.company-lock-set.lock"
+  __session_scope_lock_acquire "$lock" || return 1
+  if [ ! -e "$cap" ]; then
+    companies="$(session_scope_read_companies "$root" "$sid" "" 2>/dev/null | awk 'NF' | paste -sd, - || true)"
+    if [ -n "$companies" ] && session_scope_mint_set "$root" "$sid" "$companies" "$aid"; then
+      rc=0
+    fi
+  fi
+  rm -rf -- "$lock"
+  return "$rc"
+}
+
 # Per-session lock shared with hq-session.sh company lock-set updates
 # (company_lock_update_acquire). Same mkdir protocol and stale-owner rule.
 __session_scope_lock_acquire() {

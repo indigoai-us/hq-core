@@ -107,7 +107,7 @@ out=$(run_gc --dry-run 2>&1) || fail "dry-run exited non-zero"
 for d in "$WT_A" "$WT_B" "$WT_C" "$WT_D" "$WT_E" "$WT_G"; do
   [[ -d "$d" ]] || fail "dry-run removed $d (must make no changes)"
 done
-echo "$out" | grep -q "would remove" || fail "dry-run did not report a would-remove candidate"
+[[ "$out" == *"would remove"* ]] || fail "dry-run did not report a would-remove candidate"
 git -C "$REPO" worktree list | grep -q "case-a" || fail "dry-run pruned a worktree registration"
 
 # default (no flag) is also dry-run

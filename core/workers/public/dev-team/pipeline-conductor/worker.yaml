@@ -1,7 +1,7 @@
 worker:
   id: pipeline-conductor
   name: "Pipeline Conductor"
-  description: "Routing rules for /run-project --pipeline, applied by the detached pipeline-driver.sh: select unblocked stories, route each phase to a pooled worker lane, re-check acceptance criteria, report per story"
+  description: "Routing rules for /run-project --pipeline, applied by the detached pipeline-driver.sh: select unblocked stories, route each phase to an hq-cli loop lane, re-check acceptance criteria, report per story"
   type: OpsWorker
   version: "1.0"
   team: dev-team
@@ -56,9 +56,9 @@ instructions: |
   ## Contract
 
   - Never spawn a child agent (no Task tool, no `claude -p`, no `codex exec`,
-    no `grok -p`). Every phase is queued into a pool lane through
+    no `grok -p`). Every phase is queued into an hq-cli loop lane through
     `core/scripts/pipeline-conductor.sh route`, which calls
-    `conduct-pool.sh assign --envelope`.
+    `hq lanes enqueue`.
   - Never start a background loop inside a lane. The driver is the only loop.
   - Never set `passes` in prd.json. A story is finished when its literal
     acceptance criteria pass the re-check; the parent records it.

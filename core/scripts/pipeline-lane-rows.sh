@@ -2,18 +2,18 @@
 # hq-core: public
 # pipeline-lane-rows.sh - the rows behind /run-project --pipeline Step 3P.6
 # ("Relay, do not drive"): one JSON array with an item per loop lane in the
-# session pool plus one item for the driver. The parent renders them at the end
+# mapped loop lanes plus one item for the driver. The parent renders them at the end
 # of every turn in which a pipeline lane is live; it never reads a transcript.
 #
 # Usage (from the HQ root):
 #   sh core/scripts/pipeline-lane-rows.sh --state <pipeline state dir> [--session-id <id>]
 #
-# A loop lane is a pool slot whose run_dir has loop.json. Lane item fields:
+# A loop lane is loaded from hq lanes list --json and the run's lanes.json. Lane item fields:
 #   kind             "lane"
 #   worker           the slot's worker id
 #   subagent_id      the slot's subagent id
-#   status           the slot's pool status (running, waiting, idle, ...)
-#   pid_alive        true when the slot's pid answers kill -0
+#   status           the loop state (running, waiting, stopped, ...)
+#   pid_alive        true when the loop controller reports a pid
 #   story            the in_flight story whose current phase runs on this worker, or null
 #   phase            that phase's name, or null
 #   phase_label      "<story> · <worker> · <short verb>" (designing, building,
@@ -21,13 +21,13 @@
 #   phase_index      1-based index of the current phase, or null
 #   phase_count      number of phases of the story, or null
 #   phase_elapsed_s  seconds since the phase was routed (routed_at), or null
-#   quiet_s          seconds since the newest agent-N.log last changed, or null
-#   inbox_pending    envelopes waiting in run_dir/inbox/pending
-#   last_line        newest non-blank agent-N.log line, whitespace squeezed, at most 160 chars, or null
-#   exit             the value of the last CONDUCT_EXIT= line in lane.log, or null
-#   pr               the last pull-request URL named in the newest handoff this worker wrote, or null
+#   quiet_s          null (not reported by hq lanes)
+#   inbox_pending    hq lanes inbox count when available
+#   last_line        latest lane status line from hq lanes, or null
+#   exit             null (not reported by hq lanes)
+#   pr               latest pull-request URL from hq lanes, or null
 #   story_title      the story's title, or null
-#   run_dir          the lane's run dir
+#   run_dir          null (loop lane internals are not read)
 # Driver item fields:
 #   kind "driver", pid_alive, exit ("<code> <reason>" from driver/exit, or null),
 #   verified, in_flight, queued, blocked, parked, skipped, interrupted,
@@ -35,8 +35,7 @@
 #   blocked counts blocked_needs_owner, skipped reads skips.json),
 #   last_line (the last driver.log line, or null)
 #
-# Env: PIPELINE_LANE_ROWS_POOL (default: $PC_POOL, else conduct-pool.sh next to
-#   this script); HQ_SESSION_ID when --session-id is not given.
+# Env: PC_HQ (default: hq); HQ_SESSION_ID when --session-id is not given.
 #
 # POSIX sh plus jq (dash-clean, no bash arrays).
 
@@ -58,16 +57,15 @@ done
 command -v jq >/dev/null 2>&1 || { echo "pipeline-lane-rows: jq required" >&2; exit 2; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-POOL="${PIPELINE_LANE_ROWS_POOL:-${PC_POOL:-$HERE/conduct-pool.sh}}"
+PC_HQ="${PC_HQ:-hq}"
 [ -n "$SID" ] || SID="${HQ_SESSION_ID:-}"
 [ -n "$SID" ] || SID="$(bash "$HERE/hq-session.sh" current 2>/dev/null || true)"
 NOW="$(date +%s)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/plr.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
-mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
-alive() { [ -n "$1" ] && [ "$1" != null ] && kill -0 "$1" 2>/dev/null; }
 clip() { tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//' | cut -c1-160; }
+alive() { [ -n "$1" ] && [ "$1" != null ] && kill -0 "$1" 2>/dev/null; }
 
 # every story as one array
 if ls "$STATE/stories/"*.json >/dev/null 2>&1; then
@@ -77,57 +75,21 @@ else
   echo '[]' >"$TMP/stories.json"
 fi
 
-if [ -n "$SID" ]; then
-  "$POOL" --session-id "$SID" list >"$TMP/pool.json" 2>/dev/null || echo '[]' >"$TMP/pool.json"
-else
-  echo '[]' >"$TMP/pool.json"
-fi
-jq -e 'type == "array"' "$TMP/pool.json" >/dev/null 2>&1 || echo '[]' >"$TMP/pool.json"
-
-: >"$TMP/items"
-jq -r '.[] | [.worker_id, (.subagent_id // ""), (.status // ""), ((.pid // "") | tostring), (.run_dir // "")] | @tsv' \
-  "$TMP/pool.json" >"$TMP/slots"
-TAB="$(printf '\t')"
-while IFS="$TAB" read -r w sub st pid rd; do
-  [ -n "$rd" ] && [ -f "$rd/loop.json" ] || continue
-  pa=false; alive "$pid" && pa=true
-  pend=0
-  [ -d "$rd/inbox/pending" ] && pend="$(find "$rd/inbox/pending" -type f ! -name '.*' | wc -l | tr -d ' ')"
-  n="$(ls "$rd" 2>/dev/null | sed -n 's/^agent-\([0-9][0-9]*\)\.log$/\1/p' | sort -n | tail -1)"
-  last=""; quiet=null
-  if [ -n "$n" ]; then
-    lg="$rd/agent-$n.log"
-    last="$(grep -v '^[[:space:]]*$' "$lg" 2>/dev/null | tail -1 | clip)"
-    m="$(mtime "$lg")"; [ -n "$m" ] && quiet=$((NOW - m)); [ "$quiet" != null ] && [ "$quiet" -lt 0 ] && quiet=0
-  fi
-  ex="$(grep 'CONDUCT_EXIT=' "$rd/lane.log" 2>/dev/null | tail -1 | sed 's/.*CONDUCT_EXIT=//' | clip)"
-  # the newest handoff this worker wrote, for its PR
-  pr=""
-  hf="$(ls -t "$STATE/handoffs/"*.json 2>/dev/null | while IFS= read -r f; do
-          jq -e --arg w "$w" '.worker_id == $w' "$f" >/dev/null 2>&1 && { printf '%s\n' "$f"; break; }
-        done)"
-  [ -n "$hf" ] && pr="$(grep -o 'https://github\.com/[^"[:space:]]*/pull/[0-9][0-9]*' "$hf" | tail -1)"
-  jq -n --arg w "$w" --arg sub "$sub" --arg st "$st" --argjson pa "$pa" --argjson pend "$pend" \
-    --arg last "$last" --argjson quiet "$quiet" --arg ex "$ex" --arg pr "$pr" --arg rd "$rd" \
-    --argjson now "$NOW" --slurpfile S "$TMP/stories.json" '
-    def verb: {architect: "designing", backend: "building", frontend: "building", database: "migrating",
-               fullstack: "building", motion: "animating", content: "writing", docs: "writing",
-               qa: "testing", test: "testing", review: "reviewing", "code-review": "reviewing",
-               security: "auditing"}[.] // .;
-    ([$S[0][] | select(.state == "in_flight" and ((.phases // [])[.current // 0].worker == $w))] | first) as $s
-    | (if $s then ($s.phases[$s.current].phase // null) else null end) as $ph
-    | {kind: "lane", worker: $w, subagent_id: $sub, status: $st, pid_alive: $pa,
-       story: ($s.id // null), phase: $ph,
-       phase_label: (if $s then "\($s.id) · \($w) · \($ph | verb)" else null end),
-       phase_index: (if $s then ($s.current + 1) else null end),
-       phase_count: (if $s then ($s.phases | length) else null end),
-       phase_elapsed_s: (if ($s.routed_at | type) == "number" then ([0, $now - $s.routed_at] | max | floor) else null end),
-       quiet_s: $quiet, inbox_pending: $pend,
-       last_line: (if $last == "" then null else $last end),
-       exit: (if $ex == "" then null else $ex end),
-       pr: (if $pr == "" then null else $pr end),
-       story_title: ($s.title // null), run_dir: $rd}' >>"$TMP/items"
-done <"$TMP/slots"
+"$PC_HQ" lanes list --json >"$TMP/lanes.json" 2>/dev/null || echo '[]' >"$TMP/lanes.json"
+jq -e 'type == "array"' "$TMP/lanes.json" >/dev/null 2>&1 || echo '[]' >"$TMP/lanes.json"
+[ -f "$STATE/lanes.json" ] || echo '{}' >"$STATE/lanes.json"
+jq -n --argjson now "$NOW" --slurpfile S "$TMP/stories.json" --slurpfile L "$TMP/lanes.json" --slurpfile M "$STATE/lanes.json" '
+  def verb: {architect:"designing",backend:"building",frontend:"building",database:"migrating",fullstack:"building",motion:"animating",content:"writing",docs:"writing",qa:"testing",test:"testing",review:"reviewing","code-review":"reviewing",security:"auditing"}[.] // .;
+  $M[0] | to_entries[] as $map | ($L[0] | map(select(.lane_id == $map.value)) | first) as $lane |
+    select($lane != null) | ($lane.loop // {}) as $loop |
+    ([$S[0][] | select(.state == "in_flight" and ((.phases // [])[.current // 0].worker == $map.key))] | first) as $s |
+    (($s.phases // [])[($s.current // 0)].phase // null) as $ph |
+    {kind:"lane",worker:$map.key,subagent_id:$map.value,status:($loop.state // "unknown"),pid_alive:(($loop.pid // 0) > 0),
+     story:($s.id // null),phase:$ph,phase_label:(if $s then "\($s.id) · \($map.key) · \($ph|verb)" else null end),
+     phase_index:(if $s then ($s.current + 1) else null end),phase_count:(if $s then ($s.phases|length) else null end),
+     phase_elapsed_s:(if ($s.routed_at|type)=="number" then ([0,$now-$s.routed_at]|max|floor) else $lane.elapsed_s // null end),
+     quiet_s:null,inbox_pending:($lane.inbox_pending // 0),last_line:($lane.last_line // null),exit:null,pr:($lane.pr // null),
+     story_title:($s.title // null),run_dir:null}' >"$TMP/items"
 
 dpid="$(cat "$STATE/driver/driver.pid" 2>/dev/null)"
 dpa=false; alive "$dpid" && dpa=true

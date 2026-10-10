@@ -113,6 +113,17 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" SubagentStart",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

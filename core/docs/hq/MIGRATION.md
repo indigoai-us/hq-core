@@ -1,9 +1,78 @@
 # HQ Migration Guide
 
-Newest release first. `## Release: TBD` collects promotions staged for the next
-release; the release workflow stamps it with the version at tag time.
+Newest release first.
+
+## Release: v16.0.0-beta.62
+
+- The legacy conduct runtime is removed. `/conduct`, `/conduct-join`,
+  `/super-conductor`, `/overnight`, `/execute-task`, `/run-project`, and pipeline
+  mode now use `hq lanes`. The core's release replacement roots include `.claude`
+  and `core`, so `/update-hq` removes these release-owned scripts and hooks when
+  installing this version; local edits preserved as drift may need manual review.
+  Finish or stop any active pool lanes from an older core before updating: let
+  running `/conduct` and `/run-project --pipeline` work finish, then run
+  `bash core/scripts/conduct-reap.sh --apply --kill` on the old core to stop
+  lanes whose session has ended. After the scripts are replaced, this release
+  cannot reap those processes. Existing pool lanes are not adopted into
+  `hq lanes`.
+
+## Release: v16.0.0-beta.61
+
+- `/conduct` now starts workers with `hq lanes create`, keeps the invoking
+  session as senior, and uses hq-cli for admission, capacity, state, messages,
+  questions, and results. Update hq-cli to `5.345.67` or newer before using the
+  new dispatch path. `/conduct --workers` still creates one lane per role and
+  keeps the role templates, pinned provider/model/effort, QA rule, and settled
+  CI loop. Every `/conduct` lane receives configured session pins. Codex
+  SessionStart selected model and effort are retained, and a Codex parent gets a
+  completion event on its next tool call or user message. The role setup, QA
+  detection, and CI helpers are available in `core/scripts/lanes-workers.sh`.
+  Re-arm the Codex completion watcher after each create, message, resume, or
+  question answer, using a fresh `since` timestamp and unique round ID each time.
+  The old launcher and waiter remain for the follow-up cleanup story.
+
+## Release: v16.0.0-beta.60
+
+### Session links use hq lanes link
+
+Session-link skills now use `hq lanes link` instead of the conduct link shell
+script. `hq lanes link` needs hq-cli `5.345.63` or newer, and the core floor is
+already `5.345.67`, so update hq-cli before using `/conduct adopt`,
+`/conduct-join`, `/super-conductor`, or `/overnight`. Link data now lives under
+`workspace/lanes-links/` and lasts only as long as its sessions; existing
+`workspace/conduct-links/` data is not migrated.
+
+## Release: v16.0.0-beta.53
+
+- `/execute-task` phases and interactive `/run-project` stories use
+  `hq lanes create`. Each lane carries the active company, project, story, worker,
+  brief, and invoking session as senior. Send follow-up work to a live lane with
+  `hq lanes message`, then read the result from its envelope.
+- Update hq-cli to 5.345.67 or newer before using these skills. `core/core.yaml`
+  enforces this minimum version.
+
+## Release: v16.0.0-beta.54
+
+- Pipeline mode uses `hq lanes` loop lanes and requires hq-cli 5.345.65 or later.
+  Pipeline runs already in flight on the old `conduct-pool` path finish there.
 
 ## Release: v16.0.0-beta.31
+
+### Conduct hooks use hq lanes in CL-6b
+
+The SessionStart conductor block now comes from `hq lanes session-start`. The
+hook drains the event payload and its compatibility gate remains hq-cli
+`5.345.63` or newer. If the CLI is missing, below that gate, fails, or exceeds
+the two-second timeout, the hook exits without stdout or stderr. The core now
+requires hq-cli `5.345.67` or newer; that is the release where
+`hq lanes session-start` records the Codex session's selected model and effort
+in session metadata. hq-cli still applies conduct precedence and the
+`HQ_DISABLED_HOOKS=auto-conduct` off switch.
+
+PostToolUse, Stop, and SubagentStop deliver linked-session messages through
+`hq lanes link _deliver --event`. The CLI returns the hook output for each
+engine. The `conduct-lane-inbox.sh` and `40-conduct-reap.sh` registrations stay
+in place for conduct-pool lanes started before this upgrade. CL-7 removes them.
 
 - feat 2026-10-08 (conduct on by default): `conduct.default_enabled` in
   `core/settings/orchestrator.yaml` ships as `true`. Every fresh session

@@ -1,6 +1,6 @@
 # conduct-pipeline
 
-Run a project's stories as a pipeline of pooled worker lanes. All state lives
+Run a project's stories as a pipeline of hq-cli loop lanes. All state lives
 in one state dir (`--state`), so a run survives compaction and restarts.
 
 Loop: `core/scripts/pipeline-driver.sh` (deterministic, no engine calls,
@@ -81,7 +81,7 @@ The driver repeats one pass every `--interval` seconds (default 15):
    `tick --prd P --state S --worktree REPO=DIR [--worktree REPO=DIR ...] [--story-branches]`
    (the bare `--worktree DIR` form serves a single-repo prd):
    - Re-routes every `queued` story (a phase that just advanced, or one the
-     pool refused last time).
+     lane admission refused last time).
    - Starts new stories from `next` while fewer than `PC_MAX_STORIES`
      (default 3) are active. In the default branch mode stories of a repo
      share one feature branch, so `PC_MAX_STORIES` is lowered to the number of
@@ -108,13 +108,12 @@ The driver repeats one pass every `--interval` seconds (default 15):
 5. `route` checks the previous phase's handoff with `pipeline-envelope.sh
    validate` and requires `status: passed`, builds and validates the envelope
    (literal `acceptanceCriteria`, story title and description, constraints,
-   worktree, deadline, `result_path`), and calls `conduct-pool.sh assign
-   --worker-id <worker> --envelope <file>`. Pool exit 3 or 4 prints `RETRY`;
-   the story stays `queued` for the next tick. Only an `enqueue` answer (a
-   live loop lane took the envelope) routes the phase. Any other answer
-   (`spawn`, `resume`) means the worker's loop lane is gone: route releases the
-   claim with `conduct-pool.sh cancel`, leaves the story `queued`, prints
-   `LANE_DOWN <id> <phase> <worker> ...`, exits 11, and the tick stops.
+   worktree, deadline, `result_path`), creates or reuses a company-bound worker
+   lane, and calls `hq lanes enqueue <lane-id> --envelope <file>`. An admission
+   or capacity refusal prints `RETRY`; the story stays `queued` for the next
+   tick. `loop_not_running` drops the worker mapping, leaves the story queued,
+   prints `LANE_DOWN <id> <phase> <worker> ...`, exits 11, and the next tick
+   creates a fresh loop lane.
 
 The driver exits, writing `{state}/driver/exit` as `<code> <reason>`:
 
@@ -122,13 +121,13 @@ The driver exits, writing `{state}/driver/exit` as `<code> <reason>`:
 |---|---|
 | 0 | no story is queued, in flight, held, blocked or awaiting recheck, and `next` is empty; `report final` has run (parked and accepted-partial stories count as finished) |
 | 2 | usage error |
-| 20 | `RUN_GATE`: run the regression gate in the `regression-gate` pool slot as /run-project Step 3c describes, then record `gate result pass\|fail --note ...` |
+| 20 | `RUN_GATE`: run the regression gate for the pipeline as /run-project Step 3c describes, then record `gate result pass\|fail --note ...` |
 | 21 | a decision is needed: a story is `HELD` for approval; a story is `blocked_needs_owner` and nothing else can move; the gate is `GATE_FAILED`; or a phase returned `failed` `--max-phase-fails` times (`failcap` then holds the story as `blocked_needs_owner` and writes `decisions/<id>-blocked-<phase>.md` with each failed handoff's text) |
 | 22 | an in-flight phase passed its envelope `deadline` with no handoff |
 | 23 | the helper printed a line the driver does not know, or a call failed |
 | 24 | another driver already runs against this state dir |
-| 25 | stall: a phase has been in flight longer than `--stall-window` (default 600 seconds), no handoff landed, and `conduct-pool.sh list` shows every started lane `waiting` with `queue_depth` 0 |
-| 26 | lane down: routing a phase got a pool answer other than an enqueue into a live loop lane. The reason names the lane; the story stays `queued` and the claim is released. Relaunch that worker's loop lane, then restart the driver |
+| 25 | stall: a phase has been in flight longer than `--stall-window` (default 600 seconds), no handoff landed, and `hq lanes list --json` shows every owned loop lane `waiting` with `queue_depth` 0 |
+| 26 | lane down: the loop lane is no longer running. The story stays `queued`; the next tick creates a fresh lane |
 | 27 | no lane: a phase's worker has no row in the confirmed table passed with `--table`. The story stays `queued`. Add the row, launch that lane, restart the driver |
 | 130, 143 | interrupted or terminated |
 
@@ -282,7 +281,7 @@ present.
 
 - No child agents. No `passes` writes. No per-phase reporting.
 - Every git command uses `git -C <path>`.
-- One project and one tenant per state dir; run the pool-lane ownership check
+- One project and one tenant per state dir; verify each lane belongs to the run's company and project
   before reusing a lane.
 - Do not wait on a human; write a decision item and let the driver stop for
   the parent.

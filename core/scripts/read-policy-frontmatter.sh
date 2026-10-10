@@ -35,7 +35,7 @@ fi
 if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
   # shellcheck source=lib/hq-cli-floor.sh
   . "$SCRIPT_DIR/lib/hq-cli-floor.sh"
-  hq_cli_floor_check "read-policy-frontmatter.sh" "5.342.7"
+  hq_cli_floor_check "read-policy-frontmatter.sh" "5.345.63"
 fi
 
 forwarded_args=("$@")
