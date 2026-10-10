@@ -664,7 +664,8 @@ act() {
           *) finish 23 "failcap $b $c: unexpected (rc=$RC): $OUT $ERR" ;;
         esac
         [ "$e" = engine_exited_early ] && finish 21 "phase $b/$c: engine_exited_early in $d of $d attempt(s); the lane was restarted once in place and the engine exited early again; held for the owner (decision: ${OUT##* }); the parent decides whether to retry, change the story, or stop"
-        finish 21 "phase $b/$c returned handoff status failed in $d of $d attempt(s) (limit $MAX_FAILS); held for the owner (decision: ${OUT##* }); the parent decides whether to retry, change the story, or stop" ;;
+        fail_reason="$(jq -r '.blocked.text // "" | gsub("[\\r\\n\\t]+"; " ")' "$STATE/stories/$b.json" 2>/dev/null)"
+        finish 21 "phase $b/$c returned handoff status failed in $d of $d attempt(s) (limit $MAX_FAILS); reason: $fail_reason; held for the owner (decision: ${OUT##* }); the parent decides whether to retry, change the story, or stop" ;;
       EARLY)
         log "TICK: EARLY_EXIT $b/$c after ${d}s: engine_exited_early ($e)"
         h="$(early_handoff "$b" "$c" "$d" "$e")" || finish 23 "could not write the early-exit handoff for $b/$c"
@@ -695,7 +696,9 @@ act() {
         esac ;;
       DEADLINE) finish 22 "phase $b/$c passed its deadline $d with no handoff" ;;
       HELD) HELD_ITEM="$b $c" ;;
-      BLOCKED) BLOCKED_ITEMS="${BLOCKED_ITEMS:+$BLOCKED_ITEMS; }$b/$c (decision: $d)" ;;
+      BLOCKED)
+        blocked_reason="$(jq -r '.blocked.text // "" | gsub("[\\r\\n\\t]+"; " ")' "$STATE/stories/$b.json" 2>/dev/null)"
+        BLOCKED_ITEMS="${BLOCKED_ITEMS:+$BLOCKED_ITEMS; }$b/$c${blocked_reason:+: $blocked_reason} (decision: $d)" ;;
       AWAITING_GO) GO_ITEMS="${GO_ITEMS:+$GO_ITEMS, }$b (decision: $c)" ;;
       INTERRUPTED) INT_ITEMS="${INT_ITEMS:+$INT_ITEMS, }$b at $c ($d)" ;;
       LANE_STOPPED)

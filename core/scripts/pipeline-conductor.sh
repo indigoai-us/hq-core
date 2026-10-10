@@ -603,7 +603,11 @@ function archive_handoff(sid, phase) {
 }
 
 function blocker_text(h) {
-  const parts = ["summary", "notes"].filter(k => typeof get(h, k) === "string" && strip(h[k])).map(k => strip(h[k]));
+  const reason = ["context_for_next", "error"].find(k => typeof get(h, k) === "string" && strip(h[k]));
+  const parts = ["context_for_next", "error", "summary", "notes"]
+    .filter(k => typeof get(h, k) === "string" && strip(h[k]))
+    .filter(k => !(reason && k === "summary" && strip(h[k]) === "Phase execution failed."))
+    .map(k => strip(h[k]));
   return parts.join("\n\n") || "(the worker gave no reason)";
 }
 
@@ -1576,6 +1580,8 @@ function do_route(p, sid) {
       "This story adds or changes a data store or schema. Run the repo's schema-contract tests " +
       "(tests that check queries and columns against the schema) as back-pressure, if present.");
   }
+  setdefault(env, "constraints", []).push(
+    "Return hq-phase-handoff/v1 with status exactly passed, failed, or blocked; set back_pressure.tests, lint, typecheck, and build to exactly pass, fail, or skip; include one ac_evidence entry per acceptance criterion as {index, criterion, met, evidence}.");
   const ro = reopen_pending(st);
   if (get(ro, "index") === i) {
     env.reopen_note = wsjoin(get(ro, "note", ""));
@@ -1634,8 +1640,13 @@ function do_route(p, sid) {
   }
   if (!lane) {
     const meta = or(get(p, "metadata"), {});
+    const laneBriefDir = sp("briefs");
+    fs.mkdirSync(laneBriefDir, { recursive: true });
+    const laneBrief = pjoin(laneBriefDir, ph.worker + ".md");
+    writeText(laneBrief, "# Pipeline loop lane: " + project + " / " + ph.worker + "\n\n" +
+      "Pipeline phases arrive as queued envelopes. Follow each envelope; this standing brief has no task of its own.\n");
     const createArgs = ["lanes", "create", "--loop", "--company", company, "--project", project,
-      "--story", sid, "--worker", ph.worker, "--senior", "session:" + session, "--json"];
+      "--story", sid, "--worker", ph.worker, "--brief-file", abspath(laneBrief), "--senior", "session:" + session, "--json"];
     const table = get(or(jload(sp("run.json"), {}), {}), "table", "");
     if (T(table) && exists(table)) {
       const row = splitlines(readText(table)).map(x => x.split("\t")).find(x => x[0] === ph.worker);
@@ -1662,7 +1673,8 @@ function do_route(p, sid) {
   let ans; try { ans = JSON.parse(r.stdout); } catch (e) { ans = {}; }
   let enqueueError = get(ans, "error", null);
   let code = S(isDict(enqueueError) ? get(enqueueError, "code", get(ans, "code", "enqueue_failed")) : (enqueueError || get(ans, "code", "enqueue_failed")));
-  if ((!isDict(ans) || get(ans, "ok") !== true) && /already.*used|envelope_id_reused/i.test(code)) {
+  const reuseError = /envelope id .+ was already used in this loop lane/i.test(strip(r.stderr) || strip(r.stdout));
+  if ((!isDict(ans) || get(ans, "ok") !== true) && (/already.*used|envelope_id_reused/i.test(code) || reuseError)) {
     const n = Number(suffixes[ph.phase] || 0) + 1;
     suffixes[ph.phase] = n; st.envelope_suffixes = suffixes; envData.id = baseEnvelopeId + ".r" + n;
     jsave(sfile(sid), st); jsave(ep, envData);
@@ -1683,7 +1695,7 @@ function do_route(p, sid) {
   if (get(reopen_pending(st), "index") === i) st.reopen.routed = true;
   if (get(interrupt_pending(st), "index") === i) { st.interrupted.routed = true; st.interrupted.routed_at = iso(now()); }
   jsave(sfile(sid), st);
-  print("ROUTED " + sid + " " + S(ph.phase) + " " + S(ph.worker) + " " + strip(r.stdout));
+  print("ROUTED " + sid + " " + S(ph.phase) + " " + S(ph.worker) + " " + JSON.stringify(ans));
 }
 
 // ---------- accept ----------

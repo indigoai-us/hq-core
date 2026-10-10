@@ -1,4 +1,11 @@
 ## [Unreleased]
+- The hq-core release gate retries cancelled or stale checks on the current head without applying a
+  release hold, and skips failures when a newer head has replaced the checked SHA.
+- Stop and SubagentStop blocks now include the event name Claude Code requires.
+  The existing `hqSessionBlockedBy` field stays available to session-hooks.sh.
+- `/run-project --pipeline` now supplies a standing brief for each worker loop lane.
+  It keeps route output on one line, retries reused envelope IDs, reports loop
+  failure reasons, and asks workers for the acceptance evidence recheck needs.
 - Remove the legacy conduct scripts and hooks. `/conduct` and its related
   workflows use `hq lanes`; older conduct pool state is not adopted.
 - `/conduct` Codex completion watchers now check lane state before and after waits,

@@ -1909,7 +1909,8 @@ fi
 hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 
 # json_sources is index-aligned with json_outputs so a selected
-# {"decision":"block"} can be stamped with hookSpecificOutput.hqSessionBlockedBy
+# A block is stamped with hookEventName for Claude Code's event-specific output
+# schema. Keep hqSessionBlockedBy for session-hooks.sh provenance readers.
 # (US-402 / agent-session blockedBy).
 
 for hook in ${hooks[@]+"${hooks[@]}"}; do
@@ -2100,8 +2101,8 @@ if [ ${#json_outputs[@]} -eq 1 ]; then
   if [[ "${json_outputs[0]}" == *'"decision"'* ]]; then
     if master_output_needs_bound "${json_outputs[0]}"; then
       if master_output_run output_merge jq -e '.decision == "block"' >/dev/null 2>&1 <<< "${json_outputs[0]}"; then
-        json_result="$(master_output_run output_merge jq -c --arg src "${json_sources[0]}" '
-          .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+        json_result="$(master_output_run output_merge jq -c --arg src "${json_sources[0]}" --arg event "$EVENT" '
+          .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hookEventName: $event, hqSessionBlockedBy: $src})
         ' <<< "${json_outputs[0]}")"
         rc=$?
         if [ "$rc" -ne 0 ]; then
@@ -2117,8 +2118,8 @@ if [ ${#json_outputs[@]} -eq 1 ]; then
         fi
       fi
     elif printf '%s' "${json_outputs[0]}" | jq -e '.decision == "block"' >/dev/null 2>&1; then
-      json_result="$(printf '%s\n' "${json_outputs[0]}" | jq -c --arg src "${json_sources[0]}" '
-        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+      json_result="$(printf '%s\n' "${json_outputs[0]}" | jq -c --arg src "${json_sources[0]}" --arg event "$EVENT" '
+        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hookEventName: $event, hqSessionBlockedBy: $src})
       ')"
     fi
     [ -n "$json_result" ] || json_result="${json_outputs[0]}"
@@ -2160,8 +2161,8 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
   done
   if [ -n "$block_idx" ]; then
     if master_output_needs_bound "${json_outputs[$block_idx]}"; then
-      json_result="$(master_output_run output_merge jq -c --arg src "${json_sources[$block_idx]}" '
-        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+      json_result="$(master_output_run output_merge jq -c --arg src "${json_sources[$block_idx]}" --arg event "$EVENT" '
+        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hookEventName: $event, hqSessionBlockedBy: $src})
       ' <<< "${json_outputs[$block_idx]}")"
       rc=$?
       if [ "$rc" -ne 0 ]; then
@@ -2169,8 +2170,8 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
         json_result="${json_outputs[$block_idx]}"
       fi
     else
-      json_result="$(printf '%s\n' "${json_outputs[$block_idx]}" | jq -c --arg src "${json_sources[$block_idx]}" '
-        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hqSessionBlockedBy: $src})
+      json_result="$(printf '%s\n' "${json_outputs[$block_idx]}" | jq -c --arg src "${json_sources[$block_idx]}" --arg event "$EVENT" '
+        .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hookEventName: $event, hqSessionBlockedBy: $src})
       ')"
     fi
   else

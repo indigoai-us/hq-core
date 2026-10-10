@@ -29,6 +29,8 @@ printf '%s\n' "\$*" >> "$T/hq.log"
 printf '%s\n' "\$*" >> "$T/pool.log"
 case "\$1 \$2" in
   'lanes create')
+    has_brief=false; for arg in "\$@"; do [ "\$arg" = --brief-file ] && has_brief=true; done
+    if [ "\$has_brief" != true ]; then printf "error: required option '--brief-file <path>' not specified\\n" >&2; exit 1; fi
     rc=\$(cat "$T/pool.rc" 2>/dev/null || echo 0)
     worker=''; project=''; company=''; while [ \$# -gt 0 ]; do case "\$1" in --worker) worker="\$2"; shift 2;; --project) project="\$2"; shift 2;; --company) company="\$2"; shift 2;; *) shift;; esac; done
     if [ "\$rc" = 3 ]; then printf '{"ok":false,"error":"admission_denied"}\\n'; exit 0; fi
@@ -39,10 +41,11 @@ case "\$1 \$2" in
     printf '{"ok":true,"lane_id":"%s"}\\n' "\$lane" ;;
   'lanes enqueue')
     envelope=''; while [ \$# -gt 0 ]; do [ "\$1" = --envelope ] && { envelope="\$2"; shift 2; continue; }; shift; done
+    if [ -z "\$envelope" ]; then printf "error: required option '--envelope <file>' not specified\\n" >&2; exit 1; fi
     answer=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
     if [ "\$answer" != enqueue ]; then printf '{"ok":false,"error":"loop_not_running"}\\n'; exit 0; fi
     cp "\$envelope" "$T/queued/"
-    printf '{"ok":true,"action":"enqueue"}\\n' ;;
+    printf '{\\n  "ok": true,\\n  "action": "enqueue"\\n}\\n' ;;
   'lanes interrupt')
     story=''; phase=''; while [ \$# -gt 0 ]; do case "\$1" in --story) story="\$2"; shift 2;; --phase) phase="\$2"; shift 2;; *) shift;; esac; done
     answer=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
@@ -109,6 +112,52 @@ S="$T/state"
 run() { "$PC" "$@" --state "$S" >"$T/out" 2>"$T/err"; echo $? > "$T/rc"; }
 rc() { cat "$T/rc"; }
 pyget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
+
+# A failed loop handoff keeps its actual validation error in both the owner note
+# and the driver's senior-facing exit reason.
+BS="$T/failure-reason"
+mkdir -p "$BS/handoffs"
+"$PC" classify --prd "$T/prd.json" --state "$BS" --story S1 >/dev/null
+jq '.state = "in_flight" | .started = true' "$BS/stories/S1.json" >"$T/failed.tmp" && mv "$T/failed.tmp" "$BS/stories/S1.json"
+cat >"$BS/handoffs/S1-backend.json" <<'EOF'
+{"schema":"hq-phase-handoff/v1","story_id":"S1","phase":"backend","worker_id":"backend-dev","status":"failed","summary":"Phase execution failed.","files_changed":[],"commits":[],"back_pressure":{"tests":"skip","lint":"skip","typecheck":"skip","build":"skip"},"context_for_next":"handoff status must be passed, failed, or blocked","ac_evidence":[]}
+EOF
+set +e
+PIPELINE_DRIVER_CONDUCTOR="$PC" PC_HQ="$T/bin/hq" PC_WORKERS_ROOT="$T/workers" \
+  "$HERE/../pipeline-driver.sh" --prd "$T/prd.json" --state "$BS" --interval 0.1 --max-phase-fails 1 >"$T/failure-driver.out" 2>&1
+driver_rc=$?
+set +e
+check "failcap owner note preserves the loop's exact failure reason" 'grep -q "handoff status must be passed, failed, or blocked" "$BS/decisions/S1-blocked-backend.md"'
+check "senior-facing driver exit includes the loop's exact failure reason" '[ "$driver_rc" = 21 ] && grep -q "reason: handoff status must be passed, failed, or blocked" "$BS/driver/exit"'
+
+# The loop prompt renders constraints, so the conductor must put the complete
+# handoff contract there and the recheck must require AC evidence.
+AC_PRD="$T/ac-prd.json"; AS="$T/ac-state"; AC_LANE=lane-backend-dev-ac
+cat >"$AC_PRD" <<'EOF'
+{"name":"ac-contract","userStories":[{"id":"AC1","title":"evidence contract","passes":false,"dependsOn":[],"worker_preference":["backend-dev"],"acceptanceCriteria":["works"]}]}
+EOF
+printf '%s\n' "$AC_LANE" >"$T/lanes.txt"
+printf '"company":{"slug":"indigo"},"project_id":"ac-contract","worker":"backend-dev"' >"$T/owner.$AC_LANE"
+"$PC" classify --prd "$AC_PRD" --state "$AS" --story AC1 >/dev/null
+mkdir -p "$AS"
+printf '{"backend-dev":"%s"}\n' "$AC_LANE" >"$AS/lanes.json"
+"$PC" route --prd "$AC_PRD" --state "$AS" --story AC1 >"$T/ac-route.out"
+check "phase envelope constraints specify the full handoff and ac_evidence contract once" 'jq -e ".constraints | any(contains(\"status exactly passed, failed, or blocked\")) and any(contains(\"back_pressure.tests, lint, typecheck, and build\")) and any(contains(\"one ac_evidence entry per acceptance criterion as {index, criterion, met, evidence}\")) and ([.[] | select(contains(\"ac_evidence\"))] | length == 1)" "$AS/envelopes/AC1-backend.json" >/dev/null'
+cat >"$T/ac-no-evidence.json" <<'EOF'
+{"schema":"hq-phase-handoff/v1","story_id":"AC1","phase":"backend","worker_id":"backend-dev","status":"passed","summary":"done","files_changed":[],"commits":[],"back_pressure":{"tests":"skip","lint":"skip","typecheck":"skip","build":"skip"},"context_for_next":"ready"}
+EOF
+"$PC" accept --state "$AS" --story AC1 --handoff "$T/ac-no-evidence.json" >"$T/ac-accept.out"
+"$PC" recheck --prd "$AC_PRD" --state "$AS" --story AC1 >"$T/ac-recheck-missing.out" 2>&1 || true
+check "handoff without ac_evidence routes back to the acceptance criterion" 'grep -q "ROUTED_BACK AC1 backend unmet:0" "$T/ac-recheck-missing.out"'
+"$PC" route --prd "$AC_PRD" --state "$AS" --story AC1 >"$T/ac-route-retry.out"
+printf '{"schema":"hq-phase-handoff/v1","story_id":"AC1","phase":"backend","worker_id":"backend-dev","status":"passed","summary":"done","files_changed":[],"commits":[],"back_pressure":{"tests":"skip","lint":"skip","typecheck":"skip","build":"skip"},"context_for_next":"ready","ac_evidence":[{"index":0,"criterion":"works","met":true,"evidence":"assertion passed"}]}' >"$T/ac-with-evidence.json"
+"$PC" accept --state "$AS" --story AC1 --handoff "$T/ac-with-evidence.json" >"$T/ac-accept-evidence.out"
+"$PC" recheck --prd "$AC_PRD" --state "$AS" --story AC1 >"$T/ac-recheck-evidence.out"
+check "handoff with matching ac_evidence passes recheck" 'grep -q "VERIFIED AC1" "$T/ac-recheck-evidence.out"'
+: >"$T/lanes.txt"
+rm -f "$T/owner.$AC_LANE"
+: >"$T/pool.log"
+: >"$T/hq.log"
 
 # ---- e2e 3: dependsOn not passing -> not selected ----
 run next --prd "$T/prd.json"
