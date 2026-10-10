@@ -65,22 +65,57 @@ while :; do
     | {
         check_count: ($runs | length),
         status_count: ($statuses | length),
+        retryable: (
+          [$runs[] | select(.status == "completed") | . as $run
+            | select((["cancelled", "stale"] | index($run.conclusion)) != null)
+            | ((.name // ("check-run " + (.id|tostring))) + " (" + .conclusion + ")")]
+        ),
         pending: (
           [$runs[] | select(.status != "completed") | (.name // ("check-run " + (.id|tostring)))]
           + [$statuses[] | select(.state == "pending") | .context]
         ),
         failed: (
           [$runs[] | select(.status == "completed") | . as $run
-            | select(( ["success", "skipped", "neutral"] | index($run.conclusion) ) == null)
+            | select(( ["success", "skipped", "neutral", "cancelled", "stale"] | index($run.conclusion) ) == null)
             | ((.name // ("check-run " + (.id|tostring))) + " (" + (.conclusion // "missing conclusion") + ")")]
           + [$statuses[] | select(.state != "success") | (.context + " (" + (.state // "missing state") + ")")]
         )
       }
   ')"
   failed="$(jq -r '.failed | join("\n")' <<< "$report")"
+  retryable="$(jq -r '.retryable | join("\n")' <<< "$report")"
   if [[ -n "$failed" ]]; then
+    latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
+    latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
+    if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
+      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing}; no hold-release added for checks on the superseded head. The new head will be gated by its run."
+      exit 0
+    fi
+    if has_hold_label "$latest_info"; then
+      disable_auto_merge_if_armed "$latest_info"
+      fail "Refusing to merge hq-core PR #$PR_NUMBER; failing or non-accepted checks on $EXPECTED_SHA: ${failed//$'\n'/; }. hold-release was already present."
+    fi
     gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label hold-release
+    latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
+    latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
+    if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
+      if has_hold_label "$latest_info"; then
+        gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label hold-release
+      fi
+      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing} after hold-release was applied; removed the hold so the new head's checks can gate the release."
+      exit 0
+    fi
     fail "Refusing to merge hq-core PR #$PR_NUMBER; failing or non-accepted checks on $EXPECTED_SHA: ${failed//$'\n'/; }. Added hold-release."
+  fi
+
+  if [[ -n "$retryable" ]]; then
+    latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
+    latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
+    if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
+      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing}; no hold-release added for cancelled or stale checks on the superseded head. The new head will be gated by its run."
+      exit 0
+    fi
+    fail "Retrying hq-core PR #$PR_NUMBER checks on current head $EXPECTED_SHA; cancelled or stale checks are retryable and do not add hold-release: ${retryable//$'\n'/; }. The scheduled recheck will retry."
   fi
 
   pending="$(jq -r '.pending | join(", ")' <<< "$report")"

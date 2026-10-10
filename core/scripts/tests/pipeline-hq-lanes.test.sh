@@ -29,14 +29,21 @@ printf '%s\n' "$*" >>"$FAKE_HQ_LOG"
 case "$1 $2" in
   "lanes create")
     if [ -n "${CREATE_ERROR:-}" ]; then printf '{"ok":false,"error":"%s"}\n' "$CREATE_ERROR"; exit 0; fi
-    worker=""; while [ $# -gt 0 ]; do [ "$1" = --worker ] && { worker="$2"; shift 2; continue; }; shift; done
+    worker=""; brief_file=""; while [ $# -gt 0 ]; do case "$1" in --worker) worker="$2"; shift 2;; --brief-file) brief_file="$2"; shift 2;; *) shift;; esac; done
+    if [ -z "$brief_file" ]; then printf "error: required option '--brief-file <path>' not specified\\n" >&2; exit 1; fi
     printf '{"ok":true,"lane_id":"lane-%s"}\n' "$worker"
     printf '{"ok":true,"action":"list","lanes":[{"lane_id":"lane-%s","company":{"slug":"indigo"},"project_id":"lane-test","worker":"%s","loop":{"state":"waiting","queue_depth":0}}]}\n' "$worker" "$worker" >"$FAKE_HQ_LIST" ;;
   "lanes enqueue")
     envelope=""; while [ $# -gt 0 ]; do [ "$1" = --envelope ] && { envelope="$2"; shift 2; continue; }; shift; done
-    if [ -n "${ENQUEUE_ERROR:-}" ] && ! jq -e '.id | contains(".r")' "$envelope" >/dev/null; then printf '{"ok":false,"error":"%s"}\n' "$ENQUEUE_ERROR"; exit 0; fi
+    if [ -z "$envelope" ]; then printf "error: required option '--envelope <file>' not specified\\n" >&2; exit 1; fi
+    if [ "${ENQUEUE_ERROR:-}" = envelope_already_used ] && ! jq -e '.id | contains(".r")' "$envelope" >/dev/null; then
+      id="$(jq -r .id "$envelope")"
+      printf 'hq lanes: envelope id %s was already used in this loop lane\n' "$id" >&2
+      exit 1
+    fi
+    if [ -n "${ENQUEUE_ERROR:-}" ] && [ "$ENQUEUE_ERROR" != envelope_already_used ]; then printf '{\n  "ok": false,\n  "error": "%s"\n}\n' "$ENQUEUE_ERROR"; exit 0; fi
     cp "$envelope" "$FAKE_HQ_ENQUEUED/$(basename "$envelope")"
-    printf '{"ok":true,"action":"enqueue"}\n' ;;
+    printf '{\n  "ok": true,\n  "action": "enqueue"\n}\n' ;;
   "lanes interrupt")
     story=""; phase=""; while [ $# -gt 0 ]; do case "$1" in --story) story="$2"; shift 2;; --phase) phase="$2"; shift 2;; *) shift;; esac; done
     if [ "${INTERRUPT_MODE:-withdrawn}" = already_picked_up ]; then printf '{"ok":true,"withdrawn":[],"already_picked_up":["%s-%s"]}\n' "$story" "$phase"
@@ -50,12 +57,44 @@ chmod +x "$T/bin/hq"
 export PATH="$T/bin:$PATH" PC_HQ="$T/bin/hq" PC_HQ_ROOT="$T/hq" PC_WORKERS_ROOT="$T/workers"
 export HQ_SESSION_ID="01a11fa9-047c-7163-b047-ccfef5a5ac36" FAKE_HQ_LOG="$T/hq.log" FAKE_HQ_ENQUEUED="$T/enqueued" FAKE_HQ_LIST="$T/list.json"
 mkdir -p "$FAKE_HQ_ENQUEUED"
+printf '[{"lane_id":"lane-backend-dev","company":{"slug":"indigo"},"project_id":"lane-test","worker":"backend-dev","loop":{"state":"waiting","queue_depth":0}}]\n' >"$FAKE_HQ_LIST"
+
+# Exercise line framing with an already-mapped lane, independently of create.
+failures=0
+mkdir -p "$T/route-state"
+"$ROOT/core/scripts/pipeline-conductor.sh" classify --prd "$T/prd.json" --state "$T/route-state" --story A >/dev/null
+printf '{"backend-dev":"lane-backend-dev"}\n' >"$T/route-state/lanes.json"
+set +e
+"$ROOT/core/scripts/pipeline-conductor.sh" route --prd "$T/prd.json" --state "$T/route-state" --story A >"$T/route-output.out" 2>&1
+route_rc=$?
+set -e
+if [ "$route_rc" = 0 ] && [ "$(wc -l <"$T/route-output.out" | tr -d ' ')" = 1 ]; then echo 'PASS: ROUTED stays on one line when enqueue JSON is pretty-printed'; else echo 'FAIL: ROUTED spans multiple lines with pretty-printed enqueue JSON'; failures=$((failures + 1)); fi
+
+# Exercise stderr envelope-id reuse with a pre-mapped lane, independently of create.
+mkdir -p "$T/reuse-state"
+"$ROOT/core/scripts/pipeline-conductor.sh" classify --prd "$T/prd.json" --state "$T/reuse-state" --story A >/dev/null
+printf '{"backend-dev":"lane-backend-dev"}\n' >"$T/reuse-state/lanes.json"
+ENQUEUE_ERROR=envelope_already_used; export ENQUEUE_ERROR
+set +e
+"$ROOT/core/scripts/pipeline-conductor.sh" route --prd "$T/prd.json" --state "$T/reuse-state" --story A >"$T/reuse.out" 2>&1
+reuse_rc=$?
+set -e
+unset ENQUEUE_ERROR
+if [ "$reuse_rc" = 0 ] && [ "$(jq -r '.envelope_suffixes.backend' "$T/reuse-state/stories/A.json")" = 1 ] && [ "$(jq -r .id "$FAKE_HQ_ENQUEUED/A-backend.json")" = A-backend.r1 ]; then echo 'PASS: stderr envelope-id reuse retries with a fresh envelope id'; else echo 'FAIL: stderr envelope-id reuse was not retried'; failures=$((failures + 1)); fi
+[ "$failures" = 0 ]
+: >"$FAKE_HQ_LOG"
+find "$FAKE_HQ_ENQUEUED" -mindepth 1 -type f -delete
+
 "$ROOT/core/scripts/pipeline-conductor.sh" classify --prd "$T/prd.json" --state "$T/state" --story A >/dev/null
 "$ROOT/core/scripts/pipeline-conductor.sh" classify --prd "$T/prd.json" --state "$T/state" --story B >/dev/null
 "$ROOT/core/scripts/pipeline-conductor.sh" route --prd "$T/prd.json" --state "$T/state" --story A >/dev/null
 "$ROOT/core/scripts/pipeline-conductor.sh" route --prd "$T/prd.json" --state "$T/state" --story B >/dev/null
 [ "$(grep -c '^lanes create ' "$FAKE_HQ_LOG")" = 1 ]
 [ "$(grep -c '^lanes enqueue ' "$FAKE_HQ_LOG")" = 2 ]
+brief_file="$(sed -n 's/.*--brief-file \([^ ]*\).*/\1/p' "$FAKE_HQ_LOG" | head -1)"
+case "$brief_file" in /*) ;; *) echo "expected an absolute lane brief path" >&2; exit 1 ;; esac
+[ -f "$brief_file" ]
+grep -Fq 'lane-test / backend-dev' "$brief_file"
 jq -e '.id == "A-backend" and (.result_path | contains("A-backend.json"))' "$FAKE_HQ_ENQUEUED/A-backend.json" >/dev/null
 
 jq '.state = "queued"' "$T/state/stories/A.json" >"$T/story.tmp" && mv "$T/story.tmp" "$T/state/stories/A.json"

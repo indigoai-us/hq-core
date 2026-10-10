@@ -280,6 +280,14 @@ jobs:
         run: bash core/scripts/tests/orchestrator-skills-use-pool.test.sh
       - name: Orchestrator skills dispatch detached lanes (run-project + conduct)
         run: bash core/scripts/tests/orchestrator-skills-dispatch-lanes.test.sh
+      - name: Pipeline conductor routes loop-lane phases
+        run: bash core/scripts/tests/pipeline-conductor.test.sh
+      - name: Pipeline hq lanes contract and retries
+        run: bash core/scripts/tests/pipeline-hq-lanes.test.sh
+      - name: Pipeline driver interrupt recovery
+        run: bash core/scripts/tests/pipeline-interrupt.test.sh
+      - name: Pipeline driver runs without python3
+        run: bash core/scripts/tests/pipeline-no-python.test.sh
       - name: Intent hint (UserPromptSubmit, closest intent-index entries)
         run: bash core/scripts/tests/intent-hint.test.sh
       - name: Regression test (fixture + all skills + allowlist + WC-17 fix)
@@ -1359,6 +1367,7 @@ jobs:
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
+          bash core/scripts/tests/master-hook-stop-schema.test.sh
           bash core/scripts/tests/master-hook-library-fail-open.test.sh
           bash core/scripts/tests/hq-agent-session-hooks.test.sh
           bash core/scripts/anywhere-parity-test.test.sh

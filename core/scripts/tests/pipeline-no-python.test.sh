@@ -29,8 +29,14 @@ cat > "$BIN/hq" <<'EOF'
 set -eu
 printf '%s\n' "$*" >> "$FAKE_HQ_LOG"
 case "$1 $2" in
-  'lanes create') printf '{"ok":true,"lane_id":"lane-backend-dev"}\n' ;;
-  'lanes enqueue') printf '{"ok":true}\n' ;;
+  'lanes create')
+    has_brief=false; for arg in "$@"; do [ "$arg" = --brief-file ] && has_brief=true; done
+    if [ "$has_brief" != true ]; then printf "error: required option '--brief-file <path>' not specified\n" >&2; exit 1; fi
+    printf '{"ok":true,"lane_id":"lane-backend-dev"}\n' ;;
+  'lanes enqueue')
+    has_envelope=false; for arg in "$@"; do [ "$arg" = --envelope ] && has_envelope=true; done
+    if [ "$has_envelope" != true ]; then printf "error: required option '--envelope <file>' not specified\n" >&2; exit 1; fi
+    printf '{\n  "ok": true\n}\n' ;;
   'lanes list')
     if [ -f "$FAKE_HQ_LOG.stopped" ]; then printf '[{"lane_id":"lane-backend-dev","loop":{"state":"stopped","queue_depth":0,"pid":null}}]\n'
     else printf '[{"lane_id":"lane-backend-dev","loop":{"state":"waiting","queue_depth":1,"pid":1}}]\n'; fi ;;

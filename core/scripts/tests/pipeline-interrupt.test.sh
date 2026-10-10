@@ -47,10 +47,15 @@ cat > "$T/bin/hq" <<EOF
 #!/usr/bin/env bash
 set -eu
 case "\$1 \$2" in
-  'lanes create') printf '{"ok":true,"lane_id":"lane-backend-dev"}\\n' ;;
+  'lanes create')
+    has_brief=false; for arg in "\$@"; do [ "\$arg" = --brief-file ] && has_brief=true; done
+    if [ "\$has_brief" != true ]; then printf "error: required option '--brief-file <path>' not specified\\n" >&2; exit 1; fi
+    rm -f "$T/stopped"
+    printf '{\"ok\":true,\"lane_id\":\"lane-backend-dev\"}\\n' ;;
   'lanes enqueue')
     envfile=''; while [ \$# -gt 0 ]; do case "\$1" in --envelope) envfile="\$2"; shift 2;; *) shift;; esac; done
-    mkdir -p "$LANE/inbox/pending"; cp "\$envfile" "$LANE/inbox/pending/\$(date +%s)-\$RANDOM.json"; printf '{"ok":true}\\n' ;;
+    if [ -z "\$envfile" ]; then printf "error: required option '--envelope <file>' not specified\\n" >&2; exit 1; fi
+    mkdir -p "$LANE/inbox/pending"; cp "\$envfile" "$LANE/inbox/pending/\$(date +%s)-\$RANDOM.json"; printf '{\\n  "ok": true\\n}\\n' ;;
   'lanes list')
     state=waiting; [ -f "$T/stopped" ] && state=stopped
     depth=0; for f in "$LANE"/inbox/pending/*.json; do [ -f "\$f" ] && depth=1; done
