@@ -233,7 +233,7 @@ entries:
     kind: generated
     root: cwd
     interpreter: bash
-    min_cli: 5.342.7
+    min_cli: 5.345.63
     state: forwarded
     path_operands: all-nonoptions
     note: |

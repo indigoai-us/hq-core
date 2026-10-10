@@ -71,10 +71,9 @@
 #   24    another driver already runs against this state   leaves it running
 #   25    retired: the stall check now fires the stall     -
 #         event and exits 28
-#   26    lane down: routing a phase got a pool answer     relaunches the named
-#         other than an enqueue into a live loop lane      worker's loop lane,
-#         (the lane is dead). The claim is released, the   then restarts the driver
-#         story stays queued; the reason names the lane
+#   26    lane down: enqueue found a terminal loop lane;   relaunches the named
+#         the mapping was dropped and the story stays      worker's loop lane,
+#         queued; the reason names the lane                then restarts the driver
 #   27    no lane: a phase's worker has no row in the     adds the row, launches
 #         confirmed worker table (--table); the story      that lane, restarts the
 #         stays queued; the reason names the worker        driver
@@ -136,17 +135,15 @@
 # Stall check: --stall-window (default 600 seconds, env PIPELINE_DRIVER_STALL_SECS).
 #   The stall starts at the later of the oldest in-flight phase's route time and
 #   the last lane status change, and is kept in driver/stall.json so a restart
-#   does not reset it. The lane state comes from the pool's own `list` output
-#   (status, queue_depth and run_dir per slot). The event fires once per stall;
+#   does not reset it. The lane state comes from `hq lanes list --json`
+#   (loop state and queue depth). The event fires once per stall;
 #   accepting any phase clears it. No notification hook exists for the driver,
 #   so firing writes the event and exits 28 for the parent's waiter.
 #
-# Start: the driver runs `conduct-pool.sh reconcile` once, so a finished one-shot
-#   lane (a regression gate) does not hold its slot `running`.
+# Start: loop lanes own their lifecycle; the driver reads their loop state.
 #
 # Env: PIPELINE_DRIVER_CONDUCTOR (default: pipeline-conductor.sh next to this
-#   script); PIPELINE_DRIVER_POOL (default: $PC_POOL, else conduct-pool.sh next
-#   to this script); every PC_* variable the conductor reads passes through.
+#   script); PC_HQ (default: hq); every PC_* variable the conductor reads passes through.
 #
 # POSIX sh (dash-clean). Requires jq (JSON reads and small edits) and node
 # (the state scan and stall check).
@@ -187,7 +184,8 @@ command -v node >/dev/null 2>&1 || { echo "pipeline-driver: node required" >&2; 
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PC="${PIPELINE_DRIVER_CONDUCTOR:-$HERE/pipeline-conductor.sh}"
-POOL="${PIPELINE_DRIVER_POOL:-${PC_POOL:-$HERE/conduct-pool.sh}}"
+PC_HQ="${PC_HQ:-hq}"
+export PC_HQ
 mkdir -p "$STATE/stories" "$STATE/handoffs" "$STATE/envelopes" "$STATE/driver" || exit 2
 STATE="$(cd "$STATE" && pwd)"
 D="$STATE/driver"
@@ -237,8 +235,35 @@ stop_run() {
   trap '' TERM INT
   OUT="$("$PC" interrupt --state "$STATE" --note "$2" 2>&1)"
   log "INTERRUPT rc=$?: $(printf '%s' "$OUT" | tr '\n' ' ')"
+  stop_lanes
   rm -f "$D/stop.json"
   finish "$1" "$2"
+}
+stop_lanes() {
+  [ -f "$STATE/lanes.json" ] || return 0
+  local deadline lane_file
+  lane_file="$STATE/lanes.json"
+  while IFS= read -r lane; do
+    [ -n "$lane" ] || continue
+    "$PC_HQ" lanes stop "$lane" >/dev/null 2>&1 || true
+  done <<EOF
+$(jq -r 'to_entries[] | .value' "$STATE/lanes.json" 2>/dev/null)
+EOF
+  deadline=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    local rows
+    rows="$("$PC_HQ" lanes list --json 2>/dev/null)"
+    if printf '%s' "$rows" | jq -e --slurpfile owned "$lane_file" '
+      (if type == "array" then . else .lanes end) as $rows |
+      ($rows | type == "array") and
+      all($owned[0][]; . as $id | ([ $rows[] | select(.lane_id == $id) ] | length == 0 or .[0].loop.state == "stopped"))' >/dev/null 2>&1; then
+      printf '{}\n' > "$lane_file"
+      return 0
+    fi
+    sleep 2
+  done
+  log "LANE_STOP_TIMEOUT unable to confirm all mapped lanes stopped or absent within 60s"
+  return 1
 }
 check_stop() {
   [ -f "$D/stop.json" ] || return 0
@@ -250,8 +275,6 @@ trap 'stop_run 130 "interrupted"' INT
 
 log "START pid=$$ prd=$PRD interval=${INTERVAL}s max_phase_fails=$MAX_FAILS stall_window=${STALL}s"
 if [ -f "$D/stop.json" ]; then log "STALE_STOP removed driver/stop.json left from an earlier stop"; rm -f "$D/stop.json"; fi
-REC="$("$POOL" reconcile 2>/dev/null | grep '^IDLE ' | tr '\n' ' ')"
-[ -n "$REC" ] && log "POOL_RECONCILE $REC"
 # jq helpers: t = truthiness as JSON-writing tools treat it (null, false, 0,
 # "", [], {} are false); ps = a value printed as text (null -> None).
 JQ_DEFS='def t: . != null and . != false and . != 0 and . != "" and . != [] and . != {};
@@ -289,10 +312,10 @@ INTERRUPTED="$(stories_jq 'select(type == "object") | .interrupted as $it
 #   LANE_STOPPED <id> <phase>        the in-flight phase's loop lane exited on a stop envelope
 #   ACTIVE  <n>                      stories queued, in flight, held or awaiting recheck
 scan() {
-  PD_STATE="$STATE" PD_MAX="$MAX_FAILS" PD_POOL="$POOL" node - <<'JS'
+  PD_STATE="$STATE" PD_MAX="$MAX_FAILS" PD_HQ="$PC_HQ" node - <<'JS'
 'use strict';
 const fs = require('fs'), path = require('path'), cp = require('child_process');
-const S = process.env.PD_STATE, MAX = parseInt(process.env.PD_MAX, 10);
+const S = process.env.PD_STATE, MAX = parseInt(process.env.PD_MAX, 10), HQ = process.env.PD_HQ;
 const TERMINAL = ['passed', 'failed', 'blocked'];
 const EARLY = 'engine_exited_early';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -320,19 +343,25 @@ const now = () => Date.now() / 1000;
 const isoNow = () => new Date().toISOString().slice(0, 19) + 'Z';
 const collapse = (s) => Array.from(s.split(/\s+/).filter(Boolean).join(' ')).slice(0, 300).join('');
 let lanes = null;
-function laneDir(worker) {
-  // run_dir of the worker's lane from the pool's own list; read once per scan
+function laneRows() {
   if (lanes === null) {
     lanes = new Map();
     try {
-      const r = cp.spawnSync(process.env.PD_POOL, ['list'], { encoding: 'utf8', timeout: 30000 });
+      const owned = load(path.join(S, 'lanes.json')) || {};
+      const r = cp.spawnSync(HQ, ['lanes', 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
       if (!r.error) {
-        const rows = JSON.parse(r.stdout || '[]');
-        if (Array.isArray(rows)) for (const x of rows) if (isObj(x) && truthy(x.run_dir)) lanes.set(get(x, 'worker_id', null), x.run_dir);
+        const text = String(r.stdout || ''), starts = [text.indexOf('['), text.indexOf('{')].filter((n) => n >= 0);
+        const parsed = JSON.parse(starts.length ? text.slice(Math.min(...starts)) : text);
+        const rows = Array.isArray(parsed) ? parsed : (isObj(parsed) && Array.isArray(parsed.lanes) ? parsed.lanes : []);
+        for (const x of rows) if (isObj(x) && Object.values(owned).includes(get(x, 'lane_id', null))) lanes.set(get(x, 'lane_id', null), x);
       }
     } catch (e) { /* no lanes */ }
   }
-  return lanes.has(worker) ? lanes.get(worker) : null;
+  return lanes;
+}
+function laneRow(worker) {
+  const owned = load(path.join(S, 'lanes.json')) || {};
+  return laneRows().get(owned[worker]) || null;
 }
 // journal events of a lane containing <needle>, filtered to those written after <since>
 function journal(worker, needle, since, pick) {
@@ -356,15 +385,16 @@ function journal(worker, needle, since, pick) {
   return found;
 }
 function laneStopped(worker, since) {
-  // the lane's journal has loop-done (a stop envelope ended it) written after the route
-  const ev = journal(worker, '"loop-done"', since, () => true);
-  return ev !== undefined && ev !== null;
+  const row = laneRow(worker);
+  return !!row && get(get(row, 'loop', {}), 'state') === 'stopped';
 }
 function phaseExit(worker, sid, ph, since) {
   // the lane's last phase-exit event for this phase written after it was routed
-  const ev = journal(worker, '"phase-exit"', since,
-    (e) => get(e, 'event', null) === 'phase-exit' && str(get(e, 'story_id', null)) === sid && get(e, 'phase', null) === ph);
-  return ev === undefined ? null : ev;
+  const row = laneRow(worker);
+  if (!row) return null;
+  const state = get(get(row, 'loop', {}), 'state');
+  if (state === 'parked') return { reason: 'loop_stalled', phase: ph, story_id: sid };
+  return state === 'failed' ? { reason: state, phase: ph, story_id: sid } : null;
 }
 function mtime(p) {
   try { return fs.statSync(p).mtimeMs / 1000; } catch (e) { return null; }
@@ -426,7 +456,8 @@ for (const n of byteSort(fs.readdirSync(sd))) {
       let secs = get(ev, 'elapsed_s', null);
       if (!isNum(secs)) secs = since !== null ? Math.trunc(now() - since) : 0;
       const why = collapse(str(truthy(ev.reason) ? ev.reason : 'no reason given'));
-      out.push(['EARLY', sid, ph, String(Math.trunc(secs)), why]);
+      if (get(ev, 'reason', null) === 'loop_stalled') out.push(['LANE_STALLED', sid, ph, worker]);
+      else out.push(['EARLY', sid, ph, String(Math.trunc(secs)), why]);
     } else if (laneStopped(worker, since)) {
       out.push(['LANE_STOPPED', sid, ph]);
     } else {
@@ -484,10 +515,10 @@ early_handoff() {
 # for --stall-window; keeps driver/stall.json and appends the event to
 # <state>/events.jsonl when it fires
 stall_check() {
-  PD_ROWS="$("$POOL" list 2>/dev/null)" PD_STATE="$STATE" PD_WINDOW="$STALL" node - <<'JS'
+  PD_STATE="$STATE" PD_WINDOW="$STALL" PD_HQ="$PC_HQ" node - <<'JS'
 'use strict';
 const fs = require('fs'), path = require('path');
-const S = process.env.PD_STATE, W = parseInt(process.env.PD_WINDOW, 10);
+const S = process.env.PD_STATE, W = parseInt(process.env.PD_WINDOW, 10), HQ = process.env.PD_HQ;
 const SF = path.join(S, 'driver', 'stall.json');
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '' ||
@@ -526,9 +557,15 @@ function dumps(v) {
   if (Array.isArray(v)) return '[' + v.map(dumps).join(', ') + ']';
   return '{' + Object.keys(v).map((k) => dumps(k) + ': ' + dumps(v[k])).join(', ') + '}';
 }
-let rows;
-try { rows = JSON.parse(process.env.PD_ROWS); } catch (e) { rows = null; }
-if (!Array.isArray(rows)) process.exit(0);
+let rows = [];
+try {
+  const owned = load(path.join(S, 'lanes.json')) || {};
+  const r = require('child_process').spawnSync(HQ, ['lanes', 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
+  const text = String(r.stdout || ''), starts = [text.indexOf('['), text.indexOf('{')].filter((n) => n >= 0);
+  const parsed = JSON.parse(starts.length ? text.slice(Math.min(...starts)) : text);
+  const listed = Array.isArray(parsed) ? parsed : (isObj(parsed) && Array.isArray(parsed.lanes) ? parsed.lanes : []);
+  rows = listed.filter((row) => isObj(row) && Object.values(owned).includes(get(row, 'lane_id', null)));
+} catch (e) { process.exit(0); }
 const inflight = [];
 const sd = path.join(S, 'stories');
 for (const n of byteSort(fs.readdirSync(sd))) {
@@ -543,22 +580,22 @@ for (const n of byteSort(fs.readdirSync(sd))) {
   }
   inflight.push([st.id, phases[cur].worker, since]);
 }
-const live = rows.filter((r) => isObj(r) && ['claimed', 'running', 'waiting'].includes(r.status));
+const live = rows.filter((r) => isObj(r) && isObj(r.loop));
 let cond = false, stories = [], lanes = [], since = null;
-if (inflight.length && live.length && live.every((r) => r.status === 'waiting' && !truthy(r.queue_depth))) {
+if (inflight.length && live.length && live.every((r) => r.loop.state === 'waiting' && r.loop.queue_depth === 0)) {
   cond = true;
-  stories = inflight.map((x) => x[0]); lanes = live.map((r) => get(r, 'worker_id', null)).sort(cmp);
-  const changed = live.filter((r) => truthy(r.updated_at)).map((r) => epoch(r.updated_at));
+  stories = inflight.map((x) => x[0]); lanes = live.map((r) => get(r, 'lane_id', null)).sort(cmp);
+  const changed = live.filter((r) => truthy(r.loop.updated_at)).map((r) => epoch(r.loop.updated_at));
   since = Math.max(Math.min(...inflight.map((x) => x[2])), ...changed.filter((c) => c !== null));
 } else {
   // a routed phase sits in its lane queue and the lane has nothing active
+  const owned = load(path.join(S, 'lanes.json')) || {};
   const byWorker = new Map();
-  for (const r of live) byWorker.set(get(r, 'worker_id', null), r);
+  for (const r of live) for (const [worker, lane] of Object.entries(owned)) if (lane === get(r, 'lane_id', null)) byWorker.set(worker, r);
   for (const [sid, worker, s] of inflight) {
     const r = byWorker.get(worker);
-    const rd = r ? get(r, 'run_dir', null) : null;
-    if (truthy(rd) && files(path.join(rd, 'inbox', 'pending')).length && !files(path.join(rd, 'inbox', 'active')).length) {
-      cond = true; stories.push(sid); lanes.push(worker);
+    if (r && get(r.loop, 'queue_depth', 0) > 0 && !truthy(get(r.loop, 'active_envelope_id', null))) {
+      cond = true; stories.push(sid); lanes.push(get(r, 'lane_id', worker));
       since = since === null ? s : Math.min(since, s);
     }
   }
@@ -665,6 +702,12 @@ act() {
         run_pc interrupt --state "$STATE" --story "$b" --note "the $c lane exited on a stop envelope"
         log "LANE_STOPPED $b $c rc=$RC: $OUT${ERR:+ | $ERR}"
         ACTED=1 ;;
+      LANE_STALLED)
+        company="$(jq -r '.company_slug // empty' "$STATE/run.json" 2>/dev/null)"
+        lane="$(jq -r --arg w "$d" '.[$w] // empty' "$STATE/lanes.json" 2>/dev/null)"
+        questions="$("$PC_HQ" lanes questions list --company "$company" --json 2>/dev/null | jq -c --arg lane "$lane" '.questions[]? | select(.lane_id == $lane and .status == "pending")' 2>/dev/null | head -1)"
+        log "LANE_QUESTION story=$b phase=$c lane=$lane question=${questions:-missing}"
+        finish 28 "loop lane $lane parked after repeated stalls for $b/$c; answer its pending question with hq lanes questions answer, then restart the driver: ${questions:-no pending question returned}" ;;
       INFLIGHT) ;;
       ACTIVE) ACTIVE="$b" ;;
       '') ;;
@@ -704,7 +747,7 @@ while :; do
     log "TICK: $(printf '%s' "$OUT" | tr '\n' ' ')${GO_NOW:+| awaiting go: $GO_NOW}${INT_NOW:+| interrupted, routing first: $INT_NOW}"
   fi
   GO_LAST="$GO_NOW"
-  [ "$RC" = 0 ] || finish 23 "tick failed (rc=$RC): $ERR"
+  case "$RC" in 0|3|11|12) ;; *) finish 23 "tick failed (rc=$RC): $ERR" ;; esac
   HELD_ITEM=""; GATE=""; LANE_DOWN=""; NO_LANE=""
   while IFS= read -r line; do
     case "$line" in
@@ -721,10 +764,10 @@ while :; do
 $OUT
 EOF
   if [ -n "$LANE_DOWN" ]; then
-    # LANE_DOWN <id> <phase> <worker> <pool answer> <claim>
+    # LANE_DOWN <id> <phase> <worker> lanes-<code>
     set -- $LANE_DOWN
-    log "LANE_DOWN lane $3 is down: $1/$2 stays queued; $4, $5"
-    finish 26 "lane down: $3 (story $1 phase $2 stays queued; $4, $5); relaunch the $3 loop lane, then restart the driver"
+    log "LANE_DOWN lane $3 is down: $1/$2 stays queued; $4"
+    finish 26 "lane down: $3 (story $1 phase $2 stays queued; $4); relaunch the $3 loop lane, then restart the driver"
   fi
   if [ -n "$NO_LANE" ]; then
     # NO_LANE <id> <phase> <worker> not in the worker table <file>
@@ -748,6 +791,7 @@ EOF
           [ -n "$GO_ITEMS" ] && why="${why:+$why;} awaiting go: $GO_ITEMS; release with pipeline-conductor.sh go --state $STATE --story <id>"
           finish 21 "decision needed, nothing else can move:$why"
         fi
+        stop_lanes || finish 23 "could not confirm every loop lane stopped; see LANE_STOP_TIMEOUT"
         finish 0 "all stories finished: $OUT"
       fi
     fi

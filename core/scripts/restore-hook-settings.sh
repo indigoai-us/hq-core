@@ -14,7 +14,7 @@
 # (feedback 2282 / update-hq v15.0.117 → v15.0.137)
 #
 # This healer:
-#   - writes the nine canonical master-hook.sh registrations into
+#   - writes the ten canonical master-hook.sh registrations into
 #     settings.json (other keys, including env.PATH, are preserved)
 #   - deletes the hooks key from settings.local.json (permissions/env stay)
 # Idempotent. python-free. Always exits 0 unless a rewrite could not be saved.
@@ -35,7 +35,7 @@ else
   HQ_LIB_NODE="$(command -v node 2>/dev/null || true)"
 fi
 
-EVENTS='["PreToolUse","PostToolUse","PreCompact","Stop","SessionStart","UserPromptSubmit","Notification","SubagentStop","SessionEnd"]'
+EVENTS='["PreToolUse","PostToolUse","PreCompact","Stop","SessionStart","UserPromptSubmit","Notification","SubagentStart","SubagentStop","SessionEnd"]'
 
 JQ_CANON='
 def canonical_hooks:
@@ -54,7 +54,7 @@ def restore:
 NODE_PROG='
 const fs = require("fs");
 const [file, mode] = process.argv.slice(1);
-const EVENTS = ["PreToolUse","PostToolUse","PreCompact","Stop","SessionStart","UserPromptSubmit","Notification","SubagentStop","SessionEnd"];
+const EVENTS = ["PreToolUse","PostToolUse","PreCompact","Stop","SessionStart","UserPromptSubmit","Notification","SubagentStart","SubagentStop","SessionEnd"];
 const canonicalHooks = () => {
   const h = {};
   for (const e of EVENTS) {

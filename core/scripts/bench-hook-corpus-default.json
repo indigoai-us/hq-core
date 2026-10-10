@@ -11,7 +11,7 @@
         "project"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -22,7 +22,7 @@
         "deploy"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -44,7 +44,7 @@
         "web"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -56,7 +56,7 @@
         "secrets"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -86,7 +86,7 @@
         "search"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -97,7 +97,7 @@
         "board"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -108,7 +108,7 @@
         "workers"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     },
     {
@@ -119,7 +119,7 @@
         "search"
       ],
       "expect_no_blocks": [
-        "auto-conduct"
+        "conduct-lanes-session-start"
       ]
     }
   ],

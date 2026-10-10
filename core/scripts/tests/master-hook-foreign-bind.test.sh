@@ -206,4 +206,102 @@ authz_agent() { # <path> <agent_id> <agent_type> → exit code
 grep -qi 'restart the session' "$TMP/agent-authz.err" || fail "missing-id denial lacks restart direction"
 pass "Task SessionStart mint and authorizer lookup share the caller tuple"
 
+# 7. Claude Code starts an Agent-tool subagent with SubagentStart, never
+# SessionStart (feedback_284bc210). The subagent inherits the parent's
+# main-thread lock set at spawn, and only that set.
+subagent_start() { # <sid> <agent_id> <agent_type>
+  jq -cn --arg sid "$1" --arg cwd "$FIX" --arg aid "$2" --arg atype "$3" \
+    '{session_id:$sid,cwd:$cwd,hook_event_name:"SubagentStart"}
+      + (if $aid == "" then {} else {agent_id:$aid} end)
+      + (if $atype == "" then {} else {agent_type:$atype} end)' \
+    | ( cd "$FIX" && env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 HQ_HQ_SESSION_NO_CLI=1 HQ_CLI_BIN="$TMP/bin/hq-stub" \
+        bash "$FIX/.claude/hooks/master-hook.sh" SubagentStart ) > "$TMP/substart.out" 2> "$TMP/substart.err" \
+    || fail "SubagentStart failed: $(cat "$TMP/substart.err")"
+}
+authz_as() { # <sid> <path> <agent_id> <agent_type> → exit code
+  local rc=0
+  jq -cn --arg sid "$1" --arg p "$2" --arg cwd "$FIX" --arg aid "$3" --arg atype "$4" \
+    '{session_id:$sid,cwd:$cwd,tool_name:"Write",tool_input:{file_path:$p,content:"x"}}
+      + (if $aid == "" then {} else {agent_id:$aid} end)
+      + (if $atype == "" then {} else {agent_type:$atype} end)' \
+    | bash "$FIX/.claude/hooks/mandatory-scope-authorizer.sh" >/dev/null 2>"$TMP/authz-as.err" || rc=$?
+  printf '%s' "$rc"
+}
+
+PARENT_SID="parent-sess-subagent"
+HQ_HQ_SESSION_NO_CLI=1 bash "$FIX/core/scripts/hq-session.sh" --session-id "$PARENT_SID" set company_slug indigo >/dev/null \
+  || fail "could not bind parent session"
+[ "$(authz_as "$PARENT_SID" "$FIX/companies/indigo/knowledge/a.md" '' '')" = "0" ] \
+  || fail "parent main thread is not authorized for its own company"
+
+# No authorizer call before SubagentStart: the authorizer would pin the tuple
+# lazily (#1245) and this case must prove the spawn-time mint on its own.
+[ ! -e "$FIX/workspace/sessions/$PARENT_SID/agents/sub-1/scope-capability.json" ] \
+  || fail "subagent tuple existed before SubagentStart"
+
+subagent_start "$PARENT_SID" sub-1 Explore
+SUB_CAP="$FIX/workspace/sessions/$PARENT_SID/agents/sub-1/scope-capability.json"
+[ "$(jq -r '.company_slug' "$SUB_CAP")" = "indigo" ] || fail "SubagentStart did not mint the subagent tuple"
+[ "$(jq -r '.agent_id' "$SUB_CAP")" = "sub-1" ] || fail "SubagentStart minted the wrong agent_id"
+[ "$(jq -r '.company_slug' "$FIX/workspace/sessions/$PARENT_SID/scope-capability.json")" = "indigo" ] \
+  || fail "SubagentStart changed the parent main-thread capability"
+[ "$(authz_as "$PARENT_SID" "$FIX/companies/indigo/knowledge/a.md" sub-1 Explore)" = "0" ] \
+  || fail "subagent bound by SubagentStart was denied its parent's company: $(cat "$TMP/authz-as.err")"
+[ "$(authz_as "$PARENT_SID" "$FIX/companies/otherco/knowledge/a.md" sub-1 Explore)" = "2" ] \
+  || fail "subagent bound by SubagentStart was authorized for another company"
+pass "SubagentStart binds the subagent to the parent's company only"
+
+# A later parent rebind does not move an agent that is already bound.
+HQ_HQ_SESSION_NO_CLI=1 bash "$FIX/core/scripts/hq-session.sh" --session-id "$PARENT_SID" set company_slug otherco >/dev/null \
+  || fail "could not rebind parent session"
+subagent_start "$PARENT_SID" sub-1 Explore
+[ "$(jq -r '.company_slug' "$SUB_CAP")" = "indigo" ] || fail "repeat SubagentStart rebound an existing agent tuple"
+# A new subagent inherits the parent's current binding.
+subagent_start "$PARENT_SID" sub-2 Explore
+[ "$(jq -r '.company_slug' "$FIX/workspace/sessions/$PARENT_SID/agents/sub-2/scope-capability.json")" = "otherco" ] \
+  || fail "new subagent did not inherit the parent's current binding"
+pass "existing subagent tuples win; new subagents inherit the current parent binding"
+
+# The spawn-time mint and the authorizer's lazy inherit share one source and
+# one pin: whichever runs first wins and the other never re-mints.
+[ "$(authz_as "$PARENT_SID" "$FIX/companies/otherco/knowledge/a.md" sub-1 Explore)" = "2" ] \
+  || fail "authorizer re-minted a subagent pinned at SubagentStart"
+[ "$(jq -r '.company_slug' "$SUB_CAP")" = "indigo" ] || fail "authorizer moved a SubagentStart pin"
+LAZY_CAP="$FIX/workspace/sessions/$PARENT_SID/agents/sub-lazy/scope-capability.json"
+[ "$(authz_as "$PARENT_SID" "$FIX/companies/otherco/knowledge/a.md" sub-lazy Explore)" = "0" ] \
+  || fail "lazy inherit did not bind a subagent with no SubagentStart"
+HQ_HQ_SESSION_NO_CLI=1 bash "$FIX/core/scripts/hq-session.sh" --session-id "$PARENT_SID" set company_slug indigo >/dev/null \
+  || fail "could not rebind parent session"
+subagent_start "$PARENT_SID" sub-lazy Explore
+[ "$(jq -r '.company_slug' "$LAZY_CAP")" = "otherco" ] || fail "SubagentStart moved a lazily pinned subagent"
+HQ_HQ_SESSION_NO_CLI=1 bash "$FIX/core/scripts/hq-session.sh" --session-id "$PARENT_SID" set company_slug otherco >/dev/null \
+  || fail "could not restore parent session"
+pass "SubagentStart and the authorizer's lazy inherit never re-mint each other's pin"
+
+# Session metadata alone is not a source: a parent whose meta.yaml names a
+# company but has no main-thread capability gives its subagent nothing.
+META_ONLY_SID="parent-sess-meta-only"
+mkdir -p "$FIX/workspace/sessions/$META_ONLY_SID"
+printf 'session_id: %s\ncompany_slug: indigo\n' "$META_ONLY_SID" > "$FIX/workspace/sessions/$META_ONLY_SID/meta.yaml"
+subagent_start "$META_ONLY_SID" sub-meta Explore
+[ ! -e "$FIX/workspace/sessions/$META_ONLY_SID/agents/sub-meta/scope-capability.json" ] \
+  || fail "SubagentStart minted a subagent from session metadata"
+[ ! -e "$FIX/workspace/sessions/$META_ONLY_SID/scope-capability.json" ] \
+  || fail "SubagentStart minted the main-thread capability"
+pass "SubagentStart never mints from session metadata"
+
+# An unbound parent gives its subagents nothing.
+UNBOUND_SID="parent-sess-unbound"
+subagent_start "$UNBOUND_SID" sub-3 Explore
+[ ! -f "$FIX/workspace/sessions/$UNBOUND_SID/agents/sub-3/scope-capability.json" ] \
+  || fail "subagent of an unbound parent was bound"
+[ "$(authz_as "$UNBOUND_SID" "$FIX/companies/indigo/knowledge/a.md" sub-3 Explore)" = "2" ] \
+  || fail "subagent of an unbound parent was authorized"
+# A SubagentStart with agent_type but no agent_id binds nothing.
+subagent_start "$PARENT_SID" '' Explore
+[ ! -d "$FIX/workspace/sessions/$PARENT_SID/agents/Explore" ] || fail "agent_type was used as a capability key"
+[ "$(jq -r '.company_slug' "$FIX/workspace/sessions/$PARENT_SID/scope-capability.json")" = "otherco" ] \
+  || fail "id-less SubagentStart changed the main-thread capability"
+pass "unbound parent and id-less SubagentStart stay denied"
+
 echo "master-hook-foreign-bind: all passed"

@@ -6,9 +6,9 @@ hosted agents) reads before deciding how to handle a message. Lane mechanics,
 engine choice, briefs, and the pool live in `SKILL.md` and load only when work
 actually leaves the session.
 
-The block between the inject markers is what `.claude/hooks/auto-conduct.sh`
-emits at SessionStart. Keep it under 750 bytes; the rest of this file is for
-the skill and for people.
+The block between the inject markers is what hq-cli's `hq lanes session-start`
+command emits at SessionStart. Keep it under 750 bytes; the rest of this file
+is for the skill and for people.
 
 <!-- inject:start -->
 <auto-conduct>

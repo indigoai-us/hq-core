@@ -1,36 +1,31 @@
 #!/usr/bin/env bash
 # hq-core: public
-# conduct-workers.sh — the mechanical parts of `/conduct --workers`: role lanes
+# lanes-workers.sh — the mechanical parts of `/conduct --workers`: role lanes
 # pinned to one engine, model and effort for the session, per-role brief
 # templates, the CI check after a lane opens a PR, and the QA trigger.
 #
 # Usage:
-#   bash core/scripts/conduct-workers.sh setup --workers <r1,r2,...> \
+#   bash core/scripts/lanes-workers.sh setup --workers <r1,r2,...> \
 #        [--engine claude|codex|grok] [--model <m>] [--effort <f>] [--session-id <id>]
 #     Validates the role list and persists conduct_lane_roles, conduct_engine,
 #     conduct_child_model and conduct_child_effort in session meta. Omitted
 #     engine/model/effort keep their current session value. Prints the result
 #     as JSON; "engine": null means the conductor still has to resolve one.
 #
-#   bash core/scripts/conduct-workers.sh roles [--session-id <id>]
+#   bash core/scripts/lanes-workers.sh roles [--session-id <id>]
 #     Prints the session's role lanes and pins as JSON.
 #
-#   bash core/scripts/conduct-workers.sh lane-id --role <role> [--slug <slug>] [--session-id <id>]
-#     Prints the pool worker id: conduct:<role>, or conduct:<role>-<slug> for a
-#     second independent task while the role's slot is busy. The role must be
-#     one of the session's roles.
-#
-#   bash core/scripts/conduct-workers.sh template --role <role>
+#   bash core/scripts/lanes-workers.sh template --role <role>
 #     Prints the brief template path for the role (generic.md when the role
 #     has no template of its own).
 #
-#   bash core/scripts/conduct-workers.sh needs-qa [--role <role>] [--file <path>]... [--pr <url> [--repo <owner/repo>]]
+#   bash core/scripts/lanes-workers.sh needs-qa [--role <role>] [--file <path>]... [--pr <url> [--repo <owner/repo>]]
 #     Exit 0 and prints "yes" when the change needs a QA lane: the role is
 #     frontend or designer, or a changed file is UI (svelte, tsx, jsx, vue, css,
 #     scss, sass, less, html). Exit 1 and prints "no" otherwise. With --pr the
 #     changed files come from `gh pr view`; a gh failure exits 2.
 #
-#   bash core/scripts/conduct-workers.sh ci --pr <url|number> [--repo <owner/repo>] \
+#   bash core/scripts/lanes-workers.sh ci --pr <url|number> [--repo <owner/repo>] \
 #        [--timeout <secs>] [--interval <secs>] [--settle <secs>]
 #     Waits (bounded, default 1200s) for the PR's checks and prints JSON
 #     {state, failing, pending, passed}. Fails closed: if gh cannot report the
@@ -40,7 +35,7 @@
 #     Exit 0 pass, 1 fail, 2 still pending at the timeout, 3 error,
 #     4 no checks reported.
 #
-#   bash core/scripts/conduct-workers.sh ci-round --pr <url> [--session-id <id>] [--max <n>]
+#   bash core/scripts/lanes-workers.sh ci-round --pr <url> [--session-id <id>] [--max <n>]
 #     Counts one CI fix round for the PR and prints the new count. Exit 4 once
 #     the count passes --max (default 3): stop resuming the lane and take it to
 #     the owner through /decision-queue.
@@ -51,7 +46,7 @@ ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.
 ROLES_DIR="$ROOT/.claude/skills/conduct/roles"
 
 usage() { sed -n '3,46p' "$0" | sed 's/^# \{0,1\}//'; }
-die() { echo "conduct-workers: $*" >&2; exit 1; }
+die() { echo "lanes-workers: $*" >&2; exit 1; }
 need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
 
 SID=""
@@ -109,6 +104,22 @@ cmd_setup() {
   case "$effort" in *[!a-z]*) die "setup: invalid effort: $effort" ;; esac
   resolve_sid
   sset conduct_lane_roles "$clean"
+  # Codex SessionStart may have supplied automatic engine/model/effort pins.
+  # Explicit role-lane flags take precedence. When the user switches away from
+  # Codex without replacement pins, clear only the automatic model/effort.
+  local default_source
+  default_source="$(sget conduct_default_source)"
+  if [ -n "$engine$model$effort" ]; then
+    case "$default_source" in
+      codex-*)
+        if [ -n "$engine" ] && [ "$engine" != codex ]; then
+          [ -n "$model" ] || sset conduct_child_model ""
+          [ -n "$effort" ] || sset conduct_child_effort ""
+        fi
+        ;;
+    esac
+    sset conduct_default_source explicit
+  fi
   [ -z "$engine" ] || sset conduct_engine "$engine"
   [ -z "$model" ] || sset conduct_child_model "$model"
   [ -z "$effort" ] || sset conduct_child_effort "$effort"
@@ -124,32 +135,6 @@ cmd_roles() {
   done
   resolve_sid
   print_roles
-}
-
-cmd_lane_id() {
-  local role="" slug=""
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --role) need_val "$@"; role="$2"; shift 2 ;;
-      --slug) need_val "$@"; slug="$2"; shift 2 ;;
-      --session-id) need_val "$@"; SID="$2"; shift 2 ;;
-      *) die "lane-id: unknown option: $1" ;;
-    esac
-  done
-  valid_role "$role" || die "lane-id: invalid --role: '$role'"
-  if [ -n "$slug" ]; then
-    valid_role "$slug" || die "lane-id: invalid --slug: '$slug' (lowercase letters, digits, hyphens)"
-  fi
-  resolve_sid
-  local roles
-  roles="$(sget conduct_lane_roles)"
-  [ -n "$roles" ] || die "lane-id: no role lanes for this session; run setup --workers first"
-  case ",$roles," in *",$role,"*) ;; *) die "lane-id: '$role' is not one of this session's roles ($roles)" ;; esac
-  if [ -n "$slug" ]; then
-    printf 'conduct:%s-%s\n' "$role" "$slug"
-  else
-    printf 'conduct:%s\n' "$role"
-  fi
 }
 
 cmd_template() {
@@ -196,9 +181,9 @@ cmd_needs_qa() {
   if [ -n "$pr" ]; then
     local out
     if [ -n "$repo" ]; then
-      out="$(gh pr view "$pr" -R "$repo" --json files --jq '.files[].path' 2>/dev/null)" || { echo "conduct-workers: needs-qa: gh could not list the PR's files" >&2; exit 2; }
+      out="$(gh pr view "$pr" -R "$repo" --json files --jq '.files[].path' 2>/dev/null)" || { echo "lanes-workers: needs-qa: gh could not list the PR's files" >&2; exit 2; }
     else
-      out="$(gh pr view "$pr" --json files --jq '.files[].path' 2>/dev/null)" || { echo "conduct-workers: needs-qa: gh could not list the PR's files" >&2; exit 2; }
+      out="$(gh pr view "$pr" --json files --jq '.files[].path' 2>/dev/null)" || { echo "lanes-workers: needs-qa: gh could not list the PR's files" >&2; exit 2; }
     fi
     files="$files$out
 "
@@ -298,9 +283,9 @@ cmd_ci_round() {
   case "$pr" in *[[:space:]]*) die "ci-round: invalid --pr" ;; esac
   case "$max" in ''|*[!0-9]*) die "ci-round: --max must be an integer" ;; esac
   resolve_sid
-  local dir="$ROOT/workspace/tmp/workflow-runner/$SID" file n
+  local dir="$ROOT/workspace/sessions/$SID" file n
   mkdir -p "$dir"
-  file="$dir/ci-rounds.tsv"
+  file="$dir/conduct-ci-rounds.tsv"
   touch "$file"
   n="$(awk -F '\t' -v pr="$pr" '$1==pr {c=$2} END {print c+0}' "$file")"
   n=$((n + 1))
@@ -309,7 +294,7 @@ cmd_ci_round() {
   mv "$file.tmp" "$file"
   echo "$n"
   if [ "$n" -gt "$max" ]; then
-    echo "conduct-workers: $pr has used $max CI fix rounds; take it to the owner" >&2
+    echo "lanes-workers: $pr has used $max CI fix rounds; take it to the owner" >&2
     return 4
   fi
 }
@@ -319,11 +304,10 @@ sub="${1:-}"
 case "$sub" in
   setup) cmd_setup "$@" ;;
   roles) cmd_roles "$@" ;;
-  lane-id) cmd_lane_id "$@" ;;
   template) cmd_template "$@" ;;
   needs-qa) cmd_needs_qa "$@" ;;
   ci) cmd_ci "$@" ;;
   ci-round) cmd_ci_round "$@" ;;
   ""|-h|--help|help) usage ;;
-  *) echo "conduct-workers: unknown subcommand: $sub" >&2; usage >&2; exit 1 ;;
+  *) echo "lanes-workers: unknown subcommand: $sub" >&2; usage >&2; exit 1 ;;
 esac

@@ -554,6 +554,8 @@ fi
 # A Task agent's company context belongs to its exact (session_id, agent_id)
 # tuple. Shared session metadata may have moved since this agent was bound; it
 # can initialize a new binding at SessionStart, but cannot replace one.
+# SubagentStart never reads session metadata: master_bind_session_start_scope
+# pins a new subagent from the parent's main-thread capability only.
 if [ -f "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
   . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || ACTIVE_COMPANY=""
   if [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -f "$REPO_ROOT/workspace/sessions/$SESSION_ID/scope-capability.json" ]; then
@@ -1099,6 +1101,20 @@ if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
 fi
 
 master_bind_session_start_scope() {
+  # Claude Code starts an Agent-tool subagent with SubagentStart, never
+  # SessionStart. Pin the subagent's own tuple at spawn from the same single
+  # source the scope authorizer uses lazily (session_scope_inherit_parent): the
+  # parent's main-thread scope-capability.json. Never meta.yaml, a resolver, or
+  # the main-thread tuple; an existing tuple is never overwritten, and an
+  # unbound parent or an id-less event binds nothing.
+  if [ "$EVENT" = "SubagentStart" ]; then
+    [ -n "$SESSION_ID" ] && [ -n "$PAYLOAD_AGENT_ID" ] || return 0
+    . "$REPO_ROOT/core/scripts/lib/session-scope-capability.sh" || return 0
+    session_scope_identity_is_valid "$PAYLOAD_AGENT_ID" || return 0
+    session_scope_inherit_parent "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID" || true
+    ACTIVE_COMPANY="$(session_scope_read "$REPO_ROOT" "$SESSION_ID" "$PAYLOAD_AGENT_ID")"
+    return 0
+  fi
   [ "$EVENT" = "SessionStart" ] && [ -n "$SESSION_ID" ] && [ -n "$ACTIVE_COMPANY" ] || return 0
   if [ -n "$PAYLOAD_AGENT_TYPE" ] && [ -z "$PAYLOAD_AGENT_ID" ]; then
     return 0

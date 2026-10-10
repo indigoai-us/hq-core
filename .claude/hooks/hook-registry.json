@@ -921,24 +921,12 @@
         "matcher": "*",
         "hooks": [
           {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
+            "id": "conduct-lanes-link-deliver",
+            "script": ".claude/hooks/conduct-lanes-link-deliver.sh",
+            "timeout": 5,
             "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
-            }
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "file": "workspace/conduct-links/by-session"
-            },
             "args": [
-              "--link"
+              "PostToolUse"
             ]
           }
         ]
@@ -1027,31 +1015,19 @@
             "gated": true
           },
           {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "env": "HQ_CONDUCT_RUN_DIR"
-            }
-          },
-          {
-            "id": "conduct-lane-inbox",
-            "script": ".claude/hooks/conduct-lane-inbox.sh",
-            "timeout": 30,
-            "gated": true,
-            "prefilter": {
-              "file": "workspace/conduct-links/by-session"
-            },
-            "args": [
-              "--link"
-            ]
-          },
-          {
             "id": "lanes-senior-monitor-stop-gate",
             "script": ".claude/hooks/lanes-senior-monitor-stop-gate.sh",
             "timeout": 30,
             "gated": true
+          },
+          {
+            "id": "conduct-lanes-link-deliver",
+            "script": ".claude/hooks/conduct-lanes-link-deliver.sh",
+            "timeout": 5,
+            "gated": true,
+            "args": [
+              "Stop"
+            ]
           }
         ]
       }
@@ -1123,9 +1099,9 @@
             "gated": true
           },
           {
-            "id": "auto-conduct",
-            "script": ".claude/hooks/auto-conduct.sh",
-            "timeout": 30,
+            "id": "conduct-lanes-session-start",
+            "script": ".claude/hooks/conduct-lanes-session-start.sh",
+            "timeout": 5,
             "gated": true
           },
           {
@@ -1257,6 +1233,22 @@
             "script": ".claude/hooks/inject-policy-on-trigger.sh",
             "timeout": 60,
             "gated": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "conduct-lanes-link-deliver",
+            "script": ".claude/hooks/conduct-lanes-link-deliver.sh",
+            "timeout": 5,
+            "gated": true,
+            "args": [
+              "SubagentStop"
+            ]
           }
         ]
       }

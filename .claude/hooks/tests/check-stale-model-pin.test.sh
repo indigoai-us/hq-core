@@ -7,6 +7,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$HERE/../check-stale-model-pin.sh"
 pass=0; fail=0
 check() { if [ "$2" -eq 0 ]; then printf 'ok   - %s\n' "$1"; pass=$((pass+1)); else printf 'FAIL - %s\n' "$1"; fail=$((fail+1)); fi; }
+contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
+starts_with() { case "$1" in "$2"*) return 0 ;; *) return 1 ;; esac; }
 
 TMP="$(mktemp -d /tmp/stale-pin-test.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 ROOT="$TMP/hq"; mkdir -p "$ROOT/personal/settings" "$ROOT/core/settings"
@@ -26,20 +28,20 @@ out="$(run)"; [ -z "$out" ]; check "current pin is silent" "$?"
 # 2. stale pin in orchestrator.yaml -> warning names both models and the file
 orch claude-opus-5
 out="$(run)"
-echo "$out" | grep -q 'conduct child default in personal/settings/orchestrator.yaml is pinned to claude-opus-5; newer model claude-opus-5-5 is available'
+contains "$out" 'conduct child default in personal/settings/orchestrator.yaml is pinned to claude-opus-5; newer model claude-opus-5-5 is available'
 check "stale orchestrator pin warns with pinned + newer model" "$?"
-echo "$out" | grep -q '^<stale-model-pin>'; check "warning is wrapped in <stale-model-pin>" "$?"
+starts_with "$out" '<stale-model-pin>'; check "warning is wrapped in <stale-model-pin>" "$?"
 
 # 3. core orchestrator.yaml is read when there is no personal one
 rm "$ROOT/personal/settings/orchestrator.yaml"
 printf 'conduct:\n  child_defaults:\n    - main: { model: x, effort: low }\n      children: { engine: claude, model: claude-opus-5, effort: low }\n' > "$ROOT/core/settings/orchestrator.yaml"
-out="$(run)"; echo "$out" | grep -q 'conduct child default in core/settings/orchestrator.yaml is pinned to claude-opus-5'
+out="$(run)"; contains "$out" 'conduct child default in core/settings/orchestrator.yaml is pinned to claude-opus-5'
 check "falls back to core/settings/orchestrator.yaml" "$?"
 rm "$ROOT/core/settings/orchestrator.yaml"
 
 # 4. stale env pin -> warning names the variable
 out="$(run HQ_WORKFLOW_CLAUDE_EXEC_MODEL=claude-opus-5)"
-echo "$out" | grep -q 'environment variable HQ_WORKFLOW_CLAUDE_EXEC_MODEL is pinned to claude-opus-5; newer model claude-opus-5-5'
+contains "$out" 'environment variable HQ_WORKFLOW_CLAUDE_EXEC_MODEL is pinned to claude-opus-5; newer model claude-opus-5-5'
 check "stale env pin warns naming the variable" "$?"
 
 # 5. unknown model / short alias -> silent

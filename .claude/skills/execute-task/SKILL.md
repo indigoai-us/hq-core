@@ -1,7 +1,7 @@
 ---
 name: execute-task
 description: "Execute one PRD story through coordinated worker phases with test, lint, and typecheck gates."
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -10,11 +10,10 @@ Execute a single user story from a PRD through coordinated worker phases. Each w
 
 **Usage:** `execute-task {project}/{task-id}`
 
-**Live children: typical 1, worst case `CONDUCT_POOL_CAP` (default 8).** Phases
-run one at a time in the dispatching worker's pooled lane, claimed through
-`core/scripts/conduct-pool.sh` (step 6c). A worker id gets one lane per session
-no matter how many phases or stories it serves, so the count does not grow with
-the worker sequence.
+Every assigned worker phase runs through `hq lanes create` (step 6c), with this
+session as senior and the story id on every lane. The same worker lane continues
+its thread across phases under that senior. If it is still live, send the next
+phase with `hq lanes message`; read completed work from its lane envelope.
 
 **User's input:** `$ARGUMENTS`
 
@@ -22,12 +21,12 @@ the worker sequence.
 
 "Pick a task, complete it, commit it."
 
-- One pooled lane per worker, resumed across phases instead of respawned per phase
-- Lanes are compacted or recycled when they grow fat, never silently discarded
-- Sub-agents do heavy lifting (Claude Code `Task`, Codex `spawn_agent`)
+- One HQ worker lane per worker and senior, continued across phases
+- Keep the existing worker context and handoff files available across phases
+- HQ worker lanes do the phase work through `hq lanes create`
 - Back pressure keeps code on rails
 - Handoffs preserve context between workers
-- Each sub-agent commits its own work before returning
+- Each worker lane commits its own work before returning
 
 ## Return Contract (when invoked as a story sub-agent)
 
@@ -69,28 +68,18 @@ All normal execute-task behavior still runs (task classification, worker sequenc
 
 **Opt-out (prose mode):** when the prompt explicitly includes `RETURN CONTRACT: prose`, emit the normal human-readable summary. This path is reserved for direct CLI use (no orchestrator parent). Orchestrators MUST inject `RETURN CONTRACT: json` per [ralph-orchestrator-context-discipline](../../../core/policies/ralph-orchestrator-context-discipline.md) (hard policy).
 
-## Runtime Adapter: Claude Code Task vs Codex spawn_agent
+## Runtime Adapter: HQ Worker Lanes
 
-This skill is runtime-agnostic. Whenever a step says to spawn a worker with the `Task` tool:
+Worker phases use `hq lanes create` in every runtime. The invoking session is
+recorded as senior, and every phase carries the active company, project, story,
+worker, and brief file. HQ lanes owns provider launch, continuity, admission,
+and durable lane state. The caller reads the phase result from the lane envelope
+and keeps the handoff file format documented below.
 
-- **Claude Code:** use `Task({subagent_type: "general-purpose", ...})` exactly as written.
-- **Codex:** use `spawn_agent({agent_type: "worker", ...})`, then `wait_agent(...)`, with the same prompt and output contract. Use `agent_type: "explorer"` only for read-only discovery/planning phases.
-
-Codex worker prompts MUST include this coordination block:
-
-```markdown
-You are not alone in the codebase. Own only this worker phase for {task.id};
-do not revert edits made by others; adapt to any existing changes you find.
-Commit your phase work before returning. If your runtime returns an integration
-patch instead of a parent-visible commit, say so and list every changed path.
-Return only the requested JSON.
-```
-
-The orchestrator still enforces the same proof gates in both runtimes: parseable JSON, real worker IDs in the handoff/summary, back-pressure status, parent-visible commits or parent-created integration commits, lock release, and `passes:true` only after a successful story.
-
-Codex nesting rule: when `/execute-task` is invoked from a Codex sub-agent, `spawn_agent` / `wait_agent` are not available inside that sub-agent. Do not fake the worker sequence. `/run-project` in Codex must avoid this by running a **filesystem-mediated worker-phase loop**: the parent writes small phase input envelopes under `workspace/orchestrator/{project}/executions/{story-id}/`, dispatches each phase into that worker's pooled top-level Codex lane (claimed per 6c, resumed across phases rather than respawned), and absorbs compact phase JSON only. Phase workers load PRD/project/worker/policy/repo context themselves from file paths. Direct `/execute-task {project}/{task-id}` from the Codex parent session may still use the normal Codex adapter because the parent has `spawn_agent`.
-
-If Codex `spawn_agent` / `wait_agent` are unavailable, do not fake the worker sequence in the parent; stop and ask the user to use `--session-mode` for direct parent execution or resume in a runtime with Codex sub-agent support. Do not route Codex-triggered story execution through the Claude headless builder.
+Do not substitute `Task`, `spawn_agent`, or a headless builder for a phase lane.
+If `hq lanes` is unavailable or refuses the request, preserve the phase as
+queued or report the specific blocker. Do not simulate the worker sequence in
+the parent.
 
 ## Work Mesh Live — trusted bind (do this first)
 
@@ -539,7 +528,7 @@ Include applicable policy rules in worker prompts (step 6b) under `### Applicabl
 
 ### 6. Execute Each Phase
 
-For each worker in the sequence, spawn a sub-agent via the Task tool. Each sub-agent runs in its own isolated context window, commits its work before returning, and passes a structured handoff forward.
+For each worker in the sequence, create or continue its HQ worker lane with `hq lanes create`, passing the active company, project, story, worker, brief file, and invoking session as senior. Message a live lane with `hq lanes message`. Each worker commits its work before returning and passes a structured handoff to the next phase.
 
 #### 6a. Load Worker Config
 
@@ -631,9 +620,9 @@ If the target repo has a qmd collection (check `qmd status`), prefer `qmd vsearc
 
 ### Commit Your Work
 Before returning, stage and commit the files you created or modified with a
-descriptive message referencing {task.id}. The orchestrator verifies no
-uncommitted changes remain after your return — if it finds any, it will
-commit them on your behalf and flag you as non-compliant.
+descriptive message referencing {task.id}. If the orchestrator finds uncommitted
+changes after your return, it keeps the phase incomplete and returns the commit
+requirement to the same lane. The orchestrator does not commit work for you.
 
 ### Output Requirements
 When complete, provide JSON:
@@ -653,83 +642,52 @@ When complete, provide JSON:
 }
 ```
 
-#### 6c. Claim the Worker's Lane, Then Dispatch
+#### 6c. Create or Continue the Worker's Lane, Then Dispatch
 
-Workers are **pooled, not per-phase**. A worker id gets one live lane per
-session, and that lane carries the worker across phases and across stories.
+Every phase assigned to a worker uses the same lane mapping as `/conduct`:
 
-Follow `.claude/skills/_shared/pool-lane-protocol.md` — it is the single
-description of claiming, ownership validation, dispatch and release, and both
-this skill and `/run-project` follow it rather than restating it. Read it before
-your first dispatch of the session. In short, and in this order:
+1. Write the complete phase prompt from 6b to a phase brief file under
+   `workspace/orchestrator/{project}/executions/{task-id}/phases/`.
+2. Resolve the invoking session id with `bash core/scripts/hq-session.sh current`.
+   Create the lane with the bound company, project, story, worker id, brief path,
+   and `--senior session:{session-id}`:
 
-1. `conduct-pool.sh assign --worker-id "{worker.id}" --task "{task.id} — {phase name}"`.
-   A phase claims the **bare** worker id. Coordinator lanes use `story:…`
-   precisely so a wrapper never holds the id one of its own phases must claim.
-2. Honour the exit codes. 3 (pool at cap, all running) and 4 (this lane is
-   already running) both mean **wait** — neither changes the pool, so dispatching
-   past them is how a run exceeds `CONDUCT_POOL_CAP` or clobbers a live lane.
-3. `mkdir -p` the slot directory, then validate `owner.json` — **before** the
-   spawn/resume split, so a resume-capable runtime cannot skip it. On a mismatch:
-   `cancel` (not `recycle` — `assign` marks the slot `claimed`, and `recycle` is
-   for lanes that were dispatched), clear `handoffs.jsonl`, re-stamp, dispatch
-   cold.
-4. Get the lane to `running` **before** anything blocks in it, per protocol §4 —
-   Codex has an id between `spawn_agent` and `wait_agent`; Claude Code's `Task`
-   does not, so record `--subagent-id pending` first and replace it on return. A
-   slot left `claimed` while work is live is one `cancel` may retire as
-   undispatched. Then `record … --status idle` in 6d the moment the sub-agent
-   returns — **before** branching on success or failure. Release is a fact about
-   the sub-agent (it is gone), not a verdict on its work; gating it on success
-   leaves a failed phase's lane `running`, and the retry's own `assign` in 6c
-   then exits 4 waiting on a worker that no longer exists.
+   ```bash
+   hq lanes create --company "{company}" --project "{project}" \
+     --story "{task.id}" --worker "{worker.id}" \
+     --brief-file "{phase brief path}" --senior "session:{session-id}" --json
+   ```
 
-The phase-specific part is the prompt. On `spawn`, send the full 6b prompt:
+   Add `--provider`, `--model`, or `--effort` only when the selected worker
+   profile or an explicit `/conduct --workers` pin supplies that value. Read the
+   JSON body, including `ok`, `lane_id`, and any admission/capacity error; do
+   not infer delivery from the command exit code.
+3. A repeated create for the same worker and senior continues that worker's
+   previous lane thread. If `hq lanes list --json` shows that lane is still
+   live, deliver the follow-up brief with `hq lanes message {lane-id}
+   --text-file {phase brief path} --json` instead of creating another lane.
+   An admission or capacity refusal leaves the phase queued for the next tick.
+4. Start and verify the policy-required detached watcher, then wait for an envelope, question, or state change with
+   `hq lanes wait --any {lane-id} --for envelope --for question --for state
+   --timeout {seconds} --json`. Questions retain the existing user decision
+   path; answer them through `hq lanes questions answer`.
+5. Read the lane's latest `hq-lane-envelope.v1` from the reference reported by
+   `hq lanes list --json` (or the lane's `last_envelope.ref`). Read the lane's
+   state with `hq lanes show {lane-id} --json`. Validate the envelope and phase
+   handoff before continuing.
 
-Claude Code — `Task` dispatches and blocks in one call, so mark the lane running
-first and replace the placeholder id when it returns:
+The lane envelope carries the phase result. Keep the existing handoff JSON
+format between phases, including `from_worker`, `to_worker`, `timestamp`,
+`summary`, `files_created`, `files_modified`, `key_decisions`,
+`context_for_next`, and `back_pressure`. Append each validated handoff as one
+line to `workspace/orchestrator/{project}/executions/{task-id}/handoffs.jsonl`.
+The lane envelope's `artifacts` includes the handoff object so the next phase can
+be built from the envelope rather than process state.
 
-```bash
-bash core/scripts/conduct-pool.sh record --worker-id "{worker.id}" \
-  --subagent-id pending --status running
-```
-
-```
-Task({
-  subagent_type: "general-purpose",
-  model: {resolved model from 6a},
-  prompt: {built prompt above},
-  description: "{worker.id} for {task.id}"
-})
-```
-
-Codex:
-
-```
-spawn_agent({
-  agent_type: "worker",
-  message: "{built prompt above, plus the Codex coordination block from Runtime Adapter}",
-  reasoning_effort: "medium"
-})
--> agent id
-```
-
-```bash
-bash core/scripts/conduct-pool.sh record --worker-id "{worker.id}" \
-  --subagent-id "{agent id}" --status running
-```
-
-```
-wait_agent(...)
-```
-
-On `resume`, send only the phase ask and the incoming handoff — the lane already
-holds the worker's instructions and `context.base`. Where the runtime cannot
-re-enter a sub-agent (neither `Task` nor `spawn_agent` can), use the disk-backed
-restart in the protocol's §5 rather than resending everything: the slot is kept,
-and the cap counts lanes, not restarts.
-
-Each sub-agent runs in its own context window and returns structured JSON output.
+The senior remains responsible for the current quality gates, retries, commit
+checks, lock release, execution state, and user-facing reports. A malformed
+phase envelope gets the existing single retry with a stricter reminder. A
+second malformed result blocks the story; do not guess from logs or lane state.
 
 #### 6c.5 Inline Codex Review (when worker == codex-reviewer)
 
@@ -757,7 +715,7 @@ Each sub-agent runs in its own context window and returns structured JSON output
 - Continue to next phase without Codex review.
 - Still log to model-usage.jsonl: `{"worker":"codex-reviewer","model":"skipped"}`.
 
-**Skip this step entirely** for non-codex-reviewer workers — they dispatch normally via 6c. codex-reviewer runs inline in the parent and therefore takes **no pool slot**: do not `assign` for it.
+**Skip this step entirely** for non-codex-reviewer workers; they use the normal 6c flow. The codex-reviewer runs inline in the parent and takes no pool slot or HQ worker lane.
 
 When iterating through the worker sequence in step 6, check if the current worker is `codex-reviewer`:
 
@@ -778,7 +736,7 @@ When iterating through the worker sequence in step 6, check if the current worke
 1. **Read `task.e2eTests`** from prd.json — array of test descriptions.
 2. **Read all existing story test files** in `{repo}/__tests__/stories/` to understand the established pattern (imports, helpers, framework).
 3. **Detect test framework**: Check `package.json` for vitest/jest/bun test. Check `qualityGates` for test runner command. Fall back to `bun test`.
-4. **Dispatch through the pool** — `acceptance-test-writer` is an ordinary HQ worker, so claim its lane per 6c (`assign`, branch on spawn vs resume, `record` running then idle) rather than spawning directly. On `resume`, send only the prompt body below; the lane already holds this worker's instructions. Prompt:
+4. **Dispatch through the worker lane** — use the same 6c create-or-continue flow and place the prompt below in the phase brief. Prompt:
 
 ```markdown
 ## You are: acceptance-test-writer
@@ -840,19 +798,10 @@ Also run ALL existing story tests to verify no regressions:
 
 #### 6d. Process Worker Output
 
-**Release the lane first.** The sub-agent has returned, so the slot is free
-regardless of what it returned:
-
-```bash
-bash core/scripts/conduct-pool.sh record --worker-id "{worker.id}" \
-  --subagent-id "{sub-agent id}" --status idle
-```
-
-Do this before parsing and before branching. Every path below can re-dispatch —
-the debugger recovery, the normal retry, and the next phase all call `assign`
-again — and a lane still marked `running` sends each of them to exit 4, waiting
-on a sub-agent that has already exited. Idle is not "it succeeded"; it is "the
-slot is reusable", and it keeps the lane's context for the next resume.
+Read the completed lane's latest envelope from `hq lanes list --json` and its
+`last_envelope.ref`. The lane records its own state; there is no `record` or
+pool-release call. Parse the envelope and validate the worker's phase handoff
+before branching on success or failure.
 
 Then parse the worker's JSON output.
 
@@ -865,23 +814,9 @@ Then parse the worker's JSON output.
      cd {target_repo_path} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="{codex_model}" --cd {target_repo_path} \
        "Diagnose and fix back-pressure failure. Check: {failed_check_name}. Error: {stdout_stderr_from_failed_check}. Then re-run: {verification.post_execute commands}" 2>&1
      ```
-   - **If `codex_available == false`:** Dispatch a debugger into the `codex-debugger`
-     pool lane (claim it per 6c; it is one slot reused across every recovery in the
-     session, not a new child per failure). A back-pressure failure is the
-     high-risk trigger that justifies this extra lane, and the max-1-per-phase
-     cap above is what keeps it from becoming a fan-out:
-     ```
-     Task({
-       subagent_type: "general-purpose",
-       model: "haiku",
-       prompt: "You are: codex-debugger\n
-         Issue: Back-pressure failure in {worker} phase: {failed_check_name}\n
-         Error output: {stdout_stderr_from_failed_check}\n
-         cwd: {target_repo_path}\n
-         Run debug-issue skill: diagnose root cause, apply fix, then re-run back-pressure checks ({verification.post_execute commands}).",
-       description: "codex-debugger recovery for {task.id} phase {N}"
-     })
-     ```
+   - **If `codex_available == false`:** Build a `codex-debugger` phase brief with the
+     failure details and use the same 6c lane create-or-continue flow. This is the
+     existing single recovery attempt, not an additional parallel phase.
    - Record the attempt in `codex_debug_attempts`:
      ```json
      { "phase": N, "worker": "{worker}", "check": "{failed_check}", "timestamp": "ISO8601" }
@@ -895,15 +830,11 @@ Then parse the worker's JSON output.
 **If success:**
 
 - Store handoff context
-- Append the handoff JSON as one line to the worker's slot file,
-  `workspace/sessions/{session-id}/pool/{worker.id}/handoffs.jsonl`
-  (protocol §6). This append is unconditional, which is exactly why §3
-  reinitialises the slot on an ownership mismatch rather than merely declining
-  to read it — otherwise this line would file the current owner's phases under
-  the previous owner's stamp. It is what lets the lane pick itself up when the
-  runtime has no resume primitive, and the only durable record of what that lane
-  has already done.
-- The lane is already idle — released at the top of 6d, on every path
+- Append the handoff JSON as one line to
+  `workspace/orchestrator/{project}/executions/{task-id}/handoffs.jsonl`. The
+  record keeps the established handoff format and is also included in the lane
+  envelope artifacts for the next phase.
+- HQ lanes records the lane state on every path
 - Update execution state
 - Continue to next phase
 
@@ -957,19 +888,15 @@ core/scripts/audit-log.sh append \
   --action "Phase {N} completed: {worker.id}" || true
 ```
 
-#### 6e.7 Verify Sub-Agent Committed Its Work
+#### 6e.7 Verify Worker Lane Committed Its Work
 
-After each sub-agent returns, check for uncommitted changes in the target repo:
+After each worker lane returns, verify the commit and changed-file references reported in its envelope:
 
 ```bash
 cd {target_repo_path} && git status --porcelain
 ```
 
-If there are uncommitted changes:
-
-1. The sub-agent failed to commit — flag it as non-compliant in `codex_debug_attempts` or a similar log.
-2. Stage the files from `files_created` + `files_modified` and commit them with message: `{task.id}: {worker.id} auto-commit (sub-agent did not commit)`.
-3. Log a warning — this indicates a worker instruction bug that should be fixed.
+If the envelope reports changed files without a commit, keep the phase incomplete and return the missing commit requirement to the same lane. Do not create a parent-side commit that claims the worker lane completed its commit step.
 
 This enforces the HQ sub-agent rule: each sub-agent MUST commit its own work before completing. The orchestrator is the safety net.
 
@@ -1697,8 +1624,8 @@ execute-task landing-page/US-001          # UI component story
 ## Rules
 
 - **ONE task at a time** — never work on multiple tasks
-- **One pooled lane per worker** — claim it with `conduct-pool.sh assign` and resume it; never spawn a second lane for a worker that already has one, and never accumulate worker context in the parent
-- **Sub-agents must commit their own work** — orchestrator verifies no uncommitted changes after each return and commits them with a non-compliance flag if needed
+- **One lane per worker and senior** — continue that lane across phases; message it while live, and never create a competing lane for the same work
+- **Workers must commit their own work** — if a lane returns without a commit, the orchestrator keeps the phase incomplete and sends the commit requirement back to that lane
 - **Back pressure is mandatory** — no skipping tests/lint/typecheck
 - **Quality gates before passes: true** — run `prd.metadata.qualityGates` before marking a story complete
 - **Capture learnings** — every task generates a learning entry via `/learn`

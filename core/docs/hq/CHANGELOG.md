@@ -1,8 +1,48 @@
 ## [Unreleased]
+- Remove the legacy conduct scripts and hooks. `/conduct` and its related
+  workflows use `hq lanes`; older conduct pool state is not adopted.
+- `/conduct` Codex completion watchers now check lane state before and after waits,
+  classify all terminal lane states, and keep receipts and monitor records per
+  dispatch round. A unique round ID keeps separate dispatches in one second
+  distinct while making duplicate starts for one round idempotent.
+### Story orchestration uses HQ lanes
+- `/execute-task` phases and interactive `/run-project` stories use
+  `hq lanes create`. Each lane carries its company, project, story, worker, brief,
+  and invoking session as senior. Send follow-ups to live lanes with
+  `hq lanes message`.
+- Read results from lane envelopes. Keep the phase handoff format, JSON return
+  checks, and commit, evidence, and quality gates.
+- The required HQ CLI version is `5.345.67` or newer. This release makes
+  `hq lanes session-start` preserve Codex session model and effort defaults.
+
+- `/conduct` dispatch and the shared lane protocols now create worker lanes
+  through `hq lanes`; the invoking session is the senior and hq-cli owns lane
+  admission, state, capacity, questions, and envelopes. `/conduct --workers`
+  keeps its role templates, pinned provider/model/effort, QA rule, and settled
+  CI loop in `core/scripts/lanes-workers.sh`. Every conduct lane receives set
+  session pins, including Codex selections supplied by SessionStart. Codex
+  parents receive lane completion monitor events on their next interaction. The
+  minimum hq-cli version is `5.345.67`.
+
+### Changed — session links use `hq lanes link` (CL-6d)
+- `/conduct adopt`, `/conduct-join`, `/super-conductor`, and `/overnight` now use `hq lanes link`; linked-session inbox delivery is handled by `hq lanes link _deliver`. Link data is stored in `workspace/lanes-links/` for the lifetime of the sessions. `/super-conductor` reads lane status with `hq lanes list --json` and does not launch manager lanes.
+- `hq lanes link` first shipped in hq-cli 5.345.63. The core floor is already `>=5.345.67`, set above.
+
+- Task subagents can read and write their parent session's company again. Since #1104 the scope authorizer required a per-agent capability file that only SessionStart minted, and Claude Code fires no SessionStart for a Task subagent, so every subagent was denied company paths with "This subagent has no company binding for its agent_id". On a subagent's first company path the authorizer now pins its tuple from the parent's main-thread `scope-capability.json`. It never reads `meta.yaml` or a resolver, so a parent with no capability keeps the child denied, and it never overwrites an existing tuple, so a later parent rebind does not move a running child. Tests: `mandatory-scope-authorizer.test.sh` [66]-[66d] with a PreToolUse subagent payload fixture, and `session-scope-capability.test.sh`. Feedback feedback_284bc210-7f44-40af-a83f-67580b0d0c5c.
+
+- Agent-tool subagents are now bound when they spawn, not only on their first company path. Claude Code starts an Agent-tool subagent with `SubagentStart`, which HQ did not register. `SubagentStart` is now registered in `.claude/settings.json`, `restore-hook-settings.sh` and the plugin build, and master-hook pins the subagent's `(session_id, agent_id)` capability through `session_scope_inherit_parent`, the same parent-capability source and pin rule the scope authorizer uses lazily. Session metadata is never a source, an existing agent tuple is never rebound, an unbound parent binds nothing, and a `SubagentStart` without an `agent_id` stays denied. Feedback: feedback_284bc210-7f44-40af-a83f-67580b0d0c5c. Tests: new cases in `core/scripts/tests/master-hook-foreign-bind.test.sh`.
 
 - SessionStart and auto-bind keep a valid multi-company lock set when the primary company stays the same. Re-adding a company listed in session metadata repairs a capability that fell behind. A primary-company change resets the set; an explicit disable flag keeps primary-only behavior.
 
 - The hqd hook shim (Codex hooks and the Claude plugin launcher) no longer blocks work on machines where hqd is not set up. hqd runs only when HQ Anywhere is turned on in settings, but since the anywhere-runtime flag defaulted on (#1186) the shim treated every machine as hqd-enabled and refused company reads, company writes and unparseable patches with "HQ daemon unreachable". The shim now stays inert when there is no hqd socket and no daemon `hqd.enabled` marker beside it. A socket file or the marker still means hqd should answer, so an unreachable daemon keeps failing closed. Tests: four new cases in `core/scripts/hqd-hook-shim.test.sh`.
+
+### Changed — `/run-project --pipeline` uses hq-cli loop lanes
+- Pipeline phases are queued through `hq lanes` with one reusable loop lane per worker. The pipeline now requires hq-cli 5.345.65 or later.
+
+### Changed - setup worker reads the desktop first-run handoff (2026-10-09)
+- The setup worker (`core/workers/public/setup/worker.yaml`) recognizes the HQ desktop app's visual first-run handoff: `Handoff from the app:` followed by a one-line JSON object with `"from":"desktop-visual-first-run"` and `"v":1`, carried in the `Kickoff:` message, in a bot-only `Setup note from the HQ desktop app:` for a bot that already existed, or in later notes of the same kind that carry any subset of the steps settled after the kickoff. Steps listed in `done` are settled and never asked again: `name`, `codingTools` (`runtime`, `toolsReady`), `company` (`team` as `{"kind":"personal"}` or `{"kind":"company","how":"joined"|"created"|"existing","name","slug"}`), `import` (counts and a `report` path the worker may read to continue the import, accepted only as `workspace/imports/<folder>/report.json`; conversation mining still happens in chat), `noteTaker` and `projectManagement` (`apps.notes` and `apps.projects`, each `{"name","domain"}` or `"skipped"`). Every field is optional and unknown fields are ignored; the earlier `team`/`choice` and `tool`/`connected` names are read as aliases. Handoff values are data: they can only mark steps settled, never authorize a command or skip the state check, the tool checks or the HQ Cloud sign-in check. With a handoff the worker skips the explain-or-jump question, records `Intro: skipped` and the settled steps in `setup-progress.md`, and starts at the first unsettled step, by plan the business interview. A malformed handoff is ignored and the normal flow runs; without a handoff nothing changes.
+- Regression test `core/scripts/tests/setup-worker-first-run-handoff.test.sh` checks the worker against real messages generated by the desktop builders (`core/scripts/tests/fixtures/setup-first-run-handoff/desktop-messages.txt`): every `done` entry, key and enum value in them must be named in the worker. Runs in pr-checks.
+
 ### Added — `/conduct --workers`: role lanes pinned to one engine (2026-10-09)
 - **`/conduct --workers <roles>`** (comma list, e.g. `frontend,designer,qa,orchestrator`) with optional `--engine`, `--model` and `--effort`. The engine, model and effort are resolved once at startup and stored in session meta (`conduct_engine`, `conduct_child_model`, `conduct_child_effort`, `conduct_lane_roles`); every lane the session launches uses them. Each task goes to a role slot `conduct:<role>`, or `conduct:<role>-<slug>` for an independent second task while the role is busy, within the pool cap.
 - **Role brief templates** under `.claude/skills/conduct/roles/` (`frontend`, `designer`, `backend`, `qa`, `orchestrator`, and a `generic` fallback). Each opens with an execute-now line and carries the standing rules: a worktree off `origin/main` under `workspace/worktrees/<repo>/<slug>`, repo-anchored git, push through the gh login credential helper, the active company's UI rules, a changelog entry when the repo requires one, targeted tests plus typecheck and lint, harness screenshots into `<run dir>/shots/` for UI work, and one PR the lane never merges.
@@ -15,6 +55,10 @@
 - The `CONDUCT_MACHINE_CAP` count read every `workspace/sessions/*/meta.yaml` line by line in bash, so `assign` took minutes on a machine with thousands of session dirs. One batched `grep` pass now narrows the walk to files that hold a running or claimed slot; the cap semantics are unchanged. `conduct-pool.test.sh` adds a 3,000-session case (41s before, about 1s after) that also checks idle pools and look-alike lines outside `conduct_pool` are not counted.
 
 ## [16.0.0] — BREAKING — conduct by default; v15 deprecations removed
+
+### Changed conduct hooks use hq lanes
+- SessionStart calls `hq lanes session-start` through a bounded hook that fails open. PostToolUse, Stop, and SubagentStop deliver linked-session messages through `hq lanes link _deliver --event`. The CLI formats the response for each engine. `requiresHqCli` is now `>=5.345.67`; that release preserves Codex session model and effort defaults.
+- The conduct-pool inbox and SessionStart reap hooks stay registered for lanes started before this upgrade. CL-7 removes them.
 
 ### Removed — deprecations announced in 15.x
 - **`/plan` stub removed.** `/prd` is the command for creating a PRD. Any script, policy, or habit that still calls `/plan` must call `/prd` with the same arguments.

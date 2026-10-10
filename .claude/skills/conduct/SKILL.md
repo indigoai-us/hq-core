@@ -1,154 +1,80 @@
 ---
 name: conduct
-description: "Orchestrator mode: route every task to a pooled HQ worker lane on Codex, Grok, or Claude so this session stays free. Triggers: \"/conduct\", \"run everything in the background\"."
-allowed-tools: Bash, Bash(bash core/scripts/conduct-pool.sh:*), Bash(bash core/scripts/conduct-inbox.sh:*), Bash(bash core/scripts/conduct-link.sh:*), Bash(bash core/scripts/conduct-lane-status.sh:*), Bash(bash core/scripts/conduct-lane-launch.sh:*), Bash(bash core/scripts/conduct-lane-wait.sh:*), Bash(bash core/scripts/conduct-workers.sh:*), Bash(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_COMPANY="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_PROJECT="$(bash core/scripts/hq-session.sh:*), Bash(HQ_SPAWN_TASK="$(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Read, Grep, Glob, AskUserQuestion, mcp__visualize__read_me, mcp__visualize__show_widget
+description: "Orchestrator mode: route multi-step work to worker lanes through hq lanes. Triggers: /conduct, run everything in the background."
+allowed-tools: Bash, Bash(hq lanes:*), Bash(bash core/scripts/lanes-workers.sh:*), Bash(bash core/scripts/hq-session.sh:*), Read, Grep, Glob, AskUserQuestion, mcp__visualize__read_me, mcp__visualize__show_widget
 argument-hint: "[--workers <roles>] [--engine e] [--model m] [--effort f] | [engine] [task description] | adopt [session] | tell <child> <message> | status | off"
 ---
 
-# Conduct — Orchestrate the Session Through Background Lanes
+# Conduct — Orchestrate the Session Through Worker Lanes
 
-The parent session is the conductor. It triages first (`conductor-core.md`):
-answers, lookups, reads, status, and one short skill stay inline; multi-file
-edits, builds, long-running, multi-repo or multi-story work become lanes. For
-lane work it writes briefs, launches lanes, relays results, and stays
-responsive.
-
-**Live children: typical ≤ 8, worst case `CONDUCT_POOL_CAP` (default 8).**
-Every task is assigned to a worker in the session pool, so fifty tasks still map
-onto at most eight lanes. Independent tasks share the pool; they do not each open
-a new one. See `core/policies/subagent-fanout-budget.md`. Across sessions,
-`CONDUCT_MACHINE_CAP` (default 16, `0` disables) bounds the running and claimed
-lanes of every session pool on the machine; `assign` exits 6 past it, naming the
-count, the cap and the sessions holding the most. A finished one-shot lane frees
-its slot when it exits (dispatch protocol §5); `conduct-pool.sh reconcile` frees
-any whose waiter was swept.
+The invoking session is the senior. `/conduct` creates worker lanes through
+`hq lanes`, arms a watcher, and returns so the senior session stays available.
+Lane mechanics load only when a task needs a worker. Inline answers, lookups,
+reads, status, and one short skill remain in this session.
 
 ## Step 1: Parse the argument
 
-- `off` → clear the pool and the mode, then say the session is back to doing work
-  directly:
-  ```bash
-  bash core/scripts/conduct-pool.sh clear
-  bash core/scripts/hq-session.sh set conduct_engine ""
-  bash core/scripts/conduct-link.sh close 2>/dev/null || true   # only if a link is open
-  ```
-- `status` → report the pool, the live lanes, and any adopted sessions. No
-  launch. See Step 6 and Step 7.
-- `adopt` → open this session's link so sessions that are already running can
-  join it as children. See Step 7.
-- `tell {child} {message}` → send a message to an adopted session. See Step 7.
-- `--workers {roles}` (comma list, e.g. `frontend,designer,qa,orchestrator`),
-  optionally with `--engine`, `--model` and `--effort` → role-lane mode. Resolve
-  the engine, model and effort once, now: the flags win; otherwise apply the
-  child-defaults rule below. Then persist all four:
-  ```bash
-  bash core/scripts/conduct-workers.sh setup --workers "{roles}" \
-    --engine "{engine}" --model "{model}" --effort "{effort}"
-  ```
-  Every lane this session launches uses those pins. Words after the flags are
-  the first task. The role routing, CI loop, QA lane and release batch are in
-  the dispatch module.
-- First word matches a roster choice → persist it as the session default with
-  `bash core/scripts/hq-session.sh set conduct_engine "{choice}"`. The remaining
-  words are the first task.
-- First word is not a roster choice → the whole argument is the task. Do not
-  ask about engines here; the engine is resolved at first dispatch (below).
-- No task text → confirm the mode and wait.
-- Session opened with an `<auto-conduct>` block → the mode is the HQ default
-  (`conduct.default_enabled: true` in `core/settings/orchestrator.yaml`, or the
-  `personal/settings/orchestrator.yaml` override). The block is the conductor
-  core (`conductor-core.md`): apply its triage rule, do not announce the mode,
-  and do not ask about engines. The engine question is asked once, at the first
-  task that actually needs a lane, unless the user named one. `/conduct off`
-  still leaves the mode for the session.
+- `off` → stop each lane this session launched after confirmation, clear the
+  session engine pin, and close an open session link with
+  `hq lanes link close --link <link-id> --session-id <session-id>`.
+- `status` → report this session's lanes from `hq lanes list --json`; do not
+  launch work.
+- `adopt` → use `.claude/skills/conduct/adopt.md` for linked-session behavior.
+- `tell {child} {message}` → send through `hq lanes link send` with the same
+  link, child, session, and text flags:
+  `hq lanes link send --link <link-id> --child <child> --session-id <session-id> --text <message>`.
+- `--workers {roles}` with optional `--engine`, `--model`, `--effort` → pin
+  the selected provider/model/effort once for this session using
+  `bash core/scripts/lanes-workers.sh setup`. The remaining words are the task.
+- An explicit `--engine`, `--model`, or `--effort` applies to this session and
+  overrides its existing pin. Mark `conduct_default_source` as `explicit`.
+- Otherwise, use an existing `conduct_engine` as-is. Codex SessionStart may
+  provide `conduct_engine=codex` and the selected `conduct_child_model` and
+  `conduct_child_effort`; when no model is supplied, leave it unset for the
+  CLI's documented fallback.
+- If the user switches an automatic Codex engine to another engine without
+  naming a model or effort, clear those automatic pins before setting the new
+  engine and mark `conduct_default_source=explicit`. The `--workers` path does
+  this in `lanes-workers.sh setup`; for a plain `/conduct` dispatch, clear the
+  unset pins with `hq-session.sh` before saving the explicit values.
+- A first word matching a provider choice sets the session default; otherwise
+  treat the full argument as the task. Resolve an unpinned provider at first
+  dispatch, asking once only when no configured default or installed provider
+  matches.
+- No task text → confirm conduct mode and wait.
 
 ## When a task needs a lane
 
-Apply the triage rule from `conductor-core.md` first. A task that stays inline
-never touches anything below this line. For a task that needs a lane:
-
-1. Resolve the engine once per session, at this first dispatch, and persist it
-   with `bash core/scripts/hq-session.sh set conduct_engine "{engine}"`:
-   - `conduct_engine` already set → use it.
-   - The user named a roster engine in this or an earlier message → use that.
-   - Otherwise read `conduct.child_defaults` from `personal/settings/orchestrator.yaml`
-     (falling back to `core/settings/orchestrator.yaml`). A row whose `main`
-     matches this session's own model is applied silently; the engine is the
-     one that serves that row's model (claude-* → `claude`, gpt-*/o* → `codex`,
-     grok-* → `grok`).
-   - No match → ask ONE `AskUserQuestion` (options: the engines whose CLI is
-     actually installed, codex recommended), then persist the answer.
-2. Read `.claude/skills/conduct/dispatch.md` whole and follow it: worker choice,
-   pool slot, brief, detached launch, lane messaging, outcome verification, and
-   the per-turn lane rows. It is not loaded for questions, lookups, status, or
-   `/conduct off`, and nothing in it is needed until a lane exists.
-
-## Step 7: Conduct sessions that are already running
-
-Other open sessions (a desktop session, a Codex or Grok terminal) can join
-this session's link with `/conduct-join` and take instructions from it. They
-take no pool slot and this session never stops them. For `adopt`, `tell`, and
-the adopted rows in `status`, read `.claude/skills/conduct/adopt.md` whole and
-follow it.
+Read `.claude/skills/conduct/dispatch.md` whole and follow it. It covers worker
+selection, the shared lane mapping, task briefs, lane creation, watcher setup,
+role lanes, QA, CI, result verification, and lane status rows. It is not loaded
+for questions, lookups, status, or `/conduct off`.
 
 ## Rules
 
-- **The parent never blocks on a lane.** Launch detached, end the turn, let the
-  waiter wake you.
-- **Never use the `Agent` tool here.** Lanes are the dispatch mechanism, and they
-  are what keeps the child count bounded and the session survivable.
-- **The cap is mechanical.** `conduct-pool.sh` owns it. Exit 3 means stop, not
-  "launch anyway".
-- **Every owner-facing need goes through `/decision-queue`.** One
-  `AskUserQuestion` per decision, on every surface — status ticks, loop wakeups,
-  lane completions, cross-session requests — not only at session close. A
-  markdown list of questions is a defect.
-- **Every turn that ends with a lane running ends with one row per lane**
-  (dispatch module, Step 7). A text-only reply with lanes running is a defect.
-- **Irreversible actions stay with the user** — merging, publishing a release,
-  force-pushing, deleting, sending messages. The lane prepares and reports; the
-  parent asks once, then tells the worker to proceed.
-- **Company context stays isolated.** One company per brief; resolve it before
-  writing one.
-- **Lanes commit their own work** with repo-anchored commands. The parent
-  verifies from the artifacts, not from the report.
-- **A message to a running lane is an instruction, not a note.** It outranks the
-  brief on arrival, so send corrections and scope changes — not status questions,
-  which the lane cannot answer.
-- **Adopted sessions are steered, never owned.** This session did not start
-  them: it does not stop, archive, rename or reconfigure them, and it adopts
-  only sessions the operator named.
-- **The mode persists for the session** in `workspace/sessions/<id>/meta.yaml`
-  under `conduct_engine`, alongside the `conduct_pool` list. Later turns read
-  both; `/conduct off` clears them.
-- **The mode is the HQ default since v16.** `conduct.default_enabled: true` in
-  `core/settings/orchestrator.yaml` (per-machine override:
-  `personal/settings/orchestrator.yaml` with `default_enabled: false`) makes
-  every fresh session start with the conductor core via
-  `.claude/hooks/auto-conduct.sh`. Unattended sessions (local bots, fleet box
-  turns, Outpost jobs, scheduled tasks, `HQ_UNATTENDED` /
-  `HQ_SESSION_UNATTENDED` / `CLAUDE_HEADLESS`) are skipped; `HQ_AUTO_CONDUCT=1`
-  plus a named engine opts one in. The engine is never
-  preset; it is asked at first dispatch or named by the user. Per session: `HQ_AUTO_CONDUCT=1|0`
-  or `HQ_DISABLED_HOOKS=auto-conduct`.
+- `/conduct` creates worker lanes only. The invoking session is the senior;
+  do not create manager or senior lanes.
+- `hq lanes create` owns admission and capacity. A capacity refusal leaves the
+  task queued for a later tick; do not rebuild a pool around it.
+- Arm a watcher for every lane before returning. Read the JSON envelope and
+  verify the artifacts when the lane finishes; a process exit alone is not a
+  delivery result.
+- For Codex, generate a unique round ID and capture a fresh UTC `since`
+  timestamp before every dispatch. Arm one completion watcher per round,
+  including when a lane is reused. See `dispatch.md` for the command and event
+  behavior.
+- Owner-facing decisions use one structured question at a time.
+- Every turn that ends with a lane running includes one status row per lane.
+- Do not merge or publish from `/conduct`; the senior reviews and owns that step.
+- Keep company context isolated. Resolve the company before writing a brief.
+- A message to a running lane is an instruction. Send corrections, not status
+  questions.
 
 ## See also
 
-- `.claude/skills/conduct/dispatch.md` — the lane mechanics this skill loads at
-  first dispatch
-- `.claude/skills/conduct/conductor-core.md` — the always-on triage rule and
-  intent-index pointer
-- `/orchestrate` — takes one idea through the same runner from capture to
-  finished deliverable, when the arc is known up front rather than arriving task
-  by task
-- `core/scripts/conduct-pool.sh` — the pool helper, including its cap semantics
-- `.claude/skills/conduct/adopt.md` — adopting running sessions (Step 7)
-- `.claude/skills/conduct/roles/` — per-role brief templates for `--workers`
-- `core/scripts/conduct-workers.sh` — role lanes, CI check and QA trigger
-- `core/scripts/conduct-lane-launch.sh`, `core/scripts/conduct-lane-wait.sh` —
-  the dispatch protocol's launch and wait blocks as scripts
-- `core/scripts/conduct-inbox.sh` — the per-lane drop box behind Step 5b
-- `/conduct-join` — the child's half of Step 7
-- `core/scripts/conduct-link.sh` — the two-way mailbox behind Step 7
-- `core/scripts/workflow-runner.mjs` — the multi-engine runner behind every lane
-- `core/policies/subagent-fanout-budget.md` — why the cap is stated in the header
+- `.claude/skills/conduct/dispatch.md` — lane mechanics
+- `.claude/skills/conduct/conductor-core.md` — always-on triage rule
+- `.claude/skills/conduct/adopt.md` — linked sessions
+- `.claude/skills/conduct/roles/` — role templates for `--workers`
+- `core/scripts/lanes-workers.sh` — role setup, templates, QA decision, and CI
+- `.claude/skills/_shared/lane-dispatch-protocol.md` — shared lane mapping

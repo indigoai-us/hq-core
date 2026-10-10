@@ -83,11 +83,15 @@ repo_coordination:
 # =============================================================================
 # When enabled, every fresh session opens in /conduct mode: each task is
 # dispatched to a detached worker lane and the parent session stays free to
-# accept and route new messages. Enforced by:
-#   - .claude/hooks/auto-conduct.sh   (SessionStart: tells the assistant to run
-#                                      /conduct first)
-# There is no default engine on purpose: /conduct asks which engine to use
-# (codex, grok, or claude) unless one is named in the argument.
+# accept and route new messages. Enforced by hq-cli's `hq lanes session-start`
+# command at SessionStart.
+# Claude and Grok have no selected-model hook payload, so /conduct asks which
+# engine to use unless one is named. For Codex, hq lanes session-start records
+# the selected model and effort in session metadata with
+# conduct_default_source: codex-session. If the payload has no usable model, it
+# records the Codex engine with conduct_default_source: codex-fallback; the
+# runner's documented Codex tier defaults apply without claiming a model was
+# selected.
 # On by default since v16 (owner decision 2026-10-08: v16 comes with conduct).
 # Per-machine override: copy this file to personal/settings/orchestrator.yaml
 # and set default_enabled: false.

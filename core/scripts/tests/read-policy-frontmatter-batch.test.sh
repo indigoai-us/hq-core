@@ -65,16 +65,16 @@ printf 'partial result\n'
 exit 0
 HQ
 chmod +x "$TMP/old-floor-bin/hq"
-if HQ_TEST_CLI_VERSION=5.342.6 PATH="$TMP/old-floor-bin:$PATH" bash "$FORWARDER" "$TMP/one.md" "$TMP/two.md" > "$TMP/old-floor.stdout" 2> "$TMP/old-floor.stderr"; then
+if HQ_TEST_CLI_VERSION=5.345.62 PATH="$TMP/old-floor-bin:$PATH" bash "$FORWARDER" "$TMP/one.md" "$TMP/two.md" > "$TMP/old-floor.stdout" 2> "$TMP/old-floor.stderr"; then
   old_floor_status=0
 else
   old_floor_status=$?
 fi
 [ "$old_floor_status" -ne 0 ] || {
-  echo "FAIL: forwarder accepted hq-cli 5.342.6 below its 5.342.7 floor" >&2
+  echo "FAIL: forwarder accepted hq-cli 5.345.62 below its 5.345.63 floor" >&2
   exit 1
 }
-grep -Fq 'needs hq-cli >= 5.342.7 (found 5.342.6)' "$TMP/old-floor.stderr" || {
+grep -Fq 'needs hq-cli >= 5.345.63 (found 5.345.62)' "$TMP/old-floor.stderr" || {
   echo "FAIL: old CLI rejection did not include the floor message" >&2
   exit 1
 }
@@ -82,7 +82,7 @@ if grep -Fq 'partial result' "$TMP/old-floor.stdout"; then
   echo "FAIL: old CLI printed a partial result before the floor rejection" >&2
   exit 1
 fi
-printf 'PASS: forwarder rejects hq-cli 5.342.6 before any partial multi-file output\n'
+printf 'PASS: forwarder rejects hq-cli 5.345.62 before any partial multi-file output\n'
 
 SKILL_ROOT="${HQ_TEST_SKILL_ROOT:-$ROOT/.claude/skills}"
 POLICY_CHUNK_SIZE=""

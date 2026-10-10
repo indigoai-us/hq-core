@@ -59,7 +59,8 @@ export BASH_ENV=/dev/null
 #      Stop block output, guarded by stopHookActive.
 #
 #      Which HQ gates actually hold a Grok turn today: the CLI checkpoint gate
-#      and the conduct inbox backstop. enforce-humanize-before-send and
+#      and the linked-session delivery guard.
+#      enforce-humanize-before-send and
 #      enforce-capability-link-render do NOT — they read the session transcript,
 #      and Grok writes an ACP-style updates.jsonl
 #      ({"method":"_x.ai/session/update",...}) rather than Claude's
@@ -253,10 +254,10 @@ STOP_BLOCK_SOURCE=""
 STOP_BLOCK_COUNT=0
 
 # Accumulate rather than keep the first. Every Stop gate that blocks has already
-# had its side effects by the time we read its decision — conduct-lane-inbox in
-# particular has DRAINED its queue — so discarding a later reason destroys the
-# message it just consumed. Grok caps Stop feedback at 10,000 characters, which
-# is ample for the handful of gates that can fire at once.
+# had its side effects by the time we read its decision —
+# conduct-lanes-link-deliver may have consumed a queued message — so discarding
+# a later reason destroys the message it just consumed. Grok caps Stop feedback
+# at 10,000 characters, which is ample for the handful of gates that can fire.
 append_stop_block() { # <hook-id> <reason>
   local id="$1" reason="$2"
   [ -n "$reason" ] || return 1
@@ -583,8 +584,10 @@ ${reason}"
   deny "$(compact_reason "$reason")"
 }
 
-run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
+run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode] [registered args...]
   local id="$1" script="$2" payload="${3:-$CLAUDE_JSON}" stdout_mode="${4:-drop}"
+  shift 4 2>/dev/null || shift $#
+  local extra=("$@")
   local out err status out_text err_text warning
   out="$(mktemp)"
   err="$(mktemp)"
@@ -592,7 +595,7 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
   warning=""
 
   if command -v hqad_launch_registered_hook >/dev/null 2>&1; then
-    hqad_launch_registered_hook "$HQ_ROOT" "$EVENT" "$payload" "$id" "$script" >"$out" 2>"$err" || status=$?
+    hqad_launch_registered_hook "$HQ_ROOT" "$EVENT" "$payload" "$id" "$script" "${extra[@]}" >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
@@ -604,7 +607,7 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode]
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
-    printf '%s' "$payload" | bash "$GATE" "$id" "$script" >"$out" 2>"$err" || status=$?
+    printf '%s' "$payload" | bash "$GATE" "$id" "$script" "${extra[@]}" >"$out" 2>"$err" || status=$?
   fi
 
   out_text="$(cat "$out" 2>/dev/null || true)"
@@ -896,7 +899,7 @@ dispatch_settings_hooks() {
             # A successful advisory hook's additionalContext goes to the model
             # on PreToolUse/PostToolUse; any other stdout becomes bounded
             # stderr diagnostics (e.g. bridge-health / policy warnings).
-            run_advisory "$a" "$b" "$payload" "diag"
+            run_advisory "$a" "$b" "$payload" "diag" $rest
           fi
           ;;
         master)
@@ -1011,10 +1014,10 @@ run_post_tool_use() {
     *)
       # Every remaining tool (Grep, list_dir, and any Grok tool this adapter has
       # no special payload shape for). PostToolUse hooks registered with matcher
-      # `*` — conduct-lane-inbox is the live one — must fire on these too, or a
-      # lane that spends a stretch doing nothing but greps never gets its queued
-      # messages until the turn ends. Claude dispatches PostToolUse on every
-      # tool; this is that parity.
+      # `*` — conduct-lanes-link-deliver is registered
+      # here — must fire on these too, or a session that spends a stretch doing
+      # nothing but greps never gets its queued messages until the turn ends.
+      # Claude dispatches PostToolUse on every tool; this is that parity.
       dispatch_settings_hooks "PostToolUse" "$CTOOL" "$CLAUDE_JSON"
       ;;
   esac
@@ -1174,7 +1177,7 @@ run_precompact() {
 
 # StopCancelled / StopFailure: the turn is over and cannot be held, so the HQ
 # Stop hooks run for their side effects only (the checkpoint gate records the
-# turn end, the conduct-inbox backstop drains what it can) with the decision
+# turn end) with the decision
 # marked undeliverable, and no decision JSON is emitted. Without this, a lane
 # that ends on --max-turns or an interrupt never reached the Stop side at all.
 run_stop_observe() {

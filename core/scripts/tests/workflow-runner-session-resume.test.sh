@@ -30,7 +30,6 @@ export HQ_SESSION_ID="test-workflow-runner-session-resume-$$"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$REPO_ROOT/core/scripts/workflow-runner.mjs"
-INBOX_SH="$REPO_ROOT/core/scripts/conduct-inbox.sh"
 
 pass=0
 fail=0
@@ -125,15 +124,18 @@ start_lane() {
   wait_for 10 test -f "$LANE/loop.json"
 }
 stop_lane() {
-  bash "$INBOX_SH" send --run-dir "$LANE" --text '{"kind":"stop"}' >/dev/null
+  mkdir -p "$LANE/inbox/pending"
+  printf '%s\n' '{"kind":"stop"}' > "$LANE/inbox/pending/$(date -u +%Y%m%d%H%M%S)-$$-stop.msg"
   wait "$LANE_PID" 2>/dev/null
   LANE_PID=""
 }
 # phase <engine> <story> <id> [extra json fields]  -> runs it, waits for result
 phase() {
   local extra="${4:-}"
-  bash "$INBOX_SH" send --run-dir "$LANE" --text \
-    "{\"kind\":\"phase\",\"engine\":\"$1\",\"tier\":\"exec\",\"story_id\":\"$2\",\"id\":\"$3\",\"result_path\":\"$TMP/res/$3.json\",\"prompt\":\"TAG=$3\"$extra}" >/dev/null
+  mkdir -p "$LANE/inbox/pending"
+  printf '%s\n' \
+    "{\"kind\":\"phase\",\"engine\":\"$1\",\"tier\":\"exec\",\"story_id\":\"$2\",\"id\":\"$3\",\"result_path\":\"$TMP/res/$3.json\",\"prompt\":\"TAG=$3\"$extra}" \
+    > "$LANE/inbox/pending/$(date -u +%Y%m%d%H%M%S)-$$-$3.msg"
   wait_for 20 test -f "$TMP/res/$3.json"
 }
 call() { sed -n "${1}p" "$TMP/rec/calls"; }        # argv of the Nth engine call

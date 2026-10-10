@@ -580,7 +580,6 @@ assert_stop_order() {
     .hooks.Stop[0].hooks | map(.id) as $ids
     | (($ids | index("lanes-senior-monitor-stop-gate")) > ($ids | index("enforce-capability-link-render")))
       and (($ids | index("lanes-senior-monitor-stop-gate")) > ($ids | index("enforce-humanize-before-send")))
-      and (($ids | index("lanes-senior-monitor-stop-gate")) > ($ids | index("conduct-lane-inbox")))
   ' "$1" >/dev/null 2>&1
 }
 if assert_stop_order "$REGISTRY_SRC"; then

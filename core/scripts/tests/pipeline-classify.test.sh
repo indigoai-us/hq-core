@@ -5,7 +5,7 @@
 # dependency lint, and park/unpark counts. bash 3.2 portable.
 # shellcheck disable=SC2016  # check() evals single-quoted assertions on purpose
 set -u
-unset PC_WORKERS_ROOT PC_POOL PC_NOW PC_TABLE PC_PARK_CONFIRM HQ_SESSION_ID
+unset PC_WORKERS_ROOT PC_HQ PC_NOW PC_TABLE PC_PARK_CONFIRM HQ_SESSION_ID
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PC="${PC_UNDER_TEST:-$HERE/../pipeline-conductor.sh}"
 T="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/pc-classify.XXXXXX")" && pwd -P)"
@@ -14,7 +14,7 @@ pass=0; fail=0
 check() { if eval "$2"; then pass=$((pass+1)); echo "PASS: $1"; else fail=$((fail+1)); echo "FAIL: $1"; fi; }
 pyget() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2"; }
 
-# ---- fixtures: workers, a stub pool ----
+# ---- fixtures: workers ----
 W="$T/workers"
 mkw() { mkdir -p "$W/$1"; printf '%s\n' "$2" > "$W/$1/worker.yaml"; }
 mkw backend-dev 'worker:
@@ -38,15 +38,7 @@ mkw gatekeeper 'worker:
 mkw test-fixture-builder 'worker:
   id: test-fixture-builder
   role: implementer'
-cat > "$T/pool" <<EOF
-#!/usr/bin/env bash
-echo "\$*" >> "$T/pool.log"
-case "\$1" in cancel) exit 0;; esac
-wid=""; while [ \$# -gt 0 ]; do case "\$1" in --worker-id) wid="\$2"; shift 2;; *) shift;; esac; done
-echo "{\"action\":\"enqueue\",\"worker_id\":\"\$wid\"}"
-EOF
-chmod +x "$T/pool"
-export PC_WORKERS_ROOT="$W" PC_POOL="$T/pool" PC_NOW=1790000000 PC_HQ_ROOT="$T/hq"
+export PC_WORKERS_ROOT="$W" PC_NOW=1790000000 PC_HQ_ROOT="$T/hq"
 mkdir -p "$T/hq" "$T/wt"
 
 S="$T/state"

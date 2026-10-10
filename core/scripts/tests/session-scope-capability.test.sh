@@ -79,6 +79,18 @@ jq '.company_slugs = ["indigo", 7]' "$cap" >"$TMP/malformed.json"
 cp "$TMP/malformed.json" "$cap"
 assert_eq "$(PATH="$TMP/bin:$PATH" session_scope_read_companies "$TMP" "sess-a")" "" "malformed lock set fails closed"
 
+session_scope_mint "$TMP" "sess-clear" "indigo"
+session_scope_mint "$TMP" "sess-clear" "indigo" "agent-C"
+clear_cap="$TMP/workspace/sessions/sess-clear/scope-capability.json"
+session_scope_clear "$TMP" "sess-clear"
+[ ! -e "$clear_cap" ] || fail "clear left the main capability behind"
+assert_eq "$(session_scope_read "$TMP" "sess-clear")" "" "read after clear"
+assert_eq "$(session_scope_read "$TMP" "sess-clear" "agent-C")" "indigo" "clear of main leaves agent capability"
+session_scope_clear "$TMP" "sess-clear" || fail "clearing an absent capability should succeed"
+if session_scope_clear "$TMP" "../evil" 2>/dev/null; then
+  fail "clear with invalid session id should be rejected"
+fi
+
 # The lock flag is a kill switch. Only an explicit false may disable it.
 fallback_failures=0
 expect_default_on() {
@@ -128,6 +140,30 @@ if [ "$(PATH="$TMP/false-bin:$PATH" call_multi_company_flag "$TMP" indigo)" != o
 fi
 session_scope_mint_set "$TMP" "sess-a" "indigo,otherco"
 assert_eq "$(PATH="$TMP/false-bin:$PATH" session_scope_read_companies "$TMP" sess-a)" "indigo" "explicit false keeps singleton lock"
+
+# Task subagents get no SessionStart, so their tuple is pinned from the parent's
+# main-thread capability on first use (feedback_284bc210).
+mkdir -p "$TMP/workspace/sessions/sess-inherit"
+session_scope_mint "$TMP" "sess-inherit" "indigo"
+session_scope_inherit_parent "$TMP" "sess-inherit" "agent-C" || fail "inherit from parent capability should mint"
+assert_eq "$(session_scope_read "$TMP" "sess-inherit" "agent-C")" "indigo" "child inherits parent company"
+assert_eq "$(jq -r '.agent_id' "$TMP/workspace/sessions/sess-inherit/agents/agent-C/scope-capability.json")" \
+  "agent-C" "inherited tuple names the child"
+session_scope_mint "$TMP" "sess-inherit" "otherco"
+if session_scope_inherit_parent "$TMP" "sess-inherit" "agent-C"; then
+  fail "inherit must not overwrite an existing tuple"
+fi
+assert_eq "$(session_scope_read "$TMP" "sess-inherit" "agent-C")" "indigo" "parent rebind does not move a pinned child"
+mkdir -p "$TMP/workspace/sessions/sess-metaonly"
+printf 'company_slug: indigo\n' >"$TMP/workspace/sessions/sess-metaonly/meta.yaml"
+if session_scope_inherit_parent "$TMP" "sess-metaonly" "agent-D"; then
+  fail "meta.yaml alone must not bind a subagent"
+fi
+[ ! -e "$TMP/workspace/sessions/sess-metaonly/agents/agent-D/scope-capability.json" ] \
+  || fail "no tuple may be minted without a parent capability"
+if session_scope_inherit_parent "$TMP" "sess-inherit" "../agent-E"; then
+  fail "invalid agent_id must not inherit"
+fi
 
 if session_scope_mint "$TMP" "sess-a" "../evil" 2>/dev/null; then
   fail "invalid slug should be rejected"

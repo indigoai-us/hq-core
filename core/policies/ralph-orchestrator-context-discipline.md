@@ -13,7 +13,7 @@ source: user-correction
 
 ## Rule
 
-**Which rules bind which caller.** Rules 6, 8, 9 and 10 — pool discipline and
+**Which rules bind which caller.** Rules 6, 8, 9 and 10 — lane discipline and
 transcript budget — bind every orchestrator in the trigger, including `/conduct`,
 which is why it is listed there. Rules 1–5 and 7 are the story-return contract
 and bind only an orchestrator that dispatches a per-story sub-agent it then waits
@@ -28,9 +28,9 @@ Any orchestrator that dispatches a story sub-agent to run `/execute-task` (or an
 3. **Retry exactly once** on parse failure, with a stricter reminder: `Your previous reply was not valid JSON. Emit ONLY the JSON object specified above. No prose, no fences, no trailing newline.`
 4. **Mark the story `blocked` with reason `INVALID_RETURN_FORMAT`** if the retry also fails. Surface to user; do not advance to the next story silently.
 5. **Narrate one line per story to the user.** Format: `[{story_id}] {status} · {N} files · {commit_sha_short}`. Anything longer than that line goes to `workspace/threads/journal/<date>/<story-id>.md`, not to the parent transcript.
-6. **Keep the orchestrator in budget mode by default.** One live slot per HQ worker id, claimed through `core/scripts/conduct-pool.sh assign` and reused across stories — the preflight explorer, each story worker, and the regression-gate worker are named slots that resume, not new children per story. Compact or recycle a slot when it grows fat or the pool hits cap; never exceed `CONDUCT_POOL_CAP` (default 8). Set Codex `reasoning_effort` to `low` unless a hard policy or explicit user request requires more.
+6. **Keep the orchestrator in budget mode by default.** Create HQ worker lanes with `hq lanes create`, using the invoking session as senior and the story id as `--story`. Continue a worker lane across phases; send follow-ups with `hq lanes message` while it is live. Read results from lane envelopes and honor HQ lanes admission or capacity refusals. Set Codex `reasoning_effort` to `low` unless a hard policy or explicit user request requires more.
 7. **Never simulate `/execute-task` phases in the parent.** If a story worker cannot run `/execute-task` internally, pause and switch execution mode instead of spawning architect/dev/review/QA agents from the parent orchestrator.
-8. **Do not open extra slots by default.** Two stories that classify to the same worker id **serialize on that slot** — they do not get a slot each. A second slot for the same worker, or an extra inline review or QA worker, requires a high-risk trigger or an explicit user opt-in after stating the token/runtime cost. Dependency-independent stories may run concurrently only up to remaining pool cap.
+8. **Do not open extra slots by default.** Two stories that classify to the same worker id **serialize on that worker lane**. Do not create a competing lane while it is live. Extra inline review or QA workers require a high-risk trigger or an explicit user opt-in after stating the token/runtime cost. Dependency-independent stories may run concurrently only when lane admission accepts them.
 9. **Keep parent log reads bounded.** The parent must not read raw test output, full `*.output.json`, or long logs into the transcript. Detailed logs belong on disk; parent inspection must use compact JSON, omit `stdout_tail` / `stderr_tail`, or cap with a small byte tail.
 10. **Run budget-aware regression gates.** Every-three-story gates default to repos touched since the last gate. Run the full `metadata.qualityGates` matrix at final completion, before deploy, after high-risk cross-repo contract changes, or when the user explicitly asks for full gates.
 
@@ -40,13 +40,13 @@ The structured-return path is the **default** for story sub-agents. Prose-mode (
 
 The parent orchestrator stays small while workers do the heavy lifting in isolated context. That guarantee breaks the moment a worker returns a prose recap: tool transcripts stay in the worker (good) but a 500-word "here's what I did" reply lands directly in the orchestrator's context (bad). Across 20 stories, that's 10K+ tokens of pure narration the orchestrator never needed.
 
-**Fresh context per story is no longer the mechanism that buys this, and rules 6 and 8 no longer ask for it.** Three things do the work now: the parent stays thin, returns are JSON, and the pool caps live children. Within those bounds a worker is *better* long-lived than freshly spawned — a resumed slot reuses its prompt cache and keeps the identity the operator selected, where a cold start pays for both again on every story. Context rot is bounded by compacting or recycling the slot, which is a pool operation, not a reason to throw the worker away after one story. (The original Ralph framing is at `core/knowledge/public/Ralph/03-how-ralph-works.md:151-158`; `core/knowledge/public/workers/README.md` records where HQ now diverges from it.)
+The orchestrator keeps its context bounded by staying focused on coordination, requiring JSON returns, and using HQ lanes for admission and capacity. A continuing lane keeps its worker identity and phase context, while a cold start pays those setup costs again for each story. Bounded phase briefs and handoffs keep context useful across phases.
 
 JSON returns + machine parsing collapse that to ~80 tokens per story. The orchestrator's context budget then stays bounded for the *operational* state it actually needs (next story, retry queue, regression-gate timing) and for the user's interactive turn.
 
 This is also why the in-session loop **is** Ralph mode now (re-engined 2026-05). Inline mode (Task / spawn_agent sub-agents) isolates context per story without depending on `claude -p` subprocess spawning; structured returns make it equivalent in context-discipline to the old subprocess Ralph mode without the per-spawn cost — so `--ralph-mode` was redefined as this inline loop run unattended rather than a detached `claude -p` orchestrator.
 
-Codex adds one more failure mode: it is easy for the parent to keep spawning helpful side agents or to inspect raw outputs while debugging. That defeats the savings even when the worker's return is JSON. Budget mode makes the parent a coordinator again: one delegated story, one compact result, bounded gates — and now one *named, reused* slot per worker rather than a fresh child each time.
+Codex adds one more failure mode: it is easy for the parent to keep spawning helpful side agents or to inspect raw outputs while debugging. That defeats the savings even when the worker's return is JSON. Budget mode keeps the parent focused on coordination. It reads one compact result at a time, runs bounded gates, and reuses each worker lane across related phases.
 
 ## Examples
 
@@ -74,8 +74,8 @@ Applies to:
 
 - `.claude/skills/run-project/SKILL.md` (inline mode, Step 3b)
 - `.claude/skills/execute-task/SKILL.md` (return contract definition, phase loop)
-- `.claude/skills/conduct/SKILL.md` (session pool orchestration)
-- `core/scripts/conduct-pool.sh` (the slot accounting rules 6 and 8 rely on)
+- `.claude/skills/conduct/SKILL.md` (HQ worker lanes orchestration)
+- `hq lanes create`, `hq lanes list --json`, and lane envelopes (lane creation and result records)
 - `.claude/scripts/run-project.sh` (frozen/deprecated headless story-spawning path — JSON-parsed at line 2807; retained for legacy direct-CLI/CI use only, not invoked by `/run-project --ralph-mode`)
 - Any future orchestrator that spawns per-story workers
 

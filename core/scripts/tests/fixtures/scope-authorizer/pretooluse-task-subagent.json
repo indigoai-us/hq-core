@@ -1,0 +1,14 @@
+{
+  "session_id": "5f0c2a9e-7d41-4b8a-9c3e-2e6f1a7b8d90",
+  "transcript_path": "__HQ_ROOT__/home/.claude/projects/-hq/5f0c2a9e-7d41-4b8a-9c3e-2e6f1a7b8d90.jsonl",
+  "cwd": "__HQ_ROOT__",
+  "permission_mode": "default",
+  "agent_id": "a4e81c2f9b3d7065",
+  "agent_type": "general-purpose",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "__HQ_ROOT__/companies/__COMPANY__/settings/foo.yaml"
+  },
+  "tool_use_id": "toolu_01Hq7sUbAgEnTpArEnTsCoPe"
+}
