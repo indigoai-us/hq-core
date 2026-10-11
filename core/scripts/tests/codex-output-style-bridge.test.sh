@@ -28,9 +28,11 @@ mkdir -p \
   "${HQ_ROOT}/.claude/policies" \
   "${HQ_ROOT}/.claude/skills/demo/agents" \
   "${HQ_ROOT}/.claude/output-styles" \
-  "${HQ_ROOT}/core/scripts"
+  "${HQ_ROOT}/core/scripts/lib"
 
 cp "${ROOT}/core/scripts/codex-skill-bridge.sh" "${HQ_ROOT}/core/scripts/codex-skill-bridge.sh"
+cp "${ROOT}/core/scripts/lib/forwarder.sh" "${HQ_ROOT}/core/scripts/lib/forwarder.sh"
+cp "${ROOT}/core/scripts/lib/hq-cli-floor.sh" "${HQ_ROOT}/core/scripts/lib/hq-cli-floor.sh"
 chmod +x "${HQ_ROOT}/core/scripts/codex-skill-bridge.sh"
 
 cat > "${HQ_ROOT}/.claude/settings.json" <<'JSON'

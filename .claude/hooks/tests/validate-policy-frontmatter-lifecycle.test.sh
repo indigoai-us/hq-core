@@ -81,8 +81,9 @@ for engine in node jq; do
 done
 
 # --all: names the offending file and field, exits 1; clean tree exits 0
-mkdir -p "$TMP/core/policies" "$TMP/personal/policies" "$TMP/companies/acme/policies" "$TMP/core/scripts" "$TMP/.claude/hooks"
+mkdir -p "$TMP/core/policies" "$TMP/personal/policies" "$TMP/companies/acme/policies" "$TMP/core/scripts/lib" "$TMP/.claude/hooks"
 cp "$ROOT/core/scripts/eval-trigger.sh" "$TMP/core/scripts/"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$TMP/core/scripts/lib/forwarder.sh"
 cp "$HOOK" "$TMP/.claude/hooks/"
 policy "" > "$TMP/core/policies/good.md"
 policy $'status: retired\nretired_at: 2026-09-08\n' > "$TMP/personal/policies/good-retired.md"

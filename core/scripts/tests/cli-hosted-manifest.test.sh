@@ -7,6 +7,7 @@ FIXTURE="$SCRIPTS/tests/fixtures/cli-hosted"
 GENERATOR="$SCRIPTS/generate-forwarders.sh"
 GUARD="$SCRIPTS/check-cli-hosted.sh"
 FLOOR_LIBRARY="$SCRIPTS/lib/hq-cli-floor.sh"
+FORWARDER_LIBRARY="$SCRIPTS/lib/forwarder.sh"
 NODE_BIN="$(command -v node)"
 TMP="$(mktemp -d /tmp/cli-hosted-manifest.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
@@ -53,8 +54,9 @@ make_tree() {
   local tree="$1" with_floor="$2"
   mkdir -p "$tree"
   bash "$GENERATOR" --manifest "$FIXTURE/manifest.yaml" --output-root "$tree"
+  mkdir -p "$tree/core/scripts/lib"
+  cp "$FORWARDER_LIBRARY" "$tree/core/scripts/lib/forwarder.sh"
   if [ "$with_floor" = yes ]; then
-    mkdir -p "$tree/core/scripts/lib"
     cp "$FLOOR_LIBRARY" "$tree/core/scripts/lib/hq-cli-floor.sh"
   fi
 }
@@ -126,6 +128,20 @@ CALLER="$TMP/caller"
 mkdir -p "$CALLER"
 printf 'stdin line one\nstdin line two\n' > "$TMP/stdin"
 make_hq_stub "$TMP/hq-new" 99.0.0 "$TMP/version-new.log"
+
+MISSING_FORWARDER_LIB="$TMP/missing-forwarder-lib"
+make_tree "$MISSING_FORWARDER_LIB" yes
+rm -f "$MISSING_FORWARDER_LIB/core/scripts/lib/forwarder.sh"
+run_status=0
+if (cd "$CALLER"; PATH="$TMP/hq-new:/usr/bin:/bin" /bin/bash "$MISSING_FORWARDER_LIB/core/scripts/fixture-live.sh" > "$TMP/missing-lib.out" 2> "$TMP/missing-lib.err"); then
+  run_status=0
+else
+  run_status=$?
+fi
+assert_eq "$run_status" 1 'missing forwarder library fails closed'
+[ ! -s "$TMP/missing-lib.out" ] || fail 'missing forwarder library wrote stdout'
+assert_file_eq "$TMP/missing-lib.err" <(printf 'fixture-live.sh: required forwarder library is missing: %s\n' "$MISSING_FORWARDER_LIB/core/scripts/lib/forwarder.sh") 'missing forwarder library diagnostic names path'
+printf 'ok: missing shared forwarder library fails closed and names its path\n'
 
 run_status=0
 if (cd "$CALLER"; unset HQ_ROOT; PATH="$TMP/hq-new:/usr/bin:/bin" /bin/bash "$TREE/core/scripts/fixture-live.sh" 'one word' '' --flag < "$TMP/stdin" > "$TMP/live.out" 2> "$TMP/live.err"); then
@@ -274,7 +290,7 @@ printf 'ok: missing CLI message and exit code are unchanged\n'
 GUARD_ROOT="$TMP/guard-clean"
 make_guard_root "$GUARD_ROOT"
 CATALOG_TEST_NPM_ROOT="$CATALOG_TEST_NPM_ROOT" PATH="$CATALOG_TEST_BIN:$PATH" \
-  bash "$GUARD" --root "$GUARD_ROOT" --manifest "$GUARD_ROOT/core/scripts/cli-hosted.yaml" > "$TMP/guard-clean.out" 2> "$TMP/guard-clean.err" || fail 'guard rejected a clean synthetic tree'
+  bash "$GUARD" --root "$GUARD_ROOT" --manifest "$GUARD_ROOT/core/scripts/cli-hosted.yaml" > "$TMP/guard-clean.out" 2> "$TMP/guard-clean.err" || { cat "$TMP/guard-clean.err" >&2; fail 'guard rejected a clean synthetic tree'; }
 grep -F -q 'cli-hosted manifest and backmerge checks passed' "$TMP/guard-clean.out" || fail 'guard clean success line missing'
 printf 'ok: guard accepts a clean synthetic tree\n'
 

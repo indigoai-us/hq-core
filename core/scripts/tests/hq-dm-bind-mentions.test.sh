@@ -6,8 +6,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
-mkdir -p "$SANDBOX/root/core/scripts" "$SANDBOX/bin" "$SANDBOX/home"
+mkdir -p "$SANDBOX/root/core/scripts/lib" "$SANDBOX/bin" "$SANDBOX/home"
 cp "$ROOT/core/scripts/hq-dm-bind.sh" "$SANDBOX/root/core/scripts/"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$SANDBOX/root/core/scripts/lib/forwarder.sh"
+cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$SANDBOX/root/core/scripts/lib/hq-cli-floor.sh"
 mkdir -p "$SANDBOX/home/.hq"
 printf '{}\n' > "$SANDBOX/home/.hq/config.json"
 printf '{}\n' > "$SANDBOX/home/.hq/cognito-tokens.json"

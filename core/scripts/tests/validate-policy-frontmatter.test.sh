@@ -126,6 +126,7 @@ mock_cli="$PROJ/old-cli-bin"
 mkdir -p "$forwarder_root/core/scripts/lib" "$mock_cli"
 ln -s "$ROOT/core/scripts/eval-trigger.sh" "$forwarder_root/core/scripts/eval-trigger.sh"
 ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$forwarder_root/core/scripts/lib/hq-cli-floor.sh"
+ln -s "$ROOT/core/scripts/lib/forwarder.sh" "$forwarder_root/core/scripts/lib/forwarder.sh"
 cat > "$mock_cli/hq" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1-}" = "--version" ]; then printf '5.341.2\n'; exit 0; fi

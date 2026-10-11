@@ -100,20 +100,25 @@ INSTALL_ROOT="$TMP/install-root"
 ROOT_PRECEDENCE_ROOT="$TMP/root-precedence-root"
 mkdir -p "$ROOT_PRECEDENCE_ROOT/core/scripts/lib"
 cp "$SCRIPTS/lib/cli-hosted-manifest.awk" "$ROOT_PRECEDENCE_ROOT/core/scripts/lib/cli-hosted-manifest.awk"
+cp "$SCRIPTS/lib/forwarder.sh" "$ROOT_PRECEDENCE_ROOT/core/scripts/lib/forwarder.sh"
 cat > "$ROOT_PRECEDENCE_ROOT/core/scripts/cli-hosted.yaml" <<'YAML'
 entries:
   - path: core/scripts/derive-trigger-facts.sh
     command: derive-trigger-facts
     kind: generated
-    root: live
+    root: live-project
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
     path_operands: none
+    no_update_check: true
+    stdin_closed: true
 YAML
 bash "$GENERATOR" --manifest "$ROOT_PRECEDENCE_ROOT/core/scripts/cli-hosted.yaml" \
   --output-root "$ROOT_PRECEDENCE_ROOT" >/dev/null
 if grep -F -q 'HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-' \
+  "$SCRIPTS/lib/forwarder.sh" && grep -F -q \
+  'forwarder_exec "derive-trigger-facts.sh" "5.341.3" "live-project" "derive-trigger-facts" "true"' \
   "$ROOT_PRECEDENCE_ROOT/core/scripts/derive-trigger-facts.sh"; then
   pass 'live trigger-fact forwarder preserves CLAUDE_PROJECT_DIR root fallback'
 else

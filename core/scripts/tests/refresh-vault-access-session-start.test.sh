@@ -21,6 +21,7 @@ trap 'rm -rf "$TMP"' EXIT
 HQ_ROOT="$TMP/hq"
 mkdir -p "$HQ_ROOT/core/scripts/lib" "$HQ_ROOT/.claude" "$HQ_ROOT/.hq" "$TMP/bin"
 ln -s "$ROOT/core/scripts/refresh-vault-access.sh" "$HQ_ROOT/core/scripts/refresh-vault-access.sh"
+ln -s "$ROOT/core/scripts/lib/forwarder.sh" "$HQ_ROOT/core/scripts/lib/forwarder.sh"
 ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh"
 REAL_HQ="$(command -v hq)"
 [ -n "$REAL_HQ" ] || { echo "FAIL: pinned hq CLI is not on PATH" >&2; exit 1; }

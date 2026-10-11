@@ -7,11 +7,13 @@ entries:
   - path: core/scripts/derive-trigger-facts.sh
     command: derive-trigger-facts
     kind: generated
-    root: live
+    root: live-project
     interpreter: bash
     min_cli: 5.342.5
     state: forwarded
     path_operands: none
+    no_update_check: true
+    stdin_closed: true
     note: |
       This hook-time helper runs on the hq core fast path and retains its
       bundled shell fallback while the core-native-hook-helpers flag is off.
@@ -23,17 +25,19 @@ entries:
     min_cli: 5.341.3
     state: forwarded
     path_operands: none
+    no_update_check: true
     note: |
       This hook-time helper runs on the hq core fast path and retains its
       bundled shell fallback while the core-native-hook-helpers flag is off.
   - path: core/scripts/migrate-policy-triggers.sh
     command: migrate-policy-triggers
     kind: generated
-    root: live
+    root: live-project
     interpreter: bash
     min_cli: 5.341.3
     state: forwarded
     path_operands: none
+    no_update_check: true
     note: |
       This SessionStart helper runs on the hq core fast path and retains its
       bundled shell fallback while the core-native-hook-helpers flag is off.

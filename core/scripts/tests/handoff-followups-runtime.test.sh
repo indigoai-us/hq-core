@@ -68,6 +68,8 @@ cp "$ROOT/core/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-pos
 cp "$ROOT/core/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
 cp "$ROOT/core/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"
 cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$TMP_ROOT/repo/core/scripts/lib/forwarder.sh"
+cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$TMP_ROOT/repo/core/scripts/lib/hq-cli-floor.sh"
 cat > "$TMP_ROOT/repo/.claude/skills/document-release/SKILL.md" <<'MD'
 ---
 name: document-release

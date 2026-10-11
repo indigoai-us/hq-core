@@ -104,6 +104,8 @@ is_explicitly_allowed_cli_source() {
   case "$1" in
     # The generator embeds hq core in printf templates for generated forwarders.
     core/scripts/generate-forwarders.sh) return 0 ;;
+    # The shared runtime executes the manifest-selected command for forwarders.
+    core/scripts/lib/forwarder.sh) return 0 ;;
     # The checker has hq core in diagnostics and documents future catalog checks.
     core/scripts/check-cli-hosted.sh) return 0 ;;
     # The CI installer probes for the hidden core group before running tests.
@@ -160,7 +162,7 @@ GENERATED_ROOT="$TEMP_DIR/generated"
 if ! bash "$SCRIPT_DIR/generate-forwarders.sh" --manifest "$MANIFEST" --output-root "$GENERATED_ROOT"; then
   fail "core/scripts/cli-hosted.yaml" "forwarder generation failed"
 else
-  while IFS="$(printf '\t')" read -r path command kind _root _interpreter _min_cli state _path_operands; do
+  while IFS="$(printf '\t')" read -r path command kind _root _interpreter _min_cli state _path_operands _no_update_check _stdin_closed; do
     if [ "$kind" = "generated" ] && [ "$state" = "forwarded" ]; then
       if [ ! -f "$ROOT/$path" ] || ! cmp -s "$GENERATED_ROOT/$path" "$ROOT/$path"; then
         fail "$path" "generated forwarder differs from manifest"

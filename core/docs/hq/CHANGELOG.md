@@ -1,4 +1,6 @@
 ## [Unreleased]
+- Generated script forwarders now share their CLI detection, version-floor, root, and
+  Git Bash path-conversion runtime through `core/scripts/lib/forwarder.sh`.
 - Delegate pickup and failure receipts now replace private manifests with mode-0600 temporary files, preserving the manifest's permissions.
 - The hq-core release gate retries cancelled or stale checks on the current head without applying a
   release hold, and skips failures when a newer head has replaced the checked SHA.

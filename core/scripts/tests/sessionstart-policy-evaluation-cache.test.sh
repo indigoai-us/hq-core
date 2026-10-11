@@ -11,11 +11,13 @@ trap 'rm -rf "$TMP"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-mkdir -p "$ROOT/.claude/hooks" "$ROOT/core/scripts" "$ROOT/core/policies" \
+mkdir -p "$ROOT/.claude/hooks" "$ROOT/core/scripts/lib" "$ROOT/core/policies" \
   "$ROOT/personal/policies" "$ROOT/workspace" "$TMP/bin" "$TMP/home"
 cp "$HOOK_SOURCE" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$ROOT/core/scripts/hook-lib.sh"
 cp "$HQ_SRC/core/scripts/eval-trigger.sh" "$ROOT/core/scripts/eval-trigger.sh"
+cp "$HQ_SRC/core/scripts/lib/forwarder.sh" "$ROOT/core/scripts/lib/forwarder.sh"
+cp "$HQ_SRC/core/scripts/lib/hq-cli-floor.sh" "$ROOT/core/scripts/lib/hq-cli-floor.sh"
 cat > "$ROOT/core/scripts/derive-trigger-facts.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "${HQ_TEST_FACTS:-always}"
