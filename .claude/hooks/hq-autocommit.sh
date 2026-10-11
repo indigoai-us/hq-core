@@ -47,7 +47,7 @@ SESSION_KEY="$(printf '%s' "$SESSION_KEY" | tr -c 'A-Za-z0-9._-' '_')"
 log_line() {
   mkdir -p "$LOG_DIR" 2>/dev/null || return 0
   local size
-  size="$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)"
+  size="$( { wc -c <"$LOG_FILE"; } 2>/dev/null || echo 0)"
   size="${size//[^0-9]/}"
   if [[ -n "$size" && "$size" -gt "$LOG_MAX_BYTES" ]]; then
     mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || true
@@ -158,6 +158,38 @@ case "$REL_PATH" in
     exit 0
     ;;
 esac
+
+# Size cap: never autosave a file above HQ_OFFLOAD_MIN_BYTES (default 50 MiB).
+# Big files belong in HQ cloud storage (`hq storage offload`), not in the local
+# autosave history, where every saved version stays on disk for good. Skipped
+# files are logged once per path and size in workspace/logs. `*.hqcloud`
+# placeholders are small text files and are always committed.
+OVERSIZE_MIN_BYTES="${HQ_OFFLOAD_MIN_BYTES:-52428800}"
+[[ "$OVERSIZE_MIN_BYTES" =~ ^[0-9]+$ && "$OVERSIZE_MIN_BYTES" -gt 0 ]] || OVERSIZE_MIN_BYTES=52428800
+OVERSIZE_SEEN="$LOG_DIR/hq-autocommit-oversize.seen"
+file_bytes() { # prints size of a regular file, or nothing
+  [[ -f "$1" && ! -L "$1" ]] || return 0
+  # GNU stat first: on Linux `stat -f` succeeds but reports the filesystem.
+  stat -c '%s' -- "$1" 2>/dev/null || stat -f '%z' -- "$1" 2>/dev/null || true
+}
+is_oversize() { # $1 = path relative to HQ_ROOT
+  local b
+  case "$1" in *.hqcloud) return 1 ;; esac
+  b="$(file_bytes "$HQ_ROOT/$1")"
+  [[ -n "$b" && "$b" -gt "$OVERSIZE_MIN_BYTES" ]] || return 1
+  OVERSIZE_BYTES="$b"
+}
+log_oversize_once() { # $1 = path
+  local key="$OVERSIZE_BYTES $1"
+  grep -Fqx -- "$key" "$OVERSIZE_SEEN" 2>/dev/null && return 0
+  mkdir -p "$LOG_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$key" >>"$OVERSIZE_SEEN" 2>/dev/null || true
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=oversize bytes=${OVERSIZE_BYTES} min=${OVERSIZE_MIN_BYTES} path=$1 session=${SESSION_KEY}"
+}
+if is_oversize "$REL_PATH"; then
+  log_oversize_once "$REL_PATH"
+  exit 0
+fi
 
 WARN_DIR="$HQ_ROOT/workspace/.autocommit-warnings"
 LOCK_DIR="${TMPDIR:-/tmp}/hq-autocommit.lock"
@@ -385,6 +417,17 @@ done < <(git -C "$HQ_ROOT" diff --cached --name-only -z 2>/dev/null)
 if [[ $STAGED_CONTROL_CHAR -gt 0 ]]; then
   log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=control-char count=${STAGED_CONTROL_CHAR} path=${REL_PATH} session=${SESSION_KEY}"
 fi
+
+# A directory add can sweep in big files beneath it: unstage each one above the
+# size cap (see is_oversize above). --no-renames: a moved big file shows as an
+# add (A), not a rename (R) that the filter would miss.
+while IFS= read -r -d '' staged_path; do
+  [[ -n "$staged_path" ]] || continue
+  if is_oversize "$staged_path"; then
+    git -C "$HQ_ROOT" reset -q -- "$staged_path" 2>/dev/null || true
+    log_oversize_once "$staged_path"
+  fi
+done < <(git -C "$HQ_ROOT" diff --cached --name-only -z --no-renames --diff-filter=AMT -- "$REL_PATH" 2>/dev/null)
 
 # Refuse to autosave an embedded git repo (gitlink, mode 160000). A directory
 # add that reaches a nested worktree/repo would otherwise stage it into the HQ

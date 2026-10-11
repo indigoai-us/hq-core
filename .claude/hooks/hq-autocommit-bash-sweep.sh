@@ -37,6 +37,8 @@ fi
 [[ "$FLAG_ENABLED" == true ]] || exit 0
 
 MAX_CHANGED_PATHS=20
+OVERSIZE_MIN_BYTES="${HQ_OFFLOAD_MIN_BYTES:-52428800}"
+[[ "$OVERSIZE_MIN_BYTES" =~ ^[0-9]+$ && "$OVERSIZE_MIN_BYTES" -gt 0 ]] || OVERSIZE_MIN_BYTES=52428800
 STATUS_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-autocommit-bash-status.XXXXXX" 2>/dev/null)"
 if [[ -z "$STATUS_FILE" ]]; then
   log_line 'FAIL stage=bash-status reason=temp-file-unavailable'
@@ -92,6 +94,17 @@ for REL_PATH in "${CANDIDATE_PATHS[@]}"; do
     fi
   fi
   [[ -e "$HQ_ROOT/$REL_PATH" || -L "$HQ_ROOT/$REL_PATH" ]] || continue
+
+  # Size cap, same threshold as hq-autocommit.sh (which also enforces it and
+  # logs the skip once per file). Placeholders (*.hqcloud) always pass.
+  if [[ "$REL_PATH" != *.hqcloud && -f "$HQ_ROOT/$REL_PATH" && ! -L "$HQ_ROOT/$REL_PATH" ]]; then
+    # GNU stat first: on Linux `stat -f` succeeds but reports the filesystem.
+    SIZE="$(stat -c '%s' -- "$HQ_ROOT/$REL_PATH" 2>/dev/null || stat -f '%z' -- "$HQ_ROOT/$REL_PATH" 2>/dev/null || echo 0)"
+    if [[ "$SIZE" =~ ^[0-9]+$ && "$SIZE" -gt "$OVERSIZE_MIN_BYTES" ]]; then
+      log_line "SKIP stage=bash-sweep reason=oversize bytes=$SIZE min=$OVERSIZE_MIN_BYTES"
+      continue
+    fi
+  fi
 
   # Delegate one explicit path to the established autosave implementation. It
   # owns the .git/repos/worktree/knowledge/control-character exclusions, lock,

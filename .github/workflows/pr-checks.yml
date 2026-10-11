@@ -1478,6 +1478,10 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - name: tracked shell discovery regression test
         run: bash core/scripts/tests/lint-shell-errors.test.sh
+      - name: hq-storage report and prune
+        run: |
+          shellcheck -S warning core/scripts/hq-storage.sh core/scripts/tests/hq-storage.test.sh
+          bash core/scripts/tests/hq-storage.test.sh
       - name: shellcheck all tracked shell scripts (error)
         run: bash core/scripts/lint-shell-errors.sh
       - name: scaffold shell regression tests

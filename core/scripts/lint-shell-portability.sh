@@ -14,9 +14,10 @@
 #     patterns ($'\\t', $'\\037') expand to one character and are not flagged.
 #   - mktemp templates that put a suffix after the X run. BSD/macOS and GNU
 #     mktemp require template Xs at the end; omit extensions from temporary paths.
-#   - bare "${array[@]}" expansions in nounset hook-health checks. Stock macOS
-#     bash 3.2 treats an empty array as unbound; use
-#     ${array[@]+"${array[@]}"} so a healthy empty issue list remains a PASS.
+#   - bare "${array[@]}" expansions under set -u: every one in hook-health
+#     checks, and elsewhere those whose array the file initializes empty
+#     (name=()). Stock macOS bash 3.2 treats an empty array as unbound; use
+#     ${array[@]+"${array[@]}"}.
 #
 # Allowlist: core/scripts/lint-shell-portability.allow (path substring per line).
 # /tmp and bare $USER are documented contributor rules; full auto-lint for those
@@ -65,13 +66,16 @@ scan_file() {
   done < "$HITS"
 }
 
-# Scope this new static rule to the health checker that triggered the regression.
-# A repository-wide scan finds many candidate expansions, most with
-# array-initialization invariants outside a shell parser's reach. Keeping the
-# scope narrow blocks a third recurrence here without falsely banning those
-# existing call sites; expand it only with a reviewed allowlist or dataflow rule.
+# Two scopes. "all": every bare expansion, for the health checker that
+# triggered the first regression. "empty-init": only arrays the same file
+# initializes empty (`name=()`, `local name=()`), for the files listed in
+# NOUNSET_EMPTY_INIT_FILES below. Shipped instance for empty-init:
+# hq-storage.sh strip-large's `local signed=()` expanded bare, which aborted on
+# stock macOS bash 3.2 whenever git lacked --signed-commits. A repository-wide
+# empty-init scan reports about 90 existing call sites, most filled before use
+# on every path; add a file to the list once its sites are guarded.
 scan_nounset_array_expansions() {
-  local f="$1" hit body name bare guarded
+  local f="$1" mode="${2:-all}" hit body name bare guarded
 
   # The expansion is only hazardous where nounset is active.
   grep -Eq '^[[:space:]]*set[[:space:]]+[^#]*-[[:alnum:]]*u' "$f" || return 0
@@ -84,6 +88,9 @@ scan_nounset_array_expansions() {
     case "${body#"${body%%[![:space:]]*}"}" in \#*) continue ;; esac
     name="$(printf '%s\n' "$body" | sed -n 's/.*"\${\([A-Za-z_][A-Za-z0-9_]*\)\[@\]}".*/\1/p')"
     [ -n "$name" ] || continue
+    if [ "$mode" = empty-init ]; then
+      grep -Eq "(^|[[:space:];(])$name=\(\)" "$f" || continue
+    fi
     bare='"${'"$name"'[@]}"'
     guarded='${'"$name"'[@]+"${'"$name"'[@]}"}'
     case "$body" in
@@ -92,6 +99,9 @@ scan_nounset_array_expansions() {
     report "$f" "${hit%%:*}" "bare $bare under set -u aborts on an empty array in macOS bash 3.2; use $guarded"
   done < "$HITS"
 }
+
+# Files held to the empty-init nounset rule (see scan_nounset_array_expansions).
+NOUNSET_EMPTY_INIT_FILES="core/scripts/hq-storage.sh"
 
 git ls-files -- '*.sh' > "$LIST"
 
@@ -161,7 +171,10 @@ while IFS= read -r f || [ -n "$f" ]; do
     report "$f" "${hit%%:*}" "mktemp template has a suffix after its trailing X run (remove the extension)"
   done < "$HITS"
   case "$f" in
-    core/scripts/check-hq-hooks.sh) scan_nounset_array_expansions "$f" ;;
+    core/scripts/check-hq-hooks.sh) scan_nounset_array_expansions "$f" all ;;
+  esac
+  case " $NOUNSET_EMPTY_INIT_FILES " in
+    *" $f "*) scan_nounset_array_expansions "$f" empty-init ;;
   esac
   # An unquoted ANSI-C pattern holding a LITERAL backslash silently no-ops on
   # bash 3.2 (stock macOS) while working on bash 5, so it fails only off-CI.
