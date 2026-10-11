@@ -123,6 +123,79 @@ companies add more. The list below is the common set, not a full inventory.
 **HQ services:** `/hq-sync`, `/hq-files`, `/hq-share`, `/hq-secrets`, `/hq-integrations`, `/dm`
 **Ship:** `/pr` (pull request operations), `/deploy` (publish an artifact; there is no `hq deploy` command)
 
+## Script: `hq-storage.sh` (autosave history size, big files, prune)
+
+Autosave commits every edit into the HQ root repo and nothing prunes it.
+`core/scripts/hq-storage.sh` reports the size, replaces big files in history
+with cloud pointers, and squashes old history. Moving big files to the cloud
+is the main way to free space; the date cutoff (`prune`) is secondary.
+
+- `bash core/scripts/hq-storage.sh large --json [--min-bytes N]` — blobs above
+  the threshold (default 50 MiB, env `HQ_OFFLOAD_MIN_BYTES`) anywhere in
+  history, with `bytes`, `disk_bytes`, `paths`, `last_seen_at`, `in_head`; and
+  current files above it with `mtime` and `idle_days`. `*.hqcloud`
+  placeholders are not listed.
+- `bash core/scripts/hq-storage.sh strip-large --manifest m.json --yes` —
+  manifest `{"blobs":[{"sha","pointer_text"}]}`, written by `hq storage
+  offload` only after it verified each upload. Replaces each listed blob in
+  every commit with its pointer text (one `git fast-export | filter |
+  fast-import` pass), keeps every commit, author, date and message, and
+  re-points branches, tags and extra refs to the rewritten commits. Each
+  pointer must start with `HQ-CLOUD-FILE v1`, and its `git-blob:` and `size:`
+  lines must match the blob, or the run stops before changing anything. A
+  pointer carries one path: the CLI uses the blob's first path (`paths[0]`
+  from `large`), so a blob stored at several paths shows that one path
+  everywhere. Blobs in HEAD's tree or any index are never replaced; they are
+  listed in `skipped_current`. Refuses when a branch checked out in a linked
+  worktree holds a listed blob. Verifies the ref set, commit count, commit
+  metadata and the HEAD tree, and restores every ref if a check fails. Never
+  touches working-tree files or the index. Expires reflogs except
+  `refs/stash`, then `git gc --prune=now`. Holds the autosave lock.
+- Recovery point (strip-large and prune): before any ref moves, every ref is
+  copied under `refs/hq-storage/backup/<epoch>-<pid>/`. The old history stays
+  on disk until a later run after the grace period
+  (`HQ_STORAGE_BACKUP_GRACE_HOURS`, default 24) or `hq-storage.sh
+  drop-backups` deletes the backup; output has `backup_ref` and
+  `reclaim_after` (ISO date). `--no-backup` frees the space at once with no
+  undo. `drop-backups --expired` drops only backups past the grace period.
+- Every subcommand accepts `--json` (output is always JSON).
+- Autosave (`.claude/hooks/hq-autocommit.sh` and the Bash sweep) never commits
+  a file above `HQ_OFFLOAD_MIN_BYTES`. The skip is logged once per path and size
+  in `workspace/logs/hq-autocommit.log`. `*.hqcloud` placeholders are always
+  committed.
+
+- `bash core/scripts/hq-storage.sh report --json` — git dir size, tracked file
+  size, commit count, and five age tranches (7d, 30d, 90d, 365d, older) with
+  commit counts and an estimate of reclaimable bytes. The estimate uses the same
+  keep-set as prune: blobs that another branch, a tag or the stash still reaches
+  count as kept. `holding_refs` (`[{name, commit_date}]`) and
+  `holding_refs_count` list those refs when they share history with HEAD.
+  `git_dir_bytes` comes from `git count-objects -v`. The history part is cached
+  for 10 minutes (`HQ_STORAGE_CACHE_TTL`) under `workspace/.storage-cache/`;
+  `--no-cache` skips it.
+- `bash core/scripts/hq-storage.sh prune --before YYYY-MM-DD --dry-run` — JSON
+  with `would_remove_commits`, `est_bytes`, `flattened_merges`, `retained_refs`,
+  `holding_refs`, `holding_refs_count`, `refs_to_remove`, and
+  `refs_to_remove_sample` (up to 5 names). `est_bytes`
+  counts only objects that nothing kept (branches, tags, stash) still reaches.
+  `report --json` also has `extra_refs`, the count of refs prune would delete
+  or move.
+- `bash core/scripts/hq-storage.sh prune --before YYYY-MM-DD --yes` — squashes
+  every commit before the cutoff into one root commit, replays newer commits
+  byte-for-byte (merges are flattened to their first parent, same tree), moves
+  the branch, then expires reflogs except `refs/stash` (every stash entry is
+  kept) and runs `git gc --prune=now`. The new commits are built in one batch
+  (about 45 s for 25,000 kept commits including gc). Refuses with exit 4 when
+  `est_bytes` is 0, naming the refs that hold the old history, unless
+  `--force`. Holds the autosave lock and refuses with staged changes, an
+  in-progress rebase or merge, a detached HEAD, remote-tracking branches, or
+  the branch checked out in another worktree. Extra refs (anything outside
+  `refs/heads/`, `refs/tags/`, `refs/remotes/`, and `refs/stash`, such as
+  `refs/cmux/last-turn/*` and `refs/original/*`) are moved to the rewritten
+  commit when they point at a kept commit on the branch, and deleted otherwise.
+  Other branches, tags, and stash are left alone and keep the objects they
+  reach, so a branch or tag forked from old history keeps that history on disk.
+
 ## CLI: `hq mesh` (Work Mesh Live)
 
 Presence and per-turn activity are automatic via hooks + `hq mesh daemon`. Manual verbs only: `task-status`, `blocked`, `note`. See `core/knowledge/public/hq-core/work-mesh-live.md` and `core/skills/work-mesh/`.

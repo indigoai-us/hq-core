@@ -169,6 +169,37 @@ if printf '%s' "$array_out" | grep -q 'check-hq-hooks.sh:6:'; then
 fi
 echo "  ok   established empty-array guard is accepted"
 
+# empty-init scope (hq-storage.sh): an array initialized empty and expanded
+# bare is flagged (the shipped strip-large `local signed=()` defect); a guarded
+# expansion and an array never initialized empty are not.
+cat >"$ARRAY_REPO/core/scripts/hq-storage.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+f() {
+  local signed=()
+  git fast-export "${signed[@]}"
+  local refs=()
+  git fast-export ${refs[@]+"${refs[@]}"}
+  filled=(a b)
+  printf '%s\n' "${filled[@]}"
+}
+SH
+git -C "$ARRAY_REPO" add core/scripts
+empty_out="$(cd "$ARRAY_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
+if printf '%s' "$empty_out" | grep -q 'hq-storage.sh:5:.*signed'; then
+  echo "  ok   real linter flags a bare expansion of an empty-initialized array"
+else
+  echo "FAIL: linter missed the empty-initialized array expansion" >&2
+  printf '%s\n' "$empty_out" >&2
+  exit 1
+fi
+if printf '%s' "$empty_out" | grep -q -e 'hq-storage.sh:7:' -e 'hq-storage.sh:9:'; then
+  echo "FAIL: linter false-flagged a guarded or never-empty array in empty-init scope" >&2
+  printf '%s\n' "$empty_out" >&2
+  exit 1
+fi
+echo "  ok   empty-init scope accepts guarded and never-empty arrays"
+
 # ---- mktemp templates with suffixes after XXXXXX ----------------------------
 # BSD/macOS mktemp replaces a trailing run of Xs. A suffix after that run is
 # not portable: shell-script examples such as XXXXXX).tar.gz fail to expand.

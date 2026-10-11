@@ -945,4 +945,52 @@ run_windows_style_path_case forwardslash
 run_unresolved_windows_path_case
 run_windows_fallback_path_case
 
+# Size cap: a file above HQ_OFFLOAD_MIN_BYTES is never autosaved (logged once
+# per path and size); *.hqcloud placeholders are always committed; a directory
+# add unstages big files beneath it and still commits the small ones.
+oversize_head="$(git -C "$TMP" rev-parse HEAD)"
+head -c 5000 /dev/zero | tr '\0' x >"$TMP/big.bin"
+run_hook "sess-oversize" "big.bin" HQ_OFFLOAD_MIN_BYTES=1000
+[[ "$HOOK_RC" -eq 0 && -z "$HOOK_OUT" ]] || { echo "oversize skip must stay silent; rc=$HOOK_RC out='$HOOK_OUT'" >&2; exit 1; }
+[[ "$(git -C "$TMP" rev-parse HEAD)" == "$oversize_head" ]] || { echo "oversize file was committed" >&2; exit 1; }
+[[ -z "$(git -C "$TMP" diff --cached --name-only)" ]] || { echo "oversize file left staged" >&2; exit 1; }
+[[ "$(grep -c 'SKIP stage=oversize bytes=5000 min=1000 path=big.bin' "$LOG")" -eq 1 ]] || { echo "oversize skip not logged once" >&2; exit 1; }
+run_hook "sess-oversize-2" "big.bin" HQ_OFFLOAD_MIN_BYTES=1000
+[[ "$(grep -c 'SKIP stage=oversize bytes=5000 min=1000 path=big.bin' "$LOG")" -eq 1 ]] || { echo "oversize skip logged twice for the same file" >&2; exit 1; }
+rm -f "$TMP/big.bin"
+
+head -c 3000 /dev/zero | tr '\0' p >"$TMP/promo.mp4.hqcloud"
+run_hook "sess-oversize" "promo.mp4.hqcloud" HQ_OFFLOAD_MIN_BYTES=1000
+git -C "$TMP" show --name-only --format=%s HEAD | grep -qx "promo.mp4.hqcloud" || { echo ".hqcloud placeholder was not committed" >&2; exit 1; }
+
+mkdir -p "$TMP/media"
+head -c 5000 /dev/zero | tr '\0' y >"$TMP/media/huge.mov"
+printf 'small\n' >"$TMP/media/notes.md"
+run_hook "sess-oversize" "media" HQ_OFFLOAD_MIN_BYTES=1000
+git -C "$TMP" show --name-only --format=%s HEAD | grep -qx "media/notes.md" || { echo "small file in directory was not committed" >&2; exit 1; }
+if git -C "$TMP" ls-files --error-unmatch media/huge.mov >/dev/null 2>&1; then echo "big file in directory was committed" >&2; exit 1; fi
+[[ -z "$(git -C "$TMP" diff --cached --name-only)" ]] || { echo "directory add left big file staged" >&2; exit 1; }
+rm -rf "${TMP:?}/media"
+
+# A big file that was committed earlier (higher cap) and is then moved inside
+# the added directory must not slip through as a rename (R).
+mkdir -p "$TMP/media2"
+head -c 5000 /dev/zero | tr '\0' z >"$TMP/media2/old.bin"
+run_hook "sess-oversize" "media2" HQ_OFFLOAD_MIN_BYTES=100000
+git -C "$TMP" ls-files --error-unmatch media2/old.bin >/dev/null 2>&1 || { echo "setup: big file not committed under the high cap" >&2; exit 1; }
+mv "$TMP/media2/old.bin" "$TMP/media2/new.bin"
+run_hook "sess-oversize" "media2" HQ_OFFLOAD_MIN_BYTES=1000
+if git -C "$TMP" ls-files --error-unmatch media2/new.bin >/dev/null 2>&1; then echo "renamed big file was committed" >&2; exit 1; fi
+[[ -z "$(git -C "$TMP" diff --cached --name-only)" ]] || { echo "renamed big file left staged" >&2; exit 1; }
+rm -rf "${TMP:?}/media2"
+
+# The first log write (no log file yet) prints nothing to stderr.
+rm -f "$LOG" "$LOG".1 "$(dirname "$LOG")/hq-autocommit-oversize.seen"
+head -c 5000 /dev/zero | tr '\0' w >"$TMP/first.bin"
+first_err="$(cd "$TMP" && printf '{"tool_name":"Edit","session_id":"sess-first","tool_input":{"file_path":"first.bin"}}' \
+  | env HQ_OFFLOAD_MIN_BYTES=1000 bash .claude/hooks/hq-autocommit.sh 2>&1 >/dev/null || true)"
+[[ -z "$first_err" ]] || { echo "first log write printed to stderr: $first_err" >&2; exit 1; }
+grep -q 'SKIP stage=oversize bytes=5000 min=1000 path=first.bin' "$LOG" || { echo "first log write missing" >&2; exit 1; }
+rm -f "$TMP/first.bin"
+
 echo "hq-autocommit smoke: ok"
