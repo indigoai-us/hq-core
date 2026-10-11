@@ -65,6 +65,8 @@ cp "$SRC_ROOT/../.claude/hooks/mirror-thread-to-company.sh" "$TMP_ROOT/mirror-th
 mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/hooks" "$TMP_ROOT/repo/workspace/baseline" "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator"
 cp "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
 cp "$SRC_ROOT/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
+cp "$SRC_ROOT/scripts/lib/forwarder.sh" "$TMP_ROOT/repo/core/scripts/lib/forwarder.sh"
+cp "$SRC_ROOT/scripts/lib/hq-cli-floor.sh" "$TMP_ROOT/repo/core/scripts/lib/hq-cli-floor.sh"
 cp "$TMP_ROOT/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
 cp "$TMP_ROOT/qmd-reindex-bg.sh" "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh"
 cp "$TMP_ROOT/mirror-thread-to-company.sh" "$TMP_ROOT/repo/.claude/hooks/mirror-thread-to-company.sh"

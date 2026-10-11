@@ -23,8 +23,10 @@ BASH_BIN="$(command -v bash)"
 
 new_root() {
   local d; d="$(mktemp -d)"
-  mkdir -p "$d/core/scripts" "$d/core/workers/public"
+  mkdir -p "$d/core/scripts/lib" "$d/core/workers/public"
   cp "$SCRIPT" "$d/core/scripts/generate-workers-registry.sh"
+  cp "$ROOT/core/scripts/lib/forwarder.sh" "$d/core/scripts/lib/forwarder.sh"
+  cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$d/core/scripts/lib/hq-cli-floor.sh"
   chmod +x "$d/core/scripts/generate-workers-registry.sh"
   echo "$d"
 }

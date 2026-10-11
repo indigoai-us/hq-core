@@ -674,6 +674,8 @@ mv "$TMP/handoff-finalize.sh" "$TMP/repo/core/scripts/handoff-finalize.sh"
 cp "$HELPER" "$TMP/repo/core/scripts/qmd-reindex-bg.sh"
 cp "$POST" "$TMP/repo/core/scripts/handoff-post.sh"
 cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP/repo/core/scripts/hq-status-summary.sh"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$TMP/repo/core/scripts/lib/forwarder.sh"
+cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$TMP/repo/core/scripts/lib/hq-cli-floor.sh"
 cat > "$TMP/repo/core/scripts/rebuild-threads-index.sh" <<'SH'
 #!/usr/bin/env bash
 mkdir -p workspace/threads

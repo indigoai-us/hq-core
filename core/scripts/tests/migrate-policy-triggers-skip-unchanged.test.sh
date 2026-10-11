@@ -35,6 +35,7 @@ printf 'requiresHqCli: "0.0.1"\n' > "$HQROOT/core/core.yaml"
 # The wrapper runs the real generated forwarder from the fixture root; give it one.
 mkdir -p "$HQROOT/core/scripts/lib"
 cp "$ROOT/core/scripts/migrate-policy-triggers.sh" "$HQROOT/core/scripts/migrate-policy-triggers.sh"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$HQROOT/core/scripts/lib/forwarder.sh"
 cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$HQROOT/core/scripts/lib/hq-cli-floor.sh"
 # The forwarder sources lib/hq-cli-floor.sh from its own directory; keep that.
 

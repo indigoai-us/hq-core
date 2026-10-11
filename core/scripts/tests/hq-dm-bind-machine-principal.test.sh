@@ -6,8 +6,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
-mkdir -p "$SANDBOX/root/core/scripts" "$SANDBOX/bin" "$SANDBOX/home"
+mkdir -p "$SANDBOX/root/core/scripts/lib" "$SANDBOX/bin" "$SANDBOX/home"
 cp "$ROOT/core/scripts/hq-dm-bind.sh" "$SANDBOX/root/core/scripts/"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$SANDBOX/root/core/scripts/lib/forwarder.sh"
+cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$SANDBOX/root/core/scripts/lib/hq-cli-floor.sh"
 
 cat > "$SANDBOX/root/core/scripts/hq-session.sh" <<'S'
 #!/usr/bin/env bash
@@ -29,7 +31,7 @@ printf '%s\n' "$*" >> "$CALLS"
 
 if [ "${1:-}" = core ]; then exec "$REAL_NODE" "$REAL_HQ" "$@"; fi
 if [ "${1:-}" = --version ]; then
-  printf 'CLI %s\n' "${HQ_VERSION:-5.137.0}"
+  printf 'CLI %s\n' "${HQ_VERSION:-5.345.76}"
   exit 0
 fi
 
@@ -115,9 +117,9 @@ echo "PASS: machine principal polling filters senderMachineUid"
 # An older CLI must refuse before a post is attempted.
 before="$(grep -c '^dm room ' "$CALLS" || true)"
 rc=0
-HQ_VERSION=5.136.0 bash "$BIND" post --title "Too old" >/dev/null 2>"$SANDBOX/old.err" || rc=$?
-[ "$rc" = 2 ] || fail "old hq-cli must be rejected (rc=$rc)"
-grep -q 'hq-cli >= 5.137.0' "$SANDBOX/old.err" || fail "old CLI rejection must name the required version"
+HQ_VERSION=5.309.0 bash "$BIND" post --title "Too old" >/dev/null 2>"$SANDBOX/old.err" || rc=$?
+[ "$rc" = 127 ] || fail "old hq-cli must be rejected before forwarding (rc=$rc)"
+grep -q 'hq-cli >= 5.309.1' "$SANDBOX/old.err" || fail "old CLI rejection must name the required version"
 after="$(grep -c '^dm room ' "$CALLS" || true)"
 [ "$before" = "$after" ] || fail "old hq-cli must not attempt a post"
 echo "PASS: machine principal refuses an older hq-cli before posting"

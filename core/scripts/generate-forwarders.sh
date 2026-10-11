@@ -42,7 +42,7 @@ if ! awk -f "$SCRIPT_DIR/lib/cli-hosted-manifest.awk" "$MANIFEST" > "$ROWS"; the
   exit 1
 fi
 
-while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli state path_operands; do
+while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli state path_operands no_update_check stdin_closed; do
   [ "$kind" = "generated" ] || continue
   [ "$state" = "forwarded" ] || continue
 
@@ -88,195 +88,31 @@ while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli st
     {
       printf '%s\n' \
         '#!/usr/bin/env bash' \
-        '# FORWARDER — the implementation of this script now lives in the hq CLI.' \
-        '#' \
-        "# It ships at assets/scaffold/$path inside @indigoai-us/hq-cli and"
-      printf '# runs as the hidden command \140hq core %s\140. This file stays behind so every\n' "$command"
-      printf '%s\n' \
-        '# existing caller — skills, other scripts, CI, and muscle memory — keeps working' \
-        '# against the path it already knows.' \
-        '#'
-      while IFS= read -r note_line || [ -n "$note_line" ]; do
-        if [ -n "$note_line" ]; then
-          printf '# %s\n' "$note_line"
-        else
-          printf '#\n'
-        fi
-      done < "$note_file"
-      printf '%s\n' \
-        '#' \
-        '# The ABI is preserved exactly: arguments are forwarded unchanged, stdin is never' \
-        '# read by this file, stdout and stderr are inherited untouched, and the child' \
-        '# replaces this process so its exit code and signal disposition become the' \
-        "# caller's." \
-        '' \
+        "# FORWARDER — hq core $command; shared runtime lives in lib/forwarder.sh." \
         'set -euo pipefail' \
-        ''
-      case "$command" in
-        derive-trigger-facts|eval-trigger|migrate-policy-triggers)
-          printf '%s\n' \
-            '# Hook-time helpers must not run the CLI self-updater inside the hook deadline.' \
-            'export HQ_NO_UPDATE_CHECK=1' \
-            ''
-          ;;
-      esac
-      printf '%s\n' \
         'FORWARDER_PATH="${BASH_SOURCE[0]}"' \
         'FORWARDER_DIR="${FORWARDER_PATH%/*}"' \
         '[ "$FORWARDER_DIR" != "$FORWARDER_PATH" ] || FORWARDER_DIR=.' \
-        'SCRIPT_DIR="$(cd "$FORWARDER_DIR" && pwd)"' \
-        ''
-      if [ "$root" = "live-project" ] || { [ "$root" = "live" ] && { [ "$command" = "derive-trigger-facts" ] || [ "$command" = "migrate-policy-triggers" ]; }; }; then
-        printf '%s\n' \
-          '# Preserve the original root precedence: HQ_ROOT, CLAUDE_PROJECT_DIR, then this tree.' \
-          'HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"' \
-          ''
-      elif [ "$root" = "live" ]; then
-        printf '%s\n' \
-          '# This forwarder sits in the tree it targets, so its own location IS the root.' \
-          'HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"' \
-          ''
-      else
-        printf '%s\n' \
-          "# No root is injected: this script derived its root from the CALLER's cwd" \
-          '# before it moved (git top level, a cwd walk, or a positional argument), and the' \
-          '# CLI preserves that. Anything the caller already exported still applies.' \
-          ''
-      fi
-      printf 'if ! command -v hq >/dev/null 2>&1; then\n'
-      printf "  echo \"%s: requires the hq CLI — this script's implementation now ships with it.\" >&2\n" "$script_name"
-      printf '%s\n' '  echo "Install it with: npm install -g @indigoai-us/hq-cli" >&2'
-      printf '  exit 127\n'
-      printf 'fi\n\n'
-      printf "if [ -f \"\$SCRIPT_DIR/lib/hq-cli-floor.sh\" ]; then\n"
-      printf '  # shellcheck source=lib/hq-cli-floor.sh\n'
-      printf "  . \"\$SCRIPT_DIR/lib/hq-cli-floor.sh\"\n"
-      printf '  hq_cli_floor_check "%s" "%s"\n' "$script_name" "$min_cli"
-      printf 'fi\n\n'
-      if [ "$command" = "derive-trigger-facts" ]; then
-        printf '%s\n' \
-          '# Node replaces an inherited closed fd 0 with /dev/null; tell the CLI to run its own bundled shell with fd 0 closed.' \
-          'if ! { true 3<&0; } 2>/dev/null; then' \
-          '  HQ_CORE_STDIN_CLOSED=1' \
-          '  export HQ_CORE_STDIN_CLOSED' \
-          'fi' \
-          ''
-      fi
-      if [ "$root" = "live" ] || [ "$root" = "live-project" ]; then
-        printf '%s\n' \
-          '# MSYS path conversion is disabled for the hq process so slash commands arrive unchanged.' \
-          '# Convert only this generated root path to Windows form for the native CLI.' \
-          'if command -v cygpath >/dev/null 2>&1; then' \
-          '  HQ_ROOT="$(cygpath -m "$HQ_ROOT")"' \
-          'fi' \
-          ''
-      fi
-      printf '%s\n' \
-        'forwarded_args=("$@")' \
-        'forwarded_arg_count=$#'
+        'SCRIPT_DIR="$(cd "$FORWARDER_DIR" && pwd)"'
+      printf '%s\n' '# shellcheck disable=SC2034'
       printf 'PATH_OPERANDS=%q\n' "$path_operands"
-      cat <<'PATH_CONVERSION'
-convert_forwarded_path() {
-  local arg_index="$1"
-  local value="${forwarded_args[$arg_index]}"
-  case "$value" in
-    /*) forwarded_args[$arg_index]="$(cygpath -m "$value")" ;;
-  esac
-}
-
-if command -v cygpath >/dev/null 2>&1; then
-  IFS=';' read -r -a path_rules <<< "$PATH_OPERANDS"
-  for path_rule in "${path_rules[@]}"; do
-    case "$path_rule" in
-      none) ;;
-      position:*)
-        index="${path_rule#position:}"
-        if (( index < forwarded_arg_count )); then convert_forwarded_path "$index"; fi
-        ;;
-      first-nonoption)
-        for ((index = 0; index < forwarded_arg_count; index++)); do
-          case "${forwarded_args[index]}" in --*) ;; *) convert_forwarded_path "$index"; break ;; esac
-        done
-        ;;
-      all-nonoptions)
-        for ((index = 0; index < forwarded_arg_count; index++)); do
-          case "${forwarded_args[index]}" in --*) ;; *) convert_forwarded_path "$index" ;; esac
-        done
-        ;;
-      options:*)
-        IFS=, read -r -a path_options <<< "${path_rule#options:}"
-        for ((index = 0; index < forwarded_arg_count; index++)); do
-          for path_option in "${path_options[@]}"; do
-            case "${forwarded_args[index]}" in
-              "$path_option")
-                index=$((index + 1))
-                if (( index < forwarded_arg_count )); then convert_forwarded_path "$index"; fi
-                break
-                ;;
-              "$path_option"=*)
-                value="${forwarded_args[index]#*=}"
-                case "$value" in /*) forwarded_args[index]="${path_option}=$(cygpath -m "$value")" ;; esac
-                break
-                ;;
-            esac
-          done
-        done
-        ;;
-      comma:*)
-        path_option="${path_rule#comma:}"
-        for ((index = 0; index < forwarded_arg_count; index++)); do
-          case "${forwarded_args[index]}" in
-            "$path_option")
-              index=$((index + 1))
-              if (( index < forwarded_arg_count )); then
-                IFS=, read -r -a path_values <<< "${forwarded_args[index]}"
-                converted_values=()
-                for path_value in "${path_values[@]}"; do
-                  case "$path_value" in /*) converted_values+=("$(cygpath -m "$path_value")") ;; *) converted_values+=("$path_value") ;; esac
-                done
-                value="$(IFS=,; printf '%s' "${converted_values[*]}")"
-                forwarded_args[index]="$value"
-              fi
-              break
-              ;;
-            "$path_option"=*)
-              value="${forwarded_args[index]#*=}"
-              case "$value" in
-                /*,*|/*)
-                  IFS=, read -r -a path_values <<< "$value"
-                  converted_values=()
-                  for path_value in "${path_values[@]}"; do
-                    case "$path_value" in /*) converted_values+=("$(cygpath -m "$path_value")") ;; *) converted_values+=("$path_value") ;; esac
-                  done
-                  value="$(IFS=,; printf '%s' "${converted_values[*]}")"
-                  forwarded_args[index]="${path_option}=$value"
-                  ;;
-              esac
-              break
-              ;;
-          esac
-        done
-        ;;
-      *) echo "unknown path_operands rule: $path_rule" >&2; exit 70 ;;
-    esac
-  done
-fi
-PATH_CONVERSION
-      if [ "$root" = "live" ] || [ "$root" = "live-project" ]; then
-        printf 'if [ "$forwarded_arg_count" -gt 0 ]; then\n'
-        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s --hq-root \"\$HQ_ROOT\" %s \"\${forwarded_args[@]}\"\n" core "$command"
-        printf 'else\n'
-        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s --hq-root \"\$HQ_ROOT\" %s\n" core "$command"
-        printf 'fi\n'
-      else
-        printf 'if [ "$forwarded_arg_count" -gt 0 ]; then\n'
-        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s %s \"\${forwarded_args[@]}\"\n" core "$command"
-        printf 'else\n'
-        printf "  MSYS2_ARG_CONV_EXCL='*' exec hq %s %s\n" core "$command"
-        printf 'fi\n'
+      printf '%s\n' \
+        'if [ ! -f "$SCRIPT_DIR/lib/forwarder.sh" ]; then' \
+        "  printf '%s: required forwarder library is missing: %s\\n' '$script_name' \"\$SCRIPT_DIR/lib/forwarder.sh\" >&2" \
+        '  exit 1' \
+        'fi' \
+        '# shellcheck source=lib/forwarder.sh' \
+        '. "$SCRIPT_DIR/lib/forwarder.sh"'
+      if [ "$no_update_check" = true ]; then
+        printf '%s\n' 'export HQ_NO_UPDATE_CHECK=1'
       fi
+      printf 'forwarder_exec "%s" "%s" "%s" "%s" "%s" "$@"\n' \
+        "$script_name" "$min_cli" "$root" "$command" "$stdin_closed"
     } > "$output"
-  else
+    chmod +x "$output"
+    continue
+  fi
+  if [ "$interpreter" = "node" ]; then
     command_json='["core"'
     for command_part in $command; do
       command_json="$command_json, \"$command_part\""

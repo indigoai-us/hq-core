@@ -19,10 +19,12 @@ TMPROOT="$(mktemp -d)"
 ROOT="$TMPROOT/hq"
 trap 'rm -rf "$TMPROOT"' EXIT
 
-mkdir -p "$ROOT/core/policies" "$ROOT/core/scripts" "$ROOT/.claude/hooks" \
+mkdir -p "$ROOT/core/policies" "$ROOT/core/scripts/lib" "$ROOT/.claude/hooks" \
   "$ROOT/workspace/orchestrator/policy-trigger-state"
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$ROOT/core/scripts/hook-lib.sh"
 ln -s "$EVAL" "$ROOT/core/scripts/eval-trigger.sh"
+ln -s "$HQ_SRC/core/scripts/lib/forwarder.sh" "$ROOT/core/scripts/lib/forwarder.sh"
+ln -s "$HQ_SRC/core/scripts/lib/hq-cli-floor.sh" "$ROOT/core/scripts/lib/hq-cli-floor.sh"
 cp "$INJECT" "$ROOT/.claude/hooks/inject-policy-on-trigger.sh"
 cat >"$ROOT/core/scripts/derive-trigger-facts.sh" <<'EOF'
 #!/usr/bin/env bash

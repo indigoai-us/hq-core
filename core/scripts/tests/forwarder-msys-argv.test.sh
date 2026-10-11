@@ -12,7 +12,12 @@ printf 'synthetic path fixture\n' > "$TMP/fixture/real-path/file.txt"
 # path_operands rule regenerates a different forwarder and fails this check.
 generated_root="$TMP/generated"
 bash "$ROOT/core/scripts/generate-forwarders.sh" --output-root "$generated_root"
-while IFS="$(printf '\t')" read -r path command kind root interpreter min_cli state path_operands; do
+mkdir -p "$generated_root/core/scripts/lib"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$generated_root/core/scripts/lib/forwarder.sh"
+if [ -f "$ROOT/core/scripts/lib/hq-cli-floor.sh" ]; then
+  cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$generated_root/core/scripts/lib/hq-cli-floor.sh"
+fi
+while IFS="$(printf '\t')" read -r path _ kind _ _ _ state path_operands _ _; do
   [ "$kind" = "generated" ] && [ "$state" = "forwarded" ] || continue
   if ! cmp -s "$ROOT/$path" "$generated_root/$path"; then
     fail "generated forwarder differs from manifest output: $path ($path_operands)"

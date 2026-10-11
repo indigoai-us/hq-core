@@ -70,6 +70,8 @@ hq_json_get() {
 }
 EOF
   ln -s "$HQ_SRC/core/scripts/derive-trigger-facts.sh" "$ROOT/core/scripts/derive-trigger-facts.sh"
+  ln -s "$HQ_SRC/core/scripts/lib/forwarder.sh" "$ROOT/core/scripts/lib/forwarder.sh"
+  ln -s "$HQ_SRC/core/scripts/lib/hq-cli-floor.sh" "$ROOT/core/scripts/lib/hq-cli-floor.sh"
   cp "$HQ_SRC/core/scripts/lib/transcript-tail.sh" "$ROOT/core/scripts/lib/transcript-tail.sh"
   cp "$HQ_SRC/core/scripts/lib/trigger-fact-text.awk" "$ROOT/core/scripts/lib/trigger-fact-text.awk"
   printf '#!/bin/bash\nexit 0\n' > "$ROOT/core/scripts/eval-trigger.sh"

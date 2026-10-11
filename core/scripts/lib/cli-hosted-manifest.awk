@@ -49,8 +49,16 @@ function emit_entry(    valid) {
     report("invalid path_operands for " path)
     valid = 0
   }
+  if (no_update_check != "true" && no_update_check != "false") {
+    report("invalid no_update_check for " path)
+    valid = 0
+  }
+  if (stdin_closed != "true" && stdin_closed != "false") {
+    report("invalid stdin_closed for " path)
+    valid = 0
+  }
   if (valid) {
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", path, command, kind, root, interpreter, min_cli, state, path_operands
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", path, command, kind, root, interpreter, min_cli, state, path_operands, no_update_check, stdin_closed
   }
 }
 
@@ -65,6 +73,8 @@ function emit_entry(    valid) {
   min_cli = ""
   state = ""
   path_operands = ""
+  no_update_check = "false"
+  stdin_closed = "false"
   next
 }
 
@@ -107,6 +117,18 @@ function emit_entry(    valid) {
 /^    path_operands:[[:space:]]/ {
   path_operands = $0
   sub(/^    path_operands:[[:space:]]*/, "", path_operands)
+  next
+}
+
+/^    no_update_check:[[:space:]]/ {
+  no_update_check = $0
+  sub(/^    no_update_check:[[:space:]]*/, "", no_update_check)
+  next
+}
+
+/^    stdin_closed:[[:space:]]/ {
+  stdin_closed = $0
+  sub(/^    stdin_closed:[[:space:]]*/, "", stdin_closed)
   next
 }
 

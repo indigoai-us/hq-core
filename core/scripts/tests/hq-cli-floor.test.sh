@@ -248,6 +248,7 @@ hot_home="$TMP/hot-forwarder-home"
 hot_execs="$TMP/hot-forwarder-execs"
 mkdir -p "$hot_root/core/scripts/lib" "$hot_root/core" "$hot_package/bin" "$hot_package/path" "$hot_shims"
 cp "$ROOT/core/scripts/derive-trigger-facts.sh" "$hot_root/core/scripts/derive-trigger-facts.sh"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$hot_root/core/scripts/lib/forwarder.sh"
 cp "$LIB" "$hot_root/core/scripts/lib/hq-cli-floor.sh"
 printf 'requiresHqCli: ">=5.342.5"\n' > "$hot_root/core/core.yaml"
 printf '{"name":"@indigoai-us/hq-cli","version":"5.342.7"}\n' > "$hot_package/package.json"
@@ -372,7 +373,9 @@ symlink_stub_bin="$TMP/symlink-stub-bin"
 symlink_args="$TMP/symlink-forwarder-args"
 mkdir -p "$symlink_physical_root/core/scripts/lib" "$symlink_stub_bin"
 ln -s "$symlink_physical_root" "$symlink_logical_root"
-printf 'hq_cli_floor_check() { :; }\n' > "$symlink_physical_root/core/scripts/lib/hq-cli-floor.sh"
+mkdir -p "$symlink_logical_root/core/scripts/lib"
+printf 'hq_cli_floor_check() { :; }\n' > "$symlink_logical_root/core/scripts/lib/hq-cli-floor.sh"
+cp "$ROOT/core/scripts/lib/forwarder.sh" "$symlink_logical_root/core/scripts/lib/forwarder.sh"
 cat > "$symlink_stub_bin/hq" <<'HQ'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$SYMLINK_HQ_ARGS"
@@ -402,6 +405,7 @@ export SYMLINK_HQ_ARGS="$symlink_args"
 PATH="$symlink_stub_bin:/usr/bin:/bin"
 export PATH
 unset HQ_ROOT CLAUDE_PROJECT_DIR
+assert_equal "$(test -f "$symlink_logical_root/core/scripts/lib/forwarder.sh" && printf found)" found "forwarder library is available through the logical HQ symlink"
 expected_symlink_root="$symlink_logical_root"
 if command -v cygpath >/dev/null 2>&1; then
   expected_symlink_root="$(cygpath -m "$symlink_logical_root")"

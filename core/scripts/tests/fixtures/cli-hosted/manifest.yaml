@@ -8,6 +8,8 @@ entries:
     min_cli: 5.11.0
     state: forwarded
     path_operands: none
+    no_update_check: true
+    stdin_closed: true
     note: |
       Why the fixture moved: it tests live-root forwarding.
   - path: core/scripts/fixture-cwd.sh

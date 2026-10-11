@@ -46,6 +46,8 @@ cp "$ROOT/core/scripts/lib/trigger-fact-text.awk" "$TMP/core/scripts/lib/"
 ln -s "$ROOT/core/scripts/derive-trigger-facts.sh" "$TMP/core/scripts/derive-trigger-facts.sh"
 cp "$ROOT/core/scripts/lib/transcript-tail.sh" "$TMP/core/scripts/lib/"
 ln -s "$ROOT/core/scripts/eval-trigger.sh" "$TMP/core/scripts/eval-trigger.sh"
+ln -s "$ROOT/core/scripts/lib/forwarder.sh" "$TMP/core/scripts/lib/forwarder.sh"
+ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$TMP/core/scripts/lib/hq-cli-floor.sh"
 chmod +x \
   "$TMP/.claude/hooks/hook-gate.sh" \
   "$TMP/.claude/hooks/inject-policy-on-trigger.sh" \
