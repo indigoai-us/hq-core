@@ -59,9 +59,13 @@ case "$STATUS" in
 esac
 
 record_pickup() { # <kind> <detail>
-  jq --arg now "$NOW" --arg k "$1" --arg d "$2" \
+  local TMP_MANIFEST
+  TMP_MANIFEST="$(mktemp "${MANIFEST}.tmp.XXXXXX")" || exit 1
+  if ! jq --arg now "$NOW" --arg k "$1" --arg d "$2" \
     '.status = "picked-up" | .pickedUpAt = $now | .pickup = {kind: $k, detail: $d, recordedAt: $now}' \
-    "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+    "$MANIFEST" > "$TMP_MANIFEST" || ! mv "$TMP_MANIFEST" "$MANIFEST"; then
+    rm -f "$TMP_MANIFEST"
+  fi
   echo "hq-delegate-pickup: $NAME picked up the delegation ($1) — status advanced to 'picked-up'"
   exit 0
 }
@@ -93,7 +97,10 @@ if [ "$age_h" -lt "$WINDOW" ]; then
   exit 6
 fi
 reason="no pickup evidence from $NAME within ${WINDOW}h of send (${SENT_AT:-unknown}): no acknowledgement, no commit by $TO on ${BRANCH:-the branch}"
-jq --arg now "$NOW" --arg r "$reason" '.status = "failed" | .failedAt = $now | .failure = {reason: $r, recordedAt: $now}' \
-  "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+TMP_MANIFEST="$(mktemp "${MANIFEST}.tmp.XXXXXX")" || exit 1
+if ! jq --arg now "$NOW" --arg r "$reason" '.status = "failed" | .failedAt = $now | .failure = {reason: $r, recordedAt: $now}' \
+  "$MANIFEST" > "$TMP_MANIFEST" || ! mv "$TMP_MANIFEST" "$MANIFEST"; then
+  rm -f "$TMP_MANIFEST"
+fi
 echo "hq-delegate-pickup: FAILED — $reason. Re-send with a direct ask, or hand it to someone else." >&2
 exit 5

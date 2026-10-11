@@ -259,4 +259,55 @@ fi
 grep -q 'auth-refresh' "$HQ_STUB_LOG" || fail "expected cognito/auth refresh attempt"
 pass "auth failure dm names re-login; no device-login loop"
 
+# ---------- 4) cached Claude creds + expired OAuth → auth, not agent_error ----------
+# Real Outpost case: ~/.claude/.credentials.json is still present, so the
+# pre-run skip does not fire. The CLI exits in seconds with the expired-OAuth
+# line. That must be auth (re-login DM), not "fix the prompt/skill".
+cat >"$HQ/personal/jobs/oauth-expired.yaml" <<'YAML'
+id: alert-oauth-expired
+name: OAuth expired job
+schedule: "0 9 * * *"
+timezone: UTC
+runtime: claude
+exec:
+  prompt: "Reply OK"
+cwd: personal
+timeout_seconds: 120
+notify: profile
+enabled: true
+owner: owner@example.com
+created_at: "2026-08-23T14:00:00Z"
+requirements:
+  runtime: claude
+  secrets: []
+YAML
+echo '{"token":"stale"}' >"$HOME_DIR/.claude/.credentials.json"
+cat >"$BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "Failed to authenticate: OAuth session expired and could not be refreshed" >&2
+exit 1
+STUB
+chmod +x "$BIN/claude"
+: >"$HQ_DM_LOG"
+: >"$HQ_STUB_LOG"
+: >"$HQ_CURL_LOG"
+export HQ_JOB_NOTIFY_NOW_EPOCH=5000000
+set +e
+bash "$RUN" --hq-root "$HQ" --job-id alert-oauth-expired
+oauth_rc=$?
+set -e
+[ "$oauth_rc" -ne 0 ] || fail "expired OAuth run should fail the job, got $oauth_rc"
+grep -qi 're-login' "$HQ_DM_LOG" || fail "expired OAuth dm should name re-login"
+if grep -qi 'fix the prompt' "$HQ_DM_LOG"; then
+  fail "expired OAuth must not tell the owner to fix the prompt"
+fi
+grep -q '"failure_class":"auth"' "$HQ_CURL_LOG" || fail "expired OAuth ingest failure_class auth"
+if grep -q '"failure_class":"agent_error"' "$HQ_CURL_LOG"; then
+  fail "expired OAuth must not ingest agent_error"
+fi
+if grep -Eqi 'device-code|claude login|codex login' "$HQ_STUB_LOG"; then
+  fail "must not device-login loop on expired OAuth"
+fi
+pass "expired Claude OAuth with cached creds classifies as auth"
+
 echo "ALL PASSED (hq-job-alerts)"
