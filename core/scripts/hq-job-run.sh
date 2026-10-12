@@ -37,6 +37,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${1:-}" = "--company-machine" ]; then
+  shift
+  exec node "$SCRIPT_DIR/lib/company-jobs.mjs" run "$@"
+fi
+if [ "${HQ_MACHINE_AUTH_REQUIRED:-}" = "1" ]; then
+  echo 'company jobs require --company-machine <config>' >&2
+  exit 2
+fi
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/hook-lib.sh"

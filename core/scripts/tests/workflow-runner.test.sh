@@ -1364,5 +1364,14 @@ check "every schema handed to the codex engine in this suite is strict-valid" "$
 node --test "$REPO_ROOT/core/scripts/__tests__/windows-cmd-spawn.test.mjs" >/dev/null
 check "Windows npm-shim spawn helper (PATHEXT, no shell:true, runner wiring)" "$?"
 
+# The answering CLI is the other half of gate(); keep it on this job so a
+# --force index regression cannot land without the runner suite seeing it.
+CLI_OUT="$(bash "$REPO_ROOT/core/scripts/tests/workflow-gate-cli.test.sh" 2>&1)"
+CLI_RC=$?
+if [ "$CLI_RC" -ne 0 ]; then
+  printf '%s\n' "$CLI_OUT"
+fi
+check "workflow-gate answering CLI (index mapping / --force)" "$CLI_RC"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

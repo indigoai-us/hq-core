@@ -563,6 +563,10 @@ jobs:
             core/scripts/tests/hq-job-run.test.sh \
             core/scripts/tests/hq-job-probe.test.sh \
             core/scripts/tests/outpost-jobs-reconcile.test.sh \
+            core/scripts/tests/personal-job-oncalendar.test.sh \
+            core/scripts/company-jobs-install.sh \
+            core/scripts/tests/fixtures/company-jobs-install.sh \
+            core/scripts/tests/company-jobs-account.test.sh \
             core/scripts/tests/outpost-job-failure-alerts.test.sh \
             core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
@@ -1290,11 +1294,28 @@ jobs:
           bash core/scripts/tests/hq-job-run.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
           bash core/scripts/tests/outpost-jobs-reconcile.test.sh
+          bash core/scripts/tests/personal-job-oncalendar.test.sh
           # macOS TMPDIR ends in "/", which doubles a slash in the HQ root.
           TMPDIR="$RUNNER_TEMP/" bash core/scripts/tests/outpost-jobs-reconcile.test.sh
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/outpost-job-failure-alerts.test.sh
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hq-job-notify.test.sh
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hq-job-alerts.test.sh
+
+  company-jobs:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: company-jobs
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Accepted company job runner
+        run: |
+          node --test core/scripts/tests/company-jobs.test.mjs
+          node --test core/scripts/tests/company-jobs-acceptance.test.mjs
+      - name: Existing job account shell and groups are refused when wrong
+        run: bash core/scripts/tests/company-jobs-account.test.sh
 
   previously-unrun-suites:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
