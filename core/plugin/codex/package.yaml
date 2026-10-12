@@ -12,6 +12,7 @@ contributes:
     - architect
     - ascii-graphic
     - calibration-report
+    - capacity
     - codebase-design
     - designate-team
     - diagnose

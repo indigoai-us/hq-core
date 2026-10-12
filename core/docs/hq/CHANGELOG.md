@@ -1,4 +1,37 @@
 ## [Unreleased]
+- On Windows, `/conduct` lanes can start Claude and other npm-installed
+  engines. The runner no longer launches `.cmd` shims the way Unix binaries
+  are launched, which made Node 20 refuse the start (`spawn EINVAL`) or miss
+  `claude.cmd` on PATH (`spawn ENOENT`).
+- Process wrappers such as `env`, `nohup`, `timeout`, `nice`, and `sudo` no
+  longer make the policy-write hook abort on macOS Bash 3.2. Empty argument
+  lists are copied without treating them as unset, so a wrapped command that
+  is not a policy write is allowed. Wrapped policy writes are still blocked.
+- Setup worker: the HQ desktop app now creates the setup bot with no kickoff
+  and, when its visual setup closes, sends one `Setup note from the HQ desktop
+  app:` note with everything that setup settled. The worker treats that note
+  as its kickoff. With `import` done it never offers the import again and never
+  runs a second scan (step 3 is skipped). Notes from older app builds still
+  fold in, and a late note no longer leaves an old question standing.
+- Setup worker: it no longer asks what the person already said. A standing
+  rule in "How you talk" checks the person's words, the app's handoff, the
+  import report and the HQ before any question. `skills/your-business.md`
+  decides the kind of business from what they said and what Import found,
+  states that reading inside the recommendations, and no longer allows a
+  follow-up just because it would change them. Software development for
+  clients is the services profile, so "I run an independent software
+  engineering company" is not followed by "for clients, or your own
+  product?".
+- Regression tests: `setup-worker-first-run-handoff.test.sh` covers the one
+  end-of-setup note (fixture lines from the current desktop builder added) and
+  forbids a second import offer or scan; new
+  `setup-worker-infers-before-asking.test.sh` pins the no-ask rules. Both run
+  in pr-checks.
+- `/update-hq` hook restore no longer drops the Stop monitor waiter
+  (`hq-monitor-session-hook.sh wait`, asyncRewake, 24-hour timeout). The hook
+  health check now fails when that waiter is missing from a tree that ships the
+  script, and it no longer crashes on jq 1.6 (`$label` is a reserved word there).
+- `/hq-sync` now runs `hq reindex` after a pull that downloaded or deleted files, so company skills show up for teammates without a manual reindex.
 - Generated script forwarders now share their CLI detection, version-floor, root, and
   Git Bash path-conversion runtime through `core/scripts/lib/forwarder.sh`.
 - Delegate pickup and failure receipts now replace private manifests with mode-0600 temporary files, preserving the manifest's permissions.

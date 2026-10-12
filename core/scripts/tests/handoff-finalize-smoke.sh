@@ -80,6 +80,29 @@ printf '%s\n' '#!/bin/sh' 'exit 0' >"$TMP_ROOT/bin/qmd"
 chmod +x "$TMP_ROOT/bin/qmd"
 export HOME="$TMP_ROOT/home"
 
+# The finalizer runs qmd-reindex-bg.sh, which execs `hq index background`. The
+# real CLI bundles its own qmd (the stub above never runs) and DETACHES a worker
+# that outlives this script, inheriting a cwd under $TMP_ROOT that the EXIT
+# trap deletes. That is how this smoke leaked nine `hq index background --worker
+# --log C:/tmp/qmd-handoff.log` processes that each spun at ~96% CPU for days.
+# Intercept that one subcommand and record its argv; every other `hq` call
+# (the status-summary forwarder) still reaches the real CLI. The skip mode is a
+# second guard in case anything resolves the real CLI past this stub.
+US396_REAL_HQ="$(command -v hq)"
+export US396_REAL_HQ
+export US396_HQ_BACKGROUND_RECORD="$TMP_ROOT/hq-index-background.argv"
+export HQ_QMD_REINDEX_MODE=skip
+cat > "$TMP_ROOT/bin/hq" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "index" && "${2:-}" == "background" ]]; then
+  printf '%s\n' "$*" >> "$US396_HQ_BACKGROUND_RECORD"
+  echo 4242
+  exit 0
+fi
+exec "$US396_REAL_HQ" "$@"
+SH
+chmod +x "$TMP_ROOT/bin/hq"
+
 # Simulate Git Bash/MSYS argv conversion for native utilities: slash-leading
 # non-path arguments are rewritten unless the caller opts out. The handoff
 # command is data, so the finalizer must preserve it for jq.
@@ -328,5 +351,22 @@ else
     fail "smoke created host qmd completion stamp at $_HOST_STAMP"
   fi
 fi
+
+# Every reindex launch reached the sandbox stub, never the real CLI, and the
+# forwarder did not apply the fake cygpath outside a Windows Bash: on macOS and
+# Linux the log stays the absolute /tmp path the finalizer passed.
+assert_eq "$(jq -r '.qmd_pid' <<<"$out")" "4242" "qmd_pid comes from the sandbox hq stub"
+[[ -s "$US396_HQ_BACKGROUND_RECORD" ]] || fail "finalizer never launched hq index background"
+_windows_bash=0
+case "${OSTYPE:-}" in msys* | cygwin*) _windows_bash=1 ;; esac
+case "$(uname -s 2>/dev/null || true)" in MINGW* | MSYS* | CYGWIN*) _windows_bash=1 ;; esac
+while IFS= read -r _launch; do
+  [[ "$_launch" == "index background --hq-root "* ]] || fail "unexpected hq index background argv: $_launch"
+  if [[ "$_windows_bash" -eq 0 ]]; then
+    [[ "$_launch" == *" --log /tmp/qmd-handoff.log" ]] \
+      || fail "forwarder rewrote the reindex log path on a non-Windows host: $_launch"
+    [[ "$_launch" != *"C:"* ]] || fail "forwarder applied cygpath on a non-Windows host: $_launch"
+  fi
+done < "$US396_HQ_BACKGROUND_RECORD"
 
 echo "handoff-finalize smoke: ok"

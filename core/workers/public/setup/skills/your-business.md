@@ -20,22 +20,51 @@ Look first, quietly. You may already know most of the answer from:
 - the company they joined or created in the previous step (its name, and
   anything in `companies/{co}/knowledge/`),
 - what Import just found (repository names, project names, note titles, the
-  kinds of documents on this machine),
+  kinds of documents on this machine). When the app's visual setup ran the
+  import, read the report its handoff names; folders named after other
+  organizations are usually clients,
 - the "Owner context" block,
 - their email domain.
 
-If the evidence points clearly to one kind of business, say what you think it
-is and ask them to confirm, in one line: "From what I found, it looks like you
-run a marketing agency. Is that right?" If it does not, ask plainly:
+If the evidence points clearly to one kind of business, do not ask: say what
+you think it is inside the message that makes your recommendations (see
+below), so they can correct it. If it does not, ask plainly:
 
 > **What kind of business do you run?**
 
-Accept any answer in their own words. Map it to the closest profile below. If
-it matches none of them, use "Any business" plus your own judgement, and do
-not force it into a category. Ask at most one follow-up if it changes the
-recommendations (for an agency: "About how many clients do you work with right
-now?"; for a brand: "Do you sell mostly on your own store, on Amazon, or in
-retail?").
+Accept any answer in their own words. Map it to the closest profile below
+using what they said together with everything above, and decide: never ask
+them to choose between two profiles when their words or what you found
+already tell you which. If it matches none of them, use "Any business" plus
+your own judgement, and do not force it into a category.
+
+Some words settle it on their own, read together with what the business
+does:
+
+- Work for clients (the agency or services profile): a consultancy, an
+  agency, a dev shop, a contractor, "for clients", "for other companies",
+  project folders named after other organizations, and an independent
+  firm that sells a skill (engineering, design, marketing, accounting)
+  rather than a product. "I run an independent software engineering
+  company" is a software services firm. An independent bookshop or a game
+  studio that sells its own games is not.
+- A freelancer is one person doing client work: use the "Creator, solo
+  operator or freelancer" profile when they work alone, and add the client
+  items from the services profile when their work is for clients.
+- Their own product (the software or product profile): "our product", "our
+  app", a product name, customers who sign up or subscribe.
+
+Say your reading back inside the message that makes your recommendations,
+not as a separate question, so they can correct it if it is wrong: "Sounds
+like you build software for clients like Acme Robotics and Bluebird Labs.
+Here's what I'd set up for you: ..." When they plainly do both, recommend for
+both, most important first, instead of asking which.
+
+Ask a follow-up only when it would change what you set up and nothing they
+said or you found answers it: how many clients an agency has when that
+decides how many client homes to make, or where a brand mostly sells
+("Do you sell mostly on your own store, on Amazon, or in retail?"). Never ask
+a follow-up whose answer is already in what they told you.
 
 Record the business type and the key facts in the progress note and in
 `personal/knowledge/profile.md`.
@@ -200,8 +229,9 @@ connected:
 
 ### Agency or services firm
 
-Marketing, creative, development, consulting, recruiting, accounting, or any
-business that does work for clients.
+Marketing, creative, software development for clients (dev shops and
+independent software engineering firms), consulting, recruiting, accounting,
+or any business that does work for clients.
 
 - **Project management tool** (ClickUp, Asana, Monday, Notion, Linear,
   Teamwork, Jira) so bots can see what is due and who owns it.
@@ -235,6 +265,10 @@ business that does work for clients.
   weekly business review.
 
 ### Software or product company
+
+A company that builds and sells its own software or product. Someone who
+builds software for clients is the agency or services profile above, with
+the code and issue tracker items below added to it.
 
 - **Code** (GitHub or GitLab), **issue tracker** (Linear, Jira), **docs**
   (Notion, Confluence).

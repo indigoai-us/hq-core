@@ -1,7 +1,7 @@
 ---
 name: review
 description: "Pre-landing code review of the git diff; critical issues block the PR. Use before a PR or when asked to review changes."
-allowed-tools: Read, Grep, Glob, Bash(git:*), AskUserQuestion, Task
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(bash "$HQ_ROOT/core/scripts/commit-secret-scan.sh:*), AskUserQuestion, Task
 ---
 
 # Pre-Landing Code Review
@@ -11,7 +11,7 @@ Semantic code review that reads the diff and reasons about correctness, security
 ## Process
 
 ```
-VALIDATE BRANCH → LOAD CHECKLIST → GET DIFF → TWO-PASS ANALYSIS → REPORT
+VALIDATE BRANCH → LOAD CHECKLIST → GET DIFF → SECRET SCAN → TWO-PASS ANALYSIS → REPORT
 ```
 
 ### Step 1: Branch Validation
@@ -43,6 +43,31 @@ git diff origin/main
 ```
 
 Read the FULL diff before flagging anything. Issues already addressed within the diff are not issues.
+
+### Step 3b: Secret Scan
+
+Scan every file the branch changed for secrets. Run it from any folder inside
+the repo under review:
+
+```bash
+bash "$HQ_ROOT/core/scripts/commit-secret-scan.sh" pr-check origin/main
+```
+
+(`$HQ_ROOT` is the HQ folder; use its absolute path if the variable is unset.)
+This runs whether or not commit-time scanning is turned on, and catches
+anything committed with the check skipped or from another machine. It is
+offline (`hq scan secrets`, hq CLI 5.345.86+) and prints rule, file and line,
+never the value.
+
+- Exit 1: each finding is a **CRITICAL** issue. The fix is to remove the
+  value, rotate the credential if it was ever pushed, and keep it in the HQ
+  vault (`hq secrets set`, then `hq run` / `hq secrets exec` at run time). A
+  secret in an earlier commit stays in history even after it is deleted, so
+  say whether the branch history needs rewriting before the PR.
+- Exit 2 (scanner missing or base not found): report it as CRITICAL — the
+  scan did not run — and give the fix (update the hq CLI, or pass the right
+  base). Do not treat a scan that could not run as clean.
+- A line that is a known false positive can carry a `gitleaks:allow` comment.
 
 ### Step 4: Two-Pass Analysis
 

@@ -101,6 +101,7 @@ Run `hq <command> --help` for options. Commonly used:
 | `hq sync now` | Push then pull the active company (`--all` for every membership plus the personal vault) |
 | `hq files share <prefix>...` | Share vault paths. Opens a share-session page; `--with <email\|grp_*\|@all> --permission <read\|write>` grants directly. Full reference: `.claude/skills/hq-files/SKILL.md` |
 | `hq secrets` / `hq run` | Manage secrets; run a command with secrets injected |
+| `hq scan secrets` | Check files or staged changes for secrets before they are committed. Turn on checking for every commit with `bash core/scripts/commit-secret-scan.sh enable` (off by default) |
 | `hq dm <recipient-or-channel> "<message>"` | Send a direct message (see below) |
 | `hq search "<query>"` | Search the local HQ qmd index |
 | `hq bot` | Local bots on this computer |

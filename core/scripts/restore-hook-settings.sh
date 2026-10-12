@@ -15,7 +15,9 @@
 #
 # This healer:
 #   - writes the ten canonical master-hook.sh registrations into
-#     settings.json (other keys, including env.PATH, are preserved)
+#     settings.json, plus the shipped Stop waiter
+#     hq-monitor-session-hook.sh wait (asyncRewake, timeout 86400)
+#     (other keys, including env.PATH, are preserved)
 #   - deletes the hooks key from settings.local.json (permissions/env stay)
 # Idempotent. python-free. Always exits 0 unless a rewrite could not be saved.
 #
@@ -38,15 +40,24 @@ fi
 EVENTS='["PreToolUse","PostToolUse","PreCompact","Stop","SessionStart","UserPromptSubmit","Notification","SubagentStart","SubagentStop","SessionEnd"]'
 
 JQ_CANON='
+def master_hook($e):
+  {hooks:[{
+    type: "command",
+    command: (
+      "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + $e
+    ),
+    timeout: 300
+  }]};
+def stop_waiter:
+  {hooks:[{
+    type: "command",
+    command: "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh\" wait",
+    asyncRewake: true,
+    timeout: 86400
+  }]};
 def canonical_hooks:
   reduce $events[] as $e ({};
-    .[$e] = [{hooks:[{
-      type: "command",
-      command: (
-        "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + $e
-      ),
-      timeout: 300
-    }]}]);
+    .[$e] = (if $e == "Stop" then [stop_waiter, master_hook($e)] else [master_hook($e)] end));
 def restore:
   .hooks = canonical_hooks;
 '
@@ -55,14 +66,21 @@ NODE_PROG='
 const fs = require("fs");
 const [file, mode] = process.argv.slice(1);
 const EVENTS = ["PreToolUse","PostToolUse","PreCompact","Stop","SessionStart","UserPromptSubmit","Notification","SubagentStart","SubagentStop","SessionEnd"];
+const masterHook = (e) => ({hooks:[{
+  type: "command",
+  command: "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + e,
+  timeout: 300
+}]});
+const stopWaiter = {hooks:[{
+  type: "command",
+  command: "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh\" wait",
+  asyncRewake: true,
+  timeout: 86400
+}]};
 const canonicalHooks = () => {
   const h = {};
   for (const e of EVENTS) {
-    h[e] = [{hooks:[{
-      type: "command",
-      command: "env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\" " + e,
-      timeout: 300
-    }]}];
+    h[e] = e === "Stop" ? [stopWaiter, masterHook(e)] : [masterHook(e)];
   }
   return h;
 };

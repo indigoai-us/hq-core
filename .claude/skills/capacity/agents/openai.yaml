@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Capacity
+  short_description: >-
+    Show usage, limits, and reset times for AI accounts.

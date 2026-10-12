@@ -1361,5 +1361,8 @@ rm -f "$HQROOT/personal/settings/orchestrator.yaml"
 node "$REPO_ROOT/core/scripts/tests/assert-strict-output-schema.mjs" "$TMP/rec/schemas"/*.json 2>"$TMP/strict-all.err"
 check "every schema handed to the codex engine in this suite is strict-valid" "$?"
 
+node --test "$REPO_ROOT/core/scripts/__tests__/windows-cmd-spawn.test.mjs" >/dev/null
+check "Windows npm-shim spawn helper (PATHEXT, no shell:true, runner wiring)" "$?"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

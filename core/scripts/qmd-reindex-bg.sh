@@ -37,12 +37,28 @@ if ! command -v hq >/dev/null 2>&1; then
   exit 127
 fi
 
-if command -v cygpath >/dev/null 2>&1; then
+# Convert paths to Windows-native form ONLY on a Windows Bash (Git Bash, MSYS2,
+# Cygwin). A `cygpath` merely being on PATH is not evidence of Windows: a test
+# that stubs it on macOS turned `--log /tmp/qmd-handoff.log` into the RELATIVE
+# POSIX path `C:/tmp/qmd-handoff.log`, and the detached worker that inherited
+# it spun at 100% CPU for days once its temp cwd was deleted.
+convert_windows_paths=0
+case "${OSTYPE:-}" in
+  msys* | cygwin*) convert_windows_paths=1 ;;
+esac
+case "$(uname -s 2>/dev/null || true)" in
+  MINGW* | MSYS* | CYGWIN*) convert_windows_paths=1 ;;
+esac
+if [ "$convert_windows_paths" -eq 1 ] && ! command -v cygpath >/dev/null 2>&1; then
+  convert_windows_paths=0
+fi
+
+if [ "$convert_windows_paths" -eq 1 ]; then
   HQ_ROOT="$(cygpath -m "$HQ_ROOT")"
 fi
 forwarded_args=("$@")
 forwarded_arg_count=$#
-if command -v cygpath >/dev/null 2>&1; then
+if [ "$convert_windows_paths" -eq 1 ]; then
   for ((index = 0; index < forwarded_arg_count; index++)); do
     case "${forwarded_args[index]}" in
       --log) index=$((index + 1)); if ((index < forwarded_arg_count)); then forwarded_args[index]="$(cygpath -m "${forwarded_args[index]}")"; fi ;;

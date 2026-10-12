@@ -211,6 +211,61 @@ assert_contains "$out" '.claude/settings.json re-registers registry hook id inje
   || fail "direct settings.json registration was not reported: $out"
 pass "direct settings.json registration fails with file and registry id"
 
+echo "[1f] a shipped monitor script without the Stop waiter is a fail"
+MONITOR_MISS="$TMP/monitor-missing-stop"
+make_healthy_root "$MONITOR_MISS"
+mkdir -p "$MONITOR_MISS/.claude/hooks"
+: >"$MONITOR_MISS/.claude/hooks/hq-monitor-session-hook.sh"
+out="$(run_expect 2 "$MONITOR_MISS")"
+assert_contains "$out" 'Stop is missing the hq-monitor-session-hook.sh wait command' \
+  || fail "missing Stop waiter was not reported: $out"
+assert_contains "$out" 'restore-hook-settings.sh' \
+  || fail "missing Stop waiter did not name the healer: $out"
+MONITOR_OK="$TMP/monitor-ok"
+make_healthy_root "$MONITOR_OK"
+mkdir -p "$MONITOR_OK/.claude/hooks"
+: >"$MONITOR_OK/.claude/hooks/hq-monitor-session-hook.sh"
+cat >"$MONITOR_OK/.claude/settings.json" <<'JSON'
+{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo session-start"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"echo pre-tool"}]}],"Stop":[{"hooks":[{"type":"command","command":"env BASH_ENV=/dev/null bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hq-monitor-session-hook.sh\" wait","asyncRewake":true,"timeout":86400}]}]}}
+JSON
+out="$(run_expect 0 "$MONITOR_OK")"
+assert_contains "$out" 'HQ hook health: PASS' || fail "Stop waiter present should pass: $out"
+pass "missing Stop waiter fails only when the monitor script ships"
+
+echo "[1g] registry-duplicate jq compiles without the jq 1.6 reserved word \$label"
+if grep -E -- '--arg[[:space:]]+label[[:space:]]' "$CHECKER"; then
+  fail "check-hq-hooks.sh binds jq --arg label, which jq 1.6 rejects as a reserved word"
+fi
+if grep -F '($label)' "$CHECKER"; then
+  fail "check-hq-hooks.sh interpolates jq \$label, which jq 1.6 rejects as a reserved word"
+fi
+JQ16=""
+if [ -n "${HQ_TEST_JQ16:-}" ] && [ -x "$HQ_TEST_JQ16" ]; then
+  case "$("$HQ_TEST_JQ16" --version 2>/dev/null)" in *1.6*) JQ16="$HQ_TEST_JQ16" ;; esac
+elif command -v jq >/dev/null 2>&1; then
+  case "$(jq --version 2>/dev/null)" in *1.6*) JQ16="$(command -v jq)" ;; esac
+fi
+if [ -n "$JQ16" ]; then
+  "$JQ16" -n --arg file_label '.claude/settings.json' '"\($file_label) re-registers registry hook id x"' >/dev/null \
+    || fail "jq 1.6 rejected \$file_label interpolation"
+  if "$JQ16" -n --arg label '.claude/settings.json' '"\($label) re-registers"' >/dev/null 2>&1; then
+    fail "jq 1.6 unexpectedly accepted \$label; the reserved-word regression may be gone"
+  fi
+  set +e
+  jq16_out="$(
+    PATH="$(dirname "$JQ16"):$INLINE_STUB_BIN:$PATH"
+    bash "$CHECKER" --root "$DIRECT" 2>&1
+  )"
+  jq16_rc=$?
+  set -e
+  [ "$jq16_rc" -eq 2 ] || fail "expected exit 2 under jq 1.6, got $jq16_rc: $jq16_out"
+  assert_contains "$jq16_out" '.claude/settings.json re-registers registry hook id inject-policy-on-trigger' \
+    || fail "jq 1.6 could not check registry duplicates: $jq16_out"
+  pass "registry-duplicate filter compiles on jq 1.6 ($("$JQ16" --version))"
+else
+  pass "registry-duplicate filter avoids jq 1.6 \$label (jq 1.6 binary not on this runner)"
+fi
+
 echo "[2] a missing settings file produces an actionable desktop/SDK repair"
 MISSING="$TMP/missing"
 mkdir -p "$MISSING/.claude"

@@ -212,12 +212,13 @@ record_assignments() {
 
 argv_as_record() {
   local IFS=$'\037'
+  ((${#ARGV[@]})) || return 0
   printf '%s' "${ARGV[*]}"
 }
 
 argv_leading_command() {
   local tok
-  for tok in "${ARGV[@]}"; do
+  for tok in ${ARGV[@]+"${ARGV[@]}"}; do
     is_assignment "$tok" && continue
     printf '%s' "$tok"
     return 0
@@ -306,13 +307,13 @@ record_write_op_targets_policy() {
       if [[ -n "$target_dir" ]]; then
         is_protected_write_target "$target_dir" && return 0
       elif [[ "$exe" = mv ]]; then
-        for tok in "${positional[@]}"; do is_protected_write_target "$tok" && return 0; done
+        for tok in ${positional[@]+"${positional[@]}"}; do is_protected_write_target "$tok" && return 0; done
       elif ((${#positional[@]})); then
         is_protected_write_target "${positional[$(( ${#positional[@]} - 1 ))]}" && return 0
       fi
       ;;
     dd)
-      for tok in "${ARGV[@]}"; do
+      for tok in ${ARGV[@]+"${ARGV[@]}"}; do
         case "$tok" in of=*) is_protected_write_target "${tok#of=}" && return 0 ;; esac
       done
       ;;
@@ -351,7 +352,7 @@ record_write_op_targets_policy() {
       ;;
     chmod|chown|chgrp)
       local seen=0
-      for tok in "${ARGV[@]}"; do
+      for tok in ${ARGV[@]+"${ARGV[@]}"}; do
         [[ "$tok" = "$exe" || "$tok" = -* ]] || is_assignment "$tok" && continue
         if ((seen)); then is_protected_write_target "$tok" && return 0; else seen=1; fi
       done
@@ -422,7 +423,7 @@ record_tar_targets_policy() {
   if ((${#target_dirs[@]} == 0)); then
     is_protected_write_target . && return 0
   else
-    for tok in "${target_dirs[@]}"; do is_protected_write_target "$tok" && return 0; done
+    for tok in ${target_dirs[@]+"${target_dirs[@]}"}; do is_protected_write_target "$tok" && return 0; done
   fi
   return 1
 }
@@ -466,13 +467,13 @@ find_start_may_reach_live_policy() { # <find start path>
 record_find_delete_target() {
   local tok
   local has_delete=0
-  for tok in "${ARGV[@]}"; do [[ "$tok" = -delete ]] && has_delete=1; done
+  for tok in ${ARGV[@]+"${ARGV[@]}"}; do [[ "$tok" = -delete ]] && has_delete=1; done
   ((has_delete)) || return 1
   record_find_start_paths
   if ((${#FIND_STARTS[@]} == 0)); then
     find_start_may_reach_live_policy . && return 0
   else
-    for tok in "${FIND_STARTS[@]}"; do find_start_may_reach_live_policy "$tok" && return 0; done
+    for tok in ${FIND_STARTS[@]+"${FIND_STARTS[@]}"}; do find_start_may_reach_live_policy "$tok" && return 0; done
   fi
   return 1
 }
@@ -485,7 +486,7 @@ find_execdir_scan_cwd() {
   local tok resolved fallback=""
   record_find_start_paths
   ((${#FIND_STARTS[@]})) || FIND_STARTS=(.)
-  for tok in "${FIND_STARTS[@]}"; do
+  for tok in ${FIND_STARTS[@]+"${FIND_STARTS[@]}"}; do
     resolved="$(resolve_from_cwd "$tok")" || continue
     [[ -n "$fallback" ]] || fallback="$resolved"
     if is_policy_target "$tok"; then
@@ -562,11 +563,11 @@ scan_xargs_argv() { # <parent isolate flag>
     case "$tok" in
       -I|-n|-P|-L|-s|-E|-d) i=$((i + 1)); continue ;;
       -*) continue ;;
-      *) next=("${ARGV[@]:i}"); break ;;
+      *) next=(${ARGV[@]+"${ARGV[@]:i}"}); break ;;
     esac
   done
   ((${#next[@]})) || return 1
-  scan_argv_as_simple_command "$parent_isolate" "${next[@]}"
+  scan_argv_as_simple_command "$parent_isolate" ${next[@]+"${next[@]}"}
 }
 
 scan_find_exec_argv() { # <parent isolate flag>
@@ -588,11 +589,11 @@ scan_find_exec_argv() { # <parent isolate flag>
     if [[ -n "$execdir_cwd" ]]; then
       saved_cwd="$CURRENT_CWD"
       CURRENT_CWD="$execdir_cwd"
-      scan_argv_as_simple_command "$parent_isolate" "${next[@]}"; rc=$?
+      scan_argv_as_simple_command "$parent_isolate" ${next[@]+"${next[@]}"}; rc=$?
       CURRENT_CWD="$saved_cwd"
       ((rc == 0)) && return 0
     else
-      scan_argv_as_simple_command "$parent_isolate" "${next[@]}" && return 0
+      scan_argv_as_simple_command "$parent_isolate" ${next[@]+"${next[@]}"} && return 0
     fi
   done
   ((found)) || return 1
@@ -610,15 +611,15 @@ scan_parallel_argv() { # <parent isolate flag>
       -j|--jobs|--delay|--timeout) i=$((i + 1)); continue ;;
       --jobs=*|--delay=*|--timeout=*|-*) continue ;;
       :::|::::|--arg-file) break ;;
-      *) next=("${ARGV[@]:i}"); break ;;
+      *) next=(${ARGV[@]+"${ARGV[@]:i}"}); break ;;
     esac
   done
   ((${#next[@]})) || return 1
   for ((i=0; i<${#next[@]}; i++)); do
-    [[ "${next[$i]}" = ::: || "${next[$i]}" = :::: || "${next[$i]}" = --arg-file ]] && { next=("${next[@]:0:i}"); break; }
+    [[ "${next[$i]}" = ::: || "${next[$i]}" = :::: || "${next[$i]}" = --arg-file ]] && { next=(${next[@]+"${next[@]:0:i}"}); break; }
   done
   ((${#next[@]})) || return 1
-  scan_argv_as_simple_command "$parent_isolate" "${next[@]}"
+  scan_argv_as_simple_command "$parent_isolate" ${next[@]+"${next[@]}"}
 }
 
 scan_process_wrapper_argv() { # <wrapper> <parent isolate flag>
@@ -659,11 +660,11 @@ scan_process_wrapper_argv() { # <wrapper> <parent isolate flag>
         esac
         ;;
     esac
-    next=("${ARGV[@]:i}")
+    next=(${ARGV[@]+"${ARGV[@]:i}"})
     break
   done
   ((${#next[@]})) || return 1
-  scan_argv_as_simple_command "$parent_isolate" "${next[@]}"
+  scan_argv_as_simple_command "$parent_isolate" ${next[@]+"${next[@]}"}
 }
 
 scan_wrapper_payload() { # <executable> <parent isolate flag>

@@ -69,33 +69,12 @@ hq_sync_count_tombstoned_files() {
   printf '%s\n' "$files_tombstoned"
 }
 
-# hq_sync_post_pull_reindex_flag_enabled
-# Avoid starting Node when the hq-flags endpoint or company identity is absent
-# or malformed. The CJS reader uses the same default-off flag-client pattern as
-# hq-autocommit-failure-context-flag.cjs.
-hq_sync_post_pull_reindex_flag_enabled() {
-  local endpoint="${HQ_FLAGS_API_URL:-}"
-  local company_uid="${HQ_COMPANY_UID:-}"
-  local cli_bin="${HQ_CLI_BIN:-}"
-  local reader_dir reader enabled
-
-  [[ "$endpoint" =~ ^https?://[^/[:space:]]+(/[^[:space:]]*)?$ ]] || return 1
-  [[ "$company_uid" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] || return 1
-  if [ -z "$cli_bin" ]; then cli_bin="$(command -v hq 2>/dev/null || true)"; fi
-  [ -n "$cli_bin" ] && [ -x "$cli_bin" ] || return 1
-  command -v node >/dev/null 2>&1 || return 1
-
-  reader_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 1
-  reader="$reader_dir/hq-sync-post-pull-reindex-flag.cjs"
-  [ -f "$reader" ] || return 1
-  enabled="$(HQ_CLI_BIN="$cli_bin" node "$reader" 2>/dev/null)" || return 1
-  [ "$enabled" = true ]
-}
-
 # hq_sync_post_pull_reindex <hq_root> <files_downloaded> <files_tombstoned>
-# The --companies runner skips reindex per company to avoid repeated work.
-# Refresh namespaced wrappers only when the default-off hq-flags gate is enabled
-# and the pull changed files. This is best-effort; never replace sync's status.
+# The --companies runner skips reindex per company to avoid repeated work, so
+# /hq-sync runs one `hq reindex` after a pull that downloaded or tombstoned
+# files. That builds per-machine company skill wrappers. Best-effort: never
+# replace sync's status. HQ_NO_UPDATE_CHECK keeps this from kicking a CLI
+# self-update in the middle of a finished sync.
 hq_sync_post_pull_reindex() {
   local hq_root="${1:-}"
   local files_downloaded="${2:-0}"
@@ -115,9 +94,8 @@ hq_sync_post_pull_reindex() {
     echo "Warning: company-skill reindex skipped because the HQ root is empty." >&2
     return 0
   fi
-  hq_sync_post_pull_reindex_flag_enabled || return 0
 
-  hq reindex --repo-root "$hq_root" || reindex_status=$?
+  HQ_NO_UPDATE_CHECK=1 hq reindex --repo-root "$hq_root" || reindex_status=$?
   if [ "$reindex_status" -ne 0 ]; then
     echo "Warning: company-skill reindex failed (exit $reindex_status); sync result is unchanged. Run 'hq reindex --repo-root <hqRoot>' to retry." >&2
   fi

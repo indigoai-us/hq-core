@@ -2,6 +2,31 @@
 
 Newest release first.
 
+## Release: v16.0.0-beta.75
+
+- New, off by default: commit-time secret scanning. Turning it on makes every
+  `git commit` run `hq scan secrets --staged` (hq CLI 5.345.86 or later; offline,
+  no account or quota) and stops a commit that contains a possible secret. It
+  covers repos on the global git hook, husky repos, and repos under `repos/`
+  that set their own hook folder; existing hooks still run after the scan. Turn it on with
+  `bash core/scripts/commit-secret-scan.sh enable`, off with `disable`, which
+  restores the backed-up hook settings. `/hq-checkup` recommends turning it on
+  while it is off. If you already use another global hook manager (for example
+  ggshield), it keeps running after the scan unless you pass `--replace`.
+- `/review` now scans the branch's changed files for secrets before a pull
+  request (`commit-secret-scan.sh pr-check`), whether or not commit-time
+  scanning is on. Findings are blocking.
+- New policy `hq-commit-secret-scan`: scan before every pull request, never
+  skip the scan without the owner's OK, and keep secrets in the HQ vault
+  (`hq secrets`, `hq run`) rather than local files.
+
+## Release: v16.0.0-beta.70
+
+- New `/free-disk-space` command (`core/scripts/free-disk-space.sh`) reports disk
+  usage and reclaims space from caches, fully pushed worktrees, and build folders
+  in idle worktrees. It never deletes uncommitted, unpushed, or stashed work. No
+  action needed on update.
+
 ## Release: v16.0.0-beta.62
 
 - The legacy conduct runtime is removed. `/conduct`, `/conduct-join`,

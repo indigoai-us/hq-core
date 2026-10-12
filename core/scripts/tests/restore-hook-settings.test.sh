@@ -100,6 +100,41 @@ for ENGINE in jq node; do
   [ "$EMPTY" -eq 0 ] && ok "$ENGINE: all ten events have master-hook" \
     || fail "$ENGINE: all ten events have master-hook" "$(jq -c '.hooks | keys' "$T/.claude/settings.json")"
 
+  if jq -e '
+    [.hooks.Stop[]?.hooks[]?
+      | select(.type == "command"
+               and (.command | type == "string")
+               and (.command | contains("hq-monitor-session-hook.sh"))
+               and (.command | endswith(" wait"))
+               and .asyncRewake == true
+               and .timeout == 86400)] | length == 1
+  ' "$T/.claude/settings.json" >/dev/null; then
+    ok "$ENGINE: Stop keeps the monitor waiter with asyncRewake and 86400 timeout"
+  else
+    fail "$ENGINE: Stop keeps the monitor waiter with asyncRewake and 86400 timeout" "$(jq -c '.hooks.Stop' "$T/.claude/settings.json")"
+  fi
+  has_master "$T" Stop \
+    && ok "$ENGINE: Stop still has master-hook after waiter restore" \
+    || fail "$ENGINE: Stop still has master-hook after waiter restore" "$(jq -c '.hooks.Stop' "$T/.claude/settings.json")"
+
+  # Shipped settings.json already has the waiter; restore must not drop it.
+  S="$TMP/shipped"; mkdir -p "$S/.claude" "$S/core/scripts"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$S/core/scripts/hook-lib.sh"
+  cp "$ROOT/.claude/settings.json" "$S/.claude/settings.json"
+  OUT_SHIPPED="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$S")"
+  if [ -z "$OUT_SHIPPED" ] \
+     && jq -e '
+       [.hooks.Stop[]?.hooks[]?
+         | select((.command | contains("hq-monitor-session-hook.sh"))
+                  and (.command | endswith(" wait"))
+                  and .asyncRewake == true
+                  and .timeout == 86400)] | length == 1
+     ' "$S/.claude/settings.json" >/dev/null; then
+    ok "$ENGINE: shipped settings.json is a silent no-op that keeps the Stop waiter"
+  else
+    fail "$ENGINE: shipped settings.json is a silent no-op that keeps the Stop waiter" "out=$OUT_SHIPPED stop=$(jq -c '.hooks.Stop' "$S/.claude/settings.json")"
+  fi
+
   [ "$(jq -r '.env.PATH' "$T/.claude/settings.json")" = "/machine/bin:/usr/bin" ] \
     && ok "$ENGINE: machine PATH preserved" \
     || fail "$ENGINE: machine PATH preserved" "$(jq -c '.env' "$T/.claude/settings.json")"
