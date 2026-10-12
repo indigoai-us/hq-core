@@ -25,8 +25,8 @@ Usage: check-hq-hooks.sh [--root <hq-root>] [--require-ledger] [--session-id <id
 
 Checks the tracked project settings required for HQ hooks. --require-ledger
 also verifies that a policy-trigger ledger exists after a real session. This
-command is deliberately hook-independent: use it to make a non-dispatching
-Claude Code app/SDK runtime visible instead of silently assuming enforcement.
+command is deliberately hook-independent: use it to make a missing
+Claude Code SDK hook dispatch visible instead of silently assuming enforcement.
 With --session-id, checks that exact session's ledger rather than any earlier
 session's ledger. --session-id implies --require-ledger.
 
@@ -153,8 +153,8 @@ emit_runtime_off_explanation() {
     echo "  SAME .claude hooks, but only during a live turn — so a box with no live" >&2
     echo "  turn yet is expected to read NOT OBSERVED until the agent takes one." >&2
   else
-    echo "  The policy-trigger hook did not run in this session. In the affected" >&2
-    echo "  Claude Code app/SDK runtime, command hooks are not dispatched." >&2
+    echo "  The policy-trigger hook did not write a ledger in this session." >&2
+    echo "  Some SDK hosts skip command hooks; the desktop app and terminal CLI dispatch them." >&2
   fi
 }
 

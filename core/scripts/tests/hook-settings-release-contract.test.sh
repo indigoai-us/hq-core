@@ -194,4 +194,9 @@ bash "$ROOT/core/scripts/tests/restore-hook-settings.test.sh" \
   || fail "restore-hook-settings healer regression failed"
 pass "rescue-relocated hook wiring is restored"
 
+echo "[6] image-context-guard blocks oversized reads and does not claim app hooks never fire"
+bash "$ROOT/core/scripts/tests/image-context-guard.test.sh" \
+  || fail "image-context-guard regression failed"
+pass "image-context-guard byte cap and hook-warning regressions"
+
 echo "PASS: hook settings release contract"

@@ -1,7 +1,7 @@
 ---
 name: free-disk-space
-description: Find and reclaim disk space from stale HQ worktrees, build folders, and dev caches without losing unpushed work.
-allowed-tools: Bash, AskUserQuestion
+description: Reclaim disk from stale linked worktrees, build dirs, and allowlisted dev caches. Dry-run unless --apply; never deletes full clones, .env, or unpushed work.
+allowed-tools: Bash(bash core/scripts/free-disk-space.sh:*), AskUserQuestion
 ---
 
 # /free-disk-space
@@ -21,20 +21,37 @@ Reclaim disk space on the user's machine. All work goes through
 
 2. **Offer options** with AskUserQuestion, one question per call. Nothing is deleted
    before the user picks.
-   - `caches` — clears app caches, the npm cache, and safe `~/.cache` entries. Keeps
-     the qmd search index and Codex runtimes. No risk to work.
-   - `prune-backed-up [hours]` — deletes worktrees that are clean, pushed to their
-     upstream, have no stash, and were not touched in the last N hours (default 6).
+   - `caches` — deletes only a named allowlist of developer caches (Homebrew, pip,
+     Yarn, npm, pnpm, node-gyp, go-build, cargo, turbo, typescript, electron), the
+     npm cache, and safe `~/.cache` entries (`gh`, `prisma`, `node`, `agent-browser`).
+     It does not touch other app caches. It keeps the qmd search index and Codex
+     runtimes.
+   - `prune-backed-up [hours]` — removes linked git worktrees that are clean, pushed
+     (including every branch checked out there), stash-free, free of ignored files
+     outside rebuildable build directories, free of a nested git repository under
+     those directories, free of skip-worktree or assume-unchanged index flags,
+     and untouched for N hours (default 6).
+     Full clones are never removed. Removal uses `git worktree remove`, not `rm -rf`.
    - `slim-idle [days]` — in worktrees idle N days (default 7), deletes git-ignored
-     dependency and build folders. Code and commits stay; they rebuild on next use.
+     dependency and build folders that contain no tracked files and no nested git
+     repository. It skips a checkout with skip-worktree or assume-unchanged flags,
+     or with a nested git repository. Code and commits stay.
 
-3. **Run** the chosen mode and report GB freed plus the new free total.
+3. **Dry run first.** Run the chosen mode without `--apply`
+   (`bash core/scripts/free-disk-space.sh <mode>`). It prints `would-remove` and
+   `kept ... reason=...` lines and deletes nothing. Show that list to the user.
 
-4. **Remaining worktrees** with uncommitted, unpushed, or stashed work are never
-   deleted by this skill. If the user wants them gone, list them and confirm each
-   one, or offer to push them first. Deleting unpushed work is irreversible: state
-   that plainly and get an explicit yes before removing anything outside the modes
-   above.
+4. **Ask before apply.** Use AskUserQuestion to confirm the dry-run list. Only
+   after an explicit yes, re-run the same mode with `--apply`
+   (`bash core/scripts/free-disk-space.sh --apply <mode>`).
+
+5. **Remaining worktrees** with uncommitted work, unpushed commits, a stash,
+   hidden local edits (skip-worktree or assume-unchanged), a nested git repository,
+   or ignored files such
+   as `.env` are never deleted by this skill. If the user wants
+   them gone, list them and confirm each one, or offer to push them first.
+   Deleting unpushed work is irreversible: state that plainly and get an explicit
+   yes before removing anything outside the modes above.
 
 ## Rules
 

@@ -24,20 +24,21 @@ release-owned charter.
 - Ask before destructive, external, or irreversible actions. Do not infer
   authorization to deploy, publish, send messages, delete data, force-push, or
   change production infrastructure.
+- Do not inline large image bytes into the parent session. Cost is file size,
+  not image count. The PreToolUse `image-context-guard` blocks a local image
+  over 2 MB or a ninth distinct image in the session. Delegate inspection.
 
 ## App and SDK runtime warning
 
-**HQ RUNTIME WARNING:** Shell-hook enforcement is not available in every Claude
-Code host. In the affected Claude Code app/SDK runtime, command hooks registered
-for `SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse` are not
-dispatched. That means secret detection, core-write and cross-company guards,
-policy injection, autocommit, and journal hooks cannot mechanically enforce
-their rules there.
+**HQ RUNTIME WARNING:** Shell-hook enforcement depends on the host actually
+dispatching command hooks. The Claude Code terminal CLI and the desktop app
+do dispatch `SessionStart`, `UserPromptSubmit`, `PreToolUse`, and `PostToolUse`.
+Some SDK hosts still skip those events. Do not skip building a PreToolUse
+guard because you assume hooks are off.
 
-The safety rules above and personal context still load as native Claude context,
-but they are guidance, not a security boundary. When using an app or SDK host,
-assume hooks are off until this ordinary command, run outside the hook system,
-reports that the policy-trigger ledger was observed:
+Native context (this file) is still guidance, not a security boundary, on any
+host. When you need to know whether hooks ran in *this* session, use this
+ordinary command, outside the hook system:
 
 ```bash
 bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
@@ -46,8 +47,11 @@ bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
 An SDK host that has its session ID should use `--session-id <id>` too, so an
 older CLI session's ledger cannot be mistaken for this runtime.
 
-If the command reports `HQ runtime enforcement: NOT OBSERVED`, use the terminal
-Claude Code CLI for hook-enforced work or add equivalent host-side enforcement.
+If the command reports `HQ runtime enforcement: NOT OBSERVED`, either no
+session has written the policy-trigger ledger yet, or this host did not
+dispatch hooks. Use a host that does (desktop app or terminal CLI) or add
+equivalent host-side enforcement. Do not treat a missing ledger as proof that
+the desktop app never fires hooks.
 
 ## Personal additions
 

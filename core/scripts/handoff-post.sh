@@ -187,6 +187,13 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
   while IFS= read -r company; do
     [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || continue
     [[ -d "$HQ_ROOT/companies/$company/workspace" ]] || continue
+    # Local-only companies have no cloud vault. Pushing them fails with
+    # "No entity in caller's namespace matches company/<slug>" and a
+    # wrong-identity hint even when the operator is signed in correctly.
+    if ! grep -Eq '^cloud:[[:space:]]*true' "$HQ_ROOT/companies/$company/company.yaml" 2>/dev/null; then
+      log "workspace-sync: skipped (company is local-only, cloud: false)"
+      continue
+    fi
     if [[ "$THREAD_MIRRORABLE" != "true" || \
           ! -f "$HQ_ROOT/companies/$company/workspace/sessions/$THREAD_ID.json" ]]; then
       log "workspace-sync: skipped (thread mirror missing for $company)"

@@ -1,25 +1,28 @@
-# HQ hooks not firing in Claude Desktop or an SDK runtime
+# HQ hooks not firing in some hosts
 
 HQ safety, voice, and policy hooks live in the project's
-`.claude/settings.json`. Claude Code terminal sessions can work while the
-affected Claude Code app/SDK runtime silently runs none of those command hooks,
+`.claude/settings.json`. Claude Code terminal sessions and the desktop app
+dispatch those command hooks. Some SDK hosts still silently run none of them,
 even when that settings file is present and its shell scripts work when invoked
 by hand.
 
-In that runtime, the command-hook registrations for `SessionStart`,
-`UserPromptSubmit`, `PreToolUse`, and `PostToolUse` are not dispatched. This
-leaves policy injection, per-turn voice injection, secret detection, core-write
-and cross-company guards, autocommit, and journal capture inactive. This is a
-Claude Code product/runtime limitation: HQ cannot make a host dispatch a hook
-event that the host does not implement.
+When a host skips command-hook registrations for `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, and `PostToolUse`, policy injection, per-turn
+voice injection, secret detection, core-write and cross-company guards,
+autocommit, and journal capture stay inactive. HQ cannot make a host dispatch a
+hook event that the host does not implement. Do not assume the desktop app is
+one of those hosts: it does dispatch PreToolUse and UserPromptSubmit. Verify
+the current session instead of treating the warning as a reason not to ship a
+guard.
 
-HQ now mitigates the gap with a native import in `.claude/CLAUDE.md`:
-`@personal-context.md`. The imported `.claude/personal-context.md` is preserved
-by `/update-hq`, imports `personal/CLAUDE.md`, carries the minimum secret,
-core-write, and cross-company guidance, and warns directly in context when an
-app/SDK host may not run hooks. It is not a mechanical security boundary. Use
-the terminal CLI or host-side enforcement for work that requires a guaranteed
-block.
+HQ also mitigates a missing-dispatch host with a native import in
+`.claude/CLAUDE.md`: `@personal-context.md`. The imported
+`.claude/personal-context.md` is preserved by `/update-hq`, imports
+`personal/CLAUDE.md`, carries the minimum secret, core-write, and
+cross-company guidance, and warns directly in context when an SDK host may not
+run hooks. It is not a mechanical security boundary. Use a host that
+dispatches hooks, or host-side enforcement, for work that requires a
+guaranteed block.
 
 ## Diagnose without relying on hooks
 
@@ -88,7 +91,9 @@ bash core/scripts/check-hq-hooks.sh --root "$PWD" --require-ledger
 On a brand-new HQ root, run the first command before the ledger check: no
 ledger exists until a session has had an opportunity to run. If the second
 command prints `HQ runtime enforcement: NOT OBSERVED`, it has made the missing
-dispatch loud without relying on a hook to run the diagnostic.
+dispatch loud without relying on a hook to run the diagnostic. On the desktop
+app that usually means this session has not written the ledger yet, not that
+hooks cannot fire.
 
 An SDK host with the current session ID can make this conclusive for that
 runtime rather than accepting a prior CLI session's evidence:
@@ -142,10 +147,11 @@ query({
 
 `cwd: hqRoot` locates the project and `settingSources: ["project"]` permits
 the runtime to load native project context such as the durable
-`personal-context.md` import. In the affected app/SDK runtime, neither option
-causes command-hook events to dispatch. Restart the session after changing
+`personal-context.md` import. Some SDK hosts still will not dispatch
+command-hook events even with those options. Restart the session after changing
 either value, then rerun the `--require-ledger` check; a `NOT OBSERVED` result
-means use the terminal CLI or host-side enforcement for safety-critical work.
+on an SDK host means use the desktop app, the terminal CLI, or host-side
+enforcement for safety-critical work.
 
 ## Windows: core files unreadable (`Permission denied`)
 
