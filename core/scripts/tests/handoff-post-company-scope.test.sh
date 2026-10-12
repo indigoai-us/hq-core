@@ -42,6 +42,7 @@ SH
 chmod +x "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh"
 source "$SRC_ROOT/scripts/tests/lib/handoff-post-test-helpers.sh"
 printf 'company_slug: indigo\n' > "$TMP_ROOT/repo/workspace/sessions/scoped-session/meta.yaml"
+printf 'slug: indigo\ncloud: true\n' > "$TMP_ROOT/repo/companies/indigo/company.yaml"
 
 cat > "$TMP_ROOT/bin/hq" <<'SH'
 #!/usr/bin/env bash
@@ -156,6 +157,7 @@ printf 'synthetic base\n' > "$ZERO_REPO/README.md"
 git -C "$ZERO_REPO" add README.md
 git -C "$ZERO_REPO" commit -qm "synthetic fixture base"
 printf 'company_slug: acme\n' > "$ZERO_REPO/workspace/sessions/$ZERO_SESSION/meta.yaml"
+printf 'slug: acme\ncloud: true\n' > "$ZERO_REPO/companies/acme/company.yaml"
 : > "$TMP_ROOT/zero-change-hq-sync-calls"
 : > "$TMP_ROOT/zero-change-hq-cloud-calls"
 
@@ -458,6 +460,61 @@ if [[ "$(jq -c '.mirror_companies' <<<"$CONTROL_OUT")" != '["winks"]' ]]; then
 fi
 [[ -f "$ZERO_REPO/companies/winks/workspace/sessions/$CONTROL_THREAD_ID.json" ]] \
   || fail "single dotted-path handoff did not mirror into winks"
+
+# A bound local-only company (company.yaml cloud: false) must still get a
+# local thread mirror, but must not call hq sync push. That push fails with a
+# misleading wrong-identity error even when the operator is signed in.
+LOCAL_ONLY_SESSION="synthetic-local-only-session"
+mkdir -p "$ZERO_REPO/companies/localco/workspace" \
+  "$ZERO_REPO/workspace/sessions/$LOCAL_ONLY_SESSION" \
+  "$TMP_ROOT/local-only-logs"
+printf 'slug: localco\ncloud: false\n' > "$ZERO_REPO/companies/localco/company.yaml"
+printf 'company_slug: localco\n' > "$ZERO_REPO/workspace/sessions/$LOCAL_ONLY_SESSION/meta.yaml"
+printf '{"session_id":"%s","company_slug":"localco","company_slugs":["localco"]}\n' "$LOCAL_ONLY_SESSION" \
+  > "$ZERO_REPO/workspace/sessions/$LOCAL_ONLY_SESSION/scope-capability.json"
+LOCAL_ONLY_ID="T-synthetic-local-only-company"
+LOCAL_ONLY_PATH="workspace/threads/$LOCAL_ONLY_ID.json"
+LOCAL_ONLY_MIRROR="$ZERO_REPO/companies/localco/workspace/sessions/$LOCAL_ONLY_ID.json"
+cat > "$ZERO_REPO/$LOCAL_ONLY_PATH" <<JSON
+{"thread_id":"$LOCAL_ONLY_ID","type":"handoff","created_at":"2026-10-12T00:00:00Z","updated_at":"2026-10-12T00:00:00Z","files_touched":[],"metadata":{"company":["localco"]}}
+JSON
+: > "$TMP_ROOT/local-only-sync-calls"
+handoff_post_test_run --clean-env "$ZERO_REPO" "$LOCAL_ONLY_PATH" "" \
+  CODEX_THREAD_ID="$LOCAL_ONLY_SESSION" \
+  HQ_ACTIVE_COMPANY=otherco \
+  HQ_SYNC_CALLS="$TMP_ROOT/local-only-sync-calls" \
+  HQ_CLOUD_CALLS="$TMP_ROOT/zero-change-hq-cloud-calls" \
+  HANDOFF_LOG_DIR="$TMP_ROOT/local-only-logs" \
+  PATH="$ZERO_BIN:/usr/bin:/bin"
+[[ -f "$LOCAL_ONLY_MIRROR" ]] || fail "local-only company did not get a local thread mirror"
+[[ ! -s "$TMP_ROOT/local-only-sync-calls" ]] \
+  || fail "local-only company was pushed: $(cat "$TMP_ROOT/local-only-sync-calls")"
+grep -Fq 'workspace-sync: skipped (company is local-only, cloud: false)' "$TMP_ROOT/local-only-logs/handoff-post.log" \
+  || fail "local-only company did not log the cloud: false skip"
+
+# Missing company.yaml is also local-only: do not push.
+NOYAML_SESSION="synthetic-noyaml-session"
+mkdir -p "$ZERO_REPO/companies/noyaml/workspace" \
+  "$ZERO_REPO/workspace/sessions/$NOYAML_SESSION" \
+  "$TMP_ROOT/noyaml-logs"
+printf 'company_slug: noyaml\n' > "$ZERO_REPO/workspace/sessions/$NOYAML_SESSION/meta.yaml"
+NOYAML_ID="T-synthetic-noyaml-company"
+NOYAML_PATH="workspace/threads/$NOYAML_ID.json"
+cat > "$ZERO_REPO/$NOYAML_PATH" <<JSON
+{"thread_id":"$NOYAML_ID","type":"handoff","created_at":"2026-10-12T00:00:00Z","updated_at":"2026-10-12T00:00:00Z","files_touched":[],"metadata":{"company":["noyaml"]}}
+JSON
+: > "$TMP_ROOT/noyaml-sync-calls"
+handoff_post_test_run --clean-env "$ZERO_REPO" "$NOYAML_PATH" "" \
+  CODEX_THREAD_ID="$NOYAML_SESSION" \
+  HQ_ACTIVE_COMPANY=otherco \
+  HQ_SYNC_CALLS="$TMP_ROOT/noyaml-sync-calls" \
+  HQ_CLOUD_CALLS="$TMP_ROOT/zero-change-hq-cloud-calls" \
+  HANDOFF_LOG_DIR="$TMP_ROOT/noyaml-logs" \
+  PATH="$ZERO_BIN:/usr/bin:/bin"
+[[ ! -s "$TMP_ROOT/noyaml-sync-calls" ]] \
+  || fail "company without company.yaml was pushed: $(cat "$TMP_ROOT/noyaml-sync-calls")"
+grep -Fq 'workspace-sync: skipped (company is local-only, cloud: false)' "$TMP_ROOT/noyaml-logs/handoff-post.log" \
+  || fail "missing company.yaml did not log the local-only skip"
 
 if [[ "$failures" -gt 0 ]]; then
   echo "Failed $failures handoff-post regression assertions" >&2

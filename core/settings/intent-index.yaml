@@ -89,7 +89,7 @@ skills:
   - name: "/finish-estimate"
     use: "Mark a pending time estimate complete with actual duration."
   - name: "/free-disk-space"
-    use: "Find and reclaim disk space from stale HQ worktrees, build folders, and dev caches without losing unpushed work."
+    use: "Reclaim disk from stale linked worktrees, build dirs, and allowlisted dev caches. Dry-run unless --apply; never deletes full clones, .env, or unpushed work."
   - name: "/garden"
     use: "Audit HQ content for stale, duplicate, or inaccurate information."
   - name: "/goals"

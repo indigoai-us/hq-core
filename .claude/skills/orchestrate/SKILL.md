@@ -143,8 +143,8 @@ success is a claim, not a fact:
   write JPEG data behind a .png name), prd.json parses with all stories
   `passes: true`, board `prd_created`, brainstorm `promoted`. Spot-check the
   primary artifact against the PRD's acceptance bar yourself (for visual work
-  that means looking at it — keep the parent session under 10 images;
-  delegate bulk image checks). Then close out:
+  that means looking at it — do not inline large image bytes; the PreToolUse
+  guard caps size and session count; delegate bulk image checks). Then close out:
 
 ```
 **{name}** — delivered. {storiesExecuted}/{storiesTotal} stories,

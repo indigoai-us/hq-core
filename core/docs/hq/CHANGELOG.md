@@ -1,4 +1,12 @@
 ## [Unreleased]
+- Image reads are capped by file size, not image count. A PreToolUse guard
+  blocks a local image over 2 MB, a ninth distinct image in the session, or
+  Codex `detail: original`, and the image-context-isolation policy now
+  describes that control. The charter warning no longer claims desktop-app
+  hooks never fire.
+- `/handoff` no longer tries to push a company workspace when that company is
+  local-only (`cloud: false`). The post-handoff log records the skip instead of
+  a failed push that looks like a sign-in problem.
 - On Windows, `/conduct` lanes can start Claude and other npm-installed
   engines. The runner no longer launches `.cmd` shims the way Unix binaries
   are launched, which made Node 20 refuse the start (`spawn EINVAL`) or miss

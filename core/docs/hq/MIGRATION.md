@@ -23,9 +23,15 @@ Newest release first.
 ## Release: v16.0.0-beta.70
 
 - New `/free-disk-space` command (`core/scripts/free-disk-space.sh`) reports disk
-  usage and reclaims space from caches, fully pushed worktrees, and build folders
-  in idle worktrees. It never deletes uncommitted, unpushed, or stashed work. No
-  action needed on update.
+  usage. `prune-backed-up`, `slim-idle`, and `caches` are a dry run unless you pass
+  `--apply`. `prune-backed-up` removes only linked git worktrees with
+  `git worktree remove` — never a full clone and never `rm -rf`. It keeps a
+  worktree that is dirty, unpushed (including a side branch checked out there),
+  stashed, recently touched, marked skip-worktree or assume-unchanged, holding a
+  nested git repository, or holding ignored files such as `.env` outside
+  rebuildable build directories, and it reports what it kept and why. `caches`
+  deletes only a named developer-cache allowlist, not every app cache under
+  `~/Library/Caches`. No action needed on update.
 
 ## Release: v16.0.0-beta.62
 

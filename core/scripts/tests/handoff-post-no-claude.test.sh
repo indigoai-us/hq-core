@@ -72,6 +72,7 @@ cat > "$TMP_ROOT/repo/workspace/threads/T-test.json" <<'JSON'
 JSON
 # handoff-post pushes a company workspace only for the session-bound company.
 printf 'company_slug: acme\n' > "$TMP_ROOT/repo/workspace/sessions/no-claude-session/meta.yaml"
+printf 'slug: acme\ncloud: true\n' > "$TMP_ROOT/repo/companies/acme/company.yaml"
 cat > "$TMP_ROOT/learnings.json" <<'JSON'
 [
   {"type":"rule","content":"ALWAYS: test handoff-post without hidden CLI","scope":"global","source":"test"}

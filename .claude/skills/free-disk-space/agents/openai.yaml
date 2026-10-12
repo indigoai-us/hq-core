@@ -1,3 +1,3 @@
 interface:
   display_name: "Free Disk Space"
-  short_description: "Reclaim disk space without losing unpushed work."
+  short_description: "Dry-run disk reclaim. Deletes only with --apply."

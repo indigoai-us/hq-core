@@ -402,6 +402,20 @@ jobs:
       - name: GC removes only provably-safe stale worktrees
         run: bash core/scripts/tests/worktree-gc.test.sh
 
+  free-disk-space:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # /free-disk-space must not delete full clones, unpushed side branches,
+    # ignored files such as .env, or app caches outside the developer allowlist.
+    # Default is dry-run. New core/scripts/tests are wired here explicitly.
+    name: free-disk-space
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: free-disk-space refuses unsafe deletes
+        run: bash core/scripts/tests/free-disk-space.test.sh
+
   hq-delegate:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     # /delegate — one-command project handoff. Every helper ships with an

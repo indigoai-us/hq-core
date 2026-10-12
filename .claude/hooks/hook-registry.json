@@ -94,6 +94,31 @@
               "re": "companies/[^/\"]+/settings/"
             },
             "runner": "source"
+          },
+          {
+            "id": "image-context-guard",
+            "script": ".claude/hooks/image-context-guard.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "\\.(png|jpe?g|gif|webp)([\"'?#]|\\s|$)|view_image"
+            },
+            "runner": "source"
+          }
+        ]
+      },
+      {
+        "matcher": "view_image",
+        "hooks": [
+          {
+            "id": "image-context-guard",
+            "script": ".claude/hooks/image-context-guard.sh",
+            "timeout": 30,
+            "gated": true,
+            "prefilter": {
+              "re": "view_image|\\.(png|jpe?g|gif|webp)|detail"
+            },
+            "runner": "source"
           }
         ]
       },

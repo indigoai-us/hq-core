@@ -609,6 +609,21 @@ run_pre_tool_use() {
       [ -n "$read_path" ] && block_sensitive_read_if_needed "$read_path"
       dispatch_settings_hooks "PreToolUse" "Read" "$INPUT"
       ;;
+    view_image|ViewImage)
+      # Codex image inline maps onto the Claude Read matcher so the
+      # byte-cap guard runs without a second implementation.
+      local image_payload image_path
+      image_path="$(json_get '.tool_input.file_path // .tool_input.path // .tool_input.image_path // empty')"
+      image_payload="$(printf '%s' "$INPUT" | jq -c --arg p "$image_path" '
+        .tool_name = "Read"
+        | if ($p != "" and ((.tool_input.file_path // "") == ""))
+          then .tool_input.file_path = $p
+          else .
+          end
+      ' 2>/dev/null)"
+      [ -n "$image_payload" ] || image_payload="$INPUT"
+      dispatch_settings_hooks "PreToolUse" "Read view_image" "$image_payload"
+      ;;
     Grep)
       grep_path="$(json_get '.tool_input.path // empty')"
       [ -n "$grep_path" ] && block_sensitive_read_if_needed "$grep_path"
