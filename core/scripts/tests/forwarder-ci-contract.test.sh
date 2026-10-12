@@ -54,6 +54,10 @@ NON_EXECUTING_REFERENCE_ALLOWLIST = {
     ("core/scripts/tests/handoff-followups-runtime.test.sh", "hq-status-summary.sh"),
     ("core/scripts/tests/handoff-followups-runtime.test.sh", "rebuild-orchestrator-index.sh"),
     ("core/scripts/tests/handoff-followups-runtime.test.sh", "rebuild-threads-index.sh"),
+    # Isolation suite writes a reindex helper stub and is invoked from
+    # handoff-post-company-scope.test.sh, which pr-checks already runs with
+    # the pinned CLI install. The analyzer only sees direct workflow commands.
+    ("core/scripts/tests/handoff-thread-isolation.test.sh", "qmd-reindex-bg.sh"),
 }
 
 # This test's own allowlist contains forwarder names as Python metadata. The
@@ -63,6 +67,7 @@ ANALYZER_METADATA_ALLOWLIST = {
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "hq-status-summary.sh"),
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "rebuild-orchestrator-index.sh"),
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "rebuild-threads-index.sh"),
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "qmd-reindex-bg.sh"),
     # Named in references_forwarder()'s docstring as the worked example of the
     # suffix false positive it exists to prevent. Prose, not execution.
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "worktree.sh"),

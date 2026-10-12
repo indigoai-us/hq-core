@@ -45,6 +45,9 @@ skills:
   - name: explain-hq
     description: "The fixed explanation of HQ for someone who asks for it at the start of setup. Sent word for word, by you or by the HQ app."
     doc: skills/explain-hq.md
+  - name: add-a-pack
+    description: "Recognize a content pack the person pastes or names (a hqforwork.com pack link, hq-pack-{slug}, a bare slug, or a display name from the catalog), confirm in one message, install it with --start-bot, and hand over to the pack's bot."
+    doc: skills/add-a-pack.md
 
 instructions: |
   # Setup

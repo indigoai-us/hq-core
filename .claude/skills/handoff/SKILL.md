@@ -75,11 +75,14 @@ Pass the resolved project directory that owns this session's journal. The helper
 - Classifies noisy HQ root status via `hq core hq-status-summary` so baseline local files do not become accidental handoff scope
 - Schedules ownership-aware qmd reindex via `qmd-reindex-bg.sh` (shared with post): agent boxes hard-skip (`skipped-agent`, zero qmd mutation — managed timer/post-sync own freshness); laptops use one non-blocking single-flight cleanup→update→embed
 
+Pass `--company "{co}"` only for the explicitly resolved owner of this handoff. Omit it for HQ/global work. Never derive ownership from touched paths or distribute a complete thread to multiple companies.
+
 Reuse the `CHANGESET_TMP` file prepared in Step 1 and pass its path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Use `mktemp` under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
 
 ```bash
 rc=0
 core/scripts/handoff-finalize.sh \
+  --company "{co}" \
   --title "Handoff: {one-line title}" \
   --summary "{one-paragraph summary of what changed}" \
   --message "{user's handoff message, or echo of the summary}" \

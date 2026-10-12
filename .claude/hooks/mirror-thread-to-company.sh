@@ -41,17 +41,22 @@ esac
 HQ_ROOT="${FILE_PATH%/workspace/threads/*}"
 [ -d "$HQ_ROOT/companies" ] || exit 0
 
-# A thread mirror is safe only when it belongs to exactly one company and
-# every company path in its changeset agrees with the session binding. Never
-# use the list of touched companies as a list of mirror destinations.
-THREAD_COMPANIES_JSON=$(jq -c '
-  .metadata.company // empty
-  | if type == "array" then . else [.] end
-  | map(select(type == "string" and test("^[a-z][a-z0-9_-]*$")))
-  | unique
-' "$FILE_PATH" 2>/dev/null || printf '[]')
-[ "$(jq 'length' <<< "$THREAD_COMPANIES_JSON")" -eq 1 ] || exit 0
-COMPANY=$(jq -r '.[0]' <<< "$THREAD_COMPANIES_JSON")
+# Full records have one owner. Arrays of touched tenants are not recipients.
+# Reject ambiguous or invalid ownership before any tenant directories or rows exist.
+COMPANY=$(jq -er '
+  .metadata.company
+  | if . == null or . == [] or . == "" then ""
+    elif type == "string" then .
+    elif type == "array" and length == 1 then .[0]
+    else error("thread must have exactly one company owner") end
+  | if type != "string" then error("invalid company owner")
+    elif . == "" or test("^[a-z][a-z0-9_-]*$") then .
+    else error("invalid company owner") end
+' "$FILE_PATH") || {
+  echo "mirror-thread-to-company: refusing invalid or ambiguous ownership" >&2
+  exit 2
+}
+[ -z "$COMPANY" ] && exit 0
 
 THREAD_PATH_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
   [ ((.files_touched // []) | if type == "array" then .[] else empty end)
@@ -62,10 +67,14 @@ THREAD_PATH_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
     | select(type == "string")
   ] | unique
 ' "$FILE_PATH" 2>/dev/null || printf '[]')
-[ "$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")" -le 1 ] || exit 0
+if [ "$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")" -gt 1 ]; then
+  echo "mirror-thread-to-company: refusing invalid or ambiguous ownership" >&2
+  exit 2
+fi
 if [ "$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")" -eq 1 ] && \
    [ "$(jq -r '.[0]' <<< "$THREAD_PATH_COMPANIES_JSON")" != "$COMPANY" ]; then
-  exit 0
+  echo "mirror-thread-to-company: refusing invalid or ambiguous ownership" >&2
+  exit 2
 fi
 
 source "$HQ_ROOT/core/scripts/lib/session-id.sh"

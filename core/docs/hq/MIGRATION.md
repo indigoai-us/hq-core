@@ -2,6 +2,14 @@
 
 Newest release first.
 
+## Release: v16.0.0-beta.89
+
+- feat 2026-10-11 (setup: add a pack from the chat): the setup worker has a new
+  skill, `core/workers/public/setup/skills/add-a-pack.md`. When the person
+  pastes a hqforwork.com pack link or names a pack, Setup confirms, installs it
+  with `hq packages install {slug-or-path} --start-bot`, and hands over to the
+  pack's bot. `--start-bot` needs the hq-cli release that carries
+  indigoai-us/hq-cli#1809. No action beyond `/update-hq`.
 ## Release: v16.0.0-beta.75
 
 - New, off by default: commit-time secret scanning. Turning it on makes every

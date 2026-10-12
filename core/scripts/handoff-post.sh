@@ -105,11 +105,12 @@ else
   log "document-release: skipped (no thread path)"
 fi
 
-# --- 3b. Push company handoff mirrors promptly (best effort) ---
+# --- 3b. Push only a single-owner handoff workspace ---
 # Session snapshots are intentionally gitignored, so a completed mirror needs
 # the sync client to make the handoff available to a second device. Keep
 # finalizer company metadata and add the company bound to this session when no
 # changed path identified one; never use a device-wide active-company value.
+# Legacy touched-company arrays must never authorize a cross-tenant push.
 bound_session_company() {
   local session_id metadata company
   session_id="$(session_id_resolve "$HQ_ROOT")"
@@ -127,12 +128,25 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
   else
     THREAD_FILE="$HQ_ROOT/$THREAD_PATH"
   fi
-  THREAD_COMPANIES_JSON="$(jq -c '
-    (.metadata.company // [])
-    | (if type == "array" then . else [.] end)
-    | map(select(type == "string" and test("^[a-z][a-z0-9_-]*$")))
-    | unique
-  ' "$THREAD_FILE" 2>/dev/null || printf '[]')"
+  THREAD_OWNER="$(jq -er '
+    .metadata.company
+    | if . == null or . == [] or . == "" then ""
+      elif type == "string" then .
+      elif type == "array" and length == 1 then .[0]
+      else error("thread must have exactly one company owner") end
+    | if type != "string" then error("invalid company owner")
+      elif . == "" or test("^[a-z][a-z0-9_-]*$") then .
+      else error("invalid company owner") end
+  ' "$THREAD_FILE")" || {
+    log "workspace-sync: refused invalid or ambiguous ownership"
+    echo "handoff-post: refusing invalid or ambiguous ownership" >&2
+    exit 2
+  }
+  if [[ -n "$THREAD_OWNER" ]]; then
+    THREAD_COMPANIES_JSON="$(jq -cn --arg company "$THREAD_OWNER" '[$company]')"
+  else
+    THREAD_COMPANIES_JSON='[]'
+  fi
   THREAD_PATH_COMPANIES_JSON="$(jq -c --arg hq_root "$HQ_ROOT" '
     [ ((.files_touched // []) | if type == "array" then .[] else empty end)
     | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
