@@ -63,7 +63,6 @@ HQ is **model-agnostic**, so it works inside any AI tool and leverages the subsc
 | [GitHub CLI](https://cli.github.com/) | Yes | `brew install gh` / winget / apt — then `gh auth login` |
 | [qmd](https://github.com/tobi/qmd) | Recommended | `npm install -g @tobilu/qmd` (macOS also: `brew install sqlite`) |
 | [OpenAI Codex](https://openai.com/codex) | Optional | `npm install -g @openai/codex` then `codex login` |
-| [ggshield](https://docs.gitguardian.com/ggshield-docs/getting-started/installation) | Recommended | `brew install ggshield` then `ggshield auth login` |
 
 Platform details (Windows Git Bash baseline, deploy identity fallback, portable shell helpers): [cross-platform-support.md](../../knowledge/public/hq-core/cross-platform-support.md).
 
@@ -81,15 +80,27 @@ Then restart Claude Code. With LSP enabled, Claude prefers LSP over grep for cod
 
 ### Secret Scanning (recommended)
 
-Prevent API keys, tokens, and credentials from being committed:
+Prevent API keys, tokens, and credentials from being committed. HQ's own
+scanner, `hq scan secrets`, is part of the hq CLI (5.345.86 or later). It runs
+offline and needs no extra install, account, or quota. Commit-time scanning is
+off by default, and `/hq-checkup` reminds you until you turn it on:
 
 ```bash
-brew install ggshield
-ggshield auth login
-ggshield install --mode global
+bash core/scripts/commit-secret-scan.sh enable    # check every commit on this computer
+bash core/scripts/commit-secret-scan.sh status
+bash core/scripts/commit-secret-scan.sh disable   # restore your previous hook setup
 ```
 
-This enables a pre-commit hook across all repos that blocks commits containing secrets. Free tier covers personal use.
+When it is on, a commit that contains a possible secret is stopped. The check
+reports the file, line, and rule, and never prints the value. It covers repos
+that use the global git hook, husky repos, and repos under HQ's `repos/` folder
+that set their own hook folder. Those repos' own hooks still run after the scan.
+`/review` also scans every file a branch changed, plus each version its commits
+added, before a pull request. Keep the real values in the HQ vault with
+`hq secrets set` and load them at run time with `hq run` or `hq secrets exec`.
+
+To scan files yourself: `hq scan secrets [files...]`, or `hq scan secrets --staged`
+for the staged changes.
 
 ## Quick Start
 

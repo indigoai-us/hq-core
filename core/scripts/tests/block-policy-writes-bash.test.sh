@@ -61,6 +61,9 @@ run() {
   if [[ "$want" == 2 ]] && ! grep -q '^BLOCKED:' "$stderr"; then
     fail "$label (guard denied without its required BLOCKED diagnostic: $(tr '\n' ' ' < "$stderr"))"
   fi
+  if grep -q 'unbound variable' "$stderr"; then
+    fail "$label (nounset abort: $(tr '\n' ' ' < "$stderr"))"
+  fi
   if grep -q 'grep: warning' "$stderr"; then
     fail "$label (guard leaked a grep warning)"
   fi
@@ -214,6 +217,20 @@ run 2 "stdbuf -oL cp /tmp/policy-input $P" 'stdbuf-wrapped cp into a policy file
 run 2 "nice cp /tmp/policy-input $P" 'nice-wrapped cp into a policy file is blocked'
 run 2 "sudo -u root cp /tmp/policy-input $P" 'sudo user-wrapped cp into a policy file is blocked'
 run 2 "parallel cp {} $P ::: /tmp/policy-input" 'parallel direct cp into a policy file is blocked'
+
+echo "[1c] process wrappers that are not policy writes stay allowed"
+# \$ keeps the scanner on (the fast path would otherwise skip these). The
+# original macOS Bash 3.2 abort was on this unwrap, not on a policy write.
+run 0 'nohup bash "$HOME/rt-mac-energy-sample.sh" > /tmp/rt-mac-energy-sampler.log 2>&1 &' \
+  'nohup-wrapped bash with expansion is allowed'
+run 0 'env bash "$HOME/script.sh"' 'env-wrapped bash with expansion is allowed'
+run 0 'timeout 5 bash "$HOME/script.sh"' 'timeout-wrapped bash with expansion is allowed'
+run 0 'stdbuf -oL bash "$HOME/script.sh"' 'stdbuf-wrapped bash with expansion is allowed'
+run 0 'nice bash "$HOME/script.sh"' 'nice-wrapped bash with expansion is allowed'
+run 0 'sudo -u root bash "$HOME/script.sh"' 'sudo-wrapped bash with expansion is allowed'
+run 0 'parallel bash ::: "$HOME/script.sh"' 'parallel-wrapped bash with expansion is allowed'
+run 0 'nohup mv "$HOME/a" "$HOME/b"' 'nohup-wrapped mv outside policy paths is allowed'
+
 run 2 "tar -C $TMP/personal/policies/ -xf /tmp/policies.tar" 'tar extraction into a policy directory is blocked'
 run 2 "git checkout -- personal/policies/x.md" 'git checkout into a policy path is blocked'
 run 2 "cd /tmp && git -C $TMP checkout -- personal/policies/x.md" 'git checkout -C into a policy path is blocked'

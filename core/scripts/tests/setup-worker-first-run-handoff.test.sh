@@ -10,10 +10,13 @@
 # sends, or from removing the "malformed means ignore" fallback.
 #
 # fixtures/setup-first-run-handoff/desktop-messages.txt holds real messages
-# produced by the desktop builders (firstRunKickoff, firstRunHandoffNotice,
-# firstRunImportNotice, firstRunSettledNotice). Every key and enum value in
-# them must be named in the worker's handoff section. When the desktop changes
-# its schema, regenerate the fixture from its builders and update the worker.
+# produced by the desktop builders. The first four lines come from older app
+# builds (firstRunKickoff, then firstRunHandoffNotice, firstRunImportNotice
+# and firstRunSettledNotice), which are still installed. The rest come from
+# the current app, which sends one firstRunHandoffNotice when its visual
+# setup closes. Every key and enum value in them must be named in the
+# worker's handoff section. When the desktop changes its schema, regenerate
+# the fixture from its builders and update the worker.
 
 set -uo pipefail
 
@@ -106,13 +109,41 @@ while IFS= read -r line; do
   fi
   n=$((n + 1))
 done < "$FIXTURE"
-[ "$n" -ge 4 ] || fail "fixture has $n messages, expected the kickoff and three notes"
+[ "$n" -ge 7 ] || fail "fixture has $n messages, expected four from older builds and three current notes"
 ok "$n real desktop messages fully covered"
 
-echo "setup worker: later notes may carry any subset of the settled steps"
-grep -qi 'any subset' "$SECTION" || fail "section must say later notes carry any subset of done"
-grep -qi 'never wait for one' "$SECTION" || fail "section must say not to wait for a later note"
-ok "late notes merge in"
+echo "setup worker: the one note at the end of the visual setup is the kickoff"
+# Owner run rc-run-1011-1449: the kickoff went out while the person was still
+# in the app's screens, and the worker said "never wait for one before
+# starting", so the bot's first message offered the import the app had just
+# done. The current app sends one note with everything when its setup closes.
+grep -q 'That note is your kickoff' "$SECTION" || fail "section must say the end-of-setup note is the kickoff"
+grep -q 'ONE note' "$SECTION" || fail "section must say the current app sends one note with everything"
+if grep -qi 'never wait for one' "$SECTION"; then
+  fail "section still tells the bot to start before the app's outcomes are in"
+fi
+# shellcheck disable=SC2016  # literal backticks from the prose
+tr '\n' ' ' < "$WORKER" | tr -s ' ' | grep -q 'there is no `Kickoff:` message at all' || fail "kickoff section must say the app's note replaces the kickoff"
+ok "one note, read as the kickoff"
+
+echo "setup worker: older builds' later notes still fold in, without re-asking"
+grep -qi 'any subset' "$SECTION" || fail "section must say older builds' later notes carry any subset of done"
+grep -qi 'never ask the person to answer the old one' "$SECTION" || fail "a late note must not leave an old question standing"
+ok "late notes from older builds merge in"
+
+echo "setup worker: a settled import is never offered or scanned again"
+grep -qi 'never offer to bring in the work on this computer' "$SECTION" || fail "handoff section must forbid offering a settled import"
+STEP3="$TMPD/step3.md"
+awk '
+  /^  ### 3\. Import/ { on = 1; print; next }
+  on && /^  ### / { exit }
+  on { print }
+' "$WORKER" > "$STEP3"
+[ -s "$STEP3" ] || fail "step 3 (Import) not found"
+grep -qi 'When Import is already done' "$STEP3" || fail "step 3 must skip when the import is already done"
+tr '\n' ' ' < "$STEP3" | grep -qi 'never run a *second scan' || fail "step 3 must forbid a second scan"
+tr '\n' ' ' < "$STEP3" | grep -qi 'never offer the *import again' || fail "step 3 must forbid offering the import again"
+ok "import done means no offer and no second scan"
 
 echo "setup worker: the report path is accepted only in one exact form"
 # shellcheck disable=SC2016

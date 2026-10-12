@@ -95,6 +95,13 @@ if [ "${FORWARDER_TEST_FORCE_CYG_PATH:-}" = "1" ]; then
 printf 'WIN_PATH:%s\n' "$2"
 SH
   chmod +x "$TMP/bin/cygpath"
+  # qmd-reindex-bg.sh converts only on a Windows Bash, not merely when cygpath
+  # is on PATH, so the forced mode must also look like Git Bash to uname.
+  cat > "$TMP/bin/uname" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-s" ]; then printf 'MINGW64_NT-10.0\n'; else exec /usr/bin/uname "$@"; fi
+SH
+  chmod +x "$TMP/bin/uname"
   cat > "$TMP/bin/hq" <<'SH'
 #!/usr/bin/env bash
 exec node "$HQ_STUB_SCRIPT" "$@"

@@ -158,6 +158,239 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { strictifySchemaForCodex, stripStrictNulls } from './lib/codex-output-schema.mjs';
+import { spawnCommand, spawnSyncCommand } from './lib/windows-cmd-spawn.mjs';
+
+// Advisory only (US-010). Calls `hq capacity --json` and never reads now.json
+// itself. Every failure stays off the dispatch path: the engine still spawns.
+const CAPACITY_ADVISORY_TIMEOUT_MS = 2000;
+// Same window as `hq capacity` (CAPACITY_STALE_MS): older than this is silent.
+const CAPACITY_STALE_MS = 5 * 60 * 1000;
+// One hq read per run, reused across engines. A later engine may refresh it.
+const CAPACITY_ADVISORY_CACHE_MS = 60 * 1000;
+// ASCII stand-in for a missing span or percent. Never an em dash.
+const CAPACITY_UNKNOWN = '-';
+
+function capacityAdvisoryRoot() {
+  const override = (process.env.HQ_CAPACITY_ROOT || '').trim();
+  if (override) return override;
+  const home = (process.env.HOME || process.env.USERPROFILE || os.homedir() || '').trim();
+  return path.join(home, '.hq', 'capacity');
+}
+
+function hqCapacityOnPath() {
+  const entries = (process.env.PATH || '').split(path.delimiter);
+  for (const dir of entries) {
+    if (!dir) continue;
+    try {
+      fs.accessSync(path.join(dir, 'hq'), fs.constants.X_OK);
+      return true;
+    } catch {
+      // Keep looking. A missing directory is the same as a missing binary.
+    }
+  }
+  return false;
+}
+
+function formatCapacitySpan(seconds) {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return CAPACITY_UNKNOWN;
+  const span = Math.max(0, Math.floor(seconds));
+  if (span < 60) return `${span}s`;
+  const minutes = Math.floor(span / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  if (hours < 48) return remainMinutes === 0 ? `${hours}h` : `${hours}h ${remainMinutes}m`;
+  const days = Math.floor(hours / 24);
+  const remainHours = hours % 24;
+  return remainHours === 0 ? `${days}d` : `${days}d ${remainHours}h`;
+}
+
+function weeklyCapacityLimit(provider) {
+  if (!provider || !Array.isArray(provider.limits)) return null;
+  let best = null;
+  for (const limit of provider.limits) {
+    if (!limit || limit.kind !== 'weekly_all' || typeof limit.usedPercent !== 'number') continue;
+    if (!best || limit.usedPercent < best.usedPercent) best = limit;
+  }
+  return best;
+}
+
+function observedCapacityAge(limit, nowMs) {
+  if (!limit) return CAPACITY_UNKNOWN;
+  const at = Date.parse(limit.observedAt);
+  if (!Number.isFinite(nowMs) || Number.isNaN(at)) return CAPACITY_UNKNOWN;
+  const seconds = Math.floor((nowMs - at) / 1000);
+  if (seconds < 0) return CAPACITY_UNKNOWN;
+  return `${formatCapacitySpan(seconds)} ago`;
+}
+
+function capacityPercentText(limit) {
+  return limit && typeof limit.usedPercent === 'number' ? `${limit.usedPercent}%` : CAPACITY_UNKNOWN;
+}
+
+function formatCapacityAdvisory(view, chosenEngine, nowMs) {
+  const providers = Array.isArray(view?.providers) ? view.providers : [];
+  const ordered = [];
+  const chosen = providers.find((provider) => provider && provider.provider === chosenEngine);
+  ordered.push(chosen || { provider: chosenEngine, state: 'unknown', limits: [] });
+  for (const provider of providers) {
+    if (provider && provider.provider !== chosenEngine) ordered.push(provider);
+  }
+  const parts = ordered.map((provider, index) => {
+    const limit = weeklyCapacityLimit(provider);
+    const pct = capacityPercentText(limit);
+    if (index === 0) {
+      const resets = limit && typeof limit.secondsToReset === 'number'
+        ? formatCapacitySpan(limit.secondsToReset)
+        : CAPACITY_UNKNOWN;
+      return `${provider.provider} weekly ${pct} used, resets in ${resets} (observed ${observedCapacityAge(limit, nowMs)})`;
+    }
+    return `${provider.provider} weekly ${pct}`;
+  });
+  return `capacity: ${parts.join('; ')}`;
+}
+
+function naiveCapacityChoice(view, chosenEngine) {
+  let best = null;
+  for (const provider of view.providers) {
+    if (!provider || provider.state !== 'ok') continue;
+    const limit = weeklyCapacityLimit(provider);
+    if (!limit) continue;
+    const used = limit.usedPercent;
+    if (!best || used < best.used || (used === best.used && provider.provider === chosenEngine)) {
+      best = { provider: provider.provider, used };
+    }
+  }
+  return best ? best.provider : null;
+}
+
+function capacityRootIsDirectory() {
+  try {
+    return fs.statSync(capacityAdvisoryRoot()).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function parseCapacityView(stdout, nowMs) {
+  let body;
+  try {
+    body = JSON.parse(String(stdout || ''));
+  } catch {
+    return null;
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  if (body.stale === true || body.collectorEnabled === false) return null;
+  if (!Array.isArray(body.providers)) return null;
+  if (typeof body.generatedAt !== 'string') return null;
+  const generatedAt = Date.parse(body.generatedAt);
+  if (Number.isNaN(generatedAt)) return null;
+  if (Math.max(0, nowMs - generatedAt) > CAPACITY_STALE_MS) return null;
+  return body;
+}
+
+// Async on purpose: spawnSync blocked the event loop for up to 2s per attempt.
+function readHqCapacityJson() {
+  return new Promise((resolve) => {
+    let child;
+    let stdout = '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      if (child) {
+        try { child.stdout.destroy(); } catch { /* already closed */ }
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      }
+      finish(null);
+    }, CAPACITY_ADVISORY_TIMEOUT_MS);
+    try {
+      child = spawn('hq', ['capacity', '--json'], {
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      finish(null);
+      return;
+    }
+    child.stdout.on('data', (chunk) => {
+      if (stdout.length < 1_000_000) stdout += String(chunk);
+    });
+    child.on('error', () => finish(null));
+    child.on('close', (code) => finish(code === 0 ? stdout : null));
+  });
+}
+
+let capacityAdvisoryCache = null;
+let capacityAdvisoryInflight = null;
+const capacityAdvisoryPrinted = new Set();
+
+async function fetchCapacityView() {
+  try {
+    // Directory first. Machines without a ledger must not pay for `hq`.
+    if (!capacityRootIsDirectory()) return null;
+    if (!hqCapacityOnPath()) return null;
+    const stdout = await readHqCapacityJson();
+    return parseCapacityView(stdout, Date.now());
+  } catch {
+    return null;
+  }
+}
+
+async function loadCapacityView() {
+  const now = Date.now();
+  if (capacityAdvisoryCache && (now - capacityAdvisoryCache.at) < CAPACITY_ADVISORY_CACHE_MS) {
+    return capacityAdvisoryCache.body;
+  }
+  if (!capacityAdvisoryInflight) {
+    capacityAdvisoryInflight = fetchCapacityView().then((body) => {
+      capacityAdvisoryCache = { at: Date.now(), body };
+      return body;
+    }).finally(() => {
+      capacityAdvisoryInflight = null;
+    });
+  }
+  return capacityAdvisoryInflight;
+}
+
+async function noteWorkflowCapacityAdvisory(chosenEngine, options = {}) {
+  // Retry and repair attempts must not read the ledger again.
+  if (options.attempt && options.attempt !== 'main') return;
+  const key = String(chosenEngine);
+  if (capacityAdvisoryPrinted.has(key)) return;
+  capacityAdvisoryPrinted.add(key);
+  const body = await loadCapacityView();
+  if (!body) return;
+  const nowMs = Date.now();
+  const line = `${formatCapacityAdvisory(body, chosenEngine, nowMs)}\n`;
+  const naiveEngine = naiveCapacityChoice(body, chosenEngine);
+  const story = (process.env.HQ_SPAWN_TASK || '').trim() || null;
+  const record = {
+    at: new Date(nowMs).toISOString(),
+    caller: 'workflow-runner',
+    story,
+    chosenEngine,
+    naiveEngine,
+    agree: naiveEngine === chosenEngine,
+    providers: body.providers.map((provider) => ({
+      provider: provider && typeof provider.provider === 'string' ? provider.provider : null,
+      state: provider && typeof provider.state === 'string' ? provider.state : null,
+      weeklyUsedPercent: weeklyCapacityLimit(provider)?.usedPercent ?? null,
+    })),
+  };
+  try {
+    const dest = path.join(capacityAdvisoryRoot(), 'advisories.jsonl');
+    fs.appendFileSync(dest, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    try { fs.chmodSync(dest, 0o600); } catch { /* mode is best-effort */ }
+  } catch {
+    // The line still prints. A full disk must not hide the advisory.
+  }
+  if (!options.quiet) process.stderr.write(line);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -357,7 +590,7 @@ function meshRuntimeVersion(bin) {
   if (meshRuntimeCache.has(bin)) return meshRuntimeCache.get(bin);
   let version = 'unknown';
   try {
-    const probed = spawnSync(bin, ['--version'], {
+    const probed = spawnSyncCommand(bin, ['--version'], {
       encoding: 'utf8',
       timeout: 1500,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -402,7 +635,7 @@ function createMeshAdapter({ engineName, journal, runDir, hqRoot }) {
     ];
     let ok = false;
     try {
-      const result = spawnSync('hq', args, {
+      const result = spawnSyncCommand('hq', args, {
         encoding: 'utf8',
         timeout: 8000,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -598,7 +831,7 @@ function grokSupportsJsonSchema(bin) {
   if (process.env.HQ_WORKFLOW_GROK_JSON_SCHEMA === '1') return true;
   if (grokJsonSchemaCached !== null) return grokJsonSchemaCached;
   try {
-    const help = spawnSync(bin, ['--help'], { encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'] });
+    const help = spawnSyncCommand(bin, ['--help'], { encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'] });
     const text = `${help.stdout || ''}${help.stderr || ''}`;
     grokJsonSchemaCached = /--json-schema/.test(text);
   } catch {
@@ -1418,6 +1651,13 @@ async function buildRuntime(cli) {
     const mesh = attempt === 'main' ? spec.mesh : null;
     if (mesh) mesh.begin(engine.bin);
 
+    // Files and stderr only. A ledger problem must not change argv or fail
+    // the spawn. The read is async and shared, so it does not block the
+    // event loop, and it finishes before this engine starts.
+    try {
+      await noteWorkflowCapacityAdvisory(engineName, { attempt, quiet: state.quiet });
+    } catch { /* dispatch continues */ }
+
     await new Promise((resolve, reject) => {
       const logFd = fs.openSync(logFile, 'w');
       // grok's stdout is the result — write it straight to lastFile so both
@@ -1442,7 +1682,9 @@ async function buildRuntime(cli) {
         // stdin: 'ignore' wires the child's stdin to /dev/null — headless
         // CLIs otherwise hang on a stdin-EOF wait. detached: the child
         // leads its own process group so killTree() reaches its subtree.
-        child = spawn(engine.bin, argv, {
+        // Windows npm shims are `.cmd`; Node 20+ spawn() of those without a
+        // shell is EINVAL, and shell:true would interpolate the prompt.
+        child = spawnCommand(engine.bin, argv, {
           stdio: ['ignore', outFd, logFd],
           detached: true,
           cwd: HQ_ROOT,

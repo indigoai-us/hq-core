@@ -332,6 +332,25 @@ check_required_command_hooks() {
       REQUIRED_COMMAND_HOOK_ISSUES+=("${event} has no command hook in .claude/settings.json")
     fi
   done
+
+  # restore-hook-settings.sh used to rewrite Stop to master-hook.sh only and
+  # drop the shipped waiter. SessionStart/PreToolUse still passed, so this
+  # checker stayed green. Require the waiter when the script ships.
+  if [ -f "$HQ_ROOT/.claude/hooks/hq-monitor-session-hook.sh" ]; then
+    if ! jq -e '
+      [
+        .hooks.Stop[]?.hooks[]?
+        | select(.type == "command"
+                 and (.command | type == "string")
+                 and (.command | contains("hq-monitor-session-hook.sh"))
+                 and (.command | endswith(" wait"))
+                 and .asyncRewake == true
+                 and .timeout == 86400)
+      ] | length > 0
+    ' "$settings" >/dev/null 2>&1; then
+      REQUIRED_COMMAND_HOOK_ISSUES+=("Stop is missing the hq-monitor-session-hook.sh wait command (asyncRewake, timeout 86400) in .claude/settings.json")
+    fi
+  fi
 }
 
 check_required_command_hooks
@@ -349,7 +368,9 @@ check_direct_registry_hooks() {
     [ -f "$file" ] || continue
     jq empty "$file" >/dev/null 2>&1 || continue
     case "$file" in */settings.json) label=".claude/settings.json" ;; *) label=".claude/settings.local.json" ;; esac
-    if ! ids="$(jq -r --slurpfile reg "$registry" --arg label "$label" '
+    # jq 1.6 treats `$label` as a reserved word (`label $x | break $x`).
+    # Bind a different name so Anaconda jq 1.6 can compile this filter.
+    if ! ids="$(jq -r --slurpfile reg "$registry" --arg file_label "$label" '
       .hooks // {} | to_entries[] as $event_entry
       | $event_entry.key as $event
       | [ $reg[0].hooks[$event] // [] | .. | objects
@@ -358,7 +379,7 @@ check_direct_registry_hooks() {
           | $rows[] as $row
           | select(($cmd | contains($row.script))
               or (($cmd | contains("hook-gate.sh")) and ($cmd | contains($row.id))))
-          | $row.id ] | unique[] | "\($label) re-registers registry hook id \(.)"
+          | $row.id ] | unique[] | "\($file_label) re-registers registry hook id \(.)"
     ' "$file" 2>&1)"; then
       DIRECT_REGISTRY_HOOK_ISSUES+=("$label could not be checked for registry duplicates: $ids")
       continue

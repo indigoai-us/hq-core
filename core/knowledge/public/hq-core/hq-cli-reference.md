@@ -195,6 +195,14 @@ date in the header, and update `verified_against`.
 | `hq secrets cache` | Manage the local secrets cache |
 | `hq secrets cache clear` | Clear all cached secrets |
 | `hq run` | Load secrets from .env.schema and run a command with them injected |
+| `hq scan` | Local, offline scanners (added in 5.345.86; see note below) |
+| `hq scan secrets` | Scan staged changes (or files) for secrets; exits 1 on a finding |
+
+`hq scan` was added by hand from hq-cli 5.345.86 (indigoai-us/hq-cli#1810),
+ahead of the next full regeneration of this file, so the counts and version
+above do not include it yet. `hq scan secrets` exits 0 when clean, 1 on a
+possible secret, and 2 when it could not scan. It prints file, line, and
+rule, never the value.
 | `hq api-keys` | Manage vault API keys for CI and automation |
 | `hq api-keys create` | Create a new API key (vault secrets and/or scoped deploy via --deploy-app) |
 | `hq api-keys list` | List API keys for a company |

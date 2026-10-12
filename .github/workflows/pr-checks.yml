@@ -82,6 +82,10 @@ jobs:
         run: bash core/scripts/tests/shell-smoke-macos-paths.test.sh
       - name: Shell smoke timeout runner overlap and failure regression test
         run: bash core/scripts/tests/shell-smoke-timeout-runner.test.sh
+      - name: No tracked references to deleted script paths
+        run: bash core/scripts/check-deleted-script-refs.sh
+      - name: Deleted script reference guard regression test
+        run: bash core/scripts/tests/check-deleted-script-refs.test.sh
       - name: Codex policy rubric batching workflow contract
         run: bash core/scripts/tests/cost-workflow-pr-checks.test.sh
       - name: Release promotion checks gate regression test
@@ -380,6 +384,8 @@ jobs:
         run: bash core/scripts/tests/setup-nag-daily-check.test.sh
       - name: Setup worker reads the desktop first-run handoff
         run: bash core/scripts/tests/setup-worker-first-run-handoff.test.sh
+      - name: Setup worker infers before it asks
+        run: bash core/scripts/tests/setup-worker-infers-before-asking.test.sh
 
   worktree-gc:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1708,8 +1714,12 @@ jobs:
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: Git Bash forwarder preserves slash arguments and path arguments
         run: bash core/scripts/tests/forwarder-msys-argv.test.sh
+      - name: qmd reindex forwarder converts paths only on a Windows Bash
+        run: bash core/scripts/tests/qmd-reindex-bg-cygpath-gate.test.sh
       - name: jq wrapper Windows and POSIX output parity
         run: bash core/scripts/tests/jq-wrapper-platform-parity.test.sh
+      - name: jq wrapper probes --binary once per script run
+        run: bash core/scripts/tests/jq-binary-probe-once.test.sh
       - name: session-journal MSYS newline slug
         run: bash core/scripts/tests/session-journal-windows-slug.test.sh
       - name: session-journal CLI port behavior

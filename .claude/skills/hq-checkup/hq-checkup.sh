@@ -292,6 +292,25 @@ except Exception: print(-1)
   fi
 fi
 
+# Commit secret scanning is off by default; recommend turning it on.
+CSS="$HQ_ROOT/core/scripts/commit-secret-scan.sh"
+if [ -f "$CSS" ]; then
+  CSS_STATUS=$(HQ_ROOT="$HQ_ROOT" bash "$CSS" status 2>/dev/null)
+  case "$CSS_STATUS" in
+    *"commit secret scan: off"*)
+      # "On but not working" outranks recommend=false: the person chose it.
+      case "$CSS_STATUS" in
+        *"enabled=true"*)
+          say YOU "Checking commits for passwords and keys is turned on, but not working" \
+            "Run: bash core/scripts/commit-secret-scan.sh enable" ;;
+        *"recommend=false"*) ;;
+        *)
+          say YOU "Commits aren't checked for passwords and keys yet (recommended)" \
+            "Run: bash core/scripts/commit-secret-scan.sh enable    (undo any time with: disable)" ;;
+      esac ;;
+  esac
+fi
+
 # ===================== Report ================================================
 if [ "$JSON" -eq 1 ]; then
   printf '%s' "$LINES" | python3 -c "

@@ -32,7 +32,7 @@ Optional:
 3. **Run Codex Exec with Goals**
    - For each goal, run Codex in sequence (sequential ensures no conflicts):
      ```bash
-     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-6-astra" --reasoning high --fast --cd {cwd} \
        "Apply {goal} best practices to: {file_list}. Make minimal, targeted changes. Do not modify unrelated code." 2>&1
      ```
    - After each goal pass, verify files are still valid (quick syntax check)
