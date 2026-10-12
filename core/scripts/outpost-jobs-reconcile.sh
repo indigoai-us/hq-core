@@ -37,6 +37,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "${1:-}" = "--company-machine" ]; then
+  shift
+  exec node "$SCRIPT_DIR/lib/company-jobs.mjs" reconcile "$@"
+fi
+if [ "${HQ_MACHINE_AUTH_REQUIRED:-}" = "1" ]; then
+  echo 'company jobs require --company-machine <config>' >&2
+  exit 2
+fi
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 VALIDATE="$SCRIPT_DIR/jobs-validate.sh"
 PROBE="$SCRIPT_DIR/hq-job-probe.sh"
@@ -387,6 +395,8 @@ cron_to_oncalendar() {
 
   m="$(cron_time_field "$minute")"
   h="$(cron_time_field "$hour")"
+  # Personal timers shipped with an empty minute as 00 (`* 9 * * *` is once
+  # at 09:00). Company jobs expand '*' only in lib/company-jobs.mjs.
   [ -n "$m" ] || m='00'
   [ -n "$h" ] || h='*'
   # Normalize pure numbers already padded; handle hour=*

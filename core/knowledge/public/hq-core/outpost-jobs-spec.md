@@ -350,3 +350,120 @@ Fixtures / suites: `core/scripts/tests/hq-job-notify.test.sh`,
   status.readiness=`ready`
 - Remediation alerts: US-006 section above
 - Fleet contrast: `companies/indigo/knowledge/architecture/agent-scheduled-jobs.md`
+
+## Company Outpost jobs (US-005)
+
+Company jobs use the accepted revision registry and company-machine API. They do
+not consume a person's local job files or cached login. The legacy entry points
+accept `--company-machine <config>`; required-machine mode refuses the legacy path.
+Personal OnCalendar rendering matches the pre-US-005 renderer. A wildcard minute
+renders as `00` (`* 9 * * *` is once at 09:00). Company jobs expand wildcard
+minutes in `core/scripts/lib/company-jobs.mjs`.
+
+Provisioning extends the existing company infrastructure adapter. Its runtime
+release receipt includes `jobs.coreVersion` (a released `vX.Y.Z` core tag) and
+`jobs.providerVersion` (a pinned Claude CLI version). The adapter resolves the
+company slug from its company entity, installs public core through `hq rescue`,
+and writes `/etc/hq/company-jobs.json` with the exact company, machine, outpost,
+attempt, and IMDSv2 instance binding. The configuration contains paths and the
+provider secret name, never secret values. Missing release capabilities block
+provisioning before the host is advertised as ready.
+
+The released installer creates the dedicated `hq-jobs` account with a nologin
+shell and no extra groups, and refuses an existing account whose shell, primary
+group, or extra groups differ. Lingering is disabled for that account. One
+root system timer reconciles every job. Node must support built-in SQLite
+(22.13 or newer). Root owns released code at `/opt/hq-company-jobs`, the
+machine credentials at `/etc/hq/company-machine.json` (mode 600), the ledger
+and reports at `/var/lib/hq-job-runner/state`, and the system units under
+`/etc/systemd/system`. The job account owns its home and company project
+workspace only. Installation checks, as `hq-jobs`, that the credentials file
+and the ledger are unreadable, and exercises root/company/project admission as
+that account. It also refuses to install unless every path root executes or
+reads code from is root-owned and not group- or world-writable, including
+every parent directory: the HQ root, `core`, `core/scripts`, `core/scripts/lib`,
+the cloud module, and the resolved `node` binary. An `ec2-user`-owned
+`core/scripts/lib` is refused. The root runner fetches the API provider key
+(`ANTHROPIC_API_KEY` for the provisioned Claude runtime) and any other name on
+the accepted revision through the company secret broker. The live broker
+accepts `secretName` and `companyUid` only. The runner puts those values in
+the job process environment and drops to `hq-jobs` at exec. The job account
+never receives the credentials path. Denial produces a blocked receipt before
+any provider execution.
+
+Company jobs share the `hq-jobs` account, so one job could read another's
+`/proc/<pid>/environ`. A per-job `DynamicUser` or static user is not used.
+Provider CLI auth is checked as `hq-jobs`, and the company project workspace
+is mode 700 owned by that account; an ephemeral uid would have neither.
+Instead, one global run lock in the ledger admits a single company job at a
+time. The lock stamps `since` at acquisition. A later job reclaims it when
+`since` is older than `HQ_COMPANY_JOBS_LOCK_TTL_SECONDS` (default 21600, which
+is past the 14400-second job cap plus token and receipt time). A holder that
+never releases cannot wedge the box. Losing the lock is a `run_lock_lost`
+receipt and a nonzero exit, not a swallowed failure.
+
+Each run gets its own home under the job account's `runs/` directory. Provider
+transcripts go there. The runner deletes that directory after the receipt is
+written, so a later job cannot read the previous transcript.
+
+The default-off `OUTPOST_COMPANY_JOBS_INSTALL_ENABLED` toolset gate adds a normal
+released-core refresh and installer invocation for existing configured company
+hosts. With the gate absent or false, the existing manifest and digest are
+unchanged. Initial company provisioning invokes the installer directly. A release
+must publish the core installer and compatible CLI before updating the runtime
+capability receipt. This implementation does not publish that receipt or release.
+
+The reconciler calls `POST /outpost/company/jobs` with `action: reconcile`. One
+system timer (`hq-company-jobs.timer`, 60 seconds) reconciles every job; there
+is not a separate poll per job. Invalid jobs are reported and skipped, and the
+rest still install. A rejected job sets `errors` on the reconcile result to a
+nonzero count and prints that count. The reconcile process itself still exits 0. The reconciler checks accepted content digests and exact
+target bindings, and installs root-owned system timers in the accepted
+schedule's timezone. A twice-daily hour list produces two timers. Disable or
+deletion removes only this runner's units. Each timer starts an independently
+supervised root service, which drops to `hq-jobs` for the job process.
+systemd's start limit covers a bounded machine-token refresh (15 seconds) and
+the HTTP call (15 seconds) for reconcile, the delivery call, and each secret,
+then the job, then 30 seconds to write the receipt. The reconciliation timer
+cannot truncate a longer job. A token refresh that does not return is rejected
+with `machine_token_timeout` instead of running past that limit. Dispatch requests re-read the current accepted revision and
+obtain server-authoritative occurrence/run identifiers through `scheduled`,
+`dispatch`, or `recover`. Historical scheduled recovery records are not replayed.
+Downtime schedules coalesce into the latest occurrence; receipts report coalescing.
+
+Accepted `context.companyJob` carries `timeoutSeconds` (1–14400, default 600) and
+`secrets` (unique uppercase environment names, at most 50). Context is covered by
+the accepted content digest. Machine/authentication/runtime environment names
+cannot be overridden. Secrets and API headers remain in memory; short-lived
+machine token cache files use the private `/run/hq-company-jobs/tokens` runtime
+filesystem. Secret values are redacted from captured runner output.
+
+SQLite claims are transactional and durable. Scheduled claims are keyed by company,
+job and scheduled occurrence; manual requests use their unique run ID. Terminal
+receipts continue to suppress duplicates after expiry or process restart. Claims
+expire after the execution deadline plus a safety margin. Reclaim checks the
+process's boot/start identity rather than just its PID and refuses overlap with
+a still-running owner. Acquisition tokens fence stale owners. A lost supervisor
+after execution admission yields a complete `uncertain` receipt instead of
+repeating potentially completed effects. This is conservative at-most-once effect
+admission, not a claim of exactly-once external effects.
+Execution admission remains durable if a recovery supervisor also crashes.
+
+Each run's commands go in a root-owned transient scope
+(`systemd-run --scope`, `KillMode=control-group`) when `systemd-run` is
+available. The runner ends that scope with `systemctl kill` and `systemctl stop`
+on exit and at the deadline, so the cgroup stops exactly that job's processes.
+The runner does not record process IDs and does not poll the process table.
+After the direct child is reaped it does not signal a PID. Where the scope
+cannot be created, the deadline still signals the still-living direct child's
+process group and nothing else. The runner then drains pipes briefly, so a
+grandchild holding stdout cannot postpone the receipt.
+Receipts and output include company, job, accepted revision, content digest, run ID,
+scheduled time, actual start/end, machine principal, instance, outpost, attempt,
+outcome and output location, plus available registration/edit/request provenance.
+Failed, denied, timed-out and uncertain worker outcomes return a nonzero status.
+Session replies are parsed from stdout; separately captured stderr diagnostics
+are redacted and logged without corrupting the reply envelope.
+Receipts are local JSON and SQLite records under `/var/lib/hq-job-runner/state`;
+US-004 currently exposes no completion-report endpoint. Notification behavior in
+the human job runner remains unchanged.

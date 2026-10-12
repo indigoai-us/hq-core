@@ -14,8 +14,10 @@
 #       --notes      free-text note stored alongside the choice
 #       --by         who answered (recorded as answered_by)
 #       --force      pre-answer a gate that has not opened yet, or overwrite an
-#                    existing answer
-#       --freeform   accept a choice that is not one of the gate's options
+#                    existing answer. A bare option index still needs options
+#                    (pending, or stored on the answered file) or --freeform.
+#       --freeform   accept a choice that is not one of the gate's options;
+#                    required to record a bare index when no options exist
 #   workflow-gate.sh wait-pending [--timeout secs]
 #       Blocks until any pending gate exists (exit 0) or the timeout elapses
 #       (exit 1). Monitor-friendly wake condition for watching sessions.
@@ -40,7 +42,7 @@ PENDING_DIR="$GATES_DIR/pending"
 ANSWERED_DIR="$GATES_DIR/answered"
 
 die() { printf 'workflow-gate: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # Gate ids are slugged filenames (see the spec) — reject anything else so an id
 # can never traverse outside the gates dir or smuggle path separators.
@@ -120,8 +122,13 @@ if (!gate && !F) {
   fail(`no pending gate "${id}"${ids.length ? ` — pending: ${ids.join(", ")}` : " — nothing is pending"} (use --force to pre-answer)`);
 }
 
+let prior = null;
+try { prior = JSON.parse(fs.readFileSync(answeredFile, "utf8")); } catch { /* none or garbage */ }
+
 let choice = rawChoice;
-const opts = gate && Array.isArray(gate.options) ? gate.options : [];
+const opts = (gate && Array.isArray(gate.options) && gate.options.length)
+  ? gate.options
+  : (!gate && prior && Array.isArray(prior.options) && prior.options.length ? prior.options : []);
 if (opts.length) {
   if (/^[0-9]+$/.test(rawChoice)) {
     const n = Number(rawChoice);
@@ -132,6 +139,8 @@ if (opts.length) {
     if (hit) choice = hit.label;
     else if (!FF) fail(`"${rawChoice}" is not an option for "${id}" — options: ${opts.map((o) => o.label).join(", ")} (use --freeform to record it anyway)`);
   }
+} else if (!gate && /^[0-9]+$/.test(rawChoice) && !FF) {
+  fail(`"${rawChoice}" looks like an option index, but gate "${id}" has no options to resolve against — pass the option label, or use --freeform to record "${rawChoice}" literally`);
 }
 
 if (fs.existsSync(answeredFile) && !F) {
@@ -141,6 +150,7 @@ fs.mkdirSync(answeredDir, { recursive: true });
 const answer = {
   id,
   choice,
+  ...(opts.length ? { options: opts } : {}),
   ...(notes ? { notes } : {}),
   ...(by ? { answered_by: by } : {}),
   answered_at: new Date().toISOString(),

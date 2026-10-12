@@ -15,7 +15,9 @@
 #   5. validation: unknown gate id fails without --force; --force pre-answers a
 #      gate that has not opened yet; an off-menu choice fails without
 #      --freeform and is recorded with it; answering twice fails without
-#      --force and overwrites with it
+#      --force and overwrites with it; a bare option index with --force after
+#      pending is gone maps via the answered file's stored options, or is
+#      refused unless --freeform when that file has no options
 #   6. wait-pending: exits 0 when a pending gate exists, non-zero after
 #      --timeout with none (a wake condition for watching sessions)
 #   7. clear: removes both the pending and answered files for an id
@@ -166,6 +168,81 @@ gate "$G5" answer pick-color red >/dev/null 2>&1
 RC3=$?
 [ "$RC1" -eq 0 ] && [ "$RC2" -eq 0 ] && [ "$RC3" -ne 0 ]
 check "answering twice fails without --force and overwrites with it" "$?"
+
+# ---- 5b: --force + bare index after pending is gone --------------------------
+# Repro: answer while pending exists (index maps to the label), then re-record
+# with --force after pending/<id>.json is gone. Without stored options the
+# script used to write choice "2" literally.
+G5B="$TMP/g5b"; mkdir -p "$G5B"
+synth_pending "$G5B" pick-color
+gate "$G5B" answer pick-color 2 >/dev/null
+[ ! -f "$G5B/pending/pick-color.json" ]
+check "pending file is gone after the first answer" "$?"
+OUT="$(gate "$G5B" answer pick-color 2 --force 2>/dev/null)"
+RC=$?
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.exit(a.choice === "blue" ? 0 : 1);
+' "$G5B/answered/pick-color.json"
+RC2=$?
+[ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$OUT" | grep -q 'answered pick-color -> blue'
+check "--force index after pending is gone maps via stored options (not literal 2)" "$?"
+
+G5C="$TMP/g5c"; mkdir -p "$G5C/answered"
+# Legacy answered file with no options (the production incident shape).
+node -e '
+  const fs = require("fs");
+  fs.writeFileSync(process.argv[1], JSON.stringify({
+    id: "pick-color",
+    choice: "blue",
+    answered_at: new Date().toISOString(),
+  }, null, 2) + "\n");
+' "$G5C/answered/pick-color.json"
+ERR="$(gate "$G5C" answer pick-color 2 --force 2>&1)"
+RC=$?
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.exit(a.choice === "blue" ? 0 : 1);
+' "$G5C/answered/pick-color.json"
+RC2=$?
+[ "$RC" -ne 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$ERR" | grep -q 'no options'
+check "--force index with no options to resolve against is refused" "$?"
+gate "$G5C" answer pick-color 2 --force --freeform >/dev/null
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.exit(a.choice === "2" ? 0 : 1);
+' "$G5C/answered/pick-color.json"
+check "--freeform records a bare index literally when no options exist" "$?"
+
+G5D="$TMP/g5d"; mkdir -p "$G5D"
+gate "$G5D" answer never-opened 2 --force >/dev/null 2>&1
+[ "$?" -ne 0 ]
+check "pre-answer with a bare index fails without --freeform" "$?"
+gate "$G5D" answer never-opened 2 --force --freeform >/dev/null
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.exit(a.choice === "2" ? 0 : 1);
+' "$G5D/answered/never-opened.json"
+check "pre-answer with --freeform records a bare index literally" "$?"
+
+G5E="$TMP/g5e"; mkdir -p "$G5E/pending"
+node -e '
+  const fs = require("fs");
+  const dir = process.argv[1];
+  fs.writeFileSync(`${dir}/pending/free-text.json`, JSON.stringify({
+    id: "free-text",
+    question: "Any number?",
+    options: [],
+    status: "pending",
+    created_at: new Date().toISOString(),
+  }, null, 2) + "\n");
+' "$G5E"
+gate "$G5E" answer free-text 2 >/dev/null
+node -e '
+  const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  process.exit(a.choice === "2" ? 0 : 1);
+' "$G5E/answered/free-text.json"
+check "free-text pending gate records a numeric answer literally" "$?"
 
 # ---- 6: wait-pending ---------------------------------------------------------
 G6="$TMP/g6"; mkdir -p "$G6"

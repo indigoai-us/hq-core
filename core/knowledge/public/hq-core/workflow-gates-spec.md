@@ -72,11 +72,20 @@ Written atomically by the answering party (the CLI does this):
 {
   "id": "myproject-approach",
   "choice": "option-a",
+  "options": [
+    { "label": "option-a", "description": "…" },
+    { "label": "option-b", "description": "…" }
+  ],
   "notes": "optional free text",
   "answered_by": "optional name",
   "answered_at": "<ISO8601>"
 }
 ```
+
+`options` is stored when the CLI knew the menu (from the pending file, or from
+a previous answered file). It lets a later `--force` answer still map a
+1-based index to a label. A legacy answered file without `options` refuses a
+bare index unless `--freeform`.
 
 ## Lifecycle
 
@@ -87,9 +96,12 @@ Written atomically by the answering party (the CLI does this):
 2. **Answer** — any session runs
    `bash core/scripts/workflow-gate.sh answer <id> <choice|N>`. The CLI
    validates the choice against the gate's options (1-based numeric shorthand
-   maps to the Nth label; `--freeform` records an off-menu choice; `--force`
-   pre-answers an unopened gate or overwrites an existing answer), writes the
-   answered file atomically, and removes the pending file.
+   maps to the Nth label from the pending file, or from options stored on an
+   existing answered file when overwriting; a bare index with no options to
+   resolve against is refused unless `--freeform`; `--freeform` records an
+   off-menu choice; `--force` pre-answers an unopened gate or overwrites an
+   existing answer), writes the answered file atomically (including the
+   options it resolved against, when known), and removes the pending file.
 3. **Resume** — the poll sees the answer, the orchestrator emits
    `GATE ANSWERED`, and the run continues from the pause point with the
    answer object in hand.
