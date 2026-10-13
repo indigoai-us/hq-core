@@ -31,5 +31,19 @@ assert_contains \
 assert_contains \
   'keep this probe and the search in **one** Bash call' \
   'Windows sequential spawn warning'
+assert_contains \
+  '## Empty Result Escalation' \
+  'empty BM25 escalates before grep'
+assert_contains \
+  'rerun as `qmd query "$QUERY" -n $N --json [-c $COLLECTION]`' \
+  'empty BM25 retries hybrid when cached'
+assert_contains \
+  'If qmd is unavailable, errors, or the Empty Result Escalation above also returned nothing:' \
+  'grep fallback gated on escalation'
+
+# The escalation must come before the grep fallback.
+esc_line=$(grep -nF '## Empty Result Escalation' "$SKILL" | cut -d: -f1)
+fb_line=$(grep -nF '## Fallback' "$SKILL" | cut -d: -f1)
+[ "$esc_line" -lt "$fb_line" ] || fail 'escalation section must precede Fallback'
 
 echo "search-skill-qmd-mode: ok"
