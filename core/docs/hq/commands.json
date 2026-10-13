@@ -1558,7 +1558,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/search/SKILL.md",
-      "hash": "sha256:7777c4907edfb4e9e59a8331ab0c7cf42a46e8050f791cdf6ed74848045827fa",
+      "hash": "sha256:429a02eae5843d42852d71ae2eb6e2afc59f6572ab92efebe278019fe11504f5",
       "duplicates": {
         "exact": [],
         "drifted": [],

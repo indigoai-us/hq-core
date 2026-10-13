@@ -78,6 +78,16 @@ fi
 
 Never run `qmd pull`, `qmd embed`, or a cold `qmd vsearch`/`qmd query` in the foreground of a user turn. To build embeddings: `hq index background`, or `qmd pull`/`qmd embed` with `run_in_background: true`. On Windows, keep this probe and the search in **one** Bash call — each spawn is expensive.
 
+## Empty Result Escalation
+
+An empty BM25 result does not mean the content is missing. BM25 only matches words that appear verbatim in the indexed text. Before using **Fallback**:
+
+1. If the GGUF cache is present (same probe as above), rerun as `qmd query "$QUERY" -n $N --json [-c $COLLECTION]`.
+2. Otherwise rerun `qmd search` with 2–3 rephrasings: synonyms, the likely document title, the artifact type (memo, deck, deploy, report).
+3. If a company collection was auto-detected and a `{company}-signals` collection exists, search it too.
+
+Use **Fallback** only after these also return nothing.
+
 ## Display Results
 
 Parse JSON output. Display:
@@ -108,7 +118,7 @@ If `--full` flag, after listing results, read the top result file with the Read 
 
 ## Fallback
 
-If qmd is unavailable or errors:
+If qmd is unavailable, errors, or the Empty Result Escalation above also returned nothing:
 
 Use the Grep tool to search file contents:
 - Search pattern: the query text
