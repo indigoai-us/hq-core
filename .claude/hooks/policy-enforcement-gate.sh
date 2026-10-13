@@ -79,6 +79,33 @@ canonical_path() {
   printf '%s/%s' "$(cd "$dir" 2>/dev/null && pwd -P)" "$base"
 }
 
+# Print the session's policy-declared `required-skill:` or `required-brief:`
+# values as a JSON array. Skill values are comma lists; brief values are single
+# entries. One awk pass reads every listed policy file: the matched-policy list
+# grows to well over a thousand rows in a long session, and forking sed per row
+# on every tool call cost seconds per call.
+policy_required_values() {
+  local kind="$1" path
+  while IFS=$'\t' read -r _ _ path _; do
+    [ -n "$path" ] && [ -f "$path" ] && printf '%s\n' "$path"
+  done < "$POLICIES" | awk -v kind="$kind" '
+    {
+      path = $0
+      while ((getline line < path) > 0) {
+        if (index(line, "required-" kind ":") != 1) continue
+        sub(/^required-[a-z]+:[[:space:]]*/, "", line)
+        if (kind == "skill") n = split(line, parts, ",")
+        else { n = 1; parts[1] = line }
+        for (i = 1; i <= n; i++) {
+          value = parts[i]
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+          if (value != "" && !seen[value]++) print value
+        }
+      }
+      close(path)
+    }' | jq -Rsc 'split("\n")|map(select(length>0))'
+}
+
 gate_policy_data() {
   node - "$1" <<'NODE'
 const fs = require("fs");
@@ -207,14 +234,8 @@ case "$EVENT" in
     POLICY_SKILLS='[]'
     POLICY_BRIEFS='[]'
     if [ -s "$POLICIES" ]; then
-      POLICY_SKILLS="$(while IFS=$'\t' read -r id scope path enf excerpt kind; do
-        [ -n "$path" ] && [ -f "$path" ] || continue
-        sed -n 's/^required-skill:[[:space:]]*//p' "$path" | tr ',' '\n'
-      done < "$POLICIES" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF&&!seen[$0]++' | jq -Rsc 'split("\n")|map(select(length>0))')"
-      POLICY_BRIEFS="$(while IFS=$'\t' read -r id scope path enf excerpt kind; do
-        [ -n "$path" ] && [ -f "$path" ] || continue
-        sed -n 's/^required-brief:[[:space:]]*//p' "$path"
-      done < "$POLICIES" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF&&!seen[$0]++' | jq -Rsc 'split("\n")|map(select(length>0))')"
+      POLICY_SKILLS="$(policy_required_values skill)"
+      POLICY_BRIEFS="$(policy_required_values brief)"
     fi
     REQUIRED_SKILLS="$(jq -nc --argjson a "$REQUIRED_SKILLS" --argjson b "$POLICY_SKILLS" '$a+$b|unique')"
 
@@ -372,15 +393,11 @@ case "$EVENT" in
     # selector invokes this gate again after persisting that match, so merge its
     # declarative requirements before deciding whether this action may proceed.
     if [ -s "$POLICIES" ]; then
-      POLICY_SKILLS="$(while IFS=$'\t' read -r id scope path enf excerpt kind; do
-        [ -n "$path" ] && [ -f "$path" ] || continue
-        sed -n 's/^required-skill:[[:space:]]*//p' "$path" | tr ',' '\n'
-      done < "$POLICIES" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF&&!seen[$0]++' | jq -Rsc 'split("\n")|map(select(length>0))')"
-      POLICY_BRIEFS="$(while IFS=$'\t' read -r id scope path enf excerpt kind; do
-        [ -n "$path" ] && [ -f "$path" ] || continue
-        sed -n 's/^required-brief:[[:space:]]*//p' "$path"
-      done < "$POLICIES" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk 'NF&&!seen[$0]++' | jq -Rsc 'split("\n")|map(select(length>0))')"
-      if ! atomic_update '.requiredSkills = ((.requiredSkills // []) + $skills | unique) | .briefs = ((.briefs // []) + $briefs | unique)' \
+      POLICY_SKILLS="$(policy_required_values skill)"
+      POLICY_BRIEFS="$(policy_required_values brief)"
+      # Nothing to merge is the common case; skip the locked state rewrite.
+      if [ "${POLICY_SKILLS:-[]}${POLICY_BRIEFS:-[]}" != "[][]" ] \
+         && ! atomic_update '.requiredSkills = ((.requiredSkills // []) + $skills | unique) | .briefs = ((.briefs // []) + $briefs | unique)' \
         --argjson skills "${POLICY_SKILLS:-[]}" --argjson briefs "${POLICY_BRIEFS:-[]}"; then
         json_block "POLICY ENFORCEMENT BLOCK: policy requirements could not be refreshed safely; retry the outbound action."
         exit 2

@@ -60,6 +60,30 @@ scope_mask_literal_expansions() {
     case "$ch" in
       \\) out+="$ch"; escaped=1 ;;
       \') out+="$ch"; in_single=1 ;;
+      '$')
+        # A `$` that cannot begin a parameter, command, or arithmetic expansion
+        # — nor one of bash's dollar-quoting forms — is a literal dollar to the
+        # shell as well: a regex anchor in `grep -E "done$|/tmp/"`, a trailing
+        # `"cost$"`. Marking it literal keeps a pattern argument from being read
+        # as an unresolvable path expansion.
+        #
+        # The preserved set must cover EVERY introducer bash honours, or the
+        # guard stops seeing a real expansion. `$'…'` (ANSI-C quoting) and
+        # `$"…"` (locale quoting) both resolve to plain text the shell then uses
+        # as a path — `companies/$'otherco'/settings/x` is a cross-company read
+        # — and `$[…]` is legacy arithmetic. All three stay expansions here.
+        #
+        # Every special character is its OWN quoted pattern. Written as one
+        # bracket expression, `[...$!...]` is parameter-expanded before matching:
+        # bash reads the `$!` as the last background PID, and under `set -u` a
+        # hook with no background job dies with "unbound variable" instead of
+        # rendering a verdict (caught by the spawn-budget suite, which skips the
+        # process substitution that would otherwise have set `$!`).
+        case "${raw:$((i + 1)):1}" in
+          [A-Za-z0-9_@]|'*'|'#'|'?'|'$'|'!'|'-'|'{'|'('|'['|"'"|'"') out+="$ch" ;;
+          *) out+="__HQ_LITERAL_EXPANSION__" ;;
+        esac
+        ;;
       *) out+="$ch" ;;
     esac
   done
@@ -185,6 +209,12 @@ scope_strip_inert_heredoc_bodies() {
     # Leave them visible rather than hiding a later body.
     case "$line" in *'<<'*'<<'*) continue ;; esac
     case "$line" in *'|'*) continue ;; esac
+    # An interpreter heredoc body stays FULLY scanned, even with a quoted
+    # delimiter. The outer shell expands nothing in such a body, but the
+    # interpreter can hand the same text to a shell that does — a python body
+    # calling os.system("cat companies/$CO/...") expands $CO at runtime from
+    # the exported environment. Treating the body as inert source therefore
+    # cannot be made safe by looking at the delimiter's quoting.
     unsafe_re='(^|[[:space:];])(bash|sh|dash|zsh|ksh|python|python[0-9.]*|node|ruby|perl|eval|source)([[:space:]]|$)'
     [[ "$line" =~ $unsafe_re ]] && continue
 
@@ -989,10 +1019,38 @@ scope_rel_allowed() {
 
 scope_block_rel() {
   local rel="${1:-}"
-  local glob_reason="${2:-}"
-  local co bound_msg bind_msg=""
+  local block_reason="${2:-}"
+  local co bound_msg bind_msg="" scope_names_companies=0
   scope_load_bound_company
   co="$(scope_company_slug_for_rel "$rel")"
+  # A path with no companies/ segment at all is not a tenancy failure, so it
+  # must not be reported as one. Binding a company would not authorize it and
+  # would widen the session's scope for nothing; saying so sent agents to
+  # `hq-session.sh set company_slug` for paths in /tmp and ~/.claude.
+  #
+  # An unresolved slug (`companies/$co/x`) keeps the tenancy message below: the
+  # path IS under companies/, the guard just cannot say which tenant, and
+  # binding the right company is the correct remedy there.
+  scope_names_companies=0
+  case "$rel" in companies|companies/*|*/companies/*) scope_names_companies=1 ;; esac
+  if [ -z "$co" ] && [ "$scope_names_companies" -eq 0 ]; then
+    cat >&2 <<EOF
+BLOCKED: Cross-company scope violation
+Tool: $TOOL
+Path: $rel
+No company path is involved. This path could not be resolved well enough to
+prove it stays outside companies/, so the guard failed closed on it.
+EOF
+    [ -z "$block_reason" ] || printf 'Reason: %s\n' "$block_reason" >&2
+    cat >&2 <<EOF
+Session: ${SESSION_ID:-unknown}
+
+Re-run it with a literal path, or use the Write tool (or Edit) for a file
+write. Do NOT bind a company to get past this: no company owns this path, and
+binding one would only widen this session's scope.
+EOF
+    exit 2
+  fi
   if [ "$CALLER_IDENTITY_ERROR" = "missing" ]; then
     bound_msg="This subagent call has no agent_id, so its company access is denied. Restart the session so the host supplies the caller identity."
   elif [ "$CALLER_IDENTITY_ERROR" = "invalid" ]; then
@@ -1023,11 +1081,12 @@ BLOCKED: Cross-company scope violation
 Tool: $TOOL
 Path: $rel
 EOF
-  if [ -n "$glob_reason" ]; then
-    printf 'Target company: %s (glob "%s" blocked: %s)\n' "${co:-unknown}" "$rel" "$glob_reason" >&2
-  else
-    printf 'Target company: %s\n' "${co:-unknown}" >&2
-  fi
+  # Still `unknown` here: this branch is reached for a companies/ path whose
+  # slug could not be resolved, which is exactly an unknown target company.
+  printf 'Target company: %s\n' "${co:-unknown}" >&2
+  # The reason is printed as its own line. Wrapping it in `glob "..." blocked:`
+  # reported every non-glob refusal as a glob failure.
+  [ -z "$block_reason" ] || printf 'Reason: %s\n' "$block_reason" >&2
   cat >&2 <<EOF
 Session: ${SESSION_ID:-unknown}
 $bound_msg
@@ -1390,13 +1449,34 @@ scope_resolve_known_path_expansions() {
       fi
     fi
     if [ -n "$value" ]; then
-      # An absolute value embedded after an open-tree prefix is ambiguous to
-      # the shell and must not inherit the literal prefix's exemption.
-      case "$value" in /*) printf '%s' "__ABSOLUTE_EXPANSION__"; return 0 ;; esac
-      # Only a literal, slash-free, non-parent value is safe to substitute.
-      # Command substitutions and assignment chains remain unresolved.
+      # A value that is itself unresolved, or that can traverse upward, is never
+      # substituted. The candidate stays literal and the fail-closed checks
+      # downstream still apply to it.
       case "$value" in
-        *'/'*|*'..'*|*'$'*|*"$backtick"*) value="" ;;
+        *'..'*|*'$'*|*"$backtick"*) value="" ;;
+      esac
+    fi
+    if [ -n "$value" ]; then
+      case "$value" in
+        # An absolute value fully determines where the path lands, whatever
+        # literal text precedes the expansion, so substitute it and authorize
+        # the result like any literal path: under companies/ it still needs a
+        # binding, outside the HQ root it has no tenant to authorize against.
+        # Refusing every absolute value instead (the earlier behaviour) blocked
+        # ordinary work in /tmp and ~/.claude and told the agent to bind a
+        # company for a path no company owns.
+        #
+        # It only determines ONE path if it yields one word. An unquoted
+        # expansion of `D="/tmp companies/otherco"` word-splits into `/tmp` and
+        # `companies/otherco/settings/x`, so treating the whole value as a
+        # single absolute path would authorize a cross-company read by the
+        # leading `/tmp`. A glob character likewise stands for paths this value
+        # does not name. Either one stays unresolved and fails closed.
+        *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*) value="" ;;
+        /*) ;;
+        # A relative value with a slash stays unresolved: that is the original
+        # contract of the open-tree carve-out below, unchanged.
+        */*) value="" ;;
       esac
     fi
     if [ -n "$value" ]; then
@@ -1515,6 +1595,13 @@ scope_check_bash_skill_path() {
   fi
   scope_candidate_is_inert_text "$raw" "$command_text" "$prefix" "$suffix" && return 0
   case "$raw" in */*|/*) ;; *) return 0 ;; esac
+  # A command substitution stays fail-closed. Its VALUE is the program's
+  # stdout, which no static check can bound, and scanning the inner command
+  # instead does not help: `"$(printf %s companies / otherco /settings/x)"`
+  # has four individually harmless operands that the shell concatenates into
+  # one cross-company path. A long argument that needs a substitution belongs
+  # in a file the callee reads by literal path.
+  #
   # These three forms have the same value as the shell's command cwd. Resolve
   # only the exact leading spellings; any other substitution in the remaining
   # path is checked normally and stays fail-closed when it cannot be resolved.
@@ -1533,8 +1620,6 @@ scope_check_bash_skill_path() {
   esac
   expanded_raw="$(scope_resolve_resumework_basename_value "$raw" "$command_text")"
   expanded_raw="$(scope_resolve_known_path_expansions "$expanded_raw" "$command_text")"
-  [ "$expanded_raw" != "__ABSOLUTE_EXPANSION__" ] || \
-    scope_block_rel "$raw" "an absolute path expansion cannot use an open-tree prefix"
   rel="$(scope_normalize_hq_relative "$expanded_raw")"
   raw_masked="$(scope_mask_literal_expansions "$expanded_raw")"
   case "$raw_masked" in

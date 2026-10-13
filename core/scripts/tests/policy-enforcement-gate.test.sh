@@ -292,4 +292,44 @@ printf '%s' "$BLOCK" | jq -e '.reason | contains("declared-attachment-without-re
   || fail "unresolved attachment was not named"
 pass "fails closed when an attached brief has no resolvable path"
 
+# A long session's matched-policy list grows past a thousand rows, and the gate
+# rereads it on every tool call. Collect required-skill/required-brief values in
+# one pass instead of starting programs per listed policy.
+LONG_SID="long-session-policy-list"
+LONG_TSV="$FIX/workspace/orchestrator/policy-enforcement/$LONG_SID.policies.tsv"
+mkdir -p "$FIX/policies/long"
+: > "$LONG_TSV"
+for i in $(seq 1 300); do
+  printf -- '---\nid: plain-%s\nenforcement: soft\n---\n## Rule\nPlain policy %s.\n' "$i" "$i" > "$FIX/policies/long/plain-$i.md"
+  printf 'plain-%s\tcore\t%s\tsoft\tPlain policy %s.\n' "$i" "$FIX/policies/long/plain-$i.md" "$i" >> "$LONG_TSV"
+done
+printf -- '---\nid: needs-skills\nrequired-skill:  alpha-skill , beta-skill,alpha-skill\n---\n' > "$FIX/policies/long/needs-skills.md"
+printf -- '---\nid: needs-brief\nrequired-brief:   docs/long-brief.md  \n---\n' > "$FIX/policies/long/needs-brief.md"
+printf -- '---\nid: also-skill\nrequired-skill: beta-skill, gamma-skill\n---\n' > "$FIX/policies/long/also-skill.md"
+{
+  printf 'needs-skills\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/needs-skills.md"
+  printf 'missing-file\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/does-not-exist.md"
+  printf 'dir-path\tcore\t%s\tsoft\tx\n' "$FIX/policies/long"
+  printf 'needs-brief\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/needs-brief.md"
+  printf 'also-skill\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/also-skill.md"
+} >> "$LONG_TSV"
+SHIM="$TMP/shim"
+mkdir -p "$SHIM"
+for tool in sed tr; do
+  real="$(command -v "$tool")"
+  printf '#!/bin/sh\necho %s >> "%s/calls"\nexec "%s" "$@"\n' "$tool" "$SHIM" "$real" > "$SHIM/$tool"
+  chmod +x "$SHIM/$tool"
+done
+LONG_READ="$(jq -nc --arg sid "$LONG_SID" '{session_id:$sid,tool_name:"Read",tool_input:{file_path:"/dev/null"}}')"
+printf '%s' "$LONG_READ" | PATH="$SHIM:$PATH" CLAUDE_PROJECT_DIR="$FIX" \
+  bash "$FIX/.claude/hooks/policy-enforcement-gate.sh" PreToolUse >/dev/null \
+  || fail "PreToolUse failed on a long matched-policy list"
+LONG_STATE="$FIX/workspace/orchestrator/policy-enforcement/$LONG_SID.json"
+jq -e '.requiredSkills == ["alpha-skill","beta-skill","gamma-skill"] and .briefs == ["docs/long-brief.md"]' "$LONG_STATE" >/dev/null \
+  || fail "requirements from a long policy list were not collected: $(cat "$LONG_STATE")"
+CALLS=0
+[ ! -f "$SHIM/calls" ] || CALLS="$(wc -l < "$SHIM/calls" | tr -d ' ')"
+[ "$CALLS" -le 2 ] || fail "PreToolUse started $CALLS sed/tr processes for a 305-row policy list"
+pass "collects policy requirements from a long list without per-policy processes"
+
 echo "PASS (policy enforcement gate)"
