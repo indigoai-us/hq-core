@@ -103,6 +103,32 @@ echo "# Delegation brief — widget" > "$BUNDLE/BRIEF.md"
 # --- 1. prompt covers the manifest one-to-one --------------------------------
 
 write_manifest verified "$REPO_JSON"
+
+# --- MSYS jq capability probing is lazy and cached --------------------------
+REAL_JQ="$(command -v jq)"
+PROBE_BIN="$TMP/probe-bin"
+mkdir -p "$PROBE_BIN"
+cat > "$PROBE_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JQ_STUB_LOG"
+if [ "${1:-}" = "--binary" ]; then shift; fi
+exec "$REAL_JQ" "$@"
+STUB
+chmod +x "$PROBE_BIN/jq"
+JQ_STUB_LOG="$TMP/jq-stub.log"
+: > "$JQ_STUB_LOG"
+MSYSTEM=MINGW64 REAL_JQ="$REAL_JQ" JQ_STUB_LOG="$JQ_STUB_LOG" PATH="$PROBE_BIN:$PATH" \
+  HQ_ROOT="$FIX" bash "$HELPER" --help > "$TMP/msys-help.out" \
+  || fail "MSYS help exited non-zero"
+[ ! -s "$JQ_STUB_LOG" ] || fail "MSYS help should not probe jq --binary before jq is used"
+
+: > "$JQ_STUB_LOG"
+MSYSTEM=MINGW64 REAL_JQ="$REAL_JQ" JQ_STUB_LOG="$JQ_STUB_LOG" PATH="$PROBE_BIN:$PATH" \
+  HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" > /dev/null \
+  || fail "MSYS prompt generation exited non-zero"
+PROBE_COUNT="$(grep -c '^--binary -n null$' "$JQ_STUB_LOG" || true)"
+[ "$PROBE_COUNT" -eq 1 ] || fail "expected one cached MSYS jq --binary probe, got $PROBE_COUNT"
+
 : > "$INVOKE_LOG"
 HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" >/dev/null 2>&1 \
   || fail "prompt generation exited non-zero"

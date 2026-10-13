@@ -25,9 +25,16 @@ questions, and result. Do not start a second runner beside hq-cli.
 ## 2. Resolve one engine per run, before you brief anything
 
 Resolve the provider once from explicit user choice, saved session choice, or
-the worker profile. For `/conduct --workers`, resolve provider, model, and
-effort once and pass the same pins to each role lane. Ask once only if no
+the worker profile. For `/conduct --workers`, resolve provider, model, effort,
+and account once and pass the same pins to each role lane. Ask once only if no
 configured provider is available.
+
+The account pin is `conduct_child_account`, stored next to
+`conduct_child_model` and `conduct_child_effort` with
+`bash core/scripts/hq-session.sh set conduct_child_account <account-id>`. Set it
+only when the user names an account. With no pin and no user `--account` flag,
+lanes use `--account auto`, which picks from one shared pool of accounts across
+companies.
 
 ### The roster
 
@@ -54,8 +61,12 @@ hq lanes create --company <company> --project <project> --story <story> \
 ```
 
 Pass every set session pin on every `/conduct` lane: `--provider` from
-`conduct_engine`, `--model` from `conduct_child_model`, and `--effort` from
-`conduct_child_effort`. An explicit flag overrides its matching session pin.
+`conduct_engine`, `--model` from `conduct_child_model`, `--effort` from
+`conduct_child_effort`, and `--account` from `conduct_child_account`. An
+explicit flag overrides its matching session pin. When no account pin or
+`--account` flag is set, pass `--account auto`. This rule applies to every
+skill that builds `hq lanes create`, including `/execute-task` and
+`/run-project`.
 Repeating create for the same worker under the same
 senior continues that worker's thread. When the lane is still live, use
 `hq lanes message <lane> --text <instruction>`.
@@ -68,7 +79,14 @@ The reaper uses that record to keep lanes whose owning session is still alive.
 
 The lane registry is the record. Parse the create JSON for `ok`, `lane_id`, and
 the admission result. Admission or capacity refusal leaves the task queued for a
-later tick. Claude parents arm `Monitor(hq lanes watch <lane>)` or a bounded
+later tick. A `no_account_with_room` refusal from `--account auto` also leaves
+the task queued; report the soonest reset from `next_reset` in one line. Do not
+start a substitute process or pool, and do not pick an account by hand.
+A create response, refused or not, can list signed-out accounts under
+`skipped[]` with a `hq capacity login` fix. The conduct skill raises one
+owner card per account and dedupes it machine-wide; see "Signed-out
+accounts" in `conduct/dispatch.md`. Never run the login yourself.
+Claude parents arm `Monitor(hq lanes watch <lane>)` or a bounded
 background `hq lanes wait`. Codex parents generate a unique
 `round_id="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"` before every
 dispatch, then capture

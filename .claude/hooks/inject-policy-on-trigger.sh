@@ -1191,8 +1191,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
         # The parser cache now stores PostToolUse as the omitted-on default;
-        # invalidate v2 records, which baked in PreToolUse.
-        CACHE_HEADER="hq-policy-cache-v3${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
+        # invalidate v2 records, which baked in PreToolUse. v4 adds the parsed
+        # `principals:` field to each record, so v3 records (one field short)
+        # are never decoded with the new layout.
+        CACHE_HEADER="hq-policy-cache-v4${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
         if [ -r "$CACHE_FILE" ]; then
           IFS= read -r cache_header < "$CACHE_FILE" || true
@@ -1248,6 +1250,33 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   STALE_LEDGER="$HQ_ROOT/workspace/orchestrator/policy-retrieval-ledger.jsonl"
   [ -r "$STALE_LEDGER" ] || STALE_LEDGER=""
   INJECT_PERSONAL_SOFT="${HQ_INJECT_PERSONAL_SOFT:-0}"
+  # Session principal for the optional `principals:` policy audience field.
+  # Builtins and file tests only: this runs on every hook event. Order:
+  #   1. HQ_SESSION_PRINCIPAL=human|agent|bot (any other value is ignored)
+  #   2. agent: fleet identity present (mirrors hq-cli fleetIdentityPresent and
+  #      resolve-company.sh is_fleet_identity, including HQ_AGENT_ROOT_PREFIX)
+  #   3. bot: HQ_BOT_AGENT_UID (personal bot turn) or HQ_MACHINE_CREDS_FILE
+  #      (company bot turn)
+  #   4. human
+  SESSION_PRINCIPAL=""
+  case "${HQ_SESSION_PRINCIPAL:-}" in
+    human|agent|bot) SESSION_PRINCIPAL="$HQ_SESSION_PRINCIPAL" ;;
+  esac
+  if [ -z "$SESSION_PRINCIPAL" ]; then
+    principal_agent_root="${HQ_AGENT_ROOT_PREFIX:-}"
+    if [ -n "${HQ_AGENT_WORKDIR:-}" ] || [ -n "${HQ_AGENT_COMPANY_DIR:-}" ] \
+      || [ -n "${HQ_AGENT_IDENTITY_FILE:-}" ] \
+      || [ -f /etc/hq-agent/identity.json ] || [ -f /etc/hq-agent/machine-creds.json ] \
+      || [ -f /var/lib/hq-agent/machine-creds.json ] \
+      || { [ -n "$principal_agent_root" ] && [ -f "${principal_agent_root%/}/var/lib/hq-agent/identity.json" ]; } \
+      || { [ -z "$principal_agent_root" ] && [ -f /var/lib/hq-agent/identity.json ]; }; then
+      SESSION_PRINCIPAL="agent"
+    elif [ -n "${HQ_BOT_AGENT_UID:-}" ] || [ -n "${HQ_MACHINE_CREDS_FILE:-}" ]; then
+      SESSION_PRINCIPAL="bot"
+    else
+      SESSION_PRINCIPAL="human"
+    fi
+  fi
   if [ -n "$CACHE_FILE" ] && [ "$CACHE_WRITE" != "1" ]; then
     eval_session_key=""
     eval_slot=""
@@ -1270,9 +1299,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     fi
     eval_input_hash="$(
       {
-        printf '%s\034%s\034%s\034%s\034%s\034%s\034%s\034%s\034' \
+        # SESSION_PRINCIPAL is part of the key: a verdict computed for one
+        # principal must never be replayed for another.
+        printf '%s\034%s\034%s\034%s\034%s\034%s\034%s\034%s\034principal=%s\034' \
           "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" \
-          "${HQ_POLICY_TOOL_EVENTS:-}" "$STALE_TODAY" "$INJECT_PERSONAL_SOFT" "$retrieval_ledger_key"
+          "${HQ_POLICY_TOOL_EVENTS:-}" "$STALE_TODAY" "$INJECT_PERSONAL_SOFT" "$retrieval_ledger_key" \
+          "$SESSION_PRINCIPAL"
         append_policy_ledger "$DEDUPE_FILE"
         printf '\034'
         append_policy_ledger "$TURN_FILE"
@@ -1334,7 +1366,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" -v TODAY="$STALE_TODAY" \
-          -v RETRIEVAL_LEDGER="$STALE_LEDGER" -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" '
+          -v RETRIEVAL_LEDGER="$STALE_LEDGER" -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" \
+          -v PRINCIPAL="$SESSION_PRINCIPAL" '
       # Keep this hot-path parser structurally identical to eval-trigger.sh.
       # In particular, an opening paren needs a closing paren: accepting it
       # here while --check rejects it makes authoring and runtime disagree.
@@ -1428,9 +1461,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (CACHE_WRITE) {
           cache_rule=rule
           gsub(/\t/," ",cache_rule)
-          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(crx,CSEP) || index(tagx,CSEP) || index(cache_rule,CSEP)) cache_unsafe=1
-          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP crx CSEP rwx CSEP tagx CSEP cache_rule CSEP "." >> CACHE_TMP
+          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(crx,CSEP) || index(tagx,CSEP) || index(cache_rule,CSEP) || index(prx,CSEP)) cache_unsafe=1
+          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP crx CSEP rwx CSEP tagx CSEP cache_rule CSEP prx CSEP "." >> CACHE_TMP
         }
+        # `principals:` audience filter. Runs before matching and ranking, so a
+        # policy addressed to another principal never takes an output slot.
+        # prx holds the normalized valid values; empty means everyone.
+        if (prx!="" && index(" " prx " ", " " PRINCIPAL " ")==0) return
         onpad=" " onx " "
         ev_on = (index(onpad," " EVENT " ")>0)
         ai_on = (index(onpad," AssistantIntent ")>0)
@@ -1515,7 +1552,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (enf=="hard" && hay ~ /credential|secret|destructive|company-isolation|tenant|cross-company/) return 1
         return 0
       }
-      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; crx=""; rwx=0; tagx=""; tsec=0; rule=""; rsec=0; rcap=0 }
+      function add_principals(v,   n,a,i,t) {
+        gsub(/[][,"\047]/," ",v)
+        n=split(v,a,/[ \t]+/)
+        for (i=1; i<=n; i++) { t=tolower(a[i]); if (t=="human" || t=="agent" || t=="bot") prx=(prx=="" ? t : prx " " t) }
+      }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; crx=""; rwx=0; tagx=""; tsec=0; rule=""; rsec=0; rcap=0; prx=""; psec=0 }
       # specificity(expr, which): how many distinct identifiers in the `when:`
       # expression are present in the fact set. A policy keyed on
       # `deploy && vercel && indigo` outranks one keyed on `deploy` alone when
@@ -1572,9 +1614,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       CACHE_RECORDS {
         if (FNR==1) next
         n=split($0,cr,CSEP)
-        if (n < 13) next
+        if (n < 14) next
         id=cr[1]; fname=cr[3]; whenx=cr[4]; onx=cr[5]; enf=cr[6]
-        injx=cr[7]; statx=cr[8]; crx=cr[9]; rwx=cr[10]; tagx=cr[11]; rule=cr[12]
+        injx=cr[7]; statx=cr[8]; crx=cr[9]; rwx=cr[10]; tagx=cr[11]; rule=cr[12]; prx=cr[13]
         finalize()
         next
       }
@@ -1582,6 +1624,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       { fname=FILENAME }
       /^---[ \t]*$/ { if (d<2) { d++; next } }
       d==1 && tsec && /^[^ \t-]/ { tsec=0 }
+      d==1 && psec && /^[^ \t-]/ { psec=0 }
+      # principals: [human, agent] or a block list. Unknown values are dropped
+      # here (the linter rejects them); a list with no valid value applies to
+      # everyone, so a typo never hides a policy.
+      d==1 && /^principals:/ { s=$0; sub(/^principals:[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); add_principals(s); psec=(s==""); next }
+      d==1 && psec && /^[ \t]*-/ { s=$0; sub(/^[ \t]*-[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); add_principals(s); next }
       d==1 && /^id:/   { s=$0; sub(/^id:[ \t]*/,"",s);   gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
       d==1 && /^status:/ { s=$0; sub(/^status:[ \t]*/,"",s); gsub(/[ \t"]/,"",s); statx=s; next }
       d==1 && /^when:/ { s=$0; sub(/^when:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); whenx=s; next }

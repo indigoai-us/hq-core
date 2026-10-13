@@ -33,6 +33,11 @@ See "Save file" below.
 - `status` → render the session board (see "Rendering") from the JSON returned
   by `hq lanes link list`, `hq lanes list --json --senior session:<this session id>`,
   and the DM inbox. Launch nothing, send nothing.
+- `interval <seconds>` (or plain words such as "check every 2 minutes") →
+  set the present watch interval for this run only. It wins over the settings
+  file, is clamped like the setting (see "Watch interval"), is recorded in the
+  save file, and is never written to `personal/settings/super-conductor.yaml`.
+  It can be combined with a full start or sent to a running conductor.
 - Anything else, or no argument → full start (Steps 2–8). Free text is a
   standing note to pass to every adopted session (for example "no merges until
   I'm back").
@@ -142,6 +147,9 @@ teammates:                 # people whose work is checked for collisions
   - name: <display name>
     person_uid: <prs_...>  # work-mesh person id
     github: <login>
+watch_interval:            # seconds between wakeups (Step 7)
+  present: 60              # owner active
+  away: 1500               # owner away, or /overnight running
 ```
 
 **Slack (when a Slack integration is usable).** Check
@@ -178,9 +186,27 @@ Keep two things running:
    `pending: false, timeout: true` on timeout (exit 3). Read the response, then
    run `hq lanes link read --link <link>` when a report is pending. Re-arm the
    wait after each check.
-2. `ScheduleWakeup` every 60 seconds while the owner is present (never
-   slower than 5 minutes; 20–30 minutes only when the owner is away), so the
-   DM inbox and `list_sessions` are checked even when no child reports.
+2. `ScheduleWakeup` every `watch_interval.present` seconds while the owner
+   is present and every `watch_interval.away` seconds when the owner is away
+   or `/overnight` is running, so the DM inbox and `list_sessions` are
+   checked even when no child reports. See "Watch interval" below.
+
+### Watch interval
+
+Resolve both values once at start (or from the save file on resume):
+
+1. A per-run override (`interval <seconds>` in Step 1) sets `present` and
+   wins over everything else.
+2. Otherwise read `watch_interval.present` and `watch_interval.away` from
+   `personal/settings/super-conductor.yaml`.
+3. A missing or non-numeric value uses the default: `present` 60,
+   `away` 1500. Say so once in this window.
+4. Clamp every value to 30–3600 seconds. When a value is clamped, say so
+   once in this window with the value used.
+
+Record the resolved values, and whether `present` came from an override, as
+`watch_interval` in the save file so a resumed conductor keeps the same
+cadence. `/overnight` wakes on the resolved `away` value.
 
 On each wakeup: read the wait result, drain the link when a report is pending,
 run the every-session sweep (Step 8), run the collision pass, check comms,
@@ -293,6 +319,8 @@ fields:
 - `slack_cursors`: last timestamp read per watched channel and for
   mentions and DMs;
 - `team`: the latest teammate summary, when teammate tracking is on;
+- `watch_interval`: `{present, away, source}` in seconds, where `source`
+  is `override`, `settings`, or `default`;
 - `updated_at`.
 
 Rewrite it with the Write tool at the end of every wakeup and whenever a

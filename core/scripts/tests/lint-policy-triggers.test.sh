@@ -128,4 +128,45 @@ grep -Fq 'missing trigger: 1' "$missing_stdout" \
   || fail "missing trigger check emitted stderr: $(cat "$missing_stderr")"
 echo 'PASS: linter counts policies with missing when/on fields'
 
+# `principals:` audience field: valid inline and block lists pass; unknown
+# values, empty lists, and malformed syntax fail with a PRINCIPALS line.
+principals_policy() {
+  local dir="$1" name="$2" field="$3"
+  printf -- '---\nid: %s\nwhen: always\non: [SessionStart]\nenforcement: soft\n%s\n---\n\n## Rule\n\nSynthetic policy.\n' \
+    "$name" "$field" > "$dir/$name.md"
+}
+GOOD_PRINCIPALS="$TMP/good-principals"
+mkdir -p "$GOOD_PRINCIPALS"
+principals_policy "$GOOD_PRINCIPALS" inline-one 'principals: [agent]'
+principals_policy "$GOOD_PRINCIPALS" inline-all 'principals: [human, agent, "bot"]'
+principals_policy "$GOOD_PRINCIPALS" block-two $'principals:\n  - human\n  - bot'
+principals_policy "$GOOD_PRINCIPALS" untagged 'tags: [x]'
+good_rc=0
+HQ_ROOT="$TMP" bash "$LINT" "$GOOD_PRINCIPALS" > "$TMP/good-principals.out" 2>&1 || good_rc=$?
+[ "$good_rc" -eq 0 ] || fail "valid principals must lint clean (got $good_rc): $(cat "$TMP/good-principals.out")"
+grep -Fq 'invalid principals: 0' "$TMP/good-principals.out" \
+  || fail "valid principals were counted as invalid: $(cat "$TMP/good-principals.out")"
+
+check_bad_principals() {
+  local label="$1" field="$2" expect="$3" dir rc=0
+  dir="$TMP/bad-principals-$label"
+  mkdir -p "$dir"
+  principals_policy "$dir" "bad-$label" "$field"
+  HQ_ROOT="$TMP" bash "$LINT" "$dir" > "$dir.out" 2>&1 || rc=$?
+  [ "$rc" -eq 1 ] || fail "principals case $label must fail lint (got $rc): $(cat "$dir.out")"
+  grep -F "PRINCIPALS" "$dir.out" | grep -Fq "$expect" \
+    || fail "principals case $label must report '$expect': $(cat "$dir.out")"
+  grep -Fq 'invalid principals: 1' "$dir.out" \
+    || fail "principals case $label was not counted: $(cat "$dir.out")"
+}
+check_bad_principals unknown 'principals: [agent, robot]' 'unknown value "robot"'
+check_bad_principals unknown-block $'principals:\n  - humans' 'unknown value "humans"'
+check_bad_principals empty-inline 'principals: []' 'empty list'
+check_bad_principals empty-block 'principals:' 'empty list'
+check_bad_principals scalar 'principals: agent' 'expected a list'
+check_bad_principals unclosed 'principals: [agent, bot' 'expected a list'
+check_bad_principals empty-item 'principals: [agent,,bot]' 'empty item'
+check_bad_principals duplicate-key $'principals: [agent]\nprincipals: [bot]' 'more than once'
+echo 'PASS: linter validates principals values and syntax'
+
 echo 'PASS: lint-policy-triggers streams an ARG_MAX-scale corpus and fails closed'

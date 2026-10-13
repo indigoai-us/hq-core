@@ -93,6 +93,30 @@ heading, so it is never injected.
 | `learned_from` | string | Task ID or session reference (for auto-generated policies) |
 | `command` | string | Command name for a command-scoped policy (e.g. `prd`, `email`); pair with a `when:` keyed on the `/command` token |
 | `inject` | enum | `once` (default) or `always`. Sets injection **cadence** — how *often* the policy re-surfaces — and is orthogonal to `enforcement:` (which sets **depth**). See **Injection Cadence** below. |
+| `principals` | list | Session principals the policy is injected for: any of `human`, `agent`, `bot`, as `[agent, bot]` or a YAML block list of `- agent` lines. Omitted means every principal. See **Principals** below. |
+
+### Principals
+
+`principals:` limits a policy to the kind of session it is written for. It is unrelated to the
+`hq-audience-mode` output styles, which set how the agent talks to a human.
+
+The policy injector resolves the session principal once per event, in this order:
+
+1. `HQ_SESSION_PRINCIPAL` set to `human`, `agent`, or `bot`. Any other value is ignored.
+2. `agent` when a fleet identity is present: `HQ_AGENT_WORKDIR`, `HQ_AGENT_COMPANY_DIR`, or
+   `HQ_AGENT_IDENTITY_FILE` is set, or `/etc/hq-agent/identity.json`,
+   `/etc/hq-agent/machine-creds.json`, `/var/lib/hq-agent/identity.json` (under
+   `HQ_AGENT_ROOT_PREFIX` when set), or `/var/lib/hq-agent/machine-creds.json` exists. This mirrors
+   hq-cli `fleetIdentityPresent`.
+3. `bot` when `HQ_BOT_AGENT_UID` (personal bot turn) or `HQ_MACHINE_CREDS_FILE` (company bot turn)
+   is set.
+4. `human` otherwise.
+
+A policy whose `principals:` does not include the session principal is dropped before trigger
+matching and ranking, so it never takes a slot under the output ceiling. A missing field applies to
+everyone. `core/scripts/lint-policy-triggers.sh` reports unknown values, empty lists, and malformed
+syntax as `PRINCIPALS` findings and exits non-zero. At runtime a list with no recognized value
+applies to everyone, so a typo cannot hide a policy.
 
 ### Lifecycle Fields
 

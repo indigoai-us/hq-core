@@ -24,6 +24,10 @@
 #              event — TRUE for every command and prompt, so it is ranked as an
 #              event-specific match and takes the session cap slot of a policy
 #              that actually matched.
+#   PRINCIPALS `principals:` is malformed, empty, or names a value outside
+#              human | agent | bot. Accepted forms: `principals: [agent, bot]`
+#              or a block list of `- agent` items. Omit the field to apply the
+#              policy to every principal.
 #   OVERSIZE   `enforcement: hard` whose injected span exceeds
 #              HQ_POLICY_HARD_RULE_MAX_BYTES (default 6144). Hard policies are
 #              quoted verbatim into the session, so this is recurring context
@@ -161,7 +165,7 @@ if [ "$USAGE" = "1" ]; then
   exit 0
 fi
 
-# ── Pass 1: one awk over every file → path <TAB> when <TAB> on <TAB> enf <TAB> bytes
+# ── Pass 1: one awk over every file → path <TAB> when <TAB> on <TAB> enf <TAB> bytes <TAB> principals-error
 # `bytes` is the span inject-policy-on-trigger.sh would actually quote: body
 # after the frontmatter, stopping at the first archival heading. Keep this list
 # in sync with BODY_STOP in that hook and STOP in validate-policy-frontmatter.sh.
@@ -169,14 +173,41 @@ STOP='^#+[ \t]*(rationale|rationale and context|background|change history|change
 
 FACTS_TSV="$TMPROOT/policy-facts.tsv"
 if ! xargs -0 awk -v stop="$STOP" '
-    function flush() {
-      if (fn != "") printf "%s\t%s\t%s\t%s\t%s\n", fn, w, o, tolower(enf), bytes+0
+    function perror(msg) { if (perr == "") perr = msg }
+    function pitem(v, ctx) {
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+      if (v == "") { perror("empty item in " ctx); return }
+      if (v != "human" && v != "agent" && v != "bot") { perror("unknown value \"" v "\" (allowed: human, agent, bot)"); return }
+      pcount++
     }
-    function reset() { d=0; w=""; o=""; enf=""; bytes=0; stopped=0 }
+    function pinline(v,   inner, n, a, i) {
+      if (v !~ /^\[.*\]$/) { perror("expected a list such as [agent] or a block list, got \"" v "\""); return }
+      inner = substr(v, 2, length(v) - 2)
+      if (inner ~ /^[ \t]*$/) { perror("empty list (omit the field to apply to everyone)"); return }
+      if (inner ~ /[][]/) { perror("nested brackets in \"" v "\""); return }
+      n = split(inner, a, ",")
+      for (i = 1; i <= n; i++) pitem(a[i], "inline list")
+    }
+    function flush() {
+      if (pseen && pblock && pcount == 0 && perr == "") perror("empty list (omit the field to apply to everyone)")
+      if (fn != "") printf "%s\t%s\t%s\t%s\t%s\t%s\n", fn, w, o, tolower(enf), bytes+0, perr
+    }
+    function reset() { d=0; w=""; o=""; enf=""; bytes=0; stopped=0; pseen=0; pblock=0; psec=0; pcount=0; perr="" }
     FNR==1 { flush(); reset(); fn=FILENAME }
     /^---[ \t]*$/ && d < 2 { d++; next }
     d==1 {
       line=$0
+      if (psec && line ~ /^[ \t]*-/) { sub(/^[ \t]*-[ \t]*/, "", line); sub(/[ \t]+#.*/, "", line); pitem(line, "block list"); next }
+      if (psec && line ~ /^[ \t]*(#.*)?$/) next
+      if (psec && line ~ /^[ \t]+[^ \t]/) { perror("malformed block list line \"" line "\""); next }
+      psec = 0
+      if (line ~ /^principals:/) {
+        if (pseen) perror("principals: declared more than once")
+        pseen = 1; sub(/^principals:[ \t]*/, "", line); sub(/[ \t]+#.*/, "", line); sub(/^#.*/, "", line)
+        if (line == "") { pblock = 1; psec = 1 } else pinline(line)
+        next
+      }
       if (line ~ /^when:[ \t]*[^ \t]/)        { sub(/^when:[ \t]*/,"",line); sub(/[ \t]+#.*/,"",line); gsub(/^["'"'"']|["'"'"']$/,"",line); w=line }
       else if (line ~ /^on:[ \t]*[^ \t]/)     { sub(/^on:[ \t]*/,"",line); o=line }
       else if (line ~ /^enforcement:[ \t]*[^ \t]/) { sub(/^enforcement:[ \t]*/,"",line); sub(/[ \t]+#.*/,"",line); gsub(/^["'"'"']|["'"'"']$/,"",line); enf=line }
@@ -252,7 +283,7 @@ fi
 [ -s "$RECORDS" ] || die "policy facts were found but no policy records were produced"
 
 REACTIVE_EVENTS="PreToolUse PostToolUse UserPromptSubmit AssistantIntent"
-total=0; bad_when=0; loose=0; oversized=0; no_trigger=0
+total=0; bad_principals=0; bad_when=0; loose=0; oversized=0; no_trigger=0
 say() { [ "$QUIET" = "1" ] || printf '%s\n' "$1"; }
 
 # Bash treats tab as IFS whitespace and collapses consecutive separators. Split
@@ -268,10 +299,17 @@ while IFS= read -r record; do
   enf="${rest%%$'\t'*}"
   rest="${rest#*$'\t'}"
   bytes="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  principals_error="${rest%%$'\t'*}"
   state="${rest#*$'\t'}"
   [ -n "$path" ] || continue
   total=$((total + 1))
   rel="${path#"$HQ_ROOT"/}"
+
+  if [ -n "$principals_error" ]; then
+    bad_principals=$((bad_principals + 1))
+    say "PRINCIPALS $rel — $principals_error"
+  fi
 
   if [ -z "$when" ] || [ -z "$on" ]; then
     no_trigger=$((no_trigger + 1))
@@ -319,9 +357,9 @@ done < "$RECORDS"
 
 [ "$total" -gt 0 ] || die "policy records were produced but zero policies were scanned"
 
-printf 'policies scanned: %s | malformed when: %s | missing trigger: %s | loose hard trigger: %s | oversized hard body: %s\n' \
-  "$total" "$bad_when" "$no_trigger" "$loose" "$oversized"
+printf 'policies scanned: %s | malformed when: %s | missing trigger: %s | loose hard trigger: %s | oversized hard body: %s | invalid principals: %s\n' \
+  "$total" "$bad_when" "$no_trigger" "$loose" "$oversized" "$bad_principals"
 
-if [ "$bad_when" -gt 0 ] || [ "$no_trigger" -gt 0 ]; then exit 1; fi
+if [ "$bad_when" -gt 0 ] || [ "$no_trigger" -gt 0 ] || [ "$bad_principals" -gt 0 ]; then exit 1; fi
 if [ "$STRICT" = "1" ] && { [ "$loose" -gt 0 ] || [ "$oversized" -gt 0 ]; }; then exit 1; fi
 exit 0

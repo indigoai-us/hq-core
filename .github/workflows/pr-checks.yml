@@ -250,6 +250,10 @@ jobs:
         run: bash core/scripts/tests/build-intent-index.test.sh
       - name: Skills listing budget report (200K and 1M)
         run: bash core/scripts/tests/skills-listing-budget.test.sh
+      - name: Skill inventory (duplicate classes, --check freshness)
+        run: bash core/scripts/tests/skill-inventory.test.sh
+      - name: Shipped command list is current (core/docs/hq/COMMANDS.md, commands.json)
+        run: bash core/scripts/skill-inventory.sh --check
       - name: Core skills only reference shipped local shell scripts
         run: |
           bash core/scripts/lint-skill-script-refs.sh handoff
@@ -272,6 +276,8 @@ jobs:
         run: bash core/scripts/tests/conduct-session-start-payload.test.sh
       - name: /conduct session links use hq lanes
         run: bash core/scripts/tests/conduct-session-links-use-hq-lanes.test.sh
+      - name: /super-conductor watch interval setting contract
+        run: bash core/scripts/tests/super-conductor-watch-interval.test.sh
       - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
       - name: /conduct lane workers and completion watcher
@@ -572,6 +578,8 @@ jobs:
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
             core/scripts/skills-listing-budget.sh \
             core/scripts/tests/skills-listing-budget.test.sh \
+            core/scripts/skill-inventory.sh \
+            core/scripts/tests/skill-inventory.test.sh \
             core/scripts/generate-openai-yaml.sh \
             core/scripts/tests/discover-shallow-clone-fetch-all.test.sh \
             core/scripts/tests/execute-task-codex-model-source.test.sh \
@@ -1044,6 +1052,8 @@ jobs:
         run: bash core/scripts/tests/block-env-dump.test.sh
       - name: Policy reminder stays under the host output ceiling; hard rules rank first
         run: bash core/scripts/tests/inject-policy-output-ceiling.test.sh
+      - name: Policy principals field filters injection by session principal
+        run: bash core/scripts/tests/inject-policy-principals.test.sh
       - name: Policy reminder output trimming avoids per-line tail launches
         run: bash core/scripts/tests/inject-policy-output-trim-performance.test.sh
       - name: Story deliverables gate on passes:true

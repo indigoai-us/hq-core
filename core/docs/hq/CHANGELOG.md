@@ -1,4 +1,30 @@
 ## [Unreleased]
+- The `hq-delegate-send.sh` MSYS jq wrapper now probes `--binary` only when
+  jq is first used and caches that result for the script run, avoiding a probe
+  on help paths while preserving Windows jq byte handling.
+- Policies accept an optional `principals: [human|agent|bot]` field. The
+  policy injector resolves the session principal (`HQ_SESSION_PRINCIPAL`
+  override, then fleet identity as `agent`, then `HQ_BOT_AGENT_UID` or
+  `HQ_MACHINE_CREDS_FILE` as `bot`, else `human`) and skips policies addressed
+  to other principals before matching, so they do not count against the output
+  ceiling. Omitting the field keeps current behavior. The parsed-policy cache
+  moves to `hq-policy-cache-v4`, and the evaluation cache key includes the
+  principal. `lint-policy-triggers.sh` rejects unknown values, empty lists, and
+  malformed syntax.
+- New `core/scripts/skill-inventory.sh` lists every skill and slash command
+  (shipped skill directories, slash command files, core skills, and core
+  packages; with `--scope all` also personal, company, and installed package
+  skills). It is read-only and writes only to `--out`. Modes: `--json`,
+  `--markdown`, `--findings`, `--check`. Findings cover exact duplicates,
+  drifted copies, and near-duplicate descriptions. The generated
+  `core/docs/hq/COMMANDS.md` and `core/docs/hq/commands.json` list the shipped
+  set grouped by job; JSON entries use the desktop `SkillEntry` field names.
+  CI fails when the generated files are stale.
+- `/super-conductor` reads its watch interval from `watch_interval`
+  (`present`, `away`, in seconds) in `personal/settings/super-conductor.yaml`.
+  Defaults stay 60 and 1500, values clamp to 30–3600, `interval <seconds>`
+  overrides `present` for one run, and the resolved values persist in the save
+  file. `/overnight` uses the `away` value.
 - The setup worker gains an `add-a-pack` skill. When someone pastes a
   hqforwork.com pack link or names a pack (`hq-pack-{slug}`, a catalog slug,
   or a catalog display name), Setup confirms in one message, runs

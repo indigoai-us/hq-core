@@ -45,19 +45,16 @@ command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 # jq.exe on MSYS may use CRT text mode unless --binary is supported.
 case "${OSTYPE:-}:${MSYSTEM:-}" in
   msys*:*|*:MINGW*)
-    # Probe --binary once per script run, in the top-level shell. Most jq
-    # calls run inside $(...) subshells, so a cache filled lazily inside jq()
-    # would be lost and the probe would repeat on every call.
-    if command jq --binary -n 'null' >/dev/null 2>&1; then
-      HQ_JQ_BINARY_SUPPORTED=1
-    else
-      HQ_JQ_BINARY_SUPPORTED=0
-    fi
+    _hq_jq_binary_supported=""
     jq() {
-      local stdout_file stderr_file status
+      local stdout_file stderr_file status binary_supported
       stdout_file="$(mktemp)" || return $?
       stderr_file="$(mktemp)" || { status=$?; rm -f "$stdout_file"; return "$status"; }
-      if [[ "$HQ_JQ_BINARY_SUPPORTED" == 1 ]]; then
+      if [[ -z "$_hq_jq_binary_supported" ]]; then
+        if command jq --binary -n 'null' >/dev/null 2>&1; then _hq_jq_binary_supported=1; else _hq_jq_binary_supported=0; fi
+      fi
+      binary_supported=$_hq_jq_binary_supported
+      if [[ "$binary_supported" == 1 ]]; then
         if command jq --binary "$@" >"$stdout_file" 2>"$stderr_file"; then status=0; else status=$?; fi
         command cat "$stdout_file"
         command cat "$stderr_file" >&2
