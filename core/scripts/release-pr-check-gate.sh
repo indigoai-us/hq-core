@@ -40,9 +40,9 @@ if has_hold_label "$pr_info"; then
   echo "::notice::hold-release is present on hq-core PR #$PR_NUMBER; the release gate will not merge it."
   exit 0
 fi
-# Disable legacy auto-merge before polling so required checks cannot merge the
-# PR independently of this all-check gate.
-disable_auto_merge_if_armed "$pr_info"
+# Leave GitHub auto-merge armed. The promote workflow arms it on every release
+# PR so the PR is always ready to merge; this gate is a second merge path that
+# also waits for non-required checks. Only a manual hold-release disarms it.
 
 check_pages_file=''
 status_pages_file=''
@@ -85,37 +85,31 @@ while :; do
   failed="$(jq -r '.failed | join("\n")' <<< "$report")"
   retryable="$(jq -r '.retryable | join("\n")' <<< "$report")"
   if [[ -n "$failed" ]]; then
+    # Never label the PR here. Release PRs stay ready to merge: a failing check
+    # only refuses this merge attempt. The scheduled recheck does not re-run
+    # checks; once a failed check is re-run and passes, the next recheck merges
+    # the PR. hold-release is a manual, human-applied hold only.
     latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
     latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
     if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
-      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing}; no hold-release added for checks on the superseded head. The new head will be gated by its run."
+      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing}; the new head will be gated by its run."
       exit 0
     fi
     if has_hold_label "$latest_info"; then
       disable_auto_merge_if_armed "$latest_info"
       fail "Refusing to merge hq-core PR #$PR_NUMBER; failing or non-accepted checks on $EXPECTED_SHA: ${failed//$'\n'/; }. hold-release was already present."
     fi
-    gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --add-label hold-release
-    latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
-    latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
-    if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
-      if has_hold_label "$latest_info"; then
-        gh pr edit "$PR_NUMBER" --repo "$TARGET_REPO" --remove-label hold-release
-      fi
-      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing} after hold-release was applied; removed the hold so the new head's checks can gate the release."
-      exit 0
-    fi
-    fail "Refusing to merge hq-core PR #$PR_NUMBER; failing or non-accepted checks on $EXPECTED_SHA: ${failed//$'\n'/; }. Added hold-release."
+    fail "Refusing to merge hq-core PR #$PR_NUMBER; failing or non-accepted checks on $EXPECTED_SHA: ${failed//$'\n'/; }. Re-run the failed checks; the scheduled recheck merges once every check passes."
   fi
 
   if [[ -n "$retryable" ]]; then
     latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
     latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
     if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
-      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing}; no hold-release added for cancelled or stale checks on the superseded head. The new head will be gated by its run."
+      echo "::notice::PR #$PR_NUMBER head moved from $EXPECTED_SHA to ${latest_sha:-missing}; the new head will be gated by its run."
       exit 0
     fi
-    fail "Retrying hq-core PR #$PR_NUMBER checks on current head $EXPECTED_SHA; cancelled or stale checks are retryable and do not add hold-release: ${retryable//$'\n'/; }. The scheduled recheck will retry."
+    fail "Retrying hq-core PR #$PR_NUMBER checks on current head $EXPECTED_SHA; cancelled or stale checks are retryable:${retryable//$'\n'/; }. The scheduled recheck will retry."
   fi
 
   pending="$(jq -r '.pending | join(", ")' <<< "$report")"
@@ -130,7 +124,6 @@ while :; do
       echo "::notice::hold-release was added while checks ran for hq-core PR #$PR_NUMBER; not merging."
       exit 0
     fi
-    disable_auto_merge_if_armed "$latest_info"
     gh pr merge "$PR_NUMBER" --repo "$TARGET_REPO" --squash --match-head-commit "$EXPECTED_SHA"
     echo "::notice::Merged hq-core PR #$PR_NUMBER after every check and status on $EXPECTED_SHA completed successfully."
     exit 0

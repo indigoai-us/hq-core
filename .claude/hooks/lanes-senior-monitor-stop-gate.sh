@@ -5,13 +5,12 @@
 # recommendation formatter live in hq-cli. This file only translates that
 # command's result into the Claude Stop-hook protocol.
 #
-# Error policy: Claude fails closed. A missing hq binary, an old CLI without
-# monitor-check, malformed JSON, or hq exit 3 emits a loud error and a Stop
-# block when the payload can be encoded. The structured Stop protocol consumes
-# that JSON on stdout only when the hook exits successfully, so every Claude
-# block path below returns 0 after emitting its decision. A Codex/Grok adapter
-# passes its engine explicitly; those engines have no Claude Monitor tool and
-# therefore never receive a block from this shim.
+# Error policy: Claude fails closed for missing hq, an old CLI without
+# monitor-check, malformed JSON, invalid success JSON, exit 3, and other
+# non-timeout errors. A timeout gets one retry and then fails open with a quiet
+# warning if it happens again. A Codex/Grok adapter passes its engine
+# explicitly; those engines have no Claude Monitor tool and therefore never
+# receive a block from this shim.
 #
 # That engine check is load-bearing, not belt-and-braces. Both adapters now
 # translate a Stop hook's decision into their own stop protocol, so a block
@@ -28,9 +27,9 @@
 
 set -uo pipefail
 
-# master-hook.sh gives each registry child 30 seconds. Keep the CLI call below
-# that deadline so this shim can emit its own fail-closed decision if hq hangs.
-LANES_MONITOR_CHECK_TIMEOUT_SECONDS=20
+# master-hook.sh gives each registry child 30 seconds. Two 12-second attempts
+# leave margin for the rest of this hook under that deadline.
+LANES_MONITOR_CHECK_TIMEOUT_SECONDS=12
 
 # Drain before any early exit. The dispatcher may still be writing the payload;
 # leaving it unread turns a legitimate hook status into a SIGPIPE/141 report.
@@ -158,32 +157,52 @@ Detail: $detail"
 }
 
 run_hq_with_timeout() {
-  local seconds="$1" marker="$2" rc child watchdog timeout_bin perl_bin
+  local seconds="$1" marker="$2" rc child watchdog perl_bin
   shift 2
-
-  timeout_bin="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
-  if [ -n "$timeout_bin" ]; then
-    "$timeout_bin" "$seconds" "$@"
-    rc=$?
-    case "$rc" in
-      124|137|142|143) : > "$marker" 2>/dev/null || true ;;
-    esac
-    return "$rc"
-  fi
 
   perl_bin="$(command -v perl 2>/dev/null || true)"
   if [ -n "$perl_bin" ]; then
-    "$perl_bin" -e 'alarm shift; exec {$ARGV[0]} @ARGV' "$seconds" "$@"
-    rc=$?
-    case "$rc" in
-      124|137|142|143) : > "$marker" 2>/dev/null || true ;;
-    esac
-    return "$rc"
+    "$perl_bin" -e '
+      use POSIX ();
+      use Time::HiRes qw(time sleep);
+
+      my ($seconds, $marker, @command) = @ARGV;
+      my $child = fork();
+      die "fork failed: $!" unless defined $child;
+      if ($child == 0) {
+        exec { $command[0] } @command;
+        exit 127;
+      }
+
+      $SIG{ALRM} = sub {
+        if (open my $marker_file, ">", $marker) {
+          close $marker_file;
+        }
+        kill "TERM", $child;
+        my $grace_deadline = Time::HiRes::time() + 0.5;
+        while (Time::HiRes::time() < $grace_deadline) {
+          my $result = waitpid($child, POSIX::WNOHANG());
+          exit 124 if $result == $child;
+          Time::HiRes::sleep(0.02);
+        }
+        kill "KILL", $child;
+        waitpid($child, 0);
+        exit 124;
+      };
+
+      alarm $seconds;
+      waitpid($child, 0);
+      my $status = $?;
+      alarm 0;
+      exit(($status & 127) ? 128 + ($status & 127) : ($status >> 8));
+    ' "$seconds" "$marker" "$@"
+    # PERL_CALL_RETURN
+    return $?
   fi
 
   # Last-resort POSIX-shell watchdog. It kills the direct hq child and marks
-  # the result before returning, so an environment without timeout or perl is
-  # still bounded by the same fixed deadline.
+  # the result before returning, so an environment without perl is still
+  # bounded by the same fixed deadline. The deadline marker is authoritative.
   "$@" &
   child=$!
   (
@@ -191,6 +210,10 @@ run_hq_with_timeout() {
     if kill -0 "$child" 2>/dev/null; then
       : > "$marker" 2>/dev/null || true
       kill "$child" 2>/dev/null || true
+      sleep 1
+      if kill -0 "$child" 2>/dev/null; then
+        kill -KILL "$child" 2>/dev/null || true
+      fi
     fi
   ) &
   watchdog=$!
@@ -324,12 +347,25 @@ RESULT="$(run_hq_with_timeout "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" "$TIMEOUT_M
 { HQ_ERR="$(<"$ERR_FILE")"; } 2>/dev/null || HQ_ERR=''
 
 if [ -f "$TIMEOUT_MARKER" ]; then
-  detail="hq lanes monitor-check timed out after ${LANES_MONITOR_CHECK_TIMEOUT_SECONDS}s"
-  [ -n "$HQ_ERR" ] && detail="$detail: $(compact_detail "$HQ_ERR")"
-  rc=0
-  # INNER_TIMEOUT_MUST_FAIL_CLOSED
-  gate_error "$detail" || rc=$?
-  exit "$rc"
+  rm -f "$TIMEOUT_MARKER" 2>/dev/null || true
+  : > "$ERR_FILE" 2>/dev/null || true
+  HQ_RC=0
+  RESULT="$(run_hq_with_timeout "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" "$TIMEOUT_MARKER" \
+    "$HQ_BIN" lanes monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json \
+    2>"$ERR_FILE")" || HQ_RC=$?
+  { HQ_ERR="$(<"$ERR_FILE")"; } 2>/dev/null || HQ_ERR=''
+
+  if [ -f "$TIMEOUT_MARKER" ]; then
+    printf 'WARNING: hq lanes monitor-check timed out twice (%ss each); Monitor coverage was not verified this turn\n' \
+      "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" >&2
+    detail="hq lanes monitor-check timed out twice"
+    # INNER_TIMEOUT_MUST_NOT_BLOCK
+    case "$ENGINE" in
+      codex|grok) exit 3 ;;
+      # INNER_TIMEOUT_MUST_NOT_BLOCK_RETURN
+      *) exit 0 ;;
+    esac
+  fi
 fi
 
 case "$HQ_RC" in

@@ -74,16 +74,16 @@ portal, which HQ opens for the company's owner.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-10-08T17:06:11.358Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-10-13T18:30:46.771Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
 ### Plans (per month, USD)
 
 | Plan | Price | Included agents | Members | Secrets | Deployments | Storage | Integrations |
 |---|---|---|---|---|---|---|---|
-| Starter | $0 | 0 | 5 | 10 | 500 | 10 GB | 3 |
+| Starter | $0 | 0 | 5 | 10 | unlimited | 10 GB | 3 |
 | Workforce | $500 | 0 | unlimited | unlimited | unlimited | unlimited | unlimited |
 | Enterprise | contract | 0 | unlimited | unlimited | unlimited | unlimited | unlimited |
-| Individual | $50 | 0 | 1 | 100 | 500 | 10 GB | unlimited |
+| Individual | $50 | 0 | 1 | 100 | unlimited | 10 GB | unlimited |
 
 ### Agent boxes (per agent, per month)
 

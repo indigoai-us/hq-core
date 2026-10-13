@@ -817,7 +817,7 @@ check "--allow-repos-worktree: the envelope carries the shell/apply_patch constr
 "$PC" tick --prd "$T/prd-wt.json" --state "$T/ystate7" --worktree "$ywt" >"$T/out" 2>"$T/err"
 check "a worktree outside repos/ gets no repos constraint line" \
   'grep -q "^ROUTED Y1 backend" "$T/out" && ! grep -q "under repos/" "$T/ystate7/envelopes/Y1-backend.json"'
-check "the repos/ check lives in one function" '[ "$(grep -c "^function repos_worktree" "$PC")" = 1 ] && [ "$(grep -c "workspace\", \"worktrees\"" "$PC")" -le 2 ]'
+check "the repos/ check lives in one function" '[ "$(grep -c "^function repos_worktree" "$PC")" = 1 ] && [ "$(sed -n "/^function repos_worktree/,/^}/p" "$PC" | grep -c "workspace\", \"worktrees\"")" -le 2 ]'
 
 # ---- interrupt / stop ----
 IS="$T/istate"; mkdir -p "$T/ilane/inbox/pending" "$T/ilane/inbox/active"

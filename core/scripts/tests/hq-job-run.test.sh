@@ -184,12 +184,23 @@ YAML
 echo '{"token":"y"}' >"$HOME_DIR/.codex/auth.json"
 : >"$HQ_STUB_LOG"
 set +e
-bash "$RUN" --hq-root "$HQ" --job-id test-codex-hygiene
+HQ_ALLOW_CODEX=1 bash "$RUN" --hq-root "$HQ" --job-id test-codex-hygiene
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "codex run should exit 0, got $rc"
 grep -q 'codex-stub' "$HQ_STUB_LOG" || fail "codex was not invoked"
-pass "codex uses -s workspace-write (spike flags)"
+pass "codex uses -s workspace-write (spike flags) with HQ_ALLOW_CODEX=1"
+
+# 3b) Without HQ_ALLOW_CODEX a runtime=codex job runs on claude, never codex
+: >"$HQ_STUB_LOG"
+set +e
+env -u HQ_ALLOW_CODEX bash "$RUN" --hq-root "$HQ" --job-id test-codex-hygiene
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "codex->claude run should exit 0, got $rc"
+grep -q 'claude-stub' "$HQ_STUB_LOG" || fail "runtime=codex without opt-in did not run claude"
+if grep -q 'codex-stub' "$HQ_STUB_LOG"; then fail "codex launched without HQ_ALLOW_CODEX"; fi
+pass "runtime=codex maps to claude unless HQ_ALLOW_CODEX=1"
 
 # 4) Flock serialization — second waiter starts after first releases
 cat >"$BIN/claude" <<'STUB'

@@ -29,7 +29,8 @@ case "$*" in
     else
       printf '%s\n' absent >> "$GH_LABEL_OBSERVATIONS"
     fi
-    printf '{"headRefOid":"%s","autoMergeRequest":null,"labels":%s}\n' "$head_sha" "$labels"
+    auto_merge='{"mergeMethod":"SQUASH"}'
+    printf '{"headRefOid":"%s","autoMergeRequest":%s,"labels":%s}\n' "$head_sha" "$auto_merge" "$labels"
     ;;
   *'check-runs?per_page=100'*) cat "$GH_CHECK_RUNS_JSON" ;;
   *'statuses?per_page=100'*) cat "$GH_STATUSES_JSON" ;;
@@ -109,6 +110,12 @@ run_case() {
   else
     if grep -Fq 'pr edit 331' "$case_dir/gh.log"; then fail "$case_id: must not add hold-release"; fi
   fi
+  # Auto-merge is armed in every case; only a hold-release may disarm it.
+  if [[ "$expect_hold" == already ]]; then
+    grep -Fq -- '--disable-auto' "$case_dir/gh.log" || fail "$case_id: a held PR must have auto-merge disarmed"
+  elif grep -Fq -- '--disable-auto' "$case_dir/gh.log"; then
+    fail "$case_id: must leave auto-merge armed on a release PR without hold-release"
+  fi
   if [[ "$expect_merge" == yes ]]; then
     grep -Fq -- '--squash' "$case_dir/gh.log" || fail "$case_id: expected merge"
     grep -Fq -- "--match-head-commit $SHA" "$case_dir/gh.log" || fail "$case_id: merge must pin the checked head SHA"
@@ -131,20 +138,18 @@ run_case stale-current-head stale "$SHA
 $SHA" 1 no no stale
 run_case failed-superseded-head failure "$SHA
 $MOVED_SHA" 0 no no "head moved"
-run_case failed-head-moves-during-hold failure "$SHA
-$SHA
-$MOVED_SHA" 0 rollback no "after hold-release was applied"
 run_case failed-current-head-already-held failure "$SHA
 $SHA" 1 already no "hold-release was already present" 2
 
-# Existing invariants remain covered: a genuine failure on the current head
-# holds the release, while an all-green head merges only the SHA it checked.
+# A genuine failure on the current head refuses the merge but never labels the
+# PR: release PRs stay ready to merge, and the scheduled recheck merges them
+# once the checks pass. An all-green head merges only the SHA it checked.
 run_case failed-current-head failure "$SHA
-$SHA" 1 yes no company-seed-renderer
+$SHA" 1 no no company-seed-renderer
 run_case timed-out-current-head timed_out "$SHA
-$SHA" 1 yes no company-seed-renderer
+$SHA" 1 no no company-seed-renderer
 run_case action-required-current-head action_required "$SHA
-$SHA" 1 yes no company-seed-renderer
+$SHA" 1 no no company-seed-renderer
 run_case all-green success "$SHA
 $SHA" 0 no yes "Merged hq-core PR #331"
 
@@ -153,6 +158,9 @@ if [[ -z "$GATE_TEST_CASE" ]]; then
   RECHECK_WORKFLOW="$ROOT/.github/workflows/recheck-hq-core-release-gate.yml"
   grep -Fq 'path: staging' "$PROMOTE_WORKFLOW" || fail "promotion workflow must check out staging under staging/"
   grep -Fq 'run: bash staging/core/scripts/release-pr-check-gate.sh ' "$PROMOTE_WORKFLOW" || fail "promotion workflow must invoke the gate from staging/"
+  grep -Fq 'gh pr merge "$NUM" --repo "$TARGET_REPO" --auto --squash --match-head-commit "$PR_HEAD_SHA"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must arm auto-merge on the release PR"
+  # Executed commands only; the PR body still tells humans how to add a hold.
+  if grep -Eq -- '^[[:space:]]*gh pr edit .*--add-label[[:space:]]+hold-release' "$PROMOTE_WORKFLOW" "$GATE"; then fail "automation must never add hold-release"; fi
   grep -Fq '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4' "$RECHECK_WORKFLOW" || fail "recheck workflow must check out the repository root"
   if grep -Fq 'path:' "$RECHECK_WORKFLOW"; then fail "recheck workflow checkout must remain at the repository root"; fi
   grep -Fq 'bash core/scripts/release-pr-check-gate.sh ' "$RECHECK_WORKFLOW" || fail "recheck workflow must invoke the gate from its root checkout"

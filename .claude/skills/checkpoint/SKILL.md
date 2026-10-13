@@ -1,7 +1,7 @@
 ---
 name: checkpoint
 description: Save a lightweight session checkpoint.
-allowed-tools: Write, Bash, Read
+allowed-tools: Write, Bash, Read, Bash(bash core/scripts/checkpoint-recent-auto.sh:*)
 ---
 
 # /checkpoint - Save Progress
@@ -28,10 +28,12 @@ Save current work state as a thread to survive context loss.
     `core/scripts/ontology-candidate.sh`, source ref `checkpoint:{thread_id}`.
     Both switches off: skip silently. Fail-soft.
 
+**Never search `workspace/` with an unbounded `find`** (no `-maxdepth`) while checkpointing. `workspace/worktrees/` holds full repo checkouts, so such a scan can run for many minutes and outlive the session as an orphan. Use the helpers named in each step; they already know where checkpoints and journal pointers live.
+
 1. **Check for recent auto-checkpoint** (upgrade instead of duplicate)
    ```bash
-   # Find auto-checkpoints from last 5 minutes
-   find workspace/threads -name "T-*-auto-*.json" -mmin -5 2>/dev/null | sort -r | head -1
+   # Newest auto-checkpoint from the last 5 minutes (top level of workspace/threads only, time-bounded)
+   bash core/scripts/checkpoint-recent-auto.sh "$PWD" 5
    ```
    If found: upgrade that file in-place (add full fields: `initial_commit`, `commits_made`, `remote_url`, `knowledge_repos`, `worker`, `next_steps`; change `type` to `"checkpoint"`; rename file to remove `-auto-`). Then continue from step 7 (INDEX updates).
 
@@ -99,7 +101,7 @@ Save current work state as a thread to survive context loss.
    ```bash
    .claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis, ≤120 chars}"
    ```
-   Pass the resolved project directory that owns this session's journal. Fail-soft: no-op if no owned active journal pointer exists. Use the same one-line summary you used for `conversation_summary` below.
+   Pass the resolved project directory that owns this session's journal. Fail-soft: no-op if no owned active journal pointer exists. To check for one, run `.claude/skills/_shared/journal.sh path` (prints the path, or exits 1 when there is none); do not hunt for journal files under `workspace/`. Use the same one-line summary you used for `conversation_summary` below.
 
 6. **Write thread** to `workspace/threads/{thread_id}.json` (include knowledge_repos from step 3):
    ```json

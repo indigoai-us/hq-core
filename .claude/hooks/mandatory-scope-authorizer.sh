@@ -483,7 +483,11 @@ scope_check_bash_candidate_inner() {
   scope_candidate_is_single_quoted "$candidate" "$occurrence_prefix" && { scope_check_raw "$candidate"; return 0; }
 
   masked="$(scope_mask_literal_expansions "$candidate")"
-  if [ -z "$expected_company" ]; then
+  # Only a path that starts with companies/ names a tenant. Stripping the
+  # prefix unconditionally read workspace/worktrees/$w as tenant "workspace"
+  # whenever a top-level company folder of that name existed, so every loop
+  # value then had to land under that folder and was refused.
+  if [ -z "$expected_company" ] && [[ "$masked" == companies/* ]]; then
     first_segment="${masked#companies/}"
     first_segment="${first_segment%%/*}"
     case "$first_segment" in

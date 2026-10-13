@@ -143,6 +143,30 @@ case "$mode" in
     echo 'stub hq: hang completed unexpectedly' >&2
     exit 3
     ;;
+  slow-first-then-pass)
+    call_count="$(awk 'END { print NR + 0 }' "$TEST_STUB_LOG")"
+    if [ "$call_count" -eq 1 ]; then
+      sleep 3
+      echo 'stub hq: first call timed out' >&2
+      exit 3
+    fi
+    printf '%s\n' '{"ok":true,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":[],"covered_lane_ids":[],"uncovered_lane_ids":[]}' | emit_check_json
+    exit 0
+    ;;
+  double-hang)
+    sleep 3
+    echo 'stub hq: call timed out' >&2
+    exit 3
+    ;;
+  exit-124)
+    exit 124
+    ;;
+  exit-137)
+    exit 137
+    ;;
+  exit-143)
+    exit 143
+    ;;
   *)
     echo "stub hq: unknown test mode $mode" >&2
     exit 64
@@ -177,6 +201,22 @@ PAYLOAD_PASS='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_activ
 PAYLOAD_ACTIVE='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":true}'
 PATH_WITH_HQ="$BIN:$NODE_ONLY_DIR:/usr/local/bin:/usr/bin:/bin"
 PATH_WITHOUT_HQ="$TMP/no-hq:$NODE_ONLY_DIR:/usr/bin:/bin"
+PERL_ONLY_DIR="$TMP/perl-only-bin"
+mkdir -p "$PERL_ONLY_DIR"
+for program in awk bash cat date env grep head jq mktemp perl rm sleep tr; do
+  real="$(command -v "$program" 2>/dev/null || true)"
+  [ -n "$real" ] && ln -s "$real" "$PERL_ONLY_DIR/$program"
+done
+ln -s "$BIN/hq" "$PERL_ONLY_DIR/hq"
+PATH_WITH_PERL="$PERL_ONLY_DIR"
+WATCHDOG_ONLY_DIR="$TMP/watchdog-only-bin"
+mkdir -p "$WATCHDOG_ONLY_DIR"
+for program in awk bash cat date env grep head jq mktemp rm sleep tr; do
+  real="$(command -v "$program" 2>/dev/null || true)"
+  [ -n "$real" ] && ln -s "$real" "$WATCHDOG_ONLY_DIR/$program"
+done
+ln -s "$BIN/hq" "$WATCHDOG_ONLY_DIR/hq"
+PATH_WITH_WATCHDOG="$WATCHDOG_ONLY_DIR"
 if [ "$(env PATH="$PATH_WITH_HQ" bash -c 'command -v hq')" = "$BIN/hq" ]; then
   pass "hq-present PATH resolves to the test stub"
 else
@@ -874,24 +914,218 @@ if contains "$(cat "$STUB_LOG")" '--engine codex'; then fail "mutation engine_fo
 
 TIMEOUT_TEST="$TMP/timeout-test.sh"
 cp "$STOP_SRC" "$TIMEOUT_TEST"
-sed -i 's/LANES_MONITOR_CHECK_TIMEOUT_SECONDS=20/LANES_MONITOR_CHECK_TIMEOUT_SECONDS=1/' "$TIMEOUT_TEST"
-write_mode hang
-run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$PATH_WITH_HQ" claude
-if [ "$DRC" = "0" ] && contains "$DOUT" '"decision":"block"' && contains "$DERR" 'timed out'; then
-  echo "MUTATION_RED: inner_timeout / hq timeout fails closed"
-  pass "inner_timeout"
+sed -i 's/LANES_MONITOR_CHECK_TIMEOUT_SECONDS=12/LANES_MONITOR_CHECK_TIMEOUT_SECONDS=1/' "$TIMEOUT_TEST"
+echo "[3] every exit path is classified on Perl and POSIX-watchdog paths"
+for path_label in perl watchdog; do
+  if [ "$path_label" = perl ]; then gate_path="$PATH_WITH_PERL"; else gate_path="$PATH_WITH_WATCHDOG"; fi
+
+  reset_stub pass
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
+  [ "$DRC" = "0" ] && pass "$path_label valid JSON pass is allowed" || fail "$path_label pass rc=$DRC stderr=$DERR"
+  [ "$(stub_call_count)" = "1" ] && pass "$path_label pass calls hq once" || fail "$path_label pass call count=$(stub_call_count)"
+
+  reset_stub blocked
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
+  [ "$DRC" = "0" ] && pass "$path_label uncovered exit 2 blocks Claude" || fail "$path_label exit 2 rc=$DRC stderr=$DERR"
+  assert_contains "$DOUT" '"decision":"block"' "$path_label exit 2 block JSON"
+  assert_contains "$DOUT" 'hq lanes watch lane-a' "$path_label exit 2 Monitor calls"
+  [ "$(stub_call_count)" = "1" ] && pass "$path_label exit 2 calls hq once" || fail "$path_label exit 2 call count=$(stub_call_count)"
+
+  reset_stub exit-124
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
+  [ "$DRC" = "0" ] && pass "$path_label child exit 124 blocks via gate_error" || fail "$path_label exit 124 rc=$DRC stderr=$DERR"
+  assert_contains "$DOUT" '"decision":"block"' "$path_label exit 124 block JSON"
+  assert_contains "$DERR" 'exited 124' "$path_label child exit 124 detail"
+  assert_not_contains "$DERR" 'timed out' "$path_label child exit 124 is not a timeout"
+  [ "$(stub_call_count)" = "1" ] && pass "$path_label child exit 124 calls hq once" || fail "$path_label exit 124 call count=$(stub_call_count)"
+
+  for exit_code in 137 143; do
+    reset_stub "exit-$exit_code"
+    run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
+    [ "$DRC" = "0" ] && pass "$path_label child exit $exit_code blocks Claude" || fail "$path_label exit $exit_code rc=$DRC stderr=$DERR"
+    assert_contains "$DOUT" '"decision":"block"' "$path_label exit $exit_code block JSON"
+    assert_contains "$DERR" "exited $exit_code" "$path_label exit $exit_code detail"
+    assert_not_contains "$DERR" 'timed out' "$path_label exit $exit_code is not a timeout"
+    [ "$(stub_call_count)" = "1" ] && pass "$path_label exit $exit_code calls hq once" || fail "$path_label exit $exit_code call count=$(stub_call_count)"
+  done
+
+  reset_stub slow-first-then-pass
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
+  [ "$DRC" = "0" ] && pass "$path_label slow first call then pass is allowed" || fail "$path_label retry rc=$DRC stderr=$DERR"
+  [ "$(stub_call_count)" = "2" ] && pass "$path_label deadline retries exactly once" || fail "$path_label retry call count=$(stub_call_count)"
+
+  reset_stub double-hang
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
+  [ "$DRC" = "0" ] && pass "$path_label double deadline fails open" || fail "$path_label double timeout rc=$DRC stderr=$DERR"
+  assert_not_contains "$DOUT" '"decision":"block"' "$path_label double timeout stdout"
+  assert_contains "$DERR" 'timed out twice (1s each)' "$path_label double timeout warning"
+  assert_not_contains "$DOUT$DERR" 'Repair or update hq-cli' "$path_label timeout repair wording"
+  [ "$(stub_call_count)" = "2" ] && pass "$path_label double timeout calls hq twice" || fail "$path_label double timeout call count=$(stub_call_count)"
+
+  TIMEOUT_LOG="$TMP/timeout-invoked.log"
+  cat > "$TMP/timeout" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' invoked >> "$TIMEOUT_LOG"
+exit 99
+SH
+  chmod +x "$TMP/timeout"
+  WITH_TIMEOUT="$TMP/with-timeout-bin"
+  mkdir -p "$WITH_TIMEOUT"
+  for program in awk bash cat date env grep head jq mktemp rm sleep tr; do
+    real="$(command -v "$program" 2>/dev/null || true)"
+    [ -n "$real" ] && ln -sf "$real" "$WITH_TIMEOUT/$program"
+  done
+  ln -sf "$BIN/hq" "$WITH_TIMEOUT/hq"
+  ln -sf "$TMP/timeout" "$WITH_TIMEOUT/timeout"
+  if [ "$path_label" = perl ]; then ln -sf "$(command -v perl)" "$WITH_TIMEOUT/perl"; fi
+  export TIMEOUT_LOG
+  : > "$TIMEOUT_LOG"
+  reset_stub pass
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$WITH_TIMEOUT" claude
+  [ "$DRC" = "0" ] && [ ! -s "$TIMEOUT_LOG" ] && pass "$path_label ignores timeout binary on PATH"     || fail "$path_label invoked timeout binary or failed (rc=$DRC log=$(cat "$TIMEOUT_LOG"))"
+done
+
+for engine in codex grok; do
+  reset_stub double-hang
+  run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$PATH_WITH_PERL" "$engine"
+  [ "$DRC" = "3" ] && pass "$engine double timeout keeps non-blocking exit 3" || fail "$engine timeout rc=$DRC"
+  assert_empty "$DOUT" "$engine double timeout stdout"
+  assert_contains "$DERR" 'timed out twice (1s each)' "$engine double timeout warning"
+done
+
+echo "[3aa] Perl TERM-ignore child is killed after the grace period"
+TERM_IGNORE_HQ="$TMP/hq-term-ignore"
+cat > "$TERM_IGNORE_HQ" <<'SH'
+#!/usr/bin/perl
+$SIG{TERM} = 'IGNORE';
+open my $log, '>>', $ENV{TEST_STUB_LOG} or die $!;
+print {$log} "lanes monitor-check --session senior-1 --engine claude --json\n";
+close $log;
+open my $calls_file, '<', $ENV{TEST_STUB_LOG} or die $!;
+my @calls = <$calls_file>;
+close $calls_file;
+if (@calls == 1) {
+  sleep 10;
+  exit 0;
+}
+print qq({"ok":true,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":[],"covered_lane_ids":[],"uncovered_lane_ids":[]}\n);
+exit 0;
+SH
+chmod +x "$TERM_IGNORE_HQ"
+TERM_IGNORE_BIN="$TMP/perl-term-ignore-bin"
+mkdir -p "$TERM_IGNORE_BIN"
+for program in awk bash cat date env grep head jq mktemp perl rm sleep tr; do
+  real="$(command -v "$program" 2>/dev/null || true)"
+  [ -n "$real" ] && ln -s "$real" "$TERM_IGNORE_BIN/$program"
+done
+ln -s "$TERM_IGNORE_HQ" "$TERM_IGNORE_BIN/hq"
+reset_stub term-ignore
+TIME_START="$(test_now_ms)"
+run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$TERM_IGNORE_BIN" claude
+TIME_END="$(test_now_ms)"
+TIME_ELAPSED=$((TIME_END - TIME_START))
+[ "$DRC" = "0" ] && assert_empty "$DERR" "TERM-ignore first call retry warning"
+[ "$(stub_call_count)" = "2" ] && pass "TERM-ignore first call is retried once" || fail "TERM-ignore call count=$(stub_call_count)"
+[ "$TIME_ELAPSED" -lt 2500 ] && pass "TERM-ignore child is killed within deadline + grace + 1s (${TIME_ELAPSED}ms)"   || fail "TERM-ignore child exceeded deadline + grace + 1s (${TIME_ELAPSED}ms)"
+
+echo "[3aa2] POSIX watchdog KILLs a TERM-ignoring child, retries, then fails open"
+WATCHDOG_TERM_IGNORE_HQ="$TMP/hq-watchdog-term-ignore"
+cat > "$WATCHDOG_TERM_IGNORE_HQ" <<'SH'
+#!/usr/bin/env bash
+trap '' TERM
+printf '%s\n' "$*" >> "$TEST_STUB_LOG"
+exec sleep 10
+SH
+chmod +x "$WATCHDOG_TERM_IGNORE_HQ"
+WATCHDOG_TERM_IGNORE_BIN="$TMP/watchdog-term-ignore-bin"
+mkdir -p "$WATCHDOG_TERM_IGNORE_BIN"
+for program in awk bash cat date env grep head jq mktemp rm sleep tr; do
+  real="$(command -v "$program" 2>/dev/null || true)"
+  [ -n "$real" ] && ln -s "$real" "$WATCHDOG_TERM_IGNORE_BIN/$program"
+done
+ln -s "$WATCHDOG_TERM_IGNORE_HQ" "$WATCHDOG_TERM_IGNORE_BIN/hq"
+reset_stub term-ignore
+TIME_START="$(test_now_ms)"
+run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$WATCHDOG_TERM_IGNORE_BIN" claude
+TIME_END="$(test_now_ms)"
+TIME_ELAPSED=$((TIME_END - TIME_START))
+[ "$DRC" = "0" ] && pass "POSIX TERM-ignore double timeout fails open" || fail "POSIX TERM-ignore rc=$DRC stderr=$DERR"
+assert_contains "$DERR" 'timed out twice (1s each)' "POSIX TERM-ignore double timeout warning"
+[ "$(stub_call_count)" = "2" ] && pass "POSIX TERM-ignore timeout retries exactly once" || fail "POSIX TERM-ignore call count=$(stub_call_count)"
+[ "$TIME_ELAPSED" -lt 6500 ] && pass "POSIX TERM-ignore child is killed within deadline + grace + scheduler margin (${TIME_ELAPSED}ms)" \
+  || fail "POSIX TERM-ignore child exceeded deadline + grace + 1s per attempt (${TIME_ELAPSED}ms)"
+
+WATCHDOG_KILL_MUT="$TMP/mutation-watchdog-kill.sh"
+cp "$TIMEOUT_TEST" "$WATCHDOG_KILL_MUT"
+sed -i 's/kill -KILL "\$child"/:/' "$WATCHDOG_KILL_MUT"
+reset_stub term-ignore
+TIME_START="$(test_now_ms)"
+run_direct "$WATCHDOG_KILL_MUT" "$PAYLOAD_PASS" "$WATCHDOG_TERM_IGNORE_BIN" claude
+TIME_END="$(test_now_ms)"
+TIME_ELAPSED=$((TIME_END - TIME_START))
+if [ "$TIME_ELAPSED" -ge 6500 ] && [ "$DRC" = "0" ] \
+  && contains "$DERR" 'timed out twice (1s each)' && [ "$(stub_call_count)" = "2" ]; then
+  echo "MUTATION_RED: watchdog_kill / TERM-ignore child exceeded deadline + grace + 1s per attempt ($TIME_ELAPSED ms)"
+  pass "watchdog_kill escalation mutation"
 else
-  fail "inner timeout did not produce a structured fail-closed block: rc=$DRC stdout=$DOUT stderr=$DERR"
+  fail "mutation watchdog_kill did not turn the timeout bound red ($TIME_ELAPSED ms)"
 fi
-TIMEOUT_MUT="$TMP/mutation-inner-timeout.sh"
+
+reset_stub blocked
+run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$PATH_WITH_HQ" claude
+assert_contains "$DOUT" '"decision":"block"' "exit 2 still blocks"
+[ "$(stub_call_count)" = "1" ] && pass "exit 2 does not retry" || fail "exit-2 call count=$(stub_call_count)"
+
+echo "[3ab] required timeout mutations are detected"
+MARKER_MUT="$TMP/mutation-perl-marker.sh"
+cp "$TIMEOUT_TEST" "$MARKER_MUT"
+sed -i '/if (open my \$marker_file/,/^[[:space:]]*}/d' "$MARKER_MUT"
+reset_stub double-hang
+run_direct "$MARKER_MUT" "$PAYLOAD_PASS" "$PATH_WITH_PERL" claude
+if [ "$(stub_call_count)" = "1" ] && contains "$DERR" 'exited 124'; then
+  echo "MUTATION_RED: perl_deadline_marker / deadline marker write removed"
+  pass "perl_deadline_marker"
+else
+  fail "mutation perl_deadline_marker did not turn the suite red (calls=$(stub_call_count) stderr=$DERR)"
+fi
+
+WNOHANG_MUT="$TMP/mutation-perl-wnohang.sh"
+cp "$TIMEOUT_TEST" "$WNOHANG_MUT"
+sed -i 's/POSIX::WNOHANG()/0/' "$WNOHANG_MUT"
+reset_stub term-ignore
+TIME_START="$(test_now_ms)"
+run_direct "$WNOHANG_MUT" "$PAYLOAD_PASS" "$TERM_IGNORE_BIN" claude
+TIME_END="$(test_now_ms)"
+TIME_ELAPSED=$((TIME_END - TIME_START))
+if [ "$TIME_ELAPSED" -ge 2500 ]; then
+  echo "MUTATION_RED: perl_wnohang / blocking wait exceeded the timeout bound ($TIME_ELAPSED ms)"
+  pass "perl_wnohang"
+else
+  fail "mutation perl_wnohang did not violate the timeout bound ($TIME_ELAPSED ms)"
+fi
+
+EXIT124_MUT="$TMP/mutation-perl-infers-124.sh"
+cp "$TIMEOUT_TEST" "$EXIT124_MUT"
+sed -i '/# PERL_CALL_RETURN/a\    case "$?" in 124) : > "$marker" 2>/dev/null || true ;; esac' "$EXIT124_MUT"
+reset_stub exit-124
+run_direct "$EXIT124_MUT" "$PAYLOAD_PASS" "$PATH_WITH_PERL" claude
+if [ "$(stub_call_count)" = "2" ] || contains "$DERR" 'timed out twice'; then
+  echo "MUTATION_RED: perl_exit_124_marker / child exit 124 must not write timeout marker"
+  pass "perl_exit_124_marker"
+else
+  fail "mutation perl_exit_124_marker did not turn the suite red"
+fi
+
+TIMEOUT_MUT="$TMP/mutation-double-timeout.sh"
 cp "$TIMEOUT_TEST" "$TIMEOUT_MUT"
-sed -i '/# INNER_TIMEOUT_MUST_FAIL_CLOSED/{n;s/gate_error /: # mutated timeout /;}' "$TIMEOUT_MUT"
+sed -i '/# INNER_TIMEOUT_MUST_NOT_BLOCK_RETURN/{n;s/exit 0/gate_error "$detail"; exit "$rc"/;}' "$TIMEOUT_MUT"
+reset_stub double-hang
 run_direct "$TIMEOUT_MUT" "$PAYLOAD_PASS" "$PATH_WITH_HQ" claude
 if contains "$DOUT" '"decision":"block"'; then
-  fail "mutation inner_timeout did not go red"
-else
-  echo "MUTATION_RED: inner_timeout / timeout fail-closed branch"
+  echo "MUTATION_RED: inner_timeout / double-timeout fail-open return"
   pass "inner_timeout_guard"
+else
+  fail "mutation inner_timeout did not turn the double timeout into a block"
 fi
 
 REM_MUT="$TMP/mutation-reminder.sh"
