@@ -1141,5 +1141,236 @@ rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "explicit multi-company false keeps authorizer on primary only"
 export PATH="$ORIGINAL_PATH"
 
+# [94]-[107] cover feedback_2e99a50c-5f75-41e3-8c04-f879ee923973: the guard
+# refused Bash commands that touch no company at all, and told the agent to bind
+# a company to get past them. Every allow case below is paired with the company
+# case it must keep refusing.
+#
+# Two of the reported refusals are CORRECT and stay: an interpreter heredoc body
+# ([99]) and a command substitution ([102], [103]) can both reach a tenant path
+# in ways no static check can bound, so they fail closed. Those cases are here
+# as attacks that must keep being refused, not as false positives.
+#
+# OUTSIDE is deliberately not under $TMP (the fixture's HQ_ROOT). It need not
+# exist: the property under test is that a path resolving outside the HQ root
+# has no tenant to authorize against.
+OUTSIDE="/tmp/hq-scope-outside-$$"
+
+echo "[94] absolute out-of-HQ path held in a shell variable is out of scope"
+install_fixture ""
+command="D=$OUTSIDE/plugin-authoring; grep -n -i \"skill\" \$D/types/claude-code.d.ts"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "variable holding an absolute path outside HQ is not a company path"
+
+echo "[95] out-of-HQ write target held in a shell variable is out of scope"
+install_fixture ""
+command="M=$OUTSIDE/dev-mods/sess/story-progress; mkdir -p \$M/.claude-plugin \$M/hooks"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "mkdir under an out-of-HQ variable path is not a company write"
+
+echo "[96] variable holding an absolute company path still fails closed"
+install_fixture "indigo"
+command="C=$TMP/companies/otherco; cat \$C/settings/x"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "absolute cross-company path in a variable is refused"
+
+echo "[97] variable holding a relative company path still fails closed"
+install_fixture "indigo"
+command='C=companies/otherco; cat $C/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "relative cross-company path in a variable is refused"
+
+echo "[98] variable holding the bound company's absolute path is allowed"
+install_fixture "indigo"
+command="C=$TMP/companies/indigo; cat \$C/settings/x"
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "absolute same-company path in a variable resolves and is allowed"
+
+echo "[99] a quoted interpreter heredoc can re-expand, so it stays scanned"
+# A quoted delimiter stops the OUTER shell expanding the body, but the
+# interpreter can hand the same text to a shell that does. Treating such a
+# body as inert source let this read another tenant.
+install_fixture "indigo"
+read -r -d '' command <<'PYBODY' || true
+CO=otherco python3 - <<'EOF'
+import os
+os.system("cat companies/$CO/settings/x")
+EOF
+PYBODY
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "an expansion the interpreter re-expands at runtime is refused"
+
+echo "[99a] a data-writer heredoc keeps its carve-out past an interpreter word"
+# Anchoring the interpreter test to a word ANYWHERE in the header let a trailing
+# comment reclassify a cat/tee data body as interpreter source.
+install_fixture "indigo"
+read -r -d '' command <<'PYBODY' || true
+cat <<'EOF' > workspace/note.md # php
+see companies/otherco for details
+EOF
+PYBODY
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "an interpreter word in the header does not reclassify a data body"
+
+echo "[100] quoted interpreter heredoc naming a company still fails closed"
+install_fixture "indigo"
+read -r -d '' command <<'PYBODY' || true
+python3 - <<'EOF'
+import pathlib
+print(pathlib.Path("companies/otherco/settings/x").read_text())
+EOF
+PYBODY
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "company path in a quoted python heredoc body is still refused"
+
+echo "[101] unquoted interpreter heredoc stays fully scanned"
+install_fixture "indigo"
+read -r -d '' command <<'PYBODY' || true
+python3 - <<EOF
+print("$(cat companies/otherco/settings/x)")
+EOF
+PYBODY
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "an expanding heredoc body is still scanned for substitutions"
+
+echo "[102] a command substitution's value cannot be bounded, so it stays closed"
+# Scanning the inner command instead of the substitution text does not help:
+# the shell concatenates stdout, so four individually harmless operands become
+# one cross-company path.
+install_fixture "indigo"
+command='cat "$(printf %s companies / otherco /settings/x)"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "a substitution assembling a company path from fragments is refused"
+
+echo "[103] command substitution reading another company still fails closed"
+install_fixture "indigo"
+command='bash personal/skills/rc-new/rc-new.sh --prompt "$(cat companies/otherco/settings/x)" --title "T"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "a substitution reading another company is refused"
+
+echo "[103a] a dollar-quoted company segment is an expansion, not a literal dollar"
+# `$'…'` (ANSI-C) and `$"…"` (locale) both resolve to text the shell then opens.
+install_fixture "indigo"
+for quoted_case in "cat companies/\$'otherco'/settings/x" 'cat companies/$"otherco"/settings/x'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$quoted_case" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "dollar-quoted company segment is refused: $quoted_case"
+done
+
+echo "[103b] an absolute value that word-splits stays unresolved"
+# Unquoted, `D="/tmp companies/otherco"` splits into `/tmp` AND
+# `companies/otherco/settings/x`; the leading `/tmp` must not authorize both.
+install_fixture "indigo"
+command='D="/tmp companies/otherco"; cat $D/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "a word-splitting absolute value is not treated as one path"
+
+echo "[103c] an absolute value carrying a glob stays unresolved"
+install_fixture "indigo"
+command='D="/tmp/*"; cat $D/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "a glob in an absolute value is not treated as one path"
+
+echo "[104] a denial for a path with no company segment explains itself correctly"
+install_fixture ""
+command='cat workspace/$1'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "an unresolved workspace operand still fails closed"
+if grep -Fq 'Target company: unknown' "$TMP/err.txt"; then
+  fail "a path with no company segment should not report an unknown target company"
+fi
+if grep -Fq 'hq-session.sh set company_slug' "$TMP/err.txt"; then
+  fail "a non-company denial must not advise binding a company"
+fi
+if grep -Fq 'glob "' "$TMP/err.txt"; then
+  fail "a non-glob denial reason must not be reported as a glob failure"
+fi
+grep -Fq 'No company path is involved' "$TMP/err.txt" \
+  || fail "a non-company denial should say no company path is involved"
+
+echo "[105] a dollar that cannot start an expansion is literal, not an operand"
+install_fixture ""
+# `$|` and a trailing `$` are literal dollars to the shell too, so a regex
+# carrying them is not an unresolvable path expansion. The reported form
+# (an unterminated `$(` inside the pattern) stays refused: that is invalid
+# shell, and the guard cannot know what it would have expanded to.
+command='grep -nE "done$|/tmp/" core/docs/readme.md'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "a regex anchor is not a path expansion"
+
+echo "[106] a literal dollar in a pattern does not exempt the file operand"
+install_fixture "indigo"
+command='grep -nE "done$|/tmp/" companies/otherco/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "the cross-company file operand beside a regex is still refused"
+
+echo "[106a] a substitution as a REDIRECTION target still fails closed"
+install_fixture "indigo"
+# A redirect writes to whatever the substitution prints, so the target is
+# unbounded. The token carries a slash so it reaches the path checker at all.
+command='printf x > "$(cat workspace/target.txt)"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "an unresolvable redirect target is refused"
+
+echo "[107] the literal-dollar classifier does not expand shell parameters"
+# With HQ_HOOK_AGENT_* preset the hook skips the jq process substitution that
+# otherwise sets $!, so a `$!` written inside a case BRACKET expression is
+# parameter-expanded and `set -u` kills the hook with "unbound variable" —
+# an exit 1 where a verdict was due. Every path below must still render one.
+install_fixture "indigo"
+for probe_case in 'grep -nE "done$|/tmp/" core/docs/readme.md:0' \
+                  'cat companies/otherco/settings/x:2' \
+                  'co=otherco; cat companies/$co/settings/x:2'; do
+  probe_command="${probe_case%:*}"
+  probe_expect="${probe_case##*:}"
+  probe_rc=0
+  : > "$TMP/err.txt"
+  jq -cn --arg cwd "$TMP" --arg command "$probe_command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:"",command:$command}}' \
+    | env HQ_HOOK_TOOL_NAME=Bash HQ_HOOK_SESSION_ID=sess-bound HQ_HOOK_CWD="$TMP" \
+        HQ_HOOK_AGENT_ID="" HQ_HOOK_AGENT_TYPE="" \
+        "${BASH_BIN:-bash}" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" \
+        >"$TMP/out.txt" 2>"$TMP/err.txt" || probe_rc=$?
+  expect_exit "$probe_expect" "$probe_rc" "preset caller identity renders a verdict for: $probe_command"
+  if grep -Fq 'unbound variable' "$TMP/err.txt"; then
+    fail "the hook must not die on an expanded shell parameter: $(cat "$TMP/err.txt")"
+  fi
+done
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"
