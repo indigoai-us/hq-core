@@ -80,7 +80,7 @@ cache_exists() {
 }
 run_hook() {
   local event="$1" sid="$2" delay="$3" marker="$4" err="$5" payload rc=0
-  printf '{"lane_id":"fixture-%s","state":"done","senior":{"kind":"session","id":"%s"}}\n' \
+  printf '{"lane_id":"fixture-%s","state":"running","senior":{"kind":"session","id":"%s"}}\n' \
     "$sid" "$sid" > "$ROOT/workspace/lanes/lanes/fixture-$sid.json"
   payload="$("$REAL_JQ" -cn --arg sid "$sid" '{session_id:$sid,engine:"claude"}')"
   printf '%s' "$payload" | env \

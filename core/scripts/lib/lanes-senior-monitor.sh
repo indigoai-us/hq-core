@@ -80,10 +80,30 @@ current_session_has_lane_record() {
   # Lane records name their senior session as a plain JSON string. A no-match
   # proves monitor-check would have no lane for this session; false positives
   # (for example an old lane record) fall through to the authoritative CLI.
-  grep -Fq -- "\"$SESSION_ID\"" "${lane_records[@]}" 2>/dev/null
-  grep_rc=$?
-  [ "$grep_rc" -eq 0 ] && return 0
-  [ "$grep_rc" -eq 1 ] || return 2
+  local -a matched=()
+  local match
+  while IFS= read -r match; do
+    matched+=("$match")
+  done < <(grep -lF -- "\"$SESSION_ID\"" "${lane_records[@]}" 2>/dev/null)
+  grep_rc=1
+  [ "${#matched[@]}" -gt 0 ] && grep_rc=0
+  if [ "$grep_rc" -eq 0 ]; then
+    # A session that only owns finished lanes (done, failed, killed,
+    # interrupted) has nothing for monitor-check to cover. Starting the CLI
+    # for those sessions cost ~0.5 s of CPU per prompt. Malformed records
+    # still reach the CLI.
+    jq -e -n --arg sid "$SESSION_ID" '
+      [inputs] as $all
+      | if all($all[]; type == "object") | not then error("malformed")
+        else any($all[]; .senior.kind == "session" and .senior.id == $sid
+          and ((.state // "") as $s | ["running","queued","awaiting_input","blocked"] | index($s)) != null)
+        end
+    ' "${matched[@]}" >/dev/null 2>&1
+    grep_rc=$?
+    [ "$grep_rc" -eq 0 ] && return 0
+    [ "$grep_rc" -eq 1 ] && return 1
+    return 2
+  fi
 
   # A fast empty result is safe only when every candidate can be parsed.
   # Validate all files in one jq process; corrupt records reach the CLI's
