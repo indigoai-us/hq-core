@@ -22,6 +22,9 @@
 # The check "$([ cond ]; echo $?)" idiom reads the condition's status on purpose.
 # shellcheck disable=SC2319
 set -uo pipefail
+# These cases cover the opt-in codex engine; the claude default and the codex
+# gate are covered in workflow-runner-engine-default.test.sh.
+export HQ_ALLOW_CODEX=1 HQ_WORKFLOW_ENGINE=codex
 unset HQ_SPAWN_COMPANY HQ_SESSION_ID HQ_PARENT_SESSION_ID HQ_WORKFLOW_NO_RESUME HQ_CONDUCT_RUN_DIR
 # Isolation: this suite never inherits the caller's session. Its own session id,
 # and (below) its own HQ_ROOT with workspace/sessions and run dirs under a temp root,

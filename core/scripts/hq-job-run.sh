@@ -552,6 +552,13 @@ esac
 [ -n "$JOB_ID" ] && [ "$JOB_ID" != "null" ] || die "job missing id: $JOB_FILE"
 [ -n "$RUNTIME" ] && [ "$RUNTIME" != "null" ] || die "job missing runtime: $JOB_FILE"
 [ -n "$JOB_NAME" ] || JOB_NAME="$JOB_ID"
+# codex is opt-in only: without HQ_ALLOW_CODEX=1 a runtime=codex job runs on claude.
+if [ "$RUNTIME" = "codex" ]; then
+  case "${HQ_ALLOW_CODEX:-}" in
+    1|true|yes|on) ;;
+    *) RUNTIME="claude"; CODEX_MAPPED=1 ;;
+  esac
+fi
 [ -n "$NOTIFY_MODE" ] && [ "$NOTIFY_MODE" != "null" ] || NOTIFY_MODE="profile"
 case "$TIMEOUT_SEC" in
   ''|*[!0-9]*) TIMEOUT_SEC=600 ;;
@@ -605,6 +612,7 @@ EXIT_CODE=0
   echo "=== hq-job-run $JOB_ID ==="
   echo "started_at=$STARTED_AT"
   echo "runtime=$RUNTIME"
+  [ "${CODEX_MAPPED:-0}" = 1 ] && echo "runtime codex mapped to claude (set HQ_ALLOW_CODEX=1 to run codex)"
   echo "timeout_seconds=$TIMEOUT_SEC"
   echo "surface=$SURFACE"
   echo "job_file=$JOB_FILE"

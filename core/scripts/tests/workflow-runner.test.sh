@@ -72,6 +72,9 @@
 #      an agent's own output verbatim and that text is untrusted
 
 set -uo pipefail
+# These cases cover the opt-in codex engine; the claude default and the codex
+# gate are covered in workflow-runner-engine-default.test.sh.
+export HQ_ALLOW_CODEX=1 HQ_WORKFLOW_ENGINE=codex
 
 # Ambient company bind must not enqueue mesh events from this suite.
 # Lane presence is covered by workflow-runner-mesh-adapter.test.sh.

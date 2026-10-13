@@ -291,6 +291,7 @@ export PC_SELF_DIR="$HERE" PC_CMD="$CMD" PC_SUB="$SUB" PC_PRD="$PRD" PC_STATE="$
 node - <<'JS'
 "use strict";
 const fs = require("fs"), cp = require("child_process"), osm = require("os");
+const pathwin = require("path").win32;
 
 const E = process.env;
 const CMD = E.PC_CMD, SUB = E.PC_SUB, STATE = E.PC_STATE;
@@ -677,6 +678,10 @@ class CutError extends Error {}
 function real(path) {
   // Absolute, symlink-free path; a relative path is read from the HQ root.
   path = expanduser(strip(S(path)));
+  if (process.platform === "win32") {
+    if (!pathwin.isAbsolute(path)) path = pathwin.resolve(E.PC_HQ_ROOT, path);
+    return winCanonicalPath(path);
+  }
   if (!isabs(path)) path = pjoin(E.PC_HQ_ROOT, path);
   return realpath(path);
 }
@@ -706,6 +711,22 @@ function all_repos(p) {
 function multi_repo(p) { return all_repos(p).length > 1; }
 
 function under(path, root) { return path === root || path.startsWith(root.replace(/\/+$/, "") + "/"); }
+function winAbsolutePath(candidate) { return pathwin.resolve(String(candidate)).replace(/\\/g, "/"); }
+function winCanonicalPath(candidate) {
+  const resolved = winAbsolutePath(candidate);
+  try { return fs.realpathSync.native(resolved).replace(/\\/g, "/"); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    const parent = pathwin.dirname(resolved);
+    if (parent === resolved) throw error;
+    return pathwin.join(winCanonicalPath(parent), pathwin.basename(resolved)).replace(/\\/g, "/");
+  }
+}
+function winUnder(path, root) {
+  const candidate = String(path).replace(/\\/g, "/").toLowerCase().replace(/\/$/, "");
+  const base = String(root).replace(/\\/g, "/").toLowerCase().replace(/\/$/, "");
+  return candidate === base || candidate.startsWith(base + "/");
+}
 
 function file_owner(f, repos) {
   // The repo that owns a declared file path, or null.
@@ -746,6 +767,19 @@ const REPOS_WT_LINE = "This worktree is under repos/, where the core Write/Edit 
 // The one check for a run worktree under <HQ>/repos/.
 function repos_worktree(path, refuse) {
   if (refuse === undefined) refuse = true;
+  if (process.platform === "win32") {
+    const hq = winCanonicalPath(E.PC_HQ_ROOT);
+    const r = winCanonicalPath(path);
+    const repos = winCanonicalPath(pathwin.join(hq, "repos"));
+    if (!winUnder(r, repos)) return false;
+    if (refuse && E.PC_ALLOW_REPOS !== "1") {
+      die("refusing worktree " + S(path) + ": it resolves under " + pjoin(hq, "repos") + "/, where the core Write/Edit guard blocks editor-tool " +
+          "writes, so a lane that edits with the Write or Edit tool stalls there. Leave --worktree off to use " +
+          "the default " + pjoin(hq, "workspace", "worktrees") + "/<project>/<repo-name>/, or pass --allow-repos-worktree to keep this tree; every phase " +
+          "envelope then tells the worker to edit through the shell or apply_patch.", 2);
+    }
+    return true;
+  }
   const hq = realpath(E.PC_HQ_ROOT);
   const r = realpath(abspath(expanduser(S(path))));
   if (!under(r, pjoin(hq, "repos"))) return false;
@@ -766,9 +800,9 @@ function wt_mapping(raw) {
     const i = e.indexOf("=");
     if (i >= 0) {
       const r = e.slice(0, i), w = e.slice(i + 1);
-      m[real(r)] = abspath(strip(w));
+      m[real(r)] = process.platform === "win32" ? winAbsolutePath(strip(w)) : abspath(strip(w));
     } else {
-      m["*"] = abspath(strip(e));
+      m["*"] = process.platform === "win32" ? winAbsolutePath(strip(e)) : abspath(strip(e));
     }
   }
   for (const w of Object.values(m)) repos_worktree(w);
@@ -811,18 +845,46 @@ function base_ref(repo, base) {
 }
 
 function check_repo(repo) {
-  const hq = realpath(E.PC_HQ_ROOT);
-  if (under(repo, hq) && !under(repo, pjoin(hq, "repos")))
-    throw new CutError("refusing a worktree of a repo inside the HQ root: " + repo);
-  if (realpath(strip(git(repo, "rev-parse", "--show-toplevel").stdout) || "/nonexistent") !== repo)
+  if (process.platform === "win32") {
+    const hq = real(E.PC_HQ_ROOT);
+    const canonicalRepo = winCanonicalPath(repo);
+    const canonicalHq = winCanonicalPath(hq);
+    const reposRoot = pathwin.resolve(canonicalHq, "repos");
+    const underWindows = (candidate, root) => {
+      const relative = pathwin.relative(root, candidate);
+      return relative === "" || (relative !== ".." && !relative.startsWith(".." + pathwin.sep) && !pathwin.isAbsolute(relative));
+    };
+    if (underWindows(canonicalRepo, canonicalHq) && !underWindows(canonicalRepo, reposRoot))
+      throw new CutError("refusing a worktree of a repo inside the HQ root: " + repo);
+  } else {
+    const hq = realpath(E.PC_HQ_ROOT);
+    if (under(repo, hq) && !under(repo, pjoin(hq, "repos")))
+      throw new CutError("refusing a worktree of a repo inside the HQ root: " + repo);
+  }
+  const gitTopRaw = strip(git(repo, "rev-parse", "--show-toplevel").stdout) || "/nonexistent";
+  const gitTop = process.platform === "win32" ? fs.realpathSync.native(gitTopRaw) : realpath(gitTopRaw);
+  const repoPath = process.platform === "win32" ? fs.realpathSync.native(repo) : repo;
+  const sameRepoPath = process.platform === "win32"
+    ? (p) => String(p).replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, drive) => drive.toLowerCase() + ":")
+    : (p) => String(p);
+  if (sameRepoPath(gitTop) !== sameRepoPath(repoPath))
     throw new CutError("not the top of a repository (git rev-parse --show-toplevel): " + repo);
 }
 
 function wt_root(p) {
   if (E.PC_WORKTREE_ROOT) return E.PC_WORKTREE_ROOT;
   const pp = or(p, {});
-  const proj = or(or(get(pp, "name"), get(pp, "project")), basename(realpath(STATE)));
-  return pjoin(realpath(E.PC_HQ_ROOT), "workspace", "worktrees", slug(proj));
+  const stateName = process.platform === "win32"
+    ? pathwin.basename(pathwin.resolve(process.cwd(), STATE))
+    : basename(realpath(STATE));
+  const proj = or(or(get(pp, "name"), get(pp, "project")), stateName);
+  return process.platform === "win32"
+    ? pathwin.join(real(E.PC_HQ_ROOT), "workspace", "worktrees", slug(proj))
+    : pjoin(realpath(E.PC_HQ_ROOT), "workspace", "worktrees", slug(proj));
+}
+
+function worktreePath(root, ...parts) {
+  return process.platform === "win32" ? pathwin.join(root, ...parts) : pjoin(root, ...parts);
 }
 
 function explicit_target(repo) {
@@ -847,7 +909,7 @@ function add_worktree(repo, wt, branch, start) {
 
 function cut_repo_worktree(p, repo) {
   check_repo(repo);
-  const wt = explicit_target(repo) || pjoin(wt_root(p), slug(basename(repo)));
+  const wt = explicit_target(repo) || worktreePath(wt_root(p), slug(basename(repo)));
   const branch = feature_branch(p);
   if (isdir(wt))
     return [wt, "EXISTS " + wt + " on " + (strip(git(wt, "rev-parse", "--abbrev-ref", "HEAD").stdout) || "?")];
@@ -866,7 +928,7 @@ function stacked_on(p, sid, repo, stories) {
 
 function cut_story_worktree(p, sid, st, repo) {
   check_repo(repo);
-  const wt = explicit_target(repo) || pjoin(wt_root(p), slug(basename(repo)) + "-" + slug(sid));
+  const wt = explicit_target(repo) || worktreePath(wt_root(p), slug(basename(repo)) + "-" + slug(sid));
   const branch = "pipeline/" + slug(sid);
   if (isdir(wt)) return [wt, "EXISTS " + wt + " on " + branch];
   const dep = stacked_on(p, sid, repo, all_stories());
@@ -1000,7 +1062,9 @@ function do_go() {
 function do_worktree() {
   if (!E.PC_REPO) die("worktree needs --repo", 2);
   if (!isdir(E.PC_REPO)) die("repo not found: " + E.PC_REPO);
-  const repo = realpath(E.PC_REPO);
+  const repo = process.platform === "win32"
+    ? winCanonicalPath(pathwin.isAbsolute(E.PC_REPO) ? E.PC_REPO : pathwin.resolve(process.cwd(), E.PC_REPO))
+    : realpath(E.PC_REPO);
   const st = STORY ? sload(STORY) : null;
   let wt, line;
   try {

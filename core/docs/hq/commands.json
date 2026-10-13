@@ -132,7 +132,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/checkpoint/SKILL.md",
-      "hash": "sha256:eed76925460cd03e08b595336b4ad70726ae941ad406b40204c0f1cc27cd267a",
+      "hash": "sha256:a40ce2de842cb6434c473f6baf374558fa9b940b632d34d49cbe186fb375d0ea",
       "duplicates": {
         "exact": [],
         "drifted": [],

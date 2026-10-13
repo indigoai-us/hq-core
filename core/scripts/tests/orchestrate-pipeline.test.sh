@@ -37,6 +37,9 @@
 #      the pipeline states additionalProperties: false itself
 
 set -uo pipefail
+# These cases cover the opt-in codex engine; the claude default and the codex
+# gate are covered in workflow-runner-engine-default.test.sh.
+export HQ_ALLOW_CODEX=1 HQ_WORKFLOW_ENGINE=codex
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$REPO_ROOT/core/scripts/workflow-runner.mjs"

@@ -1421,5 +1421,34 @@ for probe_command in \
   expect_exit 2 "$rc" "symlinked workspace entry through a variable: $probe_command"
 done
 
+echo "[109] literal loop values under non-company roots pass even when a company folder shares the root's name"
+# A company folder named like an open root (companies/workspace, companies/repos)
+# made the loop expander treat workspace/worktrees/$w as that tenant's path and
+# refuse every value. Near misses stay blocked.
+install_fixture "indigo"
+mkdir -p "$TMP/companies/workspace/settings" "$TMP/companies/repos/settings" \
+  "$TMP/workspace/worktrees/a" "$TMP/workspace/worktrees/b" \
+  "$TMP/repos/private/r1" "$TMP/repos/private/r2" "$TMP/companies/otherco/settings"
+ln -s ../../companies/otherco "$TMP/workspace/worktrees/evil"
+for probe_case in \
+  'for w in a b; do ls workspace/worktrees/$w; done:0' \
+  'for w in a b; do ls workspace/worktrees/$w/; done:0' \
+  'for r in r1 r2; do ls repos/private/$r; done:0' \
+  'for w in ../../companies/otherco; do cat workspace/worktrees/$w/settings/x; done:2' \
+  'for w in ../companies/x; do ls workspace/worktrees/$w; done:2' \
+  'for w in evil; do cat workspace/worktrees/$w/settings/x; done:2' \
+  'for w in a; do w=../../companies/otherco; cat workspace/worktrees/$w/settings/x; done:2' \
+  'for w in a; do w=evil; ls workspace/worktrees/$w; done:2' \
+  'for w in "*"; do ls workspace/worktrees/$w; done:2' \
+  'for w in a*; do ls workspace/worktrees/$w; done:2' \
+  'for w in a b; do ls companies/workspace/$w; done:2'; do
+  probe_command="${probe_case%:*}"
+  probe_expect="${probe_case##*:}"
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$probe_command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit "$probe_expect" "$rc" "non-company loop: $probe_command"
+done
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

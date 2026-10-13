@@ -1030,6 +1030,8 @@ jobs:
         run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
       - name: Checkpoint and journal hooks do not over-trigger
         run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
+      - name: Checkpoint auto lookup stays out of workspace/worktrees and is time-bounded
+        run: bash core/scripts/tests/checkpoint-recent-auto.test.sh
       - name: Session id resolves to this process, not .current
         run: bash core/scripts/tests/session-id.test.sh
       - name: Session scope capability mint/read contract
@@ -1719,6 +1721,8 @@ jobs:
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Git Bash session-title slash command argv
         run: bash core/scripts/tests/session-title-windows-argv.test.sh
+      - name: Pipeline Windows path and lock identity
+        run: bash core/scripts/tests/pipeline-windows-path-lock.test.sh
       - name: Verify Windows hook benchmark workflow wiring
         run: bash core/scripts/tests/windows-hook-benchmark-workflow.test.sh
       - name: Measure hook benchmark on Git Bash
@@ -2258,6 +2262,8 @@ jobs:
         run: node --test core/scripts/__tests__/codex-output-schema.test.mjs
       - name: Workflow runner — codex / grok / claude engines + gates
         run: bash core/scripts/tests/workflow-runner.test.sh
+      - name: Workflow runner — claude default engine, codex opt-in gate
+        run: bash core/scripts/tests/workflow-runner-engine-default.test.sh
       - name: Orchestrate pipeline E2E (fake engines)
         run: bash core/scripts/tests/orchestrate-pipeline.test.sh
 

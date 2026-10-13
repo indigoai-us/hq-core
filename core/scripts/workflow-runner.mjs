@@ -9,7 +9,10 @@
  * await, top-level return) where every agent() call spawns a headless CLI
  * subprocess chosen by opts.engine:
  *
- *   engine "codex" (default) — `codex exec` with the unattended-run flags
+ *   engine "claude" is the default. engine "codex" is opt-in only: unless
+ *   HQ_ALLOW_CODEX=1 is set, a "codex" engine request runs on claude instead.
+ *
+ *   engine "codex" (opt-in) — `codex exec` with the unattended-run flags
  *     (--dangerously-bypass-hook-trust --skip-git-repo-check
  *      --dangerously-bypass-approvals-and-sandbox); result read from a
  *     dedicated --output-last-message file (transcripts are huge — never
@@ -86,6 +89,10 @@
  *                              walking up from this script (then cwd) to the
  *                              first dir with companies/manifest.yaml or
  *                              .claude/settings.json.
+ *   HQ_WORKFLOW_ENGINE         Engine for agent() calls with no opts.engine
+ *                              (default claude)
+ *   HQ_ALLOW_CODEX=1           Opt in to the codex engine; without it every
+ *                              codex request runs on claude
  *   HQ_WORKFLOW_CODEX_BIN      codex binary (default `codex`; tests inject a fake)
  *   HQ_WORKFLOW_GROK_BIN       grok binary (default `grok`)
  *   HQ_WORKFLOW_CLAUDE_BIN     claude binary (default `claude`)
@@ -122,7 +129,8 @@
  *     opts.tier (REQUIRED): "plan" (analysis/planning — the flagship model)
  *           or "exec" (execution — the throughput model). agent() throws if
  *           missing/invalid so the model choice is never implicit.
- *     opts.engine: "codex" (default), "grok", or "claude"
+ *     opts.engine: "claude" (default), "grok", or "codex" (runs only with
+ *           HQ_ALLOW_CODEX=1; otherwise mapped to "claude")
  *     opts: label, phase, schema (ordinary JSON Schema; result parsed+returned
  *           as an object. Write it the normal way — optional properties simply
  *           stay out of `required`. On the codex engine it is rewritten into
@@ -803,6 +811,18 @@ const ENGINES = {
   },
 };
 const VALID_ENGINES = Object.keys(ENGINES);
+
+// Default engine is claude. codex runs only with an explicit HQ_ALLOW_CODEX=1
+// opt-in; any other codex request (opts.engine, a §8 envelope, or
+// HQ_CONDUCT_ENGINE / HQ_WORKFLOW_ENGINE) is mapped to claude.
+const DEFAULT_ENGINE = 'claude';
+function codexAllowed() {
+  return /^(1|true|yes|on)$/i.test(process.env.HQ_ALLOW_CODEX || '');
+}
+function resolveEngineName(name) {
+  const n = name || DEFAULT_ENGINE;
+  return n === 'codex' && !codexAllowed() ? 'claude' : n;
+}
 
 // Hooks that must not fire inside a spawned agent. An agent's whole contract is
 // that its FINAL TEXT is the return value; HQ's end-of-turn checkpoint gate
@@ -1763,7 +1783,7 @@ async function buildRuntime(cli) {
     // runaway script, so the backstop does not apply to it.
     if (!state.loop && n > MAX_AGENTS) throw new Error(`agent cap reached (${MAX_AGENTS})`);
     const label = opts.label || `agent-${n}`;
-    const engineName = opts.engine || 'codex';
+    const engineName = resolveEngineName(opts.engine || process.env.HQ_WORKFLOW_ENGINE);
     const engine = ENGINES[engineName];
     if (!engine) {
       throw new Error(
@@ -2306,7 +2326,7 @@ function prepareStorySession(rt, sessionsDir, envelope, noResume) {
     }
   }
   const session = { story_id: String(storyId), resumeId: null, newId: null };
-  const engine = envelope.engine || 'codex';
+  const engine = resolveEngineName(envelope.engine);
   let prior = null;
   try { prior = JSON.parse(fs.readFileSync(own, 'utf8')); } catch { /* none yet */ }
   if (noResume || envelope.fresh === true) {
@@ -2805,7 +2825,7 @@ function section8Handoff(envelope, engine, record, tmpDir) {
 }
 
 function section8Engine(envelope) {
-  return envelope.engine || process.env.HQ_CONDUCT_ENGINE || process.env.HQ_WORKFLOW_ENGINE || 'codex';
+  return resolveEngineName(envelope.engine || process.env.HQ_CONDUCT_ENGINE || process.env.HQ_WORKFLOW_ENGINE);
 }
 
 // The run-shaped view of a §8 envelope: what agent() and the session code read.
@@ -2953,7 +2973,7 @@ async function runLoop(rt, cli = {}) {
         try {
           if (record.status === 'ok' && session.session_id) {
             writeJsonAtomic(own, {
-              story_id: session.story_id, engine: envelope.engine || 'codex',
+              story_id: session.story_id, engine: resolveEngineName(envelope.engine),
               session_id: session.session_id, updated_at: new Date().toISOString(),
             });
           } else if (fs.existsSync(own)) {

@@ -9,8 +9,8 @@ name: Promote to hq-core
 #      an already-open PR is "rebased" onto the new code rather than a new PR
 #      being opened. Version follows a patch train: next = hq-core main
 #      hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). Auto-mode arms GitHub
-#      auto-merge (squash) once required checks are green; apply the
-#      `hold-release` label to disable auto-merge and skip re-arming.
+#      auto-merge (squash) once required checks are green. Automation never
+#      labels the PR; a human can apply `hold-release` to hold a release.
 #      Minor/major releases are still cut manually via workflow_dispatch with
 #      an explicit version.
 #
@@ -389,7 +389,7 @@ jobs:
             {
               echo "- 🤖 Auto-promote: this PR tracks staging \`main\` and is force-updated on every push."
               echo "- ✅ The release workflow waits for every check and status on the exact hq-core PR head, then merges only that checked SHA."
-              echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). The gate disables auto-merge and will not merge while the label is present."
+              echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). The gate disables auto-merge and will not merge while the label is present. Automation never adds this label. If a check fails, re-run it; the scheduled recheck reads the current results and merges once every check passes."
             } >> "$BODY_FILE"
           fi
           if [ -n "${INPUT_EXTRA}" ]; then
@@ -516,11 +516,24 @@ jobs:
             echo "::notice::Opened PR #${NUM}: ${URL}"
           fi
           PR_HEAD_SHA="$(gh pr view "$NUM" --repo "$TARGET_REPO" --json headRefOid --jq '.headRefOid')"
+          # Release PRs are always ready to merge: arm GitHub auto-merge on
+          # every open or update. Only a manually applied hold-release skips it.
+          if gh pr view "$NUM" --repo "$TARGET_REPO" --json labels \
+               --jq 'any(.labels[]?.name; . == "hold-release")' | grep -qx true; then
+            echo "::notice::PR #${NUM} has hold-release; not arming auto-merge."
+          else
+            if gh pr merge "$NUM" --repo "$TARGET_REPO" --auto --squash --match-head-commit "$PR_HEAD_SHA"; then
+              echo "::notice::Armed auto-merge (squash) on PR #${NUM} at ${PR_HEAD_SHA}."
+            else
+              echo "::warning::Could not arm auto-merge on PR #${NUM}; the release gate below still merges it once every check passes."
+            fi
+          fi
           echo "number=${NUM}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
-      # Gate the exact target PR head. GitHub auto-merge only waits for required
-      # branch-protection contexts, so do not arm it here.
+      # Gate the exact target PR head. GitHub auto-merge (armed above) waits only
+      # for required branch-protection contexts; this gate also merges once
+      # every check, required or not, has passed.
       - name: Gate every check and merge auto-mode release PR
         if: >-
           steps.params.outputs.mode == 'auto' &&

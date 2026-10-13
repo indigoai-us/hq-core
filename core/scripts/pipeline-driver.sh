@@ -197,9 +197,24 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
 # ---- one copy per state dir ----
 is_driver() { # pid -> 0 when that pid is alive and is a pipeline-driver
-  [ -n "$1" ] || return 1
-  kill -0 "$1" 2>/dev/null || return 1
-  ps -p "$1" -o args= 2>/dev/null | grep -q 'pipeline-driver' || return 1
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  if kill -0 "$1" 2>/dev/null; then
+    ps -ww -o args= -p "$1" 2>/dev/null | grep -q 'pipeline-driver' && return 0
+  fi
+  # Native Windows Node writers store the Win32 PID; Git Bash ps/kill address
+  # MSYS PIDs. Translate an MSYS PID before querying the Windows process table,
+  # while retaining the direct lookup for native Node lock writers.
+  if command -v powershell.exe >/dev/null 2>&1; then
+    local winpid="$1"
+    if [ -r "/proc/$1/winpid" ]; then
+      winpid="$(cat "/proc/$1/winpid" 2>/dev/null || true)"
+    fi
+    case "$winpid" in ''|*[!0-9]*) return 1 ;; esac
+    powershell.exe -NoLogo -NoProfile -NonInteractive -Command \
+      "\$p = Get-CimInstance Win32_Process -Filter 'ProcessId = $winpid'; if (\$null -ne \$p) { [Console]::Out.Write(\$p.CommandLine) }" 2>/dev/null \
+      | grep -Eq 'pipeline-driver|core pipeline driver' && return 0
+  fi
+  return 1
 }
 OWN_LOCK=0
 take_lock() {
