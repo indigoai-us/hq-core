@@ -1,4 +1,29 @@
 ## [Unreleased]
+- The setup worker gains an `add-a-pack` skill. When someone pastes a
+  hqforwork.com pack link or names a pack (`hq-pack-{slug}`, a catalog slug,
+  or a catalog display name), Setup confirms in one message, runs
+  `hq packages install {slug-or-path} --start-bot`, and hands over to the
+  pack's bot. Pairs with indigoai-us/hq-cli#1809.
+- `/handoff` keeps a thread with one company owner. It no longer copies a
+  complete handoff into every company named in the changeset or in a
+  `metadata.company` array. Ambiguous ownership is refused. Pass `--company`
+  for the resolved owner; omit it for HQ-wide work.
+- Regression tests pin whitespace-separated 3+ operand `&&` / `||` policy
+  trigger chains so a dropped trailing term cannot silently return. Coverage
+  lives in `eval-trigger.test.sh` and truth-value rows in the injector
+  parser-parity suite.
+- `/super-conductor` brings every open owner decision into its own window.
+  Sources are an open `AskUserQuestion` in a child window (read from the local
+  transcript, since `list_events` hides the question text), a question at the
+  end of a child's last message, agent and bot DMs, Slack asks, and CI, deploy,
+  and collision results that need a go. The answer is relayed to the child, and
+  the owner is never told to answer in another window. Each wakeup reads the
+  last message of every session active in the last 24 hours, linked or not.
+  Decisions show as one compact card when the widget tool is available. A
+  save file (`workspace/reports/conduct/<link>-state.json`) keeps children,
+  open decisions, holds, drafts, and Slack cursors across compacts. Slack
+  channels and teammate collision tracking are optional, configured in
+  `personal/settings/super-conductor.yaml`.
 - Image reads are capped by file size, not image count. A PreToolUse guard
   blocks a local image over 2 MB, a ninth distinct image in the session, or
   Codex `detail: original`, and the image-context-isolation policy now
@@ -104,6 +129,11 @@
 
 ### Fixed — `conduct-pool.sh assign` was slow on machines with many sessions (2026-10-09)
 - The `CONDUCT_MACHINE_CAP` count read every `workspace/sessions/*/meta.yaml` line by line in bash, so `assign` took minutes on a machine with thousands of session dirs. One batched `grep` pass now narrows the walk to files that hold a running or claimed slot; the cap semantics are unchanged. `conduct-pool.test.sh` adds a 3,000-session case (41s before, about 1s after) that also checks idle pools and look-alike lines outside `conduct_pool` are not counted.
+- The HQ desktop update hook (`31-ensure-hq-desktop.sh`) leaves a test build
+  alone. It used to treat any app at `/Applications/HQ.app` as the shipped
+  app, so a scratch or Lane Check build there was replaced with the public
+  release and stopped with `pkill` in the middle of a session. Only an app with
+  the shipped bundle id (`ai.indigo.hq-sync-menubar`) is updated now.
 
 ## [16.0.0] — BREAKING — conduct by default; v15 deprecations removed
 

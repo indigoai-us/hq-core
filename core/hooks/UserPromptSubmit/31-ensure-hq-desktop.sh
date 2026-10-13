@@ -214,11 +214,19 @@ locate_app_darwin() {
   local candidate
   if [ -n "${HQ_ENSURE_DESKTOP_APP_PATH:-}" ]; then
     [ -f "${HQ_ENSURE_DESKTOP_APP_PATH}/Contents/Info.plist" ] || return 1
+    [ "$(bundle_identifier "${HQ_ENSURE_DESKTOP_APP_PATH}")" = "$BUNDLE_ID" ] || return 1
     printf '%s\n' "${HQ_ENSURE_DESKTOP_APP_PATH}"
     return 0
   fi
   for candidate in "/Applications/$APP_BUNDLE" "$USER_HOME/Applications/$APP_BUNDLE"; do
-    if [ -f "$candidate/Contents/Info.plist" ]; then printf '%s\n' "$candidate"; return 0; fi
+    [ -f "$candidate/Contents/Info.plist" ] || continue
+    # Only the shipped app is ours to update. A test build installed as
+    # HQ.app (a scratch or Lane Check bundle with its own bundle id) is left
+    # alone: on 2026-10-12 this hook replaced one on a test VM with the
+    # public release and pkilled it mid-walkthrough.
+    [ "$(bundle_identifier "$candidate")" = "$BUNDLE_ID" ] || return 1
+    printf '%s\n' "$candidate"
+    return 0
   done
   return 1
 }

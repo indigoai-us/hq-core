@@ -214,6 +214,17 @@ out="$(run_hook)"
 [ -z "$out" ] || fail "missing app should be silent, got: $out"
 [ ! -s "$CURL_LOG" ] || fail "missing app must not touch the network"
 
+# --- 1b. a test build installed as HQ.app -> left alone -------------------
+# 2026-10-12: a scratch build (its own bundle id) at /Applications/HQ.app was
+# "updated" to the public release and pkilled mid-walkthrough on a test VM.
+reset_root
+write_plist "$APP" 0.10.100 ai.indigo.hq-lane-check.pack-deep-link
+stale_cache 0.10.200
+out="$(run_hook)"
+[ -z "$out" ] || fail "a test build must be left alone silently, got: $out"
+[ ! -s "$CURL_LOG" ] || fail "a test build must not trigger a manifest fetch or download"
+[ "$(installed_version)" = "0.10.100" ] || fail "a test build must not be replaced"
+
 # --- 2. current + fresh cache -> silent, no network -----------------------
 reset_root
 write_plist "$APP" 0.10.200

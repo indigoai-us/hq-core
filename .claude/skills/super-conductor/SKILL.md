@@ -1,7 +1,7 @@
 ---
 name: super-conductor
 description: Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a self-paced watch loop running until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
-allowed-tools: Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(pgrep:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
+allowed-tools: Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
 argument-hint: "[off | status | <note for the team>]"
 ---
 
@@ -9,12 +9,19 @@ argument-hint: "[off | status | <note for the team>]"
 
 The parent session does no project work itself. It adopts the sessions that
 are already open, reads their working sets, prevents them from colliding,
-answers teammates who ask for something, and queues anything that only the
-owner can decide. It stays alive on a self-paced wakeup loop until `off`.
+answers teammates who ask for something, and brings every decision that only
+the owner can make into this window. It stays alive on a self-paced wakeup
+loop until `off`.
 
 This is `/conduct` turned outward: `/super-conductor` links sessions the owner
 already has open and handles the team's inbound comms. It does not launch
 manager lanes.
+
+## Step 0: Resume from the save file
+
+If `workspace/reports/conduct/<link>-state.json` exists for an open link
+(after a compact, a resume, or an app restart), read it before anything else.
+See "Save file" below.
 
 ## Step 1: Parse the argument
 
@@ -23,10 +30,10 @@ manager lanes.
   hq lanes link close
   ```
   then call `ScheduleWakeup` with `stop: true`.
-- `status` → render the session board (Step 6) from the JSON returned by
-  `hq lanes link list`, `hq lanes list --json --senior session:<this session id>`,
+- `status` → render the session board (see "Rendering") from the JSON returned
+  by `hq lanes link list`, `hq lanes list --json --senior session:<this session id>`,
   and the DM inbox. Launch nothing, send nothing.
-- Anything else, or no argument → full start (Steps 2–7). Free text is a
+- Anything else, or no argument → full start (Steps 2–8). Free text is a
   standing note to pass to every adopted session (for example "no merges until
   I'm back").
 
@@ -82,7 +89,8 @@ Compare each new working set against every other child's. Flag and resolve:
 
 Send resolutions with `hq lanes link send --child <name>` (or `all`). Read
 `.queued` and `.children` from its JSON response. A
-message to a child is an instruction that outranks its brief.
+message to a child is an instruction that outranks its brief. Every send also
+follows the delivery rule in Step 8.
 
 Independently verify any claim that matters before relaying it: check live
 processes with `pgrep -fl workflow-runner.mjs`, check branch heads, check the
@@ -95,7 +103,9 @@ file on disk.
 - Never stop, reap, or signal a lane by matching process arguments.
 - Keep one company per session; refuse cross-company instructions.
 - Secrets never go in a report.
-- Report blockers to the conductor, not to the user in the child window.
+- Never ask the owner in the child's own window. Send every decision to the
+  conductor at once, as the exact question with two or three options,
+  recommended option first. Report blockers the same way.
 
 ## Step 6: Team comms
 
@@ -112,12 +122,48 @@ Also read any DM channel the owner named. For each inbound item:
 - **Access, grants, secrets, money, hiring, external sends, anything
   irreversible** → do not act. Reply once that the owner will see it in the
   morning only if nobody has answered the thread yet; then add it to the
-  morning queue.
-- **Bot and agent status posts** (local bots, fleet agents) → read for signals;
-  no reply needed.
+  decision queue (Step 8).
+- **Bot and agent status posts** (local bots, fleet agents) → read for signals.
+  A bot or agent DM that asks the owner something is a decision (Step 8).
 
 Check `hq dm read <person>` before replying so an already-answered thread is
 not answered twice.
+
+### Optional watch list
+
+The owner can keep a watch list in `personal/settings/super-conductor.yaml`.
+Every key is optional; skip the matching sweep when a key is absent:
+
+```yaml
+company: <slug>            # company for mesh and GitHub sweeps
+slack_channels: []         # channel names to read on every wakeup
+github_org: <org>          # org for teammate PR sweeps
+teammates:                 # people whose work is checked for collisions
+  - name: <display name>
+    person_uid: <prs_...>  # work-mesh person id
+    github: <login>
+```
+
+**Slack (when a Slack integration is usable).** Check
+`hq integrations list --usable`; when Slack is listed, Slack is part of every
+wakeup, read-only unless the owner says go. Read mentions of the owner, each
+1:1 DM with new activity since the last wakeup, and every channel in
+`slack_channels`, only past the cursor kept in the save file. Before drafting
+a reply, read the thread to see whether someone already answered. Never post
+without the owner's go in this window.
+
+**Teammate tracking (when `teammates` is set).** Read-only, every wakeup:
+
+- Work mesh: `hq mesh check --company <company> --json`, filtered to threads
+  with `lastActivityAt` since the last wakeup for each `person_uid`. Note
+  blocked and needs-human threads.
+- GitHub: `gh search prs --owner <github_org> --author <login> --updated
+  ">=<last check>"` for each teammate.
+- Collision pass: same repo and same files or feature area as an owner
+  session's open PR or planned work → warn the owner's session and tell the
+  owner. Never message teammates or touch their branches without the owner's
+  go.
+- Keep the latest summary under `team` in the save file.
 
 ## Step 7: Loop
 
@@ -137,15 +183,82 @@ Keep two things running:
    DM inbox and `list_sessions` are checked even when no child reports.
 
 On each wakeup: read the wait result, drain the link when a report is pending,
-run the collision pass, check comms, invite any new session, append to the
-overnight log, and re-arm both. Mark the wakeup `noop: true` when nothing
-changed.
+run the every-session sweep (Step 8), run the collision pass, check comms,
+invite any new session, append to the overnight log, rewrite the save file,
+and re-arm both. Mark the wakeup `noop: true` when nothing changed.
 
-## Step 8: Delivery and the continuous decision queue
+## Step 8: Everything, always, here — the continuous decision queue
 
-A `hq lanes link send` returns JSON with `queued: true`; it only lands when the child next takes a turn, and a
-child that is blocked waiting on the owner does not take a turn. These rules
-are hard:
+Every open owner decision from any source is asked in this window. Never tell
+the owner to "answer it in its window", and never list owner decisions in
+prose or ask "want me to walk these?" first.
+
+### Sources
+
+- An open `AskUserQuestion` in any child window. `list_events` hides the
+  question text, so read the newest local transcript files under
+  `~/.claude/projects/<hq-root-slug>/*.jsonl` (sorted by mtime) and take the
+  last `AskUserQuestion` input whose `tool_use` has no `tool_result` after it.
+- A child's last assistant message that ends with a numbered choice or a
+  question to the owner. Prose questions count.
+- Agent and bot DMs that ask the owner something (`hq dm inbox`, and any agent
+  threads the owner named).
+- Slack mentions and DMs that ask the owner for a decision, access, or a reply.
+- CI, deploy, and collision results that need a go.
+
+### Every session, every wakeup
+
+Run `list_sessions` (limit 60, not only linked sessions) and read the last
+assistant message of every session active in the last 24 hours, including
+sessions the conductor did not start. A session that says it "asked the
+conductor" or is waiting on a go counts as a pending decision even if no
+message arrived, because delivery can fail silently. Sessions cut off by an
+app restart (a stopped background task, or a last event that is a tool call
+with no reply) get a resume message.
+
+### Asking
+
+- The moment any source produces something only the owner can decide (merge,
+  deploy, publish, release, grant, delete, product choice, unblock), ask it in
+  the same turn it is found. Do not batch, do not wait for the next wakeup,
+  do not park it in the log first.
+- Two or more pending decisions are asked one at a time, in arrival order,
+  recommended option first.
+- A wakeup with no pending decision asks nothing; never manufacture a
+  question to fill the cadence.
+
+### Decision card
+
+When `mcp__visualize__show_widget` is available, show each decision as one
+compact card (elicitation module; call `read_me` first) instead of a bare
+`AskUserQuestion`. Fall back to `AskUserQuestion` when the widget tool is
+missing. The card is small, about 200px tall:
+
+- a title line phrased as a question from the conductor;
+- at most two short context lines covering who asked and when, the quoted
+  request, and the deadline or consequence;
+- an optional inline sparkline or mini-bar (under about 40px) only when
+  numbers or a timeline bear on the choice;
+- two to four options as small pills of a few words each, recommended first
+  and marked, plus an "Other" escape.
+
+No header chrome, no icons, no subtitles under options, no separate context
+panel, no long note field. One card per decision, in arrival order. An
+outbound message draft appears in full on the card, and picking the send
+option is the owner's go for that exact text.
+
+### Relaying the answer
+
+Relay every answer to the owning child as a quoted `OWNER GO` (or hold) in the
+same turn, and say in the relay that its open question is answered. If a
+child stays blocked on its own open prompt after the relay lands, tell the
+owner in one line that the window needs one click. Then log the answer.
+
+### Delivery rule (hard)
+
+A `hq lanes link send` returns JSON with `queued: true`; it only lands when
+the child next takes a turn, and a child that is blocked waiting on the owner
+does not take a turn.
 
 - Every relayed answer, instruction, or standing order is sent twice in the
   same turn: once on the link (the durable record) and once as a direct
@@ -153,51 +266,52 @@ are hard:
   message carries the full quoted answer, never a pointer to the mailbox.
   A link send alone is not delivery.
 - Record each child's desktop session id (the `local_…` value from its
-  join or from `list_sessions`) in the overnight log at join time so wakes
-  never need a lookup.
+  join or from `list_sessions`) in the save file and the overnight log at
+  join time so wakes never need a lookup.
 - On every wakeup read `hq lanes link list` and
   `hq lanes list --json --senior session:<this session id>`. Link JSON uses
   `.children` and `.unread_reports`; lane JSON supplies status for this
   session's lanes (`state`, `last_line`, `pr`, `inbox_pending`, `elapsed_s`,
-  and `exit`). Any child showing
-  `undelivered > 0` for more than one tick gets a direct `send_message` that
-  repeats the pending instruction and tells it to drain the mailbox. A child
-  whose `send_message` returns "archived" is dropped from the board and
-  logged.
-- Children receive a standing order at join: never ask the owner in their
-  own window; send every decision to the conductor as the exact question,
-  two or three options, recommended option first. On every wakeup, sweep
-  each running child's transcript (`list_events`, small limit) for an open
-  `AskUserQuestion`; if one is found, ask the owner here and wake the child
-  with the quoted answer.
-
-While the owner is in the window, `/decision-queue` runs continuously:
-
-- The moment any report, DM, CI result, or collision produces something only
-  the owner can decide (merge, deploy, publish, release, grant, delete,
-  product choice, unblock), ask it right then with one `AskUserQuestion`,
-  recommended option first. Do not batch, do not wait for the next wakeup,
-  do not park it in the log first.
-- Two or more pending decisions are asked one at a time, in arrival order.
-- Every answer is relayed to the owning child per the delivery rule above,
-  then logged.
-- A wakeup with no pending decision asks nothing.
+  and `exit`). Any child showing `undelivered > 0` for more than one tick
+  gets a direct `send_message` that repeats the pending instruction and tells
+  it to drain the mailbox. A child whose `send_message` returns "archived" is
+  dropped from the board and logged.
 
 When the owner is away (`/overnight` running), decisions queue under
 `## Waiting on the owner` and are walked the moment the owner is back.
+
+## Save file (survives compacts)
+
+Keep `workspace/reports/conduct/<link>-state.json` next to the log, with these
+fields:
+
+- `children`: name → desktop session id;
+- `open_decisions`: arrival order, each with a source reference;
+- `held`: standing holds in force;
+- `pending_drafts`: Slack or email drafts waiting on the owner's go, with
+  target and thread;
+- `slack_cursors`: last timestamp read per watched channel and for
+  mentions and DMs;
+- `team`: the latest teammate summary, when teammate tracking is on;
+- `updated_at`.
+
+Rewrite it with the Write tool at the end of every wakeup and whenever a
+decision is asked, answered, or added. After a compact or resume, read it
+before anything else, read Slack only past each cursor, then re-ask the first
+open decision. The log's "Waiting on the owner" section mirrors
+`open_decisions`.
 
 ## Logging and the morning queue
 
 Keep `workspace/reports/conduct/<link>-overnight.md` current:
 
-- **Waiting on the owner**: numbered, each with the window or page where the
-  decision lives.
+- **Waiting on the owner**: numbered, each with its source.
 - **Standing holds in force**.
 - **Events**: timestamped one-liners for joins, collisions found, instructions
   sent, anything changed on disk.
 
 When the owner returns, walk the queue through `/decision-queue`: one
-`AskUserQuestion` per decision, recommended option first.
+decision at a time, recommended option first.
 
 ## Rendering
 
@@ -221,5 +335,7 @@ Green working, yellow waiting on the owner or on CI, blue done or idle.
 
 - `/conduct` — launch detached lanes for tasks typed here
 - `/conduct-join` — the child's half of the link
+- `/decision-queue` — one-at-a-time owner decisions
+- `/overnight` — team-comms triage loop that runs inside this session
 - `hq lanes link` — the session mailbox; data lives in `workspace/lanes-links/`
   only while its sessions remain

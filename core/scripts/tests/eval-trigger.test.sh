@@ -50,6 +50,20 @@ run 1 "git && ( push || commit )" "git deploy"    "paren OR neither"
 run 0 "( a || b ) && ( c || d )"  "b d"           "two paren groups true"
 run 1 "( a || b ) && ( c || d )"  "b x"           "two paren groups one false"
 
+# --- spaced 3+ operand chains (trailing terms must not be dropped) ---
+# Two-operand grouped AND above still passes if parseAnd exits after the
+# second term. These cases fail if whitespace before a later && / || is not
+# skipped, including a later || operand that is itself a multi-term AND.
+run 1 "a && b && c"                        "a b"    "spaced 3-operand AND, last absent"
+run 0 "a && b && c"                        "a b c"  "spaced 3-operand AND, all present"
+run 1 "a && b && c && d"                   "a b c"  "spaced 4-operand AND, last absent"
+run 1 "(x || a) && (y || b) && (z || c)"   "a b"    "spaced 3-group AND, last group false"
+run 0 "(x || a) && (y || b) && (z || c)"   "a b c"  "spaced 3-group AND, all groups true"
+run 0 "x || y || a"                        "a b"    "spaced 3-operand OR, last present"
+run 0 "x || a && y || b"                   "a b"    "later OR operand is a multi-term AND chain"
+run 1 "!x && a && b && c"                  "a b"    "leading NOT then spaced AND chain"
+run 2 'a && "b" && c'                      "a b"    "unsafe token inside a spaced chain"
+
 # --- open tokens: misspelled/unknown identifier is simply FALSE ---
 run 1 "git && frobnicate"      "git"              "unknown token -> false"
 run 0 "git || frobnicate"      "git"              "unknown token OR present"

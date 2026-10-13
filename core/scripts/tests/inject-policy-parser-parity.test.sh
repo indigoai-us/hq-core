@@ -84,5 +84,40 @@ check_row empty '' malformed
 check_row quoted-phrase 'git && "push"' malformed
 check_row bare-multiword 'git push' malformed
 check_row deeply-nested '(git && (push || (commit && ! absent)))' ok
+check_row spaced-and 'git && push && commit' ok
+
+# Grammar-ok alone cannot catch a defect both parsers share. These rows assert
+# the expected truth value (exit 0/1) and that the injector injects only when
+# the expression is TRUE.
+set_facts() {
+  printf '%s\n' '#!/usr/bin/env bash' "printf '%s\\n' '$1'" \
+    >"$ROOT/core/scripts/derive-trigger-facts.sh"
+  chmod +x "$ROOT/core/scripts/derive-trigger-facts.sh"
+}
+
+truth_row() {
+  local label="$1" expression="$2" facts="$3" expected="$4" slug marker got=0 output
+  slug="parity-truth-${label//[^a-z0-9]/-}"
+  marker="PARSER_TRUTH_${label^^}_MARKER"
+  set_facts "$facts"
+  write_policy "$slug" "$expression" "$marker"
+  bash "$EVAL" "$expression" "$facts" >/dev/null 2>&1 || got=$?
+  [ "$got" = "$expected" ] || fail "$label: canonical expected exit $expected, got $got"
+  output="$(run_injector "$slug")"
+  if [ "$expected" = 0 ]; then
+    grep -Fq "$marker" <<<"$output" || fail "$label: injector should inject a TRUE spaced chain"
+  else
+    if grep -Fq "$marker" <<<"$output"; then
+      fail "$label: injector should not inject (expected exit $expected)"
+    fi
+  fi
+  printf 'truth=%-28s expected=%s facts=%s expression=%s\n' \
+    "$label" "$expected" "$facts" "$expression"
+}
+
+echo "injector truth-value parity"
+truth_row spaced-and-last-absent 'a && b && c' 'a b' 1
+truth_row spaced-and-all-present 'a && b && c' 'a b c' 0
+truth_row spaced-or-and-or 'x || a && y || b' 'a b' 0
 
 echo "PASS: inject-policy-parser-parity"

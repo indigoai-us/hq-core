@@ -297,7 +297,8 @@ JSON
 jq -n --arg file_path "$DIRECT_THREAD_PATH" \
   '{tool_name:"Write",tool_input:{file_path:$file_path}}' | \
   env CODEX_THREAD_ID="$ZERO_SESSION" HQ_ROOT="$ZERO_REPO" \
-    bash "$ZERO_REPO/.claude/hooks/mirror-thread-to-company.sh"
+    bash "$ZERO_REPO/.claude/hooks/mirror-thread-to-company.sh" \
+  && fail "generic mirror hook accepted multi-company ownership"
 [[ ! -e "$ZERO_REPO/companies/acme/workspace/sessions/$DIRECT_THREAD_ID.json" ]] \
   || fail "generic mirror hook copied multi-company content into acme"
 [[ ! -e "$ZERO_REPO/companies/beta/workspace/sessions/$DIRECT_THREAD_ID.json" ]] \
@@ -381,7 +382,8 @@ JSON
 jq -n --arg file_path "$MIXED_HOOK_PATH" \
   '{tool_name:"Write",tool_input:{file_path:$file_path}}' | \
   env -i CODEX_THREAD_ID="$WINKS_SESSION" HQ_ROOT="$ZERO_REPO" PATH="/usr/bin:/bin" \
-    bash "$ZERO_REPO/.claude/hooks/mirror-thread-to-company.sh"
+    bash "$ZERO_REPO/.claude/hooks/mirror-thread-to-company.sh" \
+  && fail "mirror hook accepted mixed-company ownership"
 [[ ! -e "$ZERO_REPO/companies/winks/workspace/sessions/$MIXED_HOOK_ID.json" ]] \
   || fail "mirror hook copied mixed-company content into bound winks"
 
@@ -515,6 +517,12 @@ handoff_post_test_run --clean-env "$ZERO_REPO" "$NOYAML_PATH" "" \
   || fail "company without company.yaml was pushed: $(cat "$TMP_ROOT/noyaml-sync-calls")"
 grep -Fq 'workspace-sync: skipped (company is local-only, cloud: false)' "$TMP_ROOT/noyaml-logs/handoff-post.log" \
   || fail "missing company.yaml did not log the local-only skip"
+
+# 11-tenant isolation lives in a sibling suite. Invoke it here so pr-checks
+# runs it without editing GitHub workflow files.
+if ! bash "$(dirname "$0")/handoff-thread-isolation.test.sh"; then
+  fail "thread isolation suite failed"
+fi
 
 if [[ "$failures" -gt 0 ]]; then
   echo "Failed $failures handoff-post regression assertions" >&2

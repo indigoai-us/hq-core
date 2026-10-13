@@ -17,6 +17,7 @@
 #     --learnings-json '[]' \
 #     --tags-json '["handoff"]' \
 #     --slug "handoff-short-tag" \
+#     --company "owner-slug" \
 #     --next-command "/startwork"
 #
 # The changeset (files-touched) may be supplied inline via --files-touched-json
@@ -49,7 +50,7 @@
 # stage_failures lists paths git add rejected for a reason other than gitignore.
 #
 # Exit codes: 0 ok · 2 bad argument · 3 changeset file missing · 4 handoff not
-# durable (commit refused or paths unstageable).
+# durable (commit refused or paths unstageable) · 5 mirror failed.
 
 set -euo pipefail
 
@@ -87,9 +88,11 @@ LEARNINGS_JSON="[]"
 TAGS_JSON='["handoff"]'
 SLUG="handoff"
 NEXT_COMMAND="__auto__"
+OWNER_COMPANY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --company) OWNER_COMPANY="$2"; shift 2 ;;
     --title) TITLE="$2"; shift 2 ;;
     --summary) SUMMARY="$2"; shift 2 ;;
     --message) MESSAGE="$2"; shift 2 ;;
@@ -245,9 +248,10 @@ done < <(
   ' "$FILES_TOUCHED_FILE" 2>/dev/null || true
 )
 
-# Company workspace mirrors are limited to the company bound to this session.
-# Inspect the complete handoff paths, including skipped paths, so a missing or
-# excluded file cannot hide that the handoff spans multiple companies.
+# Company workspace mirrors have one owner. --company is explicit; otherwise the
+# session binding is used. Never treat the list of touched company paths as
+# recipients. Inspect the complete handoff paths, including skipped paths, so a
+# missing or excluded file cannot hide that the handoff spans multiple companies.
 TOUCHED_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
   [ (if type == "array" then .[] else empty end)
     | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
@@ -271,6 +275,17 @@ bound_session_company() {
 }
 
 BOUND_SESSION_COMPANY="$(bound_session_company)"
+if [[ -n "$OWNER_COMPANY" ]]; then
+  if [[ ! "$OWNER_COMPANY" =~ ^[a-z][a-z0-9_-]*$ ]] || [[ ! -d "$HQ_ROOT/companies/$OWNER_COMPANY" ]]; then
+    echo "handoff-finalize: invalid or missing owner company: $OWNER_COMPANY" >&2
+    exit 2
+  fi
+  if [[ -n "$BOUND_SESSION_COMPANY" && "$BOUND_SESSION_COMPANY" != "$OWNER_COMPANY" ]]; then
+    echo "handoff-finalize: --company $OWNER_COMPANY does not match the bound session company $BOUND_SESSION_COMPANY" >&2
+    exit 2
+  fi
+  BOUND_SESSION_COMPANY="$OWNER_COMPANY"
+fi
 SESSION_LOCKED_COMPANIES_JSON='[]'
 if [[ -n "$BOUND_SESSION_COMPANY" ]]; then
   SESSION_ID_FOR_COMPANIES="$(session_id_resolve "$HQ_ROOT")"
@@ -394,7 +409,15 @@ MIRROR_HOOK="$HQ_ROOT/.claude/hooks/mirror-thread-to-company.sh"
 if [[ -f "$MIRROR_HOOK" ]]; then
   jq -n --arg file_path "$HQ_ROOT/$THREAD_PATH" \
     '{tool_name:"Write", tool_input:{file_path:$file_path}}' | \
-    bash "$MIRROR_HOOK" >/dev/null 2>&1 || true
+    bash "$MIRROR_HOOK" >/dev/null 2>&1 || {
+      if [[ "$MIRROR_COMPANIES_JSON" != '[]' ]]; then
+        echo "handoff-finalize: company mirror failed; canonical thread retained" >&2
+        exit 5
+      fi
+    }
+elif [[ "$MIRROR_COMPANIES_JSON" != '[]' ]]; then
+  echo "handoff-finalize: company mirror hook missing; canonical thread retained" >&2
+  exit 5
 fi
 while IFS= read -r company; do
   [[ -n "$company" ]] || continue
