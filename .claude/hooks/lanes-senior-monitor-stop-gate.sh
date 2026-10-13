@@ -252,6 +252,50 @@ if [ -z "$HQ_BIN" ]; then
   exit "$rc"
 fi
 
+# NO_ACTIVE_LANE_MUST_SKIP_HQ: every Stop in every session reached this point
+# and started a full hq process (~0.5 s of CPU) even when the session owned no
+# lane, or only finished ones. monitor-check only covers lanes in
+# MONITOR_ACTIVE_LANE_STATES (running, queued, awaiting_input, blocked), so a
+# store that provably holds no such lane for this session has nothing to gate.
+# Any doubt (unreadable store, unparsable record) falls through to the CLI,
+# which keeps its fail-closed error handling.
+session_has_active_lane() {
+  local lane_dir="$HQ_ROOT/workspace/lanes/lanes" rc record content
+  local -a records=() matched=()
+  [ -e "$lane_dir" ] || return 1
+  [ -d "$lane_dir" ] && [ -r "$lane_dir" ] && [ -x "$lane_dir" ] || return 2
+  shopt -s nullglob
+  records=("$lane_dir"/*.json)
+  shopt -u nullglob
+  [ "${#records[@]}" -gt 0 ] || return 1
+  # Match the session id with bash builtins so the common no-lane Stop
+  # launches no extra process. Only records naming this session reach jq.
+  for record in "${records[@]}"; do
+    content=''
+    { IFS= read -r -d '' content < "$record"; } 2>/dev/null || [ -n "$content" ] || {
+      [ -r "$record" ] || return 2
+    }
+    case "$content" in
+      *"\"$SESSION_ID\""*) matched+=("$record") ;;
+    esac
+  done
+  [ "${#matched[@]}" -gt 0 ] || return 1
+  jq -e -n --arg sid "$SESSION_ID" '
+    [inputs] as $all
+    | if all($all[]; type == "object") | not then error("malformed")
+      else any($all[]; .senior.kind == "session" and .senior.id == $sid
+        and ((.state // "") as $s | ["running","queued","awaiting_input","blocked"] | index($s)) != null)
+      end
+  ' "${matched[@]}" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  [ "$rc" -eq 1 ] && return 1
+  return 2
+}
+ACTIVE_LANE_STATUS=0
+session_has_active_lane || ACTIVE_LANE_STATUS=$?
+[ "$ACTIVE_LANE_STATUS" -eq 1 ] && exit 0
+
 ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-lanes-monitor-check.XXXXXX" 2>/dev/null || true)"
 if [ -z "$ERR_FILE" ]; then
   rc=0
