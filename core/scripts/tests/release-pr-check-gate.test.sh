@@ -159,6 +159,12 @@ if [[ -z "$GATE_TEST_CASE" ]]; then
   grep -Fq 'path: staging' "$PROMOTE_WORKFLOW" || fail "promotion workflow must check out staging under staging/"
   grep -Fq 'run: bash staging/core/scripts/release-pr-check-gate.sh ' "$PROMOTE_WORKFLOW" || fail "promotion workflow must invoke the gate from staging/"
   grep -Fq 'gh pr merge "$NUM" --repo "$TARGET_REPO" --auto --squash --match-head-commit "$PR_HEAD_SHA"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must arm auto-merge on the release PR"
+  # The workflow disarms auto-merge only on a held PR (hq-core #366 lost it to
+  # an unconditional disarm before every update).
+  [[ "$(grep -Fc -- '--disable-auto' "$PROMOTE_WORKFLOW")" == 1 ]] || fail "promotion workflow must disarm auto-merge in exactly one place"
+  grep -Fq "(any(.labels[]?.name; . == \"hold-release\")) and (.autoMergeRequest != null)" "$PROMOTE_WORKFLOW" || fail "promotion workflow may disarm auto-merge only when hold-release is present"
+  # Arm auto-merge on the commit this run pushed, not a possibly stale API read.
+  grep -Fq 'PR_HEAD_SHA="$(git rev-parse "refs/heads/${BRANCH}")"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must take the PR head from the pushed branch"
   # Executed commands only; the PR body still tells humans how to add a hold.
   if grep -Eq -- '^[[:space:]]*gh pr edit .*--add-label[[:space:]]+hold-release' "$PROMOTE_WORKFLOW" "$GATE"; then fail "automation must never add hold-release"; fi
   grep -Fq '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4' "$RECHECK_WORKFLOW" || fail "recheck workflow must check out the repository root"

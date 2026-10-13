@@ -446,9 +446,10 @@ jobs:
           cd target
           git commit -m "$COMMIT_MSG"
 
-      # Stop a previously-armed auto-merge before changing the PR head; otherwise
-      # GitHub can merge against its required-check subset during the push step.
-      - name: Disable legacy auto-merge before updating standing PR
+      # Auto-merge stays armed across this update on purpose: release PRs are
+      # always ready to merge. Only a manual hold-release disarms it, and that
+      # must happen before the push so a held PR cannot merge on the new head.
+      - name: Disarm auto-merge on a held standing PR before updating it
         if: steps.params.outputs.mode == 'auto' && steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -456,12 +457,12 @@ jobs:
         run: |
           set -euo pipefail
           EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
-          if [ -n "$EXISTING" ]; then
-            AUTO_MERGE="$(gh pr view "$EXISTING" --repo "$TARGET_REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')"
-            if [ "$AUTO_MERGE" = 'true' ]; then
-              gh pr merge "$EXISTING" --repo "$TARGET_REPO" --disable-auto
-              echo "::notice::Disabled legacy auto-merge on hq-core PR #${EXISTING} before updating its head."
-            fi
+          [ -n "$EXISTING" ] || exit 0
+          HELD_AND_ARMED="$(gh pr view "$EXISTING" --repo "$TARGET_REPO" --json labels,autoMergeRequest \
+            --jq '(any(.labels[]?.name; . == "hold-release")) and (.autoMergeRequest != null)')"
+          if [ "$HELD_AND_ARMED" = 'true' ]; then
+            gh pr merge "$EXISTING" --repo "$TARGET_REPO" --disable-auto
+            echo "::notice::PR #${EXISTING} has hold-release; disarmed auto-merge before updating its head."
           fi
 
       - name: Push branch to hq-core
@@ -515,7 +516,19 @@ jobs:
             NUM="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
             echo "::notice::Opened PR #${NUM}: ${URL}"
           fi
-          PR_HEAD_SHA="$(gh pr view "$NUM" --repo "$TARGET_REPO" --json headRefOid --jq '.headRefOid')"
+          # Use the commit this run pushed, not whatever the API returns first:
+          # right after a force-push GitHub can still report the previous head,
+          # which made arming auto-merge and the gate below fail (hq-core #366).
+          PR_HEAD_SHA="$(git rev-parse "refs/heads/${BRANCH}")"
+          for _ in $(seq 1 30); do
+            SEEN_SHA="$(gh pr view "$NUM" --repo "$TARGET_REPO" --json headRefOid --jq '.headRefOid')"
+            [ "$SEEN_SHA" = "$PR_HEAD_SHA" ] && break
+            sleep 2
+          done
+          if [ "$SEEN_SHA" != "$PR_HEAD_SHA" ]; then
+            echo "::error::PR #${NUM} still reports head ${SEEN_SHA} after pushing ${PR_HEAD_SHA}."
+            exit 1
+          fi
           # Release PRs are always ready to merge: arm GitHub auto-merge on
           # every open or update. Only a manually applied hold-release skips it.
           if gh pr view "$NUM" --repo "$TARGET_REPO" --json labels \
