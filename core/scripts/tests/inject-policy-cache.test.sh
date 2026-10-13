@@ -126,7 +126,7 @@ assert_cache_written() {
   count="$({ find "$(cache_dir)" -type f -name '*.cache' 2>/dev/null || true; } | wc -l | tr -d ' ')"
   [ "$count" -gt 0 ] || fail "expected parsed-policy cache file in $(cache_dir)"
   cache_file="$(find "$(cache_dir)" -type f -name '*.cache' -print -quit)"
-  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v3' \
+  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v4' \
     || fail "cache file is missing its complete-version header"
 }
 

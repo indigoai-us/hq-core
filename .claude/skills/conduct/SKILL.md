@@ -28,6 +28,16 @@ reads, status, and one short skill remain in this session.
   `bash core/scripts/lanes-workers.sh setup`. The remaining words are the task.
 - An explicit `--engine`, `--model`, or `--effort` applies to this session and
   overrides its existing pin. Mark `conduct_default_source` as `explicit`.
+- An account the user names for the session is stored as
+  `conduct_child_account` with `hq-session.sh set`, next to
+  `conduct_child_model` and `conduct_child_effort`. With no account pin and no
+  `--account` flag, every lane is created with `--account auto`. See
+  `dispatch.md`.
+- When a create or route response lists a signed-out account under
+  `skipped[]`, raise one exec-bus owner card per account with the `fix`
+  command, deduped for 24 hours in one machine-wide file. Never run
+  `hq capacity login` or sign an account in or out. See "Signed-out
+  accounts" in `dispatch.md`.
 - Otherwise, use an existing `conduct_engine` as-is. Codex SessionStart may
   provide `conduct_engine=codex` and the selected `conduct_child_model` and
   `conduct_child_effort`; when no model is supplied, leave it unset for the

@@ -363,7 +363,25 @@ scope_shell_variable_values() {
     esac
     IFS=$' \t\n' read -r -a values <<< "$raw"
     [ "${#values[@]}" -gt 0 ] || return 1
+    local glob_match glob_count=0 glob_cwd
     for value in "${values[@]}"; do
+      # A loop word that globs an open HQ tree (`for d in workspace/x/*`)
+      # expands to the existing entries it matches. Enumerate them here so
+      # each one is checked as a literal path; anything else stays refused.
+      if [[ "$value" =~ ^(workspace|core|personal|repos)/[A-Za-z0-9._/*?-]*$ ]] \
+        && [[ "$value" == *[*?]* ]] && [[ "$value" != *'..'* ]]; then
+        glob_cwd="${COMMAND_CWD:-$HQ_ROOT}"
+        [ "$(cd "$glob_cwd" 2>/dev/null && pwd -P)" = "$HQ_ROOT" ] || return 1
+        while IFS= read -r glob_match; do
+          [ -n "$glob_match" ] || continue
+          case "$glob_match" in *[!A-Za-z0-9._/@+-]*|*'..'*) return 1 ;; esac
+          glob_count=$((glob_count + 1))
+          [ "$glob_count" -le 2048 ] || return 1
+          printf '%s\n' "$glob_match"
+        done < <(cd "$glob_cwd" && compgen -G "$value" || true)
+        [ "$glob_count" -gt 0 ] || return 1
+        continue
+      fi
       case "$value" in
         ""|*[!A-Za-z0-9._/-]*) return 1 ;;
       esac
@@ -1422,6 +1440,29 @@ scope_open_tree_expansion_has_parent_value() {
   return 1
 }
 
+# `D=$(mktemp -d)` names a fresh directory under the temp dir, which is the
+# same TMPDIR this hook inherits from the agent's shell. Print a representative
+# absolute path inside that temp dir so the operand is authorized like any
+# literal path there (a TMPDIR inside companies/ is still checked as such).
+# Only the bare forms `mktemp`, `mktemp -d`, and `-t NAME` qualify, the variable
+# must be assigned exactly once, and a command that mentions TMPDIR is refused.
+scope_mktemp_assignment_value() {
+  local name="${1:-}" command_text="${2:-}" mktemp_re count tmp_root
+  [ -n "$name" ] || return 1
+  case "$command_text" in *TMPDIR*) return 1 ;; esac
+  mktemp_re='(^|[;&|[:space:]])'
+  mktemp_re+="$name="
+  mktemp_re+='"?\$\(mktemp( -d)?( -t [A-Za-z0-9._-]+)?( -d)?\)"?([;&|[:space:]]|$)'
+  [[ "$command_text" =~ $mktemp_re ]] || return 1
+  count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_])${name}=" | wc -l | tr -d '[:space:]')"
+  [ "$count" = "1" ] || return 1
+  tmp_root="${TMPDIR:-/tmp}"
+  tmp_root="${tmp_root%/}"
+  case "$tmp_root" in /*) ;; *) return 1 ;; esac
+  case "$tmp_root" in *'..'*|*'$'*|*[[:space:]]*|*'*'*|*'?'*|*'['*) return 1 ;; esac
+  printf '%s/hq-scope-mktemp' "$tmp_root"
+}
+
 scope_resolve_known_path_expansions() {
   local candidate="${1:-}" command_text="${2:-}" token name value assignment_re backtick
   backtick=$'\140'
@@ -1432,7 +1473,10 @@ scope_resolve_known_path_expansions() {
     value=""
     if [ "$name" = "HQ_ROOT" ] && [ -n "$HQ_ROOT" ]; then
       value="$HQ_ROOT"
+    elif value="$(scope_mktemp_assignment_value "$name" "$command_text")"; then
+      :
     else
+      value=""
       assignment_re='(^|[;[:space:]])'
       assignment_re+="$name="
       assignment_re+='("[^"[:cntrl:]]*"|'
@@ -1547,6 +1591,38 @@ scope_open_tree_expansion_is_provably_confined() {
   return 0
 }
 
+scope_open_tree_expansion_values_resolve() {
+  local candidate="${1:-}" prefix="${2:-}" command_text="${3:-}" token name tokens values
+  [ -n "$prefix" ] || return 1
+  tokens="$(printf '%s' "$candidate" | grep -oE '\$\{?([A-Za-z_][A-Za-z0-9_]*|[1-9])\}?' 2>/dev/null || true)"
+  [ -n "$tokens" ] || return 1
+  # One variable only; several would multiply into combinations not checked here.
+  [ "$(printf '%s\n' "$tokens" | wc -l | tr -d '[:space:]')" = "1" ] || return 1
+  token="$tokens"
+  name="${token#\$}"; name="${name#\{}"; name="${name%\}}"
+  values="$(scope_shell_variable_values "$name" "$prefix" "$command_text" || true)"
+  [ -n "$values" ] || return 1
+  case "$values" in *'..'*) return 1 ;; esac
+  # Every substituted path must sit in a directory that exists now and resolves
+  # physically inside the same open tree. A path the hook cannot resolve stays
+  # fail-closed (IC-0019).
+  local value expanded root parent physical_tree physical_parent
+  root="${candidate%%/*}"
+  physical_tree="$(scope_resolve_absolute_path "$HQ_ROOT/$root" 2>/dev/null || true)"
+  [ -n "$physical_tree" ] || return 1
+  while IFS= read -r value; do
+    [ -n "$value" ] || return 1
+    expanded="${candidate//"$token"/$value}"
+    case "$expanded" in "$root"/*) ;; *) return 1 ;; esac
+    parent="${expanded%/}"
+    parent="${parent%/*}"
+    [ -d "$HQ_ROOT/$parent" ] || return 1
+    physical_parent="$(scope_resolve_absolute_path "$HQ_ROOT/$parent" 2>/dev/null || true)"
+    case "$physical_parent" in "$physical_tree"|"$physical_tree"/*) ;; *) return 1 ;; esac
+  done <<< "$values"
+  return 0
+}
+
 scope_resolve_resumework_basename_value() {
   local candidate="${1:-}" command_text="${2:-}" assignment_re value thread_id backtick
   backtick=$'\140'
@@ -1567,6 +1643,61 @@ scope_resolve_resumework_basename_value() {
   candidate="${candidate//\$id/$thread_id}"
   candidate="${candidate//\$$thread_id/$thread_id}"
   printf '%s' "$candidate"
+}
+
+# A git revision operand or a gh repo slug that carries a shell variable is not
+# a filesystem path: git resolves `$C:refs/heads/x` or `origin/main...$b` in
+# the object store and gh sends `owner/$r` to the GitHub API. Recognise only
+# those exact operand positions and shapes, so a variable path handed to any
+# other program, or to git after `--` / `--no-index`, is still checked.
+# Arguments: <index of the token in scope_tokens>.
+scope_token_is_vcs_ref_operand() {
+  local index="${1:-0}" token head i sub="" ref_re range_re refspec_re
+  token="${scope_tokens[$index]:-}"
+  case "$token" in *'$'*) ;; *) return 1 ;; esac
+  case "$token" in *'$('*|*$'\140'*|*[[:space:]]*) return 1 ;; esac
+  head="${scope_tokens[0]##*/}"
+  [ "$index" -gt 0 ] || return 1
+  if [ "$head" = gh ]; then
+    # gh sends the -R/--repo value to the GitHub API; it never opens it.
+    case "${scope_tokens[$((index - 1))]}" in -R|--repo) return 0 ;; esac
+    case "$token" in --repo=*) return 0 ;; esac
+  fi
+  case "$token" in *'*'*|*'?'*|*'['*) return 1 ;; esac
+  # An http(s) URL names a remote resource for every program, never a file.
+  # (file:// and other schemes are left to the path checks.)
+  case "$token" in http://*|https://*) return 0 ;; esac
+  [ "$head" = git ] || return 1
+  # Find the git subcommand past global options; give up on anything unusual.
+  i=1
+  while [ "$i" -lt "$index" ]; do
+    case "${scope_tokens[$i]}" in
+      -C|-c|--git-dir|--work-tree) i=$((i + 2)) ;;
+      -*) i=$((i + 1)) ;;
+      *) sub="${scope_tokens[$i]}"; break ;;
+    esac
+  done
+  [ -n "$sub" ] && [ "$i" -lt "$index" ] || return 1
+  case "$sub" in
+    push|fetch|log|diff|show|rev-parse|rev-list|merge-base|range-diff|shortlog|cherry|cherry-pick|branch|switch|merge|rebase|tag|update-ref|ls-tree) ;;
+    *) return 1 ;;
+  esac
+  for ((i = i + 1; i < index; i++)); do
+    case "${scope_tokens[$i]}" in --|--no-index) return 1 ;; esac
+  done
+  # A ref never starts with `.` or `/` and never has a `.`-led component
+  # (git check-ref-format), so these shapes cannot spell an upward path.
+  ref_re='(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[A-Za-z0-9_@][A-Za-z0-9_@/^~-]*)+'
+  range_re="^(${ref_re})?\.\.\.?(${ref_re})?\$"
+  refspec_re="^\+?(${ref_re})?:(${ref_re})?\$"
+  case "$token" in /*|*/.*) return 1 ;; esac
+  if [[ "$token" =~ $range_re ]]; then
+    case "$token" in *'....'*) return 1 ;; esac
+    return 0
+  fi
+  [[ "$token" =~ $refspec_re ]] || return 1
+  case "$sub" in push|fetch|show|ls-tree|rev-parse|log|diff) return 0 ;; esac
+  return 1
 }
 
 scope_check_bash_skill_path() {
@@ -1650,6 +1781,13 @@ scope_check_bash_skill_path() {
             scope_block_rel "$raw" "a path variable contains parent traversal"
           fi
           if scope_open_tree_expansion_is_provably_confined "$expanded_raw" "$prefix"; then
+            return 0
+          fi
+          # A `for` loop or assignment can bound the variable to literal
+          # values. Substitute each one and check the resulting literal paths;
+          # an unresolved variable still fails closed below.
+          if scope_open_tree_expansion_values_resolve "$expanded_raw" "$prefix" "$command_text"; then
+            scope_check_bash_candidate_inner "$expanded_raw" "$command_text" 0 "" "$prefix" "$suffix"
             return 0
           fi
           scope_block_rel "$raw" "an open-tree path expansion is not provably confined"
@@ -1798,8 +1936,11 @@ case "$TOOL" in
       [ -n "$scope_record" ] || continue
       IFS=$'\037' read -r -a scope_tokens <<< "$scope_record"
       [ "${#scope_tokens[@]}" -gt 0 ] || continue
+      scope_token_index=-1
       for scope_token in "${scope_tokens[@]}"; do
+        scope_token_index=$((scope_token_index + 1))
         case "$scope_token" in companies/*|.claude*) continue ;; esac
+        scope_token_is_vcs_ref_operand "$scope_token_index" && continue
         case "$scope_token" in
           */*|/*) scope_check_bash_skill_path "$scope_token" "$scope_scan_cmd" "" "" ;;
         esac

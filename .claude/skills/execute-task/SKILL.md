@@ -655,11 +655,17 @@ Every phase assigned to a worker uses the same lane mapping as `/conduct`:
    ```bash
    hq lanes create --company "{company}" --project "{project}" \
      --story "{task.id}" --worker "{worker.id}" \
-     --brief-file "{phase brief path}" --senior "session:{session-id}" --json
+     --brief-file "{phase brief path}" --senior "session:{session-id}" \
+     --account auto --json
    ```
 
    Add `--provider`, `--model`, or `--effort` only when the selected worker
-   profile or an explicit `/conduct --workers` pin supplies that value. Read the
+   profile or an explicit `/conduct --workers` pin supplies that value.
+   Replace `--account auto` with `--account {id}` only when a
+   `conduct_child_account` session pin or a user `--account` flag names an
+   account. A `no_account_with_room` refusal leaves the phase queued; report
+   the soonest reset from `next_reset` in one line and never pick an account by
+   hand. Read the
    JSON body, including `ok`, `lane_id`, and any admission/capacity error; do
    not infer delivery from the command exit code.
 3. A repeated create for the same worker and senior continues that worker's

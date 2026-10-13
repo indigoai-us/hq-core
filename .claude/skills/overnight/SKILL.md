@@ -8,7 +8,7 @@ argument-hint: "[off | status | <company>]"
 # /overnight — team comms triage inside a running conductor
 
 The conductor stays the conductor. `/overnight` is the comms half of its
-night: every 15 to 20 minutes it reads the team's inbound messages, answers
+night: every `watch_interval.away` seconds (default 1500) it reads the team's inbound messages, answers
 what HQ knowledge can answer, routes work to the child session that owns it,
 and queues everything else for the owner's morning. It never does project
 work and never takes an irreversible action.
@@ -153,7 +153,8 @@ secrets, no values that look like tokens or keys.
 
 ```
 ScheduleWakeup
-  delaySeconds: 900 to 1200
+  delaySeconds: watch_interval.away from the conductor's save file
+                (default 1500; clamped to 30-3600)
   prompt: /overnight <same argument as this run>
   noop: true when nothing was read, sent, or logged
   reason: "overnight DM triage for <company>"

@@ -135,10 +135,15 @@ For each approved incomplete story:
    ```bash
    hq lanes create --company "{company}" --project "{project}" \
      --story "{story-id}" --worker "{worker-id}" \
-     --brief-file "{brief path}" --senior "session:{session-id}" --json
+     --brief-file "{brief path}" --senior "session:{session-id}" \
+     --account auto --json
    ```
 
-   The brief tells the lane to run `/execute-task {project}/{story-id}` and
+   Replace `--account auto` with `--account {id}` only when a
+   `conduct_child_account` session pin or a user `--account` flag names an
+   account. A `no_account_with_room` refusal leaves the story queued; report
+   the soonest reset from `next_reset` in one line and never pick an account by
+   hand. The brief tells the lane to run `/execute-task {project}/{story-id}` and
    includes `RETURN CONTRACT: json`, applicable policies, the target repo, and
    the `verify-story-deliverables.sh` evidence gate. Use
    the same story id for every lane created for its phases. A repeat create for

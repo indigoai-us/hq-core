@@ -1,0 +1,2077 @@
+{
+  "version": 1,
+  "generatedBy": "core/scripts/skill-inventory.sh",
+  "scope": "shipped",
+  "skills": [
+    {
+      "name": "accept",
+      "description": "Accept HQ membership invites from a magic link or raw token.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/accept",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/accept/SKILL.md",
+      "hash": "sha256:94472ae9a1afb37ec31ac60bb496e0fe2bddfc04c76b67049c0140b61f532974",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "adr",
+      "description": "Capture qualifying architecture decisions as ADRs in the right HQ or repo location.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/adr",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/adr/SKILL.md",
+      "hash": "sha256:fbfe48b809445627569bebbad0c097d01292054b89e1d9c9b6b61eaa662b9a0e",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "architect",
+      "description": "Find shallow modules and propose deepening refactors, ranked with file refs; never edits code. Use when code is hard to change or planning a refactor.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/architect",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/architect/SKILL.md",
+      "hash": "sha256:ba2522fdb9937df0bd415b3097177c780441b9f5e76efb5b375d001150b033c9",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "ascii-graphic",
+      "description": "Generate dark ASCII banner graphics for HQ and social launch assets.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/ascii-graphic",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/ascii-graphic/SKILL.md",
+      "hash": "sha256:0067380d72e08c5b5934bb2d1be2ce8239fcde77cbb41cbcc32b84b993c16387",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "brainstorm",
+      "description": "Compare approaches, surface unknowns, and draft a recommendation before PRD work.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/brainstorm",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/brainstorm/SKILL.md",
+      "hash": "sha256:3577efc41782d07ea23b4bcb26fb6a99612ee0b9682c6ab524dc5737b80605c6",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "calibration-report",
+      "description": "Summarize estimate accuracy from the assistant time log.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/calibration-report",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/calibration-report/SKILL.md",
+      "hash": "sha256:2e7fba54b9460e03ebb6353d0b2ee19e33dd9859dd4506f2c650289586ed752e",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "capacity",
+      "description": "Show usage, limits and reset times for every signed-in AI account (Claude, Codex, Grok) as a card in chat, or a table in a terminal.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/capacity",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/capacity/SKILL.md",
+      "hash": "sha256:964cb83ee3e030c0a096adfad76716933288e8adb4b4ff09687191b831ef69bc",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "checkpoint",
+      "description": "Save a lightweight session checkpoint.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/checkpoint",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/checkpoint/SKILL.md",
+      "hash": "sha256:eed76925460cd03e08b595336b4ad70726ae941ad406b40204c0f1cc27cd267a",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "clean-worktree",
+      "description": "Merge an HQ worktree branch back into local main, then remove the worktree and branch. Local only; never pushes.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/clean-worktree",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/clean-worktree/SKILL.md",
+      "hash": "sha256:3c872ca8660fc587e5749b99126cf91bdc6f736e76f39b25b8c2f5b0155cbbbb",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "cleanup",
+      "description": "Audit and clean HQ structures, indexes, and stale content.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/cleanup",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/cleanup/SKILL.md",
+      "hash": "sha256:7d79c80fa18120fda0508b9e919327beed73e130fb086babeea1e66a002ff6cc",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "codebase-design",
+      "description": "Vocabulary for designing deep modules and clean interfaces. Triggers: \\\"deep module\\\", \\\"interface design\\\", \\\"design it twice\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/codebase-design",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/codebase-design/SKILL.md",
+      "hash": "sha256:b33c55013f6fc7da22c914fb56b6e019a9d25c17b51f8a1bd99d2a95a25977e7",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "commit-main",
+      "description": "Commit every dirty file in the current repo, only when on main.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/commit-main",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/commit-main/SKILL.md",
+      "hash": "sha256:04083305b59536031cadfa032d62fcf89ee9ad919424133d77c81ac441524993",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "conduct",
+      "description": "Orchestrator mode: route multi-step work to worker lanes through hq lanes. Triggers: /conduct, run everything in the background.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/conduct",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/conduct/SKILL.md",
+      "hash": "sha256:7298b4ee1d0b83db8df0af4d0946bd32ca4e0b3777a9631ed027f811c46a7f15",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "conduct-join",
+      "description": "Join this already-running session to a /conduct session as one of its children, so the conductor can send it instructions and receive its reports. Use when the user says \"/conduct-join <link>\", \"join the conductor\", \"report to the conduct session\", or pastes a link id that starts with \"cl-\". Also handles \"leave\" to detach.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/conduct-join",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/conduct-join/SKILL.md",
+      "hash": "sha256:9dda576434841c667ebd2a2a766f2c1cba611ad75c65545840923fd20c7a6ab6",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "convert-codex",
+      "description": "Add Codex support to older Claude-first HQ roots without breaking Claude setup.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/convert-codex",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/convert-codex/SKILL.md",
+      "hash": "sha256:8cb89b074672a2bbe0b843c64b92c97967eaafc124db1b06286f842a0e6a7c6d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "create-skill",
+      "description": "Create a shared company skill in HQ with a durable identity and ACL governance. Not for personal or local-only skills.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/create-skill",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/create-skill/SKILL.md",
+      "hash": "sha256:83cdd42f746e4e691a8b141639acdb78a13f949add1d7a642c090061b3f5b1e7",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "decision-queue",
+      "description": "Resolve pending user decisions one at a time.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/decision-queue",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/decision-queue/SKILL.md",
+      "hash": "sha256:5c2c7f487541f2bb0495b0104b05cfa1c4d6d0a2b2df8634aa615faea73d4f2d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "deep-plan",
+      "description": "Deep planning: research subagents plus a 15-question interview for large or strategic PRDs. For light planning use /prd.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/deep-plan",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/deep-plan/SKILL.md",
+      "hash": "sha256:089dd5843a6ad154d296d66dfd599dd855651d19f2fd0826fd065f706aa9c60d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "delegate",
+      "description": "Hand a project to a person or fleet agent: grants, dossier, ownership transfer, and a pickup DM.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/delegate",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/delegate/SKILL.md",
+      "hash": "sha256:27dd9fcc62a5c730ea1360bb12c05d733d83d2235f9d22da1f9b24535555d74a",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "deploy",
+      "description": "Deploy or share generated HQ artifacts through hq-deploy.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/deploy",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/deploy/SKILL.md",
+      "hash": "sha256:8cbab01aa8f775f5f03ea78bcc1d3db7723c5f1cac9dfe0061f8543764682fe5",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "designate-team",
+      "description": "Mark a company as HQ Pro cloud-backed and sync its team setup.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/designate-team",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/designate-team/SKILL.md",
+      "hash": "sha256:5d96dbc0ae1a42db1ca0751c92ef5a97f88d083d314857ebf0d33a7065b156ae",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "diagnose",
+      "description": "Diagnosis loop for bugs you cannot reliably reproduce or measure, including perf regressions and flakes. For reproducible bugs use /investigate.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/diagnose",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/diagnose/SKILL.md",
+      "hash": "sha256:d588237134d1c89f36c8f1cf0268464c4c70c1515d69608c584bd2da8d84fbf1",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "discover",
+      "description": "Pull a repo into HQ and turn parallel exploration into company knowledge and policies. Triggers: \\\"discover this repo\\\", \\\"ingest <repo>\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/discover",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/discover/SKILL.md",
+      "hash": "sha256:3545bb65f49aea6cdf159c6cfc6ffc96474ac99ee63ec24fe758cc4ad1c280b2",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "dm",
+      "description": "Send or read HQ Sync direct messages — inbox, 1:1 threads, channel history; also prompts, details, or scheduled notes to teammates.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/dm",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/dm/SKILL.md",
+      "hash": "sha256:5194dfffd11dd52d6d6469df47e164e08f839d06c403efc98c3cb44d31868d6b",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "dm-bind",
+      "description": "Bind this session to one HQ DM channel — post structured status updates there and listen for replies (feedback, requests) that steer the work.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/dm-bind",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/dm-bind/SKILL.md",
+      "hash": "sha256:af1ccd4ed421ba66bee94b1eaef18451c5357e760a7e5305960c7bf692f88173",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "document-release",
+      "description": "Update in-repo docs (README, CLAUDE.md, architecture, INDEX) to match what shipped. Use after a merge, project, or release.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/document-release",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/document-release/SKILL.md",
+      "hash": "sha256:c2eb5845b87ba181f49f02443a2e01617f4fd032d17bb2a419a5b030578ab082",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "domain-modeling",
+      "description": "Sharpen a project's domain terms and maintain GLOSSARY.md as its glossary. Triggers: \\\"what should we call this\\\", \\\"domain model\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/domain-modeling",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/domain-modeling/SKILL.md",
+      "hash": "sha256:b5a04ca3afbb0fc99087d4e05f6e5e70a7773e7e8c86fbe2b2d67700d4790990",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "execute-task",
+      "description": "Execute one PRD story through coordinated worker phases with test, lint, and typecheck gates.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/execute-task",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/execute-task/SKILL.md",
+      "hash": "sha256:18abe818a66d97c1f112f3fd649a5ef90126b66f84e98699abe1ce3d56b5a0f9",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "finish-estimate",
+      "description": "Mark a pending time estimate complete with actual duration.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/finish-estimate",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/finish-estimate/SKILL.md",
+      "hash": "sha256:aa823f9ff7df6f21d986ca90ebf80aa355151075b3c542e676ad5c41e787714b",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "free-disk-space",
+      "description": "Reclaim disk from stale linked worktrees, build dirs, and allowlisted dev caches. Dry-run unless --apply; never deletes full clones, .env, or unpushed work.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/free-disk-space",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/free-disk-space/SKILL.md",
+      "hash": "sha256:e32f5c9402afb48d2a5acdf0efee7f2d8fad10d7d4b3481603a98d50f104000d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "garden",
+      "description": "Audit HQ content for stale, duplicate, or inaccurate information.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/garden",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/garden/SKILL.md",
+      "hash": "sha256:0ba94bc537fcc1647edc42ef6ad4e5302c6ae8fb4906ddf85c4163dd8d1c9e58",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "goals",
+      "description": "View and manage company OKRs and key results.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/goals",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/goals/SKILL.md",
+      "hash": "sha256:45b928a4129c5ac1091edda0468fd7ed1cc9e1b50a88a4bc9fcf2bbb44676185",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "grill-me",
+      "description": "Interview the user about any topic one question at a time, using the grilling engine with a question set generated from the prompt. Use for \"grill me on X\" outside of planning. Pass --rounds for batched rounds.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/grill-me",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/grill-me/SKILL.md",
+      "hash": "sha256:3a2ee75fbafa9ffd418ab08d857fd2cbe1ccef970612eb25f85a7bd249607fbe",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "grilling",
+      "description": "Shared interview engine for /brainstorm, /prd, and grill-me. Asks only the open frontier of a question set, looks up facts instead of asking them, and returns a question count. Engine only; not invoked on its own.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/grilling",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/grilling/SKILL.md",
+      "hash": "sha256:2dc559ca5072d279203bd7fd5092bb29517c7cf8edadbf2920f91e6becfc6a88",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "handoff",
+      "description": "Preserve session state for a follow-up agent with handoff files and commits.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/handoff",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/handoff/SKILL.md",
+      "hash": "sha256:45436274e44333faa3e589c8947eacb47ac355e714e52a43cdbe19bdd3de371b",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "handoff-all",
+      "description": "Tell every open Claude Code desktop session to run /handoff, then collect each session's /resumework command. Triggers: \\\"handoff all sessions\\\", \\\"wrap up every session\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/handoff-all",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/handoff-all/SKILL.md",
+      "hash": "sha256:e195edbbc999d6f415f12d5b9d487115da6291fa150877b09946e9060abaac2b",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "harness-audit",
+      "description": "Score an HQ setup across hooks, context, gates, persistence, search, security, and cost.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/harness-audit",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/harness-audit/SKILL.md",
+      "hash": "sha256:b4127e81c51f960d7533612ca8a293b10b1f7a38e479f8a195ef8d86dc78b84d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-access",
+      "description": "Diagnose and fix a vault file you cannot find or open — never existed, not synced (fetch and pin it), or no access (ask the owner with a one-click grant DM).",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-access",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/hq-access/SKILL.md",
+      "hash": "sha256:02cb147bcb959d38f9180d72daf46344f82fcff6c27b253fee93410f1d56ce58",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-bug",
+      "description": "Submit HQ bug reports or feature requests with session context.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-bug",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/hq-bug/SKILL.md",
+      "hash": "sha256:3c60c48adb88019de2098696c79a9cd6b676f383b34f0b173d5f9c1c9afcfe37",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-checkup",
+      "description": "Check HQ health and fix what is safe: start the app, back up unsaved work, re-enable safety checks. Reports the rest in plain language.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-checkup",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/hq-checkup/SKILL.md",
+      "hash": "sha256:eee858760aa0d3ab6272f4ffa785ea9dfb3747d4d5d8ea49bf80187105c7bded",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-files",
+      "description": "Inspect or change HQ vault ACLs, grants, and shared prefixes.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-files",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/hq-files/SKILL.md",
+      "hash": "sha256:3c6351c53d0486813652c25fef082fdb5e538b706abea29abc70afb4dc6fe9b2",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-heal",
+      "description": "Triage and repair HQ session errors such as hook crashes, sync conflicts, or MCP failures.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-heal",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/hq-heal/SKILL.md",
+      "hash": "sha256:1f94360facbe5b96fd38190801f389732020b39ec0c1ba7ed14537f32ea35af4",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-integrations",
+      "description": "Use the company's connected external apps (Linear, Notion, Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma, HubSpot, Salesforce, and anything else wired through `hq integrations`) BEFORE reaching for a separate MCP, a web search, or asking the user. Trigger on any request to look up, read, create, update, or search in an external app, including natural phrasings like 'check my Linear tickets', 'open issues assigned to me', 'find the Notion doc about X', 'any new Sentry errors', 'my Jira issues', 'search Slack for', 'create a GitHub issue', 'add a task in Asana'. Check the SessionStart note 'HQ Integrations you can use in company <slug>' or run `hq integrations list --usable` first; only fall back to another path when no usable app covers it. Also covers connecting, sharing, policy, approval, and disconnect flows.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-integrations",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/hq-integrations/SKILL.md",
+      "hash": "sha256:b17b2a12736fd7b8eae0308f9ce59f8c4d5d5ea74edc9dcb516bacc7819eb1be",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-login",
+      "description": "Sign into HQ Cognito, preferring status, refresh, then browser login.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-login",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/hq-login/SKILL.md",
+      "hash": "sha256:f022a9602f3dca5d8b3bf686331ec656e62dd2babd08a8e7af706b282dbc182e",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-logout",
+      "description": "Sign out of HQ Cognito and clear local tokens.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-logout",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/hq-logout/SKILL.md",
+      "hash": "sha256:ee6e36ebaaa856386e3e2c5837967b8f8fbf488dc37d4175c0db3f06769519cd",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-secrets",
+      "description": "Use HQ CLI secrets safely through env injection or one-off exec.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-secrets",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/hq-secrets/SKILL.md",
+      "hash": "sha256:07a30cd0b90109e9fafd606d3b6fc793790732d23fc91d9e2f3a1c737ac998d2",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-share",
+      "description": "Share HQ vault paths through single-use links or direct ACL grants.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-share",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/hq-share/SKILL.md",
+      "hash": "sha256:bcbdd5400f630db076fb150c471849a4481175cd833322395ce0e49f61dc0fa2",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": [
+          {
+            "invoke": "/hq-pack-cowork:hq-cowork-share",
+            "score": 0.667
+          }
+        ]
+      }
+    },
+    {
+      "name": "hq-sync",
+      "description": "Run a full bidirectional sync for cloud-backed HQ companies.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-sync",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/hq-sync/SKILL.md",
+      "hash": "sha256:8c50fc105c25748c1664202955a5b519c817297953402a15c994c895aac91787",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-whoami",
+      "description": "Show current HQ Cognito identity and session expiry.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-whoami",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/hq-whoami/SKILL.md",
+      "hash": "sha256:a69a5c4e544d26439fa2c080d585fc1d433ce0b25e0e3e75c830046ea2ef58a1",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "humanize",
+      "description": "Revise human-facing prose to remove AI tells and match the intended voice.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/humanize",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/humanize/SKILL.md",
+      "hash": "sha256:a495eb7f36c5593889d4201db6236740462fee46ced34300e9044ff47b6ea931",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "idea",
+      "description": "Capture a lightweight project idea on the board.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/idea",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/idea/SKILL.md",
+      "hash": "sha256:688529516b8650305542512db24cd9efcdafb4682366c5957ed36ae8bd76ef1e",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "import-claude",
+      "description": "Deprecated alias for /import-context — bootstrap HQ from your prior AI footprint (Claude Code, Codex, Grok, claude.ai history plus on-disk artifacts).",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/import-claude",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/import-claude/SKILL.md",
+      "hash": "sha256:4937abc9ca5ca9b01146c57e3a871460e5785d6e1e26ccc20345b8f61933a276",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": [
+          {
+            "invoke": "/import-context",
+            "score": 0.625
+          }
+        ]
+      }
+    },
+    {
+      "name": "import-context",
+      "description": "Bootstrap HQ from prior Claude Code, Codex, Grok, and claude.ai history and on-disk artifacts, with guided import.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/import-context",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/import-context/SKILL.md",
+      "hash": "sha256:694810365b2d1b51c01310f538499cf34d6f674aba220190b6af191984856e47",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": [
+          {
+            "invoke": "/import-claude",
+            "score": 0.625
+          }
+        ]
+      }
+    },
+    {
+      "name": "investigate",
+      "description": "Root-cause debugging before any fix: scope lock, hypothesis testing, debug report. Triggers: \\\"debug this\\\", \\\"why is this broken\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/investigate",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/investigate/SKILL.md",
+      "hash": "sha256:227c3374387defdb78f85152716200a594f6d62a3963febb0e5b87af7f6a3af6",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "job",
+      "description": "Deprecated alias for /schedule — Outpost recurring agent jobs. Prefer /schedule.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/job",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/job/SKILL.md",
+      "hash": "sha256:ae70449d4002dfaac5ad6eb7c469a63d503e1ff1c43ace11f8b55e528c98647c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "journal",
+      "description": "Write structured session journal entries for durable working memory.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/journal",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/journal/SKILL.md",
+      "hash": "sha256:5a57e2871d8dbeeb93ea9952f6159a99bcda13732b5bd0add1dd4c11795da047",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "knowledge-pulse",
+      "description": "Run a lightweight freshness pass over company knowledge and policies.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/knowledge-pulse",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/knowledge-pulse/SKILL.md",
+      "hash": "sha256:2890c8b53130267a4c882047b69a48ab9d458c93f4bdd1d72b5ad39f276759ae",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "land",
+      "description": "Land a PR: watch CI, resolve review issues, merge, verify production. Triggers: \\\"land this\\\", \\\"merge and monitor\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/land",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/land/SKILL.md",
+      "hash": "sha256:1f91596aab14a308c1e959dc9ff043a7bda98e9bf4e110b05ef7a6a31e4e8c22",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "land-batch",
+      "description": "Triage, review, and merge several open PRs in order, with CI and deploy checks. Triggers: \\\"land all PRs\\\", \\\"merge open PRs\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/land-batch",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/land-batch/SKILL.md",
+      "hash": "sha256:a707f1cb15962badd6edbd90cdf49fd0317b0c35fb39c81774fb36d97f3185c8",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "learn",
+      "description": "Turn reusable findings into scoped policies or insight files.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/learn",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/learn/SKILL.md",
+      "hash": "sha256:074860259d7c993636dded69b1d605855c658a8ce05d7365d995ad969178af4d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "meeting-notes",
+      "description": "Read HQ-native meeting notes, transcripts, recaps, and sources for a company.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/meeting-notes",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/meeting-notes/SKILL.md",
+      "hash": "sha256:3190684cc6af00794ed339d17aa9bf15ca5671e0b43cf22375901a3893409c68",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "new-agent",
+      "description": "Provision or repair a hosted HQ agent end to end, from identity to a verified capability probe. Routes local and external bots to their own flows.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/new-agent",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/new-agent/SKILL.md",
+      "hash": "sha256:a40c36ef398876795bf02cf0832dae246eb1265abf7448c5eba5c429585bbb4e",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "new-hire",
+      "description": "Onboard a teammate end to end: invite, role, groups, secrets, file access, and onboarding packet. Also brings existing access up to role.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/new-hire",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/new-hire/SKILL.md",
+      "hash": "sha256:9ae4c25a8891bbff43984b933ea8dacfee2b4260c92da3a2e0d707b5c065317c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "newcompany",
+      "description": "Scaffold a new HQ company, optionally through to operational: knowledge, workers, brand, integrations, access rules, and invites.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/newcompany",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/newcompany/SKILL.md",
+      "hash": "sha256:36268e8daea75913c3410610e0aab9fcd44ecd7d947eef3c21cfacb3da717c5d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "newworker",
+      "description": "Scaffold a new HQ worker with skills, tools, and knowledge.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/newworker",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/newworker/SKILL.md",
+      "hash": "sha256:1e7c96281b9a224f3bf63b55265feb348e5ee433507fec70d30067d59c0e69fa",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "onboard",
+      "description": "Create or join an HQ company through onboarding.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/onboard",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/onboard/SKILL.md",
+      "hash": "sha256:3aaea1ffce4983bb43d3f094cb6109dc2d318b7fc312ef05de5bd8cc3fcb836c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "ontology",
+      "description": "Read a company ontology brief, entity graph, and freshness signals for context.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/ontology",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/ontology/SKILL.md",
+      "hash": "sha256:20057bb41b3750cd909a79a8d631478922d6a36a69c85ef095cd419ea5cc60b9",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "orchestrate",
+      "description": "Take an idea to a finished deliverable: brainstorm, PRD, then execute every story. --gated pauses at decisions; --plan-only stops at the PRD.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/orchestrate",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/orchestrate/SKILL.md",
+      "hash": "sha256:46a5fc7f4989c4847ff7565c926f3d4957abcf764040b73ba54a3bb56dc72a84",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "out-of-scope",
+      "description": "Record rejected ideas so future planning does not revisit them.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/out-of-scope",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/out-of-scope/SKILL.md",
+      "hash": "sha256:58baec6e4a96fe48723a686e6bf5cb5d7235dc1675b7bc852d388bc61276273e",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "outpost-host",
+      "description": "Host an app on this HQ Outpost/EC2 VM behind nginx and return its public URL. Refuses to run elsewhere. For artifacts use /deploy.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/outpost-host",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/outpost-host/SKILL.md",
+      "hash": "sha256:d98cc9e21c4778dcec64578cfaec946b03ae13080cca9c1484ef2147de29a4c4",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "overnight",
+      "description": "Overnight team-comms mode inside a running /super-conductor session. On a self-paced wakeup loop it reads the HQ DM inbox and the active company's DM channels, answers information requests from HQ knowledge, routes work requests to the conducted child that owns them, queues anything only the owner can decide, checks that every teammate who asked for something got an answer or a route, and logs it all to the link's overnight report. Use when the user says \"/overnight\", \"watch the team overnight\", \"handle team DMs while I sleep\", \"overnight mode\", or \"triage the inbox until morning\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/overnight",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/overnight/SKILL.md",
+      "hash": "sha256:71125c6973ec11777354a35567c719fdf3a5b462d7bcc3dfbf64a57aef3ad1e1",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "personal-interview",
+      "description": "Build the owner profile and social voice through interview.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/personal-interview",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/personal-interview/SKILL.md",
+      "hash": "sha256:60ee2b81c64d8143a7c2292917c600a2743002d5538968377312df690734deef",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "pin",
+      "description": "Anchor this session to one goal — the message, target, or outcome it keeps working toward across loops, wakeups, compactions, and hand-offs — and check progress against it.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/pin",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/pin/SKILL.md",
+      "hash": "sha256:bbe087e9a0c2bda3fb385668a5c4a03765ab9a6f4dff7e5852f317d22a48d9b5",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "prd",
+      "description": "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/prd",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/prd/SKILL.md",
+      "hash": "sha256:042c38937ab22cd79d1f4e234a88d1835b47cb5ef88f23c0df7c220a576f0027",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "project-summary",
+      "description": "Render a branded visual artifact from a project's prd.json (plan summary) or brainstorm.md (research deck) and deploy it gated, returning a link.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/project-summary",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/project-summary/SKILL.md",
+      "hash": "sha256:c0c5a8a1d1eee2649d90a3f0d214a58943ff257f2e8a6ed0ed09b0dfa3806964",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "promote",
+      "description": "Change an HQ company member role or guest path scope.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/promote",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/promote/SKILL.md",
+      "hash": "sha256:65d83855d1a23a75fbfd53e310d93738c8d0ee89bf61bf9e884fde45d1934f37",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "publish-docs",
+      "description": "Sync the company's published docs site to match what shipped. For in-repo docs use /document-release.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/publish-docs",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/publish-docs/SKILL.md",
+      "hash": "sha256:3e31563579ae56ea91ea788587e07ebabe1a8c810b7c041c8320fa73efee3274",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "quality-gate",
+      "description": "Universal pre-commit quality checks (typecheck, lint, test, coverage, dead code) with auto-detection and --fix support",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/quality-gate",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/quality-gate/SKILL.md",
+      "hash": "sha256:6b972968101205697469aa9e0059434deb34af0661a901beb667f875b0dcb7f8",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "recover-session",
+      "description": "Recover sessions that hit context limits without a handoff.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/recover-session",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/recover-session/SKILL.md",
+      "hash": "sha256:b4849f290d6359cfe86137ba0ff4e21d6a61f12c836f6b182eacd90738c6c701",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "registry",
+      "description": "Inspect or update a company resource registry around resource changes.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/registry",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/registry/SKILL.md",
+      "hash": "sha256:3951d9a4d764aaead238e2f4e32d2214d6f2bec45f4a523e10a7930fa5b70721",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "resolve-conflicts",
+      "description": "Resolve HQ Sync conflicts by choosing local, cloud, or discard.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/resolve-conflicts",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/resolve-conflicts/SKILL.md",
+      "hash": "sha256:a2ae59675a29d7dbc847535b2822f321bcf8d5e1b86618441b03f92c383cb830",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "resume-all",
+      "description": "Relaunch every session from a /handoff-all batch as a new Claude Code desktop session running its /resumework command. Triggers: \\\"resume all sessions\\\", \\\"bring back the handed-off sessions\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/resume-all",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/resume-all/SKILL.md",
+      "hash": "sha256:8f7058cbc0c125b0e42ddc9a13d7a3ec11b1d1b3164b0e49294b4258570e6639",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "resumework",
+      "description": "Resume a specific handoff thread by id. For the latest handoff use /startwork.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/resumework",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/resumework/SKILL.md",
+      "hash": "sha256:9b2d3784e717e46ca579c70de77759fcaa0084f5bcd8731d8153b0d27b6080e8",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "retro",
+      "description": "Run a project or session retrospective and capture reusable lessons.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/retro",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/retro/SKILL.md",
+      "hash": "sha256:a53019d54ee9951319658253c07868ee17adb7dfef2e4b634385e5b4aa2063be",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "review",
+      "description": "Pre-landing code review of the git diff; critical issues block the PR. Use before a PR or when asked to review changes.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/review",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/review/SKILL.md",
+      "hash": "sha256:a53102967e4594ef91b6be05f4bcf1d4417c490fbde28aafed59b581aaac197f",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "review-plan",
+      "description": "Stress-test a plan or PRD in expansion, hold, or reduction mode.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/review-plan",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/review-plan/SKILL.md",
+      "hash": "sha256:ecc7a8bc033e29c178f0f7dda3f034638bf576e406f1f760d17dd33703e4158c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "run",
+      "description": "Run or list HQ workers, preferring isolated Codex subagents when available.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/run",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/run/SKILL.md",
+      "hash": "sha256:80912f3375f7efa8be8531d6b782b7de38dd9e1462e5b53d24bb7e2c87667327",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "run-pipeline",
+      "description": "Multi-project pipeline orchestrator — triage, execute, PR, review, deploy with safety gates",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/run-pipeline",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/run-pipeline/SKILL.md",
+      "hash": "sha256:c6bb2c7f6f5f1af0f27e2998baa0d2883275574ca1e6a0e6ff5c85ca93a475a9",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "run-project",
+      "description": "Execute a project's PRD stories through HQ worker lanes that survive compaction. Interactive mode runs in the parent.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/run-project",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/run-project/SKILL.md",
+      "hash": "sha256:f05f049a3b30cf3d995c103a82e4e3bf0085103021ef4691d16430f592c30354",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "schedule",
+      "description": "Schedule recurring Claude/Codex agent jobs on the user's Outpost — structured checklist requirements, dm alert profile, status-aware list from hq-pro. Alias: /job (deprecated).",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/schedule",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/schedule/SKILL.md",
+      "hash": "sha256:bb3504e5bd3361bcd514e2cc9391834e6e9e85b5dc4a149589b87a285180f397",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "search",
+      "description": "Search HQ content and indexed repos with qmd, falling back to grep.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/search",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/search/SKILL.md",
+      "hash": "sha256:7777c4907edfb4e9e59a8331ab0c7cf42a46e8050f791cdf6ed74848045827fa",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "setup",
+      "description": "Run the HQ Starter Kit setup wizard.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/setup",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/setup/SKILL.md",
+      "hash": "sha256:754e9ce5a520e34bc0efe682c2d812d94e6f8bd1cd4b71799cea220d5ec048f5",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "ship",
+      "description": "Take PRs through review, merge, deploy, smoke test, and monitoring until every KPI is healthy. Triggers: \\\"ship this\\\", \\\"take this to prod\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/ship",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/ship/SKILL.md",
+      "hash": "sha256:8ca5bbeb6562b1eca8e4e1476b5de17a0ecdfba6ff7d89bcba3eb82ef5247e9c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "signals",
+      "description": "Read HQ-native company signals such as decisions, actions, risks, commitments, and wins.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/signals",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/signals/SKILL.md",
+      "hash": "sha256:a3cd126996250ab1a569d7fa4f09e23a8b72240100c564bcc93ae2bba2008f1c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "startwork",
+      "description": "Resolve current HQ context and surface useful next work options.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/startwork",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/startwork/SKILL.md",
+      "hash": "sha256:a5857650d17ddf7701003c06a8153eed352acc562e668e6221653ff9cd53c43c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "storyboard",
+      "description": "Lock visual design before building — explore mockups on your preferred surface (Paper, HTML, Figma) and feed discovered changes back into the PRD.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/storyboard",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/storyboard/SKILL.md",
+      "hash": "sha256:38a4b1f551523224111608217012fdcd7034779f19ed5349567d2b608c6d7bc4",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "strategize",
+      "description": "Prioritize what to work on next, optionally with deep review.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/strategize",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/strategize/SKILL.md",
+      "hash": "sha256:65093d0d298bc7e77e61fa8faa32a4b26f8d9a0a7abcf8a49d6117362d5e88f8",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "super-conductor",
+      "description": "Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a self-paced watch loop running until told to stop. Use when the user says \"/super-conductor\", \"/conduct-all\" (deprecated alias), \"manage all my sessions\", \"watch everything while I'm away\", \"going to bed, manage open sessions and the team\", or \"conduct everything\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/super-conductor",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/super-conductor/SKILL.md",
+      "hash": "sha256:109ce424267c33e1c052ab72435207cff758fb39871c7eb4772c6cf16f4711eb",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "sync-registry",
+      "description": "Rebuild a company resource registry index.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/sync-registry",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/sync-registry/SKILL.md",
+      "hash": "sha256:1a7648a7c0059470797b9f6e29350ab3e7811f19527e31f5cf87ca48c4046b27",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "tdd",
+      "description": "Enforce test-driven development with RED→GREEN→REFACTOR cycle and coverage validation",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/tdd",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/tdd/SKILL.md",
+      "hash": "sha256:f84d3cd89c1a5eb00d7cf7e1c1453913376e09044b8b73abe19d048a32ad6a0d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "team-access",
+      "description": "Set, change, or repair members' default read/write access to company vault folders, and find rules that lock members out.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/team-access",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/team-access/SKILL.md",
+      "hash": "sha256:d06060f14b4c20c2363801b2a199f0fe26c21573fe21dffd39873364be1ac3e3",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "to-tickets",
+      "description": "Break a plan or PRD into vertical-slice tickets with dependency order. Triggers: \\\"break into tickets\\\", \\\"vertical slices\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/to-tickets",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/to-tickets/SKILL.md",
+      "hash": "sha256:34d91495d724bc1e024c7fbe72719a519b6c41482e636ea8759950b6218d7402",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "track-estimate",
+      "description": "Manually log a time estimate.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/track-estimate",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/track-estimate/SKILL.md",
+      "hash": "sha256:14d5b261c659caa2cd10338923bf7eeefc686cec93416d5444d8a4f0369351fb",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "tutorial",
+      "description": "Run hands-on HQ workflow lessons.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/tutorial",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/tutorial/SKILL.md",
+      "hash": "sha256:e29daead523a7158348ab2308a0041bbe0ce9344e3c343511b1f4eec63798456",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "update-hq",
+      "description": "Upgrade HQ from the latest hq-core release.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/update-hq",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/update-hq/SKILL.md",
+      "hash": "sha256:0e2db46f4d2de77120893c8cb3f996ec7db479c039fe9c96400fdae1b7f8a3b9",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "wayfinder",
+      "description": "Plan work too big and foggy for one session as a map of investigation tickets resolved one per session.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/wayfinder",
+      "skillUid": null,
+      "group": "plan",
+      "source": ".claude/skills/wayfinder/SKILL.md",
+      "hash": "sha256:d83849d7c19737b0d5883bb23c761749e0594da3be2919d502974c993be416de",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "work-broadcast",
+      "description": "Draft Slack broadcasts for completed or proposed HQ work.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/work-broadcast",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/work-broadcast/SKILL.md",
+      "hash": "sha256:5d8de616be6aeaec2d11a380b828033ff70c70deaa301ce3fe66803da6296e3f",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "worktree",
+      "description": "Create a git worktree under workspace/worktrees/ off the latest origin default branch and route all work through it.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/worktree",
+      "skillUid": null,
+      "group": "ship",
+      "source": ".claude/skills/worktree/SKILL.md",
+      "hash": "sha256:c125b41870b3a723a03053dc5414790df0e5164d8a3a63b19d01b6be3c98dd69",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "work-mesh",
+      "description": "Work Mesh Live — automatic presence via hq mesh daemon; context reconcile/organize; manual session task-status, blocked, and note only.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/core:work-mesh",
+      "skillUid": null,
+      "group": "session state",
+      "source": "core/skills/work-mesh/SKILL.md",
+      "hash": "sha256:1e21bfc308c302448d7020889e618224f55e7a2fb525a08de1032c8211790a4f",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork",
+      "description": "Discover and dispatch HQ capabilities from a sandboxed Cowork plugin host.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork",
+      "skillUid": null,
+      "group": "capture",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork/SKILL.md",
+      "hash": "sha256:6fc697d727a88fbbfe2b83b87170fddf3dc706f8b7eb05be0b5b5c29ea2b72b5",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-cli",
+      "description": "Run long-tail HQ CLI commands through guarded host-side Cowork tools.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-cli",
+      "skillUid": null,
+      "group": "other",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-cli/SKILL.md",
+      "hash": "sha256:3cf1cb65bc7157c1cf4a55f9a27d31c0c221ed2b8beb56db27a86444c8acde20",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-dm",
+      "description": "Send HQ Sync direct messages from Cowork through the host-side DM tool.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-dm",
+      "skillUid": null,
+      "group": "share",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-dm/SKILL.md",
+      "hash": "sha256:c374202edb9d9c85e46995d2e6a0c27d9bd104ede177a24297398f5980491f74",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-files",
+      "description": "Browse or read HQ vault files from Cowork without a full sync.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-files",
+      "skillUid": null,
+      "group": "sync",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-files/SKILL.md",
+      "hash": "sha256:2b68ee9fccf452105eafda81c8afe4b2b0306ecc304a6a0e7da7d2e952eaaa7b",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-install",
+      "description": "Build and install the HQ Cowork plugin artifact and smoke-test it.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-install",
+      "skillUid": null,
+      "group": "ship",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-install/SKILL.md",
+      "hash": "sha256:7e75b76bf88b70549938dd6a89a0a9b8093d11e644aec4aa08f4cf103f510ff8",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-meetings",
+      "description": "Read HQ meeting notes and extracted signals from Cowork.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-meetings",
+      "skillUid": null,
+      "group": "capture",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-meetings/SKILL.md",
+      "hash": "sha256:acd25c953d625fa2b55413f1be48e4c08157199fa0f9667aa4f8f9e29ab9a7e9",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-search",
+      "description": "Search HQ content from Cowork with full-text, semantic, or hybrid modes.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-search",
+      "skillUid": null,
+      "group": "other",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-search/SKILL.md",
+      "hash": "sha256:a875e137d28a78c4f7ec4b7c47eefbb9e3be597e6813e0cf8ab091eb5f614a74",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-secrets",
+      "description": "Run commands with HQ secrets from Cowork without exposing values.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-secrets",
+      "skillUid": null,
+      "group": "other",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-secrets/SKILL.md",
+      "hash": "sha256:e94f42c9f288fc9c3246f94066e3ee9d1cf50567f095770c34c80d28331de7e8",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-cowork-share",
+      "description": "Share HQ vault paths from Cowork through links or direct grants.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-share",
+      "skillUid": null,
+      "group": "share",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-share/SKILL.md",
+      "hash": "sha256:982ec5973e5001a217d1d8f106998cf3be84e1b4bbd50148d02d38d2194b863d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": [
+          {
+            "invoke": "/hq-share",
+            "score": 0.667
+          }
+        ]
+      }
+    },
+    {
+      "name": "hq-cowork-sync",
+      "description": "Run bidirectional HQ Sync from Cowork.",
+      "scope": "package",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-pack-cowork:hq-cowork-sync",
+      "skillUid": null,
+      "group": "sync",
+      "source": "core/packages/hq-pack-cowork/skills/hq-cowork-sync/SKILL.md",
+      "hash": "sha256:0ecdb8fb6d23c133f17adc8c01680c62cd1a8d788870c6fab29b7edec6b61b1d",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    }
+  ],
+  "commands": [],
+  "findings": {
+    "rule": {
+      "exactDuplicates": "same name (case-insensitive), identical SKILL.md bytes, different source path",
+      "driftedCopies": "same name (case-insensitive), different SKILL.md bytes",
+      "nearDuplicates": "different names, description token Jaccard >= 0.5 (tokens: lowercase [a-z0-9]+ of 3+ chars minus stopwords; both sets >= 4 tokens)"
+    },
+    "counts": {
+      "exactDuplicates": 0,
+      "driftedCopies": 0,
+      "nearDuplicates": 2
+    },
+    "exactDuplicates": [],
+    "driftedCopies": [],
+    "nearDuplicates": [
+      {
+        "a": "/hq-share",
+        "b": "/hq-pack-cowork:hq-cowork-share",
+        "score": 0.667
+      },
+      {
+        "a": "/import-claude",
+        "b": "/import-context",
+        "score": 0.625
+      }
+    ]
+  }
+}

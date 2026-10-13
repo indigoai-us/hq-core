@@ -15,6 +15,18 @@ the model unset. Otherwise use the session's matching `conduct.child_defaults`
 row. Ask once if no provider is configured or available. Persist any explicit
 choice with `hq-session.sh`.
 
+An account pin works the same way. `conduct_child_account` sits next to
+`conduct_child_model` and `conduct_child_effort`. Set it only when the user
+names an account for the session:
+
+```bash
+bash core/scripts/hq-session.sh set conduct_child_account <account-id>
+```
+
+With no account pin, every lane uses `--account auto`. All provider accounts
+are one pool across companies, and hq-cli records its pick as the lane's
+`account_pick`.
+
 ## How work leaves this session
 
 1. Resolve the active company, project, story, and worker profile. Reuse an
@@ -28,13 +40,23 @@ choice with `hq-session.sh`.
      --worker <worker> --brief-file <brief> --senior session:<session-id> --json
    ```
    Add `--provider` from `conduct_engine`, `--model` from
-   `conduct_child_model`, and `--effort` from `conduct_child_effort` whenever
-   those session pins are set, for every `/conduct` lane. A user flag overrides
-   the matching session pin. A repeated create for the same worker and
+   `conduct_child_model`, `--effort` from `conduct_child_effort`, and
+   `--account` from `conduct_child_account` whenever those session pins are
+   set, for every `/conduct` lane. A user flag overrides the matching session
+   pin. When neither a `conduct_child_account` pin nor a user `--account` flag
+   is set, pass `--account auto` so hq-cli picks the account with the most room
+   from the shared pool. A repeated create for the same worker and
    senior continues its prior lane thread. If the lane is live, send follow-up work with
    `hq lanes message <lane> --text <instruction>`.
 4. Parse the JSON response. Admission and capacity refusals keep the task
    queued for the next tick. Do not start a substitute process or pool.
+   A `no_account_with_room` refusal from `--account auto` also keeps the task
+   queued; report the soonest reset from its `next_reset` field in one line,
+   for example `queued: no account has room until <next_reset>`. Never pick an
+   account by hand to get around it. Every create response can list
+   signed-out accounts under `skipped[]`; raise one owner card per
+   account as described in
+   [Signed-out accounts](#signed-out-accounts-one-owner-card-per-account).
 5. Immediately before every `hq lanes create`, generate a unique `round_id`
    and capture the round baseline `since` in UTC seconds. After the create
    returns its lane id, arm one Codex watcher for that lane and round:
@@ -69,6 +91,176 @@ inside a worker do not deliver lane messages to the parent through that event.
 6. On completion, read the lane's envelope through the CLI, inspect the changed
    files and commit, and verify claimed tests from their output. Report the PR,
    CI, artifacts, and any gap accurately.
+
+## Signed-out accounts: one owner card per account
+
+`hq lanes create --account auto` and `hq capacity route --json` list every
+account they passed over under `skipped[]`. The `no_account_with_room` error
+carries `skipped[]` too. Read `skipped[]` on every create response, refused or
+not, and on every `hq capacity route --json` this session runs.
+
+A `skipped[]` entry is a signed-out account when both of these hold:
+
+- `account` is a non-null lanes account id.
+- `fix` is `hq capacity login <provider> --account <account>` for that same
+  provider and account.
+
+`hq capacity route` exists since hq-cli 5.345.111. The signed-out
+`skipped[].fix` login command this step depends on exists in hq-cli 5.345.114
+or newer. On an older hq-cli, a signed-out entry carries no login fix, so it
+does not match and no card is raised.
+
+An entry with the reason `no fresh reading (sign-in expired)` does not match.
+Its `fix` is the plain `claude` open command for a Claude account (with
+`CLAUDE_CONFIG_DIR` set for a non-default home), or null for other providers.
+No card is raised for it. The account recovers on its own once the token
+refresh succeeds or a lane runs on it.
+
+Ignore every other entry, such as a sign-in that no lane account uses, a
+usage-only reading, or a used-up limit. Those have no account or no login fix,
+and `no_account_with_room` already covers running out of room.
+
+Conduct never runs `hq capacity login`, never runs `--repair`, and never signs
+an account in or out. It names the `fix` command and the owner runs it.
+
+### The dedupe file
+
+A signed-out account is one fact per machine, so one dedupe file serves every
+project: `workspace/orchestrator/signed-out-cards.json`. Each project, story,
+and lane the account blocked goes in that entry's `blocked[]` list. The same
+account signed out under two projects raises one card.
+
+The key is `<provider>:<account>`. Each entry stores the `reason` and `fix`
+from the JSON, the exec-bus `card_id`, `raised_at`, `suppress_until`, the
+`blocked[]` list, `rereads`, and `state` (`open`, `later`, or `disabled`).
+
+For each signed-out entry:
+
+0. An entry with `state` set to `disabled`: never raise, whatever its
+   `suppress_until` or `reason` says, and do not change the entry. A disabled
+   account that is also signed out still shows up under `skipped[]` with the
+   same login fix, because hq-cli checks sign-in before it checks whether the
+   lane account is enabled. Without this rule the card would come back every
+   24 hours after the owner chose "Disable this account".
+1. No entry under the key: raise a card and write the entry with
+   `suppress_until` set to `raised_at` plus 24 hours.
+2. An entry with a different `reason`: the reason changed, so raise a new card
+   and replace the entry.
+3. An entry with the same `reason` and the current time at or past
+   `suppress_until`: raise again and reset `raised_at`, `suppress_until`, and
+   `rereads`.
+4. An entry with the same `reason` inside the window: do not raise. Add the
+   project, story, and lane to `blocked[]` if they are not already there.
+
+When a later create or route read lists the account in `ranked[]`, or no
+longer lists it under `skipped[]`, the sign-out has cleared. Delete its entry
+so the next sign-out raises a fresh card. A `disabled` entry is deleted only
+when the account appears in `ranked[]`, which happens after the owner enables
+it again and it is signed in. Its absence from `skipped[]` alone does not
+delete it.
+
+Write the file through a temp file in the same directory, then `mv` it over
+the old one. Create `workspace/orchestrator/` if it is missing. If the file
+does not parse, move it aside as `signed-out-cards.json.bad` and start from an
+empty `cards` object.
+
+### Raising the card
+
+Raise with the executive bus, using this session's id:
+
+```bash
+bash personal/skills/executive/exec-bus.sh raise \
+  --session-id <session-id> \
+  --title "Sign back in: <provider> account <account>" \
+  --question "Run: <fix>" \
+  --option "I ran it|I signed the account back in" \
+  --option "Later|Ask again in 24 hours" \
+  --option "Disable this account|Stop routing lanes to it" \
+  --context "Account <account> (<provider>) is signed out: <reason>. Blocked: <project> <story>, lane <lane-id>. Conduct never signs in for you; run the command yourself." \
+  --blocked-work "<project> <story>, lane <lane-id>" \
+  --blocking 0 --importance 3 --timeliness today
+```
+
+Store the returned card `id` as `card_id`. A lane that was refused stays
+queued under the existing handling; the card does not change that. If
+`personal/skills/executive/exec-bus.sh` does not exist on this machine, print
+the same title, command, and context in this turn's status row and still write
+the dedupe entry.
+
+### Answers
+
+The answer arrives in this session's executive inbox as
+`Executive decision <card_id> ("Sign back in: ..."): <choice>`. Match the card
+id to the dedupe entry.
+
+- `Disable this account`: run `hq lanes accounts disable <provider> <account>`,
+  then set `state` to `disabled` and record the time as `disabled_at`. Report
+  the change in one line.
+- `I ran it`: run `hq capacity accounts --json` once. If the account is signed
+  in, delete the entry. If it is still signed out and `rereads` is 0, set
+  `rereads` to 1 and raise the card once more with `Still signed out after you
+  ran it.` at the start of `--context`. With `rereads` already 1, do not raise
+  again until the reason changes or 24 hours pass. Do not loop on the re-read.
+- `Later`: set `state` to `later` and `suppress_until` to the current time
+  plus 24 hours.
+
+### Worked example
+
+`hq lanes create ... --account auto --json` returns this entry:
+
+```json
+{
+  "provider": "claude",
+  "account": "frog",
+  "label": "frog",
+  "organization": "Frogbear",
+  "reason": "signed out: sign-in revoked",
+  "fix": "hq capacity login claude --account frog"
+}
+```
+
+The lane was for project `multi-provider-compute-router`, story `US-015`, lane
+`01EXAMPLELANE`. The card reads:
+
+```text
+Title:    Sign back in: claude account frog
+Question: Run: hq capacity login claude --account frog
+Options:  I ran it | Later | Disable this account
+Context:  Account frog (claude) is signed out: signed out: sign-in revoked.
+          Blocked: multi-provider-compute-router US-015, lane 01EXAMPLELANE.
+          Conduct never signs in for you; run the command yourself.
+```
+
+`workspace/orchestrator/signed-out-cards.json` after the raise:
+
+```json
+{
+  "schema": "conduct-signed-out-cards.v1",
+  "cards": {
+    "claude:frog": {
+      "reason": "signed out: sign-in revoked",
+      "fix": "hq capacity login claude --account frog",
+      "card_id": "dec-20261013101500-ab12",
+      "raised_at": "2026-10-13T10:15:00Z",
+      "suppress_until": "2026-10-14T10:15:00Z",
+      "blocked": [
+        {
+          "project": "multi-provider-compute-router",
+          "story": "US-015",
+          "lane": "01EXAMPLELANE",
+          "at": "2026-10-13T10:15:00Z"
+        }
+      ],
+      "rereads": 0,
+      "state": "open"
+    }
+  }
+}
+```
+
+An hour later a lane for another project skips `claude:frog` with the same
+reason. Conduct adds that project, story, and lane to `blocked[]` and raises
+nothing.
 
 ## Step 2: Choose the worker
 
@@ -138,6 +330,9 @@ There is no conduct pool. `hq lanes create` is the admission operation and
 applies hq-cli's provider, account, host, and lane capacity rules. If admission
 returns `ok:false` with an admission or capacity code, leave the task queued.
 Do not invent a second machine-wide cap or launch around the refusal.
+With `--account auto`, `no_account_with_room` means every account in the pool
+is out of room. Keep the task queued for the next tick and report the soonest
+reset in one line. Do not choose an account yourself.
 Generate a unique
 `round_id="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"` before each create,
 then capture `since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` immediately before the
@@ -201,8 +396,8 @@ round on a reused lane. Claude parents keep the `Monitor(hq lanes watch ...)`
 path.
 
 `--workers <roles>` creates one lane for each requested role. Pin provider,
-model, and effort once per session and pass those pins to each
-`hq lanes create`. Build each brief from the matching role template. The role
+model, effort, and account once per session and pass those pins to each
+`hq lanes create`. With no account pin, pass `--account auto` to each one. Build each brief from the matching role template. The role
 slot is one worker lane; create resumes that worker's previous lane thread when
 possible. If it is still live, send the next instruction with `hq lanes
 message`.
@@ -224,3 +419,74 @@ session:<this session>`. For each active row include the lane id, worker,
 state, `last_line`, PR, pending inbox count, elapsed time, and exit status when
 present. Name the blocker on blocked or review work. Use a named reviewing
 lane for `review` state.
+
+## Testing capacity distribution locally
+
+To check that unpinned lanes spread across accounts, clear any
+`conduct_child_account` pin and create two lanes with no `--account` flag, so
+each create passes `--account auto`. Then run:
+
+```bash
+hq capacity route --json
+hq lanes show <lane-1> --json
+hq lanes show <lane-2> --json
+```
+
+Each lane's `account_pick` should name the account the router picked at the
+moment that lane was created, with `account_source` set to `auto`.
+`hq capacity route --json` shows the router's current pick, so run it right
+after each create when comparing.
+
+## Dry run: signed-out card
+
+This walkthrough uses a fake `skipped[]` entry and a scratch copy of the dedupe
+file. It raises no card and touches no account. Run it from the HQ root.
+
+```bash
+f="$(mktemp -d)/signed-out-cards.json"
+entry='{"provider":"claude","account":"frog","label":"frog","reason":"signed out: sign-in revoked","fix":"hq capacity login claude --account frog"}'
+
+# 1. Is it a signed-out entry? Prints true.
+printf '%s' "$entry" | jq '.account != null and .fix == ("hq capacity login " + .provider + " --account " + .account)'
+
+# 2. Should it raise? The file is empty, so this prints raise.
+now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+key="$(printf '%s' "$entry" | jq -r '.provider + ":" + .account')"
+reason="$(printf '%s' "$entry" | jq -r .reason)"
+[ -f "$f" ] || printf '{"schema":"conduct-signed-out-cards.v1","cards":{}}\n' > "$f"
+jq -r --arg k "$key" --arg r "$reason" --arg now "$now" '
+  .cards[$k] as $c
+  | if $c == null then "raise"
+    elif $c.state == "disabled" then "skip"
+    elif $c.reason != $r then "raise"
+    elif $now >= $c.suppress_until then "raise"
+    else "skip" end' "$f"
+
+# 3. Print the card instead of raising it.
+printf '%s' "$entry" | jq -r '"Title: Sign back in: \(.provider) account \(.account)\nQuestion: Run: \(.fix)\nContext: Account \(.account) (\(.provider)) is signed out: \(.reason). Blocked: multi-provider-compute-router US-015, lane 01EXAMPLELANE."'
+
+# 4. Record it with a 24 hour window. This is macOS date; on Linux use
+#    date -u -d '+24 hours' +%Y-%m-%dT%H:%M:%SZ.
+until="$(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)"
+jq --arg k "$key" --arg r "$reason" --arg now "$now" --arg until "$until" \
+   --argjson e "$entry" '
+  .cards[$k] = {reason: $r, fix: $e.fix, card_id: "dry-run", raised_at: $now,
+    suppress_until: $until, rereads: 0, state: "open",
+    blocked: [{project: "multi-provider-compute-router", story: "US-015",
+               lane: "01EXAMPLELANE", at: $now}]}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+
+# 5. Run step 2 again. Same reason inside the window, so it prints skip.
+
+# 6. Model the owner choosing "Disable this account" and move the window
+#    into the past. Run step 2 again: it prints skip, because a disabled
+#    entry never raises.
+jq --arg k "$key" '.cards[$k].state = "disabled"
+  | .cards[$k].disabled_at = "2026-10-13T11:00:00Z"
+  | .cards[$k].suppress_until = "2000-01-01T00:00:00Z"' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+```
+
+Set `reason` to `signed out: missing profile scope` and step 2 prints `raise`
+again. Delete the `claude:frog` key from the scratch file to model a cleared
+sign-out; step 2 then prints `raise` for the next sign-out. A real run replaces
+step 3 with the `exec-bus.sh raise` command above and writes the shared dedupe
+file in `workspace/orchestrator/`.

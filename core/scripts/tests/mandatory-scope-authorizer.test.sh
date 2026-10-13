@@ -1372,5 +1372,54 @@ for probe_case in 'grep -nE "done$|/tmp/" core/docs/readme.md:0' \
   fi
 done
 
+echo "[108] shell-variable operands that are not company paths are allowed; ambiguous ones still fail closed"
+# Session logs on 2026-10-12 showed ~370 denials in one day, most of them a
+# variable in an operand that is a git ref, a gh repo slug, a mktemp dir, or a
+# loop over literal workspace entries. Each allowed shape is paired with a
+# near miss that must stay blocked.
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/worktrees/a" "$TMP/workspace/worktrees/b"
+for probe_case in \
+  'for w in a b; do ls workspace/worktrees/$w; done:0' \
+  'for d in workspace/worktrees/*; do cat $d/manifest.json; done:0' \
+  'D=$(mktemp -d); ls $D/*.dmg:0' \
+  'D=$(mktemp -d -t hqbuild); cp core/docs/readme.md $D/r.md:0' \
+  'git push origin $C:refs/heads/release:0' \
+  'git -C workspace/worktrees/a log origin/main...$b:0' \
+  'gh pr view 1 -R indigoai-us/$r:0' \
+  'for w in ../companies/otherco; do cat workspace/$w/settings/x; done:2' \
+  'for d in companies/*; do cat $d/settings/x; done:2' \
+  'for d in workspace/../companies/*; do cat $d/settings/x; done:2' \
+  'ls workspace/worktrees/$w:2' \
+  'D=$(mktemp -d); D=companies/otherco; ls $D/settings:2' \
+  'D=$(mktemp -d -p companies/otherco); ls $D/x:2' \
+  'TMPDIR=companies/otherco; D=$(mktemp -d); ls $D/x:2' \
+  'cat origin/main...$b:2' \
+  'cat indigoai-us/$r:2' \
+  'gh pr view 1 -R indigoai-us/${p%%:*}:0' \
+  'curl -s https://api.example.com/v1/$p:0' \
+  'gh pr create --body-file companies/$r/x -R indigoai-us/hq:2' \
+  'curl -s -o companies/$c/x https://api.example.com/$p:2' \
+  'cat file://companies/$c/x:2' \
+  'cat $X/settings/x:2'; do
+  probe_command="${probe_case%:*}"
+  probe_expect="${probe_case##*:}"
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$probe_command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit "$probe_expect" "$rc" "variable operand: $probe_command"
+done
+# A workspace entry that links into another company stays blocked through a
+# loop value or a loop glob.
+ln -s ../../companies/otherco "$TMP/workspace/worktrees/evil"
+for probe_command in \
+  'for w in evil; do cat workspace/worktrees/$w/settings/x; done' \
+  'for d in workspace/worktrees/*; do cat $d/settings/x; done'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$probe_command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "symlinked workspace entry through a variable: $probe_command"
+done
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

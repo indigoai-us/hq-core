@@ -18,6 +18,11 @@ the lane registry.
 `hq lanes create` is the claim and admission operation. A successful response
 returns the lane id. A capacity or admission refusal is a queued task; retry on
 the next dispatch tick. Do not create an auxiliary pool or machine cap.
+With no account pin, create lanes with `--account auto`; a
+`no_account_with_room` refusal is also a queued task (see
+`lane-dispatch-protocol.md`). Signed-out accounts listed under `skipped[]`
+get one owner card per account, never a login run by the skill (see
+"Signed-out accounts" in `conduct/dispatch.md`).
 
 ### Loop-mode lanes and the enqueue-on-assign rule
 
