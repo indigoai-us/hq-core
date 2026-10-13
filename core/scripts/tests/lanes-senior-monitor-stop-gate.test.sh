@@ -546,6 +546,9 @@ cp "$GATE_SRC" "$ADAPT/.claude/hooks/hook-gate.sh"
 cp "$STOP_SRC" "$ADAPT/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
 cp "$SRC/core/scripts/hook-lib.sh" "$ADAPT/core/scripts/hook-lib.sh"
 cp "$SRC/core/scripts/lib/hook-adapter-core.sh" "$ADAPT/core/scripts/lib/hook-adapter-core.sh"
+mkdir -p "$ADAPT/workspace/lanes/lanes"
+printf '%s\n' '{"lane_id":"fixture-lane","state":"running","senior":{"kind":"session","id":"senior-1"}}' \
+  > "$ADAPT/workspace/lanes/lanes/fixture-lane.json"
 jq -n '{hooks:{}}' > "$ADAPT/.claude/settings.json"
 jq -n '{hooks:{Stop:[{matcher:"",hooks:[{id:"lanes-senior-monitor-stop-gate",script:".claude/hooks/lanes-senior-monitor-stop-gate.sh",timeout:30,gated:true}]}]}}' \
   > "$ADAPT/.claude/hooks/hook-registry.json"

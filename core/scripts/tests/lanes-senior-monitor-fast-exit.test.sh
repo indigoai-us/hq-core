@@ -217,16 +217,19 @@ done
 printf 'PASS: active-lane timing medians (diagnostic): SessionStart=%sms UserPromptSubmit=%sms (5 runs each)\n' \
   "$(sort -n "$TMP/start-ms" | sed -n '3p')" "$(sort -n "$TMP/prompt-ms" | sed -n '3p')"
 
-# A previously empty SessionStart result must not hide a done-to-running change.
+# A session that owns only finished lanes has nothing for monitor-check to
+# cover, so the hook skips hq. A later done-to-running change must still reach
+# the CLI.
 TRANSITION_SESSION="transition-session"
 printf '%s\n' '{"lane_id":"transition","state":"done","senior":{"kind":"session","id":"transition-session"}}' > "$ROOT/workspace/lanes/lanes/transition.json"
 export HP26_STUB_MODE=empty
 run_hook SessionStart "$TRANSITION_SESSION" || fail "done transition setup SessionStart failed"
 [ ! -s "$OUT" ] || fail "done transition setup emitted output"
-[ "$(call_count)" = 9 ] || fail "done transition setup did not call hq"
+[ "$(call_count)" = 8 ] || fail "a session whose only lane is done still launched hq"
+pass "a session with only finished lanes does not launch hq"
 printf '%s\n' '{"lane_id":"transition","state":"running","senior":{"kind":"session","id":"transition-session"}}' > "$ROOT/workspace/lanes/lanes/transition.json"
 export HP26_STUB_MODE=active
 run_hook SessionStart "$TRANSITION_SESSION" || fail "running transition SessionStart failed"
 jq -e '.hookSpecificOutput.additionalContext | contains("lane-a")' "$OUT" >/dev/null || fail "done-to-running transition was hidden by cache"
-[ "$(call_count)" = 11 ] || fail "done-to-running transition did not refresh hq results"
+[ "$(call_count)" = 10 ] || fail "done-to-running transition did not refresh hq results"
 pass "SessionStart observes a done-to-running lane transition within the TTL"

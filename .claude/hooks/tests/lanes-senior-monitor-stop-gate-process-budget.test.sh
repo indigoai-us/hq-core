@@ -42,6 +42,11 @@ fi
 printf '%s\n' '{"ok":true,"action":"monitor-check","session_id":"budget-session","engine":"claude","active_lane_ids":[],"covered_lane_ids":[],"uncovered_lane_ids":[],"monitor_calls":[]}'
 SH
 chmod 700 "$BIN/hq"
+# The gate skips hq when this session owns no active lane, so the senior
+# fixture needs one running lane to stay on the monitor-check path.
+mkdir -p "$TMP/root/workspace/lanes/lanes"
+printf '%s\n' '{"lane_id":"budget-lane","state":"running","senior":{"kind":"session","id":"budget-session"}}' \
+  > "$TMP/root/workspace/lanes/lanes/budget-lane.json"
 
 FAIL=0
 pass() { printf 'ok: %s\n' "$*"; }
@@ -108,11 +113,52 @@ if [ "$senior_hq_calls" -eq 1 ]; then
 else
   fail "a lead session with HQ_LANE_ID must invoke monitor-check once (calls=$senior_hq_calls)"
 fi
-if [ "$senior_total" -le 6 ]; then
-  pass 'the total senior Stop-hook launch budget is at most 6'
+# 7 = the previous 6 plus the one jq that confirms this session's matched lane
+# record is in an active state. That jq is what lets every other Stop skip hq.
+if [ "$senior_total" -le 7 ]; then
+  pass 'the total senior Stop-hook launch budget is at most 7'
 else
-  fail "senior Stop-hook launch budget exceeded 6: $senior_total"
+  fail "senior Stop-hook launch budget exceeded 7: $senior_total"
 fi
+
+# A session that owns only finished lanes, or none, must not start hq at all.
+printf '%s\n' '{"lane_id":"budget-lane","state":"done","senior":{"kind":"session","id":"budget-session"}}' \
+  > "$TMP/root/workspace/lanes/lanes/budget-lane.json"
+run_stop
+if [ "$STOP_RC" -eq 0 ] && [ ! -s "$TMP/stdout" ] && [ "$(program_count hq)" -eq 0 ] \
+   && [ "$(total_launches)" -le 2 ]; then
+  pass 'a session with only finished lanes skips hq (launches=2 or fewer)'
+else
+  fail "finished-lane session still paid for hq (rc=$STOP_RC hq=$(program_count hq) total=$(total_launches) inventory=$(print_inventory))"
+fi
+rm -f "$TMP/root/workspace/lanes/lanes/budget-lane.json"
+printf '%s\n' '{"lane_id":"other-lane","state":"running","senior":{"kind":"session","id":"other-session"}}' \
+  > "$TMP/root/workspace/lanes/lanes/other-lane.json"
+run_stop
+if [ "$STOP_RC" -eq 0 ] && [ ! -s "$TMP/stdout" ] && [ "$(program_count hq)" -eq 0 ]; then
+  pass "another session's running lane does not start hq for this session"
+else
+  fail "unrelated active lane started hq (rc=$STOP_RC hq=$(program_count hq))"
+fi
+printf '%s\n' '{"lane_id":"budget-lane","state":"blocked","senior":{"kind":"session","id":"budget-session"}}' \
+  > "$TMP/root/workspace/lanes/lanes/budget-lane.json"
+run_stop
+if [ "$(program_count hq)" -eq 1 ]; then
+  pass 'a blocked lane still reaches monitor-check'
+else
+  fail "a blocked lane skipped monitor-check (hq=$(program_count hq))"
+fi
+printf '%s\n' '{"lane_id":"budget-lane","state":"running","senior":{"kind":"session","id":"budget-session"}' \
+  > "$TMP/root/workspace/lanes/lanes/budget-lane.json"
+run_stop
+if [ "$(program_count hq)" -eq 1 ]; then
+  pass 'a malformed record naming this session falls through to hq'
+else
+  fail "a malformed record skipped hq (hq=$(program_count hq))"
+fi
+printf '%s\n' '{"lane_id":"budget-lane","state":"running","senior":{"kind":"session","id":"budget-session"}}' \
+  > "$TMP/root/workspace/lanes/lanes/budget-lane.json"
+rm -f "$TMP/root/workspace/lanes/lanes/other-lane.json"
 
 run_stop_with_closed_stdin
 closed_stdin_err="$(<"$TMP/stderr")"
