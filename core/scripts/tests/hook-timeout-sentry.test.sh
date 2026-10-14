@@ -34,15 +34,15 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }
 
 has_recoverable_breadcrumb() {
-  local breadcrumb_dir="$1" record claim owner_pid
+  local breadcrumb_dir="$1" record claim
   for record in "$breadcrumb_dir"/*.json; do
     [ -f "$record" ] && return 0
   done
+  # Same owner check the master uses for stale-claim recovery (PID plus start
+  # time), so a reused PID cannot make a dead owner's claim look live.
   for claim in "$breadcrumb_dir"/*.json.consuming.*; do
     [ -f "$claim" ] || continue
-    owner_pid="${claim##*.consuming.}"
-    [[ "$owner_pid" =~ ^[0-9]+$ ]] || continue
-    ! kill -0 "$owner_pid" >/dev/null 2>&1 && return 0
+    hook_timeout_owner_alive "${claim##*.consuming.}" || return 0
   done
   return 1
 }
@@ -1002,23 +1002,44 @@ fi
 exec "${HQ_TEST_SYSTEM_MV:?}" "$@"
 EOF
 chmod +x "$R7/bin/mv"
+# Git Bash claim paths can pass the 260-character Windows MAX_PATH limit, and
+# the native jq.exe then cannot open them. This shim fails the same way for any
+# claim path operand, so a claim must be read through a shell redirect.
+cat > "$R7/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+if [ "${HQ_TEST_JQ_CANNOT_OPEN_CLAIMS:-0}" = "1" ]; then
+  for arg in "$@"; do
+    if [[ "$arg" == *.json.consuming.* ]]; then
+      printf 'jq: error: Could not open %s: No such file or directory\n' "$arg" >&2
+      exit 2
+    fi
+  done
+fi
+exec "${HQ_TEST_SYSTEM_JQ:?}" "$@"
+EOF
+chmod +x "$R7/bin/jq"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
-  HQ_TEST_SYSTEM_MV="$SYSTEM_MV" HQ_TEST_FAIL_BREADCRUMB_RESTORE=1 \
+  HQ_TEST_SYSTEM_MV="$SYSTEM_MV" HQ_TEST_FAIL_BREADCRUMB_RESTORE=1 HQ_TEST_JQ_CANNOT_OPEN_CLAIMS=1 \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/blocked.out" 2>"$R7/blocked.err" <<<"$(payload master-session)"
 jq -e '(.decision == "block") and (.hookSpecificOutput.hqSessionBlockedBy | endswith("20-blocker.sh"))' "$R7/blocked.out" >/dev/null \
   || fail "blocking child did not preserve master block output"
-if grep -Fq "$slow_child_path" "$R7/blocked.out"; then
+if grep -Fq "$slow_child_path" "$R7/blocked.out" || grep -Fq "hq-hook-timeout-" "$R7/blocked.out"; then
   fail "warning was mixed into a block response instead of staying pending"
 fi
 breadcrumb_dir="$R7/workspace/.hook-timeout-breadcrumbs/$breadcrumb_session_key"
 has_recoverable_breadcrumb "$breadcrumb_dir" \
   || fail "blocking child lost its pending warning breadcrumb"
+for claim in "$breadcrumb_dir"/*.json.consuming.*; do
+  [ -f "$claim" ] || continue
+  [[ "${claim##*.consuming.}" =~ ^[0-9]+\.[A-Za-z0-9]+$ ]] \
+    || fail "breadcrumb claim does not record its owner's start time: ${claim##*/}"
+done
 grep -q '^Blocked by hook 20-blocker\.$' "$R7/blocked.err" \
   || fail "blocking child did not name the blocking hook on stderr"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' ':' > "$R7/core/hooks/PreToolUse/20-blocker.sh"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
-  HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  HQ_TEST_JQ_CANNOT_OPEN_CLAIMS=1 HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
   bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/injected.out" 2>"$R7/injected.err" <<<"$(payload master-session)"
 jq -e --arg hook_path "$master_hook_path" '
   .hookSpecificOutput.hookEventName == "PreToolUse"
@@ -1054,6 +1075,59 @@ jq -e '.hookSpecificOutput.additionalContext == "existing child context"' "$R7/d
   || fail "spaced HQ_DISABLED_HOOKS did not suppress breadcrumb injection"
 [ -f "$disabled_breadcrumb_dir/absolute-disabled.json" ] || fail "spaced HQ_DISABLED_HOOKS consumed a breadcrumb"
 pass "master dispatch breadcrumb is injected once ahead of existing context"
+
+echo "[7a] a reused PID does not keep a dead master's breadcrumb claim alive"
+# Git Bash PIDs follow Windows PIDs, which Windows reuses quickly. A live
+# unrelated process stands in for one that inherited the dead claim owner's PID.
+# Use a subshell that never execs: Git Bash reports the start time of the
+# current Windows process, and an exec replaces it, so `sleep 60 &` could change
+# its start time between the two reads below.
+( while :; do sleep 1; done ) &
+reused_pid=$!
+hook_timeout_process_start_token "$reused_pid"
+# shellcheck disable=SC2154 # Set by hook_timeout_process_start_token in hook-timeout-probe.sh.
+reused_start="$hook_timeout_start_token"
+[ -n "$reused_start" ] || fail "live process start time is unreadable"
+hook_timeout_owner_alive "$reused_pid.$reused_start" \
+  || fail "live owner with a matching start time reads as dead"
+hook_timeout_owner_alive "$reused_pid" \
+  || fail "legacy PID-only owner of a live process reads as dead"
+if hook_timeout_owner_alive "$reused_pid.1$reused_start"; then
+  fail "reused PID with a different start time reads as the original owner"
+fi
+rm -f "$disabled_breadcrumb_dir"/*.json "$disabled_breadcrumb_dir"/*.json.consuming.*
+reused_record="$disabled_breadcrumb_dir/reused-owner.json"
+jq -cn --arg hook_path "$master_hook_path" '
+  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000}
+' > "$reused_record.consuming.$reused_pid.1$reused_start"
+has_recoverable_breadcrumb "$disabled_breadcrumb_dir" \
+  || fail "a claim whose PID was reused reads as held by a live owner"
+PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
+  HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/reused.out" 2>"$R7/reused.err" <<<"$(payload master-session)"
+jq -e --arg hook_path "$master_hook_path" '
+  .hookSpecificOutput.additionalContext as $context
+  | ($context | contains($hook_path))
+    and ($context | contains("This hook is taking too long; investigate why."))
+    and ($context | endswith("existing child context"))
+' "$R7/reused.out" >/dev/null || fail "master did not recover a claim whose owner PID was reused"
+compgen -G "$disabled_breadcrumb_dir/*.json*" >/dev/null \
+  && fail "recovered reused-PID claim was not consumed"
+
+# A claim whose owner is still the same live process stays with that owner.
+jq -cn --arg hook_path "$master_hook_path" '
+  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000}
+' > "$reused_record.consuming.$reused_pid.$reused_start"
+PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
+  HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  bash "$R7/.claude/hooks/master-hook.sh" PreToolUse >"$R7/live-owner.out" 2>"$R7/live-owner.err" <<<"$(payload master-session)"
+jq -e '.hookSpecificOutput.additionalContext == "existing child context"' "$R7/live-owner.out" >/dev/null \
+  || fail "master took a claim from a live owner"
+[ -f "$reused_record.consuming.$reused_pid.$reused_start" ] || fail "live owner's claim was moved"
+kill "$reused_pid" 2>/dev/null || true
+wait "$reused_pid" 2>/dev/null || true
+rm -f "$reused_record.consuming.$reused_pid.$reused_start"
+pass "breadcrumb claims are owned by PID plus start time"
 
 echo "[7b] master emits an event-tagged warning even with no child JSON"
 mkdir -p "$R7/core/hooks/SessionStart"

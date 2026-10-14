@@ -38,19 +38,19 @@ often empty; when it is empty it tells you nothing about the plan.
 - up to 5 people (invitations not yet accepted count toward the 5)
 - 1 connected app
 - 10 keys
-- 10 GB of files and 500 site deploys
+- 10 GB of files and unlimited site deploys
 - no hosted agents (see "Agents" below)
 
 Inviting people, sharing a connected app with a teammate and sharing a key
-are all included in Starter. Only adding past a limit is affected: a 6th
-person, a 2nd connected app, an 11th key, or files past 10 GB. When a company
-goes over, the owner gets reminders, and HQ may refuse to add the next one;
+are all included in Starter, and deploys have no count limit. Only adding past
+a limit is affected: a 6th person, a 2nd connected app, an 11th key, or files
+past 10 GB. When a company goes over, the owner gets reminders, and HQ may
+refuse to add the next one;
 if it does, it says so and gives an upgrade link. Nothing already there is
 ever removed, and reading, deleting, changing an existing key and
 reconnecting an existing app are never blocked. One exception: while a
 company is over its file storage, HQ may refuse file uploads, including
-saving over an existing file. Deploys are never refused for being over; the
-owner only gets a reminder.
+saving over an existing file.
 
 **HQ Workforce, $500 a month per company.** A flat price for the whole
 company, not per person:
@@ -73,9 +73,9 @@ HQ console at hq.computer. You can start the upgrade for them; the payment is
 theirs to complete, never yours.
 
 **Individual, $50 a month per person.** For someone's own personal HQ, not a
-company: 100 personal keys, unlimited connected apps, 10 GB of files and 500
-site deploys, against 10 keys, 1 connected app, 2 GB and 50 deploys without
-it. A Workforce company can cover it for a teammate: the person asks with
+company: 100 personal keys, unlimited connected apps, 10 GB of files and
+unlimited site deploys, against 10 keys, 1 connected app and 2 GB without it.
+A Workforce company can cover it for a teammate: the person asks with
 `hq billing sponsor request`, and a company owner or admin approves it (in
 the console under Billing, Sponsorship). Only bring it up if they ask about
 their personal HQ.

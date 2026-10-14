@@ -7,8 +7,10 @@ allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/
 # /delegate — one-command project handoff
 
 Transfer a project with exact grant receipts, a published dossier, and a pickup
-DM. Local board and PRD ownership are updated. Work Mesh ownership remains
-unconfirmed until its authoritative system supplies a receipt. Sender-side
+DM. Local board and PRD ownership are updated, and `hq mesh project reassign`
+moves Work Mesh project ownership and the delegator's open stories to the
+recipient. Work Mesh ownership counts as confirmed only when the server returns
+a receipt naming the recipient; otherwise it stays unconfirmed. Sender-side
 checks prove publication, not recipient access; record actual pickup separately.
 
 Requires HQ CLI 5.109.7 or newer, with `whoami --json`, `files acl --json`, and
@@ -159,7 +161,7 @@ name a recipient it cannot resolve. Everything else proceeds unasked.
 bash core/scripts/hq-delegate-grant.sh --manifest <manifest> --yes
 bash core/scripts/hq-delegate-repo.sh --manifest <manifest> --yes        # when the project has a repo
 bash core/scripts/hq-delegate-secrets.sh --manifest <manifest> --yes     # always, unless the user typed --no-secrets
-bash core/scripts/hq-delegate-transfer.sh --manifest <manifest>          # skipped automatically in share mode
+bash core/scripts/hq-delegate-transfer.sh --manifest <manifest>          # skipped automatically in share mode; runs hq mesh project reassign
 bash core/scripts/hq-delegate-verify.sh --manifest <manifest>            # reachability probe — gates the send
 ```
 
@@ -211,6 +213,11 @@ re-send with a direct ask or hand it to someone else. `/startwork` should run
 `--check` on any manifest still at `sent`.
 
 ### 11. Report
+
+Read `workMeshOwnership` from the manifest. When it is `unconfirmed` (an older
+CLI or a server without `hq mesh project reassign`), say so in the report and
+name the follow-up command:
+`hq mesh project reassign <project> --company <co> --to <uid> --include-open-stories`.
 
 One plain sentence naming the recipient and what they now have — no step log,
 no jargon. Example:

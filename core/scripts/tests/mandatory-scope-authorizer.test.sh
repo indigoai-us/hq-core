@@ -498,6 +498,32 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "loop value traversing outside the bound company is blocked"
+grep -Fq 'Path: companies/indigo/../../otherco/settings/secret.yaml' "$TMP/err.txt" \
+  || fail "traversal denial should report the original path"
+grep -Fq 'Reason: expanded path resolves outside companies/indigo' "$TMP/err.txt" \
+  || fail "traversal denial should say the path resolves outside the bound company"
+if grep -Fq 'Target company: indigo' "$TMP/err.txt"; then
+  fail "traversal denial must not label the bound company as the target"
+fi
+
+echo "[36a] an unresolved company expansion names the session company"
+install_fixture "indigo"
+command='cat companies/$unresolved/settings/x'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "unresolved company expansion is blocked"
+grep -Fq 'BLOCKED: Unresolvable company-path expansion' "$TMP/err.txt" \
+  || fail "unresolved company expansion should use its own header"
+grep -Fq 'Path: companies/$unresolved/settings/x' "$TMP/err.txt" \
+  || fail "unresolved company expansion should report the literal path"
+grep -Fq 'Reason: variable expansion has no statically resolvable value' "$TMP/err.txt" \
+  || fail "unresolved company expansion should give its reason"
+grep -Fq 'Session company_slug: indigo' "$TMP/err.txt" \
+  || fail "unresolved company expansion should name the session company"
+if grep -Fq 'Target company: unknown' "$TMP/err.txt"; then
+  fail "unresolved company expansion should not report an unknown target company"
+fi
 
 echo "[37] Bash ignores a foreign-company path in inert heredoc text"
 install_fixture "indigo"
@@ -523,6 +549,40 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "foreign path in an executed heredoc remains blocked"
+
+echo "[39a] Bash scans heredoc bodies written to a file the command later executes"
+install_fixture "indigo"
+for command in \
+  $'cat <<\'BODY\' > /tmp/scope-gen.sh\ncat companies/otherco/settings/secret.yaml\nBODY\nbash /tmp/scope-gen.sh' \
+  $'cat <<BODY > /tmp/scope-gen.sh\ncat companies/otherco/settings/secret.yaml\nBODY\nbash /tmp/scope-gen.sh' \
+  $'cat <<\'BODY\' > /tmp/scope-gen.sh\ncat companies/otherco/settings/secret.yaml\nBODY\n. /tmp/scope-gen.sh' \
+  $'cat <<\'BODY\' > scope-gen.sh\ncat companies/otherco/settings/secret.yaml\nBODY\nchmod +x scope-gen.sh && ./scope-gen.sh' \
+  $'tee /tmp/scope-gen.py >/dev/null <<\'BODY\'\nopen("companies/otherco/settings/secret.yaml")\nBODY\npython3 /tmp/scope-gen.py'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "executed heredoc file cannot reach another company: ${command##*$'\n'}"
+done
+
+echo "[39b] Bash scans here-strings and -c scripts handed to a shell"
+install_fixture "indigo"
+for command in \
+  "bash <<< 'cat companies/otherco/settings/secret.yaml'" \
+  "bash -c 'cat companies/otherco/settings/secret.yaml'" \
+  "sh -c \"\$(cat <<< 'cat companies/otherco/settings/secret.yaml')\""; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "shell input cannot reach another company: $command"
+done
+
+echo "[39c] an executed heredoc file inside the bound company is still allowed"
+install_fixture "indigo"
+command=$'cat <<\'BODY\' > /tmp/scope-gen.sh\ncat companies/indigo/settings/x\nBODY\nbash /tmp/scope-gen.sh'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "executed heredoc file reading the bound company is allowed"
 
 echo "[40] Bash blocks company-root globs that can span tenants"
 install_fixture "indigo"

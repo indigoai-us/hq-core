@@ -1,4 +1,27 @@
 ## [Unreleased]
+- Pricing data and setup/deploy guidance now reflect the live API's unlimited
+  deployment counts across plans.
+- The mandatory scope authorizer now scans heredoc and here-string bodies that a
+  later interpreter (`bash`, `sh`, `source`, `.`, `python`, `node`, and others)
+  executes, so a foreign company path in a script written to a file and then run
+  is denied. Unresolvable company-path denials print the session company and a
+  reason, and traversal escapes keep the original path and add "expanded path
+  resolves outside companies/<bound>". Ported from #1158 (hassaans).
+- `pipeline-worker-table.sh` honors `HQ_DISABLED_ENGINES` (comma-separated
+  `claude`, `codex`, `grok`). A row seeded with a listed engine is proposed as
+  `needs-answer` with empty engine and model and a note naming the allowed
+  engines, and `--confirmed` exits 2 on a lane that names a disabled engine.
+  Unset keeps the previous seeding.
+- `/execute-task` claims its story on the Work Mesh (`hq mesh claim`, assignee
+  you and status `in_progress`) right after the trusted bind, stops on a
+  `STORY_ASSIGNEE_CONFLICT` to ask before `--force`, and continues unclaimed
+  when `hq` or the verb is unavailable. `/run-project --interactive` claims
+  each story the same way.
+- `hq-delegate-transfer.sh` (used by `/delegate`) now runs
+  `hq mesh project reassign <project> --to <recipient uid> --include-open-stories`
+  and records `workMeshOwnership: confirmed` on the manifest only when the
+  server's receipt names the recipient. Older CLIs or servers leave it
+  `unconfirmed` and the transfer still succeeds.
 - The `hq-delegate-send.sh` MSYS jq wrapper now probes `--binary` only when
   jq is first used and caches that result for the script run, avoiding a probe
   on help paths while preserving Windows jq byte handling.

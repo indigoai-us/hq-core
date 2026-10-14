@@ -1,7 +1,7 @@
 ---
 name: retro
 description: Run a project or session retrospective and capture reusable lessons.
-allowed-tools: Read, Write, Glob, Grep, Bash(git:*), Bash(qmd:*), AskUserQuestion
+allowed-tools: Read, Write, Glob, Grep, Bash(git:*), Bash(qmd:*), Bash(bash core/scripts/handoff-builder-route.sh:*), Bash(bash core/scripts/handoff-autofile.sh:*), Bash(bash core/scripts/retro-merge-deficiencies.sh:*), AskUserQuestion
 ---
 
 # Retrospective
@@ -138,6 +138,31 @@ Which workers carried the most load? Any worker used on >70% of stories?
 **4. Time Distribution**
 - Rough breakdown: planning vs building vs debugging vs reviewing
 
+**5. Environment levers**
+
+Use the same seven levers as the `/handoff` deficiency scan (Step 2b of `.claude/skills/handoff/SKILL.md`). Unlike `/handoff`, retro reads the record: threads, learnings, the audit log, and git history from Step 1. Flag a lever only when that record shows the environment (not the task) slowed or misled the work.
+
+| lever | use when |
+|---|---|
+| `navigation` | Finding the right file, script, or doc took repeated searches or wrong turns. |
+| `automated-checks` | A test, lint, hook, or CI check was missing, flaky, slow, or misleading. |
+| `coding-standards` | A convention was unclear, contradictory, or undocumented. |
+| `steering-bloat` | Injected policies, reminders, or context crowded out what mattered or got truncated. |
+| `tool-economy` | A tool or command cost far more calls, output, or retries than the job needed. |
+| `no-ops` | A command, hook, or step ran and did nothing useful. |
+| `information-access` | Needed information, access, or a credential was unavailable or hard to reach. |
+
+Write each finding with the handoff item fields (`lever`, `kind`, `severity`, `summary`, `evidence`, `proposed_fix`; `kind` is `hq-core`, `local-setup`, or `repo`; `evidence` is required) to a temp file, for example `mktemp workspace/threads/.handoff-tmp/retro-deficiencies.XXXXXX`. Then merge in the `deficiencies[]` arrays that `/handoff` stored in thread files modified in the last 24h:
+
+```bash
+bash core/scripts/retro-merge-deficiencies.sh --root "$PWD" \
+  --retro-json "{retro_deficiencies_file}" \
+  ${HQ_ACTIVE_COMPANY:+--company "$HQ_ACTIVE_COMPANY"} \
+  --out "{retro_thread_file}"
+```
+
+The script dedupes by lever and summary (the retro's own item wins), drops items without evidence, tags each item with its `source`, and writes `{retro_thread_file}`: a thread-shaped file with the merged `deficiencies[]` and the newest thread's `system_info`. Step 5 reports from it and Step 6 files from it. When a company is bound, `--company` limits the merge to threads whose `metadata.company` lists it, so the analysis stays inside the resolved company's threads.
+
 ## Step 3: Pattern Detection
 
 Flag these patterns when evidence supports them:
@@ -249,6 +274,16 @@ Output to `workspace/reports/{slug}-retro.md`:
 |---|------|-------|--------|
 | 1 | {rule} | {scope} | new / already captured |
 
+## Environment Deficiencies (SESSION mode)
+
+Merged from this retro and thread `deficiencies[]` (last 24h). Same fields as the `/handoff` array.
+
+| lever | kind | severity | summary | evidence | proposed_fix | source |
+|---|---|---|---|---|---|---|
+| {lever} | {hq-core / local-setup / repo} | {high / medium / low} | {one line} | {what concretely happened} | {change or command} | {retro or thread file} |
+
+Write "None found." when the merged array is empty.
+
 ## What Went Well
 
 - {Specific thing that worked — be concrete, not generic}
@@ -268,19 +303,32 @@ Output to `workspace/reports/{slug}-retro.md`:
 qmd update 2>/dev/null || true
 ```
 
+**SESSION mode, hq-core deficiencies.** When `{retro_thread_file}` has any `kind: "hq-core"` item, offer to file them (ask; never file without a yes). Reuse the `/handoff` scripts with `{retro_thread_file}` as the thread:
+
+```bash
+bash core/scripts/handoff-builder-route.sh --root "$PWD" --thread "{retro_thread_file}"
+```
+
+- `route: public (...)`: offer `/hq-bug`. On yes, run `bash core/scripts/handoff-autofile.sh --thread "{retro_thread_file}" --root "$PWD"`. It files one `hq feedback bug` report, applies the 7-day dedupe ledger and the secret scan, and prints one `filed:` / `skipped:` / `aborted:` / `failed:` line. Keep it as `{file_result}`.
+- `route: builder` with `brief: <path>`: offer a staging PR. On yes, dispatch one visible fix agent with that brief exactly as `/handoff` Step 4.5 "Builder route" does (same prompt, never merge, never push to main). Keep its `pr:` line as `{file_result}`.
+- `brief: none (...)`, no hq-core items, or the user declines: `{file_result}` is `none (<reason>)`.
+
+Remove the temp files from Step 2 afterwards.
+
 Print:
 ```
 Retro complete: {title}
 Report: workspace/reports/{slug}-retro.md
 Patterns detected: {N}
 New learnings: {N} (run /learn to capture)
+Environment deficiencies: {N} ({hq-core N}) — {file_result}
 ```
 
 ---
 
 ## Rules
 
-- **Read-only analysis** — retro does not modify project files, prd.json, or board.json. It writes only its own report
+- **Read-only analysis** — retro does not modify project files, prd.json, or board.json. It writes only its own report and temp files, and files hq-core deficiencies only after the user says yes
 - **Evidence-backed patterns only** — do not flag patterns without specific data points from Steps 1-2
 - **Delegate learning capture** — suggest `/learn`, do not write policy files directly
 - **No re-capture** — check existing policies before proposing a learning. Duplicates waste context

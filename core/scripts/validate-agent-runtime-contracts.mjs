@@ -111,6 +111,10 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "The enable call begins with a runtime credential assignment and remains approval-gated.",
   ],
   [
+    ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/comments-watch.sh",
+    "The watcher is launched through hq monitor start with a runtime-built description, which cannot use a path-only literal prefix.",
+  ],
+  [
     ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/og-inject.sh",
     "The command is embedded in assignment syntax, which cannot use a path-only literal prefix.",
   ],

@@ -52,6 +52,30 @@ fi
 _wm_json_str "$INPUT" cwd; [ -n "$REPLY" ] && CWD=$REPLY
 [ -n "$SID" ] || exit 0
 
+# An unbound or unresolved preflight is a normal state (fresh install, no
+# company default, CLI offline or older). Claude Code prints SessionStart stderr
+# as a "hook error" whenever any sibling hook in the batch exits non-zero, so
+# these notices go to a debug log only. HQ_WORK_MESH_DEBUG=1 also echoes them.
+_wm_notice() {
+  local log_dir="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
+  local log_file="$log_dir/sessionstart-debug.log" log_size=0
+  # Size cap: past ~256 KB keep only the last ~64 KB. `wc -c <file` is portable
+  # across macOS, Linux, and Git Bash (no stat -c/-f split).
+  if [ -f "$log_file" ]; then
+    log_size="$(wc -c <"$log_file" 2>/dev/null | tr -d '[:space:]')" || log_size=0
+    case "$log_size" in ''|*[!0-9]*) log_size=0 ;; esac
+    if [ "$log_size" -gt 262144 ]; then
+      { tail -c 65536 "$log_file" >"$log_file.tmp.$$" \
+          && mv -f -- "$log_file.tmp.$$" "$log_file"; } 2>/dev/null \
+        || rm -f -- "$log_file.tmp.$$" 2>/dev/null || true
+    fi
+  fi
+  { mkdir -p -- "$log_dir" \
+      && printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SID" "$1" >>"$log_file"; } 2>/dev/null || true
+  case "${HQ_WORK_MESH_DEBUG:-}" in 1|true|TRUE|yes|YES|on|ON) printf '%s\n' "$1" >&2 ;; esac
+  return 0
+}
+
 BOUND_COMPANY=""
 WORK_CONTEXT_ROOT="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
 if [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
@@ -533,7 +557,7 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
         PREFLIGHT_KIND="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.kind' 2>/dev/null)" || PREFLIGHT_KIND=""
         case "$PREFLIGHT_CLASSIFICATION:$PREFLIGHT_KIND" in
           company_conflict:company_conflict)
-            printf '%s\n' 'work-mesh: company_conflict; leaving device-default session unbound' >&2
+            _wm_notice 'work-mesh: company_conflict; leaving device-default session unbound'
             ;;
           bound:bound|bound:queued|needs_project:needs_project|needs_project:queued|needs_task:needs_task|needs_task:queued)
             # Bind the exact slug/uid validated for this session+operation;
@@ -542,7 +566,7 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
               session_auto_bind_apply_validated_default "$HQ_ROOT" "$SID" "$PREFLIGHT_SLUG" "$PREFLIGHT_UID" "$PREFLIGHT_STATE_EXISTED" "$PREFLIGHT_REPAIR" || true
             ;;
           *)
-            printf '%s\n' 'work-mesh: preflight unresolved; leaving device-default session unbound' >&2
+            _wm_notice 'work-mesh: preflight unresolved; leaving device-default session unbound'
             ;;
         esac
         ;;
@@ -550,17 +574,17 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
         # No configured/validated default is an ordinary no-op, not an error.
         ;;
       unresolved|untracked)
-        printf '%s\n' 'work-mesh: preflight unresolved; leaving device-default session unbound' >&2
+        _wm_notice 'work-mesh: preflight unresolved; leaving device-default session unbound'
         ;;
       "")
         if printf '%s' "$PREFLIGHT_RESULT" | jq -e 'type == "object"' >/dev/null 2>&1; then
-          printf '%s\n' 'work-mesh: preflight rejected; classification not in contract' >&2
+          _wm_notice 'work-mesh: preflight rejected; classification not in contract'
         else
-          printf '%s\n' 'work-mesh: preflight unresolved; leaving device-default session unbound' >&2
+          _wm_notice 'work-mesh: preflight unresolved; leaving device-default session unbound'
         fi
         ;;
       *)
-        printf '%s\n' 'work-mesh: preflight rejected; classification not in contract' >&2
+        _wm_notice 'work-mesh: preflight rejected; classification not in contract'
         ;;
     esac
   fi

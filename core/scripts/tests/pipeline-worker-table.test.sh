@@ -15,6 +15,9 @@ SCRIPT="$ROOT/core/scripts/pipeline-worker-table.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# The table reads HQ_DISABLED_ENGINES; start every case without it.
+unset HQ_DISABLED_ENGINES
+
 PASS=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { PASS=$((PASS + 1)); echo "  ok — $1"; }
@@ -203,6 +206,25 @@ OUT="$(run --confirmed "$TMP/confirmed.tsv" "$TMP/prd-alias.json")"
 assert_contains "$OUT" "# lane backend-dev story US-40 (model_hint) bare alias ignored, table pins opus" "bare alias noted"
 assert_not_contains "$OUT" "'sonnet'" "bare alias never exported"
 ok "table pin wins over model_hint; bare alias never exported"
+
+# 11b. HQ_DISABLED_ENGINES: a disabled seed engine becomes needs-answer
+OUT="$(HQ_DISABLED_ENGINES=codex run "$TMP/prd.json")"
+QA="$(printf '%s\n' "$OUT" | grep $'^row\tqa-tester')"
+assert_eq "$(echo "$QA" | cut -f3-6)" $'\t\t\tneeds-answer' "disabled codex seed is not ready"
+assert_eq "$(echo "$QA" | cut -f8)" "codex disabled (HQ_DISABLED_ENGINES); choose claude or grok" "disabled note"
+BE="$(printf '%s\n' "$OUT" | grep $'^row\tbackend-dev')"
+assert_eq "$(echo "$BE" | cut -f3-6)" $'claude\topus\t\tok' "claude row unaffected"
+OUT="$(HQ_DISABLED_ENGINES=' Grok , CODEX' run "$TMP/prd.json")"
+assert_contains "$OUT" "codex disabled (HQ_DISABLED_ENGINES); choose claude" "list tolerates spaces and case"
+OUT="$(run "$TMP/prd.json")"
+QA="$(printf '%s\n' "$OUT" | grep $'^row\tqa-tester')"
+assert_eq "$(echo "$QA" | cut -f3-6)" $'codex\tgpt-5.4\thigh\tok' "unset variable keeps codex seed"
+set +e
+ERR="$(HQ_DISABLED_ENGINES=codex run --confirmed "$TMP/confirmed.tsv" "$TMP/prd.json" 2>&1 >/dev/null)"; RC=$?
+set -e
+assert_eq "$RC" "2" "confirmed codex lane with codex disabled exits 2"
+assert_contains "$ERR" "lane qa-tester: engine codex is disabled" "confirmed disabled message"
+ok "HQ_DISABLED_ENGINES: seed becomes needs-answer, confirmed lane exits 2, unset keeps codex"
 
 # 12. portable: no bash-only syntax
 if command -v dash >/dev/null 2>&1; then dash -n "$SCRIPT" || fail "dash -n failed"; fi

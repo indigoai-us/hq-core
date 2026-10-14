@@ -17,6 +17,24 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P || true
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$LIB_DIR/../../.." 2>/dev/null && pwd -P || true)}}"
 EVENT="${1:-}"
 
+# NO_LANE_STORE_MUST_STAY_SILENT: a senior session can only have lanes to
+# monitor when the lane store holds at least one record. A fresh install has
+# no store, so there is nothing to cover, and a missing jq or hq (common on a
+# new Windows Git Bash install) must not fail SessionStart. This check is pure
+# bash so it runs before either dependency is required. An unreadable store
+# still falls through to the checks below.
+lane_store_dir="$HQ_ROOT/workspace/lanes/lanes"
+if [ ! -e "$lane_store_dir" ]; then
+  exit 0
+fi
+if [ -d "$lane_store_dir" ] && [ -r "$lane_store_dir" ] && [ -x "$lane_store_dir" ]; then
+  shopt -s nullglob
+  lane_store_records=("$lane_store_dir"/*.json)
+  shopt -u nullglob
+  [ "${#lane_store_records[@]}" -gt 0 ] || exit 0
+  unset lane_store_records
+fi
+
 if ! command -v jq >/dev/null 2>&1; then
   printf 'ERROR: lanes-senior-monitor reminder shim: jq is unavailable; monitor coverage is unknown.\n' >&2
   exit 1

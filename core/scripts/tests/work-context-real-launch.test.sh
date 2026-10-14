@@ -88,6 +88,10 @@ elif [ "$1" = "mesh" ] && [ "$2" = "context" ] && [ "$3" = "reconcile" ]; then
   if [ -n "${HQ_RECONCILE_CAPTURE:-}" ] && [ -n "$observation" ]; then
     cat "$observation" >> "$HQ_RECONCILE_CAPTURE"
   fi
+  if [ -n "${HQ_RECONCILE_EXIT:-}" ]; then
+    printf '%s\n' "${HQ_RECONCILE_STDERR:-error: unknown command}" >&2
+    exit "$HQ_RECONCILE_EXIT"
+  fi
   if [ "${HQ_RECONCILE_SLEEP:-0}" != "0" ]; then
     sleep "$HQ_RECONCILE_SLEEP"
   fi
@@ -308,35 +312,69 @@ jq -e --arg cwd "$HQ/companies/otherco/projects/x" \
   '.cwd==$cwd and ((.trustedContext // {}) | has("companySlug") | not)' "$capture" >/dev/null \
   && pass "resolver receives cwd without a trusted device default" \
   || fail "resolver observation trusted the device default"
-grep -q 'company_conflict; leaving device-default session unbound' "$err" \
-  && pass "cwd conflict emits one-line notice" \
-  || fail "cwd conflict notice missing"
+[ ! -s "$err" ] && grep -q "$SID work-mesh: company_conflict; leaving device-default session unbound" "$HOME_DIR/.hq/work-context/sessionstart-debug.log" \
+  && pass "cwd conflict notice goes to debug log, stderr empty" \
+  || fail "cwd conflict notice: stderr=$(cat "$err" 2>/dev/null)"
 
 # --- 2d) failed or noncanonical preflight never promotes the device default ---
-for preflight_case in garbage timeout; do
+for preflight_case in garbage timeout cli-error; do
   reset_spool
   SID="sid-device-default-$preflight_case"
   err="$SANDBOX/device-default-$preflight_case.err"
   reconcile_result='not json at all'
   reconcile_sleep=0
+  reconcile_exit=""
+  # cli-error: an older or signed-out hq on a fresh install fails reconcile.
+  [ "$preflight_case" = "cli-error" ] && reconcile_exit=1
   if [ "$preflight_case" = "timeout" ]; then
     reconcile_result="$(preflight_fixture needs_project)"
     reconcile_sleep=5
   fi
   env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
     WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
-    HQ_WORK_MESH_RECONCILE_STUB=0 HQ_RECONCILE_RESULT="$reconcile_result" HQ_RECONCILE_SLEEP="$reconcile_sleep" \
+    HQ_WORK_MESH_RECONCILE_STUB=0 HQ_RECONCILE_RESULT="$reconcile_result" HQ_RECONCILE_SLEEP="$reconcile_sleep" HQ_RECONCILE_EXIT="$reconcile_exit" \
     HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
     CLAUDE_CODE_SESSION_ID="$SID" \
     bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
-    <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null 2>"$err"
+    <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null 2>"$err" && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] \
+    && pass "$preflight_case preflight exits 0" \
+    || fail "$preflight_case preflight exited $rc"
   [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
     && pass "$preflight_case preflight leaves device-default session unbound" \
     || fail "$preflight_case preflight wrote a device-default meta binding"
-  grep -q 'preflight unresolved; leaving device-default session unbound' "$err" \
-    && pass "$preflight_case preflight emits one-line notice" \
-    || fail "$preflight_case preflight notice missing"
+  # Regression (Windows fresh install, Oct 2026): an unresolved preflight must
+  # not write stderr, or Claude Code shows it as a SessionStart hook error.
+  [ ! -s "$err" ] \
+    && pass "$preflight_case preflight writes nothing to stderr" \
+    || fail "$preflight_case preflight stderr: $(cat "$err" 2>/dev/null)"
+  grep -q "$SID work-mesh: preflight unresolved; leaving device-default session unbound" "$HOME_DIR/.hq/work-context/sessionstart-debug.log" \
+    && pass "$preflight_case preflight notice goes to debug log" \
+    || fail "$preflight_case preflight debug-log notice missing"
 done
+
+# --- 2d1) debug log is size-capped (~256 KB trigger, ~64 KB kept) ---
+reset_spool
+SID=sid-device-default-logcap
+err="$SANDBOX/device-default-logcap.err"
+cap_log="$HOME_DIR/.hq/work-context/sessionstart-debug.log"
+mkdir -p "$HOME_DIR/.hq/work-context"
+awk 'BEGIN { for (i = 0; i < 6000; i++) printf "2026-01-01T00:00:00Z old-sid filler line %06d padding padding\n", i }' >"$cap_log"
+[ "$(wc -c <"$cap_log" | tr -d '[:space:]')" -gt 262144 ] || fail "log cap: seed log not oversized"
+env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SPOOL" \
+  WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
+  HQ_WORK_MESH_RECONCILE_STUB=0 HQ_RECONCILE_RESULT='not json at all' HQ_RECONCILE_SLEEP=0 HQ_RECONCILE_EXIT="" \
+  HQ_DEFAULT_COMPANY_JSON='{"ok":true,"slug":"acme","enabled":true,"needsChoice":false,"source":"configured"}' \
+  CLAUDE_CODE_SESSION_ID="$SID" \
+  bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
+  <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null 2>"$err" && rc=0 || rc=$?
+cap_size="$(wc -c <"$cap_log" | tr -d '[:space:]')"
+[ "$rc" -eq 0 ] && pass "log cap: hook exits 0" || fail "log cap: hook exited $rc"
+[ ! -s "$err" ] && pass "log cap: no stderr" || fail "log cap: stderr: $(cat "$err" 2>/dev/null)"
+[ "$cap_size" -le 262144 ] && pass "log cap: oversized log trimmed ($cap_size bytes)" \
+  || fail "log cap: log still $cap_size bytes"
+tail -n 1 "$cap_log" | grep -q "$SID work-mesh: preflight unresolved; leaving device-default session unbound" \
+  && pass "log cap: newest notice is last line" || fail "log cap: newest notice missing after trim"
 
 # --- 2d2) no configured default is intentionally silent ---
 reset_spool
@@ -571,7 +609,8 @@ while IFS= read -r classification; do
       ;;
     company_conflict)
       [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
-        && grep -q 'company_conflict; leaving device-default session unbound' "$err" \
+        && [ ! -s "$err" ] \
+        && grep -q "$SID work-mesh: company_conflict; leaving device-default session unbound" "$HOME_DIR/.hq/work-context/sessionstart-debug.log" \
         && pass "fixture company_conflict accepted and left unbound" \
         || fail "fixture company_conflict: $(cat "$err" 2>/dev/null)"
       ;;
@@ -582,8 +621,9 @@ while IFS= read -r classification; do
       ;;
     unresolved|untracked)
       [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
-        && grep -q 'preflight unresolved; leaving device-default session unbound' "$err" \
-        && ! grep -q 'preflight rejected' "$err" \
+        && [ ! -s "$err" ] \
+        && grep -q "$SID work-mesh: preflight unresolved; leaving device-default session unbound" "$HOME_DIR/.hq/work-context/sessionstart-debug.log" \
+        && ! grep -q "$SID work-mesh: preflight rejected" "$HOME_DIR/.hq/work-context/sessionstart-debug.log" \
         && pass "fixture $classification accepted without binding" \
         || fail "fixture $classification: $(cat "$err" 2>/dev/null)"
       ;;
@@ -605,7 +645,8 @@ env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK
   bash "$HQ/core/hooks/SessionStart/35-work-mesh-session-start.sh" \
   <<<"{\"session_id\":\"$SID\",\"cwd\":\"/tmp\"}" >/dev/null 2>"$err"
 [ ! -f "$HQ/workspace/sessions/$SID/meta.yaml" ] \
-  && grep -q 'preflight rejected; classification not in contract' "$err" \
+  && [ ! -s "$err" ] \
+  && grep -q "$SID work-mesh: preflight rejected; classification not in contract" "$HOME_DIR/.hq/work-context/sessionstart-debug.log" \
   && pass "migration_pending is not accepted" \
   || fail "outside-set shape was accepted: $(cat "$err" 2>/dev/null)"
 

@@ -752,12 +752,14 @@ journal_active_child_end() {
   [ -z "$active_child_file" ] || : > "$active_child_file" 2>/dev/null || true
 }
 
+# shellcheck disable=SC2154 # hook_timeout_owner_id is set by hook-timeout-probe.sh.
 acquire_journal_compaction_lock() {
   local lock_dir="$timeout_journal_file.lock" owner attempt
   [ -n "$timeout_journal_file" ] || return 1
+  hook_timeout_self_owner_id
   for attempt in 1 2; do
     if mkdir "$lock_dir" >/dev/null 2>&1; then
-      printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null || {
+      printf '%s\n' "$hook_timeout_owner_id" > "$lock_dir/pid" 2>/dev/null || {
         rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
         rmdir "$lock_dir" >/dev/null 2>&1 || true
         return 1
@@ -765,7 +767,7 @@ acquire_journal_compaction_lock() {
       return 0
     fi
     owner="$(cat "$lock_dir/pid" 2>/dev/null || true)"
-    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" >/dev/null 2>&1; then
+    if hook_timeout_owner_alive "$owner"; then
       return 1
     fi
     [ "$attempt" -eq 1 ] || break
@@ -774,7 +776,7 @@ acquire_journal_compaction_lock() {
   rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
   rmdir "$lock_dir" >/dev/null 2>&1 || return 1
   if mkdir "$lock_dir" >/dev/null 2>&1; then
-    printf '%s\n' "$$" > "$lock_dir/pid" 2>/dev/null || {
+    printf '%s\n' "$hook_timeout_owner_id" > "$lock_dir/pid" 2>/dev/null || {
       rm -f "$lock_dir/pid" >/dev/null 2>&1 || true
       rmdir "$lock_dir" >/dev/null 2>&1 || true
       return 1
@@ -906,7 +908,7 @@ timeout_warning_event_delivers_context() {
 }
 
 consume_timeout_breadcrumbs() {
-  local session_hash breadcrumb_dir record claim stale stale_pid text
+  local session_hash breadcrumb_dir record claim stale text owner_id=""
   master_timeout_watchdog_enabled || return 0
   [ -n "$SESSION_ID" ] || return 0
   session_hash="$(master_timeout_sha256 "$SESSION_ID")"
@@ -915,20 +917,28 @@ consume_timeout_breadcrumbs() {
   [ -d "$breadcrumb_dir" ] || return 0
 
   # A master process can be killed between atomic claim and final emission.
-  # Recover only claims whose owner PID is no longer alive; a concurrent live
-  # consumer keeps its claim and will either emit or restore it itself.
+  # Recover only claims whose owner is no longer alive; a concurrent live
+  # consumer keeps its claim and will either emit or restore it itself. The
+  # owner is matched by PID and start time because Git Bash reuses PIDs.
   for stale in "$breadcrumb_dir"/*.json.consuming.*; do
     [ -f "$stale" ] || continue
-    stale_pid="${stale##*.consuming.}"
-    if [[ ! "$stale_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$stale_pid" >/dev/null 2>&1; then
+    if ! hook_timeout_owner_alive "${stale##*.consuming.}"; then
       record="${stale%%.consuming.*}"
       [ -e "$record" ] || mv "$stale" "$record" 2>/dev/null || true
     fi
   done
   for record in "$breadcrumb_dir"/*.json; do
     [ -f "$record" ] || continue
-    claim="${record}.consuming.$$"
+    if [ -z "$owner_id" ]; then
+      hook_timeout_self_owner_id
+      # shellcheck disable=SC2154 # Set by hook_timeout_self_owner_id in hook-timeout-probe.sh.
+      owner_id="$hook_timeout_owner_id"
+    fi
+    claim="${record}.consuming.$owner_id"
     mv "$record" "$claim" 2>/dev/null || continue
+    # Read through a shell redirect. A Git Bash claim path can pass the
+    # 260-character Windows MAX_PATH limit, which the native jq.exe cannot
+    # open, and an unreadable claim would be deleted as invalid below.
     text="$(jq -r '
       if (.hook_path | type) == "string"
         and (.hook_event | type) == "string"
@@ -947,7 +957,7 @@ consume_timeout_breadcrumbs() {
           + .hook_event + ". It is about to be killed by the harness and its output will be discarded. Investigate why.\n</hq-hook-timeout-escalation>"
         else empty end
       else empty end
-    ' "$claim" 2>/dev/null || true)"
+    ' < "$claim" 2>/dev/null || true)"
     if [ -z "$text" ]; then
       rm -f "$claim" >/dev/null 2>&1 || true
       continue
@@ -1405,7 +1415,7 @@ master_timeout_record_exists() {
     [ -f "$record" ] || continue
     if jq -e --arg hook_path "$SCRIPT_DIR/master-hook.sh" --arg event "$EVENT" --arg invocation_id "$MASTER_INVOCATION_ID" '
       .hook_path == $hook_path and .hook_event == $event and .invocation_id == $invocation_id
-    ' "$record" >/dev/null 2>&1; then
+    ' < "$record" >/dev/null 2>&1; then
       return 0
     fi
   done
@@ -1494,7 +1504,7 @@ wait_for_timeout_reporters() {
     [ -f "$record" ] || continue
     if ! jq -e --arg hook_path "$SCRIPT_DIR/master-hook.sh" --arg event "$EVENT" --arg invocation_id "$MASTER_INVOCATION_ID" '
       .hook_path == $hook_path and .hook_event == $event and .invocation_id == $invocation_id
-    ' "$record" >/dev/null 2>&1; then
+    ' < "$record" >/dev/null 2>&1; then
       continue
     fi
     marker="$record.reported"
@@ -1510,14 +1520,6 @@ wait_for_timeout_reporters() {
 master_load_average() {
   hook_timeout_load_average "$(uname -s 2>/dev/null || printf 'unknown')" /proc/loadavg \
     "$(command -v sysctl 2>/dev/null || printf 'sysctl')"
-}
-
-master_spawn_probe_ms() {
-  local os_name="$1" shell_bin
-  shell_bin="$(command -v bash 2>/dev/null || true)"
-  [ "$os_name" = windows ] || return 0
-  [ -n "$timeout_journal_file" ] || return 0
-  hook_timeout_spawn_ms "$timeout_journal_file.spawn-ms" "$shell_bin"
 }
 
 master_elapsed_ms() {
@@ -1536,9 +1538,10 @@ master_report_late_event() {
   local child_timeout_seconds="${5:-}" declared_timeout_ms watchdog_timeout_ms
   local hook_name message hq_version platform load_average fingerprint_identity fingerprint_hash
   local bash_env_set shell_info cwd_kind_value nproc_count hook_sequence policy_trigger_metadata report_exit event_json
-  local os_name spawn_ms slow_child="" slow_child_ms="" slow_child_state="" slow_phase="" slow_child_duration=0 dispatcher_fallback=0 i
+  local os_name spawn_ms="" slow_child="" slow_child_ms="" slow_child_state="" slow_phase="" slow_child_duration=0 dispatcher_fallback=0 i
   local active_child_name="" active_child_event="" active_child_started_ms="" active_child_now_ms=""
   local hq_bin debug_process_count=unavailable debug_spawn_ms=unavailable debug_context=""
+  local spawn_cache_file cached_spawn_ms
   local debug_phase_timings='[]' debug_wait_point=wait debug_child_name=other debug_child_elapsed=0 debug_remaining_ms
   command -v hq >/dev/null 2>&1 || return 0
   hq_bin="$(command -v hq 2>/dev/null || printf 'hq')"
@@ -1552,7 +1555,15 @@ master_report_late_event() {
   platform="$(uname -s 2>/dev/null || printf 'unknown')"
   os_name="$(hook_timeout_os_name "$platform")"
   load_average="$(master_load_average)"
-  spawn_ms="$(master_spawn_probe_ms "$os_name")"
+  # The watchdog measures spawn latency only after a warning is accepted. The
+  # late reporter must reuse that cache instead of starting another probe.
+  if [ -n "${timeout_journal_file:-}" ]; then
+    spawn_cache_file="$timeout_journal_file.spawn-ms"
+    if [ -r "$spawn_cache_file" ]; then
+      cached_spawn_ms="$(<"$spawn_cache_file")"
+      [[ "$cached_spawn_ms" =~ ^[0-9]{1,9}$ ]] && spawn_ms="$cached_spawn_ms"
+    fi
+  fi
   if [ "$hook_name" = master-hook.sh ]; then
     if [ -n "${active_child_file:-}" ] && [ -r "$active_child_file" ]; then
       IFS=$'\t' read -r active_child_name active_child_event active_child_started_ms < "$active_child_file" || true
@@ -1624,9 +1635,9 @@ master_report_late_event() {
     "$MASTER_DEBUG_PHASE_FILE" "$MASTER_DEBUG_ACTIVE_PHASE_FILE" "__read_active__" \
     "$MASTER_DEBUG_CHILD_PHASE_FILE")"
   if [ "$os_name" = windows ]; then
-    [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
     debug_process_count="$(hook_timeout_windows_process_count "$(command -v ps 2>/dev/null || printf 'ps')")"
   fi
+  [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
   if [ "$dispatcher_fallback" -eq 1 ]; then
     # Preserve the active phase for the detailed context; the top-level fields
     # carry the dispatcher basename and its measured elapsed time for the CLI.
@@ -1647,6 +1658,9 @@ master_report_late_event() {
         esac
         ;;
     esac
+  fi
+  if [ -z "$slow_phase" ]; then
+    slow_phase=no_phase_recorded
   fi
   if hook_timeout_cli_supports_debug_context "$hq_bin" "$MASTER_DEBUG_CLI_VERSION_FILE" "$platform"; then
     debug_context="$(hook_timeout_debug_context_json \

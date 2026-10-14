@@ -57,6 +57,13 @@
 #   worker.yaml has no grok field, so grok is never seeded; the owner chooses it
 #   in the confirmed table.
 #
+# DISABLED ENGINES: HQ_DISABLED_ENGINES is an optional comma-separated list of
+# engines (claude, codex, grok) this HQ must not dispatch to. A row whose seed
+# engine is in the list is emitted with engine and model empty, status
+# needs-answer, and the note `<engine> disabled (HQ_DISABLED_ENGINES); choose
+# ...` naming the engines still allowed. In --confirmed mode a lane naming a
+# disabled engine exits 2. Unset or empty disables nothing.
+#
 # CONFIRMED MODE: --confirmed <file> holds one lane per line,
 #   <worker> <engine> <model> <effort>   (tabs or spaces; # comments allowed;
 #   effort may be omitted). engine must be claude, codex, or grok and model must
@@ -87,6 +94,23 @@ NL='
 TAB="$(printf '\t')"
 
 die() { echo "pipeline-worker-table: $1" >&2; exit "${2:-1}"; }
+
+# engine_disabled <engine> -> 0 when <engine> is listed in HQ_DISABLED_ENGINES.
+engine_disabled() {
+  case ",$(printf '%s' "${HQ_DISABLED_ENGINES:-}" | tr -d ' \t' | tr '[:upper:]' '[:lower:]')," in
+    *",$1,"*) return 0 ;;
+  esac
+  return 1
+}
+# allowed_engines -> the engines not disabled, joined with " or ".
+allowed_engines() {
+  out=""
+  for e in claude codex grok; do
+    engine_disabled "$e" && continue
+    if [ -n "$out" ]; then out="$out or $e"; else out="$e"; fi
+  done
+  printf '%s' "${out:-none}"
+}
 
 ROOTS=""
 CONFIRMED=""
@@ -212,6 +236,7 @@ if [ -n "$CONFIRMED" ]; then
   while read -r w engine model effort _rest || [ -n "${w:-}" ]; do
     case "$w" in ''|'#'*|worker) continue ;; esac
     case "${engine:-}" in claude|codex|grok) ;; *) die "lane $w: engine must be claude, codex, or grok (got '${engine:-}')" 2 ;; esac
+    ! engine_disabled "$engine" || die "lane $w: engine $engine is disabled (HQ_DISABLED_ENGINES=${HQ_DISABLED_ENGINES:-}); choose $(allowed_engines)" 2
     [ -n "${model:-}" ] || die "lane $w: model is empty — answer it before launch" 2
     echo "# lane $w ($engine)"
     emit_exports "$engine" "$model" "${effort:-}"
@@ -271,6 +296,10 @@ printf '%s\n' "$WORKERS" | while IFS= read -r w; do
       effort="$(exec_field "$y" codex_flags | sed -n 's/.*--reasoning[= ]\([A-Za-z]*\).*/\1/p')"
     else
       note="no execution.model or execution.codex_model"
+    fi
+    if [ -n "$engine" ] && engine_disabled "$engine"; then
+      note="$engine disabled (HQ_DISABLED_ENGINES); choose $(allowed_engines)"
+      engine=""; model=""; effort=""; status="needs-answer"
     fi
   fi
   printf 'row\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$w" "$engine" "$model" "$effort" "$status" "$(stories_of "$w")" "$note"

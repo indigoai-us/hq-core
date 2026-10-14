@@ -25,6 +25,14 @@ done
 bash "$repo_root/core/scripts/build-claude-plugin.sh" "$plugin"
 node "$repo_root/core/scripts/validate-agent-runtime-contracts.mjs" --root "$repo_root" --plugin-dir "$plugin"
 
+# A skill folder that is also a Claude Code plugin (the run-project progress
+# mod) loads at the HQ root only; its mod must not ship in HQ Anywhere.
+nested=$(find "$plugin/skills" -path '*/.claude-plugin/plugin.json' -print)
+if [ -n "$nested" ]; then
+  printf 'bundled skill carries its own plugin manifest:\n%s\n' "$nested" >&2
+  exit 1
+fi
+
 bad_plugin="$tmp/bad-plugin"
 cp -R "$plugin" "$bad_plugin"
 mkdir -p "$bad_plugin/skills/bad-metadata"

@@ -108,4 +108,99 @@ if printf '%s' "$demo_out" | grep -qF "/execute-task other/US-999"; then
   fail "session demo read another session's journal"
 fi
 
+# Regression: the hook runs after every turn, and long sessions grow their
+# transcript to hundreds of MB. A full-file scan there cost ~6s per run (one
+# 270 MB session spent 25-60s per turn in Stop hooks), so the hook must read
+# only a bounded tail of the transcript. Shim every full-file reader the hook
+# could plausibly use and fail if one of them is handed the transcript path.
+#
+# The shims are POSIX sh with builtins only, and the hook runs with BASH_ENV
+# and ENV unset. A bash shim would source BASH_ENV (often ~/.bashrc) at
+# startup; if that file calls any shimmed tool, every call starts another
+# shim and the test becomes a fork bomb.
+SHIM_DIR="$TMP_ROOT/shim-bin"
+SHIM_LOG="$TMP_ROOT/shim.log"
+mkdir -p "$SHIM_DIR"
+: > "$SHIM_LOG"
+#
+# Reverse readers count as full-file readers too: an uncapped reverse scan
+# (tac, or BSD tail -r) walks back toward the start of the file whenever the
+# newest assistant record is far from EOF. Plain tail -c / tail -n read from
+# the end and stay bounded, so only tail -r is flagged.
+for tool in awk cat grep sed jq perl python3 head wc cut sort tac tail; do
+  real="$(command -v "$tool" 2>/dev/null || true)"
+  case "$real" in /*) ;; *) continue ;; esac
+  flagged_tool=1
+  [ "$tool" = tail ] && flagged_tool=0
+  cat > "$SHIM_DIR/$tool" <<EOF
+#!/bin/sh
+flag=$flagged_tool
+for arg in "\$@"; do
+  [ "\$arg" = "-r" ] && flag=1
+done
+if [ "\$flag" = 1 ]; then
+  for arg in "\$@"; do
+    case "\$arg" in
+      *big-transcript.jsonl) printf '%s %s\n' "$tool" "\$arg" >> "$SHIM_LOG" ;;
+    esac
+  done
+fi
+exec "$real" "\$@"
+EOF
+  chmod +x "$SHIM_DIR/$tool"
+done
+run_hook_with_shims() {
+  env -u BASH_ENV -u ENV CLAUDE_PROJECT_DIR="$TMP_ROOT" PATH="$SHIM_DIR:$PATH" \
+    bash "$HOOK"
+}
+
+BIG="$TMP_ROOT/big-transcript.jsonl"
+filler="$(printf '%*s' 8192 '' | tr ' ' 'x')"
+{
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Old turn: the build failed and I was blocked."}]}}'
+  i=0
+  while [ "$i" -lt 300 ]; do
+    printf '{"type":"user","message":{"content":[{"type":"tool_result","content":"%s"}]}}\n' "$filler"
+    i=$((i + 1))
+  done
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Handoff ready. To continue in a fresh session, run startwork."}]}}'
+} > "$BIG"
+big_size="$(wc -c < "$BIG" | tr -d ' ')"
+[ "$big_size" -gt 2000000 ] || fail "fixture transcript too small to exercise the bounded read: $big_size bytes"
+
+big_payload=$(printf '{"session_id":"s-big","transcript_path":"%s"}' "$BIG")
+big_out=$(run_hook_with_shims <<<"$big_payload")
+assert_contains "$big_out" "resume from the handoff" "large transcript uses the newest assistant turn"
+if printf '%s' "$big_out" | grep -qF "/investigate"; then
+  fail "large transcript: suggestion came from an older assistant turn"
+fi
+if [ -s "$SHIM_LOG" ]; then
+  fail "large transcript was read in full by: $(tr '\n' ';' < "$SHIM_LOG")"
+fi
+
+# When more than the bounded window of records follows the newest assistant
+# record, the hook must not scan backward to find it: these suggestions are
+# advisory, so it falls back to the generic ones. It must never pick an older
+# assistant turn instead.
+TRAILING="$TMP_ROOT/trailing-big-transcript.jsonl"
+{
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Old turn: the build failed and I was blocked."}]}}'
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Handoff ready for the next session."}]}}'
+  i=0
+  while [ "$i" -lt 300 ]; do
+    printf '{"type":"system","content":"%s"}\n' "$filler"
+    i=$((i + 1))
+  done
+} > "$TRAILING"
+: > "$SHIM_LOG"
+trailing_payload=$(printf '{"session_id":"s-trailing","transcript_path":"%s"}' "$TRAILING")
+trailing_out=$(run_hook_with_shims <<<"$trailing_payload")
+assert_contains "$trailing_out" "<hq-suggestions>" "long tail still emits suggestions"
+if printf '%s' "$trailing_out" | grep -qF "/investigate"; then
+  fail "long tail: suggestion came from an older assistant turn"
+fi
+if [ -s "$SHIM_LOG" ]; then
+  fail "long-tail transcript was read in full by: $(tr '\n' ';' < "$SHIM_LOG")"
+fi
+
 echo "after-turn-suggestions smoke: ok"

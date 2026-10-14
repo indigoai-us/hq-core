@@ -31,7 +31,19 @@ jq -e 'def safe_path: type == "string" and length > 0 and (startswith("/") | not
   exit 1
 }
 
-for knowledge_path in "$root"/core/knowledge/public/* "$root"/core/knowledge/private/* "$root"/personal/knowledge/* "$root"/companies/*/knowledge; do
+# Company scope: only the session's bound company (HQ_ACTIVE_COMPANY) is
+# considered. Other companies' knowledge is never read or committed. With no
+# bound company, company knowledge is skipped and the skip is reported.
+bound_company="${HQ_ACTIVE_COMPANY:-}"
+company_knowledge=()
+if [[ "$bound_company" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  company_knowledge=("$root/companies/$bound_company/knowledge")
+else
+  bound_company=""
+  echo "SKIPPED-COMPANY-KNOWLEDGE: no bound company; company knowledge repositories were not processed"
+fi
+
+for knowledge_path in "$root"/core/knowledge/public/* "$root"/core/knowledge/private/* "$root"/personal/knowledge/* ${company_knowledge[@]+"${company_knowledge[@]}"}; do
   [ -e "$knowledge_path" ] || [ -L "$knowledge_path" ] || continue
   knowledge_rel="${knowledge_path#"$root"/}"
   if [ -L "$knowledge_path" ]; then
@@ -53,9 +65,8 @@ for knowledge_path in "$root"/core/knowledge/public/* "$root"/core/knowledge/pri
     esac
     continue
   fi
-  case "$knowledge_path" in
-    "$root"/companies/*/knowledge) continue ;;
-  esac
+  # A plain company knowledge directory syncs through its vault; only a bound
+  # company's knowledge that is its own git repository is committed here.
   [ -e "$knowledge_path/.git" ] || continue
   repo_dir="$(git -C "$knowledge_path" rev-parse --show-toplevel 2>/dev/null)" || continue
   knowledge_real="$(cd "$knowledge_path" && pwd -P)"
@@ -115,6 +126,14 @@ done
 while IFS= read -r touched_path; do
   case "$touched_path" in
     core/knowledge/public/*|core/knowledge/private/*|personal/knowledge/*)
+      if ! grep -Fqx -- "$touched_path" "$handled_paths"; then
+        echo "NOT-COMMITTED: $touched_path is listed in the handoff changeset but no knowledge repository committed it"
+      fi
+      ;;
+    companies/*/knowledge/*)
+      [ -n "$bound_company" ] || continue
+      case "$touched_path" in "companies/$bound_company/knowledge/"*) ;; *) continue ;; esac
+      [ -e "$root/companies/$bound_company/knowledge/.git" ] || continue
       if ! grep -Fqx -- "$touched_path" "$handled_paths"; then
         echo "NOT-COMMITTED: $touched_path is listed in the handoff changeset but no knowledge repository committed it"
       fi

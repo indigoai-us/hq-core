@@ -62,13 +62,20 @@ cat > "$HQ_ROOT/core/scripts/session-title.sh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 cmd=""
+prune_stale_state=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --command) cmd="${2:-}"; shift 2 ;;
     --session-id) shift 2 ;;
+    --prune-stale-state) prune_stale_state=1; shift ;;
     *) shift ;;
   esac
 done
+if [ "$prune_stale_state" -eq 1 ]; then
+  find "$HQ_ROOT/.claude/state" -maxdepth 1 -type f \
+    \( -name 'session-title-*' -o -name 'auto-session-project-*' \) \
+    -mtime +14 -delete 2>/dev/null || true
+fi
 [ -n "$cmd" ] || cmd="chat"
 printf 'hq · %s\n' "$cmd"
 STUB

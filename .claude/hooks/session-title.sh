@@ -50,6 +50,9 @@ esac
 
 [ -x "$HELPER" ] || exit 0
 
+# This hook does not use hq_normpath. Seed its platform switch so sourcing the
+# shared library does not fork `uname` merely to initialize an unused helper.
+HQ_LIB_WINSEP="${HQ_LIB_WINSEP:-0}"
 . "$HOOK_REPO_ROOT/core/scripts/hook-lib.sh"
 
 extract() {
@@ -248,16 +251,6 @@ if [ -f "$MANUAL" ]; then
 fi
 # --- manual-rename back-off (END) -------------------------------------------
 
-prune_stale_state() {
-  # Per-session title state accumulates one to three small files per session.
-  # Drop anything untouched for a fortnight; cheap and SessionStart-only.
-  command -v find >/dev/null 2>&1 || return 0
-  find "$STATE_DIR" -maxdepth 1 -type f \
-    \( -name 'session-title-*' -o -name 'auto-session-project-*' \) -mtime +14 \
-    -exec rm -f {} + 2>/dev/null || true
-}
-[ "$EVENT" = "SessionStart" ] && prune_stale_state
-
 file_contains_line() {
   local file="$1" wanted="$2" line
   [ -f "$file" ] || return 1
@@ -285,7 +278,9 @@ mark_manual() {
 
 # State file: line 1 = last command word, line 2 = last emitted title.
 last_command=""; last_title=""
+had_state=0
 if [ -f "$STATE" ]; then
+  had_state=1
   {
     IFS= read -r last_command || true
     IFS= read -r last_title || true
@@ -336,7 +331,21 @@ if [ "$EVENT" = "UserPromptSubmit" ] && [ ! -f "$PROJ_MARKER" ] && [ ! -f "$PROJ
 fi
 # --- project-marker wait (END) ----------------------------------------------
 
-title="$("$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null || true)"
+PRUNE_STALE_ARGS=()
+[ "$EVENT" = "SessionStart" ] && PRUNE_STALE_ARGS=(--prune-stale-state)
+# Bash 3.2 (macOS /bin/bash) treats "${arr[@]}" on an empty array as unbound
+# under set -u, so expand the optional flag only when it is set.
+title="$("$BASH" "$HELPER" --session-id "$SESSION_ID" --command "$command" ${PRUNE_STALE_ARGS[@]+"${PRUNE_STALE_ARGS[@]}"} 2>/dev/null || true)"
+# The helper prunes stale state after the state file was read above. If it
+# pruned this session's own file (a session id reused or resumed after more
+# than 14 days), the command and title read from it are stale: drop them and
+# resolve the title again from a clean slate. Only that rare case pays for the
+# second helper launch.
+if [ "$had_state" = "1" ] && [ ! -f "$STATE" ]; then
+  last_command=""; last_title=""
+  command=""
+  title="$("$BASH" "$HELPER" --session-id "$SESSION_ID" --command "$command" 2>/dev/null || true)"
+fi
 
 # --- first-turn naming nudge (BEGIN) ----------------------------------------
 # Outside the terminal CLI the sessionTitle emitted below never lands: the

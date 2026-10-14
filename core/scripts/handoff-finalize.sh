@@ -15,6 +15,7 @@
 #     --files-touched-json '["path1","path2"]' \
 #     --files-touched-json-file workspace/threads/.changeset.json \
 #     --learnings-json '[]' \
+#     --deficiencies-json workspace/threads/.handoff-tmp/deficiencies.json \
 #     --tags-json '["handoff"]' \
 #     --slug "handoff-short-tag" \
 #     --company "owner-slug" \
@@ -48,6 +49,13 @@
 #                       incomplete even if a commit landed for the rest; exit 4.
 #                       This is the shape a held .git/index.lock takes.
 # stage_failures lists paths git add rejected for a reason other than gitignore.
+#
+# --deficiencies-json <path> takes a file holding the Step 2 environment
+# deficiencies array (lever, kind, severity, summary, evidence, proposed_fix).
+# Items whose evidence is missing or blank are dropped before storage. A
+# missing file is a hard error (exit 3). The thread also gets one system_info
+# block (hq_version, hq_cli_version, host, os, hooks_enforced) with no paths,
+# emails, or tokens.
 #
 # Exit codes: 0 ok · 2 bad argument · 3 changeset file missing · 4 handoff not
 # durable (commit refused or paths unstageable) · 5 mirror failed.
@@ -85,6 +93,7 @@ NEXT_STEPS_JSON="[]"
 FILES_TOUCHED_JSON="[]"
 FILES_TOUCHED_JSON_FILE=""
 LEARNINGS_JSON="[]"
+DEFICIENCIES_JSON_FILE=""
 TAGS_JSON='["handoff"]'
 SLUG="handoff"
 NEXT_COMMAND="__auto__"
@@ -100,6 +109,7 @@ while [[ $# -gt 0 ]]; do
     --files-touched-json) FILES_TOUCHED_JSON="$2"; shift 2 ;;
     --files-touched-json-file) FILES_TOUCHED_JSON_FILE="$2"; shift 2 ;;
     --learnings-json) LEARNINGS_JSON="$2"; shift 2 ;;
+    --deficiencies-json) DEFICIENCIES_JSON_FILE="$2"; shift 2 ;;
     --tags-json) TAGS_JSON="$2"; shift 2 ;;
     --slug) SLUG="$2"; shift 2 ;;
     --next-command) NEXT_COMMAND="$2"; shift 2 ;;
@@ -354,6 +364,49 @@ else
   printf '[]' > "$STAGED_PATHS_FILE"
 fi
 
+# -------- environment deficiencies + system_info --------
+DEFICIENCIES_JSON="[]"
+if [[ -n "$DEFICIENCIES_JSON_FILE" ]]; then
+  if [[ ! -f "$DEFICIENCIES_JSON_FILE" ]]; then
+    echo "handoff-finalize: deficiencies file not found: $DEFICIENCIES_JSON_FILE" >&2
+    exit 3
+  fi
+  if ! DEFICIENCIES_JSON="$(jq -c '
+      if type == "array" then . else [] end
+      | map(select(type == "object"
+          and ((.evidence // "") | type) == "string"
+          and ((.evidence // "") | gsub("^\\s+|\\s+$"; "")) != ""))
+      | map({lever, kind, severity, summary, evidence, proposed_fix})
+    ' "$DEFICIENCIES_JSON_FILE" 2>/dev/null)"; then
+    echo "handoff-finalize: deficiencies file is not valid JSON: $DEFICIENCIES_JSON_FILE" >&2
+    exit 2
+  fi
+fi
+
+SYSINFO_HQ_VERSION="$(sed -n 's/^hqVersion:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' core/core.yaml 2>/dev/null | head -n 1 || true)"
+SYSINFO_CLI_VERSION=""
+if command -v hq >/dev/null 2>&1; then
+  SYSINFO_CLI_VERSION="$(hq --version 2>/dev/null | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*' | head -n 1 || true)"
+fi
+case "${HQ_HANDOFF_HOST:-${CLAUDE_CODE_ENTRYPOINT:-cli}}" in
+  sdk*) SYSINFO_HOST="sdk" ;;
+  *desktop*) SYSINFO_HOST="desktop" ;;
+  *) SYSINFO_HOST="cli" ;;
+esac
+SYSINFO_OS="$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+SYSINFO_HOOKS="false"
+if [[ -f core/scripts/check-hq-hooks.sh ]] && \
+   bash core/scripts/check-hq-hooks.sh --root "$HQ_ROOT" --require-ledger >/dev/null 2>&1; then
+  SYSINFO_HOOKS="true"
+fi
+SYSTEM_INFO_JSON="$(jq -cn \
+  --arg hq_version "$SYSINFO_HQ_VERSION" \
+  --arg hq_cli_version "$SYSINFO_CLI_VERSION" \
+  --arg host "$SYSINFO_HOST" \
+  --arg os "$SYSINFO_OS" \
+  --argjson hooks_enforced "$SYSINFO_HOOKS" \
+  '{hq_version: $hq_version, hq_cli_version: $hq_cli_version, host: $host, os: $os, hooks_enforced: $hooks_enforced}')"
+
 mkdir -p workspace/threads
 # Every next step carries an id and a closure status (2026-09-07). Handoffs
 # used to record steps with no way to close one; an audit found a task copied
@@ -382,6 +435,8 @@ jq -n \
   --argjson next_steps "$NEXT_STEPS_NORMALIZED_JSON" \
   --slurpfile files_touched "$FILES_TOUCHED_FILE" \
   --argjson learnings "$LEARNINGS_JSON" \
+  --argjson deficiencies "$DEFICIENCIES_JSON" \
+  --argjson system_info "$SYSTEM_INFO_JSON" \
   --argjson tags "$TAGS_JSON" \
   --argjson companies "$MIRROR_COMPANIES_JSON" \
   --argjson company_slugs "$SESSION_LOCKED_COMPANIES_JSON" \
@@ -399,6 +454,8 @@ jq -n \
     next_steps: $next_steps,
     files_touched: ($files_touched[0] // []),
     learnings: $learnings,
+    deficiencies: $deficiencies,
+    system_info: $system_info,
     metadata: { title: $title, tags: $tags, company: $companies, company_slugs: $company_slugs }
   }' > "$THREAD_PATH"
 

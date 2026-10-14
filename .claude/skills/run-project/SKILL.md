@@ -44,6 +44,14 @@ bash core/scripts/work-mesh-live-bind-trusted.sh \
 Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
 and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 
+**Story claims.** Each story is claimed on the Work Mesh when it starts. Lanes
+running `/execute-task` claim in its step 1.6. In `--interactive` mode the
+parent claims before editing:
+`hq mesh claim --company "{co}" --project "{project}" --story "{story-id}"`.
+On `STORY_ASSIGNEE_CONFLICT`, skip that story, report its holder, and ask the
+user before re-running with `--force`. A missing `hq` or an older CLI without
+`claim` does not block the run.
+
 ## Step 1 — Parse Arguments
 
 Extract from `$ARGUMENTS`:
@@ -285,6 +293,9 @@ the known ids; fix the sequence rather than answering its row. Then:
   `unclassified` story needs an overlay entry (`overlay set`) or goes on the
   skip list.
 - Do not add a `pipeline-conductor` row: it is not a lane.
+- `HQ_DISABLED_ENGINES` (comma-separated `claude`, `codex`, `grok`) turns any
+  row seeded with a listed engine into `needs-answer` with an empty engine and
+  model, and makes `--confirmed` exit 2 on a lane that names one.
 - A `model_hint` does not override a confirmed row: the lane's model wins, and
   `--confirmed` prints each hint commented out as "hint ignored, table pins
   <model>". A bare alias (`opus`, `sonnet`, `haiku`) is never passed to an
