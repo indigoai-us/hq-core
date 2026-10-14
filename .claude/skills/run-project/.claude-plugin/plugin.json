@@ -1,0 +1,7 @@
+{
+  "name": "run-project",
+  "version": "0.1.0",
+  "description": "Story progress band for /run-project: done vs remaining PRD stories above the prompt while a run is in progress",
+  "author": { "name": "Indigo" },
+  "types": "./types/index.d.ts"
+}

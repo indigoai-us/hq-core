@@ -55,6 +55,14 @@ if [ "${1:-} ${2:-} ${3:-}" = "mesh session note" ]; then
     esac
   done
 fi
+if [ "${1:-} ${2:-} ${3:-}" = "mesh project reassign" ]; then
+  # MESH_REASSIGN_MODE: ok (server receipt), old (pre-reassign CLI), 404.
+  case "${MESH_REASSIGN_MODE:-ok}" in
+    ok)  printf '{"ok":true,"projectId":"%s","ownerUid":"prs_alice1","previousOwnerUid":"prs_owner1","reassignedStories":["US-1"]}\n' "$4" ;;
+    old) echo "error: unknown command 'reassign'" >&2; exit 1 ;;
+    404) echo '{"ok":false,"unavailable":true}'; exit 0 ;;
+  esac
+fi
 exit 0
 HQ
   chmod +x "$fix/bin/hq"
@@ -68,7 +76,7 @@ write_manifest() { # path mode
   "mode": "$2",
   "company": "acme",
   "from": {"email": "owner@acme.test", "personUid": "prs_owner1"},
-  "to": {"kind": "person", "principal": "alice@acme.test", "displayName": "Alice"},
+  "to": {"kind": "person", "principal": "alice@acme.test", "personUid": "prs_alice1", "displayName": "Alice"},
   "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json", "boardId": "ac-proj-7"},
   "vaultPrefixes": [{"prefix": "projects/widget/", "permission": "write", "reason": "project dossier"}],
   "status": "granted"
@@ -93,6 +101,14 @@ grep -q -- '--session-id ' "$MESH_STUB_LOG" \
   || fail "mesh note must pass --session-id (not --session): $(cat "$MESH_STUB_LOG")"
 grep -q -- '--company-slug acme --project widget' "$MESH_STUB_LOG" \
   || fail "mesh note must attribute company + project: $(cat "$MESH_STUB_LOG")"
+# Regression: a shared literal session id ("delegate") is owned by whoever ran
+# the first delegation in the company, so the mesh rejects every later
+# delegator with SESSION_OWNER_MISMATCH. With no HQ_SESSION_ID the note must
+# use the delegation id, which is unique.
+! grep -q -- '--session-id delegate ' "$MESH_STUB_LOG" \
+  || fail "mesh note must not reuse the shared session id 'delegate': $(cat "$MESH_STUB_LOG")"
+grep -q -- '--session-id dlg-20260807-widget ' "$MESH_STUB_LOG" \
+  || fail "mesh note must fall back to the delegation id as session id: $(cat "$MESH_STUB_LOG")"
 
 BOARD="$FIX/companies/acme/board.json"
 jq -e '(.projects | length) == 2' "$BOARD" >/dev/null \
@@ -117,6 +133,32 @@ grep -q 'projects/widget/' "$JOURNAL" || fail "journal must record the transferr
 
 jq -e '.ownershipTransferredAt != null' "$M" >/dev/null \
   || fail "manifest must record ownershipTransferredAt"
+
+# --- 3a. mesh reassign: called with the recipient uid; receipt -> confirmed --
+
+grep -q -- 'mesh project reassign widget --company acme --to prs_alice1 --include-open-stories' "$MESH_STUB_LOG" \
+  || fail "transfer must call hq mesh project reassign with the recipient uid: $(cat "$MESH_STUB_LOG")"
+jq -e '.workMeshOwnership == "confirmed"' "$M" >/dev/null \
+  || fail "a reassign receipt naming the recipient must mark workMeshOwnership confirmed"
+grep -q 'Work Mesh ownership is confirmed' "$JOURNAL" \
+  || fail "journal must say Work Mesh ownership is confirmed"
+
+# --- 3b. old CLI or a server without the route -> unconfirmed, still exit 0 --
+
+for mode in old 404; do
+  make_fixture "$FIX"
+  write_manifest "$M" transfer
+  MESH_REASSIGN_MODE="$mode" PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
+    || fail "transfer must exit 0 when reassign is unavailable ($mode)"
+  jq -e '.workMeshOwnership == "unconfirmed"' "$M" >/dev/null \
+    || fail "unavailable reassign ($mode) must leave workMeshOwnership unconfirmed"
+  grep -q 'reassign did not confirm' "$TMP/transfer.err" \
+    || fail "unavailable reassign ($mode) must say ownership is unconfirmed"
+done
+make_fixture "$FIX"
+write_manifest "$M" transfer
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+  || fail "transfer setup run before the idempotency check failed"
 
 # --- 3. idempotent second run ------------------------------------------------
 
@@ -168,4 +210,4 @@ PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2
 [ ! -d "$FIX/companies/acme/projects/widget/journal" ] \
   || fail "share mode must not write a journal stanza"
 
-echo "hq-delegate-transfer: ok (in-place board update, single created entry, idempotent journal, offline mesh tolerated, share mode inert)"
+echo "hq-delegate-transfer: ok (in-place board update, single created entry, idempotent journal, mesh reassign confirmed or unconfirmed, offline mesh tolerated, share mode inert)"

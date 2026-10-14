@@ -859,11 +859,11 @@ spawn_ms=""
 slow_child=""
 slow_child_ms=""
 slow_phase=""
-if [ "$os_name" = windows ] && [ -n "$session_hash" ]; then
+if [ -n "$session_hash" ]; then
   mkdir -p "$root/workspace/.hook-timeout-journal" >/dev/null 2>&1 || true
   spawn_ms="$(hook_timeout_spawn_ms \
     "$root/workspace/.hook-timeout-journal/$session_hash.tsv.spawn-ms" \
-    "$(command -v bash 2>/dev/null || printf 'bash')")"
+    "$(command -v bash 2>/dev/null || printf 'bash')" "$platform")"
 fi
 if [ "$source_kind" = master-dispatch ] \
   && [ -n "$session_hash" ] \
@@ -956,14 +956,17 @@ else
   slow_child_ms=""
 fi
 if [ "$os_name" = windows ]; then
-  [[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
   debug_process_count="$(hook_timeout_windows_process_count "$(command -v ps 2>/dev/null || printf 'ps')")"
 fi
+[[ "$spawn_ms" =~ ^[0-9]+$ ]] && debug_spawn_ms="$spawn_ms"
 if hook_timeout_cli_supports_debug_context "$HQ_BIN" "$debug_cli_version_file" "$platform"; then
   debug_context="$(hook_timeout_debug_context_json \
     "$hook_name" "$event_name" "$declared_timeout_ms" "$elapsed_ms" "$remaining_ms" \
     "$debug_phase_timings" "$debug_wait_point" "$debug_child_name" "$debug_child_elapsed" \
     "$load_average" "$debug_spawn_ms" "$debug_process_count")"
+fi
+if [ -z "$slow_phase" ]; then
+  slow_phase=no_phase_recorded
 fi
 
 event_json_error_file=/dev/null

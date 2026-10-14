@@ -124,6 +124,24 @@ bash core/scripts/work-mesh-live-bind-trusted.sh \
 
 Do this before loading workers or editing files.
 
+### 1.6 Claim the story on the Work Mesh
+
+Right after the bind, claim the story so the team board shows who holds it:
+
+```bash
+hq mesh claim --company "{co}" --project "{project}" --story "{task-id}" --json
+```
+
+`hq mesh claim` sets the assignee to you and the status to `in_progress`.
+
+- Exit 0: claimed, or already yours. Continue.
+- `STORY_ASSIGNEE_CONFLICT` (another person or agent holds the story): stop.
+  Tell the user who holds it and ask whether to wait, pick another story, or
+  take it over. Re-run with `--force` only after the user says to take it over.
+- `hq` missing, `unknown command 'claim'`, an auth or network failure, or an
+  "unavailable" result: continue without a claim and say once that the story
+  was not claimed on the mesh. A mesh outage never blocks the story.
+
 ### 2. Load Task Spec
 
 Resolve project location using `qmd search` (never Glob for `prd.json`):

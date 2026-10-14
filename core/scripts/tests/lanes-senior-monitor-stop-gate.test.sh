@@ -537,6 +537,11 @@ cp "$GATE_SRC" "$SIBLING_FIX/.claude/hooks/hook-gate.sh"
 cp "$FIX/.claude/hooks/hook-registry.json" "$SIBLING_FIX/.claude/hooks/hook-registry.json"
 cp "$REMINDER_SRC" "$SIBLING_FIX/core/scripts/lib/lanes-senior-monitor.sh"
 cp "$WRAP_SS" "$SIBLING_FIX/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
+# An unrelated lane record keeps the store non-empty, so the shim passes the
+# NO_LANE_STORE fast exit and the session-scoped guard mutated in [2c] runs.
+mkdir -p "$SIBLING_FIX/workspace/lanes/lanes"
+printf '%s\n' '{"lane_id":"unrelated-lane","state":"running","senior":{"kind":"session","id":"other-senior"}}' \
+  > "$SIBLING_FIX/workspace/lanes/lanes/unrelated-lane.json"
 cat > "$SIBLING_FIX/core/hooks/SessionStart/99-sibling.sh" <<'SH'
 #!/usr/bin/env bash
 cat >/dev/null 2>&1 || true

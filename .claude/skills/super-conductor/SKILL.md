@@ -252,6 +252,12 @@ with no reply) get a resume message.
   recommended option first.
 - A wakeup with no pending decision asks nothing; never manufacture a
   question to fill the cadence.
+- Never end a sweep or turn with a prose "waiting on you" list. When any item
+  waits on the owner at that point (merges, sends, replies, product choices,
+  scheduling, money), invoke `/decision-queue` over those items in the same
+  turn: one `AskUserQuestion` per item, recommended option first.
+- An item the owner deferred ("I'm replying live", "hold") is re-offered only
+  when new information about it arrives.
 
 ### Decision card
 

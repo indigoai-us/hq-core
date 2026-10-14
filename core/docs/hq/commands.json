@@ -319,7 +319,7 @@
       "skillUid": null,
       "group": "share",
       "source": ".claude/skills/delegate/SKILL.md",
-      "hash": "sha256:27dd9fcc62a5c730ea1360bb12c05d733d83d2235f9d22da1f9b24535555d74a",
+      "hash": "sha256:92e46b38e5dd0dd15c7a3c781e96714b55955fe9b0801994ee3b44d9cd02d427",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -336,7 +336,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/deploy/SKILL.md",
-      "hash": "sha256:8cbab01aa8f775f5f03ea78bcc1d3db7723c5f1cac9dfe0061f8543764682fe5",
+      "hash": "sha256:baf8fdd693a31c09da336bf25dd6838c6026c4c107ad0cfe93d76d0fa20376b3",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -472,7 +472,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/execute-task/SKILL.md",
-      "hash": "sha256:18abe818a66d97c1f112f3fd649a5ef90126b66f84e98699abe1ce3d56b5a0f9",
+      "hash": "sha256:c0e454e116f5bb5743d819de781e575e0826c8d9c0e0ff550baec6b6b26611a4",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -591,7 +591,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/handoff/SKILL.md",
-      "hash": "sha256:45436274e44333faa3e589c8947eacb47ac355e714e52a43cdbe19bdd3de371b",
+      "hash": "sha256:7acd72bc5c795f1101dd755bfc1f7425c6035dff01e68ec863ec4d450be7c239",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1439,7 +1439,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/retro/SKILL.md",
-      "hash": "sha256:a53019d54ee9951319658253c07868ee17adb7dfef2e4b634385e5b4aa2063be",
+      "hash": "sha256:7dff47630306707ef409ef642d5a8a99c648dc26ed689d8d56e7851d6607e5e9",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1524,7 +1524,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/run-project/SKILL.md",
-      "hash": "sha256:f05f049a3b30cf3d995c103a82e4e3bf0085103021ef4691d16430f592c30354",
+      "hash": "sha256:a0381a55c4867bd1129735a533d8a5b23d6f5ab237876d4b78b5c12bdf602a1f",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1677,7 +1677,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:109ce424267c33e1c052ab72435207cff758fb39871c7eb4772c6cf16f4711eb",
+      "hash": "sha256:ccf0559deb2688a9aa62bdaf45fa2592a4d175d3b62828935c37f4031f2faf5d",
       "duplicates": {
         "exact": [],
         "drifted": [],

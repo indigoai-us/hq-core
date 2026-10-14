@@ -14,9 +14,11 @@
 #   2. prd.json metadata gains owner, delegatedFrom, delegatedAt; for a
 #      brainstorm-stage project the same three keys land in the
 #      brainstorm.md frontmatter (owner, delegated_from, delegated_at)
-#   3. work-mesh: `done` event closes the delegator's in-progress thread and
-#      broadcasts the reassignment; silently skipped when the helper is
-#      unavailable (local/offline installs) — the transfer still succeeds
+#   3. work-mesh: a thread note broadcasts the reassignment and
+#      `hq mesh project reassign` transfers project ownership and the
+#      delegator's open stories; manifest workMeshOwnership becomes
+#      "confirmed" only on a server receipt naming the recipient. Silently
+#      skipped when hq is unavailable — the transfer still succeeds
 #   4. a dated "Delegated" stanza is appended to the project journal naming
 #      the recipient, delegation id, and transferred scope
 #
@@ -166,17 +168,43 @@ else
 fi
 
 # --- 3. work mesh: close the delegator's thread, broadcast reassignment ------
+MESH_OWNERSHIP="unconfirmed"
+TO_UID="$(jq -r '.to.uid // .to.personUid // .to.agentUid // .to.principal // empty' "$MANIFEST")"
+MESH_PROJECT="$PROJECT"
+if [ "$STAGE" = prd ]; then
+  MESH_PROJECT="$(jq -r --arg p "$PROJECT" '.metadata.workMeshProjectId // .metadata.projectId // $p' "$PRD_ABS" 2>/dev/null || printf '%s' "$PROJECT")"
+fi
 # Silently tolerated when unavailable (local/offline installs no-op).
 
 if command -v hq >/dev/null 2>&1; then
   # `--session-id` is the CLI option (hq-cli 5.157+ rejects `--session` with
   # "unknown option"); --company-slug/--project attribute the note to the
   # delegated project.
-  hq mesh session note --enqueue --session-id "${HQ_SESSION_ID:-delegate}" --seq 1 \
+  #
+  # The session id must be unique per delegation. The mesh keys session
+  # ownership on (company, sessionId): a shared literal such as "delegate" is
+  # owned by whoever ran the first delegation in the company, and every later
+  # delegator is rejected with SESSION_OWNER_MISMATCH even as company owner.
+  MESH_SESSION_ID="${HQ_SESSION_ID:-$DELEGATION_ID}"
+  hq mesh session note --enqueue --session-id "$MESH_SESSION_ID" --seq 1 \
     --harness claude-code --adapter-version 1.0.0 \
     --company-slug "$COMPANY" --project "$PROJECT" \
     --summary "Delegated to $DISPLAY ($PRINCIPAL) — delegation $DELEGATION_ID; ownership transferred" \
     || echo "hq-delegate-transfer: mesh note failed; authoritative mesh ownership remains unconfirmed" >&2
+
+  # Authoritative transfer: `hq mesh project reassign` moves project thread
+  # ownership and the delegator's open stories to the recipient. Confirmed only
+  # when the server answers with the recipient as owner; an older CLI or server
+  # (unknown command, 404) leaves ownership "unconfirmed" and the run continues.
+  REASSIGN_OUT="$(hq mesh project reassign "$MESH_PROJECT" --company "$COMPANY" \
+    --to "$TO_UID" --include-open-stories \
+    --note "Delegated via /delegate ($DELEGATION_ID)" --json 2>/dev/null || true)"
+  if printf '%s' "$REASSIGN_OUT" | jq -e --arg to "$TO_UID" \
+      '(.ok != false) and ((.ownerUid // "") != "") and ((.ownerUid == $to) or ($to | test("@")))' >/dev/null 2>&1; then
+    MESH_OWNERSHIP="confirmed"
+  else
+    echo "hq-delegate-transfer: hq mesh project reassign did not confirm; Work Mesh ownership remains unconfirmed" >&2
+  fi
 fi
 
 # --- 4. journal: one dated stanza per delegation id --------------------------
@@ -203,9 +231,9 @@ if ! grep -qF "$DELEGATION_ID" "$JOURNAL_FILE"; then
     echo "- To: $DISPLAY ($PRINCIPAL)"
     echo "- Transferred scope: $SCOPE"
     if [ "$STAGE" = prd ]; then
-      echo "- Local board and PRD ownership updated; Work Mesh ownership is unconfirmed. Existing delegator access is unchanged."
+      echo "- Local board and PRD ownership updated; Work Mesh ownership is $MESH_OWNERSHIP. Existing delegator access is unchanged."
     else
-      echo "- Brainstorm-stage project (no PRD yet). Local board and brainstorm.md ownership updated; Work Mesh ownership is unconfirmed. Existing delegator access is unchanged."
+      echo "- Brainstorm-stage project (no PRD yet). Local board and brainstorm.md ownership updated; Work Mesh ownership is $MESH_OWNERSHIP. Existing delegator access is unchanged."
     fi
   } >> "$JOURNAL_FILE"
 fi
@@ -213,11 +241,11 @@ fi
 # --- record on the manifest ---------------------------------------------------
 
 TMP_MANIFEST="$(mktemp)"
-jq --arg now "$NOW" '.ownershipTransferredAt = $now | .workMeshOwnership = "unconfirmed"' "$MANIFEST" > "$TMP_MANIFEST" \
+jq --arg now "$NOW" --arg mesh "$MESH_OWNERSHIP" '.ownershipTransferredAt = $now | .workMeshOwnership = $mesh' "$MANIFEST" > "$TMP_MANIFEST" \
   && mv "$TMP_MANIFEST" "$MANIFEST"
 
 if [ "$STAGE" = prd ]; then
-  echo "hq-delegate-transfer: ownership of '$PROJECT' transferred to $DISPLAY ($PRINCIPAL) — local board, PRD, and journal updated; Work Mesh ownership unconfirmed"
+  echo "hq-delegate-transfer: ownership of '$PROJECT' transferred to $DISPLAY ($PRINCIPAL) — local board, PRD, and journal updated; Work Mesh ownership $MESH_OWNERSHIP"
 else
-  echo "hq-delegate-transfer: ownership of '$PROJECT' (brainstorm stage) transferred to $DISPLAY ($PRINCIPAL) — local board, brainstorm.md, and journal updated; Work Mesh ownership unconfirmed"
+  echo "hq-delegate-transfer: ownership of '$PROJECT' (brainstorm stage) transferred to $DISPLAY ($PRINCIPAL) — local board, brainstorm.md, and journal updated; Work Mesh ownership $MESH_OWNERSHIP"
 fi

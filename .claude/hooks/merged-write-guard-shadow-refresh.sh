@@ -5,6 +5,9 @@ set -uo pipefail
 export BASH_ENV=/dev/null
 INPUT=""
 while IFS= read -r line; do INPUT+="$line"; done
-HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P)" || exit 0
-printf '%s\n' "$INPUT" | node "$HOOK_ROOT/.claude/hooks/merged-write-guard-shadow.cjs" --refresh
+HOOK_SOURCE="${BASH_SOURCE[0]}"
+case "$HOOK_SOURCE" in */*) ;; *) HOOK_SOURCE="./$HOOK_SOURCE" ;; esac
+HOOK_DIR="${HOOK_SOURCE%/*}"
+HOOK_ROOT="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd -P)" || exit 0
+node "$HOOK_ROOT/.claude/hooks/merged-write-guard-shadow.cjs" --refresh <<< "$INPUT" || :
 exit 0

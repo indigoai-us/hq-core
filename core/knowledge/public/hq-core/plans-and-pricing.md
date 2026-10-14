@@ -38,11 +38,11 @@ in hq-pro, and `hq billing` drives them from the CLI.
 
 | Plan id (internal) | Name | Scope | Price | People | Secrets | Integrations | Deploys | Storage | Hosted agents included |
 |---|---|---|---|---|---|---|---|---|---|
-| `free` | Starter | company | $0 | 5 | 10 | 1 | 500 (lifetime) | 10 GiB | 0 |
+| `free` | Starter | company | $0 | 5 | 10 | 1 | unlimited | 10 GiB | 0 |
 | `paid-500` | HQ Workforce | company | $500/mo flat | unlimited | unlimited | unlimited | unlimited | unlimited | 0 (current price); 3 on the legacy price |
 | `enterprise` | Enterprise | company | per contract | unlimited | unlimited | unlimited | unlimited | unlimited | per contract |
-| `personal-50` | Individual | person | $50/mo | 1 | 100 | unlimited | 500 | 10 GiB | 0 |
-| (unpaid personal scope) | none | person | $0 | 1 | 10 | 1 | 50 (lifetime) | 2 GiB | 0 |
+| `personal-50` | Individual | person | $50/mo | 1 | 100 | unlimited | unlimited | 10 GiB | 0 |
+| (unpaid personal scope) | none | person | $0 | 1 | 10 | 1 | unlimited | 2 GiB | 0 |
 
 Notes:
 
@@ -128,9 +128,9 @@ personal scopes have their own ceilings (table above).
 - **Never refused:** reads, deletes, rotating an existing secret, reconnecting
   an existing integration, deploys, and hosted agents (agents are reminder
   only in this model; creation is gated by the Workforce requirement above).
-- **Deploys.** hq-deploy never blocks a deploy on plan limits. Starter
-  companies near or over the 500-deploy limit get a `planLimits` nag in some
-  deploy responses.
+- **Deploys.** Counts are unlimited on every plan, and a deploy is never
+  refused due to deployment count. Deploy responses do not include a
+  deployment-count limit nag.
 - **Custom deploy domains** check a separate staff-assigned plan field
   (`pro` or `enterprise`); see the `/deploy` skill.
 - **Remote vault DB** (`hq db provision`) requires Workforce; see

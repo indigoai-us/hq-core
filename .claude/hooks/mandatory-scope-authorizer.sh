@@ -182,6 +182,7 @@ scope_heredoc_executions() {
 scope_strip_inert_heredoc_bodies() {
   local raw="${1:-}" output="" line delimiter="" strip_tabs=0 in_body=0 delimiter_quoted=0
   local original="$raw" tail="" unsafe_re body_sub_prefix data_writer=0
+  local writer_dests="" dest dest_rest exec_re
   case "$raw" in *'<<'*) ;; *) printf '%s' "$raw"; return 0 ;; esac
 
   body_sub_prefix='$'
@@ -234,6 +235,12 @@ scope_strip_inert_heredoc_bodies() {
       if scope_heredoc_output_writer "$line"; then
         tail="${line#*<<}"
         data_writer=1
+        dest="${BASH_REMATCH[0]}"
+        dest="${dest#"${dest%%[![:space:]]*}"}"
+        dest="${dest#>>}"; dest="${dest#1>}"; dest="${dest#>}"
+        dest="${dest#"${dest%%[![:space:]]*}"}"
+        dest="${dest#[\'\"]}"; dest="${dest%[\'\"]}"
+        [ -z "$dest" ] || writer_dests+="$dest"$'\n'
       else
         continue
       fi
@@ -274,9 +281,28 @@ scope_strip_inert_heredoc_bodies() {
   # Invalid, unterminated input stays visible to the scope scan.
   if [ "$in_body" -eq 1 ]; then
     printf '%s' "$original"
-  else
-    printf '%s' "$output"
+    return 0
   fi
+  # A stripped data-writer body is only inert while nothing runs it. If the
+  # same command later names a written file again (`bash /tmp/x`, `./x`,
+  # `source x`, `python x`) or invokes any interpreter at all, the body may be
+  # executed, so keep every body visible and fail closed on its paths.
+  if [ -n "$writer_dests" ]; then
+    exec_re='(^|[[:space:];&|(])(bash|sh|dash|zsh|ksh|python|python[0-9.]*|node|ruby|perl|eval|source|exec|\.)([[:space:]]|$)'
+    if [[ "$output" =~ $exec_re ]]; then
+      printf '%s' "$original"
+      return 0
+    fi
+    while IFS= read -r dest; do
+      [ -n "$dest" ] || continue
+      dest_rest="${output#*"$dest"}"
+      if [[ "$dest_rest" == *"$dest"* ]] || [[ "$dest_rest" == *"./${dest##*/}"* ]]; then
+        printf '%s' "$original"
+        return 0
+      fi
+    done <<< "$writer_dests"
+  fi
+  printf '%s' "$output"
 }
 
 scope_shell_prefix_is_unquoted() {
@@ -557,7 +583,7 @@ scope_check_bash_candidate_inner() {
     resolved="$(scope_resolve_rel_symlinks "$resolved")"
     case "$resolved" in
       "companies/$expected_company"|"companies/$expected_company"/*) ;;
-      *) scope_block_rel "$candidate" ;;
+      *) scope_block_rel "$candidate" "expanded path resolves outside companies/$expected_company" ;;
     esac
     scope_check_rel "$resolved"
   else
@@ -1042,7 +1068,7 @@ scope_rel_allowed() {
 scope_block_rel() {
   local rel="${1:-}"
   local block_reason="${2:-}"
-  local co bound_msg bind_msg="" scope_names_companies=0
+  local co bound_msg bind_msg="" scope_names_companies=0 traversal_target
   scope_load_bound_company
   co="$(scope_company_slug_for_rel "$rel")"
   # A path with no companies/ segment at all is not a tenancy failure, so it
@@ -1098,14 +1124,34 @@ session — retry it as: core/scripts/hq-session.sh --session-id ${SESSION_ID:-<
     bound_msg="Session locked companies: ${BOUND_COS:-$BOUND_CO}."
   fi
 
-  cat >&2 <<EOF
+  if [ -z "$co" ] && [[ "$rel" == *'$'* ]]; then
+    # A company segment supplied by a variable with no static value. There is
+    # no target to name, so report the session's own company instead.
+    cat >&2 <<EOF
+BLOCKED: Unresolvable company-path expansion
+Tool: $TOOL
+Path: $rel
+EOF
+    [ -n "$block_reason" ] || block_reason="variable expansion has no statically resolvable value"
+    printf 'Session company_slug: %s\n' "${BOUND_CO:-none}" >&2
+  else
+    cat >&2 <<EOF
 BLOCKED: Cross-company scope violation
 Tool: $TOOL
 Path: $rel
 EOF
-  # Still `unknown` here: this branch is reached for a companies/ path whose
-  # slug could not be resolved, which is exactly an unknown target company.
-  printf 'Target company: %s\n' "${co:-unknown}" >&2
+    # A traversal such as companies/indigo/../../otherco names one company
+    # lexically and opens another. Label the company the path resolves to.
+    case "$rel" in
+      *..*)
+        traversal_target="$(scope_normalize_hq_relative "$rel")"
+        co="$(scope_company_slug_for_rel "$traversal_target")"
+        ;;
+    esac
+    # Still `unknown` here: this branch is reached for a companies/ path whose
+    # slug could not be resolved, which is exactly an unknown target company.
+    printf 'Target company: %s\n' "${co:-unknown}" >&2
+  fi
   # The reason is printed as its own line. Wrapping it in `glob "..." blocked:`
   # reported every non-glob refusal as a glob failure.
   [ -z "$block_reason" ] || printf 'Reason: %s\n' "$block_reason" >&2

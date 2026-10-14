@@ -27,18 +27,20 @@ HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.
 SESSION_ID="default"
 COMMAND=""
 SESSION_CWD=""
+PRUNE_STALE_STATE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id) SESSION_ID="${2:-default}"; shift 2 ;;
     --command)    COMMAND="${2:-}"; shift 2 ;;
     --cwd)        SESSION_CWD="${2:-}"; shift 2 ;;
+    --prune-stale-state) PRUNE_STALE_STATE=1; shift ;;
     *)            shift ;;
   esac
 done
 
 command -v node >/dev/null 2>&1 || exit 0
 
-HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" SESSION_CWD="$SESSION_CWD" \
+HQ_ROOT="$HQ_ROOT" SESSION_ID="$SESSION_ID" SESSION_CWD="$SESSION_CWD" PRUNE_STALE_STATE="$PRUNE_STALE_STATE" \
   MSYS2_ARG_CONV_EXCL="*" node - "$COMMAND" <<'JS'
 const fs = require("fs");
 const path = require("path");
@@ -49,6 +51,24 @@ let command = (process.argv[2] || "").trim().replace(/^\/+/, "");
 
 const key = sid.replace(/[^A-Za-z0-9._-]/g, "_") || "default";
 const state = path.join(hq, ".claude", "state");
+
+// SessionStart already launches this resolver. Prune old per-session state
+// here instead of starting find/rm in the hook process; preserve GNU find's
+// `-mtime +14` whole-day boundary and the shared HQ-title ledger.
+if (process.env.PRUNE_STALE_STATE === "1") {
+  try {
+    const now = Date.now();
+    for (const entry of fs.readdirSync(state, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      if (!entry.name.startsWith("session-title-") && !entry.name.startsWith("auto-session-project-")) continue;
+      try {
+        const file = path.join(state, entry.name);
+        const ageDays = Math.floor((now - fs.statSync(file).mtimeMs) / 86400000);
+        if (ageDays > 14) fs.unlinkSync(file);
+      } catch (e) {}
+    }
+  } catch (e) {}
+}
 
 const firstLine = (p) => {
   try {

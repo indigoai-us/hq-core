@@ -40,6 +40,51 @@ hook_timeout_load_average() {
   fi
 }
 
+# A PID alone does not identify a process: Git Bash PIDs follow Windows PIDs,
+# which Windows reuses quickly, so a dead claim owner's PID can belong to an
+# unrelated live process. Ownership records therefore carry "<pid>.<start>",
+# where <start> is a filename-safe token for when that process started.
+# Sets hook_timeout_start_token (empty when unreadable) without a subshell on
+# procfs platforms (Linux, Git Bash); macOS has no procfs and asks ps once.
+hook_timeout_process_start_token() {
+  local pid="${1:-}" stat fields
+  hook_timeout_start_token=""
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  if [ -d /proc/self ]; then
+    # Field 22 (starttime) of /proc/<pid>/stat. The comm field may contain
+    # spaces, so split only what follows its closing parenthesis.
+    IFS= read -r stat 2>/dev/null < "/proc/$pid/stat" || return 0
+    IFS=' ' read -r -a fields <<< "${stat##*) }"
+    hook_timeout_start_token="${fields[19]:-}"
+  else
+    # `command -p` resolves the system ps, never a ps shim earlier on PATH.
+    hook_timeout_start_token="$(command -p ps -o lstart= -p "$pid" 2>/dev/null || true)"
+    hook_timeout_start_token="${hook_timeout_start_token//[^A-Za-z0-9]/}"
+  fi
+  [[ "$hook_timeout_start_token" =~ ^[A-Za-z0-9]+$ ]] || hook_timeout_start_token=""
+}
+
+# Sets hook_timeout_owner_id to "<pid>.<start>" for this shell, or "<pid>"
+# when the start time is unreadable.
+hook_timeout_self_owner_id() {
+  hook_timeout_process_start_token "$$"
+  # shellcheck disable=SC2034 # Master-hook reads this owner id.
+  hook_timeout_owner_id="$$${hook_timeout_start_token:+.$hook_timeout_start_token}"
+}
+
+# Succeeds while the owner "<pid>.<start>" (or legacy "<pid>") still runs. A
+# live PID whose start time differs is a reused PID, so its owner is dead.
+hook_timeout_owner_alive() {
+  local owner="${1:-}" pid token=""
+  pid="${owner%%.*}"
+  [ "$pid" = "$owner" ] || token="${owner#*.}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  [ -n "$token" ] || return 0
+  hook_timeout_process_start_token "$pid"
+  [ "$hook_timeout_start_token" = "$token" ]
+}
+
 hook_timeout_now_ms() {
   local realtime seconds fraction now
   realtime="${EPOCHREALTIME:-}"

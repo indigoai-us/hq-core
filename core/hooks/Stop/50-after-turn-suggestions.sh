@@ -38,8 +38,15 @@ set -uo pipefail
   fi
 
   LAST_TEXT=""
-  if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-    LAST_ASSISTANT="$(awk '/"type":"assistant"/ { last=$0 } END { print last }' "$TRANSCRIPT_PATH" 2>/dev/null || true)"
+  TRANSCRIPT_TAIL_LIB="$SCRIPT_DIR/../../scripts/lib/transcript-tail.sh"
+  if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_TAIL_LIB" ]; then
+    # This hook runs after every turn and long sessions reach hundreds of MB,
+    # so read a bounded tail rather than scanning the whole transcript. The
+    # suggestions are advisory: when the newest assistant record is outside
+    # the window, fall back to generic ones instead of scanning backward.
+    . "$TRANSCRIPT_TAIL_LIB"
+    TRANSCRIPT_TAIL="$(hq_transcript_tail "$TRANSCRIPT_PATH" 2>/dev/null || true)"
+    LAST_ASSISTANT="$(printf '%s\n' "$TRANSCRIPT_TAIL" | awk '/"type":"assistant"/ { last=$0 } END { print last }')"
     if [ -n "$LAST_ASSISTANT" ]; then
       LAST_TEXT="$(printf '%s' "$LAST_ASSISTANT" | jq -r '
         .message.content as $c

@@ -576,6 +576,119 @@ test_watchdog_trigger_phase_snapshot() {
   pass "watchdog snapshots the active master phase at trigger acceptance"
 }
 
+test_watchdog_unrecorded_phase_and_non_windows_spawn() {
+  local root
+  root="$(prepare_fixture watchdog-unrecorded-phase-non-windows-spawn)"
+  cat > "$root/bin/uname" <<'UNAME'
+#!/usr/bin/env bash
+printf 'Linux\n'
+UNAME
+  chmod +x "$root/bin/uname"
+  assert_master_phase_marker_no_spawn "$root"
+  seed_sequence "$root" c179-attribution-watchdog-unrecorded-phase-non-windows-spawn
+  run_report "$root" watchdog-unrecorded-phase-non-windows-spawn
+  jq -e '
+    (.metadata.platform == "Linux" or .metadata.platform == "Darwin")
+    and .metadata.slow_phase == "no_phase_recorded"
+    and (.metadata.spawn_ms | type == "number" and . >= 0 and . <= 5000)
+    and (.metadata.hook_timeout_debug_context.spawn_ms | type == "number" and . >= 0 and . <= 5000)
+  ' "$root/event.json" >/dev/null \
+    || { jq -c '.metadata | {platform, slow_phase, spawn_ms, hook_timeout_debug_context}' "$root/event.json" >&2; fail "non-Windows watchdog event did not distinguish an unrecorded phase and measured spawn latency"; }
+  pass "non-Windows watchdog event identifies an unrecorded phase and includes measured spawn latency"
+}
+
+test_master_late_unrecorded_phase_and_non_windows_spawn() {
+  local root function_file
+  root="$(prepare_fixture master-late-unrecorded-phase-non-windows-spawn)"
+  function_file="$root/master-report-late-function.sh"
+  awk '
+    /^master_report_late_event\(\) \{/ { copy = 1 }
+    copy { print }
+    copy && /^}/ { exit }
+  ' "$ROOT/.claude/hooks/master-hook.sh" > "$function_file"
+  [ -s "$function_file" ] || fail "master_report_late_event function was not extracted"
+  (
+    . "$root/.claude/hooks/hook-timeout-probe.sh"
+    . "$function_file"
+    REPO_ROOT="$root"
+    SCRIPT_DIR="$root/.claude/hooks"
+    EVENT=SessionStart
+    TOOL_NAME=Bash
+    SESSION_ID=c179-master-late-unrecorded-phase-non-windows-spawn
+    MASTER_TIMING_PRECISION=ms
+    MASTER_DEBUG_ACTIVE_PHASE=""
+    MASTER_DEBUG_ACTIVE_STARTED=""
+    MASTER_DEBUG_PHASE_FILE="$root/master.debug.tsv"
+    MASTER_DEBUG_ACTIVE_PHASE_FILE="$root/master.debug.tsv.active"
+    MASTER_DEBUG_CLI_VERSION_FILE="$root/master.debug.tsv.cli-version"
+    MASTER_DEBUG_CHILD_PHASE_FILE=""
+    MASTER_DEBUG_CHILD_ACTIVE_PHASE_FILE=""
+    timeout_journal_file="$root/workspace/.hook-timeout-journal/session.tsv"
+    mkdir -p "$root/workspace/.hook-timeout-journal"
+    printf '42\n' > "$timeout_journal_file.spawn-ms"
+    completed_child_elapsed_ms=()
+    completed_child_paths=()
+    uname() { printf 'Linux\n'; }
+    hook_timeout_spawn_ms() { : > "$root/spawn-probe-called"; printf '99'; }
+    master_safe_hook_script() { printf 'master-hook.sh'; }
+    master_load_average() { printf '0.1'; }
+    master_hook_fingerprint_identity() { printf '%s' "$1"; }
+    master_timeout_sha256() { printf 'c179-test-fingerprint'; }
+    master_bash_env_state() { printf 'unset'; }
+    master_shell_descriptor() { printf 'bash test'; }
+    master_cwd_kind() { printf 'hq-root'; }
+    master_nproc() { printf '2'; }
+    master_hook_sequence_json() { printf '[]'; }
+    master_policy_trigger_metadata_json() { printf '{}'; }
+    master_declared_timeout_ms() { printf '30000'; }
+    master_watchdog_timeout_ms() { printf '10000'; }
+    hook_timeout_cli_supports_debug_context() { return 0; }
+    hook_timeout_windows_process_count() { printf 'unavailable'; }
+    PATH="$root/bin:$PATH"
+    HQ_TEST_EVENT_FILE="$root/event.jsonl"
+    export PATH HQ_TEST_EVENT_FILE
+    master_report_late_event hook_late_finish "$root/.claude/hooks/master-hook.sh" 5000 0
+  ) || fail "master late non-Windows instrumentation fixture failed"
+  [ ! -e "$root/spawn-probe-called" ] || fail "master late reporter reran the spawn probe instead of using the warning cache"
+  sed '/^---EVENT---$/,$d' "$root/event.jsonl" > "$root/event.json"
+  jq -e '
+    .metadata.platform == "Linux"
+    and .metadata.slow_phase == "no_phase_recorded"
+    and .metadata.spawn_ms == 42
+    and .metadata.hook_timeout_debug_context.spawn_ms == 42
+  ' "$root/event.json" >/dev/null \
+    || { jq -c '.metadata | {platform, slow_phase, spawn_ms, hook_timeout_debug_context}' "$root/event.json" >&2; fail "master late non-Windows event did not distinguish an unrecorded phase and include spawn latency"; }
+  pass "master late non-Windows event identifies an unrecorded phase and includes measured spawn latency"
+}
+
+assert_master_phase_marker_no_spawn() {
+  local root="$1" command no_spawn_path
+  mkdir -p "$root/no-spawn-bin" "$root/spawn-markers"
+  for command in bash date awk timeout perl jq ps; do
+    cat > "$root/no-spawn-bin/$command" <<'WRAPPER'
+#!/usr/bin/env bash
+: > "${C179_TEST_SPAWN_MARKERS:?}/$(basename "$0")"
+exit 97
+WRAPPER
+    chmod +x "$root/no-spawn-bin/$command"
+  done
+  (
+    . "$ROOT/.claude/hooks/hook-timeout-probe.sh"
+    MASTER_DEBUG_ACTIVE_PHASE_FILE="$root/master-active.tsv"
+    MASTER_DEBUG_PHASE_BUFFER=()
+    hook_timeout_realtime_ms() { HOOK_TIMEOUT_REALTIME_MS=1700000000000; return 0; }
+    no_spawn_path="$root/no-spawn-bin"
+    # shellcheck disable=SC2123 # Intentional PATH shim verifies phase entry spawns nothing.
+    PATH="$no_spawn_path"
+    export PATH C179_TEST_SPAWN_MARKERS="$root/spawn-markers"
+    master_debug_phase_start external_command
+  ) || fail "master phase marker fixture failed"
+  [ -s "$root/master-active.tsv" ] || fail "master phase marker was not written"
+  for command in "$root"/spawn-markers/*; do
+    [ ! -e "$command" ] || fail "master phase entry spawned $(basename "$command")"
+  done
+}
+
 test_eof_read_under_errexit() {
   local root fixture_bin payload rc
   root="$(prepare_fixture read-eof-errexit)"
@@ -652,7 +765,6 @@ test_master_late_active_phase() {
     completed_child_paths=()
     master_safe_hook_script() { printf 'master-hook.sh'; }
     master_load_average() { printf '0.1'; }
-    master_spawn_probe_ms() { printf 'unavailable'; }
     master_hook_fingerprint_identity() { printf '%s' "$1"; }
     master_timeout_sha256() { printf 'c179-test-fingerprint'; }
     master_bash_env_state() { printf 'unset'; }
@@ -688,7 +800,7 @@ test_master_late_active_phase() {
   pass "master late report with no slow child retains the active phase"
   sed '/^---EVENT---$/,$d' "$root/untrusted-phase-event.jsonl" > "$root/untrusted-phase-event.json"
   jq -e '
-    (.metadata | has("slow_phase") | not)
+    .metadata.slow_phase == "no_phase_recorded"
     and .metadata.hook_timeout_debug_context.wait_point == "wait"
   ' "$root/untrusted-phase-event.json" >/dev/null || {
     jq -c '.metadata | {slow_phase, hook_timeout_debug_context}' "$root/untrusted-phase-event.json" >&2
@@ -697,7 +809,7 @@ test_master_late_active_phase() {
   if grep -Fq '../../unlisted/path' "$root/untrusted-phase-event.json"; then
     fail "master late report leaked an unlisted phase value"
   fi
-  pass "master late report omits phase values outside the fixed list"
+  pass "master late report normalizes phase values outside the fixed list"
 }
 
 test_master_late_inflight_child() {
@@ -742,7 +854,6 @@ test_master_late_inflight_child() {
     master_now_ms() { printf '20000'; }
     master_safe_hook_script() { printf 'master-hook.sh'; }
     master_load_average() { printf '0.1'; }
-    master_spawn_probe_ms() { printf 'unavailable'; }
     master_hook_fingerprint_identity() { printf '%s' "$1"; }
     master_timeout_sha256() { printf 'c179-test-fingerprint'; }
     master_bash_env_state() { printf 'unset'; }
@@ -1585,6 +1696,8 @@ case "$CASE" in
   master-late-inflight-child) test_master_late_inflight_child ;;
   master-dispatch-startup-elapsed) test_master_dispatch_startup_elapsed ;;
   watchdog-trigger-phase-snapshot) test_watchdog_trigger_phase_snapshot ;;
+  watchdog-unrecorded-phase-non-windows-spawn) test_watchdog_unrecorded_phase_and_non_windows_spawn ;;
+  master-late-unrecorded-phase-non-windows-spawn) test_master_late_unrecorded_phase_and_non_windows_spawn ;;
   read-eof-errexit) test_eof_read_under_errexit ;;
   journal-filter) test_journal_sequence_filter ;;
   cli-contract)
@@ -1617,6 +1730,8 @@ case "$CASE" in
     test_master_late_inflight_child
     test_master_dispatch_startup_elapsed
     test_watchdog_trigger_phase_snapshot
+    test_watchdog_unrecorded_phase_and_non_windows_spawn
+    test_master_late_unrecorded_phase_and_non_windows_spawn
     test_eof_read_under_errexit
     test_journal_sequence_filter
     if [ "${C179_TEST_SKIP_REQUIRED_CLI_PROBE_CONTROL:-0}" != "1" ]; then

@@ -2,6 +2,26 @@
 
 Newest release first.
 
+## Release: v16.0.19-beta.14
+
+- hq-cli `5.345.85` and newer can find and stop legacy conduct pool lanes that
+  an older core left running. `hq lanes orphans` lists a
+  `workflow-runner.mjs --loop` pool lane whose session has ended, marked
+  `legacy: true`, and `hq lanes reap --legacy` reports the same lanes. To stop
+  them, run `hq lanes reap --legacy --stop --reason "<why>"`. It signals a
+  process only after checking that the process's start time and command line
+  still match the pool record and that its owning session has ended. The
+  session-start orphan sweep reports these lanes and never stops them. This
+  replaces the removed `conduct-reap.sh` for that cleanup.
+
+## Release: v16.0.19-beta.2
+
+- fix 2026-10-13 (super-conductor: waiting items use the decision queue): a
+  sweep or turn never ends with a prose "waiting on you" list. Items waiting on
+  the owner are walked with `/decision-queue`, one question each, recommended
+  option first; deferred items return only on new information. No action
+  beyond `/update-hq`.
+
 ## Release: v16.0.0-beta.89
 
 - feat 2026-10-11 (setup: add a pack from the chat): the setup worker has a new
@@ -52,8 +72,9 @@ Newest release first.
   running `/conduct` and `/run-project --pipeline` work finish, then run
   `bash core/scripts/conduct-reap.sh --apply --kill` on the old core to stop
   lanes whose session has ended. After the scripts are replaced, this release
-  cannot reap those processes. Existing pool lanes are not adopted into
-  `hq lanes`.
+  cannot reap those processes; hq-cli `5.345.85` or newer can, with
+  `hq lanes reap --legacy` (see the newer release above). Existing pool lanes
+  are not adopted into `hq lanes`.
 
 ## Release: v16.0.0-beta.61
 

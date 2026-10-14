@@ -84,6 +84,50 @@ run_hook() {
 call_count() { wc -l < "$CALLS" | tr -d '[:space:]'; }
 now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
 
+# Fresh install regression (Windows Git Bash, Reach Digital report): no lane
+# store and neither jq nor hq on PATH. No lane can exist, so SessionStart must
+# exit 0 silently instead of failing the whole master-hook batch.
+BARE_BIN="$TMP/bare-bin"
+mkdir -p "$BARE_BIN"
+for tool in cat dirname; do
+  ln -sf "$(command -v "$tool")" "$BARE_BIN/$tool"
+done
+BASH_BIN="$(command -v bash)"
+run_bare() {
+  local rc=0
+  : > "$OUT"
+  : > "$ERR"
+  printf '%s' '{"session_id":"fresh-1","hook_event_name":"SessionStart"}' | env \
+    HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" HOME="$TMP/home" \
+    XDG_CACHE_HOME="$CACHE" HP26_CALLS="$CALLS" PATH="$BARE_BIN" \
+    "$BASH_BIN" "$ROOT/core/scripts/lib/lanes-senior-monitor.sh" SessionStart \
+    >"$OUT" 2>"$ERR" || rc=$?
+  return "$rc"
+}
+env PATH="$BARE_BIN" "$BASH_BIN" -c 'command -v jq || command -v hq' >/dev/null 2>&1 \
+  && fail "bare PATH unexpectedly provides jq or hq"
+
+run_bare || fail "empty lane store without jq/hq returned nonzero: $(cat "$ERR")"
+[ ! -s "$OUT" ] || fail "empty lane store without jq/hq wrote stdout"
+[ ! -s "$ERR" ] || fail "empty lane store without jq/hq wrote stderr: $(cat "$ERR")"
+pass "empty lane store without jq/hq is silent and exits 0"
+
+rmdir "$ROOT/workspace/lanes/lanes"
+run_bare || fail "missing lane store without jq/hq returned nonzero: $(cat "$ERR")"
+[ ! -s "$OUT" ] || fail "missing lane store without jq/hq wrote stdout"
+[ ! -s "$ERR" ] || fail "missing lane store without jq/hq wrote stderr: $(cat "$ERR")"
+pass "missing lane store without jq/hq is silent and exits 0"
+mkdir -p "$ROOT/workspace/lanes/lanes"
+
+# Positive control: once a lane record exists, missing jq stays loud.
+printf '%s\n' '{"lane_id":"fresh-lane","state":"running","senior":{"kind":"session","id":"fresh-1"}}' \
+  > "$ROOT/workspace/lanes/lanes/fresh-lane.json"
+if run_bare; then fail "lane store with records and no jq exited 0"; fi
+grep -q 'jq is unavailable' "$ERR" || fail "missing jq with lane records lost its stderr diagnostic"
+pass "missing jq with lane records still fails loudly"
+rm -f "$ROOT/workspace/lanes/lanes/fresh-lane.json"
+: > "$CALLS"
+
 # An unrelated active lane is a positive control: the precondition must match
 # the senior session, not merely test whether any lane record exists.
 cat > "$ROOT/workspace/lanes/lanes/unrelated.json" <<'JSON'

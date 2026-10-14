@@ -9,8 +9,8 @@ endpoint is correct and the shipped copy is stale. Policy:
 
 ## Plans
 
-- **Starter** is free. It has fixed limits on members, secrets, deployments,
-  storage and integrations, and it does not include hosted agents.
+- **Starter** is free. It has fixed limits on members, secrets, storage and
+  integrations, and it does not include hosted agents.
 - **Workforce** is a flat monthly price per company. It has unlimited members
   and no resource limits. The current Workforce price includes no hosted
   agents; each agent is billed separately (see below).

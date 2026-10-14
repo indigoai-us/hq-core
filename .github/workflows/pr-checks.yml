@@ -262,6 +262,7 @@ jobs:
           bash core/scripts/lint-skill-script-refs.sh resumework
           bash core/scripts/lint-skill-script-refs.sh startwork
           bash core/scripts/lint-skill-script-refs.sh conduct
+          bash core/scripts/lint-skill-script-refs.sh retro
       - name: /startwork capability block (company-scoped, no network, alias resolve)
         run: bash core/scripts/tests/startwork-context.test.sh
       - name: /import-context redactor and synthetic scan output
@@ -310,6 +311,8 @@ jobs:
         run: bash core/scripts/tests/deploy-skill-app-route.test.sh
       - name: Deploy request helper rejects errors and supports app multipart uploads
         run: bash core/scripts/tests/deploy-api-request.test.sh
+      - name: Deploy comment watcher reports each new comment once
+        run: bash core/scripts/tests/deploy-comments-watch.test.sh
       - name: App deploy artifact includes root API handlers
         run: bash core/scripts/tests/guardrails-check-app-api.test.sh
       - name: HQ feedback summary and verbatim report contract
@@ -353,6 +356,26 @@ jobs:
           fetch-depth: 0
       - name: UserPromptSubmit command.sh dispatch (scope, isolation, bounds)
         run: bash core/scripts/tests/skill-command-script.test.sh
+
+  run-project-progress-mod:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    # The /run-project progress band is a Claude Code mod inside the
+    # run-project skill folder. Validates its manifest, the skill's frontmatter
+    # and the hooks module the way the engine loads them, then runs its tests
+    # (no login needed).
+    name: run-project-progress-mod
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.296
+      - name: Validate the mod
+        run: claude plugin validate .claude/skills/run-project
+      - name: Run the mod's tests
+        run: claude plugin test .claude/skills/run-project
 
   company-seed-renderer:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -575,6 +598,13 @@ jobs:
             core/scripts/tests/company-jobs-account.test.sh \
             core/scripts/tests/outpost-job-failure-alerts.test.sh \
             core/scripts/tests/handoff-finalize-pointer.test.sh \
+            core/scripts/tests/handoff-finalize-deficiencies.test.sh \
+            core/scripts/handoff-autofile.sh \
+            core/scripts/tests/handoff-autofile.test.sh \
+            core/scripts/handoff-builder-route.sh \
+            core/scripts/tests/handoff-builder-route.test.sh \
+            core/scripts/retro-merge-deficiencies.sh \
+            core/scripts/tests/retro-merge-deficiencies.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
             core/scripts/skills-listing-budget.sh \
             core/scripts/tests/skills-listing-budget.test.sh \
@@ -940,6 +970,14 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-pointer.test.sh
       - name: Handoff finalizer never reports a failed commit as success
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
+      - name: Handoff finalizer stores deficiencies and system_info
+        run: bash core/scripts/tests/handoff-finalize-deficiencies.test.sh
+      - name: Handoff auto-files hq-core deficiencies once per handoff
+        run: bash core/scripts/tests/handoff-autofile.test.sh
+      - name: Handoff builder route decides builder vs public from the staging repo
+        run: bash core/scripts/tests/handoff-builder-route.test.sh
+      - name: Retro merges thread deficiencies with its own lever findings
+        run: bash core/scripts/tests/retro-merge-deficiencies.test.sh
       - name: Handoff finalizer smoke
         run: bash core/scripts/tests/handoff-finalize-smoke.sh
       - name: Handoff finalizer accepts a large file-backed changeset
@@ -1011,6 +1049,8 @@ jobs:
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
       - name: Session-scoped journal pointers and ownership validation
         run: bash core/scripts/tests/journal-session-scoped-pointer.test.sh
+      - name: Handoff knowledge commits and journal index stay in the bound company
+        run: bash core/scripts/tests/handoff-journal-company-scope.test.sh
       - name: Stop hook selects only its session journal
         run: bash core/scripts/tests/after-turn-suggestions.test.sh
       - name: Context checkpoint hooks
@@ -1038,6 +1078,8 @@ jobs:
         run: bash core/scripts/tests/session-scope-capability.test.sh
       - name: Mandatory scope authorizer blocks cross-company access
         run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: SCOPE-1112 tenant-boundary regression cases
+        run: bash core/scripts/tests/scope-1112-regressions.test.sh all
       - name: Resumework skill commands stay within allowed paths
         run: bash core/scripts/tests/resumework-skill-scope.test.sh
       - name: Mandatory scope authorizer process budget and deny parity
@@ -1208,6 +1250,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Session-title event payload spawn budget and output
         run: bash core/scripts/tests/session-title-json-spawn-budget.test.sh
+      - name: SessionStart child process budget
+        run: bash core/scripts/tests/session-title-process-budget.test.sh
+      - name: Hook runs under the system Bash and ignores state pruned on SessionStart
+        run: bash core/scripts/tests/session-title-hook-shell-and-prune.test.sh
       - name: Manual /rename and --name titles are not clobbered
         run: bash core/scripts/tests/session-title-manual-backoff.test.sh
       - name: Session title mode override and desktop nudge
@@ -1354,6 +1400,8 @@ jobs:
         run: bash core/scripts/tests/skill-command-refs.test.sh
       - name: Merged write-guard shadow is flag-off inert and record-only
         run: bash core/scripts/tests/merged-write-guard-shadow.test.sh
+      - name: Merged write-guard shadow refresh avoids extra process launches
+        run: core/scripts/tests/merged-write-guard-shadow-refresh-process-count.test.sh
 
   core-write-protection:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}

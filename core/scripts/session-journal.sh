@@ -3,7 +3,7 @@
 # Spec: core/knowledge/public/hq-core/session-journal-spec.md
 #
 # Usage:
-#   session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH] [--session KEY]
+#   session-journal.sh write "<title>" [--files f1,f2,...] [--body-file PATH] [--session KEY] [--company SLUG]
 #   session-journal.sh list [--date YYYY-MM-DD]
 #   session-journal.sh read <NNN> [--date YYYY-MM-DD]
 #   session-journal.sh index-path [--date YYYY-MM-DD]   # prints the INDEX.md path
@@ -241,8 +241,10 @@ case "$cmd" in
     files_csv=""
     body_file=""
     session_arg=""
+    company_arg="${HQ_ACTIVE_COMPANY:-}"
     while [ $# -gt 0 ]; do
       case "$1" in
+        --company)   company_arg="${2:-}"; shift 2 || break ;;
         --files)     files_csv="${2:-}"; shift 2 || break ;;
         --body-file) body_file="${2:-}"; shift 2 || break ;;
         --session)   session_arg="${2:-}"; shift 2 || break ;;
@@ -251,6 +253,9 @@ case "$cmd" in
     done
 
     [ -z "$title" ] && { warn "write: title required"; exit 0; }
+    # The bound company tags the entry so the SessionStart index loader can
+    # surface only that company's entries. Anything not slug-shaped is dropped.
+    [[ "$company_arg" =~ ^[A-Za-z0-9_-]+$ ]] || company_arg=""
 
     d="$(today)"
     dir="$(journal_dir_for "$d")"
@@ -284,6 +289,7 @@ case "$cmd" in
           printf 'ts: %s\n' "$(now_iso_z)"
           printf 'title: %s\n' "$yaml_title"
           printf 'slug: %s\n' "$yaml_slug"
+          [ -z "$company_arg" ] || printf 'company: %s\n' "$company_arg"
           if [ -n "$files_csv" ]; then
             printf 'files:\n'
             old_ifs="$IFS"
@@ -322,7 +328,9 @@ case "$cmd" in
     if [ ! -f "$idx" ]; then
       printf '# Session journal — %s\n\n' "$d" > "$idx"
     fi
-    printf -- '- `%s` %s — %s\n' "$seq" "$(now_hhmm_z)" "$title" >> "$idx" \
+    company_tag=""
+    [ -z "$company_arg" ] || company_tag=" [company: $company_arg]"
+    printf -- '- `%s` %s — %s%s\n' "$seq" "$(now_hhmm_z)" "$title" "$company_tag" >> "$idx" \
       || warn "write: INDEX update failed"
 
     # Reset the tool counter for THIS session only — journaling one task's

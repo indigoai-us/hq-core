@@ -55,7 +55,7 @@ company_target="$TMP/company-knowledge"
 mkdir -p "$company_target"
 ln -s "$company_target" "$fixture_root/companies/acme/knowledge"
 printf '["core/knowledge/public/legacy/pending.md","companies/acme/knowledge/notes.md"]\n' > "$TMP/symlink-changeset.json"
-symlink_output="$(bash "$HELPER" --root "$fixture_root" --files-touched-json-file "$TMP/symlink-changeset.json")"
+symlink_output="$(HQ_ACTIVE_COMPANY=acme bash "$HELPER" --root "$fixture_root" --files-touched-json-file "$TMP/symlink-changeset.json")"
 legacy_warning="INVALID-DIRTY: core/knowledge/public/legacy is a legacy knowledge symlink to $legacy_repo with uncommitted changes — NOT auto-committed; run hq reindex to materialize it, then commit, before archiving this session"
 [[ "$symlink_output" == *"$legacy_warning"* ]] || fail 'dirty legacy knowledge symlink is reported with the established wording'
 [[ "$symlink_output" == *'NOT-COMMITTED: core/knowledge/public/legacy/pending.md'* ]] || fail 'listed legacy symlink path is reported as not committed'
@@ -97,5 +97,56 @@ ok 'directory changeset expands to changed nested files'
 printf '[]\n' > "$TMP/empty-changeset.json"
 TMPDIR="$TMP/missing-tmpdir" bash "$HELPER" --root "$fixture_root" --files-touched-json-file "$TMP/empty-changeset.json"
 ok 'helper uses workspace-local temp storage when TMPDIR is unavailable'
+
+# Company-owned knowledge is committed only for the active company, and is
+# explicitly skipped when the session has no company binding.
+acme_repo="$fixture_root/companies/acme/knowledge"
+beta_repo="$fixture_root/companies/beta/knowledge"
+rm -rf "$fixture_root/companies/acme" "$fixture_root/companies/beta"
+for company_repo in "$acme_repo" "$beta_repo"; do
+  mkdir -p "$company_repo"
+  git -C "$company_repo" init -q
+  git -C "$company_repo" config user.name 'Feedback Test'
+  git -C "$company_repo" config user.email 'feedback-test@example.invalid'
+  printf 'base\n' > "$company_repo/README.md"
+  git -C "$company_repo" add -- README.md
+  git -C "$company_repo" commit -q -m base
+done
+acme_base="$(git -C "$acme_repo" rev-parse HEAD)"
+beta_base="$(git -C "$beta_repo" rev-parse HEAD)"
+printf 'acme session note\n' > "$acme_repo/acme-note.md"
+printf 'beta session note\n' > "$beta_repo/beta-note.md"
+printf '["companies/acme/knowledge/acme-note.md","companies/beta/knowledge/beta-note.md"]\n' \
+  > "$TMP/company-scope-changeset.json"
+company_scope_output="$(HQ_ACTIVE_COMPANY=acme bash "$HELPER" --root "$fixture_root" --files-touched-json-file "$TMP/company-scope-changeset.json")"
+[[ "$company_scope_output" != *'SKIPPED-COMPANY-KNOWLEDGE'* ]] \
+  || fail 'bound acme session does not skip company knowledge'
+acme_commit="$(git -C "$acme_repo" rev-parse HEAD)"
+beta_commit="$(git -C "$beta_repo" rev-parse HEAD)"
+[ "$acme_commit" != "$acme_base" ] || fail 'active acme knowledge repo receives a new commit'
+acme_committed="$(git -C "$acme_repo" show --pretty=format: --name-only HEAD | sed '/^$/d')"
+[ "$acme_committed" = 'acme-note.md' ] || fail "acme commit contains its listed file (got: $acme_committed)"
+[ "$beta_commit" = "$beta_base" ] || fail 'inactive beta knowledge repo receives no new commit'
+[ "$(git -C "$beta_repo" status --porcelain -- beta-note.md)" = '?? beta-note.md' ] \
+  || fail 'beta listed file remains uncommitted'
+
+acme_unbound_head="$(git -C "$acme_repo" rev-parse HEAD)"
+beta_unbound_head="$(git -C "$beta_repo" rev-parse HEAD)"
+printf 'acme unbound note\n' > "$acme_repo/acme-unbound.md"
+printf 'beta unbound note\n' > "$beta_repo/beta-unbound.md"
+printf '["companies/acme/knowledge/acme-unbound.md","companies/beta/knowledge/beta-unbound.md"]\n' \
+  > "$TMP/unbound-company-changeset.json"
+unbound_output="$(env -u HQ_ACTIVE_COMPANY bash "$HELPER" --root "$fixture_root" --files-touched-json-file "$TMP/unbound-company-changeset.json")"
+[[ "$unbound_output" == *'SKIPPED-COMPANY-KNOWLEDGE'* ]] \
+  || fail 'unbound session reports SKIPPED-COMPANY-KNOWLEDGE'
+[ "$(git -C "$acme_repo" rev-parse HEAD)" = "$acme_unbound_head" ] \
+  || fail 'unbound session creates no acme commit'
+[ "$(git -C "$beta_repo" rev-parse HEAD)" = "$beta_unbound_head" ] \
+  || fail 'unbound session creates no beta commit'
+[ "$(git -C "$acme_repo" status --porcelain -- acme-unbound.md)" = '?? acme-unbound.md' ] \
+  || fail 'unbound acme file remains uncommitted'
+[ "$(git -C "$beta_repo" status --porcelain -- beta-unbound.md)" = '?? beta-unbound.md' ] \
+  || fail 'unbound beta file remains uncommitted'
+ok 'company knowledge commits stay scoped to the bound company and skip when unbound'
 
 echo 'handoff-knowledge-commit-scope: PASS'

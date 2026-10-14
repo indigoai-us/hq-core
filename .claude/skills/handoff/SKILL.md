@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(bash core/scripts/handoff-knowledge-commit.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(bash core/scripts/hq-detach.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(bash core/scripts/handoff-knowledge-commit.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(bash core/scripts/handoff-autofile.sh:*), Bash(bash core/scripts/handoff-builder-route.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -29,7 +29,7 @@ CHANGESET_JSON
 bash core/scripts/handoff-knowledge-commit.sh --files-touched-json-file "$CHANGESET_TMP"
 ```
 
-Include only files this session intentionally changed. List files, not folders: an entry with a trailing slash, an absolute path, or a `..` segment fails the whole changeset, and the helper prints the offending entries. The helper commits only listed files inside personal/core knowledge repositories and leaves unrelated staged or dirty files untouched. It does not process company knowledge, which remains a plain synced directory.
+Include only files this session intentionally changed. List files, not folders: an entry with a trailing slash, an absolute path, or a `..` segment fails the whole changeset, and the helper prints the offending entries. The helper commits only listed files inside personal/core knowledge repositories and the bound company's knowledge repository, and leaves unrelated staged or dirty files untouched. It reads the bound company from `HQ_ACTIVE_COMPANY` and never touches another company's knowledge. A bound company's knowledge that is a plain synced directory (the usual case) syncs through its vault and is not committed. With no bound company it prints `SKIPPED-COMPANY-KNOWLEDGE:`; keep that line for the Step 6 report. This step behaves the same under Claude, Codex, and Grok.
 
 ### 2. Collect learnings (do NOT invoke /learn)
 
@@ -44,6 +44,37 @@ Format:
 ```
 
 Choose one concrete learnings file path, such as `/tmp/handoff-learnings-{short-slug}.json`, write the array there, and retain the same serialized array as `{learnings_json}`. Reuse the exact path in Steps 4 and 4.5. Empty array is fine. **Do not call `/learn` here — Step 4.5 dispatches it after the learning array is durable.**
+
+#### 2b. Collect environment deficiencies (from memory only)
+
+Second collection in this step. Answer the checklist below **from session memory only**. Do **not** read logs, transcripts, session JSONL, tool-result files, or any other record of the session in this step; if you do not remember a problem, it does not go in.
+
+For each of the seven levers, ask whether the environment (not the task) slowed or misled you this session:
+
+| lever | question |
+|---|---|
+| `navigation` | Did finding the right file, script, or doc take repeated searches or wrong turns? |
+| `automated-checks` | Was a test, lint, hook, or CI check missing, flaky, slow, or misleading? |
+| `coding-standards` | Was a convention unclear, contradictory, or undocumented? |
+| `steering-bloat` | Did injected policies, reminders, or context crowd out what mattered or get truncated? |
+| `tool-economy` | Did a tool or command cost far more calls, output, or retries than the job needed? |
+| `no-ops` | Did a command, hook, or step run and do nothing useful? |
+| `information-access` | Was needed information, access, or a credential unavailable or hard to reach? |
+
+Write one item per real problem into a `deficiencies[]` array:
+
+```json
+[
+  {"lever": "navigation", "kind": "repo", "severity": "medium",
+   "summary": "one line", "evidence": "what concretely happened this session",
+   "proposed_fix": "the change or exact command that would prevent it"}
+]
+```
+
+- `kind`: `hq-core` (HQ scaffold, scripts, skills, policies), `local-setup` (this machine or account), or `repo` (the target code repo).
+- `severity`: `high` | `medium` | `low`.
+- `evidence` is required. Drop any item without a concrete evidence string before storing; the finalizer also drops items whose evidence is empty.
+- Write the array to a temp file under `workspace/threads/.handoff-tmp/` (for example `mktemp workspace/threads/.handoff-tmp/deficiencies.XXXXXX`) and keep the path as `{deficiencies_file}`. `[]` is fine. Remove the file after Step 3.
 
 ### 2.2 Capture signal and entity candidates (opt-in companies only)
 
@@ -89,6 +120,7 @@ core/scripts/handoff-finalize.sh \
   --next-steps-json '[{"...json array of next steps..."}]' \
   --files-touched-json-file "$CHANGESET_TMP" \
   --learnings-json '{learnings_json from Step 2}' \
+  --deficiencies-json "{deficiencies_file from Step 2b}" \
   --tags-json '["handoff","{co}","{topic}"]' \
   --slug "{short-hyphenated-slug}" || rc=$?
 rm -f "$CHANGESET_TMP"   # clean up on both success and failure
@@ -198,6 +230,43 @@ Use the document-release skill for the handoff thread at {thread_path}. Update r
 
 For synchronous fallback, invoke `Skill` with `/learn {learnings_json}` or `/document-release {thread_path}` as applicable. Do not call `claude -p`.
 
+#### Auto-file hq-core deficiencies
+
+After the follow-ups, run once in the foreground:
+
+```bash
+bash core/scripts/handoff-autofile.sh --thread "{thread_path}" --root "$PWD"
+```
+
+Keep its single output line as `{autofile_result}`. The script files at most one `hq feedback bug` report per handoff and only on public installs:
+
+- Builder machines never file. A builder machine has `repos/private/hq-core-staging` and a successful `git push --dry-run` there (same test as the builder route below); a staging folder that cannot push files like a public install.
+- Only `kind: "hq-core"` deficiencies go in. The body has one section per item (lever, severity, summary, evidence, proposed fix) plus the thread's `system_info` block. The title is the highest-severity summary.
+- Zero hq-core items: nothing is filed.
+- Dedupe: a hash of lever and summary per item is recorded in `workspace/handoff-autofile/filed.json`. Items filed in the last 7 days are omitted; if all are omitted, nothing is filed.
+- `HQ_HANDOFF_AUTOFILE=0` disables filing. Items still stay in the thread and the report.
+- The body is scanned with `core/scripts/lib/secret-patterns.sh` before submit. A match aborts the submit.
+
+Results: `filed: <id>`, `skipped: <reason>`, `aborted: <reason>`, or `failed: <reason>`. Do not retry a failed or aborted submit in this step.
+
+#### Builder route: draft hq-core fixes as a staging PR
+
+Run this only after `handoff-finalize.sh` succeeded. Run once in the foreground:
+
+```bash
+bash core/scripts/handoff-builder-route.sh --root "$PWD" --thread "{thread_path}"
+```
+
+The first line is `route: builder` or `route: public (<reason>)`. The builder test passes only when `repos/private/hq-core-staging` is a git repo and `git push --dry-run` to its origin succeeds. On the public route, the auto-file step above already covered hq-core items; set `{builder_pr_result}` to `none (<reason>)` and stop here. `HQ_HANDOFF_BUILDER_ROUTE=0` forces the public route.
+
+On the builder route the second line is `brief: <path>` or `brief: none (<reason>)`. With no brief, set `{builder_pr_result}` to `none (<reason>)`. With a brief, dispatch one visible fix agent through the same routes as the follow-ups above: Codex `spawn_agent` then `wait_agent`, else Claude `Task`/`Agent`. Never use `claude -p` or a hidden background process. If neither visible route exists, do not run the fixes in this parent; set `{builder_pr_result}` to `none (no visible agent dispatch available)`.
+
+Give the agent this prompt, with the brief path filled in:
+
+> Read {brief_path} and follow it exactly. Work only in repos/private/hq-core-staging. Create the named branch off origin/main, apply the listed hq-core fixes grouped by lever, run the tests for every touched area plus the repo leak scan, and open one PR with gh pr create -R indigoai-us/hq-core-staging. Add the manual-copy label and push one more commit when .claude/skills or .claude/commands are touched. List each applied deficiency with its evidence and the thread id in the PR body, and put skipped items (no evidence, outside hq-core, failing tests) under 'Not applied'. Never merge, never use gh pr merge or --admin, never push to main. End with 'pr: <url>' or 'pr: none (<reason>)'.
+
+Wait for the result. Keep its final `pr:` line value as `{builder_pr_result}`. A launched agent id without a `pr:` line is `none (fix agent returned no result)`.
+
 ### 5. Detect active pipelines (cheap, keep in foreground)
 
 ```bash
@@ -231,6 +300,10 @@ When trusted context is absent (for example, a routed natural-language or progra
 - Clipboard copied: `All saved. To pick up later, open a new chat and paste what's on your clipboard.`
 - Clipboard not copied: `All saved. To pick up later, open a new chat and run {next_command}.`
 - Active pipelines: add one plain sentence that some work is still running and a new chat can pick it up.
+- Deficiencies with `kind: "local-setup"`: list them under a `Your setup` heading, one line each with the plain summary and, when `proposed_fix` is a command, the exact command to run.
+- Deficiencies with `kind: "repo"`: route each to `/learn` with repo scope (`"scope": "repo:{repo}"`) through the same Step 4.5 follow-up as learnings; do not list them in chat.
+- Deficiencies with `kind: "hq-core"`: add one plain line with `{autofile_result}` from Step 4.5, showing the filed feedback id or the reason nothing was filed (for example `Reported 2 HQ problems to the HQ team (feedback fb_123).` or `HQ problems noted, not reported: auto-filing is off.`). When there are zero hq-core items, still add one plain line that nothing was filed (for example `No HQ problems to report.`). On the builder route, add one more plain line with `{builder_pr_result}`: the PR link (for example `Drafted fixes for review: <url>`) or the reason no PR was opened.
+- Step 1 printed `SKIPPED-COMPANY-KNOWLEDGE:`: add one plain sentence that no company was bound, so company knowledge was not saved by this handoff.
 - `git_bg_errors` non-empty: add one plain sentence that one knowledge folder did not save, and they can ask you to retry. No raw git dump.
 
 If any eligible follow-up is still uncompleted after the synchronous Skill fallback, put this warning first (Auto-Clarity — the person must run a command). In the default style, lead with one plain sentence that something still needs finishing, then the recovery commands. Include the document-release recovery entry and its `Run exactly:` line only when the same installed-skill check above passed. If the skill is absent, record `document-release: skipped (skill not installed)` and omit the document-release recovery entry and command:
@@ -261,6 +334,7 @@ Background work dispatched:
   - /learn → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
   - /document-release → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending | document-release: skipped (skill not installed)}
   - qmd helper (`skipped-agent` | `skipped` | worker pid) → /tmp/qmd-handoff.log
+  - builder fix PR → {builder_pr_result}
 
 To continue in a fresh session:
   1. Start a new session
