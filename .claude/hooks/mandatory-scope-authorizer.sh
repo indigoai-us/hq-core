@@ -179,6 +179,28 @@ scope_heredoc_executions() {
   printf '%s' "$out"
 }
 
+# Remove references to a heredoc-written file that only read it as message
+# text: `gh pr|issue create|edit|comment --body-file <dest>` (or -F) and
+# `git [-C dir] commit -F|--file <dest>`. Those commands send the file to
+# GitHub or into a commit message; they never execute it. Any other mention
+# of the file, including a second one on the same line, is left in place so
+# the caller still treats the body as possibly executed.
+scope_strip_data_file_refs() {
+  local text="${1:-}" dest="${2:-}" line out="" consumer_re form q
+  consumer_re='^[[:space:]]*(gh[[:space:]]+(pr|issue)[[:space:]]+(create|edit|comment)|git([[:space:]]+-C[[:space:]]+[^[:space:];&|]+)?[[:space:]]+commit)([[:space:]]|$)'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -n "$dest" ] && [[ "$line" =~ $consumer_re ]]; then
+      for q in "" "'" '"'; do
+        for form in "--body-file $q$dest$q" "--body-file=$q$dest$q" "-F $q$dest$q" "--file $q$dest$q" "--file=$q$dest$q"; do
+          line="${line//" $form"/ }"
+        done
+      done
+    fi
+    out+="$line"$'\n'
+  done <<< "$text"
+  printf '%s' "$out"
+}
+
 scope_strip_inert_heredoc_bodies() {
   local raw="${1:-}" output="" line delimiter="" strip_tabs=0 in_body=0 delimiter_quoted=0
   local original="$raw" tail="" unsafe_re body_sub_prefix data_writer=0
@@ -295,7 +317,7 @@ scope_strip_inert_heredoc_bodies() {
     fi
     while IFS= read -r dest; do
       [ -n "$dest" ] || continue
-      dest_rest="${output#*"$dest"}"
+      dest_rest="$(scope_strip_data_file_refs "${output#*"$dest"}" "$dest")"
       if [[ "$dest_rest" == *"$dest"* ]] || [[ "$dest_rest" == *"./${dest##*/}"* ]]; then
         printf '%s' "$original"
         return 0
@@ -434,7 +456,7 @@ scope_shell_variable_values() {
 
 scope_candidate_is_inert_text() {
   local candidate="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
-  local segment="" masked_segment="" output_re redirection_re data_option_re backtick text_option_re command_head
+  local segment="" masked_segment="" output_re redirection_re data_option_re backtick text_option_re command_head pr_wrapper_re
   [ -n "$candidate" ] || return 1
   backtick=$'\140'
   # Only a standalone echo/printf is inert. A pipe, redirect, command
@@ -456,6 +478,12 @@ scope_candidate_is_inert_text() {
       text_option_re="(^|[[:space:]])(--title|--body)(=|[[:space:]])(\"[^\"]*$|'[^']*$)" ;;
     *) text_option_re="" ;;
   esac
+  # The gh pr create wrapper gets the gh pr create rule under any path form:
+  # bash/sh/zsh or direct execution, relative, ./, or absolute (quoted or not).
+  pr_wrapper_re='^((bash|sh|zsh)[[:space:]]+)?"?([^[:space:]"]*/)?core/scripts/hq-pr-create\.sh"?[[:space:]]'
+  if [[ "$command_head" =~ $pr_wrapper_re ]]; then
+    text_option_re="(^|[[:space:]])(--title|--body)(=|[[:space:]])(\"[^\"]*$|'[^']*$)"
+  fi
   [ -n "$text_option_re" ] && [[ "$prefix" =~ $text_option_re ]] && return 0
   segment="$prefix$candidate$suffix"
   output_re='^[[:space:]]*(command[[:space:]]+)?(printf|echo)([[:space:]]|$)'

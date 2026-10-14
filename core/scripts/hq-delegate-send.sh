@@ -9,6 +9,11 @@
 # Usage:
 #   core/scripts/hq-delegate-send.sh --manifest <path> [--send]
 #     [--headline <text>] [--note <text>]
+#   core/scripts/hq-delegate-send.sh --manifest <path> --reconcile <eventId>
+#
+# --reconcile records an already-delivered handoff DM (sent outside this
+# helper) by eventId: status granted|verified|sending -> sent, so
+# hq-delegate-pickup.sh can --check it. Sends nothing.
 #
 # Without --send: (re)generates PICKUP-PROMPT.md next to the manifest and
 # prints its path — inspectable, idempotent, sends nothing.
@@ -37,7 +42,7 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck source=lib/delegate-brainstorm.sh
 . "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
 
-usage() { sed -n '3,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { echo "hq-delegate-send: $*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
@@ -69,13 +74,14 @@ case "${OSTYPE:-}:${MSYSTEM:-}" in
     ;;
 esac
 
-MANIFEST="" SEND=0 HEADLINE="" NOTE=""
+MANIFEST="" SEND=0 HEADLINE="" NOTE="" RECONCILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest) MANIFEST="${2:-}"; shift 2 ;;
     --send)     SEND=1; shift ;;
     --headline) HEADLINE="${2:-}"; shift 2 ;;
     --note)     NOTE="${2:-}"; shift 2 ;;
+    --reconcile) RECONCILE="${2:-}"; shift 2 ;;
     -h|--help)  usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -84,6 +90,23 @@ done
 [ -n "$MANIFEST" ] || die "--manifest is required"
 [ -f "$MANIFEST" ] || die "manifest not found: $MANIFEST"
 jq -e . "$MANIFEST" >/dev/null 2>&1 || die "manifest is not valid JSON: $MANIFEST"
+if [ -n "$RECONCILE" ]; then
+  [[ "$RECONCILE" =~ ^[A-Za-z0-9_-]+$ ]] || die "--reconcile needs a DM eventId (letters, digits, _ and -)"
+  CUR="$(jq -r '.status // empty' "$MANIFEST")"
+  case "$CUR" in
+    granted|verified|sending) ;;
+    sent|picked-up) die "manifest status is '$CUR' - already recorded as sent" ;;
+    *) die "manifest status is '$CUR' - only granted, verified, or sending can be reconciled" ;;
+  esac
+  NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  TMP_MANIFEST="$(mktemp "${MANIFEST}.tmp.XXXXXX")"
+  if ! jq --arg now "$NOW" --arg ev "$RECONCILE" '.status = "sent" | .sentAt = $now | .dmEventId = $ev | .sentVia = "reconcile"' \
+    "$MANIFEST" > "$TMP_MANIFEST" || ! mv "$TMP_MANIFEST" "$MANIFEST"; then
+    rm -f "$TMP_MANIFEST"; die "could not save reconciled send receipt"
+  fi
+  echo "hq-delegate-send: recorded existing DM (eventId $RECONCILE) - status advanced to 'sent'"
+  exit 0
+fi
 LOCK="$MANIFEST.send-lock"
 if [ "$SEND" -eq 1 ]; then
   mkdir "$LOCK" 2>/dev/null || die "verification or delivery is active; retry after it finishes"

@@ -867,6 +867,24 @@ grep -qx -- 'withtrestle' "$TMP/rec/codex-spawnco.$suf"
 check "child inherits parent company_slug as HQ_SPAWN_COMPANY" "$?"
 grep -qx -- 'parent-sid' "$TMP/rec/codex-parent.$suf"
 check "child gets HQ_PARENT_SESSION_ID from the parent session" "$?"
+
+# Nested lane: a worker started by a lane carries HQ_PARENT_SESSION_ID of the
+# session that created the lane. What the worker spawns must see the worker's
+# own session as its parent, not the grandparent (session-fingerprints US-005).
+before_nested="$(ls "$TMP/rec"/codex-parent.* 2>/dev/null | wc -l | tr -d ' ')"
+OUT="$(env -u HQ_SPAWN_COMPANY -u HQ_SPAWN_PROJECT -u HQ_SPAWN_TASK \
+  HQ_WORKFLOW_CODEX_BIN="$TMP/bin/codex" FAKE_REC_DIR="$TMP/rec" \
+  HQ_WORKFLOW_CPU_CHECK=0 HQ_ROOT="$HQROOT" HQ_SESSION_ID=worker-own-sid \
+  HQ_PARENT_SESSION_ID=grandparent-sid HQ_LANE_ID=lane-nested \
+  HQ_WORKFLOW_GATES_DIR="$TMP/gates-default" \
+  node "$RUNNER" "$TMP/wf-inherit.mjs" --quiet --run-dir "$TMP/run-nested" 2>/dev/null)"
+RC=$?
+check "nested-lane inherit workflow exits 0" "$RC"
+after_nested="$(ls "$TMP/rec"/codex-parent.* 2>/dev/null | wc -l | tr -d ' ')"
+nested_own="$(grep -lx -- 'worker-own-sid' "$TMP/rec"/codex-parent.* 2>/dev/null | wc -l | tr -d ' ')"
+nested_grand="$(grep -lx -- 'grandparent-sid' "$TMP/rec"/codex-parent.* 2>/dev/null | wc -l | tr -d ' ')"
+[ "$after_nested" -gt "$before_nested" ] && [ "$nested_own" -ge 1 ] && [ "$nested_grand" -eq 0 ]
+check "inside a lane the child gets the worker's own session as HQ_PARENT_SESSION_ID, not the grandparent" "$?"
 ih_argv="$TMP/rec/codex-argv.$suf"
 grep -qx -- '--sandbox' "$ih_argv" && grep -qx -- 'danger-full-access' "$ih_argv"
 check "plan-tier explorer spawn uses danger-full-access sandbox" "$?"

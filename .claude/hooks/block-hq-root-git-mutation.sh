@@ -65,7 +65,7 @@ fi
 
 if [[ "${HQ_ALLOW_HQ_ROOT_GIT:-}" == "1" ]]; then exit 0; fi
 case "$CMD" in
-  *git*|*gh*) ;;
+  *git*|*gh*|*hq-pr-create.sh*) ;;
   *) exit 0 ;;
 esac
 # This exact standalone read-only form needs no root lookup or git process.
@@ -251,7 +251,7 @@ simple_command_has_escape_assignment() {
   for ((i=0; i<${#words[@]}; i++)); do
     token="${words[i]}"
     [[ "$token" == "$executable" ]] && return 1
-    if [[ "$token" == "HQ_ALLOW_HQ_ROOT_GIT=1" ]]; then return 0; fi
+    if [[ "$token" == "HQ_ALLOW_HQ_ROOT_GIT=1" ]]; then return 0; fi # gitleaks:allow
     [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
   done
   return 1
@@ -359,6 +359,36 @@ gh_positional_repo_anchor() {
   [[ "$endpoint" =~ ^/?repos/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*([/?#]|$) ]]
 }
 
+# core/scripts/hq-pr-create.sh wraps `gh pr create`, so `bash <wrapper> ARGS`
+# (or running the wrapper directly) is the same gh mutation. Rewrite the record
+# to `gh pr create ARGS` in WRAPPER_GH_RECORD so the -R/--repo and cd anchor
+# rules below apply to it unchanged.
+WRAPPER_GH_RECORD=""
+hq_pr_create_wrapper_record() {
+  local record="$1" executable executable_base i
+  local -a words
+  IFS=$'\037' read -r -a words <<<"$record"
+  executable="$(hq_shell_command_executable "$record" || true)"
+  [[ -n "$executable" ]] || return 1
+  for ((i=0; i<${#words[@]}; i++)); do
+    [[ "${words[i]}" == "$executable" ]] && break
+  done
+  [[ "$i" -lt "${#words[@]}" ]] || return 1
+  executable_base="${executable##*/}"
+  case "$executable_base" in
+    bash|bash.exe|sh|sh.exe|zsh|zsh.exe) i=$((i+1)) ;;
+  esac
+  case "${words[i]:-}" in
+    core/scripts/hq-pr-create.sh|./core/scripts/hq-pr-create.sh|*/core/scripts/hq-pr-create.sh) ;;
+    *) return 1 ;;
+  esac
+  WRAPPER_GH_RECORD="gh"$'\037'"pr"$'\037'"create"
+  for ((i=i+1; i<${#words[@]}; i++)); do
+    WRAPPER_GH_RECORD+=$'\037'"${words[i]}"
+  done
+  return 0
+}
+
 ANCHOR_SCAN_COMMAND="$CMD"
 collect_resolved_records "$CMD" 0
 if [[ "$STRICT_GIT_GUARD" -eq 1 ]]; then ANCHOR_SCAN_COMMAND="$RESOLVED_COMMAND"; fi
@@ -396,6 +426,16 @@ while IFS= read -r shell_record; do
           GH_IS_MUTATION=1
           GH_CMD="$shell_text"
           GH_RECORD="$shell_record"
+        fi
+        GH_MUTATION_COUNT=$((GH_MUTATION_COUNT + 1))
+      fi
+      ;;
+    *)
+      if hq_pr_create_wrapper_record "$shell_record"; then
+        if [ "$GH_IS_MUTATION" -eq 0 ]; then
+          GH_IS_MUTATION=1
+          GH_CMD="${WRAPPER_GH_RECORD//$'\037'/ }"
+          GH_RECORD="$WRAPPER_GH_RECORD"
         fi
         GH_MUTATION_COUNT=$((GH_MUTATION_COUNT + 1))
       fi

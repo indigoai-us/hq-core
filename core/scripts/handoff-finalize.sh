@@ -675,7 +675,19 @@ if [[ $STAGED -gt 0 ]] && [[ -n "$(git diff --cached --name-only 2>/dev/null)" ]
   git diff --cached --name-only | jq -R -s 'split("\n") | map(select(length > 0))' > "$PENDING_PATHS_FILE"
   commit_out=""
   commit_rc=0
-  commit_out="$(git commit -m "checkpoint: handoff ${THREAD_ID}" 2>&1)" || commit_rc=$?
+  # This commit runs hooks. When the HQ git-hooks dispatcher is installed (a
+  # global core.hooksPath), its commit-msg hook stamps HQ-Fingerprint, so an
+  # explicit trailer here would be a second copy. Pass it only when no global
+  # hooks path is set, i.e. the dispatcher is absent. A lib that fails to
+  # source or load leaves the array empty and never aborts the commit.
+  HQ_FINGERPRINT_TRAILER_ARGS=()
+  if [[ -z "$(git config --global --get core.hooksPath 2>/dev/null || true)" ]] \
+     && [[ -f "$HANDOFF_SCRIPT_DIR/lib/fingerprint.sh" ]]; then
+    # shellcheck source=lib/fingerprint.sh
+    { source "$HANDOFF_SCRIPT_DIR/lib/fingerprint.sh" 2>/dev/null \
+        && hq_fingerprint_trailer_load "$HQ_ROOT"; } || HQ_FINGERPRINT_TRAILER_ARGS=()
+  fi
+  commit_out="$(git commit -m "checkpoint: handoff ${THREAD_ID}" ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"} 2>&1)" || commit_rc=$?
   if [[ $commit_rc -eq 0 ]]; then
     HQ_COMMITTED="true"
     HQ_COMMIT_STATUS="committed"

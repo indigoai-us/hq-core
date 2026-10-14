@@ -137,10 +137,39 @@ if [ -n "$BAD" ]; then
   die "prefix violates the hq-files prefix conventions (must be company-relative folder form ending in '/'): $BAD"
 fi
 
+# --- person recipients named by personUid ------------------------------------
+# `hq people resolve` matches names and emails only (a prs_ uid returns
+# not_found), and `hq files share --with` accepts only email / grp_ / @all.
+# Map the prs_ uid to its email through the structured people roster, then
+# resolve and share by that email. The authoritative membership resolve below
+# must return this exact personUid, or the run stops.
+RESOLVE_KEY="$PRINCIPAL"
+case "$PRINCIPAL" in
+  prs_*)
+    PEOPLE_JSON="$(hq people list --company "$COMPANY" --json \
+      | awk 'started {print; next} /^[[:space:]]*[{[]/ {started=1; print}')" \
+      || die "could not list people to map personUid $PRINCIPAL to an email; set to.principal to the recipient's email and re-run"
+    PRS_EMAILS="$(printf '%s' "$PEOPLE_JSON" | jq -r --arg uid "$PRINCIPAL" '
+      if type == "array" then . else (.people // error("unexpected people list shape")) end
+      | [.[] | select(.personUid == $uid) | .email
+         | select(type == "string" and length > 0) | ascii_downcase] | unique | .[]
+    ' | tr -d '\r')" \
+      || die "people list returned unexpected JSON while mapping $PRINCIPAL; set to.principal to the recipient's email and re-run"
+    PRS_EMAIL_COUNT="$(printf '%s' "$PRS_EMAILS" | grep -c . || true)"
+    [ "$PRS_EMAIL_COUNT" -eq 1 ] \
+      || die "personUid $PRINCIPAL maps to $PRS_EMAIL_COUNT emails in company '$COMPANY' (need exactly 1); set to.principal to the recipient's email and re-run"
+    RESOLVE_KEY="$PRS_EMAILS"
+    GRANT_PRINCIPAL="$PRS_EMAILS"
+    ;;
+esac
+
 # --- plan (always printed; the only output without --yes) --------------------
 
 echo "Delegation grant plan — company '$COMPANY', recipient '$PRINCIPAL':"
-if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
+case "$PRINCIPAL" in
+  prs_*) echo "  0. Person recipient: personUid $PRINCIPAL maps to $GRANT_PRINCIPAL; grants are shared to that email" ;;
+esac
+if [ "${PRINCIPAL#agt_}" != "$PRINCIPAL" ]; then
   echo "  0. Agent recipient: grants flow through group $GRANT_PRINCIPAL (created if absent, containing exactly $DISPLAY)"
 fi
 echo "  1. Push companies/$COMPANY/projects/$PROJECT/ to the vault (on-conflict keep)"
@@ -180,7 +209,7 @@ done
 
 # --- 1b. agent recipients: ensure the delegation group exists + contains them
 
-if [ "$GRANT_PRINCIPAL" != "$PRINCIPAL" ]; then
+if [ "${PRINCIPAL#agt_}" != "$PRINCIPAL" ]; then
   # Group creation and add are idempotent-tolerated; confirm that the complete
   # member list is exactly this agent before any file ACL is shared.
   hq groups create "$GRANT_PRINCIPAL" --name "Delegation: $DISPLAY" --company "$COMPANY" \
@@ -205,13 +234,20 @@ case "$GRANT_PRINCIPAL" in
   @all) EXPECTED_TYPE=company-wide; EXPECTED_ID="" ;;
   *)
     RESOLVE_RC=0
-    RESOLVED="$(hq people resolve "$PRINCIPAL" --company "$COMPANY" --json --membership-only)" || RESOLVE_RC=$?
+    RESOLVED="$(hq people resolve "$RESOLVE_KEY" --company "$COMPANY" --json --membership-only)" || RESOLVE_RC=$?
     if printf '%s' "$RESOLVED" | jq -e '.status == "found" and (.person.personUid | type == "string") and (.person.companyUid | type == "string")' >/dev/null; then
       [ "$RESOLVE_RC" -eq 0 ] || die "recipient resolution failed"
       EXPECTED_TYPE=person
       EXPECTED_ID="$(printf '%s' "$RESOLVED" | jq -r '.person.personUid' | tr -d '\r')"
       EXPECTED_COMPANY="$(printf '%s' "$RESOLVED" | jq -r '.person.companyUid' | tr -d '\r')"
+      case "$PRINCIPAL" in
+        prs_*) [ "$EXPECTED_ID" = "$PRINCIPAL" ] \
+          || die "personUid $PRINCIPAL mapped to $RESOLVE_KEY, but membership resolves that email to $EXPECTED_ID; set to.principal to the recipient's email and re-run" ;;
+      esac
     elif printf '%s' "$RESOLVED" | jq -e '.status == "not_found"' >/dev/null; then
+      case "$PRINCIPAL" in
+        prs_*) die "personUid $PRINCIPAL ($RESOLVE_KEY) is not an active member of company '$COMPANY'" ;;
+      esac
       case "$PRINCIPAL" in *@*) EXPECTED_TYPE=email; EXPECTED_ID="$(printf '%s' "$PRINCIPAL" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" ;; *) die "unresolved recipient" ;; esac
     else
       die "authoritative recipient lookup failed; update hq-cli if --membership-only is unsupported"

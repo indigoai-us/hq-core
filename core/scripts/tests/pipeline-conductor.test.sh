@@ -859,6 +859,29 @@ check "stop with a live driver: writes driver/stop.json as a stop envelope" \
   'grep -q "^STOP_REQUESTED " "$T/out" && [ "$(pyget "$IS/driver/stop.json" "d[\"kind\"]")" = stop ] && [ "$(pyget "$IS/driver/stop.json" "d[\"note\"]")" = "owner stop" ]'
 kill "$lpid" 2>/dev/null; wait "$lpid" 2>/dev/null
 
+# ---- worker-table rows: tabs or runs of spaces both carry engine, model, effort ----
+tbl_tick() {  # <name> <table-file> -> rc in $T/tbl.rc, create line in $T/tbl.create
+  : >"$T/pool.log"
+  PC_MAX_STORIES=1 "$PC" tick --prd "$T/prd.json" --state "$T/tbl-$1" --worktree "$T/wt" --table "$2" >"$T/tbl.out" 2>"$T/tbl.err"
+  echo $? >"$T/tbl.rc"; grep "^lanes create " "$T/pool.log" >"$T/tbl.create" || true
+}
+printf 'backend-dev\tclaude\tclaude-opus-4-8\thigh\nqa-tester\tclaude\tclaude-sonnet-4-6\n' >"$T/tbl-tabs.tsv"
+tbl_tick tabs "$T/tbl-tabs.tsv"
+check "tab-separated table row passes provider, model and effort to lanes create" \
+  '[ "$(cat "$T/tbl.rc")" = 0 ] && grep -q -- "--provider claude --model claude-opus-4-8 --effort high" "$T/tbl.create"'
+printf 'worker  engine  model  effort\nbackend-dev   claude    claude-opus-4-8   xhigh   # pinned\nqa-tester claude claude-sonnet-4-6\n' >"$T/tbl-spaces.tsv"
+tbl_tick spaces "$T/tbl-spaces.tsv"
+check "space-separated table row passes provider, model and effort to lanes create" \
+  '[ "$(cat "$T/tbl.rc")" = 0 ] && grep -q -- "--provider claude --model claude-opus-4-8 --effort xhigh" "$T/tbl.create"'
+printf 'backend-dev claude\nqa-tester claude claude-sonnet-4-6\n' >"$T/tbl-nomodel.tsv"
+tbl_tick nomodel "$T/tbl-nomodel.tsv"
+check "table row with no readable model column fails loudly and creates no lane" \
+  '[ "$(cat "$T/tbl.rc")" != 0 ] && [ ! -s "$T/tbl.create" ] && grep -q "model column is missing or unreadable" "$T/tbl.err"'
+printf 'backend-dev,claude,claude-opus-4-8,high\nqa-tester claude claude-sonnet-4-6\n' >"$T/tbl-garbled.tsv"
+tbl_tick garbled "$T/tbl-garbled.tsv"
+check "table row with an unparseable engine/model column fails loudly and creates no lane" \
+  '[ "$(cat "$T/tbl.rc")" != 0 ] && [ ! -s "$T/tbl.create" ] && grep -q "engine must be claude, codex, or grok" "$T/tbl.err"'
+
 # ---- never spawns ----
 check "no child-agent spawn in conductor" '! grep -nE "claude -p|codex exec|grok -p|Task\(" "$PC"'
 

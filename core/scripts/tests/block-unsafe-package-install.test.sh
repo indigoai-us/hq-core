@@ -276,6 +276,20 @@ ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook 'npm install -g @tobilu/qmd@2.5.3'
 [ "$ec" = "2" ] && pass "missing allow file still blocks 'npm install -g @tobilu/qmd@2.5.3' (exit 2)" \
                  || fail "missing allow file should block (exit 2), got $ec"
 
+# 8. The gh pr create wrapper gets the same exemption as `gh pr create` under
+#    every path form, so install text in a PR body is not mistaken for a
+#    command. Look-alike scripts are still parsed as commands.
+PR_BODY='--title t --body "step; npm install left-pad"'
+allow_case 0 "gh pr create $PR_BODY"                                  "gh pr create body text is exempt"
+allow_case 0 "bash core/scripts/hq-pr-create.sh $PR_BODY"             "wrapper via bash, relative path, is exempt"
+allow_case 0 "bash ./core/scripts/hq-pr-create.sh $PR_BODY"           "wrapper via bash, ./ path, is exempt"
+allow_case 0 "bash /abs/hq/core/scripts/hq-pr-create.sh $PR_BODY"     "wrapper via bash, absolute path, is exempt"
+allow_case 0 "bash \"\$HQ_ROOT/core/scripts/hq-pr-create.sh\" $PR_BODY" "wrapper via bash, quoted \$HQ_ROOT path, is exempt"
+allow_case 0 "sh core/scripts/hq-pr-create.sh $PR_BODY"               "wrapper via sh is exempt"
+allow_case 0 "core/scripts/hq-pr-create.sh $PR_BODY"                  "wrapper executed directly is exempt"
+allow_case 2 "bash other.sh $PR_BODY"                                 "other script with install text is still blocked"
+allow_case 2 "bash /abs/hq/core/scripts/hq-pr-create.sh.bak $PR_BODY" "wrapper look-alike name is still blocked"
+
 if [ "$fails" -gt 0 ]; then
   echo "block-unsafe-package-install.test.sh: $fails check(s) failed" >&2
   exit 1

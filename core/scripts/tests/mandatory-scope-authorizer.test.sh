@@ -1510,5 +1510,32 @@ for probe_case in \
   expect_exit "$probe_expect" "$rc" "non-company loop: $probe_command"
 done
 
+echo "[pr-wrapper] hq-pr-create.sh body text gets the gh pr create treatment"
+install_fixture "indigo"
+pr_args=' --title "T" --body "see companies/otherco/settings/x"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "gh pr create$pr_args" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+gh_rc="$(run_hook "$payload")"
+expect_exit 0 "$gh_rc" "gh pr create body text naming another company is inert"
+for wrapper in \
+  'bash core/scripts/hq-pr-create.sh' \
+  'bash ./core/scripts/hq-pr-create.sh' \
+  'bash /abs/hq/core/scripts/hq-pr-create.sh' \
+  'bash "$HQ_ROOT/core/scripts/hq-pr-create.sh"' \
+  'core/scripts/hq-pr-create.sh'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$wrapper$pr_args" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit "$gh_rc" "$rc" "wrapper body text matches gh pr create: $wrapper"
+done
+for lookalike in \
+  'bash core/scripts/other.sh' \
+  'bash /abs/hq/core/scripts/hq-pr-create.sh.bak'; do
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$lookalike$pr_args" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "look-alike script body text is still scanned: $lookalike"
+done
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

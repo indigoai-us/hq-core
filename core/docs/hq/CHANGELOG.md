@@ -1,4 +1,18 @@
 ## [Unreleased]
+- `workflow-runner.mjs` inside a lane worker (`HQ_LANE_ID` set) now passes the
+  worker's own session as `HQ_PARENT_SESSION_ID` to the engines it spawns,
+  instead of forwarding the session that created the lane. Nested lanes and
+  session fingerprints record the worker as the parent. Matches the hq-cli
+  native runner (session-fingerprints US-005).
+- `pipeline-conductor.sh` reads worker-table rows split on tabs or runs of
+  spaces, matching `pipeline-worker-table.sh --confirmed`, so space-separated
+  rows now pass `--provider`, `--model` and `--effort` to `hq lanes create`.
+  A row with an engine other than claude, codex or grok, or with no model
+  column, stops the conductor with an error instead of creating a lane on the
+  default model.
+- `/delegate` now reports a project with no Work Mesh board as
+  `workMeshOwnership: "not-registered"` (from `PROJECT_VIEW_NOT_FOUND`) instead
+  of "unconfirmed", and no longer suggests a reassign command that cannot succeed.
 - Pricing data and setup/deploy guidance now reflect the live API's unlimited
   deployment counts across plans.
 - The mandatory scope authorizer now scans heredoc and here-string bodies that a

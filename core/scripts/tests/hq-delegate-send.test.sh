@@ -262,3 +262,13 @@ chmod +x "$TMP/bin/jq"
 if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1; then fail 'failed sending-state write accepted'; fi
 [ ! -s "$INVOKE_LOG" ] || fail 'DM sent without durable sending marker'
 jq -e '.status == "verified"' "$MANIFEST" >/dev/null || fail 'failed state write destroyed manifest'
+
+# --- reconcile: DM sent outside the helper is recordable ----------------------
+write_manifest granted null
+: > "$INVOKE_LOG"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --reconcile evt_outside42 >/dev/null || fail 'reconcile failed'
+jq -e '.status == "sent" and .dmEventId == "evt_outside42" and .sentAt != null' "$MANIFEST" >/dev/null || fail 'reconcile did not record sent state'
+[ ! -s "$INVOKE_LOG" ] || fail 'reconcile invoked hq'
+if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --reconcile evt_again >/dev/null 2>&1; then fail 'reconcile accepted an already-sent manifest'; fi
+write_manifest granted null
+if HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --reconcile 'bad id;' >/dev/null 2>&1; then fail 'reconcile accepted malformed eventId'; fi

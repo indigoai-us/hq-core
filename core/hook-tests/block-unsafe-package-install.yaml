@@ -26,3 +26,11 @@ cases:
     input:
       command: "npm ci"
     expect: allow
+
+  # The hq-pr-create.sh wrapper (gh pr create) installs nothing → allowed.
+  - name: allows-hq-pr-create-wrapper
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "bash core/scripts/hq-pr-create.sh -R owner/repo --title x --body y"
+    expect: allow

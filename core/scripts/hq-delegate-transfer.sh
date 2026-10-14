@@ -196,12 +196,31 @@ if command -v hq >/dev/null 2>&1; then
   # ownership and the delegator's open stories to the recipient. Confirmed only
   # when the server answers with the recipient as owner; an older CLI or server
   # (unknown command, 404) leaves ownership "unconfirmed" and the run continues.
+  # PROJECT_VIEW_NOT_FOUND means the project was never registered on the board:
+  # there is nothing to reassign, so that is "not-registered", not "unconfirmed".
+  # The mesh directory matches uids, not emails. A recipient resolved by
+  # hq-delegate-resolve.sh is often known only by email, so look up the
+  # personUid from company membership first. If that fails, the email is
+  # passed through and the reassign reports unconfirmed as before.
+  case "$TO_UID" in
+    *@*)
+      RESOLVED_UID="$(hq people resolve "$TO_UID" --company "$COMPANY" --membership-only --json 2>/dev/null \
+        | jq -r 'select(.status == "found") | .person.personUid // empty' 2>/dev/null || true)"
+      case "$RESOLVED_UID" in prs_*) TO_UID="$RESOLVED_UID" ;; esac
+      ;;
+  esac
+  REASSIGN_ERR="$(mktemp)"
   REASSIGN_OUT="$(hq mesh project reassign "$MESH_PROJECT" --company "$COMPANY" \
     --to "$TO_UID" --include-open-stories \
-    --note "Delegated via /delegate ($DELEGATION_ID)" --json 2>/dev/null || true)"
+    --note "Delegated via /delegate ($DELEGATION_ID)" --json 2>"$REASSIGN_ERR" || true)"
+  REASSIGN_ERR_TEXT="$(cat "$REASSIGN_ERR" 2>/dev/null || true)"
+  rm -f "$REASSIGN_ERR"
   if printf '%s' "$REASSIGN_OUT" | jq -e --arg to "$TO_UID" \
       '(.ok != false) and ((.ownerUid // "") != "") and ((.ownerUid == $to) or ($to | test("@")))' >/dev/null 2>&1; then
     MESH_OWNERSHIP="confirmed"
+  elif printf '%s\n%s' "$REASSIGN_OUT" "$REASSIGN_ERR_TEXT" | grep -q 'PROJECT_VIEW_NOT_FOUND'; then
+    MESH_OWNERSHIP="not-registered"
+    echo "hq-delegate-transfer: project $MESH_PROJECT has no Work Mesh board; local ownership is authoritative; nothing to reassign. To track it on the board, register it with \`hq mesh project register\` (see \`hq mesh project --help\`)" >&2
   else
     echo "hq-delegate-transfer: hq mesh project reassign did not confirm; Work Mesh ownership remains unconfirmed" >&2
   fi

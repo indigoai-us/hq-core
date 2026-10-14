@@ -208,6 +208,17 @@ Presence and per-turn activity are automatic via hooks + `hq mesh daemon`. Manua
 | `hq mesh context default get\|set\|clear` | Device default company |
 | `hq mesh session task-status\|blocked\|note\|flush` (`--session-id`) | Discrete Board signals |
 
+## CLI: `hq fingerprint` (session fingerprints)
+
+Commits and PRs made from an HQ session carry `HQ-Fingerprint: hqfp1:<company>:<identity>:<machine>:<session>`. No trailer means no fingerprint. Guide: `core/docs/hq/USER-GUIDE.md#session-fingerprints`.
+
+| Command | Use |
+|---------|-----|
+| `hq fingerprint <value> [--json]` | Resolve a fingerprint (local records, then the HQ registry). Exit 0 found, 1 no record, 2 not an HQ fingerprint |
+| `hq fingerprint self [--json] [--offline] [--no-register]` | Print this session's fingerprint; registers it once per session unless `--no-register`. Always exits 0 |
+| `bash core/scripts/hq-fingerprint-hooks.sh status\|enable [--replace]\|disable [--dry-run]` | Commit trailer hook. `disable` writes `enabled: false` to `personal/settings/fingerprint.yaml`. Exit 0 ok, 2 usage or setup error |
+| `bash core/scripts/hq-pr-create.sh [gh pr create args...]` | `gh pr create` with the fingerprint footer |
+
 ## CLI: `hq files` (vault sharing)
 
 Not slash commands — direct CLI surface for HQ vault access control. Skill: `.claude/skills/hq-files/SKILL.md`.

@@ -1298,9 +1298,26 @@ function table_rows() {
   for (const ln of splitlines(readText(t))) {
     const f = words(ln);
     if (!f.length || f[0].startsWith("#") || f[0] === "worker") continue;
-    rows.set(f[0], f.length > 2 ? f[2] : "");
+    rows.set(f[0], table_lane(t, f[0]).model);
   }
   return rows;
+}
+
+function table_lane(t, worker) {
+  // The confirmed-table row for worker as {engine, model, effort}, or null when the table has no row for it.
+  // Fields split on tabs or runs of spaces, matching pipeline-worker-table.sh --confirmed. A row whose engine or
+  // model column cannot be read dies rather than letting the lane fall back to a default model.
+  for (const ln of splitlines(readText(t))) {
+    const f = words(ln);
+    if (!f.length || f[0].startsWith("#") || f[0] === "worker" || f[0] !== worker) continue;
+    if (!["claude", "codex", "grok"].includes(f[1] || ""))
+      die("worker table " + S(t) + ": lane " + worker + ": engine must be claude, codex, or grok (got '" + (f[1] || "") + "')");
+    if (!f[2] || f[2].startsWith("#"))
+      die("worker table " + S(t) + ": lane " + worker + ": model column is missing or unreadable; refusing to create a lane on a default model");
+    const effort = f[3] && !f[3].startsWith("#") ? f[3] : "";
+    return { engine: f[1], model: f[2], effort: effort };
+  }
+  return null;
 }
 
 function lane_problems(workers) {
@@ -1713,8 +1730,8 @@ function do_route(p, sid) {
       "--story", sid, "--worker", ph.worker, "--brief-file", abspath(laneBrief), "--senior", "session:" + session, "--json"];
     const table = get(or(jload(sp("run.json"), {}), {}), "table", "");
     if (T(table) && exists(table)) {
-      const row = splitlines(readText(table)).map(x => x.split("\t")).find(x => x[0] === ph.worker);
-      if (row) { if (row[1]) createArgs.push("--provider", row[1]); if (row[2]) createArgs.push("--model", row[2]); if (row[3]) createArgs.push("--effort", row[3]); }
+      const row = table_lane(table, ph.worker);
+      if (row) { createArgs.push("--provider", row.engine, "--model", row.model); if (row.effort) createArgs.push("--effort", row.effort); }
     }
     const created = run(E.PC_HQ, createArgs, { timeout: 120000 });
     let answer; try { answer = JSON.parse(created.stdout); } catch (e) { answer = {}; }

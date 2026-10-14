@@ -554,21 +554,23 @@ function readSessionCompanySlugs(sid) {
 }
 
 function parentSessionId() {
-  return String(
-    process.env.HQ_PARENT_SESSION_ID
-    || process.env.HQ_SESSION_ID
+  const own = process.env.HQ_SESSION_ID
     || process.env.CLAUDE_CODE_SESSION_ID
     || process.env.CLAUDE_SESSION_ID
     || process.env.CODEX_SESSION_ID
-    || process.env.CODEX_THREAD_ID
-    || '',
+    || process.env.CODEX_THREAD_ID;
+  // Inside a lane worker HQ_PARENT_SESSION_ID names the session that started
+  // the worker; the worker's own session is the parent of what it spawns.
+  const laneWorker = Boolean(process.env.HQ_LANE_ID?.trim()) && Boolean(own?.trim());
+  return String(
+    (laneWorker ? own : process.env.HQ_PARENT_SESSION_ID || own) || '',
   ).replace(/\s+/g, '');
 }
 
 function engineChildEnv() {
   const extra = {};
   const parent = parentSessionId();
-  if (!process.env.HQ_PARENT_SESSION_ID && parent) extra.HQ_PARENT_SESSION_ID = parent;
+  if (parent && parent !== process.env.HQ_PARENT_SESSION_ID) extra.HQ_PARENT_SESSION_ID = parent;
   if (!process.env.HQ_SPAWN_COMPANY) {
     const capability = readSessionCompanyCapability(parent);
     if (capability?.company_slug) extra.HQ_SPAWN_COMPANY = capability.company_slug;

@@ -117,6 +117,10 @@ files and the delegation journal), plus the brief. The mutable local
 `publication` receipt records canonical read-back hashes, including the published
 manifest; the manifest does not hash itself. `recipientAccess` and
 `workMeshOwnership` remain `unconfirmed` until separately established.
+`workMeshOwnership` is one of `confirmed` (the reassign receipt names the
+recipient), `not-registered` (`PROJECT_VIEW_NOT_FOUND`: the project has no Work
+Mesh board, local ownership is authoritative, nothing to reassign), or
+`unconfirmed` (any other failure; rerun `hq mesh project reassign`).
 
 ## Hard safety rules
 

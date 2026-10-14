@@ -23,6 +23,9 @@
 #      next step /plan. Secret-shaped brainstorm content still fails closed.
 #   7. The PRD path is unchanged: stage "prd", prdPath set, and no dossier
 #      list (the publish step keeps its PRD file set).
+#   8. A project folder with more than 200 files and a node_modules/.git tree
+#      builds instead of dying silently (exit 141): dependency and VCS dirs are
+#      skipped, checksums cap at 200 entries, and the cap is reported on stderr.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -290,4 +293,45 @@ AFTER_COUNT="$(find "$FIX/workspace/delegations" -maxdepth 1 -mindepth 1 -type d
 jq -e '.project.stage == "prd" and .project.prdPath == "companies/acme/projects/widget/prd.json" and .project.sourcePath == .project.prdPath and (.project | has("dossier") | not)' \
   "$MANIFEST" >/dev/null || fail "PRD manifest must keep stage prd / prdPath and carry no dossier list: $(jq .project "$MANIFEST")"
 
-echo "hq-delegate-bundle: ok (schema valid; prefixes folder-form + bucket-relative; fail-closed on neither source and secret match; brainstorm stage builds from brainstorm.md with dossier + /plan brief; prd path unchanged; pattern lib superset of hook)"
+# --- 8. big project folders: >200 files and dependency dirs ------------------
+# A project folder holding a build toolchain (node_modules with thousands of
+# files) once killed the builder silently with exit 141: the checksum pipeline
+# truncated with `head`, the producer took SIGPIPE, and pipefail + errexit
+# ended the script with no message. Dependency and VCS folders are not part of
+# the dossier and must not be checksummed; a folder with more than 200 real
+# files must still build.
+
+BIG="$FIX/companies/acme/projects/bigfolder"
+mkdir -p "$BIG/research" "$BIG/video/node_modules/pkg/lib" "$BIG/video/.git/objects"
+printf -- '---\nstatus: exploring\n---\n\n# Big folder\n\n> A project with a build toolchain inside.\n' > "$BIG/brainstorm.md"
+# 260 real files (over the 200 cap) plus enough long dependency paths that the
+# sorted list overflows the pipe buffer, which is what made head SIGPIPE sort.
+i=0
+while [ "$i" -lt 260 ]; do
+  echo "note $i" > "$BIG/research/note-$i.md"
+  i=$((i + 1))
+done
+i=0
+while [ "$i" -lt 1500 ]; do
+  : > "$BIG/video/node_modules/pkg/lib/a-rather-long-generated-module-file-name-for-padding-$i.js"
+  i=$((i + 1))
+done
+echo "obj" > "$BIG/video/.git/objects/abc"
+echo "src" > "$BIG/video/Fde.tsx"
+
+BIGOUT="$(HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project bigfolder \
+  --to alice@acme.test --to-name "Alice" 2>"$TMP/big.err")" \
+  || fail "builder must build a project with >200 files and a node_modules folder (exit $?): $(cat "$TMP/big.err")"
+BIGID="$(printf '%s' "$BIGOUT" | head -1)"
+BIGMAN="$FIX/workspace/delegations/$BIGID/manifest.json"
+[ -f "$BIGMAN" ] || fail "big-folder manifest not written: $BIGMAN"
+jq -e '.checksums | keys | map(select(test("/node_modules/|/\\.git/"))) | length == 0' "$BIGMAN" >/dev/null \
+  || fail "checksums must skip node_modules and .git: $(jq '.checksums | keys | map(select(test("node_modules|\\.git")))[0:3]' "$BIGMAN")"
+jq -e '.checksums | has("companies/acme/projects/bigfolder/brainstorm.md") and has("companies/acme/projects/bigfolder/research/note-0.md")' "$BIGMAN" >/dev/null \
+  || fail "checksums must still cover the project's own files"
+jq -e '.checksums | length == 200' "$BIGMAN" >/dev/null \
+  || fail "checksums must cap at 200 entries: got $(jq '.checksums | length' "$BIGMAN")"
+grep -q 'checksummed the first 200' "$TMP/big.err" \
+  || fail "builder must say on stderr when the checksum list was capped: $(cat "$TMP/big.err")"
+
+echo "hq-delegate-bundle: ok (schema valid; prefixes folder-form + bucket-relative; fail-closed on neither source and secret match; brainstorm stage builds from brainstorm.md with dossier + /plan brief; prd path unchanged; big folders build with dependency dirs skipped and a 200-entry cap; pattern lib superset of hook)"

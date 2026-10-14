@@ -125,12 +125,46 @@ then
   invalid_release_age=1
 fi
 
+# US-008: the candidate exempts a single-line hq-pr-create.sh invocation (via
+# bash, sh, or direct execution) the same way it exempts `gh pr create`, so PR
+# body text is not parsed as install commands. The pinned baseline predates the
+# wrapper and blocks it. Shell operators outside quotes disqualify the command.
+pr_create_wrapper=0
+if [ "$target_kind" = unsafe ] && [ "$base_rc" -eq 2 ] && [ "$candidate_rc" -eq 0 ] \
+  && python3 - "$record/input" <<'PY'
+import json
+import re
+import shlex
+import sys
+
+try:
+    command = json.loads(open(sys.argv[1], encoding="utf-8").read())["tool_input"]["command"]
+    if "\n" in command:
+        sys.exit(1)
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+except (KeyError, TypeError, ValueError):
+    sys.exit(1)
+if not tokens or any(token and set(token) <= set("();<>|&") for token in tokens):
+    sys.exit(1)
+script = tokens[1] if tokens[0] in ("bash", "sh") and len(tokens) > 1 else tokens[0]
+sys.exit(0 if re.fullmatch(r"(\S*/)?core/scripts/hq-pr-create\.sh", script) else 1)
+PY
+then
+  pr_create_wrapper=1
+fi
+
 cmp -s "$record/base/stdout" "$record/candidate/stdout" || {
   printf 'FAIL: %s guard differs on fixture invocation %s (stdout)\n' "$target_kind" "$count" >&2
   exit 1
 }
 intentional_release_age_block=0
-if [ "$base_rc" -ne "$candidate_rc" ]; then
+if [ "$pr_create_wrapper" -eq 1 ]; then
+  grep -Fq 'BLOCKED' "$record/base/stderr" \
+    && [ ! -s "$record/candidate/stdout" ] && [ ! -s "$record/candidate/stderr" ] \
+    || { printf 'FAIL: US-008 hq-pr-create.sh exemption has unexpected output\n' >&2; exit 1; }
+elif [ "$base_rc" -ne "$candidate_rc" ]; then
   if [ "$target_kind" != unsafe ] || [ "$invalid_release_age" -ne 1 ] \
     || [ "$base_rc" -ne 0 ] || [ "$candidate_rc" -ne 2 ]; then
     printf 'FAIL: %s guard exit differs on fixture invocation %s (base %s, candidate %s)\n' \
@@ -144,7 +178,8 @@ if [ "$base_rc" -ne "$candidate_rc" ]; then
 fi
 
 for field in stdout stderr exit; do
-  if [ "$intentional_release_age_block" -eq 1 ] && { [ "$field" = stderr ] || [ "$field" = exit ]; }; then
+  if { [ "$intentional_release_age_block" -eq 1 ] || [ "$pr_create_wrapper" -eq 1 ]; } \
+    && { [ "$field" = stderr ] || [ "$field" = exit ]; }; then
     continue
   fi
   cmp -s "$record/base/$field" "$record/candidate/$field" || {
@@ -195,6 +230,33 @@ run_fixture_suites() {
       cat "$C138C_TMP/${test_file##*/}.out" >&2
       return 1
     }
+  done
+
+  # US-008 negative cases: the candidate exempts these chained wrapper commands
+  # and the baseline blocks them, but they fall outside the carve-out, so the
+  # wrapper must still report the exit divergence.
+  local negative negative_err payload
+  negative_err="$C138C_TMP/negative.err"
+  mkdir -p "$C138C_TMP/negative-records" "$C138C_TMP/negative-cwd"
+  for negative in \
+    'bash core/scripts/hq-pr-create.sh --title t && npm install left-pad' \
+    'core/scripts/hq-pr-create.sh --title t; npm install left-pad' \
+    'bash core/scripts/hq-pr-create.sh --title t | npm install left-pad'; do
+    payload="$(jq -cn --arg cmd "$negative" '{tool_name:"Bash",tool_input:{command:$cmd}}')"
+    if ( cd "$C138C_TMP/negative-cwd" && printf '%s' "$payload" \
+        | HQ_PARITY_RECORD_ROOT="$C138C_TMP/negative-records" HQ_ROOT="$C138C_TMP/negative-cwd" \
+          HQ_ALLOW_UNSAFE_INSTALL=0 bash "$HQ_PARITY_UNSAFE_CANDIDATE_HOOK" \
+          > /dev/null 2> "$negative_err" ); then
+      rc=0
+    else
+      rc=$?
+    fi
+    if [ "$rc" -ne 1 ] || ! grep -Fq '(base 2, candidate 0)' "$negative_err"; then
+      printf 'FAIL: US-008 carve-out accepted a chained wrapper command (exit %s): %s\n' \
+        "$rc" "$negative" >&2
+      cat "$negative_err" >&2
+      return 1
+    fi
   done
 }
 
