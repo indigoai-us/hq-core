@@ -19,6 +19,26 @@ done
 [ -n "$changeset" ] && [ -f "$changeset" ] || usage
 root="$(cd "$root" && pwd -P)"
 tmp_parent="$root/workspace/threads/.handoff-tmp"
+
+# These commits run hooks. When the HQ git-hooks dispatcher is installed (a
+# global core.hooksPath), its commit-msg hook stamps HQ-Fingerprint, so an
+# explicit trailer here would be a second copy. Pass it only when no global
+# hooks path is set, i.e. the dispatcher is absent. The trailer is loaded
+# lazily, once, before the first commit, so a handoff with nothing to commit
+# never pays for it. A failing lib leaves the array empty and never blocks the
+# commit.
+HQ_FINGERPRINT_TRAILER_ARGS=()
+fingerprint_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fingerprint.sh"
+fingerprint_loaded=0
+load_fingerprint_trailer_once() {
+  [ "$fingerprint_loaded" -eq 0 ] || return 0
+  fingerprint_loaded=1
+  if [ -z "$(git config --global --get core.hooksPath 2>/dev/null || true)" ] && [ -f "$fingerprint_lib" ]; then
+    # shellcheck source=lib/fingerprint.sh
+    { . "$fingerprint_lib" 2>/dev/null && hq_fingerprint_trailer_load "$root"; } || HQ_FINGERPRINT_TRAILER_ARGS=()
+  fi
+  return 0
+}
 mkdir -p "$tmp_parent"
 tmp_dir="$(mktemp -d "$tmp_parent/handoff-knowledge-commit.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -120,7 +140,8 @@ for knowledge_path in "$root"/core/knowledge/public/* "$root"/core/knowledge/pri
   changed="$(git -C "$repo_dir" status --porcelain -- "${repo_paths[@]}")"
   [ -n "$changed" ] || continue
   git -C "$repo_dir" add -- "${repo_paths[@]}"
-  git -C "$repo_dir" commit --only -m "checkpoint: save session knowledge changes" -- "${repo_paths[@]}"
+  load_fingerprint_trailer_once
+  git -C "$repo_dir" commit --only -m "checkpoint: save session knowledge changes" ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"} -- "${repo_paths[@]}"
 done
 
 while IFS= read -r touched_path; do

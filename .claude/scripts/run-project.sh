@@ -1921,7 +1921,14 @@ validate_git_state() {
       git -C "$REPO_PATH" reset -q 2>/dev/null || true
       return 1
     fi
-    git -C "$REPO_PATH" commit -m "[orchestrator] ${story_id}: auto-commit uncommitted work" --no-verify 2>/dev/null || true
+    # --no-verify skips the commit-msg hook that stamps HQ-Fingerprint, so pass
+    # the trailer explicitly (nothing is added when the helper prints nothing).
+    HQ_FINGERPRINT_TRAILER_ARGS=()
+    if [[ -f "$HQ_ROOT/core/scripts/lib/fingerprint.sh" ]]; then
+      # shellcheck source=../../core/scripts/lib/fingerprint.sh
+      . "$HQ_ROOT/core/scripts/lib/fingerprint.sh" && hq_fingerprint_trailer_load "$HQ_ROOT"
+    fi
+    git -C "$REPO_PATH" commit -m "[orchestrator] ${story_id}: auto-commit uncommitted work" --no-verify ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"} 2>/dev/null || true
   fi
 }
 

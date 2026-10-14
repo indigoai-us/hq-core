@@ -208,7 +208,7 @@
             "timeout": 30,
             "gated": true,
             "prefilter": {
-              "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
+              "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
             },
             "runner": "source"
           },
@@ -718,6 +718,15 @@
             "gated": true,
             "prefilter": {
               "re": "git commit|git push|gh pr (create|merge)|vercel (deploy|--prod)|(npm|bun) publish|bun run test|npm test|bun test|curl -X (POST|PUT|DELETE)"
+            }
+          },
+          {
+            "id": "pr-fingerprint-footer",
+            "script": ".claude/hooks/pr-fingerprint-footer.sh",
+            "timeout": 15,
+            "gated": true,
+            "prefilter": {
+              "re": "gh pr create"
             }
           },
           {

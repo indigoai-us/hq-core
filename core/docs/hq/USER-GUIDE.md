@@ -238,6 +238,130 @@ The distinction between `UNTESTED` / `NA` / `UNKNOWN` and `PASS` is the design's
 central safeguard: a false `PASS` is worse than no tool, because it retires the
 instinct to check by hand.
 
+## Session fingerprints
+
+A session fingerprint is a short value that names the HQ session, company and
+machine that made a commit or opened a pull request. It does not contain a full
+identity, machine or session id.
+
+```
+hqfp1:<company>:<identity>:<machine>:<session>
+```
+
+- `company` is the company slug.
+- `identity` is `prs_` (a person) or `agt_` (an agent) plus the first 8
+  characters of the id.
+- `machine` is `laptop`, `outpost` or `fleet`, a dot, and the first 8 hex
+  characters of the machine id.
+- `session` is the first 8 characters of the session id.
+
+Any part HQ cannot work out is written as `-`.
+
+### Where fingerprints appear
+
+Commits made in a repo inside your HQ folder (`repos/`, `workspace/worktrees/`
+and the HQ folder itself) get a trailer on the last line of the message:
+
+```
+fix(signup): keep the email field after a failed submit
+
+HQ-Fingerprint: hqfp1:acme:prs_01J8ZK4Q:laptop.e3ef5a5a:fabb19c9
+```
+
+A git hook adds the trailer. It never fails a commit, and it leaves repos
+outside the HQ folder alone. HQ scripts that commit without running hooks pass
+the same trailer to `git commit` themselves.
+
+Pull requests opened from an HQ session get a footer at the end of the body:
+
+```
+Fixes the signup form losing the email after a failed submit.
+
+---
+HQ-Fingerprint: hqfp1:acme:prs_01J8ZK4Q:laptop.e3ef5a5a:fabb19c9
+```
+
+`bash core/scripts/hq-pr-create.sh [gh pr create args...]` opens the pull
+request with the footer. A pull request opened with a plain `gh pr create` from
+a Claude Code session gets the footer added right after it is created, as long
+as gh prints the PR URL. A body that already has a line starting with
+`HQ-Fingerprint:` is left alone.
+
+A commit or pull request without a trailer or footer has no fingerprint. HQ
+never guesses one for it. When HQ cannot build a fingerprint, it adds nothing.
+
+### Look up a fingerprint
+
+```bash
+hq fingerprint hqfp1:acme:prs_01J8ZK4Q:laptop.e3ef5a5a:fabb19c9
+```
+
+This checks the records on your machine first, then the HQ registry. It prints
+the identity, machine, session and company, and a `source:` line that says
+`local` or `registry`. A registry match also shows the identity's display name,
+the machine label, the host kind and a `first seen:` line. Add `--json` for
+machine-readable output;
+it includes `source`, and a registry match also includes `label` and
+`firstSeenAt`.
+
+Exit codes: `0` found, `1` no record anywhere (prints `no fingerprint record`),
+`2` the value is not an HQ fingerprint.
+
+### Print your own fingerprint
+
+```bash
+hq fingerprint self
+```
+
+This prints the fingerprint for the current session, or `no fingerprint:` and
+the reason when one cannot be built. It always exits `0`.
+
+| Flag | Effect |
+|------|--------|
+| `--json` | Machine-readable output. |
+| `--offline` | Never use the network: no identity lookup and no registration. |
+| `--no-register` | Skip registration (see below) but still allow the identity lookup. |
+
+`HQ_FINGERPRINT_OFFLINE=1` in the environment is the same as `--offline`. The
+commit hook, the explicit trailer helper and `hq-pr-create.sh` all run `self`
+offline, so they never register.
+
+### Registration
+
+The first time `hq fingerprint self` runs in a session while you are signed in
+and not offline, and the fingerprint is complete, it sends the fingerprint to
+the HQ registry so teammates can look it up later. Registration runs after the
+fingerprint is printed, inside the same command, with a 3 second limit. It never
+changes the output or the exit code. A failure is written to
+`~/.hq/fingerprint.log`. The time of a successful registration is recorded as
+`registered_at`, and later runs in that session skip the call. An Outpost
+machine token cannot register a fingerprint, and a 403 means the registry
+refused it; both are recorded as `registration_skipped` and not retried in that
+session.
+
+### Turn fingerprints off
+
+Fingerprints are on by default. The setting lives in
+`core/settings/fingerprint.yaml`, and `personal/settings/fingerprint.yaml`
+overrides it. To turn the trailer and footer off, run:
+
+```bash
+bash core/scripts/hq-fingerprint-hooks.sh disable
+```
+
+This writes `enabled: false` to `personal/settings/fingerprint.yaml`, so session
+start does not turn it back on. You can also write that line yourself. Other
+subcommands:
+
+| Command | Effect |
+|---------|--------|
+| `bash core/scripts/hq-fingerprint-hooks.sh status` | Show what is wired now and the recorded setting. |
+| `bash core/scripts/hq-fingerprint-hooks.sh enable [--replace]` | Wire the git hook and turn the trailer back on. |
+| `bash core/scripts/hq-fingerprint-hooks.sh disable [--dry-run]` | Turn the trailer off and record `enabled: false`. |
+
+The script exits `0` on success and `2` on a usage or setup error. While the
+setting is `enabled: true`, session start checks the hook wiring once a day.
+
 ## Workers
 
 ```

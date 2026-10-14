@@ -966,6 +966,8 @@ jobs:
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=failure-context bash core/scripts/tests/hq-autocommit.test.sh
       - name: Autocommit commits never start automatic git maintenance
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=auto-maintenance bash core/scripts/tests/hq-autocommit.test.sh
+      - name: Hook-bypassing HQ commits carry the HQ-Fingerprint trailer explicitly
+        run: bash core/scripts/tests/fingerprint-explicit-trailer.test.sh
       - name: Handoff pointer is atomic and worktree-resumable
         run: bash core/scripts/tests/handoff-finalize-pointer.test.sh
       - name: Handoff finalizer never reports a failed commit as success
@@ -1433,7 +1435,11 @@ jobs:
       - name: Hook timeout attribution tags and compact sequence
         run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: SessionStart slow work is detached and deadline-bound
-        run: timeout 30s bash core/scripts/tests/sessionstart-slow-work-bounded.test.sh
+        # Hang guard only. The suite waits out a 10s detached-reconcile
+        # deadline, a >5s after-five reconcile, and several ~2.5s bounded
+        # dispatches, so a normal pass takes ~27s; per-dispatch bounds are
+        # asserted inside the test.
+        run: timeout 90s bash core/scripts/tests/sessionstart-slow-work-bounded.test.sh
       - name: Master-hook success path process budget
         env:
           HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -1493,6 +1499,10 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: All tracked .sh files are mode 100755 in the git index (US-004)
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
+      - name: hq-pr-create.sh appends the HQ-Fingerprint footer (US-008)
+        run: bash core/scripts/tests/hq-pr-create.test.sh
+      - name: pr-fingerprint-footer hook edits raw gh pr create bodies (US-008)
+        run: bash core/scripts/tests/pr-fingerprint-footer.test.sh
       - name: Output style task-specific prompt regression test
         run: bash core/scripts/tests/output-style-task-specific-prompts.test.sh
       - name: new-hire CLI onboarding guidance regression

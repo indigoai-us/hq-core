@@ -22,6 +22,9 @@
 #   5. No share-session URL path: every share call carries --with (direct
 #      grant), never the bare browser-flow form.
 #   6. Agent recipient: grants flow through a per-agent delegation group.
+#   7. prs_ personUid recipient: mapped to its roster email, resolved and
+#      shared by that email, receipt pinned to the same personUid; unknown,
+#      ambiguous, or mismatched uids fail before any share.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -54,6 +57,7 @@ resolve_grantee() {
   case "$1" in
     grp_*)              printf 'group %s' "$1" ;;
     alice@acme.test)    printf 'person prs_ALICE' ;;
+    carol@acme.test)    printf 'person prs_CAROL' ;;
     *@*)                printf 'email %s' "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" ;;
     *)                  printf 'person prs_%s' "$1" ;;
   esac
@@ -101,11 +105,31 @@ case "$1 $2" in
        directRow:(if ($rows|length)>0 then {creatorUid:"prs_FIXTURE",open:false,createdAt:"fixture",updatedAt:"fixture"} else null end),
        effectivePermission:null,identities:{},schemaVersion:1,companyUid:"cmp_acme",exists:(($rows|length)>0)}'
     exit 0 ;;
+  "people list")
+    # Real `hq people list --json`: array of roster rows (membership-backed);
+    # agents have no email. A leading CLI notice line precedes the JSON.
+    echo "hq: a newer hq-cli is available"
+    cat <<'JSON'
+[
+  {"slug":"alice","name":"Alice","email":"alice@acme.test","personUid":"prs_ALICE","companyUid":"cmp_acme","role":"admin"},
+  {"slug":"carol","name":"Carol","email":"Carol@Acme.test","personUid":"prs_CAROL","companyUid":"cmp_acme","role":"member"},
+  {"slug":"deacon","name":"Deacon","personUid":"agt_01KTXDEACON","companyUid":"cmp_acme","role":"member"},
+  {"slug":"mallory","name":"Mallory","email":"alice@acme.test","personUid":"prs_MALLORY","companyUid":"cmp_acme","role":"member"},
+  {"slug":"twin-a","name":"Twin","email":"twin-a@acme.test","personUid":"prs_TWIN","companyUid":"cmp_acme","role":"member"},
+  {"slug":"twin-b","name":"Twin","email":"twin-b@acme.test","personUid":"prs_TWIN","companyUid":"cmp_acme","role":"member"}
+]
+JSON
+    exit 0 ;;
   "people resolve")
     tok="$3"
     case "$tok" in
       alice@acme.test|Alice)
         echo '{"status":"found","email":"alice@acme.test","person":{"name":"Alice","email":"alice@acme.test","role":"admin","personUid":"prs_ALICE","companyUid":"cmp_acme"}}' ;;
+      carol@acme.test)
+        echo '{"status":"found","email":"carol@acme.test","person":{"name":"Carol","email":"carol@acme.test","role":"member","personUid":"prs_CAROL","companyUid":"cmp_acme"}}' ;;
+      prs_*)
+        # The real CLI matches names/emails only; a personUid is not_found.
+        echo '{"status":"not_found"}'; exit 1 ;;
       *)
         echo '{"status":"not_found"}' ;;
     esac
@@ -327,4 +351,51 @@ write_manifest "$M" building
 jq '.to.principal="Pending@Example.test"' "$M" > "$TMP/m" && mv "$TMP/m" "$M"
 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail 'mixed-case pending email grant rejected'
 jq -e 'all(.vaultPrefixes[]; .grantReceipt.granteeId == "pending@example.test")' "$M" >/dev/null || fail 'pending email not canonicalized'
-echo "hq-delegate-grant: ok (exact identity, committed errors, replay, false-success rejection, direct grants, agent group)"
+# --- 7. prs_ personUid recipient (live failure: /delegate to a prs_ uid died
+# with "unresolved recipient" because people resolve does not match uids) ----
+
+set_prs_principal() { # uid
+  write_manifest "$M" building
+  jq --arg uid "$1" '.to = {"kind":"person","principal":$uid,"displayName":"Carol"}' "$M" > "$TMP/m" && mv "$TMP/m" "$M"
+}
+
+reset_acl_state
+set_prs_principal prs_CAROL
+: > "$INVOKE_LOG"
+set +e
+PLAN="$(bash "$GRANT" --manifest "$M" 2>/dev/null)"
+RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "prs_ plan-only must exit 2, got $RC"
+printf '%s' "$PLAN" | grep -q "prs_CAROL maps to carol@acme.test" || fail "prs_ plan must name the mapped email: $PLAN"
+if grep -Eq '^(sync push|files share|groups )' "$INVOKE_LOG"; then fail "prs_ plan-only must not mutate: $(cat "$INVOKE_LOG")"; fi
+
+: > "$INVOKE_LOG"
+bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "prs_ personUid recipient must grant and verify"
+grep -q '^people list --company acme --json$' "$INVOKE_LOG" || fail "prs_ must be mapped through people list: $(cat "$INVOKE_LOG")"
+grep -q '^people resolve carol@acme.test --company acme --json --membership-only$' "$INVOKE_LOG" \
+  || fail "prs_ must be resolved by its mapped email: $(cat "$INVOKE_LOG")"
+if grep -q '^people resolve prs_' "$INVOKE_LOG"; then fail "people resolve must never receive a prs_ uid"; fi
+[ "$(grep -c '^files share .* --with carol@acme.test ' "$INVOKE_LOG")" -eq 3 ] || fail "prs_ grants must share to the mapped email"
+if grep '^files share' "$INVOKE_LOG" | grep -q 'prs_'; then fail "files share must never receive a raw prs_ principal"; fi
+if grep -q '^groups ' "$INVOKE_LOG"; then fail "person recipient must not take the agent group path"; fi
+jq -e '.status == "granted" and .grantPrincipal == "carol@acme.test"
+  and all(.vaultPrefixes[]; .grantReceipt.granteeType == "person" and .grantReceipt.granteeId == "prs_CAROL")' "$M" >/dev/null \
+  || fail "prs_ run must record exact person receipts: $(cat "$M")"
+
+# Unknown, ambiguous, and mismatched uids fail before any share.
+for uid in prs_NOBODY prs_TWIN prs_MALLORY; do
+  reset_acl_state
+  set_prs_principal "$uid"
+  : > "$INVOKE_LOG"
+  set +e
+  ERR="$(bash "$GRANT" --manifest "$M" --yes 2>&1 >/dev/null)"
+  RC=$?
+  set -e
+  [ "$RC" -ne 0 ] || fail "$uid must fail"
+  if grep -q '^files share' "$INVOKE_LOG"; then fail "$uid must not reach files share"; fi
+  printf '%s' "$ERR" | grep -q "email" || fail "$uid error must tell the operator to use the email: $ERR"
+  jq -e '.status == "building" and .vaultPrefixes[0].grantReceipt == null' "$M" >/dev/null || fail "$uid advanced state"
+done
+
+echo "hq-delegate-grant: ok (exact identity, committed errors, replay, false-success rejection, direct grants, agent group, prs_ recipient)"

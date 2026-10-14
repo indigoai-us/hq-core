@@ -195,6 +195,15 @@ If a DM call fails or returns no event receipt, status stays `sending`.
 Inspect HQ DM history and reconcile the actual event before retrying. Never
 reset that status merely to resend; the previous call may have delivered.
 
+Always deliver the handoff DM through `hq-delegate-send.sh`. If a DM already
+went out some other way (manifest still `granted`, `verified`, or `sending`,
+and `hq-delegate-pickup.sh --check` refuses with exit 2), record it instead of
+re-sending:
+
+```bash
+bash core/scripts/hq-delegate-send.sh --manifest <manifest> --reconcile <eventId>
+```
+
 ### 10. Close the loop: receipt or FAILED
 
 "Sent" is a send receipt, not a delivery receipt. The delegation is not done
@@ -214,10 +223,16 @@ re-send with a direct ask or hand it to someone else. `/startwork` should run
 
 ### 11. Report
 
-Read `workMeshOwnership` from the manifest. When it is `unconfirmed` (an older
-CLI or a server without `hq mesh project reassign`), say so in the report and
-name the follow-up command:
-`hq mesh project reassign <project> --company <co> --to <uid> --include-open-stories`.
+Read `workMeshOwnership` from the manifest:
+
+- `confirmed`: the Work Mesh board now names the recipient. Nothing to add.
+- `not-registered`: the project has no Work Mesh board (`PROJECT_VIEW_NOT_FOUND`),
+  so local ownership is authoritative and the transfer is complete. Do not
+  suggest the reassign command; it cannot succeed. Optionally mention that the
+  project can be put on the board with `hq mesh project register`.
+- `unconfirmed` (an older CLI, a server without `hq mesh project reassign`, or
+  another failure): say so in the report and name the follow-up command:
+  `hq mesh project reassign <project> --company <co> --to <uid> --include-open-stories`.
 
 One plain sentence naming the recipient and what they now have — no step log,
 no jargon. Example:

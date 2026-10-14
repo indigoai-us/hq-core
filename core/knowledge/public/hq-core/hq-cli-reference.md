@@ -70,6 +70,9 @@ date in the header, and update `verified_against`.
 | `hq auth logout` | Clear the cached HQ Cognito session |
 | `hq auth refresh` | Ensure a valid cached Cognito session (refresh only if expiring; no-op if already valid) |
 | `hq auth status` | Show whether a valid HQ session is cached |
+| `hq fingerprint` | Fingerprint commands; with no argument prints help |
+| `hq fingerprint <value>` | Resolve `hqfp1:...` from local records, then the HQ registry. `--json`. Exit 0 found, 1 no record, 2 not an HQ fingerprint |
+| `hq fingerprint self` | Print the fingerprint for the current HQ session and register it once per session. `--json`, `--offline`, `--no-register`. Always exits 0 |
 
 ## Companies, membership, and cloud
 

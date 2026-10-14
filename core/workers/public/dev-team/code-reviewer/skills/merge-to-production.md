@@ -38,7 +38,7 @@ Optional:
 
 ```bash
 # Create release PR
-gh pr create --base main --head staging --title "Release v1.x.x"
+bash core/scripts/hq-pr-create.sh -R {owner}/{repo} --base main --head staging --title "Release v1.x.x"
 
 # Merge to production
 gh pr merge <number> --merge

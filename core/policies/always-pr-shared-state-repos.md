@@ -18,7 +18,7 @@ Never push commits directly to `main` (or any shared-state branch: `master`, `st
 
 1. Create a feature branch (`fix/...`, `feat/...`, `chore/...`).
 2. Push the branch to origin.
-3. Open a PR via `gh pr create --base main --head {branch}`.
+3. Open a PR via `bash core/scripts/hq-pr-create.sh -R {owner}/{repo} --base main --head {branch}`.
 4. Wait for CI + review before merging.
 
 This rule applies **regardless of what `git log` shows**: the presence of prior direct-to-main commits in a repo's history is not evidence of a standing policy allowing direct pushes. Different committers made different choices; the default for AI agents is always-PR.

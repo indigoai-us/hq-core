@@ -122,6 +122,6 @@ One issue per question. Never batch. Recommend which option and why.
 
 After review completes with no unresolved critical issues:
 - Suggest running `/quality-gate` for mechanical checks (types, lint, tests)
-- Suggest opening the pull request (`gh pr create -R {owner}/{repo} ...`), then
+- Suggest opening the pull request (`bash core/scripts/hq-pr-create.sh -R {owner}/{repo} ...`), then
   `/land` to take that one PR through CI and merge, or `/ship` to run the full
   review → land → deploy → smoke → monitor pipeline

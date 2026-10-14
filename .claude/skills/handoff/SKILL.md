@@ -263,7 +263,7 @@ On the builder route the second line is `brief: <path>` or `brief: none (<reason
 
 Give the agent this prompt, with the brief path filled in:
 
-> Read {brief_path} and follow it exactly. Work only in repos/private/hq-core-staging. Create the named branch off origin/main, apply the listed hq-core fixes grouped by lever, run the tests for every touched area plus the repo leak scan, and open one PR with gh pr create -R indigoai-us/hq-core-staging. Add the manual-copy label and push one more commit when .claude/skills or .claude/commands are touched. List each applied deficiency with its evidence and the thread id in the PR body, and put skipped items (no evidence, outside hq-core, failing tests) under 'Not applied'. Never merge, never use gh pr merge or --admin, never push to main. End with 'pr: <url>' or 'pr: none (<reason>)'.
+> Read {brief_path} and follow it exactly. Work only in repos/private/hq-core-staging. Create the named branch off origin/main, apply the listed hq-core fixes grouped by lever, run the tests for every touched area plus the repo leak scan, and open one PR with bash core/scripts/hq-pr-create.sh -R indigoai-us/hq-core-staging. Add the manual-copy label and push one more commit when .claude/skills or .claude/commands are touched. List each applied deficiency with its evidence and the thread id in the PR body, and put skipped items (no evidence, outside hq-core, failing tests) under 'Not applied'. Never merge, never use gh pr merge or --admin, never push to main. End with 'pr: <url>' or 'pr: none (<reason>)'.
 
 Wait for the result. Keep its final `pr:` line value as `{builder_pr_result}`. A launched agent id without a `pr:` line is `none (fix agent returned no result)`.
 

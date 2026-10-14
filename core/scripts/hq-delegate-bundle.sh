@@ -207,9 +207,27 @@ fi
 
 # --- checksums of the project dossier ----------------------------------------
 
+# Dependency, VCS, and build-cache folders are not part of the dossier: they are
+# reinstallable, can hold thousands of files, and are never what a recipient
+# picks up. The list is capped at CHECKSUM_CAP entries. The cap is applied with
+# awk, which reads all of its input: `head` exits early, and under pipefail the
+# SIGPIPE it hands to `sort` killed this script silently (exit 141) on big
+# project folders.
+CHECKSUM_CAP=200
+CHECKSUM_LIST="$(
+  cd "$HQ_ROOT" || exit 1
+  find "companies/$COMPANY/projects/$PROJECT" \
+    \( -name node_modules -o -name .git -o -name .venv -o -name venv \
+       -o -name __pycache__ -o -name .next -o -name .turbo -o -name .cache \) -prune \
+    -o -type f ! -name '.DS_Store' -print | LC_ALL=C sort
+)"
+CHECKSUM_TOTAL="$(printf '%s' "$CHECKSUM_LIST" | awk 'END { print NR }')"
+if [ "$CHECKSUM_TOTAL" -gt "$CHECKSUM_CAP" ]; then
+  echo "hq-delegate-bundle: project has $CHECKSUM_TOTAL files; checksummed the first $CHECKSUM_CAP" >&2
+fi
 CHECKSUMS_JSON="$(
   cd "$HQ_ROOT" || exit 1
-  find "companies/$COMPANY/projects/$PROJECT" -type f ! -name '.DS_Store' | sort | head -200 | \
+  printf '%s\n' "$CHECKSUM_LIST" | awk -v cap="$CHECKSUM_CAP" 'NF && NR <= cap' | \
   while IFS= read -r f; do
     jq -cn --arg p "$f" --arg h "$(file_sha256 "$f")" '{key: $p, value: $h}'
   done | jq -s 'from_entries'

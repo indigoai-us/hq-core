@@ -58,6 +58,30 @@ run_case() {
       rc="$(run_hook "$command")"
       expect_exit 0 "$rc" 'executed quoted heredoc can read the bound company'
       ;;
+    data-file-reference)
+      # A file written from a quoted heredoc and then handed to gh/git as a
+      # message body is read as text, never executed. Its prose (here a
+      # backticked `/fde`) must not be scanned as shell.
+      command=$'cat > workspace/pr.md <<\'EOF\'\nAdds a page at `/fde`.\nEOF\ngh pr create -R o/r --title t --body-file workspace/pr.md'
+      rc="$(run_hook "$command")"
+      expect_exit 0 "$rc" 'heredoc file passed to gh pr create --body-file is data'
+      command=$'cat > workspace/msg.txt <<\'EOF\'\nShip `/fde` and the $2,000 plan.\nEOF\ngit -C repos/x commit -F workspace/msg.txt'
+      rc="$(run_hook "$command")"
+      expect_exit 0 "$rc" 'heredoc file passed to git commit -F is data'
+      command=$'cat > workspace/pr.md <<\'EOF\'\nAdds a page at `/fde`.\nEOF\ngh issue comment 3 -R o/r --body-file=workspace/pr.md'
+      rc="$(run_hook "$command")"
+      expect_exit 0 "$rc" 'heredoc file passed to gh issue comment --body-file= is data'
+      # The same file run later stays scanned and a foreign company is denied.
+      command=$'cat > workspace/s.sh <<\'EOF\'\ncat companies/otherco/settings/x\nEOF\ngh pr create -R o/r --body-file workspace/s.sh\nbash workspace/s.sh'
+      rc="$(run_hook "$command")"
+      expect_exit 2 "$rc" 'a body file that is also executed stays scanned'
+      command=$'cat > workspace/s.sh <<\'EOF\'\ncat companies/otherco/settings/x\nEOF\ncat workspace/s.sh | sh'
+      rc="$(run_hook "$command")"
+      expect_exit 2 "$rc" 'a written file piped to a shell stays scanned'
+      command=$'cat > workspace/s.sh <<\'EOF\'\ncat companies/otherco/settings/x\nEOF\ngh pr create -R o/r --body-file workspace/s.sh --title "$(cat workspace/s.sh)"'
+      rc="$(run_hook "$command")"
+      expect_exit 2 "$rc" 'a second, non-data reference to the file stays scanned'
+      ;;
     diagnostic-reason)
       command='cat companies/$unresolved/settings/x'
       rc="$(run_hook "$command")"
@@ -80,7 +104,7 @@ run_case() {
 }
 
 if [ "$CASE" = all ]; then
-  for id in expansion heredoc diagnostic-reason diagnostic-company; do run_case "$id"; done
+  for id in expansion heredoc data-file-reference diagnostic-reason diagnostic-company; do run_case "$id"; done
 else
   run_case "$CASE"
 fi

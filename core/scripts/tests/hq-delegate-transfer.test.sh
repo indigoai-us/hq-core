@@ -55,12 +55,26 @@ if [ "${1:-} ${2:-} ${3:-}" = "mesh session note" ]; then
     esac
   done
 fi
+if [ "${1:-} ${2:-}" = "people resolve" ]; then
+  # Mirrors `hq people resolve <email> --membership-only --json`.
+  printf '{"status":"found","email":"%s","person":{"email":"%s","personUid":"prs_alice1"}}\n' "$3" "$3"
+  exit 0
+fi
 if [ "${1:-} ${2:-} ${3:-}" = "mesh project reassign" ]; then
+  # Like the live CLI, the mesh directory does not match a bare email.
+  prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--to" ]; then
+      case "$a" in *@*) echo "--to \"$a\" did not match anyone in the directory. Run \`hq mesh doctor\` to refresh it, or pass a uid." >&2; exit 1 ;; esac
+    fi
+    prev="$a"
+  done
   # MESH_REASSIGN_MODE: ok (server receipt), old (pre-reassign CLI), 404.
   case "${MESH_REASSIGN_MODE:-ok}" in
     ok)  printf '{"ok":true,"projectId":"%s","ownerUid":"prs_alice1","previousOwnerUid":"prs_owner1","reassignedStories":["US-1"]}\n' "$4" ;;
     old) echo "error: unknown command 'reassign'" >&2; exit 1 ;;
     404) echo '{"ok":false,"unavailable":true}'; exit 0 ;;
+    notfound) echo '404 PROJECT_VIEW_NOT_FOUND: Project view not found' >&2; exit 1 ;;
   esac
 fi
 exit 0
@@ -143,6 +157,24 @@ jq -e '.workMeshOwnership == "confirmed"' "$M" >/dev/null \
 grep -q 'Work Mesh ownership is confirmed' "$JOURNAL" \
   || fail "journal must say Work Mesh ownership is confirmed"
 
+# --- 3d. recipient known only by email -> resolved to a personUid first -----
+# A manifest from hq-delegate-resolve carries the email as principal and no
+# personUid. The mesh directory does not match emails, so passing the email
+# straight to reassign left every such delegation "unconfirmed".
+
+make_fixture "$FIX"
+write_manifest "$M" transfer
+jq 'del(.to.personUid)' "$M" > "$TMP/m" && mv "$TMP/m" "$M"
+: > "$MESH_STUB_LOG"
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
+  || fail "transfer (email-only recipient) exited non-zero"
+grep -q -- 'people resolve alice@acme.test --company acme --membership-only --json' "$MESH_STUB_LOG" \
+  || fail "an email-only recipient must be resolved through hq people resolve: $(cat "$MESH_STUB_LOG")"
+grep -q -- 'mesh project reassign widget --company acme --to prs_alice1 ' "$MESH_STUB_LOG" \
+  || fail "reassign must receive the resolved personUid, not the email: $(cat "$MESH_STUB_LOG")"
+jq -e '.workMeshOwnership == "confirmed"' "$M" >/dev/null \
+  || fail "an email-only recipient must end confirmed once resolved (got $(jq -r .workMeshOwnership "$M")): $(cat "$TMP/transfer.err")"
+
 # --- 3b. old CLI or a server without the route -> unconfirmed, still exit 0 --
 
 for mode in old 404; do
@@ -155,6 +187,21 @@ for mode in old 404; do
   grep -q 'reassign did not confirm' "$TMP/transfer.err" \
     || fail "unavailable reassign ($mode) must say ownership is unconfirmed"
 done
+# --- 3c. project never registered on the board -> not-registered, no rerun advice --
+
+make_fixture "$FIX"
+write_manifest "$M" transfer
+MESH_REASSIGN_MODE=notfound PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
+  || fail "transfer must exit 0 when the project has no Work Mesh board"
+jq -e '.workMeshOwnership == "not-registered"' "$M" >/dev/null \
+  || fail "PROJECT_VIEW_NOT_FOUND must mark workMeshOwnership not-registered (got $(jq -r .workMeshOwnership "$M"))"
+grep -q 'did not confirm' "$TMP/transfer.err" \
+  && fail "PROJECT_VIEW_NOT_FOUND must not report ownership as unconfirmed"
+grep -q 'nothing to reassign' "$TMP/transfer.err" \
+  || fail "PROJECT_VIEW_NOT_FOUND must say there is nothing to reassign"
+grep -q 'hq mesh project register' "$TMP/transfer.err" \
+  || fail "PROJECT_VIEW_NOT_FOUND must point at board registration"
+
 make_fixture "$FIX"
 write_manifest "$M" transfer
 PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
@@ -210,4 +257,4 @@ PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2
 [ ! -d "$FIX/companies/acme/projects/widget/journal" ] \
   || fail "share mode must not write a journal stanza"
 
-echo "hq-delegate-transfer: ok (in-place board update, single created entry, idempotent journal, mesh reassign confirmed or unconfirmed, offline mesh tolerated, share mode inert)"
+echo "hq-delegate-transfer: ok (in-place board update, single created entry, idempotent journal, mesh reassign confirmed, unconfirmed or not-registered, offline mesh tolerated, share mode inert)"

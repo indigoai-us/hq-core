@@ -2,6 +2,28 @@
 
 Newest release first.
 
+## Release: v16.0.20-beta.8
+
+- fix 2026-10-14 (`/delegate` on big project folders): the bundle step no
+  longer exits silently with code 141 when a project folder holds more than
+  200 files, for example a video build with `node_modules`. Dependency, VCS,
+  and build-cache folders (`node_modules`, `.git`, `.venv`, `venv`,
+  `__pycache__`, `.next`, `.turbo`, `.cache`) are left out of the dossier
+  checksums. The list is capped at 200 entries, and the bundle step says so on
+  stderr when it caps. No action beyond `/update-hq`.
+- fix 2026-10-14 (`/delegate` Work Mesh ownership): a recipient known only by
+  email is resolved to their personUid through
+  `hq people resolve --membership-only` before `hq mesh project reassign`.
+  Before this, every such handoff was reported as "unconfirmed", including
+  projects that are simply not on the board, which are now reported as
+  "not-registered". No action beyond `/update-hq`.
+- fix 2026-10-14 (scope guard and message files): a file written from a quoted
+  heredoc and then passed to `gh pr|issue create|edit|comment --body-file` or
+  `git commit -F` is treated as message text, so prose in it, such as a
+  backticked path, no longer blocks the command. A written file that is also
+  run, piped to a shell, or named again anywhere else in the command is still
+  scanned in full. No action beyond `/update-hq`.
+
 ## Release: v16.0.19-beta.14
 
 - hq-cli `5.345.85` and newer can find and stop legacy conduct pool lanes that

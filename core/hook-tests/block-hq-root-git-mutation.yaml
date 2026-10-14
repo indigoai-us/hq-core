@@ -29,6 +29,14 @@ cases:
       command: "gh pr create -R owner/repo --title x --body y"
     expect: allow
 
+  # core/scripts/hq-pr-create.sh wraps `gh pr create`; the same -R anchor allows it.
+  - name: allows-anchored-hq-pr-create-wrapper-with-repo
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "bash core/scripts/hq-pr-create.sh -R owner/repo --title x --body y"
+    expect: allow
+
   # The strict hq-flags gate defaults off, preserving main's behavior until
   # explicitly enabled for the company.
   - name: default-off-allows-bash-c-payload

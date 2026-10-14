@@ -594,6 +594,16 @@ esac
 case "$FIRST_TWO" in
   "git commit"|"git tag"|"git stash"|"bash -c"|"sh -c"|"zsh -c"|"python -c"|"python3 -c"|"node -e"|"ruby -e"|"perl -e") exit 0 ;;
 esac
+# The gh pr create wrapper gets the "gh pr create" exemption below under any
+# path form: bash/sh/zsh or direct execution, relative, ./, or absolute.
+if [ "$FIRST_LINE_COUNT" -eq 1 ]; then
+  case "$FIRST_ONE" in
+    bash|sh|zsh) pr_wrapper_word="${FIRST_TWO#* }" ;;
+    *) pr_wrapper_word="$FIRST_ONE" ;;
+  esac
+  pr_wrapper_re='^"?([^[:space:]"]*/)?core/scripts/hq-pr-create\.sh"?$'
+  [[ "$pr_wrapper_word" =~ $pr_wrapper_re ]] && exit 0
+fi
 case "$FIRST_THREE" in
   "gh pr create"|"gh pr edit"|"gh issue create"|"gh issue edit"|"gh release create") exit 0 ;;
 esac

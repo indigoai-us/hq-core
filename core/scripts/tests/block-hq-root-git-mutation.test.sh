@@ -75,12 +75,23 @@ run 2 "$TMP" 'git commit -m x'                       'bare commit @ HQ root bloc
 run 2 "$TMP" 'git push origin main'                  'bare push @ HQ root blocked'
 run 2 "$TMP" '( git add --dry-run README.md )'       'paren bare add @ HQ root blocked (post-strip shape, 2026-06-08 incident)'
 run 2 "$TMP" 'gh pr create --title x'                'bare gh pr create @ HQ root blocked'
+run 2 "$TMP" 'bash core/scripts/hq-pr-create.sh --title x' 'bare hq-pr-create wrapper @ HQ root blocked'
+run 2 "$TMP" 'sh ./core/scripts/hq-pr-create.sh --title x' 'bare hq-pr-create wrapper via sh @ HQ root blocked'
+run 2 "$TMP" 'core/scripts/hq-pr-create.sh --title x' 'bare hq-pr-create wrapper run directly @ HQ root blocked'
 run 2 "$TMP/not-a-repo" 'git commit -m x'            'bare commit, cwd not a repo, blocked'
 
 # --- Explicit anchors still work ------------------------------------------
 run 0 "$TMP" "git -C $NESTED commit -m x"            'git -C nested repo allowed'
 run 2 "$TMP" "git -C $TMP push origin main"          'git -C HQ root blocked'
 run 0 "$TMP" 'gh pr create -R owner/repo --title x'  'gh -R allowed'
+# core/scripts/hq-pr-create.sh wraps `gh pr create` and follows the same rules.
+run 0 "$TMP" 'bash core/scripts/hq-pr-create.sh -R owner/repo --title x' 'hq-pr-create wrapper -R allowed'
+run 0 "$TMP" 'bash core/scripts/hq-pr-create.sh --repo owner/repo --title x' 'hq-pr-create wrapper --repo allowed'
+run 0 "$TMP" "bash $TMP/core/scripts/hq-pr-create.sh -R owner/repo --title x" 'hq-pr-create wrapper abs path -R allowed'
+run 0 "$TMP" "cd $NESTED && bash core/scripts/hq-pr-create.sh --title x" 'hq-pr-create wrapper cd-anchored to nested repo allowed'
+run 2 "$TMP" "cd $TMP && bash core/scripts/hq-pr-create.sh --title x" 'hq-pr-create wrapper cd-anchored to HQ root blocked'
+run 2 "$TMP" 'bash core/scripts/hq-pr-create.sh -R owner/repo --title x && git push origin main' 'hq-pr-create wrapper -R + bare git push @ HQ root blocked'
+run 0 "$TMP" 'bash core/scripts/other.sh --title x'  'other bash script not treated as gh pr create'
 run 0 "$TMP" 'git status'                            'read-only git allowed'
 run_windows_status_fast_path 'git -C C:/x status' 'Windows drive slash status fast path'
 run_windows_status_fast_path 'git -C C:\x status' 'Windows drive backslash status fast path'
@@ -115,6 +126,7 @@ run 2 "$TMP" 'git init repos/private/newthing && git push origin main' 'git init
 run 0 "$NESTED" 'git commit -m x'                    'bare commit, cwd = nested repo, allowed (strip fallback)'
 run 0 "$NESTED" '( git push origin main )'           'paren bare push, cwd = nested repo, allowed (strip fallback)'
 run 0 "$NESTED" 'gh pr create --title x'             'bare gh pr create, cwd = nested repo, allowed (strip fallback)'
+run 0 "$NESTED" 'bash core/scripts/hq-pr-create.sh --title x' 'bare hq-pr-create wrapper, cwd = nested repo, allowed (strip fallback)'
 
 # --- cd-anchor form, when it DOES survive the harness ----------------------
 # (path != session cwd). The parenthesized form historically failed
