@@ -676,7 +676,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/hq-checkup/SKILL.md",
-      "hash": "sha256:eee858760aa0d3ab6272f4ffa785ea9dfb3747d4d5d8ea49bf80187105c7bded",
+      "hash": "sha256:f767bc4860ec3add4f1a32756881845c58ec5d15ef63652961f8d2d916a01a86",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -778,7 +778,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/hq-secrets/SKILL.md",
-      "hash": "sha256:07a30cd0b90109e9fafd606d3b6fc793790732d23fc91d9e2f3a1c737ac998d2",
+      "hash": "sha256:0be5442d4c0330a34dbece792942bbd4308991abc6ff03598aab5ad56f2eeeeb",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1422,7 +1422,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/resumework/SKILL.md",
-      "hash": "sha256:9b2d3784e717e46ca579c70de77759fcaa0084f5bcd8731d8153b0d27b6080e8",
+      "hash": "sha256:914a877f45bb008e82a0fd061088a369b7fcad4108f38229056f781477a16155",
       "duplicates": {
         "exact": [],
         "drifted": [],

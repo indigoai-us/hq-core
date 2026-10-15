@@ -234,11 +234,43 @@ test_pointer_is_atomically_replaced_in_its_directory() {
   rm -f "$TEST_BIN/jq"
 }
 
+# feedback_b75f1436: two handoffs with the same slug in the same second must
+# get distinct thread ids, so /resumework can select each by its full id and
+# neither overwrites the other.
+test_same_second_same_slug_gets_unique_ids() {
+  local repo="$TMP_ROOT/unique-ids" datebin="$TMP_ROOT/fixed-date-bin" real_date out1 out2 id1 id2 id3
+  scaffold_repo "$repo"
+  mkdir -p "$datebin"
+  real_date="$(command -v date)"
+  # Freeze the clock: every date call sees the same second.
+  cat > "$datebin/date" <<SH
+#!/usr/bin/env bash
+if "$real_date" -r 0 >/dev/null 2>&1; then exec "$real_date" -r 1792000000 "\$@"; fi
+exec "$real_date" -d @1792000000 "\$@"
+SH
+  chmod +x "$datebin/date"
+  local saved_path="$TEST_BIN"
+  TEST_BIN="$datebin:$saved_path"
+  out1="$(run_finalize "$repo")" || fail "first same-second handoff failed"
+  out2="$(run_finalize "$repo")" || fail "second same-second handoff failed"
+  local out3; out3="$(run_finalize "$repo")" || fail "third same-second handoff failed"
+  TEST_BIN="$saved_path"
+  id1="$(jq -r '.thread_id' <<<"$out1")"; id2="$(jq -r '.thread_id' <<<"$out2")"; id3="$(jq -r '.thread_id' <<<"$out3")"
+  [[ "$id1" == *-us083-pointer ]] || fail "first id lost its slug: $id1"
+  [[ "$id2" == "$id1-2" ]] || fail "second same-second id not suffixed: $id1 / $id2"
+  [[ "$id3" == "$id1-3" ]] || fail "third same-second id not suffixed: $id1 / $id3"
+  [[ -f "$repo/workspace/threads/$id1.json" && -f "$repo/workspace/threads/$id2.json" && -f "$repo/workspace/threads/$id3.json" ]] \
+    || fail "same-second handoffs did not each keep a thread file"
+  [[ "$(jq -r '.thread_id' "$repo/workspace/threads/$id1.json")" == "$id1" ]] || fail "first thread file was overwritten"
+  pass "same-second same-slug handoffs get unique thread ids ($id1, -2, -3)"
+}
+
 case "${1:-all}" in
   worktree) test_linked_worktree_copies_thread_and_updates_main_pointer ;;
   atomic) test_pointer_is_atomically_replaced_in_its_directory ;;
   reconcile) test_clean_worktree_reconciles_only_matching_handoff_mirrors ;;
-  all) test_linked_worktree_copies_thread_and_updates_main_pointer; test_pointer_is_atomically_replaced_in_its_directory; test_clean_worktree_reconciles_only_matching_handoff_mirrors ;;
+  unique) test_same_second_same_slug_gets_unique_ids ;;
+  all) test_linked_worktree_copies_thread_and_updates_main_pointer; test_pointer_is_atomically_replaced_in_its_directory; test_clean_worktree_reconciles_only_matching_handoff_mirrors; test_same_second_same_slug_gets_unique_ids ;;
   *) fail "unknown test selector: $1" ;;
 esac
 echo "PASS: handoff-finalize-pointer"

@@ -1,7 +1,7 @@
 ---
 name: resumework
 description: "Resume a specific handoff thread by id. For the latest handoff use /startwork."
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(session_id="$(bash core/scripts/hq-session.sh:*), Bash(lock_json="$(bash core/scripts/resume-thread-lock.sh:*), Bash(if bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/resumework-resolve.sh:*), Bash(session_id="$(bash core/scripts/hq-session.sh:*), Bash(lock_json="$(bash core/scripts/resume-thread-lock.sh:*), Bash(if bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash, AskUserQuestion
 ---
 
 # Resume Work From a Thread
@@ -22,7 +22,13 @@ Targeted resume. Unlike `/startwork` (which peeks at `handoff.json` for the *lat
 
 Before resolving the thread, pull the session continuity pointer from the personal vault so a `/handoff` run on another machine is visible on this one. The workspace tree is otherwise machine-local; only `workspace/threads/handoff.json` plus the referenced thread file are carved into the personal vault (hq-cloud-sync `computeContinuityPointerPaths`). Without this pull, resuming on a second device sees stale state (or no thread file at all). The helper is fail-soft: missing-CLI, offline, logged-out, or lock-held hosts return within the timeout and leave the local pointer untouched. Its output is advisory, so continue even if it exits non-zero.
 
-The argument is a thread id, with or without the `.json` suffix, and may be a partial slug. Resolve it to exactly one thread file under `workspace/threads/` (also check `workspace/threads/archive/**` for older threads).
+The argument is a thread id, with or without the `.json` suffix, and may be a partial slug. `core/scripts/resumework-resolve.sh` resolves it and prints JSON with every candidate, newest first. It searches these places in order:
+
+1. `workspace/threads/` and `workspace/threads/archive/**`.
+2. The session's **bound company** sessions folder, `companies/{co}/workspace/sessions/`. This is where a handoff written on another device lands when it reaches this machine through the company vault rather than the personal continuity pointer.
+3. If nothing matched, the bound company's vault through `hq files search` + `hq files get`. This step is slower; it materializes the thread in place.
+
+It never searches another company. With no company bound, only step 1 runs. If the vault step reports an error (logged out, offline), say so and suggest `/hq-login` or `/hq-sync`.
 
 ```bash
 bash core/scripts/handoff-sync-prefetch.sh || true
@@ -36,20 +42,18 @@ if [ -z "$id" ]; then
   exit 0
 fi
 
-# Exact match first, then prefix/substring across active + archived threads.
-matches=$(find workspace/threads -maxdepth 1 -type f -name "${id}.json" -print 2>/dev/null)
-if [ -z "$matches" ]; then
-  matches=$(find workspace/threads \
-    -path 'workspace/threads/resume-locks' -prune -o \
-    -name '*.json' ! -name '*.changeset.json' -path "*${id}*" -print 2>/dev/null)
-fi
-printf '%s\n' "$matches"
+# Local threads, then the sessions folder of the bound company, then its vault.
+bash core/scripts/resumework-resolve.sh "$id" \
+  | jq -r '"company=\(.company // "none") vault_searched=\(.vault.searched) vault_error=\(.vault.error // "none")",
+           (.matches[] | [.thread_id, .created_at, .session_id, .source, .branch, (.open_steps|tostring), (if .same_as_newer then "same-as-newer" else "" end), .title, .path] | map(. // "-") | join(" | "))'
 ```
 
+Each output row is `thread_id | created_at | session_id | source | branch | open steps | same-as-newer flag | title | path`, newest first.
+
 - **No arg / empty** — STOP. This skill requires a thread id. Tell the user the form (`/resumework <thread-id>`) and offer `/startwork` (resume the latest handoff) as the no-id alternative. List the few most recent thread ids to choose from: `ls -t workspace/threads/T-*.json 2>/dev/null | grep -v changeset | head -5`.
-- **Exactly one match** — proceed with that file.
-- **Multiple matches** — present them via AskUserQuestion (id + title, newest first) and wait for the user to pick one. Do not guess.
-- **No match** — report it plainly and show the 5 most recent thread ids so the user can correct the id.
+- **Exactly one match** — proceed with that path.
+- **Multiple matches** — present them via AskUserQuestion, newest first. Each option label is the **full thread id**, and its description shows created time, session id, branch, open-step count and source. Several handoffs from one session often share a slug, title and summary. Mark rows flagged `same-as-newer` as repeats of a newer handoff, and make the newest the first option. Wait for the user to pick, then continue with that exact thread id. Do not guess, and do not choose by title.
+- **No match** — report it plainly, including which places were searched (local, company `{co}`, vault) and any vault error, and show the 5 most recent thread ids so the user can correct the id.
 
 Never load a `*.changeset.json` as the thread — it's the changeset sidecar, not the thread.
 

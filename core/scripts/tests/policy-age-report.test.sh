@@ -11,6 +11,10 @@ NOW=1800000000   # fixed "now"
 day=86400
 pol() { # <file> <id> <created YYYY-MM-DD> <source> <version> <rule>
   printf -- '---\nid: %s\ntitle: t\nenforcement: hard\ncreated: %s\nsource: %s\nversion: %s\nwhen: always\n---\n\n## Rule\n\n%s\n' "$2" "$3" "$4" "$5" "$6" > "$1"
+  # The usage windows count from the last change to the policy file, so the
+  # file must not look edited after its created date (NOW is pinned ahead of
+  # the real clock).
+  touch -t "$(printf '%s' "$3" | tr -d -)0000" "$1"
 }
 pol "$FX/personal/policies/fresh-used.md"  fresh-used  2026-01-01 session-learning 1 'Run `core/scripts/exists.sh` first.'
 pol "$FX/personal/policies/never-old.md"   never-old   2025-01-01 user-correction  1 'Something nobody triggers.'

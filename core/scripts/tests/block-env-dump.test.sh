@@ -91,6 +91,22 @@ expect_hook 0 "set -e allowed" "set -euo pipefail"
 expect_hook 0 "export assignment allowed" "export FOO=bar"
 expect_hook 0 "unrelated tool ignored" "true"
 
+# feedback_2a6a39c7: a HOME-based CLI piped to grep whose pattern is a dump
+# word is a search, not a dump.
+expect_hook 0 "HOME binary piped to grep env allowed" "\$HOME/.local/bin/ads create:preview --id 1 | grep env"
+expect_hook 0 "HOME binary piped to grep -i set allowed" "\"\$HOME/.local/bin/ads\" create:preview 2>&1 | grep -i set"
+expect_hook 0 "tilde binary piped to rg printenv allowed" "~/bin/ads create:preview | rg printenv"
+expect_hook 0 "grep -E with env alternative allowed" "\$HOME/bin/ads create:preview | grep -E 'url|env'"
+expect_hook 0 "absolute grep with env pattern allowed" "\$HOME/bin/ads create:preview | /usr/bin/grep -c env"
+expect_hook 0 "HOME binary with --env option piped to grep allowed" "\$HOME/bin/ads create:preview --env prod | grep url"
+# Real dumps around a grep stay blocked.
+expect_hook 2 "env piped into grep still blocks" "env | grep env"
+expect_hook 2 "printenv piped into grep still blocks" "\$HOME/bin/ads x; printenv | grep -i token"
+expect_hook 2 "env after a grep segment still blocks" "grep env file.txt; env"
+expect_hook 2 "env capture as a grep operand still blocks" "grep foo \$(env)"
+expect_hook 2 "env backtick capture as a grep operand still blocks" "grep foo \`env\`"
+expect_hook 2 "set after grep in an and-list still blocks" "grep -q x f && set > /tmp/dump.txt"
+
 # Non-Bash payload must fail open (registration is not the only scope boundary).
 rc=0
 jq -nc '{tool_name:"Read",tool_input:{file_path:"/tmp/x"}}' \

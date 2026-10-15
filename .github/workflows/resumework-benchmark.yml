@@ -20,6 +20,7 @@ on:
       - '.claude/skills/resumework/**'
       - '.claude/hooks/**'
       - 'core/scripts/handoff-sync-prefetch.sh'
+      - 'core/scripts/resumework-resolve.sh'
       - 'core/scripts/handoff-open-steps.sh'
       - 'core/scripts/hq-session.sh'
       - 'core/scripts/resume-thread-lock.sh'

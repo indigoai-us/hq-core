@@ -1,7 +1,7 @@
 ---
 name: hq-secrets
 description: Use HQ CLI secrets safely through env injection or one-off exec.
-allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*)
+allowed-tools: Bash(hq:*), Bash(source:*), Bash(bash:*), Bash(hq secrets exec --only NOTION_TOKEN -- bash core/scripts/notion-upload-file.sh:*)
 ---
 
 # HQ Secrets
@@ -111,6 +111,23 @@ hq secrets exec --only OPENAI_API_KEY -- node script.js
 The `--only` flag is required — there is no "inject all" mode. Name exactly the secrets the child process needs.
 
 Results are cached locally (encrypted, 5-minute TTL) so repeated `exec` calls within a short window don't re-fetch from the API.
+
+### HTTP calls that need a bearer header
+
+Never type a token into a `curl -H "Authorization: Bearer ..."` command; the detect-secrets guard blocks it. Reference the injected variable instead, inside a child shell so it expands there, or read the header from a file:
+
+```bash
+hq secrets exec --only NOTION_TOKEN -- sh -c 'curl -sS -H "Authorization: Bearer $NOTION_TOKEN" https://api.notion.com/v1/users/me'
+curl -sS -H @/path/to/headers-file https://api.example.com/v1/thing   # file holds the Authorization line, mode 600
+```
+
+**Notion file and image uploads** (screenshots, charts, PDFs) have a helper that creates the upload, sends the file and optionally attaches it as an image/file block, with the token kept off every command line:
+
+```bash
+hq secrets exec --only NOTION_TOKEN -- bash core/scripts/notion-upload-file.sh chart.png --attach-to <page-or-block-id> --caption "Weekly chart"
+```
+
+It prints `{"file_upload_id":..., "status":..., "attached_block_id":...}`. Use `--token-env NAME` when the vault secret has another name, or `--header-file <path>` to read the `Authorization:` line from a file.
 
 ## Sourcing into a shell: `env`
 

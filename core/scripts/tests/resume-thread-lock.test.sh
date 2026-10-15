@@ -40,7 +40,11 @@ grep -Fq 'resume-thread-lock.sh acquire "$thread_id" --replace' "$SKILL" \
   || fail "resumework cannot refresh a confirmed lock"
 grep -Fq -- '--expected-generation' "$SKILL" \
   || fail "resumework does not pin a confirmed re-resume to the inspected lock"
-grep -Fq -- "-path 'workspace/threads/resume-locks' -prune" "$SKILL" \
+# Thread resolution lives in resumework-resolve.sh (feedback_050aaf1f); it must
+# prune the lock store so a lock record is never mistaken for a thread.
+grep -Fq 'resumework-resolve.sh' "$SKILL" \
+  || fail "resumework does not resolve threads through resumework-resolve.sh"
+grep -Fq -- "-path '*/resume-locks' -prune" "$ROOT/core/scripts/resumework-resolve.sh" \
   || fail "resumework resolution can mistake a lock record for a thread"
 grep -Fq 'same resume-lock confirmation procedure from `/resumework` Step 2' "$STARTWORK_SKILL" \
   || fail "startwork latest-handoff resume bypasses the lock"

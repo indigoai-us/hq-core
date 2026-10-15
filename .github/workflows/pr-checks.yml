@@ -347,6 +347,8 @@ jobs:
         run: bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
       - name: /resumework requires explicit confirmation for locked threads
         run: bash core/scripts/tests/resume-thread-lock.test.sh
+      - name: resumework resolves company-mirrored and vault handoffs and lists repeats by full id
+        run: bash core/scripts/tests/resumework-resolve.test.sh
 
   skill-command-script:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1106,6 +1108,8 @@ jobs:
         run: bash core/scripts/tests/detect-secrets-escape-hardening.test.sh
       - name: Secret detector block message never echoes the matched value
         run: bash core/scripts/tests/detect-secrets-no-value-leak.test.sh
+      - name: Notion upload helper keeps the token off argv; literal bearer still blocked
+        run: bash core/scripts/tests/notion-upload-file.test.sh
       - name: Env-dump hook blocks printenv on the live PreToolUse path (DEF-026)
         run: bash core/scripts/tests/block-env-dump.test.sh
       - name: Policy reminder stays under the host output ceiling; hard rules rank first
@@ -1158,6 +1162,8 @@ jobs:
         run: bash core/scripts/tests/policy-age-report.test.sh
       - name: Policy retire / restore and consumers skip retired through hq core
         run: bash core/scripts/tests/policy-retire.test.sh
+      - name: hq-checkup reports malformed policy triggers and retire failures
+        run: bash core/scripts/tests/hq-checkup-policy-retire.test.sh
       - name: Garden policies pass selects and retires candidates through hq core
         run: bash core/scripts/tests/garden-policy-pass.test.sh
       - name: Garden deep policies pass inventories, merges, backs up, and restores

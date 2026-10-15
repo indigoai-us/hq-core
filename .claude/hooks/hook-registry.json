@@ -1013,12 +1013,6 @@
             "gated": true
           },
           {
-            "id": "cleanup-mcp-processes",
-            "script": ".claude/hooks/cleanup-mcp-processes.sh",
-            "timeout": 30,
-            "gated": true
-          },
-          {
             "id": "hq-autocommit-bash-sweep",
             "script": ".claude/hooks/hq-autocommit-bash-sweep.sh",
             "timeout": 30,
@@ -1283,6 +1277,19 @@
             "args": [
               "SubagentStop"
             ]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "cleanup-mcp-processes",
+            "script": ".claude/hooks/cleanup-mcp-processes.sh",
+            "timeout": 30,
+            "gated": true
           }
         ]
       }

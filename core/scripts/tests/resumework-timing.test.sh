@@ -46,7 +46,7 @@ if count == 0 or count > limit:
     )
 required = (
     "handoff-sync-prefetch.sh",
-    "find workspace/threads",
+    "resumework-resolve.sh",
     "resume-thread-lock.sh inspect",
     "resume-thread-lock.sh acquire",
     "handoff-open-steps.sh list --limit 10",

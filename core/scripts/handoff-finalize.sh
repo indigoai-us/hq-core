@@ -338,6 +338,26 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 DAY=$(date +%Y%m%d)
 HM=$(date +%H%M%S)
 THREAD_ID="T-${DAY}-${HM}-${SLUG}"
+# Thread ids must be unique: /resumework selects by full thread id, and two
+# handoffs in the same second with the same slug would otherwise share one id
+# and overwrite each other (feedback_b75f1436). Probe the local thread store,
+# its archive and the session's company mirrors for an existing id and append
+# -2, -3, ... until free.
+thread_id_taken() {
+  local candidate="$1" co
+  [[ -e "workspace/threads/${candidate}.json" ]] && return 0
+  [[ -n "$(find workspace/threads/archive -name "${candidate}.json" -print -quit 2>/dev/null)" ]] && return 0
+  local locked="${LOCKED_COMPANIES:-}"
+  for co in ${locked//,/ }; do
+    [[ -n "$co" && -e "companies/${co}/workspace/sessions/${candidate}.json" ]] && return 0
+  done
+  return 1
+}
+if thread_id_taken "$THREAD_ID"; then
+  n=2
+  while thread_id_taken "${THREAD_ID}-${n}"; do n=$((n + 1)); done
+  THREAD_ID="${THREAD_ID}-${n}"
+fi
 THREAD_PATH="workspace/threads/${THREAD_ID}.json"
 CHANGESET_PATH="workspace/threads/${THREAD_ID}.changeset.json"
 
