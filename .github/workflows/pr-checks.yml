@@ -279,6 +279,10 @@ jobs:
         run: bash core/scripts/tests/conduct-session-links-use-hq-lanes.test.sh
       - name: /super-conductor watch interval setting contract
         run: bash core/scripts/tests/super-conductor-watch-interval.test.sh
+      - name: /super-conductor arms the watch loop before adoption
+        run: bash core/scripts/tests/super-conductor-loop-arm.test.sh
+      - name: /super-conductor sweeps HQ DMs by createdAt cursor, not --unread
+        run: bash core/scripts/tests/super-conductor-dm-sweep.test.sh
       - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
       - name: /conduct lane workers and completion watcher
@@ -966,6 +970,12 @@ jobs:
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=failure-context bash core/scripts/tests/hq-autocommit.test.sh
       - name: Autocommit commits never start automatic git maintenance
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=auto-maintenance bash core/scripts/tests/hq-autocommit.test.sh
+      - name: Git hook dispatcher is shared by the commit secret scan and the fingerprint stage
+        run: bash core/scripts/tests/commit-secret-scan.test.sh
+      - name: Commit-msg hook stamps HQ-Fingerprint only inside HQ and fails open
+        run: bash core/scripts/tests/hq-fingerprint-hook.test.sh
+      - name: Git hook tests pass from an HQ root with an apostrophe, a space and a double quote
+        run: bash core/scripts/tests/git-hooks-quoted-root.test.sh
       - name: Hook-bypassing HQ commits carry the HQ-Fingerprint trailer explicitly
         run: bash core/scripts/tests/fingerprint-explicit-trailer.test.sh
       - name: Handoff pointer is atomic and worktree-resumable

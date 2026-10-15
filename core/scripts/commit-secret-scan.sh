@@ -37,18 +37,18 @@ set -u
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)}"
 SELF="$HQ_ROOT/core/scripts/commit-secret-scan.sh"
-HOOKS_DIR="${HQ_SECRET_SCAN_HOOKS_DIR:-$HOME/.hq/git-hooks}"
-STATE_DIR="$(dirname "$HOOKS_DIR")/git-hooks-backups"
 SETTING_CORE="$HQ_ROOT/core/settings/commit-secret-scan.yaml"
 SETTING_PERSONAL="$HQ_ROOT/personal/settings/commit-secret-scan.yaml"
-HUSKY_INIT="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"
-MARK_BEGIN="# >>> HQ commit secret scan (core/scripts/commit-secret-scan.sh) >>>"
-MARK_END="# <<< HQ commit secret scan <<<"
 MIN_HQ="5.345.86"
-HOOK_NAMES="applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge pre-push post-rewrite pre-auto-gc push-to-checkout"
+# shellcheck disable=SC2034 # read by ghd_die in the sourced lib
+GHD_PROG="commit-secret-scan"
+# The dispatcher, backups and husky block are shared with
+# core/scripts/hq-fingerprint-hooks.sh.
+# shellcheck source=lib/git-hooks-dispatcher.sh
+. "$HQ_ROOT/core/scripts/lib/git-hooks-dispatcher.sh"
 
 # Hooks launched from GUI apps can have a thin PATH.
-export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin"
+ghd_augment_path
 
 die() { echo "commit-secret-scan: $*" >&2; exit 2; }
 
@@ -61,17 +61,18 @@ hq_cmd() {
   fi
 }
 
+# An hq CLI older than $MIN_HQ has no `scan` command but still exits 0 on
+# `scan secrets --help` (it prints the root help). Require the scanner's own
+# --staged option in the help text so an old CLI is reported as missing
+# instead of every commit failing as a "possible secret".
 hq_available() {
   if [ -z "${HQ_SECRET_SCAN_BIN:-}" ] && ! command -v hq >/dev/null 2>&1; then return 1; fi
-  hq_cmd scan secrets --help >/dev/null 2>&1
-}
-
-yaml_scalar() { # file key
-  local line=""
-  [ -f "$1" ] || return 1
-  line="$(grep -E "^$2:[[:space:]]*" "$1" 2>/dev/null | head -n 1)" || return 1
-  [ -n "$line" ] || return 1
-  printf '%s' "${line#*:}" | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//'
+  local help
+  help="$(hq_cmd scan secrets --help 2>&1)" || return 1
+  case "$help" in
+    *--staged*) return 0 ;;
+  esac
+  return 1
 }
 
 setting() { # key default
@@ -84,28 +85,15 @@ write_setting() { # enabled-value
   mkdir -p "$(dirname "$SETTING_PERSONAL")"
   local rec
   rec="$(setting recommend true)"
-  cat >"$SETTING_PERSONAL" <<EOF
+  cat >"$SETTING_PERSONAL" <<EOS
 # Written by core/scripts/commit-secret-scan.sh. Change it with
 # \`bash core/scripts/commit-secret-scan.sh enable|disable\`, not by hand.
 enabled: $1
 recommend: $rec
-EOF
+EOS
 }
 
-wired() { [ "$(git config --global --get core.hooksPath 2>/dev/null)" = "$HOOKS_DIR" ]; }
-
-# One line per distinct repo config under $HQ_ROOT/repos (worktrees share it):
-# <checkout>\t<local core.hooksPath>
-own_path_repos() {
-  [ -d "$HQ_ROOT/repos" ] || return 0
-  find "$HQ_ROOT/repos" -maxdepth 4 -name .git 2>/dev/null | while read -r g; do
-    r="$(dirname "$g")"
-    cd_="$(git -C "$r" rev-parse --git-common-dir 2>/dev/null)" || continue
-    case "$cd_" in /*) ;; *) cd_="$r/$cd_" ;; esac
-    cd_="$(cd "$cd_" 2>/dev/null && pwd -P)" || continue
-    printf '%s\t%s\t%s\n' "$cd_" "$r" "$(git -C "$r" config --local --get core.hooksPath 2>/dev/null)"
-  done | sort -u -t "$(printf '\t')" -k1,1 | cut -f2-
-}
+wired() { ghd_wired && ghd_feature_on secretScan; }
 
 # ---------------------------------------------------------------- gate / hook
 
@@ -137,81 +125,22 @@ EOF
   return 1
 }
 
+# Older hook stubs call `commit-secret-scan.sh hook <name>`; they keep working.
 hook() { # name args...
-  local n="$1"; shift
-  if [ "$n" = "pre-commit" ]; then gate || exit 1; fi
-
-  local chain d=""
-  chain="$(git config --get hq.chainHooksPath 2>/dev/null)"
-  if [ -n "$chain" ]; then
-    case "$chain" in /*) d="$chain" ;; *) d="$(git rev-parse --show-toplevel 2>/dev/null)/$chain" ;; esac
-  else
-    local prev
-    prev="$(git config --global --get hq.secretScan.previousHooksPath 2>/dev/null)"
-    if [ -n "$prev" ]; then
-      d="$prev"
-    else
-      # Same as git without a global hooksPath, for pre-commit; other hook
-      # types also run from .git/hooks, which is git's default behaviour.
-      d="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P)/hooks"
-    fi
-  fi
-  [ -n "$d" ] && [ -d "$d" ] || exit 0
-  [ "$(cd "$d" && pwd -P)" = "$(cd "$HOOKS_DIR" 2>/dev/null && pwd -P)" ] && exit 0
-  if [ -f "$d/$n" ] && [ -x "$d/$n" ]; then exec "$d/$n" "$@"; fi
-  exit 0
+  exec bash "$GHD_LIB" dispatch "$@"
 }
 
 # ---------------------------------------------------------------- enable/disable
 
 enable() {
-  local replace=0
-  [ "${1:-}" = "--replace" ] && replace=1
+  local replace=""
+  [ "${1:-}" = "--replace" ] && replace="--replace"
   hq_available || die "the hq CLI with \`hq scan secrets\` ($MIN_HQ or later) is required. Update the hq CLI, then run this again."
-  if wired; then echo "Already on."; status; return 0; fi
+  # Already wired: rewrite stale stubs (moved HQ folder, edited markers).
+  if wired; then ghd_refresh >/dev/null 2>&1; echo "Already on."; status; return 0; fi
 
-  mkdir -p "$HOOKS_DIR" "$STATE_DIR"
-  local ts b prev
-  ts="$(date +%Y%m%d-%H%M%S)"
-  b="$STATE_DIR/backup-$ts.tsv"
-  prev="$(git config --global --get core.hooksPath 2>/dev/null)"
-  {
-    printf 'global\t-\t%s\n' "${prev:--}"
-    own_path_repos | while IFS="$(printf '\t')" read -r r hp; do
-      if [ -n "$hp" ]; then printf 'repo\t%s\t%s\n' "$r" "$hp"; fi
-    done
-  } >"$b" || die "could not write the backup"
-  echo "Backed up current hook settings: $b"
-
-  # %q keeps a path with spaces, quotes or $ intact in the generated scripts.
-  local qself
-  qself="$(printf '%q' "$SELF")"
-  for n in $HOOK_NAMES; do
-    printf '#!/usr/bin/env bash\nexec bash %s hook %s "$@"\n' "$qself" "$n" >"$HOOKS_DIR/$n"
-    chmod +x "$HOOKS_DIR/$n"
-  done
-
-  if [ -n "$prev" ] && [ "$replace" -eq 0 ]; then
-    git config --global hq.secretScan.previousHooksPath "$prev"
-    echo "Your previous global hooks ($prev) still run after the scan. Use --replace to drop them."
-  fi
-  git config --global core.hooksPath "$HOOKS_DIR"
-
-  mkdir -p "$(dirname "$HUSKY_INIT")"
-  if ! { [ -f "$HUSKY_INIT" ] && grep -qF "$MARK_BEGIN" "$HUSKY_INIT"; }; then
-    printf '%s\nif [ "${n:-}" = "pre-commit" ]; then\n  bash %s gate || exit 1\nfi\n%s\n' \
-      "$MARK_BEGIN" "$qself" "$MARK_END" >>"$HUSKY_INIT"
-  fi
-
-  own_path_repos | while IFS="$(printf '\t')" read -r r hp; do
-    [ -z "$hp" ] && continue
-    [ "$hp" = ".husky/_" ] && continue
-    case "$hp" in
-      /*) if [ ! -d "$hp" ]; then git -C "$r" config --local --unset core.hooksPath; continue; fi ;;
-    esac
-    git -C "$r" config --local hq.chainHooksPath "$hp"
-    git -C "$r" config --local --unset core.hooksPath
-  done
+  ghd_install $replace
+  ghd_set_marker secretScan
 
   write_setting true
   echo "On. Every commit on this computer is now checked for secrets."
@@ -219,39 +148,19 @@ enable() {
 }
 
 disable() {
-  local dry="${1:-}" b
-  run() { if [ "$dry" = "--dry-run" ]; then echo "  would run: $*"; else "$@"; fi; }
-  b="$(ls -t "$STATE_DIR"/backup-*.tsv 2>/dev/null | head -1)"
-  if [ -z "$b" ]; then
-    wired && die "no backup found in $STATE_DIR; set core.hooksPath back by hand"
-    echo "Already off."; [ "$dry" = "--dry-run" ] || write_setting false; return 0
-  fi
-  echo "Restoring from $b ${dry}"
-  while IFS="$(printf '\t')" read -r kind r hp; do
-    case "$kind" in
-      global)
-        if [ -n "$hp" ] && [ "$hp" != "-" ]; then run git config --global core.hooksPath "$hp"
-        else run git config --global --unset core.hooksPath; fi
-        run git config --global --unset hq.secretScan.previousHooksPath ;;
-      repo)
-        [ -d "$r" ] || continue
-        [ "$(git -C "$r" config --local --get core.hooksPath 2>/dev/null)" = "$hp" ] && continue
-        run git -C "$r" config --local core.hooksPath "$hp"
-        run git -C "$r" config --local --unset hq.chainHooksPath ;;
-    esac
-  done <"$b"
-  if [ -f "$HUSKY_INIT" ] && grep -qF "$MARK_BEGIN" "$HUSKY_INIT"; then
-    if [ "$dry" = "--dry-run" ]; then echo "  would remove the HQ block from $HUSKY_INIT"
-    else
-      awk -v b="$MARK_BEGIN" -v e="$MARK_END" '$0==b{s=1} !s{print} $0==e{s=0}' "$HUSKY_INIT" >"$HUSKY_INIT.hq-tmp" \
-        && mv "$HUSKY_INIT.hq-tmp" "$HUSKY_INIT"
-    fi
-  fi
-  if [ "$dry" != "--dry-run" ]; then
-    mv "$b" "$b.restored"
+  local dry="${1:-}" out
+  [ "$dry" = "--dry-run" ] || ghd_clear_marker secretScan
+  out="$(ghd_uninstall_if_unused secretScan "$dry")" || { [ "$dry" = "--dry-run" ] || ghd_set_marker secretScan; exit 2; }
+  if [ "$out" = "kept" ]; then
+    [ "$dry" = "--dry-run" ] && { echo "  would stop the secret scan; the HQ git hook stays for the fingerprint trailer"; return 0; }
     write_setting false
-    echo "Off. Commits are no longer checked by HQ."
+    echo "Off. Commits are no longer checked for secrets. The HQ git hook stays on for the fingerprint trailer."
+    return 0
   fi
+  [ -n "$out" ] && echo "$out"
+  [ "$dry" = "--dry-run" ] && return 0
+  write_setting false
+  [ "$out" = "Already off." ] || echo "Off. Commits are no longer checked by HQ."
 }
 
 status() {

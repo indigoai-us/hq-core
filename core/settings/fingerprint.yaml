@@ -1,0 +1,12 @@
+# HQ-Fingerprint commit trailer (core/scripts/hq-fingerprint-hooks.sh).
+#
+# When on, commits in repos inside this HQ folder (repos/, workspace/worktrees/
+# and the HQ folder itself) get an `HQ-Fingerprint: hqfp1:...` trailer that
+# records the HQ session, company and machine that made them. Repos outside
+# the HQ folder are never touched. The hook never fails a commit.
+#
+# Session start wires it once a day while this says `enabled: true`.
+# personal/settings/fingerprint.yaml overrides this file. To turn it off:
+#   bash core/scripts/hq-fingerprint-hooks.sh disable
+# (that writes `enabled: false` to the personal file).
+enabled: true
