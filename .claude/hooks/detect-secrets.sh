@@ -111,6 +111,10 @@ Pattern matched: $PATTERN_NAME
 
 Remove the secret. Put real credentials in the HQ vault (/hq-secrets, hq run,
 hq secrets exec) and reference them by name; make example keys look fake.
+For an HTTP auth header, expand the injected variable in the child shell
+(hq secrets exec --only NAME -- sh -c 'curl -H "Authorization: Bearer \$NAME" ...')
+or read the header from a file (curl -H @file). Notion file/image uploads:
+hq secrets exec --only NOTION_TOKEN -- bash core/scripts/notion-upload-file.sh <file>
 EOF
           exit 2
         fi

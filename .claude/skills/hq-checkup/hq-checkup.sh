@@ -311,6 +311,42 @@ if [ -f "$CSS" ]; then
   esac
 fi
 
+# ===================== Policies ==============================================
+# Policies that aged out or point at things that no longer exist are retired
+# automatically (human on the loop): every one is listed with its reason in
+# workspace/reports/policy-retirement-<date>.md and can be restored. --check
+# runs the same pass as a dry run. Policies whose `when:` trigger is malformed
+# are never retired; policy-retire names each one on stderr, and they are
+# reported here because they cannot load until someone fixes the trigger.
+# Stderr is read, not discarded: a retire failure or a broken trigger is
+# something the person needs to see.
+POLICY_RETIRE="$HQ_ROOT/core/scripts/policy-retire.sh"
+if [ -x "$POLICY_RETIRE" ]; then
+  _ret_err="$(mktemp "${TMPDIR:-/tmp}/hq-checkup-policy-retire.XXXXXX")"
+  if [ "$FIX" = 1 ]; then
+    _ret_out="$(HQ_ROOT="$HQ_ROOT" bash "$POLICY_RETIRE" --auto 2>"$_ret_err")"
+  else
+    _ret_out="$(HQ_ROOT="$HQ_ROOT" bash "$POLICY_RETIRE" --auto --dry-run 2>"$_ret_err")"
+  fi
+  _ret_rc=$?
+  _ret="$(printf '%s\n' "$_ret_out" | tail -1)"
+  _ret_retired="$(printf '%s' "$_ret" | sed -n 's/^policy-retire --auto: \([0-9][0-9]*\) retired, .*/\1/p')"
+  if [ "${_ret_retired:-0}" -gt 0 ] 2>/dev/null; then
+    say INFO "Retired policies that aged out or point at things that no longer exist (${_ret#policy-retire --auto: })" ""
+  fi
+  _ret_malformed="$(grep -c 'has a malformed when: trigger' "$_ret_err" 2>/dev/null)"
+  if [ "${_ret_malformed:-0}" -gt 0 ] 2>/dev/null; then
+    say YOU "$(commas "$_ret_malformed") policies have a broken trigger (when: line), so they never load" \
+      "Run: bash core/scripts/lint-policy-triggers.sh    (lists each one; fix its when: line)"
+  fi
+  _ret_other="$(grep -v 'has a malformed when: trigger' "$_ret_err" 2>/dev/null | grep -v '^[[:space:]]*$' | head -1 | tr '\t' ' ')"
+  if [ "$_ret_rc" -ne 0 ] || [ -n "$_ret_other" ]; then
+    say YOU "Couldn't finish retiring old policies${_ret_other:+: ${_ret_other}}" \
+      "Run: bash core/scripts/policy-retire.sh --auto --dry-run    (to see why)"
+  fi
+  rm -f "$_ret_err"
+fi
+
 # ===================== Report ================================================
 if [ "$JSON" -eq 1 ]; then
   printf '%s' "$LINES" | python3 -c "
@@ -342,17 +378,6 @@ if [ "$N_FIXED" -gt 0 ]; then
     [ "$s" = "FIXED" ] && printf '    • %s\n' "$head"
   done
   printf '\n'
-fi
-
-# Policies that aged out or point at things that no longer exist are retired
-# automatically (human on the loop): every one is listed with its reason in
-# workspace/reports/policy-retirement-<date>.md and can be restored.
-if [ "$FIX" = 1 ] && [ -x "$HQ_ROOT/core/scripts/policy-retire.sh" ]; then
-  _ret="$(bash "$HQ_ROOT/core/scripts/policy-retire.sh" --auto 2>/dev/null | tail -1)"
-  case "$_ret" in
-    *" retired, "*" report "*) LINES="${LINES}INFO	Retired policies that aged out or point at things that no longer exist (${_ret#policy-retire --auto: })	
-" ;;
-  esac
 fi
 
 if printf '%s' "$LINES" | grep -q '^INFO'; then

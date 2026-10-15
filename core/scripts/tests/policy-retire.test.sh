@@ -77,7 +77,10 @@ echo "policy-retire --auto: ok"
 
 echo "[6b] --auto reports only successful writes and fails when validation rejects a selected policy"
 mkdir -p "$FX/auto-invalid/policies"
-printf -- '---\nid: auto-invalid\ntitle: t\nenforcement: hard\ncreated: 2026-01-01\nversion: 3\nwhen: git push\non: [SessionStart]\n---\n\n## Rule\n\nRun `core/scripts/auto-missing.sh`.\n' > "$FX/auto-invalid/policies/auto-invalid.md"
+# A missing `on:` fails canonical validation. A malformed `when:` is not used
+# here: the age report marks those malformed-trigger and --auto never selects
+# them for retirement.
+printf -- '---\nid: auto-invalid\ntitle: t\nenforcement: hard\ncreated: 2026-01-01\nversion: 3\nwhen: git\n---\n\n## Rule\n\nRun `core/scripts/auto-missing.sh`.\n' > "$FX/auto-invalid/policies/auto-invalid.md"
 rc=0; out="$(hq core --hq-root "$FX" policy retire --auto --dir "$FX/auto-invalid/policies" --report-dir "$FX/auto-invalid/reports" 2>&1)" || rc=$?
 [ "$rc" != 0 ] || fail "auto batch must fail when canonical validation rejects a selected policy: $out"
 grep -q 'failed: auto-invalid' <<<"$out" || fail "auto batch did not name the failed policy: $out"

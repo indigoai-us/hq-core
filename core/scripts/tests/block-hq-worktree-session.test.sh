@@ -407,5 +407,59 @@ for skill in brainstorm deep-plan prd; do
   fi
 done
 
+# --- Session-spawn tools from the canonical HQ root (feedback_ddf0470d) -----
+# A spawn_task chip or a start_session call with its own worktree, issued from
+# the HQ root, would start a session in a linked HQ worktree that this guard
+# then blocks on its first prompt. Refuse the spawn up front instead.
+# run_spawn <expected_exit> <tool_name> <tool_input_json> <label> [project_dir]
+run_spawn() {
+  local expect="$1" tool="$2" input="$3" label="$4" project="${5:-$HQ}" payload rc=0
+  payload=$(jq -nc --arg cwd "$project" --arg tool "$tool" --argjson ti "$input" \
+    '{cwd: $cwd, hook_event_name: "PreToolUse", session_id: "spawn-test", tool_name: $tool, tool_input: $ti}')
+  LAST_STDERR="$(printf '%s' "$payload" \
+    | env -u HQ_HOOK_AGENT_ID -u HQ_HOOK_SESSION_ID -u HQ_HOOK_CWD -u HQ_HOOK_EVENT -u HQ_HOOK_TOOL_NAME \
+      CLAUDE_PROJECT_DIR="$project" HQ_ROOT= HQ_ALLOW_HQ_WORKTREE= HQ_WORKTREE_GUARD_TTL=0 \
+      bash "$HOOK" PreToolUse 2>&1 >/dev/null)" || rc=$?
+  if [[ "$rc" -eq "$expect" ]]; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL [$label]: expected exit $expect, got $rc ($LAST_STDERR)" >&2
+  fi
+}
+run_spawn 2 mcp__ccd_session__spawn_task '{"title":"Warm lead follow-up","prompt":"draft the follow-up"}' \
+  'spawn_task chip from HQ root blocked (reported shape)'
+if [[ "$LAST_STDERR" != *"use_worktree: false"* ]]; then
+  FAIL=$((FAIL + 1)); echo 'FAIL [spawn guidance]: refusal does not name use_worktree: false' >&2
+else
+  PASS=$((PASS + 1))
+fi
+run_spawn 2 spawn_task '{"title":"t","prompt":"p"}' 'bare spawn_task from HQ root blocked'
+run_spawn 2 mcp__ccd_session__start_session '{"initiation":"own_initiative","title":"t","prompt":"p","use_worktree":true}' \
+  'start_session use_worktree:true from HQ root blocked'
+run_spawn 2 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":true,\"cwd\":\"$HQ/workspace\"}" \
+  'start_session worktree with cwd inside HQ (not repos/) blocked'
+run_spawn 0 mcp__ccd_session__start_session '{"initiation":"own_initiative","title":"t","prompt":"p","use_worktree":false}' \
+  'start_session use_worktree:false allowed'
+run_spawn 0 mcp__ccd_session__start_session '{"initiation":"own_initiative","title":"t","prompt":"p"}' \
+  'start_session without use_worktree allowed (plain checkout keeps its folder)'
+run_spawn 0 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":true,\"cwd\":\"$APP\"}" \
+  'start_session worktree of a source repo under repos/ allowed'
+run_spawn 0 mcp__ccd_session__start_session '{"initiation":"user_asked","title":"t","prompt":"p","use_worktree":true,"cwd":"/tmp/elsewhere"}' \
+  'start_session worktree outside HQ allowed'
+run_spawn 0 mcp__ccd_session__start_session '{"initiation":"user_asked","title":"t","prompt":"p","target":"cloud"}' \
+  'start_session cloud target allowed'
+run_spawn 0 mcp__ccd_session__start_session '{"initiation":"offer","title":"t"}' \
+  'start_session offer card without a brief allowed'
+run_spawn 0 mcp__ccd_session__start_session '{"proposal_id":"task_ab12"}' \
+  'start of an already-proposed session allowed'
+run_spawn 0 mcp__ccd_session__start_session '{"context":"fork","title":"t","prompt":"p"}' \
+  'fork from a plain checkout allowed'
+run_spawn 0 mcp__ccd_session__spawn_task '{"title":"t","prompt":"p","use_worktree":false}' \
+  'spawn_task explicitly in this checkout allowed'
+run_spawn 0 mcp__ccd_session__spawn_task '{"title":"t","prompt":"p"}' \
+  'spawn_task from a source-repo session allowed' "$APP"
+run_spawn 0 Bash '{"command":"ls"}' 'ordinary tool from HQ root unaffected'
+
 echo "block-hq-worktree-session: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

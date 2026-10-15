@@ -71,6 +71,7 @@ payload_field() {
   case "$1" in
     hook_event_name) if [ -n "${HQ_HOOK_EVENT+set}" ]; then printf '%s' "$HQ_HOOK_EVENT"; return 0; fi ;;
     agent_id) if [ -n "${HQ_HOOK_AGENT_ID+set}" ]; then printf '%s' "$HQ_HOOK_AGENT_ID"; return 0; fi ;;
+    tool_name) if [ -n "${HQ_HOOK_TOOL_NAME+set}" ]; then printf '%s' "$HQ_HOOK_TOOL_NAME"; return 0; fi ;;
     cwd) if [ -n "${HQ_HOOK_CWD+set}" ]; then printf '%s' "$HQ_HOOK_CWD"; return 0; fi ;;
     session_id) if [ -n "${HQ_HOOK_SESSION_ID+set}" ]; then printf '%s' "$HQ_HOOK_SESSION_ID"; return 0; fi ;;
   esac
@@ -83,6 +84,79 @@ payload_field() {
 EVENT="${1:-}"
 [ -z "$EVENT" ] && EVENT="$(payload_field hook_event_name)"
 [ -z "$EVENT" ] && EVENT="UserPromptSubmit"
+
+# Session-spawn tools (feedback_ddf0470d). A desktop spawn_task chip, or a
+# start_session call asking for its own worktree, launched from the HQ root
+# creates a new session in a linked worktree of HQ. This guard then blocks that
+# session on its first prompt, after the user has already accepted the chip.
+# Refuse the spawn up front instead, with what to do. A spawn aimed at a source
+# repo under repos/, outside HQ, at another host (cloud/ssh/preset), or
+# explicitly in this checkout (use_worktree: false) is allowed. Offers without
+# a brief and starts of an already-checked proposal create nothing new here.
+spawn_target_is_hq_worktree() {
+  local tool="$1" root="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}" fields use_wt cwd target host preset context prompt proposal
+  # Only a session rooted at HQ itself forks HQ; a source-repo session's own
+  # worktrees are the normal flow.
+  case "$root" in */repos/*) return 1 ;; esac
+  load_input
+  [ -n "$INPUT" ] || return 1
+  # Unit-separator framing: tab is IFS whitespace and would collapse empty
+  # fields, shifting every later column.
+  fields="$(printf '%s' "$INPUT" | jq -r '.tool_input // {} | [
+      (if has("use_worktree") then (.use_worktree | tostring) else "" end),
+      (.cwd // ""), (.target // ""), (.host // ""), (.preset // ""), (.context // ""),
+      ((.prompt // "") | .[0:1]), (.proposal_id // "") ]
+      | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' 2>/dev/null)" || return 1
+  IFS=$'\x1f' read -r use_wt cwd target host preset context prompt proposal <<<"$fields"
+  [ "$use_wt" = "false" ] && return 1
+  case "$target" in cloud|ssh) return 1 ;; esac
+  [ -n "$host" ] || [ -n "$preset" ] && return 1
+  if [ -n "$cwd" ] && [ -n "$root" ]; then
+    case "$cwd" in "~"*) cwd="$HOME${cwd#\~}" ;; esac
+    case "$cwd" in
+      "$root"/repos/*) return 1 ;;
+      "$root"|"$root"/*) ;;
+      *) return 1 ;;
+    esac
+  fi
+  case "$tool" in
+    *spawn_task)
+      # spawn_task always starts its session in a new worktree of the project.
+      return 0 ;;
+  esac
+  # start_session: a fork shares a plain checkout; an omitted use_worktree
+  # keeps a plain checkout's folder. Only an explicit worktree request forks HQ.
+  [ "$context" = "fork" ] && return 1
+  [ -n "$proposal" ] && [ -z "$prompt" ] && return 1
+  [ "$use_wt" = "true" ]
+}
+
+if [ "$EVENT" = "PreToolUse" ]; then
+  SPAWN_TOOL="$(payload_field tool_name)"
+  case "$SPAWN_TOOL" in
+    spawn_task|*__spawn_task|start_session|*__start_session)
+      if spawn_target_is_hq_worktree "$SPAWN_TOOL"; then
+        cat >&2 <<'MSG'
+BLOCKED: this would start an HQ session in a linked git worktree.
+
+A new session started from the HQ root in its own worktree is a worktree of
+HQ itself, and HQ's worktree guard blocks such a session on its first prompt
+(hard policy hq-no-worktree-for-repo-work). The user would accept the chip and
+then get a session that cannot run.
+
+Instead:
+  - start the session in this checkout: start_session with use_worktree: false
+  - for code work in a source repo, set cwd to the repo under repos/ (its own
+    worktree there is fine)
+  - or do the work here, or in a background Task subagent
+
+Do not offer a spawn_task chip from the HQ root: it always uses a worktree.
+MSG
+        exit 2
+      fi
+      ;;
+  esac
+fi
 
 # A Task subagent with `isolation: "worktree"` intentionally runs in a linked
 # worktree. Claude includes agent_id on hook events fired inside a subagent;

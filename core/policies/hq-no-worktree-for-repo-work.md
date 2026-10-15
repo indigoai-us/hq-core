@@ -31,6 +31,14 @@ SessionStart (banner), UserPromptSubmit (exit 2 — the prompt is erased) and
 PreToolUse (exit 2 — every tool call is refused), so an ordinary session
 started from an HQ worktree can do no work at all.
 
+The same hook also refuses, on PreToolUse, a session-spawn call from the HQ
+root that would start the new session in a linked HQ worktree: any
+`spawn_task` chip, and `start_session` with `use_worktree: true` and no
+`cwd` under `repos/` or outside HQ. Without this, the user accepts the chip
+and gets a session that is blocked on its first prompt (feedback_ddf0470d).
+Start such sessions with `use_worktree: false`, or point `cwd` at a source
+repo under `repos/`.
+
 Task subagents launched from the canonical HQ checkout with
 `isolation: "worktree"` are intentionally exempt. Claude identifies hook calls
 inside those delegated children with a non-empty `agent_id`; manually started

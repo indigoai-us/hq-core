@@ -51,6 +51,8 @@ These can't be done for someone, so the script only reports them:
 | Saving is paused | Only they can flip the switch in the menu bar |
 | Two copies of a file | Only they know which version they want |
 | A new version of HQ's setup | It rewrites HQ while it's running — needs a fresh chat |
+| A rule with a broken trigger (`when:` line) | Only they know what the rule should match; it is never retired for not firing |
+| Old rules couldn't be retired | The retire pass failed; its first error is shown |
 
 ## What you say afterwards
 

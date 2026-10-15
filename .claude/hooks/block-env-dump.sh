@@ -154,20 +154,30 @@ DUMP_END='($|[;&|]|&&|\|\||[0-9]?>>?|&>)'
 CAPTURE_OPEN='(\$\(|`|(^|[[:space:];&|])\()[[:space:]]*(command[[:space:]]+)?(/usr/bin/|/bin/)?'
 CAPTURE_CLOSE='([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*(\)|`)'
 
-if echo "$FLAT" | grep -qE "${CAPTURE_OPEN}(printenv|env|set)${CAPTURE_CLOSE}"; then
+# Operands of a text-search command are patterns or file names, not commands.
+# `ads create:preview | grep env` or `... | grep -i set` searches for a word
+# and dumps nothing (feedback_2a6a39c7). Drop each search command and its plain
+# operands from the text the env/printenv/set checks read. The operand run stops
+# at `;`, `&`, `|`, a parenthesis, a backtick or `$`, so a dump elsewhere in the
+# same line (a later `; env`, or a `$(env)` / backtick capture used as a grep
+# operand) is still seen.
+SEARCH_CMD='(^|[;&|(]|\$\()[[:space:]]*(command[[:space:]]+)?([^[:space:];&|()`$]*/)?(grep|egrep|fgrep|zgrep|rg|ag|ack)([[:space:]]+[^;&|()`$]*)?'
+SCAN=$(printf '%s' "$FLAT" | sed -E "s#${SEARCH_CMD}#\\1 #g")
+
+if echo "$SCAN" | grep -qE "${CAPTURE_OPEN}(printenv|env|set)${CAPTURE_CLOSE}"; then
   block
 fi
 
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?printenv([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
+if echo "$SCAN" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?printenv([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
   block
 fi
 
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?env([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
+if echo "$SCAN" | grep -qE "${DUMP_PREFIX}(/usr/bin/|/bin/)?env([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*${DUMP_END}"; then
   block
 fi
 
 # `set` with no args dumps the shell environment.
-if echo "$FLAT" | grep -qE "${DUMP_PREFIX}(builtin[[:space:]]+)?set[[:space:]]*${DUMP_END}"; then
+if echo "$SCAN" | grep -qE "${DUMP_PREFIX}(builtin[[:space:]]+)?set[[:space:]]*${DUMP_END}"; then
   block
 fi
 

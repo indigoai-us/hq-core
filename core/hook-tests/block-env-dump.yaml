@@ -79,3 +79,17 @@ cases:
     input:
       command: "ls"
     expect: allow
+
+  - name: allows-home-binary-piped-to-grep-env
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "$HOME/.local/bin/ads create:preview | grep env"
+    expect: allow
+
+  - name: blocks-env-after-grep-segment
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "grep env notes.txt; env"
+    expect: block
