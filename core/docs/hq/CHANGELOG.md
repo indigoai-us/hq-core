@@ -1,4 +1,61 @@
 ## [Unreleased]
+- Commits in repos inside the HQ folder (`repos/`, `workspace/worktrees/` and
+  the HQ folder itself) get an `HQ-Fingerprint: hqfp1:...` trailer naming the
+  HQ session, company and machine, from `hq fingerprint self --json
+  --offline`. Repos outside the HQ folder are never touched. The commit-msg
+  stage never fails a commit: a missing or failing command, a null
+  fingerprint, or a run over 2 seconds adds nothing and logs one line to
+  `~/.hq/fingerprint-hook.log` without the value. Merge commits keep git's
+  message. On by default through `core/settings/fingerprint.yaml`; session
+  start wires it once a day. Turn it off with
+  `bash core/scripts/hq-fingerprint-hooks.sh disable`, which writes
+  `enabled: false` to `personal/settings/fingerprint.yaml`.
+- The commit secret scan and the fingerprint trailer share one git hook
+  dispatcher (`core/scripts/lib/git-hooks-dispatcher.sh`) with a switch per
+  feature (`hq.hooks.secretScan`, `hq.hooks.fingerprint`). Turning one off
+  keeps the hook wired for the other; turning the last one off restores the
+  backed-up hook settings. Existing secret-scan installs get rewritten hook
+  files and a husky block that also runs commit-msg.
+- Added: explicit HQ-Fingerprint trailer on hook-bypassing HQ commits
+  (core/scripts/lib/fingerprint.sh), used by hq-autocommit, run-project,
+  handoff-finalize and handoff-knowledge-commit.
+- Added: PR bodies carry an `HQ-Fingerprint` footer via
+  `core/scripts/hq-pr-create.sh` (the wrapper HQ skills now use for
+  `gh pr create`) and the `pr-fingerprint-footer` PostToolUse hook for PRs
+  opened with a raw `gh pr create`.
+- Fixed: the HQ git hook no longer slows down git outside HQ. Hook files do
+  the HQ-folder scope check first (no git config read, no bash) and run the
+  repo's own hook directly outside HQ; only `pre-commit` and `commit-msg` do
+  HQ work, and the other hook names pass through. `hq.hooks.*` switches are
+  read with one git call. Measured on macOS: a commit outside HQ goes from
+  25 ms unwired to 36 to 40 ms wired.
+- Fixed: the commit-msg stage no longer starts an hq CLI that lacks
+  `hq fingerprint` on every commit. It reads the CLI version from package.json
+  without starting it; a CLI older than `HQ_FINGERPRINT_MIN_HQ_CLI`
+  (5.345.131) is never started. Without an agent session id there is no
+  trailer and no spawn. Within a session the value, or a "none" answer, is
+  cached in `workspace/sessions/<sid>/fingerprint-trailer.cache` in the v2
+  format shared with `core/scripts/lib/fingerprint.sh`, so the hook and the
+  explicit helper start the CLI once per session between them. Failed probes
+  are cached per hq binary (path, mtime, version) for 24 hours in
+  `~/.hq/fingerprint-capability.cache` (`core/scripts/lib/hq-cli-capability.sh`).
+  Inside HQ with 5.345.130 a commit costs about 110 ms instead of about 1.2 s.
+- Fixed: `enabled: false` stops the commit-msg stage before any work, and the
+  next session start clears the trailer switch; when the secret scan is off it
+  also removes the HQ git hook and restores the previous hook settings, so a
+  commit costs the same as unwired. `enabled: true` turns it back on at the
+  next session start. Fleet and Outpost machines are detected with
+  `HQ_AGENT_ROOT_PREFIX` support and are not wired.
+- Fixed: the hooks no longer fail when `HOME` is unset.
+- Fixed: a missing dispatcher lib fails open (the trailer is skipped and your
+  own hooks still run); with the secret scan on, the commit is blocked and the
+  message names `bash core/scripts/lib/git-hooks-dispatcher.sh repair`, a new
+  command that rewrites the hook files and husky block.
+- Fixed: `~/` in a backed-up `core.hooksPath` is expanded; the husky block is
+  appended after a newline guard and only when husky is detected; both
+  `git interpret-trailers` calls use `--no-divider`; the wiring check compares
+  canonical paths; `~/.hq/fingerprint-hook.log` rotates at 1 MB; unchanged hook
+  files are not rewritten; user-facing messages say "HQ git hooks".
 - `workflow-runner.mjs` inside a lane worker (`HQ_LANE_ID` set) now passes the
   worker's own session as `HQ_PARENT_SESSION_ID` to the engines it spawns,
   instead of forwarding the session that created the lane. Nested lanes and

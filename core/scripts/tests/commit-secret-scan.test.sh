@@ -3,26 +3,31 @@
 #
 # Regression test for core/scripts/commit-secret-scan.sh.
 #
-# Runs in a sandbox: a temporary HOME, GIT_CONFIG_GLOBAL and fake HQ root, so
-# the real machine's git config is never touched. Makes real `git commit`s.
+# Runs in a sandbox: a temporary HOME, GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM=1
+# and a fake HQ root, so the real machine's git config is never touched. Makes real `git commit`s.
 # Fake secrets are random and never printed.
 #
-# Scanner: a real hq CLI with `hq scan secrets` (5.345.86+) when one is on PATH
-# or in HQ_SECRET_SCAN_BIN; otherwise a stub that flags GitHub-token shapes, so
-# the wiring is still tested on CI machines without the hq CLI.
+# Scanner: HQ_SECRET_SCAN_BIN when set, else a real hq CLI on PATH whose
+# `hq scan secrets --help` names --staged (5.345.86+); otherwise a stub that
+# flags GitHub-token shapes, so the wiring is still tested on CI machines with
+# no hq CLI or an older one. An older CLI exits 0 on that --help (it prints the
+# root help), so exit status alone does not prove the scanner exists.
 #
 # The fake HQ root has a space and a quote in its path, to prove the generated
 # hook scripts quote it.
 set -u
+# Git hooks export these; a test run from inside a hook must not inherit them.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-if [ -z "${HQ_SECRET_SCAN_BIN:-}" ] && ! command -v hq >/dev/null 2>&1; then
+has_scanner() { case "$("$@" scan secrets --help 2>&1)" in *--staged*) return 0 ;; esac; return 1; }
+if [ -z "${HQ_SECRET_SCAN_BIN:-}" ] && ! { command -v hq >/dev/null 2>&1 && has_scanner hq; }; then
   cat >"$T/stub-hq" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-} ${2:-}" = "scan secrets" ] || exit 2
 shift 2
-[ "${1:-}" = "--help" ] && exit 0
+[ "${1:-}" = "--help" ] && { echo "usage: hq scan secrets [--staged] [files...]"; exit 0; }
 pat='gh''p_[A-Za-z0-9]{36}'
 if [ "${1:-}" = "--staged" ]; then
   git diff --cached -U0 | grep -qE "^\+.*$pat" && { echo "stub: possible secret" >&2; exit 1; }
@@ -33,18 +38,21 @@ exit 0
 STUB
   chmod +x "$T/stub-hq"
   export HQ_SECRET_SCAN_BIN="$T/stub-hq"
-  echo "note: no hq CLI found; using a stub scanner"
+  echo "note: no hq CLI with \`hq scan secrets\` found; using a stub scanner"
 fi
 ROOT="$T/my hq's root"
-export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/home/.gitconfig" XDG_CONFIG_HOME="$T/home/.config"
+export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/home/.gitconfig" XDG_CONFIG_HOME="$T/home/.config" GIT_CONFIG_NOSYSTEM=1
 mkdir -p "$HOME" "$ROOT/core/scripts" "$ROOT/core/settings" "$ROOT/repos"
-cp "$REAL/core/scripts/commit-secret-scan.sh" "$ROOT/core/scripts/"
+mkdir -p "$ROOT/core/scripts/lib"
+cp "$REAL/core/scripts/commit-secret-scan.sh" "$REAL/core/scripts/hq-fingerprint-hooks.sh" "$ROOT/core/scripts/"
+cp "$REAL/core/scripts/lib/git-hooks-dispatcher.sh" "$REAL/core/scripts/lib/hq-cli-floor.sh" \
+  "$REAL/core/scripts/lib/hq-cli-capability.sh" "$ROOT/core/scripts/lib/"
 cp "$REAL/core/settings/commit-secret-scan.yaml" "$ROOT/core/settings/"
 export HQ_ROOT="$ROOT"
 S="$ROOT/core/scripts/commit-secret-scan.sh"
-git config --global user.email t@example.invalid
-git config --global user.name test
-git config --global init.defaultBranch main
+git -C "$T" config --global user.email t@example.invalid
+git -C "$T" config --global user.name test
+git -C "$T" config --global init.defaultBranch main
 
 pass=0; fail=0
 ok() { if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 (want $2, got $3)"; fi; }
@@ -60,7 +68,7 @@ ok "off: nothing blocks" 1 "$(commits "$r")"
 
 # --- existing global hook folder and own-path repos before enable
 mkdir -p "$T/prevhooks"; printf '#!/bin/sh\necho prev-global-ran\n' >"$T/prevhooks/pre-commit"; chmod +x "$T/prevhooks/pre-commit"
-git config --global core.hooksPath "$T/prevhooks"
+git -C "$T" config --global core.hooksPath "$T/prevhooks"
 own=$(repo "$ROOT/repos/private/ownhooks"); mkdir -p "$own/.githooks"
 printf '#!/bin/sh\necho own-hook-ran\n' >"$own/.githooks/pre-commit"; chmod +x "$own/.githooks/pre-commit"
 git -C "$own" config core.hooksPath .githooks
@@ -70,9 +78,9 @@ dead=$(repo "$ROOT/repos/private/deadpath"); git -C "$dead" config core.hooksPat
 plain=$(repo "$ROOT/repos/private/zz-plain")
 
 bash "$S" enable >/dev/null 2>&1
-ok "enable wires the global hook" "$HOME/.hq/git-hooks" "$(git config --global --get core.hooksPath)"
+ok "enable wires the global hook" "$HOME/.hq/git-hooks" "$(git -C "$T" config --global --get core.hooksPath)"
 ok "enable records the setting" "enabled: true" "$(grep '^enabled:' "$ROOT/personal/settings/commit-secret-scan.yaml")"
-grep -qF ">>> HQ commit secret scan" "$XDG_CONFIG_HOME/husky/init.sh" && h=yes || h=no
+grep -qF ">>> HQ git hooks" "$XDG_CONFIG_HOME/husky/init.sh" && h=yes || h=no
 ok "enable adds the husky block" yes "$h"
 
 # --- global-hook repo
@@ -122,23 +130,74 @@ git -C "$pr" rm -q t.py; git -C "$pr" commit -q -m "remove it" >/dev/null 2>&1
 (cd "$pr" && bash "$S" pr-check base >/dev/null 2>&1); ok "pr-check finds a secret deleted later on the branch" 1 $?
 
 # --- generated hook scripts quote the HQ path (it contains a space and a quote)
-head -2 "$HOME/.hq/git-hooks/pre-commit" | tail -1 | grep -qF "my\ hq\'s\ root" && q=yes || q=no
+grep "dispatch pre-commit" "$HOME/.hq/git-hooks/pre-commit" | grep -qF "'$T/my hq'\\''s root'" && q=yes || q=no
 ok "hook stub quotes the HQ path" yes "$q"
 
 # --- disable restores everything
 bash "$S" disable --dry-run >/dev/null 2>&1
-ok "dry-run changes nothing" "$HOME/.hq/git-hooks" "$(git config --global --get core.hooksPath)"
+ok "dry-run changes nothing" "$HOME/.hq/git-hooks" "$(git -C "$T" config --global --get core.hooksPath)"
 bash "$S" disable >/dev/null 2>&1
-ok "disable restores the previous global hook" "$T/prevhooks" "$(git config --global --get core.hooksPath)"
+ok "disable restores the previous global hook" "$T/prevhooks" "$(git -C "$T" config --global --get core.hooksPath)"
 ok "disable restores own-path repo" ".githooks" "$(git -C "$own" config --get core.hooksPath)"
 ok "disable removes the chain" "" "$(git -C "$own" config --get hq.chainHooksPath)"
 ok "disable restores the dead path" "/nonexistent/old/hooks" "$(git -C "$dead" config --get core.hooksPath)"
-grep -qF ">>> HQ commit secret scan" "$XDG_CONFIG_HOME/husky/init.sh" && h=present || h=removed
+grep -qF ">>> HQ git hooks" "$XDG_CONFIG_HOME/husky/init.sh" 2>/dev/null && h=present || h=removed
 ok "disable removes the husky block" removed "$h"
 ok "disable records the setting" "enabled: false" "$(grep '^enabled:' "$ROOT/personal/settings/commit-secret-scan.yaml")"
 
+# --- shared dispatcher with the fingerprint trailer (hq-fingerprint-hooks.sh)
+F="$ROOT/core/scripts/hq-fingerprint-hooks.sh"
+backups() { ls "$HOME/.hq/git-hooks-backups"/backup-*.tsv 2>/dev/null | wc -l | tr -d ' '; }
+bash "$S" enable >/dev/null 2>&1
+out=$(bash "$S" enable 2>&1)
+case "$out" in "Already on."*) ok "second enable is a no-op" yes yes ;; *) ok "second enable is a no-op" yes no ;; esac
+ok "second enable takes no second backup" 1 "$(backups)"
+bash "$F" enable >/dev/null 2>&1
+ok "fingerprint enable reuses the wiring" 1 "$(backups)"
+ok "fingerprint enable sets its switch" true "$(git -C "$T" config --global --get hq.hooks.fingerprint)"
+bash "$S" disable >/dev/null 2>&1
+ok "scan off keeps the dispatcher for the trailer" "$HOME/.hq/git-hooks" "$(git -C "$T" config --global --get core.hooksPath)"
+ok "scan off records its switch as false" false "$(git -C "$T" config --global --get hq.hooks.secretScan)"
+ok "scan status reads off" "commit secret scan: off" "$(bash "$S" status | head -1)"
+grep -qF ">>> HQ git hooks" "$XDG_CONFIG_HOME/husky/init.sh" 2>/dev/null && h=present || h=removed
+ok "husky block stays while the trailer is on" present "$h"
+r=$(repo "$T/plain2"); fake >"$r/a.py"; git -C "$r" add a.py; git -C "$r" commit -q -m x >/dev/null 2>&1
+ok "scan off: secret no longer blocked" 1 "$(commits "$r")"
+bash "$F" disable >/dev/null 2>&1
+ok "last feature off restores the global hook" "$T/prevhooks" "$(git -C "$T" config --global --get core.hooksPath)"
+ok "last feature off restores own-path repo" ".githooks" "$(git -C "$own" config --get core.hooksPath)"
+[ -e "$HOME/.hq/git-hooks/pre-commit" ] && st=present || st=removed
+ok "last feature off removes the stubs" removed "$st"
+
+# --- a machine wired by the older secret-scan-only script (no hq.hooks.* keys)
+git -C "$T" config --global core.hooksPath "$HOME/.hq/git-hooks"
+ok "legacy wiring counts as scan on" "commit secret scan: on" "$(bash "$S" status | head -1)"
+bash "$F" enable >/dev/null 2>&1
+ok "fingerprint enable records the legacy scan switch" true "$(git -C "$T" config --global --get hq.hooks.secretScan)"
+ok "legacy scan still on after fingerprint enable" "commit secret scan: on" "$(bash "$S" status | head -1)"
+git -C "$T" config --global --unset core.hooksPath; git -C "$T" config --global --remove-section hq.hooks
+
 # --- enable fails closed without the scanner
 HQ_SECRET_SCAN_BIN=false bash "$S" enable >/dev/null 2>&1; ok "enable refuses without the scanner" 2 $?
+
+# --- an hq CLI older than 5.345.86: no `scan` command, but `scan secrets --help`
+# exits 0 with the root help. It must count as missing, so a commit is reported
+# as needing a CLI update, never as a possible secret.
+cat >"$T/old-hq" <<'OLD'
+#!/usr/bin/env bash
+case " $* " in
+  *" --help "*) echo "Usage: hq [options] [command]"; echo "Commands: run, secrets, sync"; exit 0 ;;
+esac
+echo "error: unknown command '${1:-}'" >&2
+exit 1
+OLD
+chmod +x "$T/old-hq"
+HQ_SECRET_SCAN_BIN="$T/old-hq" bash "$S" enable >/dev/null 2>&1; ok "enable refuses an hq CLI without scan" 2 $?
+og=$(repo "$T/oldcli"); echo hi >"$og/a.txt"; git -C "$og" add a.txt
+out=$(cd "$og" && HQ_SECRET_SCAN_BIN="$T/old-hq" bash "$S" gate 2>&1); rc=$?
+ok "old CLI: gate blocks" 1 "$rc"
+case "$out" in *"Update the hq CLI"*) ok "old CLI: gate asks for a CLI update" yes yes ;; *) ok "old CLI: gate asks for a CLI update" yes no ;; esac
+case "$out" in *"possible secret"*) ok "old CLI: gate does not claim a secret" no yes ;; *) ok "old CLI: gate does not claim a secret" no no ;; esac
 
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

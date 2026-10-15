@@ -32,7 +32,9 @@ See "Save file" below.
   then call `ScheduleWakeup` with `stop: true`.
 - `status` → render the session board (see "Rendering") from the JSON returned
   by `hq lanes link list`, `hq lanes list --json --senior session:<this session id>`,
-  and the DM inbox. Launch nothing, send nothing.
+  and the DM inbox. Start the board with the loop line
+  `loop: armed, every <N>s, waiter running` (or `loop: NOT armed`, then arm
+  it per Step 2b). Launch nothing, send nothing.
 - `interval <seconds>` (or plain words such as "check every 2 minutes") →
   set the present watch interval for this run only. It wins over the settings
   file, is clamped like the setting (see "Watch interval"), is recorded in the
@@ -55,6 +57,21 @@ hand.
 
 Rename this session in HQ grammar, for example
 `🎛 HQ · Conduct · Coordinate open desktop sessions`.
+
+## Step 2b: Arm the watch loop now
+
+Arm the loop in the same turn the link opens, before Step 3. Do not leave it
+for the end of the first turn: adoption, comms, and the decision queue can run
+long or stop on an owner question, and a loop armed last can start late or not
+at all.
+
+1. Resolve the watch interval (see "Watch interval" under Step 7).
+2. Start the background link waiter from Step 7.
+3. Call `ScheduleWakeup` with `delaySeconds: <resolved present>` (or the
+   resolved `away` value when `/overnight` is running) and a `prompt` that
+   names the link and the save file, so the wakeup resumes this conductor.
+4. Tell the owner in one line: `Watching every <N> seconds, plus an instant
+   wake on any session report. Say "interval <seconds>" to change it.`
 
 ## Step 3: Adopt every open session
 
@@ -117,8 +134,17 @@ file on disk.
 On every wakeup:
 
 ```bash
-hq dm inbox --unread
+hq dm inbox --limit 100 --json
 ```
+
+Never filter with `--unread`. The desktop app acknowledges incoming DMs within
+seconds, so `--unread` returns nothing even when the owner has unanswered
+messages. Instead, keep `hq_dm_cursor` (the newest `createdAt` already
+handled) in the save file and process every message with a later `createdAt`.
+On the first sweep of a run, start from the previous save file's cursor, or
+from 24 hours back when there is none. For each sender, read the thread with
+`hq dm read <email or uid> --no-ack` and treat a message as open when no owner
+reply follows it.
 
 Also read any DM channel the owner named. For each inbound item:
 
@@ -203,12 +229,15 @@ Resolve both values once at start (or from the save file on resume):
    `away` 1500. Say so once in this window.
 4. Clamp every value to 30–3600 seconds. When a value is clamped, say so
    once in this window with the value used.
+5. Never pick a different cadence on your own judgment. A slower or faster
+   delay than the resolved value needs the owner's `interval <seconds>`.
 
 Record the resolved values, and whether `present` came from an override, as
 `watch_interval` in the save file so a resumed conductor keeps the same
 cadence. `/overnight` wakes on the resolved `away` value.
 
-On each wakeup: read the wait result, drain the link when a report is pending,
+On each wakeup: re-arm both before asking any owner decision (an open
+question can stall the turn), then read the wait result, drain the link when a report is pending,
 run the every-session sweep (Step 8), run the collision pass, check comms,
 invite any new session, append to the overnight log, rewrite the save file,
 and re-arm both. Mark the wakeup `noop: true` when nothing changed.

@@ -2,6 +2,62 @@
 
 Newest release first.
 
+## Release: v16.0.21-beta.1
+
+- New, on by default: the `HQ-Fingerprint` commit trailer. After
+  `/update-hq`, the next session start wires the HQ git hook (or reuses it if
+  the commit secret scan already wired it) and commits in repos inside your HQ
+  folder (`repos/`, `workspace/worktrees/` and the HQ folder itself) get an
+  `HQ-Fingerprint: hqfp1:...` trailer. Repos elsewhere on the computer are
+  never changed. The trailer needs an hq CLI with `hq fingerprint`; with an
+  older CLI the hook adds nothing and commits go through as before. To turn it
+  off, run `bash core/scripts/hq-fingerprint-hooks.sh disable`; that writes
+  `enabled: false` to `personal/settings/fingerprint.yaml` so session start
+  leaves it off.
+- If you use the commit secret scan, its hook files under `~/.hq/git-hooks`
+  and the HQ block in `~/.config/husky/init.sh` are rewritten to call the
+  shared dispatcher (`core/scripts/lib/git-hooks-dispatcher.sh`). The scan
+  behaves as before. `commit-secret-scan.sh disable` now keeps the hook wired
+  while the trailer is on.
+- No action needed. HQ commits that skip git hooks (autosave, run-project
+  auto-commits, handoff and knowledge checkpoints) now carry the
+  HQ-Fingerprint trailer explicitly through core/scripts/lib/fingerprint.sh;
+  the same personal/settings/fingerprint.yaml enabled: false switch turns it
+  off.
+- No action needed. PRs opened by HQ skills now go through
+  `core/scripts/hq-pr-create.sh`, which appends an `HQ-Fingerprint` footer to
+  the PR body; a PostToolUse hook adds the same footer to PRs opened with a raw
+  `gh pr create`. Both are best effort and pass through unchanged when no
+  fingerprint is available or the setting is off.
+- No action needed. The HQ git hook checks scope first. Each hook file under
+  `~/.hq/git-hooks` compares the repo folder with your HQ folder before it
+  reads any git setting or starts bash; in a repo outside HQ it runs that
+  repo's own hook (or the hook folder you had before) directly. Only
+  `pre-commit` and `commit-msg` do HQ work; every other hook name just passes
+  through. The hook reads the hq CLI version from its package.json without
+  starting it. A CLI older than 5.345.131 (the first with `hq fingerprint`)
+  is never started and gets no trailer. A commit made outside an agent session
+  (no `HQ_SESSION_ID`, `CLAUDE_CODE_SESSION_ID` or similar) gets no trailer
+  and starts nothing. Inside a session the value is fetched once and kept in
+  `workspace/sessions/<session id>/fingerprint-trailer.cache`, the same v2
+  file `core/scripts/lib/fingerprint.sh` uses, so later commits, autosaves and
+  checkpoints in that session reuse it. A cached "no fingerprint" answer is
+  reused the same way.
+- No action needed. Setting `enabled: false` in
+  `personal/settings/fingerprint.yaml` takes effect at the next session start:
+  the trailer switch is cleared, and when the commit secret scan is off the
+  HQ git hook is removed and your previous hook settings are restored. The
+  commit-msg stage also checks the setting first and does nothing while it is
+  false. Setting it back to `true` turns the trailer on again at the next
+  session start.
+- If your HQ folder moves or `core/scripts/lib/git-hooks-dispatcher.sh` goes
+  missing, commits keep working: the hook skips the trailer and runs your own
+  hooks. With the commit secret scan on, commits are blocked with a message
+  instead, because the scan cannot run. Fix either case from your HQ folder
+  with `bash core/scripts/lib/git-hooks-dispatcher.sh repair`, which rewrites
+  the hook files and the husky block for this HQ folder. Run the same command
+  after editing `hq.hooks.*` git settings by hand.
+
 ## Release: v16.0.20-beta.8
 
 - fix 2026-10-14 (`/delegate` on big project folders): the bundle step no
