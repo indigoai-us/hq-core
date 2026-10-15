@@ -378,41 +378,40 @@ autosave() { # bin file sid
   printf '%s' "$payload" | (cd "$HQ" && HQ_AUTOCOMMIT_STRICT=1 HQ_SESSION_ID="$3" HQ_FINGERPRINT_BIN="$1" CLAUDE_PROJECT_DIR="$HQ" bash .claude/hooks/hq-autocommit.sh)
 }
 
+# Autosave commits carry no HQ-Fingerprint trailer and never start the
+# builder: a fingerprint marks work a session produced, never the session
+# saving itself. Each case below would have produced a trailer under the
+# earlier behavior.
+rm -f "$COUNT_FILE"
 autosave "$STUBS/hq-value" notes.md fp-autosave
 check_eq "autosave commit message is the autosave subject" "$(git -C "$HQ" log -1 --format=%s)" "autosave(hq): notes.md"
-check_eq "autosave commit carries one HQ-Fingerprint trailer" \
-  "$(git -C "$HQ" log -1 --format='%(trailers:key=HQ-Fingerprint,valueonly)' | sed '/^$/d')" "$FP"
+check_eq "autosave commit with a session and a working hq carries no HQ-Fingerprint trailer" \
+  "$(git -C "$HQ" log -1 --format=%B)" "autosave(hq): notes.md"
 
 autosave "$STUBS/hq-null" notes-null.md fp-autosave-null
-check_eq "autosave with null fingerprint keeps the old message byte for byte" \
+check_eq "autosave with a null fingerprint keeps the old message byte for byte" \
   "$(git -C "$HQ" log -1 --format=%B)" "autosave(hq): notes-null.md"
 
-# Repeated autosaves in one session run the builder once and all carry the trailer.
+# Repeated autosaves in one session never run the builder.
 rm -f "$COUNT_FILE"
 autosave "$STUBS/hq-count" notes-a.md fp-autosave-repeat
 autosave "$STUBS/hq-count" notes-b.md fp-autosave-repeat
 autosave "$STUBS/hq-count" notes-c.md fp-autosave-repeat
-check_eq "three autosaves in one session run the builder once" "$(runs)" "1"
-check_eq "a cached autosave commit still carries the trailer" \
-  "$(git -C "$HQ" log -1 --format='%(trailers:key=HQ-Fingerprint,valueonly)' | sed '/^$/d')" "$FP"
+check_eq "three autosaves in one session run the builder zero times" "$(runs)" "0"
+check_eq "a repeated autosave commit carries no trailer" \
+  "$(git -C "$HQ" log -1 --format=%B)" "autosave(hq): notes-c.md"
 
 # Real-CLI-shape autosaves: hq on PATH (no HQ_FINGERPRINT_BIN) that boots
-# slowly and lacks the command. The first autosave pays one boot, the second
-# pays nothing, and an autosave in another session pays nothing either.
+# slowly and lacks the command. No autosave boots it.
 rm -rf "$CAP_CACHE_DIR"; rm -f "$COUNT_FILE"
 slow_unknown 202605010000
-a_start=$(now_ms)
 PATH="$SLOW/bin:$PATH" autosave "" notes-slow-1.md fp-autosave-slow
-A_FIRST_MS=$(( $(now_ms) - a_start ))
-a_start=$(now_ms)
 PATH="$SLOW/bin:$PATH" autosave "" notes-slow-2.md fp-autosave-slow
-A_SECOND_MS=$(( $(now_ms) - a_start ))
 PATH="$SLOW/bin:$PATH" autosave "" notes-slow-3.md fp-autosave-slow-next
-echo "# timing: autosave hook first ${A_FIRST_MS} ms, second ${A_SECOND_MS} ms (whole hook, including git commit)"
-check_eq "slow unknown-command hq boots once across two autosave sessions" "$(runs)" "1"
-check_eq "autosave with an unknown-command hq keeps the old message" \
+check_eq "autosaves never boot the hq on PATH" "$(runs)" "0"
+check_eq "autosave with an hq on PATH keeps the old message" \
   "$(git -C "$HQ" log -1 --format=%B)" "autosave(hq): notes-slow-3.md"
-if [[ "$A_SECOND_MS" -lt "$A_FIRST_MS" ]]; then ok "second autosave is faster than the first"; else not_ok "second autosave ${A_SECOND_MS} ms vs first ${A_FIRST_MS} ms"; fi
+check_eq "autosaves write no capability cache" "$(cap_files)" "0"
 
 # No session id: the old message and no builder run.
 rm -f "$COUNT_FILE"

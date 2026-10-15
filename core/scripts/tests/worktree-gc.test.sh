@@ -12,7 +12,8 @@ SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # .../core
 GC="$SRC_ROOT/scripts/worktree-gc.sh"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+LIVE_PID=""
+trap '[[ -n "$LIVE_PID" ]] && kill "$LIVE_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -56,7 +57,13 @@ write_stamp() { # <wt> <epoch>
   mkdir -p "$HQ/workspace/worktrees/.gc-meta"
   printf '{"createdAtEpoch":%s}' "$2" > "$HQ/workspace/worktrees/.gc-meta/$key.json"
 }
-mk_old_mtime() { touch -t 202001010000 "$1"; }   # far past → never "recent-activity"
+# far past → never "recent-activity": the directory plus its HEAD and HEAD reflog.
+mk_old_mtime() {
+  local gd
+  touch -t 202001010000 "$1"
+  gd=$(git -C "$1" rev-parse --path-format=absolute --git-dir)
+  touch -t 202001010000 "$gd/HEAD" "$gd/logs/HEAD"
+}
 
 # (a) clean + merged + old  → REMOVED
 WT_A="$HQ/workspace/worktrees/case-a"
@@ -100,15 +107,67 @@ WT_G="$HQ/.claude/worktrees/agent-test"
 git -C "$HQ" worktree add -q -b agent-br "$WT_G" main
 write_stamp "$WT_G" "$OLD_EPOCH"; mk_old_mtime "$WT_G"
 
+# (i) clean + merged + old, but a live process has its cwd inside → skipped
+#     [live-session]. This is the reported shape: an open session's worktree.
+WT_I="$HQ/workspace/worktrees/case-i"
+git -C "$REPO" worktree add -q -b wt-i "$WT_I" origin/main
+mkdir -p "$WT_I/src"
+write_stamp "$WT_I" "$OLD_EPOCH"
+(cd "$WT_I/src" && exec sleep 600) &
+LIVE_PID=$!
+mk_old_mtime "$WT_I"
+
+# (j) clean + merged + old, no process inside, but a session transcript written
+#     in the last 7 days recorded a cwd inside it → skipped [recent-session].
+WT_J="$HQ/workspace/worktrees/case-j"
+git -C "$REPO" worktree add -q -b wt-j "$WT_J" origin/main
+write_stamp "$WT_J" "$OLD_EPOCH"; mk_old_mtime "$WT_J"
+mkdir -p "$HOME/.claude/projects/p1"
+printf '{"type":"user","cwd":"%s/docs","sessionId":"s1"}\n' "$WT_J" > "$HOME/.claude/projects/p1/s1.jsonl"
+# A transcript older than the window does not hold case-a.
+printf '{"type":"user","cwd":"%s","sessionId":"s0"}\n' "$WT_A" > "$HOME/.claude/projects/p1/s0.jsonl"
+touch -t 202001010000 "$HOME/.claude/projects/p1/s0.jsonl"
+
+# (k) clean + old, branch pushed to origin at the same tip (not merged into
+#     main), no session → REMOVED.
+WT_K="$HQ/workspace/worktrees/case-k"
+git -C "$REPO" worktree add -q -b wt-k "$WT_K" origin/main
+echo pushed > "$WT_K/pushed.txt"
+git -C "$WT_K" add pushed.txt
+git -C "$WT_K" commit -qm "pushed work"
+git -C "$WT_K" push -q -u origin wt-k
+write_stamp "$WT_K" "$OLD_EPOCH"; mk_old_mtime "$WT_K"
+
+# (m) clean + pushed + old directory, but a commit landed in the last 2h (HEAD
+#     reflog is fresh) → skipped [recent-activity].
+WT_M="$HQ/workspace/worktrees/case-m"
+git -C "$REPO" worktree add -q -b wt-m "$WT_M" origin/main
+write_stamp "$WT_M" "$OLD_EPOCH"; mk_old_mtime "$WT_M"
+echo fresh > "$WT_M/fresh.txt"
+git -C "$WT_M" add fresh.txt
+git -C "$WT_M" commit -qm "fresh commit"
+git -C "$WT_M" push -q -u origin wt-m
+touch -t 202001010000 "$WT_M"
+
+phys() { (cd "$1" && pwd -P); }
+P_B=$(phys "$WT_B"); P_C=$(phys "$WT_C"); P_I=$(phys "$WT_I"); P_J=$(phys "$WT_J"); P_K=$(phys "$WT_K"); P_M=$(phys "$WT_M")
+
 run_gc() { HQ_ROOT="$HQ" bash "$GC" "$@"; }
 
 # ---- (f) dry-run (default) makes NO changes ----
 out=$(run_gc --dry-run 2>&1) || fail "dry-run exited non-zero"
-for d in "$WT_A" "$WT_B" "$WT_C" "$WT_D" "$WT_E" "$WT_G"; do
+for d in "$WT_A" "$WT_B" "$WT_C" "$WT_D" "$WT_E" "$WT_G" "$WT_I" "$WT_J" "$WT_K" "$WT_M"; do
   [[ -d "$d" ]] || fail "dry-run removed $d (must make no changes)"
 done
 [[ "$out" == *"would remove"* ]] || fail "dry-run did not report a would-remove candidate"
 git -C "$REPO" worktree list | grep -q "case-a" || fail "dry-run pruned a worktree registration"
+
+# Every skip carries a printed reason.
+for pair in "dirty|$P_B" "unpushed|$P_C" "live-session|$P_I" "recent-session|$P_J" "recent-activity|$P_M"; do
+  reason="${pair%%|*}"; wtp="${pair#*|}"
+  printf '%s\n' "$out" | grep -Fq "skip  [$reason] $wtp" || fail "dry-run did not print [$reason] for $wtp: $out"
+done
+printf '%s\n' "$out" | grep -F "$P_K" | grep -q "would remove" || fail "(k) pushed stale worktree not a candidate: $out"
 
 # default (no flag) is also dry-run
 run_gc >/dev/null 2>&1 || fail "default run exited non-zero"
@@ -138,7 +197,7 @@ CRLF_JQ_READ_MARKER="$TMP/crlf-jq-read"
 crlf_output="$(PATH="$TMP/crlf-bin:$PATH" REAL_JQ="$REAL_JQ" CRLF_JQ_READ_MARKER="$CRLF_JQ_READ_MARKER" HQ_ROOT="$HQ" bash "$GC" --dry-run 2>&1)" \
   || fail "worktree-gc failed with CRLF jq timestamp output: $crlf_output"
 [[ -f "$CRLF_JQ_READ_MARKER" ]] || fail "worktree-gc did not read a stamped epoch under the CRLF jq stub"
-printf '%s\n' "$crlf_output" | grep -Fq "[too-recent] $WT_H" \
+printf '%s\n' "$crlf_output" | grep -Fq "[too-recent] $(phys "$WT_H")" \
   || fail "CRLF jq timestamp changed the too-recent classification for $WT_H: $crlf_output"
 echo "PASS: worktree-gc normalizes CRLF jq epoch values before arithmetic"
 
@@ -160,5 +219,23 @@ git -C "$REPO" branch --list wt-a | grep -q wt-a && fail "(a) branch wt-a not de
 [[ -d "$WT_H" ]] || fail "(h) CRLF-stamped too-recent worktree was removed"
 # (e) active-session preserved
 [[ -d "$WT_E" ]] || fail "(e) active-session worktree was removed"
+
+# (i) live session preserved
+[[ -d "$WT_I" ]] || fail "(i) worktree with a live process cwd inside was removed"
+# (j) recent session transcript preserved
+[[ -d "$WT_J" ]] || fail "(j) worktree recorded as a recent session cwd was removed"
+# (k) clean, pushed, unowned, stale → removed
+[[ ! -d "$WT_K" ]] || fail "(k) clean+pushed+old unowned worktree was NOT removed"
+git -C "$REPO" cat-file -e origin/wt-k:pushed.txt || fail "(k) pushed work missing from origin"
+# (m) recent commit preserved
+[[ -d "$WT_M" ]] || fail "(m) worktree with a commit in the last 2h was removed"
+
+# The session window is configurable; at 0 hours the transcript no longer holds (j).
+out0=$(HQ_WORKTREE_SESSION_WINDOW_HOURS=0 run_gc --dry-run 2>&1) || fail "window=0 run failed"
+printf '%s\n' "$out0" | grep -F "$P_J" | grep -q "would remove" || fail "(j) still held with a 0h session window: $out0"
+
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+LIVE_PID=""
 
 echo "PASS: worktree-gc.test.sh"

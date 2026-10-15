@@ -506,7 +506,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/free-disk-space/SKILL.md",
-      "hash": "sha256:e32f5c9402afb48d2a5acdf0efee7f2d8fad10d7d4b3481603a98d50f104000d",
+      "hash": "sha256:df1f64473385a069f181fa58aede50330f4af03f1f2e92dd0035c99e23c9bf90",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1210,7 +1210,7 @@
     },
     {
       "name": "overnight",
-      "description": "Overnight team-comms mode inside a running /super-conductor session. On a self-paced wakeup loop it reads the HQ DM inbox and the active company's DM channels, answers information requests from HQ knowledge, routes work requests to the conducted child that owns them, queues anything only the owner can decide, checks that every teammate who asked for something got an answer or a route, and logs it all to the link's overnight report. Use when the user says \"/overnight\", \"watch the team overnight\", \"handle team DMs while I sleep\", \"overnight mode\", or \"triage the inbox until morning\".",
+      "description": "Overnight team-comms mode inside a running /super-conductor session. On the conductor's heartbeat (at the away interval) it reads the HQ DM inbox and the active company's DM channels, answers information requests from HQ knowledge, routes work requests to the conducted child that owns them, queues anything only the owner can decide, checks that every teammate who asked for something got an answer or a route, and logs it all to the link's overnight report. Use when the user says \"/overnight\", \"watch the team overnight\", \"handle team DMs while I sleep\", \"overnight mode\", or \"triage the inbox until morning\".",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -1218,7 +1218,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/overnight/SKILL.md",
-      "hash": "sha256:71125c6973ec11777354a35567c719fdf3a5b462d7bcc3dfbf64a57aef3ad1e1",
+      "hash": "sha256:e75e6d7f2c9e550346f898875c26250a8332d79770a1d4c85defebf3bded0395",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1669,7 +1669,7 @@
     },
     {
       "name": "super-conductor",
-      "description": "Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a self-paced watch loop running until told to stop. Use when the user says \"/super-conductor\", \"/conduct-all\" (deprecated alias), \"manage all my sessions\", \"watch everything while I'm away\", \"going to bed, manage open sessions and the team\", or \"conduct everything\".",
+      "description": "Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says \"/super-conductor\", \"/conduct-all\" (deprecated alias), \"manage all my sessions\", \"watch everything while I'm away\", \"going to bed, manage open sessions and the team\", or \"conduct everything\".",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -1677,7 +1677,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:f86a33cb2d246055221621b2d6d04261113798114575c3bae89f7dc6961f2c7c",
+      "hash": "sha256:7767e63080730ea724018946fe8f6e20625498004d2414f737c444d1bd22f092",
       "duplicates": {
         "exact": [],
         "drifted": [],

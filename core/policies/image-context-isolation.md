@@ -5,9 +5,9 @@ when: .png || .jpg || .jpeg || .gif || .webp
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 tier: 1
-version: 3
+version: 4
 created: 2026-03-30
-updated: 2026-10-12
+updated: 2026-10-15
 source: back-pressure-failure
 learned_from: an export-graphics session crash; lake-house-group weekly Codex drain
 public: true
@@ -19,7 +19,9 @@ Do not inline large image bytes into the parent session. Cost is file size, not 
 
 Mechanical control (this is the control; the rest of this file is guidance):
 
-- PreToolUse hook `image-context-guard` denies a `Read` / `view_image` of a local `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp` over **2 MiB**, or a ninth distinct image in the same session, or Codex `detail: original`.
+- PreToolUse hook `image-context-guard` denies a `Read` / `view_image` of a local `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp` over **2 MiB**, or Codex `detail: original`.
+- Per agent context it also denies a new image once the distinct images already inlined there would pass **8 MiB** (each image charged its file size, at least 64 KiB), or past **32** distinct images. Tune with `HQ_IMAGE_BUDGET_BYTES`, `HQ_IMAGE_MIN_COST_BYTES`, `HQ_IMAGE_MAX_COUNT`.
+- The parent session and each sub-agent have separate budgets. The hook keys sub-agent reads by the host's `agent_id`, so delegated image QA never spends the parent's budget.
 - Wired in `.claude/hooks/hook-registry.json` (Read and view_image) and all three `hook-gate.sh` profiles.
 - Escape hatch: `HQ_ALLOW_INLINE_IMAGE=1`, or the literal token `ALLOW_INLINE_IMAGE`.
 
@@ -50,7 +52,7 @@ When you need to inspect an image, delegate. The parent session should accumulat
 
 | Tool | Approach |
 |------|----------|
-| `Read` on .png/.jpg/.jpeg/.gif/.webp | Sub-agent delegation (default). Direct only for small icons or first 1-2 in session. The PreToolUse guard blocks oversize / over-count reads. |
+| `Read` on .png/.jpg/.jpeg/.gif/.webp | Sub-agent delegation (default). Direct only for small icons or first 1-2 in session. The PreToolUse guard blocks oversize reads and reads past the per-context budget. |
 | `view_image` (Codex) | Same byte and session caps. Never pass `detail: original`. |
 | `agent-browser screenshot` | Screenshot to file → `bash core/scripts/resize-screenshot.sh {path}` → sub-agent Read |
 | `preview_screenshot` (MCP) | AVOID in multi-image sessions. Use `preview_snapshot` + `preview_inspect` (text-based, zero image overhead) |
@@ -71,6 +73,6 @@ A count cap ("under ~10 images") does not bound cost. One September call returne
 
 Claude API also enforces a 2000px max dimension per image when many images accumulate ("many-image mode"). Count-only guidance plus `enforcement: soft` and no hook meant nothing ever checked the expensive variable.
 
-The PreToolUse guard measures bytes and per-session distinct reads. Prompt text remains guidance for delegation; the hook is the control. A policy only a well-behaved agent can violate is not a control.
+The PreToolUse guard measures bytes per image and a byte-weighted budget per agent context (parent or sub-agent). Prompt text remains guidance for delegation; the hook is the control. A policy only a well-behaved agent can violate is not a control.
 
 This policy supersedes the narrower `qa-screenshot-isolation` policy (which only covered 5+ page QA audits). Image context isolation applies universally to all image reading.

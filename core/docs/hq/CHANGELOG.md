@@ -1,4 +1,54 @@
 ## [Unreleased]
+- Fixed: policy reminders no longer flood plain reads. On PostToolUse a
+  policy is matched against the command plus the structured facts the output
+  can establish (a leaked key -> `secret`/`apikey`, a finished merge or deploy
+  -> `completed`), not every word the tool printed. Policies that list
+  PostToolUse without PreToolUse still match output words. A `cat` or `ls`
+  of a file that mentions slack, deploy or feedback no longer injects every
+  policy keyed on those words.
+- Fixed: when JSON quoting pushed a PostToolUse reminder over the 8000-byte
+  ceiling, the hook sent only "Policies matched.", recorded nothing, and
+  re-sent the same oversized set on every later tool call. It now refits the
+  reminder under the ceiling and records what it delivered.
+- Fixed: the malformed `when:` notice names each slug once per session
+  instead of on every event. Malformed HARD policies are still delivered.
+- Fixed: the policy enforcement gate classifies MCP tools by the action verb
+  after the last `__`: `get_`/`list_`/`search_`/`read_` tools are reads even
+  when a later word is post or message (`get_post_content`), and
+  send/post/reply/publish tools are still gated. A prompt phrase such as "use
+  HQ skill" only becomes a required skill when
+  `.claude/skills/<name>/SKILL.md` exists.
+- A session started in a repo below HQ (`repos/public/<repo>`,
+  `repos/private/<repo>`, or `workspace/worktrees/<name>`) gets a SessionStart
+  note listing HQ's skills (for example `/review`, `/handoff`, and personal
+  skills) with their SKILL.md paths and the `/add-dir <HQ root>` command that
+  loads them as slash commands. Claude Code and Codex stop the project skill
+  walk at the repository root, so these skills were missing from those
+  sessions. HQ-root sessions get no note. Skills the session already loads and
+  company-namespaced skills are left out; the note is capped near 3,000
+  characters. Hook: `core/hooks/SessionStart/55-repo-rooted-hq-skills.sh`;
+  silence it with `HQ_NO_REPO_SKILLS_NOTE=1`.
+- Fixed: `block-hq-root-git-mutation` no longer blocks a chain of gh
+  mutations that each carry `-R`/`--repo` (or a positional repo target),
+  including after a `cd <HQ root>`. Each gh mutation is checked for its own
+  anchor; `--repo=owner/repo` and `-Rowner/repo` count, and `-R` inside a
+  quoted argument does not. A bare gh mutation in the chain, or a git mutation
+  without its own anchor, is still blocked at the HQ root. Also carries the
+  grok `--worktree` carve-out from #1328 for this hook.
+- Fixed: `block-hq-root-git-mutation` checked only the first git mutation's
+  `-C`, so `git -C <repo> commit && git push` from the HQ root got through.
+  Every git mutation is now checked: each `-C` target must be outside the HQ
+  root repo, and any git mutation without `-C` goes through the cd and cwd
+  checks. `git commit -C <rev>` is no longer read as a repo anchor.
+- Fixed: the image-context-guard no longer counts a sub-agent's image reads
+  against the parent session. Reads that carry the host's `agent_id` use
+  their own ledger, so delegating image QA to sub-agents works after the
+  parent has used its budget. The fixed 8-image cap is replaced by a
+  byte-weighted budget per agent context: 8 MB of distinct images, each
+  charged its file size with a 64 KB floor, plus a ceiling of 32 distinct
+  images. Small screenshots no longer use up the budget. The 2 MB per-file
+  limit and the Codex `detail: original` block are unchanged. The block
+  message names the sub-agent route, resizing, and OCR.
 - Commits in repos inside the HQ folder (`repos/`, `workspace/worktrees/` and
   the HQ folder itself) get an `HQ-Fingerprint: hqfp1:...` trailer naming the
   HQ session, company and machine, from `hq fingerprint self --json
@@ -17,8 +67,11 @@
   backed-up hook settings. Existing secret-scan installs get rewritten hook
   files and a husky block that also runs commit-msg.
 - Added: explicit HQ-Fingerprint trailer on hook-bypassing HQ commits
-  (core/scripts/lib/fingerprint.sh), used by hq-autocommit, run-project,
-  handoff-finalize and handoff-knowledge-commit.
+  (core/scripts/lib/fingerprint.sh), used by run-project, handoff-finalize
+  and handoff-knowledge-commit.
+- Changed: autosave commits (`autosave(hq): ...` from the hq-autocommit hook)
+  carry no HQ-Fingerprint trailer and never start the hq CLI. A fingerprint
+  marks work a session produced, never the session saving itself.
 - Added: PR bodies carry an `HQ-Fingerprint` footer via
   `core/scripts/hq-pr-create.sh` (the wrapper HQ skills now use for
   `gh pr create`) and the `pr-fingerprint-footer` PostToolUse hook for PRs
@@ -70,6 +123,33 @@
 - `/delegate` now reports a project with no Work Mesh board as
   `workMeshOwnership: "not-registered"` (from `PROJECT_VIEW_NOT_FOUND`) instead
   of "unconfirmed", and no longer suggests a reassign command that cannot succeed.
+- The mandatory scope authorizer blocks fewer in-scope Bash commands. It
+  resolves `$HOME`/`${HOME}` (unless the command reassigns it), treats
+  http(s) URLs given to network clients (curl, wget, gh, git) as non-paths, even
+  with a query string or a `companies/` segment,
+  ignores the quoted body of `git commit|tag|notes -F - <<'EOF'`, ignores prose
+  words in echo/printf text and in quoted interpreter heredoc bodies while still
+  checking the commands inside their `$(...)`, expands plain `{a,b}` braces and
+  company-segment globs (`companies/*/knowledge`) into concrete paths and checks
+  each one, and accepts a quoted literal prefix before a glob
+  (`"companies/<co>/dir/"*.md`). Every expanded path to another tenant is still
+  denied. Unresolved-variable denials now say how to rewrite the command. A
+  substitution followed by `..` in one word no longer normalizes away before
+  the check, and bash extglob or zsh glob groups in the company segment
+  (`companies/@(x)`, `companies/^x`, `companies/(a|b)`) are now denied.
+- The mandatory scope authorizer resolves a shell variable from its
+  assignment earlier in the same command (`D=workspace/x; mkdir -p $D;
+  python3 s.py > $D/out.txt`), including relative values and chained
+  variables, when that assignment is the only one, runs unconditionally at the
+  top level, and precedes the use. A reassigned, conditional, nested, or later
+  assignment no longer resolves to the first value it finds, which had let
+  `D=/tmp; D=$(cat f); cat $D/x` through. It also accepts a slash-free
+  `$(date +FORMAT)` filename suffix, loop variables over literal words in
+  multi-command loop bodies, a no-match glob under the locked company, globs
+  after a leading `cd <literal dir>`, `$(...)` inside URLs passed to network
+  clients (the substitution is still scanned), and string literals in quoted
+  interpreter heredoc bodies. A word that appears several times is checked at
+  each occurrence.
 - Pricing data and setup/deploy guidance now reflect the live API's unlimited
   deployment counts across plans.
 - The mandatory scope authorizer now scans heredoc and here-string bodies that a

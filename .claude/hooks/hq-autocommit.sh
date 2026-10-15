@@ -452,16 +452,10 @@ if [[ ${#msg_path} -gt 72 ]]; then
   msg_path="${msg_path:0:69}..."
 fi
 
-# --no-verify skips the commit-msg hook that stamps HQ-Fingerprint, so pass the
-# trailer explicitly. The helper prints nothing (and the commit is unchanged)
-# when fingerprints are off, hq is missing, or the lookup takes over 2 seconds.
-HQ_FINGERPRINT_TRAILER_ARGS=()
-if [[ -f "$HQ_ROOT/core/scripts/lib/fingerprint.sh" ]]; then
-  # shellcheck source=../../core/scripts/lib/fingerprint.sh
-  . "$HQ_ROOT/core/scripts/lib/fingerprint.sh" && hq_fingerprint_trailer_load "$HQ_ROOT"
-fi
-
-COMMIT_OUT="$(git -c gc.auto=0 -c maintenance.auto=false -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"} 2>&1)"
+# Autosave commits carry no HQ-Fingerprint trailer. A fingerprint marks work a
+# session produced, never the session saving itself. --no-verify also keeps
+# the commit-msg hook from stamping one.
+COMMIT_OUT="$(git -c gc.auto=0 -c maintenance.auto=false -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" 2>&1)"
 COMMIT_RC=$?
 if [[ $COMMIT_RC -ne 0 ]]; then
   report_failure "commit" "$COMMIT_RC" "$COMMIT_OUT"

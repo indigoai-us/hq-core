@@ -50,6 +50,8 @@
 #                refuses to start (exit 24) unless the holder is dead
 #   driver.log   append-only, one timestamped line per action
 #   exit         "<code> <reason>" written on exit, for the parent's waiter
+#   queued-<story>-<phase>  epoch seconds an in-flight envelope was last seen
+#                waiting in its lane queue; extends that phase's deadline
 #
 # Exit codes:
 #   code  meaning                                          the parent then
@@ -240,10 +242,32 @@ cleanup() {
   if [ "$OWN_LOCK" = 1 ]; then rm -rf "$LOCK"; rm -f "$D/driver.pid"; fi
 }
 finish() { # code reason
-  printf '%s %s\n' "$1" "$2" >"$D/exit"
   log "EXIT $1 $2"
+  notify_owner "$1" "$2"
+  # exit is written last: a waiter that sees it may stop the process at once
+  printf '%s %s\n' "$1" "$2" >"$D/exit"
   cleanup; OWN_LOCK=0
   exit "$1"
+}
+# notify_owner code reason: an exit the owner or parent must act on is announced
+# as a Work Mesh "blocked" signal for the session, so a stopped run does not sit
+# silent in driver/exit until someone looks. 0, 24 (another driver), 29 (stop
+# on request) and signals are not announced. Never fails the exit.
+notify_owner() {
+  case "$1" in 20|21|22|23|26|27|28) ;; *) return 0 ;; esac
+  if [ -z "${HQ_SESSION_ID:-}" ]; then
+    log "NOTIFY exit=$1 skipped: no HQ_SESSION_ID"
+    return 0
+  fi
+  local name reason summary rc
+  name="$(jq -r '.name // empty' "$PRD" 2>/dev/null)"
+  reason="$(printf 'pipeline driver stopped (exit %s): %s' "$1" "$2" | tr '\n' ' ' | cut -c1-480)"
+  summary="$(printf '%s needs the owner: see %s/decisions and %s/exit' "${name:-pipeline run}" "$STATE" "$D" | cut -c1-270)"
+  "$PC_HQ" mesh session blocked --enqueue --session-id "$HQ_SESSION_ID" \
+    --reason "$reason" --summary "$summary" >/dev/null 2>&1
+  rc=$?
+  log "NOTIFY exit=$1 mesh blocked rc=$rc"
+  return 0
 }
 # stop_run code reason: mark in-flight phases interrupted, withdraw unpicked envelopes, exit
 stop_run() {
@@ -319,6 +343,8 @@ INTERRUPTED="$(stories_jq 'select(type == "object") | .interrupted as $it
 #   ACCEPT  <id> <phase> <handoff>   an in-flight phase has its handoff
 #   RECHECK <id>                     a story is awaiting recheck
 #   DEADLINE <id> <phase> <deadline> an in-flight phase is past its deadline with no handoff
+#                                    while its lane works it; time spent waiting in the
+#                                    lane queue does not count (see workDeadline)
 #   INFLIGHT <id> <phase> <secs>     an in-flight phase with no handoff, routed <secs> ago
 #   HELD    <id> <decision-file>     a story is held for an approval decision
 #   BLOCKED <id> <phase> <decision>  a phase returned blocked (or cannot route); the owner decides
@@ -411,6 +437,35 @@ function phaseExit(worker, sid, ph, since) {
   if (state === 'parked') return { reason: 'loop_stalled', phase: ph, story_id: sid };
   return state === 'failed' ? { reason: state, phase: ph, story_id: sid } : null;
 }
+// The deadline bounds work time, not queue time. An envelope still waiting in
+// its loop lane's queue (the lane is throttle-queued, or busy on another
+// envelope) is not past its deadline yet. Only a lane row whose loop reports a
+// different active envelope, or none, counts as waiting; with no lane row or no
+// loop status the deadline applies as before.
+function waitingInQueue(worker, envId) {
+  if (typeof envId !== 'string' || !envId) return false;
+  const row = laneRow(worker);
+  const loop = get(row, 'loop', null);
+  if (!isObj(loop) || !Object.prototype.hasOwnProperty.call(loop, 'active_envelope_id')) return false;
+  return get(loop, 'active_envelope_id', null) !== envId;
+}
+// workDeadline <sid> <ph> <deadline> <routed_at> <waiting>: the deadline to
+// enforce, or null while the envelope still waits in the queue. The envelope
+// deadline is stamped at routing, so the time the envelope was last seen
+// waiting is added back: a phase gets its full budget once the lane picks it
+// up. driver/queued-<sid>-<phase> holds that time (epoch seconds).
+function workDeadline(sid, ph, dl, since, waiting) {
+  const mark = path.join(S, 'driver', `queued-${sid}-${ph}`);
+  if (waiting) {
+    try { fs.writeFileSync(mark, String(Math.trunc(now())) + '\n'); } catch (e) { /* best effort */ }
+    return null;
+  }
+  let seen = NaN;
+  try { seen = parseInt(fs.readFileSync(mark, 'utf8'), 10); } catch (e) { /* never queued */ }
+  const base = epoch(dl);
+  if (!isNum(since) || !Number.isFinite(seen) || seen <= since || base === null) return dl;
+  return new Date((base + (seen - Math.trunc(since))) * 1000).toISOString().slice(0, 19) + 'Z';
+}
 function mtime(p) {
   try { return fs.statSync(p).mtimeMs / 1000; } catch (e) { return null; }
 }
@@ -478,7 +533,10 @@ for (const n of byteSort(fs.readdirSync(sd))) {
     } else {
       const env = load(path.join(S, 'envelopes', `${sid}-${ph}.json`));
       const dl = get(env, 'deadline', null);
-      if (typeof dl === 'string' && isoNow() > dl) out.push(['DEADLINE', sid, ph, dl]);
+      if (typeof dl === 'string') {
+        const due = workDeadline(sid, ph, dl, since, waitingInQueue(worker, get(env, 'id', null)));
+        if (due !== null && isoNow() > due) out.push(['DEADLINE', sid, ph, due]);
+      }
       if (since !== null) out.push(['INFLIGHT', sid, ph, String(Math.max(0, Math.trunc(now() - since)))]);
     }
   } else if (state === 'awaiting_go') {

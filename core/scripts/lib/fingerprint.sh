@@ -5,9 +5,11 @@
 # SOURCED, never executed:  . "$HQ_ROOT/core/scripts/lib/fingerprint.sh"
 # Bash 3.2 safe, set -euo pipefail safe, no jq/python/node of its own.
 #
-# HQ scripts that commit with --no-verify (autosave, the run-project
-# orchestrator) never reach the commit-msg hook that stamps HQ-Fingerprint, so
-# they pass the trailer to `git commit` themselves.
+# HQ scripts that commit session work with --no-verify (the run-project
+# orchestrator, handoff-finalize, handoff-knowledge-commit) never reach the
+# commit-msg hook that stamps HQ-Fingerprint, so they pass the trailer to
+# `git commit` themselves. The autosave hook does not: a fingerprint marks
+# work a session produced, never the session saving itself.
 #
 #   hq_fingerprint_trailer_args [hq_root]
 #     Prints two lines, `--trailer` and `HQ-Fingerprint: <value>`, when
@@ -28,8 +30,8 @@
 #   hq_fingerprint_trailer_load "$HQ_ROOT"
 #   git commit -m "..." ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"}
 #
-# Cost: the builder is a full node boot and the autosave hook calls this on
-# every Edit/Write, so the builder runs at most once per session. The result is
+# Cost: the builder is a full node boot, so it runs at most once per session
+# however many callers ask. The result is
 # cached in workspace/sessions/<session id>/fingerprint-trailer.cache, keyed by
 # the session id and the hq-cli version. A null or failed result is cached for
 # the rest of the session too, so a later `hq login` takes effect in the next
