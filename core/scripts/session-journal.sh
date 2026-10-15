@@ -37,7 +37,7 @@ warn() { echo "session-journal: $*" >&2; }
 
 slugify() {
   # Win32 rejects newline file-name bytes; otherwise keep the POSIX slug pipeline.
-  local slug_input="$1"; if [[ "${OSTYPE:-}" == msys* ]] || [[ "${MSYSTEM:-}" == MINGW* ]]; then slug_input="${slug_input//$'\n'/-}"; fi; printf '%s' "$slug_input" \
+  local slug_input="$1"; if [[ "${OSTYPE:-}" == msys* ]] || [[ "${MSYSTEM:-}" =~ ^(MINGW|UCRT|CLANG|MSYS) ]]; then slug_input="${slug_input//$'\n'/-}"; fi; printf '%s' "$slug_input" \
     | tr '[:upper:]' '[:lower:]' \
     | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
     | cut -c1-40

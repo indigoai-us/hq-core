@@ -48,8 +48,9 @@ die()   { echo "hq-delegate-send: $*" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
 # jq.exe on MSYS may use CRT text mode unless --binary is supported.
+# Git for Windows 2.56+ reports MSYSTEM=UCRT64; match every MSYS2 environment.
 case "${OSTYPE:-}:${MSYSTEM:-}" in
-  msys*:*|*:MINGW*)
+  msys*:*|*:MINGW*|*:UCRT*|*:CLANG*|*:MSYS)
     _hq_jq_binary_supported=""
     jq() {
       local stdout_file stderr_file status binary_supported

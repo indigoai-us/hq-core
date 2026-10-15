@@ -20,8 +20,14 @@
 #                                         is already merged into the HQ root's
 #                                         local `main`. Fetch is best-effort; a
 #                                         failed fetch makes the worktree UNSAFE.
-#   4. Not in use                       — no active session references its path,
-#                                         and it was not touched in the last 2h.
+#   4. Not in use                       — no live process has its cwd inside it,
+#                                         no Claude Code / Codex session transcript
+#                                         written in the last 7 days (env
+#                                         HQ_WORKTREE_SESSION_WINDOW_HOURS) recorded
+#                                         a cwd inside it, no session / lock file
+#                                         references its path, and neither the
+#                                         directory nor its HEAD / HEAD reflog
+#                                         changed in the last 2h.
 #
 # Removal mechanics are the gentle git verbs only — never `rm -rf`, never
 # `--force`, never `branch -D`:
@@ -64,7 +70,7 @@ while [[ $# -gt 0 ]]; do
     --gated) GATED=1; shift ;;
     --json) JSON=1; shift ;;
     -h|--help)
-      sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "worktree-gc: unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -126,6 +132,76 @@ session_references() {
   return 1
 }
 
+# ---------------------------- session liveness ------------------------------
+# A worktree is owned by a live session when a running process has its cwd
+# inside it (lsof on macOS, /proc on Linux), or when a Claude Code / Codex
+# session transcript written within the session window recorded a cwd inside
+# it. Agent shells do not keep a process parked in the worktree between tool
+# calls, so the transcript cwd is what covers an idle but open session. Both
+# lists are gathered once per run. With no lsof and no /proc the process probe
+# yields nothing; the transcript, reference, and activity guards still apply.
+SESSION_WINDOW_HOURS="${HQ_WORKTREE_SESSION_WINDOW_HOURS:-168}"
+case "$SESSION_WINDOW_HOURS" in ''|*[!0-9]*) SESSION_WINDOW_HOURS=168 ;; esac
+LIVE_PROC_CWDS=""
+SESSION_CWDS=""
+collect_session_cwds() {
+  local _p d dirs
+  LIVE_PROC_CWDS="$(mktemp "${TMPDIR:-/tmp}/hq-wt-proc.XXXXXX" 2>/dev/null)" || LIVE_PROC_CWDS=""
+  SESSION_CWDS="$(mktemp "${TMPDIR:-/tmp}/hq-wt-sess.XXXXXX" 2>/dev/null)" || SESSION_CWDS=""
+  if [ -n "$LIVE_PROC_CWDS" ]; then
+    if [ -e /proc/self/cwd ]; then
+      for _p in /proc/[0-9]*; do readlink "$_p/cwd" 2>/dev/null || true; done > "$LIVE_PROC_CWDS"
+    elif command -v lsof >/dev/null 2>&1; then
+      { lsof -w -n -P -d cwd -Fn 2>/dev/null || true; } | sed -n 's/^n//p' > "$LIVE_PROC_CWDS"
+    fi
+  fi
+  if [ -n "$SESSION_CWDS" ]; then
+    dirs="${HQ_SESSION_TRANSCRIPT_DIRS:-$HOME/.claude/projects:$HOME/.codex/sessions}"
+    printf '%s\n' "$dirs" | tr ':' '\n' | while IFS= read -r d; do
+      [ -n "$d" ] && [ -d "$d" ] || continue
+      { find "$d" -type f -name '*.jsonl' -mmin "-$((SESSION_WINDOW_HOURS * 60))" -print0 2>/dev/null \
+          | xargs -0 grep -h -o '"cwd": *"[^"]*"' /dev/null 2>/dev/null || true; } \
+        | sed 's/^"cwd": *"//; s/"$//'
+    done | sort -u > "$SESSION_CWDS"
+  fi
+}
+
+# path_in_list <list-file> <path> [<alt-path>] — true when a listed cwd is the
+# path or lies inside it.
+path_in_list() {
+  local f="$1" a="${2:-}" b="${3:-}"
+  [ -n "$f" ] && [ -s "$f" ] || return 1
+  awk -v a="$a" -v b="$b" '
+    function hit(p, w) { return w != "" && (p == w || index(p, w "/") == 1) }
+    hit($0, a) || hit($0, b) { found = 1; exit }
+    END { exit found ? 0 : 1 }' "$f"
+}
+
+# session_owner_reason <wt> [<alt>] — prints live-session or recent-session and
+# succeeds when a session owns the worktree.
+session_owner_reason() {
+  if path_in_list "$LIVE_PROC_CWDS" "$1" "${2:-}"; then echo "live-session"; return 0; fi
+  if path_in_list "$SESSION_CWDS" "$1" "${2:-}"; then echo "recent-session"; return 0; fi
+  return 1
+}
+
+# worktree_activity_epoch <wt> — newest mtime of the worktree directory and its
+# per-worktree HEAD and HEAD reflog (commits, checkouts, resets). The index is
+# left out because `git status` may rewrite it on its own.
+worktree_activity_epoch() {
+  local wt="$1" gd newest f m
+  newest=$(path_mtime "$wt")
+  gd=$(git -C "$wt" rev-parse --path-format=absolute --git-dir 2>/dev/null || echo "")
+  if [[ -n "$gd" ]]; then
+    for f in "$gd/HEAD" "$gd/logs/HEAD"; do
+      [[ -e "$f" ]] || continue
+      m=$(path_mtime "$f")
+      if (( m > newest )); then newest=$m; fi
+    done
+  fi
+  echo "$newest"
+}
+
 # Optional timeout wrapper for network fetches (macOS has no `timeout`).
 _TIMEOUT_BIN=""
 if command -v timeout >/dev/null 2>&1; then _TIMEOUT_BIN="timeout"
@@ -160,7 +236,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # --------------------------- results / counters -----------------------------
 REC_NDJSON="$(mktemp 2>/dev/null || echo "/tmp/worktree-gc-rec.$$")"
 : > "$REC_NDJSON"
-cleanup_rec() { rm -f "$REC_NDJSON"; }
+cleanup_rec() { rm -f "$REC_NDJSON" "${LIVE_PROC_CWDS:-}" "${SESSION_CWDS:-}"; }
 trap cleanup_rec EXIT
 
 examined=0
@@ -168,6 +244,9 @@ removed=0
 would=0
 reclaimed_kb=0
 declare -i skip_total=0
+
+if [[ "${#CANDIDATES[@]}" -gt 0 ]]; then collect_session_cwds; fi
+HQ_ROOT_PHYS="$(cd "$HQ_ROOT" && pwd -P)"
 
 # wt_git <git-args...> — run git against the current worktree's main repo, adding
 # the HQ_ALLOW_HQ_ROOT_GIT escape hatch only for HQ-root-class worktrees (whose
@@ -225,8 +304,19 @@ for wt in "${CANDIDATES[@]:-}"; do
   branch=$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || echo "")
   head_sha=$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo "")
 
+  # ---- guard 4a: owned by a live session ----
+  # Checked before anything else inspects the tree. wt is the physical path;
+  # the spelling under the given HQ_ROOT is matched too.
+  wt_alt="$wt"
+  [[ "$wt" == "$HQ_ROOT_PHYS"/* ]] && wt_alt="$HQ_ROOT/${wt#"$HQ_ROOT_PHYS"/}"
+  if owner=$(session_owner_reason "$wt" "$wt_alt"); then
+    skip "$wt" "$main_repo" "$branch" "$is_hq_root" "" "" "$owner"; continue
+  fi
+
   # ---- guard 1: clean working tree ----
-  porcelain=$(git -C "$wt" status --porcelain 2>/dev/null || echo "__ERR__")
+  # --no-optional-locks keeps the scan from rewriting the index. Untracked files
+  # count as dirty even when status.showUntrackedFiles=no.
+  porcelain=$(git --no-optional-locks -C "$wt" status --porcelain --untracked-files=all 2>/dev/null || echo "__ERR__")
   if [[ "$porcelain" == "__ERR__" ]]; then
     skip "$wt" "$main_repo" "$branch" "$is_hq_root" "" "" "git-error"; continue
   fi
@@ -234,13 +324,13 @@ for wt in "${CANDIDATES[@]:-}"; do
     skip "$wt" "$main_repo" "$branch" "$is_hq_root" "" "" "dirty"; continue
   fi
 
-  # ---- guard 4a: recent activity (in-use heuristic) ----
+  # ---- guard 4b: recent activity (in-use heuristic) ----
   wt_mtime=$(path_mtime "$wt")
-  if (( wt_mtime > RECENT_EPOCH )); then
+  if (( $(worktree_activity_epoch "$wt") > RECENT_EPOCH )); then
     skip "$wt" "$main_repo" "$branch" "$is_hq_root" "" "" "recent-activity"; continue
   fi
 
-  # ---- guard 4b: active-session reference ----
+  # ---- guard 4c: active-session reference ----
   if session_references "$wt"; then
     skip "$wt" "$main_repo" "$branch" "$is_hq_root" "" "" "active-session"; continue
   fi

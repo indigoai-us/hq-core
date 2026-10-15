@@ -6,9 +6,9 @@ when: worktree
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: soft
 tier: 2
-version: 1
+version: 2
 created: 2026-08-17
-updated: 2026-08-17
+updated: 2026-10-14
 source: authored
 ---
 
@@ -21,7 +21,7 @@ it removes a worktree ONLY when every guard holds, and defaults to a dry-run.
 
 ### Removal requires ALL of
 
-1. **Clean working tree** — `git status --porcelain` is empty. A worktree with
+1. **Clean working tree** — `git status --porcelain --untracked-files=all` is empty. A worktree with
    any uncommitted, staged, or untracked change is NEVER removed.
 2. **Older than the retention window** — default 7 days (`--days N` or
    `HQ_WORKTREE_GC_DAYS`). Age comes from the creation stamp
@@ -35,8 +35,33 @@ it removes a worktree ONLY when every guard holds, and defaults to a dry-run.
    - *HQ-root local-only worktrees* (`.claude/worktrees/agent-*` and any
      `workspace/worktrees/` worktree whose repo IS the HQ root — HQ never
      pushes) — the branch is already merged into the HQ root's local `main`.
-4. **Not in use** — no active session / thread / lock file references the
-   worktree path, and it was not modified in the last 2 hours.
+4. **Not owned by a session** — checked before the tree is inspected:
+   - no live process has its cwd inside the worktree (`lsof -d cwd` on macOS,
+     `/proc/*/cwd` on Linux) — skip reason `live-session`;
+   - no Claude Code (`~/.claude/projects/**/*.jsonl`) or Codex
+     (`~/.codex/sessions/**/*.jsonl`) transcript written in the last 7 days
+     recorded a `cwd` inside it — skip reason `recent-session`. Agent shells do
+     not keep a process parked in the worktree between tool calls, so this is
+     what protects an open but idle session. Window:
+     `HQ_WORKTREE_SESSION_WINDOW_HOURS` (default 168); transcript roots:
+     `HQ_SESSION_TRANSCRIPT_DIRS` (colon-separated);
+   - no session / thread / lock file references the path — `active-session`;
+   - neither the directory nor its per-worktree `HEAD` / `HEAD` reflog changed
+     in the last 2 hours — `recent-activity`.
+
+Every skipped worktree is printed with its reason (`skip  [<reason>] <path>`).
+
+### Every GC path follows the same ownership rule
+
+- `core/scripts/worktree-gc.sh` (this policy; run by `/handoff`).
+- `core/scripts/free-disk-space.sh prune-backed-up` and `slim-idle`
+  (`/free-disk-space`): keeps `reason=live-session` / `reason=recent-session`
+  worktrees in addition to its dirty, no-upstream, unpushed, stash, and recent
+  checks. "Recent" covers any file in the tree and the HEAD reflog, not only the
+  top-level entries.
+- `hq reindex` (hq-cli, runs from the PostToolUse `reindex.sh` hook) sweeps
+  `workspace/worktrees/<repo>/<name>`. It must apply the same session-ownership,
+  dirty, and unpushed / no-upstream skips and never pass `--force`.
 
 ### Safety guarantees
 

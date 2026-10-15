@@ -2,6 +2,45 @@
 
 Newest release first.
 
+## Release: v16.0.22-beta.9
+
+- No action needed. `/super-conductor` now keeps itself awake. A background
+  heartbeat (`hq monitor` running `core/scripts/super-conductor-heartbeat.sh`)
+  wakes the conductor session on each watch interval and right away when a
+  linked session reports, even while the session is idle. Owners no longer
+  have to type "sweep all" to keep it working. `/overnight` reuses the same
+  heartbeat at the away interval. `ScheduleWakeup` is now only a fallback.
+- New: on first start, `/super-conductor` asks which channels to watch (HQ
+  DMs, Slack, email, X; open sessions are always watched) and how often to
+  check (1, 5, 10, or 30 minutes, or any value). It can save the answers as
+  `channels` and `watch_interval.present` in
+  `personal/settings/super-conductor.yaml`. For a single run, pass
+  `channels hq_dms,slack` or `interval 5m`.
+- Each heartbeat wakeup now sweeps every selected channel, and the conductor
+  asks at most one owner question per turn, so an unanswered question no
+  longer stops the loop.
+
+## Release: v16.0.22-beta.7
+
+- No action needed. When a `/run-project --pipeline` driver stops and needs the
+  owner or the parent session (exit codes 20, 21, 22, 23, 26, 27 and 28), it
+  now enqueues a Work Mesh `blocked` signal for the session
+  (`hq mesh session blocked --enqueue`). The signal carries the exit reason and
+  points at the run's `decisions/` folder, so a run held for a decision shows
+  up on the board instead of only in `driver/exit`. A stop you asked for
+  (exit 29) is not announced. Without `HQ_SESSION_ID` the driver logs
+  `NOTIFY ... skipped` and exits as before.
+- The driver now writes `driver/exit` last, after the announcement, so a waiter
+  that stops the process as soon as the file appears no longer turns an exit 21
+  into 143.
+
+## Release: v16.0.22-beta.4
+
+- No action needed. Pipeline runs no longer stop with exit 22 ("passed its
+  deadline with no handoff") while a phase envelope is still waiting in its
+  lane's queue. The phase deadline now counts only once the lane is working
+  that envelope.
+
 ## Release: v16.0.21-beta.1
 
 - New, on by default: the `HQ-Fingerprint` commit trailer. After
@@ -40,9 +79,9 @@ Newest release first.
   (no `HQ_SESSION_ID`, `CLAUDE_CODE_SESSION_ID` or similar) gets no trailer
   and starts nothing. Inside a session the value is fetched once and kept in
   `workspace/sessions/<session id>/fingerprint-trailer.cache`, the same v2
-  file `core/scripts/lib/fingerprint.sh` uses, so later commits, autosaves and
-  checkpoints in that session reuse it. A cached "no fingerprint" answer is
-  reused the same way.
+  file `core/scripts/lib/fingerprint.sh` uses, so later commits and
+  checkpoints in that session reuse it. Autosave commits carry no trailer. A
+  cached "no fingerprint" answer is reused the same way.
 - No action needed. Setting `enabled: false` in
   `personal/settings/fingerprint.yaml` takes effect at the next session start:
   the trailer switch is cleared, and when the commit secret scan is off the

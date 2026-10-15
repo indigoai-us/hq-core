@@ -26,7 +26,9 @@ release-owned charter.
   change production infrastructure.
 - Do not inline large image bytes into the parent session. Cost is file size,
   not image count. The PreToolUse `image-context-guard` blocks a local image
-  over 2 MB or a ninth distinct image in the session. Delegate inspection.
+  over 2 MB, and a new image once the parent context has inlined 8 MB of
+  images (small images are charged at least 64 KB) or 32 distinct images.
+  Each sub-agent has its own budget, so delegate inspection to sub-agents.
 
 ## App and SDK runtime warning
 

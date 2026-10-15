@@ -36,8 +36,9 @@ die()   { echo "hq-delegate-grant: $*" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
 # jq.exe on MSYS may use CRT text mode unless --binary is supported.
+# Git for Windows 2.56+ reports MSYSTEM=UCRT64; match every MSYS2 environment.
 case "${OSTYPE:-}:${MSYSTEM:-}" in
-  msys*:*|*:MINGW*)
+  msys*:*|*:MINGW*|*:UCRT*|*:CLANG*|*:MSYS)
     # Probe --binary once per script run, in the top-level shell. Most jq
     # calls run inside $(...) subshells, so a cache filled lazily inside jq()
     # would be lost and the probe would repeat on every call.

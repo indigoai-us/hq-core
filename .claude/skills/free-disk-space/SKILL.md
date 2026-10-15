@@ -30,12 +30,15 @@ Reclaim disk space on the user's machine. All work goes through
      (including every branch checked out there), stash-free, free of ignored files
      outside rebuildable build directories, free of a nested git repository under
      those directories, free of skip-worktree or assume-unchanged index flags,
-     and untouched for N hours (default 6).
+     untouched for N hours (default 6; any file, commit, or checkout), and not owned
+     by a session. A worktree is session-owned when a live process has its cwd
+     inside it (`reason=live-session`) or a Claude Code / Codex transcript from
+     the last 7 days recorded a cwd inside it (`reason=recent-session`).
      Full clones are never removed. Removal uses `git worktree remove`, not `rm -rf`.
    - `slim-idle [days]` — in worktrees idle N days (default 7), deletes git-ignored
      dependency and build folders that contain no tracked files and no nested git
      repository. It skips a checkout with skip-worktree or assume-unchanged flags,
-     or with a nested git repository. Code and commits stay.
+     with a nested git repository, or owned by a session. Code and commits stay.
 
 3. **Dry run first.** Run the chosen mode without `--apply`
    (`bash core/scripts/free-disk-space.sh <mode>`). It prints `would-remove` and

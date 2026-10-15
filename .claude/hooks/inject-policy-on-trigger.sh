@@ -555,6 +555,7 @@ record_policy_trigger_sizes() {
 
 FACTS_FILE=""
 INTENT_FACTS_FILE=""
+OUTPUT_FACTS_FILE=""
 FACT_PAIR_FILE=""
 POLICY_BODY_TMP_DIR=""
 POLICY_ARG_INLINE_LIMIT=65536
@@ -563,6 +564,7 @@ cleanup_policy_fact_files() {
   [ -z "$STDIN_FILE" ] || rm -f "$STDIN_FILE" 2>/dev/null || true
   [ -z "$FACTS_FILE" ] || rm -f "$FACTS_FILE" 2>/dev/null || true
   [ -z "$INTENT_FACTS_FILE" ] || rm -f "$INTENT_FACTS_FILE" 2>/dev/null || true
+  [ -z "$OUTPUT_FACTS_FILE" ] || rm -f "$OUTPUT_FACTS_FILE" 2>/dev/null || true
   [ -z "$FACT_PAIR_FILE" ] || rm -f "$FACT_PAIR_FILE" 2>/dev/null || true
   [ -z "$POLICY_BODY_TMP_DIR" ] || rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
 }
@@ -776,6 +778,27 @@ run_derive_trigger_facts() {
   return "$helper_status"
 }
 
+# policy_output_structured_facts — print the non-literal facts a PostToolUse
+# tool output establishes (secret, apikey, completed), using the same shared
+# awk library as the fact helper. shared_branch is left out on purpose: the
+# word "main" appears in almost any output, and the command facts already
+# carry shared_branch from the command text and the checked-out branch.
+policy_output_structured_facts() {
+  local lib="$HELPERS/lib/trigger-fact-text.awk"
+  [ -n "$JQ" ] && [ -r "$lib" ] || return 0
+  {
+    if [ -n "$STDIN_FILE" ]; then
+      "$JQ" -r 'if .tool_response == null then "" elif (.tool_response|type) == "string" then .tool_response else (.tool_response|tostring) end' < "$STDIN_FILE"
+    else
+      printf '%s' "$STDIN_JSON" | "$JQ" -r 'if .tool_response == null then "" elif (.tool_response|type) == "string" then .tool_response else (.tool_response|tostring) end'
+    fi
+  } 2>/dev/null | awk -v mode=derived -v branch="" -f "$lib" 2>/dev/null \
+    | while IFS= read -r structured_fact; do
+        [ "$structured_fact" = "shared_branch" ] || printf '%s ' "$structured_fact"
+      done
+  return 0
+}
+
 spill_policy_facts() {
   local value="$1" label="$2" temporary=""
   [ "${#value}" -gt "$POLICY_ARG_INLINE_LIMIT" ] || return 0
@@ -787,6 +810,7 @@ spill_policy_facts() {
     case "$label" in
       facts) FACTS_FILE="$temporary" ;;
       intent-facts) INTENT_FACTS_FILE="$temporary" ;;
+      output-facts) OUTPUT_FACTS_FILE="$temporary" ;;
     esac
   else
     rm -f "$temporary" 2>/dev/null || true
@@ -839,7 +863,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # AssistantIntent channel: AI-message-only facts, available where there is a
   # transcript look-back (PreToolUse + UserPromptSubmit). Policies with
   # `on: [AssistantIntent]` are evaluated against THIS set, not the event facts.
-  INTENT_FACTS=""; INTENT_MODE=0
+  INTENT_FACTS=""; INTENT_MODE=0; OUTPUT_FACTS=""
   if [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "UserPromptSubmit" ]; then
     INTENT_MODE=1
     # Derive both fact channels from one payload parse and one helper launch.
@@ -886,7 +910,17 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       COMMAND_FACTS="$(run_derive_trigger_facts PreToolUse)" || true
       COMMAND_FACTS=" ${COMMAND_FACTS} "
       COMMAND_FACTS="${COMMAND_FACTS// run_in_background / }"
-      FACTS="$FACTS $COMMAND_FACTS"
+      # Relevance: the ACTION is the command, not whatever text it printed.
+      # Every word of a `cat`/`ls`/`gh` result used to become a fact, so a
+      # plain file read matched dozens of unrelated policies keyed on words
+      # the file merely contained (slack, deploy, feedback, done, ...). The
+      # primary PostToolUse fact set is now the command facts plus the
+      # structured facts the output alone can establish (a leaked credential
+      # -> secret/apikey, a finished merge or deploy -> completed). The full
+      # output-word set is kept only for policies that listen on PostToolUse
+      # WITHOUT PreToolUse, which are written to key on what a tool printed.
+      OUTPUT_FACTS="$FACTS $COMMAND_FACTS"
+      FACTS="$COMMAND_FACTS $(policy_output_structured_facts)"
     fi
   fi
 
@@ -896,11 +930,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # reads that previously materialized the whole ledgers in shell variables.
   spill_policy_facts "$FACTS" facts
   spill_policy_facts "$INTENT_FACTS" intent-facts
+  spill_policy_facts "$OUTPUT_FACTS" output-facts
   FACTS_INLINE="$FACTS"
   INTENT_FACTS_INLINE="$INTENT_FACTS"
+  OUTPUT_FACTS_INLINE="$OUTPUT_FACTS"
   [ -z "$FACTS_FILE" ] || FACTS_INLINE=""
   [ -z "$INTENT_FACTS_FILE" ] || INTENT_FACTS_INLINE=""
-  FACTS_BYTES=$((${#FACTS} + ${#INTENT_FACTS}))
+  [ -z "$OUTPUT_FACTS_FILE" ] || OUTPUT_FACTS_INLINE=""
+  FACTS_BYTES=$((${#FACTS} + ${#INTENT_FACTS} + ${#OUTPUT_FACTS}))
   DEDUPE_BYTES="$(policy_file_bytes "$DEDUPE_FILE")"
   TURN_BYTES="$(policy_file_bytes "$TURN_FILE")"
   LEDGER_BYTES=$((DEDUPE_BYTES + TURN_BYTES))
@@ -1186,7 +1223,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       scope_key="${scope_hash%% *}"
       CACHE_DIR="$HQ_ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"
       if [ -n "$scope_key" ]; then
-        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v5" "$CACHE_DIR/eval-v6" "$STATS_DIR" 2>/dev/null || true
+        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v6" "$CACHE_DIR/eval-v7" "$STATS_DIR" 2>/dev/null || true
       fi
       if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
@@ -1194,7 +1231,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # invalidate v2 records, which baked in PreToolUse. v4 adds the parsed
         # `principals:` field to each record, so v3 records (one field short)
         # are never decoded with the new layout.
-        CACHE_HEADER="hq-policy-cache-v4${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
+        CACHE_HEADER="hq-policy-cache-v5${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
         if [ -r "$CACHE_FILE" ]; then
           IFS= read -r cache_header < "$CACHE_FILE" || true
@@ -1301,8 +1338,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       {
         # SESSION_PRINCIPAL is part of the key: a verdict computed for one
         # principal must never be replayed for another.
-        printf '%s\034%s\034%s\034%s\034%s\034%s\034%s\034%s\034principal=%s\034' \
-          "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" \
+        printf '%s\034%s\034%s\034%s\034output=%s\034%s\034%s\034%s\034%s\034principal=%s\034' \
+          "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" "$OUTPUT_FACTS" \
           "${HQ_POLICY_TOOL_EVENTS:-}" "$STALE_TODAY" "$INJECT_PERSONAL_SOFT" "$retrieval_ledger_key" \
           "$SESSION_PRINCIPAL"
         append_policy_ledger "$DEDUPE_FILE"
@@ -1322,14 +1359,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       if [ "$EVENT" = "SessionStart" ]; then
         EVAL_CACHE_DIR="$CACHE_DIR/eval-v6"
       else
-        EVAL_CACHE_DIR="$CACHE_DIR/eval-v5"
+        EVAL_CACHE_DIR="$CACHE_DIR/eval-v7"
       fi
       if [ -d "$EVAL_CACHE_DIR" ]; then
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
         if [ "$EVENT" = "SessionStart" ]; then
           EVAL_CACHE_HEADER="hq-policy-eval-v6${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_input_key}"
         else
-          EVAL_CACHE_HEADER="hq-policy-eval-v5${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+          EVAL_CACHE_HEADER="hq-policy-eval-v7${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         fi
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
@@ -1362,6 +1399,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       awk -v EVENT="$EVENT" -v LEGACY_TOOL_EVENTS="${HQ_POLICY_TOOL_EVENTS:-}" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS_INLINE" -v AIFACTS="$INTENT_FACTS_INLINE" \
           -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
+          -v OUTFACTS="$OUTPUT_FACTS_INLINE" -v OUTFACTS_FILE="$OUTPUT_FACTS_FILE" \
           -v ALREADY_FILE="$DEDUPE_FILE" -v ALREADY_TURN_FILE="$TURN_FILE" \
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
@@ -1399,7 +1437,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         s=expr; out=""
         while (match(s, "[A-Za-z0-9_./][A-Za-z0-9_./-]*")) {
           tok=substr(s,RSTART,RLENGTH)
-          present = (which=="ev") ? (tolower(tok) in evh) : (tolower(tok) in aih)
+          present = (which=="ev") ? (tolower(tok) in evh) : ((which=="out") ? (tolower(tok) in outh) : (tolower(tok) in aih))
           out = out substr(s,1,RSTART-1) (present?"1":"0")
           s = substr(s,RSTART+RLENGTH)
         }
@@ -1451,10 +1489,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         C=out; cpos=1
         return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule,evset) {
         if (whenx=="") return
         if (id=="") id=base(fname)
-        if (onx=="") onx=(LEGACY_TOOL_EVENTS=="legacy" ? "PreToolUse" : "PostToolUse")
+        # An omitted `on:` defaults to the tool event. The `_omitted_` marker
+        # (cached with the record) keeps such a policy keyed on the command:
+        # it never opted into matching words in tool output.
+        if (onx=="") onx=(LEGACY_TOOL_EVENTS=="legacy" ? "PreToolUse _omitted_" : "PostToolUse _omitted_")
         # On a cache miss, write the parsed record while this same pass has the
         # policy file open. A malformed cache record is never published: the
         # parent only renames the temp file when END writes an "ok" status.
@@ -1490,7 +1531,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # HQ_INJECT_PERSONAL_SOFT=1. Core and company soft policies are unchanged.
         if (PERSONAL_SOFT!="1" && scopeof(fname)=="personal" && enf!="hard" && enf!="gate") return
         matched=0; degraded=0; spec=0
-        if (ev_on || ss_on) { r=evalexpr(whenx,"ev"); if(r==0) { matched=1; spec=specificity(whenx,"ev") } else if(r==2) degraded=1 }
+        # Output words count only for a policy that explicitly listens on
+        # PostToolUse and not PreToolUse: that policy keys on what a tool
+        # printed. Every other policy is matched against the action (the
+        # command) plus structured output facts.
+        evset="ev"
+        if (EVENT=="PostToolUse" && index(onpad," PostToolUse ")>0 && index(onpad," PreToolUse ")==0 && index(onpad," _omitted_ ")==0) evset="out"
+        if (ev_on || ss_on) { r=evalexpr(whenx,evset); if(r==0) { matched=1; spec=specificity(whenx,evset) } else if(r==2) degraded=1 }
         if (!matched && ai_on && INTENT_MODE) { r=evalexpr(whenx,"ai"); if(r==0) { matched=1; spec=specificity(whenx,"ai") } else if(r==2) degraded=1 }
         # An expression the grammar cannot parse used to MATCH — a blanket
         # fail-open that made every malformed policy fire on every event and
@@ -1568,7 +1615,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           tok=substr(s,RSTART,RLENGTH); s=substr(s,RSTART+RLENGTH)
           tok_lc=tolower(tok)
           if (tok_lc=="always" || tok_lc=="never") continue
-          if (!(tok_lc in seen)) { seen[tok_lc]=1; if ((which=="ev") ? (tok_lc in evh) : (tok_lc in aih)) n++ }
+          if (!(tok_lc in seen)) { seen[tok_lc]=1; if ((which=="ev") ? (tok_lc in evh) : ((which=="out") ? (tok_lc in outh) : (tok_lc in aih))) n++ }
         }
         return n
       }
@@ -1582,6 +1629,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         } else {
           n=split(EVFACTS,fa,/[ ,]+/)
           for(i=1;i<=n;i++) if(fa[i]!="") evh[fa[i]]=1
+        }
+        if (OUTFACTS_FILE != "") {
+          while ((getline outline < OUTFACTS_FILE) > 0) {
+            n=split(outline,oa,/[ ,]+/)
+            for(i=1;i<=n;i++) if(oa[i]!="") outh[oa[i]]=1
+          }
+          close(OUTFACTS_FILE)
+        } else {
+          n=split(OUTFACTS,oa,/[ ,]+/)
+          for(i=1;i<=n;i++) if(oa[i]!="") outh[oa[i]]=1
         }
         if (AIFACTS_FILE != "") {
           while ((getline intentline < AIFACTS_FILE) > 0) {
@@ -2178,6 +2235,27 @@ policy_body() {
   '
 }
 
+MALFORMED_MARKER_PREFIX="__malformed-trigger-reported:"
+MALFORMED_NOTICE_PREFIX='> Malformed `when:` trigger'
+
+# record_malformed_notice <delivered-output> — after the notice is delivered,
+# mark each slug it named so later events in this session do not repeat it.
+record_malformed_notice() {
+  local output="$1" row slug ws markers=""
+  case "$output" in
+    *"$MALFORMED_NOTICE_PREFIX"*) ;;
+    *) return 0 ;;
+  esac
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    IFS=$'\t' read -r slug _ _ _ _ _ _ ws _ <<< "$row"
+    [ "$ws" = "malformed" ] || continue
+    already "${MALFORMED_MARKER_PREFIX}${slug}" once && continue
+    markers+="${MALFORMED_MARKER_PREFIX}${slug}"$'\n'
+  done <<< "$MATCHES"
+  [ -z "$markers" ] || record_slugs "$DEDUPE_FILE" "$markers"
+}
+
 emit_reminder() {
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
@@ -2189,7 +2267,13 @@ printf '%s' "$MATCHES" | {
   while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt; do
     [ -z "$slug" ] && continue
     match_index=$((match_index + 1))
-    [ "$ws" = "malformed" ] && malformed="${malformed:+$malformed, }$slug"
+    # The malformed-trigger notice names a slug once per session. A malformed
+    # hard policy is a low-ranked baseline row, so the output ceiling often
+    # cuts its line and leaves it eligible; without this marker the notice
+    # re-listed every such slug on every later event.
+    if [ "$ws" = "malformed" ] && ! already "${MALFORMED_MARKER_PREFIX}${slug}" once; then
+      malformed="${malformed:+$malformed, }$slug"
+    fi
     body=""
     # HARD rules carry full text while the budget lasts. MATCHES is already
     # ordered reactive-before-baseline and by specificity, so rules that
@@ -2274,156 +2358,167 @@ if [ -n "$ENFORCEMENT_CONTEXT" ]; then
 fi
 # Measure precisely what the final `printf '%s\n'` below will write; command
 # substitution strips emit_reminder's final newline.
-policy_value_bytes "$OUT"
-OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
-if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
-  # Too big for the host to deliver: fall back to one-line summaries for
-  # every policy, and say so. A shortened set the model can read beats a full
-  # set it never sees.
-  OUT="$(HARD_FULL=0 emit_reminder)"
-  OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${OUT_BYTES} bytes with full text): every HARD policy above is shortened to its summary line. Read each in full at its own file before acting on it.
-</policy-reminder>"
+# fit_reminder <ceiling> — fit FULL_OUT under <ceiling> bytes, setting OUT,
+# OUT_BYTES and (when nothing fits) NO_STDOUT_REASON. PostToolUse calls it a
+# second time with a smaller ceiling when JSON quoting grows the envelope past
+# OUTPUT_CEILING, so the policies that fit are still delivered and recorded.
+FULL_OUT="$OUT"
+fit_reminder() {
+  FIT_CEILING="$1"
+  OUT="$FULL_OUT"
+  NO_STDOUT_REASON=""
   policy_value_bytes "$OUT"
   OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
-fi
-if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ]; then
-  # Still over even as summaries: calculate the first fitting cut count in
-  # one byte-oriented awk pass. The old loop rebuilt, measured, searched and
-  # edited the reminder once per dropped policy line.
-  TRIM_SEPARATOR=""
-  TRIM_SEPARATOR_CANDIDATES=($'\034' $'\035' $'\036' $'\037')
-  for candidate_separator in "${TRIM_SEPARATOR_CANDIDATES[@]}"; do
-    case "$OUT" in
-      *"$candidate_separator"*) ;;
-      *) TRIM_SEPARATOR="$candidate_separator"; break ;;
-    esac
-  done
-  if [ -z "$TRIM_SEPARATOR" ]; then
-    OUT=""
-    OUT_BYTES=0
-    NO_STDOUT_REASON="policy reminder contains all reserved output-trim separators"
-  else
-    TRIM_RESULT=""
-    if ! TRIM_RESULT="$(LC_ALL=C awk -v ceiling="$OUTPUT_CEILING" -v sep="$TRIM_SEPARATOR" '
-        {
-          lines[NR]=$0
-          total_bytes += length($0) + 1
-          if ($0 ~ /^> Policy `/) policy_line[NR]=1
-        }
-        END {
-          removed_bytes=0
-          candidate_cut=0
-          chosen_cut=0
-          for (i=NR; i>=1; i--) {
-            if (!(i in policy_line)) continue
-            removed_bytes += length(lines[i]) + 1
-            candidate_cut++
-            notice = "> Output ceiling of " ceiling " bytes: " candidate_cut " lower-ranked policy line(s) cut from this reminder. Omitted policies remain eligible for a later event; see the policy files."
-            candidate_bytes = total_bytes - removed_bytes + length(notice) + 1
-            if (candidate_bytes <= ceiling) {
-              chosen_cut=candidate_cut
-              chosen_bytes=candidate_bytes
-              chosen_notice=notice
-              break
-            }
-          }
-          if (!chosen_cut) {
-            printf "%snone%s%d%s0", sep, sep, candidate_cut, sep
-            exit
-          }
-          remaining=chosen_cut
-          for (i=NR; i>=1; i--) {
-            if (remaining > 0 && (i in policy_line)) {
-              drop[i]=1
-              remaining--
-            }
-          }
-          for (i=1; i<=NR; i++) {
-            if (lines[i] == "</policy-reminder>") {
-              printf "%s\n", chosen_notice
-              printf "%s", lines[i]
-              if (i < NR) printf "\n"
-            } else if (!(i in drop)) {
-              printf "%s\n", lines[i]
-            }
-          }
-          printf "%sfit%s%d%s%d", sep, sep, chosen_cut, sep, chosen_bytes
-        }
-    ' <<<"$OUT")"; then
+  if [ "$OUT_BYTES" -gt "$FIT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
+    # Too big for the host to deliver: fall back to one-line summaries for
+    # every policy, and say so. A shortened set the model can read beats a full
+    # set it never sees.
+    OUT="$(HARD_FULL=0 emit_reminder)"
+    OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${OUT_BYTES} bytes with full text): every HARD policy above is shortened to its summary line. Read each in full at its own file before acting on it.
+</policy-reminder>"
+    policy_value_bytes "$OUT"
+    OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
+  fi
+  if [ "$OUT_BYTES" -gt "$FIT_CEILING" ]; then
+    # Still over even as summaries: calculate the first fitting cut count in
+    # one byte-oriented awk pass. The old loop rebuilt, measured, searched and
+    # edited the reminder once per dropped policy line.
+    TRIM_SEPARATOR=""
+    TRIM_SEPARATOR_CANDIDATES=($'\034' $'\035' $'\036' $'\037')
+    for candidate_separator in "${TRIM_SEPARATOR_CANDIDATES[@]}"; do
+      case "$OUT" in
+        *"$candidate_separator"*) ;;
+        *) TRIM_SEPARATOR="$candidate_separator"; break ;;
+      esac
+    done
+    if [ -z "$TRIM_SEPARATOR" ]; then
       OUT=""
       OUT_BYTES=0
-      NO_STDOUT_REASON="output ceiling trim calculation failed"
+      NO_STDOUT_REASON="policy reminder contains all reserved output-trim separators"
     else
-      trim_bytes="${TRIM_RESULT##*"$TRIM_SEPARATOR"}"
-      trim_before_bytes="${TRIM_RESULT%"$TRIM_SEPARATOR"*}"
-      trim_cut="${trim_before_bytes##*"$TRIM_SEPARATOR"}"
-      trim_before_cut="${trim_before_bytes%"$TRIM_SEPARATOR"*}"
-      trim_status="${trim_before_cut##*"$TRIM_SEPARATOR"}"
-      trimmed_out="${trim_before_cut%"$TRIM_SEPARATOR"*}"
-      case "$trim_cut" in ''|*[!0-9]*)
+      TRIM_RESULT=""
+      if ! TRIM_RESULT="$(LC_ALL=C awk -v ceiling="$FIT_CEILING" -v shown="$OUTPUT_CEILING" -v sep="$TRIM_SEPARATOR" '
+          {
+            lines[NR]=$0
+            total_bytes += length($0) + 1
+            if ($0 ~ /^> Policy `/) policy_line[NR]=1
+          }
+          END {
+            removed_bytes=0
+            candidate_cut=0
+            chosen_cut=0
+            for (i=NR; i>=1; i--) {
+              if (!(i in policy_line)) continue
+              removed_bytes += length(lines[i]) + 1
+              candidate_cut++
+              notice = "> Output ceiling of " shown " bytes: " candidate_cut " lower-ranked policy line(s) cut from this reminder. Omitted policies remain eligible for a later event; see the policy files."
+              candidate_bytes = total_bytes - removed_bytes + length(notice) + 1
+              if (candidate_bytes <= ceiling) {
+                chosen_cut=candidate_cut
+                chosen_bytes=candidate_bytes
+                chosen_notice=notice
+                break
+              }
+            }
+            if (!chosen_cut) {
+              printf "%snone%s%d%s0", sep, sep, candidate_cut, sep
+              exit
+            }
+            remaining=chosen_cut
+            for (i=NR; i>=1; i--) {
+              if (remaining > 0 && (i in policy_line)) {
+                drop[i]=1
+                remaining--
+              }
+            }
+            for (i=1; i<=NR; i++) {
+              if (lines[i] == "</policy-reminder>") {
+                printf "%s\n", chosen_notice
+                printf "%s", lines[i]
+                if (i < NR) printf "\n"
+              } else if (!(i in drop)) {
+                printf "%s\n", lines[i]
+              }
+            }
+            printf "%sfit%s%d%s%d", sep, sep, chosen_cut, sep, chosen_bytes
+          }
+      ' <<<"$OUT")"; then
         OUT=""
         OUT_BYTES=0
-        NO_STDOUT_REASON="output ceiling trim result had an invalid cut count"
-        trim_status="invalid"
-        ;;
-      esac
-      case "$trim_status" in
-        fit)
-          case "$trim_bytes" in ''|*[!0-9]*)
-            OUT=""
-            OUT_BYTES=0
-            NO_STDOUT_REASON="output ceiling trim result had an invalid byte count"
-            ;;
-          *)
-            OUT="$trimmed_out"
-            OUT_BYTES="$trim_bytes"
-            ;;
-          esac
-          ;;
-        none)
-          # Policy lines cannot make room for an oversized withheld/malformed
-          # notice. Preserve the more informative existing fallback whenever
-          # it fits; only then shrink again to the compact form.
-          cut="$trim_cut"
-          if [ "$cut" -gt 0 ]; then
-            last_resort="<policy-reminder>
-> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. Remaining reminder text was omitted to keep this event deliverable; see the policy files.
-</policy-reminder>"
-          else
-            last_resort="<policy-reminder>
-> Output ceiling of ${OUTPUT_CEILING} bytes: remaining reminder text was omitted to keep this event deliverable; see the policy files.
-</policy-reminder>"
-          fi
-          policy_value_bytes "$last_resort"
-          last_resort_bytes=$((POLICY_VALUE_BYTES + 1))
-          if [ "$last_resort_bytes" -le "$OUTPUT_CEILING" ]; then
-            OUT="$last_resort"
-            OUT_BYTES="$last_resort_bytes"
-          else
-            # The compact reminder is deliberately measured too: a ceiling
-            # below its useful 76-byte floor must not leak a fixed-size fallback.
-            compact_out="$(compact_reminder)"
-            policy_value_bytes "$compact_out"
-            compact_bytes=$((POLICY_VALUE_BYTES + 1))
-            if [ "$compact_bytes" -le "$OUTPUT_CEILING" ]; then
-              OUT="$compact_out"
-              OUT_BYTES="$compact_bytes"
-            else
-              OUT=""
-              OUT_BYTES=0
-              NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the ${compact_bytes}-byte minimum reminder"
-            fi
-          fi
-          ;;
-        *)
+        NO_STDOUT_REASON="output ceiling trim calculation failed"
+      else
+        trim_bytes="${TRIM_RESULT##*"$TRIM_SEPARATOR"}"
+        trim_before_bytes="${TRIM_RESULT%"$TRIM_SEPARATOR"*}"
+        trim_cut="${trim_before_bytes##*"$TRIM_SEPARATOR"}"
+        trim_before_cut="${trim_before_bytes%"$TRIM_SEPARATOR"*}"
+        trim_status="${trim_before_cut##*"$TRIM_SEPARATOR"}"
+        trimmed_out="${trim_before_cut%"$TRIM_SEPARATOR"*}"
+        case "$trim_cut" in ''|*[!0-9]*)
           OUT=""
           OUT_BYTES=0
-          NO_STDOUT_REASON="output ceiling trim result had an unknown status"
+          NO_STDOUT_REASON="output ceiling trim result had an invalid cut count"
+          trim_status="invalid"
           ;;
-      esac
+        esac
+        case "$trim_status" in
+          fit)
+            case "$trim_bytes" in ''|*[!0-9]*)
+              OUT=""
+              OUT_BYTES=0
+              NO_STDOUT_REASON="output ceiling trim result had an invalid byte count"
+              ;;
+            *)
+              OUT="$trimmed_out"
+              OUT_BYTES="$trim_bytes"
+              ;;
+            esac
+            ;;
+          none)
+            # Policy lines cannot make room for an oversized withheld/malformed
+            # notice. Preserve the more informative existing fallback whenever
+            # it fits; only then shrink again to the compact form.
+            cut="$trim_cut"
+            if [ "$cut" -gt 0 ]; then
+              last_resort="<policy-reminder>
+> Output ceiling of ${OUTPUT_CEILING} bytes: ${cut} lower-ranked policy line(s) cut from this reminder. Remaining reminder text was omitted to keep this event deliverable; see the policy files.
+</policy-reminder>"
+            else
+              last_resort="<policy-reminder>
+> Output ceiling of ${OUTPUT_CEILING} bytes: remaining reminder text was omitted to keep this event deliverable; see the policy files.
+</policy-reminder>"
+            fi
+            policy_value_bytes "$last_resort"
+            last_resort_bytes=$((POLICY_VALUE_BYTES + 1))
+            if [ "$last_resort_bytes" -le "$FIT_CEILING" ]; then
+              OUT="$last_resort"
+              OUT_BYTES="$last_resort_bytes"
+            else
+              # The compact reminder is deliberately measured too: a ceiling
+              # below its useful 76-byte floor must not leak a fixed-size fallback.
+              compact_out="$(compact_reminder)"
+              policy_value_bytes "$compact_out"
+              compact_bytes=$((POLICY_VALUE_BYTES + 1))
+              if [ "$compact_bytes" -le "$FIT_CEILING" ]; then
+                OUT="$compact_out"
+                OUT_BYTES="$compact_bytes"
+              else
+                OUT=""
+                OUT_BYTES=0
+                NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the ${compact_bytes}-byte minimum reminder"
+              fi
+            fi
+            ;;
+          *)
+            OUT=""
+            OUT_BYTES=0
+            NO_STDOUT_REASON="output ceiling trim result had an unknown status"
+            ;;
+        esac
+      fi
     fi
   fi
-fi
+}
+fit_reminder "$OUTPUT_CEILING"
 HOOK_OUTPUT="$OUT"
 if [ -z "${NO_STDOUT_REASON:-}" ] && [ -n "$OUT" ]; then
   if [ "$EVENT" = "PostToolUse" ]; then
@@ -2440,9 +2535,31 @@ fi
 if [ -n "$HOOK_OUTPUT" ]; then
   policy_value_bytes "$HOOK_OUTPUT"
   OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
+  # JSON quoting (escaped quotes, backslashes and newlines) can grow the
+  # PostToolUse envelope past the ceiling. Refit the reminder under a ceiling
+  # reduced by the measured overflow, so the policies that fit are delivered
+  # and recorded. The old fallback replaced everything with "Policies
+  # matched.", recorded nothing, and so re-fired the same oversized set on
+  # every later tool call.
+  refit_attempt=0
+  refit_ceiling="$OUTPUT_CEILING"
+  while [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$EVENT" = "PostToolUse" ] \
+    && [ "$refit_attempt" -lt 4 ]; do
+    refit_attempt=$((refit_attempt + 1))
+    refit_ceiling=$((refit_ceiling - (OUT_BYTES - OUTPUT_CEILING) - 64))
+    [ "$refit_ceiling" -gt 0 ] || break
+    fit_reminder "$refit_ceiling"
+    if [ -n "${NO_STDOUT_REASON:-}" ] || [ -z "$OUT" ]; then OUT_BYTES=$((OUTPUT_CEILING + 1)); break; fi
+    HOOK_OUTPUT="$(jq -cn --arg event "$EVENT" --arg context "$OUT" \
+      '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}' 2>/dev/null)"
+    [ -n "$HOOK_OUTPUT" ] || break
+    policy_value_bytes "$HOOK_OUTPUT"
+    OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
+  done
+  NO_STDOUT_REASON=""
   if [ "$OUT_BYTES" -gt "$OUTPUT_CEILING" ] && [ "$EVENT" = "PostToolUse" ]; then
-    # JSON quoting can expand the reminder beyond the context budget. Retry
-    # with a compact, valid envelope and suppress it if even that cannot fit.
+    # Still over: retry with a compact, valid envelope and suppress it if
+    # even that cannot fit.
     OUT='Policies matched.'
     HOOK_OUTPUT="$(jq -cn --arg event "$EVENT" --arg context "$OUT" \
       '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}' 2>/dev/null)"
@@ -2458,7 +2575,10 @@ if [ -n "$HOOK_OUTPUT" ]; then
       NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the minimum PostToolUse envelope"
     fi
   fi
-  [ -z "$HOOK_OUTPUT" ] || record_emitted_match_rows "$MATCHES" "$OUT"
+  if [ -n "$HOOK_OUTPUT" ]; then
+    record_emitted_match_rows "$MATCHES" "$OUT"
+    record_malformed_notice "$OUT"
+  fi
 else
   OUT_BYTES=0
 fi

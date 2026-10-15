@@ -45,6 +45,9 @@ cp "$ROOT/.claude/hooks/hook-gate.sh" "$tmp/hq/.claude/hooks/hook-gate.sh"
 cp "$ROOT/.claude/hooks/policy-enforcement-gate.sh" "$tmp/hq/.claude/hooks/policy-enforcement-gate.sh"
 cp "$PURGE" "$tmp/hq/.claude/hooks/purge-policy-ledger-precompact.sh"
 printf '# Launch brief\n' > "$tmp/hq/brief.md"
+# The declaration gate requires only prompt-named skills that are installed.
+mkdir -p "$tmp/hq/.claude/skills/work-broadcast"
+printf '# Work Broadcast\n' > "$tmp/hq/.claude/skills/work-broadcast/SKILL.md"
 
 # A once-per-session policy (default cadence) and an always (per-turn) policy.
 cat > "$tmp/hq/core/policies/once-rule.md" <<'EOF'

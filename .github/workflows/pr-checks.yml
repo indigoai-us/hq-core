@@ -92,6 +92,8 @@ jobs:
         run: bash core/scripts/tests/release-pr-check-gate.test.sh
       - name: US-016 Tart VM harness stub regression test
         run: bash core/scripts/tests/anywhere-vm-test.test.sh
+      - name: MSYS2 environment guards match UCRT64 and CLANG64
+        run: bash core/scripts/tests/msys2-environment-guards.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -1483,6 +1485,7 @@ jobs:
           bash core/scripts/tests/resolve-hq-root.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
+          bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
           bash core/scripts/tests/master-hook-stop-schema.test.sh
           bash core/scripts/tests/master-hook-library-fail-open.test.sh

@@ -14,8 +14,13 @@
 # dir's worktrees/) via `git worktree remove`. It never rm -rf's a checkout.
 # A worktree is kept when it is dirty, lacks an upstream, has unpushed commits
 # on a branch checked out there (current branch or reflog), has a stash, was
-# touched in the last H hours (default 6), has skip-worktree or assume-unchanged
-# index flags, a nested git repo, or ignored files outside the rebuildable allowlist.
+# touched in the last H hours (default 6; a file anywhere in the tree, or its
+# HEAD / HEAD reflog), has skip-worktree or assume-unchanged index flags, a nested
+# git repo, or ignored files outside the rebuildable allowlist. A worktree owned
+# by a session is also kept: a live process has its cwd inside it (live-session),
+# or a Claude Code / Codex transcript written in the last 7 days recorded a cwd
+# inside it (recent-session; env HQ_WORKTREE_SESSION_WINDOW_HOURS). slim-idle
+# skips session-owned worktrees too.
 # caches deletes only the named developer cache allowlist below.
 
 set -u
@@ -29,6 +34,80 @@ SAFE_DOT_CACHE='gh prisma node agent-browser'
 # ~/Library/Caches directory names that are safe to rebuild. Not a glob.
 LIB_CACHE_NAMES='Homebrew pip Yarn npm pnpm node-gyp go-build cargo turbo typescript electron'
 APPLY=0
+
+# ---------------------------- session liveness ------------------------------
+# A worktree is owned by a live session when a running process has its cwd
+# inside it (lsof on macOS, /proc on Linux), or when a Claude Code / Codex
+# session transcript written within the session window recorded a cwd inside
+# it. Agent shells do not keep a process parked in the worktree between tool
+# calls, so the transcript cwd is what covers an idle but open session. Both
+# lists are gathered once per run. With no lsof and no /proc the process probe
+# yields nothing; the transcript, reference, and activity guards still apply.
+SESSION_WINDOW_HOURS="${HQ_WORKTREE_SESSION_WINDOW_HOURS:-168}"
+case "$SESSION_WINDOW_HOURS" in ''|*[!0-9]*) SESSION_WINDOW_HOURS=168 ;; esac
+LIVE_PROC_CWDS=""
+SESSION_CWDS=""
+collect_session_cwds() {
+  local _p d dirs
+  LIVE_PROC_CWDS="$(mktemp "${TMPDIR:-/tmp}/hq-wt-proc.XXXXXX" 2>/dev/null)" || LIVE_PROC_CWDS=""
+  SESSION_CWDS="$(mktemp "${TMPDIR:-/tmp}/hq-wt-sess.XXXXXX" 2>/dev/null)" || SESSION_CWDS=""
+  if [ -n "$LIVE_PROC_CWDS" ]; then
+    if [ -e /proc/self/cwd ]; then
+      for _p in /proc/[0-9]*; do readlink "$_p/cwd" 2>/dev/null || true; done > "$LIVE_PROC_CWDS"
+    elif command -v lsof >/dev/null 2>&1; then
+      { lsof -w -n -P -d cwd -Fn 2>/dev/null || true; } | sed -n 's/^n//p' > "$LIVE_PROC_CWDS"
+    fi
+  fi
+  if [ -n "$SESSION_CWDS" ]; then
+    dirs="${HQ_SESSION_TRANSCRIPT_DIRS:-$HOME/.claude/projects:$HOME/.codex/sessions}"
+    printf '%s\n' "$dirs" | tr ':' '\n' | while IFS= read -r d; do
+      [ -n "$d" ] && [ -d "$d" ] || continue
+      { find "$d" -type f -name '*.jsonl' -mmin "-$((SESSION_WINDOW_HOURS * 60))" -print0 2>/dev/null \
+          | xargs -0 grep -h -o '"cwd": *"[^"]*"' /dev/null 2>/dev/null || true; } \
+        | sed 's/^"cwd": *"//; s/"$//'
+    done | sort -u > "$SESSION_CWDS"
+  fi
+}
+
+# path_in_list <list-file> <path> [<alt-path>] — true when a listed cwd is the
+# path or lies inside it.
+path_in_list() {
+  local f="$1" a="${2:-}" b="${3:-}"
+  [ -n "$f" ] && [ -s "$f" ] || return 1
+  awk -v a="$a" -v b="$b" '
+    function hit(p, w) { return w != "" && (p == w || index(p, w "/") == 1) }
+    hit($0, a) || hit($0, b) { found = 1; exit }
+    END { exit found ? 0 : 1 }' "$f"
+}
+
+# session_owner_reason <wt> [<alt>] — prints live-session or recent-session and
+# succeeds when a session owns the worktree.
+session_owner_reason() {
+  if path_in_list "$LIVE_PROC_CWDS" "$1" "${2:-}"; then echo "live-session"; return 0; fi
+  if path_in_list "$SESSION_CWDS" "$1" "${2:-}"; then echo "recent-session"; return 0; fi
+  return 1
+}
+
+cleanup_session_lists() { rm -f "${LIVE_PROC_CWDS:-}" "${SESSION_CWDS:-}"; }
+trap cleanup_session_lists EXIT
+
+# 0 when a file in the worktree (outside .git and build dirs), or its HEAD or
+# HEAD reflog, changed in the last <minutes>.
+recently_touched() {
+  local p="$1" mins="$2" gd hit
+  hit=$(find "$p" -mindepth 1 \
+    \( -name .git -o -name node_modules -o -name target -o -name dist -o -name build -o -name .next -o -name .turbo -o -name .svelte-kit -o -name .vite -o -name .cache -o -name coverage -o -name out \) -prune -o \
+    -mmin "-$mins" -print 2>/dev/null | head -1 || true)
+  [ -n "$hit" ] && return 0
+  hit=$(find "$p" -maxdepth 0 -mmin "-$mins" 2>/dev/null || true)
+  [ -n "$hit" ] && return 0
+  gd=$(git -C "$p" rev-parse --path-format=absolute --git-dir 2>/dev/null) || gd=""
+  if [ -n "$gd" ]; then
+    hit=$(find "$gd/HEAD" "$gd/logs/HEAD" -maxdepth 0 -mmin "-$mins" 2>/dev/null | head -1 || true)
+    [ -n "$hit" ] && return 0
+  fi
+  return 1
+}
 
 usage() {
   sed -n '2,22p' "$0"
@@ -287,8 +366,14 @@ cmd_prune_backed_up() {
   esac
   before=$(free_kb)
   if [ "$APPLY" = 1 ]; then echo "mode=apply"; else echo "mode=dry-run"; fi
+  collect_session_cwds
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    if owner=$(session_owner_reason "$p" "$(cd "$p" 2>/dev/null && pwd -P)"); then
+      echo "kept $p reason=$owner"
+      kept=$((kept + 1))
+      continue
+    fi
     if [ -d "$p/.git" ]; then
       echo "kept $p reason=full-clone"
       kept=$((kept + 1))
@@ -320,7 +405,8 @@ cmd_prune_backed_up() {
     up=$(git -C "$p" rev-parse --abbrev-ref '@{u}' 2>/dev/null) || up=""
     unp=$(git -C "$p" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 1)
     st=$(git -C "$p" stash list 2>/dev/null | wc -l | tr -d ' ')
-    recent=$(find "$p" -maxdepth 1 -mmin -$((hours * 60)) 2>/dev/null | head -1 || true)
+    recent=""
+    if recently_touched "$p" "$((hours * 60))"; then recent=1; fi
     side=$(unpushed_checked_out_branch "$p" || true)
     lost=$(reflog_commit_not_on_remote "$p" || true)
     blockers=$(ignored_blockers "$p" | head -8 | paste -sd, - || true)
@@ -380,11 +466,17 @@ cmd_slim_idle() {
   esac
   before=$(free_kb)
   if [ "$APPLY" = 1 ]; then echo "mode=apply"; else echo "mode=dry-run"; fi
+  collect_session_cwds
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     # Grouping dirs (worktrees/<repo>/<name>) are not checkouts. git -C on them
     # walks up to the HQ repo, whose ignore rules must not decide deletions.
     is_worktree_root "$p" || continue
+    if owner=$(session_owner_reason "$p" "$(cd "$p" 2>/dev/null && pwd -P)"); then
+      echo "kept $p reason=$owner"
+      skipped=$((skipped + 1))
+      continue
+    fi
     if hidden_local_changes "$p"; then
       echo "kept $p reason=hidden-local-changes"
       skipped=$((skipped + 1))

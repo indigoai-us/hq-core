@@ -158,20 +158,20 @@ out="$(run "$leak_sid" HQ_SESSION_PRINCIPAL=human)"    # parse cache hit, writes
 ! grep -q 'cache-agent' <<<"$out" || fail "cache-agent injected for human (warm): $out"
 cache_dir="$FX/workspace/orchestrator/hook-state/policy-trigger-cache"
 find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit | grep -q . || fail "parse cache was not written"
-head -n 1 "$(find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit)" | grep -Fq 'hq-policy-cache-v4' \
-  || fail "parse cache header was not bumped to v4"
-find "$cache_dir/eval-v5" -name '*.eval' -print -quit | grep -q . || fail "eval cache was not written"
+head -n 1 "$(find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit)" | grep -Fq 'hq-policy-cache-v5' \
+  || fail "parse cache header was not bumped to v5"
+find "$cache_dir/eval-v7" -name '*.eval' -print -quit | grep -q . || fail "eval cache was not written"
 out="$(run "$leak_sid" HQ_SESSION_PRINCIPAL=agent)"    # same session, same facts, same ledger
 grep -q 'CACHE AGENT rule' <<<"$out" || fail "cached human verdict leaked into the agent session: $out"
 
-# A v3 parse cache (records one field short) must be rebuilt, not decoded.
+# An older parse cache (v4 records lack the omitted-on marker) must be rebuilt, not decoded.
 rm -rf "$cache_dir"
 v3_sid="$(sid v3)"
 run "$v3_sid" HQ_SESSION_PRINCIPAL=human >/dev/null
 cf="$(find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit)"
-sed '1s/hq-policy-cache-v4/hq-policy-cache-v3/' "$cf" > "$cf.tmp" && mv "$cf.tmp" "$cf"
+sed '1s/hq-policy-cache-v5/hq-policy-cache-v4/' "$cf" > "$cf.tmp" && mv "$cf.tmp" "$cf"
 out="$(run "$(sid v3-human)" HQ_SESSION_PRINCIPAL=human)"
-! grep -q 'cache-agent' <<<"$out" || fail "stale v3 cache let agent policy through for human: $out"
-head -n 1 "$cf" | grep -Fq 'hq-policy-cache-v4' || fail "stale v3 cache was not rewritten as v4"
+! grep -q 'cache-agent' <<<"$out" || fail "stale v4 cache let agent policy through for human: $out"
+head -n 1 "$cf" | grep -Fq 'hq-policy-cache-v5' || fail "stale v4 cache was not rewritten as v5"
 
 echo "PASS: inject-policy principals filtering"

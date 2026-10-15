@@ -13,6 +13,8 @@ cp "$HOOK" "$FIX/.claude/hooks/policy-enforcement-gate.sh"
 cp "$ROOT/core/scripts/hook-lib.sh" "$FIX/core/scripts/hook-lib.sh"
 cp "$ROOT/core/scripts/lib/session-id.sh" "$FIX/core/scripts/lib/session-id.sh"
 printf '# Work Broadcast\n' > "$FIX/.claude/skills/work-broadcast/SKILL.md"
+mkdir -p "$FIX/.claude/skills/security-review"
+printf '# Security Review\n' > "$FIX/.claude/skills/security-review/SKILL.md"
 printf '# Brief\n' > "$FIX/brief.md"
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -117,6 +119,45 @@ run_hook UserPromptSubmit "$SKILL_PROMPT" >/dev/null
 jq -e '.requiredSkills == ["security-review"]' "$FIX/workspace/orchestrator/policy-enforcement/skill-extraction.json" >/dev/null \
   || fail "skill extraction consumed words after the requested skill name"
 pass "extracts the skill name before trailing prompt text"
+
+# feedback_90ea6d44: "use HQ skill to rename this chat session" named no
+# installed skill. Requiring "hq" left a receipt that could never be earned.
+NO_SKILL_SID="no-such-skill"
+NO_SKILL_PROMPT="$(jq -nc --arg sid "$NO_SKILL_SID" '{session_id:$sid,prompt:"use HQ skill to rename this chat session"}')"
+run_hook UserPromptSubmit "$NO_SKILL_PROMPT" >/dev/null
+jq -e '.requiredSkills == []' "$FIX/workspace/orchestrator/policy-enforcement/$NO_SKILL_SID.json" >/dev/null \
+  || fail "prompt-named skill without a SKILL.md became a requirement: $(cat "$FIX/workspace/orchestrator/policy-enforcement/$NO_SKILL_SID.json")"
+NO_SKILL_SEND="$(jq -nc --arg sid "$NO_SKILL_SID" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:"hello"}}')"
+run_hook PreToolUse "$NO_SKILL_SEND" >/dev/null \
+  || fail "nonexistent prompt-named skill still blocked an outbound send"
+pass "requires only prompt-named skills that are installed"
+
+# feedback_90ea6d44: read-only MCP tools are not sends, even when a later word
+# in the action is post/message/email. Use a session whose receipt is missing
+# so any outbound classification would block.
+READONLY_SID="readonly-mcp"
+READONLY_PROMPT="$(jq -nc --arg sid "$READONLY_SID" '{session_id:$sid,prompt:"Use the security-review skill and summarize the newsletter."}')"
+run_hook UserPromptSubmit "$READONLY_PROMPT" >/dev/null
+jq -e '.requiredSkills == ["security-review"] and (.receipts.skills == [])' \
+  "$FIX/workspace/orchestrator/policy-enforcement/$READONLY_SID.json" >/dev/null \
+  || fail "read-only fixture did not declare an unmet skill requirement"
+for tool in mcp__71ea2368-aaaa__get_post_content mcp__beehiiv__list_posts mcp__slack__search_messages \
+            mcp__gmail__read_email mcp__slack__getPostPermalink mcp__superhuman__get_message; do
+  READONLY_CALL="$(jq -nc --arg sid "$READONLY_SID" --arg tool "$tool" '{session_id:$sid,tool_name:$tool,tool_input:{post_id:"post_1"}}')"
+  run_hook PreToolUse "$READONLY_CALL" >/dev/null || fail "read-only tool $tool was classified as an outbound send"
+done
+pass "does not classify read-only get_/list_/search_/read_ MCP tools as sends"
+for tool in mcp__slack__send_message mcp__slack__slack_post_message mcp__beehiiv__create_post \
+            mcp__gmail__reply_to_thread mcp__x__publish_post SendEmail; do
+  SEND_CALL="$(jq -nc --arg sid "$READONLY_SID" --arg tool "$tool" '{session_id:$sid,tool_name:$tool,tool_input:{message:"hi"}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$SEND_CALL")"; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "outbound tool $tool was not gated (rc=$RC)"
+  printf '%s' "$BLOCK" | jq -e '.reason | contains("Missing skills: security-review")' >/dev/null \
+    || fail "outbound tool $tool block reason incomplete: $BLOCK"
+done
+pass "still gates send/post/reply/publish MCP tools"
 
 PARALLEL_SID="parallel-receipts"
 cp "$FIX/workspace/orchestrator/policy-enforcement/$SID.policies.tsv" \

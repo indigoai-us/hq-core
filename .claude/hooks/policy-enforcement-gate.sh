@@ -217,6 +217,29 @@ candidate_reads_exact_path() {
       });'
 }
 
+# tool_is_outbound <tool_name> — true when the tool sends something out.
+# Classify the action, not the whole name: an MCP tool is
+# mcp__<server>__<action>, and the server segment can be anything. Within the
+# action, the first verb decides. A read verb (get_post_content,
+# list_messages, search_emails) is a read even when a later word is a noun
+# like post or message; an outbound verb (send_message, slack_post_message,
+# create_post) is a send. camelCase actions are split the same way.
+tool_is_outbound() {
+  local action="$1"
+  case "$action" in *__*) action="${action##*__}" ;; esac
+  [ -n "$action" ] || return 1
+  printf '%s\n' "$action" | sed -E 's/([a-z0-9])([A-Z])/\1_\2/g' | awk '
+    {
+      n = split(tolower($0), parts, /[^a-z0-9]+/)
+      for (i = 1; i <= n; i++) {
+        w = parts[i]
+        if (w ~ /^(get|list|search|read|fetch|query|find|describe|lookup|view|show|retrieve|count|check|inspect|preview|download|export|stat|status|history|info)$/) exit 1
+        if (w ~ /^(send|post|broadcast|message|email|dm|reply|publish)$/) exit 0
+      }
+      exit 1
+    }'
+}
+
 case "$EVENT" in
   UserPromptSubmit)
     PROMPT="$(extract_prompt)"
@@ -228,7 +251,16 @@ case "$EVENT" in
           s=substr(line,RSTART,RLENGTH); sub(/^(use|run|load|read)[[:space:]]+(the[[:space:]]+)?/,"",s); sub(/[[:space:]]+skill.*/,"",s); print s
         }
       }
-    ' | awk 'NF && !seen[$0]++' | jq -Rsc 'split("\n") | map(select(length>0))')"
+    ' | awk 'NF && !seen[$0]++' | while IFS= read -r prompt_skill; do
+      # A receipt is earned only by reading .claude/skills/<name>/SKILL.md (see
+      # PostToolUse below). A prompt phrase such as "use HQ skill to rename"
+      # names no installed skill; requiring "hq" would leave a receipt that can
+      # never be satisfied and block every later outbound action in the
+      # session. Require only prompt-named skills whose SKILL.md exists.
+      case "$prompt_skill" in ''|.|..|*/*) continue ;; esac
+      [ -f "$ROOT/.claude/skills/$prompt_skill/SKILL.md" ] || continue
+      printf '%s\n' "$prompt_skill"
+    done | jq -Rsc 'split("\n") | map(select(length>0))')"
     [ -n "$REQUIRED_SKILLS" ] || REQUIRED_SKILLS='[]'
 
     POLICY_SKILLS='[]'
@@ -407,7 +439,7 @@ case "$EVENT" in
     TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
     CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     OUTBOUND=0
-    if printf '%s' "$TOOL" | grep -Eqi '(^|_)(send|post|broadcast|message|email|dm)($|_)'; then OUTBOUND=1; fi
+    if tool_is_outbound "$TOOL"; then OUTBOUND=1; fi
     if printf '%s' "$CMD" | grep -Eqi '(^|[^[:alnum:]_])hq[[:space:]]+(cowork[[:space:]]+)?dm([^[:alnum:]_]|$)|chat\.postMessage|send-broadcast|slack\.com/api/chat\.postMessage|/broadcasts'; then OUTBOUND=1; fi
     if [ -s "$POLICIES" ] && awk -F '\t' '$4 == "gate" { found=1 } END { exit !found }' "$POLICIES"; then
       . "$ROOT/core/scripts/hook-lib.sh" || {

@@ -1,7 +1,7 @@
 ---
 name: overnight
-description: Overnight team-comms mode inside a running /super-conductor session. On a self-paced wakeup loop it reads the HQ DM inbox and the active company's DM channels, answers information requests from HQ knowledge, routes work requests to the conducted child that owns them, queues anything only the owner can decide, checks that every teammate who asked for something got an answer or a route, and logs it all to the link's overnight report. Use when the user says "/overnight", "watch the team overnight", "handle team DMs while I sleep", "overnight mode", or "triage the inbox until morning".
-allowed-tools: Bash(hq lanes link:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(qmd:*), Bash(cat:*), Bash(tail:*), Bash(ls:*), Bash(date:*), Bash(python3:*), Read, Write, Edit, AskUserQuestion, ScheduleWakeup
+description: Overnight team-comms mode inside a running /super-conductor session. On the conductor's heartbeat (at the away interval) it reads the HQ DM inbox and the active company's DM channels, answers information requests from HQ knowledge, routes work requests to the conducted child that owns them, queues anything only the owner can decide, checks that every teammate who asked for something got an answer or a route, and logs it all to the link's overnight report. Use when the user says "/overnight", "watch the team overnight", "handle team DMs while I sleep", "overnight mode", or "triage the inbox until morning".
+allowed-tools: Bash(hq lanes link:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq channels:*), Bash(qmd:*), Bash(cat:*), Bash(tail:*), Bash(ls:*), Bash(date:*), Bash(python3:*), Read, Write, Edit, AskUserQuestion, ScheduleWakeup
 argument-hint: "[off | status | <company>]"
 ---
 
@@ -19,7 +19,9 @@ logic lives in `.claude/skills/super-conductor/SKILL.md`.
 
 ## Step 1: Parse the argument
 
-- `off` → call `ScheduleWakeup` with `stop: true`, append a final
+- `off` → restart the conductor's heartbeat at `watch_interval.present`
+  (Step 7), call `ScheduleWakeup` with `stop: true` in case a fallback
+  wakeup is pending, append a final
   `## DM triage` line saying overnight mode ended, and tell the owner the
   queue is in the overnight report. Do not close the link; the conductor
   owns that.
@@ -151,19 +153,39 @@ secrets, no values that look like tokens or keys.
 
 ## Step 7: Loop
 
+Overnight rides the conductor's heartbeat (super-conductor Step 2b). On
+start, stop the running heartbeat (`hq monitor stop <heartbeat.monitor_id>`
+from the conductor's save file) and start it again at the away cadence with
+the same link, channels, and save file:
+
+```bash
+hq monitor start --persistent --json \
+  --target "session:claude:$CLAUDE_CODE_SESSION_ID" \
+  --description "super-conductor heartbeat <link>" \
+  -- bash core/scripts/super-conductor-heartbeat.sh \
+    --link <link> --interval <watch_interval.away> --channels <csv> \
+    --state workspace/reports/conduct/<link>-state.json
+```
+
+`watch_interval.away` comes from the conductor's save file (default 1500;
+clamped to 30-3600). Update `heartbeat` in the save file. On `/overnight
+off`, restart the heartbeat at `watch_interval.present` the same way.
+
+Only when no heartbeat can be started, fall back to:
+
 ```
 ScheduleWakeup
   delaySeconds: watch_interval.away from the conductor's save file
-                (default 1500; clamped to 30-3600)
   prompt: /overnight <same argument as this run>
   noop: true when nothing was read, sent, or logged
   reason: "overnight DM triage for <company>"
 ```
 
-On each wakeup: Steps 3 to 6, then re-arm. Mark `noop: true` when the
-inbox and channels had nothing new and the queue did not change. The loop
-ends only with `/overnight off`. `/super-conductor off` also ends it, since
-the link closes; on the next wakeup with no link, stop the loop and say so.
+On each heartbeat wakeup: the conductor's sweep plus Steps 3 to 6. Mark
+`noop: true` on the fallback loop when the inbox and channels had nothing
+new and the queue did not change. The loop ends only with `/overnight off`.
+`/super-conductor off` also ends it, since the link closes and the heartbeat
+exits; if a wakeup finds no link, stop and say so.
 
 At the end of a wakeup that changed anything, say in one line what was
 answered, routed, and queued. Say nothing when it was a noop.

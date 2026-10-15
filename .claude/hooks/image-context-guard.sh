@@ -8,7 +8,22 @@
 #   - deny a local image over HQ_IMAGE_MAX_BYTES (default 2 MiB)
 #   - deny Codex detail=original (full-resolution inline)
 #   - deny more than one image path in a single call
-#   - deny more than HQ_IMAGE_MAX_COUNT (default 8) distinct images per session
+#   - per agent context, deny a new image once the distinct images already
+#     inlined there would push the context past HQ_IMAGE_BUDGET_BYTES
+#     (default 8 MiB). Each image is charged its file size, with a floor of
+#     HQ_IMAGE_MIN_COST_BYTES (default 64 KiB), so small screenshots cost
+#     little and 2 MiB images cost a lot.
+#   - per agent context, deny more than HQ_IMAGE_MAX_COUNT (default 32)
+#     distinct images, as a ceiling on many tiny images
+#
+# Agent context: the parent session and each sub-agent keep separate ledgers.
+# Claude Code sends agent_id on hook events fired inside a sub-agent (and
+# master-hook.sh exports it as HQ_HOOK_AGENT_ID). A sub-agent's image lives in
+# its own context window, so it must not spend the parent's budget; that would
+# block the delegation route this guard recommends. A host that runs
+# sub-agents under their own session or thread id gets separate ledgers
+# through the session key. agent_type alone is not used: manual --agent
+# main-thread sessions carry it too.
 #
 # Allows:
 #   - non-image reads
@@ -38,9 +53,13 @@ if [ -f "$ROOT/core/scripts/hook-lib.sh" ]; then
 fi
 
 MAX_BYTES="${HQ_IMAGE_MAX_BYTES:-2097152}"
-MAX_COUNT="${HQ_IMAGE_MAX_COUNT:-8}"
+BUDGET_BYTES="${HQ_IMAGE_BUDGET_BYTES:-8388608}"
+MIN_COST="${HQ_IMAGE_MIN_COST_BYTES:-65536}"
+MAX_COUNT="${HQ_IMAGE_MAX_COUNT:-32}"
 case "$MAX_BYTES" in ''|*[!0-9]*) MAX_BYTES=2097152 ;; esac
-case "$MAX_COUNT" in ''|*[!0-9]*) MAX_COUNT=8 ;; esac
+case "$BUDGET_BYTES" in ''|*[!0-9]*) BUDGET_BYTES=8388608 ;; esac
+case "$MIN_COST" in ''|*[!0-9]*) MIN_COST=65536 ;; esac
+case "$MAX_COUNT" in ''|*[!0-9]*) MAX_COUNT=32 ;; esac
 
 case "${HQ_ALLOW_INLINE_IMAGE:-0}" in
   1|true|TRUE|yes|YES) exit 0 ;;
@@ -122,10 +141,14 @@ block_msg() {
   cat >&2 <<EOF
 Blocked: $1
 
-Inline image cost is bytes, not count. Delegate inspection to a sub-agent
-(text findings only), or resize first:
+Inline image cost is bytes, not count. Options:
 
-  bash core/scripts/resize-screenshot.sh <path>
+  - Delegate: spawn a sub-agent (Agent tool, or Codex spawn_agent) with the
+    image paths and ask for text findings only.
+    Each sub-agent has its own image budget; its reads do not count here.
+  - Resize first: bash core/scripts/resize-screenshot.sh <path>
+  - Text only: OCR the image (macOS Vision, tesseract, Windows OCR) instead
+    of inlining it.
 
 Escape hatch: HQ_ALLOW_INLINE_IMAGE=1, or the literal token ALLOW_INLINE_IMAGE.
 EOF
@@ -181,7 +204,24 @@ STATE_ROOT="$ROOT/workspace/orchestrator/hook-state"
 if command -v hq_hook_state_dir >/dev/null 2>&1; then
   STATE_ROOT="$(hq_hook_state_dir "$ROOT")"
 fi
-LEDGER_DIR="$STATE_ROOT/image-context/$SESSION_KEY"
+# Agent context. master-hook.sh exports HQ_HOOK_AGENT_ID (empty = known main
+# thread); direct invocations read the payload.
+if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ]; then
+  AGENT_ID="$HQ_HOOK_AGENT_ID"
+else
+  AGENT_ID="$(json_field agent_id)"
+  [ -z "$AGENT_ID" ] && AGENT_ID="$(json_field agentId)"
+fi
+if [ -n "$AGENT_ID" ]; then
+  AGENT_KEY="$(printf '%s' "$AGENT_ID" | tr -c 'A-Za-z0-9._-' '_')"
+  AGENT_KEY="${AGENT_KEY:0:96}"
+  # The parent keeps the original ledger path; each sub-agent gets its own.
+  LEDGER_DIR="$STATE_ROOT/image-context/$SESSION_KEY/agents/$AGENT_KEY"
+  CONTEXT_LABEL="this sub-agent"
+else
+  LEDGER_DIR="$STATE_ROOT/image-context/$SESSION_KEY"
+  CONTEXT_LABEL="this session (parent context)"
+fi
 LEDGER="$LEDGER_DIR/reads.txt"
 mkdir -p "$LEDGER_DIR" 2>/dev/null || true
 
@@ -190,19 +230,48 @@ if command -v hq_normpath >/dev/null 2>&1; then
   NORM="$(hq_normpath "$PATH_PARAM")"
 fi
 
-if [ -f "$LEDGER" ] && grep -F -x -q -- "$NORM" "$LEDGER" 2>/dev/null; then
-  exit 0
-fi
+COST="$SIZE"
+[ "$COST" -lt "$MIN_COST" ] && COST="$MIN_COST"
 
+# Ledger lines are "<charged bytes><TAB><normalized path>". Lines written by
+# the older count-only guard hold a bare path; charge them the floor cost.
+SEEN=0
 COUNT=0
+USED=0
 if [ -f "$LEDGER" ]; then
-  COUNT="$(grep -c . "$LEDGER" 2>/dev/null || true)"
+  stats="$(awk -F '\t' -v want="$NORM" -v floor="$MIN_COST" '
+    NF == 0 || $0 == "" { next }
+    {
+      if (NF >= 2 && $1 ~ /^[0-9]+$/) { cost = $1 + 0; p = substr($0, length($1) + 2) }
+      else { cost = floor + 0; p = $0 }
+      if (p == want) seen = 1
+      n += 1; used += cost
+    }
+    END { printf "%d %d %d", seen + 0, n + 0, used + 0 }
+  ' "$LEDGER" 2>/dev/null || true)"
+  read -r SEEN COUNT USED <<EOF
+$stats
+EOF
 fi
+case "$SEEN" in ''|*[!0-9]*) SEEN=0 ;; esac
 case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+case "$USED" in ''|*[!0-9]*) USED=0 ;; esac
+
+# Re-reading an image already charged to this context costs nothing new.
+[ "$SEEN" -eq 1 ] && exit 0
+
 if [ "$COUNT" -ge "$MAX_COUNT" ]; then
-  block_msg "this session already inlined $COUNT images (limit $MAX_COUNT). Delegate further inspection"
+  block_msg "$CONTEXT_LABEL already inlined $COUNT distinct images (limit $MAX_COUNT)"
   exit 2
 fi
 
-printf '%s\n' "$NORM" >>"$LEDGER" 2>/dev/null || true
+if [ $((USED + COST)) -gt "$BUDGET_BYTES" ]; then
+  used_mb="$(awk -v s="$USED" 'BEGIN { printf "%.1f", s / 1048576 }')"
+  cost_mb="$(awk -v s="$COST" 'BEGIN { printf "%.2f", s / 1048576 }')"
+  budget_mb="$(awk -v s="$BUDGET_BYTES" 'BEGIN { printf "%.1f", s / 1048576 }')"
+  block_msg "$CONTEXT_LABEL already inlined ${used_mb}MB of images across $COUNT files; ${PATH_PARAM##*/} (${cost_mb}MB) would pass the ${budget_mb}MB image budget"
+  exit 2
+fi
+
+printf '%s\t%s\n' "$COST" "$NORM" >>"$LEDGER" 2>/dev/null || true
 exit 0

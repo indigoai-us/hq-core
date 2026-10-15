@@ -277,7 +277,8 @@ GIT_IS_MUTATION=0
 GH_IS_MUTATION=0
 GIT_CMD=""
 GH_CMD=""
-GH_RECORD=""
+GH_MUTATION_RECORDS=()
+GIT_MUTATION_RECORDS=()
 SUB=""
 GIT_MUTATION_COUNT=0
 GH_MUTATION_COUNT=0
@@ -359,6 +360,69 @@ gh_positional_repo_anchor() {
   [[ "$endpoint" =~ ^/?repos/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*([/?#]|$) ]]
 }
 
+# Print the directory a git record runs in when it carries global -C options
+# (applied in order, as git does); return 1 when it has none. Only options
+# before the subcommand count, so `git commit -C HEAD` is not an anchor.
+git_record_c_anchor() {
+  local record="$1" executable token i found=0 target=""
+  local -a words
+  IFS=$'\037' read -r -a words <<<"$record"
+  executable="$(hq_shell_command_executable "$record" || true)"
+  [[ -n "$executable" ]] || return 1
+  for ((i=0; i<${#words[@]}; i++)); do
+    [[ "${words[i]}" == "$executable" ]] && break
+  done
+  for ((i=i+1; i<${#words[@]}; i++)); do
+    token="${words[i]}"
+    case "$token" in
+      -C)
+        ((i++)); [[ "$i" -lt "${#words[@]}" ]] || return 1
+        token="${words[i]}"
+        found=1
+        case "$token" in
+          /*|\~*|[A-Za-z]:[/\\]*) target="$token" ;;
+          *) if [[ -n "$target" ]]; then target="$target/$token"; else target="$token"; fi ;;
+        esac
+        ;;
+      -c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix) ((i++)) ;;
+      -*) ;;
+      *) break ;;
+    esac
+  done
+  [[ "$found" -eq 1 ]] || return 1
+  printf '%s\n' "$target"
+}
+
+# True when a gh record carries -R/--repo as its own argv word with a value:
+# `-R o/r`, `--repo o/r`, `--repo=o/r`, `-Ro/r`. Matching argv words, not
+# command text, keeps a quoted body such as `--body "see -R o/r"` from counting
+# as an anchor.
+gh_record_has_repo_flag() {
+  local record="$1" executable token i command_index=-1
+  local -a words
+  IFS=$'\037' read -r -a words <<<"$record"
+  executable="$(hq_shell_command_executable "$record" || true)"
+  [[ -n "$executable" ]] || return 1
+  for ((i=0; i<${#words[@]}; i++)); do
+    if [[ "${words[i]}" == "$executable" ]]; then
+      command_index=$((i + 1))
+      break
+    fi
+  done
+  [[ "$command_index" -ge 0 ]] || return 1
+  for ((i=command_index; i<${#words[@]}; i++)); do
+    token="${words[i]}"
+    case "$token" in
+      --) return 1 ;;
+      -R|--repo)
+        [[ -n "${words[i+1]:-}" && "${words[i+1]}" != -* ]] && return 0
+        ;;
+      --repo=?*|-R?*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # core/scripts/hq-pr-create.sh wraps `gh pr create`, so `bash <wrapper> ARGS`
 # (or running the wrapper directly) is the same gh mutation. Rewrite the record
 # to `gh pr create ARGS` in WRAPPER_GH_RECORD so the -R/--repo and cd anchor
@@ -418,15 +482,18 @@ while IFS= read -r shell_record; do
       if [ "$shell_mutation" -eq 1 ] && [ "$GIT_IS_MUTATION" -eq 0 ]; then
         GIT_IS_MUTATION=1; GIT_CMD="$shell_text"; SUB="$shell_sub"
       fi
-      [ "$shell_mutation" -eq 1 ] && GIT_MUTATION_COUNT=$((GIT_MUTATION_COUNT + 1))
+      if [ "$shell_mutation" -eq 1 ]; then
+        GIT_MUTATION_COUNT=$((GIT_MUTATION_COUNT + 1))
+        GIT_MUTATION_RECORDS+=("$shell_record")
+      fi
       ;;
     gh)
       if echo "$shell_text" | grep -Eq '^[^[:space:]]*[[:space:]]+(pr[[:space:]]+(create|merge|close|reopen|edit|comment|ready|review)|repo[[:space:]]+(create|delete|rename|archive|edit|sync|fork)|release[[:space:]]+(create|delete|edit|upload)|issue[[:space:]]+(create|close|edit|comment|delete)|api.*-X[[:space:]]*(POST|PUT|PATCH|DELETE))'; then
         if [ "$GH_IS_MUTATION" -eq 0 ]; then
           GH_IS_MUTATION=1
           GH_CMD="$shell_text"
-          GH_RECORD="$shell_record"
         fi
+        GH_MUTATION_RECORDS+=("$shell_record")
         GH_MUTATION_COUNT=$((GH_MUTATION_COUNT + 1))
       fi
       ;;
@@ -435,8 +502,8 @@ while IFS= read -r shell_record; do
         if [ "$GH_IS_MUTATION" -eq 0 ]; then
           GH_IS_MUTATION=1
           GH_CMD="${WRAPPER_GH_RECORD//$'\037'/ }"
-          GH_RECORD="$WRAPPER_GH_RECORD"
         fi
+        GH_MUTATION_RECORDS+=("$WRAPPER_GH_RECORD")
         GH_MUTATION_COUNT=$((GH_MUTATION_COUNT + 1))
       fi
       ;;
@@ -448,6 +515,7 @@ if [[ "$STRICT_GIT_GUARD" -eq 1 && "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
   GIT_CMD="git push"
   SUB="push"
   GIT_MUTATION_COUNT=$((GIT_MUTATION_COUNT + 1))
+  GIT_MUTATION_RECORDS+=("git"$'\037'"push")
 fi
 
 [[ $GIT_IS_MUTATION -eq 0 && $GH_IS_MUTATION -eq 0 ]] && exit 0
@@ -455,19 +523,53 @@ fi
 ANCHOR_PATH=""
 ANCHOR_KIND=""
 
+# Each git mutation is judged on its own anchor. A `-C` on one git command does
+# not apply to the next one: in `git -C <repo> commit && git push` the push runs
+# in the shell cwd. GIT_C_ANCHORS holds the -C target of every git mutation that
+# has one; GIT_UNANCHORED is set when any git mutation has none, and those are
+# judged through the cd / cwd checks below.
+GIT_C_ANCHORS=()
+GIT_UNANCHORED=0
 if [[ $GIT_IS_MUTATION -eq 1 ]]; then
-  GC=$(echo "$GIT_CMD" | grep -oE 'git[[:space:]]+([^|;&]*[[:space:]])?-C[[:space:]]+("[^"]+"|'"'"'[^'"'"']+'"'"'|[^ ;&|]+)' | head -1 \
-       | sed -E 's/.*-C[[:space:]]+//; s/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
-  if [[ -n "$GC" ]]; then ANCHOR_PATH="$GC"; ANCHOR_KIND="git -C"; fi
+  for git_mutation_record in "${GIT_MUTATION_RECORDS[@]}"; do
+    if git_c_target="$(git_record_c_anchor "$git_mutation_record")"; then
+      GIT_C_ANCHORS+=("$git_c_target")
+    else
+      GIT_UNANCHORED=1
+    fi
+  done
 fi
 
-if [[ -z "$ANCHOR_PATH" && $GH_IS_MUTATION -eq 1 && $GH_MUTATION_COUNT -eq 1 && $GIT_IS_MUTATION -eq 0 ]]; then
-  if echo "$GH_CMD" | grep -Eq 'gh[^|;&]*[[:space:]](-R|--repo)[[:space:]]+[^ ;&|]+'; then
-    exit 0
+# A gh mutation that names its repository (-R/--repo, or a positional repo
+# target) runs against that remote repository whatever the shell cwd is, so a
+# `cd` elsewhere in the command cannot redirect it. When EVERY gh mutation in
+# the command carries its own anchor, the gh side is satisfied:
+#   - with no git mutation, allow (a preceding `cd <HQ root>` is irrelevant);
+#   - with a git mutation, drop the gh side and judge the git mutation alone
+#     through the -C / cd / cwd checks below.
+# One unanchored gh mutation keeps the whole gh side under the cd/cwd checks,
+# so `gh pr merge 12 && gh pr view 12 -R o/r` at the HQ root stays blocked.
+if [[ $GH_IS_MUTATION -eq 1 && ${#GH_MUTATION_RECORDS[@]} -gt 0 ]]; then
+  all_gh_anchored=1
+  for gh_mutation_record in "${GH_MUTATION_RECORDS[@]}"; do
+    if ! gh_record_has_repo_flag "$gh_mutation_record" \
+       && ! gh_positional_repo_anchor "$gh_mutation_record"; then
+      all_gh_anchored=0
+      break
+    fi
+  done
+  if [[ "$all_gh_anchored" -eq 1 ]]; then
+    [[ $GIT_IS_MUTATION -eq 0 ]] && exit 0
+    GH_IS_MUTATION=0
   fi
-  if gh_positional_repo_anchor "$GH_RECORD"; then
-    exit 0
-  fi
+fi
+
+# Every mutation carries its own -C: the first -C is the primary anchor and the
+# rest are verified below. Otherwise the unanchored ones fall to the cd scan.
+if [[ $GIT_IS_MUTATION -eq 1 && $GIT_UNANCHORED -eq 0 && $GH_IS_MUTATION -eq 0 \
+      && ${#GIT_C_ANCHORS[@]} -gt 0 ]]; then
+  ANCHOR_PATH="${GIT_C_ANCHORS[0]}"
+  ANCHOR_KIND="git -C"
 fi
 
 if [[ -z "$ANCHOR_PATH" ]]; then
@@ -668,6 +770,38 @@ if [[ $GIT_IS_MUTATION -eq 1 && $GIT_MUTATION_COUNT -eq 1 && $GH_IS_MUTATION -eq
   fi
 fi
 
+# Block when a git anchor path resolves to the HQ root repository.
+check_anchor_not_hq_root() {
+  local kind="$1" path="$2" resolved toplevel grok_worktrees
+  case "$path" in
+    /*|\~*) resolved="$path" ;;
+    *)      resolved="$HQ_ROOT/$path" ;;
+  esac
+  resolved="$(norm "$resolved")"
+  toplevel="$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$toplevel" ]] || return 0
+  toplevel="$(norm "$toplevel")"
+  [[ "$toplevel" == "$HQ_ROOT" ]] || return 0
+  # grok --worktree materializes a full HQ-shaped clone under
+  # ~/.grok/worktrees. The adapter then adopts that clone as HQ_ROOT, so
+  # every `git -C <worktree>` looks like a mutation of the orchestration
+  # repo. That clone is the repo the session is editing. The orchestration
+  # checkout (any HQ root outside that directory) stays blocked.
+  # (Ported from #1328, fix/hook-false-denials.)
+  grok_worktrees="$(norm "${HOME:-}/.grok/worktrees")"
+  case "$HQ_ROOT" in
+    "$grok_worktrees"/*) return 0 ;;
+  esac
+  block "Anchor ($kind -> $path) resolves to the HQ root git repo."
+}
+
+# Every git -C target must be outside the HQ root repo, including the ones
+# after the first. This runs before the cwd fallback so a non-HQ cwd cannot
+# excuse a `git -C <HQ root>` elsewhere in the command.
+for git_c_target in "${GIT_C_ANCHORS[@]+"${GIT_C_ANCHORS[@]}"}"; do
+  check_anchor_not_hq_root "git -C" "$git_c_target"
+done
+
 # `gh repo create` names its target in its own args (owner/name, or name under
 # the authenticated account) and accepts neither `git -C` nor `-R` — requiring
 # an external anchor made it impossible to invoke. Without --source it never
@@ -714,18 +848,6 @@ if [[ -z "$ANCHOR_PATH" ]]; then
   block "Unanchored git/gh mutation with effective cwd at the HQ root (no \`git -C\`, no \`gh -R\`)."
 fi
 
-case "$ANCHOR_PATH" in
-  /*|\~*) RESOLVED="$ANCHOR_PATH" ;;
-  *)      RESOLVED="$HQ_ROOT/$ANCHOR_PATH" ;;
-esac
-RESOLVED="$(norm "$RESOLVED")"
-
-TOPLEVEL="$(git -C "$RESOLVED" rev-parse --show-toplevel 2>/dev/null || true)"
-if [[ -n "$TOPLEVEL" ]]; then
-  TOPLEVEL="$(norm "$TOPLEVEL")"
-  if [[ "$TOPLEVEL" == "$HQ_ROOT" ]]; then
-    block "Anchor ($ANCHOR_KIND -> $ANCHOR_PATH) resolves to the HQ root git repo."
-  fi
-fi
+check_anchor_not_hq_root "$ANCHOR_KIND" "$ANCHOR_PATH"
 
 exit 0

@@ -11,7 +11,8 @@ SRC_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$SRC_ROOT/scripts/free-disk-space.sh"
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT
+LIVE_PID=""
+trap '[ -n "$LIVE_PID" ] && kill "$LIVE_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -38,8 +39,16 @@ GIT_AUTHOR_DATE=2020-01-01T00:00:00 GIT_COMMITTER_DATE=2020-01-01T00:00:00 \
   git -C "$HQ" commit -qm "root" --date=2020-01-01T00:00:00
 run() { HQ_ROOT="$HQ" bash "$SCRIPT" "$@"; }
 
+# Backdates the tree and, for a linked worktree, its HEAD and HEAD reflog.
 backdate() {
+  local gd
   find "$1" -exec touch -t 202001010000 {} +
+  gd=$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null) || gd=""
+  if [ -n "$gd" ]; then
+    touch -t 202001010000 "$gd/HEAD" 2>/dev/null || true
+    [ -f "$gd/logs/HEAD" ] && touch -t 202001010000 "$gd/logs/HEAD"
+  fi
+  return 0
 }
 
 make_origin() {
@@ -294,6 +303,40 @@ if git -C "$WT_NESTED" ls-files -s | grep -q '^160000 '; then
   fail "nested clone was recorded as a submodule"
 fi
 
+# Session-owned worktrees. Each is clean, pushed, has an upstream and was idle
+# for years, so only session ownership keeps it. A live process with its cwd
+# inside is the reported shape: an open session's worktree.
+BARE_L="$TMP/origin-l.git"
+REPO_L="$TMP/repo-l"
+make_origin "$BARE_L" "$REPO_L"
+WT_LIVE="$HQ/workspace/worktrees/grp/live"
+git -C "$REPO_L" worktree add -q -b wt-live "$WT_LIVE" origin/main
+git -C "$WT_LIVE" push -q -u origin wt-live
+mkdir -p "$WT_LIVE/src"
+backdate "$WT_LIVE"
+(cd "$WT_LIVE/src" && exec sleep 600) &
+LIVE_PID=$!
+# A session transcript from the last 7 days recorded a cwd inside this one.
+WT_SESS="$HQ/workspace/worktrees/grp/sess"
+git -C "$REPO_L" worktree add -q -b wt-sess "$WT_SESS" origin/main
+git -C "$WT_SESS" push -q -u origin wt-sess
+backdate "$WT_SESS"
+mkdir -p "$HOME/.codex/sessions/2026/10/14"
+printf '{"type":"session_meta","payload":{},"cwd": "%s"}\n' "$WT_SESS" > "$HOME/.codex/sessions/2026/10/14/rollout.jsonl"
+# Idle worktree with ignored node_modules, held by a live process: slim-idle
+# must not clear it.
+WT_SLIMLIVE="$HQ/workspace/worktrees/grp/slimlive"
+git -C "$REPO_L" worktree add -q -b wt-slimlive "$WT_SLIMLIVE" origin/main
+printf 'node_modules/\n' > "$WT_SLIMLIVE/.gitignore"
+git -C "$WT_SLIMLIVE" add .gitignore
+GIT_AUTHOR_DATE=2020-01-01T00:00:00 GIT_COMMITTER_DATE=2020-01-01T00:00:00 \
+  git -C "$WT_SLIMLIVE" commit -qm "ignore nm" --date=2020-01-01T00:00:00
+git -C "$WT_SLIMLIVE" push -q -u origin wt-slimlive
+mkdir -p "$WT_SLIMLIVE/node_modules"
+printf 'x\n' > "$WT_SLIMLIVE/node_modules/pkg.js"
+printf '{"cwd":"%s/node_modules"}\n' "$WT_SLIMLIVE" >> "$HOME/.codex/sessions/2026/10/14/rollout.jsonl"
+backdate "$WT_SLIMLIVE"
+
 # Fixtures must be exercising the holes in `git status --porcelain`.
 [ -z "$(git -C "$WT_SAFE" status --porcelain)" ] || fail "safe fixture is dirty"
 [ -z "$(git -C "$WT_SIDE" status --porcelain)" ] || fail "side fixture is dirty"
@@ -371,6 +414,14 @@ case "$dry" in
   *) fail "dry-run did not keep the nested git clone: $dry" ;;
 esac
 [ -f "$WT_NESTED/build/vendor/w.txt" ] || fail "dry-run removed the nested clone file"
+case "$dry" in
+  *"kept $WT_LIVE reason=live-session"*) ;;
+  *) fail "dry-run did not keep the live-session worktree: $dry" ;;
+esac
+case "$dry" in
+  *"kept $WT_SESS reason=recent-session"*) ;;
+  *) fail "dry-run did not keep the recent-session worktree: $dry" ;;
+esac
 case "$dry" in
   *deleted=0*) ;;
   *) fail "dry-run reported a deletion: $dry" ;;
@@ -461,7 +512,23 @@ case "$apply" in
   *) fail "apply did not report the nested git clone: $apply" ;;
 esac
 
+[ -d "$WT_LIVE" ] || fail "apply removed a worktree with a live process cwd inside: $apply"
+case "$apply" in
+  *"kept $WT_LIVE reason=live-session"*) ;;
+  *) fail "apply did not report the live-session worktree: $apply" ;;
+esac
+[ -d "$WT_SESS" ] || fail "apply removed a worktree recorded as a recent session cwd: $apply"
+case "$apply" in
+  *"kept $WT_SESS reason=recent-session"*) ;;
+  *) fail "apply did not report the recent-session worktree: $apply" ;;
+esac
+
 slim=$(run --apply slim-idle 7)
+[ -f "$WT_SLIMLIVE/node_modules/pkg.js" ] || fail "slim-idle cleared a session-owned worktree: $slim"
+case "$slim" in
+  *"kept $WT_SLIMLIVE reason=recent-session"*) ;;
+  *) fail "slim-idle did not report the session-owned worktree: $slim" ;;
+esac
 [ -f "$WT_GROUP/out/draft.md" ] || fail "slim-idle deleted grouped out/draft.md: $slim"
 [ -f "$WT_GROUP/target/plan.txt" ] || fail "slim-idle deleted grouped target/plan.txt: $slim"
 [ -f "$WT_NOTES/src/out/new.ts" ] || fail "slim-idle deleted src/out/new.ts: $slim"
@@ -512,5 +579,9 @@ esac
 if grep -E 'Library/Caches/?["'\'']?\*' "$SCRIPT" >/dev/null; then
   fail "script still globs ~/Library/Caches"
 fi
+
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+LIVE_PID=""
 
 echo "PASS: free-disk-space.test.sh"

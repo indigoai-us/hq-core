@@ -218,6 +218,107 @@ done
 run 2 "$NESTED" "cd $TMP && echo hi && git push origin main" \
   'cd HQ root then push blocked even with an intervening command'
 
+# --- gh -R anchors are per-command, whatever the cd or chain --------------
+# Regression: feedback_7341d3f8-f44d-411a-bb76-489491230993. A gh mutation
+# with its own -R/--repo targets that remote repo regardless of cwd, so a
+# preceding `cd <HQ root>` or a second anchored gh mutation must not block it.
+run 0 "$TMP" "cd $TMP; gh pr merge 5008 -R o/r --squash --admin --match-head-commit abc && gh pr view 5008 -R o/r --json state && gh pr close 4909 -R o/r --comment \"superseded\"" \
+  '7341d3f8 live repro: cd HQ root; anchored merge && view && anchored close allowed'
+run 0 "$TMP" "gh pr merge 5008 -R o/r --squash && gh pr view 5008 -R o/r --json state && gh pr close 4909 -R o/r --comment x" \
+  '7341d3f8 two anchored gh mutations in an && chain allowed'
+run 0 "$TMP" "cd $TMP && gh pr merge 5 -R o/r --squash && gh pr view 5 -R o/r" \
+  '7341d3f8 cd HQ root && anchored merge && view allowed'
+run 0 "$TMP" "cd $TMP && gh pr merge 5 --repo o/r && gh pr comment 6 --repo o/r --body hi" \
+  '7341d3f8 cd HQ root && two --repo mutations allowed'
+run 0 "$TMP" 'gh pr merge 5 --repo=o/r --squash && gh pr close 6 --repo=o/r' \
+  '7341d3f8 --repo=owner/repo form allowed'
+run 0 "$TMP" 'gh pr merge 5 -Ro/r --squash && gh pr close 6 -Ro/r' \
+  '7341d3f8 attached -Rowner/repo form allowed'
+run 0 "$TMP" "cd $TMP && for r in a b; do gh pr close 1 -R o/\$r; done" \
+  '7341d3f8 cd HQ root && loop of anchored gh mutations allowed'
+run 0 "$TMP" 'gh pr merge 5 -R o/r && gh api -X PATCH repos/o/r/issues/1' \
+  '7341d3f8 -R mutation chained with positional gh api anchor allowed'
+run 0 "$TMP" "cd $NESTED && gh pr merge 12 -R o/r && git push origin main" \
+  '7341d3f8 anchored gh + git push cd-anchored to nested repo allowed'
+# Block side: every gh mutation needs its own anchor, and git mutations are
+# still judged on their own.
+run 2 "$TMP" 'gh pr merge 12 && gh pr view 12 -R o/r' \
+  '7341d3f8 unanchored merge chained with anchored view blocked'
+run 2 "$TMP" "cd $TMP && gh pr merge 12 && gh pr view 12 -R o/r" \
+  '7341d3f8 cd HQ root && unanchored merge blocked'
+run 2 "$TMP" 'gh pr merge 12 -R o/r && gh pr close 13' \
+  '7341d3f8 anchored merge does not anchor a later bare close'
+run 2 "$TMP" 'gh pr merge 5 -R o/r && gh api -X PATCH user' \
+  '7341d3f8 anchored merge does not anchor a non-repo gh api mutation'
+run 2 "$TMP" 'gh pr merge 5 --body "see -R o/r" && gh pr view 5 -R o/r' \
+  '7341d3f8 -R inside a quoted body is not an anchor'
+run 2 "$TMP" 'gh pr merge 12 -R o/r && git push origin main' \
+  '7341d3f8 anchored gh does not anchor a bare git push at HQ root'
+run 2 "$TMP" "cd $TMP && gh pr merge 12 -R o/r && git push origin main" \
+  '7341d3f8 anchored gh does not anchor git push cd-anchored to HQ root'
+run 2 "$TMP" 'gh pr merge 12 --squash' \
+  '7341d3f8 bare gh pr merge at HQ root still blocked'
+
+# --- git -C anchors are per-command too -----------------------------------
+# The hook used to read only the first git mutation's -C, so a later bare git
+# mutation in the same command ran in the HQ-root cwd unchecked.
+run 2 "$TMP" "git -C $NESTED commit -m x && git push origin main" \
+  'git -C nested commit && bare push @ HQ root blocked'
+run 2 "$TMP" "git -C $NESTED add . && git -C $NESTED commit -m x && git push" \
+  'two anchored git mutations then bare push @ HQ root blocked'
+run 2 "$TMP" "git -C $NESTED commit -m x && git -C $TMP push origin main" \
+  'second git -C pointing at HQ root blocked'
+run 2 "$NESTED" "git commit -m x && git -C $TMP push origin main" \
+  'git -C HQ root blocked even when cwd fallback is a nested repo'
+run 2 "$TMP" "git -C $NESTED commit -m x && gh pr merge 5" \
+  'git -C nested does not anchor a bare gh mutation @ HQ root'
+run 2 "$TMP" "git -C $NESTED commit -C HEAD && git push" \
+  'commit -C <rev> is not a repo anchor for the following push'
+run 0 "$TMP" "git -C $NESTED commit -m x && git -C $NESTED push origin main" \
+  'git -C a commit && git -C a push allowed'
+run 0 "$TMP" "git -C $NESTED add . && git -C $NESTED commit -m x && git -C $NESTED push" \
+  'three git -C a mutations allowed'
+run 0 "$TMP" "cd $NESTED && git -C $NESTED commit -m x && git push origin main" \
+  'cd nested && git -C nested commit && bare push allowed (cd applies)'
+run 0 "$NESTED" "git -C $NESTED commit -m x && git push origin main" \
+  'git -C nested commit && bare push, cwd = nested, allowed'
+run 0 "$TMP" "git -C $NESTED commit -m x && gh pr create -R o/r --title x" \
+  'git -C nested && anchored gh pr create allowed'
+run 0 "$TMP" 'for r in repos/private/app; do git -C "$r" fetch -q; done' \
+  'loop of git -C $var fetch allowed'
+
+# grok --worktree materializes a full clone and the adapter adopts it as
+# HQ_ROOT, so `git -C <that clone>` compares equal to HQ_ROOT. That clone is
+# the repo being edited. Any other HQ root, including this fixture, stays
+# blocked. HOME is set so the carve-out cannot match a worktree that is not
+# under this process's real home. (Ported from #1328.)
+WT_HOME="$TMP/wt-home"
+WT="$WT_HOME/.grok/worktrees/private-hq-core-staging/pr-1143"
+mkdir -p "$WT"
+git -C "$WT" init -q
+wt_payload=$(jq -n --arg cwd "$WT" --arg cmd "git -C $WT fetch origin" \
+  '{cwd: $cwd, tool_input: {command: $cmd}}')
+wt_rc=0
+printf '%s' "$wt_payload" | HOME="$WT_HOME" CLAUDE_PROJECT_DIR="$WT" HQ_ALLOW_HQ_ROOT_GIT= \
+  bash "$HOOK" >/dev/null 2>&1 || wt_rc=$?
+if [[ "$wt_rc" -eq 0 ]]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "FAIL [grok worktree fetch allowed]: expected exit 0, got $wt_rc" >&2
+fi
+orch_payload=$(jq -n --arg cwd "$TMP" --arg cmd "git -C $TMP fetch origin" \
+  '{cwd: $cwd, tool_input: {command: $cmd}}')
+orch_rc=0
+printf '%s' "$orch_payload" | HOME="$WT_HOME" CLAUDE_PROJECT_DIR="$TMP" HQ_ALLOW_HQ_ROOT_GIT= \
+  bash "$HOOK" >/dev/null 2>&1 || orch_rc=$?
+if [[ "$orch_rc" -eq 2 ]]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "FAIL [orchestration checkout fetch still blocked]: expected exit 2, got $orch_rc" >&2
+fi
+
 echo "block-hq-root-git-mutation: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
 
