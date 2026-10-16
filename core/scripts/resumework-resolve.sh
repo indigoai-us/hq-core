@@ -66,7 +66,7 @@ fi
 case "$CO" in
   personal|none|null) CO="" ;;
 esac
-if [ -n "$CO" ] && ! printf '%s' "$CO" | grep -Eq '^[a-z][a-z0-9_-]*$'; then CO=""; fi
+if [ -n "$CO" ] && ! printf '%s' "$CO" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; then CO=""; fi
 [ -n "$CO" ] && [ ! -d "$ROOT/companies/$CO" ] && CO=""
 
 LIST="$(mktemp "${TMPDIR:-/tmp}/resumework-resolve.XXXXXX")"

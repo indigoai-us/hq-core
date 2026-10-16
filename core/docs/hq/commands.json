@@ -727,7 +727,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/hq-integrations/SKILL.md",
-      "hash": "sha256:b17b2a12736fd7b8eae0308f9ce59f8c4d5d5ea74edc9dcb516bacc7819eb1be",
+      "hash": "sha256:316c15386996d1485dac0c6eea8173e3088c1506149322da8101d1f5e30ad1f5",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1609,7 +1609,7 @@
       "skillUid": null,
       "group": "capture",
       "source": ".claude/skills/signals/SKILL.md",
-      "hash": "sha256:a3cd126996250ab1a569d7fa4f09e23a8b72240100c564bcc93ae2bba2008f1c",
+      "hash": "sha256:3294908a769747a2af7a237ac7104dfca9c0d1f16aa95ce59107ab4433cf8f8f",
       "duplicates": {
         "exact": [],
         "drifted": [],

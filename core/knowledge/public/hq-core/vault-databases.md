@@ -10,7 +10,7 @@ relates_to:
 
 # Vault databases (`hq db`)
 
-Structured storage as a first-class HQ surface: **local SQLite per company** on every machine, and (on **HQ Workforce**, $500/mo per company; internal plan id `paid-500`) a **remote** DB provisioned by the platform — secrets never printed.
+Structured storage as a first-class HQ surface: **local SQLite per company** on every machine, and (on a paid plan; on the legacy plans that is **HQ Workforce**, internal plan id `paid-500`, closed to new signups from 2026-10-16 and kept for existing customers) a **remote** DB provisioned by the platform — secrets never printed.
 
 Deployed apps get their own database with `database: true` and `@hq/db` (Team plan, $10 a month per app). See `core/knowledge/public/hq-core/app-databases.md`.
 
@@ -66,7 +66,7 @@ Never place `*.db` under `companies/` — binary state must not enter vault sync
 - **Never print** `postgres://` / connection strings (CLI, API, logs, agent transcripts).
 - Company scope from HQ identity + membership + `--company` — not free-text path alone.
 - `ATTACH` / path overrides that open another company’s DB are denied.
-- Remote provision requires the **HQ Workforce plan**; other plans get a clear plan error ("Remote vault DB requires the HQ Workforce plan ($500/mo)."). Local remains available.
+- Remote provision requires a paid plan. On the legacy plans that is the **HQ Workforce plan**; other legacy plans get a clear plan error ("Remote vault DB requires the HQ Workforce plan ($500/mo)."). For accounts on the usage card (new signups from 2026-10-16), relay what HQ returns. Local remains available.
 
 ## Skill / implementer contract
 

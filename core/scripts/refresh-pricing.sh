@@ -49,19 +49,58 @@ fi
 jq -e '.version == 1 and (.plans | type == "array")' "$TMP/live.json" >/dev/null 2>&1 \
   || { echo "refresh-pricing: response is not a version-1 pricing statement; nothing changed" >&2; exit 2; }
 
+# The usage card and signup options are published by the same endpoint. Refuse
+# to drop them from the shipped copy when the endpoint has not published them yet.
+for block in usage signup; do
+  if [ -f "$JSON" ] && jq -e --arg b "$block" '.[$b] != null' "$JSON" >/dev/null 2>&1 \
+    && ! jq -e --arg b "$block" '.[$b] != null' "$TMP/live.json" >/dev/null 2>&1; then
+    echo "refresh-pricing: the endpoint publishes no \`$block\` block but the shipped copy has one; nothing changed" >&2
+    echo "refresh-pricing: wait until the endpoint publishes the usage card, then run this again" >&2
+    exit 2
+  fi
+done
+
 jq -r '
   def usd: if . == null then "contract" elif . == (. | floor) then "$\(. | floor)" else "$\(.)" end;
   def lim: if . == null then "unlimited" else tostring end;
   def gb: if . == null then "unlimited" else "\(. / 1073741824 | floor) GB" end;
+  def cents: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length == 1 then "0" + . else . end)";
+  def free: {"deploys": "deploys", "dms": "DMs", "background-ai": "background AI"}[.] // .;
   "_Generated from pricing.json (statement generated \(.generatedAt)). Do not edit by hand; run core/scripts/refresh-pricing.sh._",
   "",
-  "### Plans (per \(.interval), \(.currency | ascii_upcase))",
+  (if .usage == null then empty else
+    "### Usage card (new signups from \(.usage.newSignupsFrom[0:10]), card version \(.usage.version))",
+    "",
+    "| Meter | Price | Per | Waived in trial |",
+    "|---|---|---|---|",
+    (.usage.meters[] | "| \(.label) | \(.unitUsd | cents) | \(.unit) | \(if .waivedInTrial then "yes" else "no" end) |"),
+    "",
+    "- Included usage: \(.usage.includedUsd | usd) per \(.interval).",
+    "- Trial: \(.usage.trial.days) days, capped at \(.usage.trial.capUsd | usd) of usage.",
+    "- Free: \(.usage.free | map(free) | join(", ")).",
+    "- Domains: \(.usage.domains.standardUsd | usd) standard, \(.usage.domains.premiumUsd | usd) premium, per \(.interval).",
+    "",
+    "### Boxes on the usage card (per box, per \(.interval))",
+    "",
+    "| Size | Instance | Price |",
+    "|---|---|---|",
+    (.usage.boxes[] | "| \(.size) | \(.instanceType) | \(.monthlyUsd | usd) |"),
+    ""
+  end),
+  (if .signup == null then empty else
+    "### Signup",
+    "",
+    (.signup.options[] | "- \(.label) (`\(.id)`)"),
+    (if .signup.selfHosted == null then empty else "- \(.signup.selfHosted.label): \(.signup.selfHosted.url)" end),
+    ""
+  end),
+  "### \(if .usage == null then "Plans" else "Legacy plans" end) (per \(.interval), \(.currency | ascii_upcase))",
   "",
-  "| Plan | Price | Included agents | Members | Secrets | Deployments | Storage | Integrations |",
-  "|---|---|---|---|---|---|---|---|",
-  (.plans[] | "| \(.displayName) | \(.monthlyUsd | usd) | \(.includedAgents) | \(.included.users | lim) | \(.included.secrets | lim) | \(.included.deployments | lim) | \(.included.storageBytes | gb) | \(.included.integrations | lim) |"),
+  "| Plan | Price | Included agents | Members | Secrets | Deployments | Storage | Integrations | New signups |",
+  "|---|---|---|---|---|---|---|---|---|",
+  (.plans[] | "| \(.displayName) | \(.monthlyUsd | usd) | \(.includedAgents) | \(.included.users | lim) | \(.included.secrets | lim) | \(.included.deployments | lim) | \(.included.storageBytes | gb) | \(.included.integrations | lim) | \(if (.newSignupsUntil // null) == null then "open" else "closed from \(.newSignupsUntil[0:10])" end) |"),
   "",
-  "### Agent boxes (per agent, per \(.interval))",
+  "### \(if .usage == null then "Agent boxes" else "Agent boxes on legacy plans" end) (per agent, per \(.interval))",
   "",
   "| Size | Instance | Price | Buyable today |",
   "|---|---|---|---|",

@@ -2104,5 +2104,27 @@ scope_112_case b06e9db7 2 "cat > companies/otherco/settings/q.sql <<'EOF'
 select 1;
 EOF"
 
+echo "[117] feedback_a6d1ddf3: an http(s) URL with a loop variable, given to curl/wget inside a for loop body"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/projects/alpha"
+scope_112_case a6d1ddf3 0 'for n in 1 2 3; do curl -s "https://shop.example.com/products/x?preview=$n" -o /dev/null; done'
+scope_112_case a6d1ddf3 0 'for n in 1 2; do curl -s https://shop.example.com/?p=$n -o /dev/null; done'
+scope_112_case a6d1ddf3 0 'for n in 1 2; do wget -q -O /dev/null "https://shop.example.com/?p=$n"; done'
+scope_112_case a6d1ddf3 0 'for n in 1 2; do curl -s "https://shop.example.com/?p=$n" -o companies/indigo/projects/alpha/p$n.html; done'
+scope_112_case a6d1ddf3 2 'for n in 1; do cat "https://x/?p=$n"; done'
+scope_112_case a6d1ddf3 2 'for n in 1; do curl -s "https://shop.example.com/?p=$n" -o $D/out.html; done'
+scope_112_case a6d1ddf3 2 'for n in 1; do curl -s "https://shop.example.com/?p=$n" -o companies/otherco/settings/x; done'
+
+echo "[118] feedback_34ab4b26: a bare . argument in a loop body is data, not the dot-source command"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/orchestrator/a" "$TMP/workspace/orchestrator/b"
+scope_112_case 34ab4b26 0 'for s in a b; do jq . workspace/orchestrator/$s.json; done'
+scope_112_case 34ab4b26 0 'for s in a b; do jq . workspace/orchestrator/$s/state.json; done'
+scope_112_case 34ab4b26 0 'for s in a b; do find . -name x; cat workspace/orchestrator/$s.json; done'
+scope_112_case 34ab4b26 2 'for s in a b; do . workspace/tmp/x.sh; cat workspace/orchestrator/$s.json; done'
+scope_112_case 34ab4b26 2 'for s in a b; do true && . workspace/tmp/x.sh; cat workspace/orchestrator/$s.json; done'
+scope_112_case 34ab4b26 2 'for s in a b; do if true; then . workspace/tmp/x.sh; fi; cat workspace/orchestrator/$s.json; done'
+scope_112_case 34ab4b26 2 'for s in a b; do command . workspace/tmp/x.sh; cat workspace/orchestrator/$s.json; done'
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

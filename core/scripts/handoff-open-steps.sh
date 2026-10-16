@@ -76,13 +76,34 @@ case "$CMD" in
     while [ $# -gt 0 ]; do case "$1" in --as) AS="$2"; shift 2;; --note) NOTE="$2"; shift 2;; *) shift;; esac; done
     [ "$CMD" = reopen ] && AS="open"
     case "$AS" in done|dropped|open) ;; *) echo "--as must be done|dropped" >&2; exit 2;; esac
-    tid="${ID%%#*}"
-    f="$(find "$THREADS" -name "$tid.json" ! -path '*/resume-locks/*' 2>/dev/null | head -1)"
-    [ -n "$f" ] || { echo "handoff-open-steps: thread $tid not found under $THREADS" >&2; exit 3; }
+    # `list` prints each step's own id. A step written with a custom id
+    # (`ns-1016c-3`) carries no thread prefix, so find the thread by that id
+    # when the `<thread_id>#` prefix does not name a thread file. The
+    # positional `<thread_id>#<n>` form also matches step n when the step
+    # has a custom id.
+    tid=""
+    case "$ID" in *'#'*) tid="${ID%%#*}" ;; esac
+    f=""
+    if [ -n "$tid" ]; then
+      f="$(find "$THREADS" -name "$tid.json" ! -path '*/resume-locks/*' 2>/dev/null | head -1)"
+    fi
+    if [ -z "$f" ]; then
+      while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        if normalize_thread "$cand" 2>/dev/null | jq -e --arg id "$ID" '[.next_steps[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
+          f="$cand"; break
+        fi
+      done < <(thread_files)
+    fi
+    [ -n "$f" ] || { echo "handoff-open-steps: step $ID not found in any thread under $THREADS" >&2; exit 3; }
+    tid="$(basename "$f" .json)"
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; by="${HQ_SESSION_ID:-${CLAUDE_SESSION_ID:-unknown-session}}"
-    normalize_thread "$f" | jq --arg id "$ID" --arg as "$AS" --arg now "$now" --arg by "$by" --arg note "$NOTE" '
-      if ([.next_steps[] | select(.id == $id)] | length) == 0 then error("step \($id) not in thread") else . end
-      | .next_steps = (.next_steps | map(if .id == $id then
+    normalize_thread "$f" | jq --arg id "$ID" --arg tid "$tid" --arg as "$AS" --arg now "$now" --arg by "$by" --arg note "$NOTE" '
+      # Exact id first; the positional thread#n form only when no step has that id.
+      (if ([.next_steps[] | select(.id == $id)] | length) > 0 then $id
+       else ([.next_steps | to_entries[] | select(($tid + "#" + ((.key + 1)|tostring)) == $id) | .value.id] | first) end) as $match
+      | if $match == null then error("step \($id) not in thread") else . end
+      | .next_steps = (.next_steps | map(if .id == $match then
           (if $as == "open" then del(.closed_at, .closed_by) | .status = "open"
            else .status = $as | .closed_at = $now | .closed_by = $by | (if $note != "" then .note = $note else . end) end)
         else . end))

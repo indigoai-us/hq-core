@@ -118,7 +118,7 @@ bound_session_company() {
   metadata="$HQ_ROOT/workspace/sessions/$session_id/meta.yaml"
   [[ -r "$metadata" ]] || return 0
   company="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$metadata" 2>/dev/null || true)"
-  [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || return 0
+  [[ "$company" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || return 0
   printf '%s' "$company"
 }
 
@@ -135,7 +135,7 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
       elif type == "array" and length == 1 then .[0]
       else error("thread must have exactly one company owner") end
     | if type != "string" then error("invalid company owner")
-      elif . == "" or test("^[a-z][a-z0-9_-]*$") then .
+      elif . == "" or test("^[a-z0-9][a-z0-9_-]*$") then .
       else error("invalid company owner") end
   ' "$THREAD_FILE")" || {
     log "workspace-sync: refused invalid or ambiguous ownership"
@@ -152,7 +152,7 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
     | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
     | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
     | sub("^\\./"; "")
-    | (try capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company catch null)
+    | (try capture("^companies/(?<company>[a-z0-9][a-z0-9_-]*)/").company catch null)
       | select(type == "string")
     ] | unique
   ' "$THREAD_FILE" 2>/dev/null || printf '[]')"
@@ -199,7 +199,7 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
     fi
   fi
   while IFS= read -r company; do
-    [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || continue
+    [[ "$company" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || continue
     [[ -d "$HQ_ROOT/companies/$company/workspace" ]] || continue
     # Local-only companies have no cloud vault. Pushing them fails with
     # "No entity in caller's namespace matches company/<slug>" and a

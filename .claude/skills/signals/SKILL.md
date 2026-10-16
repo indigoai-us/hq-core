@@ -51,7 +51,7 @@ If `companies/{co}/signals/` is empty or absent, signals haven't been extracted 
 1. `/designate-team {co}` to make the company cloud-backed.
 2. Capture meetings with the HQ meeting bot (`/meeting-notes` covers this) → notes ingest.
 3. Signals are extracted from ingested notes into `companies/{co}/signals/` automatically once provisioned.
-4. Note: billing is live. Inviting the HQ meeting bot needs the company on the HQ Workforce plan (a Starter company gets "HQ Workforce plan required to invite a meeting bot" with an upgrade link; the owner upgrades with `hq billing upgrade --company {co}` or on the console Billing page). Signals extraction runs on HQ cloud over the notes that arrive. Plan details: `core/knowledge/public/hq-core/plans-and-pricing.md`.
+4. Note: billing is live. On the legacy plans, inviting the HQ meeting bot needs the company on HQ Workforce (a Starter company gets "HQ Workforce plan required to invite a meeting bot" with an upgrade link; the owner upgrades with `hq billing upgrade --company {co}` or on the console Billing page). On the usage card (new signups from 2026-10-16), relay what HQ returns. Signals extraction runs on HQ cloud over the notes that arrive. Plan details: `core/knowledge/public/hq-core/plans-and-pricing.md`.
 
 ## Output
 

@@ -14,7 +14,7 @@ An app deployed with HQ Deploy can have its own Postgres-compatible database (Au
 
 ## Who can use it
 
-- Companies on the HQ Workforce (Team) plan or a staff-set paid plan (Enterprise).
+- Companies on the HQ Workforce (Team) plan or a staff-set paid plan (Enterprise). Workforce is a legacy plan, closed to new signups from 2026-10-16 and kept for existing customers. For accounts on the usage card, relay what HQ returns.
 - A company on Starter gets "Remote databases are not available yet on this company's plan" with the price and an upgrade link. Upgrading the plan makes the feature available right away.
 - Indigo's own apps are exempt from billing.
 - A company can hold 20 database apps. Deleted apps count until their database is removed (see "Delete and retention"). Ask HQ support if you need more.

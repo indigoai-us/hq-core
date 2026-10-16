@@ -85,7 +85,7 @@ cannot see a page listed here, a flag or role is the likely reason.
 | `/personal/profile` | Name, avatar, secondary emails, sign-in methods | |
 | `/personal/outpost` | Manage your Outpost | Staff only today; others see "coming soon" |
 | `/account/billing` | Personal plan and Stripe billing portal | |
-| `/signup/team` | Self-serve HQ Workforce signup, then first-bot setup | Can be disabled server-side |
+| `/signup/team` | Self-serve HQ Workforce signup, then first-bot setup (legacy: Workforce is closed to new signups from 2026-10-16) | Can be disabled server-side |
 | `/pro/partner` | Create, claim, or edit your firm's listing in the partner directory | Sidebar link appears only when a membership has a live listing |
 
 ## Link and token pages
@@ -119,7 +119,7 @@ cannot see a page listed here, a flag or role is the likely reason.
 | Invite a teammate | `/team/invites` | `/new-hire` |
 | Add a bot | `/agents` → add-bot wizard | `/new-agent`, `hq agents provision` |
 | Connect a bot to Slack | wizard Slack step (flagged) or `/agents/<uid>/slack-setup` | |
-| Upgrade to Workforce | `/billing` | `hq billing upgrade --company <slug>` |
+| Upgrade to Workforce (legacy plan, existing customers only) | `/billing` | `hq billing upgrade --company <slug>` |
 | Approve a sponsorship request | `/billing/sponsorship` | `hq billing sponsor approve` |
 | Connect an app | `/integrations` | `/hq-integrations` |
 | Add a secret | `/secrets` | `/hq-secrets` |

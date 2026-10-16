@@ -467,8 +467,13 @@ scope_shell_variable_values() {
     fi
     [[ "$command_prefix" =~ (^|[[:space:]])${name}= ]] && return 1
     case "$command_prefix" in
-      *"-v $name"*|*"read $name"*|*"declare $name"*|*"local $name"*|*"unset $name"*|*"eval"*|*"source "*|*". "*) return 1 ;;
+      *"-v $name"*|*"read $name"*|*"declare $name"*|*"local $name"*|*"unset $name"*|*"eval"*|*"source "*) return 1 ;;
     esac
+    # `. FILE` sources a script that can rebind the loop variable, but only
+    # when `.` is the command word. A `.` argument (`jq . "$f"`, `find . -name
+    # x`) is data and must not refuse the loop.
+    local dot_source_re='(^|[;&|({!'$'\n'']|(^|[^A-Za-z0-9_./-])(do|then|else|elif|time|command|builtin|exec))[[:space:]]*\.[[:space:]]'
+    [[ "$command_prefix" =~ $dot_source_re ]] && return 1
     # `for r in $(ls [-1|-A] DIR)` binds r to the entry names in DIR, the
     # same set `DIR/*` would give. DIR must be one literal directory inside
     # the HQ root that this session may read (it is checked here as an
@@ -2253,14 +2258,16 @@ scope_url_is_remote_operand() {
 # or any backslash in the command keep the normal fail-closed path check.
 # Arguments: <index of the token in scope_tokens>.
 scope_token_is_remote_url_with_substitutions() {
-  local index="${1:-0}" token head reduced sub_re mark=$'\001'
+  local index="${1:-0}" token head head_index reduced sub_re mark=$'\001'
   scope_prose_subs=()
   [ "$index" -gt 0 ] || return 1
   token="${scope_tokens[$index]:-}"
   case "$token" in http://*'$('*|https://*'$('*) ;; *) return 1 ;; esac
   case "$token" in *$'\140'*|*"$mark"*) return 1 ;; esac
   [[ "${scope_scan_cmd:-}" == *\\* ]] && return 1
-  head="${scope_tokens[0]##*/}"
+  head_index="$(scope_command_head_index)"
+  [ "$index" -gt "$head_index" ] || return 1
+  head="${scope_tokens[$head_index]##*/}"
   scope_url_is_remote_operand "$head" "${scope_tokens[$((index - 1))]}" "$token" || return 1
   reduced="$token"
   sub_re='\$\(([^()]*)\)'
@@ -2274,12 +2281,16 @@ scope_token_is_remote_url_with_substitutions() {
 }
 
 scope_token_is_vcs_ref_operand() {
-  local index="${1:-0}" token head i sub="" ref_re range_re refspec_re
+  local index="${1:-0}" token head url_head url_head_index i sub="" ref_re range_re refspec_re
   token="${scope_tokens[$index]:-}"
   case "$token" in *'$'*) ;; *) return 1 ;; esac
   case "$token" in *'$('*|*$'\140'*|*[[:space:]]*) return 1 ;; esac
   head="${scope_tokens[0]##*/}"
   [ "$index" -gt 0 ] || return 1
+  # A loop or conditional keyword can lead the record (`do curl ...`); the
+  # URL exemption must see the program itself. git and gh keep using token 0.
+  url_head_index="$(scope_command_head_index)"
+  url_head="${scope_tokens[$url_head_index]##*/}"
   if [ "$head" = gh ]; then
     # gh sends the -R/--repo value to the GitHub API; it never opens it.
     case "${scope_tokens[$((index - 1))]}" in -R|--repo) return 0 ;; esac
@@ -2290,7 +2301,9 @@ scope_token_is_vcs_ref_operand() {
   # (a planted `https:` symlink makes that a tenant path), so only the
   # clients below are exempt. Checked before the glob test: a query string
   # such as `?r=$RANDOM` is not a glob.
-  scope_url_is_remote_operand "$head" "${scope_tokens[$((index - 1))]}" "$token" && return 0
+  if [ "$index" -gt "$url_head_index" ]; then
+    scope_url_is_remote_operand "$url_head" "${scope_tokens[$((index - 1))]}" "$token" && return 0
+  fi
   case "$token" in *'*'*|*'?'*|*'['*) return 1 ;; esac
   [ "$head" = git ] || return 1
   # Find the git subcommand past global options; give up on anything unusual.

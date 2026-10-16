@@ -276,7 +276,7 @@ TOUCHED_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
     | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
     | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
     | sub("^\\./"; "")
-    | (try capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company catch null)
+    | (try capture("^companies/(?<company>[a-z0-9][a-z0-9_-]*)/").company catch null)
     | select(type == "string")
   ] | unique
 ' "$FILES_TOUCHED_FILE" 2>/dev/null || printf '[]')
@@ -289,13 +289,13 @@ bound_session_company() {
   metadata="$HQ_ROOT/workspace/sessions/$session_id/meta.yaml"
   [[ -r "$metadata" ]] || return 0
   company="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$metadata" 2>/dev/null || true)"
-  [[ "$company" =~ ^[a-z][a-z0-9_-]*$ ]] || return 0
+  [[ "$company" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || return 0
   printf '%s' "$company"
 }
 
 BOUND_SESSION_COMPANY="$(bound_session_company)"
 if [[ -n "$OWNER_COMPANY" ]]; then
-  if [[ ! "$OWNER_COMPANY" =~ ^[a-z][a-z0-9_-]*$ ]] || [[ ! -d "$HQ_ROOT/companies/$OWNER_COMPANY" ]]; then
+  if [[ ! "$OWNER_COMPANY" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || [[ ! -d "$HQ_ROOT/companies/$OWNER_COMPANY" ]]; then
     echo "handoff-finalize: invalid or missing owner company: $OWNER_COMPANY" >&2
     exit 2
   fi

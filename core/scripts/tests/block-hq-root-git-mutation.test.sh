@@ -96,6 +96,12 @@ run 0 "$TMP" 'git status'                            'read-only git allowed'
 run_windows_status_fast_path 'git -C C:/x status' 'Windows drive slash status fast path'
 run_windows_status_fast_path 'git -C C:\x status' 'Windows drive backslash status fast path'
 run 0 "$TMP" 'git check-ignore -v some/path'       'read-only check-ignore at HQ root allowed'
+# Regression: feedback_3ee29d66. `git archive` only reads the object store and
+# writes the archive to stdout or an -o file; it never changes the repository.
+run 0 "$TMP" 'git archive HEAD | tar -t | head'     'read-only archive to stdout at HQ root allowed'
+run 0 "$TMP" 'git archive --format=tar HEAD core > /tmp/core.tar' 'read-only archive with pathspec at HQ root allowed'
+run 0 "$TMP" 'git archive -o /tmp/hq.zip HEAD'      'read-only archive -o at HQ root allowed'
+run 2 "$TMP" 'git archive HEAD | tar -t && git commit -m x' 'archive does not excuse a later commit at HQ root'
 run 0 "$TMP" 'hq core checkpoint --summary "synchronous git fetch + hard-reset"' \
   'git words in a non-git summary argument allowed'
 run 0 "$TMP" 'grep -niE "git reset|reset --hard|git checkout|git restore" some.log' \
