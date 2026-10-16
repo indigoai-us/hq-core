@@ -1981,5 +1981,128 @@ scope_112_case 2ec4335f 2 'hq outposts exec box -- "cat $(ls -d /srv/app/release
 grep -Fq 'wrap it in single quotes' "$TMP/err.txt" \
   || fail "a double-quoted remote command block should suggest single quotes"
 
+echo "[114] sweep-1 follow-ups: dollar amounts in heredoc strings, \$(cat) message values, \$(ls DIR) loops, absolute loop roots, labelled echo text"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/knowledge" "$TMP/companies/indigo/projects/alpha" \
+  "$TMP/workspace/tmp" "$TMP/workspace/threads/.handoff-tmp" "$TMP/workspace/worktrees/a" \
+  "$TMP/workspace/names/otherco" "$TMP/repos/private/app" "$TMP/repos/public"
+touch "$TMP/companies/indigo/knowledge/k.md" "$TMP/companies/indigo/projects/alpha/README.md" \
+  "$TMP/companies/otherco/settings/a.md" "$TMP/workspace/tmp/msg.md" "$TMP/workspace/tmp/summary.md"
+ln -s ../../companies/otherco "$TMP/repos/public/otherlink"
+ln -s ../companies/otherco "$TMP/workspace/olink"
+# feedback_13e0b6e7: a dollar amount glued to another string literal in a
+# python/node heredoc that cannot reach a shell is text, not a path.
+scope_112_case 13e0b6e7 0 "python3 - <<'EOF'
+s='x'.replace('a','\$49/mo')
+EOF"
+scope_112_case 13e0b6e7 0 "python3 - <<'EOF'
+p='companies/indigo/knowledge/k.md'
+s=open(p).read().replace('\$39/mo','\$49/mo')
+open(p,'w').write(s)
+EOF"
+scope_112_case 13e0b6e7 0 "python3 - <<'EOF'
+s='x'.replace('\$39/mo', '\$49/mo')
+EOF"
+scope_112_case 13e0b6e7 0 "node - <<'EOF'
+const s='x'.replace('a','\$49/mo')
+EOF"
+# An escaped \$ in double-quoted message text is a literal dollar sign.
+scope_112_case 13e0b6e7 0 'hq pm add-note --text "Pro is \$49/mo now"'
+scope_112_case 13e0b6e7 2 "python3 - <<'EOF'
+open('companies/otherco/settings/a.md','w').write('\$49/mo')
+EOF"
+scope_112_case 13e0b6e7 2 "python3 - <<'EOF'
+s='x'.replace('a','\$49/mo');open('x','w').write(open('companies/otherco/settings/a.md').read())
+EOF"
+scope_112_case 13e0b6e7 2 "python3 - <<'EOF'
+import os;os.system('cp a \$D/x,y')
+EOF"
+scope_112_case 13e0b6e7 2 'hq pm add-note --text "Pro is $D/mo now"'
+scope_112_case 13e0b6e7 2 'hq pm add-note --text "Pro \$D/mo and $D/mo"'
+# feedback_993a28e7: "$(cat <file>)" as hq agents message text and as a
+# handoff-finalize.sh text or JSON value.
+scope_112_case 993a28e7 0 'hq agents message jacob "$(cat workspace/tmp/msg.md)" --company indigo'
+scope_112_case 993a28e7 0 'hq agents msg --company indigo jacob "$(cat workspace/tmp/msg.md)"'
+scope_112_case 993a28e7 0 'core/scripts/handoff-finalize.sh --title t --summary "$(cat workspace/tmp/summary.md)" --slug s'
+scope_112_case 993a28e7 0 'bash core/scripts/handoff-finalize.sh --title t --summary "$(cat workspace/tmp/summary.md)" --slug s'
+scope_112_case 993a28e7 0 'core/scripts/handoff-finalize.sh --title t --summary s --learnings-json "$(cat workspace/threads/.handoff-tmp/l.json)" --slug s'
+scope_112_case 993a28e7 0 'core/scripts/handoff-finalize.sh --title t --summary s --next-steps-json "$(cat workspace/threads/.handoff-tmp/n.json)" --slug s'
+scope_112_case 993a28e7 2 'hq agents message jacob "$(cat companies/otherco/settings/a.md)"'
+scope_112_case 993a28e7 2 'core/scripts/handoff-finalize.sh --title t --summary "$(cat companies/otherco/settings/a.md)" --slug s'
+scope_112_case 993a28e7 2 'hq agents message jacob "$(cat $D/x.md)"'
+scope_112_case 993a28e7 2 'hq agents message jacob "$(cp workspace/tmp/msg.md companies/otherco/settings/b.md)"'
+scope_112_case 993a28e7 2 'hq agents message --company "$(cat $D/x)" jacob hi'
+scope_112_case 993a28e7 2 'hq agents message "$(cat $D/x)" hi'
+scope_112_case 993a28e7 2 'core/scripts/handoff-finalize.sh --title t --summary s --deficiencies-json "$(cat $D/x)"'
+# feedback_decb4125: for r in $(ls DIR) binds r to DIR's entries, like DIR/*.
+scope_112_case decb4125 0 'for r in $(ls repos/private); do git -C repos/private/$r status --short; done'
+scope_112_case decb4125 0 'for r in $(ls -1 repos/private); do git -C repos/private/$r status --short; done'
+scope_112_case decb4125 0 'for p in $(ls companies/indigo/projects); do cat companies/indigo/projects/$p/README.md; done'
+scope_112_case decb4125 2 'for p in $(ls companies/otherco); do cat companies/otherco/$p/a.md; done'
+scope_112_case decb4125 2 'for p in $(ls companies); do cat companies/$p/settings/a.md; done'
+scope_112_case decb4125 2 'for r in $(ls -R companies/indigo); do cat companies/indigo/$r; done'
+scope_112_case decb4125 2 'for r in $(ls -a companies/indigo/projects); do cat companies/indigo/projects/$r/x; done'
+scope_112_case decb4125 2 'for r in $(ls repos/public/otherlink); do cat repos/public/otherlink/$r; done'
+scope_112_case decb4125 2 'for c in $(ls workspace/names); do cat companies/$c/settings/a.md; done'
+scope_112_case decb4125 2 'for r in $(ls repos/private companies/otherco); do cat repos/private/$r; done'
+scope_112_case decb4125 2 'for r in $(ls repos/private | sed s,^,x,); do cat repos/private/$r; done'
+# An absolute loop root assigned in the same command (the form the guard's
+# own rewrite hint recommends).
+scope_112_case decb4125 0 "W=$TMP/workspace/worktrees; for n in a b; do cat \$W/\$n; done"
+scope_112_case decb4125 0 "W=$TMP/workspace/worktrees; for n in a b c; do git worktree remove \$W/\$n; done"
+scope_112_case decb4125 2 "W=$TMP/workspace; for n in ../companies/otherco; do cat \$W/\$n/settings/a.md; done"
+scope_112_case decb4125 2 "W=$TMP/workspace/worktrees; for n in a b; do echo x > \$W/\$n/\$m; done"
+scope_112_case decb4125 2 "W=$TMP/workspace/olink; for n in settings; do cat \$W/\$n/a.md; done"
+scope_112_case decb4125 2 'for n in a b; do echo hi > $W/$n; done'
+# A loop variable as a "label:" lead in echo text with a $(grep) count.
+scope_112_case decb4125 0 "W=$TMP/workspace/worktrees; for s in a b; do echo \"\$s: \$(grep -c x \$W/\$s.md)\"; done"
+scope_112_case decb4125 0 'W=companies/indigo/projects; for s in alpha beta; do echo "$s: $(grep -c x $W/$s/README.md)"; done'
+scope_112_case decb4125 2 'W=companies/otherco/settings; for s in a b; do echo "$s: $(grep -c x $W/$s.md)"; done'
+scope_112_case decb4125 2 'W=companies/indigo; for s in ../otherco/settings/a; do echo "$s: $(grep -c x $W/$s.md)"; done'
+scope_112_case decb4125 2 'for s in a b; do echo "$s: $(grep -c x $D/$s.md)"; done'
+scope_112_case decb4125 2 'for s in a b; do echo "$s: x" > $D/$s.md; done'
+
+echo "[115] feedback_436da6e9: a literal-only printf as a data-option value and a grep -c count in a sed address"
+install_fixture "indigo"
+mkdir -p "$TMP/repos/private/theme" "$TMP/workspace/tmp"
+touch "$TMP/repos/private/theme/a.liquid" "$TMP/workspace/tmp/body.md" "$TMP/companies/otherco/settings/a.md"
+scope_112_case 436da6e9 0 "gh pr create -R o/r --title t --body \"\$(printf 'Fixes header\\n\\nSee sections/header.liquid')\""
+scope_112_case 436da6e9 0 "gh pr create -R o/r --title t --body \"\$(printf '%s\\n' 'Summary' '- updated sections/header.liquid')\""
+scope_112_case 436da6e9 0 "gh pr create -R o/r --title t --body=\"\$(printf 'Fixes x\\nSee a/b')\""
+scope_112_case 436da6e9 0 "sed -n \"1,\$(grep -c x repos/private/theme/a.liquid)p\" repos/private/theme/a.liquid"
+scope_112_case 436da6e9 2 "gh pr create -R o/r --title t --body \"\$(printf '%s' \"\$(cat companies/otherco/settings/a.md)\")\""
+scope_112_case 436da6e9 2 "gh pr create -R o/r --title t --body \"\$(printf 'x' > companies/otherco/settings/b.md)\""
+scope_112_case 436da6e9 2 "gh pr create -R o/r --title t --body \"\$(printf '%s' \$D/x)\""
+scope_112_case 436da6e9 2 "gh pr create -R o/r --title t --body \"\$(printf '%s' \"\$D/x\")\""
+scope_112_case 436da6e9 2 "gh pr create -R o/r --title t --body \"\$(printf 'a' \$(cat \$D/x))\""
+scope_112_case 436da6e9 2 "gh pr create -R o/r --title t --body \"\$(printf 'a/b')\"; cat \$(printf a/b)/\$D"
+scope_112_case 436da6e9 2 "cp workspace/tmp/body.md \"\$(printf '%s' \$D)/b\""
+scope_112_case 436da6e9 2 "cat \"\$(printf 'x/y')\" \$D/z"
+scope_112_case 436da6e9 2 "sed -n \"1,\$(grep -c x repos/private/theme/a.liquid workspace/tmp/body.md)p\" repos/private/theme/a.liquid"
+scope_112_case 436da6e9 2 "sed -n \"1,\$(grep -cl x repos/private/theme/a.liquid)p\" repos/private/theme/a.liquid"
+scope_112_case 436da6e9 2 "sed -n \"1,\$(grep -c x companies/otherco/settings/a.md)p\" repos/private/theme/a.liquid"
+scope_112_case 436da6e9 2 "sed -n \"1,\$(grep -c x \$D/a.md)p\" repos/private/theme/a.liquid"
+
+echo "[116] feedback_b06e9db7: an f-string field after a literal bound-company path inside a quoted python -c program"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/projects/alpha"
+touch "$TMP/companies/otherco/settings/a.md"
+scope_112_case b06e9db7 0 "python3 -c \"d='2026-10-16'; open(f'companies/indigo/projects/alpha/report-{d}.md','w').write('x')\""
+scope_112_case b06e9db7 0 "python3 -c \"t=5; open(f'companies/indigo/projects/alpha/{t}/r.md','w').write(f'Total {t} per month')\""
+scope_112_case b06e9db7 0 "python3 -c 'd=1; open(f\"companies/indigo/projects/alpha/r-{d}.md\",\"w\").write(f\"\${d}/mo\")'"
+scope_112_case b06e9db7 0 "cat > companies/indigo/projects/alpha/q.sql <<'EOF'
+SELECT id FROM orders WHERE note LIKE '\$%' AND path = 'a/b';
+EOF"
+scope_112_case b06e9db7 2 "python3 -c \"d=1; open(f'companies/otherco/settings/r-{d}.md','w').write('x')\""
+scope_112_case b06e9db7 2 "python3 -c \"c='otherco'; open(f'companies/{c}/settings/x','w')\""
+scope_112_case b06e9db7 2 "python3 -c \"c='co'; open(f'companies/other{c}/settings/x','w')\""
+scope_112_case b06e9db7 2 "python3 -c \"d=1; open(f'companies/indigo/projects/alpha/../../../otherco/settings/{d}.md','w')\""
+scope_112_case b06e9db7 2 "python3 -c \"m='../../../otherco/settings'; open(f'companies/indigo/projects/alpha/{m}/x.md','w')\""
+scope_112_case b06e9db7 2 "python3 -c \"d=1; open(f'companies/indigo/projects/alpha/{d}.md','w'); open('x/../y')\""
+scope_112_case b06e9db7 2 "python3 -c \"open(f'companies/indigo/projects/alpha/\$(cat \$D)/{d}','w')\""
+scope_112_case b06e9db7 2 "cat > companies/otherco/settings/q.sql <<'EOF'
+select 1;
+EOF"
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

@@ -148,7 +148,8 @@ for tool in mcp__71ea2368-aaaa__get_post_content mcp__beehiiv__list_posts mcp__s
 done
 pass "does not classify read-only get_/list_/search_/read_ MCP tools as sends"
 for tool in mcp__slack__send_message mcp__slack__slack_post_message mcp__beehiiv__create_post \
-            mcp__gmail__reply_to_thread mcp__x__publish_post SendEmail; do
+            mcp__gmail__reply_to_thread mcp__x__publish_post SendEmail \
+            mcp__superhuman-mail__send_draft mcp__mail__post_draft; do
   SEND_CALL="$(jq -nc --arg sid "$READONLY_SID" --arg tool "$tool" '{session_id:$sid,tool_name:$tool,tool_input:{message:"hi"}}')"
   set +e
   BLOCK="$(run_hook PreToolUse "$SEND_CALL")"; RC=$?
@@ -158,6 +159,13 @@ for tool in mcp__slack__send_message mcp__slack__slack_post_message mcp__beehiiv
     || fail "outbound tool $tool block reason incomplete: $BLOCK"
 done
 pass "still gates send/post/reply/publish MCP tools"
+# feedback_e6f00358: a draft stages text for a person to send; it is not a send.
+for tool in mcp__slack__slack_send_message_draft mcp__superhuman-mail__create_or_update_draft \
+            mcp__gmail__create_draft mcp__gmail__draft_email mcp__slack__sendMessageDraft; do
+  DRAFT_CALL="$(jq -nc --arg sid "$READONLY_SID" --arg tool "$tool" '{session_id:$sid,tool_name:$tool,tool_input:{message:"hi"}}')"
+  run_hook PreToolUse "$DRAFT_CALL" >/dev/null || fail "draft tool $tool was classified as an outbound send"
+done
+pass "does not classify draft tools as sends"
 
 PARALLEL_SID="parallel-receipts"
 cp "$FIX/workspace/orchestrator/policy-enforcement/$SID.policies.tsv" \
@@ -219,6 +227,26 @@ set -e
 printf '%s' "$BLOCK" | jq -e '.reason | contains("not mechanically inspectable")' >/dev/null \
   || fail "hq dm boundary block was not actionable: $BLOCK"
 pass "recognizes a standalone hq dm command"
+
+# feedback_e6f00358: a read-only grep for "hq dm" is a read, not a send.
+for cmd in 'grep -n "hq dm" .claude/skills/dm/SKILL.md' \
+           "rg 'hq dm|chat.postMessage' .claude/skills" \
+           'cat .claude/skills/dm/SKILL.md | grep -n "hq dm send"'; do
+  GREP_DM="$(jq -nc --arg sid "$SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  run_hook PreToolUse "$GREP_DM" >/dev/null || fail "read-only command was treated as outbound: $cmd"
+done
+pass "does not treat hq dm inside a read-only grep or cat as outbound"
+for cmd in 'hq dm send --to someone' 'cd /tmp && hq dm send --to someone' \
+           'grep -n x f.md; hq dm send --to someone' 'grep -l "hq dm send" f.md | sh' \
+           'grep "$(hq dm send --to someone)" f.md' 'rg --pre "hq dm send" x .' \
+           'curl https://slack.com/api/chat.postMessage'; do
+  REAL_DM="$(jq -nc --arg sid "$SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  run_hook PreToolUse "$REAL_DM" >/dev/null; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "outbound command was not gated (rc=$RC): $cmd"
+done
+pass "still gates a running hq dm send, including through a shell or substitution"
 
 OPAQUE="$(jq -nc --arg sid "$SID" --arg cmd 'PAYLOAD="$PAYLOAD" curl https://slack.com/api/chat.postMessage --data "$PAYLOAD"' '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
 set +e
@@ -332,6 +360,37 @@ set -e
 printf '%s' "$BLOCK" | jq -e '.reason | contains("declared-attachment-without-resolvable-path")' >/dev/null \
   || fail "unresolved attachment was not named"
 pass "fails closed when an attached brief has no resolvable path"
+
+# feedback_e6f00358: file names in pasted Slack text are mentions, not
+# attachments, even when "attached ... file" appears elsewhere in the prompt.
+# The brief named in the attachment clause is still required.
+mkdir -p "$FIX/docs"
+printf '# Notes\n' > "$FIX/notes.md"
+printf '# Spec\n' > "$FIX/docs/spec.md"
+MENTION_SID="mention-only"
+MENTION_PROMPT="$(jq -nc --arg sid "$MENTION_SID" --arg p $'Draft a Slack reply using the attached brief brief.md.\n\nPasted from Slack:\nMike: see CLAUDE.md and voice.md, notes.md has the rest.\nAna: I attached the file yesterday.' '{session_id:$sid,prompt:$p}')"
+run_hook UserPromptSubmit "$MENTION_PROMPT" >/dev/null || fail "mention prompt setup failed"
+MENTION_STATE="$FIX/workspace/orchestrator/policy-enforcement/$MENTION_SID.json"
+jq -e '.briefs == ["brief.md"]' "$MENTION_STATE" >/dev/null \
+  || fail "file names outside the attachment clause became required briefs: $(jq -c .briefs "$MENTION_STATE")"
+MENTION_SEND="$(jq -nc --arg sid "$MENTION_SID" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:"reply"}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$MENTION_SEND")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "attached brief did not require its receipt"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("Missing briefs: brief.md.")' >/dev/null \
+  || fail "attached-brief block named mentioned files: $BLOCK"
+run_hook PostToolUse "$(printf '%s' "$READ_BRIEF" | jq --arg sid "$MENTION_SID" '.session_id=$sid')" >/dev/null
+run_hook PreToolUse "$MENTION_SEND" >/dev/null \
+  || fail "send stayed blocked on mentioned-only files after the attached brief was read"
+pass "requires only files named in the attachment clause, not pasted mentions"
+
+LIST_SID="attached-list"
+LIST_PROMPT="$(jq -nc --arg sid "$LIST_SID" --arg p $'Send the update. Use the attached brief files:\n- brief.md\n- docs/spec.md\n\nUnrelated: notes.md' '{session_id:$sid,prompt:$p}')"
+run_hook UserPromptSubmit "$LIST_PROMPT" >/dev/null || fail "list prompt setup failed"
+jq -e '.briefs == ["brief.md","docs/spec.md"]' "$FIX/workspace/orchestrator/policy-enforcement/$LIST_SID.json" >/dev/null \
+  || fail "attached list was not declared exactly: $(jq -c .briefs "$FIX/workspace/orchestrator/policy-enforcement/$LIST_SID.json")"
+pass "declares every path listed under an attachment clause that ends with a colon"
 
 # A long session's matched-policy list grows past a thousand rows, and the gate
 # rereads it on every tool call. Collect required-skill/required-brief values in

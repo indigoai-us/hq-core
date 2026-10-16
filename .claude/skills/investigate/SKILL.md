@@ -1,7 +1,7 @@
 ---
 name: investigate
 description: "Root-cause debugging before any fix: scope lock, hypothesis testing, debug report. Triggers: \"debug this\", \"why is this broken\"."
-allowed-tools: Read, Grep, Glob, Write, Bash(git:*), Bash(qmd:*), Bash(bash core/scripts/resolve-company.sh:*), AskUserQuestion
+allowed-tools: Read, Grep, Glob, Write, Bash(git:*), Bash(qmd:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), AskUserQuestion
 ---
 
 # Iron Law Debugging
@@ -28,8 +28,9 @@ It returns `{"company":"<slug>","source":"session|prompt|none"}`: the company bo
 
 If matched:
 1. Set `{co}` = matched slug, strip from input
-2. Load policies: `companies/{co}/policies/` (skip `example-policy.md`)
-3. Scope qmd searches to company collection if available
+2. **Bind the session** — run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+3. Load policies: `companies/{co}/policies/` (skip `example-policy.md`)
+4. Scope qmd searches to company collection if available
 
 If no match: infer company from cwd (`companies/{slug}/` or `repos/{pub|priv}/{name}` → manifest lookup).
 

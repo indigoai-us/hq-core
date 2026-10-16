@@ -28,19 +28,21 @@ target repos. It is idempotent — rerun anytime to regenerate and redeploy at t
 Accept `{co}/{name}`, a bare `{name}`, or a project directory path, plus an optional
 `--brainstorm` flag (or a `brainstorm.md` path) selecting **deck mode**.
 
-1. Locate the project dir:
+1. Set `{co}` from the input when a company is given or inferable (empty for personal
+   projects). When `{co}` is set, run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+2. Locate the project dir:
    - `companies/{co}/projects/{name}/` when a company is given or inferable.
    - `projects/{name}/` or `personal/projects/{name}/` for personal / HQ projects (no company).
    - If only `{name}` is given, find it: `qmd search "{name}" --json -n 5` or check the
      locations directly.
-2. Pick the mode + source file:
+3. Pick the mode + source file:
    - **deck mode** (`--brainstorm`, or input points at a `brainstorm.md`) → source is
      `{dir}/brainstorm.md`.
    - **plan mode** (default) → source is `{dir}/prd.json`.
    - If the chosen source is missing, **stop** with a one-line message:
      `No {source} at {path} — run /{prd|brainstorm} first.` (When called from a skill's auto-step
      the path is already known, so this never triggers.)
-3. Set `{co}` (may be empty for personal projects), `{name}`, and `{mode}` for the rest of the flow.
+4. Keep `{co}`, `{name}`, and `{mode}` for the rest of the flow.
 
 ## Step 2: Read project data
 

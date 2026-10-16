@@ -81,7 +81,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/brainstorm/SKILL.md",
-      "hash": "sha256:a5da93f2c6f4019329836d8f907e55fd51b91dd9ee9d5a0c2cf8041034dce8bb",
+      "hash": "sha256:fa558afeb2bc56370a7b55094593f39c45d989e18ef8622dd818a838b7fbd663",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -302,7 +302,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/deep-plan/SKILL.md",
-      "hash": "sha256:089dd5843a6ad154d296d66dfd599dd855651d19f2fd0826fd065f706aa9c60d",
+      "hash": "sha256:90ffe87bf1d2f5c2b241319879da7b061cd18f590b643032d460c20e99190601",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -929,7 +929,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/investigate/SKILL.md",
-      "hash": "sha256:227c3374387defdb78f85152716200a594f6d62a3963febb0e5b87af7f6a3af6",
+      "hash": "sha256:e3d0f6f6135d8cebc356862284e078e9f2e60eec3a53d82fd02f88482cd2a41f",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1269,7 +1269,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/prd/SKILL.md",
-      "hash": "sha256:042c38937ab22cd79d1f4e234a88d1835b47cb5ef88f23c0df7c220a576f0027",
+      "hash": "sha256:d1a7182a548df1c81750486868b5e7c85ceb7599f7d510ce62700dff5cff6f44",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1286,7 +1286,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/project-summary/SKILL.md",
-      "hash": "sha256:c0c5a8a1d1eee2649d90a3f0d214a58943ff257f2e8a6ed0ed09b0dfa3806964",
+      "hash": "sha256:f2981933b15acea2b91a675c6bd5c1a76d8fbd5f1378d48f2c3b3296928251b6",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1660,7 +1660,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/strategize/SKILL.md",
-      "hash": "sha256:65093d0d298bc7e77e61fa8faa32a4b26f8d9a0a7abcf8a49d6117362d5e88f8",
+      "hash": "sha256:79408a8207a1837bdf9d27da48a700b324f1f481e2177526a1483fa69e22c645",
       "duplicates": {
         "exact": [],
         "drifted": [],
