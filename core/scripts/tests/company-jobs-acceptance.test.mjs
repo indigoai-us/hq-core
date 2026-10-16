@@ -48,7 +48,8 @@ test('E2E1 accepted twice-daily API revision installs two timezone timers idempo
 test('E2E2 repeated scheduled issuance executes once across process-ledger restart',async t=>{
   const f=harness(t),d=f.delivery();await f.runner.run(f.job.jobId,revision);f.restart();await f.runner.run(f.job.jobId,revision);
   assert.equal(f.executions.length,1);assert.equal(f.receipt(d.runId).outcome,'succeeded');
-  assert.deepEqual(f.transport.map(x=>x.action),['reconcile','scheduled','reconcile','scheduled']);
+  assert.deepEqual(f.transport.map(x=>x.action),['reconcile','scheduled','report','reconcile','scheduled']);
+  // The duplicate second delivery returns before a receipt exists, so only the first run reports.
 });
 test('E2E3 two missed occurrences produce one latest-due coalesced execution',async t=>{
   const f=harness(t);await f.runner.run(f.job.jobId,revision);

@@ -69,4 +69,17 @@ printf 'skills:\n  - name: "/acme:crm"\n    use: "Company CRM."\n    keywords: "
 out="$(run "post this in slack")"
 grep -q '^/acme:crm: ' <<<"$out" || fail "local index should win when present"
 echo "ok 6 local index wins"
-echo "intent-hint.test.sh: 6/6 passed"
+rm -f "$TMP/workspace/orchestrator/intent-index.yaml"
+
+# Multi-line prompts (feedback_6f587581). Desktop prompts often start with a
+# <system-reminder> block. The hook must not write to stderr (BSD awk rejects a
+# -v value containing a newline), and a keyword at the end of a line must still
+# match. The line-end checks fail before the fix under gawk and mawk too.
+ml_prompt="$(printf '<system-reminder>\nsome context\n</system-reminder>\nsummarize what happened\nin slack\nthanks')"
+out="$(run "$ml_prompt" 2>"$TMP/ml.err")"
+[ ! -s "$TMP/ml.err" ] || fail "multi-line prompt wrote to stderr: $(cat "$TMP/ml.err")"
+grep -q '^<intent-hints>' <<<"$out" || fail "multi-line prompt produced no hints block"
+grep -q '^integrations: ' <<<"$out" || fail "slack at a line end should hint integrations"
+grep -q '^/search: ' <<<"$out" || fail "happened at a line end should hint /search"
+echo "ok 7 multi-line prompt"
+echo "intent-hint.test.sh: 7/7 passed"

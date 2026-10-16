@@ -361,6 +361,46 @@ scope_shell_prefix_is_unquoted() {
   [ -z "$quote" ] && [ "$escaped" -eq 0 ]
 }
 
+# True when <name> is expanded at least once in <command> and every expansion
+# ($name, ${name}) sits inside double quotes, where the shell neither splits
+# nor globs the value. Any other parameter form (${name:-x}, ${name/a/b}), a
+# command substitution or backtick (whose quoting starts over inside), or a
+# heredoc (whose body quoting this scan cannot follow) returns 1.
+scope_var_uses_double_quoted() {
+  local name="${1:-}" text="${2:-}" i ch quote="" escaped=0 uses=0 rest next
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  case "$text" in *'<<'*|*'$('*|*$'\140'*) return 1 ;; esac
+  for ((i = 0; i < ${#text}; i++)); do
+    ch="${text:i:1}"
+    if [ "$escaped" -eq 1 ]; then escaped=0; continue; fi
+    if [ "$quote" = "'" ]; then
+      [ "$ch" = "'" ] && quote=""
+      continue
+    fi
+    case "$ch" in
+      \\) escaped=1 ;;
+      "'") [ "$quote" = '"' ] || quote="'" ;;
+      '"') if [ "$quote" = '"' ]; then quote=""; else quote='"'; fi ;;
+      '$')
+        rest="${text:$((i + 1))}"
+        if [[ "$rest" == "{$name}"* ]]; then
+          [ "$quote" = '"' ] || return 1
+          uses=$((uses + 1))
+        elif [[ "$rest" == "{$name"* ]]; then
+          return 1
+        elif [[ "$rest" == "$name"* ]]; then
+          next="${rest:${#name}:1}"
+          case "$next" in
+            [A-Za-z0-9_]) ;;
+            *) [ "$quote" = '"' ] || return 1; uses=$((uses + 1)) ;;
+          esac
+        fi
+        ;;
+    esac
+  done
+  [ "$uses" -gt 0 ]
+}
+
 scope_shell_variable_values() {
   local name="${1:-}" prefix="${2:-}" command_text="${3:-}" loop_re assignment_re command_prefix_re
   local raw value command_prefix function_name function_re function_keyword_re statement call_text position call_count call_occurrences loop_match loop_pre
@@ -459,19 +499,35 @@ scope_shell_variable_values() {
   fi
 
   assignment_re="^[[:space:]]*${name}=([^[:space:];|&]+);[[:space:]]*(.*)$"
-  [[ "$prefix" =~ $assignment_re ]] || return 1
-  raw="${BASH_REMATCH[1]}"
-  command_prefix="${BASH_REMATCH[2]}"
-  [[ "$command_prefix" =~ $command_prefix_re ]] || return 1
-  [[ "$command_prefix" =~ (^|[[:space:]])${name}= ]] && return 1
-  case "$raw" in
-    \"*) raw="${raw#\"}"; raw="${raw%\"}" ;;
-    \'*) raw="${raw#\'}"; raw="${raw%\'}" ;;
-  esac
-  case "$raw" in
+  if [[ "$prefix" =~ $assignment_re ]]; then
+    raw="${BASH_REMATCH[1]}"
+    command_prefix="${BASH_REMATCH[2]}"
+    if [[ "$command_prefix" =~ $command_prefix_re ]]; then
+      [[ "$command_prefix" =~ (^|[[:space:]])${name}= ]] && return 1
+      case "$raw" in
+        \"*) raw="${raw#\"}"; raw="${raw%\"}" ;;
+        \'*) raw="${raw#\'}"; raw="${raw%\'}" ;;
+      esac
+      case "$raw" in
+        ""|*[!A-Za-z0-9_./@+-]*) return 1 ;;
+      esac
+      printf '%s\n' "$raw"
+      return 0
+    fi
+  fi
+  # The use is not a plain word list after the assignment (a redirect, a
+  # heredoc, quotes: `CO=indigo; cat > companies/$CO/x <<'EOF'`). Accept the
+  # value only under the stricter run-order rules of
+  # scope_assignment_literal_value, and only as one plain word, so the caller
+  # checks the substituted path exactly as if it had been typed (a value
+  # naming another company, or climbing out with `..`, is still refused there).
+  local assignment_value
+  assignment_value="$(scope_assignment_literal_value "$name" "$prefix" "$command_text")" || return 1
+  value="${assignment_value##*$'\037'}"
+  case "$value" in
     ""|*[!A-Za-z0-9_./@+-]*) return 1 ;;
   esac
-  printf '%s\n' "$raw"
+  printf '%s\n' "$value"
 }
 
 scope_candidate_is_inert_text() {
@@ -1251,10 +1307,17 @@ scope_rel_allowed() {
 # Say how to rewrite a command whose path the guard could not resolve
 # statically, so the next attempt passes instead of guessing.
 scope_print_rewrite_hint() {
-  local rel="${1:-}" backtick=$'\140'
+  local rel="${1:-}" backtick=$'\140' remote_re
   case "$rel" in
     *'$('*|*"$backtick"*)
       printf '%s\n' "How to rewrite: a command substitution's output cannot be checked. Run the inner command first, then use the literal path it printed." >&2
+      # Inside double quotes the local shell runs $(...) before ssh or
+      # `hq outposts exec` sends the command, so the substitution reads local
+      # paths. Single quotes send it unexpanded to run on the remote host.
+      remote_re='(^|[;&|({[:space:]])(ssh|hq[[:space:]]+outposts[[:space:]]+exec)[[:space:]]'
+      if [[ "${cmd:-}" =~ $remote_re ]]; then
+        printf '%s\n' "For a remote command (ssh, hq outposts exec), wrap it in single quotes so \$(...) runs on the remote host: hq outposts exec box -- 'cat \$(ls -d /srv/x/* | tail -1)/VERSION'." >&2
+      fi
       ;;
     *'$'*)
       printf '%s\n' "How to rewrite: the guard follows a variable only when the same command gives it a literal value, as in VAR=/abs/path; cmd \"\$VAR/x\" or for x in a b c; do cmd dir/\$x; done. \$HOME is resolved automatically. Otherwise spell the path literally." >&2
@@ -1693,23 +1756,74 @@ scope_open_tree_expansion_has_parent_value() {
 # same TMPDIR this hook inherits from the agent's shell. Print a representative
 # absolute path inside that temp dir so the operand is authorized like any
 # literal path there (a TMPDIR inside companies/ is still checked as such).
-# Only the bare forms `mktemp`, `mktemp -d`, and `-t NAME` qualify, the variable
-# must be assigned exactly once, and a command that mentions TMPDIR is refused.
+# The bare forms `mktemp`, `mktemp -d`, and `-t NAME` qualify, and so do a
+# literal TEMPLATE (`mktemp -d /tmp/dl.XXXXXX`, `mktemp workspace/x.XXXX`) and
+# `-p DIR` / `--tmpdir=DIR` with a literal DIR. The printed value is the
+# template's own path (or DIR/TEMPLATE), which is where mktemp creates the
+# entry, so `mktemp -d companies/<other>/x.XXXX` is checked as that company's
+# path. A literal suffix after the substitution (`T=$(mktemp -d)/theme`) is
+# appended. The variable must be assigned exactly once, every word must be
+# literal with no `..`, and a command that mentions TMPDIR is refused.
 scope_mktemp_assignment_value() {
   local name="${1:-}" command_text="${2:-}" mktemp_re count tmp_root
+  local args suffix arg template="" dir="" have_t=0 expect="" value
+  local -a words=()
   [ -n "$name" ] || return 1
   case "$command_text" in *TMPDIR*) return 1 ;; esac
   mktemp_re='(^|[;&|[:space:]])'
   mktemp_re+="$name="
-  mktemp_re+='"?\$\(mktemp( -d)?( -t [A-Za-z0-9._-]+)?( -d)?\)"?([;&|[:space:]]|$)'
+  mktemp_re+='"?\$\(mktemp([^()]*)\)([A-Za-z0-9._/@+-]*)"?([;&|[:space:]]|$)'
   [[ "$command_text" =~ $mktemp_re ]] || return 1
+  args="${BASH_REMATCH[2]}"
+  suffix="${BASH_REMATCH[3]}"
   count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_])${name}=" | wc -l | tr -d '[:space:]')"
   [ "$count" = "1" ] || return 1
-  tmp_root="${TMPDIR:-/tmp}"
-  tmp_root="${tmp_root%/}"
-  case "$tmp_root" in /*) ;; *) return 1 ;; esac
-  case "$tmp_root" in *'..'*|*'$'*|*[[:space:]]*|*'*'*|*'?'*|*'['*) return 1 ;; esac
-  printf '%s/hq-scope-mktemp' "$tmp_root"
+  case "$args$suffix" in *'..'*) return 1 ;; esac
+  case "$args" in *[!A-Za-z0-9._/@+=[:space:]-]*) return 1 ;; esac
+  case "$suffix" in ""|/*) ;; *) return 1 ;; esac
+  IFS=$' \t' read -r -a words <<< "$args"
+  for arg in ${words[@]+"${words[@]}"}; do
+    if [ -n "$expect" ]; then
+      case "$arg" in -*|'~'*) return 1 ;; esac
+      case "$expect" in
+        t) have_t=1; case "$arg" in */*) return 1 ;; esac ;;
+        p) dir="$arg" ;;
+      esac
+      expect=""
+      continue
+    fi
+    case "$arg" in
+      -d|-q|--directory|--quiet) ;;
+      -t) expect=t ;;
+      -p) expect=p ;;
+      --tmpdir=?*) dir="${arg#--tmpdir=}" ;;
+      -*) return 1 ;;
+      *)
+        [ -z "$template" ] || return 1
+        case "$arg" in '~'*) return 1 ;; esac
+        template="$arg"
+        ;;
+    esac
+  done
+  [ -z "$expect" ] || return 1
+  if [ -n "$template" ]; then
+    # -t with a TEMPLATE means different directories on GNU and BSD mktemp.
+    [ "$have_t" -eq 0 ] || return 1
+    case "$template" in
+      */*) [ -z "$dir" ] || return 1; value="$template" ;;
+      *) if [ -n "$dir" ]; then value="${dir%/}/$template"; else value="$template"; fi ;;
+    esac
+  elif [ -n "$dir" ]; then
+    [ "$have_t" -eq 0 ] || return 1
+    value="${dir%/}/hq-scope-mktemp"
+  else
+    tmp_root="${TMPDIR:-/tmp}"
+    tmp_root="${tmp_root%/}"
+    case "$tmp_root" in /*) ;; *) return 1 ;; esac
+    case "$tmp_root" in *'..'*|*'$'*|*[[:space:]]*|*'*'*|*'?'*|*'['*) return 1 ;; esac
+    value="$tmp_root/hq-scope-mktemp"
+  fi
+  printf '%s%s' "$value" "$suffix"
 }
 
 scope_resolve_known_path_expansions() {
@@ -1789,7 +1903,11 @@ scope_resolve_known_path_expansions() {
         # single absolute path would authorize a cross-company read by the
         # leading `/tmp`. A glob character likewise stands for paths this value
         # does not name. Either one stays unresolved and fails closed.
-        *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*) value="" ;;
+        *'*'*|*'?'*|*'['*|*']'*) value="" ;;
+        # A quoted value with a space (`L="/x/My Drive/out"`) is one word when
+        # every use of the variable is double-quoted (checked again here for
+        # values such as $HOME that did not come from an assignment).
+        *[[:space:]]*) scope_var_uses_double_quoted "$name" "$command_text" || value="" ;;
         # A relative value (`D=workspace/x`) is substituted too. The shell
         # pastes the value's text into the word, so the result is exactly the
         # literal path the agent could have typed, and it goes through the
@@ -1895,7 +2013,7 @@ scope_assignment_literal_value() {
   [[ "$command_text" =~ $re ]] && return 1
 
   assign_re="(^|[;&|[:space:](\{${backtick}])(export[[:space:]]+)?${name}="
-  assign_re+='(\$\([^()]*\)|"[^"]*"|'"'[^']*'"'|[^][;&|[:space:]<>()"'"'"'\\*?{}~`]*)'
+  assign_re+='(\$\([^()]*\)|[A-Za-z0-9_./@+:-]*\$\(date[^()]*\)[A-Za-z0-9_./@+:-]*|"[^"]*"|'"'[^']*'"'|[^][;&|[:space:]<>()"'"'"'\\*?{}~`]*)'
   [[ "$use_prefix" =~ $assign_re ]] || return 1
   raw="${BASH_REMATCH[3]}"
   head_cut="${BASH_REMATCH[1]}${BASH_REMATCH[2]}$name=$raw"
@@ -1924,20 +2042,39 @@ scope_assignment_literal_value() {
   fi
 
   case "$raw" in
-    '$('*)
-      value="$(scope_date_substitution_value "$raw")" || return 1
-      ;;
     \"*\") value="${raw:1:${#raw}-2}"
       case "$value" in *"$backtick"*|*'$('*|*\\*) return 1 ;; esac
       ;;
     \'*\') value="${raw:1:${#raw}-2}"
       case "$value" in *'$'*) return 1 ;; esac
       ;;
+    *'$('*)
+      # One slash-free `$(date +FORMAT)` piece, alone or between literal
+      # filename characters (`T=/tmp/theme-$(date +%s)`).
+      local sub_pre sub_rest sub_body sub_post date_value
+      sub_pre="${raw%%\$\(*}"
+      sub_rest="${raw#*\$\(}"
+      sub_body="${sub_rest%%\)*}"
+      sub_post="${sub_rest#*\)}"
+      case "$sub_pre$sub_post" in *'$'*|*'('*|*')'*) return 1 ;; esac
+      date_value="$(scope_date_substitution_value "\$($sub_body)")" || return 1
+      value="$sub_pre$date_value$sub_post"
+      ;;
     *) value="$raw" ;;
   esac
   [ -n "$value" ] || return 1
   case "$value" in
-    *[[:space:]]*|*'*'*|*'?'*|*'['*|*']'*|*"$backtick"*|*\\*|*"$us"*) return 1 ;;
+    *[[:space:]]*)
+      # A space inside a quoted value (`L="/x/My Drive/out"`) is one word only
+      # while every use of the variable is inside double quotes; an unquoted
+      # use word-splits it into several paths.
+      case "$raw" in \"*\"|\'*\') ;; *) return 1 ;; esac
+      case "$value" in *$'\n'*|*$'\t'*|*$'\r'*) return 1 ;; esac
+      scope_var_uses_double_quoted "$name" "$command_text" || return 1
+      ;;
+  esac
+  case "$value" in
+    *'*'*|*'?'*|*'['*|*']'*|*"$backtick"*|*\\*|*"$us"*) return 1 ;;
     '~'*) return 1 ;;
   esac
   printf '%s%s%s' "$before" "$us" "$value"
@@ -2156,6 +2293,20 @@ scope_token_is_vcs_ref_operand() {
   return 1
 }
 
+# Index in scope_tokens of the program a simple command runs: the splitter
+# leaves a leading loop or conditional keyword (`do echo ...`, `then sed
+# ...`) in the record, so skip those words.
+scope_command_head_index() {
+  local i=0
+  while [ "$i" -lt "${#scope_tokens[@]}" ]; do
+    case "${scope_tokens[$i]}" in
+      do|then|else|elif|'{'|'!') i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$i"
+}
+
 # A shell word such as "EXISTS: $(wc -l < f) lines" or the prose line of an
 # interpreter heredoc ("see `companies/x` and ...") contains a slash but is
 # not a path anyone opens: its first path component begins with a plain word
@@ -2174,9 +2325,9 @@ scope_token_is_vcs_ref_operand() {
 # Arguments: <token> <context: shell|body> <token index in scope_tokens>.
 scope_token_is_prose() {
   local token="${1:-}" context="${2:-shell}" index="${3:-0}"
-  local reduced lead sub_re body cwd head prev backtick=$'\140' mark=$'\001'
+  local reduced lead sub_re body cwd head prev backtick=$'\140' mark=$'\001' lead_is_var=0 shell_pipe_re
   scope_prose_subs=()
-  case "$token" in /*|~*|*'..'*|*"$mark"*) return 1 ;; esac
+  case "$token" in /*|~*|*"$mark"*) return 1 ;; esac
   reduced="$token"
   sub_re='\$\(([^()]*)\)'
   while [[ "$reduced" =~ $sub_re ]]; do
@@ -2193,6 +2344,10 @@ scope_token_is_prose() {
     [ "${#scope_prose_subs[@]}" -le 16 ] || return 1
   done
   case "$reduced" in *[[:space:]]*) ;; *) return 1 ;; esac
+  # A `..` in the text itself can climb out of the first component. A `..`
+  # inside a substitution body (`git log origin/main..HEAD`) is an argument
+  # of that command; the body is checked as a command by the caller.
+  case "$reduced" in *'..'*) return 1 ;; esac
   # The tokenizer has already removed escapes, so a body's `a\ b` would be
   # re-split differently from how the shell runs it. With any backslash in
   # the command, a substitution in prose gets no exemption.
@@ -2202,21 +2357,34 @@ scope_token_is_prose() {
   case "$reduced" in *'$('*|*"$backtick"*|*'('*'('*) return 1 ;; esac
   # The leading word must be literal text ended by whitespace, before any
   # slash, variable, or substituted value can join the first path component.
+  # The one exception is a plain `$name` lead in echo/printf text (checked
+  # below), which prints the word and opens nothing.
   lead="${reduced%%[[:space:]]*}"
   [ -n "$lead" ] || return 1
-  case "$lead" in *'/'*|*'$'*|*"$mark"*|*'*'*|*'?'*|*'['*|*'{'*|*'~'*) return 1 ;; esac
+  case "$lead" in
+    *'/'*|*'$'*|*"$mark"*|*'*'*|*'?'*|*'['*|*'{'*|*'~'*)
+      [ "$context" != body ] && [[ "$lead" =~ ^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$ ]] || return 1
+      lead_is_var=1
+      ;;
+  esac
   if [ "$context" != body ]; then
     case "$reduced" in
       *'$'*|*"$mark"*)
-        head="${scope_tokens[0]:-}"
+        local head_index
+        head_index="$(scope_command_head_index)"
+        head="${scope_tokens[$head_index]:-}"
         head="${head##*/}"
         case "$head" in echo|printf) ;; *) return 1 ;; esac
-        [ "$index" -gt 0 ] || return 1
+        [ "$index" -gt "$head_index" ] || return 1
         prev="${scope_tokens[$((index - 1))]:-}"
         [[ "$prev" =~ ^[0-9]*(\<|\>|\>\>|\<\<\<|\>\|)$|^\&\>\>?$ ]] && return 1
+        # Printed text piped into a shell or interpreter is run, not shown.
+        shell_pipe_re='\|[[:space:]]*(sudo[[:space:]]+|env[[:space:]]+|command[[:space:]]+|exec[[:space:]]+)*([^[:space:]|;&]*/)?(bash|sh|zsh|dash|ksh|fish|xargs|eval|source|python[0-9.]*|node|perl|ruby)([[:space:]]|$)'
+        [[ "${scope_scan_cmd:-}" =~ $shell_pipe_re ]] && return 1
         ;;
     esac
   fi
+  [ "$lead_is_var" -eq 0 ] || return 0
   cwd="${COMMAND_CWD:-$HQ_ROOT}"
   if ( cd "$cwd" 2>/dev/null && shopt -s dotglob && compgen -G "$lead"'[[:space:]]*' >/dev/null ); then
     return 1
@@ -2308,36 +2476,372 @@ scope_offset_in_interpreter_body() {
 }
 
 scope_check_prose_substitutions() {
-  local body record tok
+  local body record tok tok_prefix body_prefix
   local -a sub_tokens=()
-  local stripped cd_re='(^|[;&|[:space:]])(cd|pushd|CDPATH=)'
+  local stripped cd_re='(^|[;&|[:space:]])(cd|pushd|popd|CDPATH=)'
   for body in ${scope_prose_subs[@]+"${scope_prose_subs[@]}"}; do
     # The prose exemption only covers the outer text. A substitution body is
-    # a command, and it gets no more latitude than the top-level scan: any
-    # quoting, escaping, brace, glob, expansion, or directory change that
-    # could assemble or reach a tenant path fails closed here.
+    # a command, and it gets no more latitude than the top-level scan:
+    # escaping, braces, globs, a nested substitution, or a directory change
+    # that could assemble or reach a tenant path fails closed here.
     case "$body" in
-      *"'"*|*'"'*|*\\*|*'{'*|*'}'*|*'*'*|*'?'*|*'['*|*'$'*|*$'\140'*)
-        scope_block_rel "\$($body)" "a command substitution inside text uses quoting, globbing, or expansion; run it as its own command with literal paths"
+      *\\*|*'{'*|*'}'*|*'*'*|*'?'*|*'['*|*$'\140'*|*'$('*)
+        scope_block_rel "\$($body)" "a command substitution inside text uses escaping, braces, globbing, or a nested substitution; run it as its own command with literal paths"
         ;;
     esac
+    # Quotes only group words here (`grep -n 'start' f`). The tokenizer
+    # removes them, and every resulting word is checked below, so a path
+    # spliced from quoted pieces is checked as the path the program gets.
+    # Unbalanced quoting means the body was cut at a quoted `)`.
+    scope_shell_prefix_is_unquoted "$body" \
+      || scope_block_rel "\$($body)" "a command substitution inside text has unbalanced quotes; run it as its own command with literal paths"
     [[ "$body" =~ $cd_re ]] && scope_block_rel "\$($body)" "a command substitution inside text changes directory; run it as its own command with literal paths"
-    stripped="${body//companies\//}"
+    stripped="${body//[\"\']/}"
+    stripped="${stripped//companies\//}"
     case "$stripped" in *[Cc][Oo][Mm][Pp][Aa][Nn]*)
       scope_block_rel "\$($body)" "a command substitution inside text names companies in a form the guard cannot resolve"
       ;;
     esac
+    body_prefix=""
+    [[ "${scope_scan_cmd:-}" == *"\$($body)"* ]] && body_prefix="${scope_scan_cmd%%"\$($body)"*}\$("
     while IFS= read -r record; do
       [ -n "$record" ] || continue
       IFS=$'\037' read -r -a sub_tokens <<< "$record"
       for tok in "${sub_tokens[@]}"; do
         case "$tok" in
           companies/*) scope_check_bash_candidate "$tok" "$body" "" "" ;;
+          *'$'*)
+            # A variable is accepted only where the rest of the command
+            # proves its value (an earlier `D=workspace/x;`, a literal
+            # `for c in a b` list). The value is substituted and checked as a
+            # path; an unproven variable fails closed, slash or not, because
+            # `cat $D` opens whatever D names.
+            case "$tok" in
+              */*) scope_check_bash_skill_path "$tok" "${scope_scan_cmd:-$body}" "" "" ;;
+              *)
+                [ -n "$body_prefix" ] && [[ "$body" == *"$tok"* ]] \
+                  || scope_block_rel "\$($body)" "a variable inside a command substitution cannot be resolved; run it as its own command with literal paths"
+                tok_prefix="$body_prefix${body%%"$tok"*}"
+                scope_check_bash_candidate_inner "$tok" "$scope_scan_cmd" 0 "" "$tok_prefix" ""
+                ;;
+            esac
+            ;;
           */*|/*|.claude*) scope_check_bash_skill_path "$tok" "$body" "" "" ;;
         esac
       done
     done <<< "$(hq_shell_simple_commands "$body")"
   done
+}
+
+# Print the bodies of quoted-delimiter python or node heredocs that cannot
+# hand text to a shell: no system/popen/subprocess/spawn/exec/child_process,
+# and none of the reflection or dynamic-import names that can reach them.
+# In such a body a `$` or backtick is source text that nothing expands, so a
+# word like `$30k/mo` or `${x}/bar` names no path. Bodies of any other
+# interpreter, or with any of those names, are not printed and keep the
+# fail-closed variable checks.
+scope_text_only_interpreter_bodies() {
+  local raw="${1:-}" line delimiter="" in_body=0 interp_re tail body="" keep=0
+  local handoff_re='system|popen|Popen|subprocess|spawn|exec|shell|Shell|child_|process\.binding|process\.dlopen|pty\.|commands|getoutput|__import__|__builtins__|__dict__|__class__|__globals__|__subclasses__|getattr|attrgetter|methodcaller|globals\(|vars\(|eval|importlib|import\(|pickle|marshal|ctypes|cffi|Function\(|require\(|fork'
+  case "$raw" in *'<<'*) ;; *) return 0 ;; esac
+  interp_re='(^|[[:space:];])(python|python[0-9.]*|node)([[:space:]]|$)'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$in_body" -eq 1 ]; then
+      if [ "$line" = "$delimiter" ]; then
+        in_body=0
+        if [ "$keep" -eq 1 ] && ! [[ "$body" =~ $handoff_re ]]; then
+          printf '%s' "$body"
+        fi
+        body=""
+      else
+        body+="$line"$'\n'
+      fi
+      continue
+    fi
+    keep=0
+    case "$line" in *'<<'*'<<'*) continue ;; esac
+    [[ "$line" =~ $interp_re ]] || continue
+    tail="${line#*<<}"
+    while [[ "$tail" == [[:space:]]* ]]; do tail="${tail:1}"; done
+    case "$tail" in
+      \'*) tail="${tail#\'}"; delimiter="${tail%%\'*}" ;;
+      \"*) tail="${tail#\"}"; delimiter="${tail%%\"*}" ;;
+      *) continue ;;
+    esac
+    case "$delimiter" in ""|*[!A-Za-z0-9._-]*) continue ;; esac
+    in_body=1
+    keep=1
+  done <<< "$raw"
+}
+
+# True when token <index> of scope_tokens is exactly `$(BODY)` (or
+# `--opt=$(BODY)`) given as the value of an option that carries data, not a
+# path, for a client that sends it (curl, wget, xh/http, gh, hq):
+# `hq ... --json "$(cat workspace/x.json)"`, `curl -d "$(cat $D/q.gql)"`. BODY
+# must be one plain reader (cat, head, tail, jq) with no pipe, redirect, or
+# nested substitution; its operands are returned in scope_prose_subs and
+# checked as commands by scope_check_prose_substitutions, so a reader of
+# another company's file, or of an unproven variable, still fails closed. A
+# substitution in a path position (`cat "$(cat p)"`, `cp a "$(...)"`) is not
+# covered and stays refused.
+scope_token_is_data_option_substitution() {
+  local index="${1:-0}" token prev body opt reader record count=0 head
+  scope_prose_subs=()
+  [ "$index" -gt 0 ] || return 1
+  token="${scope_tokens[$index]:-}"
+  prev="${scope_tokens[$((index - 1))]:-}"
+  case "$token" in
+    '$('*')') opt="$prev"; body="${token#\$(}" ;;
+    --*'=$('*')') opt="${token%%=*}"; body="${token#*=\$(}" ;;
+    *) return 1 ;;
+  esac
+  body="${body%)}"
+  # Only clients that send the value somewhere: `-d` is a directory for
+  # mktemp and unzip, so the option alone does not make the value data.
+  head="${scope_tokens[$(scope_command_head_index)]:-}"
+  head="${head##*/}"
+  case "$head:$opt" in
+    curl:-d|curl:--data|curl:--data-raw|curl:--data-binary|curl:--data-ascii|curl:--json) ;;
+    wget:--post-data|wget:--body-data) ;;
+    xh:--raw|http:--raw|https:--raw) ;;
+    gh:--body|gh:--title|gh:--raw-field) ;;
+    hq:--json|hq:--body|hq:--text|hq:--message|hq:--params|hq:--payload|hq:--summary|hq:--title|hq:--description|hq:--note) ;;
+    *) return 1 ;;
+  esac
+  case "$body" in *'('*|*')'*|*$'\140'*|*'|'*|*'<'*|*'>'*|*';'*|*'&'*|*$'\n'*) return 1 ;; esac
+  while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    count=$((count + 1))
+    reader="${record%%$'\037'*}"
+  done <<< "$(hq_shell_simple_commands "$body")"
+  [ "$count" -eq 1 ] || return 1
+  case "${reader##*/}" in cat|head|tail|jq) ;; *) return 1 ;; esac
+  scope_prose_subs=("$body")
+  return 0
+}
+
+# A pipeline whose output is only line numbers or counts: `grep -n PAT [FILE]
+# | cut -d: -f1`, or anything ending in `wc -l` reading stdin, with optional
+# `head`/`tail -n N` stages. Such output cannot carry a sed command or a path.
+scope_substitution_prints_numbers() {
+  local body="${1:-}" record stage=0 last="" tok i operands saw_n saw_cut=0
+  local -a words=()
+  case "$body" in *';'*|*'&'*|*$'\n'*|*'>'*) return 1 ;; esac
+  while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    stage=$((stage + 1))
+    IFS=$'\037' read -r -a words <<< "$record"
+    case "${words[0]}" in
+      grep)
+        [ "$stage" -eq 1 ] || return 1
+        saw_n=0; operands=0; i=1
+        while [ "$i" -lt "${#words[@]}" ]; do
+          tok="${words[$i]}"
+          case "$tok" in
+            --line-number) saw_n=1 ;;
+            -e) i=$((i + 1)); operands=$((operands + 1)) ;;
+            --) ;;
+            -*)
+              case "$tok" in -*[!nEiFwxvP]*) return 1 ;; esac
+              case "$tok" in *n*) saw_n=1 ;; esac
+              ;;
+            *) operands=$((operands + 1)) ;;
+          esac
+          i=$((i + 1))
+        done
+        # Pattern plus at most one file: with two files grep prefixes names.
+        [ "$saw_n" -eq 1 ] && [ "$operands" -ge 1 ] && [ "$operands" -le 2 ] || return 1
+        last="grep"
+        ;;
+      cut)
+        [ "$last" = grep ] || return 1
+        case "${words[*]:1}" in
+          '-d: -f1'|'-d : -f1'|'-d: -f 1'|'-d : -f 1'|'-f1 -d:'|'-f 1 -d :'|'-f1 -d :') ;;
+          *) return 1 ;;
+        esac
+        saw_cut=1
+        last="cut"
+        ;;
+      head|tail)
+        [ "$stage" -gt 1 ] || return 1
+        case "${words[*]:1}" in
+          ''|-[0-9]*|'-n '[0-9]*|-n[0-9]*) ;;
+          *) return 1 ;;
+        esac
+        case "${words[*]:1}" in *[!0-9n\ -]*) return 1 ;; esac
+        ;;
+      wc)
+        # `wc -l` on stdin (a pipe or `< file`) prints only the count.
+        case "${words[*]:1}" in
+          -l) ;;
+          '-l < '*) [ "${#words[@]}" -eq 4 ] || return 1 ;;
+          *) return 1 ;;
+        esac
+        last="wc"
+        ;;
+      *) [ "$stage" -eq 1 ] || return 1; last=other ;;
+    esac
+  done <<< "$(hq_shell_simple_commands "$body")"
+  # Only head/tail may follow the final cut or wc.
+  [ "$last" = wc ] || { [ "$last" = cut ] && [ "$saw_cut" -eq 1 ]; }
+}
+
+# True when token <index> is the script operand of sed (the first non-option
+# word, or the value of -e/--expression) and every `$(...)` in it prints
+# only digits (scope_substitution_prints_numbers) or a slash-free date
+# (scope_date_substitution_value). The script must be an address range with
+# p/d (`$(...),$p`, `$(...),+40p`) or one s command whose delimiter the
+# substituted text cannot contain and whose flags are among g p i I and
+# digits (no w file, no e). A literal `$` (a last-line address) must be
+# written `\$` in the command, so no shell variable is spliced into the
+# script. The substitution bodies are returned in scope_prose_subs and
+# checked as commands; the file operands are checked as usual.
+scope_token_is_sed_script() {
+  local index="${1:-0}" token head i tok script_at=-1 saw_script_opt=0 reduced sub_re body escaped whole
+  local mark=$'\001' delim rest addr_re
+  scope_prose_subs=()
+  [ "$index" -gt 0 ] || return 1
+  token="${scope_tokens[$index]:-}"
+  case "$token" in *'$('*) ;; *) return 1 ;; esac
+  case "$token" in *$'\140'*|*"$mark"*|*$'\n'*) return 1 ;; esac
+  i="$(scope_command_head_index)"
+  head="${scope_tokens[$i]:-}"
+  head="${head##*/}"
+  case "$head" in sed|gsed) ;; *) return 1 ;; esac
+  i=$((i + 1))
+  while [ "$i" -lt "${#scope_tokens[@]}" ]; do
+    tok="${scope_tokens[$i]}"
+    case "$tok" in
+      -e|--expression)
+        saw_script_opt=1
+        [ "$((i + 1))" -eq "$index" ] && script_at="$index"
+        i=$((i + 2)); continue ;;
+      -f|--file) saw_script_opt=1; i=$((i + 2)); continue ;;
+      -l|--line-length) i=$((i + 2)); continue ;;
+      --) i=$((i + 1)); break ;;
+      -*) i=$((i + 1)); continue ;;
+    esac
+    break
+  done
+  if [ "$saw_script_opt" -eq 0 ] && [ "$i" -eq "$index" ]; then
+    script_at="$index"
+  fi
+  [ "$script_at" -eq "$index" ] || return 1
+  # Every $(...) must be a plain, non-nested substitution.
+  reduced="$token"
+  sub_re='\$\(([^()]*)\)'
+  while [[ "$reduced" =~ $sub_re ]]; do
+    body="${BASH_REMATCH[1]}"
+    # The checks below run their own regex matches; keep this one.
+    whole="${BASH_REMATCH[0]}"
+    if ! scope_date_substitution_value "\$($body)" >/dev/null \
+      && ! scope_substitution_prints_numbers "$body"; then
+      return 1
+    fi
+    scope_prose_subs[${#scope_prose_subs[@]}]="$body"
+    reduced="${reduced/"$whole"/$mark}"
+    [ "${#scope_prose_subs[@]}" -le 4 ] || return 1
+  done
+  case "$reduced" in *'$('*|*'('*|*')'*) return 1 ;; esac
+  # A literal `$` must be backslash-escaped inside the double-quoted word,
+  # and that exact word must occur once.
+  escaped="$token"
+  if [[ "$reduced" == *'$'* ]]; then
+    local piece out="" restw="$token"
+    while [ -n "$restw" ]; do
+      if [[ "$restw" =~ ^\$\(([^()]*)\) ]]; then
+        out+="${BASH_REMATCH[0]}"
+        restw="${restw:${#BASH_REMATCH[0]}}"
+        continue
+      fi
+      piece="${restw:0:1}"
+      [ "$piece" = '$' ] && piece='\$'
+      out+="$piece"
+      restw="${restw:1}"
+    done
+    escaped="$out"
+    [[ "${scope_scan_cmd:-}" == *"\"$escaped\""* ]] || return 1
+    rest="${scope_scan_cmd#*"\"$escaped\""}"
+    [[ "$rest" != *"\"$escaped\""* ]] || return 1
+  fi
+  # Address range with p, d or nothing. A substitution here prints a number,
+  # so test the shape with a digit in its place (bash 3.2 uses \001
+  # internally and cannot match it in a regex).
+  addr_re='^([0-9]+|\$)(,([0-9]+|\$|\+[0-9]+|~[0-9]+))?[pd]?$'
+  [[ "${reduced//"$mark"/0}" =~ $addr_re ]] && return 0
+  # One s command.
+  [ "${reduced:0:1}" = s ] || return 1
+  delim="${reduced:1:1}"
+  case "$delim" in /|'|'|'#'|'@'|',') ;; *) return 1 ;; esac
+  rest="${reduced:2}"
+  [[ "$rest" == *"$delim"*"$delim"* ]] || return 1
+  rest="${rest#*"$delim"}"
+  rest="${rest#*"$delim"}"
+  case "$rest" in *"$delim"*) return 1 ;; esac
+  case "$rest" in *[!gpiI0-9]*) return 1 ;; esac
+  # No literal `$` outside the substitutions in an s command.
+  case "$reduced" in *'$'*) return 1 ;; esac
+  return 0
+}
+
+# True when token <index> is the value of a text option (`--text`,
+# `--summary`, `--title`, `--body`, `--message`, ...; `-m` for git) and holds
+# whitespace: message text the program stores or sends, not a path it
+# opens. Each whitespace-separated piece that looks like a path is still
+# checked: a literal one as a path, one with a `$` variable only if the
+# command proves its value, and one with a `$(...)` result next to a `/`
+# fails closed. `$(...)` bodies are returned in scope_prose_subs.
+scope_token_is_text_option_value() {
+  local index="${1:-0}" token prev opt head reduced sub_re piece mark=$'\001' backtick=$'\140'
+  scope_prose_subs=()
+  scope_text_pieces=()
+  [ "$index" -gt 0 ] || return 1
+  token="${scope_tokens[$index]:-}"
+  prev="${scope_tokens[$((index - 1))]:-}"
+  head="${scope_tokens[$(scope_command_head_index)]:-}"
+  head="${head##*/}"
+  case "$token" in
+    --*=*) opt="${token%%=*}"; token="${token#*=}" ;;
+    *) opt="$prev" ;;
+  esac
+  case "$opt" in
+    --text|--summary|--title|--body|--message|--note|--description|--next|--subject|--comment|--reason|--details) ;;
+    -m) [ "$head" = git ] || return 1 ;;
+    *) return 1 ;;
+  esac
+  case "$token" in *[[:space:]]*) ;; *) return 1 ;; esac
+  case "$token" in *"$mark"*) return 1 ;; esac
+  [[ "${scope_scan_cmd:-}" == *\\* ]] && case "$token" in *'$('*|*"$backtick"*) return 1 ;; esac
+  reduced="$token"
+  sub_re='\$\(([^()]*)\)'
+  while [[ "$reduced" =~ $sub_re ]]; do
+    scope_prose_subs[${#scope_prose_subs[@]}]="${BASH_REMATCH[1]}"
+    reduced="${reduced/"${BASH_REMATCH[0]}"/$mark}"
+    [ "${#scope_prose_subs[@]}" -le 16 ] || return 1
+  done
+  sub_re="$backtick([^$backtick\\\\]*)$backtick"
+  while [[ "$reduced" =~ $sub_re ]]; do
+    scope_prose_subs[${#scope_prose_subs[@]}]="${BASH_REMATCH[1]}"
+    reduced="${reduced/"${BASH_REMATCH[0]}"/$mark}"
+    [ "${#scope_prose_subs[@]}" -le 16 ] || return 1
+  done
+  case "$reduced" in *'$('*|*"$backtick"*|*'('*'('*|*'..'*) return 1 ;; esac
+  # As for prose: the first word is literal and no entry starting with it
+  # exists, so even a program that opened the value could not reach a real
+  # directory through it.
+  piece="${reduced%%[[:space:]]*}"
+  [ -n "$piece" ] || return 1
+  case "$piece" in *'/'*|*'$'*|*"$mark"*|*'*'*|*'?'*|*'['*|*'{'*|*'~'*) return 1 ;; esac
+  if ( cd "${COMMAND_CWD:-$HQ_ROOT}" 2>/dev/null && shopt -s dotglob && compgen -G "$piece"'[[:space:]]*' >/dev/null ); then
+    return 1
+  fi
+  while IFS= read -r piece; do
+    case "$piece" in
+      *"$mark"*/*|*/*"$mark"*) scope_block_rel "$token" "a command substitution result is used as part of a path inside message text" ;;
+      */*) scope_text_pieces[${#scope_text_pieces[@]}]="$piece" ;;
+    esac
+  done <<< "${reduced//[[:space:]]/$'\n'}"
+  return 0
 }
 
 scope_check_bash_skill_path() {
@@ -2378,6 +2882,24 @@ scope_check_bash_skill_path() {
       done
       return 0
     fi
+  fi
+  # `"$D"/*.md`, `"$D/"*.md`: the tokenizer drops the quotes, so the word
+  # `$D/*.md` is not in the command text and the use site (which decides
+  # whether `D=...` ran before it) was never found. Locate the quoted
+  # spelling and take the text before its opening quote as the prefix. Only
+  # a leading `$NAME` / `${NAME}` followed by `/` qualifies; the resolved
+  # path, glob included, is then checked like the unquoted form.
+  if [ -z "$prefix" ] && [ "${scope_occurrence_explicit:-0}" -eq 0 ] \
+    && [[ "$command_text" != *"$raw"* ]] \
+    && [[ "$raw" =~ ^(\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(/.*)$ ]]; then
+    local quoted_var="${BASH_REMATCH[1]}" quoted_rest="${BASH_REMATCH[3]}" quoted_form
+    for quoted_form in "\"$quoted_var\"$quoted_rest" "\"$quoted_var/\"${quoted_rest#/}"; do
+      if [[ "$command_text" == *"$quoted_form"* ]]; then
+        prefix="${command_text%%"$quoted_form"*}"
+        suffix="${command_text#*"$quoted_form"}"
+        break
+      fi
+    done
   fi
   scope_candidate_is_inert_text "$raw" "$command_text" "$prefix" "$suffix" && return 0
   case "$raw" in */*|/*) ;; *) return 0 ;; esac
@@ -2477,7 +2999,18 @@ scope_check_bash_skill_path() {
   token="$(printf '%s' "$masked" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*\}?' 2>/dev/null | head -n 1 || true)"
   [ -z "$token" ] || return 0
   case "$masked" in
-    *'*'*|*'?'*|*'['*) return 0 ;;
+    *'*'*|*'?'*|*'['*)
+      # A glob whose path only lands under companies/ after a variable was
+      # substituted or `..` was normalized (`D=companies/a/k; ls $D/../../b/*`)
+      # never reaches the companies/ text scan. Expand it and check every
+      # match, as for a literal companies/ glob.
+      case "$rel" in
+        companies|companies/*)
+          scope_check_bash_candidate_inner "$HQ_ROOT/$rel" "$command_text" 0 "" "" ""
+          ;;
+      esac
+      return 0
+      ;;
   esac
   resolved="$(scope_resolve_rel_symlinks "$rel")"
   scope_check_rel "$resolved"
@@ -2677,6 +3210,15 @@ case "$TOOL" in
       scope_remaining="${scope_remaining:$scope_consumed}"
     done
     scope_interp_bodies="$(scope_interpreter_heredoc_bodies "$scope_scan_cmd")"
+    scope_interp_bodies_unquoted="${scope_interp_bodies//[\"\']/}"
+    scope_interp_outside_unquoted="${scope_interp_outside//[\"\'\\]/}"
+    # The `$` relaxation applies only when every interpreter body in the
+    # command is a python/node body with no shell handoff.
+    scope_text_bodies_only=0
+    if [ -n "$scope_interp_bodies" ] \
+      && [ "$(scope_text_only_interpreter_bodies "$scope_scan_cmd")" = "$scope_interp_bodies" ]; then
+      scope_text_bodies_only=1
+    fi
     scope_segments="$(hq_shell_simple_commands "$scope_scan_cmd")"
     while IFS= read -r scope_record; do
       [ -n "$scope_record" ] || continue
@@ -2691,24 +3233,81 @@ case "$TOOL" in
           scope_check_prose_substitutions
           continue
         fi
+        if scope_token_is_sed_script "$scope_token_index"; then
+          scope_check_prose_substitutions
+          continue
+        fi
+        if scope_token_is_data_option_substitution "$scope_token_index"; then
+          scope_check_prose_substitutions
+          continue
+        fi
+        if scope_token_is_text_option_value "$scope_token_index"; then
+          scope_check_prose_substitutions
+          for scope_text_piece in ${scope_text_pieces[@]+"${scope_text_pieces[@]}"}; do
+            scope_check_bash_skill_path "$scope_text_piece" "$scope_scan_cmd" "" ""
+          done
+          continue
+        fi
         scope_token_context=shell
-        if [ -n "$scope_interp_bodies" ] && [[ "$scope_interp_bodies" == *"$scope_token"* ]] \
-          && [[ "$scope_interp_outside" != *"$scope_token"* ]]; then
-          scope_token_context=body
+        if [ -n "$scope_interp_bodies" ]; then
+          if [[ "$scope_interp_bodies" == *"$scope_token"* ]] \
+            && [[ "$scope_interp_outside" != *"$scope_token"* ]]; then
+            scope_token_context=body
+          elif { [[ "$scope_token" == *[[:space:]]* ]] || [[ "$scope_token" == *$'\140'* ]]; } \
+            && [[ "$scope_interp_bodies_unquoted" == *"$scope_token"* ]] \
+            && [[ "$scope_interp_outside_unquoted" != *"$scope_token"* ]]; then
+            # The tokenizer drops quotes, so adjacent string literals with
+            # no space after the comma (`print('a','see `x`')`) reach here as
+            # one glued word that is not in the body verbatim. Match it
+            # against the body with quotes removed (and against the outside
+            # with quotes and backslashes removed, so a shell word cannot be
+            # mistaken for body text).
+            scope_token_context=body
+          fi
         fi
         # A body word with spaces or backticks is source text such as
         # "see `companies/x` and `../y`", not one path. The outer shell
         # expands nothing in it, so check each path-like piece on its own
         # (company and .claude pieces are covered by the scans above). A
-        # piece with `$` still goes through the fail-closed variable checks.
+        # piece with `$` still goes through the fail-closed variable checks,
+        # except in a python/node body that cannot hand text to a shell
+        # (scope_text_only_interpreter_bodies), where `$30k/mo` or `${x}/y`
+        # is text nothing expands.
         if [ "$scope_token_context" = body ]; then
           case "$scope_token" in
             *'$('*) ;;
             *[[:space:]]*|*$'\140'*)
+              # In a body that can reach a shell, check every expansion in
+              # the whole word before it is split: splitting at braces would
+              # turn `${D}/x` into the harmless-looking pieces `$`, `D`, `/x`.
+              if [ "$scope_text_bodies_only" -eq 0 ]; then
+                while IFS= read -r scope_body_var; do
+                  [ -n "$scope_body_var" ] || continue
+                  scope_body_resolved="$(scope_resolve_known_path_expansions "$scope_body_var" "$scope_scan_cmd")"
+                  case "$scope_body_resolved" in
+                    *'$'*) scope_block_rel "$scope_token" "interpreter source that can run a shell command uses a variable the command does not set" ;;
+                  esac
+                done <<< "$(printf '%s' "$(scope_mask_literal_expansions "$scope_token")" | grep -oE '\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9])' 2>/dev/null || true)"
+              fi
               scope_body_pieces="${scope_token//[[:space:]\`\"\'(),;\{\}\[\]]/$'\n'}"
               while IFS= read -r scope_body_piece; do
                 case "$scope_body_piece" in
                   companies/*|.claude*|*/companies/*|*/.claude*) continue ;;
+                  *'$'*)
+                    [ "$scope_text_bodies_only" -eq 1 ] && continue
+                    # This body can hand the text to a shell (os.system,
+                    # subprocess, perl, ...), which expands the variable from
+                    # the environment. The interpreter's own quotes do not
+                    # stop that, so the shell single-quote rule does not
+                    # apply: the value must be proven by the command.
+                    scope_body_resolved="$(scope_resolve_known_path_expansions "$scope_body_piece" "$scope_scan_cmd")"
+                    case "$(scope_mask_literal_expansions "$scope_body_resolved")" in
+                      *'$'*) scope_block_rel "$scope_body_piece" "interpreter source that can run a shell command uses a variable the command does not set" ;;
+                    esac
+                    scope_body_piece="$scope_body_resolved"
+                    ;;
+                esac
+                case "$scope_body_piece" in
                   */*) scope_check_bash_skill_path "$scope_body_piece" "$scope_scan_cmd" "" "" ;;
                 esac
               done <<< "$scope_body_pieces"

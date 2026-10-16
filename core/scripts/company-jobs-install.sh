@@ -38,11 +38,12 @@ assertReleasedCode([
   root+'/core/scripts/outpost-jobs-reconcile.sh',
   root+'/core/scripts/hq-job-run.sh',
   root+'/core/scripts/company-job-with-credentials.sh',
+  root+'/core/scripts/lib/company-signin.mjs',
   process.argv[6],
   fs.realpathSync(nodeBinary),
 ]);
 PATHS
-for script in lib/company-jobs.mjs hq-agent-session.sh outpost-jobs-reconcile.sh hq-job-run.sh company-job-with-credentials.sh; do
+for script in lib/company-jobs.mjs lib/company-signin.mjs hq-agent-session.sh outpost-jobs-reconcile.sh hq-job-run.sh company-job-with-credentials.sh; do
   [ -s "$ROOT/core/scripts/$script" ] || { echo "release missing $script" >&2; exit 2; }
 done
 [ -r "$CREDS" ] || { echo 'company machine credentials not provisioned' >&2; exit 2; }
@@ -73,6 +74,29 @@ ensure_system_account() {
   [ "$(id -u "$name")" != 0 ] || exit 2
 }
 ensure_system_account hq-jobs /var/lib/hq-company-jobs
+# Box sign-in mode (no broker provider secret): a separate account owns the
+# Claude sign-in. hq-jobs never reads its home; the root runner passes only a
+# short-lived access token to the claude session unit.
+SIGNIN_MODE=0
+if jq -e '(.providerSecret == null) and (.provider == "claude")' "$CONFIG" >/dev/null; then
+  SIGNIN_MODE=1
+  command -v script >/dev/null || { echo 'missing prerequisite: script' >&2; exit 2; }
+  ensure_system_account hq-claude-auth /var/lib/hq-claude-auth
+  [ "$(id -u hq-claude-auth)" != "$(id -u hq-jobs)" ] || exit 2
+  for p in /var/lib/hq-claude-auth /var/lib/hq-claude-auth/.claude /var/lib/hq-claude-auth/.claude.json; do
+    [ ! -L "$p" ] || { echo "symlink refused: $p" >&2; exit 2; }
+  done
+  install -d -m 700 -o hq-claude-auth -g hq-claude-auth /var/lib/hq-claude-auth /var/lib/hq-claude-auth/.claude
+  if [ ! -e /var/lib/hq-claude-auth/.claude.json ]; then
+    printf '%s\n' '{"theme":"dark","hasCompletedOnboarding":true}' >/var/lib/hq-claude-auth/.claude.json
+    chown hq-claude-auth:hq-claude-auth /var/lib/hq-claude-auth/.claude.json
+    chmod 600 /var/lib/hq-claude-auth/.claude.json
+  fi
+  if runuser -u hq-jobs -- test -r /var/lib/hq-claude-auth/.claude || runuser -u hq-jobs -- test -x /var/lib/hq-claude-auth; then
+    echo 'hq-jobs can reach the Claude sign-in' >&2
+    exit 2
+  fi
+fi
 STATE=/var/lib/hq-job-runner/state
 UNITS=/etc/systemd/system
 install -d -m 700 -o root -g root /var/lib/hq-job-runner "$STATE" /run/hq-company-jobs /run/hq-company-jobs/tokens
@@ -82,9 +106,11 @@ install -d -m 700 -o hq-jobs -g hq-jobs "$PROJECTS"
 # Root owns credentials, the ledger and the config. The job account gets neither.
 chown root:root "$CREDS" "$CONFIG"
 chmod 600 "$CREDS" "$CONFIG"
-node - "$CONFIG" "$STATE" "$UNITS" <<'LAYOUT'
+AUTH_UID=0
+[ "$SIGNIN_MODE" != 1 ] || AUTH_UID="$(id -u hq-claude-auth)"
+node - "$CONFIG" "$STATE" "$UNITS" "$SIGNIN_MODE" "$AUTH_UID" <<'LAYOUT'
 const fs = require('node:fs');
-const [configPath, stateDir, unitDir] = process.argv.slice(2);
+const [configPath, stateDir, unitDir] = process.argv.slice(2, 5);
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 config.stateDir = stateDir;
 config.unitDir = unitDir;
@@ -92,6 +118,11 @@ config.jobUser = 'hq-jobs';
 config.jobHome = '/var/lib/hq-company-jobs';
 config.runnerHome = '/var/lib/hq-job-runner';
 config.secretRuntimeDir = '/run/hq-company-jobs';
+if (process.argv[5] === '1') {
+  config.providerAuthFile = '/var/lib/hq-claude-auth/.claude/.credentials.json';
+  config.providerAuthUid = Number(process.argv[6]);
+  if (!Number.isInteger(config.providerAuthUid) || config.providerAuthUid <= 0) throw Error('Invalid sign-in account');
+}
 fs.writeFileSync(configPath, JSON.stringify(config));
 LAYOUT
 chown root:root "$CONFIG"
@@ -114,7 +145,7 @@ const runtime=await import(pathToFileURL(c.hqRoot+'/core/scripts/lib/company-job
 runtime.validateConfig(c);
 const creds=JSON.parse(fs.readFileSync(c.machineCredsFile,'utf8'));
 if(creds.entityType!=='company-outpost'||creds.entityUid!==c.machineUid)throw Error('Wrong machine credentials');
-if(c.jobUser!=='hq-jobs'||!c.providerSecret)throw Error('Company provider secret binding missing');
+if(c.jobUser!=='hq-jobs'||(!c.providerSecret&&c.provider!=='claude'))throw Error('Company provider binding missing');
 const cloud=await import(pathToFileURL(c.cloudModule));
 if(typeof cloud.loadMachineCreds!=='function'||typeof cloud.getValidMachineTokens!=='function')throw Error('Machine client capability missing');
 ROOTCHECK
@@ -175,3 +206,27 @@ loginctl disable-linger hq-jobs
 systemctl daemon-reload
 systemctl enable --now hq-company-jobs.timer
 systemctl is-active --quiet hq-company-jobs.timer
+if [ "$SIGNIN_MODE" != 1 ]; then
+  systemctl disable --now hq-company-signin.service 2>/dev/null || true
+else
+  cat >/etc/systemd/system/hq-company-signin.service <<UNIT
+[Unit]
+Description=Company Outpost Claude sign-in watcher
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=HOME=/var/lib/hq-job-runner
+ExecStart="${NODE}" "${ROOT}/core/scripts/lib/company-signin.mjs" watch "${CONFIG}"
+Restart=always
+RestartSec=10
+UMask=0077
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now hq-company-signin.service
+fi

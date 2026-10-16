@@ -71,6 +71,17 @@ grep -q '^## Q-mode' "$QSET" && ok "Q-mode fact present" || bad "Q-mode fact pre
 grep -q '^- applies_to: startup' "$QSET" && grep -q '^- applies_to: builder' "$QSET" \
   && ok "STARTUP and BUILDER branches present" || bad "STARTUP and BUILDER branches present"
 
+# 4b. Guiding principles: overlap sweep, verified removals, fresh research, Q-retire.
+grep -q '^## Guiding Principles' "$SKILL" && ok "Guiding Principles section present" || bad "Guiding Principles section present"
+grep -q '^### Overlap & Cruft Sweep' "$SKILL" && ok "Overlap & Cruft Sweep step present" || bad "Overlap & Cruft Sweep step present"
+grep -q '^\*\*Removal plan:\*\*' "$SKILL" && ok "template has Removal plan" || bad "template has Removal plan"
+grep -q 'last 60 days' "$SKILL" && ok "web research freshness window stated" || bad "web research freshness window stated"
+grep -q '^## Q-retire' "$QSET" && ok "Q-retire question present" || bad "Q-retire question present"
+grep -q '^\*\*Scorecard:\*\* durable' "$SKILL" && ok "options carry the quality scorecard" || bad "options carry the quality scorecard"
+grep -q 'research/web-best-in-class.md' "$SKILL" && ok "best-in-class research note required" || bad "best-in-class research note required"
+grep -q 'first-principles clean-sheet design' "$SKILL" && ok "clean-sheet option required" || bad "clean-sheet option required"
+grep -qE 'Recommend the smallest footprint|Simplest wins' "$SKILL" && bad "least-code ranking removed" || ok "least-code ranking removed"
+
 # 5. Replay the fixture: apply the gate branch the SKILL text prescribes.
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cp "$FIXTURE/brainstorm.md" "$FIXTURE/board.json" "$tmp/"

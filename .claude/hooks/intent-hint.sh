@@ -40,8 +40,10 @@ INDEX="$HQ_ROOT/workspace/orchestrator/intent-index.yaml"
 MAX="${HQ_INTENT_HINT_MAX:-3}"
 
 # Lowercase prompt, non-alphanumerics (except - and /) to spaces, padded so
-# whole-word checks are a plain substring test.
-WORDS=" $(printf '%s' "$PROMPT" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9/\n-' ' ' | tr -s ' ') "
+# whole-word checks are a plain substring test. Newlines become spaces too:
+# BSD awk (macOS) rejects a -v value that contains a newline ("newline in
+# string"), and a word at the end of a line must still match.
+WORDS=" $(printf '%s' "$PROMPT" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9/-' ' ' | tr -s ' ') "
 
 awk -v words="$WORDS" -v max="$MAX" '
   function unq(v) { sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2); return v }

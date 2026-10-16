@@ -73,7 +73,7 @@
     },
     {
       "name": "brainstorm",
-      "description": "Compare approaches, surface unknowns, and draft a recommendation before PRD work.",
+      "description": "Compare approaches to best-in-class prior art, merge existing work, verify cruft removal, and recommend the most durable design before PRD work.",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -81,7 +81,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/brainstorm/SKILL.md",
-      "hash": "sha256:3577efc41782d07ea23b4bcb26fb6a99612ee0b9682c6ab524dc5737b80605c6",
+      "hash": "sha256:a5da93f2c6f4019329836d8f907e55fd51b91dd9ee9d5a0c2cf8041034dce8bb",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -98,7 +98,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/calibration-report/SKILL.md",
-      "hash": "sha256:2e7fba54b9460e03ebb6353d0b2ee19e33dd9859dd4506f2c650289586ed752e",
+      "hash": "sha256:0361b127d23557fbb562b5590d1b8078355e5c39ff610db7836630258fbc5884",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -166,7 +166,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/cleanup/SKILL.md",
-      "hash": "sha256:7d79c80fa18120fda0508b9e919327beed73e130fb086babeea1e66a002ff6cc",
+      "hash": "sha256:c0c16a430f490d038d573ed5b7477a594abe62956620f73a93b13b55bb4835e4",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -277,7 +277,7 @@
     },
     {
       "name": "decision-queue",
-      "description": "Resolve pending user decisions one at a time.",
+      "description": "Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor.",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -285,7 +285,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/decision-queue/SKILL.md",
-      "hash": "sha256:5c2c7f487541f2bb0495b0104b05cfa1c4d6d0a2b2df8634aa615faea73d4f2d",
+      "hash": "sha256:2808b97a6cf09fa63e533cad0daa2fd0ccb5fd8b542ecb628eca05fe3a5a3137",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -336,7 +336,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/deploy/SKILL.md",
-      "hash": "sha256:baf8fdd693a31c09da336bf25dd6838c6026c4c107ad0cfe93d76d0fa20376b3",
+      "hash": "sha256:dff61dac8c30a87722a456594a482c5ec3a9abc2005f4c9db0bb40f78069bedd",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -817,7 +817,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/hq-sync/SKILL.md",
-      "hash": "sha256:8c50fc105c25748c1664202955a5b519c817297953402a15c994c895aac91787",
+      "hash": "sha256:c6f97d664677ca1978f86cc59ab6b49729db1c46e748d43e25a28daa73134db3",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1150,7 +1150,7 @@
       "skillUid": null,
       "group": "capture",
       "source": ".claude/skills/ontology/SKILL.md",
-      "hash": "sha256:20057bb41b3750cd909a79a8d631478922d6a36a69c85ef095cd419ea5cc60b9",
+      "hash": "sha256:0add1e3805356ca216de4afa44bc93f33d3ec5aacd0a0122dc82a442808df0b9",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1677,7 +1677,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:7767e63080730ea724018946fe8f6e20625498004d2414f737c444d1bd22f092",
+      "hash": "sha256:2b6cc2335f524c4d133dde1e65ff14b276e3b24544b1fd41bdf7b8f00526a3d2",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1728,7 +1728,7 @@
       "skillUid": null,
       "group": "share",
       "source": ".claude/skills/team-access/SKILL.md",
-      "hash": "sha256:d06060f14b4c20c2363801b2a199f0fe26c21573fe21dffd39873364be1ac3e3",
+      "hash": "sha256:4bf24a4dcb452d0b1ff301bbbc8dabba0ad7f4f8633a02e4a1733c91aada71a4",
       "duplicates": {
         "exact": [],
         "drifted": [],

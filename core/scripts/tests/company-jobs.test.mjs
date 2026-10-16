@@ -100,7 +100,7 @@ test('FINAL03 successful session JSON stays valid with redacted stderr diagnosti
  const log=fs.readFileSync(result.outputLocation,'utf8');assert.match(log,/\[REDACTED\]/);assert(!log.includes('SENTINEL_SECRET'));
 });
 test('SEC04/05 reconcile supervises jobs separately and reports launch errors',async t=>{const f=fixture(t);f.j.context={companyJob:{timeoutSeconds:14400}};f.j.contentDigest=contentDigest(f.j);await f.r.reconcile();assert.equal(f.executed(),0);assert(f.units.some(a=>a.join(' ')==='start --no-block hq-company-job-job_abc.service'));const unit=fs.readFileSync(path.join(f.c.unitDir,'hq-company-job-job_abc.service'),'utf8');const callSeconds=(MACHINE_TOKEN_BUDGET_MS+COMPANY_API_BUDGET_MS)/1000;
-assert.match(unit,new RegExp(`TimeoutStartSec=${14400*2+2*callSeconds+30}`));assert.match(unit,/User=root/);assert.match(unit,/Environment=HQ_RUNNER_UNIT=%n/);assert.match(unit,/KillMode=control-group/);assert.doesNotMatch(unit,/NoNewPrivileges/);assert.equal(serviceTimeoutSeconds(14400,0),14400*2+2*callSeconds+30);assert.equal(serviceTimeoutSeconds(600,3),600*2+5*callSeconds+30);f.r.systemctl=args=>{if(args[0]==='start')throw new Error('launch failed');};await assert.rejects(()=>f.r.reconcile(),/launch failed/);});
+assert.match(unit,new RegExp(`TimeoutStartSec=${14400*2+3*callSeconds+30}`));assert.match(unit,/User=root/);assert.match(unit,/Environment=HQ_RUNNER_UNIT=%n/);assert.match(unit,/KillMode=control-group/);assert.doesNotMatch(unit,/NoNewPrivileges/);assert.equal(serviceTimeoutSeconds(14400,0),14400*2+3*callSeconds+30);assert.equal(serviceTimeoutSeconds(600,3),600*2+6*callSeconds+30);f.r.systemctl=args=>{if(args[0]==='start')throw new Error('launch failed');};await assert.rejects(()=>f.r.reconcile(),/launch failed/);});
 test('job launch passes only allowlisted secrets and refuses to run as the runner',async t=>{
   const f=fixture(t);const other=process.getuid()===65534?65533:65534;
   f.c.jobUid=other;f.c.jobGid=other;f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
@@ -294,7 +294,7 @@ test('a hung machine-token refresh is rejected inside its budget',async()=>{
   const source=fs.readFileSync(new URL('../lib/company-jobs.mjs',import.meta.url),'utf8');
   assert.match(source,/refreshMachineTokens\(cloud, creds\)/);
   assert.match(source,/budgetMs = MACHINE_TOKEN_BUDGET_MS/);
-  assert.equal(serviceTimeoutSeconds(14400,0),14400*2+2*((MACHINE_TOKEN_BUDGET_MS+COMPANY_API_BUDGET_MS)/1000)+30);
+  assert.equal(serviceTimeoutSeconds(14400,0),14400*2+3*((MACHINE_TOKEN_BUDGET_MS+COMPANY_API_BUDGET_MS)/1000)+30);
 });
 test('an ec2-user owned core/scripts/lib is refused',()=>{
   const {assertReleasedCode}=require('../lib/released-code-owner.cjs');
@@ -674,3 +674,17 @@ test('secrets stay on disk until the job unit is active and then the directory i
   assert.equal(await waiting,'released');
   assert.equal(fs.existsSync(home),false);
 });
+
+// Mirrors hq-pro-agents src/outpost/company-job-freshness.ts parseCompanyJobReport, the server's report contract.
+function serverAcceptsReport(b){
+ return b.action==='report'&&/^job_[A-Za-z0-9]+$/.test(b.jobId)&&typeof b.revision==='string'&&b.revision.length>=1&&b.revision.length<=80
+  &&/^(?:[a-f0-9-]{36}|[a-f0-9]{64})$/.test(b.runId)&&Number.isFinite(Date.parse(b.scheduledAt))&&Number.isFinite(Date.parse(b.endedAt))
+  &&typeof b.outcome==='string'&&/^[a-z0-9_-]{1,64}$/.test(b.outcome)&&(!('exitCode' in b)||Number.isFinite(b.exitCode))&&(!('coalesced' in b)||typeof b.coalesced==='boolean');
+}
+const RUN_A='a'.repeat(64), RUN_B='b'.repeat(64);
+test('reconcile posts a jobs heartbeat on every tick before reconciling',async t=>{const f=fixture(t);await f.r.reconcile();await f.r.reconcile();const beats=f.calls.filter(c=>c.op==='jobs'&&c.action==='heartbeat');assert.equal(beats.length,2);assert.deepEqual(beats[0],{op:'jobs',action:'heartbeat'});const first=f.calls.findIndex(c=>c.action==='heartbeat');assert(first<f.calls.findIndex(c=>c.action==='reconcile'));});
+test('heartbeat failure is logged and does not break reconcile',async t=>{const f=fixture(t);const warnings=[];f.r.warn=l=>warnings.push(l);const inner=f.r.api;f.r.api=async(op,b)=>{if(b.action==='heartbeat'){const e=new Error('x');e.status=503;throw e;}return inner(op,b);};const result=await f.r.reconcile();assert.equal(result.jobs,1);assert.equal(warnings.length,1);assert.equal(JSON.parse(warnings[0]).event,'heartbeat_post_failed');assert.equal(JSON.parse(warnings[0]).status,503);});
+test('successful run posts a report in the server contract shape',async t=>{const f=fixture(t);const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'succeeded');const reports=f.calls.filter(c=>c.action==='report');assert.equal(reports.length,1);const {op,...body}=reports[0];assert.equal(op,'jobs');assert(serverAcceptsReport(body),JSON.stringify(body));assert.equal(body.scheduledAt,'2026-01-02T01:00:00Z');assert.equal(body.runId,RUN_A);assert.equal(body.revision,'revision1');assert.equal(body.outcome,'succeeded');assert.equal(body.exitCode,0);assert.equal(body.endedAt,receipt.endedAt);});
+test('secret_denied run reports outcome blocked with its error code',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);const sent=[];f.r.api=async(op,b)=>{if(op==='secret')throw new Error('denied');sent.push({op,...b});return {ok:true};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_B));assert.equal(receipt.outcome,'blocked');assert.equal(f.executed(),0);assert.equal(sent.length,1);const {op,...body}=sent[0];assert.equal(op,'jobs');assert(serverAcceptsReport(body));assert.equal(body.outcome,'blocked');assert.equal(body.errorCode,'secret_denied');assert.equal(body.scheduledAt,'2026-01-02T01:00:00Z');});
+test('failed and timed-out runs post reports with outcome and error code',async t=>{const f=fixture(t);let code=1;f.r.execute=async()=>({code,text:''});assert.equal((await f.r.runDelivery(f.j,f.delivery(RUN_A))).outcome,'failed');code=124;assert.equal((await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'))).outcome,'timeout');const reports=f.calls.filter(c=>c.action==='report');assert.deepEqual(reports.map(r=>[r.outcome,r.exitCode]),[['failed',1],['timeout',124]]);for(const r of reports){const {op,...b}=r;assert(serverAcceptsReport(b));}});
+test('report failure is logged and does not change the receipt',async t=>{const f=fixture(t);const warnings=[];f.r.warn=l=>warnings.push(l);f.r.api=async(op,b)=>{if(b.action==='report')throw new Error('offline');return {};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'succeeded');assert.equal(warnings.length,1);const w=JSON.parse(warnings[0]);assert.equal(w.event,'report_post_failed');assert.equal(w.runId,RUN_A);assert.equal(w.outcome,'succeeded');const stored=JSON.parse(fs.readFileSync(fs.readdirSync(f.c.stateDir).filter(n=>n.endsWith('.json')).map(n=>path.join(f.c.stateDir,n))[0],'utf8'));assert.equal(stored.outcome,'succeeded');});

@@ -94,7 +94,7 @@ Sort entities by `signal_count`:
 ```bash
 aws s3 sync s3://{bucket}/ontology/entities/ /tmp/entities-{co}/ --quiet
 for f in /tmp/entities-{co}/**/*.md; do
-  count=$(grep -m1 '^signal_count:' "$f" | awk '{print $2}')
+  count=$(grep -m1 '^signal_count:' "$f" | awk '{print $(2)}')
   echo "$count $f"
 done | sort -rn | head -10
 ```

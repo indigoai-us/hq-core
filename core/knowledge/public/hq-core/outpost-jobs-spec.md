@@ -391,6 +391,33 @@ the job process environment and drops to `hq-jobs` at exec. The job account
 never receives the credentials path. Denial produces a blocked receipt before
 any provider execution.
 
+### Box Claude sign-in (no provider secret)
+
+When the configuration has no `providerSecret` and the provider is `claude`,
+the box uses a Claude sign-in instead of a broker key. The installer creates a
+second nologin account, `hq-claude-auth`, whose home `/var/lib/hq-claude-auth`
+is mode 700, and refuses to finish if `hq-jobs` can reach it. The root
+`hq-company-signin.service` runs `claude auth login --claudeai` as that account
+under a pty. It posts the URL to `POST /outpost/company/signin`
+(`login-url`) with the company machine principal, polls `login-code` for the
+code a company owner or admin submits, types it, and reports `login-complete`.
+It also restarts the login on `regenerate-pending`. Codes must match
+`^[A-Za-z0-9][A-Za-z0-9#_.~-]{7,511}$` before they are typed.
+
+For each run the root runner reads only `accessToken` and `expiresAt` from the
+sign-in file (regular file, owned by `hq-claude-auth`, mode 600). If the token
+would expire before the run deadline plus five minutes, it runs one minimal
+`claude -p` as `hq-claude-auth` so the CLI refreshes its own file, then
+re-reads. It then passes the token as `CLAUDE_CODE_OAUTH_TOKEN` through
+`LoadCredential` to the claude session unit only. The precondition script never
+receives it, and job code never sees the refresh token. A missing or still-short
+token blocks the run before any job code runs (`provider_not_signed_in`,
+`provider_token_expiring`). Residual risk: job code in the session can read the
+access token for its remaining lifetime, and so can another `hq-jobs` process
+running at the same time. The global run lock admits one company job at a time,
+which keeps other jobs' code off the box while a session holds the token; a
+stale-lock reclaim is the only overlap window.
+
 Company jobs share the `hq-jobs` account, so one job could read another's
 `/proc/<pid>/environ`. A per-job `DynamicUser` or static user is not used.
 Provider CLI auth is checked as `hq-jobs`, and the company project workspace

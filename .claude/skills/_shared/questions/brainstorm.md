@@ -82,8 +82,8 @@ Direction?
 - tier: strategic
 - kind: decision
 - depends_on: [Q-mode, Q-company]
-- options: Speed to ship | Quality and durability | Exploration | Cost minimization
-- recommended: Speed to ship
+- options: Quality and durability | Speed to ship | Exploration | Lowest running cost
+- recommended: Quality and durability
 
 ## Q-constraints
 Hard constraints? Ask a free-text follow-up only when a constraint type is picked.
@@ -102,3 +102,12 @@ What observable outcome would tell you this worked?
 - depends_on: [Q-direction]
 - options: A metric from research | A named user's adoption | A replaced tool | Other, describe
 - recommended: A metric from research
+
+## Q-retire
+Which removal candidates from the Overlap & Cruft Sweep go into the removal plan? Asked only when the sweep found at least one candidate with evidence. Ask with `multiSelect: true`, one option per candidate (path plus one-line evidence), up to 4; ask again for more. Confirmed items go into the recommendation's Removal plan; unselected items stay as they are.
+
+- tier: architecture
+- kind: decision
+- depends_on: [Q-direction]
+- options: Candidate 1 from the sweep | Candidate 2 from the sweep | Candidate 3 from the sweep | Keep all, remove nothing
+- recommended: Candidate 1 from the sweep

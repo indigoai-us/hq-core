@@ -285,6 +285,10 @@ jobs:
         run: bash core/scripts/tests/super-conductor-loop-arm.test.sh
       - name: /super-conductor sweeps HQ DMs by createdAt cursor, not --unread
         run: bash core/scripts/tests/super-conductor-dm-sweep.test.sh
+      - name: /super-conductor routes every owner item through /decision-queue
+        run: bash core/scripts/tests/super-conductor-decision-queue.test.sh
+      - name: /super-conductor owner preferences extend the core skill
+        run: bash core/scripts/tests/super-conductor-prefs.test.sh
       - name: /conduct worker selection (registry fields, definition load)
         run: bash core/scripts/tests/conduct-worker-selection.test.sh
       - name: /conduct lane workers and completion watcher
@@ -311,6 +315,8 @@ jobs:
         run: bash core/scripts/tests/skill-script-refs.test.sh
       - name: Shipped skills reference existing core scripts
         run: bash core/scripts/tests/skill-core-script-references.test.sh
+      - name: Skill bodies carry no argument placeholders in code ($N, fenced $ARGUMENTS)
+        run: bash core/scripts/tests/skill-body-positional-placeholders.test.sh
       - name: Command reports gate expandable technical details
         run: bash core/scripts/tests/skill-plain-report.test.sh
       - name: Deploy skill app route and multipart helper contracts
@@ -607,6 +613,7 @@ jobs:
             core/scripts/tests/outpost-job-failure-alerts.test.sh \
             core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/handoff-finalize-deficiencies.test.sh \
+            core/scripts/tests/handoff-finalize-no-jq.test.sh \
             core/scripts/handoff-autofile.sh \
             core/scripts/tests/handoff-autofile.test.sh \
             core/scripts/handoff-builder-route.sh \
@@ -988,6 +995,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
       - name: Handoff finalizer stores deficiencies and system_info
         run: bash core/scripts/tests/handoff-finalize-deficiencies.test.sh
+      - name: Handoff finalizer checks for jq before writing anything
+        run: bash core/scripts/tests/handoff-finalize-no-jq.test.sh
       - name: Handoff auto-files hq-core deficiencies once per handoff
         run: bash core/scripts/tests/handoff-autofile.test.sh
       - name: Handoff builder route decides builder vs public from the staging repo
@@ -1118,6 +1127,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-principals.test.sh
       - name: Policy reminder output trimming avoids per-line tail launches
         run: bash core/scripts/tests/inject-policy-output-trim-performance.test.sh
+      - name: Policy evaluator loads policies under a UTF-8 locale; summary cut is byte-safe
+        run: bash core/scripts/tests/inject-policy-utf8-locale.test.sh
       - name: Story deliverables gate on passes:true
         run: bash core/scripts/tests/verify-story-deliverables.test.sh
       - name: Delegation pickup receipt / FAILED state
@@ -1392,6 +1403,7 @@ jobs:
         run: |
           node --test core/scripts/tests/company-jobs.test.mjs
           node --test core/scripts/tests/company-jobs-acceptance.test.mjs
+          node --test core/scripts/tests/company-signin.test.mjs
       - name: Existing job account shell and groups are refused when wrong
         run: bash core/scripts/tests/company-jobs-account.test.sh
 

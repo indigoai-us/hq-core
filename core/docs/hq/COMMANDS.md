@@ -105,7 +105,7 @@ if none match, the first group whose keywords match a word in its description; o
 | Command | Scope | Description |
 | --- | --- | --- |
 | `/architect` | core | Find shallow modules and propose deepening refactors, ranked with file refs; never edits code. Use when code is hard to change or planning a refactor. |
-| `/brainstorm` | core | Compare approaches, surface unknowns, and draft a recommendation before PRD work. |
+| `/brainstorm` | core | Compare approaches to best-in-class prior art, merge existing work, verify cruft removal, and recommend the most durable design before PRD work. |
 | `/calibration-report` | core | Summarize estimate accuracy from the assistant time log. |
 | `/codebase-design` | core | Vocabulary for designing deep modules and clean interfaces. Triggers: \"deep module\", \"interface design\", \"design it twice\". |
 | `/deep-plan` | core | Deep planning: research subagents plus a 15-question interview for large or strategic PRDs. For light planning use /prd. |
@@ -150,7 +150,7 @@ if none match, the first group whose keywords match a word in its description; o
 | `/cleanup` | core | Audit and clean HQ structures, indexes, and stale content. |
 | `/convert-codex` | core | Add Codex support to older Claude-first HQ roots without breaking Claude setup. |
 | `/create-skill` | core | Create a shared company skill in HQ with a durable identity and ACL governance. Not for personal or local-only skills. |
-| `/decision-queue` | core | Resolve pending user decisions one at a time. |
+| `/decision-queue` | core | Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor. |
 | `/domain-modeling` | core | Sharpen a project's domain terms and maintain GLOSSARY.md as its glossary. Triggers: \"what should we call this\", \"domain model\". |
 | `/free-disk-space` | core | Reclaim disk from stale linked worktrees, build dirs, and allowlisted dev caches. Dry-run unless --apply; never deletes full clones, .env, or unpushed work. |
 | `/garden` | core | Audit HQ content for stale, duplicate, or inaccurate information. |

@@ -489,8 +489,8 @@ Insights older than 90 days with `confidence: medium` are stale candidates:
 # Find medium-confidence insights older than 90 days
 for f in workspace/insights/**/*.md companies/*/knowledge/insights/*.md; do
   [ -f "$f" ] || continue
-  confidence=$(grep "^confidence:" "$f" | awk '{print $2}')
-  created=$(grep "^created:" "$f" | awk '{print $2}')
+  confidence=$(grep "^confidence:" "$f" | awk '{print $(2)}')
+  created=$(grep "^created:" "$f" | awk '{print $(2)}')
   [ "$confidence" = "medium" ] && echo "STALE CANDIDATE: $f (created: $created)"
 done
 ```

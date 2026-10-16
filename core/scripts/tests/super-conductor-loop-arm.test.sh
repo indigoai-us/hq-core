@@ -4,8 +4,8 @@
 # only as a fallback) is armed right after the link opens, before adoption and
 # comms work; the owner is told the loop is running, at what cadence, and on
 # which channels; the conductor never substitutes its own interval; every
-# wakeup confirms and re-arms the heartbeat before asking decisions; and owner
-# pickers do not hold the loop open.
+# wakeup confirms and re-arms the heartbeat before asking decisions; and
+# wakeups that arrive while an owner picker is open are handled after it.
 set -euo pipefail
 
 ROOT="${HQ_TEST_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
@@ -32,7 +32,8 @@ need 'Never pick a different cadence' 'conductor may not substitute its own inte
 need 'confirm the heartbeat is running with `hq monitor list --json`' 'each wakeup checks the heartbeat'
 need 're-arm it before asking any owner decision' 'each wakeup re-arms before asking decisions'
 need 'Never run two heartbeats' 'one heartbeat per link'
-need 'Ask one per turn and let the turn end' 'pickers do not hold the loop open'
+need 're-arm the heartbeat before the first picker' 'heartbeat is re-armed before a picker holds the turn'
+need 'Heartbeat lines that arrive while a picker is open wait' 'wakeups that arrive during a picker are handled after the queue'
 need 'loop: armed' 'status reports loop state'
 need 'hq monitor stop <heartbeat\.monitor_id' 'off stops the heartbeat'
 
