@@ -70,8 +70,8 @@ export function serviceTimeoutSeconds(timeoutSeconds, secretCount = 0) {
   const secrets = Number.isInteger(secretCount) && secretCount > 0 ? secretCount : 0;
   const callSeconds = CALL_BUDGET_MS / 1000;
   // Lock wait has its own copy of the job timeout so waiting does not shrink RuntimeMaxSec.
-  // Then reconcile, the delivery call, and one call per secret, then 30s to write the receipt.
-  return timeoutSeconds + timeoutSeconds + (2 + secrets) * callSeconds + 30;
+  // Then reconcile, the delivery call, one call per secret, 30s to write the receipt, and the freshness report call.
+  return timeoutSeconds + timeoutSeconds + (3 + secrets) * callSeconds + 30;
 }
 export function processStatus(action, result) {
   if (action === 'reconcile' && Number(result?.errors) > 0) return 1;
@@ -606,9 +606,24 @@ function ensureUnitDirectory(dir) {
   privateDirectory(dir);
 }
 export class CompanyRunner {
-  constructor(config,api,{systemctl,execute,clock=Date.now}={}){this.c=config;this.api=api;this.clock=clock;this.ledger=new Ledger(config.stateDir);this.systemctl=systemctl??(args=>{const r=spawnSync('systemctl',args,{encoding:'utf8',timeout:15000});if(r.status!==0){const error=new Refusal('systemctl_failed');error.detail=`${r.stderr??''}\n${r.stdout??''}`.trim();throw error;}});this.execute=execute??bounded;}
+  constructor(config,api,{systemctl,execute,clock=Date.now,warn}={}){this.c=config;this.api=api;this.clock=clock;this.warn=warn??(line=>console.error(line));this.ledger=new Ledger(config.stateDir);this.systemctl=systemctl??(args=>{const r=spawnSync('systemctl',args,{encoding:'utf8',timeout:15000});if(r.status!==0){const error=new Refusal('systemctl_failed');error.detail=`${r.stderr??''}\n${r.stdout??''}`.trim();throw error;}});this.execute=execute??bounded;}
   close(){this.ledger.close();}
+  // Freshness signals feed `hq outposts status` and missed-run alerts. A failed post is
+  // logged to stderr (journald) and never changes the run or reconcile result.
+  async heartbeat(){
+    try{await this.api('jobs',{action:'heartbeat'});return true;}
+    catch(error){this.warn(JSON.stringify({service:'company-jobs',event:'heartbeat_post_failed',code:error instanceof Refusal?error.code:'heartbeat_error',status:error?.status??null}));return false;}
+  }
+  async report(receipt){
+    const body={action:'report',jobId:receipt.jobId,revision:receipt.revision,runId:receipt.runId,scheduledAt:receipt.scheduledAt,endedAt:receipt.endedAt,outcome:receipt.outcome};
+    if(Number.isFinite(receipt.exitCode))body.exitCode=receipt.exitCode;
+    if(typeof receipt.coalesced==='boolean')body.coalesced=receipt.coalesced;
+    if(typeof receipt.errorCode==='string')body.errorCode=receipt.errorCode;
+    try{await this.api('jobs',body);return true;}
+    catch(error){this.warn(JSON.stringify({service:'company-jobs',event:'report_post_failed',jobId:receipt.jobId,runId:receipt.runId,outcome:receipt.outcome,code:error instanceof Refusal?error.code:'report_error',status:error?.status??null}));return false;}
+  }
   async reconcile(){
+    await this.heartbeat();
     const data=await this.api('jobs',{action:'reconcile'});
     requireThat(Array.isArray(data.jobs)&&Array.isArray(data.pending)&&Array.isArray(data.recoverable),'invalid_reconcile');
     const jobs=[], rejected=[];
@@ -622,7 +637,7 @@ export class CompanyRunner {
       const base=`hq-company-job-${j.jobId}`;
       const opt=options(j);
       const cmd=[process.execPath,path.join(this.c.hqRoot,'core/scripts/lib/company-jobs.mjs'),'run',this.c.configPath,j.jobId,j.acceptedRevision].map(quote).join(' ');
-      const limit=serviceTimeoutSeconds(opt.timeout, opt.secrets.length + (this.c.providerSecret ? 1 : 0));
+      const limit=serviceTimeoutSeconds(opt.timeout, opt.secrets.length + this.providerCallSlots());
       desired.set(`${base}.service`,`[Unit]\nDescription=Accepted company job ${j.jobId}\n[Service]\nType=oneshot\nUser=root\nEnvironment=HQ_RUNNER_UNIT=%n\nExecStart=${cmd}\nTimeoutStartSec=${limit}\nTimeoutStopSec=5\nKillMode=control-group\nSendSIGKILL=yes\nUMask=0077\n`);
       calendars(j.schedule).forEach((cal,i)=>desired.set(`${base}-${i}.timer`,`[Unit]\nDescription=Company job ${j.jobId}\n[Timer]\nOnCalendar=${cal}\nPersistent=true\nAccuracySec=1s\nUnit=${base}.service\n[Install]\nWantedBy=timers.target\n`));
     }
@@ -687,12 +702,21 @@ export class CompanyRunner {
     catch(e){if(e.status===409)return {outcome:'not_due_or_changed'};throw e;}
     return this.runDelivery(j,d);
   }
+  /** Budget slots for provider auth: one broker call, or a sign-in read plus a bounded CLI refresh. */
+  providerCallSlots(){return this.c.providerSecret?1:this.c.provider==='claude'?3:0;}
+  /** Box sign-in token env for the session unit, or null when a broker provider secret is configured. */
+  async providerSignIn(jobMs){
+    const signin=this.signin??await import('./company-signin.mjs');
+    if(!signin.usesBoxSignIn(this.c))return null;
+    const token=signin.claudeAccessToken({file:this.c.providerAuthFile??signin.credentialFile(),uid:this.c.providerAuthUid,needUntil:this.clock()+jobMs,now:this.clock});
+    return {env:{[signin.TOKEN_ENV]:token}};
+  }
   async run(jobId,revision,runId){
     const data=await this.api('jobs',{action:'reconcile'});
     const j=data.jobs.find(j=>j.jobId===jobId&&j.acceptedRevision===revision);
     requireThat(j,'revision_not_current');acceptedJob(this.c,j);
     const opt=options(j);
-    this.deadlineAt=this.clock()+(1+opt.secrets.length+(this.c.providerSecret?1:0))*CALL_BUDGET_MS+opt.timeout*1000;
+    this.deadlineAt=this.clock()+(1+opt.secrets.length+this.providerCallSlots())*CALL_BUDGET_MS+opt.timeout*1000;
     if(runId){
       const action=data.pending.some(r=>r.runId===runId&&r.jobId===jobId&&r.revision===revision)?'dispatch':'recover';
       const d=await this.api('jobs',{action,jobId,revision,runId});
@@ -713,6 +737,7 @@ export class CompanyRunner {
     if(!lock){
       const skipped={companyUid:this.c.companyUid,jobId:j.jobId,revision:d.acceptedRevision,runId:d.runId,scheduledAt:d.firedAt,outcome:'skipped_lock_busy',endedAt:iso(this.clock())};
       atomic(path.join(this.c.stateDir,`${digest(d.runId)}.json`),JSON.stringify(skipped,null,2)+'\n');
+      await this.report(skipped);
       return skipped;
     }
     let releaseResult=null;
@@ -748,6 +773,8 @@ export class CompanyRunner {
       const env=jobEnvironment({...this.c,jobHome:homes.runHome},granted);
       const jobMs=Math.max(1,timeout*1000-Math.max(0,this.clock()-budgetAnchor));
       const runnerUnit=process.env.HQ_RUNNER_UNIT||`hq-company-job-${j.jobId}.service`;
+      // Box sign-in: resolved before any job code runs. Only the claude session unit receives the token.
+      const signin=await this.providerSignIn(jobMs);
       const launch=extra=>({env,cwd:this.c.hqRoot,redactions:values,output:log,enterService:true,systemctl:ctlArgs=>this.systemctl(ctlArgs),serviceUser:account?.user||this.c.jobUser||'hq-jobs',runnerUnit,envFileDir:secretRuntimeDirectory(this.c),secretNames:Object.keys(granted),runId:d.runId,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...extra,...(account?{uid:account.uid,gid:account.gid}:{})});
       this.ledger.executing(key);
       const request={contractVersion:1,agentUid:this.c.machineUid,companySlug:this.c.companySlug,companySlugs:[this.c.companySlug],channel:'job',convKey:`company-job:${d.runId}`,messageText:d.prompt,provider:this.c.provider,sender:{verified:true}};
@@ -759,15 +786,16 @@ export class CompanyRunner {
         request.messageText+='\n\nPrecondition output:\n'+pre.text;
       }
       request.messageText+='\n\nExecution fingerprint:\n'+JSON.stringify(fingerprint);
-      const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000))}));
+      const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...(signin?{env:{...env,...signin.env},secretNames:[...Object.keys(granted),...Object.keys(signin.env)],redactions:[...values,...Object.values(signin.env)]}:{})}));
       receipt.exitCode=result.code;receipt.outcome=result.code===0?'succeeded':result.code===124?'timeout':'failed';
       if(result.code===0){let response;try{response=JSON.parse(result.text);}catch{throw new Refusal('invalid_session_response');}requireThat(response.disposition==='reply' && !['failed','blocked'].includes(response.outcome),'session_not_successful');}
-    }catch(e){receipt.outcome=e.code==='secret_denied'?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
+    }catch(e){receipt.outcome=['secret_denied','provider_not_signed_in','provider_token_expiring','provider_credential_unsafe'].includes(e.code)?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
     finally{
       if(homes)removeRunHome(homes.parent,homes.runHome,account);
       const released=release();
       if(!released)receipt.lockRelease='lost';
       receipt.endedAt=iso(this.clock());log('\n'+JSON.stringify(receipt)+'\n');fs.closeSync(outputFd);this.ledger.finish(key,receipt);atomic(path.join(this.c.stateDir,`${digest(d.runId)}.json`),JSON.stringify(receipt,null,2)+'\n');
+      await this.report(receipt);
       if(!released)throw new Refusal('run_lock_lost');
     }
     return receipt;

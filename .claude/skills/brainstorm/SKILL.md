@@ -1,6 +1,6 @@
 ---
 name: brainstorm
-description: Compare approaches, surface unknowns, and draft a recommendation before PRD work.
+description: Compare approaches to best-in-class prior art, merge existing work, verify cruft removal, and recommend the most durable design before PRD work.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
 ---
 
@@ -11,6 +11,18 @@ Think through a problem before committing to a PRD. Research HQ context, compare
 **Input:** The user's argument — typically `[company] <idea description or board idea ID>`.
 
 **Pipeline:** idea capture --> **brainstorm** --> PRD --> run-project
+
+## Guiding Principles
+
+These shape every step below. When two steps pull in different directions, these win.
+
+1. **Best long-term solution wins, not least effort.** Coding agents make code nearly free to write, so code volume and build effort are not costs to minimise. Pick the solution that is the most durable, flexible, resilient, scalable, cost-efficient to run (infrastructure spend), mature, and modern. The real costs are runtime spend, operational burden, fragility, and lock-in. Elegance still matters: prefer one well-designed system that merges or replaces several existing ones, because fewer systems are more resilient and cheaper to run. Judge approaches by what exists and runs after the change, not by how much code it takes.
+2. **Find what already exists before proposing anything new.** Fast AI work produces duplicates: two skills, workers, scripts, or repos that do the same job. Step 2 sweeps for them. Every brainstorm states what it reuses, what it merges, and what it retires.
+3. **Remove cruft as part of the solution.** Out-of-date or superseded material found during the sweep goes into the recommendation as a verified removal plan. The brainstorm verifies each removal (evidence plus user confirmation); the PRD carries it out. The brainstorm itself deletes nothing.
+4. **Deeper, not bigger** (adapted from [be-ambitious](https://github.com/DannyMac180/skills/blob/main/be-ambitious/SKILL.md)). Keep the user's goal fixed, and raise the standard for that outcome: what an expert in the field would do that was not asked for, the rawest primary sources, named methods and tools, and an external check with a stated pass condition. Drop side quests and extra deliverables that do not serve the goal. The solution design itself is unbounded (Principle 7).
+5. **Assume agent velocity.** A `/run-project` loop typically finishes in 1 to 3 hours what a human team once planned in months. Never shrink scope, defer the clean solution, or pick a hack because the full version "sounds long". Effort fields still use scope/risk sizing and session counts (policy `ai-velocity-time-sense`), never calendar estimates.
+6. **Fresh, authoritative research.** Web research prefers primary sources (official docs, changelogs, release notes, maintainer repos, standards) published in the last 60 days. Training-data knowledge of tools, models, APIs, and pricing is treated as a hypothesis until a fresh source confirms it.
+7. **Study the best, then go past them.** Research how the most advanced companies solve this problem for quality, UX, and speed: their engineering blogs, published architectures, open-source code, and shipped products. Use that as the reference bar, not the ceiling. Then design from first principles with no bounds on what is possible, and aim for a solution better than anything that exists. At least one approach is this clean-sheet design.
 
 
 ## Work Mesh Live — trusted bind (do this first)
@@ -85,11 +97,47 @@ Do not ask questions yet. Build context from HQ first.
 **Target repo (if inferable):**
 - Note existence, don't deep-read. If repo has qmd collection, run scoped search
 
+### Overlap & Cruft Sweep (always run)
+
+Search for anything that already does part of the job, inside the company scope plus HQ core. Cover every surface, using 3 to 5 keyword variants of the idea (synonyms, the verb, the output it produces):
+
+| Surface | Where to look |
+|---|---|
+| Code and repos | the company's `repos:` list in `companies/manifest.yaml`; `grep -rl` / `qmd` inside those repos for the key nouns and verbs |
+| Infrastructure | manifest `deploy:` / `vercel_projects:` / `sources:`, `hq integrations list --usable`, existing deploy targets and services |
+| Workers | `core/workers/registry.yaml` and `companies/{co}/workers/` |
+| Skills and commands | `.claude/skills/`, `companies/{co}/skills/`, `personal/skills/` (HQ work only) |
+| Projects and ideas | `companies/{co}/projects/*/` (brainstorm.md, prd.json status), `board.json` entries in any status, including in-flight and parked |
+| Knowledge and policies | qmd hits from above, `companies/{co}/policies/`, `core/policies/` |
+
+When the surface is broad, delegate the sweep to an `Explore` subagent with the keyword list and the table above, and have it return paths plus one-line verdicts.
+
+Give every hit one verdict:
+
+- **Reuse** — does the job as is; the solution calls it
+- **Extend** — does most of the job; the solution builds on it
+- **Merge** — overlaps another hit or the new idea; the solution combines them into one
+- **Replace** — the new solution supersedes it; it gets retired
+- **Unrelated** — keyword match only; drop it
+
+**Cruft verification.** A hit is a removal candidate when it is superseded, duplicated, or out of date. Before listing it, collect evidence for each candidate:
+
+1. Last change: `git -C {repo} log -1 --format=%cs -- {path}` (or file mtime outside git)
+2. Live references: grep for its name or path across skills, hooks, workers, scripts, and repos; zero callers is strong evidence
+3. Status: board/PRD status, deprecated markers, a newer item that does the same job
+4. Blast radius: what breaks if it goes (callers, docs, scheduled jobs, deployed services)
+
+Only candidates with evidence go forward. Each one is confirmed with the user in Step 3 (`Q-retire`) and, once confirmed, becomes part of the recommendation's removal plan. The brainstorm never deletes anything itself (**No execution** rule).
+
+Write the full sweep to `research/hq-landscape.md` (Step 4, Layer 1).
+
 Present compact summary:
 ```
 Research complete:
 - Related projects: {list or "none found"}
 - Relevant workers: {list}
+- Existing code/skills/infra: {hits with verdict: reuse / extend / merge / replace}
+- Removal candidates: {count, with one-line evidence each, or "none"}
 - Policies: {count loaded}
 - Prior art: {relevant knowledge hits or "none"}
 ```
@@ -100,7 +148,7 @@ After research, before asking the user anything, challenge the premise:
 
 1. **Is this the right problem?** What assumption must be true for this to matter?
 2. **What happens if we do nothing?** Is inaction a viable option?
-3. **What simpler/cheaper solution might already solve 80%?** Existing tool, manual process, or minor tweak?
+3. **What already exists to build on?** Check the sweep first: a Reuse or Extend hit is the foundation, and a mature external platform may beat a custom build on durability and running cost. Do not pick a smaller, weaker solution because it is quicker to build.
 
 State a position. Don't hedge. If the premise is weak, say so before exploring approaches. This may eliminate the need for a full brainstorm.
 
@@ -109,7 +157,7 @@ Present as:
 Premise check:
 - Core assumption: {what must be true}
 - Inaction cost: {what happens if we skip this}
-- 80% solution: {simpler alternative, or "none — this requires dedicated work"}
+- Foundation: {existing item or mature platform to build on, or "none — clean sheet"}
 - Verdict: {STRONG / QUESTIONABLE / WEAK}
 ```
 
@@ -126,6 +174,8 @@ Run the grilling engine (`.claude/skills/grilling/SKILL.md`) with:
 - `mode`: `one-at-a-time` (one `AskUserQuestion` per question) unless the user passed `--rounds`
 
 Each question is its own `AskUserQuestion` call with 2 to 4 options pre-filled from Step 2 research. Mark the first option `(Recommended)` when research points to one answer. Never batch several decisions into one question, and never collapse the interview to a single question (`decision-queue-one-at-a-time`). If `Q-company` is still unresolved, ask it as a picker of plausible company slugs from `companies/manifest.yaml`.
+
+When the sweep produced removal candidates, `Q-retire` is part of the interview: the user confirms which removals enter the plan.
 
 If an answer opens a new decision (for example a constraint that changes the approach space), ask a follow-up the same way. The interview ends when no directional input is missing.
 
@@ -149,13 +199,22 @@ Research in layers, and **write the findings down** — every substantive resear
 Where `{project_dir}` is `companies/{co}/projects/{slug}/` (or `personal/projects/{slug}/` for personal/HQ). Each note gets a one-line frontmatter-style header (`layer`, `date`, `question it answers`). Notes survive context compaction and feed `/prd` and `/deep-plan` directly — brainstorm.md links them, it never restates them in full.
 
 **Layer 1 — HQ (always, from Step 2):**
-qmd, workers, policies, existing projects. Distil the Step 2 findings into `research/hq-landscape.md` — the hits that mattered, the overlap verdict, the policy constraints that shape the approach space.
+qmd, workers, policies, existing projects, and the Overlap & Cruft Sweep. Distil the Step 2 findings into `research/hq-landscape.md`: the hits that mattered with their verdicts, the removal candidates with evidence, and the policy constraints that shape the approach space.
 
 **Layer 2 — Reasoning (always, free):**
-Competitive landscape, known tools, pricing, market context from training data. No API calls needed. Identify alternatives, comparable tools, known pricing tiers, and market dynamics. Write `research/market-landscape.md`.
+Competitive landscape, known tools, pricing, market context from training data. No API calls needed. Identify alternatives, comparable tools, known pricing tiers, and market dynamics. Write `research/market-landscape.md`. Training data is stale for fast-moving topics (AI models, agent tooling, SDKs, APIs, pricing): mark those claims `unverified` and check them in Layer 3.
 
 **Layer 3 — Live Web (default-on for external-facing ideas):**
-Run live web research whenever the idea touches an external API/service, an unfamiliar domain, a competitive market, or the user asked for research. Skip only for purely internal tooling on platforms you know cold. Announce what you'll search for and why before searching (user continuing counts as approval). Write one `research/web-{topic}.md` per investigation, with sources cited. For deep multi-source questions, delegate to research subagents (Task/Agent) and have each write its own note.
+Run live web research whenever the idea touches an external API/service, a library or model, an unfamiliar domain, a competitive market, or the user asked for research. Skip only for purely internal tooling on platforms you know cold. Announce what you'll search for and why before searching (user continuing counts as approval). Write one `research/web-{topic}.md` per investigation, with sources cited. For deep multi-source questions, delegate to research subagents (Task/Agent) and have each write its own note.
+
+Freshness and authority rules for Layer 3:
+
+- Get today's date with `date +%F` and put the current month and year in queries ("{topic} changelog {Month YYYY}").
+- Prefer primary sources: official docs, changelogs, release notes, maintainer repos and issues, standards bodies, vendor engineering blogs. Use aggregators and SEO listicles only to find a primary source.
+- Default window is the last 60 days. Cite every source with its publish or last-updated date. A source older than 60 days is used only when nothing newer covers the point, and is labelled `stale ({date})` in the note.
+- Where a fresh source contradicts Layer 2, the fresh source wins; record the correction.
+- Name the expert methods and tools the field uses for this problem (Guiding Principle 4), from sources, not invented.
+- Always write `research/web-best-in-class.md` when Layer 3 runs: how the most advanced companies solve this problem (architecture, UX, speed, quality bar), each point with a dated primary source (Guiding Principle 7).
 
 **Depth guidance:** more research is better than less **as long as it is stored** — a finding that lives only in context is wasted. Stop a layer when new passes stop changing the approach comparison, not at a fixed effort cap.
 
@@ -203,6 +262,15 @@ source_idea_id: {board ID or null}
 - {Missing info that blocks confident decision-making}
 - ...
 
+## Overlap & Cruft
+
+| Existing item | Path | What it does | Verdict |
+|---|---|---|---|
+| {skill / worker / repo / script / project} | {path} | {one line} | {reuse / extend / merge / replace} |
+
+**Removal candidates (confirmed in Q-retire):**
+- {path} — {why it is cruft: superseded by X / zero callers / last changed {date}} · blast radius: {callers or "none"}
+
 ## Interview Answers
 
 Q-direction: {answer}
@@ -223,6 +291,10 @@ Q-success: {answer}
 
 **How it works:** {2-3 sentences describing the approach}
 
+**Reuses / merges / retires:** {existing items it builds on, combines, or removes}
+**Systems after the change:** {what exists and runs afterwards, e.g. "1 service replaces 2 scripts and a cron"}
+**Scorecard:** durable {H/M/L} · flexible {H/M/L} · resilient {H/M/L} · scalable {H/M/L} · infra cost {H/M/L running spend} · mature {H/M/L} · modern {H/M/L}
+
 **Tradeoffs:**
 - Pro: {specific advantage}
 - Pro: {specific advantage}
@@ -236,6 +308,10 @@ Q-success: {answer}
 ### Option B: {Name}
 
 **How it works:** {2-3 sentences}
+
+**Reuses / merges / retires:** {items}
+**Systems after the change:** {what exists and runs afterwards}
+**Scorecard:** durable · flexible · resilient · scalable · infra cost · mature · modern {H/M/L each}
 
 **Tradeoffs:**
 - Pro: {specific advantage}
@@ -260,10 +336,24 @@ Q-success: {answer}
 
 **Biggest risk:** {The one thing most likely to blow up the preferred approach}
 
+**Best-in-class reference:** {who does this best today and what they do, linked to `research/web-best-in-class.md`}
+
+**Where we go past it:** {what the recommended design does better than the reference, from first principles}
+
+**Removal plan:** {each confirmed removal candidate, what replaces it, and the check that proves it is gone safely (zero references, tests pass), or "none"}
+
+### Expert standard *(deeper, not bigger)*
+
+- **Expert moves:** {2-3 things an expert would do for this same outcome that the request did not ask for}
+- **Rawest material:** {primary sources or data the build should start from}
+- **Methods and tools:** {named techniques or libraries, and why each fits}
+- **External verification:** {the check outside the model and the user, with its pass and fail condition}
+
 ## Next Steps
 
 - [ ] {Specific validation task or question to resolve before starting PRD}
 - [ ] {Other prerequisite}
+- [ ] {One line per confirmed removal: "Retire {path}, replaced by {X}"}
 
 **Promotion path:**
 - Ready to build --> promote to a PRD with `/prd` (brainstorm.md pre-populates the interview)
@@ -277,6 +367,10 @@ Q-success: {answer}
 - Never more than 3 — collapse similar options or pick the most distinct
 - Each option must differ on at least one of: effort, reversibility, dependency, or user experience
 - Must state a recommendation — no "it depends" without a stated override condition
+- When the sweep found two or more items doing related jobs, one option must merge or replace them
+- One option is always the first-principles clean-sheet design (Guiding Principle 7), set against the best-in-class reference
+- Rank options on the scorecard: durable, flexible, resilient, scalable, infra cost, mature, modern. Never rank by lines of code or build effort. Recommend the strongest scorecard unless a stated condition overrides it
+- Do not cut scope or pick a stopgap for time reasons: a `/run-project` loop clears months of former human work in 1 to 3 hours
 - T-shirt effort = scope/risk, NOT calendar time (policy `ai-velocity-time-sense`): S (one seam, low risk), M (one subsystem, modest unknowns), L (multiple seams, real unknowns), XL (cross-cutting, hard-to-reverse). If "how long" is needed, use sessions + concurrency ("~2 sessions, parallel-able"), never weeks/months. Be honest about breadth
 
 ## Step 6: Board Integration
@@ -444,7 +538,7 @@ Handle the answer:
 The plan phase is the only part of this skill that writes prd.json. It reuses the `/prd` interview and finalize steps so the user does not re-answer questions.
 
 1. **Interview.** Run the grilling engine with `question_set: .claude/skills/_shared/questions/prd.md`, `mode: one-at-a-time`, and `known_facts` loaded from the Phase B answers: every `Q-id: answer` line in brainstorm.md whose id exists in the PRD question set, plus answers the PRD set's `prefill:` hints take from brainstorm.md (Context, Recommendation, rejected approaches). Do not re-ask loaded ids as confirmations.
-2. **Generate.** Write `{project_dir}/prd.json` and `{project_dir}/README.md` following `/prd` Step 5 (`.claude/skills/prd/SKILL.md`), including `metadata.interview` from the engine count object. Run `bash core/scripts/prd-interview-check.sh {project_dir}/prd.json` and show any warning.
+2. **Generate.** Write `{project_dir}/prd.json` and `{project_dir}/README.md` following `/prd` Step 5 (`.claude/skills/prd/SKILL.md`), including `metadata.interview` from the engine count object. Every item in the brainstorm's **Removal plan** becomes its own story (or acceptance criteria on the story that replaces it), with the removal check as its acceptance test. Carry the **External verification** pass condition into the PRD's acceptance criteria. Run `bash core/scripts/prd-interview-check.sh {project_dir}/prd.json` and show any warning.
 3. **Finalize.** Follow `.claude/skills/_shared/prd-finalize.md` in order as caller `/prd`. Step 5.5 sets brainstorm.md frontmatter to `status: promoted` with `promoted_to: {project_dir}/prd.json`. Step 5.6 sets the board entry to `prd_created`. Step 5.7 runs Work Mesh registration, which is where policy `hq-work-mesh-prd-genesis` fires; do not skip it.
 4. **Deploy once.** Run the project summary deploy that policy `auto-deploy-project-summary-on-brainstorm-prd` requires for a finished PRD (`project-summary {co}/{slug}`). This one deploy covers the brainstorm and the PRD, because Step 6.6 was deferred. Report only this link.
 5. **Confirm.** Print the `/prd` Step 9 summary and stop. Do not start execution.
@@ -469,6 +563,10 @@ Keep it cheap: do **not** rebuild INDEX, update `recent.md`, run `qmd update`, o
 ## Rules
 
 - **Scan HQ before asking anything** — research phase (Step 2) happens before the first question. Never ask for info findable in qmd, board.json, or policies
+- **Sweep for overlap every time** — no brainstorm skips the Overlap & Cruft Sweep. A recommendation that builds something HQ or the company already has is a defect
+- **Removals are verified, not assumed** — each removal candidate carries evidence (last change, live references, superseded-by) and the user's `Q-retire` confirmation before it enters the plan
+- **Quality over effort** — never recommend an option because it is less code or quicker to build. Code is cheap with coding agents; runtime cost, fragility, and lock-in are not
+- **Fresh sources for fast-moving facts** — tool, model, API, and pricing claims cite a primary source from the last 60 days, or are labelled stale or unverified
 - **One question AT A TIME, not one total** — the gate and every interview question is its own `AskUserQuestion` call (decision-queue style per `decision-queue-one-at-a-time`). Ask every unresolved field; skip any already clear from args/research. Never batch multiple decisions into a single combined question, and never collapse the full interview to a single question. 4–8 questions is a normal interview
 - **2-3 approaches, no more** — present distinct options, not variations. If only one reasonable path exists, say so and explain why
 - **State a recommendation** — "it depends" without a stated override condition is not a recommendation

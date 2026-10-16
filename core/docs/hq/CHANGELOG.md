@@ -1,4 +1,47 @@
 ## [Unreleased]
+- Fixed: under a UTF-8 locale on macOS, no policy loaded when a policy's rule
+  line was cut at the 160-byte summary limit inside a multibyte character
+  (awk stopped with "towc: multibyte conversion failure"). The evaluator awk
+  in `inject-policy-on-trigger.sh` now runs with `LC_ALL=C` like the hook's
+  other awk passes, and the summary cut backs off to a whole UTF-8 character
+  before adding "...".
+- Fixed: the company scope guard no longer blocks these Bash shapes when no
+  other company is involved: comma-joined string arguments in a quoted
+  python/node heredoc (`print('a','see `src/x`')`); `"$(cat <path>)"` as the
+  value of a data option (`--json`, `-d`, `--data`, `--body`, ...); a sed
+  script whose `$(...)` prints a line number or a date; a git range or loop
+  variable inside `$(...)` in echo text; a `$VAR` word in message text
+  (`--text`, `--summary`, `--title`, `--body`, `git -m`); a quoted variable
+  value with a space used only in double quotes (`L="/x/My Drive"`); `mktemp`
+  with a template or `-p DIR`, a suffix after `$(mktemp ...)`, and a
+  `$(date)` piece in an assigned path; `"$D"/*.md`; and `companies/$CO/` when
+  `CO` is assigned the locked company earlier in the command. The same shapes
+  aimed at another company, or at a variable the command does not set, still
+  block. Newly blocked: a proven variable plus `..` plus a glob that lands in
+  another company (`$D/../../otherco/*`), an unset variable inside interpreter
+  source that can run a shell (`os.system('cp a $D/x')`), and echo text with a
+  variable piped into a shell. A blocked double-quoted `ssh`/`hq outposts
+  exec` command now suggests single quotes.
+- Fixed: shell snippets in skill bodies lost their positional parameters.
+  Claude Code replaces `$N` (0-based) and `$ARGUMENTS` anywhere in a SKILL.md
+  body, fenced code included, so `/deploy` with arguments set `deploy_request`'s
+  stage to an argument, printed an argument instead of the tarball hash, and
+  showed the wrong database price. The snippets in `deploy`, `cleanup`,
+  `ontology`, `team-access`, `calibration-report` and `hq-sync` now use
+  `${1}`, named variables, awk `$(N)` fields, `cut`, or `\$` in prose. The
+  `/hq-sync` flag parser also now runs: it was gated on an unset shell variable,
+  so `--direction` and `--on-conflict` were ignored. New lint
+  `core/scripts/lint-skill-positional-args.sh` fails on a bare dollar-digit in
+  any shipped skill body and on fenced `$ARGUMENTS` outside an allowlist.
+- Fixed: `handoff-finalize.sh` checks for jq before it writes anything. On a
+  host without jq it used to create temp files under `workspace/threads/` and
+  then fail partway with "jq: command not found". It now exits 6 with a message
+  that names jq and how to install it, and leaves the tree unchanged.
+- Fixed: the `intent-hint` UserPromptSubmit hook gave no hints for
+  multi-line prompts. It kept newlines in the word list it passes to
+  `awk -v`, which macOS awk rejects with "newline in string" (one stderr line
+  per line break), and a keyword at the end of a line never matched on any
+  awk. Newlines now become spaces before matching.
 - Fixed: policy reminders no longer flood plain reads. On PostToolUse a
   policy is matched against the command plus the structured facts the output
   can establish (a leaked key -> `secret`/`apikey`, a finished merge or deploy

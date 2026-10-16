@@ -87,7 +87,7 @@ Pure jq + awk + bash. No Python, no installs. Keep it < 100 lines.
 
 For median in awk:
 ```awk
-{ a[NR] = $1 } END {
+{ a[NR] = $(1) } END {
   asort(a)
   if (NR % 2) print a[(NR+1)/2]
   else print (a[NR/2] + a[NR/2+1]) / 2

@@ -1396,7 +1396,11 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # Emit: slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind.
       # `kind` is consumed only inside this hook before prose emission; the
       # public HQ_POLICY_EMIT=tsv path continues to print five fields below.
-      awk -v EVENT="$EVENT" -v LEGACY_TOOL_EVENTS="${HQ_POLICY_TOOL_EVENTS:-}" -v INTENT_MODE="$INTENT_MODE" \
+      # LC_ALL=C keeps awk byte-oriented, like the other awk passes in this
+      # hook. Under a UTF-8 locale BSD awk aborts the whole pass with
+      # "towc: multibyte conversion failure" when a string op meets a split
+      # code point, and then no policy loads.
+      LC_ALL=C awk -v EVENT="$EVENT" -v LEGACY_TOOL_EVENTS="${HQ_POLICY_TOOL_EVENTS:-}" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS_INLINE" -v AIFACTS="$INTENT_FACTS_INLINE" \
           -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
           -v OUTFACTS="$OUTPUT_FACTS_INLINE" -v OUTFACTS_FILE="$OUTPUT_FACTS_FILE" \
@@ -1620,6 +1624,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         return n
       }
       BEGIN {
+        # UTF-8 continuation bytes 0x80-0xBF, used by the byte-safe summary cut.
+        UTF8_CONT="\200\201\202\203\204\205\206\207\210\211\212\213\214\215\216\217\220\221\222\223\224\225\226\227\230\231\232\233\234\235\236\237"
+        UTF8_CONT=UTF8_CONT "\240\241\242\243\244\245\246\247\250\251\252\253\254\255\256\257\260\261\262\263\264\265\266\267\270\271\272\273\274\275\276\277"
         if (EVFACTS_FILE != "") {
           while ((getline factline < EVFACTS_FILE) > 0) {
             n=split(factline,fa,/[ ,]+/)
@@ -1706,7 +1713,17 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       }
       d>=2 && /^## Rule[ \t]*$/ { rsec=1; next }
       d>=2 && rsec && /^## / { rsec=0 }
-      d>=2 && rsec && !rcap && NF { line=$0; gsub(/\*\*/,"",line); if(length(line)>160) line=substr(line,1,157)"..."; rule=line; rcap=1 }
+      # The summary cap counts bytes (LC_ALL=C). Back the cut off any UTF-8
+      # continuation byte so the kept prefix ends on a whole code point.
+      d>=2 && rsec && !rcap && NF {
+        line=$0; gsub(/\*\*/,"",line)
+        if (length(line)>160) {
+          cut=157
+          while (cut>0 && index(UTF8_CONT, substr(line,cut+1,1))) cut--
+          line=substr(line,1,cut)"..."
+        }
+        rule=line; rcap=1
+      }
       END {
         if (!CACHE_RECORDS && seen) finalize()
         if (CACHE_WRITE) print (cache_unsafe ? "unsafe" : "ok") > CACHE_STATUS

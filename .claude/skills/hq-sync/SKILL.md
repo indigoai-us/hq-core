@@ -184,21 +184,22 @@ if [ ! -f "$HOME/.hq/cognito-tokens.json" ]; then
   exit 2
 fi
 
-# Step 3: parse user args (defaults match the HQ Desktop App). We expand $ARGUMENTS into
-# positional args so the standard while-case parser works under both bash and zsh.
+# Step 3: parse user args (defaults match the HQ Desktop App). Claude Code
+# replaces the ARGUMENTS placeholder on the `set --` line with the skill's arguments (nothing
+# when there are none), so the while-case parser sees them as positional args
+# under both bash and zsh. Read positionals as ${1}/${2}: Claude Code would
+# also replace a bare dollar-digit with a skill argument.
 direction="both"
 on_conflict="keep"
-if [ -n "${ARGUMENTS:-}" ]; then
-  # shellcheck disable=SC2086 — intentional word-split of ARGUMENTS
-  set -- $ARGUMENTS
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --direction) direction="${2:-both}"; shift 2 ;;
-      --on-conflict) on_conflict="${2:-keep}"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-fi
+# shellcheck disable=SC2086 — intentional word-split of the arguments
+set -- $ARGUMENTS
+while [ $# -gt 0 ]; do
+  case "${1}" in
+    --direction) direction="${2:-both}"; shift; [ $# -gt 0 ] && shift ;;
+    --on-conflict) on_conflict="${2:-keep}"; shift; [ $# -gt 0 ] && shift ;;
+    *) shift ;;
+  esac
+done
 
 # Step 4: spawn the runner. `set -o pipefail` is the portable way to capture
 # the exit status of the LEFT side of `| tee` under both bash and zsh —

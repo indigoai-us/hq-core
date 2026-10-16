@@ -667,7 +667,7 @@ fi
 DEPLOY_SCOPE="company"
 [ "$PERSONAL_SCOPE" = "true" ] && DEPLOY_SCOPE="personal"
 deploy_request() {
-  local stage="$1"
+  local stage="${1}"
   shift
   HQ_DEPLOY_JWT="$JWT" .claude/skills/deploy/scripts/deploy-api-request.sh \
     --stage "$stage" --org "${ORG_SLUG:--}" --scope "$DEPLOY_SCOPE" \
@@ -695,14 +695,14 @@ Invocation intents (detected like `--comments`):
 ```bash
 # Re-run guardrails on a new tree; on pass, swap it in as the upload artifact.
 rerun_guardrails() {
-  local g
-  g=$(.claude/skills/deploy/scripts/guardrails-check.sh "$1" "")
+  local tree="${1}" g
+  g=$(.claude/skills/deploy/scripts/guardrails-check.sh "$tree" "")
   if [ "$(jq -r '.pass' <<<"$g")" != "true" ]; then
     rm -f "$(jq -r '.tarball_path // empty' <<<"$g")"
     return 1
   fi
   rm -f "$TARBALL_PATH"
-  OUTPUT_DIR="$1"
+  OUTPUT_DIR="$tree"
   TARBALL_PATH=$(jq -r '.tarball_path' <<<"$g")
   TARBALL_SIZE=$(jq -r '.size_bytes' <<<"$g")
   TARBALL_SHA256=$(jq -r '.sha256' <<<"$g")
@@ -861,9 +861,9 @@ if [ "$DEPLOY_TYPE" = "static" ]; then
     TARBALL_PATH="$NEW_TAR"
     TARBALL_SIZE=$(stat -c%s "$TARBALL_PATH" 2>/dev/null || stat -f%z "$TARBALL_PATH" 2>/dev/null || echo 0)
     if command -v sha256sum >/dev/null 2>&1; then
-      TARBALL_SHA256=$(sha256sum "$TARBALL_PATH" | awk '{print $1}')
+      TARBALL_SHA256=$(sha256sum "$TARBALL_PATH" | cut -d' ' -f1)
     else
-      TARBALL_SHA256=$(shasum -a 256 "$TARBALL_PATH" | awk '{print $1}')
+      TARBALL_SHA256=$(shasum -a 256 "$TARBALL_PATH" | cut -d' ' -f1)
     fi
   fi
 fi
@@ -1147,7 +1147,7 @@ Full reference: `core/knowledge/public/hq-core/app-databases.md`.
 
 **Before the first database deploy of an app**, state the terms in plain words and ask one structured yes-or-no question (use the picker when available):
 
-> Adding a database to this app costs $10 a month. That includes 250,000 compute units and 1 GB of storage. Above that it is $32 per million compute units and $1.32 per GB per month. If the app reaches 4 times the included amounts, the database becomes read-only until the next month. Add the database?
+> Adding a database to this app costs \$10 a month. That includes 250,000 compute units and 1 GB of storage. Above that it is \$32 per million compute units and \$1.32 per GB per month. If the app reaches 4 times the included amounts, the database becomes read-only until the next month. Add the database?
 
 - **Yes:** set the flag and the acknowledgement on the app, then deploy with the acknowledgement too.
 
@@ -1168,7 +1168,7 @@ DB_EXEMPT=false
 case ",${HQ_DB_BILLING_EXEMPT_ORGS:-indigo}," in *",$ORG_SLUG,"*) DB_EXEMPT=true ;; esac
 ```
 
-**Silent and headless runs.** The `auto-deploy-on-create` path, headless runs and fleet agents never add a database and never send the acknowledgement. If the project looks like it needs one, deploy without it when possible and add one line to the final message: "This app uses a database. Adding one costs $10 a month; say so and I'll add it." If it cannot run without one, stop and say the same.
+**Silent and headless runs.** The `auto-deploy-on-create` path, headless runs and fleet agents never add a database and never send the acknowledgement. If the project looks like it needs one, deploy without it when possible and add one line to the final message: "This app uses a database. Adding one costs \$10 a month; say so and I'll add it." If it cannot run without one, stop and say the same.
 
 **Server enforcement.** For a billed company, a deploy that would create a new database without the acknowledgement fails with `409 DATABASE_BILLING_ACK_REQUIRED`; the message carries the terms. Nothing on the live app changes. Show the terms, ask the question above, and on yes repeat the deploy with `DB_BILLING_ACK=true`. Apps that already have a database are not asked again.
 
@@ -1208,7 +1208,7 @@ HQ_PRO_REQUEST_HEADERS=()
 # needs a real answer. Fall back to reconstructing it from the subdomain, and
 # if even that is unavailable, say plainly that the state is unverified.
 report_gate_exposure_and_fail() {
-  local why="$1" live_code url
+  local why="${1}" live_code url
   url="${LIVE_URL:-}"
   # Same construction as BASE_URL in the upload block — keep them in step.
   if [ -z "$url" ] && [ -n "${APP_SUBDOMAIN:-}" ]; then

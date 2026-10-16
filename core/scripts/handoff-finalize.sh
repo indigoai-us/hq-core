@@ -58,9 +58,18 @@
 # emails, or tokens.
 #
 # Exit codes: 0 ok · 2 bad argument · 3 changeset file missing · 4 handoff not
-# durable (commit refused or paths unstageable) · 5 mirror failed.
+# durable (commit refused or paths unstageable) · 5 mirror failed · 6 jq is
+# not installed (checked before anything is written).
 
 set -euo pipefail
+
+# jq builds every JSON file this script writes. Check for it before the first
+# mkdir or write so a host without jq gets one clear message and an untouched
+# workspace, instead of a half-written handoff and "jq: command not found".
+if ! command -v jq >/dev/null 2>&1; then
+  echo "handoff-finalize: jq is required but was not found on PATH. Nothing was written. Install jq (macOS: brew install jq; Debian/Ubuntu: sudo apt-get install jq; Windows: winget install jqlang.jq), then re-run /handoff." >&2
+  exit 6
+fi
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"

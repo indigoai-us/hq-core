@@ -17,13 +17,18 @@
 #   super-conductor-heartbeat.sh --interval <seconds> [--link <id>]
 #       [--channels <csv>] [--state <save-file>] [--once]
 #
+# Without --channels, the channels come from the owner's settings file
+# (personal/settings/super-conductor.yaml, or $SC_PREFS_FILE) through
+# super-conductor-prefs.mjs, re-read on every line so a preference saved
+# mid-run applies on the next wake. Falls back to sessions,hq_dms.
+#
 # Exit: 0 when the link closes (the conductor is off), 1 after repeated waiter
 # errors, 2 on bad arguments.
 set -uo pipefail
 
 interval=""
 link=""
-channels="sessions,hq_dms"
+channels=""
 state=""
 once=0
 HQ_BIN="${HQ_BIN:-hq}"
@@ -56,12 +61,30 @@ fi
 (( interval < MIN_INTERVAL )) && interval=$MIN_INTERVAL
 (( interval > 3600 )) && interval=3600
 
+PREFS_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-conductor-prefs.mjs"
+
+current_channels() {
+  if [[ -n "$channels" ]]; then
+    printf '%s' "$channels"
+    return
+  fi
+  local c=""
+  if command -v node >/dev/null 2>&1 && [[ -f "$PREFS_JS" ]]; then
+    c="$(node "$PREFS_JS" channels 2>/dev/null || true)"
+  fi
+  if [[ -n "$c" ]]; then
+    printf '%s (from settings)' "$c"
+  else
+    printf 'sessions,hq_dms'
+  fi
+}
+
 resume_hint="Run the /super-conductor wakeup (Step 7)"
 [[ -n "$state" ]] && resume_hint="Read $state, then run the /super-conductor wakeup (Step 7)"
 
 emit() { # kind detail
   printf 'SUPER-CONDUCTOR %s %s | channels: %s | %s.\n' \
-    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$channels" "$2"
+    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(current_channels)" "$2"
 }
 
 errors=0

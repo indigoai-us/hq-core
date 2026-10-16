@@ -2,6 +2,46 @@
 
 Newest release first.
 
+## Release: v16.0.24-beta.6
+
+- No action needed. `/brainstorm` now sweeps the company's code, repos,
+  infrastructure, workers, skills, and projects for existing work before
+  proposing anything, and gives each hit a reuse / extend / merge / replace
+  verdict. Out-of-date items become removal candidates with evidence (last
+  change, live references, what superseded them). A new `Q-retire` interview
+  question asks which removals go into the plan, and each confirmed removal
+  becomes a PRD story.
+- Approaches are now ranked on a scorecard (durable, flexible, resilient,
+  scalable, infrastructure running cost, mature, modern), not on code volume or
+  build effort. One approach is always a first-principles clean-sheet design,
+  set against a required `research/web-best-in-class.md` note on how the most
+  advanced companies solve the problem.
+- Live web research prefers primary sources from the last 60 days and labels
+  older ones `stale`. Each brainstorm records an expert standard: expert moves,
+  primary sources, methods, and an external check with a pass condition.
+- The interview's direction question now recommends "Quality and durability".
+
+## Release: v16.0.24-beta.2
+
+- No action needed. `/super-conductor` now brings every owner decision to you
+  as a `/decision-queue` picker: one picker per item, recommended option first,
+  each answer relayed before the next picker. It no longer ends a turn with a
+  question in prose, a table of options to pick from, a "still to come" list,
+  or a decision card. Status-only updates stay as short text. This replaces the
+  one-question-per-turn pacing from v16.0.22-beta.9.
+- `/decision-queue` now runs for a single item when `/super-conductor` or
+  `/overnight` calls it, shows drafts and candidate assets in each option's
+  preview, and relays each answer to the session it came from.
+- New: `personal/settings/super-conductor.yaml` is your extension of
+  `/super-conductor`. The conductor reads it on every start and every wakeup,
+  keeps keys it does not recognize, and saves preferences you state ("always
+  sweep X") with `core/scripts/super-conductor-prefs.mjs`, which only adds to
+  lists or sets one value and never rewrites other keys. New keys:
+  `slack_workspaces`, `hq_channels` (HQ channels and group DMs), multi-account
+  `email_accounts`, and `surface` (`needs_attention` or `all`).
+- The heartbeat reads its channels from that file when started without
+  `--channels`, so a saved channel applies on the next wake.
+
 ## Release: v16.0.22-beta.9
 
 - No action needed. `/super-conductor` now keeps itself awake. A background

@@ -437,7 +437,7 @@ When the owner asks to fix access "everywhere", "for all my companies", or passe
 ```bash
 me="$(hq whoami --json | jq -r '.email')"
 hq sync mode --show                                     # companies you belong to (first column)
-hq members list --company "$c" | awk -v me="$me" '$1==me {print $2}'   # your role in company $c
+hq members list --company "$c" | awk -v me="$me" '$(1)==me {print $(2)}'   # your role in company $c
 ```
 
 Keep a company only if `companies/$c/company.yaml` has `cloud: true` and your role is
