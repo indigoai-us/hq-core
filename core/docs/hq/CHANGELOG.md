@@ -1,10 +1,58 @@
 ## [Unreleased]
+- Fixed: the policy enforcement gate blocked Slack drafts and read-only greps
+  by demanding receipts for file names that only appeared in pasted text. When
+  a prompt declares an attachment ("attached brief", "attached file"), only
+  file names in that sentence, or in the lines listed under it when it ends
+  with a colon, become required briefs; names elsewhere in the prompt are
+  mentions. A declared attachment that names no file still fails closed.
+  Draft tools (`create_draft`, `draft_email`, `slack_send_message_draft`) are
+  no longer counted as sends; `send_draft` and `post_draft` still are. A
+  pipeline segment run by a read-only viewer (grep, rg, cat, head, tail, less,
+  wc, ls) no longer counts as `hq dm` or a Slack post. The whole command is
+  still checked when it uses a command substitution, process substitution or
+  backtick, pipes into a shell, eval or xargs, or passes `--pre` to rg.
+- Fixed: `/brainstorm`, `/deep-plan`, `/prd`, `/strategize`, `/investigate`
+  and `/project-summary` read company paths before binding the session, so the
+  scope guard denied the first read under `companies/{co}/` with "Session has
+  no company_slug bound" and the skill had to retry. Each skill now runs
+  `core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` right after it
+  anchors the company and before its first company read. `/strategize` runs
+  `hq core hq-session set company_slug "{co}"` instead so it stays in the Codex
+  pack, which ships only skills without `core/` paths. New lint
+  `core/scripts/lint-skill-company-bind.sh` fails when a skill anchors `{co}`
+  and reads `companies/{co}/` or loads policies before a bind step.
 - Fixed: under a UTF-8 locale on macOS, no policy loaded when a policy's rule
   line was cut at the 160-byte summary limit inside a multibyte character
   (awk stopped with "towc: multibyte conversion failure"). The evaluator awk
   in `inject-policy-on-trigger.sh` now runs with `LC_ALL=C` like the hook's
   other awk passes, and the summary cut backs off to a whole UTF-8 character
   before adding "...".
+- Fixed: the company scope guard no longer blocks these Bash shapes when no
+  other company is involved: a dollar amount glued to another string literal
+  in a python/node heredoc that cannot run a shell
+  (`.replace('$39/mo','$49/mo')`); an escaped `\$` in double-quoted message
+  text (`--text "Pro is \$49/mo"`); `"$(cat <file>)"` as the message of
+  `hq agents message <agent>` and as the `--title`, `--summary`, `--message`,
+  `--learnings-json`, `--next-steps-json` or `--tags-json` value of
+  `handoff-finalize.sh`; `for r in $(ls [-1|-A] <dir>); do ... <dir>/$r`,
+  which is checked like `<dir>/*` and also checks the directory; an absolute
+  loop root assigned in the same command (`W=/abs/hq/workspace/worktrees;
+  for n in a b; do cat $W/$n; done`); and a `"$s: $(grep ...)"` label in echo
+  text inside a loop. The same shapes aimed at another company, a symlink
+  into one, or a variable the command does not set still block
+  (feedback_13e0b6e7, feedback_993a28e7, feedback_decb4125). Also accepted:
+  a printf whose words are all single-quoted literals as a data-option value
+  (`gh pr create --body "$(printf 'Fixes x\n\nSee a/b')"`), and a
+  `grep -c PAT [FILE]` count in a sed address (`sed -n "1,$(grep -c x f)p"`).
+  A printf with a variable, a nested substitution, double-quoted words, or a
+  path position, and grep -c over two files, still block (feedback_436da6e9).
+  An f-string field after a literal path under the bound company inside a
+  quoted `python -c` or `node -e` program
+  (`open(f'companies/<co>/reports/r-{d}.md','w')`) is no longer read as shell
+  brace expansion. The literal path must end its company segment with `/`,
+  and the program must contain no `..`, `$`, backtick or backslash in that
+  path; another company or a field in the company segment still blocks
+  (feedback_b06e9db7).
 - Fixed: the company scope guard no longer blocks these Bash shapes when no
   other company is involved: comma-joined string arguments in a quoted
   python/node heredoc (`print('a','see `src/x`')`); `"$(cat <path>)"` as the

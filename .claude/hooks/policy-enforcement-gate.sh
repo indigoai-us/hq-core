@@ -224,6 +224,10 @@ candidate_reads_exact_path() {
 # list_messages, search_emails) is a read even when a later word is a noun
 # like post or message; an outbound verb (send_message, slack_post_message,
 # create_post) is a send. camelCase actions are split the same way.
+# A draft is not a send: an action that names a draft (create_draft,
+# draft_email, slack_send_message_draft) only stages text for a person to
+# send. An outbound verb directly followed by "draft" (send_draft,
+# post_draft) delivers an existing draft and stays a send.
 tool_is_outbound() {
   local action="$1"
   case "$action" in *__*) action="${action##*__}" ;; esac
@@ -234,10 +238,52 @@ tool_is_outbound() {
       for (i = 1; i <= n; i++) {
         w = parts[i]
         if (w ~ /^(get|list|search|read|fetch|query|find|describe|lookup|view|show|retrieve|count|check|inspect|preview|download|export|stat|status|history|info)$/) exit 1
-        if (w ~ /^(send|post|broadcast|message|email|dm|reply|publish)$/) exit 0
+        if (w ~ /^drafts?$/) exit 1
+        if (w ~ /^(send|post|broadcast|message|email|dm|reply|publish)$/) {
+          if (parts[i + 1] ~ /^drafts?$/) exit 0
+          for (j = i + 1; j <= n; j++) if (parts[j] ~ /^drafts?$/) exit 1
+          exit 0
+        }
       }
       exit 1
     }'
+}
+
+# command_is_outbound <command> — true when a shell command can deliver a
+# message (hq dm, Slack chat.postMessage, broadcast endpoints). Match the
+# commands that run, not text they only search or print: a pipeline segment
+# whose command is a read-only viewer (grep, rg, cat, head, tail, ...) is
+# skipped, so `grep -n "hq dm" SKILL.md` is a read. The whole command is
+# matched as before when it contains a command substitution, process
+# substitution, backtick, or a segment that executes text (sh, bash, eval,
+# xargs, source), or when rg is given --pre.
+command_is_outbound() {
+  local command="$1" pattern scan
+  pattern='(^|[^[:alnum:]_])hq[[:space:]]+(cowork[[:space:]]+)?dm([^[:alnum:]_]|$)|chat\.postMessage|send-broadcast|slack\.com/api/chat\.postMessage|/broadcasts'
+  [ -n "$command" ] || return 1
+  printf '%s' "$command" | grep -Eqi "$pattern" || return 1
+  scan="$(printf '%s' "$command" | node -e '
+    let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+      if(/\$\(|`|<\(|>\(/.test(s)){process.stdout.write(s);return;}
+      const segs=[]; let cur="", quote="", esc=false;
+      for(let i=0;i<s.length;i++){const c=s[i];
+        if(esc){cur+=c;esc=false;continue;}
+        if(c==="\\"&&quote!=="\x27"){cur+=c;esc=true;continue;}
+        if(quote){cur+=c;if(c===quote)quote="";continue;}
+        if(c==="\""||c==="\x27"){quote=c;cur+=c;continue;}
+        if(c===";"||c==="|"||c==="&"||c==="\n"){segs.push(cur);cur="";continue;}
+        cur+=c;}
+      segs.push(cur);
+      const words=seg=>(seg.match(/(?:[^\s"\x27\\]|\\.|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27)+/g)||[]).map(w=>w.replace(/^["\x27]|["\x27]$/g,""));
+      const cmdWord=seg=>{const w=words(seg);let i=0;while(i<w.length&&/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i]))i++;return {name:(w[i]||"").replace(/^.*\//,""),args:w.slice(i+1)};};
+      const executes=new Set(["sh","bash","zsh","dash","ksh","fish","eval","xargs","source",".","exec","env","sudo","command","nohup","time","parallel"]);
+      const viewers=new Set(["grep","egrep","fgrep","rg","cat","head","tail","less","more","wc","ls"]);
+      const parsed=segs.map(seg=>({seg,...cmdWord(seg)}));
+      if(parsed.some(p=>executes.has(p.name))){process.stdout.write(s);return;}
+      const kept=parsed.filter(p=>!(viewers.has(p.name)&&!(p.name==="rg"&&p.args.some(a=>/^--pre(=|$)/.test(a)))));
+      process.stdout.write(kept.map(p=>p.seg).join("\n"));
+    });' 2>/dev/null)" || scan="$command"
+  printf '%s' "$scan" | grep -Eqi "$pattern"
 }
 
 case "$EVENT" in
@@ -279,7 +325,31 @@ case "$EVENT" in
     DECLARES_BRIEF=0
     if printf '%s' "$PROMPT" | grep -Eqi '\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b'; then
       DECLARES_BRIEF=1
-      PROMPT_PATHS="$( { printf '%s\n' "$PROMPT" | grep -Eo '[/A-Za-z0-9_.-]+\.(md|txt|pdf|docx)' 2>/dev/null || true; } | jq -Rsc 'split("\n") | map(select(length>0)) | unique')"
+      # Only a file named in the attachment clause itself is a declared brief:
+      # the sentence that says "attached ... brief/file" (or "brief ...
+      # attached"), plus the following lines up to a blank line when that
+      # sentence ends with ":" (a list of attached paths). A file name elsewhere
+      # in the prompt, such as pasted Slack text, is only a mention. When the
+      # clause names no file, the sentinel below still fails closed.
+      PROMPT_PATHS="$(printf '%s' "$PROMPT" | node -e '
+        let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+          const declares=/\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b/i;
+          const pathRe=/[\/A-Za-z0-9_.-]+\.(?:md|txt|pdf|docx)/g;
+          const lines=s.split(/\r?\n/), clauses=[];
+          for(let i=0;i<lines.length;i++){
+            const sentences=lines[i].split(/(?<=[.!?])\s+/);
+            sentences.forEach((sentence,k)=>{
+              if(!declares.test(sentence)) return;
+              clauses.push(sentence);
+              if(k===sentences.length-1 && /:\s*$/.test(sentence))
+                for(let j=i+1;j<lines.length && lines[j].trim();j++) clauses.push(lines[j]);
+            });
+          }
+          const out=new Set();
+          for(const c of clauses) for(const m of c.matchAll(pathRe)) out.add(m[0]);
+          process.stdout.write(JSON.stringify([...out].sort()));
+        });' 2>/dev/null)"
+      [ -n "$PROMPT_PATHS" ] || PROMPT_PATHS='[]'
     fi
     BRIEFS="$(jq -nc --argjson a "$ATTACHMENTS" --argjson p "$PROMPT_PATHS" --argjson d "$POLICY_BRIEFS" '$a + $p + $d | unique')"
     if [ "$DECLARES_BRIEF" -eq 1 ]; then
@@ -440,7 +510,7 @@ case "$EVENT" in
     CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     OUTBOUND=0
     if tool_is_outbound "$TOOL"; then OUTBOUND=1; fi
-    if printf '%s' "$CMD" | grep -Eqi '(^|[^[:alnum:]_])hq[[:space:]]+(cowork[[:space:]]+)?dm([^[:alnum:]_]|$)|chat\.postMessage|send-broadcast|slack\.com/api/chat\.postMessage|/broadcasts'; then OUTBOUND=1; fi
+    if command_is_outbound "$CMD"; then OUTBOUND=1; fi
     if [ -s "$POLICIES" ] && awk -F '\t' '$4 == "gate" { found=1 } END { exit !found }' "$POLICIES"; then
       . "$ROOT/core/scripts/hook-lib.sh" || {
         json_block "POLICY ENFORCEMENT BLOCK: the gate fact checker is unavailable; retry after repairing the installation."

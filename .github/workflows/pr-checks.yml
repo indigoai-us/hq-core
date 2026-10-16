@@ -317,6 +317,8 @@ jobs:
         run: bash core/scripts/tests/skill-core-script-references.test.sh
       - name: Skill bodies carry no argument placeholders in code ($N, fenced $ARGUMENTS)
         run: bash core/scripts/tests/skill-body-positional-placeholders.test.sh
+      - name: Skills bind the session company before reading company paths
+        run: bash core/scripts/tests/skill-company-bind-before-read.test.sh
       - name: Command reports gate expandable technical details
         run: bash core/scripts/tests/skill-plain-report.test.sh
       - name: Deploy skill app route and multipart helper contracts

@@ -469,6 +469,38 @@ scope_shell_variable_values() {
     case "$command_prefix" in
       *"-v $name"*|*"read $name"*|*"declare $name"*|*"local $name"*|*"unset $name"*|*"eval"*|*"source "*|*". "*) return 1 ;;
     esac
+    # `for r in $(ls [-1|-A] DIR)` binds r to the entry names in DIR, the
+    # same set `DIR/*` would give. DIR must be one literal directory inside
+    # the HQ root that this session may read (it is checked here as an
+    # operand), and every entry name must be a plain word; ls prints bare
+    # names, so a value never contains a slash. Any other ls option (-a
+    # adds `.` and `..`, -R and -d change what is printed), a pipe, or a
+    # second operand is not matched and the loop stays unresolved.
+    local ls_re='^\$\(ls([[:space:]]+-(1|A|1A|A1))?[[:space:]]+([A-Za-z0-9._/@+-]+)\)[[:space:]]*$'
+    if [[ "$raw" =~ $ls_re ]]; then
+      local ls_flag="${BASH_REMATCH[2]}" ls_dir="${BASH_REMATCH[3]}" ls_abs ls_rel ls_entry ls_count=0
+      case "$ls_dir" in -*|*'..'*) return 1 ;; esac
+      case "$ls_dir" in
+        /*) ls_abs="$ls_dir" ;;
+        *)
+          [ "$(cd "${COMMAND_CWD:-$HQ_ROOT}" 2>/dev/null && pwd -P)" = "$HQ_ROOT" ] || return 1
+          ls_abs="$HQ_ROOT/$ls_dir"
+          ;;
+      esac
+      [ -d "$ls_abs" ] || return 1
+      ls_rel="$(scope_normalize_hq_relative "$ls_abs")"
+      [ -n "$ls_rel" ] || return 1
+      scope_rel_allowed "$ls_rel" || return 1
+      while IFS= read -r ls_entry; do
+        [ -n "$ls_entry" ] || continue
+        case "$ls_entry" in .|..|*[!A-Za-z0-9._@+-]*) return 1 ;; esac
+        ls_count=$((ls_count + 1))
+        [ "$ls_count" -le 2048 ] || return 1
+        printf '%s\n' "$ls_entry"
+      done < <(cd "$HQ_ROOT/$ls_rel" 2>/dev/null && { [ -z "$ls_flag" ] || [ "$ls_flag" = 1 ] || shopt -s dotglob; } && compgen -G '*' || true)
+      [ "$ls_count" -gt 0 ] || return 1
+      return 0
+    fi
     IFS=$' \t\n' read -r -a values <<< "$raw"
     [ "${#values[@]}" -gt 0 ] || return 1
     local glob_match glob_count=0 glob_cwd
@@ -2358,12 +2390,13 @@ scope_token_is_prose() {
   # The leading word must be literal text ended by whitespace, before any
   # slash, variable, or substituted value can join the first path component.
   # The one exception is a plain `$name` lead in echo/printf text (checked
-  # below), which prints the word and opens nothing.
+  # below), optionally followed by a `:` or `,` label separator (`"$s: ..."`),
+  # which prints the word and opens nothing.
   lead="${reduced%%[[:space:]]*}"
   [ -n "$lead" ] || return 1
   case "$lead" in
     *'/'*|*'$'*|*"$mark"*|*'*'*|*'?'*|*'['*|*'{'*|*'~'*)
-      [ "$context" != body ] && [[ "$lead" =~ ^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$ ]] || return 1
+      [ "$context" != body ] && [[ "$lead" =~ ^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[:,]?$ ]] || return 1
       lead_is_var=1
       ;;
   esac
@@ -2473,6 +2506,45 @@ scope_offset_in_interpreter_body() {
     fi
   done
   return 1
+}
+
+# True when the companies/ <fragment> found after <prefix> lies inside the
+# quoted program of `python[N] -c` or `node -e`, and its literal text up to
+# the program's closing quote has no `$`, backtick, backslash, or `..`. Sets
+# scope_inline_program_path to the literal path: the fragment cut at the end
+# of the program's own string literal (the other quote character), a comma,
+# a closing bracket, or the first `{` of an f-string or template field. The
+# cut path must name a company segment ended by `/`, so a field cannot be
+# glued onto the company name (`companies/x{c}/`).
+scope_fragment_in_inline_program() {
+  local prefix="${1:-}" fragment="${2:-}" re rest match q="" other between="" pre="" whole path tail
+  scope_inline_program_path=""
+  re='(^|[;&|[:space:](])(python[0-9.]*|node)[[:space:]]+(-[A-Za-z]+[[:space:]]+)*-[ce][[:space:]]*(["'"'"'])'
+  rest="$prefix"
+  while [[ "$rest" =~ $re ]]; do
+    match="${BASH_REMATCH[0]}"
+    q="${BASH_REMATCH[4]}"
+    pre="${prefix:0:$(( ${#prefix} - ${#rest} ))}${rest%%"$match"*}"
+    rest="${rest#*"$match"}"
+    between="$rest"
+  done
+  [ -n "$q" ] || return 1
+  case "$between" in *"$q"*) return 1 ;; esac
+  scope_shell_prefix_is_unquoted "$pre" || return 1
+  if [ "$q" = '"' ]; then other="'"; else other='"'; fi
+  # No `..` anywhere in the program, so a field value spelled in it
+  # (`m='../../otherco'`) cannot climb out of the literal company path.
+  tail="${scope_scan_cmd:-}"
+  tail="${tail:${#prefix}}"
+  tail="${tail%%"$q"*}"
+  case "$between$tail" in *'..'*) return 1 ;; esac
+  whole="${fragment%%"$q"*}"
+  case "$whole" in *'..'*|*'$'*|*$'\140'*|*\\*) return 1 ;; esac
+  path="${whole%%["$other"\{,\]\}]*}"
+  tail="${path#companies/}"
+  [[ "$tail" == [A-Za-z0-9_]*/* ]] || return 1
+  scope_inline_program_path="$path"
+  return 0
 }
 
 scope_check_prose_substitutions() {
@@ -2585,7 +2657,7 @@ scope_text_only_interpreter_bodies() {
 # substitution in a path position (`cat "$(cat p)"`, `cp a "$(...)"`) is not
 # covered and stays refused.
 scope_token_is_data_option_substitution() {
-  local index="${1:-0}" token prev body opt reader record count=0 head
+  local index="${1:-0}" token prev body opt reader record count=0 head head_index
   scope_prose_subs=()
   [ "$index" -gt 0 ] || return 1
   token="${scope_tokens[$index]:-}"
@@ -2598,9 +2670,36 @@ scope_token_is_data_option_substitution() {
   body="${body%)}"
   # Only clients that send the value somewhere: `-d` is a directory for
   # mktemp and unzip, so the option alone does not make the value data.
-  head="${scope_tokens[$(scope_command_head_index)]:-}"
+  head_index="$(scope_command_head_index)"
+  head="${scope_tokens[$head_index]:-}"
+  # `bash core/scripts/handoff-finalize.sh ...` runs the same script.
+  case "$head" in
+    bash|sh) case "${scope_tokens[$((head_index + 1))]:-}" in */handoff-finalize.sh|handoff-finalize.sh) head_index=$((head_index + 1)); head="${scope_tokens[$head_index]}" ;; esac ;;
+  esac
   head="${head##*/}"
+  # `hq agents message <agent> <message...>`: every positional after the
+  # agent is message text the CLI sends, not a path it opens.
+  if [ "$head" = hq ] && [ "$opt" = "$prev" ] \
+    && [ "${scope_tokens[$((head_index + 1))]:-}" = agents ]; then
+    case "${scope_tokens[$((head_index + 2))]:-}" in
+      message|msg)
+        local j=$((head_index + 3)) positional=0
+        while [ "$j" -lt "$index" ]; do
+          case "${scope_tokens[$j]}" in
+            --company|--timeout) j=$((j + 1)) ;;
+            -*) ;;
+            *) positional=$((positional + 1)) ;;
+          esac
+          j=$((j + 1))
+        done
+        # j == index means the token is not the value of --company/--timeout.
+        [ "$j" -eq "$index" ] && [ "$positional" -ge 1 ] && opt=--message
+        ;;
+    esac
+  fi
   case "$head:$opt" in
+    handoff-finalize.sh:--title|handoff-finalize.sh:--summary|handoff-finalize.sh:--message) ;;
+    handoff-finalize.sh:--learnings-json|handoff-finalize.sh:--next-steps-json|handoff-finalize.sh:--tags-json) ;;
     curl:-d|curl:--data|curl:--data-raw|curl:--data-binary|curl:--data-ascii|curl:--json) ;;
     wget:--post-data|wget:--body-data) ;;
     xh:--raw|http:--raw|https:--raw) ;;
@@ -2608,6 +2707,33 @@ scope_token_is_data_option_substitution() {
     hq:--json|hq:--body|hq:--text|hq:--message|hq:--params|hq:--payload|hq:--summary|hq:--title|hq:--description|hq:--note) ;;
     *) return 1 ;;
   esac
+  # `--body "$(printf 'Fixes x\n\nSee a/b')"`: a printf whose words are all
+  # single-quoted literals prints only that text and opens nothing. The
+  # tokenizer may drop backslashes inside the substitution, so prove the
+  # shape on the raw command: every `$(printf` in it must be such a
+  # literal-only substitution, and this token must be one of them.
+  if [ "${body%%[[:space:]]*}" = printf ]; then
+    local printf_re printf_rest printf_total=0 printf_literal=0 printf_found=0 printf_inner
+    printf_re="\\\$\\(printf([[:space:]]+'[^']*')+[[:space:]]*\\)"
+    printf_rest="${scope_scan_cmd:-}"
+    while [[ "$printf_rest" == *'$(printf'* ]]; do
+      printf_total=$((printf_total + 1))
+      printf_rest="${printf_rest#*\$(printf}"
+    done
+    printf_rest="${scope_scan_cmd:-}"
+    while [[ "$printf_rest" =~ $printf_re ]]; do
+      printf_literal=$((printf_literal + 1))
+      printf_inner="${BASH_REMATCH[0]#\$(}"
+      printf_inner="${printf_inner%)}"
+      [ "$printf_inner" = "$body" ] && printf_found=1
+      printf_inner="${printf_inner//\\/}"
+      [ "$printf_inner" = "$body" ] && printf_found=1
+      printf_rest="${printf_rest#*"${BASH_REMATCH[0]}"}"
+    done
+    [ "$printf_total" -gt 0 ] && [ "$printf_total" -eq "$printf_literal" ] && [ "$printf_found" -eq 1 ] || return 1
+    scope_prose_subs=()
+    return 0
+  fi
   case "$body" in *'('*|*')'*|*$'\140'*|*'|'*|*'<'*|*'>'*|*';'*|*'&'*|*$'\n'*) return 1 ;; esac
   while IFS= read -r record; do
     [ -n "$record" ] || continue
@@ -2624,7 +2750,7 @@ scope_token_is_data_option_substitution() {
 # | cut -d: -f1`, or anything ending in `wc -l` reading stdin, with optional
 # `head`/`tail -n N` stages. Such output cannot carry a sed command or a path.
 scope_substitution_prints_numbers() {
-  local body="${1:-}" record stage=0 last="" tok i operands saw_n saw_cut=0
+  local body="${1:-}" record stage=0 last="" tok i operands saw_n saw_c=0 saw_cut=0
   local -a words=()
   case "$body" in *';'*|*'&'*|*$'\n'*|*'>'*) return 1 ;; esac
   while IFS= read -r record; do
@@ -2634,24 +2760,32 @@ scope_substitution_prints_numbers() {
     case "${words[0]}" in
       grep)
         [ "$stage" -eq 1 ] || return 1
-        saw_n=0; operands=0; i=1
+        saw_n=0; saw_c=0; operands=0; i=1
         while [ "$i" -lt "${#words[@]}" ]; do
           tok="${words[$i]}"
           case "$tok" in
             --line-number) saw_n=1 ;;
+            --count) saw_c=1 ;;
             -e) i=$((i + 1)); operands=$((operands + 1)) ;;
             --) ;;
             -*)
-              case "$tok" in -*[!nEiFwxvP]*) return 1 ;; esac
+              case "$tok" in -*[!nEiFwxvPc]*) return 1 ;; esac
               case "$tok" in *n*) saw_n=1 ;; esac
+              case "$tok" in *c*) saw_c=1 ;; esac
               ;;
             *) operands=$((operands + 1)) ;;
           esac
           i=$((i + 1))
         done
         # Pattern plus at most one file: with two files grep prefixes names.
-        [ "$saw_n" -eq 1 ] && [ "$operands" -ge 1 ] && [ "$operands" -le 2 ] || return 1
-        last="grep"
+        [ "$operands" -ge 1 ] && [ "$operands" -le 2 ] || return 1
+        if [ "$saw_c" -eq 1 ]; then
+          # `grep -c PAT [FILE]` prints one count (-c overrides -n).
+          last="count"
+        else
+          [ "$saw_n" -eq 1 ] || return 1
+          last="grep"
+        fi
         ;;
       cut)
         [ "$last" = grep ] || return 1
@@ -2682,8 +2816,8 @@ scope_substitution_prints_numbers() {
       *) [ "$stage" -eq 1 ] || return 1; last=other ;;
     esac
   done <<< "$(hq_shell_simple_commands "$body")"
-  # Only head/tail may follow the final cut or wc.
-  [ "$last" = wc ] || { [ "$last" = cut ] && [ "$saw_cut" -eq 1 ]; }
+  # Only head/tail may follow the final cut, wc, or grep -c.
+  [ "$last" = wc ] || [ "$last" = count ] || { [ "$last" = cut ] && [ "$saw_cut" -eq 1 ]; }
 }
 
 # True when token <index> is the script operand of sed (the first non-option
@@ -2791,6 +2925,18 @@ scope_token_is_sed_script() {
 # checked: a literal one as a path, one with a `$` variable only if the
 # command proves its value, and one with a `$(...)` result next to a `/`
 # fails closed. `$(...)` bodies are returned in scope_prose_subs.
+# True when <piece> occurs in the scanned command only with every `$`
+# written as `\$` (inside double quotes that is a literal dollar sign).
+scope_text_piece_is_escaped() {
+  local piece="${1:-}" escaped rest
+  case "$piece" in *'$'*) ;; *) return 1 ;; esac
+  case "$piece" in *\\*) return 1 ;; esac
+  escaped="${piece//\$/\\\$}"
+  [[ "${scope_scan_cmd:-}" == *"$escaped"* ]] || return 1
+  rest="${scope_scan_cmd//"$escaped"/}"
+  [[ "$rest" != *"$piece"* ]]
+}
+
 scope_token_is_text_option_value() {
   local index="${1:-0}" token prev opt head reduced sub_re piece mark=$'\001' backtick=$'\140'
   scope_prose_subs=()
@@ -2838,6 +2984,13 @@ scope_token_is_text_option_value() {
   while IFS= read -r piece; do
     case "$piece" in
       *"$mark"*/*|*/*"$mark"*) scope_block_rel "$token" "a command substitution result is used as part of a path inside message text" ;;
+      *'$'*/*|*/*'$'*)
+        # The tokenizer drops backslashes, so `"Pro is \$49/mo"` arrives as
+        # `$49/mo`. When every `$` in the piece is escaped wherever the piece
+        # occurs in the command, the program receives that literal text and
+        # no variable is expanded; skip it. Otherwise check it as a path.
+        scope_text_piece_is_escaped "$piece" || scope_text_pieces[${#scope_text_pieces[@]}]="$piece"
+        ;;
       */*) scope_text_pieces[${#scope_text_pieces[@]}]="$piece" ;;
     esac
   done <<< "${reduced//[[:space:]]/$'\n'}"
@@ -2846,7 +2999,7 @@ scope_token_is_text_option_value() {
 
 scope_check_bash_skill_path() {
   local raw="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
-  local masked raw_masked backtick token rel resolved expansion_cwd expanded expanded_raw
+  local masked raw_masked backtick token rel resolved expansion_cwd expanded expanded_raw open_tree_candidate
   [ -n "$raw" ] || return 0
   # Shell assignment words can themselves carry paths. Check those values,
   # while leaving basename-style parameter transforms such as ${id##*/} alone.
@@ -2967,13 +3120,25 @@ scope_check_bash_skill_path() {
           if scope_open_tree_expansion_has_parent_value "$raw" "$command_text"; then
             scope_block_rel "$raw" "a path variable contains parent traversal"
           fi
-          if scope_open_tree_expansion_is_provably_confined "$expanded_raw" "$prefix"; then
+          # A proven absolute prefix (`W=/abs/hq/workspace/worktrees; ...
+          # $W/$n`) lands in the same open tree as its HQ-relative form, which
+          # the confinement checks below expect. The variable part is left in
+          # place by the normalization and still has to be proven there.
+          open_tree_candidate="$expanded_raw"
+          case "$expanded_raw" in
+            "$HQ_ROOT"/*)
+              case "$rel" in
+                workspace/*|core/*|personal/*|repos/*) open_tree_candidate="$rel" ;;
+              esac
+              ;;
+          esac
+          if scope_open_tree_expansion_is_provably_confined "$open_tree_candidate" "$prefix"; then
             return 0
           fi
           # A `for` loop or assignment can bound the variable to literal
           # values. Substitute each one and check the resulting literal paths;
           # an unresolved variable still fails closed below.
-          if scope_open_tree_expansion_values_resolve "$expanded_raw" "$prefix" "$command_text"; then
+          if scope_open_tree_expansion_values_resolve "$open_tree_candidate" "$prefix" "$command_text"; then
             scope_check_bash_candidate_inner "$expanded_raw" "$command_text" 0 "" "$prefix" "$suffix"
             return 0
           fi
@@ -3149,6 +3314,17 @@ case "$TOOL" in
           companies/|companies/[!A-Za-z0-9_]*) ;;
           *) fragment="$scope_body_path" ;;
         esac
+      elif scope_fragment_in_inline_program "$scope_prefix" "$fragment"; then
+        # The same holds inside a quoted `python -c` / `node -e` program:
+        # the shell does no brace expansion inside quotes, so the `{d}` of
+        # an f-string (`open(f'companies/x/r-{d}.md','w')`) is program
+        # text. Check the literal path up to the string's end or the first
+        # brace; the company segment is still checked.
+        scope_body_path="$scope_inline_program_path"
+        case "$scope_body_path" in
+          companies/|companies/[!A-Za-z0-9_]*) ;;
+          *) fragment="$scope_body_path" ;;
+        esac
       fi
       # Markdown-style `companies/x/y` (one backtick on each side, none inside)
       # names the same path whether the backticks are prose in a quoted body
@@ -3253,7 +3429,7 @@ case "$TOOL" in
           if [[ "$scope_interp_bodies" == *"$scope_token"* ]] \
             && [[ "$scope_interp_outside" != *"$scope_token"* ]]; then
             scope_token_context=body
-          elif { [[ "$scope_token" == *[[:space:]]* ]] || [[ "$scope_token" == *$'\140'* ]]; } \
+          elif { [[ "$scope_token" == *[[:space:]]* ]] || [[ "$scope_token" == *$'\140'* ]] || [ "$scope_text_bodies_only" -eq 1 ]; } \
             && [[ "$scope_interp_bodies_unquoted" == *"$scope_token"* ]] \
             && [[ "$scope_interp_outside_unquoted" != *"$scope_token"* ]]; then
             # The tokenizer drops quotes, so adjacent string literals with
@@ -3273,8 +3449,12 @@ case "$TOOL" in
         # except in a python/node body that cannot hand text to a shell
         # (scope_text_only_interpreter_bodies), where `$30k/mo` or `${x}/y`
         # is text nothing expands.
+        scope_body_split_token="$scope_token"
+        if [ "$scope_token_context" = body ] && [ "$scope_text_bodies_only" -eq 1 ]; then
+          case "$scope_token" in *'$('*|*[[:space:]]*|*$'\140'*) ;; *) scope_body_split_token="$scope_token " ;; esac
+        fi
         if [ "$scope_token_context" = body ]; then
-          case "$scope_token" in
+          case "$scope_body_split_token" in
             *'$('*) ;;
             *[[:space:]]*|*$'\140'*)
               # In a body that can reach a shell, check every expansion in

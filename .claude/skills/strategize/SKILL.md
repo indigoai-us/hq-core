@@ -20,6 +20,7 @@ Check if **first word** of `$ARGUMENTS` matches a company slug in `companies/man
 
 1. **Set `{co}`** = matched slug. Strip from `$ARGUMENTS`
 2. **Announce:** "Anchored on **{co}**"
+3. **Bind the session** — run `hq core hq-session set company_slug "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
 
 **If no match** → company resolved in Step 1.
 
@@ -28,6 +29,8 @@ Check if **first word** of `$ARGUMENTS` matches a company slug in `companies/man
 ## Step 1: Resolve Company
 
 **If `{co}` already set from Step 0:** skip to Step 2.
+
+**Otherwise,** once a company is resolved below, bind the session before reading `board.json`: `hq core hq-session set company_slug "{co}"`.
 
 **Priority order:**
 1. cwd inside `companies/{slug}/` → infer from path

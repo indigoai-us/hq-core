@@ -38,11 +38,12 @@ It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}`:
 
 1. **Set `{co}`** = resolved slug for the entire flow. Strip it from the description only when it was the leading token
 2. **Announce:** "Anchored on **{co}**"
-3. **Load policies (frontmatter-only)** — Collect eligible files for the resolved company, except `example-policy.md`, `README.md`, and `_digest.md`; preserve their order and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests remain retired; SessionStart injects matching policies via `inject-policy-on-trigger`. Apply hard rules as constraints throughout the PRD
-4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
-5. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in the Architecture tier repo question
-6. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
-7. **Scope projects** — Only search `companies/{co}/projects/` for existing project collision check
+3. **Bind the session** — run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+4. **Load policies (frontmatter-only)** — Collect eligible files for the resolved company, except `example-policy.md`, `README.md`, and `_digest.md`; preserve their order and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests remain retired; SessionStart injects matching policies via `inject-policy-on-trigger`. Apply hard rules as constraints throughout the PRD
+5. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
+6. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in the Architecture tier repo question
+7. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
+8. **Scope projects** — Only search `companies/{co}/projects/` for existing project collision check
 
 **If `source` is `none`** — do not silently assume personal scope. Ask the user which company this belongs to, or whether it is personal/HQ work, before creating any project files. The full input text is the project description either way.
 

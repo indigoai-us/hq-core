@@ -27,7 +27,7 @@ These shape every step below. When two steps pull in different directions, these
 
 ## Work Mesh Live — trusted bind (do this first)
 
-Before any other tool call that touches project work, bind the session per
+As soon as Step 0 resolves `{co}`, and before any other tool call that touches project work, bind the session per
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
@@ -46,8 +46,9 @@ Check if the **first word** of the user's input matches a company slug in `compa
 
 1. **Set `{co}`** = matched slug. Strip from input — remaining text is the description
 2. **Announce:** "Anchored on **{co}**"
-3. **Load policies (frontmatter-only)** — Collect the eligible files for the resolved company, except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally Read the `## Rule` section with a targeted range
-4. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}`
+3. **Bind the session** — run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+4. **Load policies (frontmatter-only)** — Collect the eligible files for the resolved company, except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally Read the `## Rule` section with a targeted range
+5. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}`
 
 **If no match** -- full input is the description text. Company resolved later.
 
@@ -68,7 +69,7 @@ Mode affects Steps 2-4 (premise challenge depth, question framing, research scop
 
 **If board ID matched in Step 0:**
 1. If `{co}` already set: read `companies/{co}/board.json`, find entry by ID
-2. If `{co}` not set: scan all `companies/*/board.json` for the ID (use manifest `board_path` list)
+2. If `{co}` not set: scan all `companies/*/board.json` for the ID (use manifest `board_path` list). Once found, set `{co}` and bind the session as in Step 0 before reading further
 3. Extract the entry's `title` and `description` as starting context
 4. Set `source_idea_id` = matched ID
 
