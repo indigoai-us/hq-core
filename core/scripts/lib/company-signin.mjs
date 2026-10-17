@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { Refusal, apiClient, validateConfig } from './company-jobs.mjs';
+import { Refusal, apiClient, runuserPath, validateConfig } from './company-jobs.mjs';
 
 export const AUTH_USER = 'hq-claude-auth';
 export const AUTH_HOME = '/var/lib/hq-claude-auth';
@@ -22,7 +22,9 @@ export const credentialFile = (home = AUTH_HOME) => path.join(home, '.claude', '
 // Margin so a token does not expire between admission and the first model call.
 export const TOKEN_MARGIN_MS = 5 * 60 * 1000;
 const LOGIN_CODE = /^[A-Za-z0-9][A-Za-z0-9#_.~-]{7,511}$/;
-const LOGIN_URL = /https:\/\/(?:[a-z0-9-]+\.)*(?:claude\.ai|claude\.com|anthropic\.com)\/[^\s"'<>\u001b]+/;
+// eslint-disable-next-line no-control-regex
+const LOGIN_URL = /https:\/\/(?:[a-z0-9-]+\.)*(?:claude\.ai|claude\.com|anthropic\.com)\/[^\s"'<>\u0000-\u001f\u007f]+/g;
+const LOGIN_URL_HOSTS = ['claude.ai', 'claude.com', 'anthropic.com'];
 
 /** Signed-in mode: no broker provider secret and the Claude provider. */
 export function usesBoxSignIn(c) {
@@ -67,8 +69,8 @@ export function signedIn(file, {uid, now = Date.now, refresh = refreshViaCli} = 
 }
 
 /** One minimal CLI call as the auth account; the CLI refreshes and rewrites its own file. */
-export function refreshViaCli({user = AUTH_USER, home = AUTH_HOME, run = spawnSync} = {}) {
-  const result = run('runuser', ['-u', user, '--', 'env', '-i', `HOME=${home}`, `PATH=${SAFE_PATH}`, 'LANG=C.UTF-8',
+export function refreshViaCli({user = AUTH_USER, home = AUTH_HOME, run = spawnSync, runuser = runuserPath()} = {}) {
+  const result = run(runuser, ['-u', user, '--', 'env', '-i', `HOME=${home}`, `PATH=${SAFE_PATH}`, 'LANG=C.UTF-8',
     'claude', '-p', 'Reply with OK.', '--max-turns', '1'], {cwd: home, timeout: 60000, stdio: 'ignore'});
   return result.status === 0;
 }
@@ -97,11 +99,58 @@ export function claudeAccessToken({file = credentialFile(), uid, needUntil, now 
 // runner, authenticated by the company machine principal.
 // ---------------------------------------------------------------------------
 
-export function extractLoginUrl(text) {
+/**
+ * Mirrors the server check (hq-pro-agents validLoginUrl): https, an allowed
+ * host, no userinfo or port, path ending /oauth/authorize, no controls.
+ */
+export function validLoginUrl(value) {
   // eslint-disable-next-line no-control-regex
-  const clean = String(text).replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\u001b\][^\u0007]*\u0007/g, '');
-  const match = LOGIN_URL.exec(clean);
-  return match ? match[0] : null;
+  if (typeof value !== 'string' || value.length > 4096 || /[\u0000-\u0020\u007f]/.test(value)) return false;
+  let url;
+  try { url = new URL(value); } catch { return false; }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) return false;
+  const host = url.hostname.toLowerCase();
+  return LOGIN_URL_HOSTS.some(allowed => host === allowed || host.endsWith(`.${allowed}`)) && url.pathname.endsWith('/oauth/authorize');
+}
+
+/**
+ * Terminal output to plain text. OSC sequences (OSC 8 hyperlinks, titles) end
+ * in BEL or ST (ESC \\) and become a space so the hyperlink target and its
+ * visible text stay separate. An unterminated OSC at the end of the buffer is
+ * an incomplete chunk and is dropped. CSI and other escapes are removed, and
+ * any remaining C0/DEL control becomes a space.
+ */
+export function stripTerminal(text) {
+  /* eslint-disable no-control-regex */
+  return String(text)
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, ' ')
+    .replace(/\u001b\][^\u0007]*$/, ' ')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b[ -/]*[0-~]?/g, '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ');
+  /* eslint-enable no-control-regex */
+}
+
+/**
+ * The last complete sign-in URL in the output. An OSC 8 hyperlink target is
+ * preferred: it is whole even when the visible text wraps. Otherwise a plain
+ * URL is used, but one that runs to the end of the buffer may be cut mid-chunk
+ * and is not returned until more output ends it.
+ */
+export function extractLoginUrl(text) {
+  const raw = String(text);
+  let found = null;
+  // eslint-disable-next-line no-control-regex
+  for (const match of raw.matchAll(/\u001b\]8;[^;\u0007\u001b]*;([^\u0007\u001b]*)(?:\u0007|\u001b\\)/g)) {
+    if (validLoginUrl(match[1])) found = match[1];
+  }
+  if (found) return found;
+  const clean = stripTerminal(raw);
+  for (const match of clean.matchAll(LOGIN_URL)) {
+    if (match.index + match[0].length >= clean.length) continue;
+    if (validLoginUrl(match[0])) found = match[0];
+  }
+  return found;
 }
 
 export function validLoginCode(code) {
@@ -109,18 +158,20 @@ export function validLoginCode(code) {
 }
 
 /** Login process as the auth account. Output stays in memory; nothing is logged. */
-export function startLogin({user = AUTH_USER, home = AUTH_HOME, spawnImpl = spawn} = {}) {
-  const child = spawnImpl('runuser', ['-u', user, '--', 'env', '-i', `HOME=${home}`, `PATH=${SAFE_PATH}`, 'LANG=C.UTF-8', 'TERM=dumb',
+export function startLogin({user = AUTH_USER, home = AUTH_HOME, spawnImpl = spawn, runuser = runuserPath()} = {}) {
+  const child = spawnImpl(runuser, ['-u', user, '--', 'env', '-i', `HOME=${home}`, `PATH=${SAFE_PATH}`, 'LANG=C.UTF-8', 'TERM=dumb',
     'script', '-qfec', 'stty cols 1000 rows 50; exec claude auth login --claudeai', '/dev/null'], {cwd: home, stdio: ['pipe', 'pipe', 'pipe']});
   let output = '';
   const collect = chunk => { output = (output + chunk.toString('utf8')).slice(-65536); };
   child.stdout?.on('data', collect);
   child.stderr?.on('data', collect);
   let alive = true;
-  child.on('exit', () => { alive = false; });
-  child.on('error', () => { alive = false; });
+  let exit = null;
+  child.on('exit', (status, signal) => { alive = false; exit ??= {status, signal}; });
+  child.on('error', error => { alive = false; exit ??= {status: null, signal: null, error: error?.code ?? 'spawn_error'}; });
   return {
     alive: () => alive,
+    exitInfo: () => exit,
     output: () => output,
     sendCode: code => { if (!validLoginCode(code)) throw new Refusal('invalid_login_code'); child.stdin.write(`${code}\r`); },
     stop: () => { if (alive) child.kill('SIGTERM'); alive = false; },
@@ -130,14 +181,31 @@ export function startLogin({user = AUTH_USER, home = AUTH_HOME, spawnImpl = spaw
 /** One watcher step. All side effects are injected for tests. */
 export async function signinTick(state, {api, isSignedIn, start}) {
   if (isSignedIn()) {
-    state.login?.stop(); state.login = null; state.posted = null;
+    state.login?.stop(); state.login = null; state.posted = null; state.lastExit = null;
     if (!state.reported) { await api('signin', {action: 'login-complete'}); state.reported = true; }
     return 'signed_in';
   }
   state.reported = false;
+  if (state.login && !state.login.alive()) {
+    // Once per distinct failure; exit code and signal only, never output.
+    const exit = state.login.exitInfo?.() ?? null;
+    const key = JSON.stringify(exit);
+    if (exit && key !== state.lastExit) {
+      console.error(JSON.stringify({service: 'company-signin', code: 'login_exited', status: exit.status, signal: exit.signal, ...(exit.error ? {error: exit.error} : {})}));
+    }
+    state.lastExit = key;
+  } else if (state.login) state.lastExit = null;
   if (!state.login || !state.login.alive()) { state.login = start(); state.posted = null; }
   const url = extractLoginUrl(state.login.output());
-  if (url && url !== state.posted) { await api('signin', {action: 'login-url', url}); state.posted = url; }
+  if (url && url !== state.posted) {
+    try { await api('signin', {action: 'login-url', url}); }
+    catch (error) {
+      // No URL or body in the log: only the refusal and the HTTP status.
+      console.error(JSON.stringify({service: 'company-signin', code: 'login_url_refused', status: error?.status ?? null}));
+      throw error;
+    }
+    state.posted = url;
+  }
   if (state.posted) {
     const {code} = await api('signin', {action: 'login-code'});
     // A one-time code is typed once; a repeated poll result is ignored.
@@ -154,17 +222,19 @@ export async function watch(configPath, {intervalMs = 5000} = {}) {
   if (process.getuid() !== 0) throw new Refusal('runner_must_be_root');
   const c = validateConfig({...JSON.parse(fs.readFileSync(configPath, 'utf8')), configPath});
   if (!usesBoxSignIn(c)) return;
-  const authUid = Number(spawnSync('id', ['-u', AUTH_USER], {encoding: 'utf8'}).stdout.trim());
+  const authUid = Number(spawnSync('/usr/bin/id', ['-u', AUTH_USER], {encoding: 'utf8'}).stdout.trim());
   if (!Number.isInteger(authUid) || authUid <= 0) throw new Refusal('auth_account_required');
+  // Refuse at startup, not every tick, when no runuser exists.
+  const runuser = runuserPath();
   const api = await apiClient(c);
   const state = {};
   // At most one refresh attempt every 10 minutes when the stored token has expired.
   let lastRefresh = 0;
-  const refresh = () => { if (Date.now() - lastRefresh < 600000) return false; lastRefresh = Date.now(); return refreshViaCli(); };
-  const deps = {api, isSignedIn: () => signedIn(credentialFile(), {uid: authUid, refresh}), start: () => startLogin()};
+  const refresh = () => { if (Date.now() - lastRefresh < 600000) return false; lastRefresh = Date.now(); return refreshViaCli({runuser}); };
+  const deps = {api, isSignedIn: () => signedIn(credentialFile(), {uid: authUid, refresh}), start: () => startLogin({runuser})};
   for (;;) {
     try { await signinTick(state, deps); }
-    catch (error) { console.error(JSON.stringify({service: 'company-signin', code: error instanceof Refusal ? error.code : 'signin_error'})); }
+    catch (error) { console.error(JSON.stringify({service: 'company-signin', code: error instanceof Refusal ? error.code : 'signin_error', status: error?.status ?? null})); }
     await new Promise(resolve => setTimeout(resolve, intervalMs));
   }
 }

@@ -182,6 +182,7 @@ Type=oneshot
 User=root
 Group=root
 Environment=HOME=/var/lib/hq-job-runner
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 RuntimeDirectory=hq-company-jobs
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
@@ -219,6 +220,7 @@ Type=simple
 User=root
 Group=root
 Environment=HOME=/var/lib/hq-job-runner
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart="${NODE}" "${ROOT}/core/scripts/lib/company-signin.mjs" watch "${CONFIG}"
 Restart=always
 RestartSec=10

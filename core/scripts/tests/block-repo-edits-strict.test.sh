@@ -343,6 +343,13 @@ if bash "$ROOT/core/scripts/tests/master-hook-perl-timeout-space.test.sh"; then
 else
   fail "master-hook perl timeout space" "see master-hook-perl-timeout-space.test.sh"
 fi
+# Perl timeout fallback used to kill only perl or the hook's Bash, so the
+# hook's children held master-hook's stdout pipe past the registry timeout.
+if bash "$ROOT/core/scripts/tests/master-hook-perl-timeout-process-group.test.sh"; then
+  ok "master-hook perl timeout bounds the hook's whole process group"
+else
+  fail "master-hook perl timeout process group" "see master-hook-perl-timeout-process-group.test.sh"
+fi
 
 echo "block-repo-edits-strict: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -87,6 +87,15 @@ function withDeadline(promise, budgetMs, code) {
 export function refreshMachineTokens(cloud, creds, budgetMs = MACHINE_TOKEN_BUDGET_MS) {
   return withDeadline(cloud.getValidMachineTokens({region:creds.region, clientId:creds.clientId, userPoolDomain:''}), budgetMs, 'machine_token_timeout');
 }
+// runuser lives in /usr/sbin on Amazon Linux 2023, outside the service PATH.
+// Spawn it by absolute path, resolved from a fixed list.
+export const RUNUSER_CANDIDATES = ['/usr/sbin/runuser', '/sbin/runuser', '/usr/bin/runuser'];
+export function runuserPath({exists = fs.existsSync} = {}) {
+  const found = RUNUSER_CANDIDATES.find(candidate => exists(candidate));
+  if (!found) throw new Refusal('runuser_missing');
+  return found;
+}
+
 export async function apiClient(c) {
   Object.assign(process.env, machineEnvironment(c));
   const cloud = await import(pathToFileURL(c.cloudModule).href);
@@ -845,7 +854,9 @@ function removeRunHome(parent, runHome, account) {
   if (!stat.isDirectory()) throw new Refusal('run_home_not_directory');
   const rmArgv = ['-rf', '--', target];
   if (process.getuid() === 0 && account) {
-    const runuser = spawnSync('runuser', ['-u', account.user || 'hq-jobs', '--', 'rm', ...rmArgv], {timeout: 20000});
+    let bin;
+    try { bin = runuserPath(); } catch { bin = 'runuser'; } // ENOENT below falls back to /bin/rm as the account
+    const runuser = spawnSync(bin, ['-u', account.user || 'hq-jobs', '--', 'rm', ...rmArgv], {timeout: 20000});
     if (runuser.error?.code === 'ENOENT') {
       const direct = spawnSync('/bin/rm', rmArgv, {uid: account.uid, gid: account.gid, timeout: 20000});
       if (direct.error) throw direct.error;

@@ -286,6 +286,14 @@ Post-sync reconcile probes jobs that lack ready status, then re-reads cache.
 reconcile after each sync cycle. On-demand: run the script directly.
 Provisioning (US-005) enables linger + ensures the hook on every box.
 
+The reconciler also runs from `outpost-jobs-reconcile.service`, a system unit
+with `User=ec2-user` and no login session. When `XDG_RUNTIME_DIR` is unset it
+uses `/run/user/<uid>` (and `$XDG_RUNTIME_DIR/bus` for
+`DBUS_SESSION_BUS_ADDRESS`) so `systemctl --user` reaches the lingering user
+manager; if that directory is missing it logs the `loginctl enable-linger`
+remedy. A pass with `errors>0` exits 1, and the Stop hook logs a warning to
+stderr and `after-sync.log` instead of discarding the failure.
+
 Fixtures / suites: `core/scripts/tests/hq-job-run.test.sh`,
 `core/scripts/tests/outpost-jobs-reconcile.test.sh`.
 
