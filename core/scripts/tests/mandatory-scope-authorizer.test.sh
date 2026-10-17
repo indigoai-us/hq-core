@@ -2126,5 +2126,62 @@ scope_112_case 34ab4b26 2 'for s in a b; do true && . workspace/tmp/x.sh; cat wo
 scope_112_case 34ab4b26 2 'for s in a b; do if true; then . workspace/tmp/x.sh; fi; cat workspace/orchestrator/$s.json; done'
 scope_112_case 34ab4b26 2 'for s in a b; do command . workspace/tmp/x.sh; cat workspace/orchestrator/$s.json; done'
 
+echo "[120] sweep-2 shell shapes: \$PWD in file:// URLs and --opt= values, plain multi-assignment statements, \$(cat \"\$T\") message values, git commit -m \"\$(cat FILE)\", nested for loops"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/projects/site/out" "$TMP/companies/indigo/data/src" \
+  "$TMP/companies/indigo/data/final" "$TMP/workspace/tmp" "$TMP/repos/private/app"
+touch "$TMP/companies/indigo/projects/site/a.html" "$TMP/companies/otherco/settings/a.md"
+# feedback_9028c92c: $PWD leading a file:// URL or a --name= option value is
+# the command cwd, like a bare $PWD/ operand.
+scope_112_case 9028c92c 0 'chrome --headless --print-to-pdf=companies/indigo/projects/site/a.pdf "file://$PWD/companies/indigo/projects/site/a.html"'
+scope_112_case 9028c92c 0 'chrome --headless --print-to-pdf="$PWD/companies/indigo/projects/site/a.pdf" "file://$PWD/companies/indigo/projects/site/a.html"'
+scope_112_case 9028c92c 0 'chrome --headless --print-to-pdf=/tmp/a.pdf file://$PWD/workspace/tmp/a.html'
+scope_112_case 9028c92c 0 'open "file://${PWD}/companies/indigo/projects/site/a.html"'
+scope_112_case 9028c92c 0 'cat ${PWD}/companies/indigo/projects/site/a.html'
+scope_112_case 9028c92c 2 'chrome --headless --print-to-pdf=/tmp/a.pdf "file://$PWD/companies/otherco/settings/a.md"'
+scope_112_case 9028c92c 2 'chrome --headless --print-to-pdf=$PWD/companies/otherco/settings/a.pdf x'
+scope_112_case 9028c92c 2 'open file://$PWD/workspace/../companies/otherco/settings/a.md'
+scope_112_case 9028c92c 2 'open "file://$OTHER/workspace/a.html"'
+scope_112_case 9028c92c 2 'cat file://$PWDX/workspace/a.html'
+# A second cd moves the shell's $PWD somewhere the hook did not follow.
+scope_112_case 9028c92c 2 'cd workspace && cd ../companies && cat $PWD/otherco/settings/a.md'
+scope_112_case 9028c92c 2 'cd workspace; cd ../companies; open "file://$PWD/otherco/settings/a.md"'
+scope_112_case 9028c92c 2 '(cd companies && cat "$PWD/otherco/settings/a.md")'
+scope_112_case 9028c92c 0 'cd companies/indigo/projects/site && cat $PWD/a.html'
+# feedback_9c861974: a statement of plain assignments sets every variable.
+scope_112_case 9c861974 0 'W=companies/indigo/projects/site S=workspace/tmp; cp $S/a.html $W/out/'
+scope_112_case 9c861974 0 'W=companies/indigo/projects/site OUT=/tmp/deploy; mkdir -p $OUT && cp -R $W/out/. $OUT/'
+scope_112_case 9c861974 0 'A=1 W=companies/indigo/projects/site B=2; find $W -name "*.html" -exec cp {} workspace/tmp/ \;'
+scope_112_case 9c861974 2 'W=companies/indigo S=companies/otherco; cp $S/settings/a.md $W/'
+scope_112_case 9c861974 2 'S=workspace/tmp W=companies/otherco/settings; cp $W/a.md $S/'
+scope_112_case 9c861974 2 'W=companies/indigo S=workspace/tmp cp $S/x $W/'
+scope_112_case 9c861974 2 'W=companies/indigo S=$(cat /tmp/p); cp $S/x $W/'
+scope_112_case 9c861974 2 'W=companies/indigo S=workspace/tmp S=companies/otherco; cp $S/settings/a.md $W/'
+scope_112_case 9c861974 2 'cp $S/a.html $W/out/; W=companies/indigo S=workspace/tmp'
+scope_112_case 9c861974 2 'true || W=companies/indigo S=workspace/tmp; cp $S/x $W/'
+# feedback_8e7642ef: a quoted variable inside a quoted message substitution.
+scope_112_case 8e7642ef 0 'T=$(mktemp /tmp/handoff.XXXXXX); bash core/scripts/handoff-finalize.sh --title t --summary "$(cat "$T")" --slug s'
+scope_112_case 8e7642ef 0 'T=$(mktemp); printf x > "$T"; bash core/scripts/handoff-finalize.sh --title t --summary "$(cat $T)" --slug s'
+scope_112_case 8e7642ef 0 'T=workspace/tmp/x; bash core/scripts/handoff-finalize.sh --title t --summary "$(cat "$T")" --slug s'
+scope_112_case 8e7642ef 2 'bash core/scripts/handoff-finalize.sh --title t --summary "$(cat "$T")" --slug s'
+scope_112_case 8e7642ef 2 'T=companies/otherco/settings/a.md; bash core/scripts/handoff-finalize.sh --title t --summary "$(cat "$T")" --slug s'
+scope_112_case 8e7642ef 2 'T=$(mktemp -d companies/otherco/x.XXXX); bash core/scripts/handoff-finalize.sh --title t --summary "$(cat "$T")" --slug s'
+scope_112_case 8e7642ef 2 'bash core/scripts/handoff-finalize.sh --title t --summary "$(cat "$T")" --slug s; T=$(mktemp)'
+# feedback_9b570738: git commit/merge/tag -m takes message text.
+scope_112_case 9b570738 0 'git -C repos/private/app commit -m "$(cat /tmp/msg.txt)"'
+scope_112_case 9b570738 0 'git commit --message "$(cat workspace/tmp/msg.md)"'
+scope_112_case 9b570738 0 'git -C repos/private/app tag -a v1 -m "$(cat /tmp/msg.txt)"'
+scope_112_case 9b570738 2 'git commit -m "$(cat companies/otherco/settings/a.md)"'
+scope_112_case 9b570738 2 'git commit -m "$(cat $D/msg)"'
+scope_112_case 9b570738 2 'git checkout -m "$(cat /tmp/p)"'
+scope_112_case 9b570738 2 'git add "$(cat /tmp/p)"'
+# feedback_c73294b2: a loop nested directly in another loop's body.
+scope_112_case c73294b2 0 'for b in a b; do for ext in png jpg; do cp companies/indigo/data/src/$b.$ext companies/indigo/data/final/$b.$ext; done; done'
+scope_112_case c73294b2 2 'for b in a; do for ext in png; do cp companies/indigo/data/src/$b.$ext companies/otherco/settings/$b.$ext; done; done'
+scope_112_case c73294b2 2 'for b in a; do for c in otherco; do cp companies/indigo/data/src/$b.png companies/$c/settings/$b.png; done; done'
+scope_112_case c73294b2 2 'for b in a; do for ext in ../../../../otherco/settings/x; do cp workspace/tmp/x companies/indigo/data/final/$b/$ext; done; done'
+scope_112_case c73294b2 2 'for b in a; do for ext in png; do ext=../../otherco; cp x companies/indigo/$ext/$b; done; done'
+scope_112_case c73294b2 2 'for b in a; do while read ext; do cp x companies/indigo/data/final/$b.$ext; done; done'
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

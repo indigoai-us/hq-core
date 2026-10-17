@@ -54,8 +54,8 @@ test('a short token is refreshed once through the CLI; still short or missing bl
 
 test('the CLI refresh runs as the auth account with a clean environment', () => {
   let seen;
-  signin.refreshViaCli({run: (cmd, args, opts) => { seen = {cmd, args, opts}; return {status: 0}; }});
-  assert.equal(seen.cmd, 'runuser');
+  signin.refreshViaCli({runuser: '/usr/sbin/runuser', run: (cmd, args, opts) => { seen = {cmd, args, opts}; return {status: 0}; }});
+  assert.equal(seen.cmd, '/usr/sbin/runuser');
   assert.deepEqual(seen.args.slice(0, 5), ['-u', 'hq-claude-auth', '--', 'env', '-i']);
   assert(seen.args.includes('HOME=/var/lib/hq-claude-auth'));
   assert(!seen.args.some(a => /TOKEN|KEY/.test(a)));
@@ -121,6 +121,117 @@ test('extracts the login URL from pty output with escapes and validates codes', 
   assert.equal(signin.validLoginCode('abc def\nrm'), false);
 });
 
+// Byte shape printed by `claude auth login --claudeai` (Claude Code 2.1.299):
+// an OSC 8 hyperlink terminated with BEL, URL as target and as visible text.
+const REAL_URL = 'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=abc_DEF-123&code_challenge_method=S256&state=xyz-789';
+
+test('login URL: OSC 8 hyperlink terminated with BEL', () => {
+  const out = `Browser didn't open? Use the url below to sign in (c to copy)\r\n\r\nvisit: \u001b]8;;${REAL_URL}\u0007${REAL_URL}\u001b]8;;\u0007\r\n\r\nPaste code here if prompted > `;
+  assert.equal(out.split('').filter(ch => ch.charCodeAt(0) < 0x20 && ch !== '\r' && ch !== '\n').map(ch => ch.charCodeAt(0)).join(','), '27,7,27,7');
+  const url = signin.extractLoginUrl(out);
+  assert.equal(url, REAL_URL);
+  assert.equal(signin.validLoginUrl(url), true);
+});
+
+test('login URL: OSC 8 hyperlink terminated with ST', () => {
+  const out = `visit: \u001b]8;;${REAL_URL}\u001b\\${REAL_URL}\u001b]8;;\u001b\\\r\nPaste code here if prompted > `;
+  assert.equal(signin.extractLoginUrl(out), REAL_URL);
+});
+
+test('login URL: plain URL, and no control character ever reaches the value', () => {
+  assert.equal(signin.extractLoginUrl(`visit: ${REAL_URL}\r\n`), REAL_URL);
+  assert.equal(signin.extractLoginUrl(`visit: ${REAL_URL}\u0007junk https://claude.com/x\r\n`), REAL_URL);
+  for (const out of [`\u001b]8;;${REAL_URL}\u0007${REAL_URL}\u001b]8;;\u0007\n`, `\u001b]8;;${REAL_URL}\u001b\\${REAL_URL}\n`]) {
+    // eslint-disable-next-line no-control-regex
+    assert.doesNotMatch(signin.extractLoginUrl(out), /[\u0000-\u001f\u007f]/);
+  }
+  assert.equal(signin.extractLoginUrl('visit: https://claude.com/cai/not-oauth?x=1\n'), null);
+  assert.equal(signin.extractLoginUrl('visit: https://claude.com:8443/oauth/authorize?x=1\n'), null);
+  assert.equal(signin.validLoginUrl(`${REAL_URL}\u0007https://claude.com/x`), false);
+});
+
+test('login URL: the OSC 8 target wins over wrapped visible text, and a regenerated link replaces the old one', () => {
+  const wrapped = `visit: \u001b]8;;${REAL_URL}\u0007${REAL_URL.slice(0, 40)}\r\n${REAL_URL.slice(40)}\u001b]8;;\u0007\r\n> `;
+  assert.equal(signin.extractLoginUrl(wrapped), REAL_URL);
+  const next = REAL_URL.replace('state=xyz-789', 'state=new-456');
+  assert.equal(signin.extractLoginUrl(`visit: \u001b]8;;${REAL_URL}\u0007${REAL_URL}\u001b]8;;\u0007\r\nvisit: \u001b]8;;${next}\u0007${next}\u001b]8;;\u0007\r\n`), next);
+  assert.equal(signin.extractLoginUrl(`visit: ${REAL_URL}\r\nvisit: ${next}\r\n`), next);
+});
+
+test('login URL: output split across chunks never yields a partial URL', () => {
+  const full = `visit: \u001b]8;;${REAL_URL}\u0007${REAL_URL}\u001b]8;;\u0007\r\nPaste code here if prompted > `;
+  for (let cut = 1; cut < full.length; cut++) {
+    const got = signin.extractLoginUrl(full.slice(0, cut));
+    assert(got === null || got === REAL_URL, `cut ${cut}: ${JSON.stringify(got)}`);
+  }
+  assert.equal(signin.extractLoginUrl(full), REAL_URL);
+});
+
+test('watcher: a refused login-url post is logged with its status and no URL', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(String(line)));
+  const api = async (op, body) => {
+    if (body.action === 'login-url') { const e = new Error('company_api_400'); e.status = 400; throw e; }
+    return {};
+  };
+  const state = {};
+  const login = () => ({alive: () => true, output: () => `visit: ${REAL_URL}\r\n`, sendCode() {}, stop() {}});
+  await assert.rejects(signin.signinTick(state, {api, isSignedIn: () => false, start: login}));
+  assert.equal(state.posted, null);
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(lines[0]), {service: 'company-signin', code: 'login_url_refused', status: 400});
+  assert(!lines[0].includes('claude.com'));
+});
+
+test('runuser is resolved to an absolute sbin path (Amazon Linux 2023 has it only in /usr/sbin)', async () => {
+  const jobs = await import('../lib/company-jobs.mjs');
+  assert.equal(jobs.runuserPath({exists: p => p === '/usr/sbin/runuser'}), '/usr/sbin/runuser');
+  assert.equal(jobs.runuserPath({exists: p => p === '/sbin/runuser'}), '/sbin/runuser');
+  assert.throws(() => jobs.runuserPath({exists: () => false}), {code: 'runuser_missing'});
+});
+
+test('watcher: a login child that exits 127 is logged once per distinct failure, with no output text', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(String(line)));
+  const spawned = [];
+  const fakeSpawn = (cmd, args) => {
+    spawned.push(cmd);
+    const handlers = {};
+    const child = {stdout: {on() {}}, stderr: {on(ev, fn) { fn(Buffer.from('runuser: command not found\n')); }},
+      stdin: {write() {}}, kill() {}, on(ev, fn) { handlers[ev] = fn; }};
+    queueMicrotask(() => handlers.exit?.(127, null));
+    return child;
+  };
+  const start = () => signin.startLogin({runuser: '/usr/sbin/runuser', spawnImpl: fakeSpawn});
+  const api = async (_op, body) => body.action === 'regenerate-pending' ? {pending: false} : {ok: true};
+  const state = {};
+  const deps = {api, isSignedIn: () => false, start};
+  for (let i = 0; i < 3; i++) { await signin.signinTick(state, deps); await new Promise(r => setImmediate(r)); }
+  assert.equal(spawned.length, 3);
+  assert(spawned.every(cmd => cmd === '/usr/sbin/runuser'));
+  const exited = lines.filter(l => l.includes('login_exited'));
+  assert.equal(exited.length, 1);
+  assert.deepEqual(JSON.parse(exited[0]), {service: 'company-signin', code: 'login_exited', status: 127, signal: null});
+  assert(lines.every(l => !l.includes('not found')));
+});
+
+test('watcher: the same login failure is logged again after a sign-in recovers', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(String(line)));
+  const dead = () => ({alive: () => false, exitInfo: () => ({status: 127, signal: null}), output: () => '', sendCode() {}, stop() {}});
+  const api = async (_op, body) => body.action === 'regenerate-pending' ? {pending: false} : {ok: true};
+  let signedIn = false;
+  const state = {};
+  const deps = {api, isSignedIn: () => signedIn, start: dead};
+  await signin.signinTick(state, deps);
+  await signin.signinTick(state, deps);
+  await signin.signinTick(state, deps);
+  signedIn = true; await signin.signinTick(state, deps);
+  signedIn = false; await signin.signinTick(state, deps);
+  await signin.signinTick(state, deps);
+  assert.equal(lines.filter(l => l.includes('login_exited')).length, 2);
+});
+
 test('watcher: posts the URL once, types a valid code, reports completion once, honours regenerate', async () => {
   const calls = [];
   let codeQueue = ['abcDEF123#state', null];
@@ -157,7 +268,7 @@ test('watcher refuses to type an unsafe code', async () => {
   const typed = [];
   const state = {};
   const deps = {api: async (_op, body) => body.action === 'login-code' ? {code: 'abc\nrm -rf /'} : body.action === 'regenerate-pending' ? {pending: false} : {ok: true},
-    isSignedIn: () => false, start: () => ({alive: () => true, output: () => 'https://claude.ai/oauth/authorize?x=1', sendCode: c => typed.push(c), stop: () => {}})};
+    isSignedIn: () => false, start: () => ({alive: () => true, output: () => 'https://claude.ai/oauth/authorize?x=1\r\n', sendCode: c => typed.push(c), stop: () => {}})};
   await signin.signinTick(state, deps);
   assert.deepEqual(typed, []);
 });
@@ -181,7 +292,7 @@ test('an expired token that the CLI cannot refresh is not signed in, so the watc
 test('watcher types a repeated code only once', async () => {
   const typed = [];
   const deps = {api: async (_op, body) => body.action === 'login-code' ? {code: 'abcDEF123#s'} : body.action === 'regenerate-pending' ? {pending: false} : {ok: true},
-    isSignedIn: () => false, start: () => ({alive: () => true, output: () => 'https://claude.ai/oauth/authorize?x=1', sendCode: c => typed.push(c), stop: () => {}})};
+    isSignedIn: () => false, start: () => ({alive: () => true, output: () => 'https://claude.ai/oauth/authorize?x=1\r\n', sendCode: c => typed.push(c), stop: () => {}})};
   const state = {};
   await signin.signinTick(state, deps);
   await signin.signinTick(state, deps);

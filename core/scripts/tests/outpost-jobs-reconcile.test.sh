@@ -216,6 +216,69 @@ grep -Fqx -- '--user show-environment' "$HQ_JOB_SYSTEMCTL_TEST_LOG" \
   || fail "a missing user bus must leave the generated unit files written"
 pass "systemctl failures are reported and successful enables remain armed"
 
+# feedback_6ce027d7: outpost-jobs-reconcile.service is a system unit with
+# User=ec2-user, so it runs without XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS.
+# This stub behaves like the real systemctl: without the user runtime env it
+# cannot reach the user manager.
+RUNTIME_BASE="$TMP/run-user"
+TEST_UID="$(id -u)"
+cat >"$BIN/systemctl-needs-user-env" <<'STUB'
+#!/usr/bin/env bash
+printf '%s|XDG=%s|DBUS=%s\n' "$*" "${XDG_RUNTIME_DIR:-}" "${DBUS_SESSION_BUS_ADDRESS:-}" >>"${HQ_JOB_SYSTEMCTL_TEST_LOG:?}"
+if [ "${XDG_RUNTIME_DIR:-}" != "${HQ_TEST_EXPECT_XDG:?}" ] \
+  || [ "${DBUS_SESSION_BUS_ADDRESS:-}" != "unix:path=${HQ_TEST_EXPECT_XDG}/bus" ]; then
+  echo "Failed to connect to bus: No medium found" >&2
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$BIN/systemctl-needs-user-env"
+
+# Linger on: /run/user/<uid> and its bus exist → reconcile derives the env and arms.
+mkdir -p "$RUNTIME_BASE/$TEST_UID"
+: >"$RUNTIME_BASE/$TEST_UID/bus"
+export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/systemctl-user-env.log"
+rc=0
+env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
+  HQ_TEST_EXPECT_XDG="$RUNTIME_BASE/$TEST_UID" HQ_JOB_USER_RUNTIME_BASE="$RUNTIME_BASE" \
+  HQ_JOB_SYSTEMCTL="$BIN/systemctl-needs-user-env" \
+  bash "$RECON" --hq-root "$HQ" --no-probe >"$TMP/user-env.out" 2>"$TMP/user-env.err" || rc=$?
+[ "$rc" -eq 0 ] || fail "reconcile without a login session must derive the user bus env and succeed: $(cat "$TMP/user-env.err")"
+jq -e '.errors == 0 and .armed == 1' "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
+  || fail "derived user bus env must arm the ready job: $(cat "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json")"
+grep -Fq -- "--user enable --now hq-job-daily-inbox-digest.timer|XDG=$RUNTIME_BASE/$TEST_UID|DBUS=unix:path=$RUNTIME_BASE/$TEST_UID/bus" \
+  "$HQ_JOB_SYSTEMCTL_TEST_LOG" || fail "systemctl --user enable must receive XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS"
+grep -Fq "XDG_RUNTIME_DIR was unset; using $RUNTIME_BASE/$TEST_UID" "$TMP/user-env.err" \
+  || fail "reconcile must log that it derived XDG_RUNTIME_DIR"
+
+# A caller-provided XDG_RUNTIME_DIR is kept as-is.
+mkdir -p "$TMP/caller-runtime"
+: >"$TMP/caller-runtime/bus"
+export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/systemctl-caller-env.log"
+rc=0
+env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$TMP/caller-runtime" \
+  HQ_TEST_EXPECT_XDG="$TMP/caller-runtime" HQ_JOB_USER_RUNTIME_BASE="$RUNTIME_BASE" \
+  HQ_JOB_SYSTEMCTL="$BIN/systemctl-needs-user-env" \
+  bash "$RECON" --hq-root "$HQ" --no-probe >"$TMP/caller-env.out" 2>"$TMP/caller-env.err" || rc=$?
+[ "$rc" -eq 0 ] || fail "an existing XDG_RUNTIME_DIR must be kept: $(cat "$TMP/caller-env.err")"
+! grep -Fq 'XDG_RUNTIME_DIR was unset' "$TMP/caller-env.err" \
+  || fail "reconcile must not override a caller-provided XDG_RUNTIME_DIR"
+
+# Linger off: no /run/user/<uid> → not-scheduled, a linger hint, and a non-zero exit.
+rm -rf "$RUNTIME_BASE"
+export HQ_JOB_SYSTEMCTL_TEST_LOG="$TMP/systemctl-no-runtime.log"
+rc=0
+env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
+  HQ_TEST_EXPECT_XDG="$RUNTIME_BASE/$TEST_UID" HQ_JOB_USER_RUNTIME_BASE="$RUNTIME_BASE" \
+  HQ_JOB_SYSTEMCTL="$BIN/systemctl-needs-user-env" \
+  bash "$RECON" --hq-root "$HQ" --no-probe >"$TMP/no-runtime.out" 2>"$TMP/no-runtime.err" || rc=$?
+[ "$rc" -ne 0 ] || fail "a missing user runtime dir must make reconcile exit non-zero"
+jq -e '.errors == 1 and .armed == 0' "$HOME_DIR/.hq/jobs/reconcile/last-reconcile.json" >/dev/null \
+  || fail "a missing user runtime dir must report errors=1 armed=0"
+grep -Fq 'enable linger: sudo loginctl enable-linger' "$TMP/no-runtime.err" \
+  || fail "a missing user runtime dir must log the linger remedy: $(cat "$TMP/no-runtime.err")"
+pass "reconcile derives the user bus env outside a login session (feedback_6ce027d7)"
+
 # 1) Ready personal job → units written with Persistent + RandomizedDelaySec + OnCalendar
 set +e
 bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/out1.json" 2>"$TMP/err1.txt"
@@ -312,11 +375,60 @@ bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/out4.json" 2>"$TMP/err
 grep -q 'America/Los_Angeles' "$UNIT_DIR/hq-job-sentry-triage-mine.timer" || fail "company job tz missing"
 pass "ready company job on creator Outpost arms"
 
+# 6b) feedback_6ce027d7: under the box's machine identity, `hq whoami --json`
+# reports the owner only as delegatedEmail/delegatedSub. Company jobs owned by
+# either value must match this box.
+WHOAMI_BIN="$TMP/whoami-bin"
+mkdir -p "$WHOAMI_BIN"
+cat >"$WHOAMI_BIN/hq" <<'STUB'
+#!/usr/bin/env bash
+if [ "$*" = "whoami --json" ]; then
+  printf '%s\n' '{"tokenSource":"machine","email":null,"sub":null,"delegatedEmail":"delegated@example.com","delegatedSub":"14c81468-c081-70b8-ca57-d29b4d522d44"}'
+  exit 0
+fi
+exit 97
+STUB
+chmod +x "$WHOAMI_BIN/hq"
+cp "$FIX_VALID/company-with-requirements.yaml" "$HQ/companies/indigo/jobs/delegated-email.yaml"
+yq -i '.owner = "Delegated@example.com" | .id = "delegated-email-job"' "$HQ/companies/indigo/jobs/delegated-email.yaml"
+cp "$FIX_VALID/company-with-requirements.yaml" "$HQ/companies/indigo/jobs/delegated-sub.yaml"
+yq -i '.owner = "14c81468-c081-70b8-ca57-d29b4d522d44" | .id = "delegated-sub-job"' "$HQ/companies/indigo/jobs/delegated-sub.yaml"
+for jid in delegated-email-job delegated-sub-job; do
+  jq -nc --arg id "$jid" '{job_id:$id,readiness:"ready",updated_at:"2026-08-23T19:00:00Z",source:"test"}' >"$CACHE/$jid.json"
+done
+PATH="$WHOAMI_BIN:$PATH" bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/delegated.out" 2>"$TMP/delegated.err"
+[ -f "$UNIT_DIR/hq-job-delegated-email-job.timer" ] \
+  || fail "company job owned by the delegated owner email should arm: $(cat "$TMP/delegated.err")"
+[ -f "$UNIT_DIR/hq-job-delegated-sub-job.timer" ] \
+  || fail "company job owned by the delegated owner Cognito id should arm: $(cat "$TMP/delegated.err")"
+rm -f "$HQ/companies/indigo/jobs/delegated-email.yaml" "$HQ/companies/indigo/jobs/delegated-sub.yaml"
+bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >/dev/null 2>&1
+pass "company jobs match the delegated Outpost owner by email or Cognito id"
+
 # 7) --ensure-hook installs Stop hook
 bash "$RECON" --hq-root "$HQ" --ensure-hook --no-probe --dry-run >/dev/null 2>"$TMP/err5.txt"
 [ -f "$HQ/personal/hooks/Stop/90-outpost-jobs-reconcile.sh" ] || fail "Stop hook not installed"
 grep -q 'outpost-jobs-reconcile.sh' "$HQ/personal/hooks/Stop/90-outpost-jobs-reconcile.sh" || fail "hook content wrong"
 pass "ensure-hook installs personal/hooks/Stop reconciler"
+
+# 7b) The Stop hook surfaces a failed reconcile instead of swallowing it
+# (feedback_6ce027d7), and still does not fail the sync cycle.
+HOOK_ROOT="$TMP/hook-root"
+mkdir -p "$HOOK_ROOT/core/scripts" "$HOME_DIR/.hq/jobs/reconcile"
+printf '#!/usr/bin/env bash\necho "done armed=0 errors=23" >&2\nexit 1\n' >"$HOOK_ROOT/core/scripts/outpost-jobs-reconcile.sh"
+rc=0
+OUTPOST_HQ_ROOT="$HOOK_ROOT" bash "$HQ/personal/hooks/Stop/90-outpost-jobs-reconcile.sh" \
+  >"$TMP/hook.out" 2>"$TMP/hook.err" || rc=$?
+[ "$rc" -eq 0 ] || fail "Stop hook must not fail the sync cycle"
+grep -Fq 'after-sync reconcile reported errors' "$TMP/hook.err" \
+  || fail "Stop hook must warn on stderr when reconcile fails"
+grep -Fq 'after-sync reconcile reported errors' "$HOME_DIR/.hq/jobs/reconcile/after-sync.log" \
+  || fail "Stop hook must record the failure in after-sync.log"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$HOOK_ROOT/core/scripts/outpost-jobs-reconcile.sh"
+OUTPOST_HQ_ROOT="$HOOK_ROOT" bash "$HQ/personal/hooks/Stop/90-outpost-jobs-reconcile.sh" \
+  >"$TMP/hook-ok.out" 2>"$TMP/hook-ok.err"
+[ ! -s "$TMP/hook-ok.err" ] || fail "Stop hook must stay quiet on success: $(cat "$TMP/hook-ok.err")"
+pass "Stop hook warns on reconcile errors without failing sync"
 
 # 8) Blocked readiness removes previously armed timer
 # Re-arm digest

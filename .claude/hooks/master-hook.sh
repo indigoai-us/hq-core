@@ -1160,6 +1160,36 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v perl >/dev/null 2>&1; then
   child_timeout_cmd="perl"
 fi
+# perl fallback runner: <seconds> <marker-or-empty> <argv...>.
+# A bare `alarm; exec` or `alarm; system` only kills perl (or the hook's own
+# Bash). The hook's children (jq, hq, qmd, sleep) keep running and keep the
+# stdout pipe that `out="$(run_child ...)"` reads, so master-hook waited for the
+# slowest descendant and a 30 s registry timeout could run for minutes. Run the
+# hook in its own process group and signal the whole group on timeout, or when
+# the harness stops master-hook. Exit 142 on timeout without writing the marker.
+# shellcheck disable=SC2016 # perl program intentionally uses single quotes.
+child_timeout_perl_program='
+my $t = shift; my $marker = shift;
+my $pid = fork();
+exit 128 unless defined $pid;
+if ($pid == 0) { setpgrp(0, 0); exec {$ARGV[0]} @ARGV; exit 127; }
+setpgrp($pid, $pid);
+my $stop = sub {
+  kill "TERM", -$pid;
+  for (1 .. 10) { last unless kill 0, -$pid; select(undef, undef, undef, 0.05); }
+  kill "KILL", -$pid;
+};
+$SIG{ALRM} = sub { $stop->(); waitpid($pid, 0); exit 142; };
+for my $sig (qw(TERM INT HUP)) {
+  $SIG{$sig} = sub { $stop->(); waitpid($pid, 0); exit 128 + ($sig eq "TERM" ? 15 : $sig eq "INT" ? 2 : 1); };
+}
+alarm $t;
+waitpid($pid, 0);
+my $rc = $?;
+alarm 0;
+if (length $marker) { open my $fh, ">", $marker; close $fh; }
+exit(($rc & 127) ? 128 + ($rc & 127) : ($rc >> 8));
+'
 child_completion_dir="$REPO_ROOT/workspace/.hook-timeout-completions"
 if [ -n "$child_timeout_cmd" ]; then
   mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
@@ -1207,11 +1237,7 @@ run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker
     # word-splits, exec fails, and perl exits 0, so every argless registry
     # hook no-ops on macOS HQ roots like "SE HQ Pilot".
     perl)
-      if [ -n "$completion_marker" ]; then
-        cmd=(perl -e 'alarm shift; my $marker=shift; system { $ARGV[0] } @ARGV; my $rc=$?; open my $fh, ">", $marker; close $fh; exit($rc == -1 ? 128 : (($rc & 127) ? 128 + ($rc & 127) : ($rc >> 8)));' "$t" "$completion_marker" "${runner[@]}")
-      else
-        cmd=(perl -e 'alarm shift; exec {$ARGV[0]} @ARGV' "$t" "${runner[@]}")
-      fi
+      cmd=(perl -e "$child_timeout_perl_program" "$t" "$completion_marker" "${runner[@]}")
       ;;
     *)
       cmd=("${runner[@]}")

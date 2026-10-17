@@ -1,4 +1,15 @@
 ## [Unreleased]
+- Fixed: the scope guard blocked five more Bash shapes it can resolve:
+  `$PWD` or `${PWD}` at the start of a `file://` URL or a `--name=` option
+  value, a statement of several plain assignments (`W=a S=b; cp $S/x $W/`),
+  a quoted variable inside a quoted message substitution
+  (`--summary "$(cat "$T")"`, including `T=$(mktemp)`), `git commit`/`merge`/
+  `tag`/`notes`/`stash` `-m "$(cat FILE)"`, and a `for` loop nested directly
+  in another loop's body. Each resolved path is checked as if typed, so
+  another company's path still blocks. `$PWD` and `$(pwd)` now stay closed
+  when the command changes directory a second time, where they used to be
+  resolved against the wrong directory (feedback_9028c92c, 9c861974,
+  8e7642ef, 9b570738, c73294b2).
 - Fixed: the HQ-root git guard blocked `git archive` as if it changed the
   repository. It now treats `archive` as read-only, like `log`, `show` and
   `diff`. A mutating git command in the same Bash call still blocks

@@ -441,7 +441,10 @@ scope_shell_variable_values() {
   fi
 
   command_prefix_re='^[A-Za-z0-9_./:+@=-]+([[:space:]]+[A-Za-z0-9_./:+@=-]+)*[[:space:]]*$'
-  loop_re="(^|[;&"$'\n'"][[:space:]]*)for[[:space:]]+${name}[[:space:]]+in[[:space:]]+([^;|&]+);[[:space:]]*do[[:space:]]+(.*)$"
+  # A loop nested directly in another loop's body (`for b in a b; do for
+  # ext in png jpg; do cp src/$b.$ext ...`) starts after `do`; the inner
+  # list is as literal as the outer one, so both bind the same way.
+  loop_re="(^|[;&"$'\n'"][[:space:]]*|[;&"$'\n'"[:space:]]do[[:space:]]+)for[[:space:]]+${name}[[:space:]]+in[[:space:]]+([^;|&]+);[[:space:]]*do[[:space:]]+(.*)$"
   if [[ "$prefix" =~ $loop_re ]]; then
     loop_match="${BASH_REMATCH[0]}"
     loop_pre="${prefix%%"$loop_match"*}"
@@ -2056,6 +2059,21 @@ scope_assignment_literal_value() {
   head_cut="${BASH_REMATCH[1]}${BASH_REMATCH[2]}$name=$raw"
   before="${use_prefix%%"$head_cut"*}${BASH_REMATCH[1]}"
   after="${use_prefix#*"$head_cut"}"
+  # `W=a S=b; cp $S/x $W/` is one statement of plain assignments; with no
+  # command word, bash sets each as a shell variable, left to right. Skip the
+  # other assignment words on either side so the statement checks below see
+  # it as if it held only this one. A word with an expansion, a quote, or any
+  # other shell syntax is not skipped, and a following command word (`A=x
+  # cmd`, which only sets A in cmd's environment) still fails the check.
+  local plain_assign_re='[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./@+:-]*'
+  re='^[[:space:]]+'"$plain_assign_re"
+  while [[ "$after" =~ $re ]]; do
+    after="${after:${#BASH_REMATCH[0]}}"
+  done
+  re='(^|[;&'"$nl"'])[[:space:]]*('"$plain_assign_re"'[[:space:]]+)+$'
+  if [[ "$before" =~ $re ]]; then
+    before="${before%"${BASH_REMATCH[0]}"}${BASH_REMATCH[1]}"
+  fi
   # A statement of its own: the value ends at `;`, `&&`, or a newline.
   re='^[[:space:]]*(;|&&|'"$nl"')'
   [[ "$after" =~ $re ]] || return 1
@@ -2588,7 +2606,27 @@ scope_check_prose_substitutions() {
       ;;
     esac
     body_prefix=""
-    [[ "${scope_scan_cmd:-}" == *"\$($body)"* ]] && body_prefix="${scope_scan_cmd%%"\$($body)"*}\$("
+    if [[ "${scope_scan_cmd:-}" == *"\$($body)"* ]]; then
+      body_prefix="${scope_scan_cmd%%"\$($body)"*}\$("
+    else
+      # The tokenizer drops quotes inside the substitution, so
+      # `--summary "$(cat "$T")"` arrives as body `cat $T`, which is not in
+      # the command text. Find the first `$(...)` (no nested parentheses)
+      # whose text with quotes removed is the body, and take the text before
+      # it, so an earlier `T=...;` can still be proven to have run first.
+      local body_rest="${scope_scan_cmd:-}" body_seen="" body_inner
+      while [[ "$body_rest" == *'$('* ]]; do
+        body_seen+="${body_rest%%\$(*}\$("
+        body_rest="${body_rest#*\$(}"
+        body_inner="${body_rest%%)*}"
+        [[ "$body_rest" == *')'* ]] || break
+        case "$body_inner" in *'('*) continue ;; esac
+        if [ "${body_inner//[\"\']/}" = "$body" ]; then
+          body_prefix="$body_seen"
+          break
+        fi
+      done
+    fi
     while IFS= read -r record; do
       [ -n "$record" ] || continue
       IFS=$'\037' read -r -a sub_tokens <<< "$record"
@@ -2607,6 +2645,21 @@ scope_check_prose_substitutions() {
                 [ -n "$body_prefix" ] && [[ "$body" == *"$tok"* ]] \
                   || scope_block_rel "\$($body)" "a variable inside a command substitution cannot be resolved; run it as its own command with literal paths"
                 tok_prefix="$body_prefix${body%%"$tok"*}"
+                # `T=$(mktemp); ...; --summary "$(cat "$T")"`: a variable set
+                # once from mktemp, before this use, names a fresh temp entry.
+                # Check that temp path like a literal one (as an operand with
+                # a slash already is, via scope_resolve_known_path_expansions).
+                local mk_name="${tok#\$}" mk_value mk_re
+                mk_name="${mk_name#\{}"
+                mk_name="${mk_name%\}}"
+                mk_re='(^|[;&|[:space:]])'"$mk_name"'="?\$\(mktemp'
+                if [[ "$mk_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+                  && { [ "$tok" = "\$$mk_name" ] || [ "$tok" = "\${$mk_name}" ]; } \
+                  && [[ "$tok_prefix" =~ $mk_re ]] \
+                  && mk_value="$(scope_mktemp_assignment_value "$mk_name" "$scope_scan_cmd")"; then
+                  scope_check_raw "$mk_value"
+                  continue
+                fi
                 scope_check_bash_candidate_inner "$tok" "$scope_scan_cmd" 0 "" "$tok_prefix" ""
                 ;;
             esac
@@ -2710,7 +2763,25 @@ scope_token_is_data_option_substitution() {
         ;;
     esac
   fi
+  # `git commit -m "$(cat /tmp/msg.txt)"`: for the subcommands whose -m takes
+  # a message, the value is text git stores, not a path. Other subcommands
+  # (`git checkout -m`) use -m as a flag, so the next word is a pathspec.
+  if [ "$head" = git ]; then
+    local git_j=$((head_index + 1)) git_sub=""
+    while [ "$git_j" -lt "$index" ]; do
+      case "${scope_tokens[$git_j]}" in
+        -C|-c|--git-dir|--work-tree|--namespace) git_j=$((git_j + 2)) ;;
+        -*) git_j=$((git_j + 1)) ;;
+        *) git_sub="${scope_tokens[$git_j]}"; break ;;
+      esac
+    done
+    case "$git_sub:$opt" in
+      commit:-m|commit:--message|merge:-m|merge:--message|tag:-m|tag:--message|notes:-m|notes:--message|stash:-m|stash:--message) opt=--message ;;
+      *) return 1 ;;
+    esac
+  fi
   case "$head:$opt" in
+    git:--message) ;;
     handoff-finalize.sh:--title|handoff-finalize.sh:--summary|handoff-finalize.sh:--message) ;;
     handoff-finalize.sh:--learnings-json|handoff-finalize.sh:--next-steps-json|handoff-finalize.sh:--tags-json) ;;
     curl:-d|curl:--data|curl:--data-raw|curl:--data-binary|curl:--data-ascii|curl:--json) ;;
@@ -3079,19 +3150,24 @@ scope_check_bash_skill_path() {
   # These three forms have the same value as the shell's command cwd. Resolve
   # only the exact leading spellings; any other substitution in the remaining
   # path is checked normally and stays fail-closed when it cannot be resolved.
-  case "$raw" in
-    '$(pwd)/'*|'$(pwd -P)/'*|'$PWD/'*)
-      expansion_cwd="$(cd "$COMMAND_CWD" 2>/dev/null && pwd -P)" \
-        || scope_block_rel "$raw" "the command working directory cannot be resolved"
-      case "$raw" in
-        '$(pwd)/'*) expanded="$expansion_cwd/${raw#\$(pwd)/}" ;;
-        '$(pwd -P)/'*) expanded="$expansion_cwd/${raw#\$(pwd -P)/}" ;;
-        '$PWD/'*) expanded="$expansion_cwd/${raw#\$PWD/}" ;;
-      esac
-      scope_check_bash_candidate_inner "$expanded" "$command_text" 0 "" "$prefix" "$suffix"
-      return 0
-      ;;
-  esac
+  #
+  # The same value also leads a `file://` URL (`chrome --print-to-pdf=x
+  # "file://$PWD/a.html"`) and the value of a `--name=` option
+  # (`--print-to-pdf="$PWD/a.pdf"`); both name the file at the expanded path,
+  # so the leading option name and URL scheme are dropped and the path is
+  # checked as if typed. When the command changes directory after the point
+  # the hook follows (scope_cwd_is_static), $PWD is no longer COMMAND_CWD and
+  # the form stays closed.
+  local pwd_word_re='^(--[A-Za-z0-9][A-Za-z0-9_.-]*=)?(file://)?(\$PWD|\$\{PWD\}|\$\(pwd\)|\$\(pwd -P\))/'
+  if [[ "$raw" =~ $pwd_word_re ]]; then
+    [ "${scope_cwd_is_static:-1}" -eq 1 ] \
+      || scope_block_rel "$raw" "the command changes directory, so \$PWD or \$(pwd) is not the directory the hook can check; spell the path literally"
+    expansion_cwd="$(cd "$COMMAND_CWD" 2>/dev/null && pwd -P)" \
+      || scope_block_rel "$raw" "the command working directory cannot be resolved"
+    expanded="$expansion_cwd/${raw#"${BASH_REMATCH[0]}"}"
+    scope_check_bash_candidate_inner "$expanded" "$command_text" 0 "" "$prefix" "$suffix"
+    return 0
+  fi
   # Any other substitution stays closed BEFORE lexical normalization: a `..`
   # after the substitution's opening text would otherwise pop it away
   # (`"x $(printf %s /../companies / otherco /new)"` normalized to a
@@ -3237,11 +3313,21 @@ case "$TOOL" in
     # Only when nothing later changes directory again; otherwise the payload
     # cwd stays and the checks below are unchanged.
     scope_cd_re='^[[:space:]]*cd[[:space:]]+("([^"$`\\]+)"|'"'([^']+)'"'|([^][[:space:];&|<>()"'"'"'$`\\*?{}~]+))[[:space:]]*(;|&&)'
+    # $PWD and $(pwd) equal COMMAND_CWD only while nothing in the command
+    # changes directory, apart from the leading cd handled below. After a
+    # second cd (`cd workspace && cd ../companies && cat $PWD/x`) the shell's
+    # $PWD is somewhere the hook did not follow, so those forms stay closed.
+    scope_cwd_is_static=1
+    scope_cd_any_re='(^|[;&|({[:space:]]|'$'\n'')(cd|pushd|popd)([[:space:]]|;|$)'
+    if [[ "$cmd" =~ $scope_cd_any_re ]]; then
+      scope_cwd_is_static=0
+    fi
     if [[ "$cmd" =~ $scope_cd_re ]]; then
       scope_cd_dir="${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]}"
       scope_cd_rest="${cmd#"${BASH_REMATCH[0]}"}"
       scope_cd_again_re='(^|[;&|({[:space:]]|'$'\n'')(cd|pushd|popd)([[:space:]]|;|$)'
       if ! [[ "$scope_cd_rest" =~ $scope_cd_again_re ]] && [[ "$scope_cd_dir" != -* ]]; then
+        scope_cwd_is_static=1
         case "$scope_cd_dir" in
           /*) scope_cd_abs="$scope_cd_dir" ;;
           *) scope_cd_abs="$COMMAND_CWD/$scope_cd_dir" ;;

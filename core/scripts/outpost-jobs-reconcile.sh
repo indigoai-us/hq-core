@@ -165,6 +165,12 @@ resolve_box_owners() {
       fi
       add_token "$email"
       add_token "$uid"
+      # The person (or the human an Outpost session acts for, reported even
+      # under the box's machine identity) by Cognito id and email, so a job
+      # owner written either way matches this box.
+      add_token "$(printf '%s' "$who" | jq -r '.sub // empty' 2>/dev/null || true)"
+      add_token "$(printf '%s' "$who" | jq -r '.delegatedEmail // empty' 2>/dev/null || true)"
+      add_token "$(printf '%s' "$who" | jq -r '.delegatedSub // empty' 2>/dev/null || true)"
     fi
   fi
 
@@ -549,6 +555,33 @@ WantedBy=timers.target
 EOF
 }
 
+# A system unit with User=ec2-user (outpost-jobs-reconcile.service) or a cron
+# job runs without a login session, so XDG_RUNTIME_DIR and
+# DBUS_SESSION_BUS_ADDRESS are unset and `systemctl --user` fails with
+# "Failed to connect to bus: No medium found". When the user manager is
+# running (linger enabled), its runtime dir is /run/user/<uid>; point
+# systemctl at it. Called once from the main shell (not inside a command
+# substitution) so the exports reach every later systemctl call.
+ensure_user_bus_env() {
+  local uid runtime_dir user_name
+  uid="$(id -u 2>/dev/null || true)"
+  [ -n "$uid" ] || return 0
+  if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    runtime_dir="${HQ_JOB_USER_RUNTIME_BASE:-/run/user}/$uid"
+    if [ -d "$runtime_dir" ]; then
+      export XDG_RUNTIME_DIR="$runtime_dir"
+      log "XDG_RUNTIME_DIR was unset; using $runtime_dir for systemctl --user"
+    else
+      user_name="$(id -un 2>/dev/null || printf '%s' "$uid")"
+      log "user runtime dir $runtime_dir is missing — the systemd user manager is not running for $user_name; enable linger: sudo loginctl enable-linger $user_name"
+      return 0
+    fi
+  fi
+  if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -e "$XDG_RUNTIME_DIR/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+  fi
+}
+
 systemctl_user() {
   if [ "$DRY_RUN" -eq 1 ]; then
     log "dry-run systemctl --user $*"
@@ -649,8 +682,14 @@ ensure_sync_hook() {
 set -u
 HQ_ROOT="\${OUTPOST_HQ_ROOT:-\${HQ_ROOT:-/home/ec2-user/hq}}"
 RECONCILE="\$HQ_ROOT/core/scripts/outpost-jobs-reconcile.sh"
+LOG="\${HOME}/.hq/jobs/reconcile/after-sync.log"
 if [ -x "\$RECONCILE" ] || [ -f "\$RECONCILE" ]; then
-  bash "\$RECONCILE" --hq-root "\$HQ_ROOT" --after-sync >>"\${HOME}/.hq/jobs/reconcile/after-sync.log" 2>&1 || true
+  # A failed reconcile must not fail the sync cycle, but it must be visible:
+  # jobs with errors are left unarmed until the next successful pass.
+  if ! bash "\$RECONCILE" --hq-root "\$HQ_ROOT" --after-sync >>"\$LOG" 2>&1; then
+    echo "outpost-jobs-reconcile: after-sync reconcile reported errors — some jobs are not scheduled; see \$LOG" >&2
+    echo "outpost-jobs-reconcile: after-sync reconcile reported errors" >>"\$LOG"
+  fi
 fi
 EOF
   chmod +x "$hook_path"
@@ -669,6 +708,10 @@ PROBE_RAN=0
 
 if [ "$ENSURE_HOOK" -eq 1 ]; then
   ensure_sync_hook
+fi
+
+if [ "$DRY_RUN" -ne 1 ] && [ "$SYSTEMCTL_BIN" != ":" ] && [ "$SYSTEMCTL_BIN" != "true" ]; then
+  ensure_user_bus_env
 fi
 
 # First pass: probe jobs that are not ready (unless --no-probe).
