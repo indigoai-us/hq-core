@@ -1,9 +1,83 @@
-# Conduct dispatch — worker lanes
+# Conduct dispatch — subagents and worker lanes
 
-This module applies only after the conductor decides work needs a lane. Lanes
-are workers; the invoking session is their senior. Use the shared mapping in
+This module applies only after the conductor decides work needs a worker. A
+worker is a background subagent in this session or an `hq lanes` worker lane;
+the invoking session is its senior either way. Lanes use the shared mapping in
 `.claude/skills/_shared/lane-dispatch-protocol.md` and the same lifecycle used
 by `/execute-task` and `/run-project`.
+
+## Runner
+
+Resolve the runner before the first dispatch, in this order:
+
+1. A `--runner subagent|lane` flag or an owner instruction in this session.
+   Persist it with `bash core/scripts/hq-session.sh set conduct_runner <runner>`.
+2. The `conduct_runner` session pin.
+3. `conduct.runner` in `personal/settings/orchestrator.yaml`.
+4. `subagent`.
+
+Use a lane even when the runner is `subagent` when any of these hold:
+
+- The work must outlive this session: overnight or away work, lead lanes
+  that resume on their own, `--loop`, `--remote-control`, or `--outpost`.
+- The engine is not Claude, or the host has no `Agent` tool (Codex sessions).
+- The owner asked for a lane for this task.
+
+Use a subagent even when the runner is `lane` when `hq lanes create` returns
+`ok:false` with `no_account_with_room` or any other admission or capacity
+code. Report the switch in one line, for example
+`lanes refused (no_account_with_room, next reset <next_reset>); running as a subagent`.
+Still raise the signed-out owner cards from the refusal's `skipped[]`.
+
+Steps 1, 2, and 4 (worker choice and the brief) are the same for both
+runners. The brief, its done criteria, and the Step 6 verification do not
+change with the runner.
+
+## Subagent dispatch
+
+1. Write the brief exactly as for a lane, to a file. Name the envelope path
+   `workspace/orchestrator/conduct-subagents/<session-id>/<run-id>/envelope.json`,
+   where `run-id` is the round id below. The envelope uses the same fields as a
+   lane envelope (`decision` of `done`, `ask`, or `blocked`, a summary, changed
+   files, commits, PR, tests run with their output, and open questions).
+2. When the brief changes a repo, create a dedicated worktree on a feature
+   branch before dispatch (`git -C <repo> worktree add -b <branch>
+   workspace/worktrees/<name> origin/<base>`) and name it in the brief. Two
+   running subagents never write the same files; overlapping work waits for
+   the first subagent to finish.
+3. Generate `round_id` and capture `since` as for a lane, then call the
+   `Agent` tool with `run_in_background: true`:
+   - `subagent_type`: the matched worker's agent type when one exists,
+     otherwise `general-purpose`.
+   - `model`: the family of `conduct_child_model` (`opus`, `sonnet`, `haiku`,
+     or `fable`); omit it when no pin is set. Pass `effort` only when the
+     owner set `conduct_child_effort` explicitly.
+   - `description`: the worker name and a 3-5 word task label.
+   - `prompt`: "Read <brief path> whole and follow it. Write the JSON envelope
+     to <envelope path> before you finish. Commit your own work on the named
+     branch. Do not push, open a PR, merge, or deploy unless the brief says
+     so. End with a reply of at most 10 lines that names the envelope path."
+4. Record the run in
+   `workspace/orchestrator/conduct-subagents/<session-id>/runs.json`: agent
+   id, worker, task label, brief path, envelope path, worktree, `since`, and
+   `round_id`. Write it through a temp file and `mv`.
+5. Return to the owner. The app wakes this session when the subagent
+   finishes; do not poll it. Send a correction to a running subagent with
+   `SendMessage` to its agent id. That message is an instruction, as with
+   `hq lanes message`.
+6. On completion, read the envelope file, not only the closing message, and
+   verify it as in Step 6. A missing envelope is a failed delivery: report it
+   and resume the subagent once with `SendMessage` asking for the envelope.
+   Delete the worktree only after its branch is merged or the owner drops it.
+
+Subagent runs spend this session's Claude usage and stop if this session
+ends. Keep long results in the envelope and the worktree so they do not fill
+this session's context.
+
+Subagent runs do not appear in `hq lanes list` yet. Until hq-cli can register
+a lane that an in-session subagent runs (planned as
+`hq lanes create --runner subagent`), the status rows in Step 7 come from
+`runs.json`.
 
 ## Engine roster
 
@@ -48,12 +122,17 @@ are one pool across companies, and hq-cli records its pick as the lane's
    from the shared pool. A repeated create for the same worker and
    senior continues its prior lane thread. If the lane is live, send follow-up work with
    `hq lanes message <lane> --text <instruction>`.
-4. Parse the JSON response. Admission and capacity refusals keep the task
-   queued for the next tick. Do not start a substitute process or pool.
-   A `no_account_with_room` refusal from `--account auto` also keeps the task
-   queued; report the soonest reset from its `next_reset` field in one line,
-   for example `queued: no account has room until <next_reset>`. Never pick an
-   account by hand to get around it. Every create response can list
+4. Parse the JSON response. An admission or capacity refusal, including
+   `no_account_with_room` from `--account auto`, moves the task to a subagent
+   with the same brief (see "Runner"). Report the switch and the soonest reset
+   from `next_reset` in one line. When the task must outlive this session and
+   cannot run as a subagent, keep it queued for the next tick instead and say
+   `queued: no account has room until <next_reset>`. Never pick an account by
+   hand to get around a refusal, and do not start a substitute process or
+   pool. Pass `--allow-extra-usage` only when the session pin
+   `conduct_allow_extra_usage` is `1`; it lets `--account auto` pick a Claude
+   account whose plan limit is used up but whose paid extra usage is on,
+   ranked last. Every create response can list
    signed-out accounts under `skipped[]`; raise one owner card per
    account as described in
    [Signed-out accounts](#signed-out-accounts-one-owner-card-per-account).
@@ -326,13 +405,15 @@ must resolve to its own profile so the lane registry can preserve its thread.
 
 ## Step 3: Assign a pool slot
 
-There is no conduct pool. `hq lanes create` is the admission operation and
-applies hq-cli's provider, account, host, and lane capacity rules. If admission
-returns `ok:false` with an admission or capacity code, leave the task queued.
-Do not invent a second machine-wide cap or launch around the refusal.
-With `--account auto`, `no_account_with_room` means every account in the pool
-is out of room. Keep the task queued for the next tick and report the soonest
-reset in one line. Do not choose an account yourself.
+This step applies to lanes only; subagents take no pool slot. There is no
+conduct pool. `hq lanes create` is the admission operation and applies
+hq-cli's provider, account, host, and lane capacity rules. If admission
+returns `ok:false` with an admission or capacity code, run the task as a
+subagent (see "Runner"), or leave it queued when it must outlive this session.
+Do not invent a second machine-wide cap or start another lane around the
+refusal. With `--account auto`, `no_account_with_room` means every account in
+the pool is out of room. Report the soonest reset in one line. Do not choose
+an account yourself.
 Generate a unique
 `round_id="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"` before each create,
 then capture `since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` immediately before the
@@ -379,7 +460,8 @@ Before answering a lane question or resuming a lane, generate a unique
 Codex watcher for that lane round with `--since "$since" --round-id
 "$round_id"`.
 
-Use `hq lanes show <lane> --json` and the lane's envelope. Treat
+For a lane, use `hq lanes show <lane> --json` and the lane's envelope. For a
+subagent, use the envelope file named in its brief. Treat
 `decision: "done"` as a report to verify, not proof by itself. Inspect the
 branch diff, commit, PR, and exact CI head. For a `decision: "ask"`, deliver the
 question and wait for an answer; for `blocked`, report the named blocker. A
@@ -412,12 +494,14 @@ When `needs-qa` returns `yes`, create a `qa-tester` lane from the QA role brief,
 send it the PR URL, and wait for its envelope. Return QA failures to the owning
 implementation lane with `hq lanes message`; report the QA result with CI.
 
-## Step 7: End every turn with one row per running lane
+## Step 7: End every turn with one row per running worker
 
 List lanes launched by this session with `hq lanes list --json --senior
 session:<this session>`. For each active row include the lane id, worker,
 state, `last_line`, PR, pending inbox count, elapsed time, and exit status when
-present. Name the blocker on blocked or review work. Use a named reviewing
+present. Add one row per running subagent from `runs.json`, in the same row
+format, with `subagent` as the runner chip, the agent id in place of the lane
+id, and elapsed time from `since`. Name the blocker on blocked or review work. Use a named reviewing
 lane for `review` state.
 
 ## Testing capacity distribution locally

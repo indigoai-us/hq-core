@@ -22,7 +22,7 @@ if none match, the first group whose keywords match a word in its description; o
 | Command | Scope | Description |
 | --- | --- | --- |
 | `/checkpoint` | core | Save a lightweight session checkpoint. |
-| `/conduct` | core | Orchestrator mode: route multi-step work to worker lanes through hq lanes. Triggers: /conduct, run everything in the background. |
+| `/conduct` | core | Orchestrator mode: route multi-step work to in-session background subagents (default) or hq worker lanes. Triggers: /conduct, run everything in the background. |
 | `/conduct-join` | core | Join this already-running session to a /conduct session as one of its children, so the conductor can send it instructions and receive its reports. Use when the user says "/conduct-join <link>", "join the conductor", "report to the conduct session", or pastes a link id that starts with "cl-". Also handles "leave" to detach. |
 | `/core:work-mesh` | package | Work Mesh Live — automatic presence via hq mesh daemon; context reconcile/organize; manual session task-status, blocked, and note only. |
 | `/handoff` | core | Preserve session state for a follow-up agent with handoff files and commits. |

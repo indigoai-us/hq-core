@@ -2,6 +2,21 @@
 
 Newest release first.
 
+## Release: v16.0.28-beta.1
+
+- No action needed. `/conduct` now runs each worker as a background subagent
+  in the current session by default. Subagents use the session's own Claude
+  login and are never refused for lane capacity. Lanes are still used when
+  the work must outlive the session (self-resuming lead lanes, `--loop`,
+  `--remote-control`, `--outpost`, overnight work), for non-Claude engines,
+  or when you ask for them. When `hq lanes create` refuses for capacity
+  (`no_account_with_room`), conduct runs the same brief as a subagent instead
+  of queuing it. Pin a runner with `/conduct --runner lane|subagent` or set
+  `conduct.runner` in `personal/settings/orchestrator.yaml`.
+- Lanes spend paid Claude extra usage only when you pin
+  `conduct_allow_extra_usage=1`; conduct then passes `--allow-extra-usage`
+  to `hq lanes create` (needs the hq-cli release with that flag).
+
 ## Release: v16.0.24-beta.6
 
 - No action needed. `/brainstorm` now sweeps the company's code, repos,

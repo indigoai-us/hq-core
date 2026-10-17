@@ -9,7 +9,7 @@ PROTOCOL="$ROOT/.claude/skills/_shared/lane-dispatch-protocol.md"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 body="$(awk 'NR==1 && $0=="---" {fm=1; next} fm && $0=="---" {fm=0; next} !fm' "$SKILL")"
 [ "$(wc -l < "$SKILL" | tr -d ' ')" -le 160 ] || fail 'skill mechanics exceed 160 lines'
-for h in '## Step 1: Parse the argument' '## When a task needs a lane' '## Rules'; do
+for h in '## Step 1: Parse the argument' '## When a task needs a worker' '## Rules'; do
   grep -qF "$h" "$SKILL" || fail "skill lost $h"
 done
 grep -q 'dispatch.md' "$SKILL" || fail 'skill does not load dispatch module'
@@ -35,12 +35,27 @@ grep -q 'since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"' "$PROTOCOL" || fail 'shared pro
 grep -qi 'one watcher per lane.*round\|new watcher for each dispatch round' "$PROTOCOL" || fail 'shared protocol omits watcher re-arm per round'
 grep -q -- '--since "$since"' "$PROTOCOL" || fail 'shared protocol does not pass the round baseline'
 grep -q -- '--round-id "$round_id"' "$PROTOCOL" || fail 'shared protocol does not pass its unique round ID'
-grep -q 'Admission and capacity refusals keep the task' "$MODULE" || fail 'admission refusal must remain queued'
+# Owner decision 2026-10-17: subagents are the default runner, and a lane
+# capacity refusal runs the same brief as a subagent instead of queuing.
+grep -q '^## Runner$' "$MODULE" || fail 'dispatch lost the runner choice'
+grep -q '^## Subagent dispatch$' "$MODULE" || fail 'dispatch lost subagent dispatch'
+grep -q 'conduct_runner' "$MODULE" || fail 'runner session pin is missing'
+grep -q '^4\. `subagent`\.$' "$MODULE" || fail 'subagent is not the default runner'
+grep -q 'run_in_background: true' "$MODULE" || fail 'subagents must launch in the background'
+grep -q 'refusal, including' "$MODULE" && grep -q 'moves the task to a subagent' "$MODULE" \
+  || fail 'a lane capacity refusal must fall back to a subagent'
+grep -q 'Never pick an account by' "$MODULE" || fail 'conduct must not pick an account by hand'
+grep -q 'conduct_allow_extra_usage' "$MODULE" && grep -q -- '--allow-extra-usage' "$MODULE" \
+  || fail 'lane extra usage must stay behind the owner opt-in'
+grep -q 'outlive this session' "$MODULE" || fail 'session-outliving work must still use lanes'
+grep -q 'envelope file named in its brief' "$MODULE" || fail 'subagent results must be verified from the envelope'
+grep -q '^allowed-tools: Agent,' "$SKILL" || fail 'skill cannot call the Agent tool'
 grep -q '## Step 6R: Role lanes' "$MODULE" || fail 'role lane behavior is missing'
 grep -q 'ci-round' "$MODULE" || fail 'CI fix round limit is missing'
 grep -q 'When `needs-qa` returns `yes`, create a `qa-tester` lane' "$MODULE" || fail 'UI PRs must launch the QA lane'
 grep -q 'Return QA failures to the owning' "$MODULE" || fail 'QA failures must return to the implementation lane'
-grep -q '## Step 7: End every turn with one row per running lane' "$MODULE" || fail 'live lane status rows are missing'
+grep -q '## Step 7: End every turn with one row per running worker' "$MODULE" || fail 'live worker status rows are missing'
+grep -q 'one row per running subagent' "$MODULE" || fail 'subagent status rows are missing'
 for f in "$SKILL" "$MODULE" "$ROOT/.claude/skills/conduct/conductor-core.md" \
          "$ROOT/.claude/skills/_shared/lane-dispatch-protocol.md" \
          "$ROOT/.claude/skills/_shared/pool-lane-protocol.md" \

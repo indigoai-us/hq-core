@@ -938,7 +938,8 @@ consume_timeout_breadcrumbs() {
     mv "$record" "$claim" 2>/dev/null || continue
     # Read through a shell redirect. A Git Bash claim path can pass the
     # 260-character Windows MAX_PATH limit, which the native jq.exe cannot
-    # open, and an unreadable claim would be deleted as invalid below.
+    # open, and an unreadable claim would be deleted as invalid below. The
+    # stderr redirect comes first so a failed input redirect stays silent too.
     text="$(jq -r '
       if (.hook_path | type) == "string"
         and (.hook_event | type) == "string"
@@ -957,7 +958,7 @@ consume_timeout_breadcrumbs() {
           + .hook_event + ". It is about to be killed by the harness and its output will be discarded. Investigate why.\n</hq-hook-timeout-escalation>"
         else empty end
       else empty end
-    ' < "$claim" 2>/dev/null || true)"
+    ' 2>/dev/null < "$claim" || true)"
     if [ -z "$text" ]; then
       rm -f "$claim" >/dev/null 2>&1 || true
       continue
@@ -1329,12 +1330,14 @@ collect_output() { # <rc> <stdout> <source-path>
 if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
   && [ -d "${CLAUDE_PROJECT_DIR:-}" ] \
   && [ "${CLAUDE_PROJECT_DIR:-}" -ef "$REPO_ROOT" ]; then
+  # Same resolution as hqd and core/scripts/hqd-hook-shim.sh: the socket lives
+  # in the daemon/ runtime directory (windows-hook-parity US-001).
   if [ -n "${HQ_HQD_SOCKET:-}" ]; then
     HQD_SOCKET_PATH="$HQ_HQD_SOCKET"
   elif [ -n "${HQ_REGISTRY_DIR:-}" ]; then
-    HQD_SOCKET_PATH="$HQ_REGISTRY_DIR/hqd.sock"
+    HQD_SOCKET_PATH="$HQ_REGISTRY_DIR/daemon/hqd.sock"
   else
-    HQD_SOCKET_PATH="${HOME:-}/.hq/hqd.sock"
+    HQD_SOCKET_PATH="${HOME:-}/.hq/daemon/hqd.sock"
   fi
   if [ -S "$HQD_SOCKET_PATH" ] && [ -f "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" ]; then
     FLAG_DIR="$REPO_ROOT/core/scripts"
@@ -1439,9 +1442,11 @@ master_timeout_record_exists() {
   [ -d "$breadcrumb_dir" ] || return 1
   for record in "$breadcrumb_dir"/*.json; do
     [ -f "$record" ] || continue
+    # A concurrent fire can claim the record after the -f check; keep the
+    # failed redirect off stderr by redirecting stderr first.
     if jq -e --arg hook_path "$SCRIPT_DIR/master-hook.sh" --arg event "$EVENT" --arg invocation_id "$MASTER_INVOCATION_ID" '
       .hook_path == $hook_path and .hook_event == $event and .invocation_id == $invocation_id
-    ' < "$record" >/dev/null 2>&1; then
+    ' >/dev/null 2>&1 < "$record"; then
       return 0
     fi
   done
@@ -1530,7 +1535,7 @@ wait_for_timeout_reporters() {
     [ -f "$record" ] || continue
     if ! jq -e --arg hook_path "$SCRIPT_DIR/master-hook.sh" --arg event "$EVENT" --arg invocation_id "$MASTER_INVOCATION_ID" '
       .hook_path == $hook_path and .hook_event == $event and .invocation_id == $invocation_id
-    ' < "$record" >/dev/null 2>&1; then
+    ' >/dev/null 2>&1 < "$record"; then
       continue
     fi
     marker="$record.reported"

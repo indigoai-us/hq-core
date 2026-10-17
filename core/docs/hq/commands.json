@@ -209,7 +209,7 @@
     },
     {
       "name": "conduct",
-      "description": "Orchestrator mode: route multi-step work to worker lanes through hq lanes. Triggers: /conduct, run everything in the background.",
+      "description": "Orchestrator mode: route multi-step work to in-session background subagents (default) or hq worker lanes. Triggers: /conduct, run everything in the background.",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -217,7 +217,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/conduct/SKILL.md",
-      "hash": "sha256:7298b4ee1d0b83db8df0af4d0946bd32ca4e0b3777a9631ed027f811c46a7f15",
+      "hash": "sha256:8d8ddbcce7d523be8a56259e69ef3a2b30a8fb51759351d77ed90a96c2be3206",
       "duplicates": {
         "exact": [],
         "drifted": [],

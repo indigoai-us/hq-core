@@ -604,11 +604,39 @@ POLICY_FACT_HELPER_RESOLVED=0
 # Same floor the forwarder enforces via lib/hq-cli-floor.sh. Keep the two in step.
 POLICY_FACT_HELPER_CLI_FLOOR="5.342.5"
 
+# policy_fact_helper_npm_shim_entry <hq-bin> — when <hq-bin> is the shell shim
+# npm writes for a global bin on Windows (cmd-shim), print the package entry it
+# execs, or nothing. On Windows the global layout is <prefix>/hq (sh shim),
+# <prefix>/hq.cmd, <prefix>/hq.ps1 and <prefix>/node_modules/@indigoai-us/hq-cli,
+# and the shim is a regular file, so the symlink walk below finds nothing.
+# Accept the shim only when its first lines exec this package's dist/index.js
+# under its own directory, so a lookalike `hq` script keeps the forwarder.
+# Builtins only, bounded read: this runs on the hook fast path.
+policy_fact_helper_npm_shim_entry() {
+  local bin="$1" prefix="" entry="" line="" lines=0
+  [ -f "$bin" ] && [ ! -L "$bin" ] || return 0
+  prefix="${bin%/*}"
+  [ "$prefix" != "$bin" ] || return 0
+  entry="$prefix/node_modules/@indigoai-us/hq-cli/dist/index.js"
+  [ -r "$entry" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    lines=$((lines + 1))
+    [ "$lines" -le 40 ] || break
+    case "$line" in
+      *'"$basedir/node_modules/@indigoai-us/hq-cli/dist/index.js"'*)
+        printf '%s\n' "$entry"
+        return 0
+        ;;
+    esac
+  done < "$bin"
+  return 0
+}
+
 # policy_fact_helper_from_bin <hq-bin> — print the companion path for an `hq`
 # entry, or nothing. readlink is not a builtin and macOS readlink has no -f, so
 # walk the link chain one bounded step at a time.
 policy_fact_helper_from_bin() {
-  local bin="$1" target="" dir="" hops=0 candidate=""
+  local bin="$1" target="" dir="" hops=0 candidate="" shim_entry=""
   while [ -L "$bin" ] && [ "$hops" -lt 10 ]; do
     target="$(readlink "$bin" 2>/dev/null || true)"
     [ -n "$target" ] || break
@@ -618,6 +646,11 @@ policy_fact_helper_from_bin() {
     esac
     hops=$((hops + 1))
   done
+  # Windows npm installs `hq` as a shell shim, not a symlink. Without this the
+  # resolver returned nothing there and every event booted Node through the
+  # forwarder, about 2 s per call on Git Bash (windows-hook-parity US-001).
+  shim_entry="$(policy_fact_helper_npm_shim_entry "$bin")"
+  [ -z "$shim_entry" ] || bin="$shim_entry"
   # .../@indigoai-us/hq-cli/dist/index.js -> .../hq-cli/assets/scaffold/core/scripts
   dir="${bin%/*}"
   [ "$dir" != "$bin" ] || return 0
@@ -729,7 +762,11 @@ resolve_policy_fact_helper() {
   if [ -n "$cache" ] && [ -r "$cache" ] && [ "$cache" -nt "$hq_bin" ]; then
     # Both lines in one pass: two separate redirects would each read line 1.
     { IFS= read -r cached_key; IFS= read -r cached_path; } < "$cache" 2>/dev/null || true
-    if [ "$cached_key" = "$hq_bin" ] && [ -n "$cached_path" ] && [ -r "$cached_path" ]; then
+    # A Windows npm shim is a regular file, so `-nt "$hq_bin"` above sees the
+    # shim, not the package. Check the package manifest too, so a package
+    # replaced under an unchanged shim resolves again and meets the floor.
+    if [ "$cached_key" = "$hq_bin" ] && [ -n "$cached_path" ] && [ -r "$cached_path" ] \
+      && [ "$cache" -nt "${cached_path%/assets/scaffold/core/scripts/derive-trigger-facts.sh}/package.json" ]; then
       POLICY_FACT_HELPER="$cached_path"
       return 0
     fi

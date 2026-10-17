@@ -1507,6 +1507,7 @@ jobs:
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
           bash core/scripts/tests/resolve-hq-root.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
+          bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
@@ -1817,6 +1818,10 @@ jobs:
         run: bash core/scripts/tests/session-title-windows-argv.test.sh
       - name: Pipeline Windows path and lock identity
         run: bash core/scripts/tests/pipeline-windows-path-lock.test.sh
+      - name: Policy hook resolves the npm hq shim without starting node (US-001)
+        run: bash .claude/hooks/tests/inject-policy-fact-helper-windows-shim.test.sh
+      - name: Master hook checks the hqd daemon socket path (US-001)
+        run: bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
       - name: Verify Windows hook benchmark workflow wiring
         run: bash core/scripts/tests/windows-hook-benchmark-workflow.test.sh
       - name: Measure hook benchmark on Git Bash
@@ -2044,6 +2049,8 @@ jobs:
         run: bash core/scripts/tests/inject-policy-background-notifications.test.sh
       - name: Staleness ordering — stale rules cut first, exemptions hold, personal soft off
         run: bash .claude/hooks/tests/inject-policy-on-trigger-staleness.test.sh
+      - name: Policy hook resolves the npm hq shim without starting node (US-001)
+        run: bash .claude/hooks/tests/inject-policy-fact-helper-windows-shim.test.sh
       - name: check-stale-model-pin hook regression test
         run: bash .claude/hooks/tests/check-stale-model-pin.test.sh
       - name: Policy trigger end-to-end corpus coverage
