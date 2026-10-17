@@ -105,6 +105,20 @@ test('box not signed in: the run is blocked before any job code runs', async t =
   assert.equal(f.launches.length, 0);
 });
 
+test('next tick after sign-in runs a previously blocked delivery exactly once', async t => {
+  const f = runnerFixture(t);
+  const before = await f.r.scheduled(f.j);
+  assert.equal(before.errorCode, 'provider_not_signed_in');
+  assert.equal(f.launches.length, 0);
+  f.writeCred(Date.now() + 8 * 3600000);
+  assert.equal((await f.r.scheduled(f.j)).outcome, 'succeeded');
+  assert.equal(f.launches.length, 2); // precondition and session
+  assert.equal((await f.r.scheduled(f.j)).outcome, 'duplicate');
+  assert.equal(f.launches.length, 2);
+  const reports = f.calls.filter(call => call.action === 'report');
+  assert.deepEqual(reports.map(report => report.outcome), ['blocked', 'succeeded']);
+});
+
 test('a broker provider secret keeps the previous path and never reads the sign-in', async t => {
   const f = runnerFixture(t, {providerSecret: 'ANTHROPIC_API_KEY'});
   const receipt = await f.r.runDelivery(f.j, f.delivery());
@@ -287,6 +301,59 @@ test('an expired token that the CLI cannot refresh is not signed in, so the watc
   c.write(1000);
   assert.equal(signin.signedIn(c.file, {now: () => 5000, refresh: () => false}), false);
   assert.equal(signin.signedIn(c.file, {now: () => 5000, refresh: () => { c.write(99999); return true; }}), true);
+});
+
+test('restarted watcher posts a new link and still honours regenerate', async () => {
+  const calls = [];
+  const phases = [];
+  let pending = false;
+  let starts = 0;
+  const api = async (_op, body) => {
+    calls.push(body.action);
+    if (body.action === 'login-code') return {code: null};
+    if (body.action === 'regenerate-pending') return {pending};
+    return {ok: true};
+  };
+  const login = () => {
+    starts += 1;
+    let alive = true;
+    return {
+      alive: () => alive,
+      output: () => 'Open https://claude.ai/oauth/authorize?x=9 now',
+      sendCode() {},
+      stop: () => { alive = false; },
+    };
+  };
+  const deps = {api, isSignedIn: () => false, start: login, recordPhase: status => phases.push(status), now: () => 1_700_000_000_000};
+  // A restarted process has empty memory. It posts the new login's link.
+  const restarted = {};
+  await signin.signinTick(restarted, deps);
+  assert.equal(calls.filter(action => action === 'login-url').length, 1);
+  assert.deepEqual(phases.at(-1), {phase: 'awaiting_person', since: 1_700_000_000_000});
+  assert.equal(JSON.stringify(phases).includes('claude'), false);
+  pending = true;
+  await signin.signinTick(restarted, deps);
+  pending = false;
+  await signin.signinTick(restarted, deps);
+  assert.equal(starts, 2);
+  assert.equal(calls.filter(action => action === 'login-url').length, 2);
+  assert.deepEqual(phases.at(-1), {phase: 'awaiting_person', since: 1_700_000_000_000});
+});
+
+test('watcher records code entry without storing the code or the URL', async () => {
+  const phases = [];
+  const deps = {
+    api: async (_op, body) => body.action === 'login-code' ? {code: 'abcDEF123#s'} : body.action === 'regenerate-pending' ? {pending: false} : {ok: true},
+    isSignedIn: () => false,
+    start: () => ({alive: () => true, output: () => 'https://claude.ai/oauth/authorize?x=1\r\n', sendCode() {}, stop() {}}),
+    recordPhase: status => phases.push(status),
+    now: () => 50,
+  };
+  await signin.signinTick({}, deps);
+  assert.deepEqual(phases.at(-1), {phase: 'code_entry', since: 50});
+  const encoded = JSON.stringify(phases);
+  assert.equal(encoded.includes('abcDEF'), false);
+  assert.equal(encoded.includes('claude'), false);
 });
 
 test('watcher types a repeated code only once', async () => {

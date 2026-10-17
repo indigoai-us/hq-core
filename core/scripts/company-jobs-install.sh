@@ -5,7 +5,7 @@ set -euo pipefail
 CONFIG="${1:-/etc/hq/company-jobs.json}"
 [ "$(id -u)" = 0 ] || { echo 'company jobs install requires root' >&2; exit 2; }
 [ -f "$CONFIG" ] && [ ! -L "$CONFIG" ] || { echo 'company job config missing' >&2; exit 2; }
-for prerequisite in node jq systemctl loginctl useradd getent runuser; do
+for prerequisite in node jq systemctl loginctl useradd getent runuser flock; do
   command -v "$prerequisite" >/dev/null || { echo "missing prerequisite: $prerequisite" >&2; exit 2; }
 done
 node --input-type=module -e 'import { DatabaseSync } from "node:sqlite"; new DatabaseSync(":memory:").close()'
@@ -17,7 +17,9 @@ SLUG="$(jq -er '.companySlug' "$CONFIG")"
 [[ "$SLUG" =~ ^[A-Za-z0-9_-]+$ ]] || exit 2
 PROJECTS="$ROOT/companies/$SLUG/projects"
 NODE="$(node -p 'process.execPath')"
-for value in "$ROOT" "$CONFIG" "$CREDS" "$CLOUD" "$NODE"; do
+# systemd needs an absolute executable path, even on distributions with /bin tools.
+FLOCK="$(command -v flock)"
+for value in "$ROOT" "$CONFIG" "$CREDS" "$CLOUD" "$NODE" "$FLOCK"; do
   [[ "$value" = /* && "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *%* && "$value" != *\"* && "$value" != *\\* ]] || exit 2
 done
 node - "$ROOT" "$CREDS" "$CONFIG" "$PROJECTS" "$CLOUD" "$NODE" <<'PATHS'
@@ -39,11 +41,12 @@ assertReleasedCode([
   root+'/core/scripts/hq-job-run.sh',
   root+'/core/scripts/company-job-with-credentials.sh',
   root+'/core/scripts/lib/company-signin.mjs',
+  root+'/core/scripts/lib/company-service-restart.mjs',
   process.argv[6],
   fs.realpathSync(nodeBinary),
 ]);
 PATHS
-for script in lib/company-jobs.mjs lib/company-signin.mjs hq-agent-session.sh outpost-jobs-reconcile.sh hq-job-run.sh company-job-with-credentials.sh; do
+for script in lib/company-jobs.mjs lib/company-signin.mjs lib/company-service-restart.mjs hq-agent-session.sh outpost-jobs-reconcile.sh hq-job-run.sh company-job-with-credentials.sh; do
   [ -s "$ROOT/core/scripts/$script" ] || { echo "release missing $script" >&2; exit 2; }
 done
 [ -r "$CREDS" ] || { echo 'company machine credentials not provisioned' >&2; exit 2; }
@@ -164,6 +167,8 @@ const result=spawnSync(provider,['--version'],{timeout:10000,stdio:'ignore'});
 if(result.status!==0)throw Error('Provider unavailable to hq-jobs');
 CHECK
 # Exercise the same admission functions that precede provider execution.
+# The child shell expands its own arguments.
+# shellcheck disable=SC2016
 runuser -u hq-jobs -- env -i HOME=/var/lib/hq-company-jobs PATH=/usr/local/bin:/usr/bin:/bin HQ_AGENT_WORKDIR="$ROOT" bash -c '
   set -euo pipefail
   source "$1/core/scripts/lib/session-authz.sh"
@@ -208,6 +213,7 @@ systemctl daemon-reload
 systemctl enable --now hq-company-jobs.timer
 systemctl is-active --quiet hq-company-jobs.timer
 if [ "$SIGNIN_MODE" != 1 ]; then
+  systemctl disable --now hq-company-signin-restart.timer 2>/dev/null || true
   systemctl disable --now hq-company-signin.service 2>/dev/null || true
 else
   cat >/etc/systemd/system/hq-company-signin.service <<UNIT
@@ -224,11 +230,47 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart="${NODE}" "${ROOT}/core/scripts/lib/company-signin.mjs" watch "${CONFIG}"
 Restart=always
 RestartSec=10
+TimeoutStopSec=5s
 UMask=0077
 PrivateTmp=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
+  # Only the watcher is long-running. Timer-driven oneshots load fresh code.
+  cat >"$UNITS/hq-company-signin-restart.service" <<UNIT
+[Unit]
+Description=Apply deferred Company Outpost sign-in watcher updates
+[Service]
+Type=oneshot
+User=root
+Group=root
+RuntimeDirectory=hq-company-jobs
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart="${FLOCK}" -x /run/hq-company-jobs/signin-restart.lock "${NODE}" "${ROOT}/core/scripts/lib/company-service-restart.mjs" "${CONFIG}"
+# Recover the briefly paused parent even if the helper is killed or times out.
+ExecStopPost=-/usr/bin/systemctl kill --kill-whom=main --signal=CONT hq-company-signin.service
+TimeoutStartSec=30s
+UMask=0077
+UNIT
+  cat >"$UNITS/hq-company-signin-restart.timer" <<'UNIT'
+[Unit]
+Description=Retry sign-in watcher updates after sign-in finishes
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=hq-company-signin-restart.service
+[Install]
+WantedBy=timers.target
+UNIT
   systemctl daemon-reload
+  # Check before starting: a running watcher may still hold the previous release.
+  systemctl enable --now hq-company-signin-restart.timer
+  # The helper exits nonzero when it cannot apply the update yet, and a failed
+  # unit start does too. Neither may skip the watcher; the timer retries.
+  if ! systemctl start hq-company-signin-restart.service; then
+    echo 'company-signin restart helper failed; timer will retry' >&2
+  fi
   systemctl enable --now hq-company-signin.service
 fi

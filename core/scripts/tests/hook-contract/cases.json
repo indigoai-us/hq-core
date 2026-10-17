@@ -1,0 +1,461 @@
+{
+  "schema_version": "hq-hook-contract.v1",
+  "cases": [
+    {
+      "id": "first-block-alone",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "advisory",
+          "exit": 0
+        },
+        {
+          "output": {
+            "ok": true
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "decision": "block",
+            "reason": "first"
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "permissionDecision": "deny",
+              "permissionDecisionReason": "first"
+            }
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "decision": "block",
+          "reason": "first",
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "hqSessionBlockedBy": "$FIXTURE/core/hooks/PreToolUse/02-child.sh"
+          }
+        }
+      }
+    },
+    {
+      "id": "first-deny-alone",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "advisory",
+          "exit": 0
+        },
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "permissionDecision": "deny",
+              "permissionDecisionReason": "first"
+            }
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "decision": "block",
+            "reason": "first"
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "hookSpecificOutput": {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "first",
+            "hookEventName": "PreToolUse",
+            "hqSessionBlockedBy": "$FIXTURE/core/hooks/PreToolUse/01-child.sh"
+          }
+        }
+      }
+    },
+    {
+      "id": "single-block-provenance",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "decision": "block",
+            "reason": "first"
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "decision": "block",
+          "reason": "first",
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "hqSessionBlockedBy": "$FIXTURE/core/hooks/PreToolUse/00-child.sh"
+          }
+        }
+      }
+    },
+    {
+      "id": "exception-lone-deny-without-provenance",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "permissionDecision": "deny",
+              "permissionDecisionReason": "first"
+            }
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "hookSpecificOutput": {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "first"
+          }
+        }
+      },
+      "exception": "Operator-approved current-bash baseline: a lone permissionDecision deny is emitted without hookEventName or hqSessionBlockedBy. Any change to this behavior needs a separate, reviewed change."
+    },
+    {
+      "id": "later-top-level-key-wins",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "value": 1,
+            "keep": true
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "value": 2
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "value": 2,
+          "keep": true
+        }
+      }
+    },
+    {
+      "id": "exception-recursive-nested-merge",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "value": {
+              "old": 1,
+              "replace": 1
+            }
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "value": {
+              "replace": 2
+            }
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "value": {
+            "replace": 2,
+            "old": 1
+          }
+        }
+      },
+      "exception": "Operator-approved current-bash baseline: nested objects merge recursively, despite the stated shallow contract. Any change to this behavior needs a separate, reviewed change."
+    },
+    {
+      "id": "context-in-hook-order",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "additionalContext": "first"
+            }
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "additionalContext": ""
+            }
+          },
+          "exit": 0
+        },
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "additionalContext": "second"
+            }
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "hookSpecificOutput": {
+            "additionalContext": "first\n\nsecond"
+          }
+        }
+      }
+    },
+    {
+      "id": "plain-before-json",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "ok": true
+          },
+          "exit": 0
+        },
+        {
+          "output": "first",
+          "exit": 0
+        },
+        {
+          "output": "second",
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "text": "first\nsecond\n",
+        "json": {
+          "ok": true
+        }
+      }
+    },
+    {
+      "id": "exit-two-precedence",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "",
+          "exit": 7
+        },
+        {
+          "output": "",
+          "exit": 2
+        },
+        {
+          "output": "",
+          "exit": 9
+        }
+      ],
+      "expected": {
+        "exit": 2
+      }
+    },
+    {
+      "id": "first-nonzero-exit",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "",
+          "exit": 7
+        },
+        {
+          "output": "",
+          "exit": 9
+        }
+      ],
+      "expected": {
+        "exit": 7
+      }
+    },
+    {
+      "id": "per-child-timeout-continues",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "too late",
+          "exit": 0,
+          "sleep": 3
+        },
+        {
+          "output": "survivor",
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 124,
+        "text": "survivor\n"
+      },
+      "childTimeout": 1
+    },
+    {
+      "id": "large-json-output",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "context": {
+              "$repeat": "x",
+              "count": 70000
+            }
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "context": {
+            "$repeat": "x",
+            "count": 70000
+          }
+        }
+      }
+    },
+    {
+      "id": "large-plain-output",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "$repeat": "x",
+            "count": 70000
+          },
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "text": {
+          "$repeat": "x",
+          "count": 70000,
+          "suffix": "\n"
+        }
+      }
+    },
+    {
+      "id": "large-json-merge",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "context": {
+              "$repeat": "x",
+              "count": 70000
+            },
+            "value": 1
+          }
+        },
+        {
+          "output": {
+            "value": 2
+          }
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "context": {
+            "$repeat": "x",
+            "count": 70000
+          },
+          "value": 2
+        }
+      }
+    },
+    {
+      "id": "large-advisory-cannot-hide-deny",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "$repeat": "x",
+            "count": 70000
+          }
+        },
+        {
+          "output": {
+            "ok": true
+          }
+        },
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "permissionDecision": "deny"
+            }
+          }
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "hookSpecificOutput": {
+            "permissionDecision": "deny",
+            "hookEventName": "PreToolUse",
+            "hqSessionBlockedBy": "$FIXTURE/core/hooks/PreToolUse/02-child.sh"
+          }
+        }
+      }
+    },
+    {
+      "id": "updated-input-later-key-wins",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "updatedInput": {
+                "keep": true,
+                "value": 1
+              }
+            }
+          }
+        },
+        {
+          "output": {
+            "hookSpecificOutput": {
+              "updatedInput": {
+                "value": 2
+              }
+            }
+          }
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "json": {
+          "hookSpecificOutput": {
+            "updatedInput": {
+              "keep": true,
+              "value": 2
+            }
+          }
+        }
+      }
+    }
+  ]
+}
