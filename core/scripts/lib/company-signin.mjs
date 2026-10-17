@@ -13,6 +13,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { Refusal, apiClient, runuserPath, validateConfig } from './company-jobs.mjs';
+import { writeSigninPhase } from './company-service-restart.mjs';
 
 export const AUTH_USER = 'hq-claude-auth';
 export const AUTH_HOME = '/var/lib/hq-claude-auth';
@@ -178,11 +179,21 @@ export function startLogin({user = AUTH_USER, home = AUTH_HOME, spawnImpl = spaw
   };
 }
 
+function rememberPhase(state, recordPhase, status) {
+  recordPhase(status);
+  state.phase = status?.phase ?? null;
+}
+
 /** One watcher step. All side effects are injected for tests. */
-export async function signinTick(state, {api, isSignedIn, start}) {
+export async function signinTick(state, {api, isSignedIn, start, recordPhase = () => {}, now = Date.now}) {
   if (isSignedIn()) {
     state.login?.stop(); state.login = null; state.posted = null; state.lastExit = null;
-    if (!state.reported) { await api('signin', {action: 'login-complete'}); state.reported = true; }
+    if (!state.reported) {
+      rememberPhase(state, recordPhase, null);
+      state.sentCode = null;
+      await api('signin', {action: 'login-complete'});
+      state.reported = true;
+    }
     return 'signed_in';
   }
   state.reported = false;
@@ -195,7 +206,13 @@ export async function signinTick(state, {api, isSignedIn, start}) {
     }
     state.lastExit = key;
   } else if (state.login) state.lastExit = null;
-  if (!state.login || !state.login.alive()) { state.login = start(); state.posted = null; }
+  // A new login drops the previous phase. The replacement process posts a new link.
+  if (!state.login || !state.login.alive()) {
+    rememberPhase(state, recordPhase, null);
+    state.sentCode = null;
+    state.login = start();
+    state.posted = null;
+  }
   const url = extractLoginUrl(state.login.output());
   if (url && url !== state.posted) {
     try { await api('signin', {action: 'login-url', url}); }
@@ -205,14 +222,32 @@ export async function signinTick(state, {api, isSignedIn, start}) {
       throw error;
     }
     state.posted = url;
+    state.urlSince = now();
+  }
+  // No code yet: this is idle waiting, not code entry. The phase file stores neither the URL nor a code.
+  if (state.posted && !state.sentCode && state.phase !== 'awaiting_person') {
+    rememberPhase(state, recordPhase, {phase: 'awaiting_person', since: state.urlSince ?? now()});
   }
   if (state.posted) {
     const {code} = await api('signin', {action: 'login-code'});
     // A one-time code is typed once; a repeated poll result is ignored.
-    if (validLoginCode(code) && code !== state.sentCode) { state.login.sendCode(code); state.sentCode = code; }
+    if (validLoginCode(code) && code !== state.sentCode) {
+      state.login.sendCode(code);
+      state.sentCode = code;
+      state.codeSince = now();
+    }
+  }
+  if (state.sentCode && state.phase !== 'code_entry') {
+    rememberPhase(state, recordPhase, {phase: 'code_entry', since: state.codeSince ?? now()});
   }
   const {pending} = await api('signin', {action: 'regenerate-pending'});
-  if (pending === true) { state.login.stop(); state.login = null; state.posted = null; }
+  if (pending === true) {
+    state.login.stop();
+    state.login = null;
+    state.posted = null;
+    state.sentCode = null;
+    rememberPhase(state, recordPhase, null);
+  }
   return 'awaiting_sign_in';
 }
 
@@ -231,7 +266,10 @@ export async function watch(configPath, {intervalMs = 5000} = {}) {
   // At most one refresh attempt every 10 minutes when the stored token has expired.
   let lastRefresh = 0;
   const refresh = () => { if (Date.now() - lastRefresh < 600000) return false; lastRefresh = Date.now(); return refreshViaCli({runuser}); };
-  const deps = {api, isSignedIn: () => signedIn(credentialFile(), {uid: authUid, refresh}), start: () => startLogin({runuser})};
+  const deps = {
+    api, isSignedIn: () => signedIn(credentialFile(), {uid: authUid, refresh}), start: () => startLogin({runuser}),
+    recordPhase: status => writeSigninPhase(status), now: () => Date.now(),
+  };
   for (;;) {
     try { await signinTick(state, deps); }
     catch (error) { console.error(JSON.stringify({service: 'company-signin', code: error instanceof Refusal ? error.code : 'signin_error', status: error?.status ?? null})); }

@@ -9,6 +9,32 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { CompanyRunner, Ledger, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS } from '../lib/company-jobs.mjs';
 const require = createRequire(import.meta.url);
+test('sign-in reclaim fences old owners and preserves execution admission after a crash', t=>{
+ const f=fixture(t),d=f.delivery(),old=f.r.ledger.claim(d,100,1);
+ f.r.ledger.finish(old,{outcome:'blocked',errorCode:'provider_not_signed_in'});
+ assert.equal(f.r.ledger.claim({...d,acceptedRevision:'changed'},100,2),null);
+ const retry=f.r.ledger.claim(d,100,2);assert(retry);
+ assert.throws(()=>f.r.ledger.finish(old,{outcome:'blocked',errorCode:'provider_not_signed_in'}),/fenced/);
+ f.r.ledger.executing(retry);
+ f.r.ledger.db.prepare('UPDATE runs SET owner_identity=?').run('dead-owner');
+ const recovered=f.r.ledger.claim(d,100,103);assert.equal(recovered.uncertain,true);
+ f.r.ledger.finish(recovered,{outcome:'uncertain',errorCode:'supervisor_lost_after_admission'});
+ assert.equal(f.r.ledger.claim(d,100,1000),null);
+});
+for (const code of ['provider_not_signed_in','provider_token_expiring','provider_credential_unsafe']) {
+ test('sign-in recovery reclaims legacy completed '+code+' without waiting for TTL',async t=>{
+  const f=fixture(t),d=f.delivery();
+  const {Refusal}=await import('../lib/company-jobs.mjs');
+  f.r.providerSignIn=async()=>{throw new Refusal(code);};
+  assert.equal((await f.r.runDelivery(f.j,d)).outcome,'blocked');
+  assert.equal(f.executed(),0);
+  assert.equal(f.r.ledger.db.prepare('SELECT state FROM runs').get().state,'done');
+  f.r.providerSignIn=async()=>null;
+  assert.equal((await f.r.runDelivery(f.j,d)).outcome,'succeeded');
+  assert.equal((await f.r.runDelivery(f.j,d)).outcome,'duplicate');
+  assert.equal(f.executed(),1);
+ });
+}
 function fixture(t){
  const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'company-jobs-')));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  const c={companyUid:'cmp_test',companySlug:'test',machineUid:'out_test',outpostId:'outpost_cmp_test',instanceId:'i-test',attemptId:'attempt1',hqRoot:dir,stateDir:path.join(dir,'state'),unitDir:path.join(dir,'units'),configPath:path.join(dir,'config.json'),machineCredsFile:'/not-read',provider:'codex'};

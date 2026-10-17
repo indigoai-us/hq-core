@@ -271,12 +271,21 @@ export class Ledger {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const row=this.db.prepare('SELECT * FROM runs WHERE key=? OR run_id=?').get(key,d.runId);
-      if(row && (row.state==='done'||row.expires>now)){this.db.exec('COMMIT');return null;}
-      if(row && row.owner_identity && processIdentity(row.owner)===row.owner_identity)throw new Refusal('expired_claim_owner_alive');
+      // These refusals occur before executing() and before any job code. Older
+      // runners persisted them as done, permanently consuming the occurrence.
+      // Reopen only that exact delivery; successful/failed/uncertain effects
+      // retain their terminal claim, even after expiry or a provider sign-in.
+      let retrySignIn=false;
+      if(row?.state==='done' && row.run_id===d.runId && row.revision===d.acceptedRevision){
+        try{const receipt=JSON.parse(row.receipt);retrySignIn=receipt?.outcome==='blocked' && ['provider_not_signed_in','provider_token_expiring','provider_credential_unsafe'].includes(receipt.errorCode);}catch{}
+      }
+      if(row && !retrySignIn && (row.state==='done'||row.expires>now)){this.db.exec('COMMIT');return null;}
+      if(row && !retrySignIn && row.owner_identity && processIdentity(row.owner)===row.owner_identity)throw new Refusal('expired_claim_owner_alive');
       const uncertain=row?.state==='executing';
       // Execution admission is monotonic, including a crash during recovery.
-      this.db.prepare('INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(key,d.runId,d.jobId,d.acceptedRevision,d.firedAt,uncertain?'executing':'running',row?.since??now,now+ttl,process.pid,row?.receipt??null,processIdentity(process.pid),token);
-      this.db.exec('COMMIT'); return {key,token,uncertain,since:row?.since??now};
+      const since=retrySignIn?now:row?.since??now;
+      this.db.prepare('INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(key,d.runId,d.jobId,d.acceptedRevision,d.firedAt,uncertain?'executing':'running',since,now+ttl,process.pid,retrySignIn?null:row?.receipt??null,processIdentity(process.pid),token);
+      this.db.exec('COMMIT'); return {key,token,uncertain,since};
     } catch(e){this.db.exec('ROLLBACK');throw e;}
   }
   executing(claim){const result=this.db.prepare("UPDATE runs SET state='executing' WHERE key=? AND token=? AND state='running'").run(claim.key,claim.token);requireThat(result.changes===1,'claim_fenced');}

@@ -1409,8 +1409,13 @@ jobs:
           node --test core/scripts/tests/company-jobs.test.mjs
           node --test core/scripts/tests/company-jobs-acceptance.test.mjs
           node --test core/scripts/tests/company-signin.test.mjs
+          node --test core/scripts/tests/company-service-restart.test.mjs
+      - name: Deferred watcher restart with real systemd
+        run: sudo --preserve-env=GITHUB_ACTIONS env PATH="$PATH" bash core/scripts/tests/company-service-restart-systemd.test.sh
       - name: Existing job account shell and groups are refused when wrong
         run: bash core/scripts/tests/company-jobs-account.test.sh
+      - name: Failing sign-in helper does not skip the watcher
+        run: bash core/scripts/tests/company-jobs-install-helper-failure.test.sh
 
   previously-unrun-suites:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1439,6 +1444,22 @@ jobs:
         run: bash core/scripts/tests/merged-write-guard-shadow.test.sh
       - name: Merged write-guard shadow refresh avoids extra process launches
         run: core/scripts/tests/merged-write-guard-shadow-refresh-process-count.test.sh
+
+  hook-dispatcher-contract:
+    name: hook-dispatcher-contract
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Golden dispatcher contract (US-003)
+        run: bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh'
+      - name: Corpus freshness, coverage and diagnostic redaction (US-003)
+        run: node --test core/scripts/hook-corpus/corpus.test.mjs
+      - name: Full synthetic corpus differential, identical bash engines (US-003)
+        run: node core/scripts/hook-corpus/differential.mjs --engine-a 'bash .claude/hooks/master-hook.sh' --engine-b 'bash .claude/hooks/master-hook.sh'
 
   core-write-protection:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -1496,6 +1517,10 @@ jobs:
         run: bash core/scripts/tests/check-hq-update-attempt-stamp.test.sh
       - name: check-hq-update caches unchanged CLI probes
         run: bash core/scripts/tests/check-hq-update-cli-probe-cache.test.sh
+      - name: Golden dispatcher contract and synthetic corpus integrity (US-003)
+        run: |
+          bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh'
+          node --test core/scripts/hook-corpus/corpus.test.mjs
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Hook benchmarks dispatch through every supported runtime
@@ -1779,6 +1804,10 @@ jobs:
           cache-dependency-path: |
             core/core.yaml
             core/scripts/cli-hosted.yaml
+      - name: Golden dispatcher contract and synthetic corpus integrity (US-003)
+        run: |
+          bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh'
+          node --test core/scripts/hook-corpus/corpus.test.mjs
       - name: Install pinned mikefarah/yq for jobs-validate parity
         shell: bash
         run: |
