@@ -56,7 +56,7 @@ skills:
     use: "Join this already-running session to a /conduct session as one of its children, so the conductor can send it instructions and receive its reports. Use when the "
     args: "<link id> [name] | leave | status"
   - name: "/conduct"
-    use: "Orchestrator mode: route multi-step work to worker lanes through hq lanes. Triggers: /conduct, run everything in the background."
+    use: "Orchestrator mode: route multi-step work to in-session background subagents (default) or hq worker lanes. Triggers: /conduct, run everything in the background."
     args: "[--workers <roles>] [--engine e] [--model m] [--effort f] | [engine] [task description] | adopt [session] | tell <child> <message> | status | off"
   - name: "/convert-codex"
     use: "Add Codex support to older Claude-first HQ roots without breaking Claude setup."

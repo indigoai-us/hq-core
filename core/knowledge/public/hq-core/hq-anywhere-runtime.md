@@ -29,8 +29,10 @@ without a registry match uses personal context.
 
 ## hqd socket
 
-On Unix, hqd listens on `~/.hq/hqd.sock` by default. `HQ_REGISTRY_DIR` changes
-the parent directory, and `HQ_HQD_SOCKET` can set the socket path directly.
+On Unix, hqd listens on `~/.hq/daemon/hqd.sock` by default. When
+`HQ_REGISTRY_DIR` is set, the socket is `$HQ_REGISTRY_DIR/daemon/hqd.sock`.
+`HQ_HQD_SOCKET` sets the socket path directly and takes precedence over both.
+The hook shim and `master-hook.sh` resolve the path in the same order.
 The socket has owner-only permissions. On Windows, clients use a named pipe
 scoped to the current user. The server also creates private runtime
 directories with owner-only permissions.

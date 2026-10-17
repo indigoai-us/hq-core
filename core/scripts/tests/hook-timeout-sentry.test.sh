@@ -1252,7 +1252,7 @@ injected_count="$(grep -ohF "$delivered_killed_child_path" "$R8K/first.out" "$R8
 for label in first second; do
   jq -e '.hookSpecificOutput.additionalContext | contains("post-kill child context")' "$R8K/$label.out" >/dev/null \
     || fail "concurrent $label fire produced corrupt or partial output"
-  [ ! -s "$R8K/$label.err" ] || fail "concurrent $label fire changed stderr"
+  [ ! -s "$R8K/$label.err" ] || fail "concurrent $label fire changed stderr: $(head -c 2000 "$R8K/$label.err")"
 done
 pass "killed dispatcher warning survives and concurrent fires claim it once"
 
@@ -1291,6 +1291,28 @@ if find "$R8_EARLY/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f -
   fail "early-dead master watchdog wrote a breadcrumb"
 fi
 pass "early master death leaves no late report or breadcrumb"
+
+echo "[8c] a breadcrumb that cannot be read keeps stderr clean"
+# A concurrent fire can move a breadcrumb between this fire's existence check
+# and its read. A read through a failed redirect must not leak a shell error
+# into the hook's stderr. An unreadable claim exercises the same failed
+# redirect deterministically on platforms that honor file modes.
+R8_UNREADABLE="$(make_root unreadable-breadcrumb)"
+mkdir -p "$R8_UNREADABLE/core/hooks/PreToolUse"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' > "$R8_UNREADABLE/core/hooks/PreToolUse/10-quiet-child.sh"
+chmod +x "$R8_UNREADABLE/core/hooks/PreToolUse/10-quiet-child.sh"
+write_timeout_breadcrumb "$R8_UNREADABLE" unreadable-session "$R8_UNREADABLE/.claude/hooks/master-hook.sh" PreToolUse absolute
+unreadable_record="$(find "$R8_UNREADABLE/workspace/.hook-timeout-breadcrumbs" -name '*.json' -type f -print -quit)"
+[ -n "$unreadable_record" ] || fail "unreadable breadcrumb fixture was not written"
+chmod 000 "$unreadable_record"
+set +e
+PATH="$R8_UNREADABLE/bin:$PATH" HQ_TEST_HQ_ARGS="$R8_UNREADABLE/hq.args" HQ_TEST_HQ_STDIN="$R8_UNREADABLE/hq.stdin" \
+  bash "$R8_UNREADABLE/.claude/hooks/master-hook.sh" PreToolUse >"$R8_UNREADABLE/out" 2>"$R8_UNREADABLE/err" <<<"$(payload unreadable-session)"
+unreadable_rc=$?
+set -e
+[ "$unreadable_rc" -eq 0 ] || fail "unreadable breadcrumb changed the master exit: $unreadable_rc"
+[ ! -s "$R8_UNREADABLE/err" ] || fail "unreadable breadcrumb leaked to stderr: $(head -c 2000 "$R8_UNREADABLE/err")"
+pass "an unreadable breadcrumb is dropped without stderr noise"
 
 echo "[9] feature switch disables both watchdog channels"
 R9="$(make_root disabled)"
@@ -1990,11 +2012,18 @@ pass "phase helpers stay in the caller and persist bounded timing state"
 
 echo "[23] Bash 3.2 coarse clock retains the active phase at zero elapsed milliseconds"
 coarse_phase_timings="$TMP/coarse-clock-phase-timings.json"
+# SECONDS ticks on the wall-clock second, so a boundary can fall between the
+# marker and the read. Accept only a sample whose clock did not move across the
+# call; that sample is the zero-elapsed case this step asserts.
 (
   unset EPOCHREALTIME
-  SECONDS=42
-  hook_timeout_phase_timings_json "" "" $'external_command\tseconds:42'
-) > "$coarse_phase_timings"
+  for _ in 1 2 3 4 5; do
+    SECONDS=42
+    hook_timeout_phase_timings_json "" "" $'external_command\tseconds:42' > "$coarse_phase_timings"
+    [ "$SECONDS" -ne 42 ] || exit 0
+  done
+  exit 1
+) || fail "coarse Bash clock never held still across one phase-timing call"
 jq -e 'any(.[]; .phase == "external_command" and .elapsed_ms == 0)' \
   "$coarse_phase_timings" >/dev/null \
   || fail "coarse Bash clock dropped the active external-command phase"

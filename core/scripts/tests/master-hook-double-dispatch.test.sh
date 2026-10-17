@@ -91,7 +91,7 @@ pass "claude user+project PreToolUse dispatches once"
 # runtime flag is on and the daemon socket exists. The CLI companion's global
 # root guard leaves the project registration as the one active path.
 ROUTING_HOME="$TMP/routing-home"
-ROUTING_SOCKET="$ROUTING_HOME/.hq/hqd.sock"
+ROUTING_SOCKET="$ROUTING_HOME/.hq/daemon/hqd.sock"
 SHIM_LEDGER="$TMP/shim-ledger.jsonl"
 SHIM_CALLS="$TMP/shim-calls.log"
 mkdir -p "$(dirname "$ROUTING_SOCKET")"
