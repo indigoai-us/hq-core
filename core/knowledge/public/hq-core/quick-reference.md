@@ -20,7 +20,7 @@ Map and "which surface for which task": [hq-product-model.md](hq-product-model.m
 | Sync, vaults, company lifecycle | [hq-sync-model.md](hq-sync-model.md) |
 | Bots and agents | [agents-and-bots.md](agents-and-bots.md), [external-agents-mcp.md](external-agents-mcp.md) |
 | Console pages | [hq-console.md](hq-console.md) |
-| Plans and billing | [plans-and-pricing.md](plans-and-pricing.md) |
+| Plans and billing (usage card for new signups from 2026-10-16; legacy plans for existing customers) | [plans-and-pricing.md](plans-and-pricing.md), [pricing.json](pricing.json) |
 | Desktop app | [hq-desktop-app.md](hq-desktop-app.md) |
 | Deploy | [deploy SKILL.md](../../../../.claude/skills/deploy/SKILL.md) |
 
@@ -236,14 +236,14 @@ Share-session URLs are encrypted single-use 15-minute capabilities — never per
 
 ## CLI: `hq db` (vault databases)
 
-Local SQLite per company (always) + optional remote Postgres-class on **HQ Workforce** ($500/mo per company; internal id `paid-500`). Billing is live. Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
+Local SQLite per company (always) + optional remote Postgres-class on a paid plan. On the legacy plans that is **HQ Workforce** (internal id `paid-500`, existing customers only; closed to new signups from 2026-10-16). For accounts on the usage card, relay what HQ returns. Billing is live. Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
 
 | Command | Use |
 |---------|-----|
 | `hq db status --company {co}` | Ensure local `~/.hq/db/{co}/vault.db` (WAL); report schema version |
 | `hq db sql --company {co} -- 'SELECT …'` | Query local DB (read-only default; `--write` for mutations) |
 | `hq db migrate --company {co} --hq-root {HQ}` | Apply `companies/{co}/db/migrations/*.sql` |
-| `hq db provision --company {co}` | Remote binding — **HQ Workforce plan only** |
+| `hq db provision --company {co}` | Remote binding — paid plan only (legacy: HQ Workforce) |
 | `hq db usage --company {co} --app {app}` | App database usage, included amounts, ceiling and estimated charge |
 | `hq db sql --company {co} --app {app} -- '…'` | SQL against an app's database (read-only unless `--write`) |
 | `hq db dump --company {co} --app {app}` | Export an app's database to a SQL file |

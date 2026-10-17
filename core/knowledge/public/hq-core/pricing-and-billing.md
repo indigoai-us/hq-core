@@ -7,7 +7,36 @@ taken at release time. When you need a price, read `pricing.json` or the endpoin
 endpoint is correct and the shipped copy is stale. Policy:
 `core/policies/hq-pricing-source-of-truth.md`.
 
-## Plans
+## The usage card (new signups from 2026-10-16)
+
+Companies and personal accounts created from `usage.newSignupsFrom`
+(2026-10-16 18:00 UTC) are on the usage card in `usage`. There is no plan
+fee, no seat price and no minimum. Every month includes `usage.includedUsd`
+of usage, and usage past it is billed at the rates in `usage.meters`: syncs
+that move files (per leg), gateway calls (connected apps and external MCP
+servers through HQ), HQ MCP calls, agent runs, storage, stored secrets, and a
+vault fee for each company vault and each personal vault. The vault fee is a
+usage line, so the included usage covers it.
+
+The trial is `usage.trial.days` days of usage free, capped at
+`usage.trial.capUsd`. Meters marked `waivedInTrial` (the vault fee) are not
+charged during the trial. Items in `usage.free` (deploys, DMs, background AI)
+are never charged. Domains are priced in `usage.domains`.
+
+Hosted boxes for new accounts use the sizes in `usage.boxes` (small, medium,
+large, xlarge). Existing customers keep their current box prices (the agent
+boxes table below).
+
+New signups choose one of `signup.options`: sign up free (the usage card) or
+request an enterprise demo. `signup.selfHosted` links to the guide for using
+HQ free, self-hosted or on-prem.
+
+## Legacy plans (existing customers)
+
+Starter, Workforce and Individual are closed to new signups from the cutover
+(`plans[].newSignupsUntil`). Existing customers keep their current plan and
+box prices. The rest of this page up to "Current numbers" describes these
+plans.
 
 - **Starter** is free. It has fixed limits on members, secrets, storage and
   integrations, and it does not include hosted agents.
@@ -57,7 +86,7 @@ An outpost is an add-on with its own flat monthly price.
 
 ## Trials
 
-An eligible Starter company can take a free-month offer once. The Workforce
+On the usage card, see the trial above. On the legacy plans, an eligible Starter company can take a free-month offer once. The Workforce
 checkout then starts with a 30-day trial and bills normally when the trial ends.
 
 ## Cancelling
@@ -74,18 +103,50 @@ portal, which HQ opens for the company's owner.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-10-13T18:30:46.771Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-10-16T14:05:28.876Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
-### Plans (per month, USD)
+### Usage card (new signups from 2026-10-16, card version 2026-10-16)
 
-| Plan | Price | Included agents | Members | Secrets | Deployments | Storage | Integrations |
-|---|---|---|---|---|---|---|---|
-| Starter | $0 | 0 | 5 | 10 | unlimited | 10 GB | 3 |
-| Workforce | $500 | 0 | unlimited | unlimited | unlimited | unlimited | unlimited |
-| Enterprise | contract | 0 | unlimited | unlimited | unlimited | unlimited | unlimited |
-| Individual | $50 | 0 | 1 | 100 | unlimited | 10 GB | unlimited |
+| Meter | Price | Per | Waived in trial |
+|---|---|---|---|
+| Sync | $0.10 | sync | no |
+| Gateway call | $0.05 | call | no |
+| HQ MCP call | $0.05 | call | no |
+| Agent run | $0.05 | run | no |
+| Storage | $2.00 | GB-month | no |
+| Secret | $0.50 | secret-month | no |
+| Vault | $5.00 | vault-month | yes |
 
-### Agent boxes (per agent, per month)
+- Included usage: $10 per month.
+- Trial: 30 days, capped at $500 of usage.
+- Free: deploys, DMs, background AI.
+- Domains: $20 standard, $500 premium, per month.
+
+### Boxes on the usage card (per box, per month)
+
+| Size | Instance | Price |
+|---|---|---|
+| small | t3.small | $100 |
+| medium | t3.medium | $200 |
+| large | t3.large | $400 |
+| xlarge | t3.xlarge | $800 |
+
+### Signup
+
+- Sign up free (`free`)
+- Request an enterprise demo (`enterprise`)
+- Use HQ free, self-hosted or on-prem: https://docs.hq.computer/hq/guide/use-hq-for-free/
+
+### Legacy plans (per month, USD)
+
+| Plan | Price | Included agents | Members | Secrets | Deployments | Storage | Integrations | New signups |
+|---|---|---|---|---|---|---|---|---|
+| Starter | $0 | 0 | 5 | 10 | unlimited | 10 GB | 3 | closed from 2026-10-16 |
+| Workforce | $500 | 0 | unlimited | unlimited | unlimited | unlimited | unlimited | closed from 2026-10-16 |
+| Enterprise | contract | 0 | unlimited | unlimited | unlimited | unlimited | unlimited | open |
+| Individual | $50 | 0 | 1 | 100 | unlimited | 10 GB | unlimited | closed from 2026-10-16 |
+
+### Agent boxes on legacy plans (per agent, per month)
 
 | Size | Instance | Price | Buyable today |
 |---|---|---|---|

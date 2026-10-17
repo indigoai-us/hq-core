@@ -1,4 +1,51 @@
 ## [Unreleased]
+- Fixed: the HQ-root git guard blocked `git archive` as if it changed the
+  repository. It now treats `archive` as read-only, like `log`, `show` and
+  `diff`. A mutating git command in the same Bash call still blocks
+  (feedback_3ee29d66).
+- Pricing: `pricing.json` carries the usage card for new signups from
+  2026-10-16 18:00 UTC (`usage`: sync $0.10 per moved-file leg; gateway call,
+  HQ MCP call and agent run $0.05; storage $2.00 per GB-month; secret $0.50
+  per secret-month; vault $5 per vault-month, waived in the trial; $10
+  included each month; 30-day trial capped at $500; boxes small $100, medium
+  $200, large $400, xlarge $800; deploys, DMs and background AI free; domains
+  $20 / $500) and the signup options (`signup`: sign up free, request an
+  enterprise demo, use HQ free self-hosted or on-prem). Starter, Workforce
+  and Individual carry `newSignupsUntil` and close to new signups at the
+  cutover; existing customers keep their plans and box prices.
+  `check-pricing-drift.sh` now compares the usage meters (vault included),
+  included usage, trial, box ladder, free items, domains, signup options and
+  each plan's `newSignupsUntil` with the live `GET /v1/pricing`, and says
+  plainly when the endpoint does not publish the card yet.
+  `refresh-pricing.sh` writes usage, box and signup tables into
+  `pricing-and-billing.md` and refuses to drop the card when the endpoint
+  lacks it. Pricing docs, the setup worker, and the hq-integrations and
+  signals skills describe the card and mark the old plans as legacy.
+- Fixed: `handoff-finalize.sh --company`, `handoff-post.sh`,
+  `resumework-resolve.sh` and `session-project.sh` rejected company slugs that
+  start with a digit (`31-cornwallis-crescent`), although `hq-session.sh`
+  accepts them. They now accept a letter or digit first. Invalid slugs and
+  missing company folders are still refused (feedback_3bf6fa3a).
+- Fixed: `handoff-open-steps.sh close` rejected the step ids its own `list`
+  prints when a step had a custom id (`ns-1016c-3`), and the
+  `<thread_id>#<n>` form for such a step. `close` now finds the thread that
+  holds the id, and `<thread_id>#<n>` closes step n when no step has that
+  exact id (feedback_cc2c7619).
+- Fixed: the company scope guard blocked an http(s) URL with a `?` query
+  string passed to curl or wget inside a `for` loop body
+  (`for n in 1 2; do curl -s "https://x.example.com/?p=$n"; done`). The loop
+  keyword `do` hid the program name, so the URL was checked as a file glob
+  after the loop value was filled in. The URL exemption now skips a leading
+  `do`, `then`, `else`, `elif`, `{` or `!`. Output paths (`-o`) are still
+  checked, and a URL given to any other program still blocks
+  (feedback_a6d1ddf3).
+- Fixed: the company scope guard refused a loop variable in a path when an
+  earlier word in the loop body was a bare `.` argument
+  (`for s in a b; do jq . workspace/x/$s.json; done`). It read any `. ` as
+  the dot-source command. Now only a `.` in command position counts: at the
+  start of the body, after `;`, `&`, `|`, `(`, `{` or `!`, or after `do`,
+  `then`, `else`, `elif`, `time`, `command`, `builtin` or `exec`
+  (feedback_34ab4b26).
 - Fixed: the policy enforcement gate blocked Slack drafts and read-only greps
   by demanding receipts for file names that only appeared in pasted text. When
   a prompt declares an attachment ("attached brief", "attached file"), only

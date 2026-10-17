@@ -478,6 +478,8 @@ rule, never the value.
 
 ## Billing
 
+The prices in these descriptions are the CLI's help text at the version above. HQ Workforce ($500/mo), the $50 Individual plan and the $80 Outpost price are legacy plans and prices: closed to new signups from 2026-10-16 18:00 UTC and kept for existing customers. New signups are on the usage card; see [plans-and-pricing.md](plans-and-pricing.md) and [pricing.json](pricing.json).
+
 | Command | Description |
 |---|---|
 | `hq billing` | Inspect billing and mint a card-capture link |

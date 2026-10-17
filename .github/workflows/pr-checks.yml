@@ -616,6 +616,7 @@ jobs:
             core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/handoff-finalize-deficiencies.test.sh \
             core/scripts/tests/handoff-finalize-no-jq.test.sh \
+            core/scripts/tests/handoff-company-digit-slug.test.sh \
             core/scripts/handoff-autofile.sh \
             core/scripts/tests/handoff-autofile.test.sh \
             core/scripts/handoff-builder-route.sh \
@@ -999,6 +1000,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-deficiencies.test.sh
       - name: Handoff finalizer checks for jq before writing anything
         run: bash core/scripts/tests/handoff-finalize-no-jq.test.sh
+      - name: Handoff scripts accept company slugs that start with a digit
+        run: bash core/scripts/tests/handoff-company-digit-slug.test.sh
       - name: Handoff auto-files hq-core deficiencies once per handoff
         run: bash core/scripts/tests/handoff-autofile.test.sh
       - name: Handoff builder route decides builder vs public from the staging repo

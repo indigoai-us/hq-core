@@ -42,6 +42,19 @@ HQ_ROOT="$FX" bash "$S" reopen T-20260901-000000-a#2 >/dev/null || fail "reopen 
 [ "$(jq -r '.next_steps[1].status' "$f")" = open ] || fail "reopen"
 rc=0; HQ_ROOT="$FX" bash "$S" close T-20260901-000000-a#9 >/dev/null 2>&1 || rc=$?; [ "$rc" = 3 ] || fail "unknown step rc $rc"
 
+echo "[4b] close accepts a custom step id printed by list, and the thread#n form for it (feedback_cc2c7619)"
+mk T-custom-steps nord '[{"id":"ns-1016c-1","step":"first custom","status":"open"},{"id":"ns-1016c-2","step":"second custom","status":"open"},{"id":"ns-1016c-3","step":"third custom","status":"open"}]'
+g="$FX/workspace/threads/T-custom-steps.json"
+HQ_ROOT="$FX" bash "$S" list | grep -q '^ns-1016c-3  third custom' || fail "custom id not listed"
+HQ_ROOT="$FX" bash "$S" close ns-1016c-3 >/dev/null || fail "close by custom id printed by list"
+[ "$(jq -r '.next_steps[2].status' "$g")" = done ] || fail "custom id step not closed: $(cat "$g")"
+[ "$(jq -r '.next_steps[2].id' "$g")" = ns-1016c-3 ] || fail "custom id must be kept"
+HQ_ROOT="$FX" bash "$S" close 'T-custom-steps#2' >/dev/null || fail "close by thread#n when step has a custom id"
+[ "$(jq -r '.next_steps[1].status' "$g")" = done ] || fail "thread#n did not close step 2: $(cat "$g")"
+[ "$(jq -r '.next_steps[0].status' "$g")" = open ] || fail "sibling untouched"
+rc=0; HQ_ROOT="$FX" bash "$S" close ns-nope-9 >/dev/null 2>&1 || rc=$?; [ "$rc" = 3 ] || fail "unknown custom id rc $rc"
+rc=0; HQ_ROOT="$FX" bash "$S" close 'T-custom-steps#7' >/dev/null 2>&1 || rc=$?; [ "$rc" = 3 ] || fail "out-of-range thread#n rc $rc"
+
 echo "[5] handoff-finalize normalization jq (same expression) assigns ids and open status"
 norm="$(jq -c --arg tid T-X '
   to_entries | map(.key as $k |

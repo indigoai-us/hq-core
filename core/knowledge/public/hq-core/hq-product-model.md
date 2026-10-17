@@ -139,8 +139,15 @@ Details, ignore rules, and conflicts: [hq-sync-model.md](hq-sync-model.md).
 
 ## Plans
 
-Companies are on Starter (free), HQ Workforce (internal id `paid-500`), or
-Enterprise. People have an Individual plan or the unpaid personal scope.
+Companies and personal accounts created from 2026-10-16 18:00 UTC are on the
+usage card: no plan fee, $10 of usage included each month, per-meter prices
+past it, and a 30-day trial capped at $500. New signups choose "Sign up free"
+or "Request an enterprise demo"; HQ can also be used free, self-hosted or
+on-prem (https://docs.hq.computer/hq/guide/use-hq-for-free/). Existing
+customers keep their legacy plans: companies on Starter (free), HQ Workforce
+(internal id `paid-500`) or Enterprise, and people on an Individual plan or
+the unpaid personal scope. Starter, Workforce and Individual are closed to
+new signups.
 Billing is live through Stripe and `hq billing`. The live price source is
 `GET https://hqapi.hq.computer/v1/pricing`. Reference:
 [plans-and-pricing.md](plans-and-pricing.md).

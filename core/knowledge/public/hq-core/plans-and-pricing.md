@@ -27,14 +27,58 @@ curl -s https://hqapi.hq.computer/v1/pricing | jq .
 `GET /v1/pricing` needs no sign-in, is cached for 5 minutes, and returns
 `version`, `generatedAt`, `currency`, `interval`, `plans`, `agentRungs`,
 `addOns` (`outpost`, `meetingHours`, `notes`), `grandfather`, `billingRules`,
-and `writerModes`. A `503 PRICING_UNAVAILABLE` means the catalog could not be
+`writerModes`, and, from the 2026-10-16 card, `usage` (the usage card) and
+`signup` (the signup options). A `503 PRICING_UNAVAILABLE` means the catalog could not be
 loaded; do not fall back to guessing. When this page and the API disagree, the
 API is right.
 
 Billing is live: Stripe checkout, invoices, and the billing webhook are wired
 in hq-pro, and `hq billing` drives them from the CLI.
 
-## Plans
+## Usage card (new signups from 2026-10-16)
+
+Accounts created from 2026-10-16 18:00 UTC (`usage.newSignupsFrom`) are on
+the usage card. There is no plan fee, no seat price and no minimum. Each
+account gets $10 of included usage every month and pays for usage past it.
+
+| Line | Price |
+|---|---|
+| Sync (moved files, per leg) | $0.10 |
+| Gateway call (integrations and external MCP through HQ) | $0.05 |
+| HQ MCP call | $0.05 |
+| Agent run | $0.05 |
+| Storage | $2.00 per GB-month |
+| Secret | $0.50 per secret-month |
+| Vault | $5 per vault per month, for each company vault and each personal vault; waived during the trial |
+| Included usage | $10 per month |
+| Trial | 30 days, capped at $500 of usage |
+| Free | deploys, DMs, background AI |
+| Domains | $20 standard, $500 premium, per month |
+
+Boxes on the usage card (new boxes for accounts created after the cutover):
+
+| Size | Instance | Price |
+|---|---|---|
+| small | t3.small | $100/mo |
+| medium | t3.medium | $200/mo |
+| large | t3.large | $400/mo |
+| xlarge | t3.xlarge | $800/mo |
+
+The vault fee is billed as a usage line, so the $10 of included usage covers
+it. The meter ids in `usage.meters` are `member-sync`, `integration-call`,
+`hq-mcp-call`, `agent-run`, `storage`, `secret` and `vault`.
+
+New signups choose **Sign up free** (the usage card) or **Request an
+enterprise demo**. Teams that want to run HQ without HQ cloud can **use HQ
+free, self-hosted or on-prem**:
+https://docs.hq.computer/hq/guide/use-hq-for-free/
+
+## Legacy plans (existing customers)
+
+Starter, Workforce and Individual are closed to new signups from 2026-10-16
+18:00 UTC (`plans[].newSignupsUntil`). Existing customers keep their current
+plan and box prices. Do not offer these plans to a new account; quote them
+only to a customer who is already on one.
 
 | Plan id (internal) | Name | Scope | Price | People | Secrets | Integrations | Deploys | Storage | Hosted agents included |
 |---|---|---|---|---|---|---|---|---|---|
@@ -68,7 +112,10 @@ On Workforce the company's setup agent does account work (signals extraction,
 ontology gardening) and is part of the plan. It cannot be deleted while the
 company is on the plan.
 
-## Add-ons
+## Add-ons on legacy plans
+
+These box prices apply to existing customers' plans. New boxes for accounts
+created after the cutover use the usage card's box sizes above.
 
 | Add-on | Price | Notes |
 |---|---|---|
@@ -78,7 +125,7 @@ company is on the plan.
 | Outpost | $80/mo | |
 | Meeting hours | $1/hour | Metered per minute from the first minute, no included hours, billed monthly in arrears on the Workforce subscription. |
 
-Hosted agents require Workforce (or Enterprise). Creating one on Starter is
+On legacy plans, hosted agents require Workforce (or Enterprise). Creating one on Starter is
 refused with "HQ Workforce plan required to create an agent" and an upgrade
 link. Whether Power and Dev are charged at their own price or at the Basic
 price depends on a server-side billing mode; `hq agents provision` and the
@@ -91,7 +138,10 @@ nothing extra on a paid plan. On Starter, enrollment is refused with
 
 ## Trial
 
-A 30-day free month of Workforce, once per company, offered at Workforce
+On the usage card, the first 30 days are free up to $500 of usage, and the
+vault fee is waived during the trial (see above).
+
+Legacy Workforce trial: a 30-day free month of Workforce, once per company, offered at Workforce
 checkout only when all of these hold: the caller is the owner, the company is
 on Starter and not paying or exempt, it has not used the offer, and it was
 created before 2026-07-31. Newer companies do not get it. Do not promise it;
@@ -110,6 +160,10 @@ checkout shows it when it applies.
   `revoke`, and `withdraw` round out the CLI.
 
 ## What happens at a limit
+
+This section describes the legacy plans. On the usage card, HQ can pause
+usage at the trial cap or a spend limit, or ask for a card. Relay the message
+and link HQ returns; do not predict it.
 
 For companies, only Starter limits are enforced. Paying, exempt,
 grandfathered, and sponsored companies are skipped. Individual and unpaid
@@ -149,7 +203,7 @@ returns to Starter limits and no data is deleted.
 | Task | CLI | Console |
 |---|---|---|
 | See subscription status (owner only) | `hq billing status --company <slug> [--json]` | Company → Billing |
-| Upgrade a company to Workforce | `hq billing upgrade --company <slug>` (opens Stripe Checkout) | Company → Billing |
+| Upgrade a legacy company to Workforce (existing customers only) | `hq billing upgrade --company <slug>` (opens Stripe Checkout) | Company → Billing |
 | Add a card (Stripe card-capture link) | `hq billing checkout --company <slug>`; `--personal` for your own charges | Company → Billing, or Account → Billing |
 | Pay for your own resources in a company ("I'll pay") | none | Company → Billing → Person |
 | Sponsorship | `hq billing sponsor request|list|approve|decline|revoke|withdraw` | Company → Billing → Sponsorship |
@@ -161,6 +215,7 @@ completed by the person paying, never by an agent.
 ## Sources
 
 - hq-pro `src/billing/pricing-statement.ts` (statement served by `GET /v1/pricing`)
+- hq-pro `src/billing/usage-rate-card.ts` (usage card: meters, included usage, trial, cutover)
 - hq-pro `src/vault-service/handlers/pricing.ts`, `infra/vault-service.ts` (route, no auth)
 - hq-pro `src/billing/plan-limits.ts` (plan ceilings, unpaid personal limits)
 - hq-pro `infra/stripe-catalog.ts` (prices, agent rungs, Workforce v1/v2, outpost, seat)

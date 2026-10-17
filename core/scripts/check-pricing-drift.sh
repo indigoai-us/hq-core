@@ -5,8 +5,10 @@
 # Compares core/knowledge/public/hq-core/pricing.json against
 # GET /v1/pricing on the HQ API base (HQ_PRO_API_URL -> HQ_API_URL ->
 # HQ_VAULT_API_URL -> https://hqapi.hq.computer) on every plan price, allowance,
-# agent rung, add-on price, and the grandfather rule. Prose fields and
-# generatedAt are ignored.
+# new-signup cutoff, agent rung, add-on price, the grandfather rule, the usage
+# card (version, cutover, included usage, trial, every meter including the
+# vault fee, the box ladder, free items, domains) and the signup options.
+# Meter labels, other prose fields and generatedAt are ignored.
 #
 # Usage: bash core/scripts/check-pricing-drift.sh [--live-file <path>]
 # Env:
@@ -27,7 +29,7 @@ LIVE_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --live-file) LIVE_FILE="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "check-pricing-drift: unknown argument: $1" >&2; exit 3 ;;
   esac
 done
@@ -59,10 +61,26 @@ fi
 jq -e '.version == 1 and (.plans | type == "array")' "$TMP/live.json" >/dev/null 2>&1 \
   || unreachable "response is not a version-1 pricing statement"
 
-# Projection of the fields that carry a price, allowance, rung or add-on.
+# Projection of the fields that carry a price, allowance, rung, add-on, the
+# usage card, the signup options, or a plan's new-signup cutoff. A statement
+# without a usage or signup block projects it to null, so a block present on
+# one side only is drift.
 PROJECT='{
   currency, interval,
-  plans: ([.plans[] | {key: .id, value: {monthlyUsd, includedAgents, included, hardLimits}}] | from_entries),
+  plans: ([.plans[] | {key: .id, value: {monthlyUsd, includedAgents, included, hardLimits,
+                                          newSignupsUntil: (.newSignupsUntil // null)}}] | from_entries),
+  usage: (.usage | if . == null then null else {
+    version, newSignupsFrom, includedUsd,
+    trial: {days: .trial.days, capUsd: .trial.capUsd},
+    meters: ([.meters[] | {key: .id, value: {unit, unitUsd, waivedInTrial: (.waivedInTrial // false)}}] | from_entries),
+    boxes: ([.boxes[] | {key: .size, value: {instanceType, monthlyUsd}}] | from_entries),
+    free: (.free | sort),
+    domains: {standardUsd: .domains.standardUsd, premiumUsd: .domains.premiumUsd}
+  } end),
+  signup: (.signup | if . == null then null else {
+    options: ([.options[] | {key: .id, value: .label}] | from_entries),
+    selfHosted: (.selfHosted | if . == null then null else {label, url} end)
+  } end),
   agentRungs: ([.agentRungs[] | {key: .key, value: {instanceType, monthlyUsd, live, entry}}] | from_entries),
   addOns: {outpost: .addOns.outpost.monthlyUsd,
            meetingHours: (.addOns.meetingHours | if . == null then null else {perHourUsd, includedHours} end)},
@@ -76,17 +94,35 @@ jq -S "$PROJECT" "$TMP/live.json" >"$TMP/b.json"
 diffs="$(jq -rn --slurpfile a "$TMP/a.json" --slurpfile b "$TMP/b.json" '
   ($a[0]) as $A | ($b[0]) as $B
   | ([$A, $B] | map([paths(type != "object" and type != "array")]) | add | unique) as $ps
-  | $ps[]
-  | . as $p
-  | ($A | getpath($p)) as $x | ($B | getpath($p)) as $y
-  | select($x != $y)
-  | "\($p | map(tostring) | join(".")): shipped=\($x | tojson) live=\($y | tojson)"
+  # A block or entry missing on one side is reported once, at the shortest
+  # path where it is absent, not once per field inside it.
+  | [ $ps[] as $p
+      | select(($A | getpath($p)) != ($B | getpath($p)))
+      | (first(range(1; ($p | length) + 1) as $i | $p[:$i] as $q
+               | select(($A | getpath($q)) == null or ($B | getpath($q)) == null) | $q) // $p)
+    ] | unique | .[]
+  | . as $r | ($A | getpath($r)) as $x | ($B | getpath($r)) as $y
+  | def show: if type == "object" or type == "array" then "(present)" elif . == null then "(absent)" else tojson end;
+    "\($r | map(tostring) | join(".")): shipped=\($x | show) live=\($y | show)"
 ')"
 
 if [ -n "$diffs" ]; then
   echo "check-pricing-drift: DRIFT between $SHIPPED and $URL" >&2
   printf '%s\n' "$diffs" | sed 's/^/  /' >&2
-  echo "Run core/scripts/refresh-pricing.sh to update the shipped copy." >&2
+  missing=""
+  for block in usage signup; do
+    if jq -e --arg b "$block" '.[$b] == null' "$TMP/b.json" >/dev/null \
+      && jq -e --arg b "$block" '.[$b] != null' "$TMP/a.json" >/dev/null; then
+      missing="$missing $block"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    echo "check-pricing-drift: the live endpoint does not publish:$missing. The shipped copy carries the usage card" >&2
+    echo "  ahead of the endpoint. This check passes once the endpoint is deployed with the card and" >&2
+    echo "  core/scripts/refresh-pricing.sh has been run against it." >&2
+  else
+    echo "Run core/scripts/refresh-pricing.sh to update the shipped copy." >&2
+  fi
   exit 1
 fi
 echo "check-pricing-drift: OK (shipped pricing.json matches the live endpoint)"

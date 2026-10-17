@@ -261,8 +261,8 @@ function registeredCompanySlugs() {
     }
     if (wrapped && /^\S/.test(raw)) wrapped = false;
     const m = wrapped
-      ? raw.match(/^  ([a-z][a-z0-9_-]*):/)
-      : raw.match(/^([a-z][a-z0-9_-]*):/);
+      ? raw.match(/^  ([a-z0-9][a-z0-9_-]*):/)
+      : raw.match(/^([a-z0-9][a-z0-9_-]*):/);
     if (!m) continue;
     const slug = m[1];
     if (slug === "_template" || slug === "companies" || slug === "unaffiliated_repos") continue;

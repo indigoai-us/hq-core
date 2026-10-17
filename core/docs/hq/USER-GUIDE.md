@@ -112,7 +112,7 @@ Run `hq <command> --help` for options. Commonly used:
 
 Share-session URLs are encrypted single-use 15-minute capabilities. Never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
 
-`hq db provision` creates a remote vault DB and requires the HQ Workforce plan. `hq db sql --remote` exists but does not work yet (no remote executor is wired); use local SQL. Never commit `*.db` files into the vault tree.
+`hq db provision` creates a remote vault DB and requires a paid plan (on the legacy plans, HQ Workforce). `hq db sql --remote` exists but does not work yet (no remote executor is wired); use local SQL. Never commit `*.db` files into the vault tree.
 
 ### Direct messages (`hq dm`, `/dm`)
 
@@ -510,7 +510,7 @@ HQ captures these **natively, per company** — check HQ first, not your email o
 
 **Your preference for "meeting notes":** defaults to HQ-native. To point a company at email instead, set `meeting_notes_source: email` in `companies/{co}/settings/knowledge/preferences.yaml` (global default lives in `personal/settings/knowledge-preferences.yaml`).
 
-> Signals extraction and the ontology gardener run on HQ cloud. Billing is live: inviting the HQ meeting bot requires the HQ Workforce plan (internal id `paid-500`), and a Starter company is refused with an upgrade link. Plans: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md). Reference: [native-knowledge-stores.md](../../knowledge/public/hq-core/native-knowledge-stores.md).
+> Signals extraction and the ontology gardener run on HQ cloud. Billing is live: on the legacy plans, inviting the HQ meeting bot requires HQ Workforce (internal id `paid-500`), and a Starter company is refused with an upgrade link. On the usage card, relay what HQ returns. Plans: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md). Reference: [native-knowledge-stores.md](../../knowledge/public/hq-core/native-knowledge-stores.md).
 
 ## Product surfaces
 
@@ -532,6 +532,8 @@ Reference: [agents-and-bots.md](../../knowledge/public/hq-core/agents-and-bots.m
 ## Console
 
 [hq.computer](https://hq.computer) is the web UI: team and invites, groups and grants, bots, integrations, secrets, vault, billing, and deployments. Most pages have a matching CLI command or skill. Reference: [hq-console.md](../../knowledge/public/hq-core/hq-console.md). Plans and billing: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md).
+
+Pricing: accounts created from 2026-10-16 18:00 UTC are on the usage card. There is no plan fee; $10 of usage is included every month, and usage past it is billed per meter (sync $0.10 per moved-file leg; gateway call, HQ MCP call and agent run $0.05 each; storage $2.00 per GB-month; secret $0.50 per secret-month; $5 per company or personal vault per month, waived in the trial). The trial is 30 days, capped at $500 of usage. Deploys, DMs and background AI are free. New hosted boxes are small $100, medium $200, large $400 and xlarge $800 a month. New signups choose "Sign up free" or "Request an enterprise demo"; to run HQ without HQ cloud, see [use HQ free, self-hosted or on-prem](https://docs.hq.computer/hq/guide/use-hq-for-free/). Starter, Workforce and Individual are closed to new signups; existing customers keep their current plans and box prices. Exact numbers: [pricing.json](../../knowledge/public/hq-core/pricing.json).
 
 ## Deploy
 
