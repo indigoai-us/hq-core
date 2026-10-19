@@ -46,6 +46,19 @@ if grep -qi 'AKIA' <<<"$STDERR"; then
 fi
 
 if [[ "$FAIL" -eq 0 ]]; then
-  echo "detect-secrets-no-value-leak: 1 passed, 0 failed"
+  # A presigned download still blocks, and tells callers the supported CLI path.
+  CMD="curl https://bucket.example/file?X-Amz-Credential=$SECRET"
+  PAYLOAD=$(jq -n --arg cmd "$CMD" '{tool_name:"Bash", tool_input:{command:$cmd}}')
+  rc=0
+  STDERR="$(printf '%s' "$PAYLOAD" | bash "$HOOK" 2>&1 1>/dev/null)" || rc=$?
+  if [[ "$rc" -ne 2 ]] || ! grep -q 'hq files get <path>' <<<"$STDERR" \
+    || grep -q "$SECRET" <<<"$STDERR"; then
+    echo "FAIL: presigned download must block with safe CLI guidance" >&2
+    FAIL=1
+  fi
+fi
+
+if [[ "$FAIL" -eq 0 ]]; then
+  echo "detect-secrets-no-value-leak: 2 passed, 0 failed"
 fi
 [[ "$FAIL" -eq 0 ]]

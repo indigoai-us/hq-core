@@ -390,6 +390,20 @@ locate_hq_dir() {
   local hqpath bin candidate probe_rc saw_unknown=0 pnpm_bin npm_bin desktop_bin desktop_node
   # npm-global wins over pnpm when both managers hold an hq installation.
   # Keep unrelated ambient installations first to preserve existing behavior.
+  # Fast path: the ambient hq is the binary this lookup last returned and its
+  # probe is still cached (same path, mtime, MIN_VERSION). That skips the
+  # `npm prefix -g` and `pnpm bin -g` node start-ups (~0.35 s per prompt).
+  # Any change to the binary, or an expired cache, falls through to the full
+  # ordered search below. A pnpm-owned hq never takes the fast path, because
+  # the full search deliberately ranks npm-global ahead of pnpm.
+  hqpath="$(command -v hq 2>/dev/null)" || hqpath=""
+  case "$hqpath" in
+    "${PNPM_HOME:-/nonexistent}"/*|"${HOME:-/nonexistent}/Library/pnpm"/*|"${HOME:-/nonexistent}/.local/share/pnpm"/*) hqpath="" ;;
+  esac
+  if [ -n "$hqpath" ] && bin="$(resolve_hq_binary "$hqpath" 2>/dev/null)" && usable_cache_fresh "$bin"; then
+    dirname "$hqpath"
+    return 0
+  fi
   npm_bin="$(npm_global_bin)" || npm_bin=""
   pnpm_bin="$(pnpm_global_bin)" || pnpm_bin=""
   hqpath="$(command -v hq 2>/dev/null)" || hqpath=""

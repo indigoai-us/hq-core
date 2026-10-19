@@ -1,4 +1,17 @@
 ## [Unreleased]
+- Fixed: the hook gate keeps HQ Anywhere enabled when Node or its flag reader
+  is missing or the lookup fails. Explicit false and the false/0 environment
+  kill switch still disable it.
+- Fixed: the Anywhere flag cache honors the local kill switch before returning
+  a cached value, and install offers stay enabled when a flag lookup fails.
+- Fixed: a standalone quoted `cat` heredoc written to a file no longer
+  triggers the HQ-root git guard on mutation examples in its prose. Executable
+  substitutions, pipelines and commands after the heredoc remain checked.
+- Fixed: fewer false scope blocks for HQ lane message flags, quoted reader
+  heredocs, literal loops reading filenames selected by `ls`, and `gh api`
+  endpoints. Cross-company paths and unresolved write targets still block.
+  The secret warning now points vault downloads to `hq files get <path>`
+  instead of pasting a presigned URL (feedback b7568d4e, f286c9e5, bd5dc34a).
 - Fixed: the scope guard blocked five more Bash shapes it can resolve:
   `$PWD` or `${PWD}` at the start of a `file://` URL or a `--name=` option
   value, a statement of several plain assignments (`W=a S=b; cp $S/x $W/`),

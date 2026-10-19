@@ -309,6 +309,33 @@ hq_realpath_dir() {
   hq_normpath "$p"
 }
 
+# Strip only a complete standalone quoted cat-to-file heredoc. The header
+# remains visible to guards; unquoted bodies, pipelines, trailing commands and
+# ambiguous headers remain untouched. No shell input is evaluated.
+hq_shell_strip_standalone_data_heredoc() {
+  local raw="$1" header rest delimiter quote close line
+  local re='^[[:space:]]*cat[[:space:]]+>[[:space:]]*[A-Za-z0-9_./-]+[[:space:]]+<<[[:space:]]*([\x27"])([A-Za-z0-9_]+)([\x27"])[[:space:]]*$'
+  # Build the quote character class portably for Bash 3.2's ERE engine.
+  re="${re//\\x27/\'}"
+  header="${raw%%$'\n'*}"
+  if [[ "$raw" != *$'\n'* ]] || ! [[ "$header" =~ $re ]]; then printf '%s' "$raw"; return; fi
+  quote="${BASH_REMATCH[1]}"; delimiter="${BASH_REMATCH[2]}"; close="${BASH_REMATCH[3]}"
+  if [ "$quote" != "$close" ]; then printf '%s' "$raw"; return; fi
+  rest="${raw#*$'\n'}"
+  while [ -n "$rest" ]; do
+    line="${rest%%$'\n'*}"
+    if [ "$line" = "$delimiter" ]; then
+      if [ "$rest" = "$line" ] || [ "$rest" = "$line"$'\n' ]; then
+        printf '%s' "$header"; return
+      fi
+      break
+    fi
+    [[ "$rest" == *$'\n'* ]] || break
+    rest="${rest#*$'\n'}"
+  done
+  printf '%s' "$raw"
+}
+
 # hq_shell_simple_commands <command>
 # Emit one unit-separator-delimited argv record for each simple command in a
 # shell command string. Quotes and escapes are interpreted only far enough to

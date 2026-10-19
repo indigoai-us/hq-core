@@ -243,15 +243,16 @@ if [ -n "$self_dir" ]; then
   fi
 fi
 # Keep the main-branch fallback when hq-anywhere is disabled. The shared
-# resolver is used only after the default-off hq-flags gate is enabled.
+# resolver defaults on for GA; only an explicit false disables it.
 if [ -z "$HQ_ROOT_RESOLVED" ]; then
   HQ_ROOT_RESOLVED="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
-  anywhere_enabled=false
+  anywhere_enabled=true
   if [ -n "$self_dir" ] && command -v node >/dev/null 2>&1 \
     && [ -f "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs" ]; then
-    anywhere_enabled="$(node "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs" || printf false)"
+    anywhere_enabled="$(node "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs" || printf true)"
   fi
-  if [ "$anywhere_enabled" = "true" ] && [ -n "$self_dir" ] \
+  case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in false|0) anywhere_enabled=false;; esac
+  if [ "$anywhere_enabled" != "false" ] && [ -n "$self_dir" ] \
     && [ -f "$self_dir/../../core/scripts/resolve-hq-root.sh" ]; then
     HQ_ROOT_RESULT=""
     # shellcheck source=../../core/scripts/resolve-hq-root.sh

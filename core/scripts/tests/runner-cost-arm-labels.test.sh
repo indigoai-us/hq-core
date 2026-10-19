@@ -36,6 +36,7 @@ if not jobs or any(runner is None for runner in jobs.values()):
 expected_platform_jobs = {
     "shell-smoke-macos": "macos-latest",
     "shell-smoke-windows": "windows-latest",
+    "codex-windows-hook-launcher": "windows-latest",
 }
 errors = []
 for job, runner in jobs.items():

@@ -206,6 +206,9 @@ scope_strip_inert_heredoc_bodies() {
   local original="$raw" tail="" unsafe_re body_sub_prefix data_writer=0
   local writer_dests="" dest dest_rest exec_re
   case "$raw" in *'<<'*) ;; *) printf '%s' "$raw"; return 0 ;; esac
+  # A continuation pipe on its own line must not hide the preceding body.
+  local pipe_line_re=$'\n''[[:space:]]*\|'
+  if [[ "$raw" =~ $pipe_line_re ]]; then printf '%s' "$raw"; return 0; fi
 
   body_sub_prefix='$'
   body_sub_prefix+='(cat <<'
@@ -269,6 +272,10 @@ scope_strip_inert_heredoc_bodies() {
         dest="${dest#"${dest%%[![:space:]]*}"}"
         dest="${dest#[\'\"]}"; dest="${dest%[\'\"]}"
         [ -z "$dest" ] || writer_dests+="$dest"$'\n'
+      elif [[ "$line" =~ ^[[:space:]]*(cat|head|tail)[[:space:]]+\<\< ]] \
+        && [[ "$line" != *'>'* ]] && [[ "$line" != *';'* ]] && [[ "$line" != *'&'* ]] && [[ "$line" != *'|'* ]]; then
+        # A quoted body on a plain reader is input data, not shell source.
+        tail="${line#*<<}"
       else
         continue
       fi
@@ -577,14 +584,15 @@ scope_candidate_is_inert_text() {
   backtick=$'\140'
   # Only a standalone echo/printf is inert. A pipe, redirect, command
   # separator, or substitution can feed or execute the printed path.
-  case "$command_text" in *';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'$('*|*"$backtick"*|*$'\n'*) return 1 ;; esac
+  masked_segment="$(scope_mask_literal_expansions "$command_text")"
+  case "$masked_segment" in *';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'$('*|*"$backtick"*|*$'\n'*) return 1 ;; esac
   # Quoted message values are data only for commands whose option contract
   # identifies them as text. Keep arbitrary programs and file options checked.
-  data_option_re="(^|[[:space:]])(--text|--title|--body)(=|[[:space:]])(\"[^\"]*$|'[^']*$)"
+  data_option_re="(^|[[:space:]])(--text|--title|--body|--message|--comment)(=|[[:space:]])(\"[^\"]*$|'[^']*$)"
   command_head="${command_text#"${command_text%%[![:space:]]*}"}"
   case "$command_head" in
     'hq dm '*) text_option_re="$data_option_re" ;;
-    'hq lanes message '*) text_option_re="$data_option_re" ;;
+    'hq lanes message '*|'hq lanes link report '*) text_option_re="$data_option_re" ;;
     'hq mesh '* )
       if [[ "$command_head" =~ ^hq[[:space:]]+mesh[[:space:]]+[^[:space:]]+[[:space:]]+note([[:space:]]|$) ]]; then
         text_option_re="$data_option_re"
@@ -3021,6 +3029,50 @@ scope_text_piece_is_escaped() {
   [[ "$rest" != *"$piece"* ]]
 }
 
+# An API endpoint is remote data. File flags and shell substitutions still go
+# through the normal checks, including redirects following the endpoint.
+scope_token_is_gh_api_endpoint() {
+  local index="$1" h token
+  h="$(scope_command_head_index)"
+  [ "${scope_tokens[$h]:-}" = gh ] || return 1
+  [ "${scope_tokens[$((h + 1))]:-}" = api ] || return 1
+  [ "$index" -eq "$((h + 2))" ] || return 1
+  token="${scope_tokens[$index]}"
+  case "$token" in -*|*'$('*|*$'\140'*|*'<'*|*'>'*) return 1 ;; esac
+  return 0
+}
+
+# Bound a filename selected by ls without executing the user's substitution.
+# Check every possible entry, not only the current first/last entry. Arbitrary
+# cat output cannot be bounded this way and remains fail-closed.
+scope_token_is_bounded_loop_read() {
+  local index="$1" h token re name inner prefix values dir entry count=0
+  h="$(scope_command_head_index)"
+  case "${scope_tokens[$h]:-}" in head|tail|cat) ;; *) return 1 ;; esac
+  [ "$index" -gt "$h" ] || return 1
+  token="${scope_tokens[$index]}"
+  re='^\$([A-Za-z_][A-Za-z0-9_]*)/\$\(ls[[:space:]]+\$([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*\|[[:space:]]*(head|tail)[[:space:]]+-[0-9]+\)$'
+  case "${scope_tokens[$((index - 1))]:-}" in *'>'*|*'<'*) return 1 ;; esac
+  [[ "$token" =~ $re ]] || return 1
+  name="${BASH_REMATCH[1]}"; inner="${BASH_REMATCH[2]}"
+  [ "$name" = "$inner" ] || return 1
+  [[ "$scope_scan_cmd" == *"$token"* ]] || return 1
+  prefix="${scope_scan_cmd%%"$token"*}"
+  values="$(scope_shell_variable_values "$name" "$prefix" "$scope_scan_cmd")" || return 1
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || return 1
+    scope_check_raw "$dir"
+    case "$dir" in /*) ;; *) dir="$COMMAND_CWD/$dir" ;; esac
+    [ -d "$dir" ] || return 1
+    while IFS= read -r entry; do
+      case "$entry" in ''|*[!A-Za-z0-9._@+-]*|.|..) return 1 ;; esac
+      count=$((count + 1)); [ "$count" -le 2048 ] || return 1
+      scope_check_raw "$dir/$entry"
+    done < <(cd "$dir" && compgen -G '*' || true)
+  done <<< "$values"
+  [ "$count" -gt 0 ]
+}
+
 scope_token_is_text_option_value() {
   local index="${1:-0}" token prev opt head reduced sub_re piece mark=$'\001' backtick=$'\140'
   scope_prose_subs=()
@@ -3036,12 +3088,33 @@ scope_token_is_text_option_value() {
   esac
   case "$opt" in
     --text|--summary|--title|--body|--message|--note|--description|--next|--subject|--comment|--reason|--details) ;;
+    # The HQ lane commands expose --text, not -m. Do not infer a message
+    # contract from the executable name alone.
     -m) [ "$head" = git ] || return 1 ;;
     *) return 1 ;;
   esac
-  case "$token" in *[[:space:]]*) ;; *) return 1 ;; esac
+  local known_message=0 escaped_token message_head
+  message_head="$(scope_command_head_index)"
+  if [ "$head" = hq ] && [ "${scope_tokens[$((message_head + 1))]:-}" = lanes ]; then
+    if [ "${scope_tokens[$((message_head + 2))]:-}" = message ] \
+      || { [ "${scope_tokens[$((message_head + 2))]:-}" = link ] \
+        && [ "${scope_tokens[$((message_head + 3))]:-}" = report ]; }; then
+      known_message=1
+    fi
+  fi
+  if [ "$known_message" -eq 0 ]; then
+    case "$token" in *[[:space:]]*) ;; *) return 1 ;; esac
+  fi
   case "$token" in *"$mark"*) return 1 ;; esac
-  [[ "${scope_scan_cmd:-}" == *\\* ]] && case "$token" in *'$('*|*"$backtick"*) return 1 ;; esac
+  # The tokenizer removes escapes. Recover a wholly escaped dollar spelling
+  # from the original command before interpreting substitutions in message data.
+  escaped_token="${token//\$/\\\$}"
+  if [ "$known_message" -eq 1 ] && [[ "$scope_scan_cmd" == *"\"$escaped_token\""* ]] \
+    && [[ "$scope_scan_cmd" != *"\"$token\""* ]]; then
+    token="${token//\$/__HQ_LITERAL_DOLLAR__}"
+  else
+    [[ "${scope_scan_cmd:-}" == *\\* ]] && case "$token" in *'$('*|*"$backtick"*) return 1 ;; esac
+  fi
   reduced="$token"
   sub_re='\$\(([^()]*)\)'
   while [[ "$reduced" =~ $sub_re ]]; do
@@ -3055,7 +3128,9 @@ scope_token_is_text_option_value() {
     reduced="${reduced/"${BASH_REMATCH[0]}"/$mark}"
     [ "${#scope_prose_subs[@]}" -le 16 ] || return 1
   done
-  case "$reduced" in *'$('*|*"$backtick"*|*'('*'('*|*'..'*) return 1 ;; esac
+  case "$reduced" in *'$('*|*"$backtick"*) return 1 ;; esac
+  [ "$known_message" -eq 1 ] && return 0
+  case "$reduced" in *'('*'('*|*'..'*) return 1 ;; esac
   # As for prose: the first word is literal and no entry starting with it
   # exists, so even a program that opened the value could not reach a real
   # directory through it.
@@ -3081,6 +3156,1416 @@ scope_token_is_text_option_value() {
   return 0
 }
 
+# A repos/private/<name> or repos/public/<name> symlink may point at a checkout
+# outside the HQ tree only when that checkout's directory is listed in the
+# owner root file. The file is $HOME/.hq/repo-symlink-roots, outside the HQ
+# tree: one absolute directory per line, blank lines and # comments ignored.
+# The owner adds a root by editing that file in their own editor. This hook
+# refuses any Bash, Read, Write, Edit, or MultiEdit that names the file, so a
+# session cannot add a root for itself. companies/manifest.yaml is not the
+# registry. A listed directory is ignored when it is /, $HOME, the HQ root,
+# an ancestor of $HOME or the HQ root, or anywhere under companies/.
+scope_owner_roots_file() {
+  local home="${HOME:-}"
+  case "$home" in
+    /*) printf '%s' "${home%/}/.hq/repo-symlink-roots" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+scope_block_if_names_owner_roots() {
+  local text="${1:-}" kind="${2:-}" squashed roots resolved
+  [ -n "$text" ] || return 0
+  squashed="${text//[\"\'\\]/}"
+  case "$squashed" in
+    *repo-symlink-roots*)
+      scope_block_rel "repo-symlink-roots" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session"
+      ;;
+  esac
+  roots="$(scope_owner_roots_file)"
+  [ -n "$roots" ] || return 0
+  case "$text" in
+    "$roots"|"$roots"/*)
+      scope_block_rel "$roots" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session"
+      ;;
+  esac
+  case "$text" in
+    /*)
+      resolved="$(scope_resolve_absolute_path "$text" 2>/dev/null || true)"
+      if [ -n "$resolved" ] && [ "$resolved" = "$roots" ]; then
+        scope_block_rel "$roots" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session"
+      fi
+      ;;
+  esac
+  # Read/Write/Edit pass one path. Resolve it (including a relative symlink)
+  # before matching. Bash is walked token by token instead of as one path.
+  if [ "$kind" = "path" ]; then
+    scope_owner_roots_consider "$text" "${COMMAND_CWD:-$HQ_ROOT}"
+  fi
+}
+
+# 0 when path is /, equals or contains $HOME or the HQ root, or is inside
+# companies/. "Contains" means HOME or the HQ root sits inside path.
+scope_repo_root_is_rejected() {
+  local path="${1:-}" home="${HOME:-}"
+  path="${path%/}"
+  [ -n "$path" ] || return 0
+  [ "$path" = "/" ] && return 0
+  case "$home" in
+    /*)
+      home="${home%/}"
+      [ "$path" = "$home" ] && return 0
+      case "$home" in
+        "$path"/*) return 0 ;;
+      esac
+      ;;
+  esac
+  [ "$path" = "$HQ_ROOT" ] && return 0
+  case "$HQ_ROOT" in
+    "$path"/*) return 0 ;;
+  esac
+  case "$path" in
+    "$HQ_ROOT"/companies|"$HQ_ROOT"/companies/*) return 0 ;;
+  esac
+  return 1
+}
+
+scope_load_owner_roots() {
+  # Re-read every check. A path that was a real directory when it was listed
+  # can be replaced by a symlink before the next use; do not trust a cache,
+  # and do not trust a listed path whose final component is a symlink.
+  SCOPE_OWNER_ROOTS=""
+  local file line resolved
+  file="$(scope_owner_roots_file)"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      ""|\#*) continue ;;
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ -L "$line" ]; then
+      continue
+    fi
+    resolved="$(scope_resolve_absolute_path "$line" 2>/dev/null || true)"
+    [ -n "$resolved" ] || continue
+    resolved="${resolved%/}"
+    [ -n "$resolved" ] || resolved="/"
+    scope_repo_root_is_rejected "$resolved" && continue
+    case "
+$SCOPE_OWNER_ROOTS" in
+      *"
+$resolved
+"*) ;;
+      *) SCOPE_OWNER_ROOTS="${SCOPE_OWNER_ROOTS}${resolved}"$'\n' ;;
+    esac
+  done < "$file"
+}
+
+scope_owner_root_covers() {
+  local path="${1:-}" root
+  path="${path%/}"
+  [ -n "$path" ] || return 1
+  scope_load_owner_roots
+  [ -n "${SCOPE_OWNER_ROOTS:-}" ] || return 1
+  while IFS= read -r root || [ -n "$root" ]; do
+    [ -n "$root" ] || continue
+    [ "$path" = "$root" ] && return 0
+    case "$path" in
+      "$root"/*) return 0 ;;
+    esac
+  done <<< "${SCOPE_OWNER_ROOTS}"
+  return 1
+}
+
+# Charter deny list for every path reached through a repo symlink: rc files,
+# SSH, AWS (including sso and cache), GPG, env, netrc, shell profiles, and
+# gh and kube configs. Matched on the resolved path, not only on $HOME.
+scope_fs_folds_case() {
+  if [ "${SCOPE_FS_FOLDS_CASE_SET:-0}" -ne 1 ]; then
+    SCOPE_FS_FOLDS_CASE_SET=1
+    case "$(uname -s 2>/dev/null || true)" in
+      Darwin) SCOPE_FS_FOLDS_CASE=1 ;;
+      *) SCOPE_FS_FOLDS_CASE=0 ;;
+    esac
+  fi
+  [ "${SCOPE_FS_FOLDS_CASE:-0}" -eq 1 ]
+}
+
+# Fold only the repos/ and private|public segments, and only where the
+# filesystem does. The rest of the path, including .ENV, stays as typed so a
+# later sensitive-name check can fold it on its own.
+scope_canonicalize_repos_token() {
+  local token="${1:-}" prefix="" body dot="" low rest seg2 seg2low tail
+  [ -n "$token" ] || { printf '%s' ""; return 0; }
+  scope_fs_folds_case || { printf '%s' "$token"; return 0; }
+  case "$token" in
+    "$HQ_ROOT"/*)
+      prefix="$HQ_ROOT/"
+      body="${token#"$HQ_ROOT"/}"
+      ;;
+    *) body="$token" ;;
+  esac
+  dot=""
+  case "$body" in
+    ./*) dot="./"; body="${body#./}" ;;
+  esac
+  low="$(printf '%s' "${body%%/*}" | tr '[:upper:]' '[:lower:]')"
+  [ "$low" = "repos" ] || { printf '%s' "$token"; return 0; }
+  if [ "$body" = "${body%%/*}" ]; then
+    printf '%s' "${prefix}${dot}repos"
+    return 0
+  fi
+  rest="${body#*/}"
+  seg2="${rest%%/*}"
+  seg2low="$(printf '%s' "$seg2" | tr '[:upper:]' '[:lower:]')"
+  case "$seg2low" in
+    private|public) ;;
+    *) printf '%s' "$token"; return 0 ;;
+  esac
+  if [ "$rest" = "$seg2" ]; then
+    printf '%s' "${prefix}${dot}repos/$seg2low"
+    return 0
+  fi
+  tail="${rest#*/}"
+  printf '%s' "${prefix}${dot}repos/$seg2low/$tail"
+}
+
+scope_link_path_is_sensitive() {
+  local path="${1:-}" base
+  [ -n "$path" ] || return 1
+  if scope_fs_folds_case; then
+    path="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+  fi
+  case "$path" in
+    /.ssh|/.ssh/*|*/.ssh|*/.ssh/*) return 0 ;;
+    /.gnupg|/.gnupg/*|*/.gnupg|*/.gnupg/*) return 0 ;;
+    /.aws|/.aws/*|*/.aws|*/.aws/*) return 0 ;;
+    /.kube|/.kube/*|*/.kube|*/.kube/*) return 0 ;;
+    /.config/gh|/.config/gh/*|*/.config/gh|*/.config/gh/*) return 0 ;;
+  esac
+  base="${path##*/}"
+  case "$base" in
+    .env|.env.*|.netrc|.zshrc|.zprofile|.zshenv|.zlogin|.zlogout|.bashrc|.bash_profile|.bash_login|.bash_logout|.profile|.kshrc|.cshrc|.tcshrc|.login|.logout|.bash_aliases)
+      return 0 ;;
+  esac
+  return 1
+}
+
+scope_path_inside() {
+  local path="${1:-}" root="${2:-}"
+  [ -n "$path" ] && [ -n "$root" ] && [ "$root" != "/" ] || return 1
+  [ "$path" = "$root" ] && return 0
+  case "$path" in
+    "$root"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# repos/(private|public)/<segment> for a path that is that link or a file under it.
+scope_repo_link_rel() {
+  local raw="${1:-}" rel kind rest name
+  raw="$(scope_canonicalize_repos_token "$raw")"
+  case "$raw" in
+    "$HQ_ROOT"/repos/*) rel="${raw#"$HQ_ROOT"/}" ;;
+    repos/*) rel="$raw" ;;
+    *) printf '%s' ""; return 0 ;;
+  esac
+  rel="${rel#./}"
+  rel="${rel%/}"
+  case "$rel" in
+    repos/private/*|repos/public/*) ;;
+    *) printf '%s' ""; return 0 ;;
+  esac
+  kind="${rel#repos/}"
+  kind="${kind%%/*}"
+  rest="${rel#repos/$kind/}"
+  name="${rest%%/*}"
+  case "$name" in
+    ""|.*|*..*|*[!A-Za-z0-9._-]*) printf '%s' ""; return 0 ;;
+  esac
+  if scope_fs_folds_case; then
+    name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  fi
+  printf '%s' "repos/$kind/$name"
+}
+
+# Print the repos/ relative form of a token, or fail when it is not one.
+scope_repos_rel_of_token() {
+  local token="${1:-}" kind rest name tail
+  token="$(scope_canonicalize_repos_token "$token")"
+  token="${token%/}"
+  case "$token" in
+    ./repos/*) token="${token#./}" ;;
+    "$HQ_ROOT"/repos/*) token="${token#"$HQ_ROOT"/}" ;;
+  esac
+  case "$token" in
+    repos/private/*|repos/public/*) ;;
+    *) return 1 ;;
+  esac
+  if scope_fs_folds_case; then
+    kind="${token#repos/}"
+    kind="${kind%%/*}"
+    rest="${token#repos/$kind/}"
+    name="${rest%%/*}"
+    name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    if [ "$rest" = "$name" ] || [ "$rest" = "${rest%%/*}" ]; then
+      token="repos/$kind/$name"
+    else
+      tail="${rest#*/}"
+      token="repos/$kind/$name/$tail"
+    fi
+  fi
+  printf '%s' "$token"
+}
+
+scope_repos_rel_is_link_node() {
+  local rel="${1:-}" rest
+  case "$rel" in
+    repos/private/*|repos/public/*) ;;
+    *) return 1 ;;
+  esac
+  rest="${rel#repos/private/}"
+  [ "$rest" = "$rel" ] && rest="${rel#repos/public/}"
+  case "$rest" in
+    ""|*/*|.*|*..*|*[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# The destination of a link mutation is a repos/ path the command is replacing,
+# not a path it is reading. Naming it must stay allowed even when the link's
+# current target would be denied; the next command rechecks the new target.
+scope_path_is_repo_link_mutation_dest() {
+  local raw="${1:-}" rel
+  [ -n "${SCOPE_LINK_MUTATION_DESTS:-}" ] || return 1
+  if ! rel="$(scope_repos_rel_of_token "$raw")"; then
+    return 1
+  fi
+  case "
+$SCOPE_LINK_MUTATION_DESTS" in
+    *"
+$rel
+"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Physical checkout root when a cd path goes through a repos/ symlink, else empty.
+scope_cd_repo_root() {
+  local raw="${1:-}" rel link_rel repo_root
+  case "$raw" in
+    "$HQ_ROOT"/*) rel="${raw#"$HQ_ROOT"/}" ;;
+    /*) printf '%s' ""; return 0 ;;
+    *) rel="$raw" ;;
+  esac
+  link_rel="$(scope_repo_link_rel "$rel")"
+  [ -n "$link_rel" ] || { printf '%s' ""; return 0; }
+  [ -L "$HQ_ROOT/$link_rel" ] && [ -d "$HQ_ROOT/$link_rel" ] || { printf '%s' ""; return 0; }
+  repo_root="$(scope_resolve_absolute_path "$HQ_ROOT/$link_rel" 2>/dev/null || true)"
+  [ -n "$repo_root" ] && [ "$repo_root" != "/" ] || { printf '%s' ""; return 0; }
+  printf '%s' "${repo_root%/}"
+}
+
+# After a leading cd, a relative token that contains .. is resolved from the
+# physical directory, not from the HQ root. Returns 0 when the token was
+# handled, 1 when it is not that shape.
+scope_cd_dotdot_checked() {
+  local raw="${1:-}" phys
+  case "$raw" in
+    /*|~|~/*) return 1 ;;
+    workspace/*|core/*|personal/*|repos/*|companies/*|.claude/*) return 1 ;;
+    *..*) ;;
+    *) return 1 ;;
+  esac
+  # The same-command walk already resolved this .. against the real checkout.
+  # Returning here skips the static-cwd refusal, which would also fire for a
+  # .. that stayed inside the checkout.
+  if [ "${SCOPE_REPO_CD_HANDLED:-0}" -eq 1 ]; then
+    return 0
+  fi
+  if [ "${SCOPE_CD_APPLIED:-0}" -ne 1 ]; then
+    if [ "${scope_cwd_is_static:-1}" -eq 0 ]; then
+      scope_block_rel "$raw" "the command changes directory, so a relative .. path cannot be checked against the directory it runs in"
+    fi
+    return 1
+  fi
+  phys="$(scope_resolve_absolute_path "${COMMAND_CWD%/}/$raw" 2>/dev/null || true)"
+  [ -n "$phys" ] || scope_block_rel "$raw" "a relative path after cd could not be resolved"
+  if [ -n "${SCOPE_CD_REPO_ROOT:-}" ]; then
+    if scope_repo_root_is_rejected "$SCOPE_CD_REPO_ROOT" || ! scope_owner_root_covers "$SCOPE_CD_REPO_ROOT"; then
+      scope_block_rel "$raw" "a relative path after cd is inside a repo symlink the owner root list does not allow"
+    fi
+    if ! scope_path_inside "$phys" "$SCOPE_CD_REPO_ROOT"; then
+      scope_block_rel "$raw" "a relative path after cd leaves the repo symlink target"
+    fi
+    if scope_link_path_is_sensitive "$phys" || scope_link_path_is_sensitive "$SCOPE_CD_REPO_ROOT"; then
+      scope_block_rel "$raw" "a relative path after cd hits a sensitive path"
+    fi
+    case "$phys" in
+      "$HQ_ROOT"/companies|"$HQ_ROOT"/companies/*)
+        scope_block_rel "$raw" "a relative path after cd enters a company folder"
+        ;;
+    esac
+    return 0
+  fi
+  case "$phys" in
+    "$HQ_ROOT"|"$HQ_ROOT"/*)
+      scope_check_raw "$phys"
+      return 0
+      ;;
+  esac
+  scope_block_rel "$raw" "a relative path after cd leaves the HQ root"
+}
+
+# A command that creates, removes, or repoints a link under repos/ may not also
+# use a path under repos/. The decision follows cd/pushd and the real target
+# of a repo symlink, not only a literal repos/ token. A lone ln, cp -s,
+# unlink, or rm/mv of the link node itself stays allowed; the next command
+# rechecks the target. Destinations are recorded so those tokens are not
+# judged by the old target.
+
+scope_expand_home_spell() {
+  local token="${1:-}" home="${HOME:-}" prefix rest
+  case "$token" in
+    '~') printf '%s' "$home"; return 0 ;;
+    # The strip pattern has to be quoted. Unquoted, bash tilde-expands
+    # ${token#~/} into ${token#$HOME/} and the literal ~/ form survives.
+    '~/'*)
+      rest="${token#"~/"}"
+      printf '%s' "${home%/}/$rest"
+      return 0
+      ;;
+    '$HOME') printf '%s' "$home"; return 0 ;;
+    '$HOME/'*)
+      prefix='$HOME/'
+      printf '%s' "${home%/}/${token#"$prefix"}"
+      return 0
+      ;;
+    '${HOME}') printf '%s' "$home"; return 0 ;;
+    '${HOME}/'*)
+      prefix='${HOME}/'
+      printf '%s' "${home%/}/${token#"$prefix"}"
+      return 0
+      ;;
+  esac
+  printf '%s' "$token"
+}
+
+# Collapse . and .. without following symlinks. Absolute in, absolute out.
+scope_lexical_normalize() {
+  local input="${1:-}" resolved="/" pending segment
+  case "$input" in
+    /*) ;;
+    *) printf '%s' "$input"; return 0 ;;
+  esac
+  pending="${input#/}"
+  while [ -n "$pending" ]; do
+    case "$pending" in
+      */*) segment="${pending%%/*}"; pending="${pending#*/}" ;;
+      *) segment="$pending"; pending="" ;;
+    esac
+    case "$segment" in
+      ""|.) continue ;;
+      ..)
+        [ "$resolved" = "/" ] || resolved="${resolved%/*}"
+        [ -n "$resolved" ] || resolved="/"
+        ;;
+      *) resolved="${resolved%/}/$segment" ;;
+    esac
+  done
+  printf '%s' "$resolved"
+}
+
+scope_owner_roots_deny() {
+  scope_block_rel "${1:-repo-symlink-roots}" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session"
+}
+
+# Block a token that is the owner root list, its parent directory, a glob that
+# matches the list, or a symlink that resolves to the list. base is the
+# directory a relative token is joined to.
+scope_owner_roots_consider() {
+  local token="${1:-}" base="${2:-}" roots parent expanded abs resolved matches match
+  [ -n "$token" ] || return 0
+  roots="$(scope_owner_roots_file)"
+  [ -n "$roots" ] || return 0
+  parent="${roots%/*}"
+  expanded="$(scope_expand_home_spell "$token")"
+  case "$expanded" in
+    /*) abs="$(scope_lexical_normalize "$expanded")" ;;
+    *)
+      [ -n "$base" ] || base="${SCOPE_WALK_LOGICAL:-${COMMAND_CWD:-$HQ_ROOT}}"
+      abs="$(scope_lexical_normalize "${base%/}/$expanded")"
+      ;;
+  esac
+  case "$abs" in
+    *'*'*|*'?'*|*'['*)
+      case "$abs" in
+        "$parent"|"$parent"/*)
+          matches="$(compgen -G "$abs" 2>/dev/null || true)"
+          while IFS= read -r match || [ -n "$match" ]; do
+            [ -n "$match" ] || continue
+            match="$(scope_lexical_normalize "$match")"
+            if [ "$match" = "$roots" ] || [ "$match" = "$parent" ]; then
+              scope_owner_roots_deny "$match"
+            fi
+            if [ -e "$match" ] || [ -L "$match" ]; then
+              resolved="$(scope_resolve_absolute_path "$match" 2>/dev/null || true)"
+              if [ "$resolved" = "$roots" ] || [ "$resolved" = "$parent" ]; then
+                scope_owner_roots_deny "$match"
+              fi
+            fi
+          done <<< "$matches"
+          ;;
+      esac
+      return 0
+      ;;
+  esac
+  if [ "$abs" = "$roots" ] || [ "$abs" = "$parent" ]; then
+    scope_owner_roots_deny "$abs"
+  fi
+  if [ -e "$abs" ] || [ -L "$abs" ]; then
+    resolved="$(scope_resolve_absolute_path "$abs" 2>/dev/null || true)"
+    if [ "$resolved" = "$roots" ] || [ "$resolved" = "$parent" ]; then
+      scope_owner_roots_deny "$abs"
+    fi
+  fi
+}
+
+scope_walk_record_assign() {
+  local token="${1:-}" name val line kept
+  # A case pattern [A-Za-z0-9_]* still requires a second character, so L=ln
+  # never matched. One-character names are real assignments.
+  [[ "$token" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || return 0
+  name="${BASH_REMATCH[1]}"
+  val="${BASH_REMATCH[2]}"
+  kept=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      "$name"=*) ;;
+      *) kept="${kept}${line}"$'\n' ;;
+    esac
+  done <<< "${SCOPE_WALK_ASSIGNS:-}"
+  SCOPE_WALK_ASSIGNS="${kept}${name}=${val}"$'\n'
+}
+
+scope_walk_lookup_assign() {
+  local token="${1:-}" name line
+  # Same case-pattern trap: $L and ${L} are one character and must count.
+  if [[ "$token" =~ ^\$([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
+    name="${BASH_REMATCH[1]}"
+  elif [[ "$token" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$ ]]; then
+    name="${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$name"=*)
+        printf '%s' "${line#"$name"=}"
+        return 0
+        ;;
+    esac
+  done <<< "${SCOPE_WALK_ASSIGNS:-}"
+  return 1
+}
+
+scope_walk_push_frame() {
+  local payload snap
+  payload="${SCOPE_WALK_LOGICAL}"$'\034'"${SCOPE_WALK_PHYSICAL}"$'\034'"${SCOPE_WALK_ASSIGNS}"$'\034'"${SCOPE_WALK_SAW_REPO}"$'\034'"${SCOPE_WALK_DOTDOT_INSIDE}"$'\034'"${SCOPE_WALK_CWD_KNOWN}"$'\034'"${SCOPE_WALK_REPO_ROOTS}"
+  printf -v snap '%q' "$payload"
+  SCOPE_WALK_FRAMES="${SCOPE_WALK_FRAMES}${snap}"$'\n'
+}
+
+scope_walk_pop_frame() {
+  local line payload rest
+  [ -n "${SCOPE_WALK_FRAMES:-}" ] || return 0
+  line="${SCOPE_WALK_FRAMES%$'\n'}"
+  line="${line##*$'\n'}"
+  case "$SCOPE_WALK_FRAMES" in
+    "$line"$'\n') SCOPE_WALK_FRAMES="" ;;
+    *) SCOPE_WALK_FRAMES="${SCOPE_WALK_FRAMES%"$line"$'\n'}" ;;
+  esac
+  payload=""
+  eval "payload=$line"
+  SCOPE_WALK_LOGICAL="${payload%%$'\034'*}"
+  rest="${payload#*$'\034'}"
+  SCOPE_WALK_PHYSICAL="${rest%%$'\034'*}"
+  rest="${rest#*$'\034'}"
+  SCOPE_WALK_ASSIGNS="${rest%%$'\034'*}"
+  rest="${rest#*$'\034'}"
+  SCOPE_WALK_SAW_REPO="${rest%%$'\034'*}"
+  rest="${rest#*$'\034'}"
+  SCOPE_WALK_DOTDOT_INSIDE="${rest%%$'\034'*}"
+  rest="${rest#*$'\034'}"
+  SCOPE_WALK_CWD_KNOWN="${rest%%$'\034'*}"
+  rest="${rest#*$'\034'}"
+  SCOPE_WALK_REPO_ROOTS="$rest"
+}
+
+scope_walk_has_dotdot() {
+  case "${1:-}" in
+    ..|../*|*/..|*/../*) return 0 ;;
+  esac
+  return 1
+}
+
+# Prints REPOS:<rel>, UNPARSED, or NO. Relative tokens join the walk's
+# logical directory, then .. is collapsed without following symlinks.
+scope_walk_token_class() {
+  local token="${1:-}" expanded joined relpath rel
+  [ -n "$token" ] || { printf 'NO'; return 0; }
+  case "$token" in
+    -*) printf 'NO'; return 0 ;;
+  esac
+  # $HOME and ~/ are known spellings. Expand them before the unresolved
+  # variable check, or ln -sfn "$HOME" is refused as unparsed.
+  case "$token" in
+    '~'|'~/'*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
+      token="$(scope_expand_home_spell "$token")"
+      ;;
+    '$'*|'${'*)
+      if expanded="$(scope_walk_lookup_assign "$token")"; then
+        token="$expanded"
+      else
+        printf 'UNPARSED'
+        return 0
+      fi
+      ;;
+  esac
+  case "$token" in
+    *'$'*|*'`'*|*'('*|*')'*|*';'*|*'&'*|*[|]*|*[*]*|*[?]*|*[[]*|*' '*|*'"'*)
+      printf 'UNPARSED'
+      return 0
+      ;;
+  esac
+  expanded="$(scope_expand_home_spell "$token")"
+  case "$expanded" in
+    /*)
+      joined="$(scope_lexical_normalize "$expanded")"
+      ;;
+    *)
+      if [ "${SCOPE_WALK_CWD_KNOWN:-1}" -ne 1 ]; then
+        printf 'UNPARSED'
+        return 0
+      fi
+      joined="$(scope_lexical_normalize "${SCOPE_WALK_LOGICAL%/}/$expanded")"
+      ;;
+  esac
+  case "$joined" in
+    "$HQ_ROOT"/*) relpath="${joined#"$HQ_ROOT"/}" ;;
+    *) printf 'NO'; return 0 ;;
+  esac
+  if rel="$(scope_repos_rel_of_token "$relpath")"; then
+    printf 'REPOS:%s' "$rel"
+  else
+    printf 'NO'
+  fi
+}
+
+scope_walk_inside_any() {
+  local path="${1:-}" root
+  path="${path%/}"
+  [ -n "$path" ] || return 1
+  [ -n "${SCOPE_WALK_REPO_ROOTS:-}" ] || return 1
+  while IFS= read -r root || [ -n "$root" ]; do
+    [ -n "$root" ] || continue
+    if scope_path_inside "$path" "$root"; then
+      return 0
+    fi
+  done <<< "$SCOPE_WALK_REPO_ROOTS"
+  return 1
+}
+
+scope_walk_note_entry() {
+  local logical="${1:-}" rel link root
+  case "$logical" in
+    "$HQ_ROOT"/*) rel="${logical#"$HQ_ROOT"/}" ;;
+    *) return 0 ;;
+  esac
+  link="$(scope_repo_link_rel "$rel")"
+  [ -n "$link" ] || return 0
+  if [ -L "$HQ_ROOT/$link" ] && [ -d "$HQ_ROOT/$link" ]; then
+    root="$(scope_resolve_absolute_path "$HQ_ROOT/$link" 2>/dev/null || true)"
+    [ -n "$root" ] && [ "$root" != "/" ] || return 0
+    root="${root%/}"
+    case "
+${SCOPE_WALK_REPO_ROOTS:-}" in
+      *"
+$root
+"*) ;;
+      *) SCOPE_WALK_REPO_ROOTS="${SCOPE_WALK_REPO_ROOTS:-}${root}"$'\n' ;;
+    esac
+    SCOPE_WALK_SAW_REPO=1
+  fi
+}
+
+scope_walk_apply_cd() {
+  local dest="${1:-}" logical physical was=0
+  [ "${SCOPE_WALK_CWD_KNOWN:-1}" -eq 1 ] || return 0
+  if [ -z "$dest" ]; then
+    dest="${HOME:-}"
+    [ -n "$dest" ] || { SCOPE_WALK_CWD_KNOWN=0; return 0; }
+  fi
+  case "$dest" in
+    '$'*|'${'*|-) SCOPE_WALK_CWD_KNOWN=0; return 0 ;;
+  esac
+  dest="$(scope_expand_home_spell "$dest")"
+  if scope_walk_inside_any "$SCOPE_WALK_PHYSICAL"; then
+    was=1
+  fi
+  case "$dest" in
+    /*) logical="$(scope_lexical_normalize "$dest")" ;;
+    *) logical="$(scope_lexical_normalize "${SCOPE_WALK_LOGICAL%/}/$dest")" ;;
+  esac
+  case "$dest" in
+    /*) physical="$(scope_resolve_absolute_path "$dest" 2>/dev/null || true)" ;;
+    *) physical="$(scope_resolve_absolute_path "${SCOPE_WALK_PHYSICAL%/}/$dest" 2>/dev/null || true)" ;;
+  esac
+  [ -n "$physical" ] || physical="$logical"
+  if scope_walk_has_dotdot "$dest" && [ "$was" -eq 1 ]; then
+    if scope_walk_inside_any "$physical"; then
+      SCOPE_WALK_DOTDOT_INSIDE=1
+    else
+      scope_block_rel "$dest" "a relative path after cd leaves the repo symlink target"
+    fi
+  fi
+  SCOPE_WALK_LOGICAL="$logical"
+  SCOPE_WALK_PHYSICAL="$physical"
+  scope_walk_note_entry "$logical"
+}
+
+scope_walk_check_escape() {
+  local token="${1:-}" physical expanded
+  scope_walk_has_dotdot "$token" || return 0
+  [ "${SCOPE_WALK_CWD_KNOWN:-1}" -eq 1 ] || return 0
+  scope_walk_inside_any "$SCOPE_WALK_PHYSICAL" || return 0
+  expanded="$(scope_expand_home_spell "$token")"
+  case "$expanded" in
+    /*) physical="$(scope_resolve_absolute_path "$expanded" 2>/dev/null || true)" ;;
+    *) physical="$(scope_resolve_absolute_path "${SCOPE_WALK_PHYSICAL%/}/$expanded" 2>/dev/null || true)" ;;
+  esac
+  [ -n "$physical" ] || scope_block_rel "$token" "a relative path after cd leaves the repo symlink target"
+  if scope_walk_inside_any "$physical"; then
+    SCOPE_WALK_DOTDOT_INSIDE=1
+  else
+    scope_block_rel "$token" "a relative path after cd leaves the repo symlink target"
+  fi
+}
+
+scope_walk_add_dest() {
+  local rel="${1:-}"
+  [ -n "$rel" ] || return 0
+  if [ -n "${SCOPE_WALK_ONE_DEST:-}" ] && [ "$SCOPE_WALK_ONE_DEST" != "$rel" ]; then
+    scope_block_rel "$rel" "a command that creates, removes, or repoints a repo symlink cannot also use a path under repos/"
+  fi
+  SCOPE_WALK_ONE_DEST="$rel"
+  case "
+${SCOPE_LINK_MUTATION_DESTS:-}" in
+    *"
+$rel
+"*) ;;
+    *) SCOPE_LINK_MUTATION_DESTS="${SCOPE_LINK_MUTATION_DESTS:-}${rel}"$'\n' ;;
+  esac
+  SCOPE_WALK_MUTATION=1
+  SCOPE_WALK_THIS_DESTS="${SCOPE_WALK_THIS_DESTS:-}${rel}"$'\n'
+}
+
+scope_walk_note_use() {
+  local rel="${1:-}"
+  [ -n "$rel" ] || return 0
+  case "
+${SCOPE_WALK_THIS_DESTS:-}" in
+    *"
+$rel
+"*) return 0 ;;
+  esac
+  if [ "${SCOPE_WALK_MUTATION:-0}" -eq 1 ]; then
+    scope_block_rel "$rel" "a command that creates, removes, or repoints a repo symlink cannot also use a path under repos/"
+  fi
+  case "
+${SCOPE_LINK_MUTATION_SEEN:-}" in
+    *"
+$rel
+"*) ;;
+    *) SCOPE_LINK_MUTATION_SEEN="${SCOPE_LINK_MUTATION_SEEN:-}${rel}"$'\n' ;;
+  esac
+}
+
+scope_walk_refuse() {
+  scope_block_rel "${1:-repos}" "a command that changes a repo symlink could not be checked, so it is refused"
+}
+
+# Text after a symlink/rename call. Prints LIT:path, VAR:name, or FAIL.
+scope_walk_second_arg() {
+  local rest="${1:-}" i=0 n c quote="" arg="" which=1 depth=0 quoted=0
+  n=${#rest}
+  while [ "$i" -lt "$n" ]; do
+    c="${rest:$i:1}"
+    case "$c" in
+      [[:space:]]) i=$((i + 1)); continue ;;
+      *) break ;;
+    esac
+  done
+  [ "${rest:$i:1}" = "(" ] || { printf 'FAIL'; return 0; }
+  i=$((i + 1))
+  depth=1
+  while [ "$i" -lt "$n" ]; do
+    c="${rest:$i:1}"
+    if [ -n "$quote" ]; then
+      if [ "$c" = "$quote" ]; then
+        quote=""
+      else
+        arg="${arg}${c}"
+      fi
+      i=$((i + 1))
+      continue
+    fi
+    case "$c" in
+      '"'|"'")
+        if [ -z "$arg" ] && [ "$which" -eq 2 ]; then
+          quoted=1
+        fi
+        quote="$c"
+        ;;
+      '(')
+        depth=$((depth + 1))
+        arg="${arg}${c}"
+        ;;
+      ')')
+        depth=$((depth - 1))
+        if [ "$depth" -eq 0 ]; then
+          if [ "$which" -ne 2 ]; then
+            printf 'FAIL'
+          elif [ "$quoted" -eq 1 ]; then
+            printf 'LIT:%s' "$arg"
+          else
+            printf 'VAR:%s' "$arg"
+          fi
+          return 0
+        fi
+        arg="${arg}${c}"
+        ;;
+      ',')
+        if [ "$depth" -eq 1 ]; then
+          if [ "$which" -eq 1 ]; then
+            which=2
+            arg=""
+            quoted=0
+          elif [ "$quoted" -eq 1 ]; then
+            printf 'LIT:%s' "$arg"
+            return 0
+          else
+            printf 'VAR:%s' "$arg"
+            return 0
+          fi
+        else
+          arg="${arg}${c}"
+        fi
+        ;;
+      [[:space:]]) ;;
+      *) arg="${arg}${c}" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf 'FAIL'
+}
+
+scope_walk_script_body() {
+  local body="${1:-}" kind="${2:-}" needle dest path class rel
+  local needles
+  case "$body" in
+    *'$'*|*'`'*)
+      case "$body" in
+        *symlink*|*os.rename*|*os.link*|*os.replace*|*renameSync*|*linkSync*)
+          scope_walk_refuse "$kind"
+          ;;
+      esac
+      return 0
+      ;;
+  esac
+  if [ "$kind" = "python" ]; then
+    needles="os.symlink os.rename os.link os.replace"
+  else
+    needles="symlinkSync renameSync linkSync"
+  fi
+  for needle in $needles; do
+    case "$body" in
+      *"$needle"*) ;;
+      *) continue ;;
+    esac
+    dest="$(scope_walk_second_arg "${body#*"$needle"}")"
+    case "$dest" in
+      FAIL|VAR:*) scope_walk_refuse "$needle" ;;
+    esac
+    path="${dest#LIT:}"
+    class="$(scope_walk_token_class "$path")"
+    case "$class" in
+      UNPARSED) scope_walk_refuse "$needle" ;;
+      REPOS:*)
+        rel="${class#REPOS:}"
+        case "$needle" in
+          os.symlink|os.link|symlinkSync|linkSync)
+            scope_walk_add_dest "$rel"
+            ;;
+          *)
+            if scope_repos_rel_is_link_node "$rel"; then
+              scope_walk_add_dest "$rel"
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done
+}
+
+scope_walk_parse() {
+  printf '%s\n' "$1" | awk '
+    function push_word() { if (word != "") { argv[++argc] = word; word = "" } }
+    function emit(    j, out) {
+      push_word()
+      if (argc == 0) return
+      out = argv[1]
+      for (j = 2; j <= argc; j++) out = out sprintf("%c", 31) argv[j]
+      print out
+      for (j in argv) delete argv[j]
+      argc = 0
+    }
+    { source = source $0 "\n" }
+    END {
+      text = source
+      n = length(text); quote = ""; escaped = 0; word = ""; argc = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(text, i, 1)
+        if (escaped) { word = word c; escaped = 0; continue }
+        if (quote == "\047") {
+          if (c == "\047") quote = ""; else word = word c
+          continue
+        }
+        if (quote == "\"") {
+          if (c == "\"") quote = ""
+          else if (c == "\\") escaped = 1
+          else word = word c
+          continue
+        }
+        if (c == "\047" || c == "\"") { quote = c; continue }
+        if (c == "\\") { escaped = 1; continue }
+        if (c == " " || c == "\t") { push_word(); continue }
+        if (c == ";" || c == "|" || c == "&" || c == "\n" || c == "(" || c == ")") {
+          emit()
+          if (c == "(" || c == ")") printf "%c%s\n", 30, c
+          if ((c == "|" || c == "&") && substr(text, i + 1, 1) == c) i++
+          continue
+        }
+        if (c == ">" || c == "<") {
+          push_word(); argv[++argc] = c
+          if (substr(text, i + 1, 1) == c || (c == ">" && substr(text, i + 1, 1) == "|")) {
+            argv[argc] = argv[argc] substr(text, i + 1, 1); i++
+          }
+          continue
+        }
+        word = word c
+      }
+      emit()
+    }
+  '
+}
+
+scope_walk_one() {
+  local record="${1:-}" depth="${2:-0}"
+  local -a argv words redirs
+  local i n tok exe="" exe_at=0 dest="" last="" class="" rel="" body=""
+  local symlink=0 rsync_links=0 cluster kind=""
+  argv=()
+  words=()
+  redirs=()
+  IFS=$'\037' read -r -a argv <<< "$record" || true
+  n=${#argv[@]}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    tok="${argv[$i]}"
+    case "$tok" in
+      '>'|'>>'|'<'|'<<'|'>|'|'>&'|'&>'|'<>')
+        i=$((i + 1))
+        if [ "$i" -lt "$n" ]; then
+          redirs+=("${argv[$i]}")
+        fi
+        ;;
+      *) words+=("$tok") ;;
+    esac
+    i=$((i + 1))
+  done
+  SCOPE_WALK_THIS_DESTS=""
+  n=${#words[@]}
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    tok="${words[$i]}"
+    case "$tok" in
+      -*) ;;
+      *) scope_owner_roots_consider "$tok" "$SCOPE_WALK_LOGICAL" ;;
+    esac
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "${#redirs[@]}" ]; do
+    scope_owner_roots_consider "${redirs[$i]}" "$SCOPE_WALK_LOGICAL"
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    tok="${words[$i]}"
+    if [[ "$tok" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      scope_walk_record_assign "$tok"
+      i=$((i + 1))
+      continue
+    fi
+    case "$tok" in
+      command|builtin|exec|nohup)
+        i=$((i + 1))
+        while [ "$i" -lt "$n" ]; do
+          tok="${words[$i]}"
+          case "$tok" in
+            -*) i=$((i + 1)); continue ;;
+            *) break ;;
+          esac
+        done
+        continue
+        ;;
+      env)
+        i=$((i + 1))
+        while [ "$i" -lt "$n" ]; do
+          tok="${words[$i]}"
+          if [[ "$tok" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            scope_walk_record_assign "$tok"
+            i=$((i + 1))
+            continue
+          fi
+          case "$tok" in
+            -u|-C|-S)
+              i=$((i + 1))
+              [ "$i" -lt "$n" ] && i=$((i + 1))
+              continue
+              ;;
+            -*) i=$((i + 1)); continue ;;
+            *) break ;;
+          esac
+        done
+        continue
+        ;;
+      sudo|doas)
+        i=$((i + 1))
+        while [ "$i" -lt "$n" ]; do
+          tok="${words[$i]}"
+          case "$tok" in
+            -u|-g)
+              i=$((i + 1))
+              [ "$i" -lt "$n" ] && i=$((i + 1))
+              continue
+              ;;
+            -*) i=$((i + 1)); continue ;;
+            *) break ;;
+          esac
+        done
+        continue
+        ;;
+      *) break ;;
+    esac
+  done
+  exe_at=$i
+  if [ "$exe_at" -ge "$n" ]; then
+    return 0
+  fi
+  exe="${words[$exe_at]}"
+  case "$exe" in
+    '$'*|'${'*)
+      if class="$(scope_walk_lookup_assign "$exe")"; then
+        exe="$class"
+      else
+        return 0
+      fi
+      ;;
+  esac
+  exe="${exe##*/}"
+  case "$exe" in
+    cd|pushd)
+      dest=""
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          --)
+            i=$((i + 1))
+            [ "$i" -lt "$n" ] && dest="${words[$i]}"
+            break
+            ;;
+          -*) i=$((i + 1)); continue ;;
+          *) dest="$tok"; break ;;
+        esac
+      done
+      scope_walk_apply_cd "$dest"
+      return 0
+      ;;
+    popd)
+      SCOPE_WALK_CWD_KNOWN=0
+      return 0
+      ;;
+  esac
+  i=$((exe_at + 1))
+  while [ "$i" -lt "$n" ]; do
+    tok="${words[$i]}"
+    case "$tok" in
+      -*) ;;
+      *) scope_walk_check_escape "$tok" ;;
+    esac
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "${#redirs[@]}" ]; do
+    scope_walk_check_escape "${redirs[$i]}"
+    i=$((i + 1))
+  done
+  case "$exe" in
+    ln|cp)
+      symlink=0
+      i=0
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          --symbolic|--symbolic-link|--symbolic=*|--symbolic-link=*) symlink=1 ;;
+          --*) ;;
+          -*s*) symlink=1 ;;
+        esac
+        i=$((i + 1))
+      done
+      if [ "$symlink" -eq 1 ]; then
+        last=""
+        i=$((exe_at + 1))
+        while [ "$i" -lt "$n" ]; do
+          tok="${words[$i]}"
+          case "$tok" in
+            --) i=$((i + 1)); continue ;;
+            -*) i=$((i + 1)); continue ;;
+          esac
+          class="$(scope_walk_token_class "$tok")"
+          case "$class" in
+            UNPARSED) scope_walk_refuse "$exe" ;;
+          esac
+          last="$tok"
+          i=$((i + 1))
+        done
+        if [ -n "$last" ]; then
+          class="$(scope_walk_token_class "$last")"
+          case "$class" in
+            REPOS:*) scope_walk_add_dest "${class#REPOS:}" ;;
+          esac
+        fi
+      fi
+      ;;
+    unlink)
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          -*) i=$((i + 1)); continue ;;
+        esac
+        class="$(scope_walk_token_class "$tok")"
+        case "$class" in
+          UNPARSED) scope_walk_refuse "$exe" ;;
+          REPOS:*) scope_walk_add_dest "${class#REPOS:}" ;;
+        esac
+        i=$((i + 1))
+      done
+      ;;
+    rm|mv|rmdir|install)
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          --) i=$((i + 1)); continue ;;
+          -*)
+            case "$tok" in
+              --target-directory=*) ;;
+              -t|-S|-T|--target-directory|--suffix) i=$((i + 1)) ;;
+            esac
+            i=$((i + 1))
+            continue
+            ;;
+        esac
+        class="$(scope_walk_token_class "$tok")"
+        case "$class" in
+          REPOS:*)
+            rel="${class#REPOS:}"
+            if scope_repos_rel_is_link_node "$rel"; then
+              scope_walk_add_dest "$rel"
+            fi
+            ;;
+        esac
+        i=$((i + 1))
+      done
+      ;;
+    rsync)
+      rsync_links=0
+      i=0
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          --links|--archive) rsync_links=1 ;;
+          --copy-links|--safe-links|--hard-links) ;;
+          --*) ;;
+          -*)
+            cluster="${tok#-}"
+            case "$cluster" in
+              *l*|*a*) rsync_links=1 ;;
+            esac
+            ;;
+        esac
+        i=$((i + 1))
+      done
+      if [ "$rsync_links" -eq 1 ]; then
+        last=""
+        i=$((exe_at + 1))
+        while [ "$i" -lt "$n" ]; do
+          tok="${words[$i]}"
+          case "$tok" in
+            --) i=$((i + 1)); continue ;;
+            -*) i=$((i + 1)); continue ;;
+          esac
+          last="$tok"
+          i=$((i + 1))
+        done
+        if [ -n "$last" ]; then
+          class="$(scope_walk_token_class "$last")"
+          case "$class" in
+            UNPARSED) scope_walk_refuse "$exe" ;;
+            REPOS:*)
+              rel="${class#REPOS:}"
+              if scope_repos_rel_is_link_node "$rel"; then
+                scope_walk_add_dest "$rel"
+              fi
+              ;;
+          esac
+        fi
+      fi
+      ;;
+    xargs)
+      dest=""
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          -*) i=$((i + 1)); continue ;;
+          *) dest="${tok##*/}"; break ;;
+        esac
+      done
+      case "$dest" in
+        ln|cp|mv|rm|rmdir|install|rsync|unlink|python|python[0-9]*|node|nodejs)
+          scope_walk_refuse "$dest"
+          ;;
+      esac
+      ;;
+    bash|sh)
+      body=""
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          -c)
+            i=$((i + 1))
+            [ "$i" -lt "$n" ] && body="${words[$i]}"
+            break
+            ;;
+        esac
+        i=$((i + 1))
+      done
+      if [ -n "$body" ]; then
+        case "$body" in
+          *'$'*|*'`'*)
+            case "$body" in
+              *ln*|*symlink*|*rsync*|*install*) scope_walk_refuse "$exe" ;;
+            esac
+            ;;
+          *)
+            if [ "$depth" -ge 4 ]; then
+              case "$body" in
+                *ln*|*symlink*|*rsync*|*install*) scope_walk_refuse "$exe" ;;
+              esac
+            else
+              scope_walk_push_frame
+              SCOPE_WALK_ASSIGNS=""
+              scope_walk_commands "$body" $((depth + 1))
+              scope_walk_pop_frame
+            fi
+            ;;
+        esac
+      fi
+      ;;
+    python|python[0-9]*|node|nodejs)
+      body=""
+      kind="python"
+      case "$exe" in
+        node|nodejs) kind="node" ;;
+      esac
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          -c|-e)
+            i=$((i + 1))
+            [ "$i" -lt "$n" ] && body="${words[$i]}"
+            break
+            ;;
+        esac
+        i=$((i + 1))
+      done
+      if [ -n "$body" ]; then
+        scope_walk_script_body "$body" "$kind"
+      fi
+      ;;
+  esac
+  # A repos path in this command is a use, except a destination recorded above.
+  # bash -c already walked its body; the body word itself is not one path.
+  case "$exe" in
+    bash|sh) ;;
+    *)
+      i=$((exe_at + 1))
+      while [ "$i" -lt "$n" ]; do
+        tok="${words[$i]}"
+        case "$tok" in
+          -*) i=$((i + 1)); continue ;;
+        esac
+        class="$(scope_walk_token_class "$tok")"
+        case "$class" in
+          REPOS:*) scope_walk_note_use "${class#REPOS:}" ;;
+        esac
+        i=$((i + 1))
+      done
+      ;;
+  esac
+  i=0
+  while [ "$i" -lt "${#redirs[@]}" ]; do
+    class="$(scope_walk_token_class "${redirs[$i]}")"
+    case "$class" in
+      REPOS:*) scope_walk_note_use "${class#REPOS:}" ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+scope_walk_commands() {
+  local cmd="${1:-}" depth="${2:-0}" segments record
+  [ -n "$cmd" ] || return 0
+  [ "$depth" -le 4 ] || return 0
+  segments="$(scope_walk_parse "$cmd" || true)"
+  while IFS= read -r record || [ -n "$record" ]; do
+    [ -n "$record" ] || continue
+    case "$record" in
+      $'\036'*)
+        case "$record" in
+          $'\036(') scope_walk_push_frame ;;
+          $'\036)') scope_walk_pop_frame ;;
+        esac
+        ;;
+      *) scope_walk_one "$record" "$depth" ;;
+    esac
+  done <<< "$segments"
+}
+
+scope_note_repo_link_mutations() {
+  local cmd="${1:-}" seen phys
+  SCOPE_LINK_MUTATION_DESTS=""
+  SCOPE_LINK_MUTATION_SEEN=""
+  SCOPE_WALK_MUTATION=0
+  SCOPE_WALK_ONE_DEST=""
+  SCOPE_WALK_THIS_DESTS=""
+  SCOPE_WALK_LOGICAL="${PAYLOAD_CWD:-$HQ_ROOT}"
+  SCOPE_WALK_PHYSICAL="$SCOPE_WALK_LOGICAL"
+  SCOPE_WALK_ASSIGNS=""
+  SCOPE_WALK_FRAMES=""
+  SCOPE_WALK_SAW_REPO=0
+  SCOPE_WALK_DOTDOT_INSIDE=0
+  SCOPE_WALK_CWD_KNOWN=1
+  SCOPE_WALK_REPO_ROOTS=""
+  SCOPE_REPO_CD_HANDLED=0
+  [ -n "$cmd" ] || return 0
+  case "$SCOPE_WALK_PHYSICAL" in
+    /*)
+      phys="$(scope_resolve_absolute_path "$SCOPE_WALK_PHYSICAL" 2>/dev/null || true)"
+      [ -n "$phys" ] && SCOPE_WALK_PHYSICAL="$phys"
+      ;;
+  esac
+  scope_walk_commands "$cmd" 0
+  if [ "${SCOPE_WALK_MUTATION:-0}" -eq 1 ]; then
+    while IFS= read -r seen || [ -n "$seen" ]; do
+      [ -n "$seen" ] || continue
+      scope_block_rel "$seen" "a command that creates, removes, or repoints a repo symlink cannot also use a path under repos/"
+    done <<< "${SCOPE_LINK_MUTATION_SEEN:-}"
+  fi
+  if [ "${SCOPE_WALK_SAW_REPO:-0}" -eq 1 ] \
+    && [ "${SCOPE_WALK_DOTDOT_INSIDE:-0}" -eq 1 ] \
+    && [ "${SCOPE_WALK_CWD_KNOWN:-1}" -eq 1 ]; then
+    SCOPE_REPO_CD_HANDLED=1
+  fi
+}
+
+# Prints allow, deny, or fallthrough. allow/deny apply only to a literal path
+# through a repos/ symlink. An outside checkout is allowed only when its
+# resolved directory is on the owner root list, the path stays inside that
+# directory, and neither the directory nor the path is rejected or sensitive.
+scope_registered_repo_decision() {
+  local raw="${1:-}" rel_lex="" link_rel="" repo_root="" final="" backtick
+  backtick=$'\140'
+  [ -n "$raw" ] || { printf '%s' fallthrough; return 0; }
+  raw="$(scope_canonicalize_repos_token "$raw")"
+  case "$raw" in
+    "$HQ_ROOT"/*) rel_lex="${raw#"$HQ_ROOT"/}" ;;
+    /*) printf '%s' fallthrough; return 0 ;;
+    *) rel_lex="$raw" ;;
+  esac
+  rel_lex="${rel_lex%/}"
+  case "$rel_lex" in
+    *'$'*|*"$backtick"*|*'('*|*'*'*|*'?'*|*'['*) printf '%s' fallthrough; return 0 ;;
+  esac
+  link_rel="$(scope_repo_link_rel "$rel_lex")"
+  [ -n "$link_rel" ] || { printf '%s' fallthrough; return 0; }
+  [ -L "$HQ_ROOT/$link_rel" ] && [ -d "$HQ_ROOT/$link_rel" ] || { printf '%s' fallthrough; return 0; }
+  repo_root="$(scope_resolve_absolute_path "$HQ_ROOT/$link_rel" 2>/dev/null || true)"
+  [ -n "$repo_root" ] && [ "$repo_root" != "/" ] || { printf '%s' deny; return 0; }
+  repo_root="${repo_root%/}"
+  case "$raw" in
+    /*) final="$(scope_resolve_absolute_path "$raw" 2>/dev/null || true)" ;;
+    *) final="$(scope_resolve_absolute_path "$HQ_ROOT/$raw" 2>/dev/null || true)" ;;
+  esac
+  [ -n "$final" ] || { printf '%s' deny; return 0; }
+  final="${final%/}"
+  if scope_repo_root_is_rejected "$repo_root" || scope_repo_root_is_rejected "$final"; then
+    printf '%s' deny
+    return 0
+  fi
+  if scope_link_path_is_sensitive "$repo_root" || scope_link_path_is_sensitive "$final"; then
+    printf '%s' deny
+    return 0
+  fi
+  case "$final" in
+    "$HQ_ROOT"/companies|"$HQ_ROOT"/companies/*) printf '%s' deny; return 0 ;;
+  esac
+  if scope_owner_root_covers "$repo_root" && scope_path_inside "$final" "$repo_root"; then
+    printf '%s' allow
+    return 0
+  fi
+  case "$final" in
+    "$HQ_ROOT"/repos/*|"$HQ_ROOT"/core/*|"$HQ_ROOT"/personal/*|"$HQ_ROOT"/workspace/*)
+      printf '%s' fallthrough
+      return 0
+      ;;
+  esac
+  printf '%s' deny
+}
+
 scope_check_bash_skill_path() {
   local raw="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
   local masked raw_masked backtick token rel resolved expansion_cwd expanded expanded_raw open_tree_candidate
@@ -3093,6 +4578,7 @@ scope_check_bash_skill_path() {
       \"*\") expanded="${expanded:1:${#expanded}-2}" ;;
       \'*\') expanded="${expanded:1:${#expanded}-2}" ;;
     esac
+    expanded="$(scope_canonicalize_repos_token "$expanded")"
     case "$expanded" in
       workspace/*|core/*|personal/*|repos/*|companies/*|/*|./*|../*|~/*)
         scope_check_bash_skill_path "$expanded" "$command_text" "$prefix" "$suffix"
@@ -3140,6 +4626,12 @@ scope_check_bash_skill_path() {
   fi
   scope_candidate_is_inert_text "$raw" "$command_text" "$prefix" "$suffix" && return 0
   case "$raw" in */*|/*) ;; *) return 0 ;; esac
+  raw="$(scope_canonicalize_repos_token "$raw")"
+  # A link being created or removed in this command is a repos/ path, not a
+  # read of whatever the link points at now. The same-command check already
+  # refused any other repos/ use.
+  scope_path_is_repo_link_mutation_dest "$raw" && return 0
+  scope_cd_dotdot_checked "$raw" && return 0
   # A command substitution stays fail-closed. Its VALUE is the program's
   # stdout, which no static check can bound, and scanning the inner command
   # instead does not help: `"$(printf %s companies / otherco /settings/x)"`
@@ -3187,6 +4679,10 @@ scope_check_bash_skill_path() {
       case "$raw_masked:$rel" in
         workspace/*:workspace/*|core/*:core/*|personal/*:personal/*|repos/*:repos/*) ;;
         *)
+          case "$(scope_registered_repo_decision "$expanded_raw")" in
+            allow) return 0 ;;
+            deny) scope_block_rel "$raw" "a path through a repo symlink is not an owner-listed checkout, leaves that checkout, enters another company, or hits a sensitive path" ;;
+          esac
           [ -n "$rel" ] || scope_block_rel "$raw" "an expanded path leaves the HQ root"
           scope_check_rel "$rel"
           ;;
@@ -3272,7 +4768,12 @@ scope_check_bash_skill_path() {
 
 case "$TOOL" in
   Read|Write|Edit|MultiEdit)
-    scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')"
+    # One jq for the path. A second parse put read-workspace and write-personal
+    # at dirname+jq+jq, over the spawn budget of 2, on paths that never touch
+    # repos/. The root-list check still runs on that same path.
+    scope_tool_path="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')"
+    scope_block_if_names_owner_roots "$scope_tool_path" path
+    scope_check_raw "$scope_tool_path"
     ;;
   NotebookEdit)
     scope_check_raw "$(printf '%s' "$INPUT" | jq -r '.tool_input.notebook_path // empty')"
@@ -3307,6 +4808,11 @@ case "$TOOL" in
   Bash)
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0
+    SCOPE_CD_APPLIED=0
+    SCOPE_CD_REPO_ROOT=""
+    SCOPE_LINK_MUTATION_DESTS=""
+    SCOPE_REPO_CD_HANDLED=0
+    scope_block_if_names_owner_roots "$cmd"
     # `cd /abs/hq; grep x companies/co/policies/*.md`: a leading cd to a
     # literal, existing directory is where the rest of the command runs, so
     # globs and $(pwd) are expanded from there instead of the payload cwd.
@@ -3335,6 +4841,8 @@ case "$TOOL" in
         if [ -d "$scope_cd_abs" ]; then
           COMMAND_CWD="$(cd "$scope_cd_abs" 2>/dev/null && pwd -P)" || COMMAND_CWD="$PAYLOAD_CWD"
           [ -n "$COMMAND_CWD" ] || COMMAND_CWD="$PAYLOAD_CWD"
+          SCOPE_CD_APPLIED=1
+          SCOPE_CD_REPO_ROOT="$(scope_cd_repo_root "$scope_cd_dir")"
         fi
       fi
     fi
@@ -3365,6 +4873,7 @@ case "$TOOL" in
     case "$cmd" in *"$scope_line_continuation"*) scope_had_line_continuation=1 ;; esac
     scope_cmd="${cmd//"$scope_line_continuation"/}"
     scope_scan_cmd="$(scope_strip_inert_heredoc_bodies "$scope_cmd")"
+    scope_note_repo_link_mutations "$scope_scan_cmd"
     scope_interpreter_heredoc_layout "$scope_scan_cmd"
     scope_remaining="$scope_scan_cmd"
     scope_offset=0
@@ -3504,6 +5013,8 @@ case "$TOOL" in
         scope_token_index=$((scope_token_index + 1))
         case "$scope_token" in companies/*|.claude*) continue ;; esac
         scope_token_is_vcs_ref_operand "$scope_token_index" && continue
+        scope_token_is_gh_api_endpoint "$scope_token_index" && continue
+        scope_token_is_bounded_loop_read "$scope_token_index" && continue
         if scope_token_is_remote_url_with_substitutions "$scope_token_index"; then
           scope_check_prose_substitutions
           continue

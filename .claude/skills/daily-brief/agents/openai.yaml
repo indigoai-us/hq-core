@@ -1,0 +1,3 @@
+interface:
+  display_name: "daily-brief"
+  short_description: "Build the Daily Brief, for a company or with no company."

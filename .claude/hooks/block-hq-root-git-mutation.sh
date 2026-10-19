@@ -78,6 +78,7 @@ fi
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$HOOK_ROOT/core/scripts/hook-lib.sh"
+CMD="$(hq_shell_strip_standalone_data_heredoc "$CMD")"
 
 STRICT_GIT_GUARD=0
 if [[ "$CMD" == *git* ]]; then

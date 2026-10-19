@@ -2183,5 +2183,6 @@ scope_112_case c73294b2 2 'for b in a; do for ext in ../../../../otherco/setting
 scope_112_case c73294b2 2 'for b in a; do for ext in png; do ext=../../otherco; cp x companies/indigo/$ext/$b; done; done'
 scope_112_case c73294b2 2 'for b in a; do while read ext; do cp x companies/indigo/data/final/$b.$ext; done; done'
 
+. "$ROOT/core/scripts/tests/scope-hook-false-blocks.cases.sh"
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

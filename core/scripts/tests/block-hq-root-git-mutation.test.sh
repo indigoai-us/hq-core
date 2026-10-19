@@ -16,6 +16,9 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 HOOK="${HQ_ROOT_GIT_GUARD_HOOK_OVERRIDE:-$ROOT/.claude/hooks/block-hq-root-git-mutation.sh}"
 TMP="$(mktemp -d)"
+# Git resolves /var through /private/var on macOS. Use the same physical
+# fixture root for nonexistent init targets and existing repository paths.
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Fake HQ root (a git repo) with a nested working repo, mirroring real layout.
@@ -466,6 +469,14 @@ if [ -e "$TMP/us071-flag-lookups" ]; then
 else
   PASS=$((PASS+1))
 fi
+
+for flag in true false; do
+  strict_expect 'quoted workspace heredoc is prose' 0 "$TMP" $'cat > workspace/notes.md <<\'EOF\'\nThe words git update-index and eval "$(git update-index)" are prose.\nEOF' "$flag"
+  strict_expect 'unquoted heredoc substitution still runs git' 2 "$TMP" $'cat > workspace/notes.md <<EOF\n$(git update-index)\nEOF' "$flag"
+  strict_expect 'heredoc piped to shell still runs git' 2 "$TMP" $'cat > workspace/notes.md <<\'EOF\' | bash\ngit update-index\nEOF' "$flag"
+  strict_expect 'heredoc followed by executable command remains checked' 2 "$TMP" $'cat > workspace/notes.md <<\'EOF\'\ngit update-index\nEOF\nbash workspace/notes.md' "$flag"
+  strict_expect 'early delimiter cannot conceal later git' 2 "$TMP" $'cat > workspace/notes.md <<\'EOF\'\ntext\nEOF\ngit update-index\nEOF' "$flag"
+done
 
 printf 'block-hq-root-git-mutation US-071 round 2: %s passed, %s failed\n' \
   "$PASS" "$FAIL"

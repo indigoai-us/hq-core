@@ -4,6 +4,9 @@ TEST_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
 DEFAULT_ROOT="$(git -C "$TEST_DIR/../../.." rev-parse --show-toplevel)"
 ROOT="${HOOK_ROOT_OVERRIDE:-$DEFAULT_ROOT}"
 TMP="$(mktemp -d)"
+# Match the physical paths emitted by the guards on macOS before normalizing
+# fixture paths for the unchanged deny-output hashes.
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 SHIMS="$TMP/shims"
 mkdir -p "$SHIMS"

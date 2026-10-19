@@ -55,7 +55,21 @@ to `AGENTS.md`) references this file as the canonical directory map under its
   from `personal/`; the old reindex mirror into `core/` is retired and reindex
   prunes leftover mirror links. `/update-hq` does not touch `personal/`.
 - **`repos/`** — code only, split into `repos/public/` and `repos/private/`. The
-  only trees that get pushed to git remotes.
+  only trees that get pushed to git remotes. A symlink at `repos/private/<name>`
+  or `repos/public/<name>` may point at a checkout outside this tree only when
+  that checkout's directory is listed in `$HOME/.hq/repo-symlink-roots` (one
+  absolute directory per line; blank lines and `#` comments are ignored). The
+  owner adds a root by editing that file in their own editor. A session cannot
+  read or modify it. A listed directory is ignored when it is `/`, `$HOME`,
+  this HQ root, an ancestor of either, or anywhere under `companies/`. The
+  hook reads the list again on every check and skips an entry whose final
+  path component is a symlink, so a listed directory later replaced by a link
+  is not trusted. On macOS the `repos/` and `private` or `public` segments,
+  and the sensitive-name check, ignore case. Other systems match the path as
+  typed. A command that creates, removes, or repoints one of those links is
+  judged from the directory the command is actually in, including after `cd`
+  or `pushd`, and may not also use a path under `repos/`. A destination the
+  command does not assign, or a nested shell the hook cannot read, is refused.
 
 ## Working state
 
