@@ -23,28 +23,11 @@
 #                                                (<hq-desktop-updated> or the
 #                                                manual remedy) and stop.
 #   * a worker is still running               -> silent.
-#   * installed app is older than the latest  -> macOS: spawn the worker, which
-#     release                                    downloads that release's
-#                                                .app.tar.gz, verifies it, swaps it
-#                                                into place, and relaunches the app
-#                                                if it was running; announce that
-#                                                the update has started.
-#                                                Windows: announce the installer
-#                                                link (never runs an installer
-#                                                silently).
-#   * a meeting recording is in progress      -> NEVER quit or kill the app.
-#                                                Two durable signals are honored:
-#                                                the shipped desktop app's
-#                                                ~/.hq/recordings-ledger.json
-#                                                (a non-empty ledger), and the
-#                                                fresh, live recording-active
-#                                                marker introduced by
-#                                                hq-desktop-app PR #1476. The
-#                                                ledger protects current shipped
-#                                                builds; the marker adds pid
-#                                                liveness and freshness for the
-#                                                new contract. Both only block
-#                                                while the app is running.
+#   * running production app                  -> defer once per pending version;
+#                                                a dev bundle does not block it.
+#   * older, closed app                       -> macOS: download, verify, swap;
+#                                                never quit or launch the app.
+#                                                Windows: advise installer link.
 #
 # "Latest" is the same public updater manifest the app itself consumes:
 #   https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json
@@ -71,13 +54,18 @@
 #
 # bash-3.2 compatible (macOS default shell).
 #
-# Kill switches: HQ_NO_ENSURE_HQ_DESKTOP=1, or HQ_DISABLED_HOOKS=...,ensure-hq-desktop,...
+# Kill switches: HQ_NO_ENSURE_HQ_DESKTOP=1, HQ_DISABLED_HOOKS=...,ensure-hq-desktop,...,
+# or HQ_UPDATER_DISABLED set to 1, true, or yes. That flag accepts the same
+# values as the desktop app's env_flag_value_enabled (trimmed, any case).
+# Empty, 0, and on leave the hook enabled. Test and demo machines set it with
+# `launchctl setenv` to pin a build; without honoring it here, the first
+# Claude prompt on such a machine (for example the first-run setup assistant)
+# replaced the pinned build with the latest release and relaunched it
+# mid-onboarding (hq-desktop-app PR #1670).
 # Test seams: HQ_ROOT, HQ_ENSURE_DESKTOP_APP_PATH, HQ_ENSURE_DESKTOP_MANIFEST_URL,
 #             HQ_ENSURE_DESKTOP_CACHE_TTL, HQ_ENSURE_DESKTOP_COOLDOWN,
 #             HQ_ENSURE_DESKTOP_TIMEOUT, HQ_ENSURE_DESKTOP_FETCH_TIMEOUT,
-#             HQ_ENSURE_DESKTOP_OS, HQ_ENSURE_DESKTOP_ARCH, HQ_ENSURE_DESKTOP_HOME,
-#             HQ_ENSURE_DESKTOP_RECORDING_WAIT, HQ_ENSURE_DESKTOP_RECORDING_GRACE,
-#             HQ_ENSURE_DESKTOP_RECORDING_POLL.
+#             HQ_ENSURE_DESKTOP_OS, HQ_ENSURE_DESKTOP_ARCH, HQ_ENSURE_DESKTOP_HOME.
 
 set -uo pipefail
 
@@ -97,6 +85,14 @@ esac
 case ",${HQ_DISABLED_HOOKS:-}," in
   *,ensure-hq-desktop,*) exit 0 ;;
 esac
+# updater.rs env_flag_value_enabled: trim, then 1 / true / yes in any case.
+_upd="${HQ_UPDATER_DISABLED:-}"
+_upd="${_upd#"${_upd%%[![:space:]]*}"}"
+_upd="${_upd%"${_upd##*[![:space:]]}"}"
+case "$_upd" in
+  1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]) exit 0 ;;
+esac
+unset _upd
 
 # --- root + state ---------------------------------------------------------
 # This file lives at <HQ>/core/hooks/UserPromptSubmit/, so the HQ root is THREE
@@ -115,6 +111,8 @@ LOCK_DIR="$STATE_DIR/updating.lock"
 LOCK_PID="$LOCK_DIR/pid"
 RESULT="$STATE_DIR/last-result"
 WORKER_LOG="$STATE_DIR/worker.log"
+APP_RUNNING_CACHE="$STATE_DIR/app-running.cache"
+DEFERRED_NOTICE="$STATE_DIR/deferred-notice"
 
 MANIFEST_URL="${HQ_ENSURE_DESKTOP_MANIFEST_URL:-https://github.com/indigoai-us/hq-desktop-app/releases/latest/download/latest.json}"
 CACHE_TTL="${HQ_ENSURE_DESKTOP_CACHE_TTL:-86400}"      # 24h between manifest fetches
@@ -126,9 +124,6 @@ ARCH_NAME="${HQ_ENSURE_DESKTOP_ARCH:-$(uname -m 2>/dev/null || echo unknown)}"
 USER_HOME="${HQ_ENSURE_DESKTOP_HOME:-${HOME:-}}"
 RECORDING_LEDGER="$USER_HOME/.hq/recordings-ledger.json"
 RECORDING_MARKER="$USER_HOME/.hq/recording-active.json"
-RECORDING_WAIT="${HQ_ENSURE_DESKTOP_RECORDING_WAIT:-10800}"
-RECORDING_GRACE="${HQ_ENSURE_DESKTOP_RECORDING_GRACE:-120}"
-RECORDING_POLL="${HQ_ENSURE_DESKTOP_RECORDING_POLL:-15}"
 
 BUNDLE_ID="ai.indigo.hq-sync-menubar"
 APP_BUNDLE="HQ.app"
@@ -146,7 +141,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 version_at_least() {
   local actual="$1" required="$2" a1 a2 a3 r1 r2 r3 oldifs
   oldifs="$IFS"; IFS='.'
+  # Intentional splitting of validated numeric semver components on dots.
+  # shellcheck disable=SC2086
   set -- $actual; a1="${1:-0}"; a2="${2:-0}"; a3="${3:-0}"
+  # shellcheck disable=SC2086
   set -- $required; r1="${1:-0}"; r2="${2:-0}"; r3="${3:-0}"
   IFS="$oldifs"
   [ "$a1" -gt "$r1" ] && return 0
@@ -164,26 +162,6 @@ file_age_ok() { # file_age_ok <file> <max-age-seconds> -> 0 when the file is you
   mtime="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)"
   now="$(date +%s 2>/dev/null || echo 0)"
   [ "$now" -gt 0 ] && [ "$((now - mtime))" -lt "$max" ]
-}
-
-stop_watchdog() {
-  local watchdog_pid="$1"
-  if have pkill; then pkill -P "$watchdog_pid" 2>/dev/null || true; fi
-  kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
-}
-
-# Run shell command string $2 bounded to $1 seconds. `timeout` is absent on
-# stock macOS, so use a portable watchdog. Returns the command's status.
-run_bounded() {
-  local secs="$1" cmd="$2" cmd_pid killer_pid rc=0
-  sh -c "$cmd" >/dev/null 2>&1 &
-  cmd_pid=$!
-  ( sleep "$secs" 2>/dev/null; kill "$cmd_pid" 2>/dev/null ) >/dev/null 2>&1 &
-  killer_pid=$!
-  wait "$cmd_pid" 2>/dev/null || rc=$?
-  stop_watchdog "$killer_pid"
-  return "$rc"
 }
 
 # --- Info.plist reading ----------------------------------------------------
@@ -293,8 +271,64 @@ ledger_recording_active() {
   grep -q '"recordingId"' "$RECORDING_LEDGER" 2>/dev/null
 }
 
-# Match the exact process NAME (-x), never the command line (-f).
-app_running() { have pgrep && pgrep -x "$PROCESS_NAME" >/dev/null 2>&1; }
+# Read-only running-app detection; never send application lifecycle commands.
+# Only the installed production bundle defers an update. A dev or demo bundle
+# running beside a closed HQ.app is not the pending update's target.
+#
+# The hook caches one process-list read for the cooldown window. The worker
+# detects again at replacement time and does not trust that cache.
+running_cache_fresh() {
+  [ "$PLATFORM" = darwin ] || return 1
+  file_age_ok "$APP_RUNNING_CACHE" "$COOLDOWN"
+}
+
+running_cache_says_yes() {
+  running_cache_fresh || return 1
+  local running=""
+  IFS= read -r running < "$APP_RUNNING_CACHE" || return 1
+  [ "$running" = 1 ]
+}
+
+write_running_cache() { # $1 = 0 or 1
+  local tmp="$APP_RUNNING_CACHE.tmp.$$"
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 0
+  printf '%s\n' "$1" > "$tmp" 2>/dev/null || return 0
+  mv "$tmp" "$APP_RUNNING_CACHE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+detect_app_running() {
+  if [ "$PLATFORM" != darwin ]; then
+    have pgrep && pgrep -x "$PROCESS_NAME" >/dev/null 2>&1
+    return
+  fi
+  local apps processes executable target="${APP_PATH:-}"
+  if have lsappinfo; then
+    apps="$(lsappinfo list 2>/dev/null)" || return 0
+    # Exact production id. A longer id such as ai.indigo.hq-sync-menubar-dev
+    # must not match: the closing quote is part of the searched text.
+    if printf '%s\n' "$apps" | grep -F "bundleID=\"${BUNDLE_ID}\"" >/dev/null; then
+      return 0
+    fi
+  fi
+  # One process list. Match the installed app's path only. Do not read other
+  # bundles' Info.plists: an unreadable plist must not look like HQ.
+  have ps || return 0
+  processes="$(ps -axo comm= 2>/dev/null)" || return 0
+  [ -n "$target" ] || return 1
+  while IFS= read -r executable || [ -n "$executable" ]; do
+    case "$executable" in
+      "$target"/Contents/*) return 0 ;;
+    esac
+  done <<< "$processes"
+  return 1
+}
+
+app_running() {
+  if [ "$MODE" != worker ] && running_cache_says_yes; then
+    return 0
+  fi
+  detect_app_running
+}
 
 # Both the legacy ledger and new marker are live recording contracts. A stale
 # signal from a crashed app does not block an update because there is no app to
@@ -375,24 +409,18 @@ emit_started() { # $1=installed $2=latest
   cat <<EOF
 <hq-desktop-update-started>
 The HQ desktop app on this machine is $1; the latest release is $2. HQ is
-updating it in the background now. This can take a few minutes; if the app is
-running it will quit and relaunch on its own once the new version is in place.
+updating it in the background now. This can take a few minutes; if the app
+starts before replacement, the update will wait until it is closed.
 The outcome will be reported on a later prompt — no action is needed.
 </hq-desktop-update-started>
 EOF
 }
 
-emit_updated() { # $1=old $2=new $3=relaunched(1/0)
-  local tail
-  if [ "$3" = "1" ]; then
-    tail="It was running, so HQ quit it and relaunched the new version."
-  else
-    tail="It was not running; the new version starts the next time HQ is opened."
-  fi
+emit_updated() { # $1=old $2=new
   cat <<EOF
 <hq-desktop-updated>
 The HQ desktop app was out of date ($1), so HQ updated it to $2 in place.
-$tail
+It was not running; the new version starts the next time HQ is opened.
 </hq-desktop-updated>
 EOF
 }
@@ -412,16 +440,15 @@ EOF
 emit_deferred() { # $1=installed $2=latest
   cat <<EOF
 <hq-desktop-update-deferred>
-The HQ desktop app on this machine is $1; the latest release is $2. HQ did NOT
-quit or restart it because a meeting recording was in progress, and the
-recording was still running when the wait bound expired. The installed app was
-left untouched; HQ will retry the update later. No action is needed.
+The HQ desktop app on this machine is $1; the latest release is $2.
+The app is running, so the hook left it untouched. The app manages its own
+updates while open; hook-driven updates wait until it is closed.
 </hq-desktop-update-deferred>
 EOF
 }
 
 # ===========================================================================
-# WORKER: download, verify, swap, relaunch. Runs detached; reports via $RESULT.
+# WORKER: download, verify, swap only while closed. Runs detached; reports via $RESULT.
 # ===========================================================================
 if [ "$MODE" = worker ]; then
   # The dispatcher claimed $LOCK_DIR before spawning us; we own it now and
@@ -435,8 +462,8 @@ if [ "$MODE" = worker ]; then
   LATEST="$(manifest_version "$CACHE")"
   [ -n "$INSTALLED" ] && [ -n "$LATEST" ] || exit 0
   DOWNLOAD_URL="$(download_url_for "$CACHE")"
-  # Keep a downloaded, verified bundle under this stable path when a recording
-  # begins during the download. The next worker verifies it again and swaps it
+  # Keep a downloaded, verified bundle under this stable path when the app
+  # starts during the download. The next worker verifies it again and swaps it
   # without fetching the same release a second time.
   WORK="$STATE_DIR/work"
 
@@ -448,30 +475,13 @@ if [ "$MODE" = worker ]; then
   }
 
   defer_update() { # $1=reason — retain the verified staged bundle for retry
-    rm -f "$STAMP" 2>/dev/null || true
+    rm -f "$STAMP" "$APP_RUNNING_CACHE" 2>/dev/null || true
     write_result deferred "$INSTALLED" "$LATEST" "$1" 0 "$DOWNLOAD_URL"
     echo "[$(date -u +%H:%M:%S)] deferred: $1"
     exit 0
   }
 
-  # A recording can begin while the detached worker downloads. Wait for it to
-  # end, then let Recall settle its upload before re-checking and quitting.
-  wait_for_recording_to_end() {
-    local waited=0 announced=0
-    while recording_in_progress; do
-      if [ "$announced" = 0 ]; then
-        echo "[$(date -u +%H:%M:%S)] a meeting recording is in progress; waiting for it to end before quitting the app"
-        announced=1
-      fi
-      [ "$waited" -lt "$RECORDING_WAIT" ] || return 1
-      sleep "$RECORDING_POLL"; waited=$((waited + RECORDING_POLL))
-      if ! recording_in_progress; then
-        echo "[$(date -u +%H:%M:%S)] recording ended; settling ${RECORDING_GRACE}s before quitting the app"
-        sleep "$RECORDING_GRACE"; waited=$((waited + RECORDING_GRACE))
-      fi
-    done
-    return 0
-  }
+  app_running && defer_update "the HQ desktop app is running; its own updater owns updates"
 
   echo "[$(date -u +%H:%M:%S)] updating $INSTALLED -> $LATEST from $DOWNLOAD_URL"
   have curl || fail_update "curl is not available to download it"
@@ -482,8 +492,8 @@ if [ "$MODE" = worker ]; then
     NEW_APP="$(find "$WORK" -maxdepth 2 -type d -name '*.app' 2>/dev/null | head -1)"
   fi
   # A deferred worker can leave a verified bundle here for a retry after a
-  # recording ends. Reuse it only for this exact release: the manifest may
-  # have advanced while the recording was in progress.
+  # running app closes. Reuse it only for this exact release: the manifest may
+  # have advanced while the app was open.
   if [ -n "$NEW_APP" ] && [ -f "$NEW_APP/Contents/Info.plist" ]; then
     if [ "$(bundle_identifier "$NEW_APP")" != "$BUNDLE_ID" ] \
       || [ "$(bundle_version "$NEW_APP")" != "$LATEST" ]; then
@@ -514,54 +524,23 @@ if [ "$MODE" = worker ]; then
       || fail_update "the downloaded app failed code-signature verification"
   fi
 
-  # NEVER quit or kill the app while it is recording. A deferred update keeps
-  # the verified $WORK bundle and clears the cooldown for the next prompt.
-  wait_for_recording_to_end \
-    || defer_update "a meeting recording was still in progress after waiting ${RECORDING_WAIT}s"
-
-  # Quit the running app gracefully (its own updater does the same), then swap.
-  WAS_RUNNING=0
-  if app_running; then
-    WAS_RUNNING=1
-    if have osascript; then
-      # The recording can start after the bounded wait returns. Re-check at
-      # the termination boundary itself; do not send even a graceful quit once
-      # either recording contract becomes live.
-      recording_in_progress && defer_update "a meeting recording started before quitting the app"
-      run_bounded 10 "osascript -e 'tell application id \"$BUNDLE_ID\" to quit'" || true
-    fi
-    i=0
-    while [ "$i" -lt 10 ] && app_running; do
-      sleep 1; i=$((i + 1))
-    done
-    if app_running; then
-      # A graceful quit can be ignored for several seconds. Check again before
-      # the force-kill fallback because a recording may have started meanwhile.
-      recording_in_progress && defer_update "a meeting recording started before force-killing the app"
-      have pkill && pkill -x "$PROCESS_NAME" >/dev/null 2>&1
-      sleep 2
-    fi
-  fi
-
   BACKUP="$APP_PATH.hq-ensure-backup.$$"
   rm -rf "$BACKUP" 2>/dev/null || true
+  # The app may have started during download or verification. Check at the
+  # replacement boundary and retain the verified bundle for a later prompt.
+  app_running && defer_update "the HQ desktop app started before replacement"
   if ! mv "$APP_PATH" "$BACKUP" 2>/dev/null; then
     fail_update "it could not replace $APP_PATH (permission denied?)"
   fi
   if ! mv "$NEW_APP" "$APP_PATH" 2>/dev/null; then
     mv "$BACKUP" "$APP_PATH" 2>/dev/null || true
-    [ "$WAS_RUNNING" = 1 ] && have open && open -a "$APP_PATH" >/dev/null 2>&1
     fail_update "it could not move the new app into $APP_PATH (the old copy was kept)"
   fi
   rm -rf "$BACKUP" "$WORK" 2>/dev/null || true
   rm -f "$STAMP" 2>/dev/null || true
 
-  RELAUNCHED=0
-  if [ "$WAS_RUNNING" = 1 ] && have open; then
-    open -a "$APP_PATH" >/dev/null 2>&1 && RELAUNCHED=1
-  fi
-  write_result updated "$INSTALLED" "$NEW_VERSION" "" "$RELAUNCHED" "$DOWNLOAD_URL"
-  echo "[$(date -u +%H:%M:%S)] updated $INSTALLED -> $NEW_VERSION (relaunched=$RELAUNCHED)"
+  write_result updated "$INSTALLED" "$NEW_VERSION" "" 0 "$DOWNLOAD_URL"
+  echo "[$(date -u +%H:%M:%S)] updated $INSTALLED -> $NEW_VERSION (app left closed)"
   exit 0
 fi
 
@@ -578,12 +557,12 @@ if [ -f "$RESULT" ]; then
   if mv "$RESULT" "$CLAIM" 2>/dev/null; then
     RESULT="$CLAIM"
     R_STATUS="$(result_get status)"; R_FROM="$(result_get from)"; R_TO="$(result_get to)"
-    R_REASON="$(result_get reason)"; R_RELAUNCHED="$(result_get relaunched)"; R_URL="$(result_get url)"
+    R_REASON="$(result_get reason)"; R_URL="$(result_get url)"
     rm -f "$CLAIM" 2>/dev/null || true
     case "$R_STATUS" in
-      updated) emit_updated "$R_FROM" "$R_TO" "$R_RELAUNCHED"; exit 0 ;;
+      updated) emit_updated "$R_FROM" "$R_TO"; exit 0 ;;
       failed)  emit_available "$R_FROM" "$R_TO" "$R_URL" "$R_REASON"; exit 0 ;;
-      # A deferred worker may have finished after the recording stopped. Claim
+      # A deferred worker may have finished after the app closed. Claim
       # its result, then continue so this same prompt can reuse its staged app.
       deferred) : ;;
     esac
@@ -627,15 +606,48 @@ if version_at_least "$INSTALLED" "$LATEST"; then
   exit 0                                             # current -> silent
 fi
 
-# Do this before taking the lock or writing the cooldown stamp. A recording
-# must defer both macOS replacement and the Windows installer prompt without
-# making the next post-recording prompt wait through the normal cooldown.
+# A running production app defers replacement. Notice once per pending
+# version, and never delete the cooldown stamp from this check. A recording
+# defers Windows installer advice the same way.
 DOWNLOAD_URL="$(download_url_for "$CACHE")"
-if recording_in_progress; then
-  rm -f "$STAMP" 2>/dev/null || true
-  write_result deferred "$INSTALLED" "$LATEST" recording_active 0 "$DOWNLOAD_URL"
+defer_notice_once() {
+  local seen="" tmp="$DEFERRED_NOTICE.tmp.$$"
+  [ -f "$DEFERRED_NOTICE" ] && IFS= read -r seen < "$DEFERRED_NOTICE" || true
+  [ "$seen" = "$LATEST" ] && return 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  printf '%s\n' "$LATEST" > "$tmp" 2>/dev/null && mv "$tmp" "$DEFERRED_NOTICE" 2>/dev/null || true
+  write_result deferred "$INSTALLED" "$LATEST" app_running 0 "$DOWNLOAD_URL"
   emit_deferred "$INSTALLED" "$LATEST"
+}
+
+if [ "$PLATFORM" = darwin ] && running_cache_says_yes; then
+  defer_notice_once
   exit 0
+fi
+if [ "$PLATFORM" != darwin ] && recording_in_progress; then
+  defer_notice_once
+  exit 0
+fi
+
+# Read the process list only when the cached answer is missing, or when a
+# cached "not running" would otherwise let this prompt start an update.
+# A fresh cooldown stamp never skips the running-app notice, and this check
+# does not delete that stamp.
+if [ "$PLATFORM" = darwin ]; then
+  scan=0
+  if ! running_cache_fresh; then
+    scan=1
+  elif ! file_age_ok "$STAMP" "$COOLDOWN"; then
+    scan=1
+  fi
+  if [ "$scan" -eq 1 ]; then
+    if detect_app_running; then
+      write_running_cache 1
+      defer_notice_once
+      exit 0
+    fi
+    write_running_cache 0
+  fi
 fi
 
 # --- 4. cooldown: one attempt (and one announcement) per window -----------

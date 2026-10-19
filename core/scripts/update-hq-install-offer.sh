@@ -59,12 +59,10 @@ result_for_current_state() {
     printf '%s\n' off
     return
   fi
-  if ! flag="$(HQ_FLAG_CLI_BIN="$cli_bin" HQ_FLAGS_API_URL="$endpoint" \
-    HQ_COMPANY_UID="$company_uid" HQ_COMPANY_SLUG="$company_slug" node "$FLAG_READER")"; then
-    printf '%s\n' off
-    return
-  fi
-  if [[ "$flag" != true ]]; then
+  flag="$(HQ_FLAG_CLI_BIN="$cli_bin" HQ_FLAGS_API_URL="$endpoint" \
+    HQ_COMPANY_UID="$company_uid" HQ_COMPANY_SLUG="$company_slug" node "$FLAG_READER" || printf true)"
+  case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in false|0) flag=false;; esac
+  if [[ "$flag" == false ]]; then
     printf '%s\n' off
     return
   fi

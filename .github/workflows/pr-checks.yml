@@ -757,6 +757,8 @@ jobs:
         run: bash core/scripts/tests/ensure-hq-cli-hook.test.sh
       - name: ensure-hq-desktop hook detects/updates the desktop app
         run: bash core/scripts/tests/ensure-hq-desktop-hook.test.sh
+      - name: ensure-hq-desktop hook stays inside its process budget
+        run: bash core/scripts/tests/ensure-hq-desktop-process-budget.test.sh
 
   # A hook that exits before reading stdin used to be reported as having FAILED
   # with 141: the dispatcher piped the payload in, the hook closed the read end,
@@ -1557,6 +1559,8 @@ jobs:
         run: bash core/scripts/tests/hook-tool-scope-self-assert.test.sh
       - name: Runtime adapters repair hooks or emit bounded diagnostics
         run: bash core/scripts/tests/hook-runtime-diagnostics.test.sh
+      - name: hook-gate defaults HQ Anywhere on for GA
+        run: bash core/scripts/tests/hook-gate-anywhere-default.test.sh
       - name: hook-gate augments PATH for version-manager node (nvm/volta/fnm/asdf)
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: All tracked .sh files are mode 100755 in the git index (US-004)
@@ -1628,6 +1632,7 @@ jobs:
           timeout 240s bash core/scripts/tests/block-unsafe-package-install-process-budget.test.sh | tail -200
           timeout 240s bash core/scripts/tests/block-core-writes-bash-process-budget.test.sh | tail -200
           timeout 60s bash .claude/hooks/tests/block-policy-writes-bash-process-budget.test.sh | tail -200
+          timeout 60s bash core/scripts/tests/ensure-hq-desktop-process-budget.test.sh | tail -200
           timeout 600s bash core/scripts/tests/block-guard-hooks-parity.test.sh | tail -200
 
   # US-005: shell portability lint + shellcheck + cross-platform smoke.
@@ -2560,7 +2565,7 @@ jobs:
           else
             changed="$(git diff --name-only HEAD~1 HEAD || true)"
           fi
-          echo "$changed" | grep -qE '^core/scripts/lib/provider-adapter\.sh$|^core/scripts/lib/provider-adapters/|^core/scripts/lib/provider-adapter-version\.sh$|^core/scripts/generate-adapter-capabilities\.sh$|^core/scripts/tests/provider-adapter-|^core/scripts/tests/probes/|^core/scripts/codex-preflight\.sh$|^core/scripts/convert-codex\.sh$|^core/scripts/tests/codex-sandbox-danger-full-access\.test\.sh$|^core/workers/public/dev-team/|^\.claude/scripts/run-project\.sh$|^\.claude/skills/execute-task/SKILL\.md$' \
+          echo "$changed" | grep -qE '^core/scripts/lib/provider-adapter\.sh$|^core/scripts/lib/provider-adapters/|^core/scripts/lib/provider-adapter-version\.sh$|^core/scripts/generate-adapter-capabilities\.sh$|^core/scripts/tests/provider-adapter-|^core/scripts/tests/probes/|^core/scripts/codex-preflight\.sh$|^core/scripts/convert-codex\.sh$|^core/scripts/tests/codex-sandbox-danger-full-access\.test\.sh$|^core/workers/public/dev-team/|^\.claude/scripts/run-project\.sh$|^\.claude/skills/execute-task/SKILL\.md$|^\.codex/config\.toml$|^\.codex/hooks/hq-codex-hook|^core/scripts/tests/codex-windows-hook-launcher' \
             && echo "run=true" >> "$GITHUB_OUTPUT" \
             || echo "run=false" >> "$GITHUB_OUTPUT"
 
@@ -2576,6 +2581,10 @@ jobs:
         if: steps.filter.outputs.run == 'true'
         run: bash core/scripts/tests/codex-sandbox-danger-full-access.test.sh
 
+      - name: codex Windows hook launcher (feedback_d0c2f082)
+        if: steps.filter.outputs.run == 'true'
+        run: bash core/scripts/tests/codex-windows-hook-launcher.test.sh
+
       - name: grok adapter suite
         if: steps.filter.outputs.run == 'true'
         run: bash core/scripts/tests/provider-adapter-grok.test.sh
@@ -2587,6 +2596,49 @@ jobs:
       - name: Capability snapshot is not stale
         if: steps.filter.outputs.run == 'true'
         run: bash core/scripts/tests/provider-adapter-capabilities-snapshot.test.sh
+
+  # ─── Codex hooks on Windows (feedback_d0c2f082) ─────────────────────
+  #
+  # Runs every commandWindows string from .codex/config.toml through
+  # `cmd.exe /C "<command>"`, the way Codex starts hooks on Windows, against a
+  # fake HQ root with the real launcher and a stub adapter. Pins byte-identical
+  # stdin, exit 2 with HQ_ROOT set and unset, fail-closed exits for a missing
+  # bash or launcher, and folder names with ")" and a space.
+  codex-windows-hook-launcher:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    name: codex-windows-hook-launcher
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether codex Windows hook files changed
+        id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}" || true
+            changed="$(git diff --name-only "$base"...HEAD || true)"
+          else
+            changed="$(git diff --name-only HEAD~1 HEAD || true)"
+          fi
+          echo "$changed" | grep -qE '^\.codex/config\.toml$|^\.codex/hooks/hq-codex-hook|^core/scripts/tests/codex-windows-hook-launcher' \
+            && echo "run=true" >> "$GITHUB_OUTPUT" \
+            || echo "run=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.filter.outputs.run == 'true'
+        with:
+          node-version: '22'
+
+      - name: codex Windows hook launcher runtime (cmd.exe /C)
+        if: steps.filter.outputs.run == 'true'
+        run: node core/scripts/tests/codex-windows-hook-launcher-runtime.test.mjs
 
   planning-merge:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -2602,3 +2654,17 @@ jobs:
         run: bash core/scripts/tests/prd-minimum-questions.test.sh
       - name: Brainstorm plan gate and plan phase
         run: bash core/scripts/tests/brainstorm-gate.test.sh
+
+  daily-brief-tests:
+    # Daily-brief fixtures run with an isolated HOME and no live services.
+    name: daily-brief-tests
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Daily brief unit tests
+        run: |
+          set -euo pipefail
+          brief_test_home="$(mktemp -d)"
+          for suite in test_brief_helpers test_brief_additions test_local_sessions test_person_brief; do
+            env HOME="$brief_test_home" XDG_CONFIG_HOME="$brief_test_home" XDG_CACHE_HOME="$brief_test_home" CLAUDE_CONFIG_DIR="$brief_test_home" CODEX_HOME="$brief_test_home" python3 -I ".claude/skills/daily-brief/scripts/$suite.py"
+          done

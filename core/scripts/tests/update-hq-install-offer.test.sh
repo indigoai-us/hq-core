@@ -116,6 +116,18 @@ unbound="$(env -u HQ_FLAGS_API_URL -u HQ_COMPANY_UID -u HQ_COMPANY_SLUG \
 echo "PASS: unbound company, including person-only override, remains off"
 
 setup_case persistence-error
+mkdir -p "$CASE/copied/core/scripts"
+cp "$SCRIPT" "$CASE/copied/core/scripts/update-hq-install-offer.sh"
+printf 'throw new Error("fixture failure");\n' > "$CASE/copied/core/scripts/hq-anywhere-runtime-flag.cjs"
+[[ "$(bash "$CASE/copied/core/scripts/update-hq-install-offer.sh" --check 2>/dev/null)" == offer ]] \
+  || fail "failed flag reader must default on"
+for override in false 0; do
+  [[ "$(HQ_FLAG_HQ_ANYWHERE_RUNTIME="$override" bash "$CASE/copied/core/scripts/update-hq-install-offer.sh" --check 2>/dev/null)" == off ]] \
+    || fail "environment kill switch must survive a failed reader"
+done
+echo "PASS: failed reader defaults on and preserves both environment kill switches"
+
+setup_case persistence-error-final
 mkdir -p "$CASE/bin"
 cat > "$CASE/bin/mv" <<'SH'
 #!/usr/bin/env bash

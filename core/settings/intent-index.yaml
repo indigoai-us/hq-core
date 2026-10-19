@@ -62,6 +62,8 @@ skills:
     use: "Add Codex support to older Claude-first HQ roots without breaking Claude setup."
   - name: "/create-skill"
     use: "Create a shared company skill in HQ with a durable identity and ACL governance. Not for personal or local-only skills."
+  - name: "/daily-brief"
+    use: "Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI a"
   - name: "/decision-queue"
     use: "Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor."
   - name: "/deep-plan"

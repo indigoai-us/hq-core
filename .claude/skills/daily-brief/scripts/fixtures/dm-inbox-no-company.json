@@ -1,0 +1,43 @@
+[
+  {
+    "eventId": "evt_example_1",
+    "fromPersonUid": "prs_alex",
+    "fromEmail": "alex@example.com",
+    "fromDisplayName": "Alex",
+    "body": "Can you take a look?",
+    "createdAt": "2026-10-11T15:00:00.000Z"
+  },
+  {
+    "eventId": "evt_example_2",
+    "fromPersonUid": "prs_sam",
+    "fromEmail": "sam@example.com",
+    "fromDisplayName": "Sam",
+    "body": "Shipped the note.",
+    "createdAt": "2026-10-11T16:00:00.000Z",
+    "details": "A neutral detail line.",
+    "prompt": "Reply about the note."
+  },
+  {
+    "eventId": "evt_example_3",
+    "fromPersonUid": "prs_alex",
+    "fromEmail": "alex@example.com",
+    "fromDisplayName": "Alex",
+    "body": "File attached.",
+    "createdAt": "2026-10-11T17:00:00.000Z",
+    "companyUid": "uid_example_not_a_slug",
+    "attachment": {
+      "companyUid": "uid_example_not_a_slug",
+      "kind": "file",
+      "name": "note.txt",
+      "vaultPath": "vault/note.txt"
+    },
+    "attachments": [
+      {
+        "companyUid": "uid_example_not_a_slug",
+        "kind": "file",
+        "name": "note.txt",
+        "vaultPath": "vault/note.txt"
+      }
+    ]
+  }
+]

@@ -12,14 +12,15 @@
 #   3. Refresh a stale manifest cache, then stay silent when still current.
 #   4. Announce that an update has STARTED and return immediately even when the
 #      download is slow; the worker then downloads, unpacks, verifies, swaps,
-#      relaunches a running app, and the NEXT prompt announces the result once.
+#      leaves the app closed, and the NEXT prompt announces the result once.
 #   5. Not relaunch an app that was not running.
 #   6. Leave the installed app untouched when verification fails (codesign,
 #      bundle id, version) and surface the manual remedy once.
 #   7. Not retry while the cooldown stamp is fresh.
 #   8. Stay silent while a live peer holds the lock; reclaim a dead worker's lock.
 #   9. On Windows, advise once per cooldown with the installer link; never download.
-#  10. Stay silent on other platforms and under its kill switches.
+#  10. Stay silent on other platforms and under its kill switches, including
+#      the desktop app's own HQ_UPDATER_DISABLED.
 #  11. Stay silent when no manifest can be obtained at all.
 #  12. Concurrent invocations do not interfere: many hooks at once spawn ONE
 #      worker, download ONCE, announce the start ONCE, and later report the
@@ -51,7 +52,7 @@ BASH_BIN="$(command -v bash)"
 # PATH of "$BIN:$CORE" gives the hook its tools while $BIN controls which
 # platform-specific commands (curl, pgrep, osascript, open, codesign) exist.
 CORE="$TMP/core"; mkdir -p "$CORE"
-for u in bash sh cat cp stat date mkdir rm mv rmdir dirname basename tr sed grep head find tar gzip sleep kill pkill env chmod setsid nohup; do
+for u in bash sh cat cp stat date mkdir rm mv rmdir dirname basename tr sed grep head find tar gzip sleep touch kill env chmod setsid nohup; do
   p="$(command -v "$u" 2>/dev/null)" && ln -sf "$p" "$CORE/$u"
 done
 # jq is optional for the hook; exercise the no-jq (sed/grep) parsers here.
@@ -148,19 +149,31 @@ CALLS="$TMP/calls.log"
 stub open      "echo \"open \$*\" >> '$CALLS'"
 stub codesign  "echo codesign >> '$CALLS'; exit 0"
 RUNNING_FLAG="$TMP/app-running"
-# pgrep reports running while the flag exists; osascript's quit removes it.
-# Both must be asked for the exact process NAME (-x), never a command-line
-# pattern (-f): a -f match once killed the shell running this very test.
-stub pgrep "echo \"pgrep \$*\" >> '$CALLS'; [ \"\$1\" = -x ] || exit 3; [ -f '$RUNNING_FLAG' ]"
-# The hook's watchdog helper legitimately uses `pkill -P <pid>`; pass that
-# through to the real pkill so background sleeps are reaped.
-stub pkill "[ \"\$1\" = -P ] && exec '$CORE/pkill' \"\$@\"; echo \"pkill \$*\" >> '$CALLS'; [ \"\$1\" = -x ] || exit 3; rm -f '$RUNNING_FLAG'"
-stub osascript "echo osascript >> '$CALLS'; rm -f '$RUNNING_FLAG'"
+LS_ID="$TMP/ls-bundle-id"
+PS_PATH="$TMP/ps-executable"
+stub_lsappinfo() {
+  stub lsappinfo "[ \"\$1\" = list ] || exit 2
+if [ -f '$LS_ID' ]; then
+  printf '    bundleID=\"%s\"\n' \"\$(cat '$LS_ID')\"
+elif [ -f '$RUNNING_FLAG' ]; then
+  printf '    bundleID=\"ai.indigo.hq-sync-menubar\"\n'
+fi
+exit 0"
+}
+stub_lsappinfo
+stub_ps() { stub ps "[ \"\$*\" = '-axo comm=' ] || exit 2; [ ! -f '$PS_PATH' ] || cat '$PS_PATH'; exit 0"; }
+stub_ps
+# Every lifecycle command is a logging stub; none may reach the host app.
+stub pgrep "echo \"pgrep \$*\" >> '$CALLS'; [ -f '$RUNNING_FLAG' ]"
+stub pkill "echo pkill >> '$CALLS'; exit 99"
+stub osascript "echo osascript >> '$CALLS'; exit 99"
+no_lifecycle() { [ -f "$CALLS" ] || return 0; grep -Eq '^(open|pkill|osascript)( |$)' "$CALLS" && fail "lifecycle command invoked"; return 0; }
 
 reset_root() {
+  no_lifecycle
   rm -rf "$ROOTDIR" "$HOMEDIR" "$APPS"
   mkdir -p "$ROOTDIR/workspace" "$HOMEDIR" "$APPS"
-  : > "$CURL_LOG"; : > "$CALLS"; rm -f "$RUNNING_FLAG" "$SLOW_FLAG"
+  : > "$CURL_LOG"; : > "$CALLS"; rm -f "$RUNNING_FLAG" "$SLOW_FLAG" "$LS_ID" "$PS_PATH"
 }
 fresh_cache() { mkdir -p "$STATE"; write_manifest "$STATE/latest.json" "${1:-0.10.200}"; }
 stale_cache() { fresh_cache "$@"; touch -d '2 days ago' "$STATE/latest.json" 2>/dev/null || touch -t 202001010000 "$STATE/latest.json"; }
@@ -206,7 +219,12 @@ wait_worker() {
   while [ "$i" -lt 25 ] && [ -d "$STATE/updating.lock" ]; do sleep 0.2; i=$((i + 1)); done
 }
 no_download() { grep -q '.tar.gz' "$CURL_LOG" && fail "$1"; return 0; }
-run_hook_guard() { run_hook HQ_ENSURE_DESKTOP_RECORDING_POLL=1 HQ_ENSURE_DESKTOP_RECORDING_GRACE=1 HQ_ENSURE_DESKTOP_RECORDING_WAIT=2; }
+wait_download() {
+  local i=0
+  while [ "$i" -lt 100 ] && ! grep -q '.tar.gz' "$CURL_LOG"; do sleep 0.02; i=$((i + 1)); done
+  grep -q '.tar.gz' "$CURL_LOG" || fail "worker did not begin download"
+}
+run_hook_guard() { run_hook; }
 
 # --- 1. not installed -> silent, no network -------------------------------
 reset_root
@@ -294,15 +312,14 @@ out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "empty recor
 reset_root; write_plist "$APP" 0.10.150; fresh_cache
 out="$(run_hook)"; has "$out" '<hq-desktop-update-started>' || fail "missing recording ledger must not defer, got: $out"; wait_worker
 
-# --- 4. outdated + running -> starts at once, worker updates, next prompt reports
+# --- 4. outdated + closed -> starts at once, worker updates, next prompt reports
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
-: > "$RUNNING_FLAG"
 : > "$SLOW_FLAG"                      # the download takes 2s...
-start="$(date +%s%N 2>/dev/null || date +%s)"
+start="$(python3 -c 'import time; print(time.monotonic_ns())')"
 out="$(run_hook)"
-end="$(date +%s%N 2>/dev/null || date +%s)"
+end="$(python3 -c 'import time; print(time.monotonic_ns())')"
 elapsed_ms=$(( (end - start) / 1000000 ))
 has "$out" '<hq-desktop-update-started>' || fail "outdated app should announce the start, got: $out"
 has "$out" '0.10.150' || fail "start announcement should name the installed version"
@@ -315,11 +332,7 @@ wait_worker
 grep -q '0.10.200' "$APP/Contents/MacOS/hq-sync-menubar" || fail "new bundle contents not in place"
 grep -qx "$MAC_URL" "$CURL_LOG" || fail "the darwin release URL was not downloaded"
 grep -q codesign "$CALLS" || fail "codesign verification was skipped"
-grep -q osascript "$CALLS" || fail "running app was not asked to quit"
-grep -q 'pgrep -x hq-sync-menubar' "$CALLS" || fail "app must be matched by exact process name (pgrep -x)"
-grep -q 'pgrep -f' "$CALLS" && fail "app must never be matched by command line (pgrep -f)"
-grep -q 'pkill -x' "$CALLS" && fail "a gracefully quit app must not be force-killed"
-grep -q "open -a $APP" "$CALLS" || fail "running app was not relaunched"
+no_lifecycle
 [ ! -f "$STATE/last-attempt.stamp" ] || fail "successful update must clear the stamp"
 [ ! -d "$STATE/updating.lock" ] || fail "lock must be released when the worker exits"
 [ -z "$(find "$APPS" -maxdepth 1 -name '*.hq-ensure-backup.*')" ] || fail "backup bundle was left behind"
@@ -328,7 +341,7 @@ grep -q 'updated 0.10.150 -> 0.10.200' "$STATE/worker.log" || fail "worker log m
 # Next prompt reports the outcome once; the one after is silent.
 out="$(run_hook)"
 has "$out" '<hq-desktop-updated>' || fail "next prompt should report <hq-desktop-updated>, got: $out"
-has "$out" 'relaunched' || fail "report should say it was relaunched"
+has "$out" 'not running' || fail "report should say app was closed"
 out="$(run_hook)"
 [ -z "$out" ] || fail "outcome must be reported only once, got: $out"
 
@@ -337,17 +350,18 @@ out="$(run_hook)"
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
-: > "$RUNNING_FLAG"
 : > "$SLOW_FLAG"
 out="$(run_hook_guard)"
 has "$out" '<hq-desktop-update-started>' || fail "worker recording case should start, got: $out"
+wait_download
+: > "$RUNNING_FLAG"
 fresh_recording
 wait_worker
 [ "$(installed_version)" = "0.10.150" ] || fail "worker must not replace an app during recording"
 grep -qx 'status=deferred' "$STATE/last-result" || fail "worker must record recording deferral"
 [ ! -f "$STATE/last-attempt.stamp" ] || fail "worker deferral must clear cooldown stamp"
 [ -d "$STATE/work" ] || fail "worker deferral must retain the staged bundle"
-rm -f "$HOMEDIR/.hq/recording-active.json" "$SLOW_FLAG"
+rm -f "$HOMEDIR/.hq/recording-active.json" "$SLOW_FLAG" "$RUNNING_FLAG"
 out="$(run_hook)"
 has "$out" '<hq-desktop-update-started>' || fail "post-recording prompt should retry immediately, got: $out"
 wait_worker
@@ -368,19 +382,91 @@ wait_worker
 grep -qx 'status=updated' "$STATE/last-result" || fail "stale staged bundle should produce an updated result"
 [ "$(grep -c '.tar.gz' "$CURL_LOG")" -eq 1 ] || fail "stale staged bundle must download the current release"
 
-# 4b. graceful quit ignored -> the fallback kills by exact name only.
-reset_root
-write_plist "$APP" 0.10.150
-fresh_cache
+# 4b. Running at dispatch without any recording: no worker or lifecycle calls.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
 : > "$RUNNING_FLAG"
-stub osascript "echo osascript >> '$CALLS'"   # app ignores the quit
 out="$(run_hook)"
-has "$out" '<hq-desktop-update-started>' || fail "stuck app should still start an update, got: $out"
+has "$out" '<hq-desktop-update-deferred>' || fail "running app must defer"
+[ ! -d "$STATE/updating.lock" ] || fail "running app dispatched a worker"
+[ ! -f "$STATE/worker.log" ] || fail "running app started worker"
+no_download "running app downloaded release"
+[ "$(installed_version)" = 0.10.150 ] || fail "running app changed"
+no_lifecycle
+
+# The deferral notice is once per pending version, and only for the production
+# bundle. This check must not delete the cooldown stamp.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+: > "$RUNNING_FLAG"
+mkdir -p "$STATE"
+printf 'keep\n' > "$STATE/last-attempt.stamp"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' || fail "production app should notice once, got: $out"
+[ "$(cat "$STATE/last-attempt.stamp")" = "keep" ] || fail "deferral deleted the cooldown stamp"
+[ ! -d "$STATE/updating.lock" ] || fail "production app dispatched a worker"
+out="$(run_hook)"
+[ -z "$out" ] || fail "second prompt in the same window should be silent, got: $out"
+[ "$(cat "$STATE/last-attempt.stamp")" = "keep" ] || fail "second prompt deleted the cooldown stamp"
+write_manifest "$STATE/latest.json" 0.10.201
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' || fail "a new pending version should notice again, got: $out"
+has "$out" '0.10.201' || fail "new notice should name the new version, got: $out"
+out="$(run_hook)"
+[ -z "$out" ] || fail "the new version should be silent on the next prompt, got: $out"
+rm -f "$STATE/app-running.cache" "$STATE/last-attempt.stamp"
+out="$(run_hook)"
+[ -z "$out" ] || fail "the same pending version should stay silent without the cache, got: $out"
+[ ! -f "$STATE/worker.log" ] || fail "a repeated notice started a worker"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "silent deferral must not write a cooldown stamp"
+no_lifecycle
+
+# A dev bundle beside a stale, closed production app is not the update target.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+printf '%s\n' ai.indigo.hq-sync-menubar-dev > "$LS_ID"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' && fail "dev bundle must not produce a deferral notice, got: $out"
+has "$out" '<hq-desktop-update-started>' || fail "closed production app should update while a dev bundle runs, got: $out"
 wait_worker
-[ "$(installed_version)" = "0.10.200" ] || fail "stuck app should still be updated"
-grep -q 'pkill -x hq-sync-menubar' "$CALLS" || fail "stuck app should be killed by exact name"
-grep -q 'pkill -f' "$CALLS" && fail "fallback must never pkill -f"
-stub osascript "echo osascript >> '$CALLS'; rm -f '$RUNNING_FLAG'"
+[ "$(installed_version)" = "0.10.200" ] || fail "dev bundle blocked the production app update"
+no_lifecycle
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+printf '%s\n' com.example.unrelated > "$LS_ID"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-started>' || fail "unrelated app must not block"
+wait_worker
+[ "$(installed_version)" = "0.10.200" ] || fail "unrelated app blocked replacement"
+no_lifecycle
+
+# ps fallback matches the installed app's path. It does not read other bundles.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+printf '%s\n' "$APP/Contents/MacOS/hq-sync-menubar" > "$PS_PATH"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' || fail "installed app process must defer, got: $out"
+[ ! -f "$STATE/worker.log" ] || fail "installed app process dispatched a worker"
+no_download "installed app process downloaded release"
+no_lifecycle
+
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+BROKEN="$APPS/Broken.app"
+mkdir -p "$BROKEN/Contents/MacOS"
+{
+  printf '%s\n' "$BROKEN/Contents/MacOS/anything"
+  printf '%s\n' "$APPS/Dev.app/Contents/MacOS/hq-sync-menubar"
+} > "$PS_PATH"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' && fail "unreadable or other bundle must not defer, got: $out"
+has "$out" '<hq-desktop-update-started>' || fail "unreadable plist must not block the update, got: $out"
+wait_worker
+[ "$(installed_version)" = "0.10.200" ] || fail "unreadable plist blocked the update"
+no_lifecycle
+
+# A detector error is not evidence that the app is closed.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+stub ps 'exit 2'
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' || fail "detector error must defer"
+[ ! -f "$STATE/worker.log" ] || fail "detector error dispatched worker"
+stub_ps
 
 # --- 5. outdated + not running -> update, no relaunch --------------------
 reset_root
@@ -487,8 +573,27 @@ out="$(run_hook HQ_NO_ENSURE_HQ_DESKTOP=1)"
 [ -z "$out" ] || fail "HQ_NO_ENSURE_HQ_DESKTOP=1 should be silent, got: $out"
 out="$(run_hook HQ_DISABLED_HOOKS='foo,ensure-hq-desktop,bar')"
 [ -z "$out" ] || fail "HQ_DISABLED_HOOKS should be silent, got: $out"
+# HQ_UPDATER_DISABLED is the desktop app's own updater kill switch. A machine
+# that pins a build with it (test and demo VMs) must not have the pinned app
+# replaced and relaunched by the first Claude prompt (hq-desktop-app PR #1670).
+for v in 1 true TRUE True yes YES Yes ' yes' '1 '; do
+  rm -f "$STATE/last-attempt.stamp"
+  out="$(run_hook HQ_UPDATER_DISABLED="$v")"
+  [ -z "$out" ] || fail "HQ_UPDATER_DISABLED=$v should be silent, got: $out"
+  [ ! -f "$STATE/last-attempt.stamp" ] || fail "HQ_UPDATER_DISABLED=$v must not stamp an attempt"
+done
 [ ! -d "$STATE/updating.lock" ] || fail "kill switches must not spawn a worker"
 [ "$(installed_version)" = "0.10.150" ] || fail "kill switches must not touch the bundle"
+# Empty, 0, and on are not the desktop app's truthy set. The update still runs.
+for v in '' 0 on ON; do
+  reset_root
+  write_plist "$APP" 0.10.150
+  fresh_cache
+  out="$(run_hook HQ_UPDATER_DISABLED="$v")"
+  has "$out" '<hq-desktop-update-started>' || fail "HQ_UPDATER_DISABLED=$(printf %q "$v") should still update, got: $out"
+  wait_worker
+  [ "$(installed_version)" = "0.10.200" ] || fail "HQ_UPDATER_DISABLED=$(printf %q "$v") did not update"
+done
 
 # --- 11. no manifest obtainable (no cache, no curl) -> silent -------------
 reset_root
@@ -503,7 +608,6 @@ stub_curl   # case 11 removed it
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
-: > "$RUNNING_FLAG"
 : > "$SLOW_FLAG"                      # keep the worker busy while peers arrive
 PAR="$TMP/parallel"; rm -rf "$PAR"; mkdir -p "$PAR"
 for n in 1 2 3 4 5 6 7 8; do
@@ -517,7 +621,7 @@ other="$(cat "$PAR"/start.* | grep -c '<hq-desktop-' || true)"
 wait_worker
 [ "$(installed_version)" = "0.10.200" ] || fail "concurrent start did not land the update; worker.log: $(cat "$STATE/worker.log" 2>/dev/null) | result: $(cat "$STATE/last-result" 2>/dev/null | tr '\n' ' ') | curl: $(tr '\n' ' ' < "$CURL_LOG") | calls: $(tr '\n' ' ' < "$CALLS") | starts: $(cat "$PAR"/start.* | tr '\n' ' ')"
 [ "$(grep -c '.tar.gz' "$CURL_LOG")" -eq 1 ] || fail "concurrent hooks must download exactly once, got $(grep -c '.tar.gz' "$CURL_LOG")"
-[ "$(grep -c 'open -a' "$CALLS")" -eq 1 ] || fail "app must be relaunched exactly once"
+no_lifecycle
 [ -z "$(find "$STATE" -maxdepth 1 -name 'work.*')" ] || fail "concurrent run left a work dir"
 # Now many prompts at once: the outcome is reported by exactly one of them.
 rm -rf "$PAR"; mkdir -p "$PAR"
@@ -578,22 +682,23 @@ no_download "13b: marker-only recording must not download"
 reset_root
 write_plist "$APP" 0.10.150
 fresh_cache
-: > "$RUNNING_FLAG"
 : > "$SLOW_FLAG"
 out="$(run_hook_guard)"
 has "$out" '<hq-desktop-update-started>' || fail "13c: update should start, got: $out"
+wait_download
+: > "$RUNNING_FLAG"
 ledger_recording
 wait_worker
 [ "$(installed_version)" = "0.10.150" ] || fail "13c: deferred update must leave the bundle untouched"
 grep -q osascript "$CALLS" && fail "13c: worker must not quit during ledger recording"
 grep -q 'pkill -x' "$CALLS" && fail "13c: worker must not kill during ledger recording"
 grep -q 'open -a' "$CALLS" && fail "13c: worker must not relaunch during ledger recording"
-grep -q 'a meeting recording was still in progress after waiting 2s' "$STATE/worker.log" || fail "13c: wait-bound deferral was not logged"
+grep -q 'app started before replacement' "$STATE/worker.log" || fail "13c: wait-bound deferral was not logged"
 grep -qx 'status=deferred' "$STATE/last-result" || fail "13c: worker must record deferred result"
 [ ! -f "$STATE/last-attempt.stamp" ] || fail "13c: worker deferral must clear cooldown"
 [ -d "$STATE/work" ] || fail "13c: worker deferral must retain staged bundle"
 ledger_clear
-rm -f "$SLOW_FLAG"
+rm -f "$SLOW_FLAG" "$RUNNING_FLAG"
 out="$(run_hook_guard)"
 has "$out" '<hq-desktop-update-started>' || fail "13c: post-recording prompt should retry, got: $out"
 wait_worker
@@ -611,25 +716,15 @@ has "$out" '<hq-desktop-update-started>' || fail "13d: stale ledger without app 
 wait_worker
 [ "$(installed_version)" = "0.10.200" ] || fail "13d: stale ledger without app should still update"
 
-# 13e: recording begins after the worker's wait has returned but before its
-# quit. The final termination-boundary check must defer without osascript or
-# pkill touching the running app.
-reset_root
-write_plist "$APP" 0.10.150
-fresh_cache
-: > "$RUNNING_FLAG"
-PGREP_COUNT="$TMP/late-recording-pgrep-count"
-stub pgrep "echo \"pgrep \$*\" >> '$CALLS'; [ \"\$1\" = -x ] || exit 3
-count=0; [ -f '$PGREP_COUNT' ] && count=\$(cat '$PGREP_COUNT'); count=\$((count + 1)); printf '%s\\n' \"\$count\" > '$PGREP_COUNT'
-if [ \"\$count\" -eq 3 ]; then mkdir -p '$HOMEDIR/.hq'; printf '{\\\"late\\\":{\\\"recordingId\\\":\\\"r1\\\"}}\\n' > '$HOMEDIR/.hq/recordings-ledger.json'; fi
-[ -f '$RUNNING_FLAG' ]"
-out="$(run_hook_guard)"
-has "$out" '<hq-desktop-update-started>' || fail "13e: update should initially start, got: $out"
+# 13e: Start the app at verification, with no recording signals at all.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+stub codesign "echo codesign >> '$CALLS'; touch '$RUNNING_FLAG'; exit 0"
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-started>' || fail "closed app should dispatch"
 wait_worker
-[ "$(installed_version)" = "0.10.150" ] || fail "13e: late recording must leave the bundle untouched"
-grep -q osascript "$CALLS" && fail "13e: late recording must prevent graceful quit"
-grep -q 'pkill -x' "$CALLS" && fail "13e: late recording must prevent force kill"
-grep -q 'started before quitting the app' "$STATE/worker.log" || fail "13e: final quit boundary was not logged"
-stub pgrep "echo \"pgrep \$*\" >> '$CALLS'; [ \"\$1\" = -x ] || exit 3; [ -f '$RUNNING_FLAG' ]"
+[ "$(installed_version)" = 0.10.150 ] || fail "late app start replaced bundle"
+grep -qx 'status=deferred' "$STATE/last-result" || fail "late app start must defer"
+[ ! -f "$STATE/last-attempt.stamp" ] || fail "deferral must clear cooldown"
+no_lifecycle
 
-echo "PASS: ensure-hq-desktop-hook (not-installed, current, cache-refresh, legacy+marker-recording-guards, deferred-staged-retry, detached-start+report, stuck-app-fallback, no-relaunch, verification-guards, cooldown, live/stale-lock, windows-advise, platform+kill-switch, no-manifest, concurrency)"
+echo "PASS: ensure-hq-desktop-hook (closed-app updates, running dispatch and replacement guards, verification, cooldown, locks, Windows, kill switches, concurrency)"

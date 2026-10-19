@@ -52,6 +52,12 @@ refresh_cache() {
 
 
 hqd_hook_flag_enabled() {
+# Other flag callers share this helper; the override belongs only to Anywhere.
+if [ -z "${HQD_FLAG_KEY:-}" ] || [ "$HQD_FLAG_KEY" = hq-anywhere-runtime ]; then
+  case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in
+    false|0) HQD_FLAG_ENABLED=false; return 0 ;;
+  esac
+fi
 cached_value=''
 cached_at=''
 extra=''

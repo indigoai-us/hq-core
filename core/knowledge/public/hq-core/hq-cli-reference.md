@@ -157,7 +157,7 @@ date in the header, and update `verified_against`.
 | `hq files cat` | Stream a single vault object to stdout (or --out &lt;file&gt;) without syncing it. |
 | `hq files shared-with-me` | List the files/prefixes explicitly shared with you. |
 | `hq files search` | Search vault object keys (case-insensitive path/name match) under a company without downloading. |
-| `hq files get` | Download (materialize) a vault file or prefix into local HQ on demand. |
+| `hq files get` | Download (materialize) a vault file or prefix into local HQ on demand. Use `hq files get <path>` or `hq files cat <path> --out <file>` instead of pasting a presigned S3 URL. Its query string contains temporary credentials and is blocked by the secret guard. |
 | `hq access` | Tell whether a vault file exists and whether you can read it. |
 | `hq db` | Vault databases — local SQLite per company and HQ-managed remote Postgres-class DBs |
 | `hq db status` | Show local (and remote when bound) vault DB status; auto-creates local SQLite if missing |

@@ -98,6 +98,42 @@ printf '%s\n' 'PASS: successful version probe is cached per window; failures and
 reset_root
 rm -f "$BIN/hq"
 
+# --- 1c. a fresh cached ambient hq skips package-manager lookups ---------
+# The ambient-hq lookup used to run `npm prefix -g` and `pnpm bin -g` (two
+# node start-ups, ~0.35 s) on every prompt before checking the cached hq.
+reset_root
+PM_CALLS="$TMP/pm-calls"; : > "$PM_CALLS"
+stub hq 'echo 5.108.2'
+stub npm "echo npm >> '$PM_CALLS'; echo '$TMP/npm-prefix'"
+stub pnpm "echo pnpm >> '$PM_CALLS'; echo '$TMP/pnpm-bin'"
+write_base_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
+run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+[ -f "$ROOTDIR/workspace/.hq-cli-ensure/usable.ok" ] || fail "1c: first prompt should cache the ambient hq"
+write_base_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
+: > "$PM_CALLS"
+run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+[ ! -s "$PM_CALLS" ] || fail "1c: fresh cache should skip npm/pnpm lookups, got: $(tr '\n' ' ' < "$PM_CALLS")"
+# A changed binary invalidates the cache -> the full ordered search runs again.
+touch -t 202001010000 "$BIN/hq"
+write_base_settings "{\"env\":{\"PATH\":\"$BIN:/usr/bin\"}}"
+run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+grep -q npm "$PM_CALLS" || fail "1c: a changed hq binary should run the full search (npm lookup)"
+# A pnpm-owned ambient hq always runs the full search (npm-global ranks first).
+reset_root
+PNPM_HQ_BIN="$TMP/home/Library/pnpm"; mkdir -p "$PNPM_HQ_BIN"
+printf '#!/usr/bin/env bash\necho 5.108.2\n' > "$PNPM_HQ_BIN/hq"; chmod +x "$PNPM_HQ_BIN/hq"
+rm -f "$BIN/hq"
+write_base_settings "{\"env\":{\"PATH\":\"$PNPM_HQ_BIN:/usr/bin\"}}"
+run_hook "$PNPM_HQ_BIN:$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+: > "$PM_CALLS"
+write_base_settings "{\"env\":{\"PATH\":\"$PNPM_HQ_BIN:/usr/bin\"}}"
+run_hook "$PNPM_HQ_BIN:$COREUTILS_PATH" HQ_ENSURE_CLI_COOLDOWN=0 >/dev/null 2>&1 || true
+grep -q npm "$PM_CALLS" || fail "1c: a pnpm-owned ambient hq must keep the npm-first full search"
+rm -rf "$PNPM_HQ_BIN"
+printf '%s\n' 'PASS: fresh cached ambient hq skips npm/pnpm lookups; changed binary re-searches'
+reset_root
+rm -f "$BIN/hq" "$BIN/npm" "$BIN/pnpm"
+
 # --- 1b. Windows settings PATH resolves a Git Bash-visible hq.cmd shim ----
 reset_root
 WINDOWS_HQ_BIN="$TMP/windows-hq-bin"

@@ -111,6 +111,8 @@ Pattern matched: $PATTERN_NAME
 
 Remove the secret. Put real credentials in the HQ vault (/hq-secrets, hq run,
 hq secrets exec) and reference them by name; make example keys look fake.
+For a vault download, use hq files get <path> (or hq files cat <path> --out <file>).
+Never paste a presigned S3 URL; its query string contains temporary credentials.
 For an HTTP auth header, expand the injected variable in the child shell
 (hq secrets exec --only NAME -- sh -c 'curl -H "Authorization: Bearer \$NAME" ...')
 or read the header from a file (curl -H @file). Notion file/image uploads:

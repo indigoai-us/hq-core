@@ -16,6 +16,20 @@ The adapter keeps hook policy centralized in `.claude/hooks/`:
   Codex-readable file. The root `AGENTS.md` includes the compact always-on
   behavior; the bridge preserves the full source style for humans and tools.
 
+### Windows
+
+On Windows, Codex runs each hook's `commandWindows` through `cmd.exe /C`
+instead of the POSIX `command`. Every HQ hook sets `commandWindows` to call
+`.codex/hooks/hq-codex-hook.cmd`. The command looks for the launcher in
+`HQ_ROOT`, then the git top level, then the current folder, the same order as
+the POSIX command. The launcher finds Git Bash (`HQ_BASH_EXE`, Git for Windows,
+or the `git.exe` on `PATH`) and runs the same adapter with the hook's stdin. It
+never uses the WSL `bash.exe` in `System32`, and it ignores an `HQ_BASH_EXE`
+under the Windows folder with a warning. The hook fails closed: if the launcher
+or Git Bash is missing, `PreToolUse` exits 2 with the reason on stderr, so
+Codex denies the tool call, and every other event prints a warning and exits 1.
+An adapter exit 2 reaches Codex as exit code 2.
+
 ### Hook security limits
 
 Codex hook coverage is a guardrail, not a complete security boundary. Codex can

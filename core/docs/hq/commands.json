@@ -276,6 +276,23 @@
       }
     },
     {
+      "name": "daily-brief",
+      "description": "Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus meeting signals, fleet and connected integrations when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/daily-brief",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/daily-brief/SKILL.md",
+      "hash": "sha256:44645399cccd8f7fea183ae6f70e225b241e244c6aa6ca50cb1df1b90bb1e5cb",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
       "name": "decision-queue",
       "description": "Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor.",
       "scope": "core",

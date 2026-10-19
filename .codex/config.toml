@@ -17,6 +17,7 @@ matcher = "startup|resume|clear|compact"
 [[hooks.SessionStart.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" SessionStart & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 timeout = 30
 statusMessage = "Loading HQ context"
 
@@ -25,6 +26,7 @@ statusMessage = "Loading HQ context"
 [[hooks.UserPromptSubmit.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" UserPromptSubmit & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 timeout = 30
 statusMessage = "Routing HQ prompt"
 
@@ -34,6 +36,7 @@ matcher = ".*"
 [[hooks.PreToolUse.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" PreToolUse & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 2)'
 timeout = 30
 statusMessage = "Checking HQ safety rails"
 
@@ -43,6 +46,7 @@ matcher = ".*"
 [[hooks.PostToolUse.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" PostToolUse & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 timeout = 30
 statusMessage = "Running HQ post-tool hooks"
 
@@ -51,6 +55,7 @@ statusMessage = "Running HQ post-tool hooks"
 [[hooks.Stop.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" Stop & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 timeout = 30
 statusMessage = "Wrapping HQ session state"
 
@@ -59,6 +64,7 @@ statusMessage = "Wrapping HQ session state"
 [[hooks.PreCompact.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; echo "HQ codex hook adapter not found (searched HQ_ROOT, git toplevel, $PWD) - HQ safety rails did NOT run for this event" >&2; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" PreCompact & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 timeout = 30
 statusMessage = "Running HQ pre-compact hooks"
 
@@ -67,6 +73,7 @@ statusMessage = "Running HQ pre-compact hooks"
 [[hooks.SessionEnd.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" SessionEnd & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 # Codex enforces a 3s SessionEnd budget and clamps (with a warning) anything
 # larger — declare 3 explicitly so sessions stay warning-free.
 timeout = 3
@@ -77,5 +84,6 @@ statusMessage = "Running HQ session-end hooks"
 [[hooks.SubagentStop.hooks]]
 type = "command"
 command = 'for d in "${HQ_ROOT:-}" "$(git rev-parse --show-toplevel 2>/dev/null)" "$PWD"; do h="$d/.codex/hooks/hq-codex-hook-adapter.sh"; if [ -n "$d" ] && [ -f "$h" ]; then exec /bin/bash "$h"; fi; done; cat >/dev/null; exit 0'
+commandWindows = '@echo off & set "HQ_HOOK_RAN=" & set "HQ_HOOK_DENY=" & set "HQ_HOOK_ERR=" & (for /f "usebackq delims=" %L in (`@echo off ^& ^(if defined HQ_ROOT echo "%HQ_ROOT%"^) ^& git rev-parse --show-toplevel 2^>nul ^& cd`) do @if not defined HQ_HOOK_RAN if exist "%~fL\.codex\hooks\hq-codex-hook.cmd" set "HQ_HOOK_RAN=1" & call "%~fL\.codex\hooks\hq-codex-hook.cmd" SubagentStop & (if not errorlevel 0 (set "HQ_HOOK_ERR=1") else if errorlevel 3 (set "HQ_HOOK_ERR=1") else if errorlevel 2 (set "HQ_HOOK_DENY=1") else if errorlevel 1 (set "HQ_HOOK_ERR=1"))) & if defined HQ_HOOK_DENY (exit /b 2) else if defined HQ_HOOK_ERR (exit /b 1) else if defined HQ_HOOK_RAN (exit /b 0) else (echo HQ codex hook launcher not found in HQ_ROOT, the git top level or the current folder - HQ safety rails did NOT run for this event 1>&2 & exit /b 1)'
 timeout = 30
 statusMessage = "Running HQ subagent-stop hooks"

@@ -25,6 +25,11 @@ printf 'true %s\n' "$NOW" >"$FLAG_CACHE"
 [ "$(sh "$CACHE")" = true ]
 [ ! -e "$NODE_CALLS" ]
 printf '%s\n' 'ok   fresh cache returns true without Node'
+for override in false 0; do
+  [ "$(HQ_FLAG_HQ_ANYWHERE_RUNTIME="$override" sh "$CACHE")" = false ]
+  [ ! -e "$NODE_CALLS" ]
+done
+printf '%s\n' 'ok   local kill switch overrides a fresh enabled cache without Node'
 
 printf 'true %s\n' "$((NOW - 61))" >"$FLAG_CACHE"
 [ "$(sh "$CACHE")" = true ]

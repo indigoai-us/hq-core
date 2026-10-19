@@ -65,3 +65,12 @@ merged three of those before the distinction was made explicit.
 
 Values on IETF-reserved placeholder domains (`example.com`, `.test`,
 `.invalid`, …) are not in doubt: the org PII policy excludes them outright.
+
+## Security hooks and the pass marker
+
+A clean hq-core-review pass marker is not sufficient for a change to
+`.claude/hooks/mandatory-scope-authorizer.sh` or any other security hook.
+Those changes also need their adversarial bypass tests to pass. Do not treat
+a clean marker as clearing a security-hook change. The marker only records
+that the PII, denylist, domain, and slug scanners ran clean (or that a person
+accepted the findings). It does not record that the bypass tests passed.
