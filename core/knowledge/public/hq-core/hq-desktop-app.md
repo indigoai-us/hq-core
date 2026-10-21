@@ -79,7 +79,7 @@ including while typing in a message box.
 Shortcuts other than Mod+/ and Escape do not fire while focus is in a text
 field.
 
-## Onboarding and the Setup bot
+## Onboarding and your assistant
 
 1. First launch plays a short welcome film, then the onboarding wizard:
    sign-in, HQ folder choice, usage-data consent (defaults to "Share usage
@@ -90,7 +90,7 @@ field.
 2. The app opens on `#welcome`. This is a client-side pinned channel (wire id
    `setup`, display name `welcome`). Boot keeps landing there until setup has
    been run once on this machine.
-3. **Run Setup** creates the **Setup bot**: a personal local bot named `setup`,
+3. **Run Setup** creates **your assistant**: a personal local bot named `setup`,
    created with `hq bot create setup --worker setup` from the core worker
    template `core/workers/public/setup`. It gets a random friendly display
    name (for example Pickles or Mochi) that no bot the person can see already
@@ -196,7 +196,7 @@ Rules the app enforces:
   in the sidebar or company switcher. The form checks the handle while you
   type and can invite people by email. The app then switches to the new
   company and opens its channel.
-- A company you were just added to (including one the Setup bot creates) is
+- A company you were just added to (including one your assistant creates) is
   synced onto the machine automatically, once per company per session. The
   "Added to …" banner only appears if that pull fails, and its Sync now button
   retries.

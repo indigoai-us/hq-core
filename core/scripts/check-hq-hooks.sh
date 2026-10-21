@@ -406,10 +406,15 @@ check_local_hook_shadow() {
   command -v jq >/dev/null 2>&1 || return 0
   jq empty "$local_settings" >/dev/null 2>&1 || return 0
 
+  # With the hook-engine-launcher flag on, the shipped dispatcher is the pinned
+  # engine in exec form ({command: ~/.hq/bin/hq-hook/<semver>/..., args: [...]})
+  # rather than the master-hook.sh bash line, so both count as the dispatcher.
   if jq -e '
     [
-      .hooks | .. | objects | .command?
-      | select(type == "string" and test("master-hook\\.sh"))
+      .hooks | .. | objects | select((.command? | type) == "string")
+      | select((.command | test("master-hook\\.sh"))
+          or ((.args | type) == "array"
+              and (.command | test("[\\\\/]\\.hq[\\\\/]+bin[\\\\/]+hq-hook[\\\\/]+[0-9]+\\.[0-9]+\\.[0-9]+[^\\\\/]*[\\\\/]"))))
     ] | length > 0
   ' "$local_settings" >/dev/null 2>&1; then
     LOCAL_HOOK_SHADOW_ISSUES+=(".claude/settings.local.json shadows project hook registrations with master-hook.sh")
@@ -422,7 +427,7 @@ check_local_hook_shadow() {
   # doubled policy reminders, doubled startup context, doubled latency.
   local registry="$HQ_ROOT/.claude/hooks/hook-registry.json"
   [ -f "$registry" ] || return 0
-  grep -q 'master-hook\.sh' "$HQ_ROOT/.claude/settings.json" 2>/dev/null || return 0
+  grep -Eq 'master-hook\.sh|\.hq[\\/]+bin[\\/]+hq-hook[\\/]+[0-9]' "$HQ_ROOT/.claude/settings.json" 2>/dev/null || return 0
   local dup_count
   dup_count="$(jq -r --slurpfile reg "$registry" '
     ([$reg[0].hooks // {} | .. | objects | .id? | select(type == "string")] | unique) as $ids

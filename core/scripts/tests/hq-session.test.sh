@@ -10,7 +10,7 @@
 #    is never found and `set` dies with "no current session".
 #
 # 2. Wrong-session binds: "current session" must come from this process's own
-#    session environment, with workspace/sessions/.current only as a fallback.
+#    session environment for writes; .current is diagnostic fallback only.
 #    .current is a single global pointer rewritten by every hook event, so with
 #    concurrent sessions it can name a different session — and the scope guard
 #    reads the session id from the hook payload, not from .current. Resolving
@@ -19,6 +19,8 @@
 #    unbound and still blocked.
 
 set -euo pipefail
+
+bash "$(dirname "${BASH_SOURCE[0]}")/hq-session-write-identity.test.sh"
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hq-session.sh"
 LIB_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib"
@@ -92,6 +94,9 @@ assert_eq "$path_out" "$TMP/workspace/sessions/sess-1/meta.yaml" "meta path"
 case "$path_out" in
   "$TMP/core/"*) fail "REPO_ROOT resolved one level too shallow: $path_out" ;;
 esac
+
+# Writes need caller identity; .current above is diagnostic only.
+export CLAUDE_SESSION_ID=sess-1
 
 # 4. set/get roundtrip (would error 'no current session' under the bug).
 "$HS" set company acme
@@ -238,6 +243,25 @@ fi
   || fail "subagent did not inherit after the parent rebound"
 assert_eq "$(jq -r '.company_slug' "$TMP/workspace/sessions/sess-pin/agents/agent-Q/scope-capability.json")" "indigo" "rebound parent passes its company to a new subagent"
 pass "re-mint and unbind keep subagent pins; unbound parents give nothing"
+
+# A child the host runs under its own session id inherits the parent session's
+# lock set only; an unbound parent, a missing parent, or itself gives nothing.
+( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent_session "$TMP" sess-child "" sess-pin ) \
+  || fail "child session did not inherit the bound parent session"
+assert_eq "$(jq -c '.company_slugs' "$TMP/workspace/sessions/sess-child/scope-capability.json")" \
+  "$(jq -c '.company_slugs' "$TMP/workspace/sessions/sess-pin/scope-capability.json")" "child session copies exactly the parent lock set"
+if ( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent_session "$TMP" sess-child2 "" sess-none ); then
+  fail "a child session inherited from a parent with no capability"
+fi
+if ( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent_session "$TMP" sess-pin "" sess-pin ); then
+  fail "a session inherited from itself"
+fi
+if ( . "$TMP/core/scripts/lib/session-scope-capability.sh" && session_scope_inherit_parent_session "$TMP" sess-child3 "" ../sess-pin ); then
+  fail "a child session inherited through a path-like parent id"
+fi
+[ ! -e "$TMP/workspace/sessions/sess-child2/scope-capability.json" ] && [ ! -e "$TMP/workspace/sessions/sess-child3/scope-capability.json" ] \
+  || fail "a refused inherit minted a child capability"
+pass "child sessions inherit only a bound parent session's lock set"
 
 # Two concurrent additions must serialize around the same session snapshot.
 "$HS" --session-id sess-concurrent set company_slug indigo >/dev/null
@@ -402,6 +426,8 @@ case "$bytes_out" in
 esac
 assert_eq "$(printf '%s\n' "$bytes_out" | grep -c 'Browse `companies/bigco/policies/` for the full set')" "2" \
   "byte-cap header and overflow must use the same valid retrieval guidance"
+
+unset CLAUDE_SESSION_ID
 
 # ── Wrong-session bind regression ──────────────────────────────────────────────
 # .current still says sess-1 (another session fired the most recent hook), but

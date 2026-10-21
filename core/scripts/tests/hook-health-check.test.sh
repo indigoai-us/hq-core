@@ -163,6 +163,43 @@ assert_contains "$out" 'restore-hook-settings.sh' \
   || fail "local master-hook shadow did not name the healer: $out"
 pass "local master-hook overlay fails with restore guidance"
 
+echo "[1c-exec] the pinned engine exec form in settings.local.json is the same shadow"
+for engine in '/home/u/.hq/bin/hq-hook/1.2.3/hq-hook.app/Contents/MacOS/hq-hook' 'C:\Users\u\.hq\bin\hq-hook\1.2.3-rc.1\hq-hook.exe'; do
+  EXEC_SHADOW="$TMP/local-exec-shadow"
+  rm -rf "$EXEC_SHADOW"; make_healthy_root "$EXEC_SHADOW"
+  jq -n --arg e "$engine" --arg r "$EXEC_SHADOW" \
+    '{hooks:{PreToolUse:[{hooks:[{type:"command",command:$e,timeout:300,args:["PreToolUse","--hq-root",$r,"--runtime","claude"]}]}]}}' \
+    >"$EXEC_SHADOW/.claude/settings.local.json"
+  out="$(run_expect 2 "$EXEC_SHADOW")"
+  assert_contains "$out" 'settings.local.json shadows project hook registrations' \
+    || fail "local engine exec shadow was not reported for $engine: $out"
+done
+# Control: an unrelated exec entry, and an engine path with no args, are not the dispatcher.
+NOT_SHADOW="$TMP/local-not-shadow"
+make_healthy_root "$NOT_SHADOW"
+cat >"$NOT_SHADOW/.claude/settings.local.json" <<'JSON'
+{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/my-hook","args":["x"]},{"type":"command","command":"/home/u/.hq/bin/hq-hook/1.2.3/hq-hook --version"}]}]}}
+JSON
+out="$(run_expect 0 "$NOT_SHADOW")"
+pass "local engine exec overlay fails like master-hook.sh; unrelated exec entries do not"
+
+echo "[1d-exec] per-hook duplicates are still counted when settings.json uses the engine exec form"
+EXEC_DUP="$TMP/local-exec-dup"
+make_healthy_root "$EXEC_DUP"
+mkdir -p "$EXEC_DUP/.claude/hooks"
+jq -n --arg r "$EXEC_DUP" '{hooks: ([ "PostToolUse", "SessionStart", "PreToolUse" ] | map({key: ., value: [{hooks:[{type:"command",command:"/home/u/.hq/bin/hq-hook/1.2.3/hq-hook",timeout:300,args:[.,"--hq-root",$r,"--runtime","claude"]}]}]}) | from_entries)}' \
+  >"$EXEC_DUP/.claude/settings.json"
+cat >"$EXEC_DUP/.claude/hooks/hook-registry.json" <<'JSON'
+{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"id":"inject-policy-on-trigger","script":".claude/hooks/inject-policy-on-trigger.sh"}]}]}}
+JSON
+cat >"$EXEC_DUP/.claude/settings.local.json" <<'JSON'
+{"hooks":{"PostToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/hook-gate.sh\" inject-policy-on-trigger \"$CLAUDE_PROJECT_DIR/.claude/hooks/inject-policy-on-trigger.sh\""}]}]}}
+JSON
+out="$(run_expect 2 "$EXEC_DUP")"
+assert_contains "$out" '.claude/settings.local.json re-registers 1 hook(s) that master-hook.sh already dispatches' \
+  || fail "duplicate local dispatch was not reported with engine exec settings: $out"
+pass "duplicate per-hook overlay is reported with engine exec settings"
+
 echo "[1d] per-hook hook-gate entries in settings.local.json that master-hook already dispatches are a fail"
 DUP="$TMP/local-dup"
 make_healthy_root "$DUP"

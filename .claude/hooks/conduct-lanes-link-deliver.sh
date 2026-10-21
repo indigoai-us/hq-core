@@ -2,14 +2,38 @@
 # Deliver linked-session messages through hq-cli's per-engine output contract.
 set -uo pipefail
 
+# Messages are addressed to the root session of a link. Claude Code reports a
+# subagent's tool calls and SubagentStop under the parent's session_id, so the
+# session pointer alone would hand the root's message to the child. Any event
+# that comes from a child (an agent_id, a parent thread field, a subagent_type,
+# or a transcript under a subagents folder) returns before hq-cli is called,
+# which leaves the queue untouched for the root's next PostToolUse or Stop.
+# A parent session id alone is not a child marker: a resumed, forked, or
+# launcher-spawned Grok root can carry parentSessionId, and Grok marks its real
+# children with subagentType.
 event="${1:-}"
 case "$event" in
-  PostToolUse|Stop|SubagentStop) ;;
+  PostToolUse|Stop) ;;
   *) exit 0 ;;
 esac
 
 payload="$(cat 2>/dev/null || true)"
-sid="$(printf '%s' "$payload" | jq -er '.session_id // .sessionId // empty | strings' 2>/dev/null || true)"
+[ -z "${HQ_HOOK_AGENT_ID:-}" ] || exit 0
+fields="$(printf '%s' "$payload" | jq -r '
+  def nonempty: type == "string" and length > 0;
+  def present: . != null and . != "";
+  (.session_id // .sessionId // "" | if type == "string" then . else "" end),
+  (if ([.agent_id, .agentId] | any(present))
+      or ([.parent_thread_id, .parentThreadId] | any(nonempty))
+      or ([.agent_transcript_path, .agentTranscriptPath] | any(nonempty))
+      or ([.subagent_type, .subagentType] | any(nonempty))
+      or ((.transcript_path // .transcriptPath // "") | if type == "string" then test("[/\\\\]subagents[/\\\\][^/\\\\]+\\.jsonl$") else false end)
+    then "child" else "root" end)
+' 2>/dev/null || true)"
+# jq on Windows can end each line with CR; strip it so a root still matches.
+fields="${fields//$'\r'/}"
+sid="${fields%%$'\n'*}"
+[ "$fields" = "$sid"$'\n'root ] || exit 0
 case "$sid" in
   ""|.|..) exit 0 ;;
 esac

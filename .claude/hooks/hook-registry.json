@@ -79,6 +79,14 @@
         "matcher": "Read",
         "hooks": [
           {
+            "id": "block-credential-file-read",
+            "script": ".claude/hooks/block-credential-file-read.sh",
+            "timeout": 30,
+            "gated": true,
+            "fail_closed": true,
+            "runner": "exec"
+          },
+          {
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
             "timeout": 30,
@@ -125,6 +133,14 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "id": "block-credential-file-read",
+            "script": ".claude/hooks/block-credential-file-read.sh",
+            "timeout": 30,
+            "gated": true,
+            "fail_closed": true,
+            "runner": "exec"
+          },
           {
             "id": "mandatory-scope-authorizer",
             "script": ".claude/hooks/mandatory-scope-authorizer.sh",
@@ -689,6 +705,13 @@
         "matcher": "Read",
         "hooks": [
           {
+            "id": "redact-credential-output",
+            "script": ".claude/hooks/redact-credential-output.sh",
+            "timeout": 30,
+            "gated": true,
+            "runner": "exec"
+          },
+          {
             "id": "record-policy-retrieval",
             "script": ".claude/hooks/record-policy-retrieval.sh",
             "timeout": 30,
@@ -702,6 +725,13 @@
       {
         "matcher": "Bash",
         "hooks": [
+          {
+            "id": "redact-credential-output",
+            "script": ".claude/hooks/redact-credential-output.sh",
+            "timeout": 30,
+            "gated": true,
+            "runner": "exec"
+          },
           {
             "id": "record-policy-retrieval",
             "script": ".claude/hooks/record-policy-retrieval.sh",
@@ -1102,7 +1132,7 @@
             "gated": true
           },
           {
-            "id": "check-bridge-health",
+            "id": "desktop-memory-leak-check",
             "script": ".claude/hooks/check-claude-desktop-bridge-health.sh",
             "timeout": 30,
             "gated": true
@@ -1265,22 +1295,7 @@
         ]
       }
     ],
-    "SubagentStop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "id": "conduct-lanes-link-deliver",
-            "script": ".claude/hooks/conduct-lanes-link-deliver.sh",
-            "timeout": 5,
-            "gated": true,
-            "args": [
-              "SubagentStop"
-            ]
-          }
-        ]
-      }
-    ],
+    "SubagentStop": [],
     "SessionEnd": [
       {
         "matcher": "",

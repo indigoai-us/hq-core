@@ -169,4 +169,55 @@ if session_scope_mint "$TMP" "sess-a" "../evil" 2>/dev/null; then
   fail "invalid slug should be rejected"
 fi
 
+# DEV-4034 (c): session_scope_inherit_parent_session proves the parent before
+# it creates anything. Every refused parent leaves no child folder behind.
+expect_no_inherit() {
+  local child="$1" parent="$2" label="$3"
+  if session_scope_inherit_parent_session "$TMP" "$child" "" "$parent"; then
+    fail "$label: inherit should be refused"
+  fi
+  [ ! -e "$TMP/workspace/sessions/$child" ] || fail "$label: child folder was created"
+}
+session_scope_mint "$TMP" "sess-p-ok" "otherco"
+expect_no_inherit "sess-c-missing" "sess-p-missing" "parent with no session folder"
+mkdir -p "$TMP/workspace/sessions/sess-p-nocap"
+expect_no_inherit "sess-c-nocap" "sess-p-nocap" "parent with no capability"
+mkdir -p "$TMP/workspace/sessions/sess-p-wrongid"
+printf '{"session_id":"someone-else","company_slug":"otherco"}\n' \
+  >"$TMP/workspace/sessions/sess-p-wrongid/scope-capability.json"
+expect_no_inherit "sess-c-wrongid" "sess-p-wrongid" "parent capability for another session"
+mkdir -p "$TMP/workspace/sessions/sess-p-badslug"
+printf '{"session_id":"sess-p-badslug","company_slug":"../x"}\n' \
+  >"$TMP/workspace/sessions/sess-p-badslug/scope-capability.json"
+expect_no_inherit "sess-c-badslug" "sess-p-badslug" "parent capability with an invalid company"
+# A symlinked parent folder or capability could point anywhere.
+mkdir -p "$TMP/elsewhere/sess-p-dirlink"
+printf '{"session_id":"sess-p-dirlink","company_slug":"otherco"}\n' \
+  >"$TMP/elsewhere/sess-p-dirlink/scope-capability.json"
+ln -s "$TMP/elsewhere/sess-p-dirlink" "$TMP/workspace/sessions/sess-p-dirlink"
+expect_no_inherit "sess-c-dirlink" "sess-p-dirlink" "symlinked parent folder"
+mkdir -p "$TMP/workspace/sessions/sess-p-caplink"
+printf '{"session_id":"sess-p-caplink","company_slug":"otherco"}\n' >"$TMP/elsewhere/cap.json"
+ln -s "$TMP/elsewhere/cap.json" "$TMP/workspace/sessions/sess-p-caplink/scope-capability.json"
+expect_no_inherit "sess-c-caplink" "sess-p-caplink" "symlinked parent capability"
+for bad in '../sess-p-ok' 'a/b' '..' '.' ''; do
+  expect_no_inherit "sess-c-path" "$bad" "parent id '$bad'"
+done
+# The child's own folder must not be a symlink either.
+mkdir -p "$TMP/elsewhere/child-target"
+ln -s "$TMP/elsewhere/child-target" "$TMP/workspace/sessions/sess-c-link"
+if session_scope_inherit_parent_session "$TMP" "sess-c-link" "" "sess-p-ok"; then
+  fail "inherit wrote through a symlinked child folder"
+fi
+[ ! -e "$TMP/elsewhere/child-target/scope-capability.json" ] || fail "capability written through a child symlink"
+mkdir -p "$TMP/workspace/sessions/sess-c-agentlink"
+ln -s "$TMP/elsewhere/child-target" "$TMP/workspace/sessions/sess-c-agentlink/agents"
+if session_scope_inherit_parent_session "$TMP" "sess-c-agentlink" "agent-L" "sess-p-ok"; then
+  fail "inherit wrote through a symlinked agents folder"
+fi
+[ ! -e "$TMP/elsewhere/child-target/agent-L" ] || fail "agent tuple written through an agents symlink"
+# A real parent still passes on its lock set.
+session_scope_inherit_parent_session "$TMP" "sess-c-ok" "" "sess-p-ok" || fail "valid parent should be inherited"
+assert_eq "$(session_scope_read "$TMP" "sess-c-ok")" "otherco" "child inherits the parent's company"
+
 echo "PASS: session-scope-capability.test.sh"

@@ -10,6 +10,12 @@
 companies/*/settings/
 companies/*/settings/**
 
+# Company secret folders hold integration and agent OAuth tokens. Dot-prefixed
+# .secrets/ folders are the same convention at any depth. (Shepherd 2638)
+companies/*/secrets/
+companies/*/secrets/**
+.secrets/
+
 # Ontology working files stay on the writer's machine until the ontology worker
 # promotes them (core/knowledge/public/hq-core/ontology-local-spec.md).
 companies/*/signals/_candidates/

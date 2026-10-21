@@ -164,6 +164,7 @@ if [ "${1:-}" = "--remediate" ]; then
           | . as $row
           | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.fix.autoFixable != false)
           | select(($row.checkId != "sync.manifest.personal" and $row.checkId != "sync.update.core") or $row.status == "FAIL" or $row.fix.autoFixable != false)
+          | select(((($row.checkId // "") as $rid | ["sync.runtime.realtime-lag", "sync.runtime.device-limit", "sync.runtime.conflicts"] | any(.[]; . == $rid)) | not) or $row.status == "FAIL" or ($row.fix | if type == "object" then .autoFixable else null end) != false)
           | ($row.checkId // "") as $candidate_id
           | (if ($candidate_id | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
              then $candidate_id else "unknown" end) as $check_id
@@ -194,7 +195,10 @@ if [ "${1:-}" = "--remediate" ]; then
               if (typeof r.checkId === "string"
                 && (r.checkId.startsWith("sync.journal.")
                   || r.checkId === "sync.manifest.personal"
-                  || r.checkId === "sync.update.core")
+                  || r.checkId === "sync.update.core"
+                  || r.checkId === "sync.runtime.realtime-lag"
+                  || r.checkId === "sync.runtime.device-limit"
+                  || r.checkId === "sync.runtime.conflicts")
                 && r.status !== "FAIL" && r.fix && r.fix.autoFixable === false) continue;
               const id = typeof r.checkId === "string" && /^sync\.[A-Za-z0-9._-]{1,160}$/.test(r.checkId)
                 ? r.checkId
@@ -504,7 +508,7 @@ show_last_result_once() {
 
   case "$check_class" in
     sync.update.core)
-      step="HQ couldn't update itself automatically. Run hq update or /update-hq, then restart this session." ;;
+      step="HQ couldn't update itself automatically. Run /update-hq to update HQ (hq update only updates packs), then restart this session." ;;
     sync.journal.personal|sync.journal.personal_vault)
       step="HQ hasn't synced your personal files in over 7 days and the automatic fix did not work. Run hq sync and check the result. If it fails, run hq doctor and send the output to support." ;;
     sync.journal.company)

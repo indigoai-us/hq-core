@@ -435,6 +435,40 @@ hq_shell_command_executable() {
   return 1
 }
 
+# hq_crlf_to_lf <varname>...
+#   Rewrite each named variable in place, turning every CRLF pair into LF.
+#   Native Windows jq.exe writes stdout in text mode, so an LF inside a JSON
+#   string comes out as CRLF. A guard that re-reads the command from the stdin
+#   payload must undo that before matching, or `cd <HQ>` + newline + `git init`
+#   reaches it as `cd <HQ>\r` and `init`, which match nothing, while bash runs
+#   the original LF command. A CR that is not followed by LF is left alone, so
+#   jq.exe's output round-trips exactly. master-hook.sh does the same collapse
+#   on the HQ_HOOK_COMMAND it exports. Builtins only; bash 3.2 safe.
+#   ${var//$'\r\n'/$'\n'} gives the same result but grows quadratically with
+#   the number of pairs (5,000 CRLF lines took over a minute on bash 3.2), so
+#   split into lines, drop one CR from each line end, and rejoin. The x keeps
+#   the real tail apart from the LF the here-string adds, so a trailing CR is
+#   never taken for half of a CRLF.
+hq_crlf_to_lf() {
+  local hq_crlf_name hq_crlf_line hq_crlf_out hq_crlf_n
+  local -a hq_crlf_parts
+  for hq_crlf_name in "$@"; do
+    [[ "${!hq_crlf_name}" == *$'\r\n'* ]] || continue
+    hq_crlf_parts=()
+    if ((BASH_VERSINFO[0] >= 4)); then
+      mapfile -t hq_crlf_parts <<< "${!hq_crlf_name}x"
+    else
+      hq_crlf_n=0
+      while IFS= read -r hq_crlf_line; do
+        hq_crlf_parts[hq_crlf_n]="$hq_crlf_line"
+        hq_crlf_n=$((hq_crlf_n + 1))
+      done <<< "${!hq_crlf_name}x"
+    fi
+    printf -v hq_crlf_out '%s\n' "${hq_crlf_parts[@]%$'\r'}"
+    printf -v "$hq_crlf_name" '%s' "${hq_crlf_out%x$'\n'}"
+  done
+}
+
 hq_text_compact() {
   local max="${1:-240}"
   local text="$2"

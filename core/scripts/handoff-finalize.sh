@@ -126,6 +126,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Validate inline JSON before creating even the temporary handoff directory.
+# Feed values on stdin to retain the large-changeset argv limit protection.
+validate_json_arg() {
+  local flag="$1" value="$2"
+  if ! printf '%s' "$value" | jq -e -s 'length == 1' >/dev/null 2>&1; then
+    printf 'handoff-finalize: %s is not valid JSON (expected one JSON value). Nothing was written.\n' "$flag" >&2
+    exit 2
+  fi
+}
+validate_json_arg --next-steps-json "$NEXT_STEPS_JSON"
+validate_json_arg --learnings-json "$LEARNINGS_JSON"
+validate_json_arg --tags-json "$TAGS_JSON"
+# The file form takes precedence, so do not reject an unused inline value.
+if [[ -z "$FILES_TOUCHED_JSON_FILE" ]]; then
+  validate_json_arg --files-touched-json "$FILES_TOUCHED_JSON"
+fi
+
 # -------- temp-file registry for off-argv JSON --------
 # The Windows argv-overflow fix: any JSON value that scales with the changeset
 # (the changeset itself, and the staged/skipped/committed path lists and status

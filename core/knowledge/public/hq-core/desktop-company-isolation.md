@@ -106,7 +106,7 @@ In `vault_explorer.rs`: directory listing and `read_vault_note`.
   starts.
 - In practice, secrets are entered through the HQ secret flows: `/hq-secrets`,
   `hq secrets`, or a one-time entry link from `hq secrets generate-link`. The
-  Setup bot follows the same rule and refers to secrets by name only.
+  assistant follows the same rule and refers to secrets by name only.
 
 ## Sources
 

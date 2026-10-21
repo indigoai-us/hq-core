@@ -157,11 +157,9 @@ pass 'flag snapshot is session-scoped and PreToolUse does not recheck it'
 
 jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|apply_patch") | .hooks[] | select(.id == "merged-write-guard-shadow" and .gated == true and .script == ".claude/hooks/merged-write-guard-shadow.sh" and (has("prefilter")|not))' "$REGISTRY" >/dev/null || fail "missing session-scoped merged PreToolUse registry entry"
 jq -e '.hooks.SessionStart[] | .hooks[] | select(.id == "merged-write-guard-shadow-refresh" and .script == ".claude/hooks/merged-write-guard-shadow-refresh.sh" and .gated == true)' "$REGISTRY" >/dev/null || fail "missing SessionStart hq-flags refresh"
-BASE_REF="${GITHUB_BASE_REF:-main}"
-if ! git -C "$ROOT" rev-parse --verify "$BASE_REF^{commit}" >/dev/null 2>&1; then
-  BASE_REF="origin/$BASE_REF"
-fi
-BASE_COMMIT="$(git -C "$ROOT" merge-base HEAD "$BASE_REF")" || fail "could not resolve review base"
+. "$ROOT/core/scripts/tests/lib/review-base.sh"
+bash "$ROOT/core/scripts/tests/review-base.test.sh"
+BASE_COMMIT="$(hq_test_review_base "$ROOT")" || fail "could not resolve review base"
 git -C "$ROOT" diff --quiet "$BASE_COMMIT" HEAD -- .claude/hooks/block-core-writes-bash.sh .claude/hooks/block-core-writes.sh core/hooks/PreToolUse/10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh || fail "legacy guard source changed in reviewed commit"
 
 

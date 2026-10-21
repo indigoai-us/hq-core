@@ -90,7 +90,13 @@ export BASH_ENV=/dev/null
 set -uo pipefail
 
 INPUT_RAW="$(cat 2>/dev/null || echo '{}')"
-jget() { printf '%s' "$INPUT_RAW" | jq -r "$1" 2>/dev/null || true; }
+# jq.exe on Windows writes CRLF line ends in -r output; a trailing CR would
+# leave EVENT matching no case below. Strip CR only there, so other hosts pass
+# values through unchanged.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) jget() { printf '%s' "$INPUT_RAW" | jq -r "$1" 2>/dev/null | tr -d '\r' || true; } ;;
+  *) jget() { printf '%s' "$INPUT_RAW" | jq -r "$1" 2>/dev/null || true; } ;;
+esac
 
 EVENT="$(jget '.hookEventName // .hook_event_name // empty')"
 [ -z "$EVENT" ] && EVENT="${GROK_HOOK_EVENT:-}"
@@ -396,7 +402,8 @@ SID="$(jget '.session_id // .sessionId // .conversationId // .threadId // empty'
 [ -z "$SID" ] && SID="${GROK_SESSION_ID:-}"
 [ -z "$SID" ] && SID="grok-${PPID}"
 export HQAD_EVENT_SESSION_ID="$SID"
-PARENT_SID="$(jget '.parent_session_id // .parentSessionId // empty')"
+PARENT_SID_PAYLOAD="$(jget '.parent_session_id // .parentSessionId // empty')"
+PARENT_SID="$PARENT_SID_PAYLOAD"
 [ -z "$PARENT_SID" ] && PARENT_SID="${HQ_PARENT_SESSION_ID:-}"
 
 # Stop/SubagentStop control inputs. stopHookActive is true once a previous stop
@@ -447,10 +454,17 @@ case "$EVENT" in
     TRANSCRIPT_PATH="$(jget '.transcriptPath // .transcript_path // empty')"
     SUBAGENT_TYPE="$(jget '.subagentType // .subagent_type // empty')"
     ;;
-  PreToolUse|PostToolUse|SubagentStart)
+  PreToolUse|PostToolUse|SubagentStart|SessionStart)
     SUBAGENT_TYPE="$(jget '.subagentType // .subagent_type // empty')"
     ;;
 esac
+# A parent id in the payload counts only when the payload also marks this
+# caller as a child (subagentType). A root session that reports a parent does
+# not inherit that parent's company; it keeps the parent the spawner set in
+# HQ_PARENT_SESSION_ID, if any.
+if [ -n "$PARENT_SID_PAYLOAD" ] && [ -z "$SUBAGENT_TYPE" ]; then
+  PARENT_SID="${HQ_PARENT_SESSION_ID:-}"
+fi
 
 CLAUDE_JSON="$(jq -n \
   --arg t "$CTOOL" \
@@ -595,7 +609,7 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode] [registered a
   warning=""
 
   if command -v hqad_launch_registered_hook >/dev/null 2>&1; then
-    hqad_launch_registered_hook "$HQ_ROOT" "$EVENT" "$payload" "$id" "$script" "${extra[@]}" >"$out" 2>"$err" || status=$?
+    hqad_launch_registered_hook "$HQ_ROOT" "$EVENT" "$payload" "$id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
@@ -607,7 +621,7 @@ run_advisory() { # <hook-id> <hook-script> [payload] [stdout_mode] [registered a
         "$HQ_HOOK_LAST_CAUSE")"
     fi
   else
-    printf '%s' "$payload" | bash "$GATE" "$id" "$script" "${extra[@]}" >"$out" 2>"$err" || status=$?
+    printf '%s' "$payload" | bash "$GATE" "$id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
   fi
 
   out_text="$(cat "$out" 2>/dev/null || true)"
@@ -1203,7 +1217,15 @@ case "$EVENT" in
   # is dropped and exit is ignored by Grok on all four.
   PostToolUseFailure) dispatch_settings_hooks "PostToolUseFailure" "ANY" "$CLAUDE_JSON" ;;
   PermissionDenied)   dispatch_settings_hooks "PermissionDenied" "ANY" "$CLAUDE_JSON" ;;
-  SubagentStart)      dispatch_settings_hooks "SubagentStart" "ANY" "$CLAUDE_JSON" ;;
+  # A subagent is bound when it starts, not only on its first tool call.
+  # bind_subagent_once needs subagentType and binds each session at most once.
+  # Bind only when the event names a parent other than its own session: if
+  # SubagentStart fires under the parent's id (as in Claude Code), binding
+  # there would bind the parent mid-session from a fallback source.
+  SubagentStart)      if [ -n "$PARENT_SID" ] && [ "$PARENT_SID" != "$SID" ]; then
+                        bind_subagent_once
+                      fi
+                      dispatch_settings_hooks "SubagentStart" "ANY" "$CLAUDE_JSON" ;;
   PostCompact)        dispatch_settings_hooks "PostCompact" "ANY" "$CLAUDE_JSON" ;;
   # Grok supports these lifecycle events natively; settings.json registers the
   # master-hook company/personal/pack fan-out on each (SessionEnd has live

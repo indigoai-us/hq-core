@@ -1,7 +1,7 @@
 ---
 name: super-conductor
 description: Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
-allowed-tools: Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
+allowed-tools: Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
 argument-hint: "[off | status | interval <1m|5m|10m|seconds> | channels <hq_dms,slack,email,x> | <note for the team>]"
 ---
 
@@ -248,8 +248,35 @@ Every wakeup sweeps every channel resolved in Step 1b, in this order:
 | `teammates` | teammates' mesh threads and PRs | needs `teammates` in settings (below) |
 
 A heartbeat wakeup is a full sweep. A wakeup that reads only some of the
-selected channels is incomplete; finish the rest before ending the turn. A
-channel that is not selected is not read, and nothing from it is asked. All
+selected channels is incomplete; finish the rest before ending the turn.
+
+Sweep evidence is mandatory. `node core/scripts/super-conductor-sweep-check.mjs
+targets` lists every target this wakeup must cover: `sessions`, each selected
+channel, one `slack:<workspace>` per Slack workspace, and one
+`email:<account>` per email account. After reading a target, record it:
+
+```bash
+node core/scripts/super-conductor-sweep-check.mjs record --state <save file> --target <t> --cursor <cursor>
+```
+
+A target that cannot be read is recorded only after every fallback path for
+its channel was tried, in this order: Slack `hq_integration`, `hq_slack_cli`
+(the Slack CLI with the owner token, when installed), `slack_mcp`; email `hq_integration`, `mail_mcp` (Superhuman),
+`gmail_connector`; X `hq_integration`, `x_mcp`. A mail MCP that needs re-auth
+is one failed path, not a reason to stop. Then:
+
+```bash
+node core/scripts/super-conductor-sweep-check.mjs record --state <save file> --target <t> --unavailable "<reason>" --tried <csv of paths>
+```
+
+The script refuses the mark while a path is untried. An unavailable target is
+re-tried at most hourly; after an hour the mark expires and the target is due
+again. Before ending the wakeup, run `verify --state <save file> --since <this
+wakeup's start>`; a non-zero exit means the wakeup is not done. The heartbeat
+runs the same check on every tick and prints `SUPER-CONDUCTOR SWEEP-INCOMPLETE`
+when the previous wakeup missed a target; sweep the named targets first.
+
+A channel that is not selected is not read, and nothing from it is asked. All
 channels are read-only. Any reply, post, or send is drafted and waits for
 the owner's go in this window.
 
@@ -332,7 +359,8 @@ default workspace when the key is absent), each one on every wakeup. In each,
 read mentions of the owner, each DM and group DM with new activity since the
 last wakeup, and every channel in `slack_channels`, only past the cursor kept
 per workspace in the save file. A listed workspace with no usable connection
-is reported once in one line and stays in the settings file. Before drafting
+after every fallback path is recorded unavailable (see "Sweep evidence"),
+named in each status line, re-tried hourly, and stays in the settings file. Before drafting
 a reply, read the thread to see whether someone already answered. Never post
 without the owner's go in this window.
 
@@ -341,7 +369,9 @@ without the owner's go in this window.
 Superhuman. Sweep every listed account in `email_accounts`, each one on every
 wakeup, with the account parameter; when the key is absent, call the mail
 MCP's account list and sweep each account. An account with no usable
-connection is reported once in one line and stays in the settings file. Read inbound threads newer than the per-account cursor in
+connection after every fallback path is recorded unavailable (see "Sweep
+evidence"), named in each status line, re-tried hourly, and stays in the
+settings file. Read inbound threads newer than the per-account cursor in
 `email_cursors`. Surface a thread only when it asks the owner for a reply,
 a decision, money, or access; skip newsletters, receipts, and automated
 notices. Before drafting, read the whole thread to see whether the owner
@@ -425,7 +455,11 @@ and re-arm it before asking any owner decision (an open question can stall
 the turn), drain the link when a report is pending, run the every-session
 sweep (Step 8), run the collision pass, sweep each selected channel (Step 6),
 invite any new session, append to the overnight log, and rewrite the save
-file. A wakeup with nothing new ends in one short line or none. On the
+file. Every wakeup ends with the status line from
+`node core/scripts/super-conductor-sweep-check.mjs status-line --state <save
+file> --since <this wakeup's start>`, which names the targets read and the
+ones skipped with the reason. Never print a bare "nothing new"; say "nothing
+new in <channels read>; skipped <targets> (<reason>)". On the
 fallback loop, re-arm the waiter and `ScheduleWakeup` too, and mark the
 wakeup `noop: true` when nothing changed.
 
@@ -558,6 +592,11 @@ fields:
   `override`, `settings`, or `asked`;
 - `heartbeat`: `{monitor_id, interval, channels, started_at}`;
 - `hq_dm_cursor`, `email_cursors` (per account), `x_cursor`;
+- `sweep`: per target (`sessions`, `hq_dms`, `slack:<workspace>`,
+  `email:<account>`, ...), either `{status: swept, last_swept_at, cursor}`
+  or `{status: unavailable, reason, tried, checked_at}`, written only through
+  `super-conductor-sweep-check.mjs record`. Keep this key when rewriting the
+  file;
 - `updated_at`.
 
 Rewrite it with the Write tool at the end of every wakeup and whenever a

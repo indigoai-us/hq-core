@@ -18,17 +18,37 @@ The adapter keeps hook policy centralized in `.claude/hooks/`:
 
 ### Windows
 
-On Windows, Codex runs each hook's `commandWindows` through `cmd.exe /C`
-instead of the POSIX `command`. Every HQ hook sets `commandWindows` to call
-`.codex/hooks/hq-codex-hook.cmd`. The command looks for the launcher in
+On Windows, Codex runs each hook's `commandWindows` instead of the POSIX
+`command`, through the session shell: `pwsh -NoProfile -Command` (or Windows
+PowerShell) when the shell is PowerShell, which is the default, and
+`cmd.exe /C` otherwise. Every HQ hook sets `commandWindows` to a polyglot that
+works in both shells:
+
+```
+cmd /d /s /c ' ver >nul 2>nul & <batch> & rem '; <PowerShell exit mapping>
+```
+
+PowerShell passes the single-quoted batch to a child `cmd.exe` and then maps
+its exit code. For `PreToolUse`, any result other than 0 becomes 2, so a parse
+error, a failure to start `cmd.exe`, or an adapter error denies the tool call.
+Other events pass their exit code through, and a failure to start becomes 1.
+Under `cmd.exe /C`, the leading `cmd /d /s /c '` fails silently, the batch runs
+in that `cmd.exe`, and `& rem` comments out the PowerShell part. The batch
+cannot contain `'`, so `config.toml` stores each value as a `'''` multiline
+literal string. A Git Bash session shell is not supported for hooks.
+
+The batch calls `.codex/hooks/hq-codex-hook.cmd`. It looks for the launcher in
 `HQ_ROOT`, then the git top level, then the current folder, the same order as
 the POSIX command. The launcher finds Git Bash (`HQ_BASH_EXE`, Git for Windows,
 or the `git.exe` on `PATH`) and runs the same adapter with the hook's stdin. It
 never uses the WSL `bash.exe` in `System32`, and it ignores an `HQ_BASH_EXE`
-under the Windows folder with a warning. The hook fails closed: if the launcher
-or Git Bash is missing, `PreToolUse` exits 2 with the reason on stderr, so
-Codex denies the tool call, and every other event prints a warning and exits 1.
-An adapter exit 2 reaches Codex as exit code 2.
+under the Windows folder with a warning. `PreToolUse` fails closed: if the
+launcher or Git Bash is missing, or the adapter exits 1 or 3 or higher, it
+exits 2 with the reason on stderr, so Codex denies the tool call. Every other
+event is advisory: it prints a warning and exits 1, which Codex reports without
+blocking. An adapter exit 2 reaches Codex as exit code 2. Changing
+`commandWindows` changes each hook's hash, so Codex asks the user to trust the
+hooks again after an update; `hq reindex` re-trusts HQ's own hooks.
 
 ### Hook security limits
 

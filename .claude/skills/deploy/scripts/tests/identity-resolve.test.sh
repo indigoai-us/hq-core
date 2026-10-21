@@ -271,6 +271,44 @@ else
   fail "missing configured machine credentials should not reach browser login (got: $OUTPUT)"
 fi
 
+# Shepherd 2367: an agent kit left a machine cache in the shared default
+# location on a person's laptop. With no machine credentials and a valid person
+# session, the resolver must use the person session and never call the mint.
+BIN_STRAY="$TMP/bin-stray"
+mkdir -p "$BIN_STRAY"
+printf '#!/bin/bash\nprintf called >> "$STRAY_REFRESH_LOG"\nexit 1\n' > "$BIN_STRAY/hq-auth-refresh"
+chmod +x "$BIN_STRAY/hq-auth-refresh"
+HOME_STRAY="$TMP/home-stray"
+make_token "$HOME_STRAY" "person.jwt"
+make_machine_cache "$HOME_STRAY/.hq/work-mesh/daemon" "$FUTURE_MS"
+STRAY_REFRESH_LOG="$TMP/stray-refresh.log"
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_STRAY" USER=stray-user TMPDIR="$TMP/stray-tmp" \
+  STRAY_REFRESH_LOG="$STRAY_REFRESH_LOG" PATH="$BIN_STRAY:$PATH" \
+  /bin/bash "$RESOLVER" 2>"$TMP/stray.err")
+STATUS=$?
+if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
+  '.status == "ok" and .identity == "person" and .jwt == "person.jwt" and .source == "cache"' >/dev/null \
+  && [ ! -e "$STRAY_REFRESH_LOG" ]; then
+  pass "stray machine cache without machine creds keeps the person session"
+else
+  fail "stray machine cache without machine creds should resolve the person session (got: $OUTPUT)"
+fi
+
+# Without a person session the same stray cache still fails closed in machine
+# mode, so a damaged agent never reaches the human browser sign-in.
+HOME_STRAY_ONLY="$TMP/home-stray-only"
+make_machine_cache "$HOME_STRAY_ONLY/.hq/work-mesh/daemon" "$FUTURE_MS"
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_STRAY_ONLY" USER=stray-only TMPDIR="$TMP/stray-tmp" \
+  /bin/bash "$RESOLVER" 2>"$TMP/stray-only.err")
+if printf '%s\n' "$OUTPUT" | jq -e '.status == "login_required" and .reason == "machine_mint_failed"' >/dev/null \
+  && ! grep -q 'Opening HQ sign-in' "$TMP/stray-only.err"; then
+  pass "machine cache alone with no person session still fails closed"
+else
+  fail "machine cache alone with no person session should fail closed (got: $OUTPUT)"
+fi
+
 HOME_UNKNOWN="$TMP/home-unknown"
 make_token "$HOME_UNKNOWN" "unknown.jwt"
 OUTPUT=$(env -u USER -u USERNAME -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \

@@ -1,8 +1,11 @@
 @echo off
 rem HQ Codex hook launcher for Windows (feedback_d0c2f082).
-rem Codex runs a hook's commandWindows through cmd.exe /C, so the POSIX
-rem `exec /bin/bash` command in .codex/config.toml cannot run there. This
-rem launcher finds Git Bash and runs hq-codex-hook-adapter.sh with the hook's
+rem Codex runs a hook's commandWindows through the session shell: PowerShell
+rem (pwsh or powershell -NoProfile -Command) or cmd.exe /C. The POSIX
+rem `exec /bin/bash` command in .codex/config.toml cannot run in either, so
+rem commandWindows is a PowerShell/cmd polyglot that reaches this file through
+rem cmd.exe in both shells. This launcher finds Git Bash and runs
+rem hq-codex-hook-adapter.sh with the hook's
 rem stdin. It never uses `where bash`, which can return the WSL bash in
 rem System32. Set HQ_BASH_EXE to override the bash.exe path; a path under
 rem %SystemRoot% (the WSL bash) is ignored.

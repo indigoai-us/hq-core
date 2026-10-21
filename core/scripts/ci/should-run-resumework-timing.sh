@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Decide whether a PR changes inputs measured by resumework-timing-linux.
+# Decide whether a push or PR changes inputs measured by resumework-timing-linux.
 set -euo pipefail
 
-if [[ "$#" -ne 3 ]]; then
-  echo "usage: should-run-resumework-timing.sh <base-sha> <head-sha> <repo-root>" >&2
+if [[ "$#" -lt 3 || "$#" -gt 4 ]]; then
+  echo "usage: should-run-resumework-timing.sh <base-sha> <head-sha> <repo-root> [event-mode]" >&2
   exit 2
 fi
 
 base_sha="$1"
 head_sha="$2"
 repo_root="$3"
+event_mode="${4:-}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Shell, hook, settings, and workflow changes are already selected by the
 # shell-smoke filter, including its fail-open handling for missing history.
-shell_result="$(bash "$script_dir/should-run-macos-shell-smoke.sh" "$base_sha" "$head_sha" "$repo_root")"
+shell_result="$(bash "$script_dir/should-run-macos-shell-smoke.sh" "$base_sha" "$head_sha" "$repo_root" "$event_mode")"
 if [[ "$shell_result" == "run=true" ]]; then
   echo "run=true"
   exit 0

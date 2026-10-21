@@ -97,7 +97,7 @@ Outposts on legacy plans are $80 a month each.
 
 ## Agents
 
-- **Bots on their own Mac** (like you, the setup bot) are free on every plan.
+- **Bots on their own Mac** (like you, their assistant) are free on every plan.
 - **Hosted agents**, which run in HQ Cloud, including agents in Slack, run on
   a box. On the usage card that is a box price (from $100 a month for small)
   plus $0.05 per agent run. On a legacy Starter company, creating one is

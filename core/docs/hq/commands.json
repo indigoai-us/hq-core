@@ -285,7 +285,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/daily-brief/SKILL.md",
-      "hash": "sha256:44645399cccd8f7fea183ae6f70e225b241e244c6aa6ca50cb1df1b90bb1e5cb",
+      "hash": "sha256:b31e5a1d05d231e716157991270bab6ebb6651845ddd183eb0875156f0ed4333",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -353,7 +353,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/deploy/SKILL.md",
-      "hash": "sha256:dff61dac8c30a87722a456594a482c5ec3a9abc2005f4c9db0bb40f78069bedd",
+      "hash": "sha256:7793e74ca595db69b9158c025e0e4e38f474b3fe63994d0e2532a844c61341ee",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -727,7 +727,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/hq-heal/SKILL.md",
-      "hash": "sha256:1f94360facbe5b96fd38190801f389732020b39ec0c1ba7ed14537f32ea35af4",
+      "hash": "sha256:de69cf33fb47343839ca487027d6af0dd84c6a1259bfb8d2cc4e1a4a013b7143",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -964,6 +964,23 @@
       "group": "other",
       "source": ".claude/skills/job/SKILL.md",
       "hash": "sha256:ae70449d4002dfaac5ad6eb7c469a63d503e1ff1c43ace11f8b55e528c98647c",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "join-meeting",
+      "description": "Ride a live meeting transcript in this session. Pick a live meeting or invite the bot with a join link, stay bound until it ends, then save the transcript.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/join-meeting",
+      "skillUid": null,
+      "group": "capture",
+      "source": ".claude/skills/join-meeting/SKILL.md",
+      "hash": "sha256:0d65bcdb8ab82b3133498aa93029e5f170ba5c9d24cc502ce866b0336d276990",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1643,7 +1660,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/startwork/SKILL.md",
-      "hash": "sha256:a5857650d17ddf7701003c06a8153eed352acc562e668e6221653ff9cd53c43c",
+      "hash": "sha256:8cc699c753ce464d5fefdb2b3c53f4c8c9772d7dbc0e73b535a9bea7bdabda2c",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1694,7 +1711,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:2b6cc2335f524c4d133dde1e65ff14b276e3b24544b1fd41bdf7b8f00526a3d2",
+      "hash": "sha256:cf49d74a0cb89f5648262c4be74af6708cd36a979a9f198ca594f0afff1faab6",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1813,7 +1830,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/update-hq/SKILL.md",
-      "hash": "sha256:0e2db46f4d2de77120893c8cb3f996ec7db479c039fe9c96400fdae1b7f8a3b9",
+      "hash": "sha256:7ec53611703825685d96dc22fe5ca75b1476b38713a8e9effb310900503151dc",
       "duplicates": {
         "exact": [],
         "drifted": [],

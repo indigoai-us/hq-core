@@ -94,6 +94,9 @@ company, persist the company on this session before running project scans,
 bash core/scripts/hq-session.sh set company_slug "{co}"
 ```
 
+Session metadata writes require the caller’s harness session identity. If the host does not supply it, use the exact `--session-id` shown by the scope hook; never select a write target from `workspace/sessions/.current` or the most recent session.
+
+
 For Project or Repo mode, first resolve the project's owning company or the
 repo's company mapping when it is not already known, then run this bind before
 any Git command or project scan. A bounded-action short-circuit does not enter
