@@ -8,8 +8,6 @@
 #   policy-rationale  fail if a policies/**/*.md file's ## Rationale section
 #                     references non-public context (heuristic regex list).
 #                     Additional to denylist, NOT a replacement.
-#   slugs             fail if a PR-changed file contains a private tenant slug
-#                     from manifest-snapshot.yaml outside allowlist.yaml.
 #   users-path        fail if any tracked policy/script body contains a
 #                     literal /Users/... absolute path. Tripwire: rule
 #                     hq-promote-hq-core-users-path-tripwire.
@@ -38,9 +36,6 @@
 #   special-case-files
 #                     fail if CHANGELOG.md, MIGRATION.md, or .claude/CLAUDE.md
 #                     changed without label "special-case-confirmed".
-#   denylist-drift    fail if .leak-scan/denylist.yaml `companies:` keys
-#                     diverge from .leak-scan/manifest-snapshot.yaml slugs.
-#                     Rule: hq-cmd-promote-hq-core-denylist-source-from-manifest.
 #   settings-local-not-ignored
 #                     fail if `.claude/settings.local.json` is matched by any
 #                     .gitignore rule. Tripwire: a future edit must not
@@ -168,7 +163,6 @@ case "$mode" in
       [[ ! -f "$f" ]] && continue
       [[ "$f" == "$deny_file" ]] && continue
       [[ "$f" == "CONTRIBUTING.md" ]] && continue
-      [[ "$f" == .leak-scan/manifest-snapshot.yaml ]] && continue
 
       for pat in "${patterns[@]}"; do
         while IFS= read -r hit; do
@@ -229,70 +223,6 @@ case "$mode" in
       exit 1
     fi
     echo "policy-rationale-scan: clean"
-    ;;
-
-  slugs)
-    allow_file=".leak-scan/allowlist.yaml"
-    snap_file=".leak-scan/manifest-snapshot.yaml"
-    if [[ ! -f "$allow_file" ]]; then
-      echo "::error::$allow_file missing" >&2; exit 2
-    fi
-    if [[ ! -f "$snap_file" ]]; then
-      echo "::error::$snap_file missing" >&2; exit 2
-    fi
-
-    allowed=()
-    while IFS= read -r line; do
-      s="$(sed -E 's/^[[:space:]]*-[[:space:]]*//' <<< "$line" | tr -d '"' | awk '{print $1}')"
-      [[ -n "$s" ]] && allowed+=("$s")
-    done < <(awk '
-      /^allowed:/ { in_sec=1; next }
-      in_sec && /^[a-zA-Z]/ { in_sec=0 }
-      in_sec && /^  - / { print }
-    ' "$allow_file")
-
-    is_allowed() {
-      local candidate="$1"
-      for a in "${allowed[@]}"; do
-        [[ "$candidate" == "$a" ]] && return 0
-      done
-      return 1
-    }
-
-    snap_slugs="$(awk '/^slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap_file" | sort -u)"
-    snap_public="$(awk '/^public_slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap_file" | sort -u)"
-    private_slugs=()
-    while IFS= read -r slug; do
-      [[ -z "$slug" ]] && continue
-      if grep -Fxq "$slug" <<< "$snap_public"; then
-        continue
-      fi
-      if is_allowed "$slug"; then
-        continue
-      fi
-      private_slugs+=("$slug")
-    done <<< "$snap_slugs"
-
-    leaks=0
-    for f in "${files[@]}"; do
-      [[ -z "$f" ]] && continue
-      [[ ! -f "$f" ]] && continue
-      [[ "$f" == .leak-scan/* ]] && continue
-
-      for slug in "${private_slugs[@]}"; do
-        while IFS= read -r hit; do
-          [[ -z "$hit" ]] && continue
-          echo "::error file=$f::private tenant slug '$slug' leaked: $hit"
-          leaks=$((leaks + 1))
-        done < <(grep -nE "(^|[^A-Za-z0-9_-])${slug}([^A-Za-z0-9_-]|$)" "$f" || true)
-      done
-    done
-
-    if [[ $leaks -gt 0 ]]; then
-      echo "slug-scan: $leaks private slug(s) found" >&2
-      exit 1
-    fi
-    echo "slug-scan: clean"
     ;;
 
   users-path)
@@ -538,47 +468,6 @@ case "$mode" in
     else
       echo "special-case-files: clean"
     fi
-    ;;
-
-  denylist-drift)
-    # Verify .leak-scan/denylist.yaml `companies:` section covers every slug
-    # in .leak-scan/manifest-snapshot.yaml. The snapshot is written by HQ
-    # /promote-hq-core Phase 4.
-    snap=".leak-scan/manifest-snapshot.yaml"
-    deny=".leak-scan/denylist.yaml"
-    [[ -f "$snap" ]] || { echo "::error::$snap missing — run /promote-hq-core in HQ to write it" >&2; exit 2; }
-    [[ -f "$deny" ]] || { echo "::error::$deny missing" >&2; exit 2; }
-
-    snap_slugs="$(awk '/^slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap" | sort -u)"
-    snap_public="$(awk '/^public_slugs:/{f=1;next} f && /^- /{print $2} f && /^[a-zA-Z]/ && !/^- /{f=0}' "$snap" | sort -u)"
-
-    deny_companies="$(yaml_keys "$deny" "companies" | sort -u)"
-
-    # Public slugs (e.g. "indigo") MUST NOT appear in denylist.companies.
-    # Private slugs MUST appear (or be an explicit exception).
-    drift=0
-    while IFS= read -r slug; do
-      [[ -z "$slug" ]] && continue
-      if grep -Fxq "$slug" <<< "$snap_public"; then continue; fi
-      if ! grep -Fxq "$slug" <<< "$deny_companies"; then
-        echo "::error file=$deny::missing private slug '$slug' (present in manifest snapshot)"
-        drift=$((drift + 1))
-      fi
-    done <<< "$snap_slugs"
-
-    while IFS= read -r slug; do
-      [[ -z "$slug" ]] && continue
-      if grep -Fxq "$slug" <<< "$snap_public"; then
-        echo "::error file=$deny::public slug '$slug' must not appear in denylist.companies"
-        drift=$((drift + 1))
-      fi
-    done <<< "$deny_companies"
-
-    if [[ $drift -gt 0 ]]; then
-      echo "denylist-drift: $drift mismatch(es)" >&2
-      exit 1
-    fi
-    echo "denylist-drift: clean"
     ;;
 
   settings-local-not-ignored)

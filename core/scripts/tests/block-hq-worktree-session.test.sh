@@ -189,9 +189,9 @@ APPWT="$TMP/hq/workspace/worktrees/app/x"
 
 # --- The block: HQ itself running from a worktree ---------------------------
 run 2 "$HQWT" "$HQWT" UserPromptSubmit 'project dir is a linked HQ worktree — prompt blocked'
-if [[ "$LAST_STDERR" != *"When starting an HQ session, leave Claude Code's Worktree toggle unchecked."* ]]; then
+if [[ "$LAST_STDERR" != *"When starting an HQ session in the desktop app, use Choose Environment > Local."* ]]; then
   FAIL=$((FAIL + 1))
-  echo 'FAIL [UserPromptSubmit toggle guidance]: missing Worktree toggle instruction in refusal' >&2
+  echo 'FAIL [UserPromptSubmit environment guidance]: missing Choose Environment > Local instruction in refusal' >&2
 else
   PASS=$((PASS + 1))
 fi
@@ -216,19 +216,19 @@ run 2 "$HQ" "$HQWT" PreToolUse 'invalid company identity fails closed' \
   HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=invalid \
   HQ_TEST_SAFE_CWD_FLAG=true
 
-# The worktree-toggle note is new candidate output. Strip it from base and
+# The desktop environment note is new candidate output. Strip it from base and
 # candidate alike so parity holds whether or not the base already has it.
-strip_worktree_toggle_note() {
-  printf '%s\n' "$1" | awk 'skip { skip--; next } /^When starting an HQ session,/ { skip=2; next } NF { if (blank) print ""; print; blank=0; next } { blank=1 }'
+strip_desktop_environment_note() {
+  printf '%s\n' "$1" | awk 'skip { skip--; next } /^When starting an HQ session[ ,]/ { skip=2; next } NF { if (blank) print ""; print; blank=0; next } { blank=1 }'
 }
 
 # Regression: a base that already prints the note must normalize to the same
 # text as a base without it, so the parity checks below hold on either base.
 note_free=$'Blocked.\n\nSource-repo worktrees are unaffected.'
-note_present=$'Blocked.\n\nWhen starting an HQ session, leave the Worktree toggle unchecked. It\nstarts HQ in a linked worktree.\nUse the toggle for a source session.\n\nSource-repo worktrees are unaffected.'
-if [ "$(strip_worktree_toggle_note "$note_present")" = "$(strip_worktree_toggle_note "$note_free")" ] \
-  && [ "$(strip_worktree_toggle_note "$note_free")" = "$note_free" ]; then
-  PASS=$((PASS + 1)); echo 'ok: worktree-toggle note normalizes away on base and candidate stderr'
+note_present=$'Blocked.\n\nWhen starting an HQ session in the desktop app, use Choose Environment > Local.\nA worktree environment starts HQ in a linked worktree.\nUse a worktree environment only for a source session.\n\nSource-repo worktrees are unaffected.'
+if [ "$(strip_desktop_environment_note "$note_present")" = "$(strip_desktop_environment_note "$note_free")" ] \
+  && [ "$(strip_desktop_environment_note "$note_free")" = "$note_free" ]; then
+  PASS=$((PASS + 1)); echo 'ok: desktop environment note normalizes away on base and candidate stderr'
 else
   FAIL=$((FAIL + 1)); echo 'FAIL [note normalization]: base and candidate stderr normalize differently' >&2
 fi
@@ -239,11 +239,11 @@ HOOK="$BASE_HOOK"
 TEST_SESSION_ID=c153-multi-worktree
 run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'base denies cwd in the last of several HQ worktrees'
 base_multi_worktree_stdout="$LAST_STDOUT"
-base_multi_worktree_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
+base_multi_worktree_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-multi-worktree \
   run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'candidate denies cwd in the last of several HQ worktrees'
-candidate_multi_worktree_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
+candidate_multi_worktree_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
 [ "$LAST_STDOUT" = "$base_multi_worktree_stdout" ] \
   && [ "$candidate_multi_worktree_stderr" = "$base_multi_worktree_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate both deny the multi-worktree session'; } \
@@ -261,12 +261,12 @@ TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'base denies relative path with CDPATH'
 base_cdpath_stdout="$LAST_STDOUT"
-base_cdpath_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
+base_cdpath_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'candidate denies relative path with CDPATH'
-candidate_cdpath_stderr="$(strip_worktree_toggle_note "$LAST_STDERR")"
+candidate_cdpath_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
 [ "$LAST_STDOUT" = "$base_cdpath_stdout" ] \
   && [ "$candidate_cdpath_stderr" = "$base_cdpath_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate keep relative path output clean with CDPATH'; } \

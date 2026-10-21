@@ -290,60 +290,22 @@ job_readiness() {
 }
 
 # --- cron → systemd OnCalendar -----------------------------------------------
+#
+# Supported cron syntax, per field: '*', N, A-B, */S, A-B/S, A/S (A through the
+# field maximum), and comma lists of those (e.g. 1,5-7). Day-of-week accepts
+# 0-7 (0 and 7 are Sunday) and sun..sat names. Anything else (month names,
+# L, W, #, @-macros, out-of-range values, reversed ranges, a restricted
+# day-of-month together with a restricted day-of-week, whose cron OR meaning
+# systemd cannot express) makes cron_to_oncalendar print a reason on stderr
+# and return 1. The converter never widens a schedule to make it fit.
 
-# Map cron DOW (0/7=Sun … 6=Sat) to systemd weekday names.
-cron_dow_to_systemd() {
-  local field="$1"
-  case "$field" in
-    '*'|'*/1') printf ''; return ;;
-  esac
-  local out="" part IFS=','
-  # shellcheck disable=SC2086
-  set -f
-  set -- $field
-  set +f
-  for part in "$@"; do
-    local mapped
-    mapped="$(cron_dow_token_to_systemd "$part")" || return 1
-    [ -n "$mapped" ] || continue
-    out="${out:+$out,}$mapped"
-  done
-  printf '%s' "$out"
-}
+cron_err() { printf 'cron_to_oncalendar: %s\n' "$*" >&2; }
 
-cron_dow_token_to_systemd() {
-  local tok="$1"
-  # ranges like 1-5 or Mon-Fri
-  if printf '%s' "$tok" | grep -Eq '^[0-7]+-[0-7]+$'; then
-    local a b
-    a="${tok%-*}"; b="${tok#*-}"
-    printf '%s..%s' "$(cron_dow_num_to_name "$a")" "$(cron_dow_num_to_name "$b")"
-    return
-  fi
-  case "$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')" in
-    sun|0|7) printf 'Sun' ;;
-    mon|1) printf 'Mon' ;;
-    tue|2) printf 'Tue' ;;
-    wed|3) printf 'Wed' ;;
-    thu|4) printf 'Thu' ;;
-    fri|5) printf 'Fri' ;;
-    sat|6) printf 'Sat' ;;
-    mon..fri|1-5) printf 'Mon..Fri' ;;
-    *) return 1 ;;
-  esac
-}
-
-cron_dow_num_to_name() {
+cron_is_uint() {
   case "$1" in
-    0|7) printf 'Sun' ;;
-    1) printf 'Mon' ;;
-    2) printf 'Tue' ;;
-    3) printf 'Wed' ;;
-    4) printf 'Thu' ;;
-    5) printf 'Fri' ;;
-    6) printf 'Sat' ;;
-    *) return 1 ;;
+    ''|*[!0-9]*) return 1 ;;
   esac
+  return 0
 }
 
 pad2() {
@@ -355,71 +317,250 @@ pad2() {
   fi
 }
 
-# Convert a single cron field that is a fixed number or */n or a-b into
-# systemd calendar fragment for hour/minute. Returns empty for '*'.
-cron_time_field() {
-  local field="$1"
+# cron_value <token> <lo> <hi> <label> → prints the decimal value or fails.
+cron_value() {
+  local tok="$1" lo="$2" hi="$3" label="$4" v
+  if ! cron_is_uint "$tok" || [ "${#tok}" -gt 2 ]; then
+    cron_err "unsupported $label value '$tok'"
+    return 1
+  fi
+  v=$((10#$tok))
+  if [ "$v" -lt "$lo" ] || [ "$v" -gt "$hi" ]; then
+    cron_err "$label value $v outside $lo-$hi"
+    return 1
+  fi
+  printf '%s' "$v"
+}
+
+# cron_step <token> <label> → prints a positive step or fails.
+cron_step() {
+  local tok="$1" label="$2"
+  if ! cron_is_uint "$tok" || [ "${#tok}" -gt 2 ] || [ "$((10#$tok))" -lt 1 ]; then
+    cron_err "unsupported $label step '$tok'"
+    return 1
+  fi
+  printf '%s' "$((10#$tok))"
+}
+
+# Convert one numeric cron field (minute, hour, day-of-month, month) into the
+# matching systemd calendar component. '*' stays '*'.
+#   N -> NN, A-B -> AA..BB, */S -> LO/S, A-B/S -> AA..BB/S, A/S -> AA/S
+cron_field_to_systemd() {
+  local field="$1" lo="$2" hi="$3" label="$4"
+  local out="" part base step a b IFS=','
+  if [ "$field" = '*' ]; then
+    printf '*'
+    return 0
+  fi
   case "$field" in
-    '*') printf ''; return ;;
-    */*)
-      local step="${field#*/}"
-      printf '*/%s' "$step"
-      return
+    ''|,*|*,|*,,*)
+      cron_err "malformed $label field '$field'"
+      return 1
       ;;
-    *-*)
-      printf '%s' "$field"
-      return
-      ;;
-    *)
-      if printf '%s' "$field" | grep -Eq '^[0-9]+$'; then
-        pad2 "$field"
-        return
-      fi
-      printf '%s' "$field"
-      ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $field
+  set +f
+  for part in "$@"; do
+    step=""
+    base="$part"
+    case "$part" in
+      */*/*)
+        cron_err "malformed $label field '$field'"
+        return 1
+        ;;
+      */*)
+        base="${part%/*}"
+        step="$(cron_step "${part#*/}" "$label")" || return 1
+        ;;
+    esac
+    case "$base" in
+      '*')
+        if [ -z "$step" ]; then
+          cron_err "'*' inside a $label list '$field'"
+          return 1
+        fi
+        out="${out:+$out,}$(pad2 "$lo")/${step}"
+        ;;
+      *-*)
+        a="$(cron_value "${base%%-*}" "$lo" "$hi" "$label")" || return 1
+        b="$(cron_value "${base#*-}" "$lo" "$hi" "$label")" || return 1
+        if [ "$a" -gt "$b" ]; then
+          cron_err "reversed $label range '$base'"
+          return 1
+        fi
+        out="${out:+$out,}$(pad2 "$a")..$(pad2 "$b")${step:+/$step}"
+        ;;
+      *)
+        a="$(cron_value "$base" "$lo" "$hi" "$label")" || return 1
+        out="${out:+$out,}$(pad2 "$a")${step:+/$step}"
+        ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# Map a cron day-of-week token (0-7 or sun..sat) to 0-7; 0 and 7 are Sunday.
+cron_dow_value() {
+  local tok
+  tok="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$tok" in
+    sun) printf '0' ;;
+    mon) printf '1' ;;
+    tue) printf '2' ;;
+    wed) printf '3' ;;
+    thu) printf '4' ;;
+    fri) printf '5' ;;
+    sat) printf '6' ;;
+    *) cron_value "$tok" 0 7 day-of-week || return 1 ;;
   esac
 }
 
-cron_to_oncalendar() {
-  # stdin unused; args: minute hour dom month dow → prints OnCalendar value
-  local minute="$1" hour="$2" dom="$3" month="$4" dow="$5"
-  local dow_s date_s time_s h m
+# cron_dow_run <first> <last> <length> → Mon | Mon,Tue | Mon..Wed
+cron_dow_run() {
+  local first="$1" last="$2" len="$3"
+  local n out="" seen=0
+  if [ "$len" -ge 3 ]; then
+    printf '%s..%s' "$first" "$last"
+    return 0
+  fi
+  if [ "$len" -eq 1 ]; then
+    printf '%s' "$first"
+    return 0
+  fi
+  for n in Mon Tue Wed Thu Fri Sat Sun; do
+    [ "$n" = "$first" ] && seen=1
+    if [ "$seen" -eq 1 ]; then
+      out="${out:+$out,}$n"
+      [ "$n" = "$last" ] && break
+    fi
+  done
+  printf '%s' "$out"
+}
 
-  dow_s="$(cron_dow_to_systemd "$dow" || true)"
-
-  # Date part: year-month-day → *-month-day
-  local mon_s day_s
-  case "$month" in
-    '*') mon_s='*' ;;
-    *) mon_s="$(pad2 "$month" 2>/dev/null || printf '%s' "$month")" ;;
+# Map cron DOW (0/7=Sun … 6=Sat) to systemd weekday names. Prints '' when
+# every day matches. Days are emitted Monday-first (systemd's own order), with
+# runs of three or more collapsed to A..B, so 1-5 → Mon..Fri and 0,6 → Sat,Sun.
+cron_dow_to_systemd() {
+  local field="$1"
+  local part base step a b i d IFS=','
+  local days=" "
+  case "$field" in
+    '*'|'*/1') printf ''; return 0 ;;
+    ''|,*|*,|*,,*)
+      cron_err "malformed day-of-week field '$field'"
+      return 1
+      ;;
   esac
-  case "$dom" in
-    '*') day_s='*' ;;
-    *) day_s="$(pad2 "$dom" 2>/dev/null || printf '%s' "$dom")" ;;
-  esac
-  date_s="*-${mon_s}-${day_s}"
-
-  m="$(cron_time_field "$minute")"
-  h="$(cron_time_field "$hour")"
-  # Personal timers shipped with an empty minute as 00 (`* 9 * * *` is once
-  # at 09:00). Company jobs expand '*' only in lib/company-jobs.mjs.
-  [ -n "$m" ] || m='00'
-  [ -n "$h" ] || h='*'
-  # Normalize pure numbers already padded; handle hour=*
-  if [ "$h" = '*' ]; then
-    time_s="*:${m}:00"
-  elif printf '%s' "$h" | grep -q '/'; then
-    # e.g. */6 → 0/6
-    local step="${h#*/}"
-    time_s="0/${step}:${m}:00"
+  set -f
+  # shellcheck disable=SC2086
+  set -- $field
+  set +f
+  for part in "$@"; do
+    step=1
+    base="$part"
+    case "$part" in
+      */*/*)
+        cron_err "malformed day-of-week field '$field'"
+        return 1
+        ;;
+      */*)
+        base="${part%/*}"
+        step="$(cron_step "${part#*/}" day-of-week)" || return 1
+        ;;
+    esac
+    case "$base" in
+      '*') a=0; b=6 ;;
+      *-*)
+        a="$(cron_dow_value "${base%%-*}")" || return 1
+        b="$(cron_dow_value "${base#*-}")" || return 1
+        if [ "$a" -gt "$b" ]; then
+          cron_err "reversed day-of-week range '$base'"
+          return 1
+        fi
+        ;;
+      *)
+        a="$(cron_dow_value "$base")" || return 1
+        # A/S runs from A to the end of the week, as in Vixie cron.
+        if [ "$part" != "$base" ]; then b=6; else b="$a"; fi
+        ;;
+    esac
+    i="$a"
+    while [ "$i" -le "$b" ]; do
+      d=$((i % 7))
+      case "$days" in
+        *" $d "*) ;;
+        *) days="$days$d " ;;
+      esac
+      i=$((i + step))
+    done
+  done
+  # Monday-first order matches systemd, so every collapsed run is ascending.
+  local out="" run_start="" run_prev="" run_len=0 count=0 name
+  IFS=' '
+  for d in 1 2 3 4 5 6 0; do
+    case "$d" in
+      1) name=Mon ;; 2) name=Tue ;; 3) name=Wed ;; 4) name=Thu ;;
+      5) name=Fri ;; 6) name=Sat ;; 0) name=Sun ;;
+    esac
+    if case "$days" in *" $d "*) true ;; *) false ;; esac; then
+      count=$((count + 1))
+      if [ -z "$run_start" ]; then run_start="$name"; run_len=0; fi
+      run_prev="$name"
+      run_len=$((run_len + 1))
+    elif [ -n "$run_start" ]; then
+      out="${out:+$out,}$(cron_dow_run "$run_start" "$run_prev" "$run_len")"
+      run_start=""
+    fi
+  done
+  if [ -n "$run_start" ]; then
+    out="${out:+$out,}$(cron_dow_run "$run_start" "$run_prev" "$run_len")"
+  fi
+  if [ "$count" -eq 7 ]; then
+    printf ''
   else
-    time_s="${h}:${m}:00"
+    printf '%s' "$out"
+  fi
+}
+
+cron_to_oncalendar() {
+  # stdin unused; args: minute hour dom month dow → prints OnCalendar value.
+  # Returns 1 (reason on stderr) for any cron form it cannot map exactly.
+  local minute="$1" hour="$2" dom="$3" month="$4" dow="$5"
+  local dow_s mon_s day_s h m
+
+  if [ "$#" -ne 5 ]; then
+    cron_err "expected 5 fields, got $#"
+    return 1
+  fi
+  case "$dow" in
+    '*'|'*/1') ;;
+    *)
+      if [ "$dom" != '*' ]; then
+        cron_err "day-of-month '$dom' with day-of-week '$dow' matches either day in cron; systemd cannot express that"
+        return 1
+      fi
+      ;;
+  esac
+
+  dow_s="$(cron_dow_to_systemd "$dow")" || return 1
+  mon_s="$(cron_field_to_systemd "$month" 1 12 month)" || return 1
+  day_s="$(cron_field_to_systemd "$dom" 1 31 day-of-month)" || return 1
+  h="$(cron_field_to_systemd "$hour" 0 23 hour)" || return 1
+  # Personal timers have always shipped a wildcard minute as 00 (`* 9 * * *`
+  # is once at 09:00); that narrows, never widens. Company jobs expand '*'
+  # only in lib/company-jobs.mjs.
+  if [ "$minute" = '*' ]; then
+    m='00'
+  else
+    m="$(cron_field_to_systemd "$minute" 0 59 minute)" || return 1
   fi
 
   if [ -n "$dow_s" ]; then
-    printf '%s %s %s' "$dow_s" "$date_s" "$time_s"
+    printf '%s *-%s-%s %s:%s:00' "$dow_s" "$mon_s" "$day_s" "$h" "$m"
   else
-    printf '%s %s' "$date_s" "$time_s"
+    printf '*-%s-%s %s:%s:00' "$mon_s" "$day_s" "$h" "$m"
   fi
 }
 

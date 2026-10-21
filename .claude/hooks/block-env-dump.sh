@@ -206,9 +206,11 @@ BLOCKED: cat .env (bare)
 
 Displaying .env files will leak secrets into chat output.
 
-Safe alternatives:
-  cat .env | cut -d= -f1
-  grep -v 'KEY\|SECRET\|TOKEN\|PASSWORD' .env
+Safe alternatives (key names or counts only, never values):
+  cut -d= -f1 .env
+  grep -c . .env
+Filtering values out with grep -v is not safe: it is case-sensitive and
+misses key shapes such as _authToken.
 EOF
   if command -v jq >/dev/null 2>&1; then
     jq -nc --arg m "BLOCKED: cat .env (bare)" '{decision:"block",reason:$m}' || true

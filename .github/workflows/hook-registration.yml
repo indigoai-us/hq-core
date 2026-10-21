@@ -1,0 +1,58 @@
+name: Hook registration
+on:
+  # Only PRs that touch hook registration, the adapters or these tests.
+  # pr-checks.yml also runs the engine and exec-form tests; this workflow adds
+  # the full Linux, macOS and Windows matrix for all three.
+  # On staging, PRs run the Linux leg only. Hosted macOS and Windows have no
+  # PR leg there; a maintainer runs the full matrix by hand (workflow_dispatch).
+  # A PR that needs macOS or Windows coverage runs the three tests locally or
+  # asks Corey's conductor for a dispatch. Outside staging the matrix is
+  # unchanged.
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.claude/settings.json'
+      - '.claude/hooks/**'
+      - '.codex/hooks/**'
+      - '.grok/hooks/**'
+      - 'core/scripts/restore-hook-settings.sh'
+      - 'core/scripts/remove-stray-gate-hooks.sh'
+      - 'core/scripts/check-hq-hooks.sh'
+      - 'core/scripts/hook-lib.sh'
+      - 'core/scripts/lib/hook-adapter-core.sh'
+      - 'core/scripts/tests/restore-hook-settings.test.sh'
+      - 'core/scripts/tests/restore-hook-engine.test.sh'
+      - 'core/scripts/tests/hook-adapter-exec-form.test.sh'
+      - '.github/workflows/hook-registration.yml'
+permissions:
+  contents: read
+# A newer push to the same PR supersedes the in-flight matrix.
+# Outside staging the group is per run, which leaves hq-core unchanged.
+concurrency:
+  group: ${{ github.repository == 'indigoai-us/hq-core-staging' && format('{0}-{1}', github.workflow, github.ref) || format('{0}-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  restore:
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.repository == 'indigoai-us/hq-core-staging' && github.event_name == 'pull_request' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      # On windows-latest the engine test also compares the --hq-root token for
+      # native, mixed, lower-case drive and upper-case spellings of a root with
+      # a space against hq-cli's own launcherRoot(realpath) spelling.
+      - name: Restore and rollback in temporary homes
+        shell: bash
+        run: |
+          export HOME="$(mktemp -d)"
+          export USERPROFILE="$HOME"
+          bash core/scripts/tests/restore-hook-settings.test.sh
+          bash core/scripts/tests/restore-hook-engine.test.sh
+          bash core/scripts/tests/hook-adapter-exec-form.test.sh

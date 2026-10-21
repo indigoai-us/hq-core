@@ -18,7 +18,7 @@
 #       Emits, one per line, every settings.json command registered for that
 #       event whose matcher matches <canonical_tool>, classified as:
 #           gate<TAB><hook-id><TAB><script-abs>[<TAB>extra-arg...]
-#           master<TAB><event-arg>
+#           master<TAB><event-arg>   (also for the pinned engine exec form)
 #           script<TAB><script-abs>
 #       Tabs separate fields; callers read with IFS=$'\t'.
 #   hqad_mode_for <event> <script-abs>
@@ -553,7 +553,6 @@ hqad_launch_registered_hook() {
   case "$profile_status" in
     0) ;;
     1) return 0 ;;
-    2) printf "ERROR: Unknown profile '%s'. Use minimal|standard|strict\n" "${HQ_HOOK_PROFILE:-}" >&2; return 1 ;;
     *) printf "ERROR: hqad: profile gate failed for hook '%s' (status %s).\n" "$hook_id" "$profile_status" >&2; return 1 ;;
   esac
   if [ "$HQAD_PATH_AUGMENTED" = "0" ] && command -v hq_augment_path >/dev/null 2>&1; then
@@ -567,28 +566,35 @@ hqad_launch_registered_hook() {
   return "$status"
 }
 
-# Parse the same prefilter input text as master-hook: object tool_input JSON,
-# otherwise the prompt, plus PostToolUse tool_response JSON; flatten record
-# separators and newlines before regex matching.
+# Parse the same prefilter input text as master-hook: object tool_input JSON
+# plus its decoded string values, otherwise the prompt, plus PostToolUse
+# tool_response JSON; flatten record separators and newlines before regex
+# matching. The decoded strings keep a line-start `git` visible to boundary
+# regexes, which see `\ngit` in the JSON form as `ngit`.
 hqad_prefilter_payload_fields() {
   local event="$1" payload="$2" encoded
   encoded="$(printf '%s' "$payload" | jq -r --arg ev "$event" '
+    # Same linear flatten as master-hook; gsub and join grow faster than
+    # linear on long commands.
+    def hq_flat: reduce ("\u0000", "\u001f", "\n") as $sep
+      (.; [split($sep) | (.[0] // ""), (.[1:][] | " ", .)] | add);
     [
       (if (.cwd | type) == "string" then .cwd else "" end),
       (if (.session_id | type) == "string" then .session_id else "" end),
       ((if $ev == "UserPromptSubmit" then (.prompt // "")
-        elif (.tool_input | type) == "object" then (.tool_input | tojson)
+        elif (.tool_input | type) == "object" then ((.tool_input | tojson) + ([.tool_input | .. | strings | " ", .] | add // ""))
         else (.prompt // "") end)
        + (if $ev == "PostToolUse" and .tool_response != null then " " + (.tool_response | tojson) else "" end))
     ]
-    | map(if type == "string" then gsub("\\u001f|\\n"; " ") else "" end)
+    | map(if type == "string" then hq_flat else "" end)
     | @sh
   ' 2>/dev/null)" || return 1
   printf '%s' "$encoded"
 }
 
-# Classify a single (already $CLAUDE_PROJECT_DIR-expanded) settings.json command
-# string into a tab-separated dispatch record. settings.json commands are
+# Classify a single settings.json command string into a tab-separated dispatch
+# record. $CLAUDE_PROJECT_DIR in it expands to the HQ root inside the eval
+# below. settings.json commands are
 # release-owned and are the exact strings Claude executes verbatim, so splitting
 # them with the shell's own quoting rules (via eval) is safe and, unlike a naive
 # word-split, correctly preserves an install path that contains spaces
@@ -608,6 +614,11 @@ hqad_classify_command() {
   esac
   local rest="${command#bash }"
   local -a toks=()
+  # $CLAUDE_PROJECT_DIR expands as a variable inside the eval, so the HQ root
+  # is never re-parsed as shell text: a root containing $ or backticks stays
+  # a literal path.
+  # shellcheck disable=SC2034  # read by the eval below
+  local CLAUDE_PROJECT_DIR="$HQ_ROOT"
   eval "toks=( $rest )" 2>/dev/null || return 0
   [ "${#toks[@]}" -ge 1 ] || return 0
   local script="${toks[0]}"
@@ -636,6 +647,85 @@ hqad_classify_command() {
       printf 'script\t%s\n' "$script"
       ;;
   esac
+}
+
+# Classify an exec-form settings entry ({command, args}, run without a shell).
+# With the hook-engine-launcher flag on, the update healer and `hq reindex`
+# (hq-cli 1992) register the pinned native engine in place of the
+# master-hook.sh line:
+#   command: $HOME/.hq/bin/hq-hook/<semver>/<binary>
+#   args:    [<Event>, "--hq-root", <root>, "--runtime", "claude"]
+# The engine runs the same fan-out as master-hook.sh, so Codex and Grok must
+# still run master-hook.sh for it. Emit `master<TAB><Event>` only when the
+# command has the pinned layout <home>/.hq/bin/hq-hook/<semver>/<binary>
+# (binary names as hq-cli's resolve.ts installs them) and --hq-root names
+# this HQ root. Any other exec entry emits nothing, as before. The event
+# argument must name the settings slot the entry sits in, so a PreToolUse
+# entry cannot dispatch as another event and skip the PreToolUse guards.
+#
+# When <home> is not this process's HOME the entry still counts, with a
+# warning on stderr (see the end of hqad_classify_exec). "This HOME" follows
+# how the CLI finds it: Node's os.homedir() reads HOME on macOS and Linux and
+# USERPROFILE on Windows, where Git Bash's HOME can differ (a %HOME% variable
+# or a domain home drive). With cygpath present, USERPROFILE is accepted as
+# well. HOME=/ gives the prefix "".
+hqad_exec_home_matches() { # <prefix>
+  local prefix="$1" home cand
+  for cand in "${HOME:-}" "$( { command -v cygpath >/dev/null 2>&1 && [ -n "${USERPROFILE:-}" ] && cygpath -u "$USERPROFILE"; } 2>/dev/null)"; do
+    [ -n "$cand" ] || continue
+    home="$cand"
+    while [ -n "$home" ] && [ "${home%/}" != "$home" ]; do home="${home%/}"; done
+    if [ -z "$home" ]; then
+      [ -z "$prefix" ] && return 0
+      continue
+    fi
+    [ -n "$prefix" ] || continue
+    [ "$prefix" = "$home" ] || [ "$prefix" -ef "$home" ] && return 0
+  done
+  return 1
+}
+
+hqad_classify_exec() {
+  [ "$#" -ge 5 ] || return 0
+  local slot="$1" command="$2" event="$3" flag="$4" root="$5"
+  [ "$flag" = "--hq-root" ] && [ -n "$root" ] && [ -n "$HQ_ROOT" ] || return 0
+  case "$event" in '' | *[!A-Za-z]*) return 0 ;; esac
+  [ "$event" = "$slot" ] || return 0
+  # The CLI writes native paths on Windows; compare in Git Bash's form.
+  if command -v cygpath >/dev/null 2>&1; then
+    case "$command" in [A-Za-z]:[\\/]* | [\\/][\\/]*) command="$(cygpath -u "$command" 2>/dev/null)" || return 0 ;; esac
+    case "$root" in [A-Za-z]:[\\/]* | [\\/][\\/]*) root="$(cygpath -u "$root" 2>/dev/null)" || return 0 ;; esac
+  fi
+  case "$command" in
+    /*) ;;
+    *) return 0 ;;
+  esac
+  case "$command/" in */../* | */./* | *//*) return 0 ;; esac
+  case "$command" in */.hq/bin/hq-hook/*) ;; *) return 0 ;; esac
+  # The pinned layout has exactly one .hq/bin/hq-hook segment.
+  local prefix="${command%%/.hq/bin/hq-hook/*}"
+  local rel="${command#"$prefix"/.hq/bin/hq-hook/}"
+  local version="${rel%%/*}" binary="${rel#*/}"
+  [ "$version" != "$rel" ] || return 0
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 0
+  case "$binary" in
+    hq-hook | hq-hook.exe | hq-hook.app/Contents/MacOS/hq-hook) ;;
+    *) return 0 ;;
+  esac
+  local want got
+  want="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P)" || return 0
+  got="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$want" ] && { [ "$got" = "$want" ] || [ "$root" -ef "$HQ_ROOT" ]; } || return 0
+  # The adapters never run the named binary: a master record runs this HQ
+  # root's own master-hook.sh. So a pinned engine under another home (sudo, a
+  # sandbox or devcontainer, a fleet runtime, a HOME/USERPROFILE split) still
+  # counts as master. Dropping it would drop every personal, pack and company
+  # guard, because the release settings register them only through this entry.
+  if ! hqad_exec_home_matches "$prefix"; then
+    printf 'WARN: hqad: %s %s engine %s is not under this HOME; running master-hook.sh for it anyway.\n' \
+      "$slot" "$event" "$command" >&2
+  fi
+  printf 'master\t%s\n' "$event"
 }
 
 # Fail-closed safety net. If settings.json is missing or unparseable, the
@@ -780,7 +870,9 @@ hqad_iter_settings() {
     return 0
   fi
   # A present-but-corrupt settings.json also degrades to the critical guard set.
-  if ! jq -e . "$settings" >/dev/null 2>&1; then
+  # settings.json goes to jq on stdin. Git Bash rewrites path arguments for
+  # native jq.exe, and fails to for a root containing a backtick.
+  if ! jq -e . < "$settings" >/dev/null 2>&1; then
     hqad_fallback_records "$event" "$tool"
     return 0
   fi
@@ -789,7 +881,7 @@ hqad_iter_settings() {
   # control-byte delimiter here is not portable to Bash 3.2 (stock macOS), and
   # a producer behind process substitution can fail without making the while
   # loop fail. Capture jq first so query and framing failures fail closed.
-  local rows="" line decoded matcher command frame_failed=0
+  local rows="" line decoded matcher command frame_failed=0 want=2 exec_form=0
   local runtime="${HQ_CHECKPOINT_RUNTIME:-codex}"
   if ! rows="$(jq -r --arg ev "$event" --arg runtime "$runtime" '
     (.hooks[$ev] // [])[]
@@ -797,12 +889,15 @@ hqad_iter_settings() {
     | (.hooks // [])[]
     | select(.type == "command" and (.command | type == "string"))
     | select($ev != "Stop" or .asyncRewake != true or $runtime == "claude")
+    | (if (.args | type) == "array" and (.args | length) > 0 and (.args | all(type == "string"))
+       then .args else null end) as $args
     | if (($m | type) != "string")
-        or ([$m, .command] | any(contains("\u0000") or contains("\n")))
+        or ([$m, .command] + ($args // []) | any(contains("\u0000") or contains("\n")))
       then error("hook dispatch record contains an unsupported byte")
+      elif $args != null then "hqad-exec " + ([$m, .command] + $args | @sh)
       else "hqad-record " + ([$m, .command] | @sh)
       end
-  ' "$settings" 2>/dev/null)"; then
+  ' < "$settings" 2>/dev/null)"; then
     hqad_fallback_records "$event" "$tool"
     return 0
   fi
@@ -813,16 +908,19 @@ hqad_iter_settings() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     case "$line" in
-      "hqad-record "*) decoded="${line#hqad-record }" ;;
+      "hqad-record "*) decoded="${line#hqad-record }"; want=2 ;;
+      "hqad-exec "*) decoded="${line#hqad-exec }"; want=3 ;;
       *) frame_failed=1; break ;;
     esac
     # jq's @sh output is shell-escaped data, not executable settings content;
-    # eval only restores the two original strings as positional parameters.
+    # eval only restores the original strings as positional parameters.
     eval "set -- $decoded" 2>/dev/null || {
       frame_failed=1
       break
     }
-    if [ "$#" -ne 2 ]; then
+    # A record frame is exactly [matcher, command]; an exec frame is
+    # [matcher, command, args...] with at least one arg.
+    if { [ "$want" -eq 2 ] && [ "$#" -ne 2 ]; } || [ "$#" -lt "$want" ]; then
       frame_failed=1
       break
     fi
@@ -846,16 +944,22 @@ EOF
 
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    decoded="${line#hqad-record }"
+    case "$line" in
+      "hqad-exec "*) decoded="${line#hqad-exec }"; exec_form=1 ;;
+      *) decoded="${line#hqad-record }"; exec_form=0 ;;
+    esac
     eval "set -- $decoded" 2>/dev/null
     matcher="$1"
     command="$2"
     [ -n "$command" ] || continue
     hqad_matcher_matches "$matcher" "$tool" "$event" || continue
-    # Expand $CLAUDE_PROJECT_DIR (quoted and bare) to the resolved HQ root so
-    # the classifier sees absolute script paths.
-    command="${command//\"\$CLAUDE_PROJECT_DIR\"/\"$HQ_ROOT\"}"
-    command="${command//\$CLAUDE_PROJECT_DIR/$HQ_ROOT}"
+    if [ "$exec_form" -eq 1 ]; then
+      shift 2
+      hqad_classify_exec "$event" "$command" "$@"
+      continue
+    fi
+    # The classifier expands $CLAUDE_PROJECT_DIR to the resolved HQ root, so it
+    # sees absolute script paths.
     hqad_classify_command "$command"
   done <<EOF
 $rows

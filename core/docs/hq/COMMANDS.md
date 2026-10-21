@@ -132,6 +132,7 @@ if none match, the first group whose keywords match a word in its description; o
 | `/hq-pack-cowork:hq-cowork-meetings` | package | Read HQ meeting notes and extracted signals from Cowork. |
 | `/import-claude` | core | Deprecated alias for /import-context — bootstrap HQ from your prior AI footprint (Claude Code, Codex, Grok, claude.ai history plus on-disk artifacts). |
 | `/import-context` | core | Bootstrap HQ from prior Claude Code, Codex, Grok, and claude.ai history and on-disk artifacts, with guided import. |
+| `/join-meeting` | core | Ride a live meeting transcript in this session. Pick a live meeting or invite the bot with a join link, stay bound until it ends, then save the transcript. |
 | `/knowledge-pulse` | core | Run a lightweight freshness pass over company knowledge and policies. |
 | `/learn` | core | Turn reusable findings into scoped policies or insight files. |
 | `/meeting-notes` | core | Read HQ-native meeting notes, transcripts, recaps, and sources for a company. |

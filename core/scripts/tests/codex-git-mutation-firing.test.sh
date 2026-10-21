@@ -20,7 +20,10 @@
 
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+# Take the root from this script, not the caller's directory, so a run from
+# inside the operator's HQ never tests that HQ's hooks.
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git -C "$TEST_DIR" rev-parse --show-toplevel)"
 ADAPTER_SRC="$ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
 GATE_SRC="$ROOT/.claude/hooks/hook-gate.sh"
 HOOK_SRC="$ROOT/.claude/hooks/block-hq-root-git-mutation.sh"

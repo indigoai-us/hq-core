@@ -5,7 +5,7 @@ description: Recognize a content pack the person pastes or names (a hqforwork.co
 
 # Adding a pack from the chat
 
-A pack is a bundle of workers, knowledge and a setup bot that HQ installs with
+A pack is a bundle of workers, knowledge and its own bot that HQ installs with
 `hq packages install`. People arrive with one in three ways: they paste a link
 from a pack page, they type the pack's name, or they drop a folder path. You add
 it without them leaving this conversation, and you end by introducing the bot

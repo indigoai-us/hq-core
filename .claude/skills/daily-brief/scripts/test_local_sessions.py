@@ -46,7 +46,7 @@ def main():
         meta('s-lane', 'company_slug: acme\n')
         write(os.path.join(tx, 's-lane.jsonl'), jl(
             {'type': 'user', 'entrypoint': 'claude-desktop', 'message': {'content':
-             'Working directory: /x/repo\n\n---\n\nRead your brief at /x/HQ/workspace/tmp/workflow-runner/run-1/conduct-tokens-viz/brief.md and carry it out now.'}}))
+             'Working directory: /x/repo\n\n---\n\nRead your brief at /x/HQ/workspace/tmp/workflow-runner/run-1/conduct-charts-viz/brief.md and carry it out now.'}}))
         # Unnamed interactive session: first human line, reminders skipped.
         meta('s-prompt', 'company_slug: other-co\n')
         write(os.path.join(tx, 's-prompt.jsonl'), jl(
@@ -74,7 +74,7 @@ def main():
         assert a['kind'] == 'agent' and a['title'] == 'summarize the logs', a
 
         lane = by['s-lane']
-        assert lane['kind'] == 'lane' and lane['title'] == 'conduct-tokens-viz' and lane['company'] == 'acme', lane
+        assert lane['kind'] == 'lane' and lane['title'] == 'conduct-charts-viz' and lane['company'] == 'acme', lane
 
         p = by['s-prompt']
         assert p['title'] == 'fix the export button' and p['kind'] == 'you' and p['company'] == 'other-co', p

@@ -23,6 +23,8 @@ Run with `python3 -I`. Reads no secrets; prints nothing.
 import datetime as dt
 import json
 import os
+import re
+import unicodedata
 
 KIND_YOU, KIND_AGENT, KIND_LANE = 'you', 'agent', 'lane'
 PROMPT_SUMMARY_CHARS = 80
@@ -109,6 +111,89 @@ def read_head(path, n):
         return ''
 
 
+# ---------- secret filter ----------
+# Titles can come from the person's own prompt text, and prompts sometimes hold
+# credentials. The filter is safe by default: any line that names a credential
+# or holds a long random-looking run is dropped, and the caller falls back to
+# "Session in <project>". Some good titles are dropped; no credential is shown.
+# This is stricter than housekeeping.py's _SECRETISH, which masks values in
+# place; here the whole line is dropped.
+_SECRET_PATTERNS = re.compile(
+    r'(?<![A-Za-z0-9])(?:sk-ant-[A-Za-z0-9_-]{4,}|sk-[A-Za-z0-9_-]{8,}|sk_(?:live|test)_[A-Za-z0-9]{8,}'
+    r'|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|glpat-[A-Za-z0-9_-]{8,}|npm_[A-Za-z0-9]{8,}'
+    r'|xox[abeprs]-[A-Za-z0-9-]{8,}|(?:AKIA|ASIA)[0-9A-Z]{12,}|AIza[0-9A-Za-z_-]{20,}'
+    r'|eyJ[A-Za-z0-9_-]{8})'
+    r'|-----BEGIN [A-Z ]*PRIVATE KEY'
+    r'|://[^\s/:@]+:[^\s/@]+@')
+# A credential word anywhere in the line, in any case and inside identifiers
+# such as API_KEY or GITHUB_TOKEN. "key" and "pass" count only as whole words
+# or identifier parts, so "monkey" and "passing" do not.
+_SECRET_WORDS = re.compile(
+    r'(?i)password|passwd|passphrase|passcode|pwd|secret|token|api[\s_.-]*key|bearer'
+    r'|private[\s_.-]*key|access[\s_.-]*key|auth|credential|(?<![a-z])creds(?![a-z])'
+    r'|(?<![a-z])keys?(?![a-z])|(?<![a-z])pass(?![a-z])|sshpass'
+    r'|(?<![a-z])(?:pin|otp|2fa|mfa|pw|cred)(?![a-z])|passwort|contrase(?:ñ|n)a|mot de passe')
+# NAME= or NAME: where the name holds a credential part with no separator,
+# such as DBPASS=, PGPASS: or MYKEY=. Each maximal name run is found once and the
+# separator is checked at its end, so a long run with no = or : stays linear.
+_ASSIGN_NAME = re.compile(r'[A-Za-z0-9_.-]+')
+_ASSIGN_SEP = re.compile(r'\s*[=:]')
+_ASSIGN_PARTS = ('pass', 'key', 'pwd', 'pw', 'cred', 'secret', 'token', 'auth', 'pin')
+# 16+ letters and digits mixed, such as a short API token or a base32 TOTP seed.
+_MIXED_RUN = re.compile(r'[A-Za-z0-9]{16,}')
+_HEX_RUN = re.compile(r'[0-9A-Fa-f]{24,}')
+# base64 and base62 runs, including the / + = _ - that split AWS keys and URL-safe tokens.
+_TOKEN_RUN = re.compile(r'[A-Za-z0-9_+/=-]{20,}')
+
+
+# Letters that NFKC leaves alone but that read as ASCII: dotless i, long s,
+# Kelvin sign, dotted capital I.
+_LOOKALIKES = str.maketrans({'\u0131': 'i', '\u017f': 's', '\u212a': 'K', '\u0130': 'I'})
+
+
+def _random_run(run):
+    """A 20+ character run that holds a digit or a capital letter. Lowercase
+    words joined by - _ or / (branch names, paths) are not matched."""
+    return any(ch.isdigit() or ch.isupper() for ch in run)
+
+
+def looks_secret(text):
+    """True when text may hold a credential: a credential word (password,
+    passwd, passphrase, passcode, pwd, secret, token, api key, bearer, private
+    key, access key, auth, credential, creds, key, pass, pin, otp, 2fa, mfa),
+    a known API key prefix, a private-key header, a URL
+    with a password in it, a hex run of 24+ characters, or a base64/base62 run
+    of 20+ characters with a digit or capital letter."""
+    if not isinstance(text, str) or not text:
+        return False
+    # Check the raw text and a folded copy (full-width and other compatibility
+    # forms folded, accents dropped). Folding can join a letter onto a key
+    # prefix, as in an accented letter before sk-, so the raw check stays too.
+    if text.isascii():
+        return _looks_secret(text)
+    folded = unicodedata.normalize('NFKC', ''.join(
+        ch for ch in unicodedata.normalize('NFD', text.translate(_LOOKALIKES))
+        if unicodedata.category(ch) != 'Mn'))
+    return _looks_secret(text) or (folded != text and _looks_secret(folded))
+
+
+def _looks_secret(text):
+    if _SECRET_WORDS.search(text) or _SECRET_PATTERNS.search(text) or _HEX_RUN.search(text):
+        return True
+    for m in _ASSIGN_NAME.finditer(text):
+        if _ASSIGN_SEP.match(text, m.end()) and any(p in m.group().lower() for p in _ASSIGN_PARTS):
+            return True
+    if any(any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+           for run in _MIXED_RUN.findall(text)):
+        return True
+    return any(_random_run(run) for run in _TOKEN_RUN.findall(text))
+
+
+def safe_title(text):
+    """text, or None when it looks like it holds a credential."""
+    return None if looks_secret(text) else text
+
+
 # ---------- prompt text ----------
 def _tag_name(rest):
     out = []
@@ -162,7 +247,11 @@ def lane_name(text):
 
 
 def cap_line(line):
+    """The line collapsed and capped, or '' (found, but withheld) when the full
+    line looks like it holds a credential."""
     collapsed = ' '.join(line.split())
+    if looks_secret(collapsed):
+        return ''
     if len(collapsed) <= PROMPT_SUMMARY_CHARS:
         return collapsed
     return collapsed[:PROMPT_SUMMARY_CHARS - 1].rstrip() + '…'
@@ -242,9 +331,15 @@ def codex_first_prompt(text):
 
 # ---------- transcripts ----------
 def scan_transcript_lines(text, out):
-    """Title and cwd from transcript lines, latest record wins. Only metadata
-    records are parsed; message text never reaches the result."""
+    """Title, summary and cwd from transcript lines, latest record wins. Only
+    metadata records are parsed; message text never reaches the result."""
     for line in text.splitlines():
+        if '"type":"summary"' in line:
+            value = _loads(line)
+            t = value.get('summary') if isinstance(value, dict) and value.get('type') == 'summary' else None
+            if isinstance(t, str) and t.strip():
+                out['summary'] = t.strip()
+            continue
         if '"type":"custom-title"' in line or '"type":"agent-name"' in line:
             value = _loads(line)
             if isinstance(value, dict):
@@ -262,24 +357,28 @@ def scan_transcript_lines(text, out):
                 out['cwd'] = rest[:end].replace('\\\\', '\\')
 
 
-def summarize_transcript(path):
+def summarize_transcript(path, scan_cap=TRANSCRIPT_SCAN_CAP):
     try:
         size = os.stat(path).st_size
     except OSError:
         return None
     s = {'title': None, 'first_prompt': None, 'kind': None, 'cwd': None, 'last_at': _mtime_iso(path)}
     start = max(0, size - TRANSCRIPT_TAIL)
+    early = {'title': None, 'cwd': None}
     with open(path, 'rb') as f:
         f.seek(start)
         scan_transcript_lines(f.read(TRANSCRIPT_TAIL).decode('utf-8', errors='replace'), s)
         if s['title'] is None and start > 0:
-            # Title records can sit only near the start of a long transcript.
+            # Title and summary records can sit only near the start of a long transcript.
             f.seek(0)
-            early = {'title': None, 'cwd': None}
-            scan_transcript_lines(f.read(min(start, TRANSCRIPT_SCAN_CAP)).decode('utf-8', errors='replace'), early)
+            scan_transcript_lines(f.read(min(start, scan_cap)).decode('utf-8', errors='replace'), early)
             s['title'] = early['title']
             if s['cwd'] is None:
                 s['cwd'] = early['cwd']
+    # A custom title wins over Claude Code's own summary of the session.
+    summary = s.pop('summary', None) or early.get('summary')
+    if s['title'] is None:
+        s['title'] = summary
     first_prompt, kind = claude_first_prompt(read_head(path, TRANSCRIPT_HEAD))
     s['kind'] = kind
     if s['title'] is None:
@@ -313,14 +412,20 @@ def transcript_paths(root, wanted):
     return out
 
 
-def codex_thread_names(codex, wanted):
+def codex_thread_names(codex, wanted, cap=None):
     out = {}
+    if not wanted:
+        return out
     try:
         f = open(os.path.join(codex, 'session_index.jsonl'), encoding='utf-8', errors='replace')
     except OSError:
         return out
+    read = 0
     with f:
         for line in f:
+            read += len(line)
+            if cap is not None and read > cap:
+                break
             v = _loads(line)
             if not isinstance(v, dict):
                 continue
@@ -373,12 +478,12 @@ def product_from_title(title):
 
 def enrich_from_transcript(row, s):
     if row['title'] is None:
-        row['title'] = s.get('title')
+        row['title'] = safe_title(s.get('title'))
     named = row['title'] is not None
     if row['project'] is None:
         row['project'] = (repo_from_cwd(s['cwd']) if s.get('cwd') else None) or (product_from_title(row['title']) if row['title'] else None)
     if not named:
-        row['title'] = s.get('first_prompt')
+        row['title'] = s.get('first_prompt') or None
     kind = s.get('kind')
     if kind and not (row['kind'] == KIND_LANE and kind == KIND_AGENT):
         row['kind'] = kind
@@ -415,8 +520,9 @@ def scan(hq_root, start_iso, end_iso, claude_root=None, codex_root=None):
     """Sessions whose started_at falls in [start_iso, end_iso], newest first,
     enriched from thread records and agent-runtime transcripts."""
     home = os.path.expanduser('~')
-    claude_root = claude_root if claude_root is not None else os.path.join(home, '.claude', 'projects')
-    codex_root = codex_root if codex_root is not None else os.path.join(home, '.codex')
+    # Default: every Claude Code projects folder, including CLAUDE_CONFIG_DIR's.
+    claude_roots = [claude_root] if claude_root is not None else claude_project_roots(home)
+    codex_root = codex_root if codex_root is not None else codex_home(home)
     lo, hi = parse_iso(start_iso), parse_iso(end_iso)
     rows = []
     sdir = os.path.join(hq_root, 'workspace', 'sessions')
@@ -439,7 +545,7 @@ def scan(hq_root, start_iso, end_iso, claude_root=None, codex_root=None):
             'last_activity': None,
             'company': fields.get('company_slug'),
             'project': fields.get('project'),
-            'title': fields.get('title') or fields.get('task'),
+            'title': safe_title(fields.get('title') or fields.get('task')),
             # `company_source: parent` is written when a parent session
             # spawned this one with its company (HQ_SPAWN_COMPANY).
             'kind': KIND_LANE if fields.get('company_source') == 'parent' else KIND_YOU,
@@ -474,12 +580,16 @@ def scan(hq_root, start_iso, end_iso, claude_root=None, codex_root=None):
         r['last_activity'] = max(ats) if ats else None
         handoff = next((t for t in reversed(threads) if t['kind'] == 'handoff'), None)
         pick = handoff or threads[-1]
-        if pick['title'] is not None:
+        if safe_title(pick['title']) is not None:
             r['title'] = pick['title']
 
     rows.sort(key=lambda r: r['id'])
     rows.sort(key=lambda r: r['started_at'], reverse=True)
-    claude = transcript_paths(claude_root, wanted) if claude_root else {}
+    claude = {}
+    for root in claude_roots:
+        if root:
+            for sid, path in transcript_paths(root, wanted - set(claude)).items():
+                claude[sid] = path
     codex_names = codex_thread_names(codex_root, wanted) if codex_root else {}
     codex_files = codex_rollouts(codex_root, rows) if codex_root else {}
     for r in rows:
@@ -494,3 +604,249 @@ def scan(hq_root, start_iso, end_iso, claude_root=None, codex_root=None):
         s['title'] = codex_names.get(r['id'])
         enrich_from_transcript(r, s)
     return rows
+
+
+# ---------- machine inventory (welcome edition) ----------
+# Bounds for the welcome inventory. Counts come from directory listings and
+# stat calls only. File contents are read for a few files per project at most.
+INVENTORY_NEWEST = 3          # newest Claude transcripts per project read for the cwd
+INVENTORY_CODEX_HEADS = 300   # newest Codex rollouts read for the cwd
+INVENTORY_RECENT = 15         # newest transcripts read for titles (recent work)
+RECENT_TITLES_BUDGET_S = 20.0  # all title reads together
+RECENT_SCAN_CAP = 1024 * 1024  # bytes read from the start of a long transcript for its title
+CODEX_INDEX_CAP = 16 * 1024 * 1024  # bytes of Codex session_index.jsonl read for thread names
+INVENTORY_CWD_HEAD = 64 * 1024
+INVENTORY_BUDGET_S = 30.0
+HARNESS_CLAUDE, HARNESS_CODEX, HARNESS_CURSOR = 'claude_code', 'codex', 'cursor'
+
+
+def claude_project_roots(home=None, env=None):
+    """Every Claude Code projects folder on this machine: ~/.claude/projects, and
+    the projects folder under CLAUDE_CONFIG_DIR when that is set. Missing folders
+    are dropped."""
+    home = home or os.path.expanduser('~')
+    env = os.environ if env is None else env
+    roots = [os.path.join(home, '.claude', 'projects')]
+    if env.get('CLAUDE_CONFIG_DIR'):
+        roots.append(os.path.join(env['CLAUDE_CONFIG_DIR'], 'projects'))
+    out = []
+    for r in roots:
+        real = os.path.realpath(r)
+        if os.path.isdir(real) and real not in out:
+            out.append(real)
+    return out
+
+
+def codex_home(home=None, env=None):
+    home = home or os.path.expanduser('~')
+    env = os.environ if env is None else env
+    return env.get('CODEX_HOME') or os.path.join(home, '.codex')
+
+
+def cursor_workspaces_dir(home=None):
+    home = home or os.path.expanduser('~')
+    return os.path.join(home, 'Library', 'Application Support', 'Cursor', 'User', 'workspaceStorage')
+
+
+def _cwd_from_head(path, n=INVENTORY_CWD_HEAD):
+    """The first `"cwd":"…"` value in the head of a transcript, or None."""
+    out = {'title': None, 'cwd': None}
+    for line in read_head(path, n).splitlines():
+        if '"cwd":"' in line:
+            scan_transcript_lines(line, out)
+            if out['cwd']:
+                return out['cwd']
+    return None
+
+
+def _scandir_files(d, suffix):
+    """[(path, mtime)] for regular files in d ending in suffix. Stat only."""
+    out = []
+    try:
+        with os.scandir(d) as it:
+            for e in it:
+                if not e.name.endswith(suffix):
+                    continue
+                try:
+                    if e.is_file():
+                        out.append((e.path, e.stat().st_mtime))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
+def _iso_ts(ts):
+    return iso_z(dt.datetime.fromtimestamp(ts, dt.timezone.utc))
+
+
+def codex_session_id(path):
+    """`rollout-2026-10-01T12-34-56-<id>.jsonl` → `<id>`."""
+    return os.path.basename(path)[:-len('.jsonl')].split('-', 6)[-1]
+
+
+def _add_project(projects, cwd, harness, ids, last_ts):
+    p = projects.setdefault(cwd, {'path': cwd, 'sessions': 0, 'last_ts': 0.0, 'by_harness': {}, 'ids': []})
+    n = len(ids)
+    p['sessions'] += n
+    p['ids'].extend(ids)
+    p['last_ts'] = max(p['last_ts'], last_ts)
+    p['by_harness'][harness] = p['by_harness'].get(harness, 0) + n
+
+
+def _inside(path, root):
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _project_dir_ok(entry, home_real):
+    """A real project folder, or a symlink to one inside the home folder."""
+    try:
+        if not entry.is_dir():
+            return False
+        return not entry.is_symlink() or _inside(os.path.realpath(entry.path), home_real)
+    except OSError:
+        return False
+
+
+def inventory(claude_roots=None, codex_root=None, cursor_root=None, budget_s=INVENTORY_BUDGET_S, clock=None,
+              home=None):
+    """Agent sessions on this machine, counted from file listings.
+
+    Returns {counts: {claude_code, codex, cursor}, projects:
+    {cwd: {path, sessions, last_ts, by_harness, ids}}, unplaced, sessions: {id:
+    harness}, days, recent: [{id, path, harness, cwd, ts}], notes}.
+
+    Claude Code: one transcript per session in <projects>/<dir>/*.jsonl. The
+    project folder is read from the cwd of the newest transcripts in each dir.
+    Codex: one rollout per session in sessions/YYYY/MM/DD. The newest rollouts
+    are read for their cwd. Cursor: workspaces with chat state, counted only.
+    Message text is never read here. Reads stop at the time budget; later
+    sessions are still counted, without a project. A folder that cannot be read
+    adds a plain note. A project folder that is a symlink to somewhere outside
+    the home folder is not followed."""
+    import time
+    clock = clock or time.monotonic
+    deadline = clock() + budget_s
+    home = home or os.path.expanduser('~')
+    home_real = os.path.realpath(home)
+    claude_roots = claude_project_roots(home) if claude_roots is None else claude_roots
+    codex_root = codex_home(home) if codex_root is None else codex_root
+    cursor_root = cursor_workspaces_dir(home) if cursor_root is None else cursor_root
+    counts = {HARNESS_CLAUDE: 0, HARNESS_CODEX: 0, HARNESS_CURSOR: 0}
+    projects, sessions, days, notes, files = {}, {}, set(), [], []
+    unplaced = 0
+    timed_out = False
+
+    for root in claude_roots:
+        try:
+            with os.scandir(root) as it:
+                dirs = sorted(e.path for e in it if _project_dir_ok(e, home_real))
+        except OSError:
+            notes.append("Couldn't read Claude Code history")
+            continue
+        for d in dirs:
+            found = [x for x in _scandir_files(d, '.jsonl') if os.path.basename(x[0])[:-6] not in sessions]
+            if not found:
+                continue
+            found.sort(key=lambda x: -x[1])
+            for path, mt in found:
+                sessions[os.path.basename(path)[:-6]] = HARNESS_CLAUDE
+                days.add(_iso_ts(mt)[:10])
+            counts[HARNESS_CLAUDE] += len(found)
+            cwd = None
+            for path, _ in found[:INVENTORY_NEWEST]:
+                if clock() >= deadline:
+                    timed_out = True
+                    break
+                cwd = _cwd_from_head(path)
+                if cwd:
+                    break
+            if cwd:
+                _add_project(projects, cwd, HARNESS_CLAUDE, [os.path.basename(x[0])[:-6] for x in found], found[0][1])
+            else:
+                unplaced += len(found)
+            files.extend((mt, path, HARNESS_CLAUDE, cwd) for path, mt in found[:INVENTORY_RECENT])
+
+    rollouts = []
+    sroot = os.path.join(codex_root, 'sessions')
+    if os.path.isdir(sroot):
+        for dirpath, dirnames, filenames in os.walk(sroot):
+            dirnames.sort()
+            for name in filenames:
+                if name.startswith('rollout-') and name.endswith('.jsonl'):
+                    path = os.path.join(dirpath, name)
+                    try:
+                        rollouts.append((os.stat(path).st_mtime, path))
+                    except OSError:
+                        continue
+        rollouts.sort(reverse=True)
+    for i, (mt, path) in enumerate(rollouts):
+        sessions[codex_session_id(path)] = HARNESS_CODEX
+        days.add(_iso_ts(mt)[:10])
+        cwd = None
+        if i < INVENTORY_CODEX_HEADS:
+            if clock() < deadline:
+                cwd = _cwd_from_head(path)
+            else:
+                timed_out = True
+        if cwd:
+            _add_project(projects, cwd, HARNESS_CODEX, [codex_session_id(path)], mt)
+        else:
+            unplaced += 1
+        if i < INVENTORY_RECENT:
+            files.append((mt, path, HARNESS_CODEX, cwd))
+    counts[HARNESS_CODEX] = len(rollouts)
+
+    if os.path.isdir(cursor_root):
+        try:
+            with os.scandir(cursor_root) as it:
+                counts[HARNESS_CURSOR] = sum(1 for e in it if e.is_dir()
+                                             and os.path.isfile(os.path.join(e.path, 'state.vscdb')))
+        except OSError:
+            notes.append("Couldn't read Cursor history")
+
+    if timed_out:
+        notes.append('Some older sessions were counted without their project')
+    files.sort(key=lambda x: -x[0])
+    recent = [{'id': codex_session_id(p) if h == HARNESS_CODEX else os.path.basename(p)[:-6],
+               'path': p, 'harness': h, 'cwd': cwd, 'ts': mt} for mt, p, h, cwd in files[:INVENTORY_RECENT]]
+    return {'counts': counts, 'projects': projects, 'unplaced': unplaced,
+            'sessions': sessions, 'days': days, 'recent': recent, 'notes': notes}
+
+
+def recent_titles(recent, codex_root=None, keep=None, limit=5, budget_s=RECENT_TITLES_BUDGET_S, clock=None):
+    """[{id, title, cwd, at, harness}] for the person's recent sessions, newest
+    first. Headless agent runs and lanes are skipped, and so is any session
+    `keep(id, cwd)` rejects (company isolation: its title is never read into the
+    result). Titles prefer the Codex thread name, then the Claude Code custom
+    title or summary, then the first prompt line. One that looks like it holds
+    a credential is dropped; the session is kept with title None, for the
+    caller's "Session in <project>" fallback. Reads at most len(recent) files, at most RECENT_SCAN_CAP bytes from
+    the start of each long transcript, and stops at the time budget."""
+    import time
+    clock = clock or time.monotonic
+    deadline = clock() + budget_s
+    codex_root = codex_home() if codex_root is None else codex_root
+    names = codex_thread_names(codex_root, {r['id'] for r in recent if r['harness'] == HARNESS_CODEX},
+                               cap=CODEX_INDEX_CAP)
+    out = []
+    for r in recent:
+        if len(out) >= limit or clock() >= deadline:
+            break
+        try:
+            s = (summarize_transcript(r['path'], scan_cap=RECENT_SCAN_CAP) if r['harness'] == HARNESS_CLAUDE
+                 else summarize_codex_rollout(r['path']))
+        except OSError:
+            continue
+        if not s or s.get('kind') in (KIND_AGENT, KIND_LANE):
+            continue
+        cwd = s.get('cwd') or r['cwd']
+        if keep is not None and not keep(r['id'], cwd):
+            continue
+        found = [t for t in (names.get(r['id']), s.get('title'), s.get('first_prompt')) if t is not None]
+        if not found:
+            continue
+        title = next((t for t in found if t and not looks_secret(t)), None)
+        out.append({'id': r['id'], 'title': title, 'cwd': cwd, 'at': _iso_ts(r['ts']), 'harness': r['harness']})
+    return out

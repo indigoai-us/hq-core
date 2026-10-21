@@ -154,15 +154,51 @@ session_scope_clear() {
 #   valid or not, is never overwritten; the first mint pins the child, and a
 #   later parent rebind does not move it. Returns 0 only when it minted.
 session_scope_inherit_parent() {
-  local root="${1:-}" sid="${2:-}" aid="${3:-}" cap parent lock companies rc=1
-  [ -n "$root" ] && session_scope_identity_is_valid "$sid" && session_scope_identity_is_valid "$aid" || return 1
+  local root="${1:-}" sid="${2:-}" aid="${3:-}"
+  session_scope_identity_is_valid "$aid" || return 1
+  session_scope_inherit_parent_session "$root" "$sid" "$aid" "$sid"
+}
+
+# session_scope_inherit_parent_session <root> <session_id> <agent_id> <parent_session_id>
+#   Same rule for a child the host runs under its own session id and reports
+#   with a parent session id (Grok, Codex threads): the child's tuple, with
+#   <agent_id> empty for its main thread, is minted from the parent session's
+#   main-thread capability only. A parent with no capability leaves the child
+#   unbound, and the child never gains a company the parent does not hold.
+#   The parent is proven before anything is created: a valid id, a real
+#   session folder and capability file (no symlinks), and a non-empty lock
+#   set. A parent that fails any check leaves no child folder behind.
+session_scope_inherit_parent_session() {
+  local root="${1:-}" sid="${2:-}" aid="${3:-}" psid="${4:-}" cap parent lock companies rc=1
+  [ -n "$root" ] && session_scope_identity_is_valid "$sid" && session_scope_identity_is_valid "$psid" || return 1
+  if [ -n "$aid" ]; then
+    session_scope_identity_is_valid "$aid" || return 1
+  else
+    # A child's own main thread needs a parent other than itself.
+    [ "$psid" != "$sid" ] || return 1
+  fi
   cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 1
-  parent="$(session_scope_capability_path "$root" "$sid" "")" || return 1
-  [ ! -e "$cap" ] && [ -f "$parent" ] || return 1
+  parent="$(session_scope_capability_path "$root" "$psid" "")" || return 1
+  [ ! -e "$cap" ] && [ ! -L "$cap" ] || return 1
+  [ -d "$root/workspace/sessions/$psid" ] && [ ! -L "$root/workspace/sessions/$psid" ] \
+    && [ -f "$parent" ] && [ ! -L "$parent" ] || return 1
+  [ ! -L "$root/workspace/sessions/$sid" ] || return 1
+  if [ -n "$aid" ]; then
+    [ ! -L "$root/workspace/sessions/$sid/agents" ] && [ ! -L "$root/workspace/sessions/$sid/agents/$aid" ] || return 1
+  fi
+  companies="$(session_scope_read_companies "$root" "$psid" "" 2>/dev/null | awk 'NF' | paste -sd, - || true)"
+  [ -n "$companies" ] || return 1
+  mkdir -p "$root/workspace/sessions/$sid" 2>/dev/null || return 1
   lock="$root/workspace/sessions/$sid/.company-lock-set.lock"
   __session_scope_lock_acquire "$lock" || return 1
-  if [ ! -e "$cap" ]; then
-    companies="$(session_scope_read_companies "$root" "$sid" "" 2>/dev/null | awk 'NF' | paste -sd, - || true)"
+  # Repeat the link checks under the lock, after mkdir, so a folder swapped
+  # for a symlink in between is still refused.
+  if [ ! -e "$cap" ] && [ ! -L "$cap" ] && [ ! -L "$root/workspace/sessions/$sid" ] \
+    && [ ! -L "$root/workspace/sessions/$psid" ] && [ ! -L "$parent" ] \
+    && { [ -z "$aid" ] || { [ ! -L "$root/workspace/sessions/$sid/agents" ] \
+      && [ ! -L "$root/workspace/sessions/$sid/agents/$aid" ]; }; }; then
+    # Re-read under the lock: the parent may have changed since the check.
+    companies="$(session_scope_read_companies "$root" "$psid" "" 2>/dev/null | awk 'NF' | paste -sd, - || true)"
     if [ -n "$companies" ] && session_scope_mint_set "$root" "$sid" "$companies" "$aid"; then
       rc=0
     fi

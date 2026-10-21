@@ -1,12 +1,12 @@
 name: Recheck hq-core release gate
 
 # A bounded first wait can expire while external PR checks are still running.
-# Revisit the standing promotion PR every 15 minutes until it is held, merged,
+# Revisit the standing promotion PR every hour until it is held, merged,
 # or its checks are ready. This workflow only reads/merges hq-core's standing
 # PR; it never updates its source branch.
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '7 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +20,7 @@ jobs:
   recheck:
     if: github.repository == 'indigoai-us/hq-core-staging'
     name: Recheck hq-core release gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 12
     env:
       TARGET_REPO: indigoai-us/hq-core

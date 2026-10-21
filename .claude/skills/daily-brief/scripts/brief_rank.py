@@ -306,6 +306,53 @@ def field_problems(items):
     return out
 
 
+# A first brief for someone with past sessions never says there is nothing.
+EMPTY_STATE_PHRASES = ('nothing owed', 'no sessions', 'nothing needs', 'nothing to show', 'no activity',
+                       'nothing happened', 'no work yet', 'nothing yet')
+# Exception text never reaches the brief; failures get a plain note.
+EXCEPTION_MARKERS = (re.compile(r'Traceback \(most recent call last\)'), re.compile(r'File ".*", line \d+'),
+                     re.compile(r'\[Errno \d+\]'))
+# The person's own words and names (session titles, folder and repo names) and
+# raw source rows are data, not brief copy, so they are not checked.
+WELCOME_DATA_KEYS = ('recent_work', 'top_projects', 'top_repos', 'repos', 'import', 'items', 'sources')
+
+
+def _strings(value, skip=()):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if k not in skip:
+                yield from _strings(v, skip)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v, skip)
+
+
+def welcome_problems(brief):
+    """Problems with a welcome edition: empty-state copy on a first run that has
+    sessions, and exception text inside `welcome`. [] when there is no welcome."""
+    w = brief.get('welcome')
+    if not isinstance(w, dict):
+        return []
+    out = []
+    for text in _strings(w, WELCOME_DATA_KEYS):
+        for m in EXCEPTION_MARKERS:
+            if m.search(text):
+                out.append({'field': 'welcome', 'text': text[:120], 'problem': f'exception text ({m.pattern})'})
+                break
+    if w.get('first_run') and ((w.get('sessions') or {}).get('total') or 0) > 0:
+        rest = {k: v for k, v in brief.items() if k != 'welcome'}
+        for text in list(_strings(rest, WELCOME_DATA_KEYS)) + list(_strings(w, WELCOME_DATA_KEYS)):
+            low = text.lower()
+            for phrase in EMPTY_STATE_PHRASES:
+                if phrase in low:
+                    out.append({'field': 'brief', 'text': text[:120],
+                                'problem': f'empty-state line ({phrase!r}) on a first run with sessions'})
+                    break
+    return out
+
+
 def check_brief(brief):
     if brief.get('mode') == 'person':
         sections = dict(brief.get('companies') or {})
@@ -318,7 +365,7 @@ def check_brief(brief):
                         isolation.append({'section': slug, 'list': name, 'id': row.get('id'),
                                           'problem': 'item company does not match section'})
             reports[slug or 'personal'] = check_brief(dict(section, mode='company' if slug else 'personal'))
-        return {'sections': reports, 'isolation_problems': isolation}
+        return {'sections': reports, 'isolation_problems': isolation, 'welcome_problems': welcome_problems(brief)}
     items = brief.get('items') or {}
     repos = _origin_repos(items)
     problems = []
@@ -363,7 +410,8 @@ def check_brief(brief):
             'lead_hint_problem': lead_hint_problem(brief),
             'widget_problems': widget_problems((brief.get('prefs_applied') or {}).get('widgets')),
             'today_problem': None if isinstance(today, str) and _DATE.match(today) else 'today must be YYYY-MM-DD',
-            'index_counts': index_counts(brief), 'landed': landed(brief)}
+            'index_counts': index_counts(brief), 'landed': landed(brief),
+            'welcome_problems': welcome_problems(brief)}
 
 
 def main():

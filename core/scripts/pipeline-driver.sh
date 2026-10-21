@@ -66,7 +66,11 @@
 #         nothing else can move; the regression gate failed; or
 #         a phase returned failed --max-phase-fails times  restarts the driver
 #         (the story is then held as blocked_needs_owner
-#         with decisions/<id>-blocked-<phase>.md)
+#         with decisions/<id>-blocked-<phase>.md); or
+#         a handoff needs repair (malformed, or written by
+#         the lane runner in place of the worker's reply):
+#         the reason says "malformed handoff, needs
+#         repair" and names the wrong fields
 #   22    an in-flight phase passed its envelope deadline  checks the lane
 #   23    the conductor printed something unexpected, or   reads driver.log
 #         a conductor call failed
@@ -111,7 +115,22 @@
 # the phase once more to the same lane (the one restart in place). A second early
 # exit of the same phase holds the story for the owner (exit 21, the reason names
 # engine_exited_early). While the engine is still running the deadline path (22)
-# is unchanged.
+# is unchanged. Before the driver rewrites a lane's handoff as an early exit it
+# copies the file as found to handoffs/<id>-<phase>.orig.<n>.json.
+#
+# Malformed handoff: a handoff file that is not JSON, or lacks a field the
+# handoff schema requires, is passed to `pipeline-conductor.sh accept` once it
+# has not changed for PIPELINE_DRIVER_HANDOFF_SETTLE_SECS (default 10), so a
+# file still being written is not judged. The conductor leaves the file as it is,
+# keeps a copy at handoffs/<id>-<phase>.malformed.<n>.json, and holds the story
+# as blocked_needs_owner with blocked.kind "needs_repair" and the wrong fields in
+# decisions/<id>-blocked-<phase>.md. A handoff the lane runner wrote in place of
+# a reply it could not read (its summary starts "phase did not produce a valid
+# handoff: ", or it carries synthesized_by) is not the worker's own: when the
+# reason is a bad reply or a failed handoff check it is held the same way, never
+# accepted as a failed phase. The driver reports these stories in the exit 21
+# reason. `pipeline-conductor.sh resolve --story <id> --as retry` routes the
+# phase again.
 #
 # Reopen: when a regression gate fails because of a story that is already
 # verified, the parent records `pipeline-conductor.sh gate result fail --story
@@ -157,6 +176,7 @@ usage() { sed -n '3,/^# POSIX sh/p' "$0" >&2; exit 2; }
 NL='
 '
 PRD=""; STATE=""; WT=""; SB=0; ALLOW_REPOS=0; TABLE=""; INTERVAL=15; MAX_FAILS=2; STALL="${PIPELINE_DRIVER_STALL_SECS:-600}"
+SETTLE="${PIPELINE_DRIVER_HANDOFF_SETTLE_SECS:-10}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --prd|--state|--worktree|--interval|--max-phase-fails|--stall-window|--table)
@@ -180,6 +200,7 @@ done
 [ -f "$PRD" ] || { echo "pipeline-driver: no such prd: $PRD" >&2; exit 2; }
 case "$INTERVAL" in ''|*[!0-9.]*|.|*.*.*) echo "pipeline-driver: --interval must be a number of seconds" >&2; exit 2 ;; esac
 case "$MAX_FAILS" in ''|*[!0-9]*|0) echo "pipeline-driver: --max-phase-fails must be a positive integer" >&2; exit 2 ;; esac
+case "$SETTLE" in ''|*[!0-9]*) echo "pipeline-driver: PIPELINE_DRIVER_HANDOFF_SETTLE_SECS must be a whole number of seconds" >&2; exit 2 ;; esac
 case "$STALL" in ''|*[!0-9]*|0) echo "pipeline-driver: --stall-window must be a positive number of seconds" >&2; exit 2 ;; esac
 command -v jq >/dev/null 2>&1 || { echo "pipeline-driver: jq required" >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo "pipeline-driver: node required" >&2; exit 2; }
@@ -353,12 +374,17 @@ INTERRUPTED="$(stories_jq 'select(type == "object") | .interrupted as $it
 #   LANE_STOPPED <id> <phase>        the in-flight phase's loop lane exited on a stop envelope
 #   ACTIVE  <n>                      stories queued, in flight, held or awaiting recheck
 scan() {
-  PD_STATE="$STATE" PD_MAX="$MAX_FAILS" PD_HQ="$PC_HQ" node - <<'JS'
+  PD_STATE="$STATE" PD_MAX="$MAX_FAILS" PD_HQ="$PC_HQ" PD_SETTLE="$SETTLE" node - <<'JS'
 'use strict';
 const fs = require('fs'), path = require('path'), cp = require('child_process');
 const S = process.env.PD_STATE, MAX = parseInt(process.env.PD_MAX, 10), HQ = process.env.PD_HQ;
+const SETTLE = Number(process.env.PD_SETTLE) || 0;
 const TERMINAL = ['passed', 'failed', 'blocked'];
 const EARLY = 'engine_exited_early';
+// a handoff the lane runner wrote after it rejected the worker's reply (see
+// synthesized_reply in pipeline-conductor.sh): accepted, so the conductor holds
+// it for repair, instead of read as an early engine exit
+const SYNTH_PREFIX = 'phase did not produce a valid handoff: ';
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isNum = (v) => typeof v === 'number';
 const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '' ||
@@ -469,6 +495,14 @@ function workDeadline(sid, ph, dl, since, waiting) {
 function mtime(p) {
   try { return fs.statSync(p).mtimeMs / 1000; } catch (e) { return null; }
 }
+function synthReply(h) {
+  if (!isObj(h)) return false;
+  const summary = typeof h.summary === 'string' ? h.summary : '';
+  if (!truthy(get(h, 'synthesized_by', null)) && !summary.startsWith(SYNTH_PREFIX)) return false;
+  const why = (typeof h.notes === 'string' && h.notes.trim() ? h.notes
+    : summary.startsWith(SYNTH_PREFIX) ? summary.slice(SYNTH_PREFIX.length) : summary).trim();
+  return /^(reply |handoff check failed)/.test(why);
+}
 const out = []; let active = 0;
 const sd = path.join(S, 'stories');
 for (const n of byteSort(fs.readdirSync(sd))) {
@@ -514,15 +548,20 @@ for (const n of byteSort(fs.readdirSync(sd))) {
     if (!isNum(since)) since = mtime(path.join(S, 'envelopes', `${sid}-${ph}.json`));
     const mine = isObj(hd) && hd.phase === ph;
     const hstat = mine ? get(hd, 'status', null) : null;
+    // a handoff file that is not JSON, not an object, or has no phase is
+    // malformed: once it has not changed for the settle window (a worker may
+    // still be writing it) it goes to accept, which holds it for repair
+    const unreadable = fs.existsSync(h) && (!isObj(hd) || typeof hd.phase !== 'string');
+    const settled = unreadable && (() => { const t = mtime(h); return t !== null && now() - t >= SETTLE; })();
     let ev = null;
-    if (mine && TERMINAL.includes(hstat) && get(hd, 'exit_reason', null) !== EARLY) {
+    if (settled || (mine && TERMINAL.includes(hstat) && (get(hd, 'exit_reason', null) !== EARLY || synthReply(hd)))) {
       out.push(['ACCEPT', sid, ph, h]);
     } else if (mine && get(hd, 'exit_reason', null) === EARLY) {
       let secs = get(hd, 'elapsed_s', null);
       if (!isNum(secs)) secs = since !== null ? Math.trunc(now() - since) : 0;
       const why = collapse(str(truthy(hd.notes) ? hd.notes : truthy(hd.summary) ? hd.summary : 'no reason given'));
       out.push(['EARLY', sid, ph, String(Math.trunc(secs)), why]);
-    } else if ((!mine || !TERMINAL.includes(hstat)) && (ev = phaseExit(worker, sid, ph, since)) !== null) {
+    } else if (!unreadable && (!mine || !TERMINAL.includes(hstat)) && (ev = phaseExit(worker, sid, ph, since)) !== null) {
       let secs = get(ev, 'elapsed_s', null);
       if (!isNum(secs)) secs = since !== null ? Math.trunc(now() - since) : 0;
       const why = collapse(str(truthy(ev.reason) ? ev.reason : 'no reason given'));
@@ -561,7 +600,8 @@ archive() {
 
 # early_handoff <id> <phase> <secs> <reason>: make <id>-<phase>.json the failed
 # handoff of an early engine exit (exit_reason engine_exited_early), keeping a
-# lane-written one's fields; print its path
+# lane-written one's fields (the file as it was is copied to
+# <id>-<phase>.orig.<n>.json first); print its path
 early_handoff() {
   PD_H="$STATE/handoffs/$1-$2.json" PD_SID="$1" PD_PH="$2" PD_SECS="$3" PD_WHY="$4" \
   ehp="$STATE/handoffs/$1-$2.json"
@@ -569,6 +609,13 @@ early_handoff() {
     "$STATE/stories/$1.json" 2>/dev/null)"
   ehh="$(jq -cs 'if length == 1 then .[0] else null end' "$ehp" 2>/dev/null)" || ehh=null
   [ -n "$ehh" ] || ehh=null
+  # keep the lane-written file as it was: copy it aside before the rewrite
+  if [ -f "$ehp" ]; then
+    n=1
+    while [ -e "$STATE/handoffs/$1-$2.orig.$n.json" ]; do n=$((n + 1)); done
+    cp -p "$ehp" "$STATE/handoffs/$1-$2.orig.$n.json" || return 1
+    log "BACKUP $1 $2 -> $1-$2.orig.$n.json"
+  fi
   printf '%s\n' "$ehh" | jq -c --arg sid "$1" --arg ph "$2" --arg secs "$3" --arg why "$4" --arg worker "$ehw" \
     "$JQ_DEFS"' (if type == "object" and .phase == $ph then . else {} end)
     | ($secs | tonumber | if . < 0 then -(-. | floor) else floor end) as $el
@@ -724,7 +771,7 @@ run_tick() {
 
 # ---- act on one scan; sets ACTED=1 when the state dir changed, PENDING_EXIT on a stop ----
 act() {
-  ACTED=0; ACTIVE=""; HELD_ITEM=""; GATE_DUE=0; BLOCKED_ITEMS=""; GO_ITEMS=""; INT_ITEMS=""
+  ACTED=0; ACTIVE=""; HELD_ITEM=""; GATE_DUE=0; BLOCKED_ITEMS=""; REPAIR_ITEMS=""; GO_ITEMS=""; INT_ITEMS=""
   while IFS="$TAB" read -r a b c d e; do
     case "$a" in
       ARCHIVE) archive "$b" "$c" "$d"; ACTED=1 ;;
@@ -746,7 +793,7 @@ act() {
         run_pc accept --state "$STATE" --story "$b" --handoff "$h"
         log "ACCEPT $b $c rc=$RC: $OUT${ERR:+ | $ERR}"
         case "$RC:$OUT" in
-          1:PHASE_FAILED*) ACTED=1 ;;
+          1:PHASE_FAILED*|10:PHASE_NEEDS_REPAIR*) ACTED=1 ;;
           *) finish 23 "accept early exit $b $c: unexpected (rc=$RC): $OUT $ERR" ;;
         esac ;;
       ACCEPT)
@@ -755,7 +802,7 @@ act() {
         run_pc accept --state "$STATE" --story "$b" --handoff "$d"
         log "ACCEPT $b $c rc=$RC: $OUT${ERR:+ | $ERR}"
         case "$RC:$OUT" in
-          0:NEXT*|0:RECHECK*|1:PHASE_*|10:PHASE_BLOCKED*) ACTED=1 ;;
+          0:NEXT*|0:RECHECK*|1:PHASE_*|10:PHASE_BLOCKED*|10:PHASE_NEEDS_REPAIR*) ACTED=1 ;;
           *) finish 23 "accept $b $c: unexpected (rc=$RC): $OUT $ERR" ;;
         esac ;;
       RECHECK)
@@ -771,7 +818,11 @@ act() {
       HELD) HELD_ITEM="$b $c" ;;
       BLOCKED)
         blocked_reason="$(jq -r '.blocked.text // "" | gsub("[\\r\\n\\t]+"; " ")' "$STATE/stories/$b.json" 2>/dev/null)"
-        BLOCKED_ITEMS="${BLOCKED_ITEMS:+$BLOCKED_ITEMS; }$b/$c${blocked_reason:+: $blocked_reason} (decision: $d)" ;;
+        if [ "$(jq -r '.blocked.kind // ""' "$STATE/stories/$b.json" 2>/dev/null)" = needs_repair ]; then
+          REPAIR_ITEMS="${REPAIR_ITEMS:+$REPAIR_ITEMS; }$b/$c${blocked_reason:+: $blocked_reason} (decision: $d)"
+        else
+          BLOCKED_ITEMS="${BLOCKED_ITEMS:+$BLOCKED_ITEMS; }$b/$c${blocked_reason:+: $blocked_reason} (decision: $d)"
+        fi ;;
       AWAITING_GO) GO_ITEMS="${GO_ITEMS:+$GO_ITEMS, }$b (decision: $c)" ;;
       INTERRUPTED) INT_ITEMS="${INT_ITEMS:+$INT_ITEMS, }$b at $c ($d)" ;;
       LANE_STOPPED)
@@ -862,8 +913,9 @@ EOF
       if [ "$RC" = 0 ] && [ -z "$OUT" ]; then
         run_pc report final --state "$STATE"
         log "REPORT $OUT"
-        if [ -n "$BLOCKED_ITEMS$GO_ITEMS" ]; then
+        if [ -n "$BLOCKED_ITEMS$REPAIR_ITEMS$GO_ITEMS" ]; then
           why="${BLOCKED_ITEMS:+ blocked by its worker: $BLOCKED_ITEMS}"
+          [ -n "$REPAIR_ITEMS" ] && why="${why:+$why;} malformed handoff, needs repair: $REPAIR_ITEMS"
           [ -n "$GO_ITEMS" ] && why="${why:+$why;} awaiting go: $GO_ITEMS; release with pipeline-conductor.sh go --state $STATE --story <id>"
           finish 21 "decision needed, nothing else can move:$why"
         fi

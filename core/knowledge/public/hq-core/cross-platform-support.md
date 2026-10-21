@@ -147,7 +147,7 @@ New scripts must pass:
 bash core/scripts/lint-shell-portability.sh
 ```
 
-CI also runs ShellCheck (warning severity), the Claude/Codex/Grok/Cowork contract matrix, and a Windows/macOS smoke subset of portability tests.
+CI also runs ShellCheck (warning severity) and the Claude/Codex/Grok/Cowork contract matrix on pull requests. The Windows/macOS smoke subset of portability tests runs nightly and when a maintainer starts pr-checks by hand (workflow_dispatch), not on pull requests; run it locally before pushing platform-sensitive changes.
 
 ## Related
 

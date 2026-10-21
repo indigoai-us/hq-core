@@ -18,7 +18,7 @@ scanners:
   domains:
     enabled: true
   slugs:
-    enabled: true
+    enabled: false  # removed 2026-10-21: company-name slug scan does not scale
 
 notifications:
   # Slack notifications. Bot posts a Block Kit summary to the channel below

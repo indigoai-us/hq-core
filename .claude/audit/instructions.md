@@ -72,5 +72,5 @@ A clean hq-core-review pass marker is not sufficient for a change to
 `.claude/hooks/mandatory-scope-authorizer.sh` or any other security hook.
 Those changes also need their adversarial bypass tests to pass. Do not treat
 a clean marker as clearing a security-hook change. The marker only records
-that the PII, denylist, domain, and slug scanners ran clean (or that a person
+that the PII, denylist, and domain scanners ran clean (or that a person
 accepted the findings). It does not record that the bypass tests passed.

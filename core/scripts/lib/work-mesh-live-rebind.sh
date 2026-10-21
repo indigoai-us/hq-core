@@ -24,15 +24,40 @@ work_mesh_live_read_binding_marker() {
   REPLY="${co}|${pr}|${tk}"
 }
 
-# work_mesh_live_write_binding_marker <sid> <company> <project> <task>
+# work_mesh_live_mtime_epoch <path>
+#   Seconds since epoch. Darwin uses stat -f; other systems use GNU stat -c.
+#   GNU stat -f can succeed and print a non-numeric format, so do not chain them.
+#   Empty when the mtime cannot be read.
+work_mesh_live_mtime_epoch() {
+  local path="$1" epoch=""
+  case "$(uname -s)" in
+    Darwin) epoch="$(stat -f %m "$path" 2>/dev/null || true)" ;;
+    *) epoch="$(stat -c %Y "$path" 2>/dev/null || true)" ;;
+  esac
+  case "$epoch" in
+    ''|*[!0-9]*) printf '' ;;
+    *) printf '%s' "$epoch" ;;
+  esac
+}
+
+# work_mesh_live_write_binding_marker <sid> <company> <project> <task> [authority]
+#   Optional 5th arg "trusted" records authority=trusted. Other values omit it.
 work_mesh_live_write_binding_marker() {
-  local sid="$1" co="${2:-}" pr="${3:-}" tk="${4:-}" path dir
+  local sid="$1" co="${2:-}" pr="${3:-}" tk="${4:-}" authority="${5:-}" path dir tmp
   path="$(work_mesh_live_binding_marker_path "$sid")"
   dir="${path%/*}"
   mkdir -p -- "$dir" 2>/dev/null || true
   chmod 700 -- "$dir" 2>/dev/null || true
-  printf 'companySlug=%s\nproject=%s\ntask=%s\n' "$co" "$pr" "$tk" >"$path"
-  chmod 600 -- "$path" 2>/dev/null || true
+  # Write a temp file and rename it, so a hook reading concurrently sees the
+  # old marker or the new one, never an empty or partial file.
+  tmp="$path.tmp.$$"
+  if [ "$authority" = "trusted" ]; then
+    printf 'companySlug=%s\nproject=%s\ntask=%s\nauthority=trusted\n' "$co" "$pr" "$tk" >"$tmp" || { rm -f -- "$tmp"; return 1; }
+  else
+    printf 'companySlug=%s\nproject=%s\ntask=%s\n' "$co" "$pr" "$tk" >"$tmp" || { rm -f -- "$tmp"; return 1; }
+  fi
+  chmod 600 -- "$tmp" 2>/dev/null || true
+  mv -f -- "$tmp" "$path" || { rm -f -- "$tmp"; return 1; }
 }
 
 # work_mesh_live_enqueue_lifecycle <kind> <sid> <harness> <adapter> <company> <project> <task>
@@ -123,6 +148,29 @@ work_mesh_live_maybe_rebind_from_state() {
   rest="${old#*|}"
   old_pr="${rest%%|*}"
   old_tk="${rest#*|}"
+
+  # Hold only a marker an explicit trusted bind just wrote. A newer timestamp
+  # alone is SessionStart or `hq-session set project`, not a trusted bind.
+  # Expire the hold so a session whose reconcile never runs is not stuck.
+  # Equal-second mtimes fall through. An unreadable mtime does not hold.
+  # A future mtime (negative age) does not hold. Hold window is 10 minutes.
+  local marker marker_auth marker_epoch now_epoch marker_age
+  marker="$(work_mesh_live_binding_marker_path "$sid")"
+  marker_auth=""
+  if [ -f "$marker" ]; then
+    marker_auth="$(awk -F= '/^authority=/{print $2; exit}' "$marker" 2>/dev/null || true)"
+  fi
+  if [ -n "$old_pr" ] && [ "$old_pr" != "$pr" ] && [ "$marker_auth" = "trusted" ] \
+     && [ -f "$marker" ] && [ "$marker" -nt "$state" ]; then
+    marker_epoch="$(work_mesh_live_mtime_epoch "$marker")"
+    now_epoch="$(date +%s)"
+    if [ -n "$marker_epoch" ] && [ -n "$now_epoch" ]; then
+      marker_age=$(( now_epoch - marker_epoch ))
+      if [ "$marker_age" -ge 0 ] && [ "$marker_age" -le 600 ]; then
+        return 0
+      fi
+    fi
+  fi
 
   if [ -z "$old_pr" ]; then
     # First bind observed — record marker without closing a card (session_start

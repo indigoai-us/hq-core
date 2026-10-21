@@ -18,9 +18,11 @@ if [[ "${HQ_HOOK_TOOL_NAME+set}" == set && "$HQ_HOOK_TOOL_NAME" != Bash ]]; then
   exit 0
 fi
 PAYLOAD_CWD=""
+CMD_FROM_PAYLOAD=0
 if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
   CMD="$HQ_HOOK_COMMAND"
 else
+  CMD_FROM_PAYLOAD=1
   # The adapters pass the original JSON payload on stdin without dispatcher
   # variables. Read command and cwd together: a second jq invocation would see
   # EOF after the first one consumed the payload. NUL framing preserves both
@@ -53,6 +55,10 @@ HOOK_SOURCE="${BASH_SOURCE[0]}"
 HOOK_DIR="${HOOK_SOURCE%/*}"
 [[ "$HOOK_DIR" == "$HOOK_SOURCE" ]] && HOOK_DIR=.
 . "$HOOK_DIR/../../core/scripts/hook-lib.sh"
+# jq.exe turns each LF in the payload command into CRLF (see hq_crlf_to_lf).
+# The quick exit above only gets less likely to fire on a CR, so collapsing
+# here, before the scanner, is enough.
+[[ "$CMD_FROM_PAYLOAD" -eq 1 ]] && hq_crlf_to_lf CMD PAYLOAD_CWD
 PROJECT_DIR="$(hq_realpath_dir "$PROJECT_DIR" 2>/dev/null || echo "$PROJECT_DIR")"
 if [[ "${HQ_HOOK_CWD+set}" == set && -n "$HQ_HOOK_CWD" ]]; then
   CURRENT_CWD="$(hq_realpath_dir "$HQ_HOOK_CWD" 2>/dev/null || echo "$HQ_HOOK_CWD")"

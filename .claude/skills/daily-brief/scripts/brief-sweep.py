@@ -105,6 +105,23 @@ def count_of(v):
     return len(v) if hasattr(v, '__len__') else None
 
 
+# Plain names for failure notes. Exception text never reaches brief data; it
+# goes to stderr.
+SOURCE_LABELS = {'signals_alltime': 'signals', 'main_health': 'main-branch builds', 'prs': 'pull requests',
+                 'dms': 'DMs', 'fleet': 'agents', 'brief_history': 'brief history', 'welcome': 'welcome history'}
+
+
+def plain_note(name):
+    return f"Couldn't read {SOURCE_LABELS.get(name, name.replace('_', ' '))}."
+
+
+def failure(name, exc):
+    """{note, error} for a failed read, both plain. The exception goes to stderr."""
+    print(f'[sweep] {name} failed: {exc}', file=sys.stderr)
+    note = plain_note(name)
+    return {'note': note, 'error': note}
+
+
 def source(name):
     def deco(fn):
         def wrapped(*a, **k):
@@ -115,7 +132,8 @@ def source(name):
             except SourceSkipped as e:
                 return skip_source(name, e.reason)
             except Exception as e:  # recorded, not swallowed
-                SOURCES[name] = {'ok': False, 'state': 'failed', 'error': str(e)[:400]}
+                note = plain_note(name)
+                SOURCES[name] = {'ok': False, 'state': 'failed', 'note': note, 'error': note}
                 print(f'[sweep] {name} failed: {e}', file=sys.stderr)
                 return None
         return wrapped
@@ -173,7 +191,7 @@ def session_row(r, company, handoff_ids=()):
         has_handoff = r.get('id') in handoff_ids
     return {'id': r['id'], 'started_at': r['started_at'], 'date': t.date().isoformat(),
             'time': t.strftime('%H:%M'), 'company': tag,
-            'title': r.get('title') if own else None, 'kind': r['kind'],
+            'title': _sibling('local_sessions').safe_title(r.get('title')) if own else None, 'kind': r['kind'],
             'project': project, 'product': _product_for(project) if project else None,
             'cwd': r.get('cwd') if own else None,
             'last_activity': r.get('last_activity'),
@@ -428,7 +446,7 @@ def meeting_signals(company, mtgs, on_progress=None, me_names=()):
         try:
             d = jrun(['hq', 'meetings', 'get', m['id'], '--company', company, '--json'], timeout=60)
         except Exception as e:
-            return {'meeting': m['title'], 'error': str(e)[:160]}
+            return {'meeting': m['title'], **failure('meeting', e)}
         sig = d.get('signals') or {}
         t = texts(sig)
         return {'meeting': m['title'], 'meeting_id': m['id'], 'start': m['start'],
@@ -454,7 +472,7 @@ def signals(company):
             d = jrun(['hq', 'signals', 'list', '--entity', company, '--type', t, '--limit', '25', '--format', 'json'])
             out[t] = d.get('entries', d) if isinstance(d, dict) else d
         except Exception as e:
-            out[t] = {'error': str(e)[:200]}
+            out[t] = failure(t.replace('_', ' ') + ' signals', e)
     return out
 
 DM_LIMIT = 40
@@ -1029,7 +1047,7 @@ def main_health(repos, prs_rows=None):
                 w['merges_on_top'] = merges_on_top(prs_rows, r, w['since'])
             out[r] = {'workflows': len(latest), 'product': _product_for(r), 'red': red}
         except Exception as e:
-            out[r] = {'error': str(e)[:200]}
+            out[r] = failure(f'{r} build status', e)
     return out
 
 
@@ -1144,7 +1162,7 @@ class Status:
             label, detail = summarize(key, value, self.company, s['findings'], s['samples'], self.window)
             act.update({'at': _now(), 'label': label if ok else act.get('label', key),
                         'state': 'done' if ok else 'failed',
-                        'detail': detail if ok else (src.get('error') or '')[:80]})
+                        'detail': detail if ok else (src.get('note') or plain_note(key))[:80]})
         self._write(f)
 
 def summarize(key, v, company, findings, samples, window=None):
@@ -1215,47 +1233,612 @@ IMPORT_COUNT_KEYS = ('plans', 'commands', 'skills', 'hooks', 'policies', 'agents
 TOOL_NAMES = {'claude': 'Claude Code', 'codex': 'Codex'}
 
 
+IMPORT_SESSION_FIELDS = ('total', 'claude', 'codex', 'cursor', 'days_seen', 'first_at', 'last_at')
+# welcome.import, in output order. SKILL.md "Import report contract" documents each one.
+IMPORT_FIELDS = ('path', 'scanned_at', 'source', 'written_at', *IMPORT_COUNT_KEYS, 'sessions', 'tools', 'projects')
+SESSION_ID_ENV = ('CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID')
+IMPORT_REPORT_MAX_BYTES = 1024 * 1024  # a larger report.json is skipped
+IMPORT_REPORT_MAX_DEPTH = 32           # so is one nested deeper than this
+# With no harness id for the running session, a transcript written to in the
+# last LIVE_SESSION_S seconds may be that session, so it is not past work.
+LIVE_SESSION_S = 600
+_TOOL_ID = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
+_ISO_TIME = re.compile(r'^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$')
+
+
+def _int(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
+
+
+def _iso(v):
+    """An ISO date or date-time from the report, else None. Free text never passes."""
+    return v if isinstance(v, str) and len(v) <= 40 and _ISO_TIME.match(v) else None
+
+
+def _tool_id(v):
+    return v if isinstance(v, str) and _TOOL_ID.match(v) else None
+
+
+_IMPORT_STAMP = re.compile(r'^(?:(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z'
+                           r'|(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2}))(?:-([1-9]\d{0,3}))?$')
+
+
+def _import_stamp_key(name):
+    """Sort key for a report folder, or None when the name is not a stamp.
+    Folders are named by UTC time, as 20261019T150028Z (/import-context) or
+    2026-10-19T15-00-28 (the desktop tree step); a second import in the same
+    second adds -2, -3, ... and sorts after the base name."""
+    m = _IMPORT_STAMP.match(name)
+    if not m:
+        return None
+    parts = [int(g) for g in (m.groups()[:6] if m.group(1) else m.groups()[6:12])]
+    try:
+        when = dt.datetime(*parts, tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+    return (when, int(m.group(13) or 1))
+
+
+def _report_sessions(rep):
+    """The report's sessions block. `sessions` (the desktop tree step) wins; an
+    older /import-context report gives only a total, summed from
+    categories.conversations[].sessions. counts.conversations counts session
+    stores, not sessions, so it is never used here."""
+    block = rep.get('sessions') if isinstance(rep.get('sessions'), dict) else None
+    out = dict.fromkeys(IMPORT_SESSION_FIELDS)
+    if block is not None:
+        for k in ('total', 'claude', 'codex', 'cursor', 'days_seen'):
+            out[k] = _int(block.get(k))
+        for k in ('first_at', 'last_at'):
+            out[k] = _iso(block.get(k))
+    if out['total'] is None:
+        cats = rep.get('categories') if isinstance(rep.get('categories'), dict) else {}
+        stores = cats.get('conversations') if isinstance(cats.get('conversations'), list) else []
+        found = [_int(c.get('sessions')) for c in stores if isinstance(c, dict)]
+        if any(n is not None for n in found):
+            out['total'] = sum(n or 0 for n in found)
+    return out
+
+
+def _json_depth_ok(value, limit):
+    """False when a parsed JSON value nests arrays or objects deeper than `limit`.
+    Iterative, so a deep value cannot exhaust the stack."""
+    stack = [(value, 1)]
+    while stack:
+        v, depth = stack.pop()
+        if isinstance(v, (dict, list)):
+            if depth > limit:
+                return False
+            stack.extend((c, depth + 1) for c in (v.values() if isinstance(v, dict) else v))
+    return True
+
+
+def _read_report(folder):
+    """The parsed report.json in an import folder, or None. A symlinked folder
+    or file is not followed. A file over IMPORT_REPORT_MAX_BYTES, nested deeper
+    than IMPORT_REPORT_MAX_DEPTH, or that does not parse to an object is skipped."""
+    path = os.path.join(folder, 'report.json')
+    try:
+        if os.path.islink(folder) or os.path.islink(path) or not os.path.isfile(path):
+            return None
+        if os.path.getsize(path) > IMPORT_REPORT_MAX_BYTES:
+            return None
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(fd, 'rb') as f:
+            raw = f.read(IMPORT_REPORT_MAX_BYTES + 1)
+        if len(raw) > IMPORT_REPORT_MAX_BYTES:
+            return None
+        # json.loads is linear in the input, and raises RecursionError on very
+        # deep nesting; the depth limit is then checked on the parsed value.
+        rep = json.loads(raw.decode('utf-8'))
+        if not _json_depth_ok(rep, IMPORT_REPORT_MAX_DEPTH):
+            return None
+    except (OSError, ValueError, RecursionError) as e:
+        print(f'[sweep] import report skipped: {path}: {type(e).__name__}', file=sys.stderr)
+        return None
+    return rep if isinstance(rep, dict) else None
+
+
 def latest_import(hq_root):
-    """{path, scanned_at, <counts>} from the newest workspace/imports/<stamp>/report.json,
-    or None. Only the scan id and the per-category counts are read."""
+    """welcome.import (IMPORT_FIELDS) from the newest workspace/imports/<stamp>/report.json,
+    or None. Never raises: a report that cannot be read is skipped, and any
+    other failure gives None, so the brief falls back to direct detection."""
+    try:
+        return _latest_import(hq_root)
+    except Exception as e:
+        print(f'[sweep] import report read failed: {e}', file=sys.stderr)
+        return None
+
+
+def _latest_import(hq_root):
+    """Reads per-category counts, the sessions block and the tool list.
+    `scanned_at` is the folder's UTC time; the report's scan_id is never
+    copied. Project names in the report are counted, never copied: the report
+    covers every company on the machine. A symlinked imports folder is not
+    followed."""
     base = os.path.join(hq_root, 'workspace', 'imports')
     try:
-        stamps = sorted((n for n in os.listdir(base) if os.path.isfile(os.path.join(base, n, 'report.json'))),
-                        reverse=True)
+        if os.path.islink(base):
+            return None
+        stamps = sorted(((n, k) for n in os.listdir(base) for k in [_import_stamp_key(n)] if k),
+                        key=lambda x: x[1], reverse=True)
     except OSError:
         return None
-    for n in stamps:
+    for n, key in stamps:
+        rep = _read_report(os.path.join(base, n))
+        if rep is None:
+            continue
         path = os.path.join(base, n, 'report.json')
-        try:
-            with open(path, encoding='utf-8') as f:
-                rep = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(rep, dict):
-            continue
         counts = rep.get('counts') if isinstance(rep.get('counts'), dict) else {}
-        out = {'path': os.path.relpath(path, hq_root), 'scanned_at': rep.get('scan_id') or n}
+        out = {'path': os.path.relpath(path, hq_root), 'scanned_at': key[0].strftime('%Y-%m-%dT%H:%M:%SZ'),
+               'source': _tool_id(rep.get('source')) or 'import-context',
+               'written_at': _iso(rep.get('written_at'))}
         for k in IMPORT_COUNT_KEYS:
-            v = counts.get(k)
-            out[k] = v if isinstance(v, int) else 0
+            out[k] = _int(counts.get(k)) or 0
+        out['sessions'] = _report_sessions(rep)
+        tools = rep.get('tools') if isinstance(rep.get('tools'), list) else []
+        out['tools'] = sorted({t for t in tools if _tool_id(t)})
+        projects = rep.get('projects') if isinstance(rep.get('projects'), list) else []
+        out['projects'] = len([x for x in projects if isinstance(x, str) and x.strip()]) if projects else None
         return out
     return None
 
 
-def welcome_block(rows, company, first_run, imported, repo_cap=8):
-    """The brief's welcome object from local scan rows (local_sessions.scan shape).
-    Every row is counted; repo names come only from the brief's own rows
-    (company isolation), through the repo in the session's cwd or project."""
+def current_session_ids(environ=None):
+    """Ids of the session running the brief, from the harness environment."""
+    environ = os.environ if environ is None else environ
+    return {environ[k] for k in SESSION_ID_ENV if environ.get(k)}
+
+
+def detected_import(other, sessions, tools, n_projects, first_day, last_day):
+    """welcome.import when no report exists but past sessions are on this Mac.
+    The transcripts stay where the harness wrote them, so the machine inventory
+    is the import: there is nothing left for /import-context to bring in."""
+    out = {'path': None, 'scanned_at': None, 'source': 'detected', 'written_at': None}
+    out.update(dict.fromkeys(IMPORT_COUNT_KEYS))
+    out['sessions'] = {'total': other, 'claude': sessions['claude'], 'codex': sessions['codex'],
+                       'cursor': sessions['cursor'], 'days_seen': sessions['days_seen'],
+                       'first_at': first_day, 'last_at': last_day}
+    out['tools'] = tools
+    out['projects'] = n_projects
+    return out
+
+
+# Every field the welcome object can carry, in output order. Desktop hides an
+# absent field. SKILL.md "Welcome edition" documents each one.
+WELCOME_FIELDS = ('first_run', 'headline', 'import', 'sessions', 'harness', 'top_projects', 'top_repos',
+                  'recent_work', 'repos', 'apps', 'tree', 'actions', 'next_steps', 'getting_started', 'note')
+WELCOME_SESSION_FIELDS = ('total', 'local', 'imported', 'claude', 'codex', 'cursor', 'days_seen')
+WELCOME_PROJECT_FIELDS = ('name', 'path', 'sessions', 'last_active_at', 'harness')
+WELCOME_REPO_FIELDS = ('name', 'path', 'sessions', 'last_commit_at')
+WELCOME_RECENT_FIELDS = ('title', 'project', 'at', 'harness')
+WELCOME_TREE_FIELDS = ('companies', 'projects', 'knowledge_files')
+WELCOME_ACTION_FIELDS = ('id', 'kind', 'label', 'reason', 'launch_prompt', 'primary')
+WELCOME_ACTION_KINDS = ('open_harness', 'connect_ai_apps', 'connect_integration', 'connect_company',
+                        'import_history', 'open_tree')
+WELCOME_TOP = 5
+WELCOME_TITLE_CHARS = 80
+WELCOME_TREE_CAP = 20000      # entries walked when counting the HQ tree
+WELCOME_GIT_TIMEOUT_S = 5
+WELCOME_GIT_BUDGET_S = 30     # all git reads together; past it, repos are not named
+WELCOME_SCAN_PROJECTS = 60  # busiest project folders checked for ownership
+HARNESS_CLAUDE, HARNESS_CODEX, HARNESS_CURSOR = 'claude_code', 'codex', 'cursor'
+HARNESSES = (HARNESS_CLAUDE, HARNESS_CODEX, HARNESS_CURSOR)
+HARNESS_NAMES = {HARNESS_CLAUDE: 'Claude Code', HARNESS_CODEX: 'Codex', HARNESS_CURSOR: 'Cursor'}
+# Output ids are hyphenated; the underscore keys above appear only inside harness.counts.
+HARNESS_IDS = {HARNESS_CLAUDE: 'claude-code', HARNESS_CODEX: 'codex', HARNESS_CURSOR: 'cursor'}
+ROW_HARNESS = {'claude': HARNESS_CLAUDE, 'codex': HARNESS_CODEX}
+OPEN_HQ_PROMPT = 'Catch me up on what I worked on recently and suggest what to do next.'
+CONNECT_AI_APPS_PROMPT = 'Help me connect Claude Code, Codex and Cursor to HQ.'
+OPEN_TREE_PROMPT = 'Give me a short tour of my HQ: companies, projects and knowledge.'
+WELCOME_FIRST_STEPS = 'Welcome to HQ. Open Claude Code, Codex or Cursor in your HQ folder and your first session starts here.'
+GETTING_STARTED_NO_SESSIONS = ('Start with one small task in Claude Code, Codex or Cursor from your HQ folder. '
+                               "Tomorrow's brief will show what you did and what to pick up next.")
+
+
+def _plural(n, one, many=None):
+    return f"{n:,} {one if n == 1 else (many or one + 's')}"
+
+
+def _join(names, word='and'):
+    names = list(names)
+    return names[0] if len(names) == 1 else ', '.join(names[:-1]) + f' {word} ' + names[-1]
+
+
+def _iso_from_ts(ts):
+    return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _display_path(path):
+    """~/... inside the home folder; outside it, the folder name only."""
+    home = os.path.expanduser('~')
+    if home and (path == home or path.startswith(home + os.sep)):
+        return '~' + path[len(home):]
+    return os.path.basename(path.rstrip('/')) or path
+
+
+def _repo_root(cwd, hq_real=None):
+    """The git repo folder holding cwd: cwd or up to 3 parents with a .git entry.
+    The HQ root and the home folder are not repos here."""
+    home = os.path.realpath(os.path.expanduser('~'))
+    d = cwd
+    for _ in range(4):
+        real = os.path.realpath(d)
+        if real in (hq_real, home, os.sep):
+            return None
+        if os.path.exists(os.path.join(d, '.git')):
+            return d
+        parent = os.path.dirname(d.rstrip('/\\'))
+        if not parent or parent == d:
+            return None
+        d = parent
+    return None
+
+
+def _last_commit_at(path):
+    """Newest commit time in the repo (ISO), or None. Bounded by WELCOME_GIT_TIMEOUT_S."""
+    try:
+        p = subprocess.run(['git', '-C', path, 'log', '-1', '--format=%cI'], capture_output=True, text=True,
+                           timeout=WELCOME_GIT_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return p.stdout.strip() or None if p.returncode == 0 else None
+
+
+def _remote_org(path):
+    """GitHub owner of the repo's origin remote, or None."""
+    try:
+        p = subprocess.run(['git', '-C', path, 'config', '--get', 'remote.origin.url'], capture_output=True,
+                           text=True, timeout=WELCOME_GIT_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    m = re.search(r'github\.com[:/]([^/]+)/', p.stdout.strip()) if p.returncode == 0 else None
+    return m.group(1) if m else None
+
+
+def welcome_tree(hq_root, allowed):
+    """{companies, projects, knowledge_files}. Companies are counted across the
+    HQ; projects and knowledge files only for the `allowed` companies and the
+    personal folder (None in `allowed`). Walks at most WELCOME_TREE_CAP entries."""
+    out = {'companies': 0, 'projects': 0, 'knowledge_files': 0}
+    cdir = os.path.join(hq_root, 'companies')
+    try:
+        slugs = sorted(n for n in os.listdir(cdir) if not n.startswith(('.', '_')) and os.path.isdir(os.path.join(cdir, n)))
+    except OSError:
+        slugs = []
+    out['companies'] = len(slugs)
+    bases = [os.path.join(cdir, s) for s in slugs if s in allowed]
+    if None in allowed:
+        bases.append(os.path.join(hq_root, 'personal'))
+    budget = WELCOME_TREE_CAP
+    for base in bases:
+        try:
+            out['projects'] += sum(1 for e in os.scandir(os.path.join(base, 'projects')) if e.is_dir() and not e.name.startswith('.'))
+        except OSError:
+            pass
+        for dirpath, dirnames, filenames in os.walk(os.path.join(base, 'knowledge')):
+            dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != 'node_modules']
+            budget -= len(dirnames) + len(filenames)
+            out['knowledge_files'] += sum(1 for f in filenames if not f.startswith('.'))
+            if budget <= 0:
+                break
+    return out
+
+
+UNRESOLVED = object()   # a session whose company HQ cannot tell
+
+
+def _row_key(r, i):
+    return r.get('id') or f'row:{i}'
+
+
+def session_company_resolver(hq_root, rows, meta_fields=None):
+    """company_for(sid, cwd): the company a session belongs to, None for
+    personal work, or UNRESOLVED. The company comes from the scan row, then the
+    session's HQ meta.yaml, then a cwd under companies/<slug>. A cwd under
+    companies/<slug> is that company's even when the record says personal. Any
+    other folder inside HQ (the HQ root, repos/, worktrees) with no record of
+    its company is UNRESOLVED, so it is counted and never named."""
+    row_company = {_row_key(r, i): r.get('company') for i, r in enumerate(rows)}
+    hq_real = os.path.realpath(hq_root) if hq_root else None
+    memo = {}
+
+    def from_meta(sid):
+        if sid not in memo:
+            memo[sid] = UNRESOLVED
+            try:
+                with open(os.path.join(hq_root, 'workspace', 'sessions', os.path.basename(sid), 'meta.yaml'),
+                          encoding='utf-8', errors='replace') as f:
+                    text = f.read()
+            except OSError:
+                return UNRESOLVED
+            if meta_fields:
+                memo[sid] = meta_fields(text).get('company_slug') or None
+            else:
+                m = re.search(r'^company_slug:[ \t]*["\']?([^"\'\s]*)', text, re.M)
+                memo[sid] = (m.group(1) if m else '') or None
+        return memo[sid]
+
+    def company_for(sid, cwd):
+        record = UNRESOLVED
+        if sid in row_company:
+            record = row_company[sid]
+        elif sid and hq_root:
+            record = from_meta(sid)
+        if record is not UNRESOLVED and record:
+            return record
+        place = None if cwd else UNRESOLVED
+        if cwd and hq_real:
+            rel = os.path.relpath(os.path.realpath(cwd), hq_real).replace('\\', '/').split('/')
+            if rel[0] == 'companies' and len(rel) > 1:
+                return rel[1]
+            if rel[0] != '..':
+                place = UNRESOLVED
+        # recorded as personal, and not under companies/
+        return None if record is None else place
+
+    return company_for
+
+
+def welcome_inputs(hq_root, rows, company, also=()):
+    """{inv, recent, tree, company_for, notes, current_session} for welcome_block. Recent titles
+    are read only for sessions in the brief's own company. Each read is bounded
+    and guarded: a failure leaves that part out, adds a plain note and sends
+    the details to stderr."""
     mod = _load_local_sessions()
-    own = [r for r in rows if (r.get('company') == company if company else not r.get('company'))]
+    allowed = {company} | set(also)
+    company_for = session_company_resolver(hq_root, rows, getattr(mod, 'meta_fields', None))
+    notes, inv, recent, tree = [], None, [], None
+
+    def keep(sid, cwd):
+        c = company_for(sid, cwd)
+        return c is not UNRESOLVED and c in allowed
+
+    try:
+        inv = mod.inventory() if hasattr(mod, 'inventory') else None
+    except Exception as e:
+        print(f'[sweep] welcome inventory failed: {e}', file=sys.stderr)
+        notes.append("Couldn't count every past session")
+    try:
+        if inv and hasattr(mod, 'recent_titles'):
+            recent = mod.recent_titles(inv['recent'], keep=keep)
+    except Exception as e:
+        print(f'[sweep] welcome recent titles failed: {e}', file=sys.stderr)
+        notes.append("Couldn't read your recent work")
+    try:
+        tree = welcome_tree(hq_root, allowed)
+    except Exception as e:
+        print(f'[sweep] welcome tree failed: {e}', file=sys.stderr)
+        notes.append("Couldn't count your HQ folders")
+    return {'inv': inv, 'recent': recent, 'tree': tree, 'company_for': company_for, 'notes': notes,
+            'current_session': current_session_ids()}
+
+
+def welcome_block(rows, company, first_run, imported, repo_cap=8, inv=None, recent=None, tree=None,
+                  hq_root=None, also=(), has_companies=False, commit_at=None, owners=None, remote_org=None,
+                  company_for=None, notes=(), clock=None, current_session=(), now=None):
+    """The brief's welcome object (field names in WELCOME_FIELDS).
+
+    `rows` are HQ-started sessions (local_sessions.scan shape). `inv` is the
+    machine inventory (local_sessions.inventory) and `recent` the newest titled
+    sessions (local_sessions.recent_titles); both are optional. Every session is
+    counted. Names, paths and titles come only from the brief's own company
+    (`company`, plus `also` in person mode); other companies are counted only.
+    A folder is named only when every one of its sessions resolves, through
+    `company_for` (session_company_resolver), to an allowed company.
+    `has_companies` is False when membership lookup confirmed zero companies.
+    `owners` maps company → GitHub owner; a repo whose remote owner belongs to
+    another company is not named. Pure apart from `commit_at(path)` and
+    `remote_org(path)` (git reads with a timeout).
+
+    `imported` is latest_import(). Without a report, past sessions on this Mac
+    count as imported: welcome.import is then a detected_import() object, and
+    "Bring in your past work" is offered only when neither exists. Past
+    sessions are the inventory's transcripts (HQ-started rows only when there
+    is no inventory, so a row and its transcript count once) other than
+    `current_session` (ids of the session running the brief). When no such id
+    is in the inventory, transcripts written to in the last LIVE_SESSION_S
+    seconds before `now` (epoch seconds) are left out instead."""
+    mod = _load_local_sessions()
+    allowed = {company} | set(also)
+    if company_for is None:
+        company_for = session_company_resolver(hq_root, rows, getattr(mod, 'meta_fields', None))
+    import time
+    clock = clock or time.monotonic
+    git_deadline = clock() + WELCOME_GIT_BUDGET_S
     tools = Counter(r.get('tool') for r in rows if r.get('tool'))
+
+    # Sessions: HQ-started rows and the machine inventory, one count per session id.
+    ids = {}
+    for r in rows:
+        ids[r.get('id') or id(r)] = ROW_HARNESS.get(r.get('tool'))
+    for sid, h in ((inv or {}).get('sessions') or {}).items():
+        ids[sid] = h or ids.get(sid)
+    by_harness = Counter(h for h in ids.values() if h)
+    days = {r['started_at'][:10] for r in rows if r.get('started_at')} | set((inv or {}).get('days') or ())
+    n_cursor = ((inv or {}).get('counts') or {}).get(HARNESS_CURSOR, 0)
+    local = len(ids) + n_cursor
+    cur = set(current_session or ())
+    if inv:
+        inv_ids = set(inv.get('sessions') or ())
+        past = inv_ids - cur
+        if not cur & inv_ids:
+            now = time.time() if now is None else now
+            past -= {r.get('id') for r in inv.get('recent') or () if (r.get('ts') or 0) >= now - LIVE_SESSION_S}
+    else:
+        past = set(ids) - cur
+    other = len(past) + n_cursor
+    n_imported = (((imported or {}).get('sessions') or {}).get('total') or 0) if imported else other
+    total = max(local, n_imported)
+    sessions = {'total': total, 'local': local, 'imported': n_imported,
+                'claude': by_harness.get(HARNESS_CLAUDE, 0), 'codex': by_harness.get(HARNESS_CODEX, 0),
+                'cursor': n_cursor, 'days_seen': len(days)}
+
+    counts = {HARNESS_CLAUDE: sessions['claude'], HARNESS_CODEX: sessions['codex'], HARNESS_CURSOR: n_cursor}
+    primary = max(HARNESSES, key=lambda h: (counts[h], -HARNESSES.index(h))) if any(counts.values()) else None
+    open_label = f'Open HQ in {HARNESS_NAMES[primary or HARNESS_CLAUDE]}'
+    harness = {'primary': HARNESS_IDS.get(primary), 'counts': counts,
+               'action': {'id': 'open-hq-in-harness', 'kind': 'open_harness', 'harness': HARNESS_IDS[primary or HARNESS_CLAUDE],
+                          'label': open_label, 'launch_prompt': OPEN_HQ_PROMPT}}
+
+    # Projects: one per working folder. The inventory already holds HQ-started
+    # sessions, so rows add projects only when there is no inventory.
+    projects = {}
+    if inv:
+        for cwd, p in (inv.get('projects') or {}).items():
+            projects[cwd] = {'sessions': p['sessions'], 'last': p['last_ts'] and _iso_from_ts(p['last_ts']),
+                             'by': Counter(p.get('by_harness') or {}), 'ids': list(p.get('ids') or ())}
+    else:
+        for i, r in enumerate(rows):
+            if r.get('cwd'):
+                p = projects.setdefault(r['cwd'], {'sessions': 0, 'last': None, 'by': Counter(), 'ids': []})
+                p['sessions'] += 1
+                p['ids'].append(_row_key(r, i))
+                p['last'] = max(filter(None, [p['last'], r.get('last_activity') or r.get('started_at')]), default=None)
+                if ROW_HARNESS.get(r.get('tool')):
+                    p['by'][ROW_HARNESS[r['tool']]] += 1
+    hq_real = os.path.realpath(hq_root) if hq_root else None
+    org_company = {str(o).lower(): co for co, o in (owners or {}).items() if o}
+    org_memo = {}
+
+    def org_ok(cwd):
+        """False when the folder's repo belongs to another company's GitHub owner.
+        Past the git budget a repo is not named."""
+        root = _repo_root(cwd, hq_real) if org_company else None
+        if not root:
+            return True
+        if root not in org_memo:
+            if clock() >= git_deadline:
+                org_memo[root] = False
+            else:
+                org = (remote_org or _remote_org)(root)
+                org_memo[root] = org_company.get((org or '').lower(), company) in allowed
+        return org_memo[root]
+
+    def owned(cwd, ids):
+        """Every session in the folder is in an allowed company, and its repo is too."""
+        if not cwd:
+            return False
+        for sid in ids or [None]:
+            c = company_for(sid, cwd)
+            if c is UNRESOLVED or c not in allowed:
+                return False
+        return org_ok(cwd)
+
+    # Legacy repos list: the brief's own HQ-started sessions, by repo. A folder
+    # that also holds another company's session is not named.
     repos = Counter()
-    for r in own:
+    for i, r in enumerate(rows):
+        if r.get('company') != company if company else r.get('company'):
+            continue
+        if r.get('cwd') and not owned(r['cwd'], (projects.get(r['cwd']) or {}).get('ids') or [_row_key(r, i)]):
+            continue
         name = (mod.repo_from_cwd(r['cwd']) if r.get('cwd') else None) or r.get('project')
         if name:
             repos[name] += 1
+
+    def project_name(cwd):
+        if hq_real and os.path.realpath(cwd) == hq_real:
+            return 'HQ'
+        return mod.repo_from_cwd(cwd) or os.path.basename(cwd.rstrip('/\\')) or cwd
+
+    ranked = sorted(projects.items(), key=lambda kv: kv[1]['last'] or '', reverse=True)
+    ranked.sort(key=lambda kv: -kv[1]['sessions'])
+    # Ownership checks are bounded: the busiest WELCOME_SCAN_PROJECTS folders.
+    ranked = [kv for kv in ranked[:WELCOME_SCAN_PROJECTS] if owned(kv[0], kv[1]['ids'])]
+    top_projects = [{'name': project_name(cwd), 'path': _display_path(cwd), 'sessions': p['sessions'],
+                     'last_active_at': p['last'],
+                     'harness': HARNESS_IDS.get(max(p['by'], key=lambda h: (p['by'][h], -HARNESSES.index(h)))) if p['by'] else None}
+                    for cwd, p in ranked[:WELCOME_TOP]]
+
+    # Repos: the git repo each owned project sits in.
+    repo_rows = {}
+    for cwd, p in ranked:
+        root = _repo_root(cwd, hq_real)
+        if not root:
+            continue
+        x = repo_rows.setdefault(root, {'sessions': 0, 'last': None})
+        x['sessions'] += p['sessions']
+        x['last'] = max(filter(None, [x['last'], p['last']]), default=None)
+    top_repos = []
+    for root, x in sorted(repo_rows.items(), key=lambda kv: (-kv[1]['sessions'], kv[0]))[:WELCOME_TOP]:
+        top_repos.append({'name': mod.repo_from_cwd(root) or os.path.basename(root), 'path': _display_path(root),
+                          'sessions': x['sessions'],
+                          'last_commit_at': (commit_at or _last_commit_at)(root) if clock() < git_deadline else None})
+
+    recent_work = []
+    for r in sorted(recent or [], key=lambda r: r.get('at') or '', reverse=True):
+        if len(recent_work) >= WELCOME_TOP:
+            break
+        if not owned(r.get('cwd'), [r.get('id')]):
+            continue
+        project = project_name(r['cwd'])
+        title = r.get('title')
+        # Titles can come from prompt text; one that looks like a credential is never shown.
+        if not isinstance(title, str) or not title.strip() or _sibling('local_sessions').looks_secret(title):
+            title = f'Session in {project}'
+        recent_work.append({'title': title[:WELCOME_TITLE_CHARS], 'project': project,
+                            'at': r.get('at'), 'harness': HARNESS_IDS.get(r.get('harness'))})
+
+    # Project count: folders with a session resolved to another company are left
+    # out. Personal and unresolved folders still count; they are just not named.
+    def elsewhere(cwd, ids):
+        return any(c is not UNRESOLVED and c is not None and c not in allowed
+                   for c in (company_for(sid, cwd) for sid in ids or [None]))
+    n_projects = sum(1 for cwd, p in projects.items() if not elsewhere(cwd, p['ids']))
+    if not imported and other > 0:
+        # Per-harness counts leave out the running session, as `other` does.
+        past_by = Counter(ids.get(sid) for sid in past)
+        past_sessions = dict(sessions, claude=past_by.get(HARNESS_CLAUDE, 0), codex=past_by.get(HARNESS_CODEX, 0))
+        imported = detected_import(other, past_sessions, [HARNESS_IDS[h] for h in HARNESSES if counts[h]], n_projects,
+                                   min(days) if days else None, max(days) if days else None)
+    tree = tree or {'companies': 0, 'projects': 0, 'knowledge_files': 0}
+    actions = [dict(harness['action'], reason='Pick up where you left off, with your HQ context loaded.')]
+    missing = [HARNESS_NAMES[h] for h in HARNESSES if not counts[h]]
+    if missing:
+        found = [HARNESS_NAMES[h] for h in HARNESSES if counts[h]]
+        actions.append({'id': 'connect-ai-apps', 'kind': 'connect_ai_apps', 'label': 'Connect your AI apps',
+                        'reason': (f"HQ already sees your {_join(found)} work. Connect {_join(missing, 'or')} too, so the brief covers everything."
+                                   if found else 'Connect Claude Code, Codex or Cursor so HQ can start learning how you work.'),
+                        'launch_prompt': CONNECT_AI_APPS_PROMPT})
+    if not imported:
+        actions.append({'id': 'import-history', 'kind': 'import_history', 'label': 'Bring in your past work',
+                        'reason': 'Importing past Claude Code and Codex work fills in your history.',
+                        'launch_prompt': '/import-context'})
+    if not company and not has_companies:
+        actions.append({'id': 'connect-company', 'kind': 'connect_company', 'label': 'Create or join a company',
+                        'reason': 'Meetings, team context and agents live in a company.', 'launch_prompt': '/onboard'})
+    if company:
+        actions.append({'id': 'connect-github', 'kind': 'connect_integration', 'label': 'Connect GitHub',
+                        'integration': {'slug': 'github', 'name': 'GitHub'},
+                        'reason': 'Connected apps add pull requests, meetings and messages to the brief.',
+                        'launch_prompt': '/hq-integrations'})
+    actions.append({'id': 'open-tree', 'kind': 'open_tree', 'label': 'Look around your HQ',
+                    'reason': f"{_plural(tree['companies'], 'company', 'companies')}, {_plural(tree['projects'], 'project')} "
+                              f"and {_plural(tree['knowledge_files'], 'knowledge file')} so far.",
+                    'launch_prompt': OPEN_TREE_PROMPT})
+    kinds = [x['kind'] for x in actions]
+    if not total:
+        pick = 'connect_ai_apps'
+    elif 'import_history' in kinds:
+        pick = 'import_history'
+    elif 'connect_company' in kinds:
+        pick = 'connect_company'
+    else:
+        pick = 'open_harness'
+    for x in actions:
+        x['primary'] = x['kind'] == pick
+
+    if total:
+        where = f" across {_plural(n_projects, 'project')}" if n_projects else ''
+        most = ((f", in {HARNESS_NAMES[primary]}" if total == 1 else f", most of them in {HARNESS_NAMES[primary]}")
+                if primary else '')
+        headline = f"HQ found {_plural(total, 'past session')}{where} on this Mac{most}."
+    else:
+        headline = WELCOME_FIRST_STEPS
+
     steps = []
-    if not company:
+    if not company and not has_companies:
         steps.append({'id': 'connect-company', 'kind': 'connect_company',
                       'reason': 'Meetings, meeting signals, agents and integrations need a company.'})
     if not imported:
@@ -1266,12 +1849,19 @@ def welcome_block(rows, company, first_run, imported, repo_cap=8):
                       'reason': 'Connected apps add meetings and messages to the brief.'})
         steps.append({'id': 'sync', 'kind': 'sync',
                       'reason': "Syncing brings in the company's shared context."})
-    return {'first_run': bool(first_run), 'import': imported,
-            'sessions': {'total': len(rows), 'claude': tools.get('claude', 0), 'codex': tools.get('codex', 0),
-                         'days_seen': len({r['started_at'][:10] for r in rows if r.get('started_at')})},
-            'repos': [{'name': n, 'sessions': c} for n, c in sorted(repos.items(), key=lambda kv: (-kv[1], kv[0]))[:repo_cap]],
-            'apps': [TOOL_NAMES[t] for t in ('claude', 'codex') if tools.get(t)],
-            'next_steps': steps}
+    out = {'first_run': bool(first_run), 'headline': headline, 'import': imported, 'sessions': sessions,
+           'harness': harness, 'top_projects': top_projects, 'top_repos': top_repos, 'recent_work': recent_work,
+           'repos': [{'name': n, 'sessions': c} for n, c in sorted(repos.items(), key=lambda kv: (-kv[1], kv[0]))[:repo_cap]],
+           'apps': [TOOL_NAMES[t] for t in ('claude', 'codex') if tools.get(t)] if not inv else
+                   [HARNESS_NAMES[h] for h in HARNESSES if counts[h]],
+           'tree': tree, 'actions': actions, 'next_steps': steps}
+    if not total:
+        out['getting_started'] = GETTING_STARTED_NO_SESSIONS
+    notes = list((inv or {}).get('notes') or ()) + list(notes or ())
+    if notes:
+        out['note'] = notes[0] + '.'
+    assert set(out) <= set(WELCOME_FIELDS), sorted(set(out) - set(WELCOME_FIELDS))
+    return out
 
 
 def _hq_session_script(hq_root):
@@ -1465,12 +2055,13 @@ def person_sweep(a):
         try:
             window = data['window']
             rows = _load_local_sessions().scan(a.hq_root, window['sessions_from'], window['sessions_to'])
-            data['welcome'] = welcome_block(rows, None, not runs, latest_import(a.hq_root))
-            if members or 'memberships' in errors:
-                data['welcome']['next_steps'] = [step for step in data['welcome']['next_steps']
-                                                 if step['kind'] != 'connect_company']
-        except Exception:
-            data['welcome'] = {'first_run': not runs, 'error': 'Could not load your welcome history.'}
+            inputs = welcome_inputs(a.hq_root, rows, None, included)
+            data['welcome'] = welcome_block(rows, None, not runs, latest_import(a.hq_root), **inputs,
+                                            hq_root=a.hq_root, also=included,
+                                            has_companies=bool(members) or 'memberships' in errors,
+                                            owners=_sibling('housekeeping').company_owners(a.hq_root))
+        except Exception as e:
+            data['welcome'] = {'first_run': not runs, 'note': failure('welcome', e)['note']}
         if not members:
             data['welcome']['getting_started'] = GETTING_STARTED
     with open(a.out, 'w', encoding='utf-8') as f:
@@ -1645,27 +2236,29 @@ def main(argv=None, person_section=False):
         data['brief_history'] = _sibling('housekeeping').brief_reset_state(
             os.path.join(a.hq_root, 'workspace'), run_id)
     except Exception as e:
-        data['brief_history'] = {'error': str(e)[:200]}
+        data['brief_history'] = failure('brief_history', e)
     # Welcome belongs to the person: first ready run across every mode.
     first_run = not ready_runs(os.path.join(brief_dir, 'index.jsonl'), run_id)
     if not person_section and (a.welcome or first_run):
         try:
             day0 = dt.datetime.combine(dt.date.fromisoformat(days[0]), dt.time.min).astimezone()
             rows = _load_local_sessions().scan(a.hq_root, day0.astimezone(dt.timezone.utc).isoformat(), now.isoformat())
-            data['welcome'] = welcome_block(rows, a.company, first_run, latest_import(a.hq_root))
+            has_companies, lookup_failed = True, False
             if not a.company:
                 try:
                     has_companies = bool(membership_slugs(a.hq_root))
                 except (RuntimeError, OSError, subprocess.TimeoutExpired):
-                    has_companies = True  # Unknown membership is not proof of zero companies.
+                    lookup_failed = True  # Unknown membership is not proof of zero companies.
                     SOURCES['memberships'] = {'state': 'failed', 'ok': False,
                                              'error': 'Could not load your companies. Sign in or try again when connected.'}
-                    data['welcome']['getting_started'] = GETTING_STARTED
-                if has_companies:
-                    data['welcome']['next_steps'] = [step for step in data['welcome']['next_steps']
-                                                     if step['kind'] != 'connect_company']
+            inputs = welcome_inputs(a.hq_root, rows, a.company)
+            data['welcome'] = welcome_block(rows, a.company, first_run, latest_import(a.hq_root), **inputs,
+                                            hq_root=a.hq_root,
+                                            has_companies=has_companies, owners=owners)
+            if lookup_failed:
+                data['welcome']['getting_started'] = GETTING_STARTED
         except Exception as e:
-            data['welcome'] = {'error': str(e)[:200]}
+            data['welcome'] = {'first_run': first_run, 'note': failure('welcome', e)['note']}
     else:
         data['welcome'] = None
     data['sources'] = SOURCES

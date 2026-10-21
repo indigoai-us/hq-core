@@ -24,11 +24,11 @@
   reason: "Core HQ policy definitions for the public scaffold; policy markdown may quote example regexes or denylist-shaped strings as documentation, not violations."
 
 - path: "companies/_template/**"
-  scanners: [pii, denylist, slugs]
+  scanners: [pii, denylist]
   reason: "Starter scaffold for new HQ companies. Placeholder names (Acme, Voyage, etc.) are scaffolding examples, not real org references."
 
 - path: "companies/_setup-examples/**"
-  scanners: [pii, denylist, slugs]
+  scanners: [pii, denylist]
   reason: "Onboarding example companies. Same rationale as _template."
 
 - path: "**/*.snapshot.json"

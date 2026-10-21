@@ -2791,7 +2791,22 @@ function failedHandoff(envelope, engine, reason) {
     files_changed: [], commits: [],
     back_pressure: { tests: 'skip', lint: 'skip', typecheck: 'skip', build: 'skip' },
     context_for_next: '', engine: String(engine || ''), notes: reason,
+    // marks this as the runner's stand-in, so pipeline-conductor.sh never
+    // reads it as the worker's own handoff
+    synthesized_by: 'lane-runner',
   };
+}
+
+// Before a synthesized handoff takes result_path, copy whatever the worker
+// left there to <name>.orig.<n>.json so the original stays readable.
+function backupHandoff(file) {
+  if (!fs.existsSync(file)) return null;
+  const base = file.replace(/\.json$/, '');
+  let n = 1;
+  while (fs.existsSync(`${base}.orig.${n}.json`)) n += 1;
+  const dest = `${base}.orig.${n}.json`;
+  fs.copyFileSync(file, dest);
+  return dest;
 }
 
 // Engine reply -> §8 handoff object, or a failed handoff with the reason. A
@@ -3016,6 +3031,15 @@ async function runLoop(rt, cli = {}) {
       const handoffFile = typeof section8.result_path === 'string' && section8.result_path
         ? path.resolve(section8.result_path) : path.join(dirs.results, `${stem}.handoff.json`);
       try {
+        // a failed backup throws before the write, so the worker's file is
+        // never overwritten without a copy: the handoff goes to the fallback
+        if (handoff.synthesized_by) {
+          const kept = backupHandoff(handoffFile);
+          if (kept) {
+            handoff.worker_handoff = kept;
+            rt.journal({ event: 'loop-handoff-backup', envelope: next, handoffFile, backup: kept });
+          }
+        }
         writeJsonAtomic(handoffFile, handoff);
       } catch (e) {
         const fallback = path.join(dirs.results, `${stem}.handoff.json`);

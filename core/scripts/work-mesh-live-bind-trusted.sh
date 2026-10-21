@@ -36,11 +36,54 @@ HQ_SESSION="$ROOT/core/scripts/hq-session.sh"
 # Resolve session id before metadata writes so a known session is pinned even
 # when the caller omitted --session-id. Empty `pin` must still be safe on
 # macOS Bash 3.2 (`set -u` + `"${pin[@]}"` is an unbound-variable abort).
-if [ -z "$SESSION_ID" ]; then
-  SESSION_ID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}}}"
-  SESSION_ID="$(printf '%s' "$SESSION_ID" | tr -d '[:space:]')"
-  if [ -z "$SESSION_ID" ] && [ -f "$ROOT/workspace/sessions/.current" ]; then
-    SESSION_ID="$(tr -d '[:space:]' <"$ROOT/workspace/sessions/.current")"
+# shellcheck source=lib/session-id.sh
+. "$ROOT/core/scripts/lib/session-id.sh" 2>/dev/null || true
+if ! command -v session_id_resolve >/dev/null 2>&1; then
+  session_id_is_valid() {
+    case "${1:-}" in
+      ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;;
+    esac
+    return 0
+  }
+  session_id_from_env() {
+    local var val
+    for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
+               CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID; do
+      val="$(eval "printf '%s' \"\${$var:-}\"" | tr -d '[:space:]')"
+      if session_id_is_valid "$val"; then
+        printf '%s' "$val"
+        return 0
+      fi
+    done
+    return 0
+  }
+  session_id_from_current_file() {
+    local val=""
+    [ -f "${1:-}/workspace/sessions/.current" ] || return 0
+    val="$(tr -d '[:space:]' <"$1/workspace/sessions/.current" 2>/dev/null || true)"
+    session_id_is_valid "$val" && printf '%s' "$val"
+    return 0
+  }
+fi
+
+# Trusted authority needs a session id the caller owns: --session or the
+# process env. workspace/sessions/.current is last-writer-wins and can name
+# another session, so a bind resolved from it still writes meta and reconciles,
+# but it does not stamp the marker or send authority. An invalid --session
+# stops the bind, so it cannot fall back to whichever session .current names.
+SESSION_TRUSTED=0
+if [ -n "$SESSION_ID" ] && ! session_id_is_valid "$SESSION_ID"; then
+  printf '%s\n' 'work-mesh-live-bind-trusted: invalid --session id' >&2
+  exit 2
+fi
+if [ -n "$SESSION_ID" ]; then
+  SESSION_TRUSTED=1
+else
+  SESSION_ID="$(session_id_from_env)"
+  if [ -n "$SESSION_ID" ]; then
+    SESSION_TRUSTED=1
+  else
+    SESSION_ID="$(session_id_from_current_file "$ROOT")"
   fi
 fi
 
@@ -57,6 +100,40 @@ if [ -n "$PROJECT" ]; then
 fi
 if [ -n "$TASK" ]; then
   bash "$HQ_SESSION" ${pin[@]+"${pin[@]}"} set task "$TASK"
+fi
+
+# A project bind is the trusted signal. Stamp the live-binding marker so the
+# next hook holds it until reconcile catches up. Company-only binds do not.
+# This runs before --no-reconcile so a caller that skips reconcile still holds.
+# `hq-session set project` with an unchanged value does not touch the marker,
+# so a marker that still names another project (after a revert) is rebound here
+# first. That closes the old card and opens one for PROJECT before the stamp.
+if [ -n "$PROJECT" ] && [ "$SESSION_TRUSTED" -eq 1 ] && [ -f "$ROOT/core/scripts/lib/work-mesh-live-rebind.sh" ]; then
+  # shellcheck source=lib/work-mesh-enqueue.sh
+  . "$ROOT/core/scripts/lib/work-mesh-enqueue.sh" 2>/dev/null || true
+  # shellcheck source=lib/work-mesh-live-hook.sh
+  . "$ROOT/core/scripts/lib/work-mesh-live-hook.sh" 2>/dev/null || true
+  # shellcheck source=lib/work-mesh-live-rebind.sh
+  . "$ROOT/core/scripts/lib/work-mesh-live-rebind.sh"
+  work_mesh_live_read_binding_marker "$SESSION_ID"
+  _mb_co="${REPLY%%|*}"
+  _mb_rest="${REPLY#*|}"
+  _mb_pr="${_mb_rest%%|*}"
+  _mb_tk="${_mb_rest#*|}"
+  if [ "$_mb_pr" != "$PROJECT" ]; then
+    _new_co="${COMPANY:-$_mb_co}"
+    work_mesh_live_rebind "$SESSION_ID" "$_mb_co" "$_mb_pr" "$_mb_tk" "$_new_co" "$PROJECT" "$TASK" || true
+    _mb_co="$_new_co"
+    _mb_pr="$PROJECT"
+    _mb_tk="$TASK"
+  fi
+  if [ -z "$_mb_co" ] && [ -n "$COMPANY" ]; then
+    _mb_co="$COMPANY"
+  fi
+  if [ -z "$_mb_tk" ] && [ -n "$TASK" ]; then
+    _mb_tk="$TASK"
+  fi
+  work_mesh_live_write_binding_marker "$SESSION_ID" "$_mb_co" "$_mb_pr" "$_mb_tk" trusted || true
 fi
 
 if [ "$NO_RECONCILE" -eq 1 ]; then
@@ -119,6 +196,9 @@ if [ -n "$COMPANY" ] || [ -n "$PROJECT" ] || [ -n "$TASK" ]; then
   if [ -n "$PROJECT" ]; then
     [ "$_first" -eq 1 ] || OBS+=','
     OBS+='"project":'"$(json_quote "$PROJECT")"
+    if [ "$SESSION_TRUSTED" -eq 1 ]; then
+      OBS+=',"authority":"trusted"'
+    fi
     _first=0
   fi
   if [ -n "$TASK" ]; then

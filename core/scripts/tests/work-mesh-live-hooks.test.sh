@@ -4,8 +4,13 @@
 #
 # Timing contract (AC0/AC2/AC5): after one warm-up, run 3 independent rounds
 # of 100 invocations each. Always assert that the MEDIAN of the three per-round
-# p95(user+sys CPU ms) values is < 20 (bash TIMEFORMAT='%3U %3S'; immune
-# to runnable-queue wall inflation under load). The budget is unchanged. The
+# p95 of CPU ms is < 20 (bash TIMEFORMAT='%3U %3S'; immune to
+# runnable-queue wall inflation under load). The p50 user+sys of an empty
+# `bash --noprofile --norc -c true` is measured the same way in the same job
+# and printed with net CPU (raw minus that baseline) so a reader can tell
+# bash startup from hook cost. Bash startup was 1ms on all 24 sampled
+# ubuntu-24.04-arm runners (2026-10-20, runs 39465513040 and 39466470768), so
+# the assert stays on raw CPU. Baseline, raw and net are printed. The
 # median of three rounds replaces a single round because one round's p95 is
 # the 95th of 100 samples: a short burst of host steal or a page-cache miss in
 # that round moved session_start from cpu_p95=18 to 20 on a shared ARM runner
@@ -442,6 +447,20 @@ bash_true_overhead_ms() {
   _wm_p50 "${times[@]}"
 }
 
+# CPU (user+sys) of an empty `bash --noprofile --norc -c true`, timed the same
+# way as the hook samples. p50 of 100. Subtracted from every CPU sample so the
+# assertion covers the hook's own CPU, not interpreter startup on this runner.
+bash_true_cpu_ms() {
+  local _i cpu_line; local -a times=()
+  local TIMEFORMAT='%3U %3S'
+  for ((_i = 1; _i <= 100; _i++)); do
+    # shellcheck disable=SC2034 # TIMEFORMAT consumed by `time`
+    cpu_line=$( { time bash --noprofile --norc -c 'true' >/dev/null 2>&1 || true; } 2>&1 )
+    times+=("$(_wm_cpu_ms_from_time "$cpu_line")")
+  done
+  _wm_p50 "${times[@]}"
+}
+
 # 1-min load avg + CPU count (Linux /proc; macOS sysctl).
 _wm_load_and_ncpu() {
   if [ -r /proc/loadavg ]; then
@@ -459,6 +478,8 @@ _wm_load_and_ncpu() {
 _wm_load_and_ncpu
 BASELINE_MS="$(bash_true_overhead_ms)"
 echo "timing bash-true baseline_overhead_p50=${BASELINE_MS}ms (subtracted from wall samples)"
+CPU_BASELINE_MS="$(bash_true_cpu_ms)"
+echo "timing bash-true cpu_baseline_p50=${CPU_BASELINE_MS}ms (reported as net = raw cpu - baseline; the assert stays on raw cpu_p95 < 20)"
 
 # Wall p95 is asserted only off CI, under half-loaded CPUs, with a sane
 # baseline (see header: PRs #698/#701 flaked at load 0.72/2 on a GitHub
@@ -487,8 +508,8 @@ fi
 # globals _WM_ROUND_CPU_P95 / _WM_ROUND_ADJ_P95 and prints the round's stats.
 measure_round() {
   local hook="$1" payload="$2" label="$3" round="$4"
-  local _i start end ms adj cpu_line cpu_ms
-  local -a wall_times=() adj_times=() cpu_times=()
+  local _i start end ms adj cpu_line cpu_ms net_ms
+  local -a wall_times=() adj_times=() cpu_times=() net_times=()
   reset_spool
   mkdir -p "$WORK_MESH_SEQ_DIR" "${WORK_MESH_SPOOL%/*}"
   # warm first invocation (excluded from p95)
@@ -504,9 +525,12 @@ measure_round() {
     adj=$(( ms - BASELINE_MS ))
     [ "$adj" -lt 0 ] && adj=0
     cpu_ms="$(_wm_cpu_ms_from_time "$cpu_line")"
+    net_ms=$(( cpu_ms - CPU_BASELINE_MS ))
+    [ "$net_ms" -lt 0 ] && net_ms=0
     wall_times+=("$ms")
     adj_times+=("$adj")
     cpu_times+=("$cpu_ms")
+    net_times+=("$net_ms")
   done
   local wall_p50 wall_p95 adj_p50 cpu_p50
   wall_p50="$(_wm_p50 "${wall_times[@]}")"
@@ -515,26 +539,29 @@ measure_round() {
   _WM_ROUND_ADJ_P95="$(_wm_p95 "${adj_times[@]}")"
   cpu_p50="$(_wm_p50 "${cpu_times[@]}")"
   _WM_ROUND_CPU_P95="$(_wm_p95 "${cpu_times[@]}")"
-  echo "timing $label round=$round wall_p50=${wall_p50}ms wall_p95=${wall_p95}ms adj_p50=${adj_p50}ms adj_p95=${_WM_ROUND_ADJ_P95}ms cpu_p50=${cpu_p50}ms cpu_p95=${_WM_ROUND_CPU_P95}ms baseline=${BASELINE_MS}ms"
+  _WM_ROUND_NET_P95="$(_wm_p95 "${net_times[@]}")"
+  echo "timing $label round=$round wall_p50=${wall_p50}ms wall_p95=${wall_p95}ms adj_p50=${adj_p50}ms adj_p95=${_WM_ROUND_ADJ_P95}ms cpu_p50=${cpu_p50}ms cpu_p95=${_WM_ROUND_CPU_P95}ms net_cpu_p95=${_WM_ROUND_NET_P95}ms baseline=${BASELINE_MS}ms cpu_baseline=${CPU_BASELINE_MS}ms"
 }
 
 measure_p95() {
   local hook="$1" payload="$2" label="$3"
-  local round cpu_p95 adj_p95
-  local -a cpu_rounds=() adj_rounds=()
+  local round cpu_p95 net_p95 adj_p95
+  local -a cpu_rounds=() net_rounds=() adj_rounds=()
   for round in 1 2 3; do
     measure_round "$hook" "$payload" "$label" "$round"
     cpu_rounds+=("$_WM_ROUND_CPU_P95")
+    net_rounds+=("$_WM_ROUND_NET_P95")
     adj_rounds+=("$_WM_ROUND_ADJ_P95")
   done
   # Median of three: _wm_p50 returns the middle of the three sorted values.
   cpu_p95="$(_wm_p50 "${cpu_rounds[@]}")"
+  net_p95="$(_wm_p50 "${net_rounds[@]}")"
   adj_p95="$(_wm_p50 "${adj_rounds[@]}")"
-  echo "timing $label rounds cpu_p95=${cpu_rounds[*]} adj_p95=${adj_rounds[*]} median cpu_p95=${cpu_p95}ms adj_p95=${adj_p95}ms"
+  echo "timing $label rounds cpu_p95=${cpu_rounds[*]} net_cpu_p95=${net_rounds[*]} adj_p95=${adj_rounds[*]} median cpu_p95=${cpu_p95}ms net_cpu_p95=${net_p95}ms adj_p95=${adj_p95}ms cpu_baseline=${CPU_BASELINE_MS}ms"
   if [ "$cpu_p95" -lt 20 ]; then
-    pass "timing $label median-of-3 cpu_p95=${cpu_p95}ms < 20 (user+sys; rounds ${cpu_rounds[*]})"
+    pass "timing $label median-of-3 cpu_p95=${cpu_p95}ms < 20 (net_cpu_p95=${net_p95}ms after cpu_baseline=${CPU_BASELINE_MS}ms; rounds ${cpu_rounds[*]})"
   else
-    fail "timing $label median-of-3 cpu_p95=${cpu_p95}ms >= 20 (user+sys; rounds ${cpu_rounds[*]})"
+    fail "timing $label median-of-3 cpu_p95=${cpu_p95}ms >= 20 (net_cpu_p95=${net_p95}ms after cpu_baseline=${CPU_BASELINE_MS}ms; rounds ${cpu_rounds[*]})"
   fi
   if [ "$WALL_ASSERT" -eq 1 ]; then
     if [ "$adj_p95" -lt 20 ]; then

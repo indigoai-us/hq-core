@@ -18,10 +18,16 @@ on:
 permissions:
   contents: read
 
+# Release runs queue instead of cancelling, so a tag release is never cut short.
+# Outside staging the group is per run, which leaves hq-core unchanged.
+concurrency:
+  group: ${{ github.repository == 'indigoai-us/hq-core-staging' && format('{0}-{1}', github.workflow, github.ref) || format('{0}-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: false
+
 jobs:
   runtime-assets:
     name: Build hq-anywhere release artifacts
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -59,7 +65,7 @@ jobs:
     name: Attach hq-anywhere assets to an existing GitHub release
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' && inputs.publish_runtime_assets == true }}
     needs: runtime-assets
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     permissions:
       contents: write
     steps:
@@ -87,7 +93,7 @@ jobs:
   release:
     name: Create GitHub Release
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     permissions:
       contents: write
     env:

@@ -20,7 +20,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 render_oncalendar() {
   local script="$1" minute="$2" hour="$3" dom="$4" month="$5" dow="$6" fns
-  fns="$(awk 'BEGIN{p=0} /^cron_dow_to_systemd\(\)/{p=1} /^# --- unit writers/{exit} p{print}' "$script")"
+  fns="$(awk 'BEGIN{p=0} /^# --- cron → systemd OnCalendar/{p=1} /^# --- unit writers/{exit} p{print}' "$script")"
   [ -n "$fns" ] || fail "cron converter functions not found in $script"
   printf '%s\n' "$fns" >"$TMP/cron-fns.sh"
   cat >>"$TMP/cron-fns.sh" <<'EOF'
@@ -32,16 +32,17 @@ EOF
 expect_oncalendar() {
   local minute="$1" hour="$2" dom="$3" month="$4" dow="$5" expected="$6" actual
   actual="$(render_oncalendar "$RECON" "$minute" "$hour" "$dom" "$month" "$dow")"
-  [ "$actual" = "$expected" ] || fail "$minute $hour $dom $month $dow rendered '$actual', origin/main is '$expected'"
+  [ "$actual" = "$expected" ] || fail "$minute $hour $dom $month $dow rendered '$actual', expected '$expected'"
   pass "$minute $hour $dom $month $dow -> $actual"
 }
 
-# minute *, */15, fixed minute, range, day-of-week. Values captured from
-# origin/main:core/scripts/outpost-jobs-reconcile.sh cron_to_oncalendar.
+# minute *, */15, fixed minute, range, day-of-week. A wildcard minute stays
+# 00; steps and ranges use systemd syntax (00/15, 00..30). The full table
+# is in outpost-cron-oncalendar.test.sh.
 expect_oncalendar '*' '9' '*' '*' '*' '*-*-* 09:00:00'
-expect_oncalendar '*/15' '9' '*' '*' '*' '*-*-* 09:*/15:00'
+expect_oncalendar '*/15' '9' '*' '*' '*' '*-*-* 09:00/15:00'
 expect_oncalendar '30' '9' '*' '*' '*' '*-*-* 09:30:00'
-expect_oncalendar '0-30' '9' '*' '*' '*' '*-*-* 09:0-30:00'
+expect_oncalendar '0-30' '9' '*' '*' '*' '*-*-* 09:00..30:00'
 expect_oncalendar '15' '9' '*' '*' '1-5' 'Mon..Fri *-*-* 09:15:00'
 
 # Neither flag nor HQ_MACHINE_AUTH_REQUIRED: personal entry, node is not exec'd.

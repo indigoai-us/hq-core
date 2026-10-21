@@ -77,6 +77,7 @@ _wm_notice() {
 }
 
 BOUND_COMPANY=""
+AUTO_BIND_RAN=0
 WORK_CONTEXT_ROOT="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
 if [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
   # shellcheck source=core/scripts/lib/session-scope-capability.sh
@@ -88,9 +89,37 @@ if [ -f "$HQ_ROOT/core/scripts/lib/session-auto-bind.sh" ]; then
     # sees cwd + repository evidence and can return company_conflict; promoting
     # a preference into meta/scope here would make it trusted too early.
     HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 session_auto_bind_apply "$HQ_ROOT" "$SID" "$PARENT_SID" || true
-    BOUND_COMPANY="$(session_auto_bind_meta_slug "$HQ_ROOT" "$SID" 2>/dev/null || true)"
+    AUTO_BIND_RAN=1
   fi
 fi
+
+# One awk pass over the session meta (written by the auto-bind above) instead
+# of up to five forks: company_slug, project, task and company_slugs. Each
+# field keeps the parsing of the reader it replaces (session_auto_bind_meta_slug
+# and the former meta_get/company_slugs awk calls). No meta file, no fork.
+META_COMPANY="" META_PROJECT="" META_TASK="" META_SLUGS=""
+SESSION_META="$HQ_ROOT/workspace/sessions/$SID/meta.yaml"
+if [ -f "$SESSION_META" ]; then
+  META_FIELDS="$(awk '
+    !c && $1 == "company_slug:" { v = $0; sub(/^[^:]+:[[:space:]]*/, "", v); gsub(/^"|"$/, "", v); cv = v; c = 1 }
+    !p && $1 == "project:" { v = $0; sub(/^[^:]+:[[:space:]]*/, "", v); gsub(/^"|"$/, "", v); pv = v; p = 1 }
+    !t && $1 == "task:" { v = $0; sub(/^[^:]+:[[:space:]]*/, "", v); gsub(/^"|"$/, "", v); tv = v; t = 1 }
+    !s && $1 == "company_slugs:" { v = $0; sub(/^[^:]+:[[:space:]]*/, "", v); gsub(/[[:space:]\"]/, "", v); sv = v; s = 1 }
+    c && p && t && s { exit }
+    END { printf "%s\n%s\n%s\n%s\n.", cv, pv, tv, sv }
+  ' "$SESSION_META" 2>/dev/null || true)"
+  # Newline-separated: a value comes from one line, so it never holds one. The
+  # trailing "." keeps $(...) from trimming empty trailing fields.
+  case "$META_FIELDS" in
+    *$'\n'*$'\n'*$'\n'*$'\n.')
+      META_FIELDS="${META_FIELDS%$'\n.'}"
+      META_COMPANY="${META_FIELDS%%$'\n'*}"; META_FIELDS="${META_FIELDS#*$'\n'}"
+      META_PROJECT="${META_FIELDS%%$'\n'*}"; META_FIELDS="${META_FIELDS#*$'\n'}"
+      META_TASK="${META_FIELDS%%$'\n'*}"; META_SLUGS="${META_FIELDS#*$'\n'}"
+      ;;
+  esac
+fi
+[ "$AUTO_BIND_RAN" = 1 ] && BOUND_COMPANY="$META_COMPANY"
 
 HARNESS="${HQ_HARNESS:-${HQ_WORK_MESH_HARNESS:-${HQ_CHECKPOINT_RUNTIME:-claude-code}}}"
 case "$HARNESS" in
@@ -104,18 +133,10 @@ RUNTIME="${HQ_RUNTIME_VERSION:-${CLAUDE_CODE_VERSION:-${CODEX_VERSION:-${GROK_VE
 COMPANY="${BOUND_COMPANY:-${HQ_SPAWN_COMPANY:-}}"
 PROJECT="${HQ_SPAWN_PROJECT:-}"
 TASK="${HQ_SPAWN_TASK:-}"
-# Skip meta.yaml forks unless spawn context is incomplete and a session meta exists.
-if [ -z "$COMPANY" ] || [ -z "$PROJECT" ] || [ -z "$TASK" ]; then
-  meta="$HQ_ROOT/workspace/sessions/$SID/meta.yaml"
-  if [ -f "$meta" ]; then
-    meta_get() {
-      awk -v k="$1" '$1==k":"{ sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit }' "$meta" 2>/dev/null
-    }
-    [ -n "$COMPANY" ] || COMPANY="$(meta_get company_slug)"
-    [ -n "$PROJECT" ] || PROJECT="$(meta_get project)"
-    [ -n "$TASK" ] || TASK="$(meta_get task)"
-  fi
-fi
+# Spawn context wins; session meta fills whatever it leaves empty.
+[ -n "$COMPANY" ] || COMPANY="$META_COMPANY"
+[ -n "$PROJECT" ] || PROJECT="$META_PROJECT"
+[ -n "$TASK" ] || TASK="$META_TASK"
 
 SEQ_DIR="${WORK_MESH_SEQ_DIR:-$HOME/.hq/work-mesh/seq}"
 if [ ! -d "$SEQ_DIR" ]; then
@@ -124,10 +145,7 @@ if [ ! -d "$SEQ_DIR" ]; then
 fi
 COMPANIES=()
 META_LOCK_SET=""
-LOCK_META="$HQ_ROOT/workspace/sessions/$SID/meta.yaml"
-if [ -n "$COMPANY" ] && [ -r "$LOCK_META" ]; then
-  META_LOCK_SET="$(awk '$1 == "company_slugs:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/[[:space:]\"]/, ""); print; exit }' "$LOCK_META" 2>/dev/null || true)"
-fi
+[ -n "$COMPANY" ] && META_LOCK_SET="$META_SLUGS"
 # Legacy and singleton sessions keep the original one-company fast path. Only
 # consult the capability reader and flag client when metadata indicates a set
 # could contain more than one company; the capability remains authoritative.
@@ -518,9 +536,18 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
       PREFLIGHT_SLUG="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.companySlug | select(type == "string" and length > 0)' 2>/dev/null)" || PREFLIGHT_SLUG=""
       PREFLIGHT_UID="$(printf '%s' "$PREFLIGHT_RESULT" | jq -er '.companyUid | select(type == "string" and length > 0)' 2>/dev/null)" || PREFLIGHT_UID=""
       if [ -z "$PREFLIGHT_CACHE_HIT" ]; then
-        PREFLIGHT_REPAIR="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
-          "$HQ_BIN" mesh context default get --json 2>/dev/null \
-          | jq -er '(.repairHeldWithDefault // (.defaultCompany.repairHeldWithDefault // false)) | if . == true then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
+        # Only the bind path reads the repair flag. Skip this second CLI start
+        # for every other classification (unresolved is the common case).
+        case "$PREFLIGHT_CLASSIFICATION" in
+          bound|needs_project|needs_task)
+            PREFLIGHT_REPAIR="$(HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout \
+              "$HQ_BIN" mesh context default get --json 2>/dev/null \
+              | jq -er '(.repairHeldWithDefault // (.defaultCompany.repairHeldWithDefault // false)) | if . == true then "true" else "false" end' 2>/dev/null)" || PREFLIGHT_REPAIR=false
+            ;;
+          *)
+            PREFLIGHT_REPAIR=false
+            ;;
+        esac
       fi
       if [ "$PREFLIGHT_CACHEABLE" -eq 1 ] && [ -n "$PREFLIGHT_CACHE_KEY" ] && [ -z "$PREFLIGHT_CACHE_HIT" ]; then
         case "$PREFLIGHT_CLASSIFICATION" in
