@@ -103,7 +103,7 @@ portal, which HQ opens for the company's owner.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-10-16T14:05:28.876Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-10-20T05:12:44.286Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
 ### Usage card (new signups from 2026-10-16, card version 2026-10-16)
 
@@ -134,7 +134,7 @@ _Generated from pricing.json (statement generated 2026-10-16T14:05:28.876Z). Do 
 ### Signup
 
 - Sign up free (`free`)
-- Request an enterprise demo (`enterprise`)
+- Book a setup call (`enterprise`)
 - Use HQ free, self-hosted or on-prem: https://docs.hq.computer/hq/guide/use-hq-for-free/
 
 ### Legacy plans (per month, USD)

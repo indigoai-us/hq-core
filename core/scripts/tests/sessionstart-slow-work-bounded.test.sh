@@ -49,6 +49,7 @@ PREFLIGHT_DONE="$TMP/preflight.done"
 PREFLIGHT_PGID_FILE="$TMP/preflight.pgid"
 PREFLIGHT_NO_UPDATE_FILE="$TMP/preflight-no-update"
 VALID_PREFLIGHT_READY="$TMP/valid-preflight.ready"
+DEFAULT_GET_LOG="$TMP/default-get.log"
 REPAIR_PID_FILE="$TMP/repair.pid"
 REPAIR_CHILD_PID_FILE="$TMP/repair-child.pid"
 REPAIR_STARTED="$TMP/repair.started"
@@ -178,6 +179,7 @@ set -uo pipefail
 case "${1:-}:${2:-}" in
   mesh:context)
     if [ "${3:-}" = default ] && [ "${4:-}" = get ]; then
+      [ -z "${TEST_DEFAULT_GET_LOG:-}" ] || printf '%s\n' called >> "$TEST_DEFAULT_GET_LOG"
       if [ -f "$TEST_VALID_PREFLIGHT_READY" ] && [ "${TEST_REPAIR_MODE:-fast}" = slow ]; then
         printf '%s\n' "${HQ_NO_UPDATE_CHECK:-}" >> "$TEST_REPAIR_NO_UPDATE_FILE"
         printf '%s\n' "$$" >> "$TEST_REPAIR_PID_FILE"
@@ -216,11 +218,17 @@ case "${1:-}:${2:-}" in
         wait "$child"
         printf '%s\n' completed > "$TEST_PREFLIGHT_DONE"
       elif [ "${TEST_PREFLIGHT_MODE:-fast}" = valid ]; then
-        session_id="$(jq -er '.sessionId' "$observation")"
+        session_id="$(jq -er '.identity.sessionId // .sessionId' "$observation")"
         operation_id="$(jq -er '.clientOperationId' "$observation")"
         printf '%s\n' ready > "$TEST_VALID_PREFLIGHT_READY"
         jq -cn --arg sid "$session_id" --arg op "$operation_id" \
           '{contractVersion:1,kind:"bound",classification:"bound",delivery:"clean",lifecycle:"open",sessionId:$sid,clientOperationId:$op,companySlug:"indigo",companyUid:"cmp_indigo"}'
+        exit 0
+      elif [ "${TEST_PREFLIGHT_MODE:-fast}" = unresolved ]; then
+        session_id="$(jq -er '.identity.sessionId // .sessionId' "$observation")"
+        operation_id="$(jq -er '.clientOperationId' "$observation")"
+        jq -cn --arg sid "$session_id" --arg op "$operation_id" \
+          '{contractVersion:1,kind:"unresolved",classification:"unresolved",delivery:"clean",lifecycle:"open",sessionId:$sid,clientOperationId:$op}'
         exit 0
       fi
       printf '%s\n' '{}'
@@ -335,6 +343,7 @@ dispatch() {
     TEST_PREFLIGHT_PGID_FILE="$PREFLIGHT_PGID_FILE" \
     TEST_PREFLIGHT_NO_UPDATE_FILE="$PREFLIGHT_NO_UPDATE_FILE" \
     TEST_VALID_PREFLIGHT_READY="$VALID_PREFLIGHT_READY" \
+    TEST_DEFAULT_GET_LOG="$DEFAULT_GET_LOG" \
     TEST_REPAIR_PID_FILE="$REPAIR_PID_FILE" TEST_REPAIR_CHILD_PID_FILE="$REPAIR_CHILD_PID_FILE" \
     TEST_REPAIR_STARTED="$REPAIR_STARTED" TEST_REPAIR_DONE="$REPAIR_DONE" \
     TEST_REPAIR_PGID_FILE="$REPAIR_PGID_FILE" TEST_REPAIR_NO_UPDATE_FILE="$REPAIR_NO_UPDATE_FILE" \
@@ -453,6 +462,9 @@ dispatch c179b-slow-preflight fast none slow fast
   || fail "offline preflight did not disable hq self-update"
 
 echo "[4] slow held-default read after valid preflight is bounded"
+mkdir -p "$HOME_DIR/.hq/work-context/sessions"
+printf '{"sessionId":"c179b-slow-repair","contextStatus":"needs_company"}\n' \
+  > "$HOME_DIR/.hq/work-context/sessions/c179b-slow-repair.json"
 dispatch c179b-slow-repair fast none valid fast slow
 [ "$DISPATCH_RC" -eq 0 ] && pass "validated unbound SessionStart returns normally" \
   || fail "validated unbound SessionStart rc=$DISPATCH_RC: $(cat "$TMP/dispatch.err")"
@@ -492,6 +504,29 @@ if grep -q '^company_slug:' "$FIX/workspace/sessions/c179b-slow-repair/meta.yaml
 else
   pass "timed-out held-default read preserves the existing unbound session context"
 fi
+
+echo "[4b] held-default read runs only when preflight can bind"
+rm -f "$DEFAULT_GET_LOG" "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json"
+dispatch c179b-unresolved-default fast none unresolved fast fast
+[ "$DISPATCH_RC" -eq 0 ] && pass "unresolved preflight SessionStart returns normally" \
+  || fail "unresolved preflight SessionStart rc=$DISPATCH_RC: $(cat "$TMP/dispatch.err")"
+[ ! -s "$DEFAULT_GET_LOG" ] && pass "unresolved preflight skips the held-default CLI read" \
+  || fail "unresolved preflight still ran hq mesh context default get ($(wc -l < "$DEFAULT_GET_LOG") calls)"
+if grep -q '^company_slug:' "$FIX/workspace/sessions/c179b-unresolved-default/meta.yaml"; then
+  fail "unresolved preflight bound a company"
+else
+  pass "unresolved preflight leaves the session unbound"
+fi
+rm -f "$DEFAULT_GET_LOG" "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json"
+dispatch c179b-bound-default fast none valid fast fast
+[ "$DISPATCH_RC" -eq 0 ] && pass "bound preflight SessionStart returns normally" \
+  || fail "bound preflight SessionStart rc=$DISPATCH_RC: $(cat "$TMP/dispatch.err")"
+[ "$(wc -l < "$DEFAULT_GET_LOG" 2>/dev/null | tr -d '[:space:]')" = 1 ] \
+  && pass "bound preflight still reads the held-default repair flag once" \
+  || fail "bound preflight default-get calls: $(cat "$DEFAULT_GET_LOG" 2>/dev/null | wc -l)"
+grep -qx 'company_slug: indigo' "$FIX/workspace/sessions/c179b-bound-default/meta.yaml" \
+  && pass "bound preflight binds the validated company" \
+  || fail "bound preflight did not bind the validated company"
 
 echo "[5] stale reaper mutexes do not permanently block a reconcile"
 stale_lock="$TMP/reconcile-locks/c179b-stale-reaper.lock"

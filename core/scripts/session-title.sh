@@ -220,8 +220,8 @@ const mode = emoji === "▶️" ? "⚡" : (emoji || modeFor(command));
 // settings `aliases:` block rather than a mid-word truncation — a single-word
 // slug sliced at 8 characters is unreadable.
 // Built-ins only. Company short forms are USER data — a release-shipped file
-// must never carry tenant slugs (enforced by the slug-scan / denylist-scan CI
-// gates). Users map their own long slugs in personal/settings/session-title.yaml:
+// must never carry tenant slugs (enforced by the denylist-scan CI
+// gate). Users map their own long slugs in personal/settings/session-title.yaml:
 //
 //   aliases:
 //     some-long-company-slug: SHORT

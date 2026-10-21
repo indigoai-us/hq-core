@@ -387,6 +387,62 @@ else
 fi
 rm -rf "$ROOT/workspace/sessions/$PARENT" "$ROOT/workspace/sessions/$CHILD" "$ROOT/workspace/sessions/$PLAIN"
 
+# 16b) DEV-4034 (a): SubagentStart binds the child when it starts, before any
+# tool call. (b): a payload parent id counts only with subagentType; a
+# SessionStart that names a parent without it does not inherit, while a
+# spawner's HQ_PARENT_SESSION_ID still does.
+PARENT="grok-4034-parent-$$"
+CHILD="grok-4034-child-$$"
+ROOTSESS="grok-4034-root-$$"
+SPAWNED="grok-4034-spawned-$$"
+mkdir -p "$ROOT/workspace/sessions/$PARENT"
+printf 'company_slug: personal\n' > "$ROOT/workspace/sessions/$PARENT/meta.yaml"
+run_adapter '{"hookEventName":"SubagentStart","cwd":"'"$ROOT"'","sessionId":"'"$CHILD"'","parentSessionId":"'"$PARENT"'","subagentType":"explorer"}'
+assert_exit "$ADAPTER_ST" 0 "SubagentStart exit 0"
+if grep -q '^company_source: parent' "$ROOT/workspace/sessions/$CHILD/meta.yaml" 2>/dev/null \
+  && grep -q '^company_slug: *"\{0,1\}personal' "$ROOT/workspace/sessions/$CHILD/meta.yaml"; then
+  echo "PASS: SubagentStart binds the child to the parent company at start"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: SubagentStart did not bind the child (meta: $(cat "$ROOT/workspace/sessions/$CHILD/meta.yaml" 2>/dev/null))" >&2
+  FAIL=$((FAIL + 1))
+fi
+# A SubagentStart that names no parent (fired under the parent's own id) must
+# not bind that session from a fallback source.
+NOPARENT="grok-4034-noparent-$$"
+run_adapter '{"hookEventName":"SubagentStart","cwd":"'"$ROOT"'","sessionId":"'"$NOPARENT"'","subagentType":"explorer"}'
+if ! grep -q '^company_source:' "$ROOT/workspace/sessions/$NOPARENT/meta.yaml" 2>/dev/null; then
+  echo "PASS: SubagentStart with no parent id binds nothing"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: SubagentStart with no parent id bound a company: $(cat "$ROOT/workspace/sessions/$NOPARENT/meta.yaml")" >&2
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$ROOT/workspace/sessions/$NOPARENT"
+run_adapter '{"hookEventName":"SessionStart","source":"startup","cwd":"'"$ROOT"'","sessionId":"'"$ROOTSESS"'","parentSessionId":"'"$PARENT"'"}'
+if ! grep -q '^company_source: parent' "$ROOT/workspace/sessions/$ROOTSESS/meta.yaml" 2>/dev/null; then
+  echo "PASS: a root SessionStart that names a parent does not inherit it"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: root SessionStart inherited the payload parent: $(cat "$ROOT/workspace/sessions/$ROOTSESS/meta.yaml")" >&2
+  FAIL=$((FAIL + 1))
+fi
+out="$(mktemp)"
+set +e
+printf '%s' '{"hookEventName":"SessionStart","source":"startup","cwd":"'"$ROOT"'","sessionId":"'"$SPAWNED"'"}' \
+  | HQ_PARENT_SESSION_ID="$PARENT" "$ADAPTER" >"$out" 2>/dev/null
+set -e
+rm -f "$out"
+if grep -q '^company_source: parent' "$ROOT/workspace/sessions/$SPAWNED/meta.yaml" 2>/dev/null; then
+  echo "PASS: a spawner's HQ_PARENT_SESSION_ID still binds a lane session"
+  PASS=$((PASS + 1))
+else
+  echo "FAIL: HQ_PARENT_SESSION_ID lane did not inherit (meta: $(cat "$ROOT/workspace/sessions/$SPAWNED/meta.yaml" 2>/dev/null))" >&2
+  FAIL=$((FAIL + 1))
+fi
+rm -rf "$ROOT/workspace/sessions/$PARENT" "$ROOT/workspace/sessions/$CHILD" \
+  "$ROOT/workspace/sessions/$ROOTSESS" "$ROOT/workspace/sessions/$SPAWNED"
+
 # 17) The user bridge registers every 1.0.40 event.
 BRIDGE_JSON="$ROOT/.grok/hooks/hq-grok-user-bridge.json"
 for ev in StopCancelled StopFailure PostToolUseFailure PermissionDenied SubagentStart PostCompact; do

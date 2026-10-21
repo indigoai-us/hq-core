@@ -13,9 +13,30 @@ fail() {
 
 CONCURRENCY="$(sed -n '/^concurrency:$/,/^jobs:$/p' "$WORKFLOW" | sed '$d')"
 grep -Fq 'group: pr-checks-${{ github.ref }}' <<< "$CONCURRENCY" \
-  || fail 'main pushes must share the workflow ref concurrency group'
+  || fail 'runs must share the workflow ref concurrency group'
 grep -Fqx '  cancel-in-progress: true' <<< "$CONCURRENCY" \
-  || fail 'new main pushes must cancel superseded main runs'
+  || fail 'new runs must cancel superseded runs on the same ref'
+
+# Workflows that gained a concurrency group share it per ref only in staging.
+# Elsewhere the group is per run, so hq-core keeps its current behaviour.
+for wf in audit-cleanup:true hook-registration:true release:false; do
+  file="$ROOT/.github/workflows/${wf%%:*}.yml"
+  block="$(sed -n '/^concurrency:$/,/^[a-z]/p' "$file")"
+  grep -Fqx "  group: \${{ github.repository == 'indigoai-us/hq-core-staging' && format('{0}-{1}', github.workflow, github.ref) || format('{0}-{1}', github.workflow, github.run_id) }}" <<< "$block" \
+    || fail "${wf%%:*} must use the staging-only per-ref concurrency group"
+  grep -Fqx "  cancel-in-progress: ${wf##*:}" <<< "$block" \
+    || fail "${wf%%:*} must set cancel-in-progress: ${wf##*:}"
+done
+
+# Staging PRs run hook registration on Linux only. Hosted macOS and Windows
+# have no pull_request leg on staging; workflow_dispatch and hq-core keep all three.
+HOOK_REG="$ROOT/.github/workflows/hook-registration.yml"
+grep -Fqx "        os: \${{ fromJSON(github.repository == 'indigoai-us/hq-core-staging' && github.event_name == 'pull_request' && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}" "$HOOK_REG" \
+  || fail 'hook-registration must drop hosted macOS and Windows from staging pull requests and keep them elsewhere'
+[ "$(grep -Ec '^        os: ' "$HOOK_REG")" -eq 1 ] \
+  || fail 'hook-registration must define exactly one matrix os line'
+grep -Fqx '  workflow_dispatch:' "$HOOK_REG" \
+  || fail 'hook-registration must keep a manual run for the full matrix'
 
 WINDOWS_JOB="$(sed -n '/^  shell-smoke-windows:$/,/^  shell-smoke-macos:$/p' "$WORKFLOW")"
 grep -Fq '!cancelled()' <<< "$WINDOWS_JOB" \
@@ -38,9 +59,25 @@ grep -Fq '        run: bash core/scripts/tests/session-journal-cli-port.test.sh'
   || fail 'Windows shell smoke must run the session-journal CLI port regression'
 grep -Fq '        run: bash core/scripts/tests/session-journal-cli-port.test.sh' <<< "$MACOS_JOB" \
   || fail 'macOS shell smoke must run the session-journal CLI port regression'
-if grep -Eq 'always\(\)|github.event_name == .push.|needs\[.denylist-scan.\].result != .success.' <<< "$MACOS_JOB"; then
-  fail 'macOS shell smoke must not bypass its path filter for main pushes or scan failures'
+if grep -Eq 'always\(\)|needs\[.denylist-scan.\].result != .success.' <<< "$MACOS_JOB"; then
+  fail 'macOS shell smoke must not bypass its path filter for scan failures'
 fi
+# Hosted macOS and Windows run on dispatch, the schedule and staging release
+# tags only. A push condition is allowed only as the staging release-tag clause.
+SMOKE_TAG_CLAUSE="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging')"
+SMOKE_EVENTS="(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || $SMOKE_TAG_CLAUSE)"
+grep -Fq "\${{ $SMOKE_EVENTS" <<< "$MACOS_JOB" \
+  || fail 'macOS shell smoke must run only on workflow_dispatch, the schedule and staging release tags (hosted macOS stays off pull requests)'
+grep -Fq "&& $SMOKE_EVENTS" <<< "$WINDOWS_JOB" \
+  || fail 'Windows shell smoke must run only on workflow_dispatch, the schedule and staging release tags (hosted Windows stays off pull requests)'
+if grep -Fq "github.event_name == 'pull_request'" <<< "$MACOS_JOB$WINDOWS_JOB"; then
+  fail 'hosted macOS and Windows shell smoke must not be reachable from pull_request events'
+fi
+for smoke_job in "$MACOS_JOB" "$WINDOWS_JOB"; do
+  [ "$(grep -Fo "github.event_name == 'push'" <<< "$smoke_job" | wc -l | tr -d ' ')" -eq 1 ] \
+    && [ "$(grep -Fo "$SMOKE_TAG_CLAUSE" <<< "$smoke_job" | wc -l | tr -d ' ')" -eq 1 ] \
+    || fail 'hosted macOS and Windows shell smoke may key on push only through the staging release-tag clause'
+done
 
 grep -Fq '      - name: Hook timeout Sentry watchdog' <<< "$WINDOWS_JOB" \
   || fail 'Windows must keep the timing-sensitive Sentry watchdog in its isolated step'

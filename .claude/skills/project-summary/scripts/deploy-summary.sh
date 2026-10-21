@@ -2,10 +2,13 @@
 # deploy-summary.sh — deploy a visual project summary to hq-deploy.
 #
 # Generalized from companies/indigo/skills/standup-brief/deploy-brief.sh:
-#   - reuses the shared deploy scripts (identity-resolve, guardrails-check)
+#   - reuses the shared deploy scripts (identity-resolve, guardrails-check, list-apps)
 #   - idempotent: reuses a fixed app name so the URL is stable across reruns
 #   - company-gated when a company slug + cloud_uid resolve from companies/manifest.yaml
 #   - password-protected fallback for personal / no-company projects
+#   - gate first: the access gate is applied and proven BEFORE content is
+#     uploaded, and the app is taken down if the gate cannot be proven on the
+#     live URL afterwards. No path leaves new content public.
 #
 # Usage: bash deploy-summary.sh <build-dir> <app-name> [company-slug]
 #   <build-dir>     directory containing index.html (the artifact root)
@@ -72,35 +75,37 @@ if [ -n "$CO_SLUG" ] && [ -f companies/manifest.yaml ]; then
   ' companies/manifest.yaml)"
 fi
 
-# 4. Create or reuse the app (idempotent -> stable subdomain).
-SUB="$(curl -s -H "Authorization: Bearer $JWT" "$API/api/apps" \
-  | jq -r --arg n "$APP_NAME" '.apps[]?|select(.name==$n)|.subdomain' | head -1)"
-if [ -z "$SUB" ] || [ "$SUB" = "null" ]; then
-  R="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-        -d "{\"name\":\"$APP_NAME\",\"type\":\"static\"}" "$API/api/apps")"
-  SUB="$(echo "$R" | jq -r '.subdomain')"
-fi
-[ -n "$SUB" ] && [ "$SUB" != "null" ] || fail "app_create_failed"
-
-# 5. Upload via presigned S3 URL, then complete.
-D="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-      -d "{\"appSlug\":\"$SUB\",\"manifest\":{\"files\":[],\"size\":$SZ,\"sha256\":\"$SHA\"}}" \
-      "$API/api/deploys")"
-DID="$(echo "$D" | jq -r '.deployId')"
-PRES="$(echo "$D" | jq -r '.presignedUrl')"
-[ -n "$PRES" ] && [ "$PRES" != "null" ] || { rm -f "$TB"; fail "deploy_init_failed"; }
-curl -s -X PUT -H "Content-Type: application/gzip" --data-binary @"$TB" "$PRES" -o /dev/null
-LIVE="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
-        -d "{\"appSlug\":\"$SUB\"}" "$API/api/deploys/$DID/complete" | jq -r '.url')"
-rm -f "$TB"
-[ -n "$LIVE" ] && [ "$LIVE" != "null" ] || fail "deploy_complete_failed"
-
-# 6. Wire access mode.
-APP_ID="$(curl -s -H "Authorization: Bearer $JWT" "$API/api/apps" \
-  | jq -r --arg n "$APP_NAME" '.apps[]?|select(.name==$n)|.id' | head -1)"
-[ -n "$APP_ID" ] && [ "$APP_ID" != "null" ] || fail "app_id_unresolved"
-
 is_2xx() { [[ "$1" =~ ^2[0-9]{2}$ ]]; }
+
+# Gate proof polls the API and the anonymous edge. The edge caches each app's
+# registry row for up to 60s, so the default budget covers that window.
+GATE_ATTEMPTS="${HQ_DEPLOY_GATE_ATTEMPTS:-12}"
+GATE_SLEEP="${HQ_DEPLOY_GATE_SLEEP_SECS:-5}"
+
+# 4. Find or create the app (idempotent -> stable subdomain).
+# GET /api/apps is paginated (nextCursor), so list-apps.sh reads every page.
+# Reading only page one missed existing apps once the org passed one page of
+# apps, and a new app lands on a random page. On 2026-10-18 the old
+# post-upload lookup here missed twice, after the content was already live,
+# and the script exited before gating: two internal pages were public for
+# minutes. The id now comes from the lookup or from the create response, and
+# the gate is applied and proven BEFORE any content is uploaded.
+APP_JSON="$(HQ_DEPLOY_JWT="$JWT" "$DEPLOY/list-apps.sh" --api "$API" --name "$APP_NAME")" \
+  || fail "app_list_failed"
+APP_EXISTED=false
+if [ -n "$APP_JSON" ]; then
+  APP_EXISTED=true
+else
+  R="$(curl -sS -w $'\n%{http_code}' -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+        -d "{\"name\":\"$APP_NAME\",\"type\":\"static\"}" "$API/api/apps" || true)"
+  is_2xx "${R##*$'\n'}" || fail "app_create_failed"
+  APP_JSON="${R%$'\n'*}"
+fi
+APP_ID="$(printf '%s' "$APP_JSON" | jq -r '.id // empty' 2>/dev/null || true)"
+SUB="$(printf '%s' "$APP_JSON" | jq -r '.subdomain // empty' 2>/dev/null || true)"
+APP_URL="$(printf '%s' "$APP_JSON" | jq -r '.url // empty' 2>/dev/null || true)"
+[ -n "$APP_ID" ] || fail "app_id_unresolved"
+[ -n "$SUB" ] || fail "app_create_failed"
 
 read_app_state() {
   local response status
@@ -129,29 +134,41 @@ read_access_policy() {
   POLICY_STATE="${response%$'\n'*}"
 }
 
+# API-side proof: the app record (and, for company, the policy record) says
+# the requested gate is in force.
+gate_state_ok() {
+  local expected_mode="$1" expected_uid="${2:-}" state_mode protected policy_mode policy_uid
+  read_app_state || return 1
+  state_mode="$(printf '%s' "$APP_STATE" | jq -r '.accessMode // empty')"
+  protected="$(printf '%s' "$APP_STATE" | jq -r '.passwordProtected // false')"
+  [ "$state_mode" = "$expected_mode" ] || return 1
+  if [ "$expected_mode" = "password" ]; then
+    [ "$protected" = "true" ]
+    return
+  fi
+  # Full proof for company: the policy record binds the company we asked for.
+  read_access_policy || return 1
+  policy_mode="$(printf '%s' "$POLICY_STATE" | jq -r '.mode // empty')"
+  policy_uid="$(printf '%s' "$POLICY_STATE" | jq -r '.companyUid // empty')"
+  [ "$policy_mode" = "company" ] && [ "$policy_uid" = "$expected_uid" ]
+}
+
+# Edge-side proof: an anonymous request is redirected to sign-in.
+edge_gated() {
+  GATE="$(curl -sS -o /dev/null -w '%{http_code}' "$1/" || true)"
+  [ "$GATE" = "302" ]
+}
+
+# verify_gate <mode> <uid> [url]: poll until the API state matches and, when a
+# url is given, the anonymous edge answers 302.
 verify_gate() {
-  local expected_mode="$1" expected_uid="${2:-}" attempt state_mode protected policy_mode policy_uid
-  for attempt in 1 2 3; do
-    if read_app_state; then
-      state_mode="$(printf '%s' "$APP_STATE" | jq -r '.accessMode // empty')"
-      protected="$(printf '%s' "$APP_STATE" | jq -r '.passwordProtected // false')"
-      GATE="$(curl -sS -o /dev/null -w '%{http_code}' "$LIVE/" || true)"
-      if [ "$GATE" = "302" ] && [ "$state_mode" = "$expected_mode" ]; then
-        if [ "$expected_mode" = "password" ] && [ "$protected" = "true" ]; then
-          return 0
-        fi
-        if [ "$expected_mode" = "company" ] && read_access_policy; then
-          policy_mode="$(printf '%s' "$POLICY_STATE" | jq -r '.mode // empty')"
-          policy_uid="$(printf '%s' "$POLICY_STATE" | jq -r '.companyUid // empty')"
-          # Full proof: edge redirects, app record says company, AND the policy
-          # record binds the company we asked for.
-          if [ "$policy_mode" = "company" ] && [ "$policy_uid" = "$expected_uid" ]; then
-            return 0
-          fi
-        fi
-      fi
+  local expected_mode="$1" expected_uid="${2:-}" url="${3:-}" attempt
+  for attempt in $(seq 1 "$GATE_ATTEMPTS"); do
+    if gate_state_ok "$expected_mode" "$expected_uid" \
+      && { [ -z "$url" ] || edge_gated "$url"; }; then
+      return 0
     fi
-    [ "$attempt" -lt 3 ] && sleep 1
+    [ "$attempt" -lt "$GATE_ATTEMPTS" ] && sleep "$GATE_SLEEP"
   done
   return 1
 }
@@ -174,26 +191,78 @@ set_password_gate() {
   is_2xx "$status"
 }
 
+# Soft-delete (PATCH active:false). The edge stops serving an inactive app and
+# the API pulls its DNS record; the app can be re-activated from the console.
+take_down() {
+  local status
+  status="$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH "$API/api/apps/$APP_ID" \
+    -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+    -d '{"active":false}' || true)"
+  is_2xx "$status"
+}
+
+# 5. Apply and prove the gate BEFORE uploading. If no gate can be proven,
+# nothing is uploaded.
+MODE=""
+PW=""
+GATE=""
 if [ -n "$CO_UID" ]; then
   # Company-gated: restrict to active members of the project's company.
   if set_company_gate && verify_gate company "$CO_UID"; then
-    echo "LIVE=$LIVE"
-    echo "MODE=company"
-    echo "GATE=$GATE"   # 302 -> members-only sign-in
-    exit 0
+    MODE=company
+  else
+    echo "ERR: company_gate_unverified; trying password fallback" >&2
   fi
-  echo "ERR: company_gate_unverified; trying password fallback" >&2
+fi
+if [ -z "$MODE" ]; then
+  # Password fallback (personal / no resolvable company, or unproven company gate).
+  PW="$("$DEPLOY/password-helper.sh" gen)"
+  if set_password_gate && verify_gate password; then
+    MODE=password
+  else
+    rm -f "$TB"
+    fail "access_gate_unverified (nothing uploaded)"
+  fi
+fi
+# An existing app may already be serving content, and the edge caches its old
+# access state for up to 60s. Wait until the anonymous edge redirects before
+# new content goes up.
+if [ "$APP_EXISTED" = true ] && [ -n "$APP_URL" ]; then
+  if ! verify_gate "$MODE" "$CO_UID" "$APP_URL"; then
+    rm -f "$TB"
+    fail "access_gate_not_at_edge (nothing uploaded)"
+  fi
 fi
 
-# Password fallback (personal / no resolvable company, or unproven company gate).
-PW="$("$DEPLOY/password-helper.sh" gen)"
-if set_password_gate && verify_gate password; then
+# 6. Upload via presigned S3 URL, then complete.
+D="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+      -d "{\"appSlug\":\"$SUB\",\"manifest\":{\"files\":[],\"size\":$SZ,\"sha256\":\"$SHA\"}}" \
+      "$API/api/deploys")"
+DID="$(echo "$D" | jq -r '.deployId')"
+PRES="$(echo "$D" | jq -r '.presignedUrl')"
+[ -n "$PRES" ] && [ "$PRES" != "null" ] || { rm -f "$TB"; fail "deploy_init_failed"; }
+curl -s -X PUT -H "Content-Type: application/gzip" --data-binary @"$TB" "$PRES" -o /dev/null
+LIVE="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+        -d "{\"appSlug\":\"$SUB\"}" "$API/api/deploys/$DID/complete" | jq -r '.url')"
+rm -f "$TB"
+# A complete call that went live without returning a url is still behind the
+# gate applied in step 5.
+[ -n "$LIVE" ] && [ "$LIVE" != "null" ] || fail "deploy_complete_failed"
+
+# 7. Prove the gate on the live URL. If it cannot be proven, take the app
+# down instead of leaving it reachable.
+if ! verify_gate "$MODE" "$CO_UID" "$LIVE"; then
+  if take_down; then
+    fail "access_gate_unverified_after_upload; app taken down (inactive): $LIVE"
+  fi
+  fail "access_gate_unverified_after_upload; TAKEDOWN FAILED, $LIVE may be PUBLIC (last edge status ${GATE:-unknown}). Deactivate it in the HQ console now."
+fi
+
+echo "LIVE=$LIVE"
+echo "MODE=$MODE"
+echo "GATE=$GATE"   # 302 -> members-only sign-in or password prompt
+if [ "$MODE" = "password" ]; then
   "$DEPLOY/password-helper.sh" announce "$SUB" "$PW" project-summary >/dev/null 2>&1 || true
-  echo "LIVE=$LIVE"
-  echo "MODE=password"
-  echo "GATE=$GATE"
   echo "PASSWORD=$PW"
-  exit 0
 fi
-
-fail "access_gate_unverified"
+exit 0

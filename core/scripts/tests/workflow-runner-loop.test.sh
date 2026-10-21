@@ -16,7 +16,9 @@
 #   5. the engine child does not inherit HQ_CONDUCT_RUN_DIR, so the lane's
 #      inbox hook cannot drain the work queue from inside a phase
 #   6. --loop refuses a script argument; a failing phase writes an error
-#      result and the lane carries on
+#      result and the lane carries on; a §8 envelope whose phase fails backs
+#      up the worker's own handoff to <base>.orig.1.json before writing the
+#      failed one, which carries synthesized_by and worker_handoff (6d)
 
 set -uo pipefail
 unset HQ_SPAWN_COMPANY HQ_SESSION_ID HQ_PARENT_SESSION_ID
@@ -167,6 +169,23 @@ check "unwritable result_path falls back to results/ with the error noted" \
   "$([ -n "$bp" ] && grep -q result_path_error "$bp"; echo $?)"
 check "lane survives an unwritable result_path" "$(kill -0 "$LANE_PID" 2>/dev/null; echo $?)"
 
+# ---- 6d. a pipeline reply that is not a handoff: the worker's file is kept ----
+# The worker wrote its own handoff at result_path; the fake engine replies with
+# prose, so the lane writes a failed handoff of its own over that path. The
+# worker's file must be copied to .orig.1.json first, and the lane's handoff
+# must carry the synthesized_by marker and name the copy.
+mkdir -p "$HQROOT/wt" "$TMP/s8"
+printf '{"story_id":"S1","phase":"backend","note":"the worker wrote this"}\n' > "$TMP/s8/S1-backend.json"
+cp "$TMP/s8/S1-backend.json" "$TMP/s8-worker-copy.json"
+send "{\"schema\":\"hq-phase-envelope/v1\",\"id\":\"s8\",\"engine\":\"claude\",\"story_id\":\"S1\",\"phase\":\"backend\",\"worker_id\":\"backend-dev\",\"worktree\":\"$HQROOT/wt\",\"result_path\":\"$TMP/s8/S1-backend.json\"}"
+wait_for 20 test -f "$TMP/s8/S1-backend.orig.1.json"
+wait_for 10 grep -q synthesized_by "$TMP/s8/S1-backend.json"
+check "the worker's handoff is copied byte for byte before the lane overwrites it" \
+  "$(cmp -s "$TMP/s8/S1-backend.orig.1.json" "$TMP/s8-worker-copy.json"; echo $?)"
+check "the lane's handoff carries synthesized_by, a reply reason, and names the copy" \
+  "$(node -e 'const j=require(process.argv[1]); process.exit(j.synthesized_by==="lane-runner"&&j.status==="failed"&&/^phase did not produce a valid handoff: reply /.test(j.summary)&&j.worker_handoff===process.argv[2]?0:1)' "$TMP/s8/S1-backend.json" "$TMP/s8/S1-backend.orig.1.json"; echo $?)"
+check "lane survives a pipeline reply that is not a handoff" "$(kill -0 "$LANE_PID" 2>/dev/null; echo $?)"
+
 # ---- 4. stop after the in-flight phase -----------------------------------------
 send "$(phase last SLEEP=1)"
 wait_for 10 grep -q ' last$' "$TMP/rec/calls"
@@ -180,7 +199,7 @@ check "in-flight phase finished before exit" \
   "$(node -e 'const j=require(process.argv[1]); process.exit(j.status==="ok"?0:1)' "$last"; echo $?)"
 check "no envelope remains in pending/" "$([ -z "$(ls -A "$LANE/inbox/pending")" ]; echo $?)"
 check "stop envelope is in claimed/" \
-  "$([ "$(ls "$LANE/inbox/claimed" | wc -l | tr -d ' ')" = 9 ]; echo $?)"
+  "$([ "$(ls "$LANE/inbox/claimed" | wc -l | tr -d ' ')" = 10 ]; echo $?)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

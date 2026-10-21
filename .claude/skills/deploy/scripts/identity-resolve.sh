@@ -193,10 +193,18 @@ machine_mint_failed() {
 # even when the file cannot be read. A pre-existing machine cache is also a
 # signal, so a damaged credentials file cannot silently switch an agent to a
 # human browser sign-in on a shared box.
+#
+# The cache alone is not a signal when this process has no machine credentials
+# and a person session file exists (Shepherd 2367). Agent kits that pinned only
+# HQ_MACHINE_CREDS_FILE minted into the shared default cache, which left a
+# machine cache on the owner's laptop and forced their deploys into machine
+# mode.
 MACHINE_IDENTITY_EXPECTED=0
 if [ -n "${HQ_MACHINE_CREDS_FILE:-}" ] \
-  || [ -r "$HOME/.hq-agent/machine-creds.json" ] \
-  || [ -e "$MACHINE_TOKEN_FILE" ]; then
+  || [ -r "$HOME/.hq-agent/machine-creds.json" ]; then
+  MACHINE_IDENTITY_EXPECTED=1
+elif [ -e "$MACHINE_TOKEN_FILE" ] \
+  && [ ! -f "$TOKEN_FILE" ] && [ ! -f "$LEGACY_FILE" ]; then
   MACHINE_IDENTITY_EXPECTED=1
 fi
 if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then

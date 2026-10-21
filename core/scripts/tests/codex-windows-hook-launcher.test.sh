@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # codex-windows-hook-launcher.test.sh - regression test for feedback_d0c2f082.
 #
-# On Windows, Codex runs a hook's `command` through `cmd.exe /C` (codex-rs
-# hooks/src/engine/command_runner.rs). HQ's hook commands are POSIX shell that
-# end in `exec /bin/bash`, so every HQ hook failed on Windows and no safety
-# rails ran. Codex reads a per-hook `commandWindows` override on Windows. This
+# On Windows, Codex runs a hook's `commandWindows` (falling back to `command`)
+# through the session shell: `pwsh -NoProfile -Command <cmd>` (or Windows
+# PowerShell) when the user's shell is PowerShell, else `cmd.exe /C "<cmd>"`
+# (codex-rs hooks/src/engine/command_runner.rs). HQ's hook commands are POSIX
+# shell that end in `exec /bin/bash`, so every HQ hook failed on Windows and no
+# safety rails ran. A batch-only commandWindows does not parse in PowerShell,
+# which exits 1 (a non-blocking hook error), so the hooks failed open there.
+# commandWindows is therefore a PowerShell/cmd polyglot:
+#   cmd /d /s /c ' ver >nul 2>nul & <batch> & rem '; <PowerShell exit mapping>
+# PowerShell passes the single-quoted batch to a child cmd.exe and maps its exit
+# code (PreToolUse: anything but 0 is 2, so a launch or parse failure denies).
+# Under cmd.exe /C the stray `cmd /d /s /c '` fails silently, the batch runs
+# in that cmd, and `& rem` swallows the PowerShell tail. This
 # test pins that every shipped command hook carries one, that it routes to the
 # cmd launcher, and that the launcher resolves Git Bash instead of /bin/bash or
 # the WSL bash in System32. It also pins the fail-closed contract: a missing
@@ -63,6 +72,30 @@ for event, groups in (cfg.get("hooks") or {}).items():
             # parenthesized command: a false `if` on a cmd line swallows the
             # rest of that `&` chain, so git and `cd` never ran when HQ_ROOT
             # was unset and the launcher was reported missing.
+            # Polyglot wrapper: one fixed prefix, the batch in the middle, and a
+            # per-event PowerShell tail. The batch must not contain "'", which
+            # would end the PowerShell single-quoted string early.
+            pre = "cmd /d /s /c ' ver >nul 2>nul & "
+            if event == "PreToolUse":
+                tail = " & rem '; if ($LASTEXITCODE -eq 0) { exit 0 }; exit 2"
+            else:
+                tail = " & rem '; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE }; exit 1"
+            if not win.startswith(pre):
+                print(f"NOPOLYGLOTPREFIX {where}")
+            if not win.endswith(tail):
+                print(f"NOPOLYGLOTTAIL {where}")
+            if win.startswith(pre) and win.endswith(tail):
+                win = win[len(pre):len(win) - len(tail)]
+            if "'" in win:
+                print(f"QUOTEINBATCH {where}")
+            # PreToolUse is the guard: every non-allow path, including an
+            # adapter or launcher error (exit 1 or 3+), denies with 2. Other
+            # events stay non-blocking and report errors as 1.
+            if event == "PreToolUse":
+                if "else if defined HQ_HOOK_ERR (exit /b 2)" not in win or "exit /b 1" in win:
+                    print(f"GUARDFAILOPEN {where}")
+            elif "else if defined HQ_HOOK_ERR (exit /b 1)" not in win:
+                print(f"NONGUARDERR {where}")
             if not win.startswith("@echo off"):
                 print(f"ECHO {where}")
             if "(`@echo off ^& ^(if defined HQ_ROOT echo \"%HQ_ROOT%\"^)" not in win:
@@ -85,6 +118,12 @@ for event, groups in (cfg.get("hooks") or {}).items():
             if not win.endswith(f"1>&2 & exit /b {want})"):
                 print(f"NOTFAILCLOSED {where} want-missing-launcher-exit={want}")
 print(f"TOTAL {total}")
+# The polyglot contains "'", so every commandWindows must be a TOML multiline
+# literal string.
+with open(sys.argv[1], encoding="utf-8") as fh:
+    for line in fh.read().splitlines():
+        if line.startswith("commandWindows") and not (line.startswith("commandWindows = '''") and line.endswith("'''")):
+            print(f"NOTMULTILINELITERAL {line[:40]}")
 PY
 )"
 TOTAL="$(printf '%s\n' "$REPORT" | sed -n 's/^TOTAL //p')"

@@ -15,10 +15,22 @@ set -uo pipefail
 
 INPUT="$(cat 2>/dev/null || echo '{}')"
 
-json_get() {
-  local expr="$1"
-  printf '%s' "$INPUT" | jq -r "$expr" 2>/dev/null || true
-}
+# jq.exe on Windows writes CRLF line ends in -r output. Strip CR only there,
+# so other hosts pass values through unchanged.
+case "${OSTYPE:-}" in
+  msys* | cygwin*)
+    json_get() {
+      local expr="$1"
+      printf '%s' "$INPUT" | jq -r "$expr" 2>/dev/null | tr -d '\r' || true
+    }
+    ;;
+  *)
+    json_get() {
+      local expr="$1"
+      printf '%s' "$INPUT" | jq -r "$expr" 2>/dev/null || true
+    }
+    ;;
+esac
 
 HOOK_EVENT="$(json_get '.hook_event_name // empty')"
 TOOL_NAME="$(json_get '.tool_name // empty')"
@@ -428,12 +440,130 @@ patch_paths() {
   } | awk '{gsub(/^[ \t]+|[ \t\r]+$/, "")} NF && !seen[$0]++'
 }
 
+patch_text() {
+  printf '%s' "$INPUT" | jq -r '
+    (.tool_input // {}) as $ti
+    | [$ti.command?, $ti.patch?, $ti.input?]
+    | map(select(type == "string" and . != ""))
+    | join("\n")' 2>/dev/null
+}
+
+# Section kinds that name this path in the patch text, one per line: Add,
+# Update, Delete, or Move (the path is a "*** Move to:" target).
+patch_kinds_for_path() {
+  patch_text | awk -v target="$1" '
+    function trim(s) { gsub(/^[ \t]+|[ \t\r]+$/, "", s); return s }
+    /^\*\*\* (Add|Update|Delete) File: / {
+      p = $0; sub(/^\*\*\* (Add|Update|Delete) File: /, "", p)
+      if (trim(p) == target) print $2
+      next
+    }
+    /^\*\*\* Move to: / {
+      p = $0; sub(/^\*\*\* Move to: /, "", p)
+      if (trim(p) == target) print "Move"
+    }'
+}
+
+# Lines this patch adds to the path ("+" lines of its Add/Update sections,
+# marker stripped). Context and removed lines are not new content.
+patch_added_lines_for_path() {
+  patch_text | awk -v target="$1" '
+    function trim(s) { gsub(/^[ \t]+|[ \t\r]+$/, "", s); return s }
+    /^\*\*\* (Add|Update|Delete) File: / {
+      p = $0; sub(/^\*\*\* (Add|Update|Delete) File: /, "", p)
+      insec = (trim(p) == target && $2 != "Delete")
+      next
+    }
+    /^\*\*\* (Move to:|End Patch)/ { if ($0 ~ /^\*\*\* End Patch/) insec = 0; next }
+    insec && /^\+/ { print substr($0, 2) }'
+}
+
+# True when a path names a dotenv file, matching the env guard's basename
+# patterns case-insensitively (".ENV" is the same file on a case-insensitive
+# filesystem) and checking the symlink-resolved target too.
+is_env_like_path() {
+  local path="$1" cand base
+  for cand in "$path" "$(normalize_path "$path")"; do
+    base="$(basename "$cand" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    case "$base" in
+      .env|.env.*|*.env|*.env.*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Prints the refusal and returns 2. payload_for_path runs in a command
+# substitution, so the PreToolUse caller turns that status into the exit.
+deny_env_edit() {
+  printf 'Edit to dotenv file %s denied by hq-codex-hook-adapter.sh: %s\n' "$1" "$2" >&2
+  return 2
+}
+
+# Per-path payload for the edit-class hooks. Carries the new content so
+# content guards (env-file-no-trailing-newline) can inspect it: apply_patch
+# "+" lines become new_string; a native Edit/Write keeps its own content
+# fields. In PreToolUse a dotenv path whose new content cannot be determined
+# is denied (status 2) instead of reaching the guard with nothing to inspect.
+# Pass "post" as $2 after the tool ran: the write already happened, so it
+# falls back to a path-only payload and never denies.
 payload_for_path() {
-  local path="$1"
-  printf '%s' "$INPUT" | jq --arg path "$path" '
+  local path="$1" when="${2:-pre}" kinds content="" has_content=0 payload env_like=0
+  is_env_like_path "$path" && env_like=1
+  kinds="$(patch_kinds_for_path "$path")"
+  if [ -n "$kinds" ]; then
+    if [ "$when" = "pre" ] && [ "$env_like" = "1" ] && printf '%s\n' "$kinds" | grep -qx 'Move'; then
+      deny_env_edit "$path" "a rename into a dotenv file hides its full content; write it with an Add File section instead"
+      return 2
+    fi
+    if printf '%s\n' "$kinds" | grep -Eqx 'Add|Update'; then
+      content="$(patch_added_lines_for_path "$path")"
+      has_content=1
+    elif ! printf '%s\n' "$kinds" | grep -qx 'Move'; then
+      # Delete only: nothing new is written.
+      has_content=1
+    fi
+  fi
+  if [ "$has_content" = "0" ] && printf '%s' "$INPUT" | jq -e '
+      (.tool_input // {}) as $ti
+      | ($ti.content? | type) == "string"
+        or ($ti.new_string? | type) == "string"
+        or ($ti.edits? | type) == "array"' >/dev/null 2>&1; then
+    if content="$(printf '%s' "$INPUT" | jq -er '
+        (.tool_input // {}) as $ti
+        | if ($ti.content? | type) == "string" then $ti.content
+          elif ($ti.new_string? | type) == "string" then $ti.new_string
+          else [$ti.edits[]? | .new_string? | select(type == "string")] | join("\n")
+          end' 2>/dev/null)"; then
+      has_content=1
+    else
+      content=""
+    fi
+  fi
+  if [ "$when" = "pre" ] && [ "$has_content" = "0" ] && [ "$env_like" = "1" ]; then
+    deny_env_edit "$path" "could not determine the new content to check"
+    return 2
+  fi
+  # A symlink whose own name is not dotenv-like but whose target is: hand the
+  # guard the resolved target so the registry "env" prefilter still matches.
+  local guard_path="$path"
+  if [ "$env_like" = "1" ]; then
+    case "$(basename "$path" | tr '[:upper:]' '[:lower:]')" in
+      .env|.env.*|*.env|*.env.*) ;;
+      *) guard_path="$(normalize_path "$path")" ;;
+    esac
+  fi
+  payload="$(printf '%s' "$INPUT" | jq --arg path "$guard_path" --arg content "$content" --argjson has "$has_content" '
     .tool_name = "Edit"
-    | .tool_input = {file_path: $path}
-  '
+    | .tool_input = ({file_path: $path} + (if $has == 1 then {new_string: $content} else {} end))
+  ' 2>/dev/null)"
+  if [ -z "$payload" ]; then
+    if [ "$when" = "pre" ] && [ "$env_like" = "1" ]; then
+      deny_env_edit "$path" "could not build the guard payload"
+      return 2
+    fi
+    payload="$(printf '%s' "$INPUT" | jq --arg path "$path" '.tool_name = "Edit" | .tool_input = {file_path: $path}')"
+  fi
+  printf '%s\n' "$payload"
 }
 
 normalize_path() {
@@ -653,7 +783,7 @@ run_pre_tool_use() {
         block_core_edit_if_needed "$path"
         block_template_edit_if_needed "$path"
         block_sensitive_read_if_needed "$path"
-        payload="$(payload_for_path "$path")"
+        payload="$(payload_for_path "$path" pre)" || exit 2
         dispatch_settings_hooks "PreToolUse" "$canon" "$payload"
       done <<< "$paths"
       ;;
@@ -696,7 +826,7 @@ run_post_tool_use() {
       # company fan-out here and run it once for the whole edit event below.
       while IFS= read -r path; do
         [ -z "$path" ] && continue
-        payload="$(payload_for_path "$path")"
+        payload="$(payload_for_path "$path" post)"
         # apply_patch payloads are edits. Query the Edit matcher first so
         # Edit-specific hooks still run when a Write prefilter would skip
         # them, then query Write for the superset; dispatch_settings_hooks

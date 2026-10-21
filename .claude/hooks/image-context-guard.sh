@@ -20,7 +20,10 @@
 # Claude Code sends agent_id on hook events fired inside a sub-agent (and
 # master-hook.sh exports it as HQ_HOOK_AGENT_ID). A sub-agent's image lives in
 # its own context window, so it must not spend the parent's budget; that would
-# block the delegation route this guard recommends. A host that runs
+# block the delegation route this guard recommends. The payload's agent_id
+# wins over an empty HQ_HOOK_AGENT_ID, and a payload with no agent_id but a
+# sub-agent transcript_path (<session>/subagents/agent-<id>.jsonl) is charged
+# to that sub-agent. A host that runs
 # sub-agents under their own session or thread id gets separate ledgers
 # through the session key. agent_type alone is not used: manual --agent
 # main-thread sessions carry it too.
@@ -204,17 +207,48 @@ STATE_ROOT="$ROOT/workspace/orchestrator/hook-state"
 if command -v hq_hook_state_dir >/dev/null 2>&1; then
   STATE_ROOT="$(hq_hook_state_dir "$ROOT")"
 fi
-# Agent context. master-hook.sh exports HQ_HOOK_AGENT_ID (empty = known main
-# thread); direct invocations read the payload.
-if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ]; then
-  AGENT_ID="$HQ_HOOK_AGENT_ID"
+# Agent context. The payload decides. master-hook.sh exports HQ_HOOK_AGENT_ID
+# from the same payload, but an empty value inherited from an outer process
+# must not send a sub-agent read to the parent ledger. Order: payload
+# agent_id/agentId, a non-empty HQ_HOOK_AGENT_ID, then a sub-agent transcript
+# path (<session>/subagents/agent-<id>.jsonl) for a host that omits agent_id.
+AGENT_ID=""
+TRANSCRIPT=""
+if command -v jq >/dev/null 2>&1; then
+  AGENT_FIELDS="$(printf '%s' "$STDIN_JSON" | jq -r '
+    def str: if type == "string" then . elif type == "number" then tostring else "" end;
+    [ ((.agent_id | str) as $a | if $a != "" then $a else (.agentId | str) end),
+      ((.transcript_path | str) as $t | if $t != "" then $t else (.transcriptPath | str) end) ]
+    | map(gsub("[\t\n]"; " ")) | join("\t")
+  ' 2>/dev/null || true)"
+  case "$AGENT_FIELDS" in
+    *"	"*) AGENT_ID="${AGENT_FIELDS%%	*}"; TRANSCRIPT="${AGENT_FIELDS#*	}" ;;
+  esac
 else
   AGENT_ID="$(json_field agent_id)"
   [ -z "$AGENT_ID" ] && AGENT_ID="$(json_field agentId)"
+  TRANSCRIPT="$(json_field transcript_path)"
+  [ -z "$TRANSCRIPT" ] && TRANSCRIPT="$(json_field transcriptPath)"
+fi
+[ -z "$AGENT_ID" ] && AGENT_ID="${HQ_HOOK_AGENT_ID:-}"
+if [ -z "$AGENT_ID" ]; then
+  TRANSCRIPT_BASE="${TRANSCRIPT##*/}"
+  case "$TRANSCRIPT" in
+    */subagents/"$TRANSCRIPT_BASE")
+      case "$TRANSCRIPT_BASE" in
+        agent-?*.jsonl)
+          AGENT_ID="${TRANSCRIPT_BASE#agent-}"
+          AGENT_ID="${AGENT_ID%.jsonl}"
+          ;;
+      esac
+      ;;
+  esac
 fi
 if [ -n "$AGENT_ID" ]; then
   AGENT_KEY="$(printf '%s' "$AGENT_ID" | tr -c 'A-Za-z0-9._-' '_')"
   AGENT_KEY="${AGENT_KEY:0:96}"
+  # "." or ".." would put the ledger in agents/ or back on the parent.
+  case "$AGENT_KEY" in .|..) AGENT_KEY="_$AGENT_KEY" ;; esac
   # The parent keeps the original ledger path; each sub-agent gets its own.
   LEDGER_DIR="$STATE_ROOT/image-context/$SESSION_KEY/agents/$AGENT_KEY"
   CONTEXT_LABEL="this sub-agent"

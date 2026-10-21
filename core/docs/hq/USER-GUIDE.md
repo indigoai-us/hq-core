@@ -518,7 +518,7 @@ For the map of HQ surfaces (CLI, desktop app, console, bots, connectors, deploy,
 
 ## HQ Desktop app
 
-A macOS and Windows app. On a new machine it runs onboarding; after that it is a messaging workspace (DMs, groups, channels, bots, a home channel per company) with Files, Projects, Meetings, and Library pages, and it runs sync in the background. It has no built-in agent sessions: the **Launch** menu opens the HQ folder in Claude Code, Codex, or Grok. First run creates a **Setup bot**, a personal local bot you DM to finish setup. Reference: [hq-desktop-app.md](../../knowledge/public/hq-core/hq-desktop-app.md).
+A macOS and Windows app. On a new machine it runs onboarding; after that it is a messaging workspace (DMs, groups, channels, bots, a home channel per company) with Files, Projects, Meetings, and Library pages, and it runs sync in the background. It has no built-in agent sessions: the **Launch** menu opens the HQ folder in Claude Code, Codex, or Grok. First run creates **your assistant**, a personal local bot you DM to finish setup. Reference: [hq-desktop-app.md](../../knowledge/public/hq-core/hq-desktop-app.md).
 
 ## Bots & agents
 

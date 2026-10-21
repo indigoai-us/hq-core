@@ -221,7 +221,21 @@ fi
 
 MASTER_TRACE_START="${EPOCHREALTIME:-}"
 INPUT=
-IFS= read -r -d '' INPUT || true
+# master_read_all <name>: read stdin to EOF into the named variable. Bash on
+# Windows (Cygwin and MSYS2) takes one byte per system call for read -d and
+# mapfile, even from a regular file; read -N takes up to 4 KB per call on
+# every platform. Bash 3.2 (the system Bash on macOS) has no read -N. read -N
+# drops NUL bytes, where read -d '' stopped at the first one; JSON input holds
+# no raw NUL. C locale: count and copy bytes, not characters.
+master_read_all() {
+  local LC_ALL=C rc=0
+  # Status 2 is an invalid option: nothing was read yet.
+  IFS= read -r -N 2147483647 "$1" 2>/dev/null || rc=$?
+  if ((rc == 2)); then
+    IFS= read -r -d '' "$1" || true
+  fi
+}
+master_read_all INPUT
 # Command substitution stripped trailing newlines; preserve that contract without
 # spawning an external process on every hook event.
 INPUT="${INPUT%"${INPUT##*[!$'\n']}"}"
@@ -452,7 +466,34 @@ matches_tool() {
   [[ "$tool" =~ ^(${re})$ ]]
 }
 
-# One jq call extracts every payload field the dispatcher needs.
+# Turn every CRLF pair in TOOL_COMMAND into LF; a CR not followed by LF stays.
+# Same result as ${TOOL_COMMAND//$'\r\n'/$'\n'}, which grows quadratically
+# with the number of pairs (5,000 CRLF lines took over a minute on bash 3.2).
+# Split into lines, drop one CR from each line end, rejoin. The x keeps the
+# real tail apart from the LF the here-string adds. Matches hq_crlf_to_lf in
+# core/scripts/hook-lib.sh. Builtins only.
+master_command_crlf_to_lf() {
+  local line out n=0
+  local -a parts
+  [[ "$TOOL_COMMAND" == *$'\r\n'* ]] || return 0
+  if ((BASH_VERSINFO[0] >= 4)); then
+    mapfile -t parts <<< "${TOOL_COMMAND}x"
+  else
+    while IFS= read -r line; do
+      parts[n]="$line"
+      n=$((n + 1))
+    done <<< "${TOOL_COMMAND}x"
+  fi
+  printf -v out '%s\n' "${parts[@]%$'\r'}"
+  TOOL_COMMAND="${out%x$'\n'}"
+}
+
+# One jq call extracts every payload field the dispatcher needs. The prefilter
+# text is the tool_input JSON plus its decoded string values: in JSON a newline
+# is `\n`, so a line-start `git` reads as `ngit` and fails boundary regexes.
+# Decoded strings can hold RS, which would end the metadata record early and
+# hand the rest of the text to the guards as the command, or NUL, which read
+# -N drops; metadata fields turn both into a space.
 TOOL_NAME=""
 MATCH_KEY=""
 SESSION_ID=""
@@ -463,18 +504,55 @@ PAYLOAD_AGENT_TYPE=""
 TOOL_COMMAND=""
 TOOL_METADATA_EXTRACTED=0
 TOOL_COMMAND_EXTRACTED=0
-master_debug_phase_start parse
-{
-  # NUL-frame metadata and command separately. Bash 3.2 (the system Bash on
-  # macOS) supports read -d but not read -N. Keeping command last preserves
-  # embedded newlines, unit separators, and a trailing newline exactly.
-  if IFS=$'\x1f' read -r -d '' TOOL_NAME MATCH_KEY SESSION_ID PAYLOAD_CWD PAYLOAD_AGENT_ID PAYLOAD_AGENT_TYPE PREFILTER_TEXT; then
-    TOOL_METADATA_EXTRACTED=1
-    if IFS= read -r -d '' TOOL_COMMAND; then
-      TOOL_COMMAND_EXTRACTED=1
+master_read_payload_fields() {
+  # The jq output is the metadata record, RS (0x1e), the command, RS. The
+  # metadata fields are flattened, so the first RS ends the record; the
+  # command keeps embedded newlines, separators and a trailing newline
+  # exactly, and its closing RS shows jq finished. It holds no NUL: jq cut
+  # the command at the first one, as read -d '' did. Find a separator with
+  # ${x/sep*/} and cut after it with an offset: ${x%%sep*} and ${x#*sep}
+  # take about a second on a 300 KB record. C locale: byte offsets.
+  local LC_ALL=C
+  local out="" meta rest field i=0
+  local -a fields=()
+  master_read_all out
+  [[ "$out" == *$'\x1e'* ]] || return 0
+  meta="${out/$'\x1e'*/}"
+  rest="${out:${#meta}+1}"
+  while ((i < 6)); do
+    if [[ "$meta" == *$'\x1f'* ]]; then
+      field="${meta/$'\x1f'*/}"
+      meta="${meta:${#field}+1}"
+    else
+      field="$meta"
+      meta=""
     fi
+    fields[i]="$field"
+    i=$((i + 1))
+  done
+  TOOL_NAME="${fields[0]}"
+  MATCH_KEY="${fields[1]}"
+  SESSION_ID="${fields[2]}"
+  PAYLOAD_CWD="${fields[3]}"
+  PAYLOAD_AGENT_ID="${fields[4]}"
+  PAYLOAD_AGENT_TYPE="${fields[5]}"
+  PREFILTER_TEXT="$meta"
+  TOOL_METADATA_EXTRACTED=1
+  if [[ "$rest" == *$'\x1e' ]]; then
+    TOOL_COMMAND="${rest%$'\x1e'}"
+    TOOL_COMMAND_EXTRACTED=1
+    # Native Windows jq.exe writes stdout in text mode, so a LF in the
+    # command becomes CRLF on the way out of `jq -j`. The JSON value had
+    # LF. Collapse only those pairs; a CR that is not followed by LF stays.
+    master_command_crlf_to_lf
   fi
-} < <(printf '%s' "$INPUT" | jq -j --arg ev "$EVENT" '
+}
+master_payload_fields_jq() {
+  printf '%s' "$INPUT" | jq -j --arg ev "$EVENT" '
+  # NUL, RS, US and LF become spaces. split + add stays linear in the text
+  # length; gsub and join grow faster than linear on long commands.
+  def hq_flat: reduce ("\u0000", "\u001e", "\u001f", "\n") as $sep
+    (.; [split($sep) | (.[0] // ""), (.[1:][] | " ", .)] | add);
   [ (.tool_name // ""),
     (if ($ev == "PreToolUse" or $ev == "PostToolUse") then (.tool_name // "")
      elif $ev == "PreCompact" then (.trigger // "")
@@ -485,15 +563,18 @@ master_debug_phase_start parse
     (if .agent_id == null then "" elif (.agent_id | type) == "string" then .agent_id else "!invalid-agent-id-type!" end),
     (if .agent_type == null then "" elif (.agent_type | type) == "string" then .agent_type else "!invalid-agent-type!" end),
     ((if $ev == "UserPromptSubmit" then (.prompt // "")
-      elif (.tool_input | type) == "object" then (.tool_input | tojson)
+      elif (.tool_input | type) == "object" then ((.tool_input | tojson) + ([.tool_input | .. | strings | " ", .] | add // ""))
       else (.prompt // "") end)
      + (if $ev == "PostToolUse" and .tool_response != null then " " + (.tool_response | tojson) else "" end)),
     (if .tool_name == "Bash" and ($ev == "PreToolUse" or $ev == "PostToolUse")
      then (.tool_input.command // "" | tostring) else "" end)
   ] as $fields
-  | ($fields[0:7] | map(gsub("\u001f|\n"; " ")) | join("\u001f"))
-    + "\u0000" + $fields[7] + "\u0000"
-' 2>/dev/null)
+  | ($fields[0:7] | map(hq_flat) | join("\u001f"))
+    + "\u001e" + ($fields[7] | split("\u0000") | .[0] // "") + "\u001e"
+' 2>/dev/null
+}
+master_debug_phase_start parse
+master_read_payload_fields < <(master_payload_fields_jq)
 is_tool_event "$EVENT" || TOOL_NAME=""
 master_debug_phase_finish parse
 
@@ -524,7 +605,20 @@ else
   # of treating a failed extraction as a known-empty command.
   unset HQ_HOOK_TOOL_NAME HQ_HOOK_SESSION_ID HQ_HOOK_CWD HQ_HOOK_AGENT_ID HQ_HOOK_AGENT_TYPE
 fi
-if [ "$TOOL_COMMAND_EXTRACTED" -eq 1 ]; then
+# Windows caps one environment variable at 32767 UTF-16 units and copies the
+# whole env block into every CreateProcess; an oversized export makes each
+# later spawn in this dispatch fail (E2BIG) or slow down. Bash commands above
+# the cap are left unset so guards reparse stdin, which they already do when
+# the field is absent (fail-closed, same as an extraction failure).
+HQ_HOOK_COMMAND_ENV_MAX="${HQ_HOOK_COMMAND_ENV_MAX:-16384}"
+[[ "$HQ_HOOK_COMMAND_ENV_MAX" =~ ^[0-9]{1,9}$ ]] || HQ_HOOK_COMMAND_ENV_MAX=16384
+# Measure in bytes, not characters. A UTF-8 character never takes more UTF-16
+# units than bytes, so the byte count bounds what Windows counts.
+hq_tool_command_bytes() { local LC_ALL=C; TOOL_COMMAND_BYTES=${#TOOL_COMMAND}; }
+TOOL_COMMAND_BYTES=0
+hq_tool_command_bytes
+if [ "$TOOL_COMMAND_EXTRACTED" -eq 1 ] \
+  && [ "$TOOL_COMMAND_BYTES" -le "$HQ_HOOK_COMMAND_ENV_MAX" ]; then
   export HQ_HOOK_COMMAND="$TOOL_COMMAND"
 else
   unset HQ_HOOK_COMMAND
@@ -1844,7 +1938,8 @@ registry_rows() {
         (if .gated == false then "0" else "1" end),
         (.prefilter.re // ""), (.prefilter.env // ""), (.prefilter.file // ""),
         (if .prefilter.policy_vocab == true then "1" else "" end),
-        ((.args // []) | join(" ")), (.runner // "exec")] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+        ((.args // []) | join(" ")), (.runner // "exec"),
+        (if .fail_closed == true then "1" else "0" end)] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
   master_debug_phase_finish config_load
   printf '%s\n' "$rows"
   if mkdir -p "${cache%/*}" 2>/dev/null; then
@@ -1856,15 +1951,12 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
   # Unit separator (0x1f) framing: tab is IFS whitespace, so consecutive empty
   # fields would collapse and shift later columns (a hook's args would land in
   # the prefilter slot and silently skip it).
-  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner; do
+  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed; do
     [ -n "$rid" ] || continue
     if [ "$rgated" = "1" ]; then
-      hq_hook_profile_allows "$rid"
-      case $? in
-        0) ;;
-        2) echo "ERROR: Unknown profile '${HQ_HOOK_PROFILE:-}'. Use minimal|standard|strict" >&2; continue ;;
-        *) continue ;;
-      esac
+      # An unknown profile name is treated as strict inside the gate, so it
+      # can only add guards, never skip them.
+      hq_hook_profile_allows "$rid" || continue
     fi
     if [ "$MASTER_PREFILTER_AVAILABLE" -eq 1 ]; then
       [ -z "$rpf_vocab" ] || master_debug_phase_start policy_load
@@ -1892,6 +1984,17 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       esac
     fi
     if [ ! -f "$REPO_ROOT/$rscript" ]; then
+      # A missing fail_closed PreToolUse guard is treated like a crashed one:
+      # block, so deleting or renaming the guard script cannot switch it off.
+      if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ]; then
+        # Bash is blocked too, so the repair runs in a terminal outside the
+        # session. The message names the exact restore commands.
+        printf 'BLOCKED: %s guard script %s is missing; failing closed.\n' "$rid" "$rscript" >&2
+        printf 'Restore it from a terminal outside this session: git -C "%s" checkout -- "%s" (or re-run /update-hq).\n' "$REPO_ROOT" "$rscript" >&2
+        [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: block %s (missing-script, fail_closed)\n' "$rid" >&2
+        collect_output 2 "" "$REPO_ROOT/$rscript"
+        continue
+      fi
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (missing-script)\n' "$rid" >&2
       continue
     fi
@@ -1908,6 +2011,16 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     master_now_ms >/dev/null
     child_ended_ms="$MASTER_NOW_MS"
     record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$rtimeout"
+    # A PreToolUse guard marked fail_closed gives no verdict when it times out
+    # (124/142, or 137 when killed) or crashes. Without this, that "no verdict"
+    # is a non-2 exit and Claude Code runs the tool call.
+    if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+      case "$rc" in
+        124|137|142) printf 'BLOCKED: %s timed out after %ss; failing closed.\n' "$rid" "$rtimeout" >&2 ;;
+        *) printf 'BLOCKED: %s exited %s without a verdict; failing closed.\n' "$rid" "$rc" >&2 ;;
+      esac
+      rc=2
+    fi
     [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
     master_debug_phase_start parse
     collect_output "$rc" "$out" "$REPO_ROOT/$rscript"
@@ -1921,6 +2034,22 @@ ordered_hooks=()
 # 1. core/hooks/<event>
 hooks=()
 collect_from_dir "$REPO_ROOT/core/hooks/$EVENT"
+# Retired core leaves that `hq rescue` leaves on disk after the release that
+# removed them. Never dispatch them; /update-hq deletes the files through
+# core/scripts/remove-retired-core-hooks.sh.
+if [ ${#hooks[@]} -gt 0 ]; then
+  live_hooks=()
+  for hook in "${hooks[@]}"; do
+    case "$EVENT/${hook##*/}" in
+      Stop/70-work-mesh-done.sh)
+        [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (retired)\n' "${hook##*/}" >&2
+        continue
+        ;;
+    esac
+    live_hooks+=("$hook")
+  done
+  hooks=("${live_hooks[@]+"${live_hooks[@]}"}")
+fi
 if [ ${#hooks[@]} -gt 0 ]; then
   while IFS= read -r line; do ordered_hooks+=("$line"); done < <(sort_group "${hooks[@]}")
 fi
@@ -2272,6 +2401,27 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
 fi
 
 master_debug_phase_finish output_merge
+# Claude Code reads hookSpecificOutput.updatedToolOutput only when the hook
+# exits 0. If a redactor replaced the output and a sibling hook exited non-zero,
+# exiting non-zero would drop the redaction and show the raw output. Exit 0 and
+# carry a sibling's block as a JSON decision instead.
+if [ "$EVENT" = "PostToolUse" ] && [ "$exit_code" -ne 0 ] && [ -n "$json_result" ] \
+  && [[ "$json_result" == *'"updatedToolOutput"'* ]]; then
+  if [ "$exit_code" -eq 2 ]; then
+    # Sibling stderr goes straight to the terminal and is not captured, so the
+    # reason names the blocking hooks instead of a generic text.
+    blockers=""
+    for bsrc in ${blocking_hook_sources[@]+"${blocking_hook_sources[@]}"}; do
+      blockers="${blockers:+$blockers, }${bsrc##*/}"
+    done
+    redacted_result="$(printf '%s\n' "$json_result" | jq -c --arg b "${blockers:-a PostToolUse hook}" '
+      .decision = "block"
+      | .reason = (.reason // ("Blocked by " + $b + " (exit 2). Its message is in the hook stderr; the tool output was redacted and kept."))
+    ' 2>/dev/null)" && json_result="$redacted_result"
+  fi
+  printf 'master-hook: PostToolUse exit %s changed to 0 so the redacted tool output is kept.\n' "$exit_code" >&2
+  exit_code=0
+fi
 master_debug_phase_start output_stdout
 if [ -n "$json_result" ]; then
   if master_output_needs_bound "$json_result"; then

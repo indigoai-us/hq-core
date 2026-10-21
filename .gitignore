@@ -22,8 +22,8 @@ workspace/charlie-envs/
 # Root-anchored (`/repos/`) so ONLY the top-level clone dir is excluded. A bare
 # `repos/` matches a directory named `repos` at ANY depth, which silently drops
 # legitimate nested content such as companies/<co>/knowledge/repos/<name>/
-# (discover-generated knowledge) from cloud sync — this file is merged into the
-# sync ignore filter as a layer. See DEV-1791.
+# (discover-generated knowledge). See DEV-1791. HQ sync does not read this file;
+# sync exclusions live in .hqignore and the sync engine's built-in defaults.
 /repos/
 
 # Stray project worktrees (independent linked git repos with a moving HEAD).
@@ -31,7 +31,7 @@ workspace/charlie-envs/
 # into the HQ root as an embedded gitlink (mode 160000), which leaves the tree
 # permanently dirty and blocks /handoff + session archiving. Registered HQ
 # worktrees live under `.claude/worktrees/` and are handled separately; mirrors
-# the `/repos/` handling above and is merged into the sync ignore filter layer.
+# the `/repos/` handling above.
 /workspace/worktrees/
 
 # Node
@@ -124,6 +124,10 @@ modules/.synced/
 companies/*/settings/*.env
 companies/*/settings/*.env.*
 companies/*/settings/secrets/
+# Company secret folders and dot-prefixed .secrets/ folders hold OAuth tokens.
+# Keep them out of HQ-root history. (Shepherd 2638)
+companies/*/secrets/
+.secrets/
 
 # Work Mesh transcript staging (company-work-corpus US-004). Full-content,
 # tenant-scoped session transcripts copied here by the close hook must NEVER

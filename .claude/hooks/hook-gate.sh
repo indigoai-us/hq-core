@@ -9,6 +9,7 @@ export BASH_ENV=/dev/null
 #
 # Environment:
 #   HQ_HOOK_PROFILE - Profile name (minimal|standard|strict), default: standard
+#                     (an unknown name warns and runs as strict)
 #   HQ_DISABLED_HOOKS - Comma-separated hook IDs to disable
 #
 # Profiles:
@@ -35,7 +36,7 @@ export BASH_ENV=/dev/null
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|inject-policy-on-trigger|session-title|surface-company-infra-policy|conduct-lanes-link-deliver|image-context-guard)
+    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|inject-policy-on-trigger|session-title|surface-company-infra-policy|conduct-lanes-link-deliver|image-context-guard|env-file-no-trailing-newline|block-credential-file-read|redact-credential-output)
       return 0
       ;;
     *)
@@ -47,7 +48,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard)
+    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|desktop-memory-leak-check|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard|env-file-no-trailing-newline|check-core-yaml-parity|block-credential-file-read|redact-credential-output)
       return 0
       ;;
     *)
@@ -59,7 +60,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|check-bridge-health|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard)
+    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|desktop-memory-leak-check|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard|env-file-no-trailing-newline|check-core-yaml-parity|block-credential-file-read|redact-credential-output)
       return 0
       ;;
     *)
@@ -69,17 +70,31 @@ is_in_strict_profile() {
 }
 
 
+# hq_hook_profile_warn_unknown <profile>
+#   Print one stderr line per process tree for an unknown profile name. The
+#   exported flag keeps child hook-gate.sh runs from repeating it.
+hq_hook_profile_warn_unknown() {
+  [ -z "${HQ_HOOK_PROFILE_WARNED:-}" ] || return 0
+  printf "WARNING: unknown HQ_HOOK_PROFILE '%s'; running hooks as strict. Use minimal|standard|strict.\n" "$1" >&2
+  HQ_HOOK_PROFILE_WARNED=1
+  export HQ_HOOK_PROFILE_WARNED
+}
+
 # hq_hook_profile_allows <hook-id> [profile]
 #   Return 0 when the hook id is enabled under the profile (default
 #   HQ_HOOK_PROFILE, else standard) and not listed in HQ_DISABLED_HOOKS.
-#   Return 2 on an unknown profile name.
+#   An unknown or misspelled profile fails closed: it is treated as strict,
+#   the superset tier, so a typo can never switch a gated guard off.
 hq_hook_profile_allows() {
   local id="$1" profile="${2:-${HQ_HOOK_PROFILE:-standard}}"
   case "$profile" in
+    minimal|standard|strict) ;;
+    *) hq_hook_profile_warn_unknown "$profile"; profile=strict ;;
+  esac
+  case "$profile" in
     minimal) is_in_minimal_profile "$id" || return 1 ;;
     standard) is_in_standard_profile "$id" || return 1 ;;
-    strict) is_in_strict_profile "$id" || return 1 ;;
-    *) return 2 ;;
+    *) is_in_strict_profile "$id" || return 1 ;;
   esac
   local entry remaining="${HQ_DISABLED_HOOKS:-}"
   while [ -n "$remaining" ]; do
@@ -91,7 +106,72 @@ hq_hook_profile_allows() {
     entry="${entry%"${entry##*[![:space:]]}"}"
     [ "$entry" = "$id" ] && return 1
   done
+  if [ "$id" = "$HQ_HOOK_LEGACY_ALIAS_TARGET" ] && hq_hook_legacy_alias_disabled; then
+    return 1
+  fi
   return 0
+}
+
+# Retired hook id alias. indigoai-us/hq-core-staging#1495 renamed one hook id
+# to desktop-memory-leak-check. The retired id must not appear in the repo, so
+# a HQ_DISABLED_HOOKS entry is matched against it by the sha256 of the
+# trimmed, lowercased entry. Only entries of the retired length made of
+# [a-z0-9-] are hashed, so ordinary lists never start a hash process.
+HQ_HOOK_LEGACY_ALIAS_TARGET=desktop-memory-leak-check
+HQ_HOOK_LEGACY_ALIAS_SHA256=bbd31c49a5cded814da89ad3ee84a89a3995e2cb33b06610a06c4a362afe1710
+HQ_HOOK_LEGACY_ALIAS_LEN=19
+_hq_hook_alias_cache_key=""
+_hq_hook_alias_cache_hit=""
+_hq_hook_alias_noted=""
+
+# Print the sha256 hex of stdin. Return 1 when no hash tool exists.
+hq_hook_sha256_stdin() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 2>/dev/null
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum 2>/dev/null
+  else
+    cat >/dev/null
+    return 1
+  fi
+}
+
+# hq_hook_legacy_alias_disabled
+#   Return 0 when HQ_DISABLED_HOOKS names the retired id of
+#   desktop-memory-leak-check. The result is cached per process for the
+#   current HQ_DISABLED_HOOKS value. Fail safe: when no hash tool exists the
+#   match cannot be proven, so this returns 1 and the hook runs.
+hq_hook_legacy_alias_disabled() {
+  local list="${HQ_DISABLED_HOOKS:-}"
+  [ -n "$list" ] || return 1
+  if [ -n "$_hq_hook_alias_cache_hit" ] && [ "$_hq_hook_alias_cache_key" = "$list" ]; then
+    [ "$_hq_hook_alias_cache_hit" = 1 ]
+    return
+  fi
+  local entry digest hit=0 remaining="$list"
+  while [ -n "$remaining" ]; do
+    case "$remaining" in
+      *,*) entry="${remaining%%,*}"; remaining="${remaining#*,}" ;;
+      *) entry="$remaining"; remaining="" ;;
+    esac
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [ "${#entry}" -eq "$HQ_HOOK_LEGACY_ALIAS_LEN" ] || continue
+    case "$entry" in *[!A-Za-z0-9-]*) continue ;; esac
+    digest="$(printf '%s' "$entry" | LC_ALL=C tr '[:upper:]' '[:lower:]' | hq_hook_sha256_stdin)" || digest=""
+    digest="${digest%% *}"
+    if [ "$digest" = "$HQ_HOOK_LEGACY_ALIAS_SHA256" ]; then
+      hit=1
+      break
+    fi
+  done
+  _hq_hook_alias_cache_key="$list"
+  _hq_hook_alias_cache_hit="$hit"
+  if [ "$hit" = 1 ] && [ -z "$_hq_hook_alias_noted" ]; then
+    _hq_hook_alias_noted=1
+    echo "hq: HQ_DISABLED_HOOKS uses a retired hook id; rename it to $HQ_HOOK_LEGACY_ALIAS_TARGET" >&2
+  fi
+  [ "$hit" = 1 ]
 }
 
 # PATH augmentation so hooks can find node/hq/qmd under version managers and
@@ -298,8 +378,13 @@ if [ -n "$HQ_ROOT_RESOLVED" ] && [ -f "$HOOK_LIB" ]; then
   fi
 fi
 
-# Determine profile (default: standard)
+# Determine profile (default: standard). An unknown name fails closed to
+# strict; see hq_hook_profile_allows.
 PROFILE="${HQ_HOOK_PROFILE:-standard}"
+case "$PROFILE" in
+  minimal|standard|strict) ;;
+  *) hq_hook_profile_warn_unknown "$PROFILE"; PROFILE=strict ;;
+esac
 
 # Parse disabled hooks (comma-separated)
 DISABLED_HOOKS="${HQ_DISABLED_HOOKS:-}"
@@ -318,14 +403,10 @@ case "$PROFILE" in
       should_run=1
     fi
     ;;
-  strict)
+  *)
     if is_in_strict_profile "$HOOK_ID"; then
       should_run=1
     fi
-    ;;
-  *)
-    echo "ERROR: Unknown profile '$PROFILE'. Use minimal|standard|strict" >&2
-    exit 1
     ;;
 esac
 
@@ -341,6 +422,10 @@ if [ -n "$DISABLED_HOOKS" ]; then
       break
     fi
   done
+  if [ "$should_run" -eq 1 ] && [ "$HOOK_ID" = "$HQ_HOOK_LEGACY_ALIAS_TARGET" ] \
+    && hq_hook_legacy_alias_disabled; then
+    should_run=0
+  fi
 fi
 
 # If hook should not run, pass-through (exit 0)

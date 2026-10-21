@@ -120,6 +120,10 @@ make_root() {
   mkdir -p "$root/.claude/hooks" "$root/.codex" "$root/.grok/hooks" "$root/core/scripts/lib" "$root/workspace" "$root/bin"
   cp "$SETTINGS_SRC" "$root/.claude/settings.json"
   [ ! -f "$REGISTRY_SRC" ] || cp "$REGISTRY_SRC" "$root/.claude/hooks/hook-registry.json"
+  # The registry's fail_closed PreToolUse guards must ship with it: master-hook
+  # blocks every matching call when such a guard script is missing.
+  local guard="block-credential-file-read.sh"
+  [ ! -f "$ROOT/.claude/hooks/$guard" ] || cp "$ROOT/.claude/hooks/$guard" "$root/.claude/hooks/$guard"
   cp "$CODEX_CONFIG_SRC" "$root/.codex/config.toml"
   cp "$GROK_BRIDGE_SRC" "$root/.grok/hooks/hq-grok-user-bridge.json"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"

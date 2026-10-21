@@ -51,17 +51,11 @@ refresh_count="$(jq '[.hooks.SessionStart[] | .hooks[] | select(.script == "core
 is_in_minimal_profile refresh-vault-access \
   && pass "vault access refresh runs in the minimal profile" \
   || fail "vault access refresh is missing from the minimal profile"
-# These three gated ids remain inactive pending an explicit owner choice
-# for their profile placement; they are documented in MIGRATION.md.
-DEFERRED_PROFILE_DECISION=" check-core-yaml-parity env-file-no-trailing-newline record-policy-retrieval "
 while IFS=$'\t' read -r id script gated; do
   [ -f "$ROOT/$script" ] || fail "registry script missing: $script ($id)"
   if [ "$gated" = "true" ]; then
     if ! is_in_standard_profile "$id" && ! is_in_minimal_profile "$id" && ! is_in_strict_profile "$id"; then
-      case "$DEFERRED_PROFILE_DECISION" in
-        *" $id "*) ;;
-        *) fail "gated id '$id' is in no profile list (would never run)" ;;
-      esac
+      fail "gated id '$id' is in no profile list (would never run)"
     fi
   fi
 done < <(jq -r '.hooks[][] | .hooks[] | [.id, .script, (if .gated == false then "false" else "true" end)] | @tsv' "$REGISTRY" | sort -u)
@@ -125,8 +119,11 @@ gate_runs="$(grep -c "run policy-enforcement-gate" <<<"$ERR" || true)"
 [ "$injector_runs" = "$gate_runs" ] && [ "$gate_runs" = "1" ] \
   && pass "minimal profile runs injector only with policy-enforcement-gate" \
   || fail "minimal profile broke injector/gate pairing (injector=$injector_runs gate=$gate_runs)"
-HQ_HOOK_PROFILE=bogus run_master PreToolUse "$(payload_bash "echo bench")"
-grep -q "Unknown profile" <<<"$ERR" && pass "unknown profile reports an error" || fail "unknown profile silently accepted"
+HQ_HOOK_TRACE=1 HQ_HOOK_PROFILE=bogus run_master PreToolUse "$(payload_bash "echo bench")"
+[ "$(grep -c "unknown HQ_HOOK_PROFILE 'bogus'; running hooks as strict" <<<"$ERR" || true)" = "1" ] \
+  && pass "unknown profile warns once" || fail "unknown profile silently accepted"
+grep -q "run mandatory-scope-authorizer" <<<"$ERR" && ! grep -q "Unknown profile" <<<"$ERR" \
+  && pass "unknown profile still runs gated guards" || fail "unknown profile skipped gated guards"
 
 echo "[6] policy-vocabulary prefilter skips the injector only when no policy token is present"
 PF_FIXTURE="$(mktemp -d)"

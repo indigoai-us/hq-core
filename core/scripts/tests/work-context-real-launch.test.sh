@@ -574,10 +574,15 @@ actual_cache_calls="$(wc -l < "$cache_calls")"
 [ "$actual_cache_calls" -eq "$expected_cache_calls" ] \
   && pass "fresh-cache repeats skip synchronous preflight" \
   || fail "fresh-cache repeats invoked preflight $actual_cache_calls times, expected $expected_cache_calls"
+# The device-default lookup only feeds the repair flag, and only the bind path
+# (bound, needs_project, needs_task) reads that flag. company_conflict never
+# binds, so its three synchronous preflights above (missing, stale,
+# ttl_expired) skip the lookup. Every other synchronous preflight makes one.
+expected_default_calls=$((expected_cache_calls - 3))
 actual_default_calls="$(wc -l < "$cache_default_calls")"
-[ "$actual_default_calls" -eq "$expected_cache_calls" ] \
+[ "$actual_default_calls" -eq "$expected_default_calls" ] \
   && pass "fresh-cache repeats skip device-default lookup" \
-  || fail "fresh-cache repeats invoked device-default lookup $actual_default_calls times, expected $expected_cache_calls"
+  || fail "fresh-cache repeats invoked device-default lookup $actual_default_calls times, expected $expected_default_calls"
 
 # --- 2g) every CLI preflight fixture is accepted; shapes outside the set are not ---
 # contractVersion pin is 1. To bump: change this assertion, preflight-fixtures.json,

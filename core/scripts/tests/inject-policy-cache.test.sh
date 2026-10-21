@@ -134,7 +134,7 @@ assert_evaluation_cache_written() {
   local eval_file
   eval_file="$(find "$(cache_dir)" -type f -name '*.eval' -print -quit)"
   [ -n "$eval_file" ] || fail "expected per-session evaluation cache file"
-  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v7' \
+  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v9' \
     || fail "evaluation cache file is missing its complete-version header"
 }
 
@@ -235,7 +235,7 @@ ok "concurrent fires never emit a partial cache result"
 for n in $(seq 1 80); do
   run_hook "bounded-$n" "$TMPROOT/bounded-$n.out" tsv
 done
-eval_count="$({ find "$(cache_dir)/eval-v7" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
+eval_count="$({ find "$(cache_dir)/eval-v9" -maxdepth 1 -type f -name '*.eval' 2>/dev/null || true; } | wc -l | tr -d ' ')"
 [ "$eval_count" -gt 0 ] || fail "expected bounded evaluation cache entries"
 [ "$eval_count" -le 64 ] \
   || fail "evaluation cache grew to $eval_count entries; expected at most 64 per scope"
@@ -262,20 +262,20 @@ EOF
 run_hook parser-revision "$TMPROOT/parser-revision-first.out"
 : > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
 run_hook parser-revision "$TMPROOT/parser-revision-second.out"
-cur_file="$(find "$(cache_dir)/eval-v7" -type f -name '*.eval' -print -quit)"
-[ -n "$cur_file" ] || fail "expected a v7 evaluation cache before stale-cache test"
+cur_file="$(find "$(cache_dir)/eval-v9" -type f -name '*.eval' -print -quit)"
+[ -n "$cur_file" ] || fail "expected a v9 evaluation cache before stale-cache test"
 mkdir -p "$(cache_dir)/eval-v2"
 v2_file="$(cache_dir)/eval-v2/$(basename "$cur_file")"
-sed '1s/hq-policy-eval-v7/hq-policy-eval-v2/' "$cur_file" > "$v2_file"
+sed '1s/hq-policy-eval-v9/hq-policy-eval-v2/' "$cur_file" > "$v2_file"
 printf 'legacy-permissive\tcore\t%s\tsoft\tOLD_PARSER_CACHE_MARKER\treactive\tonce\tok\t2\n' \
   "$ROOT/core/policies/legacy-permissive.md" >> "$v2_file"
-rm -rf "$(cache_dir)/eval-v7"
+rm -rf "$(cache_dir)/eval-v9"
 : > "$ROOT/workspace/orchestrator/policy-trigger-state/parser-revision.txt"
 run_hook parser-revision "$TMPROOT/parser-revision-stale-v2.out"
 grep -Fq OLD_PARSER_CACHE_MARKER "$TMPROOT/parser-revision-stale-v2.out" \
   && fail "a v2 evaluation-cache verdict survived the parser revision"
-find "$(cache_dir)/eval-v7" -type f -name '*.eval' -print -quit | grep -q . \
-  || fail "parser revision did not create a v7 evaluation cache"
+find "$(cache_dir)/eval-v9" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "parser revision did not create a v9 evaluation cache"
 ok "parser revision ignores stale v2 evaluation-cache verdicts"
 
 # A case-sensitive v3 cache can contain an empty verdict for a policy whose
@@ -307,19 +307,19 @@ CASE_FOLD_TURN="$ROOT/workspace/orchestrator/policy-trigger-state/$CASE_FOLD_SES
 run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-cache-seed.out" tsv "enoent" "enoent"
 grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-cache-seed.out" \
   || fail "case-insensitive trigger did not match after parsed-cache warmup"
-case_cur="$(find "$(cache_dir)/eval-v7" -type f -name '*.eval' -print -quit)"
-[ -n "$case_cur" ] || fail "expected v7 evaluation entry for case-folded facts"
+case_cur="$(find "$(cache_dir)/eval-v9" -type f -name '*.eval' -print -quit)"
+[ -n "$case_cur" ] || fail "expected v9 evaluation entry for case-folded facts"
 mkdir -p "$(cache_dir)/eval-v3"
 case_v3="$(cache_dir)/eval-v3/$(basename "$case_cur")"
-sed -n '1p' "$case_cur" | sed 's/hq-policy-eval-v7/hq-policy-eval-v3/' > "$case_v3"
-rm -rf "$(cache_dir)/eval-v7"
+sed -n '1p' "$case_cur" | sed 's/hq-policy-eval-v9/hq-policy-eval-v3/' > "$case_v3"
+rm -rf "$(cache_dir)/eval-v9"
 : > "$CASE_FOLD_DEDUPE"
 : > "$CASE_FOLD_TURN"
 run_hook "$CASE_FOLD_SESSION" "$TMPROOT/case-fold-stale-v3.out" tsv "enoent" "enoent"
 grep -Fq CASE_FOLD_CACHE_MARKER "$TMPROOT/case-fold-stale-v3.out" \
   || fail "stale case-sensitive v3 cache suppressed a case-insensitive policy match"
-find "$(cache_dir)/eval-v7" -type f -name '*.eval' -print -quit | grep -q . \
-  || fail "case-folded evaluation did not replace the stale namespace with v7"
+find "$(cache_dir)/eval-v9" -type f -name '*.eval' -print -quit | grep -q . \
+  || fail "case-folded evaluation did not replace the stale namespace with v9"
 ok "case-folding evaluator ignores stale v3 no-match verdicts"
 
 # The evaluation cache key includes both derived fact channels. Clearing the

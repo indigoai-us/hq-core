@@ -219,8 +219,21 @@ if ! grep -Fq "needs['denylist-scan'].result != 'success'" <<< "$windows_job"; t
   echo 'FAIL: shell-smoke-windows must run when the Windows detector is missing or unsuccessful' >&2
   exit 1
 fi
-if ! grep -Fq "github.event_name == 'push'" <<< "$windows_job"; then
-  echo 'FAIL: shell-smoke-windows must remain unconditional on main pushes' >&2
+# Hosted Windows never runs on pull requests or branch pushes, only on manual
+# dispatch, the nightly schedule and staging release tags, to keep Actions
+# cost down.
+windows_tag_clause="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging')"
+if ! grep -Fq "&& (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || $windows_tag_clause)" <<< "$windows_job"; then
+  echo 'FAIL: shell-smoke-windows must be gated to workflow_dispatch, the schedule and staging release tags only' >&2
+  exit 1
+fi
+if grep -Fq "github.event_name == 'pull_request'" <<< "$windows_job"; then
+  echo 'FAIL: shell-smoke-windows must not be reachable from pull_request events' >&2
+  exit 1
+fi
+if [[ "$(grep -Fo "github.event_name == 'push'" <<< "$windows_job" | wc -l | tr -d ' ')" -ne 1 ]] \
+  || [[ "$(grep -Fo "$windows_tag_clause" <<< "$windows_job" | wc -l | tr -d ' ')" -ne 1 ]]; then
+  echo 'FAIL: shell-smoke-windows may key on push only through the staging release-tag clause' >&2
   exit 1
 fi
 if ! grep -Fq 'bash core/scripts/tests/session-title-windows-argv.test.sh' <<< "$windows_job"; then
@@ -284,7 +297,7 @@ resumework_job="$(awk '
 for required in \
   '    needs: [denylist-scan]' \
   '!cancelled()' \
-  "github.event_name == 'push'" \
+  "github.event_name == 'workflow_dispatch'" \
   "needs['denylist-scan'].result != 'success'" \
   "needs['denylist-scan'].outputs.resumework_timing == 'true'" \
   "RESUMEWORK_TIMING_RUNS: '20'" \
@@ -294,8 +307,118 @@ for required in \
     exit 1
   fi
 done
+if grep -Fq "github.event_name == 'push'" <<< "$resumework_job"; then
+  echo 'FAIL: resumework-timing-linux must not key on main pushes (pr-checks has no push trigger)' >&2
+  exit 1
+fi
 if grep -Fq 'always()' <<< "$resumework_job"; then
   echo 'FAIL: resumework-timing-linux must not override workflow cancellation' >&2
+  exit 1
+fi
+if grep -Fq "github.event_name == 'push'" <<< "$resumework_job"; then
+  echo 'FAIL: resumework-timing-linux must use the path decision on main pushes' >&2
+  exit 1
+fi
+
+# --- push-range, forced-mode, and release-stamp gating --------------------
+# Every gate takes an event mode. Pushes and pull requests diff a range;
+# schedule, workflow_dispatch, and forced (full-ci) always run.
+assert_gate() {
+  local filter="$1" expected="$2" label="$3" base="$4" head="$5" mode="$6" actual
+  actual="$(bash "$filter" "$base" "$head" "$FIXTURE" "$mode")"
+  if [[ "$actual" != "run=$expected" ]]; then
+    echo "FAIL: $(basename "$filter") $label (mode $mode) expected run=$expected, got: $actual" >&2
+    exit 1
+  fi
+}
+
+ALL_FILTERS=("$FILTER" "$WINDOWS_FILTER" "$RESUMEWORK_FILTER")
+ZERO_SHA='0000000000000000000000000000000000000000'
+
+# A documentation-only range skips every gate on push and pull_request, and
+# runs every gate on the nightly schedule, manual dispatch, and full-ci.
+for filter in "${ALL_FILTERS[@]}"; do
+  assert_gate "$filter" false 'documentation-only range' "$doc_base" "$doc_head" push
+  assert_gate "$filter" false 'documentation-only range' "$doc_base" "$doc_head" pull_request
+  for mode in schedule workflow_dispatch forced; do
+    assert_gate "$filter" true 'documentation-only range' "$doc_base" "$doc_head" "$mode"
+  done
+  # A new branch or force push has no usable before SHA. Fail open.
+  assert_gate "$filter" true 'zero before SHA' "$ZERO_SHA" "$doc_head" push
+  assert_gate "$filter" true 'empty before SHA' '' "$doc_head" push
+  assert_gate "$filter" true 'unknown before SHA' 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$doc_head" push
+  # A missing head commit is an error, never a silent skip.
+  if bash "$filter" "$doc_base" 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' "$FIXTURE" push >/dev/null 2>&1; then
+    echo "FAIL: $(basename "$filter") must exit non-zero when the head commit is missing" >&2
+    exit 1
+  fi
+done
+
+# A multi-commit push is diffed as one range from github.event.before: a
+# shell change in the first commit still selects the jobs when the last
+# commit only touches docs.
+push_before="$(git -C "$FIXTURE" rev-parse HEAD)"
+mkdir -p "$FIXTURE/tools"
+printf '#!/usr/bin/env bash\necho push-range\n' > "$FIXTURE/tools/push-range.sh"
+commit_fixture 'push range: shell change'
+printf 'push range docs\n' > "$FIXTURE/docs/push-range.md"
+commit_fixture 'push range: docs change'
+push_after="$(git -C "$FIXTURE" rev-parse HEAD)"
+assert_single_path "$push_after^" "$push_after" 'docs/push-range.md'
+for filter in "$FILTER" "$WINDOWS_FILTER" "$RESUMEWORK_FILTER"; do
+  assert_gate "$filter" false 'last commit of the push alone' "$push_after^" "$push_after" push
+  assert_gate "$filter" true 'whole push range from before SHA' "$push_before" "$push_after" push
+done
+
+# Release-stamp commits rewrite only hqVersion/updatedAt in core/core.yaml
+# and do not select the platform shell smoke jobs.
+printf 'hqVersion: "15.0.0"\nupdatedAt: "2026-10-01"\nshell: bash\n' > "$FIXTURE/core/core.yaml"
+commit_fixture 'core.yaml baseline'
+stamp_base="$(git -C "$FIXTURE" rev-parse HEAD)"
+printf 'hqVersion: "15.0.1"\nupdatedAt: "2026-10-19"\nshell: bash\n' > "$FIXTURE/core/core.yaml"
+commit_fixture 'release stamp'
+stamp_head="$(git -C "$FIXTURE" rev-parse HEAD)"
+assert_single_path "$stamp_base" "$stamp_head" 'core/core.yaml'
+assert_gate "$FILTER" false 'release-stamp-only core.yaml' "$stamp_base" "$stamp_head" push
+assert_gate "$WINDOWS_FILTER" false 'release-stamp-only core.yaml' "$stamp_base" "$stamp_head" push
+assert_gate "$FILTER" true 'release-stamp-only core.yaml' "$stamp_base" "$stamp_head" schedule
+printf 'hqVersion: "15.0.2"\nupdatedAt: "2026-10-20"\nshell: zsh\n' > "$FIXTURE/core/core.yaml"
+commit_fixture 'stamp plus config change'
+config_head="$(git -C "$FIXTURE" rev-parse HEAD)"
+assert_gate "$FILTER" true 'core.yaml stamp plus config change' "$stamp_head" "$config_head" push
+assert_gate "$WINDOWS_FILTER" true 'core.yaml stamp plus config change' "$stamp_head" "$config_head" push
+
+# Workflow wiring: every detector diffs github.event.before on push, gets
+# the event mode, and the gated jobs read its output.
+gate_mode="GATE_MODE: \${{ contains(github.event.pull_request.labels.*.name, 'full-ci') && 'forced' || github.event_name }}"
+for step_id in shell_smoke_macos_paths shell_smoke_windows_paths resumework_timing_paths; do
+  step="$(sed -n "/id: ${step_id}\$/,/GITHUB_OUTPUT/p" "$WORKFLOW")"
+  for required in \
+    'PUSH_BEFORE_SHA: ${{ github.event.before }}' \
+    'PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}' \
+    "$gate_mode" \
+    'base_sha="$PUSH_BEFORE_SHA"' \
+    '"$base_sha" "$GITHUB_SHA" "$GITHUB_WORKSPACE" "$GATE_MODE"'; do
+    if ! grep -Fq -- "$required" <<< "$step"; then
+      echo "FAIL: detector step $step_id must keep: $required" >&2
+      exit 1
+    fi
+  done
+done
+macos_job="$(awk '
+  /^  shell-smoke-macos:$/ { in_job=1; print; next }
+  in_job && /^  [[:alnum:]_-]+:$/ { exit }
+  in_job { print }
+' "$WORKFLOW")"
+# The only push the macOS job sees is a staging release tag, and that run still
+# goes through the path decision (the detector fails open on a tag).
+if [[ "$(grep -Fo "github.event_name == 'push'" <<< "$macos_job" | wc -l | tr -d ' ')" -ne 1 ]] \
+  || [[ "$(grep -Fo "$windows_tag_clause" <<< "$macos_job" | wc -l | tr -d ' ')" -ne 1 ]]; then
+  echo 'FAIL: shell-smoke-macos may key on push only through the staging release-tag clause' >&2
+  exit 1
+fi
+if ! grep -Fq "&& needs['denylist-scan'].outputs.macos_shell_smoke == 'true'" <<< "$macos_job"; then
+  echo 'FAIL: platform jobs must use the path decision on release tag pushes' >&2
   exit 1
 fi
 

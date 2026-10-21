@@ -286,24 +286,45 @@ session_auto_bind_resolve_source() {
   local root="${1:-}" sid="${2:-}" parent="${3:-}" slug="" spawn="" parent_slug="" default_info="" repair="false"
   [ -n "$root" ] && [ -n "$sid" ] || return 0
 
-  if command -v session_scope_read >/dev/null 2>&1; then
+  # The [ -f ] guards skip a $(...) fork when the file is absent (a fresh
+  # session). Both readers print nothing for a missing file, so the result is
+  # unchanged. SessionStart runs this on every start under a CPU budget.
+  if command -v session_scope_read >/dev/null 2>&1 && \
+     [ -f "$root/workspace/sessions/$sid/scope-capability.json" ]; then
     slug="$(session_scope_read "$root" "$sid" 2>/dev/null || true)"
   fi
-  [ -z "$slug" ] && slug="$(session_auto_bind_meta_slug "$root" "$sid")"
+  [ -z "$slug" ] && [ -f "$root/workspace/sessions/$sid/meta.yaml" ] && \
+    slug="$(session_auto_bind_meta_slug "$root" "$sid")"
   if session_auto_bind_is_known_slug "$root" "$slug"; then
     printf '%s\tsession' "$slug"
     return 0
   fi
 
   [ -z "$parent" ] && parent="${HQ_PARENT_SESSION_ID:-}"
-  parent="$(printf '%s' "$parent" | tr -d '[:space:]')"
+  # Builtin expansion; same result as `printf | tr -d '[:space:]'` without
+  # two forks and an exec.
+  parent="${parent//[[:space:]]/}"
+  # The parent id becomes a path segment. A value such as ../x or a/b would
+  # read another folder's meta.yaml, and a symlinked session folder could
+  # point anywhere, so either one means no parent.
+  case "$parent" in
+    .|..|*[!A-Za-z0-9._-]*) parent="" ;;
+  esac
+  if [ -n "$parent" ] && { [ -L "$root/workspace/sessions/$parent" ] \
+    || [ -L "$root/workspace/sessions/$parent/meta.yaml" ] \
+    || [ -L "$root/workspace/sessions/$parent/scope-capability.json" ]; }; then
+    parent=""
+  fi
   if [ -n "$parent" ] && [ "$parent" != "$sid" ]; then
-    if command -v session_scope_read >/dev/null 2>&1; then
+    if command -v session_scope_read >/dev/null 2>&1 && \
+       [ -f "$root/workspace/sessions/$parent/scope-capability.json" ]; then
       parent_slug="$(session_scope_read "$root" "$parent" 2>/dev/null || true)"
     fi
-    [ -z "$parent_slug" ] && parent_slug="$(session_auto_bind_meta_slug "$root" "$parent")"
+    [ -z "$parent_slug" ] && [ -f "$root/workspace/sessions/$parent/meta.yaml" ] && \
+      parent_slug="$(session_auto_bind_meta_slug "$root" "$parent")"
     if session_auto_bind_is_known_slug "$root" "$parent_slug"; then
-      spawn="$(printf '%s' "${HQ_SPAWN_COMPANY:-}" | tr -d '[:space:]\"')"
+      spawn="${HQ_SPAWN_COMPANY:-}"
+      spawn="${spawn//[[:space:]\"]/}"
       if [ -n "$spawn" ] && [ "$spawn" != "$parent_slug" ]; then
         printf '%s\n' "session-auto-bind: ignoring HQ_SPAWN_COMPANY=$spawn because it mismatches parent company_slug=$parent_slug" >&2
       fi
@@ -312,7 +333,8 @@ session_auto_bind_resolve_source() {
     fi
   fi
 
-  slug="$(printf '%s' "${HQ_SPAWN_COMPANY:-}" | tr -d '[:space:]\"')"
+  slug="${HQ_SPAWN_COMPANY:-}"
+  slug="${slug//[[:space:]\"]/}"
   if session_auto_bind_is_known_slug "$root" "$slug"; then
     printf '%s\tspawn' "$slug"
     return 0
@@ -381,10 +403,15 @@ session_auto_bind_apply() {
     .|..|*/*|*[!A-Za-z0-9._-]*) return 0 ;;
   esac
 
-  if command -v session_scope_read >/dev/null 2>&1; then
+  # [ -f ] guards: skip the reader fork when the file is absent (see
+  # session_auto_bind_resolve_source).
+  if command -v session_scope_read >/dev/null 2>&1 && \
+     [ -f "$root/workspace/sessions/$sid/scope-capability.json" ]; then
     existing_scope_slug="$(session_scope_read "$root" "$sid" 2>/dev/null || true)"
   fi
-  existing_meta_slug="$(session_auto_bind_meta_slug "$root" "$sid")"
+  if [ -f "$root/workspace/sessions/$sid/meta.yaml" ]; then
+    existing_meta_slug="$(session_auto_bind_meta_slug "$root" "$sid")"
+  fi
   if session_auto_bind_has_case_alias "$root" "$existing_scope_slug" || \
      session_auto_bind_has_case_alias "$root" "$existing_meta_slug"; then
     stale_alias=true

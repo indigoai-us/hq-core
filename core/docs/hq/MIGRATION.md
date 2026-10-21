@@ -2,6 +2,48 @@
 
 Newest release first.
 
+## Release: v16.0.31-beta.46
+
+- No action needed. New `/join-meeting` skill: ride a live meeting transcript
+  from any session. It lists live meetings and offers one picker (each live
+  meeting, plus "Invite the bot with a join link"), invites the bot with
+  `hq meetings invite <url>` when needed, binds the session with
+  `meeting_binding`, and reads only new transcript lines on a bounded cadence.
+  When the meeting ends it saves the session's copy of the final transcript
+  to `workspace/executive/meetings/<company>/<id>.final.md` and clears the
+  binding. The official copy still arrives through HQ Sync in the company's
+  `sources/meetings/` folder; the skill never writes there. Say "leave the meeting"
+  to release it early. Transcript content is treated as untrusted. The list,
+  tail, and cursor logic lives in the new `core/scripts/meeting-tail.sh`
+  (`meeting-tail.mjs`). It lists meetings with `hq meetings live --json`,
+  keeps state under `workspace/executive/meetings/`, and gives each session
+  its own cursor, so the executive skill's cursor is never changed. The
+  session must have a locked company set that includes the meeting's company;
+  otherwise the script stops and names the
+  `core/scripts/hq-session.sh add company <slug>` command. Waits are
+  bounded (step at most 15 minutes, invite at most 30 minutes, polling at
+  least every 5 seconds). Needs hq CLI 5.345.27 or later.
+
+## Release: v16.0.31-beta.41
+
+- MIGRATION: if you disabled the SessionStart desktop memory-leak detector by
+  its old hook id in `HQ_DISABLED_HOOKS`, change that entry to
+  `desktop-memory-leak-check`. The old id keeps working through an alias for
+  now and prints a one-line note to stderr once per hook process. The alias
+  will be removed in a later release.
+
+## Release: v16.0.31-beta.1
+
+- No action needed. `/super-conductor` now records per-channel sweep evidence
+  in its save file (`sweep`, one entry per channel, Slack workspace, and email
+  account) through `core/scripts/super-conductor-sweep-check.mjs`. The
+  heartbeat checks that evidence on every tick and prints
+  `SUPER-CONDUCTOR SWEEP-INCOMPLETE` when the previous wakeup skipped a
+  selected target. A channel is marked unavailable only after every listed
+  fallback path was tried, and it is re-tried hourly. Each wakeup's status
+  line names the channels read and skipped. Re-arm a running heartbeat to
+  pick up the check.
+
 ## Release: v16.0.28-beta.1
 
 - No action needed. `/conduct` now runs each worker as a background subagent

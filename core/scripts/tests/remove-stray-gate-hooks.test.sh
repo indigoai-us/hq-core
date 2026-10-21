@@ -31,6 +31,14 @@ make_tree() {
   cp "$ROOT/core/scripts/hook-lib.sh" "$dir/core/scripts/hook-lib.sh"
   if [ "$master" = "yes" ]; then
     printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"bash \\"$CLAUDE_PROJECT_DIR/.claude/hooks/master-hook.sh\\" PreToolUse","timeout":300}]},%s]}}\n' "$(stray detect-secrets)" > "$dir/.claude/settings.json"
+  elif [ "$master" = "engine-posix" ] || [ "$master" = "engine-win" ]; then
+    # hook-engine-launcher flag on: the pinned engine in exec form replaces
+    # the master-hook.sh line (restore-hook-settings.sh / hq reindex output).
+    local engine="/home/u/.hq/bin/hq-hook/1.2.3/hq-hook.app/Contents/MacOS/hq-hook"
+    [ "$master" = "engine-win" ] && engine='C:\Users\u\.hq\bin\hq-hook\1.2.3\hq-hook.exe'
+    jq -n --arg e "$engine" --arg r "$dir" --argjson s "$(stray detect-secrets)" \
+      '{hooks:{PreToolUse:[{hooks:[{type:"command",command:$e,timeout:300,args:["PreToolUse","--hq-root",$r,"--runtime","claude"]}]},$s]}}' \
+      > "$dir/.claude/settings.json"
   else
     printf '{"hooks":{"PreToolUse":[%s]}}\n' "$(stray detect-secrets)" > "$dir/.claude/settings.json"
   fi
@@ -97,6 +105,31 @@ for ENGINE in jq node; do
   AFTER="$(cat "$T/.claude/settings.local.json" "$T/.claude/settings.json")"
   [ -z "$OUT3" ] && [ "$BEFORE" = "$AFTER" ] && ok "$ENGINE: legacy tree untouched" \
     || fail "$ENGINE: legacy tree untouched" "$OUT3"
+
+  # --- two heals within one second keep separate backups ---
+  T="$TMP/twice"; make_tree "$T" yes
+  HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$T" >/dev/null
+  make_tree "$T" yes
+  HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$T" >/dev/null
+  N_BK="$(ls -d "$T"/workspace/.hq-update-check/settings-backups/*/ 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$N_BK" = "2" ] && ok "$ENGINE: back-to-back heals write separate backups" \
+    || fail "$ENGINE: back-to-back heals write separate backups" "backup dirs: $N_BK"
+
+  # --- engine exec form (launcher flag on): strays still healed ---
+  for FORM in engine-posix engine-win; do
+    T="$TMP/$FORM"; make_tree "$T" "$FORM"
+    ENGINE_BEFORE="$(jq -c '.hooks.PreToolUse[0]' "$T/.claude/settings.json")"
+    OUT4="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$T")"
+    L="$T/.claude/settings.local.json"; S="$T/.claude/settings.json"
+    if printf '%s' "$OUT4" | grep "removed 2 stray.*settings.local.json" >/dev/null \
+       && printf '%s' "$OUT4" | grep "removed 1 stray.*settings.json" >/dev/null \
+       && [ "$(jq '.hooks.PreToolUse | length' "$L")" = "4" ] \
+       && [ "$(jq -c '.hooks.PreToolUse' "$S")" = "[$ENGINE_BEFORE]" ]; then
+      ok "$ENGINE: $FORM settings heal strays and keep the engine entry"
+    else
+      fail "$ENGINE: $FORM settings heal strays and keep the engine entry" "$OUT4 :: $(jq -c '.hooks' "$S")"
+    fi
+  done
 
   rm -rf "$TMP"
 done

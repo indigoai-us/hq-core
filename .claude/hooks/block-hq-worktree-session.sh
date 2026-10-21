@@ -390,9 +390,9 @@ WHAT TO DO: exit this session and start Claude from the canonical checkout:
 
   $next_step
 
-When starting an HQ session, leave Claude Code's Worktree toggle unchecked. It
-starts HQ in a linked worktree, which this guard blocks. Use the toggle for a
-source-repository session; those worktrees are unaffected.
+When starting an HQ session in the desktop app, use Choose Environment > Local.
+A worktree environment starts HQ in a linked worktree, which this guard blocks.
+Use a worktree environment only for a source-repository session.
 
 Source-repo worktrees are unaffected: editing a checkout under repos/ from a
 worktree in workspace/worktrees/<repo>/<name>/ is the normal, required flow.

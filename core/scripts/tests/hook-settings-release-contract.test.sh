@@ -165,6 +165,10 @@ grep -Fq 'stable updates' "$UPDATE_SKILL" && grep -Fq '`--staging` replacements'
   || fail "/update-hq does not cover the stable and staging replacement paths"
 grep -Fq 'Bash(bash core/scripts/remove-stray-gate-hooks.sh:*)' "$UPDATE_SKILL" \
   || fail "/update-hq does not grant cleanup a narrow Bash permission"
+grep -Fq 'bash core/scripts/remove-retired-core-hooks.sh {hq-root}' "$UPDATE_SKILL" \
+  || fail "/update-hq does not remove retired core hooks that rescue leaves on disk"
+grep -Fq 'Bash(bash core/scripts/remove-retired-core-hooks.sh:*)' "$UPDATE_SKILL" \
+  || fail "/update-hq does not grant retired-hook cleanup a narrow Bash permission"
 grep -Fq 'Bash(bash core/scripts/restore-hook-settings.sh:*)' "$UPDATE_SKILL" \
   || fail "/update-hq does not grant its restore command a narrow Bash permission"
 grep -Fq 'hq rescue -y' "$UPDATE_SKILL" \
