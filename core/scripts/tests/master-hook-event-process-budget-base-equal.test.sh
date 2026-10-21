@@ -105,7 +105,7 @@ copy_hook_sources() {
 replace_stdin_read_with_cat() {
   local source_file="$1" replacement_file="$1.c194-mutant" line replaced=0
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$line" = "IFS= read -r -d '' INPUT || true" ]; then
+    if [ "$line" = "master_read_all INPUT" ]; then
       printf '%s\n' 'INPUT="$(cat)"' >> "$replacement_file"
       replaced=$((replaced + 1))
     else

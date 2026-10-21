@@ -4,6 +4,18 @@ set -uo pipefail
 
 payload="$(cat 2>/dev/null || true)"
 root="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)}"
+
+# hq-cli returns without output for any source other than startup. Check it
+# here so resume/compact/clear do not pay for a node start (about 1.2-2.5s
+# measured). Anything this cannot parse falls through to the CLI, which keeps
+# the authoritative startup default and the HQ_DISABLED_HOOKS off switch.
+if command -v jq >/dev/null 2>&1; then
+  hook_source="$(printf '%s' "$payload" | jq -r 'if type == "object" and (.source | type) == "string" then .source else "" end' 2>/dev/null || true)"
+  if [ -n "$hook_source" ] && [ "$hook_source" != startup ]; then
+    exit 0
+  fi
+fi
+
 command -v hq >/dev/null 2>&1 || exit 0
 hq_bin="$(command -v hq)"
 

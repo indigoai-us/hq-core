@@ -128,6 +128,49 @@ jobs = workflow.get("jobs") if isinstance(workflow, dict) else None
 if not isinstance(jobs, dict):
     raise SystemExit("FAIL: .github/workflows/pr-checks.yml has no jobs mapping")
 
+
+def expand_grouped_jobs(raw_jobs: dict) -> dict:
+    """Split grouped runner jobs back into the former jobs they contain.
+
+    A grouped job (linux-checks-N) runs several former jobs as steps named
+    "[former-job] step name". Each former job is checked on its own: it gets
+    the group's leading unprefixed steps (checkout, setup-node) plus only its
+    own prefixed steps, with the prefix removed. A CLI install in one member
+    therefore never satisfies another member's requirement.
+    """
+    member_name = re.compile(r"^\[([a-z0-9-]+)\] ")
+    expanded: dict = {}
+    for job_name, job in raw_jobs.items():
+        if not isinstance(job, dict):
+            expanded[job_name] = job
+            continue
+        common: list = []
+        members: dict[str, list] = {}
+        for step in job.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            name = step.get("name")
+            match = member_name.match(name) if isinstance(name, str) else None
+            if match:
+                members.setdefault(match.group(1), []).append(
+                    {**step, "name": name[match.end():]}
+                )
+            elif not members:
+                common.append(step)
+        if not members:
+            expanded[job_name] = job
+            continue
+        for member, member_steps in members.items():
+            if member in expanded or member in raw_jobs:
+                raise SystemExit(
+                    f"FAIL: former job {member} in {job_name} is defined more than once"
+                )
+            expanded[member] = {"steps": common + member_steps}
+    return expanded
+
+
+jobs = expand_grouped_jobs(jobs)
+
 test_jobs: dict[str, set[str]] = defaultdict(set)
 jobs_with_hq_install: set[str] = set()
 # Find tests only when a workflow shell actually executes them. A raw test path
@@ -371,6 +414,28 @@ YAML
     echo "FAIL: CI contract environment negative control failed for an unexpected reason" >&2
     exit 1
   fi
+  # Grouped jobs: an install step in one former job must not cover a
+  # CLI-required test in another former job of the same group.
+  cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
+jobs:
+  linux-checks-1:
+    steps:
+      - uses: actions/checkout@v4
+      - name: "[installer] Install the pinned hq CLI"
+        run: bash core/scripts/ci/install-pinned-hq-cli.sh
+      - name: "[fixture] CLI-required fixture"
+        run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/cli-required-fixture.test.sh
+YAML
+  if FORWARDER_CI_CONTRACT_ROOT="$CONTRACT_FIXTURE" FORWARDER_CI_CONTRACT_FIXTURE=1 \
+    FORWARDER_CI_CONTRACT_SKIP_SELF_TEST=1 bash "${BASH_SOURCE[0]}" \
+      >"$CONTRACT_FIXTURE/grouped.out" 2>"$CONTRACT_FIXTURE/grouped.err"; then
+    echo "FAIL: CI contract let one grouped former job's CLI install cover another" >&2
+    exit 1
+  elif ! grep -F -q 'job fixture runs CLI-required test core/scripts/tests/cli-required-fixture.test.sh but lacks the pinned hq CLI install step' "$CONTRACT_FIXTURE/grouped.err"; then
+    cat "$CONTRACT_FIXTURE/grouped.err" >&2
+    echo "FAIL: grouped-job negative control failed for an unexpected reason" >&2
+    exit 1
+  fi
   cat > "$CONTRACT_FIXTURE/.github/workflows/pr-checks.yml" <<'YAML'
 jobs:
   cli-hosted-forwarders:
@@ -411,5 +476,5 @@ YAML
     FORWARDER_CI_CONTRACT_SKIP_SELF_TEST=1 bash "${BASH_SOURCE[0]}" \
       >"$CONTRACT_FIXTURE/positive.out" 2>"$CONTRACT_FIXTURE/positive.err" \
     || { cat "$CONTRACT_FIXTURE/positive.err" >&2; exit 1; }
-  echo "forwarder CI contract negative controls passed: a real-CLI test without an install step or required-mode environment, and a current CLI parity step without the required setup, fail"
+  echo "forwarder CI contract negative controls passed: a real-CLI test without an install step or required-mode environment, a grouped former job relying on another member's install, and a current CLI parity step without the required setup, fail"
 fi

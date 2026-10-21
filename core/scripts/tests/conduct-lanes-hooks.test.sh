@@ -73,7 +73,7 @@ printf '%s' "$PAYLOAD_LINK" > "$PAYLOAD"
 [ ! -s "$FAKE_CALLS" ] && [ ! -s "$TMP/out" ] || fail 'unlinked session called hq or emitted output'
 printf x > "$TMP/root/workspace/lanes-links/by-session/sid-1"
 
-for event in PostToolUse Stop SubagentStop; do
+for event in PostToolUse Stop; do
   : > "$FAKE_CALLS"
   PAYLOAD_LINK="{\"hookEventName\":\"$event\",\"sessionId\":\"sid-1\",\"marker\":\"$event payload\"}"
   printf '%s' "$PAYLOAD_LINK" > "$PAYLOAD"
@@ -83,6 +83,12 @@ for event in PostToolUse Stop SubagentStop; do
   grep -Fxq "lanes link _deliver --event $event" "$FAKE_CALLS" || fail "$event did not call the expected hq command"
   pass "linked $event delegates payload and output to hq lanes link _deliver"
 done
+
+: > "$FAKE_CALLS"
+printf '%s' '{"hookEventName":"SubagentStop","session_id":"sid-1","agent_id":"a1"}' > "$PAYLOAD"
+"$LINK" SubagentStop < "$PAYLOAD" > "$TMP/out" 2> "$TMP/err"
+[ ! -s "$FAKE_CALLS" ] && [ ! -s "$TMP/out" ] && [ ! -s "$TMP/err" ] || fail 'SubagentStop reached hq or emitted output'
+pass 'SubagentStop does not deliver the root message to the subagent'
 
 for bad in '{bad json' '{"session_id":"../sid-1"}' '{"session_id":"."}' '{"session_id":".."}' '{"session_id":42}'; do
   : > "$FAKE_CALLS"
@@ -99,10 +105,37 @@ pass 'PreToolUse does not deliver'
 
 jq -e '[.hooks.SessionStart[]?.hooks[]? | select(.id == "conduct-lanes-session-start")] | length == 1' "$ROOT/.claude/hooks/hook-registry.json" >/dev/null || fail 'new SessionStart hook is not registered once'
 jq -e '[.hooks.SessionStart[]?.hooks[]? | select(.id == "auto-conduct")] | length == 0' "$ROOT/.claude/hooks/hook-registry.json" >/dev/null || fail 'old and new SessionStart hooks are both registered'
-for event in PostToolUse Stop SubagentStop; do
+for event in PostToolUse Stop; do
   jq -e --arg event "$event" '[.hooks[$event][]?.hooks[]? | select(.id == "conduct-lanes-link-deliver")] | length == 1' "$ROOT/.claude/hooks/hook-registry.json" >/dev/null || fail "$event linked-session guard is not registered exactly once"
 done
-pass 'registry has one SessionStart conductor and all three delivery events'
+jq -e '[.hooks.SubagentStop[]?.hooks[]? | select(.id == "conduct-lanes-link-deliver")] | length == 0' "$ROOT/.claude/hooks/hook-registry.json" >/dev/null || fail 'SubagentStop still registers linked-session delivery'
+pass 'registry has one SessionStart conductor and the PostToolUse and Stop delivery events'
+
+# CI must run the root-only delivery suite and the Grok adapter suite on Linux
+# and under stock macOS Bash 3.2. Without these steps a later edit can drop the
+# agent_id child check, or reintroduce an unguarded empty-array expansion in the
+# Grok adapter, and every check stays green.
+WORKFLOW="$ROOT/.github/workflows/pr-checks.yml"
+job_block() { awk -v job="  $1:" '$0 == job { on = 1; print; next } on && /^  [A-Za-z0-9_-]+:$/ { exit } on { print }' "$WORKFLOW"; }
+# A grouped runner job (linux-checks-N) runs a former job as steps named
+# "[former-job] step name". Print only that member's steps, so another
+# member's step never satisfies the check.
+member_steps() { awk -v tag="    - name: \"[$1] " 'index($0, tag) == 1 { on = 1; print; next } /^    - / || /^  [A-Za-z0-9_-]+:$/ { on = 0 } on { print }' "$WORKFLOW"; }
+linux_job="$(job_block skill-script-refs)"
+linux_member="$(member_steps skill-script-refs)"
+macos_job="$(job_block shell-smoke-macos)"
+for suite in conduct-lanes-hooks conduct-lanes-link-deliver-root-only hq-grok-hook-adapter; do
+  grep -Fxq "        run: bash core/scripts/tests/$suite.test.sh" <<<"$linux_job" \
+    || grep -Fxq "      run: bash core/scripts/tests/$suite.test.sh" <<<"$linux_member" \
+    || fail "skill-script-refs CI job does not run $suite.test.sh"
+done
+for suite in conduct-lanes-link-deliver-root-only hq-grok-hook-adapter; do
+  grep -Fxq "        run: /bin/bash core/scripts/tests/$suite.test.sh" <<<"$macos_job" || fail "shell-smoke-macos CI job does not run $suite.test.sh under /bin/bash"
+done
+grep -Fq "':(glob).claude/hooks/**'" "$ROOT/core/scripts/ci/should-run-macos-shell-smoke.sh" \
+  && grep -Fq "':(glob).grok/hooks/**'" "$ROOT/core/scripts/ci/should-run-macos-shell-smoke.sh" \
+  || fail 'shell-smoke-macos no longer triggers on .claude/hooks or .grok/hooks changes'
+pass 'CI runs the root-only delivery and Grok adapter suites on Linux and under macOS /bin/bash'
 
 legacy_calls='conduct-pool\.sh|conduct-inbox\.sh|conduct-link\.sh|conduct-reap\.sh|conduct-lane-status\.sh|conduct-lane-launch\.sh|conduct-lane-wait\.sh'
 if grep -En "$legacy_calls" \

@@ -19,7 +19,7 @@ verified_against:
 HQ Desktop does not run agent sessions itself. Agent work runs in the user's
 own coding tool (Claude Code, Codex or Grok Build) against the HQ folder. The
 desktop connects to those tools in four ways: the Launch menu, per-item
-"Open in Claude Code" actions, local bots, and the Setup bot.
+"Open in Claude Code" actions, local bots, and your assistant.
 
 ## What was removed
 
@@ -100,7 +100,7 @@ See `hq-desktop-app.md` for personal vs company rules, handles and restore.
 
 ## Guided setup
 
-Guided setup is a conversation with the **Setup bot**, a personal local bot
+Guided setup is a conversation with **your assistant**, a personal local bot
 named `setup` created from `core/workers/public/setup`
 (`packages/ui/src/chat/setup-bot.ts`). It runs under whichever coding tool is
 signed in (Claude first, then Codex, then Grok). The bot works through the

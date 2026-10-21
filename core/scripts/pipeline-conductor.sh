@@ -191,12 +191,19 @@
 # A handoff with status `failed` re-queues the phase (the driver allows one
 # route-back). A handoff with status `blocked` holds the story as
 # blocked_needs_owner and writes one decision item: a rerun cannot help.
+# A malformed handoff (not JSON, not an object, a field the validator rejects,
+# or one the lane runner synthesized after it rejected the worker's reply)
+# is neither passed nor failed: accept copies it byte for byte to
+# handoffs/<id>-<phase>.malformed.<n>.json, leaves the file itself untouched,
+# holds the story as blocked_needs_owner with blocked.kind "needs_repair" and
+# the field names, writes decisions/<id>-blocked-<phase>.md, prints
+# PHASE_NEEDS_REPAIR <id> <phase> <decision> and exits 10.
 # A state dir from the previous version (a queued story whose newest archived
 # handoff, handoffs/<id>-<phase>.failed.<n>.json, says blocked) is read as
 # blocked_needs_owner, so resolve works on it without hand edits.
 #
 # Exit codes: 0 ok; 1 refused or failed; 2 usage; 3 lane capacity/admission (retry next tick);
-#   10 held for a parent decision (approval hold, or a blocked handoff on accept);
+#   10 held for a parent decision (approval hold, or a blocked or malformed handoff on accept);
 #   11 lane down: `hq lanes enqueue` returned `loop_not_running` or a terminal
 #      lane state. The worker mapping is dropped, the story stays queued, and
 #      route prints LANE_DOWN <id> <phase> <worker> ...; tick stops there.
@@ -209,7 +216,14 @@
 #   the /run-project regression cadence), PC_NOW (epoch seconds, for tests),
 #   PC_DEADLINE_MIN (default 120), PC_MAX_STORIES (default 3), PC_HQ_ROOT,
 #   PC_PARK_CONFIRM (default 5). PC_WORKERS_ROOT defaults to core/workers, every
-#   companies/*/workers and personal/workers.
+#   companies/*/workers and personal/workers. PC_WORKERS_REGISTRY (colon-separated
+#   registry.yaml files) and PC_PACKS_ROOT (colon-separated pack roots) default to
+#   core/workers/registry.yaml and core/packages, but only when PC_WORKERS_ROOT is
+#   left at its default; an explicit PC_WORKERS_ROOT reads no registry or pack
+#   unless those are set too. A worker id resolves by registry id first, then by
+#   the id a pack's worker.yaml declares, then by directory name. A plain directory
+#   outside the pack that carries a pack worker's id and directory name is a stale
+#   unpacked copy: the pack entry is used and stderr gets a warning.
 #
 # The conductor never writes `passes` into prd.json. A verified story is
 # reported; the parent session decides what to record.
@@ -227,8 +241,12 @@ if [ -z "${PC_WORKERS_ROOT:-}" ]; then
   PC_WORKERS_ROOT="$PC_HQ_ROOT/core/workers"
   for d in "$PC_HQ_ROOT"/companies/*/workers; do [ -d "$d" ] && PC_WORKERS_ROOT="$PC_WORKERS_ROOT:$d"; done
   PC_WORKERS_ROOT="$PC_WORKERS_ROOT:$PC_HQ_ROOT/personal/workers"
+  PC_WORKERS_REGISTRY="${PC_WORKERS_REGISTRY:-$PC_HQ_ROOT/core/workers/registry.yaml}"
+  PC_PACKS_ROOT="${PC_PACKS_ROOT:-$PC_HQ_ROOT/core/packages}"
 fi
 export PC_WORKERS_ROOT
+export PC_WORKERS_REGISTRY="${PC_WORKERS_REGISTRY:-}"
+export PC_PACKS_ROOT="${PC_PACKS_ROOT:-}"
 export PC_GATE_EVERY="${PC_GATE_EVERY:-3}"
 export PC_DEADLINE_MIN="${PC_DEADLINE_MIN:-120}"
 export PC_MAX_STORIES="${PC_MAX_STORIES:-3}"
@@ -499,6 +517,7 @@ function realpath(filename) {
 }
 function exists(p) { try { fs.statSync(p); return true; } catch (e) { return false; } }
 function isdir(p) { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } }
+function isfile(p) { try { return fs.statSync(p).isFile(); } catch (e) { return false; } }
 function islink(p) { const s = lstatOk(p); return !!s && s.isSymbolicLink(); }
 function readText(p) { return fs.readFileSync(p, "utf8"); }
 function writeText(p, s) { fs.writeFileSync(p, s, "utf8"); }
@@ -1383,9 +1402,75 @@ function do_classify(p, sid, raw) {
 // ---------- worker.yaml ----------
 const SKIP_DIRS = ["node_modules", ".git", "dist"];
 
-function find_worker_yaml(w) {
-  for (const root of E.PC_WORKERS_ROOT.split(":")) {
-    if (!root || !isdir(root)) continue;
+// A worker id is resolved in this order:
+//   1. its registry id: an `id:` entry in a PC_WORKERS_REGISTRY file (core/workers/registry.yaml by default),
+//      whose `path:` (read from the HQ root) holds a worker.yaml under a worker root or a pack root;
+//   2. its pack id: the worker.id of a worker.yaml a pack under PC_PACKS_ROOT ships (core/packages by default);
+//   3. its directory name under a worker root (the older keying, kept as the fallback).
+// hq lanes keys workers by registry id (dev-qa-tester lives in dev-team/qa-tester), so the directory name
+// alone cannot find every worker. A registry entry always wins, so a worker the release ships under
+// core/workers next to a pack copy keeps its registered path. A directory outside the packs that the
+// registry does not list, with the directory name of a pack worker of that id, is a stale unpacked copy
+// that the older lookup would have picked instead of the pack mount: the pack entry wins and a warning
+// names the stale directory.
+function split_roots(v) { return S(v || "").split(":").filter(r => r && isdir(r)); }
+function canon(p) { try { return real(p); } catch (e) { return abspath(p); } }
+function within(p, roots) {
+  const rp = canon(p);
+  return roots.some(r => {
+    const rr = canon(r).replace(/[\\/]+$/, "");
+    return rp === rr || rp.startsWith(rr + "/") || rp.startsWith(rr + "\\");
+  });
+}
+
+let _REGISTRY = null;
+function registry_index() {
+  // id -> worker.yaml path, from every PC_WORKERS_REGISTRY file; the first file that names an id wins.
+  if (_REGISTRY === null) {
+    _REGISTRY = new Map();
+    for (const f of S(E.PC_WORKERS_REGISTRY || "").split(":").filter(Boolean)) {
+      let text;
+      try { text = readText(f); } catch (e) { continue; }
+      // An entry starts at its "- " line; id and path may come in either order within it.
+      let ent = {};
+      const flush = () => {
+        if (ent.id && ent.path && !_REGISTRY.has(ent.id)) _REGISTRY.set(ent.id, pjoin(real(ent.path), "worker.yaml"));
+      };
+      for (const line of text.split(/\r?\n/)) {
+        if (/^\s*-\s/.test(line)) { flush(); ent = {}; }
+        const m = /^\s*(-\s+)?(id|path):\s*["']?([^"'#]*?)["']?\s*(#.*)?$/.exec(line);
+        if (m && strip(m[3])) ent[m[2]] = strip(m[3]);
+      }
+      flush();
+    }
+  }
+  return _REGISTRY;
+}
+
+let _PACKS = null;
+function pack_index() {
+  // id -> {yaml, pack} for every worker.yaml under <pack root>/<pack>/workers; the first one found wins.
+  if (_PACKS === null) {
+    _PACKS = new Map();
+    for (const root of split_roots(E.PC_PACKS_ROOT)) {
+      for (const pack of sortedStr(listdir(root))) {
+        const wroot = pjoin(root, pack, "workers");
+        if (!isdir(wroot)) continue;
+        for (const ent of walk(wroot)) {
+          ent[1] = ent[1].filter(d => !SKIP_DIRS.includes(d));
+          if (!ent[2].includes("worker.yaml")) continue;
+          const y = pjoin(ent[0], "worker.yaml");
+          const id = yaml_field(y, "id") || basename(ent[0]);
+          if (!_PACKS.has(id)) _PACKS.set(id, { yaml: y, pack: pack });
+        }
+      }
+    }
+  }
+  return _PACKS;
+}
+
+function dir_worker_yaml(w) {
+  for (const root of split_roots(E.PC_WORKERS_ROOT)) {
     for (const ent of walk(root)) {
       ent[1] = ent[1].filter(d => !SKIP_DIRS.includes(d));
       if (basename(ent[0]) === w && ent[2].includes("worker.yaml")) return pjoin(ent[0], "worker.yaml");
@@ -1394,17 +1479,42 @@ function find_worker_yaml(w) {
   return null;
 }
 
+const _WORKER_YAML = new Map();
+function find_worker_yaml(w) {
+  if (!_WORKER_YAML.has(w)) _WORKER_YAML.set(w, resolve_worker_yaml(w));
+  return _WORKER_YAML.get(w);
+}
+
+function resolve_worker_yaml(w) {
+  if (!T(w)) return null;
+  const packs = split_roots(E.PC_PACKS_ROOT);
+  const allowed = split_roots(E.PC_WORKERS_ROOT).concat(packs);
+  const reg = registry_index().get(w);
+  const pk = pack_index().get(w) || null;
+  if (reg && isfile(reg) && within(reg, allowed)) return reg;
+  const d = dir_worker_yaml(w);
+  if (!pk) return d;
+  if (d && canon(d) !== canon(pk.yaml) && !within(d, packs) && basename(dirname(d)) === basename(dirname(pk.yaml)) &&
+      !/(^|[\\/])_overrides([\\/]|$)/.test(d)) {
+    eprint("pipeline-conductor: warning: worker " + w + ": " + dirname(d) + " is a stale unpacked copy that " +
+           "shadows the " + pk.pack + " pack mount and is not in the workers registry; using " + dirname(pk.yaml));
+  }
+  return pk.yaml;
+}
+
 let _KNOWN = null;
 function known_workers() {
   if (_KNOWN === null) {
     const out = new Set();
-    for (const root of E.PC_WORKERS_ROOT.split(":")) {
-      if (!root || !isdir(root)) continue;
+    for (const root of split_roots(E.PC_WORKERS_ROOT)) {
       for (const ent of walk(root)) {
         ent[1] = ent[1].filter(d => !SKIP_DIRS.includes(d));
         if (ent[2].includes("worker.yaml")) out.add(basename(ent[0]));
       }
     }
+    const allowed = split_roots(E.PC_WORKERS_ROOT).concat(split_roots(E.PC_PACKS_ROOT));
+    for (const [id, y] of registry_index()) if (isfile(y) && within(y, allowed)) out.add(id);
+    for (const id of pack_index().keys()) out.add(id);
     _KNOWN = sortedStr(out);
   }
   return _KNOWN;
@@ -1780,12 +1890,96 @@ function do_route(p, sid) {
 }
 
 // ---------- accept ----------
+// A handoff the lane runner wrote in place of the worker's reply: its summary
+// starts with SYNTH_PREFIX (workflow-runner.mjs failedHandoff, and the hq-cli
+// lanes runner that mirrors it) or it carries synthesized_by. One written
+// because the worker's reply was rejected stands in for a handoff the worker
+// did produce, so it is never taken as the worker's own. One written because
+// the engine call itself failed (engine error, deadline) has no worker reply
+// behind it and stays on the early-exit path.
+const SYNTH_PREFIX = "phase did not produce a valid handoff: ";
+function synthesized_reply(h) {
+  if (!isDict(h)) return null;
+  const summary = typeof get(h, "summary") === "string" ? h.summary : "";
+  if (!T(get(h, "synthesized_by")) && !summary.startsWith(SYNTH_PREFIX)) return null;
+  const why = typeof get(h, "notes") === "string" && strip(h.notes) ? strip(h.notes)
+    : strip(summary.startsWith(SYNTH_PREFIX) ? summary.slice(SYNTH_PREFIX.length) : summary);
+  return /^(reply |handoff check failed)/.test(why) ? why : null;
+}
+
+// malformed_handoff <path>: null for a well-formed worker handoff, else
+// {reason, fields, synthetic}: the file is not JSON, is not an object, fails the
+// handoff validator (reason names the field), or was synthesized by the runner.
+function malformed_handoff(src) {
+  let h;
+  try { h = JSON.parse(readText(src)); } catch (e) {
+    return { reason: "not valid JSON: " + String(e.message || e).split("\n")[0], fields: [], synthetic: false };
+  }
+  if (!isDict(h)) return { reason: "top level must be a JSON object", fields: [], synthetic: false };
+  const [ok, why] = validate(src, "handoff");
+  if (!ok) {
+    const fields = [];
+    for (const line of String(why).split("\n")) {
+      const m = /^(?:missing field|wrong type): ([^ ]+)/.exec(strip(line));
+      if (m && !fields.includes(m[1])) fields.push(m[1]);
+    }
+    return { reason: String(why).split("\n").map(strip).filter(Boolean).join("; "), fields: fields, synthetic: false };
+  }
+  const synth = synthesized_reply(h);
+  if (synth !== null)
+    return { reason: "runner-synthesized handoff, not the worker's own: " + synth, fields: [], synthetic: true,
+             worker_handoff: typeof get(h, "worker_handoff") === "string" ? h.worker_handoff : null };
+  return null;
+}
+
+// needs_repair: hold an in-flight story whose handoff is malformed. The file is
+// left as it is; a byte-for-byte copy goes to handoffs/<id>-<phase>.malformed.<n>.json
+// first, so no later rewrite (an early-exit handoff, a retry's archive) can lose it.
+function needs_repair(st, src, bad) {
+  const sid = st.id; const ph = st.phases[st.current];
+  let n = 1;
+  while (exists(sp("handoffs", sid + "-" + ph.phase + ".malformed." + n + ".json"))) n += 1;
+  const backup = sp("handoffs", sid + "-" + ph.phase + ".malformed." + n + ".json");
+  fs.copyFileSync(src, backup);
+  const attempts = archives(sid, ph.phase).length + 1;
+  st.state = "blocked_needs_owner";
+  st.blocked = { phase: ph.phase, worker: ph.worker, handoff: abspath(src), backup: abspath(backup), kind: "needs_repair",
+                 text: "handoff needs repair: " + bad.reason, fields: bad.fields, synthetic: bad.synthetic,
+                 at: iso(now()), attempts: attempts };
+  if (bad.worker_handoff) st.blocked.worker_handoff = bad.worker_handoff;
+  pop(st, "owner_retry");
+  const dp = decision_path(sid, ph.phase);
+  writeText(dp,
+    "# Decision: " + S(sid) + " needs repair at its " + S(ph.phase) + " phase\n\n" +
+    "- story: " + S(sid) + " (" + S(get(st, "title", "")) + ")\n- phase: " + S(ph.phase) + "\n- lane: " + S(ph.worker) +
+    "\n- handoff: " + abspath(src) + " (left as written)\n- copy: " + abspath(backup) +
+    (bad.fields.length ? "\n- fields: " + bad.fields.join(", ") : "") + "\n- status: pending\n\n" +
+    "## What is wrong with the handoff\n\n" + bad.reason + "\n\n" +
+    (bad.synthetic
+      ? "The lane runner wrote this handoff after it rejected the worker's reply. It is not the worker's own " +
+        "handoff, so the phase was neither passed nor failed. " +
+        (bad.worker_handoff ? "The runner kept the worker's file at " + bad.worker_handoff + ".\n\n"
+          : "Check the lane's journal and results for the reply.\n\n")
+      : "The phase was neither passed nor failed: the handoff could not be read as the worker's result.\n\n") +
+    "## Resolutions (run one after the owner answers, then restart the driver)\n\n" +
+    "- Run the phase again (the copy above stays for the record):\n" +
+    "  pipeline-conductor.sh resolve --state " + STATE + " --story " + S(sid) + " --as retry --note \"<owner's answer>\"\n" +
+    "- Accept as a partial draft (dependents may start; passes is not set):\n" +
+    "  pipeline-conductor.sh resolve --state " + STATE + " --story " + S(sid) + " --as accepted-partial --note \"<owner's reason>\"\n" +
+    "- Set the story and its dependents aside:\n" +
+    "  pipeline-conductor.sh park --state " + STATE + " --story " + S(sid) + " --note \"<why>\"\n");
+  jsave(sfile(sid), st);
+  print("PHASE_NEEDS_REPAIR " + sid + " " + S(ph.phase) + " " + dp);
+  exit(10);
+}
+
 function do_accept(sid) {
   const st = sload(sid);
   const src = E.PC_HANDOFF;
   if (!src || !exists(src)) die("--handoff file required");
-  const [ok, why] = validate(src, "handoff");
-  if (!ok) die("invalid handoff: " + why);
+  const bad = malformed_handoff(src);
+  if (bad !== null && st.state === "in_flight") needs_repair(st, src, bad);
+  if (bad !== null) die("invalid handoff: " + bad.reason);
   const h = jload(src);
   if (st.state !== "in_flight")
     die("story " + sid + " is " + S(st.state) + ", not in_flight; refusing handoff");

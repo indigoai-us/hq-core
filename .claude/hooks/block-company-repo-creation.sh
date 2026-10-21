@@ -8,13 +8,23 @@ set -uo pipefail
 if [[ "${HQ_HOOK_TOOL_NAME+set}" == set && "$HQ_HOOK_TOOL_NAME" != "Bash" ]]; then
   exit 0
 fi
+CMD_FROM_PAYLOAD=0
 if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
   CMD="$HQ_HOOK_COMMAND"
   TOOL_CWD="${HQ_HOOK_CWD:-}"
 else
-  INPUT="$(cat)"
-  CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
-  TOOL_CWD="${HQ_HOOK_CWD:-$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)}"
+  # master-hook leaves HQ_HOOK_COMMAND unset for commands over its env cap,
+  # and the adapters never set it. Read command and cwd in one NUL-framed
+  # `jq -j` call: `jq -r` inside $(...) would leave jq.exe's CR on the last
+  # line once the substitution strips the trailing LF. CRLF is collapsed
+  # after hook-lib.sh is sourced below.
+  CMD_FROM_PAYLOAD=1
+  PAYLOAD_CWD=""
+  exec 3< <(jq -j '(.tool_input.command // ""), "\u0000", (if (.cwd | type) == "string" then .cwd else "" end), "\u0000"' 2>/dev/null)
+  IFS= read -r -d '' CMD <&3 || true
+  IFS= read -r -d '' PAYLOAD_CWD <&3 || true
+  exec 3<&-
+  TOOL_CWD="${HQ_HOOK_CWD:-$PAYLOAD_CWD}"
 fi
 [[ -n "$CMD" ]] || exit 0
 
@@ -36,14 +46,20 @@ fi
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$HOOK_ROOT/core/scripts/hook-lib.sh"
+[[ "$CMD_FROM_PAYLOAD" -eq 1 ]] && hq_crlf_to_lf CMD TOOL_CWD
 
 norm() {
   local path="$1" base="${2:-$PROJECT_DIR}" resolved tilde_prefix
   tilde_prefix="$(printf '\176/')"
+  # C:/ and C:\ are absolute. hq_canonical_path rewrites an existing
+  # /tmp/... root to C:/... on Git Bash, and this function is then called
+  # again for "$HQ_ROOT/companies". Treating that drive path as relative
+  # prepends the project dir, so the companies root never matches and a
+  # clone into companies/ is allowed.
   case "$path" in
     "~") path="$HOME" ;;
     "$tilde_prefix"*) path="$HOME/${path#"$tilde_prefix"}" ;;
-    /*) ;;
+    /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;
     *) path="$base/$path" ;;
   esac
   resolved="$(hq_realpath_lenient "$path" 2>/dev/null || hq_normpath "$path" 2>/dev/null || printf '%s' "$path")"

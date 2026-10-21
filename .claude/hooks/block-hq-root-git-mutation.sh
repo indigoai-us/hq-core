@@ -53,13 +53,23 @@ set -uo pipefail
 if [[ "${HQ_HOOK_TOOL_NAME+set}" == set && "$HQ_HOOK_TOOL_NAME" != "Bash" ]]; then
   exit 0
 fi
+CMD_FROM_PAYLOAD=0
 if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
   CMD="$HQ_HOOK_COMMAND"
   TOOL_CWD="${HQ_HOOK_CWD:-}"
 else
-  INPUT=$(cat)
-  CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
-  TOOL_CWD="${HQ_HOOK_CWD:-$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)}"
+  # master-hook leaves HQ_HOOK_COMMAND unset for commands over its env cap,
+  # and the adapters never set it. Read command and cwd in one NUL-framed
+  # `jq -j` call: `jq -r` inside $(...) would leave jq.exe's CR on the last
+  # line once the substitution strips the trailing LF. CRLF is collapsed
+  # after hook-lib.sh is sourced below.
+  CMD_FROM_PAYLOAD=1
+  PAYLOAD_CWD=""
+  exec 3< <(jq -j '(.tool_input.command // ""), "\u0000", (if (.cwd | type) == "string" then .cwd else "" end), "\u0000"' 2>/dev/null)
+  IFS= read -r -d '' CMD <&3 || true
+  IFS= read -r -d '' PAYLOAD_CWD <&3 || true
+  exec 3<&-
+  TOOL_CWD="${HQ_HOOK_CWD:-$PAYLOAD_CWD}"
 fi
 [[ -z "$CMD" ]] && exit 0
 
@@ -78,6 +88,7 @@ fi
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$HOOK_ROOT/core/scripts/hook-lib.sh"
+[[ "$CMD_FROM_PAYLOAD" -eq 1 ]] && hq_crlf_to_lf CMD TOOL_CWD
 CMD="$(hq_shell_strip_standalone_data_heredoc "$CMD")"
 
 STRICT_GIT_GUARD=0
@@ -771,18 +782,35 @@ if [[ $GIT_IS_MUTATION -eq 1 && $GIT_MUTATION_COUNT -eq 1 && $GH_IS_MUTATION -eq
   fi
 fi
 
+# HQ's own git dir, for the comparisons below. If HQ_ROOT has a .git entry but
+# git cannot resolve it (dubious ownership, a broken gitdir file, a path
+# spelling git rejects), an empty value would make every comparison allow.
+# Deny instead: the target cannot be proven to be outside the HQ repo.
+hq_root_git_dir() {
+  hq_git="$(git -C "$HQ_ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  if [[ -z "$hq_git" ]] && [[ -e "$HQ_ROOT/.git" || -L "$HQ_ROOT/.git" ]]; then
+    block "HQ root has a .git entry, but git could not resolve its git dir. Cannot prove the target is outside the HQ root repo."
+  fi
+}
+
 # Block when a git anchor path resolves to the HQ root repository.
+# Compare git's own absolute git dir for both paths. norm(PROJECT_DIR) and
+# norm(git show-toplevel) are different strings on Git Bash when one side is
+# /tmp and the other is C:/Users/.../Temp, or when a drive path was prefixed
+# onto HQ_ROOT because it did not match "/*". Git prints one spelling for
+# both -C invocations, so that comparison still matches.
 check_anchor_not_hq_root() {
-  local kind="$1" path="$2" resolved toplevel grok_worktrees
-  case "$path" in
-    /*|\~*) resolved="$path" ;;
-    *)      resolved="$HQ_ROOT/$path" ;;
-  esac
+  local kind="$1" path="$2" resolved target_git hq_git grok_worktrees
+  if hq_path_is_absolute "$path" || [[ "$path" == \~* ]]; then
+    resolved="$path"
+  else
+    resolved="$HQ_ROOT/$path"
+  fi
   resolved="$(norm "$resolved")"
-  toplevel="$(git -C "$resolved" rev-parse --show-toplevel 2>/dev/null || true)"
-  [[ -n "$toplevel" ]] || return 0
-  toplevel="$(norm "$toplevel")"
-  [[ "$toplevel" == "$HQ_ROOT" ]] || return 0
+  target_git="$(git -C "$resolved" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [[ -n "$target_git" ]] || return 0
+  hq_root_git_dir
+  [[ -n "$hq_git" && "$(norm "$target_git")" == "$(norm "$hq_git")" ]] || return 0
   # grok --worktree materializes a full HQ-shaped clone under
   # ~/.grok/worktrees. The adapter then adopts that clone as HQ_ROOT, so
   # every `git -C <worktree>` looks like a mutation of the orchestration
@@ -841,8 +869,11 @@ if [[ -z "$ANCHOR_PATH" ]]; then
   # effective cwd is HQ root (or not a repo) remain blocked: that is the
   # incident class this hook exists for.
   if [[ -n "$TOOL_CWD" ]]; then
-    CWD_TOP="$(git -C "$TOOL_CWD" rev-parse --show-toplevel 2>/dev/null || true)"
-    if [[ -n "$CWD_TOP" && "$(norm "$CWD_TOP")" != "$HQ_ROOT" ]]; then
+    # Same git-dir comparison as the -C check. A /tmp cwd whose git toplevel
+    # is C:/Users/.../Temp used to look like a different repo and allow.
+    cwd_git="$(git -C "$TOOL_CWD" rev-parse --absolute-git-dir 2>/dev/null || true)"
+    [[ -n "$cwd_git" ]] && hq_root_git_dir
+    if [[ -n "$cwd_git" && "$(norm "$cwd_git")" != "$(norm "$hq_git")" ]]; then
       exit 0
     fi
   fi

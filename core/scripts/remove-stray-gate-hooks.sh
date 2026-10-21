@@ -5,7 +5,10 @@ HQ_ROOT="${1:-${CLAUDE_PROJECT_DIR:-$(pwd)}}"
 CLAUDE_DIR="$HQ_ROOT/.claude"
 BASE="$CLAUDE_DIR/settings.json"
 [ -f "$BASE" ] || exit 0
-grep -q 'master-hook\.sh' "$BASE" 2>/dev/null || exit 0
+# The dispatcher is either the master-hook.sh bash line or, with the
+# hook-engine-launcher flag on, the pinned engine in exec form under
+# ~/.hq/bin/hq-hook/<semver>/ (written by restore-hook-settings.sh or hq reindex).
+grep -Eq 'master-hook\.sh|\.hq[\\/]+bin[\\/]+hq-hook[\\/]+[0-9]' "$BASE" 2>/dev/null || exit 0
 
 if [ -f "$HQ_ROOT/core/scripts/hook-lib.sh" ]; then
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null
@@ -151,7 +154,8 @@ cleaned_json() {
   fi
 }
 
-STAMP="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo now)"
+# The PID suffix keeps two heals within the same second from sharing a backup dir.
+STAMP="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo now)-$$"
 for FILE in "$BASE" "$CLAUDE_DIR/settings.local.json"; do
   [ -f "$FILE" ] || continue
   N="$(count_stray "$FILE" | tr -dc '0-9')"

@@ -165,7 +165,15 @@ bytes="$(printf '%s' "$out" | wc -c | tr -d ' ')"
 [ "$bytes" -lt "$HOST_LIMIT" ] || fail "emission is $bytes bytes, host would truncate"
 grep -q 'Output ceiling of' <<<"$out" || fail "over-ceiling fallback must be announced: $out"
 grep -q '^> Policy `hard-01`' <<<"$out" || fail "policies must still be listed as summaries"
-grep -q 'HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY HARDBODY ' <<<"$out" && fail "full bodies must be dropped in the fallback"
+# Only the top-ranked HARD rule keeps its full text; every other one is a
+# summary line, and the notice names the kept rule.
+full_count="$(grep -c '^> Policy `hard-[0-9]*` (HARD — binding rule from `' <<<"$out" || true)"
+[ "$full_count" = 1 ] || fail "fallback must keep exactly one full HARD body, kept $full_count: $out"
+kept="$(sed -nE 's/^> Policy `(hard-[0-9]+)` \(HARD — binding rule from `.*/\1/p' <<<"$out")"
+grep -q "HARD policy \`$kept\` keeps its full text as the top-ranked match" <<<"$out" \
+  || fail "fallback notice must name the kept HARD rule $kept: $out"
+body_lines="$(grep -c '^> HARDBODY' <<<"$out" || true)"
+[ "$body_lines" = 1 ] || fail "only the kept rule's body may appear, found $body_lines body lines"
 grep -q '</policy-reminder>' <<<"$out" || fail "reminder block must close"
 # 2c. the ledger recorded each slug exactly once despite the double emission
 led="$(ls "$FX/workspace/orchestrator/policy-trigger-state/"*.txt | tail -1)"

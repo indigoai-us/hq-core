@@ -22,6 +22,10 @@
 # super-conductor-prefs.mjs, re-read on every line so a preference saved
 # mid-run applies on the next wake. Falls back to sessions,hq_dms.
 #
+# With --state, every wake after the first runs super-conductor-sweep-check.mjs
+# verify against the previous wake's time and prints a SWEEP-INCOMPLETE line
+# for any selected channel, workspace, or account without sweep evidence.
+#
 # Exit: 0 when the link closes (the conductor is off), 1 after repeated waiter
 # errors, 2 on bad arguments.
 set -uo pipefail
@@ -82,7 +86,26 @@ current_channels() {
 resume_hint="Run the /super-conductor wakeup (Step 7)"
 [[ -n "$state" ]] && resume_hint="Read $state, then run the /super-conductor wakeup (Step 7)"
 
+SWEEP_JS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-conductor-sweep-check.mjs"
+prev_wake=""
+
+# Before each wake line, verify the save file's sweep evidence against the
+# previous wake. A short sweep prints SWEEP-INCOMPLETE naming what was missed.
+check_sweep() {
+  [[ -n "$state" && -n "$prev_wake" ]] || return 0
+  command -v node >/dev/null 2>&1 && [[ -f "$SWEEP_JS" ]] || return 0
+  local args=(verify --state "$state" --since "$prev_wake") line
+  [[ -n "$channels" ]] && args+=(--channels "$channels")
+  if ! line="$(node "$SWEEP_JS" "${args[@]}" 2>&1)"; then
+    printf 'SUPER-CONDUCTOR SWEEP-INCOMPLETE %s | %s | The last wakeup did not sweep every selected channel. Sweep the missing ones now and record evidence; never report "nothing new" for an unswept channel.\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${line:0:600}"
+  fi
+}
+
 emit() { # kind detail
+  case "$1" in
+    TICK|REPORT|WAITER-ERROR) check_sweep; prev_wake="$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+  esac
   printf 'SUPER-CONDUCTOR %s %s | channels: %s | %s.\n' \
     "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(current_channels)" "$2"
 }

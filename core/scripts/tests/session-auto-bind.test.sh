@@ -175,6 +175,27 @@ HQ_PARENT_SESSION_ID=parent-sid session_auto_bind_apply "$TMP" "child-sid"
   || fail "child did not inherit parent indigo"
 pass "child inherits parent company_slug"
 
+# DEV-4034 (c): the parent id is a path segment. A path-like id or a
+# symlinked parent folder never supplies a company, and a refused parent
+# never creates the child's folder through a parent-sourced bind.
+mkdir -p "$TMP/elsewhere/sessions/evil"
+printf 'session_id: evil\ncompany_slug: otherco\n' > "$TMP/elsewhere/sessions/evil/meta.yaml"
+ln -s "$TMP/elsewhere/sessions/evil" "$TMP/workspace/sessions/parent-link"
+mkdir -p "$TMP/workspace/sessions/parent-metalink"
+ln -s "$TMP/elsewhere/sessions/evil/meta.yaml" "$TMP/workspace/sessions/parent-metalink/meta.yaml"
+for bad_parent in '../../elsewhere/sessions/evil' 'a/b' '..' 'parent-link' 'parent-metalink'; do
+  rm -rf "$TMP/workspace/sessions/child-bad"
+  HQ_PARENT_SESSION_ID="$bad_parent" session_auto_bind_apply "$TMP" "child-bad"
+  [ -z "$(session_auto_bind_meta_slug "$TMP" "child-bad")" ] \
+    || fail "parent id '$bad_parent' bound a company"
+  [ ! -e "$TMP/workspace/sessions/child-bad" ] \
+    || fail "parent id '$bad_parent' created the child folder"
+done
+[ "$(session_auto_bind_resolve "$TMP" "child-bad" "../../elsewhere/sessions/evil")" = "" ] \
+  || fail "explicit path-like parent argument resolved a company"
+rm -rf "$TMP/workspace/sessions/parent-link" "$TMP/workspace/sessions/parent-metalink" "$TMP/elsewhere"
+pass "path-like or symlinked parent ids bind nothing"
+
 echo "== device default binds only when unbound =="
 unset HQ_SPAWN_COMPANY HQ_PARENT_SESSION_ID HQ_AGENT_WORKDIR HQ_AGENT_COMPANY_DIR HQ_AGENT_IDENTITY_FILE HQ_AGENT_ROOT_PREFIX || true
 rm -rf "$TMP/workspace/sessions/child-sid"

@@ -1,0 +1,88 @@
+name: codex-windows-hooks
+
+# Real Codex on Windows. Starts the pinned Codex CLI against a local fake model
+# with a fresh HQ root built from this commit, so Codex runs the hooks in
+# .codex/config.toml through its session shell (PowerShell on a default
+# Windows setup). Checks that `git commit` in the HQ root and a company deny
+# hook are both denied, and that a harmless command runs. See
+# .github/codex-windows-hooks/run.ps1. The Windows launcher runtime test runs
+# in the pr-checks codex-windows-hook-launcher job, so it is not repeated here.
+#
+# GitHub-hosted Windows never runs on pull requests, to keep Actions cost
+# down. This check runs on manual workflow_dispatch, nightly, and on stable
+# release tags (v*, never v*-* pre-release tags), the same tag filter as
+# pr-checks. pr-checks-minimal-actions.test.sh pins these triggers. The fake
+# model needs no credentials or network.
+on:
+  push:
+    # Stable release tags only: v* runs, and any pre-release tag (v*-*) is
+    # excluded.
+    tags: ['v*', '!v*-*']
+  schedule:
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-windows-hooks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-codex:
+    name: codex-windows-hooks
+    # A repository variable can move staging onto other Windows runners;
+    # hq-core, fork PRs and an unset variable use windows-latest.
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_WINDOWS || '"windows-latest"') || 'windows-latest' }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CODEX_VERSION: 0.163.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install the Codex CLI
+        run: |
+          npm install -g "@openai/codex@$env:CODEX_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "npm install failed: $LASTEXITCODE" }
+          $root = (npm root -g).Trim()
+          $exe = Get-ChildItem -Path "$root\@openai" -Recurse -Filter codex.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw "codex.exe not found under $root\@openai" }
+          & $exe.FullName --version
+          "CWH_CODEX=$($exe.FullName)" >> $env:GITHUB_ENV
+
+      - name: Build an HQ root from this commit
+        run: |
+          $T = Join-Path $env:RUNNER_TEMP 'cwh'
+          $HQ = Join-Path $T 'hq'
+          New-Item -ItemType Directory -Force $HQ | Out-Null
+          git archive --format=tar -o "$T\hq.tar" HEAD
+          tar -xf "$T\hq.tar" -C $HQ
+          if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+          git -C $HQ init -q
+          git -C $HQ config user.name hq-ci
+          git -C $HQ config user.email hq-ci@example.invalid
+          git -C $HQ config commit.gpgsign false
+          git -C $HQ add -A
+          git -C $HQ commit -qm 'HQ root for the Codex hook check'
+          if ($LASTEXITCODE -ne 0) { throw "git commit failed: $LASTEXITCODE" }
+          "CWH_HQ=$HQ" >> $env:GITHUB_ENV
+          "CWH_OUT=$T\evidence" >> $env:GITHUB_ENV
+
+      - name: Real Codex runs HQ hooks (deny git commit, deny company hook, allow)
+        run: ./.github/codex-windows-hooks/run.ps1
+
+      - name: Upload evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codex-windows-hooks-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cwh/evidence
+          if-no-files-found: warn

@@ -20,12 +20,37 @@
 #
 # "Current session" is resolved by core/scripts/lib/session-id.sh: the session id
 # exported into this process wins, and workspace/sessions/.current is only a
-# fallback. .current is a single global pointer rewritten by every hook event, so
+# read-only diagnostic fallback. Writes require explicit or harness identity.
+# .current is a single global pointer rewritten by every hook event, so
 # with concurrent sessions it can name someone else's session — trusting it made
 # `set company_slug` write to the wrong session's meta.yaml while the calling
 # session stayed unbound and blocked by the scope guard.
 
 set -euo pipefail
+
+# Metadata writes must never inherit the global last-writer pointer. Enforce
+# before CLI forwarding as older CLI-hosted bundles also contain that fallback.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/session-id.sh"
+hq_session_require_write_identity() {
+  local explicit='' id=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --session-id) explicit="${2:-}"; [ "$#" -ge 2 ] || return 1; shift 2 ;;
+      --session-id=*) explicit="${1#--session-id=}"; shift ;;
+      *) break ;;
+    esac
+  done
+  case "${1:-}" in
+    set|add|remove)
+      if [ -n "$explicit" ]; then id="$explicit"; else id="$(session_id_from_env)"; fi
+      if ! session_id_is_valid "$id"; then
+        echo 'hq-session: metadata write requires caller session identity; pass --session-id <id> from the scope hook or run from an identified harness. workspace/sessions/.current is read-only diagnostic fallback.' >&2
+        return 1
+      fi
+      ;;
+  esac
+}
+hq_session_require_write_identity "$@" || exit 1
 
 # Prefer the CLI-hosted implementation only when it advertises the exact-company
 # directory check. Older CLI bundles may recognize hq-session but still accept

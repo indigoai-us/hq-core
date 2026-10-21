@@ -77,11 +77,11 @@ permissions:
   contents: read
 
 concurrency:
-  # Serialize per ref. On rapid pushes the latest wins — it force-updates the
-  # standing branch with the freshest staging tree, so cancelling an in-flight
-  # run is safe (the next run re-syncs from scratch).
+  # Serialize per ref. A promote run is never cancelled: a run stopped part way
+  # can leave the standing hq-core branch or its PR half-updated. Queued runs
+  # wait, and each re-syncs the full staging tree.
   group: promote-to-hq-core-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   promote:
@@ -90,7 +90,7 @@ jobs:
     # itself; the guard keeps it inert there (a push to hq-core main must never
     # promote hq-core into itself).
     if: github.repository == 'indigoai-us/hq-core-staging'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     env:
       HQ_AUDIT_BOT_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
       HQ_AUDIT_BOT_PRIVATE_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}

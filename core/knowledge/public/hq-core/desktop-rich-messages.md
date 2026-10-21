@@ -88,9 +88,9 @@ These two kinds draw nothing inside the message bubble. The app places them
 itself, and they add nothing to the plain-text fallback. A message whose body
 is only one of these blocks shows no empty bubble.
 
-In the current app (0.10.347) the host acts on them only in the **Setup bot's
-DM** (the local bot named `setup`). Other bots can send them, but they will
-not render.
+In the current app (0.10.347) the host acts on them only in **your
+assistant's DM** (the local bot named `setup`). Other bots can send them, but
+they will not render.
 
 ### `suggestions`
 
@@ -140,7 +140,7 @@ not render.
   cards through message send.
 - **`[hq-setup] step=` / `card=` marker lines** belong to the scripted
   `/setup --guided` run. The parser is still in the app source, but the shipped
-  host no longer starts that run, and the Setup bot's DM does not strip these
+  host no longer starts that run, and the assistant's DM does not strip these
   lines. Bots should not print them.
 
 ## Security model
@@ -166,4 +166,4 @@ hq-desktop-app `origin/main@c621a6a1`:
 - `packages/ui/src/shell/DesktopApp.svelte` (setup-bot-only wiring)
 - `packages/ui/src/chat/setup-run.ts`, `setup-agent.svelte.ts` (legacy markers)
 
-HQ core: `core/workers/public/setup/worker.yaml` (emitter rules for the Setup bot).
+HQ core: `core/workers/public/setup/worker.yaml` (emitter rules for the assistant).

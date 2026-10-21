@@ -13,7 +13,10 @@
 
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel)"
+# Take the root from this script, not the caller's directory, so a run from
+# inside the operator's HQ never tests that HQ's hooks.
+TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(git -C "$TEST_DIR" rev-parse --show-toplevel)"
 HOOK="${HQ_ROOT_GIT_GUARD_HOOK_OVERRIDE:-$ROOT/.claude/hooks/block-hq-root-git-mutation.sh}"
 TMP="$(mktemp -d)"
 # Git resolves /var through /private/var on macOS. Use the same physical
@@ -477,6 +480,76 @@ for flag in true false; do
   strict_expect 'heredoc followed by executable command remains checked' 2 "$TMP" $'cat > workspace/notes.md <<\'EOF\'\ngit update-index\nEOF\nbash workspace/notes.md' "$flag"
   strict_expect 'early delimiter cannot conceal later git' 2 "$TMP" $'cat > workspace/notes.md <<\'EOF\'\ntext\nEOF\ngit update-index\nEOF' "$flag"
 done
+
+# The guard compares absolute git dirs, not toplevels. These targets have no
+# HQ toplevel but write to HQ's git dir, so they are denied on every platform,
+# not only in the Windows job.
+mkdir -p "$TMP/gitfile-alias"
+printf 'gitdir: %s\n' "$TMP/.git" > "$TMP/gitfile-alias/.git"
+run 2 "$NESTED" "git -C \"$TMP/.git\" update-ref refs/heads/x HEAD" \
+  'git -C <HQ>/.git is the HQ git dir'
+run 2 "$NESTED" "git -C \"$TMP/gitfile-alias\" commit -m x" \
+  'a .git file pointing at the HQ git dir is the HQ repo'
+run 2 "$TMP/gitfile-alias" 'git commit -m x' \
+  'cwd fallback: a .git file pointing at the HQ git dir is the HQ repo'
+
+# Drive-letter absolutes are not joined onto HQ_ROOT. Unit check of the
+# hook-lib predicate the anchor resolution uses.
+# shellcheck source=/dev/null
+. "$ROOT/core/scripts/hook-lib.sh"
+for drive_path in 'C:/Data/x' 'c:/x' 'D:\Data\x' '/c/Data/x'; do
+  if hq_path_is_absolute "$drive_path"; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [hq_path_is_absolute should accept $drive_path]" >&2
+  fi
+done
+for relative_path in 'C:x' 'repos/x' './C:/x' 'CC:/x'; do
+  if hq_path_is_absolute "$relative_path"; then
+    FAIL=$((FAIL+1))
+    echo "FAIL [hq_path_is_absolute should reject $relative_path]" >&2
+  else
+    PASS=$((PASS+1))
+  fi
+done
+
+# When git cannot resolve the HQ root's own git dir but HQ_ROOT/.git exists,
+# the guard cannot prove a target is outside HQ and must deny. A git shim fails
+# only `git -C <HQ root> rev-parse --absolute-git-dir`; the same repo spelled
+# through a subdirectory still resolves.
+mkdir -p "$TMP/hq-git-fail-bin" "$TMP/companies"
+REAL_GIT="$(command -v git)"
+cat > "$TMP/hq-git-fail-bin/git" <<'GIT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == -C && "${2:-}" == "$HQ_TEST_FAIL_GIT_DIR_FOR" \
+  && "${3:-}" == rev-parse && "${4:-}" == --absolute-git-dir ]]; then
+  exit 128
+fi
+exec "$HQ_TEST_REAL_GIT" "$@"
+GIT
+chmod +x "$TMP/hq-git-fail-bin/git"
+run_hq_git_unresolvable() {
+  local expect="$1" cwd="$2" cmd="$3" label="$4" payload rc=0
+  payload=$(jq -n --arg cwd "$cwd" --arg cmd "$cmd" '{cwd: $cwd, tool_input: {command: $cmd}}')
+  printf '%s' "$payload" | env PATH="$TMP/hq-git-fail-bin:$PATH" \
+    HQ_TEST_REAL_GIT="$REAL_GIT" HQ_TEST_FAIL_GIT_DIR_FOR="$TMP" \
+    CLAUDE_PROJECT_DIR="$TMP" HQ_ALLOW_HQ_ROOT_GIT= bash "$HOOK" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq "$expect" ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [$label]: expected exit $expect, got $rc — cmd: $cmd (cwd: $cwd)" >&2
+  fi
+}
+run_hq_git_unresolvable 2 "$NESTED" "git -C \"$TMP/companies\" commit -m x" \
+  'unresolvable HQ git dir denies a -C target inside HQ'
+run_hq_git_unresolvable 2 "$TMP/companies" 'git commit -m x' \
+  'unresolvable HQ git dir denies the bare cwd fallback inside HQ'
+run_hq_git_unresolvable 2 "$NESTED" "git -C \"$NESTED\" commit -m x" \
+  'unresolvable HQ git dir fails closed for a nested repo too'
+run_hq_git_unresolvable 0 "$TMP/companies" 'git status' \
+  'unresolvable HQ git dir still allows a read-only command'
 
 printf 'block-hq-root-git-mutation US-071 round 2: %s passed, %s failed\n' \
   "$PASS" "$FAIL"

@@ -356,13 +356,40 @@ incident write-ups, and provenance below it. Nothing is lost: the agent has the
 path and can read the whole file when it needs the reasoning.
 
 **Bounded, and never silently.** Two limits apply. Each hard policy's body must
-fit `HQ_POLICY_HARD_MAX_BYTES` (default 6144) on its own, and the whole injection
-must fit `HQ_POLICY_HARD_BUDGET_BYTES` (default 16384) across all of them,
-consumed in precedence order (company > repo > personal > core) so a tenant's own
-hard rules claim it first. A hard policy that exceeds either limit degrades to the
+fit `HQ_POLICY_HARD_MAX_BYTES` (default 2048) on its own, and the whole injection
+must fit `HQ_POLICY_HARD_BUDGET_BYTES` (default 5120) across all of them,
+consumed in relevance order (below) so the hard rules most relevant to the
+current event claim it first. A hard policy that exceeds either limit degrades to the
 soft one-line shape **and is named** in a trailing notice, so a shortened set can
 never be misread as the complete text. A hard policy whose file is unreadable or
 has no body degrades the same way — never silently dropped.
+
+**Ranked by relevance to the trigger.** Matches are ordered before any budget
+or ceiling applies. A policy whose `when:` identifiers appear directly in the
+event's own facts (the command or prompt it keys on) is a *direct*
+match; a match through `when: always`, a PostToolUse output word, or a broader fact set is *generic*. Direct
+matches rank above generic ones, hard above soft within each group, and the
+reactive groups rank above the SessionStart baseline. Within a group, more
+matched identifiers rank first, and ties keep scope precedence
+(company > repo > personal > core).
+
+**Output ceiling.** The whole reminder must fit
+`HQ_POLICY_OUTPUT_CEILING_BYTES` (default 8000; for PostToolUse this is the
+JSON envelope). When the full text does not fit, the top-ranked hard rule keeps
+its full text and every other hard rule is shortened to its summary line, with a
+notice naming the kept rule and pointing at each file. If that still does not
+fit, every hard rule is summarised, then lower-ranked lines are cut and counted
+in a notice. Cut policies are not recorded as delivered, so they stay eligible
+for the next event. The ceiling is not raised to make content fit.
+
+**No repeats inside a window.** A hard policy delivered in full is recorded in
+the session ledger like any `once` policy. A hard policy shown only as its
+summary line is recorded in a per-session seen set
+(`<session-id>.seen.tsv`) with the time and its trigger key (the matched
+`when:` identifiers). The same policy is not shown again for the same trigger
+key until `HQ_POLICY_SEEN_TTL_SECONDS` (default 1800) has passed; a new trigger
+key shows it again at once. The key does not include the working directory, repo, or company, and a row with a future timestamp counts as expired. `inject: always` policies are not filtered by the
+seen set. The PreCompact purge deletes the seen set with the other ledgers.
 
 `bash core/scripts/lint-policy-triggers.sh` reports every hard policy over the
 per-policy limit across the whole install, so oversized rules surface as a list to

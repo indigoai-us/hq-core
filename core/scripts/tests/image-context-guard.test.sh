@@ -197,6 +197,109 @@ expect 2 "known-empty HQ_HOOK_AGENT_ID stays on the parent ledger" \
 expect 2 "agent_type alone does not open a sub-agent budget" \
   "$(jq -nc --arg p "$TMP/big5.png" '{tool_name:"Read",session_id:"sess-budget",agent_type:"reviewer",tool_input:{file_path:$p}}')"
 
+# feedback_3d42bae3: image bytes are charged to the context that inlines them.
+# Synthetic parent and sub-agent payloads share one session_id. The sub-agent
+# is identified by its payload agent_id even when an empty HQ_HOOK_AGENT_ID is
+# inherited from an outer process, or by a sub-agent transcript_path when the
+# host sends no agent_id.
+S3="sess-3d42"
+S3_LEDGER="$FIX/workspace/orchestrator/hook-state/image-context/$S3/reads.txt"
+transcript_payload() {
+  local path="$1" sid="$2" transcript="$3"
+  jq -nc --arg p "$path" --arg s "$sid" --arg t "$transcript" \
+    '{tool_name:"Read",session_id:$s,transcript_path:$t,tool_input:{file_path:$p}}'
+}
+ledger_stat() {
+  if [ -f "$1" ]; then
+    awk -F '\t' '{ n += 1; b += $1 } END { printf "%d %d", n + 0, b + 0 }' "$1"
+  else
+    printf '0 0'
+  fi
+}
+expect_ledger() {
+  local want="$1" desc="$2" got
+  got="$(ledger_stat "$S3_LEDGER")"
+  if [ "$got" = "$want" ]; then ok "$desc"; else bad "$desc (want '$want' got '$got')"; fi
+}
+for i in 1 2 3 4 5; do mkimg "$TMP/p3-$i.png" 1900; done
+mkimg "$TMP/p3-fill.png" 500
+mkimg "$TMP/s3-a.png" 600
+mkimg "$TMP/s3-b.png" 700
+mkimg "$TMP/s3-c.png" 800
+
+# Parent's own reads are counted: four 1.9 MiB images fit the 8 MiB budget.
+for i in 1 2 3 4; do
+  expect 0 "3d42 parent image $i counted and allowed" \
+    "$(read_payload "$TMP/p3-$i.png" "$S3")" HQ_HOOK_AGENT_ID=
+done
+expect_ledger "4 7782400" "3d42 parent ledger holds the parent's four reads"
+
+# Sub-agent read does not consume the parent budget.
+expect 0 "3d42 sub-agent read (agent_id, empty inherited HQ_HOOK_AGENT_ID) allowed" \
+  "$(agent_payload "$TMP/s3-a.png" "$S3" agent-3d42)" HQ_HOOK_AGENT_ID=
+expect 0 "3d42 sub-agent read (transcript_path only) allowed" \
+  "$(transcript_payload "$TMP/s3-b.png" "$S3" "/p/proj/$S3/subagents/agent-a3d42t.jsonl")"
+expect_ledger "4 7782400" "3d42 sub-agent reads leave the parent ledger unchanged"
+expect 0 "3d42 parent 500KiB read fits because sub-agent bytes were not charged" \
+  "$(read_payload "$TMP/p3-fill.png" "$S3")" HQ_HOOK_AGENT_ID=
+expect_ledger "5 8294400" "3d42 parent ledger charges the parent's own fifth read"
+
+# Parent over budget does not block the sub-agent.
+expect 2 "3d42 parent blocked at the 8 MiB budget" \
+  "$(read_payload "$TMP/p3-5.png" "$S3")" HQ_HOOK_AGENT_ID=
+expect 0 "3d42 sub-agent allowed while the parent is over budget" \
+  "$(agent_payload "$TMP/p3-5.png" "$S3" agent-3d42)" HQ_HOOK_AGENT_ID=
+expect 0 "3d42 transcript-keyed sub-agent allowed while the parent is over budget" \
+  "$(transcript_payload "$TMP/s3-c.png" "$S3" "/p/proj/$S3/subagents/agent-a3d42t.jsonl")"
+expect_ledger "5 8294400" "3d42 parent ledger unchanged after over-budget sub-agent reads"
+# A dot-only id must not resolve the sub-agent ledger back onto the parent.
+expect 0 "3d42 transcript id '..' gets its own ledger" \
+  "$(transcript_payload "$TMP/s3-c.png" "$S3" "/p/proj/$S3/subagents/agent-...jsonl")"
+expect 0 "3d42 agent_id '.' gets its own ledger" \
+  "$(agent_payload "$TMP/s3-c.png" "$S3" ".")" HQ_HOOK_AGENT_ID=
+expect_ledger "5 8294400" "3d42 dot-only sub-agent ids leave the parent ledger unchanged"
+if [ -f "$FIX/workspace/orchestrator/hook-state/image-context/$S3/agents/a3d42t/reads.txt" ]; then
+  ok "3d42 transcript-keyed sub-agent has its own ledger"
+else
+  bad "3d42 transcript-keyed sub-agent ledger missing"
+fi
+
+# The parent's own transcript path, or a look-alike outside subagents/, stays
+# on the parent ledger and is still blocked.
+expect 2 "3d42 parent with its own transcript_path still blocked" \
+  "$(transcript_payload "$TMP/p3-5.png" "$S3" "/p/proj/$S3.jsonl")"
+expect 2 "3d42 agent-*.jsonl outside subagents/ stays on the parent" \
+  "$(transcript_payload "$TMP/p3-5.png" "$S3" "/p/proj/$S3/notes/agent-x.jsonl")"
+
+# The 2 MiB per-image limit applies to parent and sub-agent alike.
+expect 2 "3d42 parent 3MiB image blocked at the 2 MiB limit" \
+  "$(read_payload "$LARGE" "$S3")" HQ_HOOK_AGENT_ID=
+expect 2 "3d42 sub-agent 3MiB image blocked at the 2 MiB limit" \
+  "$(agent_payload "$LARGE" "$S3" agent-3d42)" HQ_HOOK_AGENT_ID=
+
+# 32-image ceiling: the parent's 33rd distinct image is blocked, and a
+# sub-agent in the same session still reads.
+S3C="sess-3d42-count"
+i=1
+while [ "$i" -le 33 ]; do
+  printf 'x' >"$TMP/n3-$i.png"
+  i=$((i + 1))
+done
+i=1
+n_ok=0
+while [ "$i" -le 32 ]; do
+  rc=0
+  printf '%s' "$(read_payload "$TMP/n3-$i.png" "$S3C")" \
+    | env CLAUDE_PROJECT_DIR="$FIX" HQ_ROOT="$FIX" HQ_HOOK_AGENT_ID= bash "$FIX_HOOK" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] && n_ok=$((n_ok + 1))
+  i=$((i + 1))
+done
+if [ "$n_ok" -eq 32 ]; then ok "3d42 parent's 32 tiny images allowed"; else bad "3d42 parent tiny images allowed=$n_ok want 32"; fi
+expect 2 "3d42 parent's 33rd distinct image blocked" \
+  "$(read_payload "$TMP/n3-33.png" "$S3C")" HQ_HOOK_AGENT_ID=
+expect 0 "3d42 sub-agent reads after the parent hits the 32-image ceiling" \
+  "$(agent_payload "$TMP/n3-33.png" "$S3C" agent-3d42)" HQ_HOOK_AGENT_ID=
+
 # Ledgers written by the count-only guard (bare paths) still load: each line
 # is charged the 64 KiB floor and a re-read of a listed path stays free.
 LEGACY="$FIX/workspace/orchestrator/hook-state/image-context/sess-legacy"

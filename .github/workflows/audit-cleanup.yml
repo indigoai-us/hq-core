@@ -29,13 +29,19 @@ permissions:
   contents: write        # delete the orphaned audit/* branches
   pull-requests: write   # comment on and close the orphaned PRs
 
+# A newer event for the same PR supersedes an in-flight sweep or verify.
+# Outside staging the group is per run, which leaves hq-core unchanged.
+concurrency:
+  group: ${{ github.repository == 'indigoai-us/hq-core-staging' && format('{0}-{1}', github.workflow, github.ref) || format('{0}-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: true
+
 jobs:
   sweep:
     name: Close orphaned remediation PRs
     # Remediation PRs live on audit/* branches. When one of THOSE closes, its
     # parent is still open and there is nothing to sweep.
     if: ${{ github.event.action == 'closed' && !startsWith(github.head_ref, 'audit/') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 5
     env:
       HQ_AUDIT_BOT_APP_ID: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}
@@ -91,7 +97,7 @@ jobs:
   verify:
     name: Close a remediation PR whose parent is already gone
     if: ${{ github.event.action == 'opened' && startsWith(github.head_ref, 'audit/') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 5
     env:
       HQ_AUDIT_BOT_APP_ID: ${{ vars.HQ_AUDIT_BOT_APP_ID || secrets.HQ_AUDIT_BOT_APP_ID }}

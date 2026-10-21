@@ -37,4 +37,25 @@ grep -Fq '"reasoning_effort":"high"' "$TMP/stdin" || fail 'Codex reasoning_effor
 grep -Fxq 'fixture conductor block' "$TMP/out" || fail 'SessionStart hook output did not pass through'
 [ ! -s "$TMP/err" ] || fail 'SessionStart hook emitted stderr'
 
-printf 'conduct-session-start-payload: full Codex payload passed through\n'
+for source in resume compact clear; do
+  rm -f "$FAKE_ARGS" "$FAKE_STDIN"
+  printf '{"hookEventName":"SessionStart","session_id":"s-%s","source":"%s"}' "$source" "$source" \
+    | "$HOOK" > "$TMP/out" 2> "$TMP/err" || fail "source=$source hook exited non-zero"
+  [ ! -e "$FAKE_ARGS" ] || fail "source=$source still started hq lanes session-start"
+  [ ! -s "$TMP/out" ] || fail "source=$source produced output"
+  [ ! -s "$TMP/err" ] || fail "source=$source emitted stderr"
+done
+
+rm -f "$FAKE_ARGS"
+printf '%s' '{"session_id":"s-start","source":"startup"}' | "$HOOK" > "$TMP/out" 2> "$TMP/err"
+grep -Fxq 'lanes session-start' "$FAKE_ARGS" || fail 'source=startup did not invoke hq lanes session-start'
+
+rm -f "$FAKE_ARGS"
+printf '%s' 'not json' | "$HOOK" > "$TMP/out" 2> "$TMP/err"
+grep -Fxq 'lanes session-start' "$FAKE_ARGS" || fail 'malformed payload did not fall through to the CLI startup default'
+
+rm -f "$FAKE_ARGS"
+printf '%s' '{"session_id":"s-num","source":7}' | "$HOOK" > "$TMP/out" 2> "$TMP/err"
+grep -Fxq 'lanes session-start' "$FAKE_ARGS" || fail 'non-string source did not fall through to the CLI'
+
+printf 'conduct-session-start-payload: full Codex payload passed through; non-startup sources skip the CLI\n'

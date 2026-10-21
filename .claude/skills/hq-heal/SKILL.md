@@ -1,7 +1,7 @@
 ---
 name: hq-heal
 description: Triage and repair HQ session errors such as hook crashes, sync conflicts, or MCP failures.
-allowed-tools: Read, Write, Edit, Bash, Bash(bash core/scripts/git-pack-extension-check.sh:*), Glob, Grep, AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, Bash(bash core/scripts/git-pack-extension-check.sh:*), Bash(bash core/scripts/git-icon-file-check.sh:*), Bash(bash core/scripts/hq-root-git-reinit.sh:*), Glob, Grep, AskUserQuestion
 ---
 
 # HQ Heal — Session Error Triage
@@ -17,7 +17,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 - `(no args)` → use `AskUserQuestion` to ask the user to paste the error text.
 - `<free text>` → treat the entire argument string as the error text.
 - `--last-session` → scan the most recent JSONL under `~/.claude/projects/-Users-*-Documents-HQ/` for the trailing error (uses the streaming Python pattern from `.claude/skills/recover-session/SKILL.md` step 3 — never read the full file).
-- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sync`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `git-object-store`, `plan-mode`, `unknown`.
+- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sandbox-network`, `sync`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `git-object-store`, `plan-mode`, `unknown`.
 - `--dry-run` → diagnose and propose but do not apply any fix.
 - `--no-bug` → suppress the automatic `/hq-bug` filing step. By default, every heal run files a bug so HQ engineering accumulates signal on which error classes are recurring (see Step 6).
 - `--allow-core` → permit the apply step to edit files under `core/` (the hook-protected mirror) by prefixing the offending Write/Edit/Bash call with `HQ_BYPASS_CORE_PROTECT=1`. Off by default — heal will refuse a core edit and require this flag to be passed, even when the user confirms the numbered fix. Always documented in the heal report and the filed bug (see Step 5 + Step 6).
@@ -28,7 +28,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 
 If `$ARGUMENTS` is empty, ask: *"Paste the error message you're seeing (or describe what went wrong)."* Wait for response, treat that as the error text.
 
-If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`), `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, or `manifest.*throttled`. Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
+If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`), `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, `manifest.*throttled`, `fetch failed`, `connect EPERM`, or `EPERM`. Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
 
 Store the resulting text in a local variable called `ERR`.
 
@@ -40,6 +40,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 |---|---|
 | `autocompact` | `Autocompact is thrashing`, `Prompt is too long`, `Conversation too long`, `Error during compaction`, `context refilled to the limit` |
 | `hook` | `hook .* failed`, `PreToolUse .* blocked`, `PostToolUse hook`, `hook-gate.sh`, `non-zero exit from hook` |
+| `sandbox-network` | `connect EPERM`, `EPERM .*:443`, `CODEX_SANDBOX_NETWORK_DISABLED`, `sandbox.*(network|egress)` — the OS refused an outbound HTTPS connect, or a write outside the workspace, under a Codex or ChatGPT desktop app sandbox. A bare `fetch failed` with no EPERM underneath is NOT this class: it stays with `sync` (offline, refused, timeout) |
 | `sync` | `hq sync .* conflict`, `conflictPath`, `resolve-conflicts`, `hq-sync.*error`, `originalPath.*conflict`, `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, `manifest.*throttled` |
 | `access` | `caller lacks '.*' on '.*'`, `403 Forbidden`, `Access denied`, `AccessDenied`, `no such key`, `NoSuchKey`, `not found` (when the path is under `companies/`) |
 | `denylist` | `Read access blocked`, `denied by settings`, `~/.ssh`, `~/.aws/credentials`, `~/.zshrc`, `permission rule .* deny` |
@@ -47,7 +48,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 | `qmd` | `qmd: error`, `qmd .* index`, `collection .* not found`, `qmd update` failures |
 | `reindex` | `reindex.sh`, `master-sync.sh`, `duplicate worker id`, `personal/<type>/<entry>.*already exists` |
 | `symlink` | `Too many levels of symbolic links`, `ELOOP`, `dangling symlink`, `readlink: .* No such file` |
-| `git-object-store` | `unable to read tree`, `bad tree object`, `cannot read commit object`, `invalid sha1 pointer`, `fatal: bad object`, `object file .* is empty`, `packfile .* (cannot|does not)` |
+| `git-object-store` | `unable to read tree`, `bad tree object`, `cannot read commit object`, `invalid sha1 pointer`, `fatal: bad object`, `object file .* is empty`, `packfile .* (cannot|does not)`, `Error building trees`, `invalid object [0-7]+ [0-9a-f]+`, `badRefName`, `bad sha1 file`, `Icon\r` |
 | `git-root` | `block-hq-root-git-mutation`, `git .* blocked from HQ root`, `HQ_ALLOW_HQ_ROOT_GIT` |
 | `plan-mode` | `plan mode`, `ExitPlanMode required`, `cannot Edit in plan mode` |
 | `unknown` | (no match) |
@@ -103,6 +104,46 @@ Fix proposals:
    ```
 
    Then confirm `command -v hq` and `HQ_NO_UPDATE_CHECK=1 hq --version`. If pnpm is missing, install pnpm first. An explicit version pin (`npm install -g @indigoai-us/hq-cli@<x.y.z>`) is the only npm fallback; `@latest` is never the restore command.
+
+#### `sandbox-network`
+
+`fetch failed` from `hq sync`, `/hq-sync`, `/hq-share`, or any `hq` cloud command, with
+`connect EPERM …:443` underneath it, is not an outage. It is the host sandbox denying
+outbound network. DNS resolves, the TCP connect is refused by the OS, and Node's fetch
+wraps it as `fetch failed`. The same sandbox denies writes outside the workspace, which
+is why `~/.hq` lock, package-use lease, and telemetry warnings arrive together with it.
+
+First rule out a real outage. If `ERR` carries `ENOTFOUND`, `EAI_AGAIN`, `ECONNREFUSED`,
+`ETIMEDOUT`, `ECONNRESET`, or `EHOSTUNREACH` and no `EPERM`, this is not the sandbox:
+reclassify as `sync` and follow that recipe's transient-network advice (run `/hq-sync`
+again after connectivity recovers). The same applies to a bare `fetch failed` with no
+code underneath: treat it as `sync` unless a host check below proves the sandbox.
+
+Only with `EPERM` on `connect` (or `CODEX_SANDBOX_NETWORK_DISABLED` set) continue here,
+and do not propose a retry. Confirm the host first:
+
+- `env | grep -E '^CODEX_(SANDBOX|SESSION_ID|SANDBOX_NETWORK_DISABLED)'`
+- `bash core/scripts/lib/detect-codex.sh; echo "codex-host exit: $?"`
+- `grep -nE '^(sandbox_mode|approval_policy)|network_access' .codex/config.toml`
+- `HQ_NO_UPDATE_CHECK=1 hq whoami 2>&1 | tail -3` (a `fetch failed` here confirms every HTTPS call is blocked, not just sync)
+
+When the host is Codex or the ChatGPT desktop app, report the cause in one line and
+propose exactly these fixes, in this order:
+
+1. In the ChatGPT desktop app, open the permission control under the message box for
+   this chat and switch it to **Full access**, then run `/hq-sync` again. Ask for
+   approval and Approve for me run commands in the `workspace-write` sandbox, which
+   keeps network off; on macOS the `network_access = true` key in HQ's
+   `.codex/config.toml` is not honored by that sandbox. Full access is the mode HQ
+   ships in its own config (`sandbox_mode = "danger-full-access"`).
+2. If Full access is greyed out or the user prefers not to change the chat mode, run
+   the sync outside the sandbox: `hq sync` in Terminal, or the HQ Sync menubar app.
+   Both use the same sync engine and are never sandboxed.
+
+If the host is not Codex and the error still carries `EPERM` on `connect`, name the
+blocker instead: a corporate proxy, VPN, or endpoint agent that refuses outbound 443
+for `node`. Point the user at their network admin with the host and port from the
+error, and do not claim the sync will succeed on retry.
 
 #### `sync`
 
@@ -183,7 +224,20 @@ Fix proposal: for legitimate non-knowledge links, re-create the symlink with an 
 #### `git-object-store`
 These errors read like history loss, so the instinct is to reach for `git gc`, a reclone, or `--prune`. Do NOT start there — check for a mechanical cause first, because the most common one destroys nothing and is repaired by a rename.
 
-Run the deterministic probe first (report-only; it never renames without `--fix`):
+**macOS `Icon\r` files inside `.git`.** If `ERR` mentions `Error building trees`, `invalid object`, `badRefName`, `bad sha1 file`, or `Icon\r`, run this probe before the pack check (report-only; it never deletes without `--fix`):
+
+```bash
+bash core/scripts/git-icon-file-check.sh --root .
+```
+
+Finder writes a file named `Icon` plus a carriage return into folders with a custom icon, and iCloud Desktop & Documents sync copies them into `.git/refs`, `.git/objects/xx` and `.git/logs`. The working-tree `.gitignore` does not reach inside `.git`. Git then reports `badRefName` and `bad sha1 file`, and when a loose object went missing at the same time every commit fails with `invalid object ... Error building trees`.
+
+- Exit 0 → no `Icon\r` files and no index entry is missing its object. Continue with the pack check that follows.
+- Exit 2 → show the user the reported files and missing objects and propose `--fix` as a numbered fix. On confirmation, run `bash core/scripts/git-icon-file-check.sh --root . --fix`. It deletes only files named exactly `Icon\r` under `.git`, runs `git fsck`, and restores a missing blob with `git hash-object -w` only when the working file hashes to exactly that id. It never writes an object from a file that differs. Exit 0 means `git fsck` is clean; exit 2 lists what is still broken. Do not run `git gc --prune` on what remains.
+- Never hand-roll `find .git -name 'Icon*' -delete`: that glob also matches real files such as `Icons`.
+- When the probe prints `warning: ... iCloud`, tell the user the files will come back until the HQ folder moves out of Desktop and Documents (for example to `~/hq`) or "Desktop & Documents Folders" is turned off in iCloud Drive settings.
+
+Then run the pack probe (report-only; it never renames without `--fix`):
 
 ```bash
 bash core/scripts/git-pack-extension-check.sh --root .
@@ -200,6 +254,16 @@ Worth surfacing to the user: git never writes an extensionless `pack-*` file, so
 
 #### `git-root`
 Read first 30 lines of `.claude/hooks/block-hq-root-git-mutation.sh` to surface the rule. Show the user the correct invocation form: `git -C /abs/path <cmd>` or `( cd /abs/path && git <cmd> )` or `gh ... -R owner/repo`. For sanctioned HQ-internal git work, surface `HQ_ALLOW_HQ_ROOT_GIT=1 git ...`. No file mutations.
+
+If the HQ root's `.git` is missing, or the HQ root records nested company or project repos as gitlinks (mode `160000`), never hand-roll `git init && git add -A`: that records every nested repo as a gitlink with no `.gitmodules`. Use the helper instead:
+
+```bash
+bash core/scripts/hq-root-git-reinit.sh --check    # report gitlinks (exit 2 when found)
+bash core/scripts/hq-root-git-reinit.sh --reinit   # .git is missing: init, exclude nested repos, commit
+bash core/scripts/hq-root-git-reinit.sh --repair   # gitlinks already recorded: index-only removal + exclude
+```
+
+Propose `--reinit` or `--repair` as a numbered fix and run it only after the user confirms. Nested repos are listed in `.git/info/exclude`; their files and history are not touched.
 
 #### `plan-mode`
 Surface: in plan mode, the model can Read/Glob/Grep but cannot Edit/Write. To exit, call `ExitPlanMode` (deferred tool — load via ToolSearch). No file mutations needed; this is purely an explainer.

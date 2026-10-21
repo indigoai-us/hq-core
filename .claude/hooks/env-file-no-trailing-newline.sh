@@ -23,11 +23,27 @@ if [ -z "$FILE_PATH" ]; then
 fi
 
 # Only .env* files — match basename against a leading-dot "env" prefix.
-BASENAME=$(basename "$FILE_PATH")
-case "$BASENAME" in
-  .env|.env.*|*.env|*.env.*) ;;
-  *) exit 0 ;;
+# Case-insensitive (".ENV" is the same file on a case-insensitive filesystem),
+# and a symlink is judged by its target too, so a link named "notes" that
+# points at ".env" is still checked.
+is_env_name() {
+  case "$(basename "$1" | tr '[:upper:]' '[:lower:]')" in
+    .env|.env.*|*.env|*.env.*) return 0 ;;
+  esac
+  return 1
+}
+RESOLVED_PATH="$FILE_PATH"
+case "$RESOLVED_PATH" in
+  /*) ;;
+  *)
+    CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+    [ -n "$CWD" ] && RESOLVED_PATH="$CWD/$RESOLVED_PATH"
+    ;;
 esac
+RESOLVED_PATH=$(realpath "$RESOLVED_PATH" 2>/dev/null || printf '%s' "$RESOLVED_PATH")
+if ! is_env_name "$FILE_PATH" && ! is_env_name "$RESOLVED_PATH"; then
+  exit 0
+fi
 
 # Content to inspect: Write → .tool_input.content; Edit → .tool_input.new_string
 CONTENT=$(echo "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // empty')

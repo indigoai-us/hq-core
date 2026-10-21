@@ -1,4 +1,272 @@
 ## [Unreleased]
+- Fixed: `handoff-finalize.sh` rejects malformed inline JSON for `--next-steps-json`, `--learnings-json`, `--tags-json`, and `--files-touched-json` before creating handoff files, names the invalid flag, and keeps `--files-touched-json-file` precedence. (#1507)
+- Fixed: `HQ_DISABLED_HOOKS` entries that name the old id of `desktop-memory-leak-check` disable the hook again. The rename above had no alias, so those entries were ignored and the hook ran. `hook-gate.sh` (standalone and library mode, which `master-hook.sh` uses) now treats the old id as an alias, compared by the sha256 of the trimmed, lowercased entry so the old id is not stored in the repo. Only entries of the old id's length are hashed, the result is cached per process, and a one-line note naming `desktop-memory-leak-check` goes to stderr once per process. With neither `shasum` nor `sha256sum` available the alias cannot be checked and the hook runs. MIGRATION: change such entries to `desktop-memory-leak-check`; the alias will be removed in a later release. Regression test: `core/scripts/tests/hook-id-legacy-alias.test.sh`. (#1496)
+- Security: an unknown or misspelled `HQ_HOOK_PROFILE` now runs hooks as
+  `strict` and prints one warning line. Before, it skipped every gated guard,
+  so `HQ_HOOK_PROFILE=bogus` let a `printenv` dump through (#1487).
+- Security: under Codex, the dotenv guard now receives the content of
+  `apply_patch` and edit calls, and denies the write when it cannot read it.
+  Before, it saw only the file path and allowed every write (#1489).
+- Security: a new PreToolUse guard, `block-credential-file-read`, blocks
+  Read-tool and shell reads of credential files, and tool output that
+  contains a credential value is redacted (#1480).
+- Fixed: the SessionStart work-mesh hook uses less CPU, which fixes the flaky
+  `session_start` timing check. The 20 ms budget is unchanged (#1488).
+- Renamed the SessionStart desktop memory-leak detector hook id to `desktop-memory-leak-check`. The old id contained a company slug. The rename covers the standard and strict profile lists in `hook-gate.sh`, `hook-registry.json`, the synthetic hook corpus and the process-budget fixtures. No settings or install change is needed: the hook script file name is unchanged, and `hook-gate.sh` and the registry are replaced together on update. (#1495)
+- Fixed: the client-health hook no longer files "Client health: sync checks unresolved after hq doctor --fix" for the three manual-only runtime warnings that `hq doctor --fix` cannot repair: `sync.runtime.realtime-lag`, `sync.runtime.device-limit` and `sync.runtime.conflicts` (WARN rows marked `fix.autoFixable: false`). These read the last 60 minutes of sync logs, so the re-check after `--fix` always saw them again. `sync.runtime.receiver-permission` (the cloud refused this account) and `sync.runtime.runner-restarts` (the sync runner is crash-looping) are real failures and are still reported, as are FAIL rows, rows with no `fix` field and fixable rows. All of them still show in `hq doctor`. (#1486)
+- Fixed: two gated hooks that were in no hook-gate profile, and so never ran,
+  now run. `env-file-no-trailing-newline` blocks bad `.env` writes in the
+  minimal, standard and strict profiles, and `check-core-yaml-parity` warns
+  at SessionStart in standard and strict (#1484).
+- Security: `/deploy` no longer treats a stray machine token cache
+  (`~/.hq/work-mesh/daemon/cognito-tokens.json`) as machine mode when a
+  person session exists, so a signed-in laptop no longer fails with
+  `login_required/machine_mint_failed`. Machine credential files still force
+  machine mode, and a cache with no person session still fails closed (#1479).
+- Fixed: `/hq-heal` has a `sandbox-network` class for HTTPS that a sandbox
+  blocks (`fetch failed` or `connect EPERM` on port 443) and names the real
+  fix, instead of classifying it as unknown or as a sync failure (#1477).
+- Added: before it uploads, `/deploy` checks the company's deploy records for
+  one that already does the same job and asks whether to reuse it or add the
+  new page as a route on it (#1454).
+- Added: after every successful upload, `/deploy` writes a searchable record
+  of the deploy into the project that made it (#1452).
+- Security: on Windows, Codex runs a hook's `commandWindows` through
+  PowerShell by default, which could not parse HQ's cmd syntax, so no HQ hook
+  ran and every PreToolUse guard failed open. The command now runs under both
+  PowerShell and cmd, and any PreToolUse failure denies the tool call. Run
+  `hq reindex` once after updating so Codex trusts the changed hooks (#1473).
+- Fixed: `/hq-heal` re-creates a missing HQ root `.git` with
+  `core/scripts/hq-root-git-reinit.sh`, which keeps nested company repos out
+  of the index instead of recording them as gitlinks. The shipped
+  `.hqignore` and `.gitignore` now also exclude `companies/*/secrets/` and
+  `.secrets/` (#1460).
+- Fixed: Outpost jobs keep cron ranges and steps when converted to systemd
+  `OnCalendar`. Before, `0 7-19/2 * * 1-5` fired every two hours around the
+  clock (#1475).
+- Changed: the shipped `pricing.json` and the pricing reference were refreshed
+  from the live `GET /v1/pricing` statement. The enterprise signup label is
+  now "Book a setup call" (#1470).
+- Changed: in hq-core-staging, the pr-checks `eval-loop` job runs only on
+  ready pull requests and `workflow_dispatch` (#1469).
+- Changed: in hq-core-staging, pr-checks no longer runs on pushes to main. It
+  runs on ready pull requests, by hand, and on one nightly schedule that runs
+  the required checks and smoke jobs only (#1451).
+- Fixed: conductor link messages reach only the root session. Before, a
+  subagent's hook could claim the root's inbox, and the root never saw the
+  message (#1419).
+- Added: eval-loop keeps a run ledger, gives each stage a unique label, and
+  refuses more than two probe rollouts (#1416).
+- Changed: the deploy-record tests use a neutral fixture company name. Tests
+  only (#1459).
+- Added: `deploy-record-home.sh` picks the project folder for a deploy record
+  and, for public and company deploys, keeps a copy of the deploy's source
+  there (#1444).
+- Added: `deploy-record.sh` writes a searchable record of a finished deploy
+  into the project that made it, where qmd indexes it (#1382).
+- Changed: the Windows shell smoke check now asserts that main's master hook
+  no longer exports the 40 KB command, which #1421 fixed (#1440).
+- Fixed: hook registry prefilters see `git` or `gh` at the start of a line in
+  a multi-line command, so the git guards check it. Before, the newline was
+  read as the two characters `\n` and the guard missed the command (#1421).
+- Fixed: fewer false scope blocks. A link under a company's tree that points
+  to that company's own repo is allowed, URLs and `owner/repo` slugs are not
+  read as paths, quoted heredoc bodies and command substitutions are parsed,
+  subagents inherit their parent's company lock, and SessionStart is faster.
+  A link into another company's tree still blocks, and the guard still fails
+  closed (#1422).
+- Security: `/deploy` and the project-summary deploy read every page of the
+  app list and apply the access gate before upload. Before, an app on a later
+  page was missed, the gate was skipped, and two review pages were public for
+  about two minutes (#1429).
+- Added: eval-loop limits harness edits to `skills/`, `policies/`,
+  `worker-prompts/`, `tool-guidance/` and `subagents/`, rejects absolute and
+  `..` paths, and keeps its library under the bound company (#1415).
+- Fixed: the next hook no longer overwrites a newer trusted work-mesh
+  live-binding with the old mesh project (#1418).
+- Fixed: super-conductor records evidence for each channel it sweeps and
+  prints `SUPER-CONDUCTOR SWEEP-INCOMPLETE` when a selected channel was
+  missed (#1424).
+- The HQ worktree block message now tells desktop users to start HQ sessions with Choose Environment > Local. The old text named a Worktree toggle that the desktop app does not have.
+- Security: subagent company scope (DEV-4034). Under Grok, `SubagentStart`
+  now binds a subagent to its parent's company when it starts, as Claude
+  Code subagents already were; before, the bind waited for the first tool
+  call. A parent session id in a hook payload is now used only when the
+  payload also marks the caller as a child (agent id, subagent type, or a
+  subagent transcript). A root session whose payload names a parent keeps its
+  own scope; a lane started with `HQ_PARENT_SESSION_ID` still inherits. The
+  parent is checked before anything is written: its id must be a plain name,
+  its session folder and capability file must not be symlinks, and it must
+  hold a valid lock set. A parent that fails a check no longer leaves an
+  empty child session folder behind. `session-auto-bind` now ignores a
+  path-like or symlinked parent id, which before could read a `meta.yaml`
+  outside `workspace/sessions/`.
+- Changed: in hq-core-staging, Linux CI jobs read their runner labels from the
+  `HQ_STAGING_RUNNER_LINUX` and `HQ_STAGING_RUNNER_LINUX_ARM` repository
+  variables and use the current GitHub-hosted runner when a variable is unset.
+  macOS and Windows jobs stay on GitHub-hosted runners. Pull requests from
+  forks and every run in hq-core always use the hosted runner. Most small Linux pr-checks jobs now run as steps in five grouped
+  jobs, each step still reported by name in the job summary. The grouped jobs
+  run on ready pull requests and `workflow_dispatch` only; the nightly
+  schedule runs the standalone required checks and the macOS and Windows
+  smoke jobs. audit-cleanup,
+  hook-registration and release cancel or queue superseded runs per ref in
+  staging, and the hq-core release-gate recheck runs hourly instead of every
+  15 minutes. Staging pull requests no longer start any hosted macOS or
+  Windows job: the hook-registration matrix runs only Linux on staging PRs,
+  and the full matrix runs by hand (`workflow_dispatch`). A PR that needs
+  macOS or Windows coverage runs the three hook-registration tests locally or
+  asks Corey's conductor for a dispatch. The resumework benchmark still runs
+  its Windows leg on a PR that carries the `benchmark` label.
+- Changed: pushing a stable release tag (`v*`, but not a pre-release such as
+  `v1.2.3-beta.1`) in hq-core-staging runs pr-checks'
+  macOS and Windows smoke jobs and the Windows hook-launcher check on
+  GitHub-hosted runners, plus denylist-scan, which decides whether they run.
+  A new tag has no previous commit to compare, so the path checks run the
+  smoke jobs. In hq-core a tag push runs nothing, and a branch push, including
+  main, still runs nothing. Beta tags start no run. The one `tags:` line in
+  pr-checks (`['v*', '!v*-*']`) sets which tags run them.
+- Changed: each runner variable must hold a JSON array or a JSON string. The
+  workflows read it with `fromJSON(vars.NAME || '"<hosted label>"')`, so an
+  unset variable gives the hosted label.
+- Fixed: promote-to-hq-core no longer cancels a run in progress when a newer
+  run starts on the same ref. Runs now wait in turn, so a promote is never
+  stopped part way.
+- Fixed: the welcome brief said "1 session over 1 day" and offered "Bring in
+  your past work" after the desktop tree step had already found about 400
+  past sessions. The tree step wrote no import report, and the brief read
+  `counts.conversations`, which counts session stores rather than sessions.
+  `welcome.import` now comes from the newest import report when one exists,
+  preferring its new `sessions` block and falling back to the sum of
+  `categories.conversations[].sessions` for older reports. With no report,
+  any session on the Mac other than the one running the brief counts as
+  imported and `welcome.import` has `source: "detected"`. "Bring in your
+  past work" and the `import` next step appear only when there is no report
+  and no other session. Report folders written by the desktop
+  (`2026-10-19T15-00-28`, with `-2`, `-3` for a second import in the same
+  second) and by `/import-context` (`20261019T150028Z`) are ordered by time,
+  and folders matching neither format are skipped. `welcome.import.scanned_at`
+  is the folder's UTC time and the report's `scan_id` is never copied. A
+  report over 1 MB, nested deeper than 32 levels, or reached through a
+  symlink is skipped, and a bad report falls back to direct detection.
+  Counts are clamped to non-negative integers. An HQ-started session and its
+  transcript count once, and with no harness session id a transcript
+  written in the last 10 minutes is treated as the running session. The
+  headline project count leaves out other companies' folders. The import
+  report contract agreed with the desktop app is in the daily-brief SKILL.md.
+- Fixed: a malformed worker handoff (not JSON, or missing a required field)
+  stopped the pipeline driver with exit 23. `pipeline-conductor.sh accept` now
+  leaves the file as it is, keeps a copy at
+  `handoffs/<id>-<phase>.malformed.<n>.json`, prints `PHASE_NEEDS_REPAIR`, and
+  holds the story as `blocked_needs_owner` with `blocked.kind: "needs_repair"`
+  and the wrong fields in its decision item. The driver reports it in the exit
+  21 reason ("malformed handoff, needs repair") and waits
+  `PIPELINE_DRIVER_HANDOFF_SETTLE_SECS` (default 10) before judging a file
+  that is still being written.
+- Fixed: a failed handoff the lane runner writes in place of a reply it could
+  not read (summary "phase did not produce a valid handoff: ", or the new
+  `synthesized_by` marker) was accepted as the worker's failed phase. The
+  conductor and driver now hold it for repair. Engine errors and deadlines
+  still take the early-exit path. `workflow-runner.mjs` stamps
+  `synthesized_by: "lane-runner"`, copies an existing handoff to
+  `<handoff>.orig.<n>.json` before overwriting it, and names the copy in
+  `worker_handoff`. The driver also copies a handoff before its early-exit
+  rewrite.
+- Fixed: the pipeline conductor looked workers up by directory name only, so a
+  registry id such as `dev-qa-tester` (in `dev-team/qa-tester`) was an unknown
+  worker. Lookup now tries the registry id (`core/workers/registry.yaml`), then
+  a pack worker id (`core/packages/<pack>/workers`), then the directory name.
+  A registry entry always wins, so a registered core worker keeps its path. A
+  directory the registry does not list that would shadow a pack worker of the
+  same id and directory name is reported as a stale unpacked copy, and the pack
+  entry is used. Registry entries may list `path:` before `id:`. An explicit
+  `PC_WORKERS_ROOT` keeps the directory-name lookup.
+- Added: with hq-cli 5.345.149 or later (hq-cli #1992) and its
+  hook-engine-launcher flag on, the update healer
+  registers the pinned hook engine (`~/.hq/bin/hq-hook/<semver>/`) in
+  `.claude/settings.json` in exec form. A flag that is off, an old CLI, a
+  missing engine or a probe that hangs keeps the bash `master-hook.sh` lines.
+  The healer only accepts an engine path under the pinned directory, runs the
+  probe from the HQ root, and stops the probe's whole process group on
+  timeout. The Codex and Grok adapters treat an engine entry under the pinned
+  path with a matching `--hq-root` as `master-hook.sh`, so their PreToolUse
+  deny guards still run. The SessionStart stray-hook heal and the
+  settings.local.json duplicate check recognise the engine entries (#1403).
+- Fixed: the Codex and Grok adapters no longer evaluate `$` or backticks in
+  the HQ root path when they read hook commands (#1403).
+- Fixed: the Grok adapter dropped the `master-hook.sh` fan-out under the
+  stock macOS bash 3.2 (#1403).
+- Fixed: on Windows the Codex and Grok adapters kept the trailing carriage
+  return `jq.exe` prints, so Grok matched no hook event (#1403).
+- Fixed: when the pinned engine sat under a home other than the adapter's
+  `HOME` (another account, or a Windows `HOME`/`USERPROFILE` split), the Codex
+  and Grok adapters dropped every hook event and allowed all tools. They now
+  run `master-hook.sh` for that entry and print a warning, and the healer
+  registers it the same way (#1403).
+- Changed: the setup worker and the docs a person reads now call the setup bot
+  "your assistant", to match the HQ desktop app (hq-desktop-app PR 1713). The
+  worker's prompt says it is the person's HQ assistant, the pricing line it may
+  repeat reads "like you, their assistant", and a pack is described as
+  bringing "its own bot". The worker id `setup`, the bot name `setup`, file
+  paths and code names are unchanged.
+- Fixed: the Stop hook took 10 to 30 seconds on installs updated from an
+  older release (feedback_71c2f46c). `hq rescue` keeps files a release no
+  longer ships, so the retired Stop leaf `core/hooks/Stop/70-work-mesh-done.sh`
+  kept running and made a blocking network call at every turn end. Its
+  replacement, `70-work-mesh-turn-end.sh`, only enqueues. `master-hook.sh` no
+  longer dispatches the retired leaf, and `/update-hq` now runs
+  `core/scripts/remove-retired-core-hooks.sh`, which deletes the leaf and its
+  helper when they match a released copy and keeps an edited copy. It deletes
+  only inside the real `core/hooks` folder: if `core`, `core/hooks` or
+  `core/hooks/Stop` is a symlink to another folder, the file is kept and
+  named. A CRLF copy of a released file still counts as released, and a
+  failed delete is reported and exits 1. A new
+  timing test runs the full Stop path with the leaf planted and requires a
+  median under 12 seconds (40% of the 30-second timeout). The lane monitor
+  gate and other Stop checks are unchanged.
+- Fixed: the policy reminder cut policies at its 8000-byte ceiling, shortened
+  every HARD policy to one line, and repeated the same policies on later
+  events. Matches are now ranked by relevance: a policy whose `when:` matches
+  the current command, prompt or tool output ranks above a generic match, and
+  HARD rules come first within each group. When the full text does not fit,
+  the top-ranked HARD rule keeps its full text, the rest are summarised, and
+  the notice names the kept rule and points at each file. A HARD policy shown
+  only as a summary is not shown again for the same trigger within
+  `HQ_POLICY_SEEN_TTL_SECONDS` (default 1800); a new trigger or an expired
+  window shows it again. The ceiling is unchanged (feedback_a2b3bfef).
+- Fixed: the first Daily Brief on a Mac with past work said "Nothing owed"
+  and "no sessions". The welcome edition counted only sessions started from
+  HQ. It now counts every Claude Code transcript (including a
+  `CLAUDE_CONFIG_DIR` folder), Codex rollout and Cursor workspace on the Mac,
+  and adds `headline`, `top_projects`, `top_repos`, `recent_work`, `harness`,
+  `tree`, `actions` (one `primary`) and `sessions.local`/`imported`. Other
+  companies' work is counted and never named. A failed source shows one plain
+  note; exception text goes to stderr. `brief_rank.py --check` reports
+  `welcome_problems` for empty-state lines on a first run with sessions.
+  Harness ids in the welcome fields are `claude-code`, `codex` and `cursor`;
+  the underscore keys appear only inside `harness.counts`. `recent_work`
+  titles come from Claude Code custom titles and summaries and Codex thread
+  names first. A first prompt line is used only when nothing else exists, and
+  never when it may hold a credential. The filter is safe by default: any
+  title that names a credential (password, secret, token, api key, bearer,
+  private key, access key, auth, credential, key, pass, pin, otp and similar),
+  sets a name such as DBPASS= or MYKEY=, holds a known API key prefix, a
+  private-key header or a URL with a password, or holds a hex run of 24+
+  characters, a run of 16+ mixed letters and digits, or a base64/base62 run of
+  20+ with a digit or capital letter is dropped, and that session
+  shows as "Session in <project>". Session-row titles from the registry, lane
+  and thread fields use the same filter. A folder outside the
+  home folder shows by its name only, and a project-folder symlink that points
+  outside the home folder is not followed.
+- Fixed: the image guard charged a sub-agent's image reads to the parent
+  session's budget in two cases, which blocked sub-agent visual checks once
+  the parent was full. The first case was a payload with an agent_id
+  arriving with an empty `HQ_HOOK_AGENT_ID` inherited from an outer process.
+  The second was a host that sends no agent_id but does send a sub-agent
+  transcript path (`<session>/subagents/agent-<id>.jsonl`). The payload's
+  agent_id now wins, and the transcript path keys the sub-agent's own ledger.
+  The parent's own reads are still counted and still blocked at 2 MB per
+  image, 8 MB total and 32 images (feedback_3d42bae3).
 - Fixed: the hook gate keeps HQ Anywhere enabled when Node or its flag reader
   is missing or the lookup fails. Explicit false and the false/0 environment
   kill switch still disable it.
@@ -856,7 +1124,7 @@
 ### Added: pricing and billing reference with a drift check (workforce-no-included-agents US-011)
 - `core/knowledge/public/hq-core/pricing-and-billing.md` explains plans, the member rule, per-box agent billing, the legacy Workforce rule, meeting hours, outposts, trials, cancelling and invoices. Its numbers section is generated from `core/knowledge/public/hq-core/pricing.json`, a copy of the `GET /v1/pricing` statement.
 - `core/scripts/refresh-pricing.sh` fetches the endpoint, rewrites `pricing.json`, and regenerates only the text between the numbers markers.
-- `core/scripts/check-pricing-drift.sh` fails when `pricing.json` differs from the endpoint on any plan price, allowance, agent rung, add-on or the legacy Workforce rule, and names each field. It exits 2 when the endpoint is unreachable. pr-checks runs it on every PR and push to main.
+- `core/scripts/check-pricing-drift.sh` fails when `pricing.json` differs from the endpoint on any plan price, allowance, agent rung, add-on or the legacy Workforce rule, and names each field. It exits 2 when the endpoint is unreachable. pr-checks runs it on every PR.
 - New hard policy `core/policies/hq-pricing-source-of-truth.md`: quote pricing only from `pricing.json` or the endpoint; the endpoint wins on disagreement.
 - The quick reference links the pricing reference.
 - `GET /v1/pricing` is live, so CI runs the drift check without an unreachable-endpoint allowance. `pricing.json` was refreshed from the live statement after the Workforce v2 cutover: all three agent rungs (basic, power, dev) are buyable.

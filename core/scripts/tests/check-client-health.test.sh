@@ -694,6 +694,134 @@ for eng in $ENGINES; do
     && ok "repairable sync.update.core WARN reaches the report body ($label)" \
     || bad "repairable sync.update.core WARN reaches the report body ($label)" "check id missing"
 done
+echo "== 7b2. manual-only sync.runtime WARN rows are not defect reports =="
+# hq-cli's sync.runtime.* checks are WARN-only, read the last 60 minutes of
+# sync logs, and are marked fix.autoFixable:false because `hq doctor --fix`
+# cannot clear them. realtime-lag, device-limit and conflicts are manual-only
+# and must not be filed as "unresolved after --fix". receiver-permission (cloud
+# refused this account) and runner-restarts (crash loop) are real failures and
+# are still filed, as are FAIL rows, rows without a fix field, and fixable rows.
+DOCTOR_RUNTIME_WARN="$TMP/doctor-runtime-warn.json"
+cat > "$DOCTOR_RUNTIME_WARN" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.realtime-lag","fix":{"autoFixable":false}},
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.device-limit","fix":{"autoFixable":false}},
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.conflicts","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_RUNTIME_WARN_REAL="$TMP/doctor-runtime-warn-real.json"
+cat > "$DOCTOR_RUNTIME_WARN_REAL" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.receiver-permission","fix":{"autoFixable":false}},
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.runner-restarts","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_RUNTIME_WARN_PLUS_JOURNAL="$TMP/doctor-runtime-warn-plus-journal.json"
+cat > "$DOCTOR_RUNTIME_WARN_PLUS_JOURNAL" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.realtime-lag","fix":{"autoFixable":false}},
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.device-limit","fix":{"autoFixable":false}},
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.example-co","fix":{"autoFixable":true}}
+]}
+JSON
+DOCTOR_RUNTIME_WARN_NO_FIX="$TMP/doctor-runtime-warn-no-fix.json"
+cat > "$DOCTOR_RUNTIME_WARN_NO_FIX" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.realtime-lag"}
+]}
+JSON
+DOCTOR_RUNTIME_FAIL="$TMP/doctor-runtime-fail.json"
+cat > "$DOCTOR_RUNTIME_FAIL" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.runtime.conflicts","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_RUNTIME_WARN_FIXABLE="$TMP/doctor-runtime-warn-fixable.json"
+cat > "$DOCTOR_RUNTIME_WARN_FIXABLE" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.device-limit","fix":{"autoFixable":true}}
+]}
+JSON
+for eng in $ENGINES; do
+  label="$eng"; [ "$eng" = "-" ] && label="default"
+
+  TEST_ROOT="$TMP/runtime-warn-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-warn-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN"
+  [ "$REM_RC" = 0 ] && ok "remediate($label) handles manual-only sync.runtime WARN rows" \
+    || bad "remediate($label) handles manual-only sync.runtime WARN rows" "exit $REM_RC"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "manual-only sync.runtime WARN rows file no client-health report ($label)" \
+    || bad "manual-only sync.runtime WARN rows file no client-health report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  TEST_ROOT="$TMP/runtime-warn-real-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-warn-real-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_REAL"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "receiver-permission and runner-restarts WARN rows are still reported ($label)" \
+    || bad "receiver-permission and runner-restarts WARN rows are still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  if grep -Fq "sync.runtime.receiver-permission" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && grep -Fq "sync.runtime.runner-restarts" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+    ok "report carries receiver-permission and runner-restarts ids ($label)"
+  else
+    bad "report carries receiver-permission and runner-restarts ids ($label)" \
+      "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+  fi
+
+  TEST_ROOT="$TMP/runtime-warn-plus-journal-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-warn-plus-journal-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_PLUS_JOURNAL"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "fixable journal FAIL beside manual-only runtime WARN files one report ($label)" \
+    || bad "fixable journal FAIL beside manual-only runtime WARN files one report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  if grep -Fq "sync.journal.example-co" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ! grep -Fq "sync.runtime." "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
+    ok "report carries the journal id and no sync.runtime ids ($label)"
+  else
+    bad "report carries the journal id and no sync.runtime ids ($label)" \
+      "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+  fi
+
+  TEST_ROOT="$TMP/runtime-warn-no-fix-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-warn-no-fix-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_NO_FIX"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "sync.runtime WARN with no fix field is still reported ($label)" \
+    || bad "sync.runtime WARN with no fix field is still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "sync.runtime.realtime-lag" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "sync.runtime WARN with no fix field reaches the report body ($label)" \
+    || bad "sync.runtime WARN with no fix field reaches the report body ($label)" "check id missing"
+
+  TEST_ROOT="$TMP/runtime-fail-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-fail-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_FAIL"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "sync.runtime FAIL with autoFixable:false is still reported ($label)" \
+    || bad "sync.runtime FAIL with autoFixable:false is still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "sync.runtime.conflicts" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "sync.runtime FAIL reaches the report body ($label)" \
+    || bad "sync.runtime FAIL reaches the report body ($label)" "check id missing"
+
+  TEST_ROOT="$TMP/runtime-warn-fixable-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-warn-fixable-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_FIXABLE"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "fixable sync.runtime WARN is still reported ($label)" \
+    || bad "fixable sync.runtime WARN is still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+done
+
 echo "== 7c. opted-in diagnostics carry only checkId: reasonCode pairs =="
 RDIAG="$TMP/rem-diagnostics"
 build_root "$RDIAG"

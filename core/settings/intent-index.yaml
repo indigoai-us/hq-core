@@ -143,6 +143,8 @@ skills:
     use: "Root-cause debugging before any fix: scope lock, hypothesis testing, debug report. Triggers: \"debug this\", \"why is this broken\"."
   - name: "/job"
     use: "Deprecated alias for /schedule — Outpost recurring agent jobs. Prefer /schedule."
+  - name: "/join-meeting"
+    use: "Ride a live meeting transcript in this session. Pick a live meeting or invite the bot with a join link, stay bound until it ends, then save the transcript."
   - name: "/journal"
     use: "Write structured session journal entries for durable working memory."
   - name: "/knowledge-pulse"

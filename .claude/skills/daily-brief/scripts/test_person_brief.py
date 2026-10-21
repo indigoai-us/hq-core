@@ -41,7 +41,12 @@ class PersonBrief(unittest.TestCase):
                         self.progress_snapshots.append(json.loads(Path(instance.path).read_text()))
                 stack.enter_context(patch.object(sweep.Status, '_write', record_status))
                 stack.enter_context(patch.object(sweep, 'latest_import', return_value=None))
-                stack.enter_context(patch.object(sweep._load_local_sessions(), 'scan', return_value=[]))
+                local = sweep._load_local_sessions()
+                stack.enter_context(patch.object(local, 'scan', return_value=[]))
+                stack.enter_context(patch.object(local, 'inventory', side_effect=AssertionError('inventory read')))
+                stack.enter_context(patch.object(sweep, '_load_local_sessions', return_value=local))
+                stack.enter_context(patch.object(sweep, 'welcome_inputs', return_value={
+                    'inv': None, 'recent': [], 'tree': None, 'company_for': None, 'notes': []}))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 sweep.main(list(flags) + ['--hq-root', root, '--out', str(out), '--me', 'Test', '--status', str(out.parent / 'status.json')])
                 return json.loads(out.read_text()), meeting.call_args_list
