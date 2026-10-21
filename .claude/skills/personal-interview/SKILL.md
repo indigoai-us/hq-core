@@ -61,7 +61,7 @@ Ask questions **one at a time**. Keep it conversational, not interrogative. Adap
 
 Always ask this last, after every other question, as the step that finishes the interview and gets them into the HQ app.
 
-19. Ask them to finish by setting their profile photo: in the HQ app, open **Settings → Public profile → Change photo**, or go to https://hq.computer/personal/profile. Any photo works; HQ crops it to a square. If they already have one, confirm and finish.
+19. Ask them to finish by setting their profile photo: in the HQ app, open **Settings → Profile → Change photo**, or go to https://hq.computer/personal/profile. Any photo works; HQ crops it to a square. If they already have one, confirm and finish.
 
 - Wait until they confirm it's done or say "skip". Don't try to upload it yourself; there is no command for that.
 - If they skip, write "Profile photo: not set" under Context Notes in `profile.md`.
