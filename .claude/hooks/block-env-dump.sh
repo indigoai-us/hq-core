@@ -160,8 +160,15 @@ CAPTURE_CLOSE='([[:space:]]+-[-a-zA-Z0-9]+)*[[:space:]]*(\)|`)'
 # operands from the text the env/printenv/set checks read. The operand run stops
 # at `;`, `&`, `|`, a parenthesis, a backtick or `$`, so a dump elsewhere in the
 # same line (a later `; env`, or a `$(env)` / backtick capture used as a grep
-# operand) is still seen.
-SEARCH_CMD='(^|[;&|(]|\$\()[[:space:]]*(command[[:space:]]+)?([^[:space:];&|()`$]*/)?(grep|egrep|fgrep|zgrep|rg|ag|ack)([[:space:]]+[^;&|()`$]*)?'
+# operand) is still seen. A quoted operand is one word whatever it holds, so a
+# pattern like "stripe|env|secret" or 'token|set' is dropped whole instead of
+# being cut at its `|` (feedback a6435e4f). A double-quoted operand that holds
+# `$` or a backtick is not dropped, so "$(env)" stays visible. A backslash
+# takes the next character with it, unquoted or inside double quotes, so an
+# escaped quote (`grep a\"b; env; echo \"`) cannot open a fake quoted operand
+# that would swallow the `; env;` between it and a later quote.
+SEARCH_OPERAND="([^;&|()\`\$'\"\\\\]|\\\\.|'[^']*'|\"([^\"\`\$\\\\]|\\\\.)*\")"
+SEARCH_CMD='(^|[;&|(]|\$\()[[:space:]]*(command[[:space:]]+)?([^[:space:];&|()`$]*/)?(grep|egrep|fgrep|zgrep|rg|ag|ack)([[:space:]]+'"${SEARCH_OPERAND}"'*)?'
 SCAN=$(printf '%s' "$FLAT" | sed -E "s#${SEARCH_CMD}#\\1 #g")
 
 if echo "$SCAN" | grep -qE "${CAPTURE_OPEN}(printenv|env|set)${CAPTURE_CLOSE}"; then
@@ -197,8 +204,15 @@ if echo "$FLAT" | grep -qE "${DUMP_PREFIX}cat[[:space:]]+/proc/(self|[0-9]+)/env
 fi
 
 # --- cat .env files ---
-if echo "$FLAT" | grep -qE '(^|[[:space:];&|])cat[[:space:]]+[^|&;]*\.env\b'; then
-  if echo "$FLAT" | grep -qE 'cat[[:space:]]+[^|&;]*\.env.*[|>]'; then
+# A document whose name only contains `.env` (a policy such as aws.env.md, a
+# notes.env.txt) is prose, not an env file (feedback a6435e4f). Drop words that
+# end in a document extension after `.env` before the check. `.env`,
+# `.env.local`, `prod.env` and the like are still matched. Only a whole word
+# of plain file-name characters is dropped: `.env$IFS.md` expands to `.env`
+# plus another word, so a word with `$`, a quote or a backslash is kept.
+CAT_SCAN=$(printf '%s' "$FLAT" | sed -E 's#(^|[[:space:];&|<>(])[A-Za-z0-9_./@+-]*\.env[A-Za-z0-9_./@+-]*\.(md|mdx|markdown|txt|rst)([[:space:];&|)<>]|$)#\1\3#g')
+if echo "$CAT_SCAN" | grep -qE '(^|[[:space:];&|])cat[[:space:]]+[^|&;]*\.env\b'; then
+  if echo "$CAT_SCAN" | grep -qE 'cat[[:space:]]+[^|&;]*\.env.*[|>]'; then
     exit 0
   fi
   cat >&2 <<'EOF'

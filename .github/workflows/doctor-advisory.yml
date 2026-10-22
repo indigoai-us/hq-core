@@ -59,9 +59,13 @@ jobs:
 
       - name: Install hq CLI
         id: install
+        # Exact pin (a version with `hq doctor`), installed with --ignore-scripts
+        # by the shared CI installer. Bump it here.
+        env:
+          HQ_DOCTOR_CLI_VERSION: 5.345.155
         run: |
           set -uo pipefail
-          npm install -g @indigoai-us/hq-cli || true
+          bash core/scripts/ci/install-pinned-hq-cli.sh --version "$HQ_DOCTOR_CLI_VERSION" || true
           if command -v hq >/dev/null 2>&1 && hq doctor --help >/dev/null 2>&1; then
             echo "available=true" >> "$GITHUB_OUTPUT"
           else

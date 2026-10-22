@@ -343,9 +343,27 @@ hq_shell_strip_standalone_data_heredoc() {
 # guards a safe classification surface: `grep "git reset"` is grep, while
 # `git reset` is git. Redirections are retained as argv tokens so write guards
 # can inspect their targets.
+#
+# hq_shell_simple_commands <command> raw
+# Same split, but each word is printed as it is spelled in the command, with
+# its quotes and backslashes kept. Records, words and embedded newlines line
+# up one for one with the default output, so a caller can read both and tell
+# whether a word was written literally at that argv position.
+#
+# hq_shell_simple_commands <command> nl
+# Same split as the default, but a newline inside a word (a quoted newline in a
+# `bash -c` program) is printed as the record-separator byte \036, so each
+# simple command stays on one output line. The caller turns \036 back into a
+# newline in each word.
 hq_shell_simple_commands() {
-  printf '%s' "$1" | awk '
-    function push_word() { if (word != "") { argv[++argc] = word; word = "" } }
+  printf '%s' "$1" | awk -v raw_mode="${2:-}" '
+    function push_word() {
+      if (word != "") {
+        argv[++argc] = (raw_mode == "raw" ? rword : word)
+        if (raw_mode == "nl") gsub(/\n/, sprintf("%c", 30), argv[argc])
+      }
+      word = ""; rword = ""
+    }
     function emit(    j, out) {
       push_word()
       if (argc == 0) return
@@ -361,22 +379,24 @@ hq_shell_simple_commands() {
       # A quoted `bash -c` program and a heredoc can span newlines; resetting
       # quote state at each line silently discarded the command before it.
       text = source
-      n = length(text); quote = ""; escaped = 0; word = ""; argc = 0
+      n = length(text); quote = ""; escaped = 0; word = ""; rword = ""; argc = 0
       for (i = 1; i <= n; i++) {
         c = substr(text, i, 1)
-        if (escaped) { word = word c; escaped = 0; continue }
+        if (escaped) { word = word c; rword = rword c; escaped = 0; continue }
         if (quote == "\047") {
+          rword = rword c
           if (c == "\047") quote = ""; else word = word c
           continue
         }
         if (quote == "\"") {
+          rword = rword c
           if (c == "\"") quote = ""
           else if (c == "\\") escaped = 1
           else word = word c
           continue
         }
-        if (c == "\047" || c == "\"") { quote = c; continue }
-        if (c == "\\") { escaped = 1; continue }
+        if (c == "\047" || c == "\"") { quote = c; rword = rword c; continue }
+        if (c == "\\") { escaped = 1; rword = rword c; continue }
         if (c == " " || c == "\t") { push_word(); continue }
         if (c == ";" || c == "|" || c == "&" || c == "\n" || c == "(" || c == ")") {
           emit()
@@ -393,7 +413,7 @@ hq_shell_simple_commands() {
           }
           continue
         }
-        word = word c
+        word = word c; rword = rword c
       }
     }
   '

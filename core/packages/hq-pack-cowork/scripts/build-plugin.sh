@@ -35,6 +35,8 @@ PACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$HOME/Downloads/hq-pack-cowork.plugin}"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hq-pack-cowork-build.XXXXXX")"
 STAGE="$BUILD_ROOT/hq-pack-cowork"
+PNPM_VERSION="10.32.1"
+ESBUILD_VERSION="0.28.2"
 
 cleanup() {
   rm -rf "$BUILD_ROOT"
@@ -52,8 +54,13 @@ rsync -a \
 (
   cd "$STAGE/mcp-server"
   rm -f .npmrc package-lock.json
-  npm install --ignore-scripts --omit=dev --package-lock=false
-  npm exec --package=esbuild -- esbuild index.mjs \
+  # Install from the committed pnpm-lock.yaml, so the plugin bundles the
+  # versions CI tests. A lockfile that is out of sync with package.json fails
+  # the build instead of resolving a fresh tree. pnpm and esbuild are pinned
+  # to exact versions; pnpm matches the pr-checks.yml cowork job.
+  npm exec --yes --package="pnpm@$PNPM_VERSION" -- \
+    pnpm install --frozen-lockfile --prod --ignore-scripts --ignore-workspace
+  npm exec --yes --package="esbuild@$ESBUILD_VERSION" -- esbuild index.mjs \
     --bundle \
     --platform=node \
     --format=esm \

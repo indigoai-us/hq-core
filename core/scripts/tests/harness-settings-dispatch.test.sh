@@ -207,7 +207,7 @@ assert_combo() { # <runtime-label> <adapter> <event> <tool> <payload>
     pass "$label $event/$tool (all $(printf '%s\n' "$expected" | grep -c . ) settings hooks)"
   fi
   if settings_has_master "$event"; then
-    if printf '%s\n' "$recorded" | grep -q "^master:$event$"; then
+    if printf '%s\n' "$recorded" | grep "^master:$event$" >/dev/null; then
       pass "$label $event/$tool master fan-out"
     else
       fail "$label $event/$tool did not run master-hook"

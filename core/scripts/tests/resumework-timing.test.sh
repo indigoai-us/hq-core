@@ -97,11 +97,15 @@ blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\
 block = next((block for block in blocks if 'thread_file="<resolved-thread-file>"' in block), None)
 if block is None:
     raise SystemExit("resumework timing: lock Bash block not found")
-block = block.replace('thread_file="<resolved-thread-file>"', 'thread_file="$ROOT/workspace/threads/$RESUMEWORK_THREAD_ID.json"')
+# The skill tells the agent to write the resolved thread path literally. The
+# id changes per sample, so leave a marker here and substitute the expanded
+# literal path for each sample below; a `$ROOT/...$RESUMEWORK_THREAD_ID`
+# assignment would be a value the scope guard cannot prove (#1512 review).
+block = block.replace('thread_file="<resolved-thread-file>"', 'thread_file="__RESUMEWORK_THREAD_FILE__"')
 print(block, end="")
 PYBLOCK
 )"
-METADATA_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" <<'PYBLOCK'
+METADATA_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" "$ROOT" <<'PYBLOCK'
 import pathlib
 import re
 import sys
@@ -112,7 +116,11 @@ blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\
 block = next((block for block in blocks if "git -C /absolute/path/to/repo branch --show-current" in block), None)
 if block is None:
     raise SystemExit("resumework timing: metadata Bash block not found")
-block = block.replace("/absolute/path/to/repo", "$ROOT").replace('"{co}"', '"indigo"')
+# The skill tells the agent to write the repo path literally, so substitute
+# the literal fixture root. A `$ROOT` here would be set only in this test's
+# environment, and the scope guard blocks `git -C` with a variable the
+# command does not set.
+block = re.sub(r"(git -C )\S+", lambda m: m.group(1) + sys.argv[2], block).replace('"{co}"', '"indigo"')
 print(block, end="")
 PYBLOCK
 )"
@@ -168,7 +176,7 @@ for step in "${!commands[@]}"; do
     if (( step < 2 )); then
       printf '%s\n' '{}' > "$ROOT/workspace/threads/${RESUMEWORK_THREAD_ID}.json"
     fi
-    command="${commands[$step]}"
+    command="${commands[$step]//__RESUMEWORK_THREAD_FILE__/$ROOT/workspace/threads/$RESUMEWORK_THREAD_ID.json}"
     payload="$(jq -nc --arg s "$SESSION_ID" --arg c "$command" --arg cwd "$HQ_ROOT" '{session_id:$s,hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$c,description:"resumework timing"}}')"
     t0="$(now_ms)"
     if ! printf '%s' "$payload" | bash "$ROOT/.claude/hooks/master-hook.sh" PreToolUse >"$HOOK_OUTPUT" 2>&1; then

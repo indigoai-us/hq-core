@@ -198,14 +198,37 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
       log "workspace-sync: mirror hook unavailable for handoff thread"
     fi
   fi
+  # handoff_company_is_cloud <slug> — true when the company has a cloud vault.
+  # company.yaml `cloud: true` says so directly. Many cloud companies have no
+  # company.yaml (or no cloud: line) and are known only by their manifest
+  # cloud_uid; they used to be skipped as local-only
+  # (feedback_98f2ce49-5065-4670-8544-1a3dccd9985e). An explicit `cloud: false`
+  # still wins over the manifest.
+  handoff_company_is_cloud() {
+    local co="$1" yaml="$HQ_ROOT/companies/$1/company.yaml"
+    if [[ -f "$yaml" ]]; then
+      grep -Eq '^cloud:[[:space:]]*"?true"?([[:space:]]|#|$)' "$yaml" && return 0
+      grep -Eq '^cloud:[[:space:]]*"?false"?([[:space:]]|#|$)' "$yaml" && return 1
+    fi
+    [[ -f "$HQ_ROOT/companies/manifest.yaml" ]] || return 1
+    awk -v co="$co" '
+      /^[^[:space:]#]/ { in_companies = ($0 ~ /^companies:[[:space:]]*$/); in_co = 0; next }
+      in_companies && /^  [^[:space:]#][^:]*:/ { k = $1; sub(/:$/, "", k); gsub(/["\047]/, "", k); in_co = (k == co); next }
+      in_companies && in_co && /^    cloud_uid:/ {
+        v = $0; sub(/^    cloud_uid:[[:space:]]*/, "", v); gsub(/["\047\r[:space:]]/, "", v)
+        if (v != "" && v != "null" && v != "~") found = 1
+      }
+      END { exit !found }
+    ' "$HQ_ROOT/companies/manifest.yaml"
+  }
   while IFS= read -r company; do
     [[ "$company" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || continue
     [[ -d "$HQ_ROOT/companies/$company/workspace" ]] || continue
     # Local-only companies have no cloud vault. Pushing them fails with
     # "No entity in caller's namespace matches company/<slug>" and a
     # wrong-identity hint even when the operator is signed in correctly.
-    if ! grep -Eq '^cloud:[[:space:]]*true' "$HQ_ROOT/companies/$company/company.yaml" 2>/dev/null; then
-      log "workspace-sync: skipped (company is local-only, cloud: false)"
+    if ! handoff_company_is_cloud "$company"; then
+      log "workspace-sync: skipped (company is local-only: no cloud: true and no manifest cloud_uid)"
       continue
     fi
     if [[ "$THREAD_MIRRORABLE" != "true" || \

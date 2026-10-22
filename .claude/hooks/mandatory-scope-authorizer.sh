@@ -374,12 +374,33 @@ scope_curl_stdin_data_line() {
 # command substitution before EOF. bash 3.2 (macOS /bin/bash) finds the end of
 # $( ) by matching parentheses and does not know heredocs, so an unmatched `)`
 # in the body closes the substitution and the rest of the body runs as shell.
-# Quotes, `#`, backslashes, and backticks change how bash 3.2 counts, so a
-# body with a `)` and any of them is treated as able to escape.
+# Quotes, `#` and backslashes change how bash 3.2 counts, so a body with a `)`
+# and any of them is treated as able to escape. Backtick spans and `${...}`
+# expansions are allowed only when they hold no parenthesis: then they cannot
+# change the count whichever way bash reads them, so a PR body that quotes
+# `${HOME}/x` next to a balanced `$(pwd)` is data (feedback fd9972dc). An odd
+# number of backticks, or a `${` with no closing `}`, still counts as escaping.
 scope_comsub_body_escapes() {
-  local body="${1:-}" parens depth=1 i
+  local body="${1:-}" parens depth=1 i rest span ticks
   case "$body" in *')'*) ;; *) return 1 ;; esac
-  case "$body" in *"'"*|*'"'*|*'#'*|*'\'*|*'`'*) return 0 ;; esac
+  case "$body" in *"'"*|*'"'*|*'#'*|*'\'*) return 0 ;; esac
+  ticks="${body//[!\`]/}"
+  [ $(( ${#ticks} % 2 )) -eq 0 ] || return 0
+  rest="$body"
+  while [[ "$rest" == *'`'* ]]; do
+    rest="${rest#*\`}"
+    span="${rest%%\`*}"
+    case "$span" in *'('*|*')'*) return 0 ;; esac
+    rest="${rest#*\`}"
+  done
+  rest="$body"
+  while [[ "$rest" == *'${'* ]]; do
+    rest="${rest#*\$\{}"
+    case "$rest" in *'}'*) ;; *) return 0 ;; esac
+    span="${rest%%\}*}"
+    case "$span" in *'('*|*')'*|*'`'*) return 0 ;; esac
+    rest="${rest#*\}}"
+  done
   parens="${body//[!()]/}"
   for ((i = 0; i < ${#parens}; i++)); do
     if [ "${parens:i:1}" = "(" ]; then depth=$((depth + 1)); else depth=$((depth - 1)); fi
@@ -569,6 +590,43 @@ scope_strip_inert_heredoc_bodies() {
   printf '%s' "$output"
 }
 
+# True when the text after <prefix> lies inside the body of a quoted-delimiter
+# heredoc read by plain `cat` (`cat <<'EOF'`, `"$(cat <<'EOF'`, `cat > f
+# <<'EOF'`). The shell expands nothing in such a body and cat runs nothing,
+# so a quote, comma, or bracket right after a path there is literal text
+# (JSON such as `"next": "see companies/x"}`), not shell quoting that could
+# join more text to the path. The `<<` must sit at an unquoted position (or
+# directly inside one `"$(`), the closing delimiter line must not appear
+# between it and the fragment, and it must appear after the fragment.
+# Arguments: <prefix> <text after prefix>.
+scope_offset_in_cat_quoted_heredoc() {
+  local prefix="${1:-}" rest="${2:-}" re word pre stmt nl=$'\n' body
+  re="<<-?[[:space:]]*'([A-Za-z_][A-Za-z0-9_]*)'[^${nl}]*${nl}"
+  [[ "$prefix" =~ $re ]] || return 1
+  # Take the last heredoc opener in the prefix.
+  body="$prefix"
+  while [[ "$body" =~ $re ]]; do
+    word="${BASH_REMATCH[1]}"
+    pre="${prefix%"${body}"}${body%%"${BASH_REMATCH[0]}"*}"
+    body="${body#*"${BASH_REMATCH[0]}"}"
+  done
+  # The delimiter line has not closed the body before the fragment ...
+  case "$nl$body" in *"$nl$word$nl"*) return 1 ;; esac
+  # ... and does close it after the fragment.
+  case "$body$rest$nl" in *"$nl$word$nl"*) ;; *) return 1 ;; esac
+  case "$pre" in *"$nl"*) pre="${pre##*"$nl"}" ;; esac
+  re='^(.*)"\$\(([^"'"'"'()$`]*)$'
+  if [[ "$pre" =~ $re ]]; then
+    scope_shell_prefix_is_unquoted "${BASH_REMATCH[1]}" || return 1
+    stmt="${BASH_REMATCH[2]}"
+  else
+    scope_shell_prefix_is_unquoted "$pre" || return 1
+    stmt="${pre##*[;&|(]}"
+  fi
+  re='^[[:space:]]*cat([[:space:]]+(>|>>)[[:space:]]*[A-Za-z0-9._/-]+)?[[:space:]]*$'
+  [[ "$stmt" =~ $re ]]
+}
+
 scope_shell_prefix_is_unquoted() {
   local value="${1:-}" quote="" escaped=0 ch i
   for ((i = 0; i < ${#value}; i++)); do
@@ -637,6 +695,33 @@ scope_var_uses_double_quoted() {
   [ "$uses" -gt 0 ]
 }
 
+# True when the <calls> plain call statements counted for <name> are the only
+# way the command can run it. Any other mention of the name (a subshell, a
+# substitution, quotes, an escape, an alias or assignment, a string run by
+# eval, trap, or a nested shell), a command word built from an expansion, a
+# glob, or a brace list, eval, source, `.`, or set -a can call it with other words.
+scope_function_calls_all_visible() {
+  local name="${1:-}" text="${2:-}" calls="${3:-0}" tokens defs nl=$'\n' backtick=$'\140' re cmd_pos word
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  defs="$(printf '%s' "$text" | grep -oE "(^|[^A-Za-z0-9_./-])${name}[[:space:]]*\(\)|(^|[^A-Za-z0-9_])function[[:space:]]+${name}([^A-Za-z0-9_./-]|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ "${defs:-0}" -gt 0 ] || return 1
+  tokens="$(printf '%s' "$text" | tr -d '\\"'"'" | tr -c 'A-Za-z0-9_./-' '\n' | grep -cxF -- "$name" 2>/dev/null || true)"
+  [ "$tokens" = "$((calls + defs))" ] || return 1
+  re='(^|[^A-Za-z0-9_.-])(eval|source|allexport)([^A-Za-z0-9_]|$)'
+  [[ "$text" =~ $re ]] && return 1
+  re='(^|[^A-Za-z0-9_.-])set([[:space:]]+[-+][A-Za-z]+)*[[:space:]]+-[A-Za-z]*a'
+  [[ "$text" =~ $re ]] && return 1
+  re='(^|[;&|(){'"$nl"'])[[:space:]]*\.[[:space:]]'
+  [[ "$text" =~ $re ]] && return 1
+  cmd_pos='[;&|(!'"$backtick$nl"']|\{[[:space:]]'
+  re='(^|[^A-Za-z0-9_])case[[:space:]]'
+  [[ "$text" =~ $re ]] && cmd_pos="$cmd_pos"'|\)'
+  word='[^[:space:];&|()<>=]*'
+  re='(^|'"$cmd_pos"'|(^|[^A-Za-z0-9_])(do|then|else|elif|if|while|until|time))[[:space:]]*([A-Za-z_][A-Za-z0-9_]*\+?=[^[:space:];&|]*[[:space:]]+)*('"$word"'[$*?'"$backtick"']|'"$word"'\[[^][:space:]]*\]|'"$word"'\{[^[:space:]]*\})'
+  [[ "$text" =~ $re ]] && return 1
+  return 0
+}
+
 scope_shell_variable_values() {
   local name="${1:-}" prefix="${2:-}" command_text="${3:-}" loop_re assignment_re command_prefix_re
   local raw value command_prefix function_name function_re function_keyword_re statement call_text position call_count call_occurrences loop_match loop_pre
@@ -701,6 +786,7 @@ scope_shell_variable_values() {
     [ "$call_count" -gt 0 ] || return 1
     call_occurrences="$(printf '%s' "$command_text" | grep -oE "(^|[;[:space:]])${function_name}([[:space:]]|$)" 2>/dev/null | wc -l | tr -d '[:space:]' || true)"
     [ "$call_occurrences" = "$call_count" ] || return 1
+    scope_function_calls_all_visible "$function_name" "$command_text" "$call_count" || return 1
     printf '%s\n' "${values[@]}"
     return 0
   fi
@@ -776,6 +862,39 @@ scope_shell_variable_values() {
     fi
     IFS=$' \t\n' read -r -a values <<< "$raw"
     [ "${#values[@]}" -gt 0 ] || return 1
+    # A literal numeric range word (`for d in {01..31}`, `day-{1..7}`) is
+    # expanded here the way bash does it, including zero padding, so each
+    # value is checked below as a plain word. Only one range per word, plain
+    # word characters around it, and at most 2048 values; anything else
+    # keeps the braces and is refused by the word check.
+    local -a range_values=()
+    local range_re='^([A-Za-z0-9._/-]*)\{(-?[0-9]{1,6})\.\.(-?[0-9]{1,6})\}([A-Za-z0-9._/-]*)$'
+    local range_word range_lo range_hi range_width range_step range_i range_n range_pre range_post
+    for range_word in "${values[@]}"; do
+      if [[ "$range_word" =~ $range_re ]]; then
+        range_pre="${BASH_REMATCH[1]}"; range_post="${BASH_REMATCH[4]}"
+        range_lo="${BASH_REMATCH[2]}"; range_hi="${BASH_REMATCH[3]}"
+        range_width=0
+        if [[ "$range_lo" =~ ^-?0[0-9] ]] || [[ "$range_hi" =~ ^-?0[0-9] ]]; then
+          range_width="${#range_lo}"
+          [ "${#range_hi}" -gt "$range_width" ] && range_width="${#range_hi}"
+        fi
+        range_lo=$((10#${range_lo#-} * ${range_lo%%[0-9]*}1))
+        range_hi=$((10#${range_hi#-} * ${range_hi%%[0-9]*}1))
+        range_step=1; [ "$range_lo" -gt "$range_hi" ] && range_step=-1
+        range_n=$(( (range_hi - range_lo) * range_step + 1 ))
+        [ "$range_n" -le 2048 ] || return 1
+        range_i="$range_lo"
+        while :; do
+          range_values[${#range_values[@]}]="$range_pre$(printf "%0${range_width}d" "$range_i")$range_post"
+          [ "$range_i" = "$range_hi" ] && break
+          range_i=$((range_i + range_step))
+        done
+      else
+        range_values[${#range_values[@]}]="$range_word"
+      fi
+    done
+    values=("${range_values[@]}")
     local glob_match glob_count=0 glob_cwd
     for value in "${values[@]}"; do
       # A loop word that globs an open HQ tree (`for d in workspace/x/*`)
@@ -1020,7 +1139,25 @@ scope_check_bash_candidate_inner() {
   [ -n "$candidate" ] || return 0
   [ "$depth" -lt 8 ] || scope_block_rel "$candidate"
   scope_candidate_is_inert_text "$candidate" "$command_text" "$occurrence_prefix" "$occurrence_suffix" && return 0
-  scope_candidate_is_single_quoted "$candidate" "$occurrence_prefix" && { scope_check_raw "$candidate"; return 0; }
+  if scope_candidate_is_single_quoted "$candidate" "$occurrence_prefix"; then
+    # The shell expands nothing inside single quotes, but a program handed
+    # to an interpreter (`node -e '...`companies/${c}/x`...'`, `python3 -c
+    # '... f"companies/{c}/x" ...'`) builds the real path at run time from
+    # its own template field. When a company path in such a program holds
+    # an interpolation marker, the path the program opens cannot be read
+    # from the text, so fail closed instead of checking the template text
+    # as if it were a literal path.
+    local sq_interp_re='(^|[;&|[:space:](])(python[0-9.]*|node|nodejs|deno|bun|perl|ruby|php|bash|sh|zsh|dash|ksh|osascript)([[:space:]]|$)'
+    if [[ "$candidate" == companies/* ]] && [[ "$occurrence_prefix" =~ $sq_interp_re ]]; then
+      case "$candidate" in
+        *'$'*|*'{'*|*$'\140'*|*'%'*)
+          scope_block_rel "$candidate" "an interpreter program builds this company path from a template or variable at run time, so the path cannot be checked; spell the company path literally"
+          ;;
+      esac
+    fi
+    scope_check_raw "$candidate"
+    return 0
+  fi
 
   masked="$(scope_mask_literal_expansions "$candidate")"
   # Only a path that starts with companies/ names a tenant. Stripping the
@@ -1146,6 +1283,213 @@ scope_check_bash_candidate_inner() {
 
 scope_check_bash_candidate() {
   scope_check_bash_candidate_inner "${1:-}" "${2:-}" 0 "" "${3:-}" "${4:-}"
+}
+
+# True when <raw> (the spelling of one argv word, from
+# `hq_shell_simple_commands ... raw`) is <word> written literally: the same
+# text alone, or inside one pair of enclosing quotes. The raw-text scan for
+# `companies/` then saw this path at this argv position, with the context
+# that decided it (an inert `--title "..."` value is allowed there only because
+# of where it sits). Matching text elsewhere in the command proves nothing:
+# `gh pr create --title "companies/otherco/x" --body-file compa''nies/otherco/x`
+# has an inert title and a real file argument with the same bash value.
+scope_word_spelled_literally() {
+  local word="${1:-}" raw="${2:-}"
+  [ -n "$word" ] || return 1
+  [ "$raw" = "$word" ] && return 0
+  [ "$raw" = "'$word'" ] && return 0
+  [ "$raw" = "\"$word\"" ] && return 0
+  return 1
+}
+
+# True when argv word <word> differs from its raw spelling <raw> only by
+# double-quote characters and every `companies/` fragment of <word> appears
+# verbatim in <raw>. The raw-text scan has then already checked each of those
+# fragments with its full context (a function call's literal argument, a loop
+# list), so checking it again here without that context would only lose it:
+# `w(){ local d="companies/$1"; ...; }; w indigo`. A quote inside a fragment
+# (`"compa"nies/otherco`, `companies/oth"er"co/x`) means the fragment is not
+# in <raw> verbatim, so the word is still checked.
+scope_word_quotes_outside_company_paths() {
+  local word="${1:-}" raw="${2:-}" rest frag
+  [ -n "$raw" ] || return 1
+  case "$raw" in *\'*|*\\*) return 1 ;; esac
+  [ "${raw//\"/}" = "$word" ] || return 1
+  rest="$word"
+  while [[ "$rest" == *companies/* ]]; do
+    frag="companies/${rest#*companies/}"
+    rest="${frag#companies/}"
+    frag="${frag%%[[:space:];|&()<>]*}"
+    [[ "$raw" == *"$frag"* ]] || return 1
+  done
+  return 0
+}
+
+# Check one shell word after quote removal. hq_shell_simple_commands joins
+# adjacent quoted and unquoted segments, drops the quotes, and applies
+# backslash escapes, as bash does before it opens a file. The raw-text scan
+# above only sees the spelled form, so `compa''nies/oth''erco/x`,
+# `companies/oth\erco/x` and `"companies"/otherco/x` reach it as no company
+# path at all. Any word whose bash value names `companies/` and whose argv
+# position <raw> is not that same text spelled literally is checked here on
+# its bash value, with the same candidate checks. With no <raw> (text from a
+# second parse) nothing is skipped.
+#
+# Every `companies/` occurrence in the word is checked, and each fragment ends
+# at whitespace as well as at shell operators and quotes. A word holding a
+# blank may be program text for a launcher this hook does not recognize
+# (`timeout 5 bash -c '...'`, `find . -exec sh -c '...' \;`), and a quoted
+# newline splits a record so the second line arrives as one word. A path after
+# the first blank is still a path bash may open.
+# Words inside an interpreter heredoc body are source text, not shell words,
+# and stay with the body rules of the main scan.
+#
+# Words come from the split of scope_mask_literal_expansions output
+# (scope_norm_scan), so an escaped or single-quoted `$`, `*`, `?` or `[`
+# arrives as a literal marker (`companies/x/\$schema.json` stays a plain file
+# name) while a real expansion still reaches the fail-closed variable checks.
+scope_check_normalized_word() {
+  local word="${1:-}" rest frag
+  case "$word" in *companies/*) ;; *) return 0 ;; esac
+  if [ "$#" -ge 2 ]; then
+    scope_word_spelled_literally "$word" "${2:-}" && return 0
+    scope_word_quotes_outside_company_paths "$word" "${2:-}" && return 0
+  fi
+  if [ -n "${scope_interp_bodies:-}" ] \
+    && { [[ "$scope_interp_bodies" == *"$word"* ]] || [[ "${scope_interp_bodies_unquoted:-}" == *"$word"* ]]; } \
+    && [[ "${scope_interp_outside_unquoted:-}" != *"$word"* ]]; then
+    return 0
+  fi
+  rest="$word"
+  while [[ "$rest" == *companies/* ]]; do
+    frag="companies/${rest#*companies/}"
+    rest="${frag#companies/}"
+    frag="${frag%%[[:space:];|&()<>\"\']*}"
+    # JSON or prose punctuation after the last segment (`companies/x"},`
+    # once quotes are gone): with no `{` in the word there is no brace
+    # expansion, and with no `/` after the cut the trailing `}`, `]` or `,`
+    # only extends the last segment's name. Check the path before it, so
+    # the company segment is still compared with the lock.
+    case "$frag" in
+      *'{'*) ;;
+      *[\},\]])
+        local frag_core="${frag%%[\},\]]*}"
+        case "${frag#"$frag_core"}" in */*) ;; *) [ "$frag_core" != companies/ ] && frag="$frag_core" ;; esac
+        ;;
+    esac
+    # The splitter ends a word at `$(` and keeps only the `$`, so
+    # `compa''nies/$(echo x)/y` arrives as `companies/$`. A command
+    # substitution's output cannot be checked; keep it blocked.
+    case "$frag" in
+      *'$') scope_block_rel "$frag(...)" "a command substitution in a company path cannot be checked" ;;
+    esac
+    scope_check_bash_candidate "$frag" "$scope_scan_cmd" "" ""
+  done
+}
+
+# Check every word of the split of <text> against the raw spelling of the
+# same argv position. Both outputs are read line by line; a quoted newline
+# inside a word splits both at the same place, so lines and fields stay
+# paired. If they ever disagree, no word on that line is skipped.
+scope_check_normalized_split() {
+  local text="${1:-}" line rawline k w
+  local -a norm_lines=() raw_lines=() norm_words=() raw_words=()
+  while IFS= read -r line; do
+    norm_lines[${#norm_lines[@]}]="$line"
+  done <<< "$(hq_shell_simple_commands "$text")"
+  while IFS= read -r line; do
+    raw_lines[${#raw_lines[@]}]="$line"
+  done <<< "$(hq_shell_simple_commands "$text" raw)"
+  for ((k = 0; k < ${#norm_lines[@]}; k++)); do
+    line="${norm_lines[$k]}"
+    [ -n "$line" ] || continue
+    rawline=""
+    [ "$k" -lt "${#raw_lines[@]}" ] && rawline="${raw_lines[$k]}"
+    norm_words=(); raw_words=()
+    IFS=$'\037' read -r -a norm_words <<< "$line"
+    IFS=$'\037' read -r -a raw_words <<< "$rawline"
+    for ((w = 0; w < ${#norm_words[@]}; w++)); do
+      if [ "${#norm_lines[@]}" -eq "${#raw_lines[@]}" ] \
+        && [ "${#raw_words[@]}" -eq "${#norm_words[@]}" ]; then
+        scope_check_normalized_word "${norm_words[$w]}" "${raw_words[$w]}"
+      else
+        scope_check_normalized_word "${norm_words[$w]}"
+      fi
+    done
+  done
+}
+
+# `eval ARGS` joins its arguments with spaces and parses the result as shell
+# again, so quotes and backslashes that survived the first parse are removed
+# a second time: `eval 'cat companies/oth''erco/x'` reads companies/otherco.
+# `bash|sh|zsh|dash|ksh [options] -c SCRIPT` parses SCRIPT the same way. The
+# shell is found at any argv position, so programs that launch it
+# (`timeout 5 bash -c`, `nice bash -c`, `xargs sh -c`,
+# `find . -exec sh -c ... \;`, `sudo -u u bash -c`) are covered without a
+# list. `eval` is found after scope_strip_command_wrappers, the same wrapper
+# parser the main loop uses. Clustered flags (`-ce`) and option arguments
+# (`-o pipefail`) before the script are understood. The text is re-split with
+# the shared splitter and every resulting word is checked as above; nested
+# eval / -c is followed up to four levels, then fails closed. <words> are the
+# unmasked words of one simple command; the text is masked again before its
+# words are checked, so a `$` the second parse would expand is still seen.
+scope_check_reparsed_words() {
+  local depth="${1:-0}"; shift
+  local -a words=("$@") inner_tokens=() saved_tokens=() stripped=()
+  local i j n text="" record found_c
+  n=${#words[@]}
+  [ "$n" -gt 0 ] || return 0
+  saved_tokens=(${scope_tokens[@]+"${scope_tokens[@]}"})
+  scope_tokens=("${words[@]}")
+  scope_strip_command_wrappers
+  stripped=(${scope_tokens[@]+"${scope_tokens[@]}"})
+  scope_tokens=(${saved_tokens[@]+"${saved_tokens[@]}"})
+  if [ "${#stripped[@]}" -gt 0 ] && [ "${stripped[0]}" = eval ]; then
+    text="${stripped[*]:1}"
+  else
+    for ((i = 0; i < n; i++)); do
+      case "${words[$i]##*/}" in
+        bash|sh|zsh|dash|ksh) ;;
+        *) continue ;;
+      esac
+      found_c=0
+      for ((j = i + 1; j < n; j++)); do
+        case "${words[$j]}" in
+          -o|+o|-O|+O|--rcfile|--init-file) j=$((j + 1)) ;;
+          --) j=$((j + 1)); break ;;
+          --*) ;;
+          -*c*) found_c=1 ;;
+          -*|+*) ;;
+          *) break ;;
+        esac
+      done
+      if [ "$found_c" -eq 1 ] && [ "$j" -lt "$n" ]; then
+        text="${words[$j]}"
+        break
+      fi
+    done
+  fi
+  [ -n "$text" ] || return 0
+  [ "$depth" -lt 4 ] || scope_block_rel "$text" "nested eval or sh -c is too deep to check; run the command directly"
+  scope_check_normalized_split "$(scope_mask_literal_expansions "$text")"
+  scope_check_reparsed_text "$((depth + 1))" "$text"
+}
+
+# Run scope_check_reparsed_words on every simple command of <text>. The split
+# keeps a quoted newline inside its word (`nl` mode encodes it as \036 and it
+# is restored here), so a multi-line `sh -c "...<newline>..."` program reaches
+# the reparse whole instead of as two unrelated records.
+scope_check_reparsed_text() {
+  local depth="${1:-0}" text="${2:-}" record k
+  local -a inner_tokens=()
+  while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    IFS=$'\037' read -r -a inner_tokens <<< "$record"
+    for ((k = 0; k < ${#inner_tokens[@]}; k++)); do
+      inner_tokens[$k]="${inner_tokens[$k]//$'\036'/$'\n'}"
+    done
+    scope_check_reparsed_words "$depth" ${inner_tokens[@]+"${inner_tokens[@]}"}
+  done <<< "$(hq_shell_simple_commands "$text" nl)"
 }
 
 scope_check_bash_glob_candidate() {
@@ -2346,6 +2690,268 @@ scope_default_expansion_value() {
   printf '%s' "\${$name}"
 }
 
+# scope_setter_scan_awk prints 1 when the shell text it reads could run a
+# variable-setting builtin, and 0 otherwise. It walks the text the way the
+# shell splits it: single and double quotes, backslashes, `${...}`, `$(...)`,
+# backticks, `(...)`, `#` comments, redirections and heredocs. A word counts
+# only in command position: the start of the text, or after `;`, `&`, `|`,
+# `(`, `)`, `{`, a newline, `$(`, `<(`, a backtick or a keyword such as
+# `then` or `do`, after any `NAME=value` prefixes and redirections, and after
+# the builtin, command, exec, jobs and time wrappers. A setter word inside a
+# quoted argument, a comment or a file name is data. It prints 1 for:
+#   - a command word that is read, mapfile, readarray, getopts, select,
+#     declare, typeset, local, readonly, export, unset, let, coproc, eval,
+#     source, `.`, trap, alias, enable, compgen, fc or bind, however it is
+#     quoted (`"read"`, `re""ad`, `\read`);
+#   - printf or wait with an option holding v or p, or an expanded,
+#     brace-expanded or globbed option (`printf -?` can match a file `-v`);
+#   - a command word built from an expansion (`$c`, `${c}d`, `$(...)`, a
+#     backtick, a leading `~`), unless it holds a literal `/`, which makes it
+#     a file, never a builtin;
+#   - a command word, or a wrapper's operand, that bash brace-expands or
+#     globs before it looks up the builtin: an unquoted `{` (`{read,}`,
+#     `re{a..a}d`), `*`, `?`, a `[...]` bracket, or an extglob `@(`, `+(` or
+#     `!(`. These count even with a `/` in the word, because `{read,/x}`
+#     still yields `read`. The same characters in arguments are data, so
+#     `ls *.md` and `grep -r x {a,b}` are not affected;
+#   - case inside `$(...)` or backticks, where a pattern's `)` could end the
+#     substitution early for this scanner;
+#   - an unquoted heredoc body holding `$(` or a backtick and a setter word;
+#   - an unbalanced quote, substitution or bracket, or an empty heredoc
+#     delimiter.
+# skiphd=1 skips heredoc bodies with a terminator line, so a setter word in
+# the body is data. It is set only for the full command as the shell reads
+# it, because a body stripped from the text could otherwise make a later
+# command look like a body.
+scope_setter_scan_awk='
+  function resetw() { ws = 0; lit = ""; dyn = 0; sl = 0; un = ""; uq = 1; wst = 0; gx = 0; gb = 0; gbr = 0 }
+  function begw() { if (!ws) { ws = 1; wst = i } }
+  function addc(c) { begw(); lit = lit c; if (uq) un = un c; if (c == "/" && xd == 0) sl = 1 }
+  function mark() { begw(); uq = 0 }
+  function push(t) { sp++; md[sp] = t; if (t == "X") xd++ }
+  function popq() { if (md[sp] == "X") xd--; sp-- }
+  function pushcmd(t,   inword) {
+    inword = (ws || md[sp] == "D" || md[sp] == "X")
+    sws[sp] = ws || inword; slit[sp] = lit; sdyn[sp] = dyn || inword; ssl[sp] = sl
+    sun[sp] = un; suq[sp] = uq && !inword; swst[sp] = (ws ? wst : i); srp[sp] = rp
+    sgx[sp] = gx; sgb[sp] = gb; sgbr[sp] = gbr
+    sp++; md[sp] = t; cs[sp] = "pre"; resetw(); rp = 0
+  }
+  function popcmd(   t) {
+    t = md[sp]; sp--
+    ws = sws[sp]; lit = slit[sp]; dyn = sdyn[sp]; sl = ssl[sp]; un = sun[sp]; uq = suq[sp]; wst = swst[sp]; rp = srp[sp]
+    gx = sgx[sp]; gb = sgb[sp]; gbr = sgbr[sp]
+    if (t == "C" || t == "B") { ws = 1; dyn = 1; uq = 0 }
+  }
+  function sep() { cs[sp] = "pre"; rp = 0 }
+  function setter(w) {
+    return w ~ /^(read|mapfile|readarray|getopts|select|declare|typeset|local|readonly|export|unset|let|coproc|eval|source|trap|alias|enable|compgen|fc|bind|\.)$/
+  }
+  function endw(   st, raw) {
+    if (!ws) return
+    if (rp) { rp = 0; resetw(); return }
+    st = cs[sp]
+    if (st == "fname") { cs[sp] = "pre"; resetw(); return }
+    if (st == "pre" || st == "wrap") {
+      if (st == "pre" && uq && un ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { resetw(); return }
+      if (st == "pre" && !uq && un ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { resetw(); return }
+      if (gx || (gbr && lit != "{")) hit = 1
+      else if (st == "wrap" && !dyn && lit ~ /^-/) { resetw(); return }
+      else if (dyn && !sl) hit = 1
+      else if (dyn) cs[sp] = "args"
+      else if (setter(lit)) hit = 1
+      else if (lit == "case" && (md[sp] == "C" || md[sp] == "B")) hit = 1
+      else if (lit == "printf" || lit == "wait") cs[sp] = "pw"
+      else if (lit ~ /^(builtin|command|exec|jobs|time)$/) cs[sp] = "wrap"
+      else if (lit == "function") cs[sp] = "fname"
+      else if (lit ~ /^(!|if|then|else|elif|do|while|until|\{|\}|fi|done|esac)$/) cs[sp] = "pre"
+      else cs[sp] = "args"
+    } else if (st == "pw") {
+      raw = substr(s, wst, i - wst)
+      if (gx || gbr) hit = 1
+      else if (dyn) { if (raw !~ /^"?\$(\{[!$?#]\}|[!$?#])"?$/) hit = 1; else cs[sp] = "args" }
+      else if (lit ~ /^-/) { if (lit ~ /^-[A-Za-z]*[vp]/) hit = 1 }
+      else cs[sp] = "args"
+    }
+    resetw()
+  }
+  function dollar(   d) {
+    d = substr(s, i + 1, 1)
+    if (d == "(") { pushcmd("C"); i += 2; return }
+    if (d == "{") { mark(); dyn = 1; push("X"); i += 2; return }
+    if (d == dq) { mark(); dyn = 1; push("D"); i += 2; return }
+    if (d == sq) { hit = 1; i += 2; return }
+    if (d ~ /[A-Za-z_]/) {
+      mark(); dyn = 1; i++
+      while (i <= n && substr(s, i, 1) ~ /[A-Za-z0-9_]/) i++
+      return
+    }
+    if (d ~ /[0-9#?$!@*-]/) { mark(); dyn = 1; i += 2; return }
+    addc("$"); i++
+  }
+  function redir(   st, ch, d, q, dash, op) {
+    if (ws && !dyn && uq && (lit ~ /^[0-9]+$/ || lit ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) resetw()
+    else endw()
+    if (substr(s, i, 3) == "<<<") { i += 3; rp = 1; return }
+    if (substr(s, i, 2) == "<<") {
+      i += 2; dash = 0
+      if (substr(s, i, 1) == "-") { dash = 1; i++ }
+      while (substr(s, i, 1) == " " || substr(s, i, 1) == "\t") i++
+      d = ""; q = 0
+      while (i <= n) {
+        ch = substr(s, i, 1)
+        if (ch ~ /[ \t\n;&|<>()]/) break
+        if (ch == sq || ch == dq || ch == bs) q = 1
+        else d = d ch
+        i++
+      }
+      if (d == "") { hit = 1; return }
+      nh++; hd[nh] = d; hq[nh] = q; ht[nh] = dash
+      return
+    }
+    st = i
+    while (i <= n && substr(s, i, 1) ~ /[<>&]/) i++
+    if (substr(s, i, 1) == "|" && substr(s, i - 1, 1) == ">") i++
+    op = substr(s, st, i - st)
+    if (op ~ /&$/ && substr(s, i, 1) ~ /[0-9-]/) {
+      while (i <= n && substr(s, i, 1) ~ /[0-9-]/) i++
+      rp = 0
+      return
+    }
+    rp = 1
+  }
+  function heredocs(j,   k, p, e, line, term, body, bodystart) {
+    if (nh == 0) return j
+    if (!skiphd) { nh = 0; return j }
+    p = j
+    for (k = 1; k <= nh; k++) {
+      bodystart = p
+      while (1) {
+        if (p > n) { nh = 0; return j }
+        e = index(substr(s, p), "\n")
+        if (e == 0) { line = substr(s, p); e = n + 1 } else { line = substr(s, p, e - 1); e = p + e - 1 }
+        term = line
+        if (ht[k]) while (substr(term, 1, 1) == "\t") term = substr(term, 2)
+        if (term == hd[k]) break
+        p = e + 1
+      }
+      body = substr(s, bodystart, p - bodystart)
+      if (!hq[k] && (body ~ /\$\(/ || index(body, bt) > 0) && body ~ /(^|[^A-Za-z0-9_])(read|mapfile|readarray|getopts|select|declare|typeset|local|readonly|export|unset|let|coproc|eval|source|trap|alias|enable|compgen|fc|bind|printf|wait|\.)([^A-Za-z0-9_]|$)/) hit = 1
+      p = e + 1
+    }
+    nh = 0
+    return p
+  }
+  BEGIN { bt = "`"; bs = "\\" }
+  { s = (NR > 1) ? s "\n" $0 : $0 }
+  END {
+    n = length(s); sp = 0; md[0] = "N"; cs[0] = "pre"; hit = 0; xd = 0; nh = 0; rp = 0
+    resetw()
+    i = 1
+    while (i <= n && !hit) {
+      c = substr(s, i, 1); m = md[sp]
+      if (m == "S") { if (c == sq) popq(); else addc(c); i++; continue }
+      if (m == "D" || m == "X") {
+        if (c == bs) { addc(substr(s, i + 1, 1)); i += 2; continue }
+        if (m == "D" && c == dq) { popq(); i++; continue }
+        if (m == "X" && c == "}") { popq(); i++; continue }
+        if (m == "X" && c == sq) { push("S"); i++; continue }
+        if (m == "X" && c == dq) { push("D"); i++; continue }
+        if (c == "$") { dollar(); continue }
+        if (c == bt) { pushcmd("B"); i++; continue }
+        addc(c); i++; continue
+      }
+      if (c == sq) { mark(); push("S"); i++; continue }
+      if (c == dq) { mark(); push("D"); i++; continue }
+      if (c == bs) { mark(); if (substr(s, i + 1, 1) != "\n") addc(substr(s, i + 1, 1)); i += 2; continue }
+      if (c == "$") { dollar(); continue }
+      if (c == bt) {
+        if (m == "B") { endw(); popcmd(); i++; continue }
+        pushcmd("B"); i++; continue
+      }
+      if (c == "#" && !ws) { while (i <= n && substr(s, i, 1) != "\n") i++; continue }
+      if (c == " " || c == "\t" || c == "\r") { endw(); i++; continue }
+      if (c == "\n") { endw(); sep(); i = heredocs(i + 1); continue }
+      if (c == ";" || c == "|") { endw(); sep(); i++; continue }
+      if (c == "&") {
+        if (substr(s, i + 1, 1) == ">") { redir(); continue }
+        endw(); sep(); i++; continue
+      }
+      if (c == "<" || c == ">") {
+        if (substr(s, i + 1, 1) == "(") { endw(); pushcmd("C"); i += 2; continue }
+        redir(); continue
+      }
+      if (c == "(") { endw(); pushcmd("P"); i++; continue }
+      if (c == ")") {
+        endw()
+        if (m == "C" || m == "P") { popcmd(); if (m == "P") cs[sp] = "pre" }
+        else cs[sp] = "pre"
+        i++; continue
+      }
+      if (c == "*" || c == "?") gx = 1
+      else if (c == "[") gb = 1
+      else if (c == "]" && gb) gx = 1
+      else if (c == "{") gbr = 1
+      else if ((c == "+" || c == "@" || c == "!") && substr(s, i + 1, 1) == "(") gx = 1
+      if (c == "~" && !ws) dyn = 1
+      addc(c); i++
+    }
+    if (!hit) { endw(); if (sp > 0) hit = 1 }
+    print (hit ? 1 : 0)
+  }
+'
+
+# scope_command_may_set_var <name> <command>: true when <command> could give
+# <name> a value the hook does not see, so $<name> must stay unknown and
+# the path checks fail closed. It is true for:
+#   - an assignment to <name> (`NAME=`, `NAME+=`, `NAME[i]=`, `${NAME:=x}`),
+#     a `for NAME`, or an fd variable `{NAME}>`;
+#   - a variable-setting builtin in command position, found by
+#     scope_setter_scan_awk (see there for the full list). A quoted, split or
+#     computed operand still fails closed, because the builtin counts
+#     whatever its operand. A command word that bash expands (`$c`, `$(...)`,
+#     `{read,}`, `rea?`) counts as a possible setter;
+#   - arithmetic, which can assign through a variable's value: `((`, `$[`,
+#     an array subscript (`a[n]=`, `${a[n]}`), a substring offset
+#     (`${s:n}`), `[[` with a numeric test or -v, or -v next to a subscript;
+#     an indirect `${!n:=x}`; and ANSI-C quoting (`$'...'`), which can spell
+#     any name;
+#   - <name> written as a bare word anywhere once quotes and backslashes are
+#     removed (`"TMP"DIR`, `TMP\DIR`).
+scope_command_may_set_var() {
+  local name="${1:-}" text="${2:-}" plain b='(^|[^A-Za-z0-9_])' e='([^A-Za-z0-9_]|$)' re re2
+  local scan_text="${2:-}" skiphd=0
+  plain="${text//[\"\'\\]/}"
+  case "$text" in *'(('*|*'$['*|*"\$'"*) return 0 ;; esac
+  re="\\\$\\{[#!]?${name}:?="
+  [[ "$plain" =~ $re ]] && return 0
+  re='\$\{!?#?[A-Za-z_][A-Za-z0-9_]*(\[|:[^-=?+])'
+  [[ "$plain" =~ $re ]] && return 0
+  re='\$\{![^}]*='
+  [[ "$plain" =~ $re ]] && return 0
+  re='[A-Za-z_][A-Za-z0-9_]*\[[^]]*\]\+?='
+  [[ "$plain" =~ $re ]] && return 0
+  re="${b}-(eq|ne|lt|le|gt|ge|v)${e}"
+  if [[ "$plain" =~ $re ]]; then
+    case "$plain" in *'[['*) return 0 ;; esac
+    re="${b}-v${e}"
+    re2='[A-Za-z_][A-Za-z0-9_]*\['
+    [[ "$plain" =~ $re ]] && [[ "$plain" =~ $re2 ]] && return 0
+  fi
+  # Drop every read of the variable, then look for the name anywhere else.
+  plain="$(printf '%s' "$plain" | sed -E "s/\\\$\\{?[#!]?${name}//g")"
+  re="${b}${name}${e}"
+  [[ "$plain" =~ $re ]] && return 0
+  # The full command is scanned as the shell reads it, before inert heredoc
+  # bodies were stripped, so the scanner sees each body with its terminator.
+  if [ -n "${scope_cmd:-}" ] && [ "$text" = "${scope_scan_cmd:-}" ]; then
+    scan_text="$scope_cmd"
+    skiphd=1
+  fi
+  [ "$(printf '%s' "$scan_text" | LC_ALL=C awk -v sq="'" -v dq='"' -v skiphd="$skiphd" "$scope_setter_scan_awk" 2>/dev/null)" = 0 ] || return 0
+  return 1
+}
+
 scope_resolve_known_path_expansions() {
   local candidate="${1:-}" command_text="${2:-}" use_prefix="${3-__SCOPE_UNSET__}" token name value backtick
   local assignment_value assignment_before
@@ -2381,14 +2987,21 @@ scope_resolve_known_path_expansions() {
     if [ "$name" = "HQ_ROOT" ] && [ -n "$HQ_ROOT" ]; then
       value="$HQ_ROOT"
     elif [ "$name" = "HOME" ] && [[ "${HOME:-}" == /* ]] \
-      && ! [[ "$command_text" =~ (^|[^A-Za-z0-9_])(HOME=|export[[:space:]]+HOME|read[[:space:]]+([^;|&]*[[:space:]])?HOME([[:space:]]|$)|declare|typeset|local[[:space:]]|eval|source|cd[[:space:]]+-|\.[[:space:]]) ]]; then
+      && ! [[ "$command_text" =~ (^|[^A-Za-z0-9_])cd[[:space:]]+- ]] \
+      && ! scope_command_may_set_var HOME "$command_text"; then
       # $HOME is the caller's real home unless the same command reassigns it.
       # Substituting it lets `ffmpeg -i $HOME/Desktop/x.mov` be checked like
       # the literal path it is; `$HOME/../../hq/companies/otherco` still
       # resolves under companies/ and is authorized there.
       value="$HOME"
+    elif [ "$name" = "TMPDIR" ] && [[ "${TMPDIR:-}" == /* ]] \
+      && ! scope_command_may_set_var TMPDIR "$command_text"; then
+      # $TMPDIR is the caller's temp folder unless the same command sets it,
+      # as for $HOME. The result is checked like the literal path, so a
+      # TMPDIR under companies/ still needs that company locked.
+      value="$TMPDIR"
     elif [ "$name" = "PWD" ] && [ "${scope_cwd_is_static:-1}" -eq 1 ] \
-      && ! [[ "$command_text" =~ (^|[^A-Za-z0-9_])(PWD\+?=|export[[:space:]]+PWD|read[[:space:]]|declare|typeset|local[[:space:]]+PWD|eval|source|\.[[:space:]]) ]]; then
+      && ! scope_command_may_set_var PWD "$command_text"; then
       # $PWD inside an assignment (`D="$PWD/personal/policies"`) is the
       # command's working directory, the same value a leading "$PWD/" gets.
       # After a cd the hook did not follow, it stays unresolved.
@@ -2588,7 +3201,7 @@ scope_expand_one_substitution() {
 #                             the work tree holding the command's cwd, asked
 #                             of git at hook time, when the substitution is
 #                             the command's first statement
-#   npm root -g, npm prefix -g, npm config get prefix, brew --prefix [f]
+#   npm root -g, npm prefix -g, npm config get prefix|cache, brew --prefix [f]
 #                             an install location outside HQ, when the
 #                             substitution is the command's first statement,
 #                             the tool resolves outside HQ, nothing in the
@@ -2639,7 +3252,7 @@ scope_substitution_literal_value() {
     return 0
   fi
   case "$body" in
-    'npm root -g'|'npm root --global'|'npm prefix -g'|'npm prefix --global'|'npm config get prefix') tool=npm ;;
+    'npm root -g'|'npm root --global'|'npm prefix -g'|'npm prefix --global'|'npm config get prefix'|'npm config get cache') tool=npm ;;
     'brew --prefix'|'brew --cellar'|'brew --repository') tool=brew ;;
     *)
       re='^brew[[:space:]]+--prefix[[:space:]]+[A-Za-z0-9@._+-]+$'
@@ -3065,6 +3678,43 @@ scope_token_is_remote_url_with_substitutions() {
   return 0
 }
 
+# `U=https://api.x; curl -s "$U/items/$ID"`: a network-client operand whose
+# leading variable the same command assigned exactly once, earlier, to a
+# literal http(s) URL. The operand then names a remote resource, the same as
+# the URL typed out (scope_url_is_remote_operand). The value must be a plain
+# http(s) URL (no file://, no expansion); a second assignment, a rebinding
+# builtin, `.`/source, or an assignment after the use leaves the operand to
+# the normal path checks.
+# Arguments: <index of the token in scope_tokens>.
+scope_token_is_url_variable_operand() {
+  local index="${1:-0}" token head head_index name assign_re count_re value cmd bind_re
+  [ "$index" -gt 0 ] || return 1
+  token="${scope_tokens[$index]:-}"
+  if [[ "$token" =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(/.*)?$ ]] || [[ "$token" =~ ^\$([A-Za-z_][A-Za-z0-9_]*)(/.*)?$ ]]; then
+    name="${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+  case "$token" in *'$('*|*$'\140'*) return 1 ;; esac
+  head_index="$(scope_command_head_index)"
+  [ "$index" -gt "$head_index" ] || return 1
+  head="${scope_tokens[$head_index]##*/}"
+  scope_url_is_remote_operand "$head" "${scope_tokens[$((index - 1))]}" "https://x" || return 1
+  cmd="${scope_scan_cmd:-}"
+  assign_re="(^|[;&|[:space:]])${name}=(\"|')?(https?://[A-Za-z0-9._~:/?#@!+,=%-]+)(\"|')?([;&[:space:]]|\$)"
+  [[ "$cmd" =~ $assign_re ]] || return 1
+  value="${BASH_REMATCH[3]}"
+  [ "${BASH_REMATCH[2]}" = "${BASH_REMATCH[4]}" ] || return 1
+  # Exactly one assignment in the whole command, and it comes before the use.
+  count_re="(^|[^A-Za-z0-9_\$])${name}\+?="
+  [ "$(printf '%s' "$cmd" | grep -oE "$count_re" 2>/dev/null | wc -l | tr -d '[:space:]')" = "1" ] || return 1
+  [[ "$cmd" == *"${BASH_REMATCH[0]}"*"$token"* ]] || return 1
+  bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|unset|let|for|select)([[:space:]]|$)|printf[[:space:]]+-v|(^|[;&|({]|'$'\n'')[[:space:]]*\.[[:space:]]'
+  [[ "$cmd" =~ $bind_re ]] && return 1
+  case "$value" in http://*|https://*) return 0 ;; esac
+  return 1
+}
+
 scope_token_is_vcs_ref_operand() {
   local index="${1:-0}" token head url_head url_head_index i sub="" ref_re range_re refspec_re
   token="${scope_tokens[$index]:-}"
@@ -3445,16 +4095,35 @@ scope_check_prose_substitutions() {
 # word like `$30k/mo` or `${x}/bar` names no path. Bodies of any other
 # interpreter, or with any of those names, are not printed and keep the
 # fail-closed variable checks.
+#
+# scope_interp_handoff_re is shared with the inline-program check
+# (scope_inline_expansions_check_word), so a `python3 -c` program and a
+# python heredoc agree on what can reach a shell.
+#
+# With <allow_fs_require> set to 1, a node `require('<module>')` of a core
+# module that cannot start a process or run code (fs, path, util and the
+# like, with or without `node:`) is removed before that check. Such a body
+# cannot reach a shell but can still write files, so the caller keeps
+# checking an expansion that sits next to a `/` (feedback 5e84d816).
+# child_process, vm, worker_threads, a relative or package module, and a
+# require of anything but a quoted literal still count as a hand-off.
+scope_interp_handoff_re='system|popen|Popen|subprocess|spawn|exec|shell|Shell|child_|process\.binding|process\.dlopen|pty\.|commands|getoutput|__import__|__builtins__|__dict__|__class__|__globals__|__subclasses__|getattr|attrgetter|methodcaller|globals\(|vars\(|eval|importlib|import\(|pickle|marshal|ctypes|cffi|Function\(|require\(|fork'
+scope_interp_safe_require_re="require\\([[:space:]]*(['\"])(node:)?(fs|fs/promises|path|util|crypto|url|assert|zlib|events|stream|buffer|querystring|string_decoder|os|readline|timers)['\"][[:space:]]*\\)"
 scope_text_only_interpreter_bodies() {
-  local raw="${1:-}" line delimiter="" in_body=0 interp_re tail body="" keep=0
-  local handoff_re='system|popen|Popen|subprocess|spawn|exec|shell|Shell|child_|process\.binding|process\.dlopen|pty\.|commands|getoutput|__import__|__builtins__|__dict__|__class__|__globals__|__subclasses__|getattr|attrgetter|methodcaller|globals\(|vars\(|eval|importlib|import\(|pickle|marshal|ctypes|cffi|Function\(|require\(|fork'
+  local raw="${1:-}" allow_fs_require="${2:-0}" line delimiter="" in_body=0 interp_re tail body="" keep=0 scope_scan_body
+  local safe_require_re="$scope_interp_safe_require_re"
+  local handoff_re="$scope_interp_handoff_re"
   case "$raw" in *'<<'*) ;; *) return 0 ;; esac
   interp_re='(^|[[:space:];])(python|python[0-9.]*|node)([[:space:]]|$)'
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$in_body" -eq 1 ]; then
       if [ "$line" = "$delimiter" ]; then
         in_body=0
-        if [ "$keep" -eq 1 ] && ! [[ "$body" =~ $handoff_re ]]; then
+        scope_scan_body="$body"
+        while [ "$allow_fs_require" = 1 ] && [[ "$scope_scan_body" =~ $safe_require_re ]]; do
+          scope_scan_body="${scope_scan_body/"${BASH_REMATCH[0]}"/ }"
+        done
+        if [ "$keep" -eq 1 ] && ! [[ "$scope_scan_body" =~ $handoff_re ]]; then
           printf '%s' "$body"
         fi
         body=""
@@ -3904,6 +4573,11 @@ scope_token_is_text_option_value() {
   esac
   case "$opt" in
     --text|--summary|--title|--body|--message|--note|--description|--next|--subject|--comment|--reason|--details) ;;
+    # gh's short forms of --body and --title carry the same text.
+    -b|-t) [ "$head" = gh ] || return 1 ;;
+    # A curl request header is sent to the server, never opened as a file.
+    # `-H @file` reads headers from a file, so that spelling stays a path.
+    -H|--header) [ "$head" = curl ] || return 1; case "$token" in @*) return 1 ;; esac ;;
     # The HQ lane commands expose --text, not -m. Do not infer a message
     # contract from the executable name alone.
     -m) [ "$head" = git ] || return 1 ;;
@@ -5466,13 +6140,55 @@ scope_check_bash_skill_path() {
   # checked as if typed. When the command changes directory after the point
   # the hook follows (scope_cwd_is_static), $PWD is no longer COMMAND_CWD and
   # the form stays closed.
-  local pwd_word_re='^(--[A-Za-z0-9][A-Za-z0-9_.-]*=)?(file://)?(\$PWD|\$\{PWD\}|\$\(pwd\)|\$\(pwd -P\))/'
+  local pwd_word_re='^(--[A-Za-z0-9][A-Za-z0-9_.-]*=)?(file://)?(\$PWD|\$\{PWD\}|\$\(pwd\)|\$\(pwd -P\)|`pwd`|`pwd -P`)/'
+  # A leading `$(git rev-parse --show-toplevel)/` is the git work tree that
+  # holds the command's cwd. It is worked out the way scope_git_toplevel_value
+  # looks it up (git asked here, in that cwd), when nothing in the command can
+  # move the cwd or redirect git: no cd the hook did not follow, no GIT_*
+  # variable or git config in the command text or the environment, and git
+  # not run from inside HQ. The mapped path is then checked as if typed.
+  local toplevel_word_re='^(--[A-Za-z0-9][A-Za-z0-9_.-]*=)?(\$\(git rev-parse --show-toplevel\)|`git rev-parse --show-toplevel`)/'
+  if [[ "$raw" =~ $toplevel_word_re ]]; then
+    local toplevel_match="${BASH_REMATCH[0]}" toplevel_value="" toplevel_bin
+    if [ "${scope_cwd_is_static:-1}" -eq 1 ] \
+      && [ -z "${GIT_DIR:-}${GIT_WORK_TREE:-}${GIT_CONFIG_PARAMETERS:-}" ] \
+      && ! [[ "$command_text" =~ (GIT_[A-Z_]*=|git[[:space:]]+(-c|config)([[:space:]]|$)|--git-dir|--work-tree) ]]; then
+      toplevel_bin="$(command -v git 2>/dev/null || true)"
+      case "$toplevel_bin" in
+        "$HQ_ROOT"|"$HQ_ROOT"/*) ;;
+        /*)
+          case "${COMMAND_CWD:-}" in
+            /*) toplevel_value="$(git -C "$COMMAND_CWD" rev-parse --show-toplevel 2>/dev/null)" || toplevel_value="" ;;
+          esac
+          ;;
+      esac
+    fi
+    case "$toplevel_value" in
+      /*) case "$toplevel_value" in *$'\n'*|*'..'*|*'$'*|*'`'*) toplevel_value="" ;; esac ;;
+      *) toplevel_value="" ;;
+    esac
+    [ -n "$toplevel_value" ] \
+      || scope_block_rel "$raw" "the repo top level cannot be worked out for this command; spell the path literally"
+    toplevel_value="$(cd "$toplevel_value" 2>/dev/null && pwd -P)" \
+      || scope_block_rel "$raw" "the repo top level cannot be worked out for this command; spell the path literally"
+    scope_check_bash_candidate_inner "$toplevel_value/${raw#"$toplevel_match"}" "$command_text" 0 "" "$prefix" "$suffix"
+    return 0
+  fi
   if [[ "$raw" =~ $pwd_word_re ]]; then
+    local pwd_word_match="${BASH_REMATCH[0]}" pwd_word_form="${BASH_REMATCH[3]}"
     [ "${scope_cwd_is_static:-1}" -eq 1 ] \
       || scope_block_rel "$raw" "the command changes directory, so \$PWD or \$(pwd) is not the directory the hook can check; spell the path literally"
+    # $(pwd) asks the shell, but $PWD is a variable the same command can set
+    # (`mapfile -t PWD < f`), and then it is not the directory checked here.
+    case "$pwd_word_form" in
+      '$PWD'|'${PWD}')
+        ! scope_command_may_set_var PWD "$command_text" \
+          || scope_block_rel "$raw" "the command may set \$PWD, so it is not the directory the hook can check; spell the path literally"
+        ;;
+    esac
     expansion_cwd="$(cd "$COMMAND_CWD" 2>/dev/null && pwd -P)" \
       || scope_block_rel "$raw" "the command working directory cannot be resolved"
-    expanded="$expansion_cwd/${raw#"${BASH_REMATCH[0]}"}"
+    expanded="$expansion_cwd/${raw#"$pwd_word_match"}"
     scope_check_bash_candidate_inner "$expanded" "$command_text" 0 "" "$prefix" "$suffix"
     return 0
   fi
@@ -5582,6 +6298,2014 @@ scope_check_bash_skill_path() {
   scope_check_rel "$resolved"
 }
 
+# Unquoted command substitutions in command arguments.
+#
+# `cat $(cat /tmp/p)` and `cp x $(cat /tmp/p)` read or write whatever path the
+# file holds, and the guard cannot see that path. The path scans below miss
+# the unquoted form: the tokenizer splits `$(cat /tmp/p)` into `$(cat` and
+# `/tmp/p)`, so no single word carries the substitution. A file holding
+# another company's path would let the command reach that company's files.
+#
+# This check reads the raw command, finds every word with a $(...) or `...`
+# outside quotes, and blocks it in an argument or redirection position unless
+#   - the body prints something that is not a path, or the command's own
+#     working directory (scope_subst_body_is_safe: pwd, the repo top level,
+#     date, git rev-parse/merge-base/rev-list --count/branch --show-current,
+#     nproc, id, whoami, hostname, uname, seq, pgrep, docker ps -q), or
+#   - the command takes no file arguments (kill, sleep, wait, [, [[, test,
+#     seq, expr; echo and printf when nothing pipes their output on).
+# A leading VAR=$(...) assignment, a for/select/case word list, and the
+# command name itself are not arguments and are left to the other checks.
+# The bodies are lexed as commands too, so a nested substitution is checked
+# in its own command. The splitter is the same quote-, heredoc- and
+# continuation-aware awk pass the inline-program check uses, with a flag on
+# each word that holds an unquoted substitution.
+scope_subst_lex() {
+  LC_ALL=C awk -v RS='\001' '
+    function flush() { if (inw) { printf "W\037%d\037%d\037%s\036", ws, wu, w; inw = 0; w = ""; wu = 0 } }
+    function endcmd() { flush(); printf "E\036" }
+    function startw(pos) { if (!inw) { inw = 1; ws = pos; w = ""; wu = 0 } }
+    function sub_rec(s, e) { if (e > s) printf "S\037%d\037%s\036", s, substr(t, s, e - s) }
+    function match_bt(i,   c) {
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "`") return i
+      }
+      return n + 1
+    }
+    function match_sub(i,   depth, q, c) {
+      depth = 1; q = ""
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (q == "\047") { if (c == "\047") q = ""; continue }
+        if (c == "\\") { i++; continue }
+        if (q == "\"") {
+          if (c == "\"") q = ""
+          else if (c == "$" && substr(t, i + 1, 1) == "(") i = match_sub(i + 2)
+          else if (c == "`") i = match_bt(i + 1)
+          continue
+        }
+        if (c == "$" && substr(t, i + 1, 1) == "\047") { i = match_ansi(i + 2); continue }
+        if (c == "\047" || c == "\"") { q = c; continue }
+        if (c == "`") { i = match_bt(i + 1); continue }
+        if (c == "(") depth++
+        else if (c == ")") { depth--; if (depth == 0) return i }
+      }
+      return n + 1
+    }
+    # $'"'"'...'"'"' (ANSI-C quoting): a backslash escapes the next byte, so \'"'"'
+    # does not end it. Returns the index of the closing quote.
+    # ${...}: the index of the closing brace, skipping quoted text.
+    function match_brace(i,   depth, q, c, j2) {
+      depth = 1; q = ""
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (q == "\047") { if (c == "\047") q = ""; continue }
+        if (c == "\\") { i++; continue }
+        # A substitution inside the braces (${X:-$(cat p)}) is recorded and,
+        # outside quotes, flags the word.
+        if (c == "$" && substr(t, i + 1, 1) == "(") { j2 = match_sub(i + 2); sub_rec(i + 2, j2); if (q == "" && substr(t, i + 2, 1) != "(") bu = 1; i = j2; continue }
+        if (c == "`") { j2 = match_bt(i + 1); sub_rec(i + 1, j2); if (q == "") bu = 1; i = j2; continue }
+        if (q == "\"") { if (c == "\"") q = ""; continue }
+        if (c == "\047" || c == "\"") { q = c; continue }
+        if (c == "{") depth++
+        else if (c == "}") { depth--; if (depth == 0) return i }
+      }
+      return n + 1
+    }
+    function match_ansi(i,   c) {
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "\047") return i
+      }
+      return n + 1
+    }
+    function skip_heredocs(i,   k, rest, nl, line) {
+      for (k = 1; k <= nh; k++) {
+        while (i < n) {
+          rest = substr(t, i + 1); nl = index(rest, "\n")
+          if (nl == 0) { line = rest; i = n } else { line = substr(rest, 1, nl - 1); i = i + nl }
+          # In an unquoted heredoc a backslash-newline joins body lines
+          # before bash compares them with the delimiter.
+          while (!hquoted[k] && line ~ /\\$/ && i < n) {
+            line = substr(line, 1, length(line) - 1)
+            rest = substr(t, i + 1); nl = index(rest, "\n")
+            if (nl == 0) { line = line rest; i = n } else { line = line substr(rest, 1, nl - 1); i = i + nl }
+          }
+          if (hdash[k]) sub(/^\t+/, "", line)
+          if (line == hd[k]) break
+        }
+      }
+      nh = 0
+      return i
+    }
+    {
+      t = $0; n = length(t); q = ""; inw = 0; w = ""; wu = 0; nh = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (q == "\047") { w = w c; if (c == "\047") q = ""; continue }
+        if (q == "\"") {
+          w = w c
+          if (c == "\\") { i++; w = w substr(t, i, 1); continue }
+          if (c == "\"") { q = ""; continue }
+          if (c == "$" && substr(t, i + 1, 1) == "(") { j = match_sub(i + 2); sub_rec(i + 2, j); w = w substr(t, i + 1, j - i); i = j; continue }
+          if (c == "`") { j = match_bt(i + 1); sub_rec(i + 1, j); w = w substr(t, i + 1, j - i); i = j; continue }
+          continue
+        }
+        # A backslash-newline joins lines outside quotes and comments.
+        if (c == "\\" && substr(t, i + 1, 1) == "\n") { i++; continue }
+        if (c == "\\") { startw(i); w = w c substr(t, i + 1, 1); i++; continue }
+        if (c == "$" && substr(t, i + 1, 1) == "\047") { startw(i); j = match_ansi(i + 2); w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == "\047" || c == "\"") { startw(i); w = w c; q = c; continue }
+        # (( ... )) is arithmetic: `<<` there is a shift, not a heredoc. The
+        # body is still lexed on its own in case bash reads it as nested
+        # subshells instead.
+        if (c == "(" && substr(t, i + 1, 1) == "(" && !inw) { endcmd(); j = match_sub(i + 1); sub_rec(i + 2, j - 1); i = j; endcmd(); continue }
+        # ${...} is one word: a zsh flag such as ${(f)x} has a "(" that is not
+        # a subshell.
+        if (c == "$" && substr(t, i + 1, 1) == "{") { startw(i); bu = 0; j = match_brace(i + 2); if (bu) wu = 1; w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == "$" && substr(t, i + 1, 1) == "(") { startw(i); if (substr(t, i + 2, 1) != "(") wu = 1; j = match_sub(i + 2); sub_rec(i + 2, j); w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == "`") { startw(i); wu = 1; j = match_bt(i + 1); sub_rec(i + 1, j); w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == " " || c == "\t") { flush(); continue }
+        if (c == "\n") { endcmd(); if (nh > 0) i = skip_heredocs(i); continue }
+        if (c == "#" && !inw) { while (i < n && substr(t, i + 1, 1) != "\n") i++; continue }
+        if (c == "<" || c == ">") {
+          if (inw && w ~ /^[0-9]+$/) { inw = 0; w = "" } else flush()
+          op = c; nx = substr(t, i + 1, 1)
+          if (c == "<" && nx == "<") {
+            i++; op = "<<"; nx = substr(t, i + 1, 1)
+            if (nx == "<") { i++; op = "<<<" } else if (nx == "-") { i++; op = "<<-" }
+          } else if (nx == ">" || nx == "|" || nx == "&") { i++; op = op nx }
+          if (op == "<<" || op == "<<-") {
+            while (substr(t, i + 1, 1) == " " || substr(t, i + 1, 1) == "\t") i++
+            # The delimiter is one shell word: quoted pieces keep their
+            # spaces (<<'"'"'E OF'"'"'), and quote characters are removed.
+            # A backslash-newline inside it joins lines (<<E\<nl>OF is EOF).
+            # Any quoting makes the body literal, with no line joining.
+            d = ""; dq = 0
+            while (i < n) {
+              nc = substr(t, i + 1, 1)
+              if (nc == "\\" && substr(t, i + 2, 1) == "\n") { i += 2; continue }
+              if (nc == " " || nc == "\t" || nc == "\n" || nc == ";" || nc == "&" || nc == "|" || nc == "<" || nc == ">" || nc == "(" || nc == ")") break
+              i++
+              if (nc == "\047" || nc == "\"") {
+                dq = 1
+                while (i < n && substr(t, i + 1, 1) != nc) { i++; d = d substr(t, i, 1) }
+                i++
+              } else if (nc == "\\") {
+                dq = 1
+                i++; d = d substr(t, i, 1)
+              } else d = d nc
+            }
+            nh++; hd[nh] = d; hdash[nh] = (op == "<<-"); hquoted[nh] = dq
+            continue
+          }
+          # A here-string word is data on stdin, not a path.
+          if (op == "<<<") printf "H\036"; else printf "R\036"
+          continue
+        }
+        if (c == ";" || c == "|" || c == "(" || c == ")") { endcmd(); continue }
+        if (c == "&") {
+          if (substr(t, i + 1, 1) == ">") { flush(); i++; if (substr(t, i + 1, 1) == ">") i++; printf "R\036"; continue }
+          endcmd(); continue
+        }
+        startw(i); w = w c
+      }
+      endcmd()
+      printf "Z\036"
+    }'
+}
+
+# Print the $(...) and `...` bodies that sit outside quotes in <word>, one per
+# record ended by \036. A $((...)) arithmetic expansion is not printed. With a
+# second argument of 1, bodies inside double quotes are printed too (bodies
+# inside single quotes never are).
+scope_subst_unquoted_bodies() {
+  local word="${1:-}" all="${2:-0}" i=0 q="" ch c2 len depth j bq
+  len=${#word}
+  while [ "$i" -lt "$len" ]; do
+    ch="${word:i:1}"
+    if [ "$q" = "'" ] || [ "$q" = A ]; then
+      if [ "$q" = A ] && [ "$ch" = "\\" ]; then i=$((i + 2)); continue; fi
+      if [ "$ch" = "'" ]; then q=""; fi
+      i=$((i + 1))
+      continue
+    fi
+    case "$ch" in
+      \\) i=$((i + 2)); continue ;;
+      '"') if [ "$q" = '"' ]; then q=""; else q='"'; fi; i=$((i + 1)); continue ;;
+      "'") if [ -z "$q" ]; then q="'"; fi; i=$((i + 1)); continue ;;
+    esac
+    if [ -z "$q" ] && [ "$ch" = '$' ] && [ "${word:$((i + 1)):1}" = "'" ]; then
+      q=A
+      i=$((i + 2))
+      continue
+    fi
+    if [ "$ch" = '$' ] && [ "${word:$((i + 1)):1}" = '(' ]; then
+      # Find the matching paren, skipping quoted text inside the body.
+      j=$((i + 2)); depth=1; bq=""
+      while [ "$j" -lt "$len" ]; do
+        c2="${word:j:1}"
+        if [ "$bq" = "'" ]; then
+          if [ "$c2" = "'" ]; then bq=""; fi
+          j=$((j + 1))
+          continue
+        fi
+        if [ "$c2" = "\\" ]; then j=$((j + 2)); continue; fi
+        if [ "$bq" = '"' ]; then
+          if [ "$c2" = '"' ]; then bq=""; fi
+          j=$((j + 1))
+          continue
+        fi
+        case "$c2" in
+          "'"|'"') bq="$c2" ;;
+          '(') depth=$((depth + 1)) ;;
+          ')')
+            depth=$((depth - 1))
+            if [ "$depth" -eq 0 ]; then break; fi
+            ;;
+        esac
+        j=$((j + 1))
+      done
+      if { [ -z "$q" ] || [ "$all" = 1 ]; } && [ "${word:$((i + 2)):1}" != '(' ]; then
+        printf '%s\036' "${word:$((i + 2)):$((j - i - 2))}"
+      fi
+      i=$((j + 1))
+      continue
+    fi
+    if [ "$ch" = $'\140' ]; then
+      j=$((i + 1))
+      while [ "$j" -lt "$len" ] && [ "${word:j:1}" != $'\140' ]; do
+        if [ "${word:j:1}" = "\\" ]; then j=$((j + 1)); fi
+        j=$((j + 1))
+      done
+      if [ -z "$q" ] || [ "$all" = 1 ]; then
+        printf '%s\036' "${word:$((i + 1)):$((j - i - 1))}"
+      fi
+      i=$((j + 1))
+      continue
+    fi
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# True when a command substitution with <body> prints something that is not
+# a path, or names the command's own working directory: $(pwd), the repo top
+# level, a date, a commit id, a process or container id, a count.
+scope_subst_body_is_safe() {
+  local body="${1:-}" ref='[A-Za-z0-9_./^~@{}:-]+'
+  body="${body#"${body%%[![:space:]]*}"}"
+  body="${body%"${body##*[![:space:]]}"}"
+  # `git -C <dir>` before a git query that prints a commit id, a branch name
+  # or a count: the output is not a path whatever <dir> is, and the git -C
+  # check reads <dir> itself (scope_inline_expansions_check_word). The
+  # directory word may be one plain variable. --show-toplevel prints the
+  # directory, so it does not take this form.
+  local gitc_re='^git\ -C\ ("?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?|[A-Za-z0-9_./~@+-]+)\ (rev-parse\ --|merge-base\ |branch\ --show-current$|rev-list\ --count\ )'
+  if [[ "$body" =~ $gitc_re ]]; then
+    case "$body" in *--show-toplevel*) return 1 ;; esac
+    body="git ${body#git -C * }"
+  fi
+  case "$body" in *'$'*|*$'\140'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'('*|*')'*) return 1 ;; esac
+  [[ "$body" =~ ^pwd(\ -[PL])?$ ]] && return 0
+  [[ "$body" =~ ^git\ rev-parse\ --show-toplevel$ ]] && return 0
+  [[ "$body" =~ ^date(\ [^\'\"]*)?$ ]] && return 0
+  [[ "$body" =~ ^git\ rev-parse(\ --(short(=[0-9]+)?|verify|abbrev-ref|quiet))*\ $ref$ ]] && return 0
+  [[ "$body" =~ ^git\ merge-base(\ --[a-z-]+)*(\ $ref)+$ ]] && return 0
+  [[ "$body" =~ ^git\ branch\ --show-current$ ]] && return 0
+  # HQ's own session id: session_id_is_valid limits it to [A-Za-z0-9._-]
+  # and refuses . and .., so it holds no slash (resumework lock steps).
+  [[ "$body" =~ ^bash\ (\./)?core/scripts/hq-session\.sh\ current$ ]] && return 0
+  [[ "$body" =~ ^git\ rev-list\ --count(\ $ref)+$ ]] && return 0
+  [[ "$body" =~ ^(nproc|whoami|hostname|id(\ -[ugnr]+)?|uname(\ -[a-zA-Z]+)?)$ ]] && return 0
+  [[ "$body" =~ ^seq(\ -?[0-9]+){1,3}$ ]] && return 0
+  # pgrep prints process ids. -a and -l add the command line, which can hold
+  # a path, so those flags are not on the list.
+  [[ "$body" =~ ^pgrep(\ -[b-kmnoq-zA-Z]+)*\ [^\'\"-][^\'\"]*$ ]] && return 0
+  [[ "$body" =~ ^docker\ ps(\ -[aq]+|\ --quiet|\ --all)+$ ]] && return 0
+  # A fresh temporary file or directory. A template path, if any, is literal
+  # text in the command and goes through the path scans.
+  [[ "$body" =~ ^mktemp(\ -[dqtu]+)*(\ [A-Za-z0-9._/X-]+)?$ ]] && return 0
+  return 1
+}
+
+# Print the text a shell receives from the program word <word> of
+# `bash -c <word>` or `eval <word>`: single quotes removed as-is, double
+# quotes removed with their \$ \` \" \\ escapes undone. Mixed or unquoted
+# words are printed unchanged, which keeps any $(...) in them visible.
+scope_subst_program_text() {
+  local word="${1:-}" inner
+  case "$word" in
+    \'*\')
+      inner="${word:1:${#word}-2}"
+      case "$inner" in *"'"*) printf '%s' "$word" ;; *) printf '%s' "$inner" ;; esac
+      ;;
+    \"*\")
+      inner="${word:1:${#word}-2}"
+      inner="${inner//\\\$/\$}"
+      inner="${inner//\\\"/\"}"
+      inner="${inner//\\\`/\`}"
+      printf '%s' "$inner"
+      ;;
+    *) printf '%s' "$word" ;;
+  esac
+}
+
+# Variables set from a command substitution.
+#
+# `x=$(cat /tmp/p); cat $x` and `for f in $(cat /tmp/p); do cat $f; done` reach
+# the same path as `cat $(cat /tmp/p)`, one statement later. A name that is
+# assigned (NAME=, NAME+=, NAME[i]=, NAME=(...), export/local/declare, printf
+# -v) or looped over from a substitution the guard cannot read is recorded in
+# SCOPE_SUBST_TAINT, as is every name read, mapfile or readarray set in a
+# command this check scans. A later word that expands the name is checked like
+# the substitution itself. A first pass over the whole command records names
+# only, so a use that comes earlier in the text (a function body, a loop) is
+# still checked. A body does not mark the name when
+#   - it prints a non-path or the working directory (scope_subst_body_is_safe);
+#   - the guard turns it into a literal and checks that path itself, or it
+#     prints a fresh temporary path or the entry names of a directory spelled
+#     out in the command (scope_subst_body_is_known);
+#   - it is one https?:// fetch with curl or wget, or one gh call, that sends
+#     no local file (scope_subst_body_is_remote).
+# A marked value passes as message text of git, gh or hq (--body, --title,
+# git -m, ...), as a here-string, as an argument of a command that takes no
+# file (kill, echo, test, ...), and inside an http(s) URL given to curl or wget.
+# A value built from a marked name is marked too.
+SCOPE_SUBST_TAINT=" "
+
+scope_subst_body_is_known() {
+  local body="${1:-}" lit='[A-Za-z0-9_./@+:][A-Za-z0-9_./@+:-]*' re
+  body="${body#"${body%%[![:space:]]*}"}"
+  body="${body%"${body##*[![:space:]]}"}"
+  # The entry names of a directory, given literally or as one plain variable,
+  # optionally cut to a count with head or tail: bare names with no slash.
+  # The guard bounds loops over these and checks each entry
+  # (feedback_decb4125, feedback_f286c9e5). Only flags that print bare names:
+  # -l and friends print link targets.
+  re='^ls(\ -[1aAFtrS]+)*(\ ('"$lit"'|\$[A-Za-z_][A-Za-z0-9_]*|"\$[A-Za-z_][A-Za-z0-9_]*"))*(\ ?\|\ ?(head|tail)(\ -n)?\ -?[0-9]+)?$'
+  [[ "$body" =~ $re ]] && return 0
+  # The last component of one word, literal or one plain variable, with an
+  # optional literal suffix to drop. The output holds no slash, so it names a
+  # company folder only after a literal companies/ prefix, which the path
+  # scans check (an unknown name there still blocks), or after a cd into
+  # companies/, which is refused. resumework's lock step uses it on the
+  # thread path (feedback: #1512 CI, resumework-skill-scope block [2]).
+  # `basename /` prints `/`, so a literal operand must end in a non-slash
+  # character, and a variable operand needs every assignment of it in the
+  # command to be such a literal (#1512 review: `r=$(basename /)` then
+  # `companies${r}otherco${r}...`).
+  re='^basename\ ('"$lit"'|\$[A-Za-z_][A-Za-z0-9_]*|"\$[A-Za-z_][A-Za-z0-9_]*")(\ [A-Za-z0-9._-]+)?$'
+  if [[ "$body" =~ $re ]]; then
+    local bn_word="${BASH_REMATCH[1]}" bn_name bn_rest bn_val bn_seen=0 bn_re
+    case "$bn_word" in
+      *'$'*)
+        bn_name="${bn_word//[\"\$]/}"
+        bn_rest="${scope_subst_text:-}"
+        bn_re='(^|[;&|({[:space:]])'"$bn_name"'(\+?=)("([^"$`\\]*)"|'"'([^']*)'"'|([^;&|<>()[:space:]"'"'"'$`\\]*))?'
+        while [[ "$bn_rest" =~ $bn_re ]]; do
+          bn_rest="${bn_rest#*"${BASH_REMATCH[0]}"}"
+          [ "${BASH_REMATCH[2]}" = "=" ] || return 1
+          [ -n "${BASH_REMATCH[3]}" ] || return 1
+          bn_val="${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
+          case "$bn_val" in ''|*/) return 1 ;; esac
+          bn_seen=1
+        done
+        [ "$bn_seen" -eq 1 ] || return 1
+        # Any other way of setting the name (read, for, declare, printf -v,
+        # an assignment value with an expansion) leaves it unproven.
+        case "${scope_subst_text:-}" in
+          *"read "*"$bn_name"*|*"for $bn_name "*|*"-v $bn_name"*|*"declare "*"$bn_name"*|*"local "*"$bn_name="*'$'*|*"$bn_name=\$"*|*"$bn_name=\"\$"*|*"$bn_name=\`"*) return 1 ;;
+        esac
+        return 0
+        ;;
+      */) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  case "$body" in *'$'*|*$'\140'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*) return 1 ;; esac
+  [[ "$body" =~ ^date(\ [^\'\"]*)?$ ]] && return 0
+  [[ "$body" =~ ^pwd(\ -[PL])?$ ]] && return 0
+  [[ "$body" =~ ^git\ rev-parse\ --show-toplevel$ ]] && return 0
+  [[ "$body" =~ ^(echo|printf\ (%s|\'%s\'|\"%s\"))\ $lit$ ]] && return 0
+  [[ "$body" =~ ^dirname\ $lit$ ]] && return 0
+  case "$body" in
+    'npm root -g'|'npm root --global'|'npm prefix -g'|'npm prefix --global'|'npm config get prefix'|'npm config get cache') return 0 ;;
+    'brew --prefix'|'brew --cellar'|'brew --repository') return 0 ;;
+  esac
+  [[ "$body" =~ ^brew\ --prefix\ [A-Za-z0-9@._+-]+$ ]] && return 0
+  # A fresh temporary path, with any template or parent directory spelled
+  # out in the command where the path scans see it.
+  [[ "$body" =~ ^mktemp(\ [A-Za-z0-9._/@+=X-]+)*$ ]] && return 0
+  return 1
+}
+
+# True when <body> is one curl or wget fetch of an http(s) URL, or one gh
+# call, that sends no local file, optionally piped through jq with a filter,
+# or head, tail, sort, uniq, wc, base64 with options only, or tr.
+scope_subst_body_is_remote() {
+  local body="${1:-}" lower stage rest w nonopt
+  body="${body#"${body%%[![:space:]]*}"}"
+  case "$body" in
+    *'$('*|*$'\140'*|*';'*|*'&'*|*'<'*|*'>'*|*'@'*) return 1 ;;
+  esac
+  lower="$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *'file:'*|*'--config'*|*'--upload-file'*|*'--data-binary'*|*'--post-file'*|*'--body-file'*) return 1 ;;
+    *'--input'*|*'--rawfile'*|*'--slurpfile'*|*'--from-file'*) return 1 ;;
+  esac
+  local -a parts=()
+  rest="${body%%|*}"
+  # Short option clusters that read a file (-K config, -T upload), however
+  # they are bundled.
+  read -r -a parts <<< "$rest"
+  for w in ${parts[@]+"${parts[@]}"}; do
+    case "$w" in --*) ;; -*K*|-*T*) return 1 ;; esac
+  done
+  case "$rest" in
+    gh\ *) ;;
+    curl\ *|wget\ *) [[ "$lower" =~ (^|[[:space:]\"\'])https?:// ]] || return 1 ;;
+    *) return 1 ;;
+  esac
+  rest="$body"
+  while [ "$rest" != "${rest#*|}" ]; do
+    rest="${rest#*|}"
+    stage="${rest%%|*}"
+    nonopt=0
+    parts=()
+    read -r -a parts <<< "$stage"
+    [ "${#parts[@]}" -gt 0 ] || return 1
+    case "${parts[0]}" in
+      tr) ;;
+      jq)
+        for w in "${parts[@]:1}"; do
+          case "$w" in -f|--from-file|--arg|--argjson|--args|--jsonargs) return 1 ;; -*) ;; *) nonopt=$((nonopt + 1)) ;; esac
+        done
+        [ "$nonopt" -le 1 ] || return 1
+        ;;
+      head|tail|sort|uniq|wc|base64)
+        for w in "${parts[@]:1}"; do
+          case "$w" in -*|[0-9]*) ;; *) return 1 ;; esac
+        done
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# True when a substitution with <body> may name the program a command runs:
+# a body that prints no path or one the guard maps, or a lookup of a
+# program on PATH (which, command -v, type -p).
+scope_subst_name_body_is_ok() {
+  local body="${1:-}"
+  body="${body#"${body%%[![:space:]]*}"}"
+  body="${body%"${body##*[![:space:]]}"}"
+  scope_subst_body_is_safe "$body" && return 0
+  scope_subst_body_is_known "$body" && return 0
+  [[ "$body" =~ ^(which|command\ -v|type\ -[pP])\ [A-Za-z0-9._+-]+$ ]]
+}
+
+scope_subst_body_taints() {
+  local body="${1:-}"
+  scope_subst_body_is_safe "$body" && return 1
+  scope_subst_body_is_known "$body" && return 1
+  scope_subst_body_is_remote "$body" && return 1
+  return 0
+}
+
+# Print <word> without its single-quoted and $'...' parts and without
+# backslash-escaped characters, none of which the shell expands.
+scope_subst_expanded_text() {
+  local word="${1:-}" out="" i=0 len ch q=""
+  len=${#word}
+  while [ "$i" -lt "$len" ]; do
+    ch="${word:i:1}"
+    if [ "$q" = "'" ]; then
+      [ "$ch" = "'" ] && q=""
+      i=$((i + 1)); continue
+    fi
+    if [ "$q" = A ]; then
+      if [ "$ch" = "\\" ]; then i=$((i + 2)); continue; fi
+      [ "$ch" = "'" ] && q=""
+      i=$((i + 1)); continue
+    fi
+    if [ "$ch" = "\\" ]; then i=$((i + 2)); continue; fi
+    if [ "$q" = '"' ]; then
+      [ "$ch" = '"' ] && q=""
+      out="$out$ch"; i=$((i + 1)); continue
+    fi
+    case "$ch" in
+      '"') q='"' ;;
+      "'") q="'"; i=$((i + 1)); continue ;;
+      '$') if [ "${word:$((i + 1)):1}" = "'" ]; then q=A; i=$((i + 2)); continue; fi ;;
+    esac
+    out="$out$ch"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+# True when <word> expands a marked name, including zsh forms ($=x, ${~x},
+# ${(f)x}); the name is left in scope_subst_taint_hit. While any name is
+# marked, an indirect expansion (${!y}, ${(P)y}) counts as a use too.
+scope_subst_word_uses_taint() {
+  local word="${1:-}" text name re
+  scope_subst_taint_hit=""
+  [ "$SCOPE_SUBST_TAINT" != " " ] || return 1
+  case "$word" in *'$'*) ;; *) return 1 ;; esac
+  text="$(scope_subst_expanded_text "$word")"
+  case "$text" in *'$'*) ;; *) return 1 ;; esac
+  re='\$\{(!|[^}]*\([^)]*P[^)]*\))'
+  if [[ "$text" =~ $re ]]; then
+    scope_subst_taint_hit="{!...}"
+    return 0
+  fi
+  for name in $SCOPE_SUBST_TAINT; do
+    re='\$\{?([#!=~^+]|\([^)]*\))*'"$name"'([^A-Za-z0-9_]|$)'
+    if [[ "$text" =~ $re ]]; then
+      scope_subst_taint_hit="$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# True when the value text <value> carries a substitution that marks its name,
+# or expands a marked name.
+scope_subst_value_taints() {
+  local value="${1:-}" body
+  case "$value" in *'$'*|*$'\140'*) ;; *) return 1 ;; esac
+  while IFS= read -r -d $'\036' body; do
+    scope_subst_body_taints "$body" && return 0
+  done < <(scope_subst_unquoted_bodies "$value" 1)
+  scope_subst_word_uses_taint "$value"
+}
+
+scope_subst_mark() {
+  local name="${1:-}"
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 0
+  case "$SCOPE_SUBST_TAINT" in *" $name "*) ;; *) SCOPE_SUBST_TAINT="$SCOPE_SUBST_TAINT$name " ;; esac
+}
+
+# The value of assignment word <k>. For NAME=(...) the lexer ends the word at
+# `(`, so the parenthesised list is read from the scanned text.
+scope_subst_assignment_value() {
+  local k="${1:-0}" word pos rest depth=0 j c out=""
+  word="${sw_raw[$k]}"
+  case "$word" in
+    *=)
+      pos=$(( ${sw_off[$k]:-0} - 1 + ${#word} ))
+      if [ "$pos" -ge 0 ] && [ "${text:$pos:1}" = "(" ]; then
+        rest="${text:$pos}"
+        j=0
+        while [ "$j" -lt "${#rest}" ]; do
+          c="${rest:j:1}"
+          out="$out$c"
+          case "$c" in
+            '(') depth=$((depth + 1)) ;;
+            ')') depth=$((depth - 1)); [ "$depth" -gt 0 ] || break ;;
+          esac
+          j=$((j + 1))
+        done
+        printf '%s' "$out"
+        return 0
+      fi
+      ;;
+  esac
+  printf '%s' "${word#*=}"
+}
+
+# Mark the name of assignment word <k> (NAME=, NAME+=, NAME[i]=, NAME=(...))
+# when its value taints.
+scope_subst_mark_assignment() {
+  local k="${1:-0}" word name
+  word="${sw_raw[$k]}"
+  [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]] || return 0
+  name="${word%%[=+[]*}"
+  scope_subst_value_taints "$(scope_subst_assignment_value "$k")" && scope_subst_mark "$name"
+  return 0
+}
+
+# True when word <k> is the value of a message-text option of git, gh or hq.
+scope_subst_is_text_value() {
+  local k="${1:-0}" head="${2:-}" word opt
+  case "$head" in git|gh|hq) ;; *) return 1 ;; esac
+  word="${sw_raw[$k]//[\"\']/}"
+  case "$word" in
+    --*=*) opt="${word%%=*}" ;;
+    *) [ "$k" -gt 0 ] || return 1; opt="${sw_raw[$((k - 1))]//[\"\']/}" ;;
+  esac
+  case "$opt" in
+    --text|--summary|--title|--body|--message|--note|--description|--subject|--comment|--reason|--details) return 0 ;;
+    -m) [ "$head" = git ] && return 0 ;;
+  esac
+  return 1
+}
+
+# Check the simple command in sw_raw/sw_unq/sw_redir from <start> to <end>.
+# With scope_subst_mark_only=1 it only records marked names.
+scope_subst_check_command() {
+  local start="${1:-0}" end="${2:-0}" i word head="" body allowed_head=0 k j declare_head=0 use joined
+  i="$start"
+  # Leading assignments only store the output (X=$(cat p)); the name is
+  # marked and checked where it is used. Wrappers hand the rest to another
+  # command.
+  while [ "$i" -lt "$end" ]; do
+    word="${sw_raw[$i]}"
+    if [ "${sw_redir[$i]}" -ne 0 ]; then
+      i=$((i + 1))
+      continue
+    fi
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]]; then
+      scope_subst_mark_assignment "$i"
+      i=$((i + 1))
+      continue
+    fi
+    head="${word//[\"\'\\]/}"
+    head="${head##*/}"
+    case "$head" in
+      do|then|else|elif|'!'|'{'|if|while|until|nohup|builtin|exec|command|time|stdbuf|caffeinate)
+        i=$((i + 1))
+        while [ "$i" -lt "$end" ] && [[ "${sw_raw[$i]}" == -* ]]; do i=$((i + 1)); done
+        ;;
+      env|sudo|nice|timeout|xargs)
+        i=$((i + 1))
+        while [ "$i" -lt "$end" ]; do
+          case "${sw_raw[$i]}" in
+            -u|-g|-C|-D|-n|-s|-k|-I|-P|-L|-d|-E|-a|-p|-r|-t|-U|-T|--signal|--kill-after|--chdir|--unset) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *)
+              if [[ "${sw_raw[$i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); else break; fi
+              ;;
+          esac
+        done
+        # timeout's first operand is the duration.
+        if [ "$head" = timeout ]; then i=$((i + 1)); fi
+        ;;
+      # A loop or case header's word list is not a command argument. A loop
+      # variable over a substitution is marked and checked where the body
+      # uses it.
+      for|select)
+        if [ $((i + 2)) -lt "$end" ] && [ "${sw_raw[$((i + 2))]}" = in ]; then
+          k=$((i + 3))
+          while [ "$k" -lt "$end" ]; do
+            if scope_subst_value_taints "${sw_raw[$k]}"; then
+              scope_subst_mark "${sw_raw[$((i + 1))]}"
+              break
+            fi
+            k=$((k + 1))
+          done
+        fi
+        return 0
+        ;;
+      case) return 0 ;;
+      *) break ;;
+    esac
+  done
+  head=""
+  if [ "$i" -lt "$end" ]; then
+    head="${sw_raw[$i]//[\"\'\\]/}"
+    head="${head##*/}"
+  fi
+  # export/local/declare NAME=VALUE store a value like a leading assignment.
+  # read, mapfile and readarray store input the guard cannot see, so every
+  # name they set is marked. printf -v NAME stores its output.
+  case "$head" in
+    export|local|declare|typeset|readonly)
+      declare_head=1
+      k=$((i + 1))
+      while [ "$k" -lt "$end" ]; do
+        [ "${sw_redir[$k]}" -ne 0 ] || scope_subst_mark_assignment "$k"
+        k=$((k + 1))
+      done
+      ;;
+    read|mapfile|readarray)
+      k=$((i + 1))
+      while [ "$k" -lt "$end" ]; do
+        [ "${sw_redir[$k]}" -ne 0 ] || scope_subst_mark "${sw_raw[$k]}"
+        k=$((k + 1))
+      done
+      ;;
+    printf)
+      k=$((i + 1))
+      while [ "$k" -lt "$end" ]; do
+        if [ "${sw_raw[$k]}" = -v ] && [ $((k + 1)) -lt "$end" ]; then
+          j=$((i + 1))
+          while [ "$j" -lt "$end" ]; do
+            if [ "$j" -ne $((k + 1)) ] && scope_subst_value_taints "${sw_raw[$j]}"; then
+              scope_subst_mark "${sw_raw[$((k + 1))]}"
+              break
+            fi
+            j=$((j + 1))
+          done
+        fi
+        k=$((k + 1))
+      done
+      ;;
+  esac
+  # A program handed to another shell runs its own substitutions there:
+  # bash -c 'cat $(cat p)', eval "...", find ... -exec sh -c '...' \;
+  case "$head" in
+    bash|sh|zsh|dash|ksh)
+      k=$((i + 1))
+      while [ "$k" -lt "$end" ]; do
+        case "${sw_raw[$k]}" in
+          -o|+o|-O|+O|--rcfile|--init-file) k=$((k + 2)); continue ;;
+          --) k=$((k + 1)); break ;;
+          -*c*)
+            k=$((k + 1))
+            while [ "$k" -lt "$end" ] && [[ "${sw_raw[$k]}" == -* ]]; do k=$((k + 1)); done
+            if [ "$k" -lt "$end" ]; then
+              scope_subst_scan "$(scope_subst_program_text "${sw_raw[$k]}")" "$((scope_subst_depth + 1))" || exit $?
+            fi
+            break
+            ;;
+          -*|+*) k=$((k + 1)) ;;
+          *) break ;;
+        esac
+      done
+      ;;
+    eval)
+      # eval joins its arguments with spaces and runs the result.
+      joined=""
+      k=$((i + 1))
+      while [ "$k" -lt "$end" ]; do
+        joined="${joined:+$joined }$(scope_subst_program_text "${sw_raw[$k]}")"
+        k=$((k + 1))
+      done
+      [ -z "$joined" ] || scope_subst_scan "$joined" "$((scope_subst_depth + 1))" || exit $?
+      ;;
+    find)
+      k=$((i + 1))
+      while [ "$k" -lt "$end" ]; do
+        case "${sw_raw[$k]}" in
+          -exec|-execdir|-ok|-okdir)
+            j=$((k + 1))
+            while [ "$j" -lt "$end" ]; do
+              case "${sw_raw[$j]}" in '\;'|"';'"|'";"'|'+') break ;; esac
+              j=$((j + 1))
+            done
+            scope_subst_check_command "$((k + 1))" "$j"
+            k=$((j + 1))
+            ;;
+          *) k=$((k + 1)) ;;
+        esac
+      done
+      ;;
+  esac
+  [ "${scope_subst_mark_only:-0}" != 1 ] || return 0
+  # These commands take no file arguments: process ids, seconds, printed
+  # text, or a test of a value. echo and printf lose the allowance when the
+  # command pipes into something that runs or opens what it reads (xargs, a
+  # shell, source, eval, read, while).
+  case "$head" in
+    kill|sleep|wait|'['|'[['|test|seq|expr) allowed_head=1 ;;
+    echo|printf)
+      allowed_head=1
+      j='\|[[:space:]]*(xargs|sh|bash|zsh|dash|ksh|source|\.|eval|read|while|parallel)([[:space:]]|$)'
+      [[ "${scope_subst_text:-}" =~ $j ]] && allowed_head=0
+      ;;
+  esac
+  # Every word with an unquoted substitution is checked except a leading
+  # assignment, a here-string and the command name itself ($(which x) args).
+  # Redirection targets are checked wherever they sit, also when no command
+  # follows (`exec > $(...)`, a bare `> $(...)`); wrapper options (env -C,
+  # sudo -D) get no command allowance. A word that expands a marked name is
+  # checked the same way, except where the overview above lets it pass.
+  k="$start"
+  while [ "$k" -lt "$end" ]; do
+    word="${sw_raw[$k]}"
+    if [ "${sw_redir[$k]}" -eq 2 ]; then
+      k=$((k + 1))
+      continue
+    fi
+    # The command name itself: `$(cat /tmp/p)`, `env $(cat /tmp/p)` or `$x`
+    # runs whatever the file holds. Only a body that prints no path, one the
+    # guard maps, or a PATH lookup may name the program.
+    if [ "$k" -eq "$i" ] && [ "${sw_redir[$k]}" -eq 0 ]; then
+      if scope_subst_word_uses_taint "$word"; then
+        scope_block_rel "\$$scope_subst_taint_hit" "the command name uses \$$scope_subst_taint_hit, which holds a command substitution's output the guard cannot check; run the inner command first and use the literal program path it printed"
+      fi
+      while IFS= read -r -d $'\036' body; do
+        scope_subst_name_body_is_ok "$body" && continue
+        scope_block_rel "\$($body)" "a command substitution supplies the command name, so the command runs a program or path the guard cannot check; run the inner command first and use the literal program path it printed"
+      done < <(scope_subst_unquoted_bodies "$word" 1)
+    fi
+    # A double-quoted substitution as an operand of a command that opens,
+    # writes or enters the path it is given: `cat "$(cat p)"`, `cp x "$(...)"`.
+    if [ "$k" -gt "$i" ] && [ "${sw_redir[$k]}" -eq 0 ]; then
+      case "$head" in
+        cat|cp|mv|rm|ln|ls|head|tail|less|more|tee|touch|mkdir|rmdir|chmod|chown|stat|file|wc|diff|cd|pushd|source|.|open|tar|zip|unzip|rsync|scp|du|realpath|readlink|truncate|shred|install|dd)
+          case "$word" in
+            *'"'*'$('*|*'"'*$'\140'*)
+              while IFS= read -r -d $'\036' body; do
+                scope_subst_body_taints "$body" || continue
+                scope_block_rel "\$($body)" "a command substitution in double quotes supplies an argument of $head the guard cannot check; run the inner command first and use the literal path it printed"
+              done < <(scope_subst_unquoted_bodies "$word" 1)
+              ;;
+          esac
+          ;;
+      esac
+    fi
+    use=0
+    if [ "${sw_redir[$k]}" -eq 1 ]; then
+      use=1
+    elif [ "$k" -ne "$i" ] && ! { [ "$k" -lt "$i" ] && [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]]; }; then
+      use=1
+      if [ "$declare_head" -eq 1 ] && [ "$k" -gt "$i" ] && [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]]; then
+        use=0
+      fi
+      if [ "$head" = printf ] && [ "$k" -gt 0 ] && [ "${sw_raw[$((k - 1))]}" = -v ]; then
+        use=0
+      fi
+    fi
+    if [ "$use" -eq 1 ] && scope_subst_word_uses_taint "$word"; then
+      if [ "${sw_redir[$k]}" -eq 1 ]; then
+        scope_block_rel "\$$scope_subst_taint_hit" "a redirection target uses \$$scope_subst_taint_hit, which holds a command substitution's output the guard cannot check; run the inner command first and use the literal path it printed"
+      fi
+      if ! { [ "$k" -gt "$i" ] && {
+        [ "$allowed_head" -eq 1 ] || scope_subst_is_text_value "$k" "$head" \
+          || { case "$head" in curl|wget) [[ "${word#[\"\']}" =~ ^https?:// ]] ;; *) false ;; esac; }
+      }; }; then
+        scope_block_rel "\$$scope_subst_taint_hit" "an argument of ${head:-the command} uses \$$scope_subst_taint_hit, which holds a command substitution's output the guard cannot check; run the inner command first and use the literal path it printed"
+      fi
+    fi
+    if [ "${sw_unq[$k]}" -eq 1 ] && {
+      [ "${sw_redir[$k]}" -eq 1 ] || {
+        [ "$k" -ne "$i" ] && ! { [ "$k" -lt "$i" ] && [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; }
+      }
+    }; then
+      while IFS= read -r -d $'\036' body; do
+        scope_subst_body_is_safe "$body" && continue
+        if [ "${sw_redir[$k]}" -eq 0 ] && [ "$k" -gt "$i" ] && [ "$allowed_head" -eq 1 ]; then
+          continue
+        fi
+        if [ "${sw_redir[$k]}" -eq 1 ]; then
+          scope_block_rel "\$($body)" "an unquoted command substitution names a redirection target the guard cannot check; run the inner command first and use the literal path it printed"
+        fi
+        scope_block_rel "\$($body)" "an unquoted command substitution supplies an argument of $head the guard cannot check; run the inner command first and use the literal path it printed"
+      done < <(scope_subst_unquoted_bodies "${sw_raw[$k]}")
+    fi
+    k=$((k + 1))
+  done
+  return 0
+}
+
+# Lex <text> and check every simple command, then every substitution body.
+scope_subst_scan() {
+  local text="${1:-}" depth="${2:-0}" rec kind rest off flag word redir=0 i finished=0
+  local -a sw_raw=() sw_unq=() sw_redir=() sw_off=() s_body=()
+  local scope_subst_depth="$depth"
+  if [ "$depth" -gt 4 ]; then
+    scope_block_rel "\$(...)" "command substitutions are nested too deeply to check; run the inner commands separately"
+  fi
+  while IFS= read -r -d $'\036' rec; do
+    kind="${rec:0:1}"
+    case "$kind" in
+      W)
+        rest="${rec:2}"
+        off="${rest%%$'\037'*}"
+        rest="${rest#*$'\037'}"
+        flag="${rest%%$'\037'*}"
+        word="${rest#*$'\037'}"
+        sw_raw[${#sw_raw[@]}]="$word"
+        sw_unq[${#sw_unq[@]}]="$flag"
+        sw_redir[${#sw_redir[@]}]="$redir"
+        sw_off[${#sw_off[@]}]="$off"
+        redir=0
+        ;;
+      # sw_redir: 1 for a redirection target, 2 for a here-string word.
+      R) redir=1 ;;
+      H) redir=2 ;;
+      E)
+        redir=0
+        if [ "${#sw_raw[@]}" -gt 0 ]; then
+          scope_subst_check_command 0 "${#sw_raw[@]}"
+        fi
+        sw_raw=()
+        sw_unq=()
+        sw_redir=()
+        sw_off=()
+        ;;
+      S)
+        rest="${rec:2}"
+        s_body[${#s_body[@]}]="${rest#*$'\037'}"
+        ;;
+      Z) finished=1 ;;
+    esac
+  done < <(printf '%s' "$text" | scope_subst_lex)
+  # A lexer that stopped early checked nothing after that point.
+  [ "$finished" -eq 1 ] || return 3
+  i=0
+  while [ "$i" -lt "${#s_body[@]}" ]; do
+    case "${s_body[$i]}" in
+      *'$('*|*$'\140'*)
+        # set -e is off in the check's subshell; pass a failure up by hand.
+        scope_subst_scan "${s_body[$i]}" "$((depth + 1))" || return $?
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# Inline interpreter programs and directory options.
+#
+# `python3 -c "open('$D/x','w')"` and `git -C $R commit` hand a variable to a
+# place the path scans above do not look. The shell fills $D or $R from the
+# environment before the command runs, so a variable the command never set can
+# point at another company's folder. The scans miss both shapes: the tokenizer
+# drops the outer double quotes, so the program's own '...' reads as shell
+# single quotes and `$D` looks literal; and a bare `$R` with no slash is not a
+# path candidate at all.
+#
+# This check reads the raw command, finds the program argument of
+#   python[N] -c, node -e/-p/--eval/--print, ruby -e, perl -e/-E,
+#   bash/sh/zsh/dash/ksh -c (also after find -exec/-execdir/-ok),
+# and the directory argument of
+#   git -C/--git-dir/--work-tree, make -C/--directory, tar -C/--directory,
+#   pnpm -C/--dir, npm --prefix/-C, yarn --cwd, env -C/--chdir, sudo -D/--chdir,
+# and requires every variable the outer shell expands there to be proven by
+# the same command: VAR=literal run before the use, a for loop over literal
+# words, a literal argument at a known function call, $HOME, or $PWD. Any
+# other variable, any other ${...} form, and any command substitution except
+# $(pwd) blocks.
+#
+# A shell program (`bash -c '...'`) is also read from the inner shell's side,
+# because single quotes stop only the outer shell: a variable the inner shell
+# expands must be set inside the program, by a VAR=literal prefix on the same
+# command, or be $HOME/$PWD, and positional parameters need literal
+# arguments. A python/node/ruby/perl program that can start a shell
+# (scope_interp_handoff_re, or backticks/qx/%x in perl and ruby) gets the same
+# check for its `$NAME` text, as its heredoc form already does.
+# Variables that never hold a path: ones bash maintains itself (most are
+# read-only or recomputed on each use) and locale, terminal and identity
+# variables. They pass without proof. Path-valued variables such as PATH,
+# SHELL, TMPDIR and OLDPWD are not listed and still need it.
+# They apply to program text only; a directory option always needs proof.
+scope_inline_plain_names=' RANDOM LINENO SECONDS EPOCHSECONDS EPOCHREALTIME SRANDOM BASHPID UID EUID PPID SHLVL OSTYPE HOSTTYPE MACHTYPE BASH_VERSION BASH_VERSINFO USER LOGNAME LANG LANGUAGE TERM COLORTERM CI HOSTNAME TZ COLUMNS LINES '
+scope_inline_is_plain_name() {
+  case "${1:-}" in
+    LC_[A-Z]*) return 0 ;;
+  esac
+  [[ "$scope_inline_plain_names" == *" ${1:-} "* ]]
+}
+scope_inline_head_re='(^|[^A-Za-z0-9_.-])(python[0-9.]*|pypy[0-9.]*|node|nodejs|ruby|perl|bash|sh|zsh|dash|ksh|git|make|gmake|tar|gtar|bsdtar|pnpm|npm|yarn|env|sudo)([^A-Za-z0-9_.-]|$)'
+
+# True when <text> has an expansion and names a command this check reads.
+scope_inline_expansions_wanted() {
+  local text="${1:-}"
+  case "$text" in *'$'*|*$'\140'*) ;; *) return 1 ;; esac
+  # A $'...' escape can spell a command name; a GIT_* assignment moves git.
+  case "$text" in *"\$'"*\\*|*GIT_[A-Z]*=*) return 0 ;; esac
+  [[ "$text" =~ $scope_inline_head_re ]]
+}
+
+# Split stdin into simple commands without evaluating anything. Records, each
+# ended by \036:
+#   W\037<1-based byte offset>\037<raw word, quotes kept>
+#   R   the next word is a redirection target
+#   E   end of a simple command
+#   S\037<1-based byte offset>\037<body>   a $(...) or `...` body
+#   Z   the input was read to the end (the caller fails closed without it)
+# Heredoc bodies are skipped; the interpreter-heredoc checks cover them.
+# The lexer reads the command before backslash-newlines are removed, because
+# bash ends a comment at a backslash-newline instead of joining the lines.
+scope_inline_lex() {
+  LC_ALL=C awk -v RS='\001' '
+    function flush() { if (inw) { printf "W\037%d\037%s\036", ws, w; inw = 0; w = "" } }
+    function endcmd() { flush(); printf "E\036" }
+    function startw(pos) { if (!inw) { inw = 1; ws = pos; w = "" } }
+    function sub_rec(s, e) { if (e > s) printf "S\037%d\037%s\036", s, substr(t, s, e - s) }
+    function match_bt(i,   c) {
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "`") return i
+      }
+      return n + 1
+    }
+    function match_sub(i,   depth, q, c) {
+      depth = 1; q = ""
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (q == "\047") { if (c == "\047") q = ""; continue }
+        if (c == "\\") { i++; continue }
+        if (q == "\"") {
+          if (c == "\"") q = ""
+          else if (c == "$" && substr(t, i + 1, 1) == "(") i = match_sub(i + 2)
+          else if (c == "`") i = match_bt(i + 1)
+          continue
+        }
+        if (c == "$" && substr(t, i + 1, 1) == "\047") { i = match_ansi(i + 2); continue }
+        if (c == "\047" || c == "\"") { q = c; continue }
+        if (c == "`") { i = match_bt(i + 1); continue }
+        if (c == "(") depth++
+        else if (c == ")") { depth--; if (depth == 0) return i }
+      }
+      return n + 1
+    }
+    # $'"'"'...'"'"' (ANSI-C quoting): a backslash escapes the next byte, so \'"'"'
+    # does not end it. Returns the index of the closing quote.
+    function match_ansi(i,   c) {
+      for (; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (c == "\\") { i++; continue }
+        if (c == "\047") return i
+      }
+      return n + 1
+    }
+    function skip_heredocs(i,   k, rest, nl, line) {
+      for (k = 1; k <= nh; k++) {
+        while (i < n) {
+          rest = substr(t, i + 1); nl = index(rest, "\n")
+          if (nl == 0) { line = rest; i = n } else { line = substr(rest, 1, nl - 1); i = i + nl }
+          # In an unquoted heredoc a backslash-newline joins body lines
+          # before bash compares them with the delimiter.
+          while (!hquoted[k] && line ~ /\\$/ && i < n) {
+            line = substr(line, 1, length(line) - 1)
+            rest = substr(t, i + 1); nl = index(rest, "\n")
+            if (nl == 0) { line = line rest; i = n } else { line = line substr(rest, 1, nl - 1); i = i + nl }
+          }
+          if (hdash[k]) sub(/^\t+/, "", line)
+          if (line == hd[k]) break
+        }
+      }
+      nh = 0
+      return i
+    }
+    {
+      t = $0; n = length(t); q = ""; inw = 0; w = ""; nh = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(t, i, 1)
+        if (q == "\047") { w = w c; if (c == "\047") q = ""; continue }
+        if (q == "\"") {
+          w = w c
+          if (c == "\\") { i++; w = w substr(t, i, 1); continue }
+          if (c == "\"") { q = ""; continue }
+          if (c == "$" && substr(t, i + 1, 1) == "(") { j = match_sub(i + 2); sub_rec(i + 2, j); w = w substr(t, i + 1, j - i); i = j; continue }
+          if (c == "`") { j = match_bt(i + 1); sub_rec(i + 1, j); w = w substr(t, i + 1, j - i); i = j; continue }
+          continue
+        }
+        # A backslash-newline joins lines outside quotes and comments.
+        if (c == "\\" && substr(t, i + 1, 1) == "\n") { i++; continue }
+        if (c == "\\") { startw(i); w = w c substr(t, i + 1, 1); i++; continue }
+        if (c == "$" && substr(t, i + 1, 1) == "\047") { startw(i); j = match_ansi(i + 2); w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == "\047" || c == "\"") { startw(i); w = w c; q = c; continue }
+        # (( ... )) is arithmetic: `<<` there is a shift, not a heredoc. The
+        # body is still lexed on its own in case bash reads it as nested
+        # subshells instead.
+        if (c == "(" && substr(t, i + 1, 1) == "(" && !inw) { endcmd(); j = match_sub(i + 1); sub_rec(i + 2, j - 1); i = j; endcmd(); continue }
+        if (c == "$" && substr(t, i + 1, 1) == "(") { startw(i); j = match_sub(i + 2); sub_rec(i + 2, j); w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == "`") { startw(i); j = match_bt(i + 1); sub_rec(i + 1, j); w = w substr(t, i, j - i + 1); i = j; continue }
+        if (c == " " || c == "\t") { flush(); continue }
+        if (c == "\n") { endcmd(); if (nh > 0) i = skip_heredocs(i); continue }
+        if (c == "#" && !inw) { while (i < n && substr(t, i + 1, 1) != "\n") i++; continue }
+        if (c == "<" || c == ">") {
+          if (inw && w ~ /^[0-9]+$/) { inw = 0; w = "" } else flush()
+          op = c; nx = substr(t, i + 1, 1)
+          if (c == "<" && nx == "<") {
+            i++; op = "<<"; nx = substr(t, i + 1, 1)
+            if (nx == "<") { i++; op = "<<<" } else if (nx == "-") { i++; op = "<<-" }
+          } else if (nx == ">" || nx == "|" || nx == "&") { i++; op = op nx }
+          if (op == "<<" || op == "<<-") {
+            while (substr(t, i + 1, 1) == " " || substr(t, i + 1, 1) == "\t") i++
+            # The delimiter is one shell word: quoted pieces keep their
+            # spaces (<<'"'"'E OF'"'"'), and quote characters are removed.
+            # A backslash-newline inside it joins lines (<<E\<nl>OF is EOF).
+            # Any quoting makes the body literal, with no line joining.
+            d = ""; dq = 0
+            while (i < n) {
+              nc = substr(t, i + 1, 1)
+              if (nc == "\\" && substr(t, i + 2, 1) == "\n") { i += 2; continue }
+              if (nc == " " || nc == "\t" || nc == "\n" || nc == ";" || nc == "&" || nc == "|" || nc == "<" || nc == ">" || nc == "(" || nc == ")") break
+              i++
+              if (nc == "\047" || nc == "\"") {
+                dq = 1
+                while (i < n && substr(t, i + 1, 1) != nc) { i++; d = d substr(t, i, 1) }
+                i++
+              } else if (nc == "\\") {
+                dq = 1
+                i++; d = d substr(t, i, 1)
+              } else d = d nc
+            }
+            nh++; hd[nh] = d; hdash[nh] = (op == "<<-"); hquoted[nh] = dq
+            continue
+          }
+          printf "R\036"
+          continue
+        }
+        if (c == ";" || c == "|" || c == "(" || c == ")") { endcmd(); continue }
+        if (c == "&") {
+          if (substr(t, i + 1, 1) == ">") { flush(); i++; if (substr(t, i + 1, 1) == ">") i++; printf "R\036"; continue }
+          endcmd(); continue
+        }
+        startw(i); w = w c
+      }
+      endcmd()
+      printf "Z\036"
+    }'
+}
+
+# Set scope_inline_paren_end to the index of the `)` that closes the `(` at
+# <index> in <text> (quote-aware), or to the text length when it never closes.
+scope_inline_match_paren() {
+  local text="${1:-}" i="${2:-0}" depth=0 q="" ch len
+  len=${#text}
+  scope_inline_paren_end=$len
+  while [ "$i" -lt "$len" ]; do
+    ch="${text:i:1}"
+    if [ "$q" = "'" ] || [ "$q" = A ]; then
+      if [ "$q" = A ] && [ "$ch" = "\\" ]; then
+        i=$((i + 2))
+        continue
+      fi
+      if [ "$ch" = "'" ]; then q=""; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ -z "$q" ] && [ "$ch" = '$' ] && [ "${text:$((i + 1)):1}" = "'" ]; then
+      q=A
+      i=$((i + 2))
+      continue
+    fi
+    case "$ch" in
+      \\) i=$((i + 1)) ;;
+      '"') if [ "$q" = '"' ]; then q=""; else q='"'; fi ;;
+      "'") if [ -z "$q" ]; then q="'"; fi ;;
+      '(') if [ -z "$q" ]; then depth=$((depth + 1)); fi ;;
+      ')')
+        if [ -z "$q" ]; then
+          depth=$((depth - 1))
+          if [ "$depth" -eq 0 ]; then
+            scope_inline_paren_end=$i
+            return 0
+          fi
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# Print the value(s) a `$name` use after <prefix> in <text> is proven to have,
+# one per line, or return 1. Proof is what the path checks already accept: an
+# assignment the shell must run first, a for loop over literal words, a
+# literal argument at a known function call, $HOME, $HQ_ROOT, a mktemp
+# assignment. $PWD is the command's working directory.
+# $TMPDIR is not proven here. The path checks read it from the hook's own
+# environment, but a program run by `sh -c` or an interpreter gets whatever
+# environment its launcher passes, so only a literal assignment in the
+# command proves it (scope_shell_variable_values below).
+scope_inline_name_values() {
+  local name="${1:-}" prefix="${2:-}" text="${3:-}" known_value values
+  case "$name" in
+    PWD) printf '%s\n' "${COMMAND_CWD:-$PAYLOAD_CWD}"; return 0 ;;
+    0) printf 'sh\n'; return 0 ;;
+    [1-9]|TMPDIR) ;;
+    *)
+      known_value="$(scope_resolve_known_path_expansions "\$$name" "$text" "$prefix")"
+      case "$known_value" in
+        *'$'*) ;;
+        *) printf '%s\n' "$known_value"; return 0 ;;
+      esac
+      ;;
+  esac
+  values="$(scope_shell_variable_values "$name" "$prefix" "$text" 2>/dev/null || true)"
+  [ -n "$values" ] || return 1
+  printf '%s\n' "$values"
+}
+
+# True when <value>, pasted between <before> and <after>, completes a
+# `companies` segment that neither the value nor the literal text holds alone
+# (`D=/abs/hq/compan; python3 -c "open('${D}ies/otherco/x','w')"`). A value
+# that contains the whole word is literal text in the command, where the
+# companies/ scan above already checks it.
+scope_inline_value_glues_company() {
+  local before="${1:-}" value="${2:-}" after="${3:-}" b a s vs ve rest pre st en base=0
+  before="${before//[\"\']/}"
+  after="${after//[\"\']/}"
+  b="${before:$(( ${#before} > 8 ? ${#before} - 8 : 0 ))}"
+  a="${after:0:8}"
+  s="$(printf '%s' "$b$value$a" | tr '[:upper:]' '[:lower:]')"
+  vs=${#b}
+  ve=$((vs + ${#value}))
+  rest="$s"
+  while [[ "$rest" == *companies* ]]; do
+    pre="${rest%%companies*}"
+    st=$((base + ${#pre}))
+    en=$((st + 9))
+    if [ "$st" -lt "$ve" ] && [ "$en" -gt "$vs" ] && ! { [ "$st" -ge "$vs" ] && [ "$en" -le "$ve" ]; }; then
+      return 0
+    fi
+    base=$((st + 1))
+    rest="${s:$base}"
+  done
+  return 1
+}
+
+# Walk the program text an inner shell receives (`bash -c '<text>'`) and block
+# on any variable it expands that is not set inside <text>, not given by a
+# VAR=literal prefix on the same command (<env_names>), and not $HOME/$PWD.
+# Positional parameters ($1, $@) are allowed only when every argument after
+# the program is literal (<args_literal> = 1), as in find -exec sh -c '...' _ {}.
+scope_inline_check_inner_shell() {
+  local text="${1:-}" env_names="${2:-}" args_literal="${3:-0}" what="${4:-the shell program}"
+  local len i=0 q="" ch nx name content start
+  len=${#text}
+  while [ "$i" -lt "$len" ]; do
+    ch="${text:i:1}"
+    if [ "$q" = "'" ] || [ "$q" = A ]; then
+      if [ "$q" = A ] && [ "$ch" = "\\" ]; then
+        i=$((i + 2))
+        continue
+      fi
+      if [ "$ch" = "'" ]; then q=""; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ -z "$q" ] && [ "$ch" = '$' ] && [ "${text:$((i + 1)):1}" = "'" ]; then
+      q=A
+      i=$((i + 2))
+      continue
+    fi
+    case "$ch" in
+      \\) i=$((i + 2)); continue ;;
+      '"') if [ "$q" = '"' ]; then q=""; else q='"'; fi; i=$((i + 1)); continue ;;
+      "'") if [ -z "$q" ]; then q="'"; fi; i=$((i + 1)); continue ;;
+      '$') ;;
+      *) i=$((i + 1)); continue ;;
+    esac
+    start=$i
+    nx="${text:$((i + 1)):1}"
+    case "$nx" in
+      '{')
+        content="${text:$((i + 2))}"
+        content="${content%%\}*}"
+        if [[ "$content" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [[ "$content" =~ ^[0-9]+$ ]]; then
+          name="$content"
+          i=$((i + 3 + ${#content}))
+        else
+          scope_block_rel "\${$content}" "$what expands a parameter form the guard cannot check; set a plain variable with a literal value inside the program"
+        fi
+        ;;
+      [A-Za-z_])
+        name="${text:$((i + 1))}"
+        name="${name%%[!A-Za-z0-9_]*}"
+        i=$((i + 1 + ${#name}))
+        ;;
+      [0-9]) name="$nx"; i=$((i + 2)) ;;
+      '@'|'*') name="@"; i=$((i + 2)) ;;
+      *) i=$((i + 1)); continue ;;
+    esac
+    case "$name" in
+      HOME|PWD|0) continue ;;
+    esac
+    scope_inline_is_plain_name "$name" && continue
+    if [[ "$name" =~ ^[0-9]+$ ]] || [ "$name" = "@" ]; then
+      [ "$args_literal" = 1 ] && continue
+      if [ "$name" != "@" ] && [ -n "$(scope_shell_variable_values "$name" "${text:0:$start}" "$text" 2>/dev/null || true)" ]; then
+        continue
+      fi
+      scope_block_rel "\$$name" "$what reads a positional parameter, and the arguments after the program are not all literal"
+    fi
+    [[ " $env_names " == *" $name "* ]] && continue
+    scope_inline_name_values "$name" "${text:0:$start}" "$text" >/dev/null && continue
+    scope_block_rel "\$$name" "$what runs in a new shell that expands \$$name from the environment, and neither the program nor a $name=value prefix on this command sets it"
+  done
+  return 0
+}
+
+# Check one program or directory word. <raw> is the word as typed (quotes
+# kept) and <off> its byte offset in scope_inline_text. <kind> is dir or
+# program; <interp> is python, node, ruby, perl, or shell for a program.
+scope_inline_expansions_check_word() {
+  local raw="${1:-}" off="${2:-0}" kind="${3:-dir}" interp="${4:-}" env_names="${5:-}" args_literal="${6:-0}" what="${7:-the directory option}"
+  local len i=0 q="" ch nx name content sub inner="" values value start pos handoff=0
+  len=${#raw}
+  while [ "$i" -lt "$len" ]; do
+    ch="${raw:i:1}"
+    if [ "$q" = "'" ]; then
+      if [ "$ch" = "'" ]; then q=""; else inner+="$ch"; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$q" = A ]; then
+      # Inside $'...': \' does not end the string, and a numeric escape
+      # (\x24, \044, $) can spell `$` or a path the guard cannot read.
+      if [ "$ch" = "\\" ]; then
+        nx="${raw:$((i + 1)):1}"
+        case "$nx" in
+          [0-7]|x|u|U|c) scope_block_rel "\$'...'" "$what uses a \$'...' escape (\\$nx) the guard cannot check; write the text plainly" ;;
+          n) inner+=$'\n' ;;
+          t) inner+=$'\t' ;;
+          *) inner+="$nx" ;;
+        esac
+        i=$((i + 2))
+        continue
+      fi
+      if [ "$ch" = "'" ]; then q=""; else inner+="$ch"; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      nx="${raw:$((i + 1)):1}"
+      if [ "$q" = '"' ]; then
+        case "$nx" in
+          '$'|$'\140'|'"'|\\) inner+="$nx" ;;
+          $'\n') ;;
+          *) inner+="\\$nx" ;;
+        esac
+      else
+        inner+="$nx"
+      fi
+      i=$((i + 2))
+      continue
+    fi
+    if [ "$ch" = '"' ]; then
+      if [ "$q" = '"' ]; then q=""; else q='"'; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ -z "$q" ] && [ "$ch" = "'" ]; then
+      q="'"
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = $'\140' ]; then
+      scope_block_rel "\$(...)" "a command substitution in $what cannot be checked; run it first and pass the literal value"
+    fi
+    if [ "$ch" != '$' ]; then
+      inner+="$ch"
+      i=$((i + 1))
+      continue
+    fi
+    start=$i
+    pos=$((off + i))
+    nx="${raw:$((i + 1)):1}"
+    name=""
+    case "$nx" in
+      '(')
+        scope_inline_match_paren "$raw" "$((i + 1))"
+        if [ "${raw:$((i + 2)):1}" = '(' ]; then
+          # $((...)) is arithmetic: its value is a number.
+          inner+="0"
+          i=$((scope_inline_paren_end + 1))
+          continue
+        fi
+        sub="${raw:$i:$((scope_inline_paren_end - i + 1))}"
+        # $(pwd) is the command's working directory, and the repo top level
+        # is the root of the repo that contains it. Both name the place a
+        # plain relative path would already reach.
+        case "$sub" in
+          '$(pwd)'|'$(pwd -P)'|'$(pwd -L)'|'$(git rev-parse --show-toplevel)')
+            inner+="${COMMAND_CWD:-.}"
+            i=$((scope_inline_paren_end + 1))
+            continue
+            ;;
+        esac
+        scope_block_rel "$sub" "a command substitution in $what cannot be checked; run it first and pass the literal value"
+        ;;
+      '{')
+        content="${raw:$((i + 2))}"
+        content="${content%%\}*}"
+        if [[ "$content" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [[ "$content" =~ ^[0-9]+$ ]]; then
+          name="$content"
+          i=$((i + 3 + ${#content}))
+        else
+          scope_block_rel "\${$content}" "$what uses a parameter expansion form the guard cannot check; set a plain variable with a literal value in the same command"
+        fi
+        ;;
+      [A-Za-z_])
+        name="${raw:$((i + 1))}"
+        name="${name%%[!A-Za-z0-9_]*}"
+        i=$((i + 1 + ${#name}))
+        ;;
+      [0-9]) name="$nx"; i=$((i + 2)) ;;
+      '@'|'*')
+        scope_block_rel "\$$nx" "$what expands all positional parameters, which this command does not set"
+        ;;
+      '$'|'?'|'#'|'!'|'-') inner+="0"; i=$((i + 2)); continue ;;
+      "'"|'"')
+        # $'...' and $"..." are quoting forms, not expansions.
+        if [ -z "$q" ]; then
+          if [ "$nx" = "'" ]; then q=A; else q='"'; fi
+          i=$((i + 2))
+          continue
+        fi
+        inner+='$'
+        i=$((i + 1))
+        continue
+        ;;
+      *) inner+='$'; i=$((i + 1)); continue ;;
+    esac
+    if [ "$kind" = program ] && scope_inline_is_plain_name "$name"; then
+      inner+="__HQ_EXPANDED__"
+      continue
+    fi
+    values="$(scope_inline_name_values "$name" "${scope_inline_text:0:$pos}" "$scope_inline_text")" \
+      || scope_block_rel "\$$name" "$what uses \$$name, which this command does not set; the shell fills it from the environment before the command runs, so it can name another company's folder"
+    while IFS= read -r value; do
+      if scope_inline_value_glues_company "${raw:0:$start}" "$value" "${raw:$i}"; then
+        scope_block_rel "\$$name" "$what joins \$$name to literal text to spell a companies/ path; spell the path literally"
+      fi
+    done <<< "$values"
+    inner+="__HQ_EXPANDED__"
+  done
+  [ "$kind" = program ] || return 0
+  case "$interp" in
+    shell)
+      scope_inline_check_inner_shell "$inner" "$env_names" "$args_literal" "$what"
+      ;;
+    *)
+      # A node require of a core module that cannot start a process or run
+      # code is not a hand-off (scope_interp_safe_require_re, shared with the
+      # heredoc body check). Such a program can still write files, so, as in
+      # that check, an expansion next to a `/` keeps the hand-off rule: the
+      # loop below then needs each name set in the command.
+      local handoff_text="$inner" safe_stripped=0
+      if [ "$interp" = node ]; then
+        while [[ "$handoff_text" =~ $scope_interp_safe_require_re ]]; do
+          handoff_text="${handoff_text/"${BASH_REMATCH[0]}"/ }"
+          safe_stripped=1
+        done
+      fi
+      if [[ "$handoff_text" =~ $scope_interp_handoff_re ]]; then
+        handoff=1
+      elif [ "$safe_stripped" -eq 1 ] \
+        && [[ "$inner" =~ (\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/|/\$\{?[A-Za-z_]) ]]; then
+        handoff=1
+      fi
+      case "$interp" in
+        perl|ruby)
+          case "$inner" in *$'\140'*|*qx*|*'%x'*) handoff=1 ;; esac
+          ;;
+      esac
+      [ "$handoff" -eq 1 ] || return 0
+      while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        name="${name#\$}"
+        name="${name#\{}"
+        case "$name" in HOME|PWD) continue ;; esac
+        scope_inline_is_plain_name "$name" && continue
+        [[ " $env_names " == *" $name "* ]] && continue
+        scope_block_rel "\$$name" "$what can start a shell, and that shell expands \$$name from the environment; set it with a $name=value prefix on this command or spell the value literally"
+      done <<< "$(printf '%s' "$inner" | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*' 2>/dev/null || true)"
+      ;;
+  esac
+  return 0
+}
+
+# Check the word at <index> of w_raw, or its text after <skip> leading bytes
+# (`--git-dir=$R`), as a directory option value.
+scope_inline_check_dir_at() {
+  local index="${1:-0}" skip="${2:-0}" what="${3:-the directory option}"
+  [ "$index" -lt "${scope_inline_end:-0}" ] || return 0
+  scope_inline_expansions_check_word "${w_raw[$index]:$skip}" "$(( ${w_off[$index]} + skip ))" dir "" "" 0 "$what"
+}
+
+# Parse <word> as a getopt short-option cluster (-abc). <argletters> are the
+# options that take an argument; the first one in the cluster takes the rest
+# of the cluster, or the next word when it is last. When that option is one
+# of <targets>, set scope_inline_cluster_hit to "attached <byte offset>" or
+# "next". scope_inline_cluster_consumed is the number of following words the
+# cluster uses (0 or 1).
+scope_inline_cluster_arg() {
+  local word="${1:-}" argletters="${2:-}" targets="${3:-}" p ch
+  scope_inline_cluster_hit=""
+  scope_inline_cluster_consumed=0
+  [[ "$word" =~ ^-[A-Za-z0-9] ]] || return 0
+  p=1
+  while [ "$p" -lt "${#word}" ]; do
+    ch="${word:p:1}"
+    case "$argletters" in
+      *"$ch"*)
+        if [ "$((p + 1))" -lt "${#word}" ]; then
+          case "$targets" in *"$ch"*) scope_inline_cluster_hit="attached $((p + 1))" ;; esac
+        else
+          scope_inline_cluster_consumed=1
+          case "$targets" in *"$ch"*) scope_inline_cluster_hit="next" ;; esac
+        fi
+        return 0
+        ;;
+    esac
+    p=$((p + 1))
+  done
+  return 0
+}
+
+# Parse <word> as an interpreter's short-option cluster and find where its
+# program option (one of <prog>) takes its program text. Option letters in
+# <arg> take the rest of the cluster or the next word; letters in <restonly>
+# take only the rest of the cluster; a letter in <stop> ends option parsing
+# (python -m); letters in <digits> take following digits (perl -l0, -0777).
+# Sets scope_inline_cluster_hit ("attached <offset>", "next" or empty),
+# scope_inline_cluster_consumed (following words used) and
+# scope_inline_cluster_stop.
+scope_inline_program_cluster() {
+  local word="${1:-}" prog="${2:-}" arg="${3:-}" restonly="${4:-}" stop="${5:-}" digits="${6:-}" p ch
+  scope_inline_cluster_hit=""
+  scope_inline_cluster_consumed=0
+  scope_inline_cluster_stop=0
+  p=1
+  while [ "$p" -lt "${#word}" ]; do
+    ch="${word:p:1}"
+    case "$prog" in
+      *"$ch"*)
+        if [ "$((p + 1))" -lt "${#word}" ]; then
+          scope_inline_cluster_hit="attached $((p + 1))"
+        else
+          scope_inline_cluster_hit="next"
+          scope_inline_cluster_consumed=1
+        fi
+        return 0
+        ;;
+    esac
+    case "$arg" in
+      *"$ch"*)
+        [ "$((p + 1))" -lt "${#word}" ] || scope_inline_cluster_consumed=1
+        return 0
+        ;;
+    esac
+    case "$restonly" in *"$ch"*) return 0 ;; esac
+    case "$stop" in *"$ch"*) scope_inline_cluster_stop=1; return 0 ;; esac
+    case "$digits" in
+      *"$ch"*)
+        while [ "$((p + 1))" -lt "${#word}" ] && [[ "${word:$((p + 1)):1}" == [0-9] ]]; do p=$((p + 1)); done
+        ;;
+    esac
+    p=$((p + 1))
+  done
+  return 0
+}
+
+# Check the program found by scope_inline_program_cluster in the word at
+# <index> of w_raw: attached to the cluster, or the next word.
+scope_inline_check_program_hit() {
+  local index="${1:-0}" interp="${2:-}" env_names="${3:-}" args_literal="${4:-0}" what="${5:-the program}" skip
+  case "$scope_inline_cluster_hit" in
+    attached\ *)
+      skip="${scope_inline_cluster_hit#attached }"
+      scope_inline_expansions_check_word "${w_raw[$index]:$skip}" "$(( ${w_off[$index]} + skip ))" program "$interp" "$env_names" "$args_literal" "$what"
+      ;;
+    next)
+      [ "$((index + 1))" -lt "${scope_inline_end:-0}" ] || return 0
+      scope_inline_expansions_check_word "${w_raw[$((index + 1))]}" "${w_off[$((index + 1))]}" program "$interp" "$env_names" "$args_literal" "$what"
+      ;;
+  esac
+  return 0
+}
+
+# True when the shell expands nothing in <word>: no unescaped `$` or backtick
+# outside single quotes. Double quotes are tracked, so the `'` inside "'$F'"
+# does not hide the expansion (scope_mask_literal_expansions does not track
+# double quotes and would read it as single-quoted).
+scope_inline_word_is_literal() {
+  local word="${1:-}" i=0 q="" ch len
+  len=${#word}
+  while [ "$i" -lt "$len" ]; do
+    ch="${word:i:1}"
+    if [ "$q" = "'" ] || [ "$q" = A ]; then
+      if [ "$q" = A ] && [ "$ch" = "\\" ]; then
+        # A numeric escape can spell any text, so the value is not known.
+        case "${word:$((i + 1)):1}" in [0-7]|x|u|U|c) return 1 ;; esac
+        i=$((i + 2))
+        continue
+      fi
+      if [ "$ch" = "'" ]; then q=""; fi
+      i=$((i + 1))
+      continue
+    fi
+    case "$ch" in
+      \\) i=$((i + 2)); continue ;;
+      '"') if [ "$q" = '"' ]; then q=""; else q='"'; fi ;;
+      "'") if [ -z "$q" ]; then q="'"; fi ;;
+      '$')
+        # $'...' is a quoting form; its numeric escapes are not literal.
+        if [ -z "$q" ] && [ "${word:$((i + 1)):1}" = "'" ]; then
+          q=A
+          i=$((i + 2))
+          continue
+        fi
+        return 1
+        ;;
+      $'\140') return 1 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# Set scope_inline_head to the command name bash runs for <word>: quotes and
+# backslashes removed (\git, "git", $'git' all run git), directory part
+# dropped. A $'...' with an escape can spell any name, so it blocks. (Not a
+# $(...) helper: inside the check's subshell, set -e is off, so a block in a
+# command substitution would not stop the check.)
+scope_inline_head_name() {
+  local word="${1:-}"
+  case "$word" in
+    *"\$'"*\\*) scope_block_rel "\$'...'" "the command name uses a \$'...' escape the guard cannot check; type the name plainly" ;;
+  esac
+  word="${word//\$\'/}"
+  word="${word//[\"\'\\]/}"
+  scope_inline_head="${word##*/}"
+}
+
+# When the assignment word at <index> of w_raw sets a git location variable
+# (GIT_DIR=$R git log), check its value like a directory option.
+scope_inline_check_git_env_at() {
+  local index="${1:-0}" word name
+  word="${w_raw[$index]:-}"
+  [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 0
+  name="${word%%=*}"
+  case "$name" in
+    GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_CONFIG|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_EXEC_PATH|GIT_TEMPLATE_DIR|GIT_SSH|GIT_SSH_COMMAND)
+      scope_inline_check_dir_at "$index" "$(( ${#name} + 1 ))" "the $name assignment"
+      ;;
+  esac
+  return 0
+}
+
+# Print 1 when the --long option at <index> of w_raw (no `=value`) is
+# followed by a word that is not an option, else 0. That word is read as
+# the option's argument (python --check-hash-based-pycs always, node
+# --input-type module), so the scan keeps looking for -c/-e after it
+# instead of stopping as if it were the script.
+scope_inline_long_option_arg() {
+  local index="${1:-0}" next
+  case "${w_raw[$index]:-}" in *=*) printf '0'; return 0 ;; esac
+  next="${w_raw[$((index + 1))]:-}"
+  case "$next" in
+    ''|-*) printf '0' ;;
+    *) printf '1' ;;
+  esac
+}
+
+# Check the simple command in w_raw/w_off from <start> up to <end>.
+scope_inline_expansions_check_command() {
+  local start="${1:-0}" end="${2:-0}" i word head flag env_names="" j k n_args has_c args_literal via_xargs=0 scope_inline_end
+  scope_inline_end="$end"
+  i="$start"
+  while [ "$i" -lt "$end" ]; do
+    word="${w_raw[$i]}"
+    if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      scope_inline_check_git_env_at "$i"
+      scope_inline_word_is_literal "${word#*=}" && env_names+=" ${word%%=*}"
+      i=$((i + 1))
+      continue
+    fi
+    scope_inline_head_name "$word"
+    head="$scope_inline_head"
+    case "$head" in
+      do|then|else|elif|'!'|'{'|if|while|until|nohup|builtin|exec|stdbuf) i=$((i + 1)) ;;
+      export|declare|typeset|local|readonly)
+        # `export GIT_DIR=$R` points every later git at $R.
+        for ((k = i + 1; k < end; k++)); do scope_inline_check_git_env_at "$k"; done
+        return 0
+        ;;
+      caffeinate|arch)
+        i=$((i + 1))
+        while [ "$i" -lt "$end" ]; do
+          case "${w_raw[$i]}" in
+            -t|-w|-e) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        ;;
+      command|time)
+        i=$((i + 1))
+        while [ "$i" -lt "$end" ] && [[ "${w_raw[$i]}" == -* ]]; do i=$((i + 1)); done
+        ;;
+      nice|timeout|xargs)
+        # xargs appends words from its input after the ones typed here.
+        if [ "$head" = xargs ]; then via_xargs=1; fi
+        i=$((i + 1))
+        while [ "$i" -lt "$end" ]; do
+          case "${w_raw[$i]}" in
+            -n|-s|-k|-I|-P|-L|-d|-E|-a|--signal|--kill-after) i=$((i + 2)) ;;
+            -*) i=$((i + 1)) ;;
+            *) break ;;
+          esac
+        done
+        # timeout's first operand is the duration.
+        if [ "$head" = timeout ]; then i=$((i + 1)); fi
+        ;;
+      env|sudo)
+        i=$((i + 1))
+        while [ "$i" -lt "$end" ]; do
+          word="${w_raw[$i]}"
+          case "$head:$word" in
+            env:--chdir|sudo:--chdir)
+              scope_inline_check_dir_at "$((i + 1))" 0 "the $head $word option"
+              i=$((i + 2))
+              ;;
+            env:--chdir=*|sudo:--chdir=*)
+              scope_inline_check_dir_at "$i" 8 "the $head --chdir option"
+              i=$((i + 1))
+              ;;
+            env:--split-string|env:--split-string=*)
+              # env -S splits (and expands ${VAR} in) its own command line.
+              scope_inline_word_is_literal "${w_raw[$((i + 1))]:-}" \
+                || scope_block_rel "env -S" "env -S expands variables in its command string; run the command directly"
+              i=$((i + 2))
+              ;;
+            env:--unset|sudo:--user|sudo:--group|sudo:--host|sudo:--prompt|sudo:--role|sudo:--type|sudo:--other-user|sudo:--command-timeout|sudo:--close-from)
+              i=$((i + 2))
+              ;;
+            *:--*) i=$((i + 1)) ;;
+            *:-?*)
+              # A short-option cluster (-iC dir, -C$R, -uroot -D dir).
+              if [ "$head" = env ]; then
+                scope_inline_cluster_arg "$word" uCS C
+              else
+                scope_inline_cluster_arg "$word" ugCDhprtUT D
+              fi
+              case "$scope_inline_cluster_hit" in
+                attached\ *) scope_inline_check_dir_at "$i" "${scope_inline_cluster_hit#attached }" "the $head $word option" ;;
+                next) scope_inline_check_dir_at "$((i + 1))" 0 "the $head $word option" ;;
+              esac
+              if [ "$head" = env ] && [[ "$word" =~ ^-[A-Za-z]*S ]]; then
+                scope_inline_word_is_literal "$word${w_raw[$((i + 1))]:-}" \
+                  || scope_block_rel "env -S" "env -S expands variables in its command string; run the command directly"
+              fi
+              i=$((i + 1 + scope_inline_cluster_consumed))
+              ;;
+            *)
+              if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                scope_inline_word_is_literal "${word#*=}" && env_names+=" ${word%%=*}"
+                i=$((i + 1))
+              else
+                break
+              fi
+              ;;
+          esac
+        done
+        ;;
+      *) break ;;
+    esac
+  done
+  [ "$i" -lt "$end" ] || return 0
+  scope_inline_head_name "${w_raw[$i]}"
+  head="$scope_inline_head"
+  case "$head" in *'$'*|*$'\140'*) return 0 ;; esac
+  j=$((i + 1))
+  case "$head" in
+    python|python[0-9]*|pypy|pypy[0-9]*)
+      while [ "$j" -lt "$end" ]; do
+        word="${w_raw[$j]}"
+        case "$word" in
+          -|--) return 0 ;;
+          --*) j=$((j + 1 + $(scope_inline_long_option_arg "$j"))) ;;
+          -*)
+            # -c takes the program, attached (-c"...") or as the next word,
+            # and ends option parsing. -m names a module instead.
+            scope_inline_program_cluster "$word" c WX "" m ""
+            if [ -n "$scope_inline_cluster_hit" ]; then
+              scope_inline_check_program_hit "$j" python "$env_names" 0 "the $head -c program"
+              return 0
+            fi
+            [ "$scope_inline_cluster_stop" -eq 0 ] || return 0
+            j=$((j + 1 + scope_inline_cluster_consumed))
+            ;;
+          *) return 0 ;;
+        esac
+      done
+      ;;
+    node|nodejs)
+      while [ "$j" -lt "$end" ]; do
+        word="${w_raw[$j]}"
+        case "$word" in
+          -e|-p|-pe|-ep|--eval|--print)
+            [ "$((j + 1))" -lt "$end" ] || return 0
+            scope_inline_expansions_check_word "${w_raw[$((j + 1))]}" "${w_off[$((j + 1))]}" program node "$env_names" 0 "the $head $word program"
+            return 0
+            ;;
+          --eval=*|--print=*)
+            flag="${word%%=*}"
+            scope_inline_expansions_check_word "${word#*=}" "$(( ${w_off[$j]} + ${#flag} + 1 ))" program node "$env_names" 0 "the $head $flag program"
+            return 0
+            ;;
+          -r|-C) j=$((j + 2)) ;;
+          --*) j=$((j + 1 + $(scope_inline_long_option_arg "$j"))) ;;
+          -*) j=$((j + 1)) ;;
+          *) return 0 ;;
+        esac
+      done
+      ;;
+    ruby|perl)
+      while [ "$j" -lt "$end" ]; do
+        word="${w_raw[$j]}"
+        case "$word" in
+          -|--) return 0 ;;
+          --*) j=$((j + 1 + $(scope_inline_long_option_arg "$j"))); continue ;;
+          -*) ;;
+          *) return 0 ;;
+        esac
+        # Each -e adds a program line, attached (-e'...') or as the next
+        # word; options before it may take the rest of the cluster.
+        if [ "$head" = ruby ]; then
+          case "$word" in
+            -C) scope_inline_check_dir_at "$((j + 1))" 0 "the ruby -C option" ;;
+            -C?*) scope_inline_check_dir_at "$j" 2 "the ruby -C option" ;;
+          esac
+          scope_inline_program_cluster "$word" e rICE FWKxi "" 0
+        else
+          scope_inline_program_cluster "$word" eE I MmFxiCdD "" l0
+        fi
+        if [ -n "$scope_inline_cluster_hit" ]; then
+          scope_inline_check_program_hit "$j" "$head" "$env_names" 0 "the $head -e program"
+        fi
+        j=$((j + 1 + scope_inline_cluster_consumed))
+      done
+      ;;
+    bash|sh|zsh|dash|ksh)
+      has_c=0
+      while [ "$j" -lt "$end" ]; do
+        word="${w_raw[$j]}"
+        case "$word" in
+          -o|+o|-O|+O|--rcfile|--init-file) j=$((j + 2)) ;;
+          --) j=$((j + 1)); break ;;
+          --*) j=$((j + 1)) ;;
+          -*c*) has_c=1; j=$((j + 1)) ;;
+          -*|+*) j=$((j + 1)) ;;
+          *) break ;;
+        esac
+      done
+      [ "$has_c" -eq 1 ] && [ "$j" -lt "$end" ] || return 0
+      args_literal=1
+      [ "$via_xargs" -eq 0 ] || args_literal=0
+      for ((k = j + 1; k < end; k++)); do
+        if ! scope_inline_word_is_literal "${w_raw[$k]}"; then
+          args_literal=0
+          break
+        fi
+      done
+      scope_inline_expansions_check_word "${w_raw[$j]}" "${w_off[$j]}" program shell "$env_names" "$args_literal" "the $head -c program"
+      ;;
+    git)
+      while [ "$j" -lt "$end" ]; do
+        word="${w_raw[$j]}"
+        case "$word" in
+          -C|--git-dir|--work-tree)
+            scope_inline_check_dir_at "$((j + 1))" 0 "the git $word option"
+            j=$((j + 2))
+            ;;
+          --git-dir=*|--work-tree=*)
+            flag="${word%%=*}"
+            scope_inline_check_dir_at "$j" "$(( ${#flag} + 1 ))" "the git $flag option"
+            j=$((j + 1))
+            ;;
+          -c)
+            # -c core.worktree=$R, core.hooksPath=$R, ... point git at a
+            # directory; check the value of every -c.
+            word="${w_raw[$((j + 1))]:-}"
+            if [[ "$word" == *=* ]]; then
+              flag="${word%%=*}"
+              scope_inline_check_dir_at "$((j + 1))" "$(( ${#flag} + 1 ))" "the git -c $flag value"
+            fi
+            j=$((j + 2))
+            ;;
+          --config-env|--namespace) j=$((j + 2)) ;;
+          -*) j=$((j + 1)) ;;
+          *) break ;;
+        esac
+      done
+      ;;
+    make|gmake|tar|gtar|bsdtar|pnpm|npm|yarn)
+      while [ "$j" -lt "$end" ]; do
+        word="${w_raw[$j]}"
+        case "$head:$word" in
+          make:-C|gmake:-C|make:--directory|gmake:--directory|tar:-C|gtar:-C|bsdtar:-C|tar:--directory|gtar:--directory|bsdtar:--directory|pnpm:-C|pnpm:--dir|npm:-C|npm:--prefix|yarn:--cwd)
+            scope_inline_check_dir_at "$((j + 1))" 0 "the $head $word option"
+            j=$((j + 2))
+            ;;
+          make:--directory=*|gmake:--directory=*|tar:--directory=*|gtar:--directory=*|bsdtar:--directory=*|pnpm:--dir=*|npm:--prefix=*|yarn:--cwd=*)
+            flag="${word%%=*}"
+            scope_inline_check_dir_at "$j" "$(( ${#flag} + 1 ))" "the $head $flag option"
+            j=$((j + 1))
+            ;;
+          pnpm:-C?*|npm:-C?*)
+            scope_inline_check_dir_at "$j" 2 "the $head -C option"
+            j=$((j + 1))
+            ;;
+          make:--*|gmake:--*|tar:--*|gtar:--*|bsdtar:--*) j=$((j + 1)) ;;
+          make:-?*|gmake:-?*|tar:-?*|gtar:-?*|bsdtar:-?*)
+            # Short-option clusters: -sC dir, -C$R, -xzC dir.
+            case "$head" in
+              *make) scope_inline_cluster_arg "$word" CfIoW C ;;
+              *) scope_inline_cluster_arg "$word" bCfFTXgKLNVHI C ;;
+            esac
+            case "$scope_inline_cluster_hit" in
+              attached\ *) scope_inline_check_dir_at "$j" "${scope_inline_cluster_hit#attached }" "the $head $word option" ;;
+              next) scope_inline_check_dir_at "$((j + 1))" 0 "the $head $word option" ;;
+            esac
+            j=$((j + 1 + scope_inline_cluster_consumed))
+            ;;
+          tar:[A-Za-z]*|gtar:[A-Za-z]*|bsdtar:[A-Za-z]*)
+            # Old-style first word (`tar xfC a.tar dir`): each letter that
+            # takes an argument takes the next unused word, in order.
+            if [ "$j" -eq "$((i + 1))" ] && [[ "$word" =~ ^[A-Za-z]+$ ]]; then
+              k=0
+              n_args=0
+              while [ "$k" -lt "${#word}" ]; do
+                case "${word:k:1}" in
+                  [bCfFTXgKLNVHI])
+                    n_args=$((n_args + 1))
+                    if [ "${word:k:1}" = C ]; then
+                      scope_inline_check_dir_at "$((j + n_args))" 0 "the $head $word option"
+                    fi
+                    ;;
+                esac
+                k=$((k + 1))
+              done
+            fi
+            j=$((j + 1))
+            ;;
+          *) j=$((j + 1)) ;;
+        esac
+      done
+      ;;
+    find)
+      while [ "$j" -lt "$end" ]; do
+        case "${w_raw[$j]}" in
+          -exec|-execdir|-ok|-okdir)
+            k=$((j + 1))
+            while [ "$k" -lt "$end" ]; do
+              case "${w_raw[$k]}" in
+                '\;'|"';'"|'";"'|'+') break ;;
+              esac
+              k=$((k + 1))
+            done
+            scope_inline_expansions_check_command "$((j + 1))" "$k"
+            scope_inline_end="$end"
+            j=$((k + 1))
+            ;;
+          *) j=$((j + 1)) ;;
+        esac
+      done
+      ;;
+  esac
+  return 0
+}
+
+# Lex <text> (at byte offset <base> of scope_inline_text) and check each simple
+# command, then each $(...) body that names a command this check reads.
+scope_inline_expansions_scan() {
+  local text="${1:-}" base="${2:-0}" depth="${3:-0}" rec kind rest off word skip=0 i finished=0
+  local -a w_raw=() w_off=() s_body=() s_off=()
+  if [ "$depth" -gt 4 ]; then
+    scope_block_rel "\$(...)" "command substitutions are nested too deeply to check; run the inner commands separately"
+  fi
+  while IFS= read -r -d $'\036' rec; do
+    kind="${rec:0:1}"
+    case "$kind" in
+      W)
+        rest="${rec:2}"
+        off="${rest%%$'\037'*}"
+        word="${rest#*$'\037'}"
+        if [ "$skip" -eq 1 ]; then
+          skip=0
+          continue
+        fi
+        w_raw[${#w_raw[@]}]="$word"
+        w_off[${#w_off[@]}]=$((base + off - 1))
+        ;;
+      R) skip=1 ;;
+      E)
+        skip=0
+        if [ "${#w_raw[@]}" -gt 0 ]; then
+          scope_inline_expansions_check_command 0 "${#w_raw[@]}"
+        fi
+        w_raw=()
+        w_off=()
+        ;;
+      S)
+        rest="${rec:2}"
+        s_off[${#s_off[@]}]=$((base + ${rest%%$'\037'*} - 1))
+        s_body[${#s_body[@]}]="${rest#*$'\037'}"
+        ;;
+      Z) finished=1 ;;
+    esac
+  done < <(printf '%s' "$text" | scope_inline_lex)
+  # A lexer that stopped early checked nothing after that point.
+  [ "$finished" -eq 1 ] || return 3
+  i=0
+  while [ "$i" -lt "${#s_body[@]}" ]; do
+    if scope_inline_expansions_wanted "${s_body[$i]}"; then
+      # set -e is off in the check's subshell; pass a failure up by hand.
+      scope_inline_expansions_scan "${s_body[$i]}" "${s_off[$i]}" "$((depth + 1))" || return $?
+    fi
+    i=$((i + 1))
+  done
+  return 0
+}
+
 case "$TOOL" in
   Read|Write|Edit|MultiEdit)
     # One jq for the path. A second parse put read-workspace and write-personal
@@ -5662,6 +8386,69 @@ case "$TOOL" in
         fi
       fi
     fi
+    # A cd/pushd into the companies/ root itself makes every later relative
+    # operand a company folder (`cd companies; cat other/settings/x`, or the
+    # slug from a variable, `C=x; cd companies; cat "$C/..."`). Those words
+    # carry no companies/ prefix, so the path scan below never sees them.
+    # Ported from the #1436 cwd tracking in narrow form: refuse the cd and
+    # ask for companies/<slug>/... paths from the HQ root instead.
+    scope_cd_target_re='(^|[;&|({[:space:]]|'$'\n'')(cd|pushd)[[:space:]]+([^;&|<>()[:space:]]+)'
+    scope_cd_scan="$cmd"
+    while [[ "$scope_cd_scan" =~ $scope_cd_target_re ]]; do
+      scope_cd_word="${BASH_REMATCH[3]}"
+      scope_cd_scan="${scope_cd_scan#*"${BASH_REMATCH[0]}"}"
+      # `D=companies; cd "$D"`: follow a literal assignment in the same
+      # command so the variable form is mapped like the literal one. Any
+      # other computed target that mentions companies is refused.
+      scope_cd_var_re='^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/[^$`\\]*)?$'
+      scope_cd_bare="${scope_cd_word//[\"\']/}"
+      if ! [[ "$scope_cd_bare" =~ $scope_cd_var_re ]]; then
+        case "$scope_cd_word" in
+          *'$'*|*$'\140'*|*\\*)
+            case "$scope_cd_word" in
+              *[Cc][Oo][Mm][Pp][Aa][Nn]*)
+                scope_block_rel "$scope_cd_word" "the command changes directory to a computed path under companies/; use literal companies/<slug>/... paths from the HQ root"
+                ;;
+            esac
+            continue
+            ;;
+        esac
+      fi
+      scope_cd_word="$scope_cd_bare"
+      if [[ "$scope_cd_word" =~ $scope_cd_var_re ]]; then
+        scope_cd_var="${BASH_REMATCH[1]}"
+        scope_cd_var_tail="${BASH_REMATCH[2]}"
+        scope_cd_assign_re='(^|[;&|({[:space:]])'"$scope_cd_var"'=("([^"$`\\]*)"|'"'([^']*)'"'|([^;&|<>()[:space:]"'"'"'$`\\]*))'
+        if [[ "$cmd" =~ $scope_cd_assign_re ]]; then
+          scope_cd_word="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}$scope_cd_var_tail"
+        fi
+      fi
+      case "$scope_cd_word" in -*|''|*'$'*) continue ;; esac
+      case "$scope_cd_word" in
+        /*) scope_cd_try="$scope_cd_word" ;;
+        *) scope_cd_try="${PAYLOAD_CWD:-$HQ_ROOT}/$scope_cd_word" ;;
+      esac
+      scope_cd_phys="$(cd "$scope_cd_try" 2>/dev/null && pwd -P)" || scope_cd_phys=""
+      scope_cd_lex="${scope_cd_word%/}"
+      scope_cd_lex="${scope_cd_lex#./}"
+      if [ "$scope_cd_phys" = "$HQ_ROOT/companies" ] || [ "$scope_cd_lex" = "companies" ] \
+        || [ "$scope_cd_lex" = "$HQ_ROOT/companies" ]; then
+        scope_block_rel "$scope_cd_word" "the command changes directory into the companies/ root, so later relative paths name company folders the guard cannot attribute; use companies/<slug>/... paths from the HQ root"
+      fi
+    done
+    # Text piped into a stdin shell (`printf ... | bash`) is a program the
+    # guard does not parse. Quote splicing (`compa''nies/x`) hides the path
+    # from the scan while the shell rejoins it, so any mention of companies
+    # in such a pipeline, once quotes and backslashes are removed, is refused.
+    scope_stdin_shell_re='\|[[:space:]]*(command[[:space:]]+|exec[[:space:]]+|env[[:space:]]+)?([^[:space:];&|]*/)?(bash|sh|zsh|dash|ksh|mksh)([[:space:]]+-[a-zA-Z]*s[a-zA-Z]*|[[:space:]]+-)?[[:space:]]*($|[;&|)]|'$'\n'')'
+    if [[ "$cmd" =~ $scope_stdin_shell_re ]]; then
+      scope_stdin_text="${cmd//[\"\'\\]/}"
+      case "$scope_stdin_text" in
+        *[Cc][Oo][Mm][Pp][Aa][Nn]*)
+          scope_block_rel "| ${BASH_REMATCH[3]}" "text piped into a shell names companies; the guard cannot check a program built from text, so run the command directly with literal paths"
+          ;;
+      esac
+    fi
     # A plain path-free command cannot name an HQ tenant path. Skip the shell
     # parser in this common case; commands that can traverse or change roots
     # stay on the full fail-closed scan.
@@ -5689,6 +8476,42 @@ case "$TOOL" in
     case "$cmd" in *"$scope_line_continuation"*) scope_had_line_continuation=1 ;; esac
     scope_cmd="${cmd//"$scope_line_continuation"/}"
     scope_scan_cmd="$(scope_strip_inert_heredoc_bodies "$scope_cmd")"
+    # Unquoted command substitutions in arguments (see scope_subst_scan). It
+    # reads the command as typed, before line continuations are joined. Run
+    # in a subshell under the C locale; exit 2 is a block, and any other
+    # failure is a bug in the check and fails closed.
+    case "$cmd" in
+      *'$('*|*$'\140'*)
+        scope_subst_rc=0
+        # Two passes: the first only records variables set from a
+        # substitution, so a use that comes earlier in the text than the
+        # assignment (a function body, a loop) is still checked.
+        ( LC_ALL=C; scope_subst_text="$cmd"
+          scope_subst_mark_only=1; scope_subst_scan "$cmd" 0 || exit $?
+          scope_subst_mark_only=0; scope_subst_scan "$cmd" 0 ) || scope_subst_rc=$?
+        if [ "$scope_subst_rc" -eq 2 ]; then
+          exit 2
+        elif [ "$scope_subst_rc" -ne 0 ]; then
+          scope_block_rel "\$(...)" "the command-substitution check could not finish (exit $scope_subst_rc); spell paths literally"
+        fi
+        ;;
+    esac
+    # Variables in inline interpreter programs and directory options (see
+    # scope_inline_expansions_check_word). It reads the command as typed,
+    # before line continuations are joined (see scope_inline_lex). Run in a
+    # subshell under the C locale so the lexer's byte offsets index the text
+    # exactly. Exit 2 is a block; any other failure is a bug in the check and
+    # fails closed.
+    # The gate also reads the joined form: `g\<newline>it -C $R` runs git.
+    if scope_inline_expansions_wanted "$cmd" || scope_inline_expansions_wanted "$scope_cmd"; then
+      scope_inline_rc=0
+      ( LC_ALL=C; scope_inline_text="$cmd"; scope_inline_expansions_scan "$cmd" 0 0 ) || scope_inline_rc=$?
+      if [ "$scope_inline_rc" -eq 2 ]; then
+        exit 2
+      elif [ "$scope_inline_rc" -ne 0 ]; then
+        scope_block_rel "\$(...)" "the inline-program variable check could not finish (exit $scope_inline_rc); spell paths literally"
+      fi
+    fi
     scope_note_repo_link_mutations "$scope_scan_cmd"
     scope_interpreter_heredoc_layout "$scope_scan_cmd"
     scope_remaining="$scope_scan_cmd"
@@ -5722,6 +8545,35 @@ case "$TOOL" in
           fi
         fi
       fi
+      # `rm -rf "companies/x"` or `ls companies/a"/../x"`: a quote or
+      # backslash glued to the company segment is removed by the shell, so
+      # the segment `x"` names company x. Strip quoting from the segment and
+      # refuse an existing company outside the locked set; the later checks
+      # would read `x"` as a folder that does not exist.
+      scope_quoted_seg="${fragment#companies/}"
+      scope_quoted_seg="${scope_quoted_seg%%/*}"
+      case "$scope_quoted_seg" in
+        *[\"\'\\]*)
+          scope_quoted_seg="${scope_quoted_seg//[\"\'\\]/}"
+          if [ -n "$scope_quoted_seg" ] && [[ "$scope_quoted_seg" != *[!A-Za-z0-9._-]* ]] \
+            && [ "$scope_quoted_seg" != . ] && [ "$scope_quoted_seg" != .. ] \
+            && [ -d "$HQ_ROOT/companies/$scope_quoted_seg" ] \
+            && ! { scope_load_bound_company; scope_company_is_locked "$scope_quoted_seg"; }; then
+            scope_block_rel "companies/$scope_quoted_seg" "the company segment is quoted; the shell removes the quotes, so it names another company"
+          fi
+          ;;
+      esac
+      # The same holds for a quoted `..` climb (`companies/a"/../x"`): check
+      # the path the shell would build once the quotes are removed.
+      case "$fragment" in
+        *[\"\'\\]*)
+          scope_quoted_path="${fragment//[\"\'\\]/}"
+          case "$scope_quoted_path" in
+            *'$'*|*$'\140'*|*[{}*?[]*) ;;
+            */..*) scope_check_raw "$scope_quoted_path" ;;
+          esac
+          ;;
+      esac
       scope_prefix_length=$((scope_offset + ${#scope_before}))
       scope_prefix="${scope_scan_cmd:0:$scope_prefix_length}"
       scope_suffix="${scope_scan_cmd:$((scope_prefix_length + ${#fragment}))}"
@@ -5731,12 +8583,17 @@ case "$TOOL" in
       # holds the path (`json.dump({"src": "companies/x/y"}, ...)`). Check the
       # literal path itself rather than failing on `"},` as brace syntax. The
       # company segment is still checked; a bare `companies/` is left whole.
+      # The string's opening quote is program text too, so the path is
+      # checked as a word of its own: a glob in it (`"companies/x/p/*.md"`)
+      # is enumerated against the locked companies instead of failing on the
+      # quote as unchecked shell expansion (feedback e2b0f0b4).
+      scope_check_prefix="$scope_prefix"
       if [ "${#scope_interp_ranges[@]}" -gt 0 ] && scope_offset_in_interpreter_body "$scope_prefix_length"; then
         scope_body_path="${fragment%%[\"\'\`,\)\]\}]*}"
         scope_body_path="${scope_body_path%%[\{\[]*}"
         case "$scope_body_path" in
           companies/|companies/[!A-Za-z0-9_]*) ;;
-          *) fragment="$scope_body_path" ;;
+          *) fragment="$scope_body_path"; scope_check_prefix="${scope_prefix%[\"\']} " ;;
         esac
       elif scope_fragment_in_inline_program "$scope_prefix" "$fragment"; then
         # The same holds inside a quoted `python -c` / `node -e` program:
@@ -5745,6 +8602,16 @@ case "$TOOL" in
         # text. Check the literal path up to the string's end or the first
         # brace; the company segment is still checked.
         scope_body_path="$scope_inline_program_path"
+        case "$scope_body_path" in
+          companies/|companies/[!A-Za-z0-9_]*) ;;
+          *) fragment="$scope_body_path" ;;
+        esac
+      elif [[ "$fragment" == *[\"\'\`,\)\]\}]* ]] \
+        && scope_offset_in_cat_quoted_heredoc "$scope_prefix" "$fragment$scope_suffix"; then
+        # Literal text of a quoted heredoc that cat prints: the quote or
+        # bracket ends the path inside the data (`"companies/x/y"},`).
+        # The company segment and any `..` before the cut are still checked.
+        scope_body_path="${fragment%%[\"\'\`,\)\]\}]*}"
         case "$scope_body_path" in
           companies/|companies/[!A-Za-z0-9_]*) ;;
           *) fragment="$scope_body_path" ;;
@@ -5778,7 +8645,73 @@ case "$TOOL" in
         scope_remaining="${scope_remaining:$scope_consumed}"
         continue
       fi
-      scope_check_bash_candidate "$fragment" "$scope_scan_cmd" "$scope_prefix" "$scope_suffix"
+      # A bracketed company segment that is not a tenant path. Two shapes:
+      #  - the fragment continues a `repos/...` path (a Next.js dynamic route
+      #    such as repos/private/app/src/app/companies/[slug]/page.tsx): the
+      #    whole word is checked by the repos/ open-tree scan, and the
+      #    `companies/` inside it is a source directory, not a tenant.
+      #  - the fragment sits inside a quoted pattern operand of grep/rg
+      #    (`grep -rn "companies/[a-z]+/" repos/x`): a quoted word is never
+      #    glob-expanded, so it is a regex and opens no file.
+      # Only a `[` in the company segment qualifies, and `..` anywhere in the
+      # word keeps the normal check, so an unquoted bracket glob under
+      # companies/ and repos/../companies/ with a bracket stay blocked.
+      scope_regex_segment="${fragment#companies/}"
+      scope_regex_segment="${scope_regex_segment%%/*}"
+      if [[ "$scope_regex_segment" == *'['* ]]; then
+        scope_raw_word="${scope_prefix##*[[:space:];|&()<>]}"
+        scope_raw_stmt="${scope_prefix%"$scope_raw_word"}"
+        scope_raw_stmt="${scope_raw_stmt##*[;|&()$'
+']}"
+        read -r scope_raw_head _ <<< "$scope_raw_stmt"
+        scope_raw_head="${scope_raw_head##*/}"
+        scope_raw_last="${scope_raw_stmt%"${scope_raw_stmt##*[![:space:]]}"}"
+        scope_raw_last="${scope_raw_last##*[[:space:]]}"
+        scope_raw_skip=0
+        case "$scope_raw_word" in
+          *'..'*|*'$'*|*$'`'*) ;;
+          repos/*/|./repos/*/|"$HQ_ROOT"/repos/*/) scope_raw_skip=1 ;;
+          '"'|"'")
+            # The word must be one quoted string that holds the bracket: the
+            # opening quote sits right before companies/, the body runs to
+            # the matching quote with the whole bracketed segment inside it,
+            # and the closing quote ends the word. `""companies/[o]therco`
+            # (empty quotes, bare bracket) and `"companies/"[o]therco` are
+            # globs and keep the normal check (#1512 review).
+            case "$scope_raw_head" in
+              grep|egrep|fgrep|rg|ag|ack)
+                case "$scope_raw_last" in
+                  -f|--file|--file=*|--exclude-from|--ignore-file) ;;
+                  *)
+                    if [[ "$scope_scan_cmd" == "$scope_prefix"* ]]; then
+                      scope_raw_rest="${scope_scan_cmd:${#scope_prefix}}"
+                      scope_raw_body="${scope_raw_rest%%"$scope_raw_word"*}"
+                      if [ "$scope_raw_body" != "$scope_raw_rest" ] \
+                        && [[ "$scope_raw_body" == "companies/$scope_regex_segment"* ]]; then
+                        scope_raw_after="${scope_raw_rest:$(( ${#scope_raw_body} + 1 )):1}"
+                        case "$scope_raw_word:$scope_raw_body" in
+                          '"':*'$'*|'"':*$'`'*|'"':*\\*) ;;
+                          *)
+                            case "$scope_raw_after" in
+                              ''|' '|$'\t'|$'\n'|';'|'|'|'&'|')') scope_raw_skip=1 ;;
+                            esac
+                            ;;
+                        esac
+                      fi
+                    fi
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+        if [ "$scope_raw_skip" -eq 1 ]; then
+          scope_offset=$((scope_offset + scope_consumed))
+          scope_remaining="${scope_remaining:$scope_consumed}"
+          continue
+        fi
+      fi
+      scope_check_bash_candidate "$fragment" "$scope_scan_cmd" "$scope_check_prefix" "$scope_suffix"
       scope_offset=$((scope_offset + scope_consumed))
       scope_remaining="${scope_remaining:$scope_consumed}"
     done
@@ -5810,15 +8743,39 @@ case "$TOOL" in
       scope_remaining="${scope_remaining:$scope_consumed}"
     done
     scope_interp_bodies="$(scope_interpreter_heredoc_bodies "$scope_scan_cmd")"
-    scope_interp_bodies_unquoted="${scope_interp_bodies//[\"\']/}"
+    # Backslashes go too: the tokenizer drops them, so a body word such as
+    # r"\$(\w+)/" reaches the token loop as r$(w+)/ and must still match.
+    scope_interp_bodies_unquoted="${scope_interp_bodies//[\"\'\\]/}"
     scope_interp_outside_unquoted="${scope_interp_outside//[\"\'\\]/}"
     # The `$` relaxation applies only when every interpreter body in the
-    # command is a python/node body with no shell handoff.
+    # command is a python/node body with no shell handoff. 2 means the only
+    # hand-off names were node requires of file and text modules (fs, path,
+    # ...): no shell, but a file write is possible, so an expansion next to
+    # a `/` (a template literal such as workspace/${b}.txt) is still checked.
     scope_text_bodies_only=0
-    if [ -n "$scope_interp_bodies" ] \
-      && [ "$(scope_text_only_interpreter_bodies "$scope_scan_cmd")" = "$scope_interp_bodies" ]; then
-      scope_text_bodies_only=1
+    if [ -n "$scope_interp_bodies" ]; then
+      if [ "$(scope_text_only_interpreter_bodies "$scope_scan_cmd")" = "$scope_interp_bodies" ]; then
+        scope_text_bodies_only=1
+      elif [ "$(scope_text_only_interpreter_bodies "$scope_scan_cmd" 1)" = "$scope_interp_bodies" ]; then
+        scope_text_bodies_only=2
+      fi
     fi
+    # Check every word on its bash value after quote removal (see
+    # scope_check_normalized_word). Only a command whose text, with quotes and
+    # backslashes deleted, still says `companies` can spell a company path
+    # this way, so other commands skip the second split. The same holds for
+    # the second parse of `eval` and `sh -c` text: with no quote or backslash
+    # it sees the same words as the first parse.
+    scope_norm_scan=""
+    case "$scope_scan_cmd" in
+      *[\"\'\\]*)
+        if [[ "${scope_scan_cmd//[\"\'\\]/}" == *companies* ]]; then
+          scope_norm_scan="$(scope_mask_literal_expansions "$scope_scan_cmd")"
+          scope_check_normalized_split "$scope_norm_scan"
+          scope_check_reparsed_text 0 "$scope_scan_cmd"
+        fi
+        ;;
+    esac
     scope_segments="$(hq_shell_simple_commands "$scope_scan_cmd")"
     while IFS= read -r scope_record; do
       [ -n "$scope_record" ] || continue
@@ -5830,6 +8787,7 @@ case "$TOOL" in
         case "$scope_token" in companies/*|.claude*) continue ;; esac
         scope_token_is_vcs_ref_operand "$scope_token_index" && continue
         scope_token_is_gh_api_endpoint "$scope_token_index" && continue
+        scope_token_is_url_variable_operand "$scope_token_index" && continue
         scope_token_is_bounded_loop_read "$scope_token_index" && continue
         if scope_token_is_remote_url_with_substitutions "$scope_token_index"; then
           scope_check_prose_substitutions
@@ -5855,7 +8813,7 @@ case "$TOOL" in
           if [[ "$scope_interp_bodies" == *"$scope_token"* ]] \
             && [[ "$scope_interp_outside" != *"$scope_token"* ]]; then
             scope_token_context=body
-          elif { [[ "$scope_token" == *[[:space:]]* ]] || [[ "$scope_token" == *$'\140'* ]] || [ "$scope_text_bodies_only" -eq 1 ]; } \
+          elif { [[ "$scope_token" == *[[:space:]]* ]] || [[ "$scope_token" == *$'\140'* ]] || [ "$scope_text_bodies_only" -ge 1 ]; } \
             && [[ "$scope_interp_bodies_unquoted" == *"$scope_token"* ]] \
             && [[ "$scope_interp_outside_unquoted" != *"$scope_token"* ]]; then
             # The tokenizer drops quotes, so adjacent string literals with
@@ -5875,32 +8833,47 @@ case "$TOOL" in
         # except in a python/node body that cannot hand text to a shell
         # (scope_text_only_interpreter_bodies), where `$30k/mo` or `${x}/y`
         # is text nothing expands.
+        # In such a body `$(` is source text too (a regex such as
+        # r"\$(\w+)/" or a template string), so the word is split like any
+        # other instead of being read as a shell substitution.
+        # Mode 1 (no hand-off at all) splits every word, `$(` included. Mode 2
+        # (a node body whose only require is a safe core module, which can
+        # still write files) keeps a `$(` word on the substitution checks.
         scope_body_split_token="$scope_token"
-        if [ "$scope_token_context" = body ] && [ "$scope_text_bodies_only" -eq 1 ]; then
-          case "$scope_token" in *'$('*|*[[:space:]]*|*$'\140'*) ;; *) scope_body_split_token="$scope_token " ;; esac
+        if [ "$scope_token_context" = body ]; then
+          case "$scope_text_bodies_only:$scope_token" in
+            1:*[[:space:]]*|1:*$'\140'*) ;;
+            1:*) scope_body_split_token="$scope_token " ;;
+            2:*'$('*|2:*[[:space:]]*|2:*$'\140'*) ;;
+            2:*) scope_body_split_token="$scope_token " ;;
+          esac
         fi
         if [ "$scope_token_context" = body ]; then
-          case "$scope_body_split_token" in
-            *'$('*) ;;
+          case "$scope_text_bodies_only:$scope_body_split_token" in
+            0:*'$('*) ;;
             *[[:space:]]*|*$'\140'*)
               # In a body that can reach a shell, check every expansion in
               # the whole word before it is split: splitting at braces would
               # turn `${D}/x` into the harmless-looking pieces `$`, `D`, `/x`.
-              if [ "$scope_text_bodies_only" -eq 0 ]; then
+              if [ "$scope_text_bodies_only" -ne 1 ]; then
+                scope_body_var_re='\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9])'
+                [ "$scope_text_bodies_only" -eq 2 ] && scope_body_var_re="/$scope_body_var_re|$scope_body_var_re/"
                 while IFS= read -r scope_body_var; do
+                  scope_body_var="${scope_body_var#/}"
+                  scope_body_var="${scope_body_var%/}"
                   [ -n "$scope_body_var" ] || continue
                   scope_body_resolved="$(scope_resolve_known_path_expansions "$scope_body_var" "$scope_scan_cmd")"
                   case "$scope_body_resolved" in
                     *'$'*) scope_block_rel "$scope_token" "interpreter source that can run a shell command uses a variable the command does not set" ;;
                   esac
-                done <<< "$(printf '%s' "$(scope_mask_literal_expansions "$scope_token")" | grep -oE '\$(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9])' 2>/dev/null || true)"
+                done <<< "$(printf '%s' "$(scope_mask_literal_expansions "$scope_token")" | grep -oE "$scope_body_var_re" 2>/dev/null || true)"
               fi
               scope_body_pieces="${scope_token//[[:space:]\`\"\'(),;\{\}\[\]]/$'\n'}"
               while IFS= read -r scope_body_piece; do
                 case "$scope_body_piece" in
                   companies/*|.claude*|*/companies/*|*/.claude*) continue ;;
                   *'$'*)
-                    [ "$scope_text_bodies_only" -eq 1 ] && continue
+                    [ "$scope_text_bodies_only" -ge 1 ] && continue
                     # This body can hand the text to a shell (os.system,
                     # subprocess, perl, ...), which expands the variable from
                     # the environment. The interpreter's own quotes do not

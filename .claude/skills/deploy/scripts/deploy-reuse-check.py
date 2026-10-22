@@ -18,8 +18,12 @@ SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 # A record is <...>/deploys/<subdomain>.md; copied sources under
 # deploys/<subdomain>/source/ are not records.
 RECORD_PATH_RE = re.compile(r"/deploys/([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.md$")
-ASK_AT = 0.75     # Decisions table, 2026-10-15: ask at or above this score
-NOTE_AT = 0.55    # one line naming the closest deploy between NOTE_AT and ASK_AT
+# Tuned on the US-007 benchmark (2026-10-21, 85 public records): a record
+# searched with its own description scores about 0.70, so 0.75 never asked,
+# and 0.55 noted on 53 of 85 records. At 0.68 the check asks on 10 of 85
+# (mostly true variants) and notes on 21 more.
+ASK_AT = 0.68     # ask at or above this score
+NOTE_AT = 0.62    # one line naming the closest deploy between NOTE_AT and ASK_AT
 MAX_CANDIDATES = 3
 QUERY_RESULTS = 10
 DESC_CHARS = 160

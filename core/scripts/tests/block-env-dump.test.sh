@@ -113,6 +113,35 @@ jq -nc '{tool_name:"Read",tool_input:{file_path:"/tmp/x"}}' \
   | bash "$HOOK" >/dev/null 2>"$TMP/err" || rc=$?
 [ "$rc" = "0" ] && ok "non-Bash tool is ignored" || bad "non-Bash tool want 0 got $rc"
 
+# feedback a6435e4f: a quoted grep pattern is one word, so an alternation
+# that names env or set is a pattern, not a dump. A document whose name holds
+# `.env` is prose. Real dumps and real env files still block.
+expect_hook 0 "a6435e4f grep -E alternation with env passes" 'grep -rilE "stripe|env|secret" companies/co-a'
+expect_hook 0 "a6435e4f single-quoted alternation with set passes" "grep -ril 'token|set|key' companies/co-a | head -20"
+expect_hook 0 "a6435e4f find piped to grep env passes" "find companies/co-a -name '*.md' | xargs grep -l \"env\""
+expect_hook 0 "a6435e4f cat of an .env.md policy passes" "cat companies/co-a/policies/aws.env.md"
+expect_hook 0 "a6435e4f cat of a notes.env.txt passes" "cat companies/co-a/notes.env.txt"
+expect_hook 2 "a6435e4f grep then a real env dump blocks" "grep -ril foo companies/co-a; env"
+expect_hook 2 "a6435e4f grep over a quoted env capture blocks" 'grep -c . "$(env)"'
+# #1512 review (shawon-majid): an escaped quote cannot open a fake quoted
+# grep operand that hides a real dump, and a .env word with an expansion is
+# not dropped as prose.
+expect_hook 2 "1512 escaped double quote hides env" 'grep a\"b; env; echo \"'
+expect_hook 2 "1512 escaped single quote hides printenv" "grep a\\'b; printenv; echo \\'"
+expect_hook 2 "1512 escaped quote operand hides env pipe" 'grep x \"; env | head -50; \"'
+expect_hook 2 "1512 rg escaped quote hides env" 'rg a\"b; env; echo \"'
+expect_hook 2 "1512 escaped quote with && printenv" 'grep a\"b && printenv && echo \"'
+expect_hook 2 "1512 cat .env\$IFS.md reads .env" 'cat .env$IFS.md'
+expect_hook 2 "1512 cat .env\${IFS}notes.md reads .env" 'cat .env${IFS}notes.md'
+expect_hook 2 "1512 cat .env\$IFS.txt reads .env" 'cat .env$IFS.txt'
+expect_hook 0 "1512 escaped space in a grep pattern passes" 'grep a\ b x.txt'
+expect_hook 0 "1512 escaped quote inside a quoted pattern passes" 'grep "a\"b" x.txt'
+expect_hook 2 "a6435e4f quoted alternation then printenv blocks" "grep -ril 'a|env' companies/co-a | printenv"
+expect_hook 2 "a6435e4f cat .env still blocks" "cat companies/co-a/settings/.env"
+expect_hook 2 "a6435e4f cat .env.local still blocks" "cat companies/co-a/x.env.local"
+expect_hook 2 "a6435e4f cat prod.env still blocks" "cat companies/co-a/prod.env"
+expect_hook 2 "a6435e4f cat .env next to a doc still blocks" "cat companies/co-a/aws.env.md companies/co-a/.env"
+
 echo "[2] hook-gate: every profile blocks printenv and allows ls / printenv HOME"
 for p in minimal standard strict; do
   for case_spec in "printenv:2" "env > /tmp/dump.txt:2" "env | tee /tmp/dump.txt:2" "ls:0" "printenv HOME:0"; do

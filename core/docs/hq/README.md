@@ -61,7 +61,7 @@ HQ is **model-agnostic**, so it works inside any AI tool and leverages the subsc
 | node | Yes | [nodejs.org](https://nodejs.org) or nvm/fnm/volta |
 | [jq](https://jqlang.github.io/jq/) | Yes | Windows: `winget install jqlang.jq` / `choco install jq` / `scoop install jq`; Linux: `apt`/`dnf install jq`; macOS: `brew install jq` |
 | [GitHub CLI](https://cli.github.com/) | Yes | `brew install gh` / winget / apt — then `gh auth login` |
-| [qmd](https://github.com/tobi/qmd) | Recommended | `npm install -g @tobilu/qmd` (macOS also: `brew install sqlite`) |
+| [qmd](https://github.com/tobi/qmd) | Recommended | `npm install -g @tobilu/qmd@2.5.3` (macOS also: `brew install sqlite`) |
 | [OpenAI Codex](https://openai.com/codex) | Optional | `npm install -g @openai/codex` then `codex login` |
 
 Platform details (Windows Git Bash baseline, deploy identity fallback, portable shell helpers): [cross-platform-support.md](../../knowledge/public/hq-core/cross-platform-support.md).

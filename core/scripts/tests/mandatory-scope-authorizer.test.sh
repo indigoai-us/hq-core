@@ -2185,6 +2185,37 @@ scope_112_case c73294b2 2 'for b in a; do for ext in png; do ext=../../otherco; 
 scope_112_case c73294b2 2 'for b in a; do while read ext; do cp x companies/indigo/data/final/$b.$ext; done; done'
 
 . "$ROOT/core/scripts/tests/scope-hook-false-blocks.cases.sh"
+# Bracketed Next.js dynamic route segment under a repos/ path, and a quoted
+# grep regex, are not tenant paths (thread T-20261015 spice-maxx-tokens-948-released).
+scope_112_case routeseg 0 'cat repos/private/hq-app/src/app/companies/[slug]/settings/page.tsx'
+scope_112_case routeseg 0 'grep -n socket repos/private/hq-app/src/app/companies/[slug]/socket-mode/page.tsx'
+scope_112_case routeseg 0 "cat $TMP/repos/private/r/src/app/companies/[slug]/page.tsx"
+scope_112_case routeseg 0 'grep -rn "companies/[a-z]+/" repos/private/r'
+scope_112_case routeseg 0 "grep -rEn 'companies/[a-z-]+/settings' repos/private/r"
+scope_112_case routeseg 2 'cat companies/[a-z]*/settings/x'
+scope_112_case routeseg 2 'cat companies/[ow]therco/settings/x'
+scope_112_case routeseg 2 'cat repos/../companies/[ow]therco/settings/x'
+scope_112_case routeseg 2 'cat workspace/companies/[ow]therco/settings/x'
+scope_112_case routeseg 2 'grep -f "companies/[ow]therco/settings/x" repos/private/r'
+scope_112_case routeseg 2 'cat "companies/[ow]therco/settings/x"'
+# cd into the companies/ root turns later relative words into company
+# folders the path scan cannot see (ported from #1436).
+scope_112_case cdroot 2 'C=otherco; cd companies; cat "$C/settings/x"'
+scope_112_case cdroot 2 'cd companies; cat otherco/settings/x'
+scope_112_case cdroot 2 'cd ./companies/ && cat "otherco/settings/x"'
+scope_112_case cdroot 2 "cd $TMP/companies; cat otherco/settings/x"
+scope_112_case cdroot 2 'pushd companies >/dev/null; cat otherco/settings/x'
+scope_112_case cdroot 2 'cd companies/indigo/..; cat otherco/settings/x'
+scope_112_case cdroot 2 'D=companies; cd "$D"; cat otherco/settings/x'
+scope_112_case cdroot 0 'cd workspace && ls'
+scope_112_case cdroot 0 'cd companies/indigo && ls settings'
+# Quote-split text piped into a stdin shell hides the path from the scan.
+scope_112_case stdinsh 2 "printf '%s' \"cat compa''nies/otherco/settings/x\" | bash"
+scope_112_case stdinsh 2 "echo \"cat compa\\\\nies/otherco/settings/x\" | sh"
+scope_112_case stdinsh 2 "printf '%s' \"cat compa''nies/otherco/settings/x\" | /bin/bash -s"
+scope_112_case stdinsh 2 "printf '%s' 'cat companies/otherco/settings/x' | bash"
+scope_112_case stdinsh 0 "printf '%s\\n' 'echo hi' | bash"
+scope_112_case stdinsh 0 "printf '%s\\n' hello | cat"
 echo "[feedback batch] company repo links, URLs and slugs, heredoc data, substitutions, child sessions"
 bash_case() {
   local expect="$1" name="$2" command="$3" sid="${4:-sess-bound}" rc
@@ -2891,6 +2922,1293 @@ bash_case 0 a0fa9acb 'D=companies/indigo; ls "${D:-workspace}/settings"'
 bash_case 2 a0fa9acb 'D=companies/indigo; ls "${D:-companies/otherco}/settings"'
 bash_case 2 a0fa9acb 'D=companies/otherco; ls "${D:-companies/indigo}/settings"'
 bash_case 2 a0fa9acb 'D=""; ls "${D:-companies/otherco}/settings"'
+
+echo "[121] a variable the command does not set, in an inline interpreter program or a directory option"
+# Reported 2026-10-16 against v16.0.24: `python3 -c "open('$D/x','w')"` and
+# `git -C $R ...` passed with D and R unset in the command. The shell fills
+# them from the environment before the command runs, so either can point at
+# another company's folder.
+install_fixture "indigo"
+scope_121_block() {
+  local command="$1" rc
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "inline expansion blocks: $(printf '%s' "$command" | tr '\n' ' ')"
+  if [ "$rc" = 2 ] && ! grep -q '^Reason: ' "$TMP/err.txt"; then
+    echo "FAIL: inline expansion block has no Reason line: $command" >&2
+    REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+  fi
+}
+scope_121_allow() {
+  scope_112_case inline-expansion 0 "$1"
+}
+# The two reported shapes, with the reason the new check gives.
+scope_121_block "python3 -c \"open('\$D/x','w')\""
+grep -q 'python3 -c program uses \$D, which this command does not set' "$TMP/err.txt" \
+  || { echo "FAIL: python3 -c block does not name the unset variable" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+scope_121_block 'git -C $R commit -m x'
+grep -q 'git -C option uses \$R, which this command does not set' "$TMP/err.txt" \
+  || { echo "FAIL: git -C block does not name the unset variable" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+# Near variants: braces, quoting, nested substitution, no slash, other
+# interpreters and directory flags.
+scope_121_block "python3 -c \"open('\${D}/x','w')\""
+scope_121_block "python3 -c \"open('\$(echo \$D)/x','w')\""
+scope_121_block "python3 -c \"import os; os.makedirs('\$D')\""
+scope_121_block "python -c \"open('\$D/x','w')\""
+scope_121_block "python3.12 -B -c \"open('\$D/x','w')\""
+scope_121_block "python3 -c \"print('\$D')\""
+scope_121_block "node -e \"require('fs').writeFileSync('\$D/x','y')\""
+scope_121_block "node --eval=\"require('fs').readFileSync('\$D')\""
+scope_121_block "ruby -e \"File.write('\$D/x','y')\""
+scope_121_block "perl -e \"open(F,'>\$D/x')\""
+scope_121_block 'bash -c "echo hi > $D/x"'
+scope_121_block 'sh -c "echo hi > ${D}/x"'
+scope_121_block "bash -c 'echo hi > \$D/x'"
+scope_121_block "bash -lc 'cd \$R && git commit -m x'"
+scope_121_block 'bash -c "echo \$D/x"'
+scope_121_block 'bash -c "$CMD"'
+scope_121_block "D=/tmp/x; bash -c 'cat \$D/y'"
+scope_121_block "find . -name x -exec sh -c 'cat \$D/\$1' _ {} \\;"
+scope_121_block "sh -c 'cat \$1' _ \"\$F\""
+scope_121_block "ls | xargs sh -c 'cat \$1' _"
+scope_121_block "python3 -c 'import os; os.system(\"cat \$D/x\")'"
+scope_121_block "perl -e 'print \`ls \$D\`'"
+scope_121_block "x=\$(python3 -c \"print('\$D')\")"
+scope_121_block "for f in *.md; do python3 -c \"print(open('\$f').read())\"; done"
+scope_121_block 'D=/abs/hq/compan; python3 -c "open('"'"'${D}ies/otherco/x'"'"','"'"'w'"'"')"'
+scope_121_block 'git -C "$R" status'
+scope_121_block 'git -C ${R} status'
+scope_121_block 'git -C "${R}" log'
+scope_121_block 'git -C "$(echo $R)" status'
+scope_121_block 'git -C "$(git rev-parse --git-common-dir)" status'
+scope_121_block 'git --git-dir=$R/.git status'
+scope_121_block 'git --work-tree $R status'
+scope_121_block 'echo "$(git -C $R rev-parse HEAD)"'
+scope_121_block 'make -C $R'
+scope_121_block 'tar -xf a.tar -C "$R"'
+scope_121_block 'pnpm -C "$R" test'
+scope_121_block 'npm --prefix $R run build'
+scope_121_block 'yarn --cwd=$R build'
+scope_121_block 'env -C $R ls'
+scope_121_block 'sudo -D $R ls'
+# Adversarial review: lexer desyncs that hid a later command, attached and
+# bundled option forms, and quoting that hid an argument's expansion.
+scope_121_block $'echo $\'a\\\'\' ; git -C $R status ; echo \'x\''
+scope_121_block $'echo $\'a\\\'\' ; python3 -c "open(\'$D/x\',\'w\')" ; echo \'x\''
+scope_121_block $'cat <<\'E OF\'\nbody\nE OF\ngit -C $R status\nE'
+scope_121_block $'(( x = 1<<2 ))\ngit -C $R status'
+scope_121_block 'for ((i=0; i<<2; i++)); do git -C $R status; done'
+scope_121_block $'echo a # b \\\ngit -C $R status'
+scope_121_block 'tar -C$R -xf a.tar'
+scope_121_block 'tar -C"$R" -xf a.tar'
+scope_121_block 'tar xfC a.tar $R'
+scope_121_block 'tar -xzC $R -f a.tar'
+scope_121_block 'env -C$R ls'
+scope_121_block 'env -iC $R ls'
+scope_121_block 'sudo -D$R ls'
+scope_121_block 'sudo -u root -D $R ls'
+scope_121_block 'make -sC $R'
+scope_121_block "python3 -c\"open('\$D/x','w')\""
+scope_121_block "python3 -Bc\"open('\$D/x','w')\""
+scope_121_block "perl -e\"open(F,'>\$D/x')\""
+scope_121_block "perl -lne\"print '\$D'\" f"
+scope_121_block "ruby -e\"File.write('\$D/x','y')\""
+scope_121_block "ruby -C \$R -e 'puts 1'"
+scope_121_block "bash -c \$'cat \\x24D/y'"
+scope_121_block "env -S \"bash -c 'cat \$D'\" x"
+scope_121_block "sh -c 'cat \$1' _ \"'\$F'\""
+scope_121_block "bash -c 'echo \$PATH'"
+scope_121_block "sh -c 'cd \$TMPDIR && pwd'"
+scope_121_block "bash -c 'exec \$SHELL -l'"
+# Adversarial review, second pass: disguised command names, continuations,
+# long options with separate arguments, $'...' values used as proof, the
+# plain-name list on a directory option, and other git location inputs.
+scope_121_block '\git -C $R status'
+scope_121_block "\$'git' -C \$R status"
+scope_121_block "\$'\\x67it' -C \$R status"
+scope_121_block $'g\\\nit -C $R status'
+scope_121_block $'pyth\\\non3 -c "open(\'$D/x\',\'w\')"'
+scope_121_block $'cat <<E\\\nOF\nbody\nEOF\ngit -C $R status\nEOF'
+scope_121_block $'cat <<EOF\nEO\\\nF\ngit -C $R status\nEOF'
+scope_121_block "python3 --check-hash-based-pycs always -c \"open('\$D/x','w')\""
+scope_121_block "node --input-type module -e \"require('fs').writeFileSync('\$D/x','')\""
+scope_121_block "D=\$'\\x63ompanies/otherco' bash -c 'git -C \"\$D\" status'"
+scope_121_block 'git -C "$TZ" status'
+scope_121_block 'tar -C "$USER" -xf /tmp/o.tar'
+scope_121_block 'git -c core.worktree=$R status'
+scope_121_block 'GIT_DIR=$R git log'
+scope_121_block 'export GIT_WORK_TREE=$R'
+scope_121_block 'caffeinate -i git -C $R status'
+scope_121_block 'arch -arm64 git -C $R status'
+# Allowed today and still allowed: a literal value set earlier in the same
+# command, a for loop over literal words, $HOME, $PWD/$(pwd), a function's
+# literal argument, single-quoted program text that no shell expands, and a
+# VAR=literal prefix for the inner shell of bash -c.
+scope_121_allow "D=/tmp/x; python3 -c \"open('\$D/x','w')\""
+scope_121_allow 'R=/tmp/r; git -C $R status'
+scope_121_allow 'R=/tmp/r; git -C "$R" commit -m "msg $(date +%F)"'
+scope_121_allow "for d in /tmp/a /tmp/b; do python3 -c \"open('\$d/x','w')\"; done"
+scope_121_allow 'for r in /tmp/a /tmp/b; do git -C $r status; done'
+scope_121_allow "python3 -c \"open('\$HOME/x','w')\""
+scope_121_allow 'git -C $HOME/x status'
+scope_121_allow 'git -C "$(pwd)" status'
+scope_121_allow 'git -C $PWD status'
+scope_121_allow 'git -C /tmp/r status'
+scope_121_allow 'f() { git -C $1 status; }; f /tmp/r'
+scope_121_allow "python3 -c 'print(\"\$D\")'"
+scope_121_allow "python3 -c \"print('\\\$5 total')\""
+scope_121_allow "python3 -c \"print(\$((1+2)))\""
+scope_121_allow 'python3 -c "import sys; print(sys.argv[1])" "$D"'
+scope_121_allow 'python3 -m json.tool f.json'
+scope_121_allow "perl -ne 'print \"\$1\\n\" if /x(\\d+)/' f.txt"
+scope_121_allow "ruby -e 'puts \$stdin.read'"
+scope_121_allow "bash -c 'D=/tmp/x; cat \$D/y'"
+scope_121_allow "D=/tmp/x bash -c 'cat \$D/y'"
+scope_121_allow "env D=/tmp/x bash -c 'cat \$D/y'"
+scope_121_allow "D=/tmp/x python3 -c 'import os; os.system(\"ls \$D\")'"
+scope_121_allow "find . -name x -exec sh -c 'cat \"\$1\"' _ {} \\;"
+scope_121_allow "ls | xargs -I{} sh -c 'cat {}'"
+scope_121_allow "bash -c 'for f in a b; do echo \$f; done'"
+scope_121_allow "bash -c 'echo \$HOME \$PWD \$? \$\$'"
+scope_121_allow 'tar -czf out.tgz -C /tmp/x .'
+scope_121_allow 'tar -C/tmp/x -xf a.tar'
+scope_121_allow 'tar xfC a.tar /tmp/x'
+scope_121_allow "bash -c 'echo \$USER \$LANG \$HOSTNAME \$RANDOM'"
+scope_121_allow "bash -c 'test -n \"\$CI\" && echo ci'"
+scope_121_allow "python3 -c \"print('\$USER')\""
+scope_121_allow $'echo $\'a\\\'\' ; git -C /tmp/r status'
+scope_121_allow $'cat <<\'E OF\'\ngit -C $R status\nE OF\necho done'
+scope_121_allow $'(( x = 1<<2 ))\necho $x'
+scope_121_allow $'echo a # git -C $R status\necho b'
+scope_121_allow "perl -pi -e 's/a/b/' f"
+scope_121_allow "perl -Mstrict -e 'print 1'"
+scope_121_allow "python3 -Wignore -c 'print(1)'"
+scope_121_allow 'python3 -m pytest -k "$K"'
+scope_121_allow "ruby -rjson -e 'puts JSON.dump(1)'"
+scope_121_allow "sh -c 'cat \$1' _ 'lit'"
+scope_121_allow 'git -C "$(git rev-parse --show-toplevel)" status'
+scope_121_allow "bash -c 'echo \$LC_TIME'"
+scope_121_allow '\git -C /tmp/r status'
+scope_121_allow 'GIT_DIR=/tmp/r/.git git log'
+scope_121_allow 'git -c core.worktree=/tmp/r status'
+scope_121_allow "python3 --check-hash-based-pycs always -c 'print(1)'"
+scope_121_allow $'cat <<E\\\nOF\ngit -C $R status\nEOF\necho done'
+scope_121_allow "git commit -m \"\$(cat <<'EOF'
+fix: don't break \$THINGS or git -C \$R
+EOF
+)\""
+scope_121_allow "cat > /tmp/f.py <<'EOF'
+import os; os.system(\"git -C \$R status\")
+EOF"
+
+echo "[122] an unquoted command substitution as a command argument or redirection target"
+# Reported 2026-10-19: `cat $(cat /tmp/p)` and `cp x $(cat /tmp/p)` passed, so
+# a file holding another company's path could read or write that company's
+# files. The tokenizer split the substitution into `$(cat` and `/tmp/p)`.
+install_fixture "indigo"
+scope_122_block() {
+  local command="$1" rc
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "unquoted substitution blocks: $(printf '%s' "$command" | tr '\n' ' ')"
+  if [ "$rc" = 2 ] && ! grep -q '^Reason: ' "$TMP/err.txt"; then
+    echo "FAIL: unquoted substitution block has no Reason line: $command" >&2
+    REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+  fi
+}
+scope_122_allow() {
+  bash_case 0 unquoted-subst "$1"
+}
+# The two reported shapes, with the reason the new check gives.
+scope_122_block 'cat $(cat /tmp/p)'
+grep -q 'unquoted command substitution supplies an argument of cat' "$TMP/err.txt" \
+  || { echo "FAIL: cat \$(...) block does not give the argument reason" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+scope_122_block 'cp x $(cat /tmp/p)'
+# Backticks, other positions and commands, glued text, redirections, nesting.
+scope_122_block 'cat `cat /tmp/p`'
+scope_122_block 'cp $(cat /tmp/p) /tmp/x'
+scope_122_block 'rm -rf $(cat /tmp/p)'
+scope_122_block 'ls $(cat /tmp/p)/x'
+scope_122_block 'mv x $(head -1 /tmp/p)'
+scope_122_block 'tee $(cat /tmp/p) < x'
+scope_122_block 'grep -r foo $(cat /tmp/p)'
+scope_122_block 'cat --file=$(cat /tmp/p)'
+scope_122_block 'cat ${X:-$(cat /tmp/p)}'
+scope_122_block 'echo x > $(cat /tmp/p)'
+scope_122_block 'cat < $(cat /tmp/p)'
+scope_122_block '> $(cat /tmp/p) echo x'
+scope_122_block 'kill $(cat $(cat /tmp/p))'
+scope_122_block 'diff <(cat $(cat /tmp/p)) x'
+scope_122_block 'echo $(cat /tmp/p) | xargs cat'
+scope_122_block 'source $(cat /tmp/p)'
+scope_122_block 'cat $(cat /tmp/p) && echo ok'
+scope_122_block 'if cat $(cat /tmp/p); then echo; fi'
+scope_122_block 'echo hi; rm $(cat /tmp/p)'
+scope_122_block 'timeout 5 cat $(cat /tmp/p)'
+scope_122_block 'env -C $(cat /tmp/p) ls'
+scope_122_block 'wc -l $(git ls-files)'
+# The program of another shell runs its own substitutions.
+scope_122_block "bash -c 'cat \$(cat /tmp/p)'"
+scope_122_block "sh -lc 'cp x \`cat /tmp/p\`'"
+scope_122_block "eval 'cat \$(cat /tmp/p)'"
+scope_122_block "find . -name x -exec sh -c 'cp x \$(cat /tmp/p)' \\;"
+scope_122_block "xargs sh -c 'cat \$(cat /tmp/p)'"
+# Allowed: output that is not a path or is the working directory, commands
+# that take no file arguments, quoted text, assignments, loop word lists,
+# arithmetic.
+scope_122_allow 'kill $(cat /tmp/pid)'
+scope_122_allow 'kill -9 $(pgrep -f foo)'
+scope_122_allow 'sleep $(( 1 + 2 ))'
+scope_122_allow 'echo $(date)'
+scope_122_allow "printf '%s\\n' \$(seq 1 3)"
+scope_122_allow '[ $(wc -l < f) -gt 3 ]'
+scope_122_allow 'test -n $(cat /tmp/p)'
+scope_122_allow 'cd $(git rev-parse --show-toplevel)'
+scope_122_allow 'cd $(mktemp -d)'
+scope_122_allow 'git log $(git merge-base HEAD origin/main)..HEAD'
+scope_122_allow 'git checkout $(git rev-parse HEAD)'
+scope_122_allow 'docker stop $(docker ps -q)'
+scope_122_allow 'tar -czf out-$(date +%F).tgz workspace/x'
+scope_122_allow 'git commit -m "fix $(date +%F)"'
+scope_122_allow 'echo "files: $(ls workspace)"'
+scope_122_allow 'x=$(cat /tmp/p)'
+scope_122_allow 'TS=$(date +%s); echo $TS'
+scope_122_allow 'for f in $(ls workspace); do echo $f; done'
+scope_122_allow "bash -c 'echo \$(date)'"
+scope_122_allow "bash -c 'kill \$(cat /tmp/pid)'"
+scope_122_allow "find . -exec sh -c 'echo \$(date)' \\;"
+scope_122_allow "git commit -m \"\$(cat <<'EOF'
+fix: block cat with an unquoted substitution argument
+EOF
+)\""
+
+echo "[122b] a substitution routed through a variable, a loop or a bare redirection"
+# Stefan's review of #1437: the same read as `cat $(cat /tmp/p)`, one statement
+# later, passed. So did `exec > $(...)`, whose redirection had no command.
+scope_122_block 'x=$(cat /tmp/p); cat $x'
+grep -q 'uses \$x, which holds a command substitution' "$TMP/err.txt" \
+  || { echo "FAIL: cat \$x block does not name the variable" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+scope_122_block 'x=$(cat /tmp/p); cat "$x"'
+scope_122_block 'x=$(cat /tmp/p); cat ${x}/y'
+scope_122_block 'x=`cat /tmp/p`; cp a "$x"'
+scope_122_block 'x="$(cat /tmp/p)"; y="$x/sub"; cat "$y"'
+scope_122_block 'for f in $(cat /tmp/p); do cat $f; done'
+scope_122_block 'for f in "$(cat /tmp/p)"; do cat "$f"; done'
+scope_122_block 'export x="$(cat /tmp/p)"; cat "$x"'
+scope_122_block 'read -r x <<< "$(cat /tmp/p)"; cat "$x"'
+scope_122_block 'x=$(cat /tmp/p); echo hi > "$x"'
+scope_122_block 'x=$(cat /tmp/p); echo "$x" | xargs cat'
+scope_122_block 'x=$(cat /tmp/p); bash -c "cat $x"'
+scope_122_block 'x=$(cat /tmp/p); git -C "$x" status'
+scope_122_block 'x=$(cat /tmp/p) cat $x'
+scope_122_block 'x=$(curl -s file:///tmp/p); cat "$x"'
+scope_122_block 'x=$(gh api repos/a/b | xargs cat); cat "$x"'
+scope_122_block 'exec > $(cat /tmp/p)'
+grep -q 'redirection target' "$TMP/err.txt" \
+  || { echo "FAIL: exec > \$(...) block does not give the redirection reason" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+scope_122_block 'exec 3< $(cat /tmp/p)'
+scope_122_block 'exec 2>> `cat /tmp/p`'
+scope_122_block '> $(cat /tmp/p)'
+scope_122_block 'x=$(cat /tmp/p); exec > "$x"'
+# pgrep -a and -l print command lines, which can hold paths.
+scope_122_block 'cat $(pgrep -a foo)'
+scope_122_block 'cat $(pgrep -fl foo)'
+# A "remote" body that reads or sends a local file is not remote.
+scope_122_block 'x=$(curl -s https://e.x/ | head -1 /tmp/p); cat "$x"'
+scope_122_block 'x=$(curl -s https://e.x/ | sort /tmp/p); cat "$x"'
+scope_122_block 'x=$(curl -s FILE:///tmp/p); cat "$x"'
+scope_122_block 'x=$(curl -sK /tmp/cfg https://e.x/); cat "$x"'
+scope_122_block 'x=$(curl -s -d @/tmp/p https://e.x/echo); cat "$x"'
+scope_122_block 'x=$(curl -sT /tmp/p https://e.x/echo); cat "$x"'
+scope_122_block 'x=$(gh api x -F f=@/tmp/p); cat "$x"'
+scope_122_block 'x=$(wget -qO- --post-file=/tmp/p https://e.x/); cat "$x"'
+# Arrays, read/mapfile, printf -v, zsh and indirect expansions, eval.
+scope_122_block 'arr=($(cat /tmp/p)); cat "${arr[@]}"'
+scope_122_block 'declare -a arr=($(cat /tmp/p)); cat "${arr[@]}"'
+scope_122_block 'local x=$(cat /tmp/p); cat "$x"'
+scope_122_block 'x[1]=$(cat /tmp/p); cat "${x[1]}"'
+scope_122_block 'x+=$(cat /tmp/p); cat "$x"'
+scope_122_block 'read -r x <<< "$(date)"; cat "$x"'
+scope_122_block 'mapfile -t a <<< "$(cat /tmp/p)"; cat "${a[@]}"'
+scope_122_block 'select f in $(cat /tmp/p); do cat "$f"; done'
+scope_122_block 'x=$(cat /tmp/p); printf -v y "%s" "$x"; cat "$y"'
+scope_122_block 'x=$(cat /tmp/p); cat ${=x}'
+scope_122_block 'x=$(cat /tmp/p); cat $=x'
+scope_122_block 'x=$(cat /tmp/p); cat ${~x}'
+scope_122_block 'x=$(cat /tmp/p); cat ${(f)x}'
+scope_122_block 'x=$(cat /tmp/p); y=x; cat ${(P)y}'
+scope_122_block 'x=$(cat /tmp/p); y=x; cat "${!y}"'
+scope_122_block 'x=$(cat /tmp/p); eval cat '"'"'$x'"'"
+scope_122_block "eval cat '\$(cat /tmp/p)'"
+# A use earlier in the text than the assignment.
+scope_122_block 'f() { cat "$x"; }; x=$(cat /tmp/p); f'
+scope_122_block 'for i in 1 2; do [ $i = 2 ] && cat "$x"; x=$(cat /tmp/p); done'
+# ls -l prints link targets; only bare names are bounded.
+scope_122_block 'x=$(ls -l /tmp/lnk); cat $x'
+scope_122_block 'for f in $(ls -l /tmp/d); do cat $f; done'
+# A URL allowance is for http(s) only, and output options stay checked.
+scope_122_block 'x=$(cat /tmp/p); curl "file://$x"'
+scope_122_block 'x=$(cat /tmp/p); curl -o "$x" https://e.x/'
+# Still allowed: commands that take no file, message text, values the guard
+# maps or that come from a remote fetch, and single-quoted text.
+scope_122_allow 'PID=$(cat /tmp/pid); kill $PID'
+scope_122_allow 'x=$(cat /tmp/p); echo "$x"'
+scope_122_allow 'x=$(cat /tmp/p); [ -n "$x" ] && echo set'
+scope_122_allow 'D=$(mktemp -d); cp workspace/x "$D/"'
+scope_122_allow 'D="$(pwd)/workspace"; ls "$D"'
+scope_122_allow 'PR=$(gh pr view 12 --json number -q .number); gh pr checks "$PR"'
+scope_122_allow 'URL=$(curl -s https://x.example.com/presign | jq -r .url); curl -X PUT -T workspace/a.tgz "$URL"'
+scope_122_allow 'MSG=$(cat /tmp/msg.txt); git commit -m "$MSG"'
+scope_122_allow 'B=$(cat /tmp/b.md); gh pr create --title t --body "$B"'
+scope_122_allow "x=\$(cat /tmp/p); grep -c '\$x' workspace/f"
+scope_122_allow 'for f in a b; do cat workspace/$f; done'
+scope_122_allow 'kill $(pgrep -f foo)'
+scope_122_allow 'exec 2>&1; echo $(date)'
+scope_122_allow 'J=$(cat workspace/out.json); jq -r .id <<< "$J"'
+scope_122_allow 'J=$(cat workspace/out.json); read -r a b <<< "$J"'
+scope_122_allow 'OUT=$(npm test 2>&1); echo "$OUT" | grep FAIL'
+scope_122_allow 'x=$(cat /tmp/p); echo "$x"; ls | head'
+scope_122_allow 'PORT=$(cat .port); curl "http://localhost:$PORT/health"'
+scope_122_allow 'URL=$(wget -qO- https://x.example.com/presign); curl -X PUT -T workspace/a.tgz "$URL"'
+scope_122_allow 'D=$(mktemp -d -p /tmp dl.XXXXXX); ls $D'
+scope_122_allow 'x=$(cat /tmp/p); cat \$x'
+scope_122_allow 'B=$(cat /tmp/b.md); gh pr edit 12 --body="$B"'
+# Review of #1467: a substitution as the command name runs whatever the file
+# holds, and a double-quoted one is still an operand of cat or cp.
+scope_122_block '$(cat /tmp/p)'
+grep -q 'supplies the command name' "$TMP/err.txt" \
+  || { echo "FAIL: \$(...) command name block does not give the command-name reason" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+scope_122_block '`cat /tmp/p`'
+scope_122_block '$(cat /tmp/p) arg'
+scope_122_block 'x=1 $(cat /tmp/p)'
+scope_122_block 'env $(cat /tmp/p)'
+scope_122_block 'sudo $(cat /tmp/p)'
+scope_122_block 'x=$(cat /tmp/p); $x'
+scope_122_block 'cat "$(cat p)"'
+scope_122_block 'cp x "$(cat p)"'
+scope_122_block 'cd "$(cat /tmp/dir)"'
+scope_122_allow "\$(which python3) -c 'print(1)'"
+scope_122_allow '`which node` --version'
+scope_122_allow '$(git rev-parse --show-toplevel)/core/scripts/x.sh'
+scope_122_allow 'cat "$(pwd)/workspace/x"'
+scope_122_allow 'ls "$(mktemp -d)"'
+
+echo "[123b] 2026-10-19 #hq-feedback shapes stay allowed with the [121]/[122] checks"
+# These cases run with sess-bound locked to the otherco fixture company.
+install_fixture "otherco"
+# (1) shell variables and $(...) in deploy and handoff commands
+bash_case 0 hqfb-1019-keep 'API=https://deploy.example.com; curl -s "$API/api/apps"'
+bash_case 0 hqfb-1019-keep 'curl -s "https://deploy.example.com/api/apps/$(cat workspace/id)/deploy"'
+bash_case 0 hqfb-1019-keep 'URL=$(curl -s https://x.example.com/presign); curl -X PUT -T workspace/a.tgz "$URL"'
+bash_case 0 hqfb-1019-keep 'bash core/scripts/handoff.sh --thread "$THREAD_ID" --out "$(pwd)/workspace/threads"'
+bash_case 0 hqfb-1019-keep 'BR=fix/x; git push origin "$BR"'
+# (2) heredocs and substitutions with no company path
+bash_case 0 hqfb-1019-keep "gh pr create -R a/b --title t --body \"\$(cat <<'EOF'
+Cost is \$40/mo, see \$(pwd) and \${HOME}
+EOF
+)\""
+bash_case 0 hqfb-1019-keep "cat <<'X' | jq .
+{\"price\":\"\$5\"}
+X"
+# (3) inline script text with $ or $(...)
+bash_case 0 hqfb-1019-keep "python3 - <<'PY'
+d = {\"a\": 1}
+print(f\"\${d['a']} -> done\")
+PY"
+bash_case 0 hqfb-1019-keep "node - <<'JS'
+process.stdout.write(\`\${process.env.HOME}/dist/\${name}.js\`)
+JS"
+bash_case 0 hqfb-1019-keep "python3 -c 'import os; print(os.environ[\"HOME\"] + \"\$x\")'"
+# (4) heredoc writes whose body has dollar amounts
+bash_case 0 hqfb-1019-keep "cat > workspace/note.md <<'EOF'
+Budget: \$1,200/mo, \$5/seat, \"\$3.2M\" ARR, \$(not run)
+EOF"
+bash_case 0 hqfb-1019-keep "cat > companies/otherco/settings/note.md <<'EOF'
+Revenue \$3.2M, margin \$400k/yr
+EOF"
+bash_case 2 hqfb-1019-keep "cat > companies/cmp_OTHER/settings/note.md <<'EOF'
+Revenue \$3.2M
+EOF"
+
+echo "[121] quote removal and backslash escapes are applied before company path checks"
+# bash joins adjacent quoted and unquoted pieces, drops the quotes, and
+# applies backslash escapes before it opens a file. Each blocked form below
+# reads another company's file; before this check the raw-text scan saw only
+# `compa''nies` or `oth\erco` and allowed it. Same-company and non-company
+# spellings of the same forms stay allowed.
+for scope_pair in "indigo otherco" "cmp_FIXTURE cmp_OTHER"; do
+  read -r qb qo <<< "$scope_pair"
+  install_fixture "$qb"
+  qoa="${qo:0:3}"; qob="${qo:3}"; qba="${qb:0:3}"; qbb="${qb:3}"
+  # 1. a backslash inside a path word, unquoted and double-quoted, and across /
+  bash_case 2 "[121] backslash in slug ($qo)" "cat companies/$qoa\\$qob/settings/x"
+  bash_case 2 "[121] backslash in companies ($qo)" "cat compa\\nies/$qo/settings/x"
+  bash_case 2 "[121] backslash before / ($qo)" "cat companies\\/$qo/settings/x"
+  bash_case 2 "[121] backslash in double quotes ($qo)" "cat \"companies/$qoa\\$qob/settings/x\""
+  # 2. adjacent quoted strings, single and double, and across /
+  bash_case 2 "[121] adjacent single quotes ($qo)" "cat 'compa''nies/$qoa''$qob/settings/x'"
+  bash_case 2 "[121] adjacent double quotes ($qo)" "cat \"compa\"\"nies/$qoa\"\"$qob/settings/x\""
+  bash_case 2 "[121] quote ends at / ($qo)" "cat 'companies/'$qo'/settings/x'"
+  bash_case 2 "[121] quoted companies then bare slug ($qo)" "cat \"companies\"/$qo/settings/x"
+  bash_case 2 "[121] mixed quotes across / ($qo)" "cat 'companies'\"/$qo\"/settings/x"
+  bash_case 2 "[121] unquoted then single-quoted slug ($qo)" "cat companies/$qoa'$qob'/settings/x"
+  bash_case 2 "[121] unquoted then double-quoted slug ($qo)" "cat companies/$qoa\"$qob\"/settings/x"
+  bash_case 2 "[121] empty quotes after slug ($qo)" "cat companies/$qo\"\"/x"
+  bash_case 2 "[121] option value ($qo)" "cat --file=compa''nies/$qo/x"
+  bash_case 2 "[121] file name with a space ($qo)" "cat \"compa\"\"nies/$qo/my file\""
+  bash_case 2 "[121] after a separator ($qo)" "echo ok; cat compa''nies/$qo/x"
+  bash_case 2 "[121] dotdot out of own company ($qo)" "cat 'compa''nies/$qb/../$qo/x'"
+  bash_case 2 "[121] brace list ($qo)" "cat 'compa''nies/'{$qo,$qb}/x"
+  bash_case 2 "[121] command substitution stays blocked ($qo)" "cat compa''nies/\$(echo $qo)/x"
+  # 3. eval (and sh -c) parse their text a second time
+  bash_case 2 "[121] eval adjacent double quotes ($qo)" "eval \"cat compan\"\"ies/$qo/x\""
+  bash_case 2 "[121] eval adjacent single quotes ($qo)" "eval 'cat companies/$qoa''$qob/x'"
+  bash_case 2 "[121] eval split before / ($qo)" "eval 'cat companies/'\"$qo/x\""
+  bash_case 2 "[121] eval unquoted backslash ($qo)" "eval cat compa\\\\nies/$qo/x"
+  bash_case 2 "[121] eval double-quoted backslash ($qo)" "eval \"cat companies/$qoa\\\\$qob/x\""
+  bash_case 2 "[121] eval quotes kept for the second parse ($qo)" "eval cat \"'companies/$qoa''$qob/x'\""
+  bash_case 2 "[121] nested eval ($qo)" "eval \"eval 'cat compa''nies/$qo/x'\""
+  bash_case 2 "[121] command eval ($qo)" "command eval 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] bash -c ($qo)" "bash -c 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] sh -c backslash ($qo)" "sh -c \"cat companies/$qoa\\\\$qob/x\""
+  # 4. a literal occurrence elsewhere in the command does not vouch for a
+  #    quote-split word: the inert --title value is allowed where it sits, the
+  #    --body-file word is a real file argument
+  bash_case 2 "[121] inert title does not unlock body-file ($qo)" "gh pr create --title \"companies/$qo/settings/x\" --body-file compa''nies/$qo/settings/x"
+  bash_case 2 "[121] inert hq dm body does not unlock cat ($qo)" "hq dm u --body \"companies/$qo/x\"; cat compa''nies/$qo/x"
+  # 5. program text under a launcher, and multi-line program text
+  bash_case 2 "[121] multi-line bash -c ($qo)" "bash -c 'true"$'\n'"cat compa''nies/$qo/x'"
+  bash_case 2 "[121] multi-line eval ($qo)" "eval 'true"$'\n'"cat compa''nies/$qo/x'"
+  bash_case 2 "[121] bash -ce ($qo)" "bash -ce 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] bash -ce double quotes ($qo)" "bash -ce \"cat compa''nies/$qo/x\""
+  bash_case 2 "[121] bash -o pipefail -c ($qo)" "bash -o pipefail -c 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] bash -o pipefail -c double quotes ($qo)" "bash -o pipefail -c \"cat compa''nies/$qo/x\""
+  bash_case 2 "[121] timeout 5 bash -c ($qo)" "timeout 5 bash -c 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] timeout 5 bash -c double quotes ($qo)" "timeout 5 bash -c \"cat compa''nies/$qo/x\""
+  bash_case 2 "[121] find -exec sh -c ($qo)" "find . -exec sh -c 'cat compa''nies/$qo/x' \\;"
+  bash_case 2 "[121] find -exec sh -c double quotes ($qo)" "find . -exec sh -c \"cat compa''nies/$qo/x\" \\;"
+  bash_case 2 "[121] xargs sh -c ($qo)" "echo x | xargs sh -c 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] xargs sh -c double quotes ($qo)" "echo x | xargs sh -c \"cat compa''nies/$qo/x\""
+  bash_case 2 "[121] nice bash -c ($qo)" "nice bash -c 'cat compa''nies/$qo/x'"
+  bash_case 2 "[121] nice bash -c double quotes ($qo)" "nice bash -c \"cat compa''nies/$qo/x\""
+  bash_case 2 "[121] sudo -u bash -c double quotes ($qo)" "sudo -u u bash -c \"cat compa''nies/$qo/x\""
+  bash_case 2 "[121] env eval ($qo)" "env FOO=1 nohup eval \"cat compan\"\"ies/$qo/x\""
+  bash_case 2 "[121] second path after a blank ($qo)" "bash -c 'cat core/docs/readme.md compa''nies/$qo/x'"
+  # Allowed controls: the bound company in the same spellings, and paths
+  # outside companies/.
+  bash_case 0 "[121] same company, backslash ($qb)" "cat companies/$qba\\$qbb/settings/x"
+  bash_case 0 "[121] same company, adjacent single quotes ($qb)" "cat 'compa''nies/$qba''$qbb/settings/x'"
+  bash_case 0 "[121] same company, adjacent double quotes ($qb)" "cat \"compa\"\"nies/$qba\"\"$qbb/settings/x\""
+  bash_case 0 "[121] same company, file name with a space ($qb)" "cat \"compa\"\"nies/$qb/my file\""
+  bash_case 0 "[121] same company, eval double quotes ($qb)" "eval \"cat compan\"\"ies/$qb/x\""
+  bash_case 0 "[121] same company, eval single quotes ($qb)" "eval 'cat companies/$qba''$qbb/x'"
+  bash_case 0 "[121] same company, bash -c ($qb)" "bash -c 'cat compa''nies/$qb/x'"
+  bash_case 0 "[121] non-company path ($qb)" "cat 'core/'\"docs\"/read\\me.md"
+  bash_case 0 "[121] non-company eval ($qb)" "eval 'cat core/''docs/readme.md'"
+  bash_case 0 "[121] non-company sh -c ($qb)" "sh -c 'ls core/''docs'"
+  bash_case 0 "[121] adjacent quotes in a pattern ($qb)" "grep -n 'foo''bar' core/docs/readme.md"
+  bash_case 0 "[121] escaped space in a non-company path ($qb)" "cat core/docs/a\\ b.md"
+  bash_case 0 "[121] quoted companies/ pattern ($qb)" "grep -rn 'companies/' core/docs"
+  bash_case 0 "[121] python -c program text ($qb)" "python3 -c \"print('companies/$qb/'+'x')\""
+  bash_case 0 "[121] same company, inert title and body-file ($qb)" "gh pr create --title \"companies/$qb/settings/x\" --body-file compa''nies/$qb/settings/x"
+  bash_case 0 "[121] same company, multi-line bash -c ($qb)" "bash -c 'true"$'\n'"cat compa''nies/$qb/x'"
+  bash_case 0 "[121] same company, multi-line eval ($qb)" "eval 'true"$'\n'"cat compa''nies/$qb/x'"
+  bash_case 0 "[121] same company, bash -ce ($qb)" "bash -ce 'cat compa''nies/$qb/x'"
+  bash_case 0 "[121] same company, bash -o pipefail -c ($qb)" "bash -o pipefail -c \"cat compa''nies/$qb/x\""
+  bash_case 0 "[121] same company, timeout 5 bash -c ($qb)" "timeout 5 bash -c \"cat compa''nies/$qb/x\""
+  bash_case 0 "[121] same company, find -exec sh -c ($qb)" "find . -exec sh -c 'cat compa''nies/$qb/x' \\;"
+  bash_case 0 "[121] same company, xargs sh -c ($qb)" "echo x | xargs sh -c \"cat compa''nies/$qb/x\""
+  bash_case 0 "[121] same company, nice bash -c ($qb)" "nice bash -c 'cat compa''nies/$qb/x'"
+  bash_case 0 "[121] non-company, multi-line bash -c ($qb)" "bash -c 'true"$'\n'"cat core/''docs/readme.md'"
+  bash_case 0 "[121] non-company, timeout 5 bash -c ($qb)" "timeout 5 bash -c \"cat core/''docs/readme.md\""
+  bash_case 0 "[121] non-company, find -exec sh -c ($qb)" "find . -exec sh -c 'cat core/''docs/readme.md' \\;"
+  bash_case 0 "[121] title naming the bound company ($qb)" "gh pr create --title \"fix: don't touch companies/$qb/x\" --body-file core/docs/readme.md"
+done
+echo "[bash false blocks 2026-10-20] loop ranges, interpreter templates, URL variables, heredoc JSON text, quoted company segments"
+# Rows feedback_94966335, 140ad495, 38a52829, e78113ff, cda2f6f5, c52a2d2e.
+# Neutral fixture: session bound to co-a; co-b and initech-test are other
+# tenants.
+install_fixture ""
+mkdir -p "$TMP/companies/co-a/data" "$TMP/companies/co-b/data" "$TMP/companies/initech-test/data" \
+  "$TMP/repos/private/app/data"
+printf 'companies:\n  co-a:\n    name: A\n  co-b:\n    name: B\n  initech-test:\n    name: I\n' > "$TMP/companies/manifest.yaml"
+printf 'company_slug: co-a\n' > "$TMP/workspace/sessions/sess-bound/meta.yaml"
+# shellcheck source=../lib/session-scope-capability.sh
+. "$ROOT/core/scripts/lib/session-scope-capability.sh"
+session_scope_mint "$TMP" "sess-bound" "co-a"
+# Shape 1: company paths built from loop variables or JSON text.
+bash_case 0 fb-94966335 'for d in {01..03}; do ls companies/co-a/data/2026-10-$d; done'
+bash_case 0 fb-94966335 'for d in 2026-10-01 2026-10-02; do mkdir -p companies/co-a/data/$d; done'
+bash_case 0 fb-94966335 'f=companies/co-a/data/run.sh; chmod +x "$f"'
+bash_case 0 fb-94966335 "bash core/scripts/handoff-finalize.sh --summary \"\$(cat <<'EOF'
+{\"next\": \"check companies/co-a\"}, \"cost\": \"\$5 and \$(date)\"}
+EOF
+)\""
+bash_case 0 fb-94966335 "bash core/scripts/handoff-finalize.sh --summary \"\$(cat <<'EOF'
+{\"paths\": [\"companies/co-a/data/x.md\", \"workspace/y\"]}
+EOF
+)\""
+bash_case 2 fb-94966335 'for d in {01..03}; do ls companies/co-b/data/2026-10-$d; done'
+bash_case 2 fb-94966335 'for d in {01..03}; do ls companies/co-a/../co-b/$d; done'
+bash_case 2 fb-94966335 'for d in {1..5000}; do ls companies/co-a/data/$d; done'
+bash_case 2 fb-94966335 'for c in {a..b}; do ls companies/co-$c/data; done'
+bash_case 2 fb-94966335 'f=companies/co-b/data/run.sh; chmod +x "$f"'
+bash_case 2 fb-94966335 "bash core/scripts/handoff-finalize.sh --summary \"\$(cat <<'EOF'
+{\"next\": \"check companies/initech-test\"}
+EOF
+)\""
+bash_case 2 fb-94966335 "bash core/scripts/handoff-finalize.sh --summary \"\$(cat <<'EOF'
+{\"next\": \"companies/co-a/../co-b\"}
+EOF
+)\""
+bash_case 2 fb-94966335 "bash core/scripts/handoff-finalize.sh --summary \"\$(bash <<'EOF'
+cat \"companies/co-b\"
+EOF
+)\""
+bash_case 2 fb-94966335 "cat <<'EOF' | bash
+cat \"companies/co-b\"
+EOF"
+# Shape 2: node -e / python -c programs that build paths from templates.
+bash_case 0 fb-140ad495 'cd repos/private/app && node -e '\''for (let i=0;i<3;i++) require("fs").readFileSync(`data/scent-${i}.json`)'\'''
+bash_case 0 fb-140ad495 'node -e '\''require("fs").readFileSync(`companies/co-a/data/x.json`)'\'''
+bash_case 2 fb-140ad495 'node -e '\''const c="co-b"; require("fs").readFileSync(`companies/${c}/x.json`)'\'''
+bash_case 2 fb-140ad495 'node -e '\''require("fs").readFileSync(`companies/${process.argv[1]}/x.json`)'\'' co-b'
+bash_case 2 fb-140ad495 'node -e '\''require("fs").readFileSync(`companies/co-a/${p}`)'\'''
+bash_case 2 fb-140ad495 'python3 -c '\''c="co-b"; open(f"companies/{c}/x").read()'\'''
+bash_case 2 fb-140ad495 'python3 -c '\''c="co-b"; open("companies/%s/x" % c).read()'\'''
+bash_case 2 fb-140ad495 'node -e '\''require("fs").readFileSync(`companies/co-b/x.json`)'\'''
+# Shape 3: shell variables or loops in paths.
+bash_case 0 fb-38a52829 'D=workspace/reports/x; mkdir -p "$D" && ls $D'
+bash_case 0 fb-38a52829 'for d in {3..1}; do ls workspace/x-$d; done'
+bash_case 0 fb-38a52829 'BASE=companies/co-a/data; for d in 01 02; do ls "$BASE/$d"; done'
+bash_case 2 fb-38a52829 'BASE=companies/co-b/data; for d in 01 02; do ls "$BASE/$d"; done'
+bash_case 2 fb-38a52829 'ls $UNSET_THING/data'
+# The assignment after a `cd ... &&` is skipped when cd fails, and the `;`
+# still runs the use with an inherited value: correctly refused.
+bash_case 2 fb-38a52829 'cd workspace && D=reports; ls $D/x'
+# Shape 4: $, $( ) and ${ } only inside heredoc text.
+bash_case 0 fb-e78113ff "cat > workspace/notes.md <<'EOF'
+Cost is \$5/day, run \$(date) and \${HOME}/x and \`whoami\`
+EOF"
+bash_case 0 fb-e78113ff "python3 - <<'EOF'
+print(\"costs \$40/day\")
+EOF"
+bash_case 2 fb-e78113ff 'cat > workspace/notes.md <<EOF
+$(cat companies/co-b/data/x)
+EOF'
+bash_case 2 fb-e78113ff "bash <<'EOF'
+cat companies/co-b/data/x
+EOF"
+bash_case 2 fb-e78113ff "python3 - <<'EOF'
+c = \"co-b\"
+open(f\"companies/{c}/x\").read()
+EOF"
+# Shape 5: a URL with a shell variable.
+bash_case 0 fb-cda2f6f5 'curl -s "https://cdn.example.com/files/${ID}/image.png" -o workspace/img.png'
+bash_case 0 fb-cda2f6f5 'U=https://example.com; curl -s $U/api/$ID'
+bash_case 0 fb-cda2f6f5 'U="https://cdn.example.com/files"; curl -s "$U/$V/a.png" -o workspace/a.png'
+bash_case 2 fb-cda2f6f5 'U=file:///etc; curl -s $U/$X'
+bash_case 2 fb-cda2f6f5 'U=https://example.com; U=$X; curl -s $U/a'
+bash_case 2 fb-cda2f6f5 'curl -s $U/api; U=https://example.com'
+bash_case 2 fb-cda2f6f5 'read U; U=https://example.com; curl -s $U/a'
+bash_case 2 fb-cda2f6f5 'U=https://example.com; curl -s $U/a -o companies/co-b/x'
+bash_case 2 fb-cda2f6f5 'curl -s "https://example.com/$V" -o "$OUT/x"'
+# Shape 6: mktemp variables and combined bind+read.
+bash_case 0 fb-c52a2d2e 'd=$(mktemp -d); cat $d/uv.sh'
+bash_case 0 fb-c52a2d2e 'bash core/scripts/hq-session.sh set company_slug co-a && ls companies/co-a/data'
+bash_case 2 fb-c52a2d2e 'bash core/scripts/hq-session.sh set company_slug co-b && ls companies/co-b/data'
+bash_case 2 fb-c52a2d2e 'd=$(mktemp -d companies/co-b/x.XXXX); cat $d/uv.sh'
+# A quoted company segment names that company once the shell drops quotes.
+bash_case 2 quoted-company-segment 'rm -rf "companies/co-b"'
+bash_case 2 quoted-company-segment 'ls companies/co-a"/../co-b"'
+bash_case 2 quoted-company-segment "ls 'companies/initech-test'"
+bash_case 0 quoted-company-segment 'ls "companies/co-a"'
+echo "[123] 2026-10-19 #hq-feedback: \$, \$(...) and heredoc text that names no other company"
+install_fixture "indigo"
+# (1) deploy and handoff commands: a curl header built from $(cat ...) and a
+# URL built from a variable.
+bash_case 0 hqfb-1019-deploy 'curl -s https://deploy.example.com/api/apps -H "Authorization: Bearer $(cat workspace/tok)"'
+bash_case 0 hqfb-1019-deploy 'API=https://deploy.example.com; curl -s "$API/api/apps" --header "x-token: $(cat workspace/tok)"'
+bash_case 0 hqfb-1019-deploy 'curl -s "https://deploy.example.com/api/apps/$(cat workspace/id)/deploy"'
+# (2) heredocs and substitutions with no company path: gh short options carry
+# the same text as --body/--title.
+bash_case 0 hqfb-1019-nocompany 'gh pr create -R a/b -t "fix: guard" -b "Fixes the guard; head is $(git rev-parse HEAD)"'
+bash_case 0 hqfb-1019-nocompany 'gh issue create -R a/b -t "Price check" -b "Plan costs \$5/mo"'
+# (3) inline script text with $ or $(...): a python regex and a node template
+# in a body that never reaches a shell.
+bash_case 0 hqfb-1019-script "python3 - <<'PY'
+import re
+print(re.sub(r\"\\\$(\\w+)/\", \"\", \"\$a/b\"))
+PY"
+bash_case 0 hqfb-1019-script "node - <<'JS'
+process.stdout.write(\`\${process.env.HOME}/dist/\$(name).js\`)
+JS"
+# (4) heredoc writes whose body has dollar amounts.
+bash_case 0 hqfb-1019-dollars "cat > workspace/note.md <<'EOF'
+Budget: \$1,200/mo, \$5/seat, \"\$3.2M\" ARR, \$(not run)
+EOF"
+bash_case 0 hqfb-1019-dollars "cat > companies/indigo/settings/note.md <<'EOF'
+Revenue \$3.2M, margin \$400k/yr
+EOF"
+# Real cross-company access in the same shapes still blocks.
+bash_case 2 hqfb-1019-neg 'curl -s -H "x-token: $(cat companies/otherco/settings/tok)" https://a.example.com'
+bash_case 2 hqfb-1019-neg 'curl -s -H @companies/otherco/settings/h https://a.example.com'
+bash_case 2 hqfb-1019-neg 'curl -s -H @"$H/h" https://a.example.com'
+bash_case 2 hqfb-1019-neg 'gh pr create -t t -b "$(cat companies/otherco/settings/x)"'
+bash_case 2 hqfb-1019-neg 'gh pr create -t t -b "see $(cat companies/otherco/settings/x)"'
+bash_case 2 hqfb-1019-neg "python3 - <<'PY'
+open(\"companies/otherco/x\", \"w\").write(\"\$5/mo \$(x)\")
+PY"
+bash_case 2 hqfb-1019-neg "python3 - <<'PY'
+import os
+os.system(\"cat \$(echo companies/\$CO)/x\")
+PY"
+bash_case 2 hqfb-1019-neg "cat > companies/otherco/settings/note.md <<'EOF'
+Revenue \$3.2M
+EOF"
+bash_case 2 hqfb-1019-neg 'X=companies/otherco; cat "$X/settings/foo.yaml"'
+bash_case 2 hqfb-1019-neg 'cat "$(echo companies/otherco/settings/foo.yaml)"'
+# Cluster A (feedback ddd43d3e, 5e8abad5, a6435e4f, 5e84d816, e2b0f0b4, e2b4e37d,
+# 0b5926d1, fd9972dc, 22779873, b954a6a7): heredoc bodies, quoted strings and
+# inline scripts are data; only real path operands and write targets are
+# checked. Each allowed shape has a case showing the same shape aimed at
+# another company is still blocked. Neutral fixture: co-a bound, co-b not.
+echo "[cluster A] data text is not a path; co-a bound, co-b stays blocked"
+install_fixture ""
+mkdir -p "$TMP/companies/co-a/settings" "$TMP/companies/co-a/policies" \
+  "$TMP/companies/co-b/settings" "$TMP/repos/private/app" "$TMP/workspace/tmp"
+printf 'companies:\n  co-a:\n    name: co-a\n  co-b:\n    name: co-b\n' > "$TMP/companies/manifest.yaml"
+printf 'company_slug: co-a\n' > "$TMP/workspace/sessions/sess-bound/meta.yaml"
+. "$ROOT/core/scripts/lib/session-scope-capability.sh"
+session_scope_mint "$TMP" "sess-bound" "co-a"
+scope_env_case() { # scope_env_case <expect> <name> <command> [env assignments...]
+  local expect="$1" name="$2" command="$3" payload rc=0
+  shift 3
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  : > "$TMP/err.txt"
+  printf '%s' "$payload" | env "$@" "${BASH_BIN:-bash}" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+  expect_exit "$expect" "$rc" "$name: $(printf '%s' "$command" | tr '\n' ' ')"
+}
+bash_case 0 ddd43d3e-literal-var 'D=/opt/cache/_npx; ls $D; find $D -maxdepth 1'
+bash_case 2 ddd43d3e-neg-subst-into-company 'D="$(echo companies/co-b)"; cat "$D/settings/x"'
+bash_case 2 ddd43d3e-neg-unset-under-companies 'ls companies/$UNSET_CO/settings'
+bash_case 0 5e8abad5-var-own-company 'P=companies/co-a/policies; ls $P; cat "$P/a.md"'
+bash_case 0 5e8abad5-var-own-company-loop 'P=companies/co-a; for f in policies settings; do ls "$P/$f"; done'
+bash_case 2 5e8abad5-neg-var-other-company 'P=companies/co-b/settings; cat "$P/x"'
+bash_case 0 a6435e4f-grep-alternation 'grep -rilE "stripe|env|secret" companies/co-a'
+bash_case 0 a6435e4f-grep-alt-pipe-set 'grep -ril '\''token|set|key'\'' companies/co-a | head -20'
+bash_case 0 a6435e4f-cat-policy 'cat companies/co-a/policies/aws.env.md'
+bash_case 0 a6435e4f-find-grep 'find companies/co-a -name '\''*.md'\'' | xargs grep -l "env"'
+bash_case 2 a6435e4f-neg-grep-other 'grep -ril "stripe|env" companies/co-b'
+bash_case 0 5e84d816-py-heredoc-template-literal 'python3 - <<'\''EOF'\''
+import re
+p = '\''repos/private/app/qa-exp.js'\''
+s = open(p).read()
+s = s.replace("old", "`${base}/api/${id}`")
+s = re.sub(r'\''\$\{(\w+)\}'\'', r'\''{\1}'\'', s)
+open(p, '\''w'\'').write(s)
+EOF'
+bash_case 0 5e84d816-node-heredoc-regex 'node - <<'\''EOF'\''
+const fs = require('\''fs'\'');
+const p = '\''repos/private/app/qa-exp.js'\'';
+let s = fs.readFileSync(p, '\''utf8'\'');
+s = s.replace(/\$\{(\w+)\}/g, (m, k) => `${k}`);
+fs.writeFileSync(p, s);
+EOF'
+bash_case 2 5e84d816-neg-py-heredoc-other-company 'python3 - <<'\''EOF'\''
+s = open('\''companies/co-b/settings/x'\'').read()
+print(f"{s}")
+EOF'
+bash_case 0 e2b0f0b4-json-heredoc-own-policy-globs 'python3 - <<'\''EOF'\''
+import json
+prd = {"stories": [{"id": "US-1", "files": ["companies/co-a/policies/*.md", "companies/co-a/policies/{a,b}.md"]}]}
+json.dump(prd, open('\''companies/co-a/projects-prd.json'\'', '\''w'\''), indent=2)
+EOF'
+bash_case 2 e2b0f0b4-neg-json-heredoc-other-company 'python3 - <<'\''EOF'\''
+import json
+prd = {"files": ["companies/co-b/policies/*.md"]}
+json.dump(prd, open('\''companies/co-a/projects-prd.json'\'', '\''w'\''))
+EOF'
+bash_case 0 e2b4e37d-py-fstrings-arrows 'python3 - <<'\''EOF'\''
+def f(x: int) -> str:
+    return f"${x:,.2f} -> {x!r}"
+tpl = "${name}/${id}"
+print(f(3), tpl)
+EOF'
+bash_case 0 e2b4e37d-py-c-fstring 'python3 -c '\''x=3; print(f"${x} -> {x}")'\'''
+bash_case 2 e2b4e37d-neg-py-c-other-company 'python3 -c '\''print(open("companies/co-b/settings/x").read())'\'''
+bash_case 0 0b5926d1-deploy-api-var 'API=https://api.example.com; curl -s "$API/api/apps" -H "Authorization: Bearer $TOKEN"'
+bash_case 0 0b5926d1-deploy-cat-subst 'API=https://api.example.com; curl -s -X POST "$API/api/apps" -d "$(cat workspace/tmp/deploy.json)"'
+bash_case 0 0b5926d1-presigned-upload 'URL=$(curl -s https://api.example.com/upload | jq -r .url); curl -s -X PUT --upload-file workspace/tmp/site.zip "$URL"'
+bash_case 0 0b5926d1-handoff-vars 'TS=$(date +%Y%m%d-%H%M); mkdir -p workspace/threads; cp workspace/tmp/h.md "workspace/threads/handoff-$TS.md"'
+bash_case 2 0b5926d1-neg-subst-write-under-companies 'TS=$(date +%s); cp workspace/tmp/h.md "companies/$(cat /tmp/co)/h-$TS.md"'
+bash_case 0 fd9972dc-gh-pr-body 'gh pr create --title "fix: x" --body "$(cat <<'\''EOF'\''
+Uses `${HOME}/x` and $(pwd) in the docs.
+Cost: $5.
+EOF
+)"'
+bash_case 0 fd9972dc-curl-subst 'curl -s https://api.example.com/v1/items -d "{\"since\": \"$(date -u +%FT%TZ)\"}"'
+bash_case 0 22779873-sed-liquid 'sed -i '\'''\'' '\''s/{{ \$price }}/{{ \$amount | money }}/g'\'' repos/private/app/theme.liquid'
+bash_case 0 22779873-py-heredoc-liquid 'python3 - <<'\''EOF'\''
+p = '\''repos/private/app/theme.liquid'\''
+s = open(p).read().replace('\''$X'\'', '\''${{ price }}'\'')
+open(p, '\''w'\'').write(s)
+EOF'
+bash_case 0 b954a6a7-heredoc-dollars 'cat > companies/co-a/note.md <<'\''EOF'\''
+Budget is $30k/mo, $5 per seat, $1.2M ARR.
+EOF'
+bash_case 0 b954a6a7-heredoc-dollars-unquoted-safe 'cat > workspace/tmp/note.md <<EOF
+Budget is \$30k/mo.
+EOF'
+bash_case 2 b954a6a7-neg-heredoc-write-other-company 'cat > companies/co-b/note.md <<'\''EOF'\''
+Budget is $30k/mo.
+EOF'
+bash_case 2 neg-unquoted-heredoc-expands-into-company 'cat > "companies/${CO}/note.md" <<EOF
+x
+EOF'
+bash_case 2 neg-quoted-string-real-path-operand 'cat "companies/co-b/settings/x"'
+bash_case 2 neg-py-c-subprocess-unset 'python3 -c "import os; os.system('\''cat companies/$CO/x'\'')"'
+bash_case 0 heredoc-tmp-dollars 'cat > /tmp/lane-a-note.md <<'\''EOF'\''
+Total $S and $(git rev-parse HEAD) cost $30.
+EOF'
+bash_case 0 grep-own-subst-pattern 'P=$(date +%Y); grep -rn "$P" companies/co-a/policies'
+# At the HQ root, `git ls-files` lists every company's tracked files and
+# `git show HEAD:$f` prints them, so this loop reads other companies' files
+# through git objects. #1465 allowed it; the combined guard (#1476's
+# substitution tracking) blocks it.
+bash_case 2 git-show-loop 'for f in $(git ls-files '\''*.md'\''); do git show HEAD:$f > /dev/null; done'
+bash_case 2 neg-grep-other 'grep -rn token companies/co-b/settings'
+bash_case 2 neg-heredoc-write-other 'cat > companies/co-b/x.md <<'\''EOF'\''
+Cost $5.
+EOF'
+bash_case 2 neg-node-childproc 'node - <<'\''EOF'\''
+const cp = require('\''child_process'\'');
+cp.execSync(`cat ${D}/x`);
+EOF'
+bash_case 2 neg-node-require-dynamic 'node - <<'\''EOF'\''
+const m = require('\''fs'\'' + x);
+const p = `${d}/x`;
+EOF'
+bash_case 2 neg-comsub-odd-backtick 'gh pr create --body "$(cat <<'\''EOF'\''
+a ` b )
+cat companies/co-b/x
+EOF
+)"'
+bash_case 2 neg-comsub-paren-in-backtick 'gh pr create --body "$(cat <<'\''EOF'\''
+a `)` b
+cat companies/co-b/x
+EOF
+)"'
+bash_case 2 node-fs-template-path 'node - <<'\''EOF'\''
+const b='\''x'\'';
+require('\''fs'\'').writeFileSync(`workspace/tmp/${b}.txt`,'\''y'\'');
+EOF'
+bash_case 2 node-fs-var-dir 'node - <<'\''EOF'\''
+const fs = require('\''fs'\'');
+fs.writeFileSync(`${D}/x.txt`, '\''y'\'');
+EOF'
+bash_case 0 node-fs-template-value 'node - <<'\''EOF'\''
+const fs = require('\''node:fs'\'');
+const s = fs.readFileSync('\''repos/private/app/a.js'\'', '\''utf8'\'').replace(/\$\{(\w+)\}/g, (m, k) => `${k}`);
+fs.writeFileSync('\''repos/private/app/a.js'\'', s);
+EOF'
+bash_case 2 node-fs-other-company 'node - <<'\''EOF'\''
+const fs = require('\''fs'\'');
+fs.writeFileSync('\''companies/co-b/x.txt'\'', `${k}`);
+EOF'
+# ddd43d3e: `npm config get cache` maps like `npm root -g`. The fake npm
+# prints $OUTSIDE/npm-global; cob there is a link into co-b.
+ln -sfn "$TMP/companies/co-b/settings" "$OUTSIDE/npm-global/cob"
+scope_env_case 0 ddd43d3e-npm-cache-ls 'D="$(npm config get cache)/plain"; ls "$D" | head' PATH="$OUTSIDE/fakebin-out:$PATH"
+scope_env_case 0 ddd43d3e-npm-cache-find 'C=$(npm config get cache); find "$C/plain" -maxdepth 2 -name package.json' PATH="$OUTSIDE/fakebin-out:$PATH"
+scope_env_case 2 ddd43d3e-neg-npm-cache-link 'C=$(npm config get cache); cat "$C/cob/x.yaml"' PATH="$OUTSIDE/fakebin-out:$PATH"
+scope_env_case 2 ddd43d3e-neg-npm-cache-parent 'C=$(npm config get cache); cat "$C/../npm-global/cob/x.yaml"' PATH="$OUTSIDE/fakebin-out:$PATH"
+scope_env_case 2 ddd43d3e-neg-npm-cache-in-hq 'C=$(npm config get cache); cat "$C/x.yaml"' PATH="$OUTSIDE/fakebin-in:$PATH"
+# $TMPDIR maps to the caller's temp folder unless the command sets it.
+mkdir -p "$OUTSIDE/tmpd"
+scope_env_case 0 tmpdir-write 'echo hi > "$TMPDIR/hq-x.txt"' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 0 tmpdir-braced 'mkdir -p "${TMPDIR}/lane"; ls "${TMPDIR}/lane"' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 neg-tmpdir-into-company 'TMPDIR=companies/co-b; echo hi > "$TMPDIR/x"' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 neg-tmpdir-export 'export TMPDIR=companies/co-b; echo hi > "$TMPDIR/x"' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 neg-tmpdir-under-company 'echo hi > "$TMPDIR/x"' TMPDIR="$TMP/companies/co-b"
+scope_env_case 0 tmpdir-under-own-company 'echo hi > "$TMPDIR/x"' TMPDIR="$TMP/companies/co-a"
+scope_env_case 2 neg-tmpdir-relative 'echo hi > "$TMPDIR/x"' TMPDIR="companies/co-b"
+# Same-shape negatives for rows whose cases above only miss with an
+# unknown name.
+bash_case 2 0b5926d1-neg-var-write-other-company 'TS=$(date +%s); cp workspace/tmp/h.md "companies/co-b/h-$TS.md"'
+bash_case 2 22779873-neg-sed-other-company "sed -i '' 's/{{ \\\$price }}/{{ \\\$amount }}/g' companies/co-b/theme.liquid"
+bash_case 2 e2b4e37d-neg-py-heredoc-fstring-other-company 'python3 - <<'"'"'EOF'"'"'
+x = open("companies/co-b/settings/x").read()
+print(f"${x} -> {x!r}")
+EOF'
+# Cluster A: text the parser cannot close (a heredoc with no end line, an
+# open quote, $( or ${) is not treated as data; the command fails closed.
+bash_case 2 parse-unterminated-heredoc-other 'cat > workspace/tmp/x.md <<'\''EOF'\''
+Cost $5.
+cat companies/co-b/x'
+bash_case 2 parse-unterminated-quote-other 'echo "Cost $5; cat companies/co-b/x'
+bash_case 2 parse-unclosed-comsub-other 'gh pr create --body "$(cat <<'\''EOF'\''
+Total $5
+EOF
+; cat companies/co-b/x'
+bash_case 2 parse-unclosed-brace-other 'echo "${A; cat companies/co-b/x"'
+bash_case 2 parse-py-heredoc-unterminated-other 'python3 - <<'\''EOF'\''
+print(f"${x}")
+open('\''companies/co-b/x'\'', '\''w'\'').write('\''y'\'')'
+
+# M1 (PR 1465 review): $TMPDIR, $HOME and $PWD map only while nothing
+# in the command can set them. Every builtin that sets a variable named by
+# an operand counts, whatever the operand, so a quoted name fails closed too.
+# workspace/p.txt names another company, but the hook cannot see that.
+mkdir -p "$OUTSIDE/home"
+printf 'companies/co-b\n' > "$TMP/workspace/p.txt"
+scope_env_case 0 m1-tmpdir-plain 'cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-mapfile-tmpdir 'mapfile -t TMPDIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-readarray-tmpdir 'readarray -t TMPDIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-getopts-tmpdir 'getopts a TMPDIR -a; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-printf-v-tmpdir 'printf -v TMPDIR %s "$(cat workspace/p.txt)"; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-let-tmpdir 'let TMPDIR=1; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-local-tmpdir 'f() { local TMPDIR=$(cat workspace/p.txt); cp workspace/tmp/h.md $TMPDIR/x; }; f' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-typeset-tmpdir 'typeset TMPDIR=$(cat workspace/p.txt); cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-select-tmpdir 'select TMPDIR in $(cat workspace/p.txt); do cp workspace/tmp/h.md $TMPDIR/x; break; done' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-for-in-tmpdir 'for TMPDIR in $(cat workspace/p.txt); do cp workspace/tmp/h.md $TMPDIR/x; done' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 m1-neg-quoted-name-tmpdir 'mapfile -t "TMP"DIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 0 m1-home-plain 'cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-mapfile-home 'mapfile -t HOME < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-readarray-home 'readarray -t HOME < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-getopts-home 'getopts a HOME -a; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-printf-v-home 'printf -v HOME %s "$(cat workspace/p.txt)"; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-let-home 'let HOME=1; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-local-home 'f() { local HOME=$(cat workspace/p.txt); cp workspace/tmp/h.md $HOME/x; }; f' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-typeset-home 'typeset HOME=$(cat workspace/p.txt); cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-select-home 'select HOME in $(cat workspace/p.txt); do cp workspace/tmp/h.md $HOME/x; break; done' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-for-in-home 'for HOME in $(cat workspace/p.txt); do cp workspace/tmp/h.md $HOME/x; done' HOME="$OUTSIDE/home"
+scope_env_case 2 m1-neg-quoted-name-home 'mapfile -t "HOM"E < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 m1-pwd-plain 'cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-mapfile-pwd 'mapfile -t PWD < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-readarray-pwd 'readarray -t PWD < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-getopts-pwd 'getopts a PWD -a; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-printf-v-pwd 'printf -v PWD %s "$(cat workspace/p.txt)"; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-let-pwd 'let PWD=1; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-local-pwd 'f() { local PWD=$(cat workspace/p.txt); cp workspace/tmp/h.md $PWD/x; }; f'
+scope_env_case 2 m1-neg-typeset-pwd 'typeset PWD=$(cat workspace/p.txt); cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 m1-neg-select-pwd 'select PWD in $(cat workspace/p.txt); do cp workspace/tmp/h.md $PWD/x; break; done'
+scope_env_case 2 m1-neg-for-in-pwd 'for PWD in $(cat workspace/p.txt); do cp workspace/tmp/h.md $PWD/x; done'
+scope_env_case 2 m1-neg-quoted-name-pwd 'mapfile -t "PWD" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+# A backtick span in a quoted-delimiter heredoc body is text; with an
+# unquoted delimiter the shell runs it, so it stays scanned.
+bash_case 0 heredoc-quoted-backtick 'cat <<'"'"'EOF'"'"'
+See `api/v1/x` and https://example.com/docs#frag here.
+EOF'
+bash_case 2 heredoc-neg-unquoted-backtick 'cat <<EOF
+See `api/v1/x` and https://example.com/docs#frag here.
+EOF'
+# An assigned heredoc value stays scanned: the variable can be used as a
+# path later in the same command.
+bash_case 2 heredoc-neg-assigned-value-other 'X=$(cat <<'"'"'EOF'"'"'
+companies/co-b/settings/x
+EOF
+); cat "$X"'
+# 40e7c20d: URL fragments and full paths outside HQ in a heredoc body
+# are allowed; the same heredoc written into another company is not.
+bash_case 0 40e7c20d-heredoc-url-and-abs-path 'cat <<EOF
+Docs at https://example.com/guide#setup, binary in /usr/local/bin.
+EOF'
+bash_case 2 40e7c20d-neg-heredoc-into-other-company 'cat > companies/co-b/x.md <<EOF
+Docs at https://example.com/guide#setup, binary in /usr/local/bin.
+EOF'
+# 265579a9: a variable holding an in-scope path, as skills document, is
+# allowed; the same shape holding another company's path is not.
+bash_case 0 265579a9-skill-var-path 'DIR=workspace/x; ls "$DIR/y"'
+bash_case 2 265579a9-neg-skill-var-other-company 'DIR=companies/co-b/settings; ls "$DIR"'
+
+# r3 (PR 1465 review): a variable-setting builtin counts only in command
+# position. The same word inside a quoted argument, a comment, a file name
+# or a quoted heredoc body is data, and $TMPDIR, $HOME and $PWD still
+# settle.
+mkdir -p "$OUTSIDE/home/Desktop" "$OUTSIDE/tmpd"
+scope_env_case 0 r3-allow-grep-select-arg 'grep -rn "select" core/docs; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r3-allow-let-in-comment 'ffmpeg -i $HOME/Desktop/x.mov $HOME/Desktop/y.mp4 # let it run' HOME="$OUTSIDE/home"
+scope_env_case 0 r3-allow-source-in-file-name 'cp "$PWD/workspace/source.txt" workspace/b'
+scope_env_case 0 r3-allow-quoted-heredoc-body 'cat > workspace/n.md <<'"'"'EOF'"'"'
+read this, then let it go; source: select
+EOF
+ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r3-allow-setter-words-as-args 'echo read declare export local; ls $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+# The same words in command position still fail closed: behind a wrapper
+# or an assignment prefix, as a computed or quoted command word, after a
+# quoted heredoc ends, or on the line after a comment. Arithmetic that can
+# assign through a value (a subscript, a substring offset, a [[ numeric
+# test) fails closed too.
+printf 'companies/co-b\n' > "$TMP/workspace/p.txt"
+scope_env_case 2 r3-neg-builtin-read-tmpdir 'builtin read TMPDIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-command-mapfile-tmpdir 'command mapfile -t TMPDIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-ifs-read-tmpdir 'IFS=: read -r TMPDIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-export-n-tmpdir 'export -n TMPDIR; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-dot-file-tmpdir '. workspace/p.sh; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-dynamic-command-tmpdir 'c=rea; n=TMP; n+=DIR; ${c}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-quoted-command-tmpdir 'n=TMP; n+=DIR; "read" -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-computed-subscript-tmpdir 'n=TMP; n+=DIR=7; a[n]=1; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-computed-substring-tmpdir 'n=TMP; n+=DIR=7; echo "${s:n}"; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-dbl-bracket-eq-tmpdir 'n=TMP; n+=DIR=7; [[ n -eq 7 ]]; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-after-quoted-heredoc-tmpdir 'cat > workspace/n.md <<'"'"'EOF'"'"'
+hi
+EOF
+read -r TMPDIR < workspace/p.txt
+cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-after-comment-line-tmpdir 'ls # note
+read -r TMPDIR < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r3-neg-builtin-read-home 'builtin read HOME < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-command-mapfile-home 'command mapfile -t HOME < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-ifs-read-home 'IFS=: read -r HOME < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-export-n-home 'export -n HOME; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-dot-file-home '. workspace/p.sh; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-dynamic-command-home 'c=rea; n=HO; n+=ME; ${c}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-quoted-command-home 'n=HO; n+=ME; "read" -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-computed-subscript-home 'n=HO; n+=ME=7; a[n]=1; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-computed-substring-home 'n=HO; n+=ME=7; echo "${s:n}"; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-dbl-bracket-eq-home 'n=HO; n+=ME=7; [[ n -eq 7 ]]; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-after-quoted-heredoc-home 'cat > workspace/n.md <<'"'"'EOF'"'"'
+hi
+EOF
+read -r HOME < workspace/p.txt
+cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-after-comment-line-home 'ls # note
+read -r HOME < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r3-neg-builtin-read-pwd 'builtin read PWD < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-command-mapfile-pwd 'command mapfile -t PWD < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-ifs-read-pwd 'IFS=: read -r PWD < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-export-n-pwd 'export -n PWD; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-dot-file-pwd '. workspace/p.sh; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-dynamic-command-pwd 'c=rea; n=P; n+=WD; ${c}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-quoted-command-pwd 'n=P; n+=WD; "read" -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-computed-subscript-pwd 'n=P; n+=WD=7; a[n]=1; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-computed-substring-pwd 'n=P; n+=WD=7; echo "${s:n}"; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-dbl-bracket-eq-pwd 'n=P; n+=WD=7; [[ n -eq 7 ]]; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-after-quoted-heredoc-pwd 'cat > workspace/n.md <<'"'"'EOF'"'"'
+hi
+EOF
+read -r PWD < workspace/p.txt
+cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r3-neg-after-comment-line-pwd 'ls # note
+read -r PWD < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+
+# r4 (PR 1465 review): bash brace-expands and globs the command word before
+# it looks up the builtin, so a command word that only becomes a setter after
+# expansion fails closed. So does a wrapper operand or printf option built
+# that way, and a NAME=$(...) prefix in front of such a word. Globs and
+# braces in arguments stay data.
+scope_env_case 0 r4-allow-ls-glob-arg 'ls *.md; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-ls-glob-arg-tmpdir 'ls workspace/*.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 0 r4-allow-grep-brace-arg 'grep -r x {a,b}; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-grep-brace-pwd 'grep -r x "$PWD"/{a,b}'
+scope_env_case 0 r4-allow-bracket-arg 'cat workspace/[ab].txt; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-question-arg 'ls workspace/?.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 0 r4-allow-setter-brace-glob-args 'echo {read,x} r*d; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-cp-glob-arg 'cp workspace/*.txt "$PWD/workspace/b"'
+scope_env_case 0 r4-allow-for-glob 'for f in workspace/*.md; do ls $HOME/x; done' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-brace-group-glob '{ ls *.md; ls $HOME/x; }' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-find-exec-braces 'find workspace -name '"'"'*.md'"'"' -exec cat {} \; ; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 0 r4-allow-home-tool-path '~/bin/tool --flag; ls $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-brace-cmd-tmpdir 'n=TMP; n+=DIR; {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-brace-cmd-split-tmpdir 'n=TMP; n+=DIR; {rea,}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-brace-seq-tmpdir 'n=TMP; n+=DIR; re{a..a}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-brace-cmd-slash-tmpdir 'n=TMP; n+=DIR; {read,/x} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-glob-question-tmpdir 'n=TMP; n+=DIR; touch read; rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-glob-star-tmpdir 'n=TMP; n+=DIR; touch read; r*d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-glob-bracket-tmpdir 'n=TMP; n+=DIR; touch read; re[a]d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-glob-star-alone-tmpdir 'n=TMP; n+=DIR; touch read; * -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-extglob-tmpdir 'n=TMP; n+=DIR; touch read; @(read) -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-builtin-brace-tmpdir 'n=TMP; n+=DIR; builtin {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-command-glob-tmpdir 'n=TMP; n+=DIR; touch read; command rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-time-brace-tmpdir 'n=TMP; n+=DIR; time {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-printf-glob-option-tmpdir 'n=TMP; n+=DIR; touch ./-v; printf -? "$n" x; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-comsub-prefix-glob-tmpdir 'n=TMP; n+=DIR; touch read; X=$(echo y) rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-comsub-prefix-brace-tmpdir 'n=TMP; n+=DIR; X=$(echo y) {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-comsub-prefix-dynamic-tmpdir 'n=TMP; n+=DIR; X=$(echo y) $(echo read) -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-comsub-cmd-word-tmpdir 'n=TMP; n+=DIR; $(echo re)ad -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-backtick-cmd-word-tmpdir 'n=TMP; n+=DIR; `echo re`ad -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-brace-around-comsub-tmpdir 'n=TMP; n+=DIR; {rea$(echo d),} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-subshell-brace-tmpdir 'n=TMP; n+=DIR; ( {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $TMPDIR/x )' TMPDIR="$OUTSIDE/tmpd"
+scope_env_case 2 r4-neg-brace-cmd-home 'n=HO; n+=ME; {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-brace-cmd-split-home 'n=HO; n+=ME; {rea,}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-brace-seq-home 'n=HO; n+=ME; re{a..a}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-brace-cmd-slash-home 'n=HO; n+=ME; {read,/x} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-glob-question-home 'n=HO; n+=ME; touch read; rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-glob-star-home 'n=HO; n+=ME; touch read; r*d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-glob-bracket-home 'n=HO; n+=ME; touch read; re[a]d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-glob-star-alone-home 'n=HO; n+=ME; touch read; * -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-extglob-home 'n=HO; n+=ME; touch read; @(read) -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-builtin-brace-home 'n=HO; n+=ME; builtin {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-command-glob-home 'n=HO; n+=ME; touch read; command rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-time-brace-home 'n=HO; n+=ME; time {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-printf-glob-option-home 'n=HO; n+=ME; touch ./-v; printf -? "$n" x; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-comsub-prefix-glob-home 'n=HO; n+=ME; touch read; X=$(echo y) rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-comsub-prefix-brace-home 'n=HO; n+=ME; X=$(echo y) {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-comsub-prefix-dynamic-home 'n=HO; n+=ME; X=$(echo y) $(echo read) -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-comsub-cmd-word-home 'n=HO; n+=ME; $(echo re)ad -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-backtick-cmd-word-home 'n=HO; n+=ME; `echo re`ad -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-brace-around-comsub-home 'n=HO; n+=ME; {rea$(echo d),} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-subshell-brace-home 'n=HO; n+=ME; ( {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $HOME/x )' HOME="$OUTSIDE/home"
+scope_env_case 2 r4-neg-brace-cmd-pwd 'n=P; n+=WD; {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-brace-cmd-split-pwd 'n=P; n+=WD; {rea,}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-brace-seq-pwd 'n=P; n+=WD; re{a..a}d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-brace-cmd-slash-pwd 'n=P; n+=WD; {read,/x} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-glob-question-pwd 'n=P; n+=WD; touch read; rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-glob-star-pwd 'n=P; n+=WD; touch read; r*d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-glob-bracket-pwd 'n=P; n+=WD; touch read; re[a]d -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-glob-star-alone-pwd 'n=P; n+=WD; touch read; * -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-extglob-pwd 'n=P; n+=WD; touch read; @(read) -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-builtin-brace-pwd 'n=P; n+=WD; builtin {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-command-glob-pwd 'n=P; n+=WD; touch read; command rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-time-brace-pwd 'n=P; n+=WD; time {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-printf-glob-option-pwd 'n=P; n+=WD; touch ./-v; printf -? "$n" x; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-comsub-prefix-glob-pwd 'n=P; n+=WD; touch read; X=$(echo y) rea? -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-comsub-prefix-brace-pwd 'n=P; n+=WD; X=$(echo y) {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-comsub-prefix-dynamic-pwd 'n=P; n+=WD; X=$(echo y) $(echo read) -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-comsub-cmd-word-pwd 'n=P; n+=WD; $(echo re)ad -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-backtick-cmd-word-pwd 'n=P; n+=WD; `echo re`ad -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-brace-around-comsub-pwd 'n=P; n+=WD; {rea$(echo d),} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x'
+scope_env_case 2 r4-neg-subshell-brace-pwd 'n=P; n+=WD; ( {read,} -r "$n" < workspace/p.txt; cp workspace/tmp/h.md $PWD/x )'
+
+# feedback_0909443c: a quoted heredoc body with backticks or ${} is data when it
+# is written to a workspace/ or personal/ target, and a for-loop over a path in
+# the session's own bound company is allowed. Each allowed shape is paired with
+# the same shape aimed at another company, which stays blocked.
+echo "[0909443c] heredoc backticks, \${} and own-company loops; co-b stays blocked"
+mkdir -p "$TMP/personal/skills/master" "$TMP/companies/co-a/data/b1" "$TMP/companies/co-a/data/b2"
+bash_case 0 0909443c-js-heredoc-template-workspace 'cat > workspace/tmp/qa.js <<'\''EOF'\''
+const url = `${base}/api/${id}`;
+const p = `companies/co-a/data/${b}/facts.json`;
+EOF'
+bash_case 2 0909443c-neg-js-heredoc-template-other-company 'cat > companies/co-b/settings/qa.js <<'\''EOF'\''
+const url = `${base}/api/${id}`;
+EOF'
+bash_case 2 0909443c-neg-js-heredoc-reads-other-company 'cat > workspace/tmp/qa.js <<'\''EOF'\''
+const url = `${base}/api/${id}`;
+EOF
+cat companies/co-b/settings/x'
+bash_case 0 0909443c-md-heredoc-backticks-personal 'cat >> personal/skills/master/SKILL.md <<'\''EOF'\''
+- Run `scripts/build.sh` and then `scripts/check.sh`.
+- Facts are in `companies/co-a/data/<b>/facts.json`.
+EOF'
+bash_case 2 0909443c-neg-md-heredoc-backticks-other-company 'cat >> companies/co-b/settings/SKILL.md <<'\''EOF'\''
+- Run `scripts/build.sh` and then `scripts/check.sh`.
+EOF'
+bash_case 0 0909443c-heredoc-braces-workspace 'cat > workspace/tmp/notes.md <<'\''EOF'\''
+Path template: ${HQ_ROOT}/companies/${co}/data/${b}
+EOF'
+bash_case 2 0909443c-neg-heredoc-braces-other-company 'cat > companies/co-b/settings/notes.md <<'\''EOF'\''
+Path template: ${HQ_ROOT}/companies/${co}/data/${b}
+EOF'
+bash_case 0 0909443c-tee-heredoc-backticks-workspace 'tee workspace/tmp/notes.md <<'\''EOF'\''
+Use `jq .` on `${file}`.
+EOF'
+bash_case 2 0909443c-neg-tee-heredoc-backticks-other-company 'tee companies/co-b/settings/notes.md <<'\''EOF'\''
+Use `jq .` on `${file}`.
+EOF'
+bash_case 0 0909443c-own-company-loop-literal-var 'for b in b1 b2; do cat companies/co-a/data/$b/facts.json; done'
+bash_case 2 0909443c-neg-other-company-loop-literal-var 'for b in b1 b2; do cat companies/co-b/data/$b/facts.json; done'
+bash_case 0 0909443c-own-company-loop-quoted-var 'for b in b1 b2; do jq . "companies/co-a/data/${b}/facts.json"; done'
+bash_case 2 0909443c-neg-other-company-loop-quoted-var 'for b in b1 b2; do jq . "companies/co-b/data/${b}/facts.json"; done'
+bash_case 0 0909443c-own-company-loop-slug-var 'for co in co-a; do ls companies/$co/data; done'
+bash_case 2 0909443c-neg-other-company-loop-slug-var 'for co in co-b; do ls companies/$co/data; done'
+bash_case 2 0909443c-neg-mixed-company-loop-slug-var 'for co in co-a co-b; do ls companies/$co/data; done'
+
+# Function calls that the call-site scan cannot see: a subshell, a command
+# substitution, backticks, a variable or computed command word, eval, source,
+# a nested shell, a glob command word, or set -a. A visible literal call beside
+# them must not settle the positional for the hidden one.
+install_fixture "indigo"
+echo s > "$TMP/companies/otherco/settings/x.yaml"
+echo s > "$TMP/companies/indigo/settings/x.yaml"
+FL='w(){ local d="companies/$1"; cat "$d/settings/x.yaml"; }'
+FP='w(){ cat "companies/$1/settings/x.yaml"; }'
+for F in "$FL" "$FP"; do
+  bash_case 2 indirect-fn "$F; w indigo; (w otherco)"
+  bash_case 2 indirect-fn "$F; w indigo; (w otherco) &"
+  bash_case 2 indirect-fn "$F; w indigo; echo \"\$(w otherco)\""
+  bash_case 2 indirect-fn "$F; w indigo; echo \$(w otherco)"
+  bash_case 2 indirect-fn "$F; w indigo; echo \`w otherco\`"
+  bash_case 2 indirect-fn "W=w; $F; w indigo; \$W otherco"
+  bash_case 2 indirect-fn "$F; W=w; w indigo; \"\$W\" otherco"
+  bash_case 2 indirect-fn "$F; F=w; w indigo; \${F} otherco"
+  bash_case 2 indirect-fn "$F; V=xw; w indigo; \${V:1} otherco"
+  bash_case 2 indirect-fn "$F; w indigo; \$(printf '\\167') otherco"
+  bash_case 2 indirect-fn "$F; w indigo; \$'\\167' otherco"
+  bash_case 2 indirect-fn "$F; w indigo; eval \"w otherco\""
+  bash_case 2 indirect-fn "$F; w indigo; eval w otherco"
+  bash_case 2 indirect-fn "$F; w indigo; eval \"\$(cat /tmp/calls)\""
+  bash_case 2 indirect-fn "$F; w indigo; source /tmp/calls"
+  bash_case 2 indirect-fn "$F; w indigo; . /tmp/calls"
+  bash_case 2 indirect-fn "$F; export -f w; w indigo; bash -c 'w otherco'"
+  bash_case 2 indirect-fn "$F; export -f w; w indigo; sh -c \"w otherco\""
+  bash_case 2 indirect-fn "set -a; $F; w indigo; bash /tmp/calls"
+  bash_case 2 indirect-fn "$F; w indigo; { w otherco; }"
+  bash_case 2 indirect-fn "$F; w indigo; if true; then w otherco; fi"
+  bash_case 2 indirect-fn "$F; w indigo; ! w otherco"
+  bash_case 2 indirect-fn "$F; w indigo; \"w\" otherco"
+  bash_case 2 indirect-fn "$F; w indigo; \\w otherco"
+  bash_case 2 indirect-fn "$F; w indigo; ? otherco"
+  bash_case 2 indirect-fn "$F; w indigo; case x in x) \$W otherco;; esac"
+  bash_case 2 indirect-fn "$F; w indigo; trap 'w otherco' EXIT"
+  bash_case 2 indirect-fn "$F; w otherco"
+  bash_case 0 indirect-fn "$F; w indigo"
+  bash_case 0 indirect-fn "$F; w indigo; w indigo"
+  bash_case 0 indirect-fn "$F; w indigo; echo done"
+  bash_case 0 indirect-fn "$F; w indigo; echo \"\$(date +%F)\""
+done
+bash_case 2 indirect-fn 'function w { cat "companies/$1/settings/x.yaml"; }; w indigo; (w otherco)'
+bash_case 0 indirect-fn "$FP; $FP; w indigo"
+FX='xy(){ cat "companies/$1/settings/x.yaml"; }'
+bash_case 0 indirect-fn "$FX; xy indigo"
+bash_case 2 indirect-fn "$FX; xy indigo; x''y otherco"
+bash_case 2 indirect-fn "$FX; xy indigo; x\"y\" otherco"
+bash_case 2 indirect-fn "$FX; xy indigo; x\\y otherco"
+bash_case 2 indirect-fn "$FX; xy indigo; x\${E}y otherco"
+bash_case 2 indirect-fn "$FX; xy indigo; [x]y otherco"
+bash_case 2 indirect-fn "$FX; xy indigo; {x,}y otherco"
+bash_case 0 indirect-fn "$FX; xy indigo; [ -n \"\$HOME\" ] && echo ok"
+bash_case 0 indirect-fn "$FX; for c in a b; do echo \"\$c\"; done; xy indigo"
+# The system-one-decision-substrate handoff thread reported three Bash
+# commands blocked outside companies/: a for-loop over a variable README path,
+# a learnings path built from a timestamp variable, and a quoted heredoc whose
+# text held brace placeholders. All three already pass on main; pin them.
+echo "[119] substrate: variable loop paths, timestamp paths, brace placeholders in quoted heredocs"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/learnings" "$TMP/core/docs/a" "$TMP/core/docs/b"
+scope_112_case substrate 0 'R=core/docs/a/README.md; for f in $R core/docs/b/README.md; do wc -l "$f"; done'
+scope_112_case substrate 0 'for d in a b; do F=core/docs/$d/README.md; cat "$F"; done'
+scope_112_case substrate 0 'TS=20261016; echo hi > workspace/learnings/learn-$TS.md'
+scope_112_case substrate 0 'TS=$(date +%Y%m%d-%H%M%S); cat > workspace/learnings/learn-$TS.md <<EOF
+hello
+EOF'
+scope_112_case substrate 0 "cat > workspace/learnings/x.md <<'EOF'
+path companies/{co}/policies/{slug}.md
+EOF"
+scope_112_case substrate 0 "cat <<'EOF' > workspace/learnings/x.md
+see {placeholder} and \${HOME}/x
+EOF"
+# An interpreter heredoc body stays visible and fails closed on a companies/ path.
+scope_112_case substrate 2 "python3 - <<'EOF'
+print(\"companies/{co}/x\")
+EOF"
+scope_112_case substrate 2 'for d in a b; do F=companies/otherco/$d; cat "$F"; done'
+
+echo "[combined] owner-reported benign shapes (2026-10-20) pass; the same shapes aimed at another company block"
+install_fixture "indigo"
+# $(git rev-parse --show-toplevel) needs a work tree at the fixture root.
+git -C "$TMP" init -q
+# $(...), backticks and $VAR outside companies/.
+bash_case 0 fz-subst-outside 'ls "$(git rev-parse --show-toplevel)/core/docs"'
+bash_case 0 fz-backtick-outside 'ls `pwd`/workspace'
+bash_case 0 fz-var-outside 'D=/tmp/fz; ls "$D/x"'
+bash_case 0 fz-session-rev 'W=/tmp/wt; mb=$(git -C $W merge-base origin/main HEAD); git -C $W log -1 $mb'
+# heredocs.
+bash_case 0 fz-heredoc "cat > workspace/fz.md <<'EOF'
+Price \$5/mo, \$(not run), \`x\`, \${HOME}/y
+EOF"
+# loop ranges.
+bash_case 0 fz-loop-range 'for i in {1..5}; do echo $i; done'
+bash_case 0 fz-loop-seq 'for i in $(seq 1 3); do echo "$i"; done'
+# URL variables and curl headers.
+bash_case 0 fz-url-var 'U=https://api.example.com; curl -s "$U/v1/x"'
+bash_case 0 fz-curl-header 'curl -s -H "Authorization: Bearer $TOKEN" https://api.example.com/v1'
+# gh short text options.
+bash_case 0 fz-gh-short 'gh pr create -R a/b -t "fix: $X" -b "body with $(date) and \`code\`"'
+# template literals.
+bash_case 0 fz-template "node -e 'const a=1; process.stdout.write(\`v=\${a}/x\`)'"
+# Negatives in the same shapes.
+bash_case 2 fz-neg-subst 'cat "$(git rev-parse --show-toplevel)/companies/otherco/settings/x.yaml"'
+bash_case 2 fz-neg-var 'D=companies/otherco; ls "$D/settings"'
+bash_case 2 fz-neg-heredoc "cat > companies/otherco/settings/fz.md <<'EOF'
+x
+EOF"
+bash_case 2 fz-neg-loop 'for c in otherco; do cat companies/$c/settings/x.yaml; done'
+bash_case 2 fz-neg-curl 'curl -s -H @companies/otherco/settings/h https://a.example.com'
+bash_case 2 fz-neg-unset-git 'git -C $R status'
+# A quoted awk program is data, not a brace expansion.
+bash_case 0 fz-awk-program 'awk -v n=5 '\''NR<n && /x/{l=NR": "$0} END{print l}'\'' core/docs/readme.md'
+bash_case 2 fz-neg-awk-target 'awk '\''{print}'\'' companies/otherco/settings/x.yaml'
+
+echo "[combined] cross-PR interactions settled in this PR"
+# A leading repo top level maps like $(pwd); anything that can move the
+# cwd or redirect git keeps it closed.
+bash_case 0 fz-toplevel-own 'cat "$(git rev-parse --show-toplevel)/companies/indigo/settings/.keep"'
+bash_case 2 fz-neg-toplevel-other 'cat "$(git rev-parse --show-toplevel)/companies/otherco/settings/x.yaml"'
+bash_case 2 fz-neg-toplevel-dotdot 'cat "$(git rev-parse --show-toplevel)/../companies/otherco/x"'
+bash_case 2 fz-neg-toplevel-after-cd 'cd companies/otherco; cat "$(git rev-parse --show-toplevel)/x"'
+bash_case 2 fz-neg-toplevel-git-dir 'GIT_DIR=/tmp/x ls "$(git rev-parse --show-toplevel)/core"'
+bash_case 2 fz-neg-toplevel-git-c 'git -c core.worktree=/tmp ls-files; ls "$(git rev-parse --show-toplevel)/core"'
+bash_case 2 fz-neg-backtick-pwd-other 'cat `pwd`/companies/otherco/x'
+# git -C <dir> before a query that prints a commit id is not a path value;
+# the -C directory itself is still checked.
+bash_case 0 fz-gitc-rev-parse 'W=/tmp/wt; h=$(git -C $W rev-parse --short HEAD); echo "$h"'
+bash_case 2 fz-neg-gitc-other 'W=companies/otherco; mb=$(git -C $W merge-base a b); echo $mb'
+bash_case 2 fz-neg-gitc-toplevel 'W=/tmp/wt; t=$(git -C $W rev-parse --show-toplevel); cat $t/x'
+bash_case 2 fz-neg-gitc-chained 'x=$(git -C /tmp merge-base a b; cat /tmp/p); cat $x'
+# Same-company function call: the visible literal argument still settles the
+# positional after quote normalization; quote-split names stay blocked.
+bash_case 0 fz-fn-same 'w(){ local d="companies/$1"; cat "$d/settings/x.yaml"; }; w indigo'
+bash_case 2 fz-neg-fn-other 'w(){ local d="companies/$1"; cat "$d/settings/x.yaml"; }; w otherco'
+bash_case 2 fz-neg-quote-split-head 'cat "compa"nies/otherco/x'
+bash_case 2 fz-neg-quote-split-mid 'cat companies/oth"er"co/x'
+# $TMPDIR is proven for a path operand, but not inside an sh -c or
+# interpreter program, which gets whatever environment its launcher passes.
+bash_case 0 fz-tmpdir-operand 'ls "$TMPDIR"'
+bash_case 0 fz-tmpdir-prefix 'TMPDIR=/tmp/x sh -c '\''cd $TMPDIR && pwd'\'''
+bash_case 2 fz-neg-tmpdir-sh-c 'sh -c '\''cd $TMPDIR && pwd'\'''
+# node -e with only a safe core-module require: text expansions pass, an
+# expansion next to a / and any process hand-off still need proof.
+bash_case 0 fz-node-fs-template 'node -e '\''for (let i=0;i<3;i++) require("fs").readFileSync(`data/s-${i}.json`)'\'''
+bash_case 2 fz-neg-node-fs-slash-var 'node -e "require('\''fs'\'').writeFileSync('\''\$D/x'\'','\''y'\'')"'
+bash_case 2 fz-neg-node-fs-then-cp 'node -e '\''require("fs"); require("child_process").execSync(`cat ${D}/x`)'\'''
+bash_case 2 fz-neg-node-dynamic-require 'node -e '\''require(m).x("$D")'\'''
+# A python heredoc that cannot reach a shell: $( in a regex is text.
+bash_case 0 fz-py-regex "python3 - <<'PY'
+import re
+print(re.sub(r\"\\\$(\\w+)/\", \"\", \"\$a/b\"))
+PY"
+# resumework Step 0 and lock step shapes (#1512 CI): the id is passed straight
+# to the lookup script; basename of the thread path and the HQ session id print no
+# slash. Using either after a literal companies/ prefix still blocks.
+bash_case 0 fz-resumework-step0 'arg="T-step0-thread-x"; id="${arg%.json}"; id="${id##*/}"; bash core/scripts/handoff-open-steps.sh list "$id"'
+bash_case 0 fz-resumework-lock 'thread_file="workspace/threads/T-1.json"; thread_id="$(basename "$thread_file" .json)"; session_id="$(bash core/scripts/hq-session.sh current)"; bash core/scripts/resume-thread-lock.sh acquire "$thread_id" --session-id "$session_id"'
+bash_case 2 fz-neg-basename-company 'd=$(basename companies/otherco); cat companies/$d/settings/x.yaml'
+bash_case 2 fz-neg-session-company 's=$(bash core/scripts/hq-session.sh current); cat companies/$s/x'
+bash_case 2 fz-neg-basename-cmd 'b=$(basename /tmp/p | cat); cat $b'
+# #1512 review (shawon-majid): basename / prints /, so a slash-ending or
+# unproven operand keeps the output tainted.
+bash_case 2 fz-neg-basename-root 'r=$(basename /); cat companies${r}otherco${r}settings${r}x'
+bash_case 2 fz-neg-basename-root-var 'x=/; r=$(basename "$x"); cat companies${r}otherco${r}settings${r}x'
+bash_case 2 fz-neg-basename-unset 'r=$(basename "$x"); cat $r'
+bash_case 2 fz-neg-basename-reassigned 'x=workspace/a.json; x=$(cat /tmp/p); r=$(basename "$x"); cat $r'
+bash_case 2 fz-neg-basename-read 'read x < /tmp/p; r=$(basename "$x"); cat $r'
+# #1512 review (shawon-majid, cb39e70d): the resumework lock step with the
+# literal full thread path the skill asks for passes; the timing test's old
+# "$ROOT/...$ID" assignment is a value the guard cannot prove and blocks.
+bash_case 0 fz-resumework-lock-full-path "thread_file=\"$TMP/workspace/threads/T-sess-step1-run1.json\"; thread_id=\"\$(basename \"\$thread_file\" .json)\"; session_id=\"\$(bash core/scripts/hq-session.sh current)\"; bash core/scripts/resume-thread-lock.sh inspect \"\$thread_id\""
+bash_case 2 fz-neg-resumework-lock-unset-root 'thread_file="$ROOT/workspace/threads/$RESUMEWORK_THREAD_ID.json"; thread_id="$(basename "$thread_file" .json)"; bash core/scripts/resume-thread-lock.sh inspect "$thread_id"'
+# #1512 review (shawon-majid): the quoted-grep skip needs the bracket inside
+# one quoted word; empty quotes before a bare bracket are a glob.
+bash_case 2 fz-neg-grep-empty-quotes 'grep x ""companies/[o]therco/settings/x'
+bash_case 2 fz-neg-grep-empty-quotes-r 'grep -r x ""companies/[o]therco/'
+bash_case 2 fz-neg-grep-empty-quotes-negclass 'grep -r x ""companies/[!i]*/settings'
+bash_case 2 fz-neg-egrep-empty-quotes 'egrep x ""companies/[o]therco/settings/x'
+bash_case 2 fz-neg-rg-empty-quotes 'rg x ""companies/[o]therco/settings/x'
+bash_case 2 fz-neg-rg-files-empty-quotes 'rg --files ""companies/[o]therco'
+bash_case 2 fz-neg-grep-second-operand 'grep x "y" ""companies/[o]therco/settings/x'
+bash_case 2 fz-neg-grep-empty-quotes-pipe 'grep -h x ""companies/[o]therco/settings/x | head'
+bash_case 2 fz-neg-grep-quote-ends-early 'grep x "companies/"[o]therco/settings/x'
+bash_case 0 fz-grep-quoted-regex 'grep -rn "companies/[a-z]+/" repos/private/r'
+bash_case 0 fz-rg-quoted-regex 'rg -n "companies/[^/]+/settings" repos/private/r'
+bash_case 2 fz-neg-py-system "python3 - <<'PY'
+import os
+os.system(\"cat \$(echo companies/\$CO)/x\")
+PY"
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

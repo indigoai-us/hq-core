@@ -10,6 +10,17 @@ settings/**/*.json
 # host loads zero tools (feedback_ce873c1f). These manifests carry no secrets.
 !core/packages/*/.mcp.json
 .env.*-token
+# Token caches (OAuth/CLI token dumps) at any depth.
+tokens/
+# core/settings ships tracked YAML defaults (fingerprint, session-title,
+# orchestrator, ...) and pure-ralph.json, so the directory itself must stay
+# tracked. Ignore only the credential-shaped files, matching settings/ above and
+# the handoff finalizer's sensitive-path list (feedback_87abfe55).
+core/settings/**/*.json
+!core/settings/pure-ralph.json
+core/settings/**/*.env
+core/settings/**/*.env.*
+core/settings/secrets/
 
 # Environment files
 .env

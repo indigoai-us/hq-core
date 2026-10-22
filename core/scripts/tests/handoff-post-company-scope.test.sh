@@ -491,7 +491,7 @@ handoff_post_test_run --clean-env "$ZERO_REPO" "$LOCAL_ONLY_PATH" "" \
 [[ -f "$LOCAL_ONLY_MIRROR" ]] || fail "local-only company did not get a local thread mirror"
 [[ ! -s "$TMP_ROOT/local-only-sync-calls" ]] \
   || fail "local-only company was pushed: $(cat "$TMP_ROOT/local-only-sync-calls")"
-grep -Fq 'workspace-sync: skipped (company is local-only, cloud: false)' "$TMP_ROOT/local-only-logs/handoff-post.log" \
+grep -Fq 'workspace-sync: skipped (company is local-only: no cloud: true and no manifest cloud_uid)' "$TMP_ROOT/local-only-logs/handoff-post.log" \
   || fail "local-only company did not log the cloud: false skip"
 
 # Missing company.yaml is also local-only: do not push.
@@ -515,7 +515,7 @@ handoff_post_test_run --clean-env "$ZERO_REPO" "$NOYAML_PATH" "" \
   PATH="$ZERO_BIN:/usr/bin:/bin"
 [[ ! -s "$TMP_ROOT/noyaml-sync-calls" ]] \
   || fail "company without company.yaml was pushed: $(cat "$TMP_ROOT/noyaml-sync-calls")"
-grep -Fq 'workspace-sync: skipped (company is local-only, cloud: false)' "$TMP_ROOT/noyaml-logs/handoff-post.log" \
+grep -Fq 'workspace-sync: skipped (company is local-only: no cloud: true and no manifest cloud_uid)' "$TMP_ROOT/noyaml-logs/handoff-post.log" \
   || fail "missing company.yaml did not log the local-only skip"
 
 # 11-tenant isolation lives in a sibling suite. Invoke it here so pr-checks
