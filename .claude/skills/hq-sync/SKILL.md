@@ -108,10 +108,21 @@ Map the runner's exit codes to plain language:
 | 0 | the protocol finished | the summary above |
 | 1 | bad arguments, or a failure before the sync started | the runner's diagnostics |
 | 2 | at least one company failed deterministically | the partial block |
+| 17 | another sync (Auto-sync or the HQ Desktop App) holds the lock | "Another sync was already running ... did not sync. Nothing failed." The skill exits 0. |
 | 75 | a retryable network failure interrupted the run | "The network interrupted the sync. Nothing is corrupt. Run /hq-sync again." |
 
-The skill's own exit codes: 0 clean, 2 not signed in, 3 partial (at least one
-company did not complete), and the runner's code passed through otherwise.
+The skill's own exit codes: 0 clean (or another sync was already running),
+2 not signed in, 3 partial (at least one company did not complete), and the
+runner's code passed through otherwise.
+
+When the runner emits
+`{"type":"scope-materialization-gap", company, count, samplePaths, syncMode}`,
+print the company, count, sample paths, and the two remedies: `hq sync mode all
+--company <slug>` or `hq files get companies/<slug>/<path>`. The runner emits
+this event only for files its plan marked `skip-out-of-scope`. A `shared` or
+`custom` pull that lists only its granted prefixes (for example `knowledge/`)
+never enumerates root-level files such as `board.json`, so it can emit no
+event for them. No gap block does not mean every company file was downloaded.
 
 Finally, report conflict residue from both places it lives:
 
@@ -294,7 +305,8 @@ fi
 
 # Step 5c: neither event. Say so — a run that reports nothing is not a success,
 # and silently treating it as one is how a broken sync passes for a clean one.
-if [ -z "${final_event:-}" ] && [ -z "${setup_event:-}" ]; then
+if [ -z "${final_event:-}" ] && [ -z "${setup_event:-}" ] \
+  && [ "$cli_status" != "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}" ]; then
   echo ""
   echo "=== Sync finished without a final status ==="
   echo "The runner emitted neither all-complete nor setup-needed (exit"
@@ -315,6 +327,13 @@ fi
 # while legacy `.conflict-*` twins sit on disk outside the ledger where
 # /resolve-conflicts cannot reach them.
 hq_sync_report_conflicts_remaining "$output_file" "$hq_root" || true
+
+# Step 5f: files the membership's sync mode kept out of this pull. A shared or
+# custom mode downloads only the shared paths, so root-level company files such
+# as board.json can be missing with nothing else saying why.
+if command -v hq_sync_report_scope_gaps >/dev/null 2>&1; then
+  hq_sync_report_scope_gaps "$output_file" || true
+fi
 
 # Step 6: reindex qmd so freshly-synced knowledge is searchable immediately.
 # Lexical update is fast (mtime-incremental) and auto-registers any new
@@ -345,11 +364,15 @@ hq_sync_post_pull_reindex "$hq_root" "${files_d:-0}" "${files_t:-0}"
 # Step 7: exit. A partial run is not a clean one, so exit 3 (documented in
 # scripts/hq-sync-events.sh) even when the runner itself exited 0 after a clean
 # conflict-abort. Exit 75 is retryable and gets a plain explanation before the
-# code is passed through.
+# code is passed through. Exit 17 (another sync holds the lock) is explained
+# and mapped to 0: the other pass does the work, so it is not a failure.
 hq_sync_exit_note "$cli_status"
 rm -f "$output_file" "$err_file"
 if [ "$summary_status" != "0" ]; then
   exit "$summary_status"
+fi
+if [ "$cli_status" = "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}" ]; then
+  exit 0
 fi
 exit "$cli_status"
 ```

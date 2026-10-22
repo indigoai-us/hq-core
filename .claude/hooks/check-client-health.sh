@@ -262,13 +262,39 @@ if [ "${1:-}" = "--remediate" ]; then
         document=$(cd "$HQ_ROOT" 2>/dev/null && bounded 120 hq doctor --json 2>/dev/null)
         rc=$?
       fi
-      [ "$rc" -eq 0 ] || return 0
+      # Exit 1 (with no findings) when doctor itself did not run cleanly, so
+      # callers can tell "no findings" from "could not check".
+      [ "$rc" -eq 0 ] && [ -n "$document" ] || return 1
       printf '%s\n' "$document" | sync_findings
     }
 
+    # The set of check IDs last reported from this install, as one line:
+    # "<fingerprint> <epoch of the successful send>". The same set is not
+    # filed again until a clean doctor run shows no findings, the set changes,
+    # or 14 days pass since that send (feedback 9b4a5016: machines filed the
+    # same report every day). The expiry matters because the clean run that
+    # clears the record only happens inside remediation, and remediation only
+    # runs when a session sees a foreground signal. A user who fixes sync by
+    # hand never gets that run, so without an expiry the same set returning
+    # later would never be reported again.
+    REPORTED_SET="$STATE_DIR/bugs/reported-set"
+    REPORTED_SET_TTL_SECONDS=1209600   # 14 days
+    # HQ_TEST_FORCE_HEALTH_NOW is a fixture seam only (same shape as
+    # HQ_TEST_FORCE_HEALTH_DEADLINE): it moves this run's clock so the 14-day
+    # expiry is provable without waiting.
+    NOW=$(date +%s)
+    case "${HQ_TEST_FORCE_HEALTH_NOW:-}" in
+      ""|*[!0-9]*) ;;
+      *) NOW="$HQ_TEST_FORCE_HEALTH_NOW" ;;
+    esac
+
     # Corroborate: the foreground signal alone is not enough to act on.
     FINDINGS=$(doctor_degraded)
-    [ -n "$FINDINGS" ] || exit 0
+    DOCTOR_RC=$?
+    if [ -z "$FINDINGS" ]; then
+      [ "$DOCTOR_RC" -eq 0 ] && rm -f "$REPORTED_SET" 2>/dev/null
+      exit 0
+    fi
 
     # Attempt the allowlisted safe repairs, then re-verify. Only findings that
     # SURVIVE the fix pass are report-worthy — a fixed issue files no bug.
@@ -293,6 +319,13 @@ if [ "${1:-}" = "--remediate" ]; then
       ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
     fi
     REMAINING=$(doctor_degraded)
+    REMAINING_RC=$?
+    # The repair pass cleared everything: a later recurrence is a new report.
+    # Checked before the unreached-journal filter, which hides rows that
+    # are still failing.
+    if [ "$REMAINING_RC" -eq 0 ] && [ -z "$REMAINING" ]; then
+      rm -f "$REPORTED_SET" 2>/dev/null
+    fi
     UNREACHED_COMPANY_JOURNAL_COUNT=0
     if [ "$UNREACHED_FILTER_ENABLED" = true ]; then
       if ATTEMPTED_REFRESH_IDS=$(refresh_sync_attempted_ids "$FIX_RESULT"); then
@@ -344,10 +377,24 @@ EOF_FINDINGS
     fi
     [ -n "$REMAINING" ] || exit 0
 
+    # Only sanitised IDs leave the machine. Cap both rows and ID length so a
+    # large install still produces a small report; raw messages stay local.
+    CHECK_IDS=$(printf '%s\n' "$REMAINING" | sanitize_check_ids)
+    # Fingerprint the KINDS of failing checks, not each company: per-company
+    # rows come and go as --fix rotates through journals, so per-company ids
+    # would give a new fingerprint (and a new report) on most days. Personal
+    # journals keep their own ids. The result is sorted and deduped, so doctor
+    # output order does not matter.
+    CHECK_SET=$(printf '%s\n' "$CHECK_IDS" | sed -E \
+        -e 's/^sync\.journal\.(personal|__hq_personal_vault__)(:|$)/sync.journal-personal.\1\2/' \
+        -e 's/^sync\.journal\.[^:]*/sync.journal.company/' \
+        -e 's/^sync\.journal-personal\./sync.journal./' \
+        -e 's/^(sync\.manifest\.(company|unresolved))\.[^:]*/\1/' \
+      | sort -u | cksum | tr -d ' \t')
+
     # One bounded attempt per install, not one attempt per company/check.
     # Reserve it BEFORE sending: a timeout may mean the report was accepted
     # but the response was lost. Retrying could duplicate the report.
-    NOW=$(date +%s)
     BUG_LOCK="$STATE_DIR/bugs/summary.lock"
     ATTEMPT_STAMP="$STATE_DIR/bugs/report-attempt.stamp"
     if [ -f "$BUG_LOCK" ]; then
@@ -356,6 +403,28 @@ EOF_FINDINGS
     fi
     if ! ( set -C; : > "$BUG_LOCK" ) 2>/dev/null; then
       exit 0
+    fi
+    # The same set was already reported from this install in the last 14
+    # days and has not cleared since: one open report is enough. Read under
+    # the lock so a concurrent run's record is seen. Only an exact
+    # "<fingerprint> <epoch>" line with an epoch that is not in the future
+    # suppresses; anything else is treated as no record, so a corrupt ledger
+    # files a report instead of hiding one. A dedup hit exits here without
+    # writing, so it never extends the window.
+    LEDGER=""
+    [ -f "$REPORTED_SET" ] && LEDGER=$(head -c 256 "$REPORTED_SET" 2>/dev/null)
+    LEDGER_TS="${LEDGER#* }"
+    if [ -n "$CHECK_SET" ] && [ "$LEDGER" = "$CHECK_SET $LEDGER_TS" ]; then
+      case "$LEDGER_TS" in
+        ""|*[!0-9]*) ;;
+        *)
+          if [ "${#LEDGER_TS}" -le 12 ] && [ "$LEDGER_TS" -le "$NOW" ] \
+              && [ "$((NOW - LEDGER_TS))" -lt "$REPORTED_SET_TTL_SECONDS" ]; then
+            rm -f "$BUG_LOCK" 2>/dev/null
+            exit 0
+          fi
+          ;;
+      esac
     fi
     if [ -f "$ATTEMPT_STAMP" ]; then
       STAMP_MTIME=$(stat -c %Y "$ATTEMPT_STAMP" 2>/dev/null || stat -f %m "$ATTEMPT_STAMP" 2>/dev/null || echo "$NOW")
@@ -368,12 +437,8 @@ EOF_FINDINGS
       rm -f "$BUG_LOCK" 2>/dev/null
       exit 0
     fi
-
     # The removed direct-Sentry CLI route is no longer available. Keep sending
     # the same sanitized summary through the feedback report path below.
-    # Only sanitised IDs leave the machine. Cap both rows and ID length so a
-    # large install still produces a small report; raw messages stay local.
-    CHECK_IDS=$(printf '%s\n' "$REMAINING" | sanitize_check_ids)
     CHECK_COUNT=$(printf '%s\n' "$CHECK_IDS" | wc -l | tr -d ' ')
     CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | sed 's/^/- /')
     # Automatic reports must opt out explicitly: the feedback CLI otherwise
@@ -389,10 +454,23 @@ $CHECK_LIST
 
 Doctor messages and log bundles are not attached. Reproduce locally with
 \`hq doctor --json\`. Component versions are attached by the feedback pipeline.
-Automatic reporting is limited to one attempt per HQ install every 24 hours.
+Automatic reporting is limited to one attempt per HQ install every 24 hours,
+and the same set of checks is reported at most once every 14 days until it
+clears or changes.
 EOF
     ); then
       ( : > "$STATE_DIR/bugs/summary.stamp" ) 2>/dev/null || true
+      # Only a filed report suppresses the set, and only a filed report sets
+      # the timestamp. A failed send leaves the ledger as it was and may retry
+      # after the 24h cooldown, as before. Written via rename so a reader
+      # never sees a half-written line.
+      LEDGER_TMP="$REPORTED_SET.$$"
+      if ( printf '%s %s\n' "$CHECK_SET" "$NOW" > "$LEDGER_TMP" ) 2>/dev/null \
+          && mv -f "$LEDGER_TMP" "$REPORTED_SET" 2>/dev/null; then
+        :
+      else
+        rm -f "$LEDGER_TMP" 2>/dev/null
+      fi
     fi
     rm -f "$BUG_LOCK" 2>/dev/null
   } 2>/dev/null || true

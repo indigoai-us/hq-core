@@ -851,7 +851,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/hq-sync/SKILL.md",
-      "hash": "sha256:c6f97d664677ca1978f86cc59ab6b49729db1c46e748d43e25a28daa73134db3",
+      "hash": "sha256:e35e5ccdcbe21550d514f97932bbcbb546f1b0083b8a9a86c5dac470d7f9d390",
       "duplicates": {
         "exact": [],
         "drifted": [],
