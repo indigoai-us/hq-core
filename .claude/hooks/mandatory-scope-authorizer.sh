@@ -1315,7 +1315,122 @@ scope_check_bash_candidate_inner() {
   fi
 }
 
+# Admit URL data only for one literal simple invocation at a known absolute
+# Chromium install path. This is lexical admission, not executable attestation.
+# Validate the ENTIRE command before exempting any URI word; wrappers, setup,
+# operators and redirects must retain ordinary fail-closed path handling.
+scope_check_browser_file_uri_inner() {
+  local command_text="${1:-}" prefix="${2:-}" target=${#2}
+  local i=0 start raw word head="" uri_path="" uri_rel uri_data input_start=-1 inputs=0
+  local scope_url_plain scope_url_end scope_url_split backtick=$'\140'
+  local data_re='^(\?[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_=&-]*)?(#[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_=&-]*)?$'
+  case "$prefix" in *file://*) ;; *) return 1 ;; esac
+  while [ "$i" -lt "${#command_text}" ]; do
+    case "${command_text:$i:1}" in
+      ' '|$'\t') i=$((i + 1)); continue ;;
+      ';'|'|'|'&'|'('|')'|'<'|'>'|$'\n') return 1 ;;
+    esac
+    start=$i
+    scope_url_word_scan "$command_text" "$i"
+    [ "$scope_url_end" -gt "$i" ] || return 1
+    i=$scope_url_end; word="$scope_url_plain"
+    raw="${command_text:$start:$((i - start))}"
+    # No expansion, escaping, quote splicing or unterminated quoting anywhere.
+    case "$raw" in *'$'*|*"$backtick"*|*\\*) return 1 ;; esac
+    if [ "$raw" != "$word" ] && [ "$raw" != "\"$word\"" ] && [ "$raw" != "'$word'" ]; then return 1; fi
+    if [ -z "$head" ]; then
+      head="$word"
+      case "$head" in
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'|/usr/bin/google-chrome|/usr/bin/chromium|/usr/bin/chromium-browser|/snap/bin/chromium) ;;
+        *) return 1 ;;
+      esac
+      continue
+    fi
+    case "$word" in
+      --headless|--headless=new|--disable-gpu|--no-sandbox|--disable-dev-shm-usage|--disable-software-rasterizer|--print-to-pdf=*|--screenshot=*) continue ;;
+      file:///*) ;;
+      *) return 1 ;;
+    esac
+    inputs=$((inputs + 1)); [ "$inputs" -eq 1 ] || return 1
+    # The input URI must be exactly one quoted literal word.
+    [ "$raw" = "\"$word\"" ] || [ "$raw" = "'$word'" ] || return 1
+    uri_path="${word#file://}"; uri_path="${uri_path%%[?#]*}"
+    case "$uri_path" in //*) return 1 ;; esac
+    case "$uri_path" in *'%'*|*'*'*|*'['*|*'{'*|*'}'*|*\"*|*\'*) return 1 ;; esac
+    uri_rel="$(scope_normalize_hq_relative "$uri_path")"
+    [ -n "$uri_rel" ] || return 1
+    uri_data="${word#file://}"; uri_data="${uri_data#"$uri_path"}"
+    [[ "$uri_data" =~ $data_re ]] || scope_block_rel "$uri_rel" "browser URL data exceeds literal query alphabet"
+    case "/$uri_path/" in */./*|*/../*) scope_block_rel "$uri_rel" "browser URI contains a dot segment" ;; esac
+    [ "$target" -lt "$start" ] || [ "$target" -ge "$i" ] || input_start=$start
+  done
+  [ "$inputs" -eq 1 ] && [ "$input_start" -ge 0 ] || return 1
+  scope_check_raw "$uri_path"
+  return 0
+}
+
+# An ineligible queried/fragment URI must not fall through to the older path
+# extractor, which can stop before fragment text and miss the rejected data.
+scope_check_browser_file_uri() {
+  scope_check_browser_file_uri_inner "$@" && return 0
+  local text="${1:-}" target=${#2} i=0 start word raw head="" options_ok=1 uri_path uri_rel backtick=$'\140'
+  local scope_url_plain scope_url_end scope_url_split
+  case "${2:-}" in *file://*) ;; *) return 1 ;; esac
+  while [ "$i" -lt "${#text}" ]; do
+    case "${text:$i:1}" in
+      ' '|$'\t') i=$((i + 1)); continue ;;
+      ';'|'|'|'&'|'('|')'|$'\n') head=""; options_ok=1; i=$((i + 1)); continue ;;
+      '<'|'>') options_ok=0; i=$((i + 1)); continue ;;
+    esac
+    start=$i
+    scope_url_word_scan "$text" "$i"
+    if [ "$scope_url_end" -le "$i" ]; then i=$((i + 1)); continue; fi
+    i=$scope_url_end; word="$scope_url_plain"
+    if [ "$target" -ge "$start" ] && [ "$target" -lt "$i" ]; then
+      # Retain the prior browser URI path refusal even when dispatch cannot
+      # acquire the URL-data exception. This branch ONLY denies; it never
+      # admits bare names, setup, wrappers or richer query/fragment data.
+      raw="${text:$start:$((i - start))}"
+      if [ "$options_ok" -eq 1 ] && { [ "$raw" = "\"$word\"" ] || [ "$raw" = "'$word'" ]; }; then
+        case "${head##*/}" in
+          chrome|google-chrome|chromium|chromium-browser|'Google Chrome')
+            case "$word" in
+              file:///*)
+                uri_path="${word#file://}"; uri_path="${uri_path%%[?#]*}"
+                case "$uri_path" in
+                  //*) ;;
+                  *'%'*|*'*'*|*'['*|*'{'*|*'}'*|*\"*|*\'*|*'$'*|*"$backtick"*|*\\*) ;;
+                  *)
+                    uri_rel="$(scope_normalize_hq_relative "$uri_path")"
+                    if [ -n "$uri_rel" ]; then
+                      case "/$uri_path/" in */./*|*/../*) scope_block_rel "$uri_rel" "browser URI contains a dot segment" ;; esac
+                    fi
+                    ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+      fi
+      case "$word" in
+        *file://*\?*|*file://*\#*) scope_block_rel "file URI" "queried URI requires one approved literal browser invocation" ;;
+      esac
+      return 1
+    fi
+    if [ -z "$head" ]; then
+      head="$word"
+    else
+      case "$word" in
+        --headless|--headless=new|--disable-gpu|--no-sandbox|--disable-dev-shm-usage|--disable-software-rasterizer|--print-to-pdf=*|--screenshot=*) ;;
+        *) options_ok=0 ;;
+      esac
+    fi
+  done
+  return 1
+}
+
 scope_check_bash_candidate() {
+  scope_check_browser_file_uri "${2:-}" "${3:-}" && return 0
   scope_check_bash_candidate_inner "${1:-}" "${2:-}" 0 "" "${3:-}" "${4:-}"
 }
 

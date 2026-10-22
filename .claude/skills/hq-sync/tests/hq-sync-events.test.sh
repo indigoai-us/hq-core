@@ -215,5 +215,71 @@ if hq_sync_has_auth_error "$plain_err"; then
 fi
 ok "a plain error event is not treated as an auth error"
 
+# ---------------------------------------------------------------------------
+# (e) Runner exit 17 (another sync holds the operation lock) is a benign skip:
+#     explained in plain words and mapped to skill exit 0 (feedback_a91e5a77).
+# ---------------------------------------------------------------------------
+[ "$(hq_sync_skill_exit_code 17)" = "0" ] \
+  || fail "(e) runner exit 17 should map to skill exit 0"
+for code in 0 1 2 75; do
+  [ "$(hq_sync_skill_exit_code "$code")" = "$code" ] \
+    || fail "(e) runner exit $code should pass through"
+done
+note17="$(hq_sync_exit_note 17)"
+printf '%s' "$note17" | grep -q "Another sync was already running" \
+  || fail "(e) exit 17 should explain the lock collision; got: $note17"
+printf '%s' "$note17" | grep -q "Nothing failed" \
+  || fail "(e) exit 17 must say nothing failed"
+printf '%s' "$note17" | grep -q "did not sync" \
+  || fail "(e) exit 17 must say this run did not sync; got: $note17"
+if printf '%s' "$note17" | grep -q "finish the work"; then
+  fail "(e) exit 17 establishes contention only; it must not promise the other sync completes this work"
+fi
+ok "runner exit 17 is explained and exits 0; other codes pass through"
+
+# The SKILL.md body must use the same mapping and must not print the
+# "finished without a final status" block for a lock collision.
+SKILL_MD="$HQ_SRC/.claude/skills/hq-sync/SKILL.md"
+grep -qF 'cli_status" = "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}"' "$SKILL_MD" \
+  || fail "(e) SKILL.md should exit 0 on runner exit 17"
+grep -qF 'cli_status" != "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}"' "$SKILL_MD" \
+  || fail "(e) SKILL.md Step 5c should skip the no-final-status block on exit 17"
+ok "SKILL.md maps exit 17 and skips the no-final-status block"
+
+# ---------------------------------------------------------------------------
+# (f) scope-materialization-gap names the files a shared/custom membership did
+#     not download, including a root-level board.json, and both remedies.
+# ---------------------------------------------------------------------------
+gap="$TMP/gap.ndjson"
+cat > "$gap" <<'NDJSON'
+{"type":"plan","company":"acme","direction":"both","filesToDownload":817}
+{"type":"scope-materialization-gap","company":"acme","count":3,"samplePaths":["board.json","company-brief.md","projects/alpha/prd.json"],"syncMode":"shared"}
+{"type":"scope-materialization-gap","company":"northwind","count":0,"samplePaths":[],"syncMode":"custom"}
+{"type":"all-complete","companiesAttempted":2,"filesDownloaded":817,"bytesDownloaded":10,"filesUploaded":0,"bytesUploaded":0,"conflictPaths":[],"errors":[],"transient":[],"partial":false,"companies":[]}
+NDJSON
+gap_out="$(hq_sync_report_scope_gaps "$gap")"
+printf '%s' "$gap_out" | grep -q "=== Files this sync did not download ===" \
+  || fail "(f) expected the scope-gap header; got: $gap_out"
+printf '%s' "$gap_out" | grep -qF "acme: 3 file(s)" \
+  || fail "(f) expected the company and count"
+printf '%s' "$gap_out" | grep -q "  - board.json" \
+  || fail "(f) expected the root-level board.json sample path"
+printf '%s' "$gap_out" | grep -q "'shared' mode" \
+  || fail "(f) expected the sync mode"
+printf '%s' "$gap_out" | grep -q "hq sync mode all --company acme" \
+  || fail "(f) expected the sync-mode remedy"
+printf '%s' "$gap_out" | grep -qF "hq files get companies/acme/<path>" \
+  || fail "(f) expected the files-get remedy"
+if printf '%s' "$gap_out" | grep -q "northwind"; then
+  fail "(f) a zero-count gap event must not be printed"
+fi
+ok "scope gap lists the withheld root files and both remedies"
+
+nogap_out="$(hq_sync_report_scope_gaps "$clean")"
+[ -z "$nogap_out" ] || fail "(f) a run without gap events must print nothing; got: $nogap_out"
+grep -qF 'hq_sync_report_scope_gaps "$output_file"' "$SKILL_MD" \
+  || fail "(f) SKILL.md should call hq_sync_report_scope_gaps"
+ok "no gap events prints nothing, and SKILL.md calls the reporter"
+
 echo ""
 echo "PASS ($pass assertions)"

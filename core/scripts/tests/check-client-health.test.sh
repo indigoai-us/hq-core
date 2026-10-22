@@ -1523,6 +1523,237 @@ POST_FIX_FILES=$(compgen -G "$R26/workspace/.hq-client-health/post-fix.*" || tru
   && ok "recent report cooldown removes the raw post-fix document" \
   || bad "recent report cooldown removes the raw post-fix document" "temporary doctor JSON remained on disk"
 
+echo "== 26. the same set of checks is filed once until it clears or changes (feedback 9b4a5016) =="
+R27="$TMP/same-set-once"
+build_root "$R27"
+REM_STATE="$TMP/same-set-once-state"
+mkdir -p "$REM_STATE"
+R27_STAMP="$R27/workspace/.hq-client-health/bugs/report-attempt.stamp"
+run_remediate "$R27" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "first degraded run files one report" \
+  || bad "first degraded run files one report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+# A day later the same checks are still failing: no second report.
+touch -t "$ANCIENT" "$R27_STAMP"
+run_remediate "$R27" "-"
+touch -t "$ANCIENT" "$R27_STAMP"
+run_remediate "$R27" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "the same set is not filed again on later days" \
+  || bad "the same set is not filed again on later days" "filed $(count_lines "$REM_STATE/bugs-filed")"
+# Different companies with the same kind of failure (--fix rotating through
+# journals) are the same set.
+R27_ROTATED="$TMP/same-set-rotated.json"
+sed 's/"sync\.journal\.stale"/"sync.journal.another"/' "$DOCTOR_DEGRADED" > "$R27_ROTATED"
+grep -Fq '"sync.journal.another"' "$R27_ROTATED" \
+  || bad "rotated fixture names a different company" "substitution did not apply"
+touch -t "$ANCIENT" "$R27_STAMP"
+run_remediate "$R27" "-" "$R27_ROTATED"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "rotating company journals do not file a new report" \
+  || bad "rotating company journals do not file a new report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+# A different kind of failing check is a new report.
+R27_CHANGED="$TMP/same-set-changed.json"
+cat > "$R27_CHANGED" <<'JSON'
+{ "results": [
+  { "family": "sync", "status": "FAIL", "checkId": "sync.journal.stale", "fix": { "autoFixable": true } },
+  { "family": "sync", "status": "WARN", "checkId": "sync.manifest.personal", "fix": { "autoFixable": true } }
+] }
+JSON
+touch -t "$ANCIENT" "$R27_STAMP"
+run_remediate "$R27" "-" "$R27_CHANGED"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+  && ok "a changed set files a new report" \
+  || bad "a changed set files a new report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+# A clean doctor run clears the record, so a recurrence is reported again.
+touch -t "$ANCIENT" "$R27_STAMP"
+run_remediate "$R27" "-" "$DOCTOR_HEALTHY"
+[ ! -f "$R27/workspace/.hq-client-health/bugs/reported-set" ] \
+  && ok "a clean doctor run clears the reported set" \
+  || bad "a clean doctor run clears the reported set" "record kept"
+run_remediate "$R27" "-" "$R27_CHANGED"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 3 ] \
+  && ok "a recurrence after a clean run is reported again" \
+  || bad "a recurrence after a clean run is reported again" "filed $(count_lines "$REM_STATE/bugs-filed")"
+# A doctor that cannot run must not clear the record.
+R28="$TMP/same-set-doctor-down"
+build_root "$R28"
+REM_STATE="$TMP/same-set-doctor-down-state"
+mkdir -p "$REM_STATE"
+run_remediate "$R28" "-"
+R28_EMPTY="$TMP/doctor-empty.json"
+: > "$R28_EMPTY"
+run_remediate "$R28" "-" "$R28_EMPTY"
+[ -s "$R28/workspace/.hq-client-health/bugs/reported-set" ] \
+  && ok "an empty doctor document keeps the reported set" \
+  || bad "an empty doctor document keeps the reported set" "record cleared"
+touch -t "$ANCIENT" "$R28/workspace/.hq-client-health/bugs/report-attempt.stamp"
+run_remediate "$R28" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "the same set stays filed once after a doctor outage" \
+  || bad "the same set stays filed once after a doctor outage" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+echo "== 27. a reported set is suppressed for at most 14 days (PR 1464 review) =="
+# Remediation only runs when a session sees a cheap foreground signal. A user
+# who repairs sync by hand never triggers the clean doctor run that clears the
+# record, so the record must expire on its own. The hook's clock is moved with
+# HQ_TEST_FORCE_HEALTH_NOW (epoch seconds); the ledger line is
+# "<fingerprint> <epoch of the last successful send>".
+DAY=86400
+ledger_of() { printf '%s/workspace/.hq-client-health/bugs/reported-set' "$1"; }
+ledger_set() { cut -d' ' -f1 "$1" 2>/dev/null; }
+ledger_ts() { cut -d' ' -f2 "$1" 2>/dev/null; }
+age_attempt_stamp() { touch -t "$ANCIENT" "$1/workspace/.hq-client-health/bugs/report-attempt.stamp"; }
+
+# 27a. Recurrence after 14 days, and a dedup hit does not refresh the timestamp.
+R29="$TMP/expiry-recurrence"
+build_root "$R29"
+REM_STATE="$TMP/expiry-recurrence-state"
+mkdir -p "$REM_STATE"
+L29="$(ledger_of "$R29")"
+T0=$(date +%s)
+HQ_TEST_FORCE_HEALTH_NOW="$T0" run_remediate "$R29" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "expiry: the first report is filed" \
+  || bad "expiry: the first report is filed" "filed $(count_lines "$REM_STATE/bugs-filed")"
+[ "$(ledger_ts "$L29")" = "$T0" ] \
+  && ok "expiry: a successful send records its own timestamp" \
+  || bad "expiry: a successful send records its own timestamp" "ledger: [$(cat "$L29" 2>/dev/null)]"
+L29_BEFORE="$(cat "$L29" 2>/dev/null)"
+HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 10 * DAY))" run_remediate "$R29" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "expiry: the same set inside 14 days is not filed again" \
+  || bad "expiry: the same set inside 14 days is not filed again" "filed $(count_lines "$REM_STATE/bugs-filed")"
+[ "$(cat "$L29" 2>/dev/null)" = "$L29_BEFORE" ] \
+  && ok "expiry: a dedup hit leaves the ledger timestamp unchanged" \
+  || bad "expiry: a dedup hit leaves the ledger timestamp unchanged" "before [$L29_BEFORE] after [$(cat "$L29" 2>/dev/null)]"
+# Day 15 is 15 days after the send but only 5 days after the dedup hit, so a
+# refreshed timestamp would still suppress here.
+HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 15 * DAY))" run_remediate "$R29" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+  && ok "expiry: the same set is filed again after 14 days" \
+  || bad "expiry: the same set is filed again after 14 days" "filed $(count_lines "$REM_STATE/bugs-filed")"
+[ "$(ledger_ts "$L29")" = "$((T0 + 15 * DAY))" ] \
+  && ok "expiry: the new send restarts the 14-day window" \
+  || bad "expiry: the new send restarts the 14-day window" "ledger: [$(cat "$L29" 2>/dev/null)]"
+
+# 27b. Manual recovery: the user repairs sync by hand, so no foreground signal
+# fires and no remediation runs. The record must not be cleared by that quiet
+# session, and the same set returning later must still be reported.
+R30="$TMP/expiry-manual-recovery"
+build_root "$R30"
+REM_STATE="$TMP/expiry-manual-recovery-state"
+mkdir -p "$REM_STATE"
+L30="$(ledger_of "$R30")"
+T0=$(date +%s)
+HQ_TEST_FORCE_HEALTH_NOW="$T0" run_remediate "$R30" "-"
+L30_BEFORE="$(cat "$L30" 2>/dev/null)"
+fresh_state "$TMP/expiry-manual-recovery-sync"
+LAUNCHES_BEFORE=$(count_lines "$LAUNCH_LOG")
+run_hook "$R30" HQ_STATE_DIR="$TMP/expiry-manual-recovery-sync"
+[ "$(count_lines "$LAUNCH_LOG")" = "$LAUNCHES_BEFORE" ] && [ -z "$HOOK_OUT" ] \
+  && ok "manual recovery: a quiet session launches no remediation" \
+  || bad "manual recovery: a quiet session launches no remediation" "launched or printed: [$HOOK_OUT]"
+[ -n "$L30_BEFORE" ] && [ "$(cat "$L30" 2>/dev/null)" = "$L30_BEFORE" ] \
+  && ok "manual recovery: an absent foreground signal does not clear the record" \
+  || bad "manual recovery: an absent foreground signal does not clear the record" "ledger: [$(cat "$L30" 2>/dev/null)]"
+HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 21 * DAY))" run_remediate "$R30" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+  && ok "manual recovery: the same set recurring weeks later is reported" \
+  || bad "manual recovery: the same set recurring weeks later is reported" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+# 27c. Failed send: the timestamp is not set or moved, and the 24h attempt
+# limit still applies.
+R31="$TMP/expiry-failed-send"
+build_root "$R31"
+REM_STATE="$TMP/expiry-failed-send-state"
+mkdir -p "$REM_STATE"
+L31="$(ledger_of "$R31")"
+HQ_STUB_FEEDBACK_RC=1 run_remediate "$R31" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] && [ ! -e "$L31" ] \
+  && ok "failed send: no ledger is written" \
+  || bad "failed send: no ledger is written" "attempts $(count_lines "$REM_STATE/bugs-filed"), ledger [$(cat "$L31" 2>/dev/null)]"
+age_attempt_stamp "$R31"
+run_remediate "$R31" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] && [ -s "$L31" ] \
+  && ok "failed send: the retry after 24h files and records the set" \
+  || bad "failed send: the retry after 24h files and records the set" "attempts $(count_lines "$REM_STATE/bugs-filed")"
+T_OLD=$(( $(date +%s) - 15 * DAY ))
+printf '%s %s\n' "$(ledger_set "$L31")" "$T_OLD" > "$L31"
+L31_BEFORE="$(cat "$L31")"
+age_attempt_stamp "$R31"
+HQ_STUB_FEEDBACK_RC=1 run_remediate "$R31" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 3 ] \
+  && ok "failed send: an expired record allows a new attempt" \
+  || bad "failed send: an expired record allows a new attempt" "attempts $(count_lines "$REM_STATE/bugs-filed")"
+[ "$(cat "$L31" 2>/dev/null)" = "$L31_BEFORE" ] \
+  && ok "failed send: the ledger timestamp is not set by a failed send" \
+  || bad "failed send: the ledger timestamp is not set by a failed send" "before [$L31_BEFORE] after [$(cat "$L31" 2>/dev/null)]"
+run_remediate "$R31" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 3 ] \
+  && ok "failed send: the 24h attempt limit still holds" \
+  || bad "failed send: the 24h attempt limit still holds" "attempts $(count_lines "$REM_STATE/bugs-filed")"
+age_attempt_stamp "$R31"
+run_remediate "$R31" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 4 ] && [ "$(ledger_ts "$L31")" -gt "$T_OLD" ] \
+  && ok "failed send: the next successful send records a new timestamp" \
+  || bad "failed send: the next successful send records a new timestamp" "attempts $(count_lines "$REM_STATE/bugs-filed"), ledger [$(cat "$L31" 2>/dev/null)]"
+
+# 27d. Doctor outage: it neither clears nor refreshes the record, and the set
+# is still reported once the window has passed.
+R32="$TMP/expiry-outage"
+build_root "$R32"
+REM_STATE="$TMP/expiry-outage-state"
+mkdir -p "$REM_STATE"
+L32="$(ledger_of "$R32")"
+T0=$(date +%s)
+HQ_TEST_FORCE_HEALTH_NOW="$T0" run_remediate "$R32" "-"
+L32_BEFORE="$(cat "$L32" 2>/dev/null)"
+R32_EMPTY="$TMP/expiry-outage-empty.json"
+: > "$R32_EMPTY"
+HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 5 * DAY))" run_remediate "$R32" "-" "$R32_EMPTY"
+HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 16 * DAY))" run_remediate "$R32" "-" "$R32_EMPTY"
+[ -n "$L32_BEFORE" ] && [ "$(cat "$L32" 2>/dev/null)" = "$L32_BEFORE" ] \
+  && ok "outage: a doctor outage neither clears nor refreshes the record" \
+  || bad "outage: a doctor outage neither clears nor refreshes the record" "before [$L32_BEFORE] after [$(cat "$L32" 2>/dev/null)]"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+  && ok "outage: nothing is filed while doctor is down" \
+  || bad "outage: nothing is filed while doctor is down" "filed $(count_lines "$REM_STATE/bugs-filed")"
+HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 17 * DAY))" run_remediate "$R32" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+  && ok "outage: the set is reported once doctor is back and 14 days have passed" \
+  || bad "outage: the set is reported once doctor is back and 14 days have passed" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+# 27e. A corrupt ledger never suppresses: garbage, a fingerprint with no
+# timestamp, a timestamp in the future, and extra lines all file a report and
+# are replaced by a valid record.
+R33="$TMP/expiry-corrupt"
+build_root "$R33"
+REM_STATE="$TMP/expiry-corrupt-state"
+mkdir -p "$REM_STATE"
+L33="$(ledger_of "$R33")"
+run_remediate "$R33" "-"
+S33="$(ledger_set "$L33")"
+NOW33=$(date +%s)
+CORRUPT_FILED=1
+for variant in garbage set-only future extra-line; do
+  case "$variant" in
+    garbage)    printf 'not a ledger\n' > "$L33" ;;
+    set-only)   printf '%s\n' "$S33" > "$L33" ;;
+    future)     printf '%s %s\n' "$S33" "$((NOW33 + 30 * DAY))" > "$L33" ;;
+    extra-line) printf '%s %s\nextra\n' "$S33" "$NOW33" > "$L33" ;;
+  esac
+  age_attempt_stamp "$R33"
+  run_remediate "$R33" "-"
+  CORRUPT_FILED=$((CORRUPT_FILED + 1))
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = "$CORRUPT_FILED" ] \
+    && ok "corrupt ledger ($variant) does not suppress the report" \
+    || bad "corrupt ledger ($variant) does not suppress the report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Eq "^$S33 [0-9]+\$" "$L33" && [ "$(count_lines "$L33")" = 1 ] \
+    && ok "corrupt ledger ($variant) is replaced by a valid record" \
+    || bad "corrupt ledger ($variant) is replaced by a valid record" "ledger [$(cat "$L33" 2>/dev/null)]"
+done
+
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="
 [ "$FAIL" = 0 ] || exit 1

@@ -12,10 +12,12 @@
 #   stderr: error, auth-error
 #
 # Runner exit codes: 0 protocol completed, 1 argv/pre-sync failure,
-# 2 deterministic partial failure, 75 retryable network failure.
+# 2 deterministic partial failure, 17 another sync holds the per-root operation
+# lock (Auto-sync or the desktop app is mid-pass), 75 retryable network failure.
 #
 # Skill exit codes:
-#   0  sync completed, every company reached "complete"
+#   0  sync completed, every company reached "complete", or another sync was
+#      already running (runner exit 17) and this run stepped aside
 #   2  not signed in (token file absent, or the runner emitted auth-error)
 #   3  the run was partial — at least one company did not complete
 #   1  the runner failed for another reason (its exit code is passed through
@@ -23,6 +25,23 @@
 
 # Exit code the skill uses when the runner reports partial: true.
 HQ_SYNC_PARTIAL_EXIT=3
+
+# Runner exit code when another sync holds the per-root operation lock
+# (hq-cloud OPERATION_LOCKED_EXIT). Not a failure: the other pass does the work.
+HQ_SYNC_RUNNER_LOCKED_EXIT=17
+
+# hq_sync_skill_exit_code <runner_exit_code>
+# Maps the runner's exit code to the skill's. A lock collision with Auto-sync
+# or the desktop app is a benign skip, so it exits 0 instead of reading as a
+# failed sync (feedback_a91e5a77). Every other code passes through.
+hq_sync_skill_exit_code() {
+  local code="${1:-0}"
+  if [ "$code" = "$HQ_SYNC_RUNNER_LOCKED_EXIT" ]; then
+    echo 0
+  else
+    echo "$code"
+  fi
+}
 
 # hq_sync_has_auth_error <err_file>
 # Returns 0 when the runner emitted an auth-error event on stderr.
@@ -43,6 +62,12 @@ hq_sync_print_auth_error() {
 hq_sync_exit_note() {
   local code="${1:-0}"
   case "$code" in
+    17)
+      echo ""
+      echo "Another sync was already running (Auto-sync or the HQ Desktop App),"
+      echo "so this run stepped aside and did not sync. Nothing failed."
+      echo "Run /hq-sync again after it finishes for a fresh result."
+      ;;
     75)
       echo ""
       echo "The network interrupted the sync. Nothing is corrupt. Run /hq-sync again."
@@ -222,5 +247,45 @@ hq_sync_report_conflicts_remaining() {
     echo "  hq sync doctor --reconcile-conflicts --hq-root $hq_root"
   fi
 
+  return 0
+}
+
+# hq_sync_report_scope_gaps <output_file>
+# Surfaces each `scope-materialization-gap` event the runner emitted: files the
+# cloud holds for a company that this sync's plan marked `skip-out-of-scope`
+# because the membership's sync mode is `shared` or `custom`. It only renders
+# events the runner supplies. A prefix-scoped pull (for example a teammate
+# granted only `knowledge/`) never lists root-level files such as board.json,
+# so the runner emits no event for them and this prints nothing
+# (feedback_a91e5a77 follow-up). Prints the count, sample paths, and the two
+# ways to get the files.
+hq_sync_report_scope_gaps() {
+  local output_file="${1:-}"
+  [ -n "$output_file" ] && [ -f "$output_file" ] || return 0
+  local events
+  events="$(grep -E '^\{"type":"scope-materialization-gap"' "$output_file" 2>/dev/null || true)"
+  [ -n "$events" ] || return 0
+
+  local line company count mode printed=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    company=$(printf '%s' "$line" | jq -r '.company // "unknown"' 2>/dev/null || echo unknown)
+    count=$(printf '%s' "$line" | jq -r '.count // 0' 2>/dev/null || echo 0)
+    mode=$(printf '%s' "$line" | jq -r '.syncMode // "shared"' 2>/dev/null || echo shared)
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    [ "$count" != "0" ] || continue
+    if [ "$printed" = "0" ]; then
+      echo ""
+      echo "=== Files this sync did not download ==="
+      printed=1
+    fi
+    echo "$company: $count file(s) in the cloud were not downloaded because this"
+    echo "membership syncs in '$mode' mode (only the paths shared with you)."
+    printf '%s' "$line" | jq -r '(.samplePaths // [])[] | "  - \(.)"' 2>/dev/null || true
+    echo "To download everything you have access to: hq sync mode all --company $company"
+    echo "To fetch one file and keep it synced: hq files get companies/$company/<path>"
+  done <<EOF
+$events
+EOF
   return 0
 }

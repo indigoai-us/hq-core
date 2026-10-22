@@ -679,6 +679,8 @@ jobs:
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
           "$RUNNER_TEMP/bin/yq" --version
           command -v jq >/dev/null
+      - name: /hq-core-review one-command runner (scanners, marker, fail-closed, cleanup)
+        run: HQ_CORE_REVIEW_TEST_REQUIRE_DEPS=1 bash core/scripts/tests/hq-core-review-run.test.sh
       - name: Install pinned hq CLI for job notification forwarder tests
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: Run-token argv, xtrace, and cleanup regressions
@@ -1207,6 +1209,8 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Quoted file URI scope under stock macOS Bash
+        run: /bin/bash core/scripts/tests/scope-file-uri.test.sh
       - name: Credential-file read guard under stock macOS Bash
         run: /bin/bash core/scripts/tests/credential-read-guard.test.sh
       - name: Handoff finalizer git add error classification under stock macOS Bash
@@ -2012,9 +2016,13 @@ jobs:
       id: t_journal_session_isolation__16
       if: "${{ !cancelled() && steps.t_journal_session_isolation__15.outcome == 'success' }}"
       run: bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+    - name: "[journal-session-isolation] Quoted browser file URI queries retain tenant scope"
+      id: t_journal_session_isolation__file_uri
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__16.outcome == 'success' }}"
+      run: bash core/scripts/tests/scope-file-uri.test.sh
     - name: "[journal-session-isolation] SCOPE-1112 tenant-boundary regression cases"
       id: t_journal_session_isolation__17
-      if: "${{ !cancelled() && steps.t_journal_session_isolation__16.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__file_uri.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-1112-regressions.test.sh all
     - name: "[journal-session-isolation] Resumework skill commands stay within allowed paths"
       id: t_journal_session_isolation__18

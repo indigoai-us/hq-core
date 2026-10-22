@@ -4384,7 +4384,7 @@ bash_case 0 pr1544-ctl-curl-format-safe 'curl -w "== /$p code=%{http_code}" http
 bash_case 2 pr1544-ctl-curl-upload-unknown 'curl -T "$(cat workspace/url.txt)" https://example.invalid'
 bash_case 2 pr1544-ctl-curl-config-unknown 'curl -K "$(cat workspace/url.txt)" https://example.invalid'
 bash_case 2 pr1544-ctl-foreign-file-query "google-chrome --headless \"file://$TMP/companies/otherco/report.html?segment=all\""
-bash_case 2 pr1544-ctl-bound-file-query-55ab-unchanged "google-chrome --headless --print-to-pdf=workspace/report.pdf \"file://$TMP/companies/indigo/report.html?segment=all\""
+bash_case 0 feedback-55ab-bound-file-query "\"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome\" --headless --print-to-pdf=workspace/report.pdf \"file://$TMP/companies/indigo/report.html?segment=all\""
 bash_case 2 pr1544-ctl-foreign-quoted-glob 'ls "companies/otherco/people/*/meta.yaml"'
 bash_case 0 pr1544-ctl-bound-quoted-glob 'ls "companies/indigo/people/*/meta.yaml"'
 bash_case 2 pr1544-ctl-emptyquote-foreign-glob 'cat companies/""[!i]*/settings/.keep'
