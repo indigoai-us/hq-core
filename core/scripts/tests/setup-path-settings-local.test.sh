@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regression for US-166: PATH is isolated from locked settings when enabled,
-# and flag lookup works from a locally bound company without session env vars.
+# Retain public flag-reader endpoint/company-context compatibility independently
+# of setup: machine PATH no longer depends on this flag.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -8,6 +8,7 @@ SETUP="$ROOT/core/scripts/setup.sh"
 HELPER="$ROOT/core/scripts/configure-settings-path.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/setup-path-settings-local.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/home"
 pass=0
 fail=0
 ok() { pass=$((pass + 1)); printf 'ok   %s\n' "$1"; }
@@ -79,7 +80,7 @@ export const loadCachedTokens = () => ({ idToken: "test-only-token" });
 JS
 
 make_fixture() {
-  local name="$1" dir="$TMP/$1"
+  local dir="$TMP/$1"
   mkdir -p "$dir/.claude" "$dir/core/scripts/lib" "$dir/companies"
   cp "$ROOT/.claude/settings.json" "$dir/.claude/settings.json"
   jq '.env = ((.env // {}) + {PATH: "/user/project:/shared"})' "$dir/.claude/settings.json" > "$dir/.claude/settings.json.tmp"
@@ -111,6 +112,11 @@ run_helper() {
     env_args+=(HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_test123)
   fi
   rm -f "$TMP/flag-marker.json"
+  # Public reader compatibility is exercised independently from setup routing.
+  "${env_args[@]}" HOME="$TMP/home" HQ_ROOT="$root" HQ_HQ_SESSION_NO_CLI=1 \
+    PATH="$TMP/bin:$PATH" HQ_CLI_BIN="$TMP/bin/hq" \
+    HQ_TEST_FLAG_MARKER="$TMP/flag-marker.json" HQ_TEST_SETUP_PATH_FLAG="$enabled" \
+    node "$root/core/scripts/setup-path-flag.cjs" > "$TMP/reader-output"
   if captured_output="$("${env_args[@]}" \
     HOME="$TMP/home" HQ_ROOT="$root" HQ_HQ_SESSION_NO_CLI=1 \
     HQ_TOOLCHAIN_DIR="$TMP/no-toolchain" PATH="$TMP/bin:$PATH" HQ_CLI_BIN="$TMP/bin/hq" \
@@ -124,6 +130,7 @@ run_helper() {
   printf -v "$rc_var" '%s' "$exit_code"
 }
 
+output=""; rc=0
 RUN_PATH="$PATH"
 EXPECTED_PATH="$(env HOME="$TMP/home" TMPDIR="$TMP" HQ_TOOLCHAIN_DIR="$TMP/no-toolchain" \
   bash "$ROOT/core/scripts/compose-settings-path.sh" "/user/local:/shared:/user/project:/shared:$RUN_PATH")"
@@ -135,9 +142,9 @@ run_helper "$ON_ROOT" true output rc
 if [[ "$rc" == 0 && "$(jq -r '.env.PATH' "$ON_ROOT/.claude/settings.local.json")" == "$EXPECTED_PATH" \
   && "$(jq -r '.env.LOCAL_ONLY' "$ON_ROOT/.claude/settings.local.json")" == 'preserved' \
   && "$(jq -r '.other' "$ON_ROOT/.claude/settings.local.json")" == 'true' ]]; then
-  ok 'default endpoint plus bound company enables local settings and preserves unrelated keys'
+  ok 'bound setup writes local settings and preserves unrelated keys'
 else
-  bad 'default endpoint plus bound company enables local settings and preserves unrelated keys'
+  bad 'bound setup writes local settings and preserves unrelated keys'
 fi
 if [[ -f "$TMP/flag-marker.json" ]] \
   && [[ "$(jq -r '.endpoint' "$TMP/flag-marker.json")" == 'https://flags.invalid/default' ]] \
@@ -155,10 +162,10 @@ fi
 OFF_ROOT="$(make_fixture disabled)"
 bind_indigo "$OFF_ROOT"
 run_helper "$OFF_ROOT" false output rc
-if [[ "$rc" == 0 && "$(jq -r '.env.PATH' "$OFF_ROOT/.claude/settings.json")" == "$EXPECTED_PATH" ]]; then
-  ok 'registry false keeps the legacy settings.json PATH behavior'
+if [[ "$rc" == 0 && "$(jq -r '.env.PATH' "$OFF_ROOT/.claude/settings.local.json")" == "$EXPECTED_PATH" ]]; then
+  ok 'registry false remains reader-compatible while machine PATH stays local'
 else
-  bad 'registry false keeps the legacy settings.json PATH behavior'
+  bad 'registry false remains reader-compatible while machine PATH stays local'
 fi
 if [[ -f "$TMP/flag-marker.json" ]] \
   && [[ "$(jq -r '.enabled' "$TMP/flag-marker.json")" == 'false' ]] \
@@ -171,9 +178,9 @@ fi
 PERSONAL_ROOT="$(make_fixture personal)"
 run_helper "$PERSONAL_ROOT" true output rc
 if [[ "$rc" == 0 && "$(jq -r '.env.PATH' "$PERSONAL_ROOT/.claude/settings.local.json")" == "$EXPECTED_PATH" ]]; then
-  ok 'companyless registry response can enable the local settings path'
+  ok 'companyless setup writes the local settings path'
 else
-  bad 'companyless registry response can enable the local settings path'
+  bad 'companyless setup writes the local settings path'
 fi
 if [[ -f "$TMP/flag-marker.json" ]] \
   && [[ "$(jq -r '.endpoint' "$TMP/flag-marker.json")" == 'https://flags.invalid/default' ]] \

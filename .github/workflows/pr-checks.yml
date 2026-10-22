@@ -2563,10 +2563,12 @@ jobs:
       id: t_compose_settings_path__1
       if: "${{ !cancelled() }}"
       run: bash core/scripts/tests/compose-settings-path.test.sh
-    - name: "[compose-settings-path] setup PATH stays out of locked settings.json when the hq-flags gate is enabled"
+    - name: "[compose-settings-path] setup machine PATH stays local and public flag reader remains compatible"
       id: t_compose_settings_path__2
       if: "${{ !cancelled() && steps.t_compose_settings_path__1.outcome == 'success' }}"
-      run: bash core/scripts/tests/setup-path-settings-local.test.sh
+      run: |
+        bash core/scripts/tests/setup-path-settings-local.test.sh
+        bash core/scripts/tests/setup-path-preservation.test.sh
     - name: "[hook-path-resolution] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
