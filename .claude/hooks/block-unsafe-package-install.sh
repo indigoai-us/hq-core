@@ -445,8 +445,16 @@ check_segment() {
   seg="${seg#"${seg%%[![:space:]]*}"}"
 
   # Strip a leading env-assignment prefix (FOO=bar BAR=baz pm install ...).
+  # Every iteration must shrink the segment. A prefix the strip cannot
+  # consume (feedback_3d0f49f4: newline-separated assignments spun this loop
+  # until the 300 s harness timeout; feedback_f692e290: orphaned copies kept
+  # spinning a core each) ends the strip instead of looping forever.
+  local seg_before
   while [[ "$seg" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]] ]]; do
-    seg="${seg#* }"
+    seg_before="$seg"
+    seg="${seg#*[[:space:]]}"
+    seg="${seg#"${seg%%[![:space:]]*}"}"
+    [ "$seg" != "$seg_before" ] || break
   done
 
   # Match: <pm> <subcmd> <rest>
@@ -563,8 +571,12 @@ fi
 # First non-whitespace token of the command (after env-assignment strip).
 FIRST="$CMD"
 FIRST="${FIRST#"${FIRST%%[![:space:]]*}"}"
+# Same no-progress guard as check_segment: never loop without shrinking.
 while [[ "$FIRST" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]] ]]; do
-  FIRST="${FIRST#* }"
+  FIRST_BEFORE="$FIRST"
+  FIRST="${FIRST#*[[:space:]]}"
+  FIRST="${FIRST#"${FIRST%%[![:space:]]*}"}"
+  [ "$FIRST" != "$FIRST_BEFORE" ] || break
 done
 # Take the first two tokens to recognize "git commit", "gh pr create", etc.
 FIRST_TWO=""

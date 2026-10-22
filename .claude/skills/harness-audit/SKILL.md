@@ -151,7 +151,7 @@ score: all core hooks present + 4 categories = 10; 6-7 = 7; 4-5 = 5; 1-3 = 2;
 - `warn-cross-company-settings.sh` exists (company isolation)
 - `detect-secrets.sh` exists (secret detection)
 - `core/policies/` directory exists with policies (company-isolation, credential-access-protocol, etc.)
-- `.gitignore` covers `.env*`, `credentials.json`, `tokens/`, `core/settings/`
+- `.gitignore` covers `.env*`, `credentials.json`, `tokens/`, and the credential-shaped files under `core/settings/` (`core/settings/**/*.json` except `pure-ralph.json`, `*.env`, `secrets/`). The directory itself ships tracked defaults and must not be ignored whole
 - `companies/manifest.yaml` exists
 
 **Scoring:**

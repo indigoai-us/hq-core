@@ -2414,7 +2414,8 @@ MALFORMED_MARKER_PREFIX="__malformed-trigger-reported:"
 MALFORMED_NOTICE_PREFIX='> Malformed `when:` trigger'
 
 # record_malformed_notice <delivered-output> — after the notice is delivered,
-# mark each slug it named so later events in this session do not repeat it.
+# mark each affected slug so later events do not repeat the diagnostic. Large
+# sets are reported by count; individual policies still keep their own ledgers.
 record_malformed_notice() {
   local output="$1" row slug ws markers=""
   case "$output" in
@@ -2439,6 +2440,7 @@ printf '%s' "$MATCHES" | {
   shortened=""
   oversize=""
   malformed=""
+  malformed_count=0
   # HARD_FULL_KEEP=1 (set by fit_reminder when the full emission would pass
   # the output ceiling): only the first HARD rule whose text fits keeps it.
   # Every later HARD rule is a summary line, covered by the ceiling notice.
@@ -2453,7 +2455,13 @@ printf '%s' "$MATCHES" | {
     # cuts its line and leaves it eligible; without this marker the notice
     # re-listed every such slug on every later event.
     if [ "$ws" = "malformed" ] && ! already "${MALFORMED_MARKER_PREFIX}${slug}" once; then
-      malformed="${malformed:+$malformed, }$slug"
+      malformed_count=$((malformed_count + 1))
+      # Bound diagnostic metadata independently of the policy rows. An unbounded
+      # slug list cannot be trimmed by trim_policy_lines and used to force the
+      # last-resort fallback, dropping even the highest-ranked reactive rule.
+      if [ "$malformed_count" -le 5 ]; then
+        malformed="${malformed:+$malformed, }$slug"
+      fi
     fi
     body=""
     # HARD rules carry full text while the budget lasts. MATCHES is already
@@ -2512,7 +2520,11 @@ printf '%s' "$MATCHES" | {
     printf '> Over the %s-byte per-policy limit, so shortened to one-line summaries — %s. Read each in full at its own file before acting on it, and consider trimming the rule.\n' \
       "$HARD_MAX" "$oversize"
   fi
-  if [ -n "$malformed" ]; then
+  if [ "$malformed_count" -gt 0 ]; then
+    policy_value_bytes "$malformed"
+    if [ "$malformed_count" -gt 5 ] || [ "$POLICY_VALUE_BYTES" -gt 512 ]; then
+      malformed="$malformed_count policies (individual names omitted to preserve policy text)"
+    fi
     printf '> Malformed `when:` trigger (does not parse, so it cannot be matched against this event) — %s. These are surfaced as a once-per-session fallback, not because they matched. Repair with: bash core/scripts/lint-policy-triggers.sh\n' \
       "$malformed"
   fi

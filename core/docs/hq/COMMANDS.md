@@ -65,6 +65,7 @@ if none match, the first group whose keywords match a word in its description; o
 | `/dm-bind` | core | Bind this session to one HQ DM channel — post structured status updates there and listen for replies (feedback, requests) that steer the work. |
 | `/hq-access` | core | Diagnose and fix a vault file you cannot find or open — never existed, not synced (fetch and pin it), or no access (ask the owner with a one-click grant DM). |
 | `/hq-files` | core | Inspect or change HQ vault ACLs, grants, and shared prefixes. |
+| `/hq-library` | core | Find, add, tag, link, fetch or remove images, videos and other media in the company's HQ Asset Library (`hq library`). Use for "find the photo of…", "what assets do we have for…", "add these images to the library", "tag this video", "get a link to the video", "send me the logo file", "remove this from the library", and for Claude using the library through the hosted HQ connector (`hq_library_*` tools) or a bot using a library API key. Not for documents, folder ACLs or sharing vault paths with people (use /hq-files or /hq-share). |
 | `/hq-pack-cowork:hq-cowork-dm` | package | Send HQ Sync direct messages from Cowork through the host-side DM tool. |
 | `/hq-pack-cowork:hq-cowork-share` | package | Share HQ vault paths from Cowork through links or direct grants. |
 | `/hq-share` | core | Share HQ vault paths through single-use links or direct ACL grants. |

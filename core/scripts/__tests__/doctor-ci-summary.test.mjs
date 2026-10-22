@@ -217,7 +217,15 @@ test("workflow: paths filter gates the job off unrelated (docs-only) PRs (e2e4)"
 test("workflow: runs hq doctor --json and is explicitly advisory (never fails build)", () => {
   const yaml = fs.readFileSync(WORKFLOW, "utf8");
   assert.match(yaml, /hq doctor --json/, "invokes the JSON doctor");
-  assert.match(yaml, /npm install -g @indigoai-us\/hq-cli/, "installs the hq CLI");
+  // The hq CLI is installed at an exact pinned version through the shared CI
+  // installer (security audit 2026-10-21, M4), never as an unversioned global.
+  assert.match(
+    yaml,
+    /install-pinned-hq-cli\.sh --version "\$HQ_DOCTOR_CLI_VERSION"/,
+    "installs the hq CLI via the pinned installer",
+  );
+  assert.match(yaml, /HQ_DOCTOR_CLI_VERSION: \d+\.\d+\.\d+\s/, "hq CLI version is an exact semver pin");
+  assert.doesNotMatch(yaml, /npm install -g @indigoai-us\/hq-cli(\s|@latest)/, "no unpinned hq CLI install");
   assert.match(yaml, /doctor-ci-summary\.mjs/, "renders the summary via the helper");
   assert.match(yaml, /github-script/, "posts/updates the PR comment via github-script");
   assert.match(yaml, /selectExistingComment/, "update-in-place uses the tested selection logic");

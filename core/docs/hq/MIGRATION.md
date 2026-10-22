@@ -2,6 +2,17 @@
 
 Newest release first.
 
+## Release: v16.0.32-beta.13
+
+- No action needed. New `/hq-library` skill: tells agents when and how to use
+  the HQ Asset Library (`hq library search`, `add`, `tag`, `describe`, `link`,
+  `fetch`, `rm`), how the hosted connector's `hq_library_*` tools map to the
+  CLI, and how a bot uses a `--preset library-agent` API key. It routes file
+  hand-offs to `link` instead of `fetch`, runs `rm --dry-run` first, keeps
+  download links out of shared places, and lists what is not built yet. The
+  intent index gains a `media` entry so plain asks about photos, videos and
+  assets reach the skill. Needs hq CLI 5.345.155 or later.
+
 ## Release: v16.0.31-beta.46
 
 - No action needed. New `/join-meeting` skill: ride a live meeting transcript

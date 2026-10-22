@@ -353,7 +353,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/deploy/SKILL.md",
-      "hash": "sha256:7793e74ca595db69b9158c025e0e4e38f474b3fe63994d0e2532a844c61341ee",
+      "hash": "sha256:8763fb666f9c56e75ddcb86ea320997ebaf51346ce27383d3b5840a749c1fc2c",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -642,7 +642,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/harness-audit/SKILL.md",
-      "hash": "sha256:b4127e81c51f960d7533612ca8a293b10b1f7a38e479f8a195ef8d86dc78b84d",
+      "hash": "sha256:2aa568dea4d065ea177de90550cee82f55062db90ac15eb815a59cde7b20b5da",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -745,6 +745,23 @@
       "group": "sync",
       "source": ".claude/skills/hq-integrations/SKILL.md",
       "hash": "sha256:316c15386996d1485dac0c6eea8173e3088c1506149322da8101d1f5e30ad1f5",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "hq-library",
+      "description": "Find, add, tag, link, fetch or remove images, videos and other media in the company's HQ Asset Library (`hq library`). Use for \"find the photo of…\", \"what assets do we have for…\", \"add these images to the library\", \"tag this video\", \"get a link to the video\", \"send me the logo file\", \"remove this from the library\", and for Claude using the library through the hosted HQ connector (`hq_library_*` tools) or a bot using a library API key. Not for documents, folder ACLs or sharing vault paths with people (use /hq-files or /hq-share).",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/hq-library",
+      "skillUid": null,
+      "group": "share",
+      "source": ".claude/skills/hq-library/SKILL.md",
+      "hash": "sha256:55abcbfb71b61ac4b8a07f5dca83e94f516bb766d1432ca53f64d8ead7efbdeb",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1456,7 +1473,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/resumework/SKILL.md",
-      "hash": "sha256:914a877f45bb008e82a0fd061088a369b7fcad4108f38229056f781477a16155",
+      "hash": "sha256:c1b803d07030c93ecd03b809285dde57fbae8dafc22ec5e3cd9c6680d6061f8e",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1609,7 +1626,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/setup/SKILL.md",
-      "hash": "sha256:754e9ce5a520e34bc0efe682c2d812d94e6f8bd1cd4b71799cea220d5ec048f5",
+      "hash": "sha256:2a21c39d1dd632202023f161354eba95e140dc5b92d3404e06461fe86d80eb97",
       "duplicates": {
         "exact": [],
         "drifted": [],

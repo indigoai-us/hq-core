@@ -264,6 +264,18 @@ else
   bad "3d42 transcript-keyed sub-agent ledger missing"
 fi
 
+# Windows transcript-only reads must also have a separate ledger.
+expect 0 "Windows transcript sub-agent allowed after parent budget spent" \
+  "$(transcript_payload "$TMP/s3-c.png" "$S3" 'C:\Users\qa\project\subagents\agent-windows.jsonl')" HQ_HOOK_AGENT_ID=
+expect_ledger "5 8294400" "Windows sub-agent leaves parent ledger unchanged"
+if [ -f "$FIX/workspace/orchestrator/hook-state/image-context/$S3/agents/windows/reads.txt" ]; then
+  ok "Windows transcript sub-agent has its own ledger"
+else
+  bad "Windows transcript sub-agent ledger missing"
+fi
+expect 2 "Windows look-alike outside subagents stays parent" \
+  "$(transcript_payload "$TMP/p3-5.png" "$S3" 'C:\Users\qa\notes\agent-windows.jsonl')" HQ_HOOK_AGENT_ID=
+
 # The parent's own transcript path, or a look-alike outside subagents/, stays
 # on the parent ledger and is still blocked.
 expect 2 "3d42 parent with its own transcript_path still blocked" \

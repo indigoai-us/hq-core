@@ -108,11 +108,11 @@ pass "journal-due remains silent when the helper is absent"
 ROOT_PLAN="$(make_root native-plan-project-sync)"
 cp "$ROOT/.claude/hooks/native-plan-project-sync.sh" "$ROOT_PLAN/.claude/hooks/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$ROOT_PLAN/core/scripts/"
-printf 'projects/demo\n' > "$ROOT_PLAN/.claude/state/active-session-project"
+printf 'companies/demo/projects/demo\n' > "$ROOT_PLAN/.claude/state/auto-session-project-plan-session"
 PLAN_HELPER="$ROOT_PLAN/core/scripts/session-project.sh"
 PLAN_LOG="$TMP/native-plan.calls"
 make_forwarder_stub "$PLAN_HELPER" session-project.sh "$PLAN_LOG"
-PAYLOAD='{"tool_name":"ExitPlanMode","tool_input":{"plan":"Synthetic plan"}}'
+PAYLOAD='{"session_id":"plan-session","tool_name":"ExitPlanMode","tool_input":{"plan":"Synthetic plan"}}'
 rc="$(run_hook "$ROOT_PLAN" "$ROOT_PLAN/.claude/hooks/native-plan-project-sync.sh" "$PAYLOAD")"
 assert_empty_result "native-plan-project-sync with 127" "$rc"
 [ "$(cat "$PLAN_LOG")" = called ] || fail "native-plan-project-sync did not invoke its helper"

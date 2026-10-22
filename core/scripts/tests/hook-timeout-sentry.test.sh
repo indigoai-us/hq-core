@@ -89,16 +89,19 @@ case "$timeout_version" in
 esac
 case "$timeout_version" in
   *"GNU coreutils"*)
-    if [ "$timeout_bin" != "$(command -v timeout 2>/dev/null || true)" ]; then
-      export HQ_TEST_GNU_TIMEOUT_BIN="$timeout_bin"
-      cat > "$TMP/bin/timeout" <<'EOF'
+    # Always put the shim in $TMP/bin, even when GNU timeout is already first
+    # on PATH. Some sections run hooks with a narrowed
+    # PATH="<root>/bin:$TMP/bin:/usr/bin:/bin"; when timeout lives elsewhere
+    # (Homebrew's /opt/homebrew/bin on macOS) it would not be found there and
+    # the bounded run would exit 127 before the hook ran.
+    export HQ_TEST_GNU_TIMEOUT_BIN="$timeout_bin"
+    cat > "$TMP/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 exec "${HQ_TEST_GNU_TIMEOUT_BIN:?}" "$@"
 EOF
-      chmod +x "$TMP/bin/timeout"
-      PATH="$TMP/bin:$PATH"
-      export PATH
-    fi
+    chmod +x "$TMP/bin/timeout"
+    PATH="$TMP/bin:$PATH"
+    export PATH
     ;;
   *)
     command -v perl >/dev/null 2>&1 || fail 'neither GNU timeout nor Perl is available for bounded hook tests'
@@ -113,6 +116,9 @@ EOF
     export PATH
     ;;
 esac
+# Sections that narrow PATH to "<root>/bin:$TMP/bin:/usr/bin:/bin" rely on this
+# shim; without it they exit 127 wherever timeout is not in /usr/bin or /bin.
+[ -x "$TMP/bin/timeout" ] || fail "no bounded timeout shim in \$TMP/bin"
 
 make_root() {
   local name="$1"

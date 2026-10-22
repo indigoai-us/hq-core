@@ -49,6 +49,10 @@
 #                       incomplete even if a commit landed for the rest; exit 4.
 #                       This is the shape a held .git/index.lock takes.
 # stage_failures lists paths git add rejected for a reason other than gitignore.
+# On a stage failure, hq_commit_error carries git's first stderr line, and
+# stage_failure_class classifies it: "permission" (the process may not write
+# .git, e.g. a sandboxed run; re-run outside the sandbox), "index-lock" (another
+# git process holds .git/index.lock), or "other". It is "" when nothing failed.
 #
 # --deficiencies-json <path> takes a file holding the Step 2 environment
 # deficiencies array (lever, kind, severity, summary, evidence, proposed_fix).
@@ -671,12 +675,26 @@ STAGED=0
 # regression hit), and macOS still ships bash 3.2.
 STAGE_FAILURES=""
 STAGE_FAILURE_COUNT=0
+# git's stderr for the first rejected path. It used to go to /dev/null, so a
+# sandbox permission denial on .git read as an unexplained "git add failed for
+# N path(s)" (feedback_98f2ce49-5065-4670-8544-1a3dccd9985e).
+FIRST_STAGE_ERROR=""
+STAGE_FAILURE_CLASS=""
+new_tmp STAGE_ERR_FILE
+# record_stage_failure <path> — append the path; keep the first stderr line.
+record_stage_failure() {
+  STAGE_FAILURES="${STAGE_FAILURES}${1}"$'\n'
+  STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+  if [[ -z "$FIRST_STAGE_ERROR" ]]; then
+    FIRST_STAGE_ERROR="$(grep -v '^[[:space:]]*$' "$STAGE_ERR_FILE" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c1-300 || true)"
+  fi
+}
 if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
   for p in "${EXPLICIT_PATHS[@]}"; do
     [[ -n "$p" ]] || continue
     if [[ -e "$p" || -n "$(git status --porcelain -- "$p" 2>/dev/null)" ]]; then
       add_rc=0
-      git add -- "$p" >/dev/null 2>&1 || add_rc=$?
+      git add -- "$p" >/dev/null 2>"$STAGE_ERR_FILE" || add_rc=$?
       if [[ $add_rc -eq 0 ]]; then
         STAGED=$((STAGED+1))
       elif git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
@@ -685,11 +703,10 @@ if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
         # files), so a plain `git add` refuses it. A tracked file must still be
         # committed, so force-add it. Only a force-add that ALSO fails (e.g. a held
         # .git/index.lock) is a genuine stage failure.
-        if git add -f -- "$p" >/dev/null 2>&1; then
+        if git add -f -- "$p" >/dev/null 2>"$STAGE_ERR_FILE"; then
           STAGED=$((STAGED+1))
         else
-          STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
-          STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+          record_stage_failure "$p"
         fi
       elif git check-ignore --no-index -q -- "$p" 2>/dev/null; then
         # An UNtracked, gitignored path is a deliberate exclusion, not a failed
@@ -698,11 +715,18 @@ if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
         # the bug that made this a stage-failure); the tracked case is handled above.
         :
       else
-        STAGE_FAILURES="${STAGE_FAILURES}${p}"$'\n'
-        STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+        record_stage_failure "$p"
       fi
     fi
   done
+fi
+if [[ $STAGE_FAILURE_COUNT -gt 0 ]]; then
+  case "$FIRST_STAGE_ERROR" in
+    *"Operation not permitted"*|*"Permission denied"*|*"Read-only file system"*)
+      STAGE_FAILURE_CLASS="permission" ;;
+    *index.lock*) STAGE_FAILURE_CLASS="index-lock" ;;
+    *) STAGE_FAILURE_CLASS="other" ;;
+  esac
 fi
 # committed_paths scales with the staged set; capture it to a file (git piped to
 # jq via stdin, then the result written to disk) so it too stays off argv.
@@ -752,6 +776,13 @@ if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
   HQ_COMMIT_STATUS="stage-failed"
   if [[ -z "$HQ_COMMIT_ERROR" ]]; then
     HQ_COMMIT_ERROR="git add failed for ${STAGE_FAILURE_COUNT} path(s) — see stage_failures"
+    case "$STAGE_FAILURE_CLASS" in
+      permission)
+        HQ_COMMIT_ERROR="${HQ_COMMIT_ERROR}; permission denied writing the git repository (a sandboxed run cannot write .git; re-run /handoff outside the sandbox)" ;;
+      index-lock)
+        HQ_COMMIT_ERROR="${HQ_COMMIT_ERROR}; another git process holds .git/index.lock (wait for it and re-run /handoff)" ;;
+    esac
+    [[ -z "$FIRST_STAGE_ERROR" ]] || HQ_COMMIT_ERROR="${HQ_COMMIT_ERROR}; first git error: ${FIRST_STAGE_ERROR}"
   fi
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -837,6 +868,7 @@ MSYS_NO_PATHCONV=1 jq -n \
   --arg hq_commit_error "$HQ_COMMIT_ERROR" \
   --slurpfile committed_paths "$COMMITTED_PATHS_JQ_FILE" \
   --slurpfile stage_failures "$STAGE_FAILURES_JQ_FILE" \
+  --arg stage_failure_class "$STAGE_FAILURE_CLASS" \
   --slurpfile skipped_paths "$SKIPPED_PATHS_JQ_FILE" \
   --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
   --arg commit_after_finalize "$COMMIT_AFTER" \
@@ -856,6 +888,7 @@ MSYS_NO_PATHCONV=1 jq -n \
     commit_after_finalize: $commit_after_finalize,
     committed_paths: ($committed_paths[0] // []),
     stage_failures: ($stage_failures[0] // []),
+    stage_failure_class: $stage_failure_class,
     skipped_paths: ($skipped_paths[0] // []),
     baseline_noise_count: $baseline_noise_count,
     indexes_regen: $indexes_regen,

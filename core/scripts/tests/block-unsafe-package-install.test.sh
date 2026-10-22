@@ -290,6 +290,64 @@ allow_case 0 "core/scripts/hq-pr-create.sh $PR_BODY"                  "wrapper e
 allow_case 2 "bash other.sh $PR_BODY"                                 "other script with install text is still blocked"
 allow_case 2 "bash /abs/hq/core/scripts/hq-pr-create.sh.bak $PR_BODY" "wrapper look-alike name is still blocked"
 
+# DEV-4329: assignment stripping must consume every whitespace delimiter.
+# Bound the reproduction so a regression fails instead of hanging CI.
+if ! python3 - "$HOOK" <<'PY_ASSIGNMENT_TEST'
+import json, os, subprocess, sys, tempfile
+hook = sys.argv[1]
+cases = [
+    ("newline assignments only", "S=scripts\nOUT=output\nAPP_NAME=app", 0),
+    ("tab assignments only", "S=scripts\tOUT=output\tAPP_NAME=app", 0),
+    ("assignments in chained segment", "true && S=scripts\nOUT=output\nAPP_NAME=app; true", 0),
+    ("tab prefix cannot hide unsafe install", "S=scripts\tnpm install left-pad", 2),
+    ("newline prefix cannot hide unsafe install", "S=scripts\nnpm install left-pad", 2),
+    ("chained prefix cannot hide unsafe install", "true && S=scripts\tnpm install left-pad", 2),
+    # feedback_3d0f49f4: the /deploy skill's Phase C block run inline. The
+    # segment between `&&` and `;` starts with newline-separated assignments
+    # (quoted values, no space anywhere), which hung PreToolUse for 300 s.
+    ("deploy phase C inline block (feedback_3d0f49f4)",
+     'cd "$HQ_ROOT" && S=.claude/skills/deploy/scripts\nOUT="workspace/deploy/out"\nAPP_NAME="hq-site"; '
+     'bash "$S/upload.sh" --app "$APP_NAME" --out "$OUT" && echo done', 0),
+    ("deploy phase C shape cannot hide an unsafe install",
+     'cd "$HQ_ROOT" && S=.claude/skills/deploy/scripts\nOUT="workspace/deploy/out"\nAPP_NAME="hq-site"\nnpm install left-pad; echo done', 2),
+    # feedback_f692e290: a prefix that cannot be consumed must end the strip,
+    # not spin. Assignments followed only by whitespace is the no-progress edge.
+    ("assignments followed by trailing whitespace only", "S=scripts\nOUT=output\n   ", 0),
+    ("assignment with a CRLF line end", "S=scripts\r\nnpm install left-pad", 2),
+]
+failed = 0
+with tempfile.TemporaryDirectory() as tmp:
+    env = {"PATH": os.environ["PATH"], "HQ_ROOT": tmp}
+    # Preserve only the same parity instrumentation allowlist used by run_hook.
+    for key in ("HQ_PARITY_REAL_BASH", "HQ_PARITY_RECORD_ROOT",
+                "HQ_PARITY_UNSAFE_BASE_HOOK", "HQ_PARITY_UNSAFE_CANDIDATE_HOOK",
+                "HQ_PARITY_CORE_BASE_HOOK", "HQ_PARITY_CORE_CANDIDATE_HOOK"):
+        if key in os.environ:
+            env[key] = os.environ[key]
+    for name, command, expected in cases:
+        payload = json.dumps({"tool_name":"Bash", "tool_input":{"command":command}})
+        try:
+            # This regression fixes behaviour absent from the frozen process baseline.
+            # Exercise the current candidate directly; historical parity stays
+            # active for the surrounding fixture suite.
+            regression_bash = env.get("HQ_PARITY_REAL_BASH", "bash")
+            regression_hook = env.get("HQ_PARITY_UNSAFE_CANDIDATE_HOOK", hook)
+            result = subprocess.run([regression_bash, regression_hook], input=payload, text=True, capture_output=True,
+                                    cwd=tmp, env=env, timeout=5)
+            if result.returncode != expected:
+                print(f"FAIL - {name}: expected {expected}, got {result.returncode}")
+                failed += 1
+            else:
+                print(f"ok   - {name} terminates with exit {expected}")
+        except subprocess.TimeoutExpired:
+            print(f"FAIL - {name}: guard failed to terminate within 5 seconds")
+            failed += 1
+sys.exit(bool(failed))
+PY_ASSIGNMENT_TEST
+then
+  fail "assignment whitespace regression"
+fi
+
 if [ "$fails" -gt 0 ]; then
   echo "block-unsafe-package-install.test.sh: $fails check(s) failed" >&2
   exit 1

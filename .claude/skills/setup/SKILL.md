@@ -243,10 +243,12 @@ if [ -x "$HQ_MANAGED_HQ_BIN/hq" ]; then
 fi
 command -v hq >/dev/null 2>&1 || npm install -g @indigoai-us/hq-cli
 
-# qmd — npm global; on macOS it loads SQLite extensions the built-in sqlite3
-# can't, so ensure Homebrew SQLite is present regardless of whether qmd itself
-# was already installed.
-command -v qmd >/dev/null 2>&1 || npm install -g @tobilu/qmd
+# qmd — npm global, the exact pin from core/scripts/install-deps.allow (the
+# version Desktop installs). Newer unpinned qmd has no better-sqlite3 binary on
+# Windows and crashes on every command. On macOS it loads SQLite extensions the
+# built-in sqlite3 can't, so ensure Homebrew SQLite is present regardless of
+# whether qmd itself was already installed.
+command -v qmd >/dev/null 2>&1 || npm install -g @tobilu/qmd@2.5.3
 if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
   brew list sqlite >/dev/null 2>&1 || brew install sqlite
 fi

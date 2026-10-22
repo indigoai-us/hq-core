@@ -35,7 +35,9 @@ bash core/scripts/handoff-sync-prefetch.sh || true
 
 arg="$ARGUMENTS"                       # e.g. T-20260625-084414-files-acl-grant-timeout
 id="${arg%.json}"; id="${id##*/}"      # strip .json and any leading path
-id="$(echo "$id" | tr -d '[:space:]')" # trim stray whitespace
+# The lookup script trims whitespace and validates the id itself; pass
+# the id straight through so it is never command-substitution output. A
+# whitespace-only id reaches the lookup script and comes back as no match.
 if [ -z "$id" ]; then
   printf '%s\n' 'A thread id is required. Recent threads:'
   ls -t workspace/threads/T-*.json 2>/dev/null | grep -v changeset | head -5

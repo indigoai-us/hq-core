@@ -275,6 +275,38 @@ done
 [ "$cut_hits" -gt 0 ] && ok "no cut policy recorded as delivered across $cut_hits cut cases" \
   || bad "fixture never cut aaa-gen-3 or soft-8"
 
+echo "[f] a large malformed-trigger notice cannot crowd out reactive policies"
+RF="$(new_root malformed-flood)"
+policy "$RF" zz-reactive 'deploy && prod' hard 'NEVER deploy without approval. REACTIVE_BODY'
+for i in $(seq 1 150); do
+  policy "$RF" "malformed-long-policy-identifier-for-notice-overflow-regression-$i" 'deploy && (' hard "Fallback $i."
+done
+for event in prompt post; do
+  if [ "$event" = prompt ]; then
+    out="$(prompt "$RF" "f-$event" 'hq deploy prod')"
+    reminder="$out"
+  else
+    out="$(post "$RF" "f-$event" 'hq deploy prod' ok)"
+    reminder="$(printf '%s' "$out" | context)"
+  fi
+  [ "$(bytes_of "$out")" -le 8000 ] && ok "$event malformed flood stays within ceiling" || bad "$event malformed flood exceeds ceiling"
+  case "$reminder" in
+    *'REACTIVE_BODY'*) ok "$event retains reactive policy body despite malformed flood" ;;
+    *) bad "$event malformed notice crowded out reactive policy: $reminder" ;;
+  esac
+  case "$reminder" in
+    *'150 policies'*'lint-policy-triggers.sh'*) ok "$event bounded malformed notice preserves count and repair command" ;;
+    *) bad "$event missing bounded malformed diagnostic" ;;
+  esac
+  markers="$(grep -c '^__malformed-trigger-reported:' "$RF/workspace/orchestrator/policy-trigger-state/f-$event.txt" || true)"
+  [ "$markers" = 150 ] && ok "$event records all 150 reported malformed diagnostics" || bad "$event recorded $markers diagnostic markers, expected 150"
+  again="$(prompt "$RF" "f-$event" 'hq deploy prod')"
+  case "$again" in
+    *'Malformed `when:` trigger'*) bad "$event repeats the malformed diagnostic" ;;
+    *) ok "$event malformed diagnostic recorded after delivery" ;;
+  esac
+done
+
 if [ "$failures" -gt 0 ]; then
   echo "FAILED: $failures"
   exit 1

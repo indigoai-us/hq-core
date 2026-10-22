@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    HQ Library
+  short_description: >-
+    Find, add, link or remove media in the company asset library.

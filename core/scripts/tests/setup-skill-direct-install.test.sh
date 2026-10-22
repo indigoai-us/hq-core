@@ -145,4 +145,19 @@ fixture_out="$(HOME="$fixture_home" PATH='/usr/bin:/bin' bash -c "$snippet; hq")
 [[ "$fixture_out" == 'managed-hq' ]] \
   || fail "8: documented setup block did not run hq with the managed Node runtime: $fixture_out"
 
+# ── 10. qmd installs only the sanctioned pin ────────────────────────────────
+# An unpinned `npm install -g @tobilu/qmd` took qmd 2.8.3 on Windows, whose
+# better-sqlite3 has no native binary there, so every qmd command crashed
+# (feedback ec9435cd). The skill must install the exact pin that
+# core/scripts/install-deps.allow sanctions, the version Desktop and setup.sh use.
+qmd_pin="$(grep -E '^@tobilu/qmd@[0-9]' "$ROOT/core/scripts/install-deps.allow" | head -1)"
+[[ -n "$qmd_pin" ]] || fail "10: install-deps.allow has no @tobilu/qmd pin"
+while IFS= read -r line; do
+  [[ "$line" == *"install -g @tobilu/qmd"* ]] || continue
+  [[ "$line" == *"install -g $qmd_pin"* ]] \
+    || fail "10: setup must install the sanctioned qmd pin ($qmd_pin), not: $line"
+done <<<"$body"
+grep -qF "npm install -g $qmd_pin" <<<"$body" \
+  || fail "10: setup must install qmd with the sanctioned pin ($qmd_pin)"
+
 echo "PASS: setup-skill-direct-install (direct-install invariant held; picker gone; auth/bootstrap carve-outs, platform-aware installs, and failure reporting present)"

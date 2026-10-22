@@ -126,6 +126,8 @@ jobs:
         run: bash core/scripts/tests/check-deleted-script-refs.test.sh
       - name: Codex policy rubric batching workflow contract
         run: bash core/scripts/tests/cost-workflow-pr-checks.test.sh
+      - name: Workflow global npm installs pin exact versions
+        run: bash core/scripts/tests/workflow-global-install-pins.test.sh
       - name: Minimal GitHub Actions contract (tag-only push, no macOS/Windows on PRs)
         run: bash core/scripts/tests/pr-checks-minimal-actions.test.sh
       - name: Grouped check per-job summary regression test
@@ -226,6 +228,8 @@ jobs:
           fetch-depth: 0
       - name: .claude/settings.local.json must not be gitignored
         run: bash .leak-scan/scan.sh settings-local-not-ignored
+      - name: .gitignore covers tokens/ and credential-shaped core/settings files
+        run: bash core/scripts/tests/gitignore-secret-paths.test.sh
 
   skill-command-refs:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -270,6 +274,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run cowork plugin build prerequisite test
         run: bash core/packages/hq-pack-cowork/scripts/tests/build-plugin-prerequisites.test.sh
+      - name: Run cowork plugin build frozen install test
+        run: bash core/packages/hq-pack-cowork/scripts/tests/build-plugin-frozen-install.test.sh
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -503,6 +509,8 @@ jobs:
         run: |
           bash core/scripts/tests/handoff-finalize-no-jq.test.sh
           bash core/scripts/tests/handoff-finalize-json-args.test.sh
+      - name: Handoff finalizer surfaces and classifies git add errors
+        run: bash core/scripts/tests/handoff-finalize-stage-error.test.sh
       - name: Handoff scripts accept company slugs that start with a digit
         run: bash core/scripts/tests/handoff-company-digit-slug.test.sh
       - name: Handoff auto-files hq-core deficiencies once per handoff
@@ -527,6 +535,8 @@ jobs:
         run: bash core/scripts/tests/handoff-post-company-scope.test.sh
       - name: Handoff post ignores the caller's HQ_ROOT
         run: bash core/scripts/tests/handoff-post-hq-root.test.sh
+      - name: Handoff post resolves cloud companies from the manifest
+        run: bash core/scripts/tests/handoff-post-cloud-manifest.test.sh
 
   autosave-failure-visibility-qmd-reindex:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
@@ -1178,6 +1188,14 @@ jobs:
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer.test.sh
       - name: Credential-file read guard under stock macOS Bash
         run: /bin/bash core/scripts/tests/credential-read-guard.test.sh
+      - name: Handoff finalizer git add error classification under stock macOS Bash
+        run: /bin/bash core/scripts/tests/handoff-finalize-stage-error.test.sh
+      - name: Handoff post manifest cloud resolution under stock macOS Bash
+        run: /bin/bash core/scripts/tests/handoff-post-cloud-manifest.test.sh
+      - name: Native plan sync session scoping under stock macOS Bash
+        run: /bin/bash core/scripts/tests/native-plan-session-project.test.sh
+      - name: .gitignore secret paths under stock macOS Bash
+        run: /bin/bash core/scripts/tests/gitignore-secret-paths.test.sh
       - name: Credential output redactor under stock macOS Bash
         run: /bin/bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed guard timeout under stock macOS Bash
@@ -1240,6 +1258,7 @@ jobs:
           bash core/scripts/tests/hq-agent-session-skill-dispatch.test.sh
           bash core/scripts/tests/inject-policy-baseline-bounds.test.sh
           bash core/scripts/tests/inject-policy-parser-parity.test.sh
+          bash core/scripts/tests/native-plan-session-project.test.sh
           bash core/scripts/tests/policy-prefilter-scale.test.sh
           bash core/scripts/tests/policy-trigger-strictness.test.sh
       - name: SessionStart hook helper process budget
@@ -1382,7 +1401,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install codex CLI
-        run: npm i -g @openai/codex
+        # Exact pin, the same version codex-windows-hooks.yml installs. Bump both together.
+        env:
+          CODEX_VERSION: 0.163.0
+        run: npm i -g "@openai/codex@$CODEX_VERSION"
       - name: Run rubrics for changed policies
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -2462,6 +2484,10 @@ jobs:
       id: t_skill_script_refs__56
       if: "${{ !cancelled() && steps.t_skill_script_refs__55.outcome == 'success' }}"
       run: bash core/scripts/tests/resumework-resolve.test.sh
+    - name: "[skill-script-refs] Deploy skill documents live agent deploy identity"
+      id: t_skill_script_refs__57
+      if: "${{ !cancelled() && steps.t_skill_script_refs__56.outcome == 'success' }}"
+      run: bash core/scripts/tests/deploy-skill-agent-identity-doc.test.sh
     - name: "[skill-command-script] reset checkout"
       if: "${{ !cancelled() }}"
       run: |

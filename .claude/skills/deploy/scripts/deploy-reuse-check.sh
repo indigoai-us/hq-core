@@ -33,10 +33,11 @@
 #   -> {"ok":true,"decision":"ask|note|none","candidates":[{"subdomain",
 #       "url","project","score","description"}],"ms":N,["reason":...]}
 #
-# decision follows the Decisions table (2026-10-15): "ask" when the top score
-# is 0.75 or more, "note" from 0.55 to 0.75 (one line naming the closest
-# deploy, then proceed), "none" below 0.55. Thresholds are tuned after the
-# US-007 benchmark. description is cut to 160 characters.
+# decision: "ask" when the top score is 0.68 or more, "note" from 0.62 to
+# 0.68 (one line naming the closest deploy, then proceed), "none" below
+# 0.62. Tuned on the US-007 benchmark (2026-10-21): a record searched with
+# its own description scores about 0.70, so the planned 0.75 never asked.
+# description is cut to 160 characters.
 #
 # Never blocks a deploy. With qmd missing, the collection missing, a qmd error
 # or a qmd run over 20 seconds, it returns "decision":"none" with no

@@ -232,6 +232,9 @@ else
 fi
 [ -z "$AGENT_ID" ] && AGENT_ID="${HQ_HOOK_AGENT_ID:-}"
 if [ -z "$AGENT_ID" ]; then
+  # Native Windows hook payloads use backslashes in transcript paths.
+  # Normalize separators before recognizing the subagents directory.
+  TRANSCRIPT="${TRANSCRIPT//\\//}"
   TRANSCRIPT_BASE="${TRANSCRIPT##*/}"
   case "$TRANSCRIPT" in
     */subagents/"$TRANSCRIPT_BASE")
