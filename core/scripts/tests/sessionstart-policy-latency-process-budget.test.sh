@@ -174,10 +174,10 @@ BLOCK_PAYLOAD="$(jq -cn --arg cwd "$EQUIV_ROOT" '{hook_event_name:"PreToolUse",s
 
 install_source "$EQUIV_ROOT" "$CANDIDATE_SOURCE"
 run_equivalence_case "$EQUIV_ROOT" "$SESSION_PAYLOAD" SessionStart session candidate
-# Compare rollback-mode PreToolUse output with base. Default-mode PreToolUse is
-# intentionally silent now and is covered by inject-policy-tool-events.test.sh.
-HQ_POLICY_TOOL_EVENTS=legacy run_equivalence_case "$EQUIV_ROOT" "$ALLOW_PAYLOAD" PreToolUse allow candidate
-HQ_POLICY_TOOL_EVENTS=legacy run_equivalence_case "$EQUIV_ROOT" "$BLOCK_PAYLOAD" PreToolUse block candidate
+# These goldens pin the legacy injector contract. Generic-cap tool-event
+# suppression is tested separately; disable it only for these legacy cases.
+HQ_POLICY_GENERIC_CAP=0 HQ_POLICY_TOOL_EVENTS=legacy run_equivalence_case "$EQUIV_ROOT" "$ALLOW_PAYLOAD" PreToolUse allow candidate
+HQ_POLICY_GENERIC_CAP=0 HQ_POLICY_TOOL_EVENTS=legacy run_equivalence_case "$EQUIV_ROOT" "$BLOCK_PAYLOAD" PreToolUse block candidate
 
 for name in session allow block; do
   fixture="$TEST_DIR/fixtures/sessionstart-policy-latency-$name"

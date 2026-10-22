@@ -21,6 +21,11 @@
 # Usage: compose-settings-path.sh [BASE_PATH]
 #   BASE_PATH defaults to $PATH. Prints the composed PATH on stdout.
 #   HQ_TOOLCHAIN_DIR overrides the toolchain root (tests).
+#
+# On Windows the installer puts the toolchain at %LOCALAPPDATA%\IndigoHQ\toolchain
+# (legacy: "Indigo HQ", or under %APPDATA%) with a different layout: node.exe
+# sits in node/ and npm global shims (hq.cmd, qmd.cmd) in npm-prefix/. Those
+# dirs are probed when HQ_TOOLCHAIN_DIR is unset.
 set -euo pipefail
 
 BASE="${1:-$PATH}"
@@ -49,10 +54,37 @@ append_path() {
 IFS=: read -r -a BASE_ENTRIES <<< "$BASE"
 # Explicit installer toolchain entries are trusted and bypass temp filtering:
 # tests and real installations may keep them below a temporary-looking root.
-for dir in "$TOOLCHAIN/node/bin" "$TOOLCHAIN/npm-global/bin" "$TOOLCHAIN/git/bin"; do
-  [[ -d "$dir" ]] || continue
+add_toolchain_dir() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 0
   case ":$COMPOSED:" in *":$dir:"*) ;; *) COMPOSED="${COMPOSED:+$COMPOSED:}$dir" ;; esac
+}
+for dir in "$TOOLCHAIN/node/bin" "$TOOLCHAIN/npm-global/bin" "$TOOLCHAIN/git/bin"; do
+  add_toolchain_dir "$dir"
 done
+if [[ -z "${HQ_TOOLCHAIN_DIR:-}" ]]; then
+  for app_root in "${LOCALAPPDATA:-}" "${APPDATA:-}"; do
+    [[ -n "$app_root" ]] || continue
+    if command -v cygpath >/dev/null 2>&1; then
+      app_root="$(cygpath -u "$app_root" 2>/dev/null)" || app_root=""
+    else
+      app_root="${app_root//\\//}"
+    fi
+    [[ -n "$app_root" ]] || continue
+    for win_tc in "$app_root/IndigoHQ/toolchain" "$app_root/Indigo HQ/toolchain"; do
+      [[ -d "$win_tc" ]] || continue
+      add_toolchain_dir "$win_tc/node/bin"
+      # node.exe lives directly in node/; skip it when it holds only bin/.
+      if [[ -e "$win_tc/node/node.exe" || -e "$win_tc/node/node" ]]; then
+        add_toolchain_dir "$win_tc/node"
+      fi
+      add_toolchain_dir "$win_tc/npm-prefix"
+      add_toolchain_dir "$win_tc/npm-global/bin"
+      add_toolchain_dir "$win_tc/git/cmd"
+      add_toolchain_dir "$win_tc/git/bin"
+    done
+  done
+fi
 for dir in "${BASE_ENTRIES[@]}"; do
   append_path "$dir"
 done

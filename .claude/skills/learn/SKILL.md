@@ -275,6 +275,7 @@ title: {Rule title}
 when: {boolean trigger expr over context words, or `always`}
 on: {[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent] | [SessionStart]}
 enforcement: {hard|soft}
+# company: <slug>   # optional; see Company field below. Uncomment only with one real manifest slug
 public: {true|false — see Lifecycle stamping below}
 status: active
 version: 1
@@ -350,6 +351,19 @@ incident write-ups, and API detail under `## Rationale`, `## Examples`,
 `## Reference`, or `## Related`, and who/when/which-ticket detail under
 `## Provenance`. Nothing is lost — the agent gets
 the file path and can read the rest when it needs the reasoning.
+
+### Company field (client-scoped rules outside a company policies directory)
+
+Step 3 still decides where a rule goes: a company-specific rule goes to `companies/{co}/policies/` by default, and that directory already loads only for the session's own companies, so a file there gets no field. The field is only for a rule that Step 3 sends elsewhere because the user gave an explicit `repo`, `command`, or `global` scope, while the rule itself is about one client. Such a file in `personal/policies/` or a repo's `.claude/policies/` would otherwise load in every session. Write `company: {slug}` in its frontmatter (`companies: [a, b]` only when the user named several). The policy reminder (`inject-policy-on-trigger.sh`) then skips it, if soft or unset, in sessions locked to other companies (see the `company:` field in `core/knowledge/public/hq-core/policies-spec.md`).
+
+- The slug must be one the user named, or the active or locked session company (`bash core/scripts/hq-session.sh get company_slug`), and the rule must be about that company. A rule merely learned while a company session is active, but true everywhere, gets no field. Never use this field to move a company rule out of `companies/{co}/policies/`.
+- Never infer a company from the policy name, slug, or wording. A word in the rule or in `when:` that matches a company folder name is not a company signal; company folder names are often ordinary words.
+- Verify each slug exists in `companies/manifest.yaml` before writing it. If the company is unclear, ask; do not guess.
+- Write a real slug only. The template shows the line commented out (`# company: <slug>`); never copy a placeholder or explanation into the value. `validate-policy-frontmatter.sh` blocks a value that is not a slug in `companies/manifest.yaml`, and the reminder ignores names with no company folder.
+- Never write a `company:` line unless Step 3 resolved a company scope (a manifest-verified slug) for this rule. If no scope resolved, leave the line out entirely; never write a placeholder, an empty value, or a guess.
+- Omit the field for a general rule. A missing field means the rule loads for every company, as before.
+- Do not add it to a file in a company policies directory (`companies/{co}/policies/`).
+- The field never hides a binding rule: the reminder never skips a `hard` or `gate` rule on this path, so a hard rule tagged with a company still loads in every session. Keep it that way; do not lower a rule's enforcement to make the company skip apply.
 
 **Policy frontmatter validation:** `when:` and `on:` are required and automatically checked by the `validate-policy-frontmatter.sh` write/edit hook. For stack-specific rules, express the service token in `when:` (for example, `when: vercel`); do not add retired applicability metadata. See `core/knowledge/public/hq-core/policies-spec.md` for the complete schema.
 

@@ -96,7 +96,7 @@ echo "PASS: no hook nests a heredoc inside a substitution (zero violations)"
 sample='{"hook_event_name":"PostToolUse","session_id":"gate-smoke","cwd":"'"$ROOT"'","tool_name":"Bash","tool_input":{"command":"echo hello"},"tool_response":{"stdout":"hello"}}'
 smoke_err="$(printf '%s' "$sample" | bash "$TARGET_HOOK" 2>&1 >/dev/null)" || \
   fail "hq-auto-acl-suggest.sh exited non-zero on a sample PostToolUse payload"
-if printf '%s' "$smoke_err" | grep -qiE 'syntax error|unexpected EOF|unterminated|matching quote'; then
+if printf '%s' "$smoke_err" | grep >/dev/null -iE 'syntax error|unexpected EOF|unterminated|matching quote'; then
   fail "hq-auto-acl-suggest.sh emitted a parser error at runtime:
 $smoke_err"
 fi

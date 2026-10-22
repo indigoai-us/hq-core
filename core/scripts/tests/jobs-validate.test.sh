@@ -41,7 +41,7 @@ for case in "${CASES[@]}"; do
   rc=0
   err="$("$VALIDATE" "$FIX/invalid/$file" 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || fail "$file expected non-zero"
-  echo "$err" | grep -q "$field" || fail "$file stderr should name '$field': $err"
+  echo "$err" | grep >/dev/null "$field" || fail "$file stderr should name '$field': $err"
   pass "$file -> non-zero naming $field"
 done
 
@@ -49,15 +49,15 @@ echo "[3] e2e AC: gemini runtime names field"
 rc=0
 err="$("$VALIDATE" "$FIX/invalid/unknown-runtime.yaml" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "gemini should fail"
-echo "$err" | grep -qi "runtime" || fail "should name runtime: $err"
-echo "$err" | grep -qi "gemini" || fail "should mention gemini: $err"
+echo "$err" | grep >/dev/null -i "runtime" || fail "should name runtime: $err"
+echo "$err" | grep >/dev/null -i "gemini" || fail "should mention gemini: $err"
 pass "unknown runtime gemini"
 
 echo "[4] e2e AC: secret value under requirements.secrets"
 rc=0
 err="$("$VALIDATE" "$FIX/invalid/inline-secret-in-requirements.yaml" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "inline secret should fail"
-echo "$err" | grep -qi "requirements.secrets" || fail "should name requirements.secrets: $err"
+echo "$err" | grep >/dev/null -i "requirements.secrets" || fail "should name requirements.secrets: $err"
 pass "inline secret rejected"
 
 echo "[5] timezone may be omitted"
@@ -82,7 +82,7 @@ for bad_timezone in false empty; do
   rc=0
   err="$("$VALIDATE" "$tmp_bad_timezone/$bad_timezone.yaml" 2>&1)" || rc=$?
   [ "$rc" -ne 0 ] || fail "$bad_timezone timezone should fail validation"
-  echo "$err" | grep -qi "timezone" || fail "$bad_timezone timezone error should name the field: $err"
+  echo "$err" | grep >/dev/null -i "timezone" || fail "$bad_timezone timezone error should name the field: $err"
 done
 rm -rf "$tmp_bad_timezone"
 pass "false and empty timezones are rejected"
@@ -95,7 +95,7 @@ cp "$FIX/valid/personal-daily-digest.yaml" "$tmp/b.yaml"
 rc=0
 err="$("$VALIDATE" "$tmp/a.yaml" "$tmp/b.yaml" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "duplicate id should fail"
-echo "$err" | grep -qi "duplicate" || fail "should say duplicate: $err"
+echo "$err" | grep >/dev/null -i "duplicate" || fail "should say duplicate: $err"
 pass "duplicate id"
 
 echo "[8] single valid personal job with requirements exits 0"

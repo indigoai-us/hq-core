@@ -32,13 +32,13 @@ JSON
 
 out="$(bash "$GEN" "$ROOT")"
 printf '%s\n' "$out"
-printf '%s\n' "$out" | grep -Fq 'Visible listing entries: 4'
-printf '%s\n' "$out" | grep -Fq 'Listing characters (name + description): 2459'
-printf '%s\n' "$out" | grep -Fq '200K estimate (2,000 characters): 459 description characters over budget; affected skill names depend on Claude invocation frequency'
-printf '%s\n' "$out" | grep -Fq '1M estimate (10,000 characters): 0 description characters over budget; affected skill names depend on Claude invocation frequency'
+printf '%s\n' "$out" | grep >/dev/null -F 'Visible listing entries: 4'
+printf '%s\n' "$out" | grep >/dev/null -F 'Listing characters (name + description): 2459'
+printf '%s\n' "$out" | grep >/dev/null -F '200K estimate (2,000 characters): 459 description characters over budget; affected skill names depend on Claude invocation frequency'
+printf '%s\n' "$out" | grep >/dev/null -F '1M estimate (10,000 characters): 0 description characters over budget; affected skill names depend on Claude invocation frequency'
 printf '%s\n' '{"skillOverrides":{"gamma":"user-invocable-only","muted":"name-only"}}' \
   > "$ROOT/.claude/settings.json"
 compact_out="$(bash "$GEN" "$ROOT")"
-printf '%s\n' "$compact_out" | grep -Fq 'Visible listing entries: 4'
-printf '%s\n' "$compact_out" | grep -Fq 'Listing characters (name + description): 2459'
+printf '%s\n' "$compact_out" | grep >/dev/null -F 'Visible listing entries: 4'
+printf '%s\n' "$compact_out" | grep >/dev/null -F 'Listing characters (name + description): 2459'
 echo 'skills-listing-budget.test.sh: passed'

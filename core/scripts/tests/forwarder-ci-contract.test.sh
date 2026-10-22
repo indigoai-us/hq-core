@@ -58,6 +58,9 @@ NON_EXECUTING_REFERENCE_ALLOWLIST = {
     # handoff-post-company-scope.test.sh, which pr-checks already runs with
     # the pinned CLI install. The analyzer only sees direct workflow commands.
     ("core/scripts/tests/handoff-thread-isolation.test.sh", "qmd-reindex-bg.sh"),
+    # Copies worktree.sh into a throwaway HQ root and runs it against a stub
+    # `hq` that only records --source; it never reaches the real CLI.
+    ("core/scripts/tests/worktree-relative-source.test.sh", "worktree.sh"),
 }
 
 # This test's own allowlist contains forwarder names as Python metadata. The

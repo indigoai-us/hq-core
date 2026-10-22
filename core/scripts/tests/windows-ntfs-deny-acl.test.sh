@@ -72,8 +72,8 @@ repair_cmd="$(HQ_LIB_WINSEP=1 bash -c '
   . "$1"
   hq_hook_repair_command "$2" "$2/in-root.sh"
 ' bash "$HOOK_LIB" "$WIN_FIX")"
-printf '%s' "$repair_cmd" | grep -q 'icacls' || fail "Windows repair command should name icacls: $repair_cmd"
-printf '%s' "$repair_cmd" | grep -q 'chmod' && fail "Windows repair command must not recommend chmod: $repair_cmd"
+printf '%s' "$repair_cmd" | grep >/dev/null 'icacls' || fail "Windows repair command should name icacls: $repair_cmd"
+printf '%s' "$repair_cmd" | grep >/dev/null 'chmod' && fail "Windows repair command must not recommend chmod: $repair_cmd"
 pass "Windows repair text is icacls"
 
 echo "[4] unreadable in-root file is repaired through a mocked icacls"
@@ -121,7 +121,7 @@ out="$(bash "$REPAIR" --root "$WIN_FIX" 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "expected exit 0 off Windows, got $rc: $out"
-printf '%s' "$out" | grep -q 'not Windows' || fail "off-Windows path should say not Windows: $out"
+printf '%s' "$out" | grep >/dev/null 'not Windows' || fail "off-Windows path should say not Windows: $out"
 pass "repair script no-ops off Windows"
 
 echo "[6] setup.sh does not chmod +x on Git Bash"

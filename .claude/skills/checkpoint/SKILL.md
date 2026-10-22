@@ -1,7 +1,7 @@
 ---
 name: checkpoint
 description: Save a lightweight session checkpoint.
-allowed-tools: Write, Bash, Read, Bash(bash core/scripts/checkpoint-recent-auto.sh:*)
+allowed-tools: Write, Bash, Read, Bash(bash core/scripts/checkpoint-recent-auto.sh:*), Bash(bash core/scripts/checkpoint-knowledge-repos.sh:*)
 ---
 
 # /checkpoint - Save Progress
@@ -54,40 +54,8 @@ Save current work state as a thread to survive context loss.
 4. **Capture personal/core knowledge repo git states**
    Personal knowledge folders may contain embedded Git repositories at their canonical real-directory paths. Company knowledge is a plain directory synced through the company vault. Continue detecting legacy symlinks only so they can be reported for migration; do not inspect company knowledge for embedded Git state:
    ```bash
-   # For each knowledge repo with changes:
-   bash -c '
-   shopt -s nullglob
-   for knowledge_path in core/knowledge/public/* core/knowledge/private/* personal/knowledge/* companies/*/knowledge; do
-     if [ -L "$knowledge_path" ]; then
-       case "$knowledge_path" in
-         companies/*/knowledge)
-           echo "$knowledge_path: INVALID symlink (company knowledge must be a plain directory synced through the vault)"
-           continue
-           ;;
-       esac
-       target=$(cd "$knowledge_path" 2>/dev/null && pwd -P) || continue
-       case "$target" in
-         "$(pwd -P)"/core/packages/*) continue ;;  # package-managed mount — the only valid knowledge link
-       esac
-       repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || repo_dir=""
-       hq_repo=$(git rev-parse --show-toplevel 2>/dev/null) || hq_repo=""
-       if [ -n "$repo_dir" ] && [ "$repo_dir" != "$hq_repo" ]; then
-         echo "$knowledge_path: INVALID legacy symlink to $repo_dir (migration required — run hq reindex)"
-       else
-         echo "$knowledge_path: NONSTANDARD symlink to $target (knowledge must be a real directory)"
-       fi
-       continue
-     fi
-     case "$knowledge_path" in
-       companies/*/knowledge) continue ;;  # plain company directory; no embedded Git state
-     esac
-     [ -d "$knowledge_path/.git" ] || continue
-     repo_dir=$(cd "$knowledge_path" && git rev-parse --show-toplevel 2>/dev/null) || continue
-     dirty=$(cd "$repo_dir" && git status --porcelain)
-     [ -z "$dirty" ] && continue
-     echo "$knowledge_path: $(cd "$repo_dir" && git rev-parse --short HEAD) (dirty)"
-   done
-   '
+   # Works from bash or zsh: the scan is a bash script, so no bash-only syntax runs in your shell.
+   bash core/scripts/checkpoint-knowledge-repos.sh "$PWD"
    ```
    Include dirty personal/core knowledge repos in the thread JSON under `git.knowledge_repos`.
 

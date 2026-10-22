@@ -49,3 +49,7 @@ Do not wait on a human. Report the blocker with what you tried.
 One readiness line first: `ready`, `ready except <PRs>` or `not ready`. Then one
 row per PR: number, title, head SHA, full-CI result with failing job names and
 run links, merge state, and the merge order you recommend.
+
+Before you report done, wait for every background reviewer or subagent you
+started and include its result. If one is still running, report `working`
+and name it; never hand back while a child is still running.

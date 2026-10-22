@@ -17,7 +17,7 @@ assert_contains() {
   local haystack="$1"
   local needle="$2"
   local label="$3"
-  if ! printf '%s' "$haystack" | grep -qF "$needle"; then
+  if ! printf '%s' "$haystack" | grep >/dev/null -F "$needle"; then
     fail "$label: missing '$needle'"
   fi
 }

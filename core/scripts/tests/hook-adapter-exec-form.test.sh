@@ -148,7 +148,7 @@ assert_fanout_and_deny() { # <label> <fixture>
       else
         recorded="$(run_recorded "$fix" "$codex" "$(codex_payload "$fix" "$ev")")"
       fi
-      printf '%s\n' "$recorded" | grep -qx "master:$ev" \
+      printf '%s\n' "$recorded" | grep >/dev/null -x "master:$ev" \
         && pass "$label codex $ev runs master-hook.sh" \
         || fail "$label codex $ev dropped the master-hook.sh fan-out"
     }
@@ -157,7 +157,7 @@ assert_fanout_and_deny() { # <label> <fixture>
     else
       recorded="$(run_recorded "$fix" "$grok" "$(grok_payload "$fix" "$ev")")"
     fi
-    printf '%s\n' "$recorded" | grep -qx "master:$ev" \
+    printf '%s\n' "$recorded" | grep >/dev/null -x "master:$ev" \
       && pass "$label grok $ev runs master-hook.sh" \
       || fail "$label grok $ev dropped the master-hook.sh fan-out (log: $(printf '%q' "$recorded"); adapter: $(HQ_ROOT="$fix" HQ_ALLOW_HQ_WORKTREE=1 bash "$grok" 2>&1 <<<"$(grok_payload "$fix" "$ev")" | tail -c 600))"
   done
@@ -168,7 +168,7 @@ assert_fanout_and_deny() { # <label> <fixture>
 
   status=0
   out="$(HQ_ROOT="$fix" HQ_ALLOW_HQ_WORKTREE=1 bash "$codex" 2>&1 <<<"$(codex_payload "$fix" PreToolUse deny-probe)")" || status=$?
-  if [ "$status" -ne 0 ] && printf '%s' "$out" | grep -q 'deny-probe company guard'; then
+  if [ "$status" -ne 0 ] && printf '%s' "$out" | grep >/dev/null 'deny-probe company guard'; then
     pass "$label codex PreToolUse deny hook behind master-hook.sh blocks (exit $status)"
   else
     fail "$label codex PreToolUse deny hook did not block (exit $status): $out"
@@ -247,7 +247,7 @@ for adapter in .codex/hooks/hq-codex-hook-adapter.sh .grok/hooks/hq-grok-hook-ad
   esac
   warn="$(HOME="$RUNTIME_HOME" USERPROFILE="$RUNTIME_HOME" HQ_ROOT="$HEALED" HQ_ALLOW_HQ_WORKTREE=1 \
     bash "$HEALED/$adapter" 2>&1 >/dev/null <<<"$payload" || true)"
-  if printf '%s' "$warn" | grep -q 'is not under this HOME'; then
+  if printf '%s' "$warn" | grep >/dev/null 'is not under this HOME'; then
     pass "other-HOME $adapter warns on stderr"
   else
     fail "other-HOME $adapter printed no warning: $warn"
@@ -396,7 +396,7 @@ for name in 'meta $(touch PWNED-dollar) root' 'meta `touch PWNED-tick` root'; do
     HQ_ROOT="$META" hqad_iter_settings PreToolUse Bash '{}' 2>/dev/null ) )"
   if [ -n "$(find "$TASK_TMP" -name 'PWNED-*' 2>/dev/null)" ]; then
     fail "root '$name' was evaluated as shell text"
-  elif printf '%s\n' "$records" | grep -qF "$(printf 'master\tPreToolUse')" \
+  elif printf '%s\n' "$records" | grep >/dev/null -F "$(printf 'master\tPreToolUse')" \
     && printf '%s\n' "$records" | grep -F "$META/.claude/hooks/" >/dev/null; then
     pass "root '$name' stays a literal path"
   else

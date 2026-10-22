@@ -11,16 +11,17 @@
 # Subcommands (each prints exactly one JSON line on stdout):
 #   hosts [--org <slug>|-]
 #       List recorded hosts, optionally for one org ("-" = personal scope).
-#       -> {"hosts":[{key,org,subdomain,appId,accessMode,deployId,site,siteExists,routes,updatedAt}]}
+#       -> {"hosts":[{key,org,subdomain,appId,accessMode,deployId,site,siteExists,routes,updatedAt,url?}]}
 #   merge <host_site_dir> <artifact_dir> <route> <out_dir> [--replace]
 #       Copy the host site into <out_dir> and place the artifact at <out_dir>/<route>/.
 #       -> {"ok":true,"out_dir":...,"route":"/r/","replaced":bool,"file_count":N,"routes":[...]}
 #       -> {"ok":false,"reason":"invalid_route|route_exists|route_blocked|no_index|
 #            root_absolute_paths|host_missing|artifact_missing|out_not_empty|copy_failed",...}
 #   record --org <slug|-> --subdomain <s> --app-id <id> --access-mode <m> --deploy-id <id>
-#          (--tarball <path.tar.gz> | --site <dir>)
+#          (--tarball <path.tar.gz> | --site <dir>) [--url <app-url>]
 #       Snapshot the site that just went live and update the registry. Prefer
-#       --tarball: it is byte-for-byte what was uploaded.
+#       --tarball: it is byte-for-byte what was uploaded. --url is the app URL
+#       the hq-deploy API returned (https origin); it is stored as the host's url.
 #       -> {"ok":true,"key":...,"site":...,"routes":[...]}
 #
 # Storage (overridable for tests):
@@ -201,10 +202,11 @@ safe_segment() {
 }
 
 cmd_record() {
-  local org="" sub="" app_id="" mode="" deploy_id="" site="" tarball=""
+  local org="" sub="" app_id="" mode="" deploy_id="" site="" tarball="" url=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --org) org="${2:-}"; shift 2 ;;
+      --url) url="${2:-}"; shift 2 ;;
       --subdomain) sub="${2:-}"; shift 2 ;;
       --app-id) app_id="${2:-}"; shift 2 ;;
       --access-mode) mode="${2:-}"; shift 2 ;;
@@ -226,6 +228,14 @@ cmd_record() {
     fail_json bad_argument "unsafe org"
   fi
   safe_segment "$sub" || fail_json bad_argument "unsafe subdomain"
+  # The app's public URL exactly as the hq-deploy API returned it. Stored, never
+  # built here: the API knows the app's serving domain (hq.work, indigo-hq.com
+  # or a company's own base domain). Anything but an https origin is dropped so
+  # a bad value never costs the snapshot.
+  url="${url%/}"
+  if [ -n "$url" ] && ! printf '%s' "$url" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?$'; then
+    url=""
+  fi
   local key org_dir
   key="$(host_key "$org" "$sub")"
   org_dir="${key%%/*}"
@@ -258,10 +268,11 @@ cmd_record() {
   local reg_tmp="${ROUTES_FILE}.tmp.$$"
   jq --arg key "$key" --arg org "${org_dir}" --arg sub "$sub" --arg app "$app_id" \
      --arg mode "${mode:-public}" --arg dep "$deploy_id" --arg site "$dest" \
-     --arg now "$now" --argjson routes "$routes" \
-     '.version = 1 | .hosts = (.hosts // {}) | .hosts[$key] = {
+     --arg now "$now" --argjson routes "$routes" --arg url "$url" \
+     '.version = 1 | .hosts = (.hosts // {}) | .hosts[$key] = ({
         org: $org, subdomain: $sub, appId: $app, accessMode: $mode,
-        deployId: $dep, site: $site, routes: $routes, updatedAt: $now }' \
+        deployId: $dep, site: $site, routes: $routes, updatedAt: $now }
+        + (if $url != "" then {url: $url} else {} end))' \
      "$ROUTES_FILE" > "$reg_tmp" && mv "$reg_tmp" "$ROUTES_FILE"
   chmod 0600 "$ROUTES_FILE" 2>/dev/null || true
   release_lock

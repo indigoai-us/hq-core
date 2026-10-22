@@ -275,7 +275,7 @@ PY_FIXTURE
 CAP_HIT_OUT="$(run_capability_hook "$CAP_HIT_TRANSCRIPT")"
 [ "$(decision_of "$CAP_HIT_OUT")" = "none" ] \
   || fail "[20] expected rendered capability link on oversized assistant to pass, got: $CAP_HIT_OUT"
-printf '%s' "$CAP_HIT_OUT" | grep -Fq "POLICY CHECK BLOCKED" \
+printf '%s' "$CAP_HIT_OUT" | grep >/dev/null -F "POLICY CHECK BLOCKED" \
   && fail "[20] internal verification warning must not be shown: $CAP_HIT_OUT"
 pass "oversized rendered capability link was inspected without an internal warning"
 
@@ -339,7 +339,7 @@ for FAST_KIND in codex claude; do
   FAST_STATUS=0
   FAST_OUTPUT="$(run_tail_with_trace "$FAST_TRANSCRIPT" "$FAST_TRACE")" || FAST_STATUS=$?
   FAST_OUTPUT_BYTES="$(printf '%s' "$FAST_OUTPUT" | wc -c | tr -d ' ')"
-  if [ "$FAST_STATUS" -ne 0 ] || ! printf '%s' "$FAST_OUTPUT" | grep -Fq "fast-$FAST_KIND"; then
+  if [ "$FAST_STATUS" -ne 0 ] || ! printf '%s' "$FAST_OUTPUT" | grep >/dev/null -F "fast-$FAST_KIND"; then
     echo "FAIL [21a/$FAST_KIND]: expected status 0 and latest assistant output; status=$FAST_STATUS"
     FAST_PATH_FAILURES=1
   fi
@@ -431,15 +431,15 @@ check_over_cap_hook() { # <case number> <label> <path> <expected decision>
   if [ "$expected" = "none" ]; then
     [ "$decision" = "none" ] \
       || fail "[$case_no] expected $label to pass without an internal warning, got: $out"
-    ! printf '%s' "$out" | grep -Fq "POLICY CHECK BLOCKED" \
+    ! printf '%s' "$out" | grep >/dev/null -F "POLICY CHECK BLOCKED" \
       || fail "[$case_no] internal verification warning must be silent, got: $out"
     pass "$label passed without an internal warning"
   else
     [ "$decision" = "block" ] \
       || fail "[$case_no] expected $label to block, got: $out"
-    printf '%s' "$out" | grep -Fq "POLICY VIOLATION" \
+    printf '%s' "$out" | grep >/dev/null -F "POLICY VIOLATION" \
       || fail "[$case_no] expected POLICY VIOLATION for $label, got: $out"
-    ! printf '%s' "$out" | grep -Fq "POLICY CHECK BLOCKED" \
+    ! printf '%s' "$out" | grep >/dev/null -F "POLICY CHECK BLOCKED" \
       || fail "[$case_no] internal verification warning must not replace the policy violation, got: $out"
     pass "$label remained blocked for the policy violation"
   fi

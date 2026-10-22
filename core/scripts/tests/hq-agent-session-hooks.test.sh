@@ -122,7 +122,7 @@ OUT="$(req | bash "$FIXTURE/core/scripts/hq-agent-session.sh" 2>"$TMP/e2")" || R
 echo "$OUT" | jq -e '.disposition == "no_reply"' >/dev/null || fail "block disposition: $OUT"
 BLOCKED="$(echo "$OUT" | jq -r '.blockedBy // empty')"
 [ -n "$BLOCKED" ] || fail "blockedBy empty: $OUT"
-echo "$BLOCKED" | grep -q '00-block.sh' || fail "blockedBy should name 00-block.sh: $BLOCKED"
+echo "$BLOCKED" | grep >/dev/null '00-block.sh' || fail "blockedBy should name 00-block.sh: $BLOCKED"
 pass "block provenance"
 
 # ── 4. master-hook stamps hqSessionBlockedBy with two blockers ──────────────
@@ -143,7 +143,7 @@ printf 'sid-test\n' > "$FIXTURE/workspace/sessions/.current"
 HOUT="$(printf '%s' "$PAYLOAD" | bash "$FIXTURE/.claude/hooks/master-hook.sh" UserPromptSubmit)"
 echo "$HOUT" | jq -e '.decision == "block"' >/dev/null || fail "merged block: $HOUT"
 SRC="$(echo "$HOUT" | jq -r '.hookSpecificOutput.hqSessionBlockedBy')"
-echo "$SRC" | grep -q '00-block.sh' || fail "first block should win: $SRC"
+echo "$SRC" | grep >/dev/null '00-block.sh' || fail "first block should win: $SRC"
 pass "two-block first wins with provenance"
 
 # ── 5. hook contexts compose in dispatch order ─────────────────────────────

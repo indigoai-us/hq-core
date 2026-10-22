@@ -102,7 +102,7 @@ OUT="$(
 )"
 RC=$?
 set -e
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qiE 'winget|apt|brew|Install jq|jq is required'; then
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep >/dev/null -iE 'winget|apt|brew|Install jq|jq is required'; then
   pass "require_jq fails with install guidance when jq missing"
 else
   fail "require_jq missing-jq: rc=$RC out=$OUT"

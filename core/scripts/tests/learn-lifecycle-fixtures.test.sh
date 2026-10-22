@@ -132,7 +132,7 @@ for dir in "$FIX"/*/; do
   fi
   # Rationale must not carry provenance-only detail (dates, ticket/PR numbers).
   rat="$(awk '/^## Rationale$/{f=1;next} /^## /{f=0} f' "$dir/expected.md")"
-  if printf '%s\n' "$rat" | grep -Eq '[0-9]{4}-[0-9]{2}-[0-9]{2}|#[0-9]+|[A-Z]+-[0-9]+'; then
+  if printf '%s\n' "$rat" | grep >/dev/null -E '[0-9]{4}-[0-9]{2}-[0-9]{2}|#[0-9]+|[A-Z]+-[0-9]+'; then
     bad "$name: Rationale carries provenance detail"
   else
     ok "$name: Rationale holds mechanism only"

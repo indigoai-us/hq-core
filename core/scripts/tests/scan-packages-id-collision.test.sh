@@ -56,9 +56,9 @@ run_scan() { ( cd "${HQ_ROOT}" && HQ_ROOT="${HQ_ROOT}" HQ_SCAN_QUIET=1 bash "${R
 
 # --- Case A: id collision -> loud warn, refuse to wire (no symlink) ---
 warn_out="$(run_scan 2>&1 1>/dev/null || true)"
-printf '%s' "${warn_out}" | grep -qi 'worker-id collision' \
+printf '%s' "${warn_out}" | grep >/dev/null -i 'worker-id collision' \
   || fail "Case A: expected a worker-id collision warning, got: ${warn_out}"
-printf '%s' "${warn_out}" | grep -q 'gemini-coder' \
+printf '%s' "${warn_out}" | grep >/dev/null 'gemini-coder' \
   || fail "Case A: collision warning did not name the colliding id; got: ${warn_out}"
 [[ -L "${HQ_ROOT}/core/workers/public/gemini-coder" ]] \
   && fail "Case A: colliding pack worker was wired despite the clash (must refuse)"
@@ -77,7 +77,7 @@ run_scan >/dev/null 2>&1 || fail "Case C: scan-packages exited non-zero"
   || fail "Case C: pack worker not wired after the clash was resolved"
 # Re-run is idempotent: the existing symlink must NOT be flagged as a self-collision.
 warn_out="$(run_scan 2>&1 1>/dev/null || true)"
-printf '%s' "${warn_out}" | grep -qi 'worker-id collision' \
+printf '%s' "${warn_out}" | grep >/dev/null -i 'worker-id collision' \
   && fail "Case C: pack's own wired symlink was misread as a collision on re-run"
 [[ -L "${HQ_ROOT}/core/workers/public/gemini-coder" ]] \
   || fail "Case C: pack worker symlink lost on idempotent re-run"

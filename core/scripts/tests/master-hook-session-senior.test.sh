@@ -25,7 +25,7 @@ seed_printf="$(awk '
   in_seed { print }
   in_seed && /> "\$META_FILE"/ { exit }
 ' "$MASTER")"
-printf '%s\n' "$seed_printf" | grep -q 'senior: user' \
+printf '%s\n' "$seed_printf" | grep >/dev/null 'senior: user' \
   || fail "master-hook meta seed printf is missing senior: user: $seed_printf"
 pass "seed printf includes senior: user"
 

@@ -13,8 +13,9 @@
 version: 1
 
 # Scope note for staging CI:
-# hq-core intentionally ships "indigo" (brand name) and "indigo-hq.com"
-# (production domain referenced by deploy skills). Those terms do NOT appear
+# hq-core intentionally ships "indigo" (brand name), "hq.work" (the deploy
+# domain the /deploy skill prints) and "indigo-hq.com" (the earlier deploy
+# domain, which keeps serving every app). Those terms do NOT appear
 # here. This denylist is the narrower set of terms that must NEVER land in
 # public hq-core content — other companies, personal identities, private
 # domains, retired product names.

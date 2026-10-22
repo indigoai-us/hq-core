@@ -27,7 +27,7 @@ session_resume_write "$CONV" "$PROVIDER" "$SID" || fail "write failed"
 PATH_R="$(session_resume_path "$CONV")"
 [ -f "$PATH_R" ] || fail "missing resume file: $PATH_R"
 HASH="$(session_resume_sha256 "$CONV")"
-echo "$PATH_R" | grep -q "/${HASH}.json" || fail "path not sha256-named: $PATH_R"
+echo "$PATH_R" | grep >/dev/null "/${HASH}.json" || fail "path not sha256-named: $PATH_R"
 # GNU stat first, BSD second — NOT the other way round. GNU's `-f` means
 # "filesystem status", so it SUCCEEDS on Linux and prints a filesystem dump
 # instead of failing over to `-c`. This test only ever ran on macOS, so the

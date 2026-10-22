@@ -201,6 +201,11 @@ PAYLOAD_PASS='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_activ
 PAYLOAD_ACTIVE='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":true}'
 PATH_WITH_HQ="$BIN:$NODE_ONLY_DIR:/usr/local/bin:/usr/bin:/bin"
 PATH_WITHOUT_HQ="$TMP/no-hq:$NODE_ONLY_DIR:/usr/bin:/bin"
+# "Missing hq" means missing everywhere the gate looks: PATH, HQ_CLI_BIN and
+# the install-location fallback (feedback_26faa03c). Keep the machine's own hq
+# out of the fallback so the missing-hq cases stay deterministic.
+export HQ_CLI_FALLBACK_DIRS="$TMP/no-hq"
+unset HQ_CLI_BIN
 PERL_ONLY_DIR="$TMP/perl-only-bin"
 mkdir -p "$PERL_ONLY_DIR"
 for program in awk bash cat date env grep head jq mktemp perl rm sleep tr; do
@@ -286,6 +291,21 @@ run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
 [ "$MRC" = "0" ] && pass "missing hq is loud and blocks Claude" || fail "missing hq rc=$MRC"
 assert_contains "$MERR" 'hq CLI is missing' "missing hq stderr"
 assert_contains "$MOUT" '"decision":"block"' "missing hq block JSON"
+
+# feedback_26faa03c: hq absent from the hook's PATH but installed where the
+# session finds it is not "missing".
+reset_stub pass
+HQ_CLI_FALLBACK_DIRS="$BIN" run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
+case "$MERR$MOUT" in
+  *'hq CLI is missing'*|*'"decision":"block"'*) fail "hq in an install location was reported missing: $MERR $MOUT" ;;
+  *) pass "hq found in an install location outside PATH" ;;
+esac
+reset_stub pass
+HQ_CLI_BIN="$BIN/hq" run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
+case "$MERR$MOUT" in
+  *'hq CLI is missing'*|*'"decision":"block"'*) fail "HQ_CLI_BIN was ignored: $MERR $MOUT" ;;
+  *) pass "an executable HQ_CLI_BIN is used when PATH lacks hq" ;;
+esac
 
 reset_stub blocked
 run_master "$PAYLOAD_ACTIVE" "$PATH_WITH_HQ"

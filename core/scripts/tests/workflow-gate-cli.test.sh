@@ -81,9 +81,9 @@ check "list reports the empty state" "$?"
 
 synth_pending "$G1" pick-color
 OUT="$(gate "$G1" list)"
-printf '%s' "$OUT" | grep -q 'pick-color' \
-  && printf '%s' "$OUT" | grep -q 'Which color' \
-  && printf '%s' "$OUT" | grep -q '1=red 2=blue'
+printf '%s' "$OUT" | grep >/dev/null 'pick-color' \
+  && printf '%s' "$OUT" | grep >/dev/null 'Which color' \
+  && printf '%s' "$OUT" | grep >/dev/null '1=red 2=blue'
 check "list shows id, question, and numbered options" "$?"
 
 # ---- 2: show ----------------------------------------------------------------
@@ -185,7 +185,7 @@ node -e '
   process.exit(a.choice === "blue" ? 0 : 1);
 ' "$G5B/answered/pick-color.json"
 RC2=$?
-[ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$OUT" | grep -q 'answered pick-color -> blue'
+[ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$OUT" | grep >/dev/null 'answered pick-color -> blue'
 check "--force index after pending is gone maps via stored options (not literal 2)" "$?"
 
 G5C="$TMP/g5c"; mkdir -p "$G5C/answered"
@@ -205,7 +205,7 @@ node -e '
   process.exit(a.choice === "blue" ? 0 : 1);
 ' "$G5C/answered/pick-color.json"
 RC2=$?
-[ "$RC" -ne 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$ERR" | grep -q 'no options'
+[ "$RC" -ne 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$ERR" | grep >/dev/null 'no options'
 check "--force index with no options to resolve against is refused" "$?"
 gate "$G5C" answer pick-color 2 --force --freeform >/dev/null
 node -e '
@@ -322,7 +322,7 @@ check "watch-run ignores a pending gate from a different run (times out)" "$?"
 synth_pending_for "$GW" my-run-gate "$RUN_A"
 OUT="$(gate "$GW" watch-run "$RUN_A" --timeout 5 2>/dev/null)"
 RC=$?
-[ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'my-run-gate'
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep >/dev/null 'my-run-gate'
 check "watch-run exits 0 and prints the gate id for its own run" "$?"
 
 # a finished run must end the watch loop rather than hang until timeout

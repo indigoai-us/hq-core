@@ -625,7 +625,7 @@ rm -f "$SPACED_REL/.claude/hooks/my dir/x.sh"
 out="$(run_expect 2 "$SPACED_REL")"
 assert_contains "$out" 'runs a script that does not exist: .claude/hooks/my dir/x.sh' \
   || fail "the missing spaced path was not named in full: $out"
-if printf '%s\n' "$out" | grep -Eq 'does not exist: \.claude/hooks/my$'; then
+if printf '%s\n' "$out" | grep >/dev/null -E 'does not exist: \.claude/hooks/my$'; then
   fail "the spaced path was truncated at the space: $out"
 fi
 pass "a spaced path segment is reported whole, present or missing"

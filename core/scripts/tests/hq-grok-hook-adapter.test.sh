@@ -21,7 +21,7 @@ assert_contains() {
   # Allow optional whitespace in JSON keys: "decision":"deny" or "decision": "deny"
   local flex
   flex="$(printf '%s' "$needle" | sed 's/":"/":[[:space:]]*"/g')"
-  if printf '%s' "$haystack" | grep -Eq "$flex" || printf '%s' "$haystack" | grep -Fq "$needle"; then
+  if printf '%s' "$haystack" | grep >/dev/null -E "$flex" || printf '%s' "$haystack" | grep >/dev/null -F "$needle"; then
     echo "PASS: $label"
     PASS=$((PASS + 1))
   else

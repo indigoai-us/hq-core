@@ -104,7 +104,7 @@ has() {
 t1="$(run_event UserPromptSubmit '' 'Draft a Slack broadcast from the attached brief brief.md')"
 has "$t1" once-rule && ok "turn1: once-rule injected" || bad "turn1: once-rule missing"
 has "$t1" always-rule && ok "turn1: always-rule injected" || bad "turn1: always-rule missing"
-printf '%s' "$t1" | grep -q 'GOVERNANCE RECEIPTS REQUIRED' \
+printf '%s' "$t1" | grep >/dev/null 'GOVERNANCE RECEIPTS REQUIRED' \
   && ok "turn1: declaration gate runs after policy selection" \
   || bad "turn1: declaration gate context missing"
 enforcement_matches="$tmp/hq/workspace/orchestrator/policy-enforcement/$sid.policies.tsv"
@@ -125,7 +125,7 @@ grep -q $'^always-rule\t' "$enforcement_matches" && grep -q $'^once-rule\t' "$en
   || bad "turn2: session-baseline enforcement was lost"
 
 blocked="$(run_event PreToolUse Bash hi 'hq dm prs_fixture "update"')"
-printf '%s' "$blocked" | grep -q 'Missing skills: outbound-review' \
+printf '%s' "$blocked" | grep >/dev/null 'Missing skills: outbound-review' \
   && ok "pre-tool: newly matched policy blocks the same outbound action" \
   || bad "pre-tool: newly matched policy raced past enforcement"
 

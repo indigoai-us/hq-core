@@ -4,7 +4,7 @@
 # Resolution order (first non-empty wins):
 #   1. $HQ_DEPLOY_API                                       explicit per-shell override
 #   2. companies/manifest.yaml services.hq-deploy.endpoint  tenant config (nearest, walking up from cwd)
-#   3. https://api.indigo-hq.com                            ALWAYS-ON public default (Hassaan directive)
+#   3. https://api.hq.work                                  ALWAYS-ON public default (Hassaan directive)
 #
 # The public default is the load-bearing part. Without it, a fresh install (no
 # companies/manifest.yaml and no $HQ_DEPLOY_API in the environment) resolves the
@@ -31,7 +31,8 @@ if [ -z "$API" ]; then
   done
 fi
 
-# Always-on public default — never emit an empty base.
-API="${API:-https://api.indigo-hq.com}"
+# Always-on public default — never emit an empty base. https://api.indigo-hq.com
+# is the same API and keeps serving, so older installs that default to it work.
+API="${API:-https://api.hq.work}"
 
 printf '%s\n' "$API"

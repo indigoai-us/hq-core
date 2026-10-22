@@ -179,7 +179,7 @@ BROKEN_PATH="$TMP/bin:$PATH"
 # shipped core policy (hq-deploy-reinforcement) matches.
 O="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s-kw","prompt":"deploy this to production","cwd":"%s"}' "$RUN" "$ROOT" \
   | PATH="$BROKEN_PATH" HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$HOOK" 2>/dev/null)"
-if printf '%s' "$O" | grep -Fq '> Policy `hq-deploy-reinforcement`'; then
+if printf '%s' "$O" | grep >/dev/null -F '> Policy `hq-deploy-reinforcement`'; then
   ok "UserPromptSubmit injects keyword-triggered policy with broken python3"
 else
   fail "UserPromptSubmit injects keyword-triggered policy with broken python3" "no reminder emitted"

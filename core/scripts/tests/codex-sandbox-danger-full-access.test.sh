@@ -73,7 +73,7 @@ fi
 
 echo "== 4. codex-preflight.sh sandbox: OK on danger-full-access config =="
 OUT_OK="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh sandbox) 2>&1 )"; RC_OK=$?
-if [ "$RC_OK" -eq 0 ] && printf '%s' "$OUT_OK" | grep -qi 'danger-full-access (OK'; then
+if [ "$RC_OK" -eq 0 ] && printf '%s' "$OUT_OK" | grep >/dev/null -i 'danger-full-access (OK'; then
   ok "sandbox probe reports OK (exit 0) for danger-full-access posture"
 else
   fail "sandbox probe OK path" "rc=$RC_OK out=$(printf '%s' "$OUT_OK" | tr '\n' ' ' | cut -c1-300)"
@@ -83,7 +83,7 @@ echo "== 5. codex-preflight.sh sandbox: flags a workspace-write posture =="
 TMPCFG="$(mktemp -d)"; printf 'sandbox_mode = "workspace-write"\n' > "$TMPCFG/config.toml"
 OUT_BAD="$( (cd "$ROOT" && HQ_CODEX_CONFIG="$TMPCFG/config.toml" bash core/scripts/codex-preflight.sh sandbox) 2>&1 )"; RC_BAD=$?
 rm -rf "$TMPCFG"
-if [ "$RC_BAD" -ne 0 ] && printf '%s' "$OUT_BAD" | grep -qi 'BROKEN'; then
+if [ "$RC_BAD" -ne 0 ] && printf '%s' "$OUT_BAD" | grep >/dev/null -i 'BROKEN'; then
   ok "sandbox probe flags workspace-write (non-zero + actionable message)"
 else
   fail "sandbox probe bad path" "rc=$RC_BAD out=$(printf '%s' "$OUT_BAD" | tr '\n' ' ' | cut -c1-300)"
@@ -174,7 +174,7 @@ echo "== 11. Probe: missing sandbox_mode key does not crash (set -e safe) =="
 TMPEMPTY="$(mktemp -d)"; printf 'model = "gpt-5.4"\n' > "$TMPEMPTY/config.toml"
 OUT_E="$( (cd "$ROOT" && HQ_CODEX_CONFIG="$TMPEMPTY/config.toml" bash core/scripts/codex-preflight.sh sandbox) 2>&1 )"; RC_E=$?
 rm -rf "$TMPEMPTY"
-if [ "$RC_E" -ne 0 ] && printf '%s' "$OUT_E" | grep -qi 'no sandbox_mode found'; then
+if [ "$RC_E" -ne 0 ] && printf '%s' "$OUT_E" | grep >/dev/null -i 'no sandbox_mode found'; then
   ok "missing sandbox_mode reaches the empty-mode branch (non-zero + message)"
 else
   fail "missing sandbox_mode branch" "rc=$RC_E out=$(printf '%s' "$OUT_E" | tr '\n' ' ' | cut -c1-300)"
@@ -192,7 +192,7 @@ printf 'sandbox_mode = "danger-full-access"\n' > "$MOCK/config.toml"
 OUT_B="$( (cd "$ROOT" && HQ_SANDBOX_OS=Linux HQ_CODEX_CONFIG="$MOCK/config.toml" PATH="$MOCK:$PATH" \
   bash core/scripts/codex-preflight.sh sandbox) 2>&1 )"; RC_B=$?
 rm -rf "$MOCK"
-if [ "$RC_B" -eq 0 ] && printf '%s' "$OUT_B" | grep -qi 'bypasses bubblewrap'; then
+if [ "$RC_B" -eq 0 ] && printf '%s' "$OUT_B" | grep >/dev/null -i 'bypasses bubblewrap'; then
   ok "danger-full-access + broken bwrap => exit 0 (informational)"
 else
   fail "bwrap informational path" "rc=$RC_B out=$(printf '%s' "$OUT_B" | tr '\n' ' ' | cut -c1-300)"
@@ -210,7 +210,7 @@ printf 'sandbox_mode = "workspace-write"\n' > "$MOCK2/config.toml"
 OUT_W="$( (cd "$ROOT" && HQ_SANDBOX_OS=Linux HQ_CODEX_CONFIG="$MOCK2/config.toml" PATH="$MOCK2:$PATH" \
   bash core/scripts/codex-preflight.sh sandbox) 2>&1 )"; RC_W=$?
 rm -rf "$MOCK2"
-if [ "$RC_W" -ne 0 ] && printf '%s' "$OUT_W" | grep -qi 'CANNOT initialize'; then
+if [ "$RC_W" -ne 0 ] && printf '%s' "$OUT_W" | grep >/dev/null -i 'CANNOT initialize'; then
   ok "workspace-write + broken bwrap => non-zero (actionable)"
 else
   fail "bwrap failure path" "rc=$RC_W out=$(printf '%s' "$OUT_W" | tr '\n' ' ' | cut -c1-300)"

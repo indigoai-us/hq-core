@@ -53,6 +53,8 @@
 # stage_failure_class classifies it: "permission" (the process may not write
 # .git, e.g. a sandboxed run; re-run outside the sandbox), "index-lock" (another
 # git process holds .git/index.lock), or "other". It is "" when nothing failed.
+# index_lock_waits counts the retries of git index operations that waited for
+# another process to release .git/index.lock (feedback 29213da4).
 #
 # --deficiencies-json <path> takes a file holding the Step 2 environment
 # deficiencies array (lever, kind, severity, summary, evidence, proposed_fix).
@@ -77,6 +79,13 @@ fi
 
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$HQ_ROOT"
+# Keep both spellings of the root. The physical one is the working directory
+# for git; the logical one (a symlinked checkout, macOS /var -> /private/var)
+# is what absolute changeset paths from the caller are prefixed with. Both are
+# stripped when paths are relativized, so a company reached through the alias
+# prefix still counts when the handoff's company scope is derived
+# (feedback 7a3e83c2).
+HQ_ROOT_LOGICAL="$(pwd -L)"
 HQ_ROOT="$(pwd -P)"
 HANDOFF_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HANDOFF_SCRIPT_DIR/lib/session-id.sh"
@@ -246,6 +255,8 @@ normalize_rel_path() {
   local rel="$raw"
   if [[ "$raw" == "$HQ_ROOT/"* ]]; then
     rel="${raw#"$HQ_ROOT/"}"
+  elif [[ "$raw" == "$HQ_ROOT_LOGICAL/"* ]]; then
+    rel="${raw#"$HQ_ROOT_LOGICAL/"}"
   elif [[ "$raw" == /* ]]; then
     return 1
   fi
@@ -292,10 +303,12 @@ done < <(
 # session binding is used. Never treat the list of touched company paths as
 # recipients. Inspect the complete handoff paths, including skipped paths, so a
 # missing or excluded file cannot hide that the handoff spans multiple companies.
-TOUCHED_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
+TOUCHED_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" --arg hq_root_logical "$HQ_ROOT_LOGICAL" '
   [ (if type == "array" then .[] else empty end)
     | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
-    | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
+    | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):]
+       elif startswith($hq_root_logical + "/") then .[(($hq_root_logical | length) + 1):]
+       else . end)
     | sub("^\\./"; "")
     | (try capture("^companies/(?<company>[a-z0-9][a-z0-9_-]*)/").company catch null)
     | select(type == "string")
@@ -670,6 +683,212 @@ EXPLICIT_PATHS=(
   "INDEX.md"
 )
 STAGED=0
+# Big files and swept-in media never ride a handoff commit (feedback_c682f3ad).
+# A changeset that names a project folder used to stage every render under it,
+# and the HQ root history grew by gigabytes a day. Two rules, applied to what
+# each `git add` actually staged:
+#   - any file above HQ_OFFLOAD_MIN_BYTES (default 50 MiB, the same cap the
+#     autosave hook uses) is unstaged, named or not;
+#   - a media or archive file that only arrived because its parent directory
+#     was listed is unstaged at any size. A media file the changeset names
+#     directly is the agent's explicit choice and still commits.
+# HQ_HANDOFF_ALLOW_MEDIA=1 turns off the second rule. Every unstaged path is
+# reported in skipped_paths with reason "oversize" or "media-in-directory".
+HANDOFF_MAX_BYTES="${HQ_OFFLOAD_MIN_BYTES:-52428800}"
+[[ "$HANDOFF_MAX_BYTES" =~ ^[0-9]+$ && "$HANDOFF_MAX_BYTES" -gt 0 ]] || HANDOFF_MAX_BYTES=52428800
+HANDOFF_STAGE_SKIPS=0
+# Paths whose `git add` succeeded, NUL-separated. The filter runs once after the
+# staging loop: a per-path pass costs a git process per entry, which a
+# 5000-path changeset cannot afford. HANDOFF_ADDED_PATHS holds the same paths
+# normalized (see handoff_norm_path), one per line, to match git's spelling.
+# The same list drives the commit: it is restricted to exactly these paths, so
+# anything another process left in the index stays staged and out of the
+# handoff commit (feedback 25b250a7). OWN_STAGED_FILE is the name the commit
+# step uses for it.
+new_tmp HANDOFF_ADDED_PATHS_FILE
+: > "$HANDOFF_ADDED_PATHS_FILE"
+OWN_STAGED_FILE="$HANDOFF_ADDED_PATHS_FILE"
+HANDOFF_ADDED_PATHS=""
+# hq_git_index_retry <git args...> — run a git command that takes the index
+# lock. When it fails because another process holds .git/index.lock (concurrent
+# sessions commit their own handoff checkpoints in the same minute, feedback
+# 29213da4), wait with a short backoff and try again, up to
+# HQ_HANDOFF_INDEX_LOCK_RETRIES times (default 8, about 6 s in total). Any other
+# failure, and a lock that outlives the retries, returns git's status with its
+# stderr intact so the caller classifies it.
+HQ_HANDOFF_INDEX_LOCK_RETRIES="${HQ_HANDOFF_INDEX_LOCK_RETRIES:-8}"
+[[ "$HQ_HANDOFF_INDEX_LOCK_RETRIES" =~ ^[0-9]+$ ]] || HQ_HANDOFF_INDEX_LOCK_RETRIES=8
+HQ_HANDOFF_INDEX_LOCK_WAITS=0
+new_tmp HQ_RETRY_ERR_FILE
+hq_git_index_retry() {
+  local attempt=0 rc=0 delay
+  while :; do
+    rc=0
+    "$@" 2>"$HQ_RETRY_ERR_FILE" || rc=$?
+    if [[ $rc -eq 0 ]] || ! grep -q 'index\.lock' "$HQ_RETRY_ERR_FILE" 2>/dev/null \
+       || [[ $attempt -ge $HQ_HANDOFF_INDEX_LOCK_RETRIES ]]; then
+      cat "$HQ_RETRY_ERR_FILE" >&2
+      return $rc
+    fi
+    attempt=$((attempt+1))
+    HQ_HANDOFF_INDEX_LOCK_WAITS=$((HQ_HANDOFF_INDEX_LOCK_WAITS+1))
+    # 0.1, 0.2, 0.4, 0.8, then 1 s per try; capped so a lock that is never
+    # released still ends in a classified stage-failed within seconds.
+    case $attempt in 1) delay=0.1 ;; 2) delay=0.2 ;; 3) delay=0.4 ;; 4) delay=0.8 ;; *) delay=1 ;; esac
+    sleep "$delay"
+  done
+}
+# Set when the filter could not run or could not unstage. The commit is then
+# withheld so unfiltered media never lands; the run reports stage-failed.
+HANDOFF_FILTER_FAILED=0
+# Skips queued as "reason<TAB>path" lines and written with one jq call, so a
+# large skip list does not cost a jq process per path.
+HANDOFF_SKIP_QUEUE_FILE=""
+handoff_queue_skip() { # handoff_queue_skip <reason> <path>
+  [[ -n "$HANDOFF_SKIP_QUEUE_FILE" ]] || new_tmp HANDOFF_SKIP_QUEUE_FILE
+  printf '%s\t%s\n' "$1" "$2" >> "$HANDOFF_SKIP_QUEUE_FILE"
+  HANDOFF_STAGE_SKIPS=$((HANDOFF_STAGE_SKIPS+1))
+}
+handoff_flush_skips() {
+  [[ -n "$HANDOFF_SKIP_QUEUE_FILE" && -s "$HANDOFF_SKIP_QUEUE_FILE" ]] || return 0
+  jq -Rc 'split("\t") | {path: (.[1:] | join("\t")), reason: .[0]}' \
+    "$HANDOFF_SKIP_QUEUE_FILE" >> "$SKIPPED_NDJSON_FILE"
+}
+# handoff_norm_path <path> — sets HANDOFF_NORM to the path with `//` and `/./`
+# collapsed, leading `./` and trailing `/` removed. Sets a global instead of
+# printing so the staging loop does not fork a subshell per path.
+handoff_norm_path() {
+  local p="$1" dd='//' dsd='/./' s='/'
+  while [[ "$p" == *"$dd"* ]]; do p="${p//$dd/$s}"; done
+  while [[ "$p" == *"$dsd"* ]]; do p="${p//$dsd/$s}"; done
+  while [[ "$p" == ./* ]]; do p="${p#./}"; done
+  while [[ "$p" == */ && "$p" != "/" ]]; do p="${p%/}"; done
+  HANDOFF_NORM="$p"
+}
+handoff_note_added() {
+  printf '%s\0' "$1" >> "$HANDOFF_ADDED_PATHS_FILE"
+  handoff_norm_path "$1"
+  HANDOFF_ADDED_PATHS="${HANDOFF_ADDED_PATHS}${HANDOFF_NORM}"$'\n'
+}
+handoff_is_media() {
+  local rc=1 restore_nocase=0
+  shopt -q nocasematch || { shopt -s nocasematch; restore_nocase=1; }
+  case "$1" in
+    *.mp4|*.mov|*.m4v|*.avi|*.mkv|*.webm|*.wmv|*.flv|*.mpg|*.mpeg|*.prores|\
+    *.wav|*.mp3|*.m4a|*.aac|*.flac|*.aif|*.aiff|*.ogg|*.opus|\
+    *.png|*.jpg|*.jpeg|*.gif|*.webp|*.heic|*.heif|*.tif|*.tiff|*.bmp|*.psd|*.exr|*.raw|\
+    *.zip|*.tar|*.gz|*.tgz|*.bz2|*.xz|*.7z|*.rar|*.dmg|*.iso)
+      rc=0 ;;
+  esac
+  [[ $restore_nocase -eq 0 ]] || shopt -u nocasematch
+  return $rc
+}
+# The handoff's own metadata (thread files, pointer, indexes) and offload
+# placeholders always commit, whatever the size cap.
+handoff_is_exempt() {
+  case "$1" in
+    *.hqcloud|workspace/threads/*|workspace/orchestrator/INDEX.md|INDEX.md) return 0 ;;
+  esac
+  return 1
+}
+handoff_filter_failed() { # handoff_filter_failed <what failed>
+  HANDOFF_FILTER_FAILED=1
+  STAGE_FAILURES="${STAGE_FAILURES}handoff-filter: $1"$'\n'
+  STAGE_FAILURE_COUNT=$((STAGE_FAILURE_COUNT+1))
+  # Best effort: leave nothing unfiltered staged for a later commit to pick up.
+  hq_git_index_retry git reset -q --pathspec-from-file="$HANDOFF_ADDED_PATHS_FILE" --pathspec-file-nul >/dev/null 2>&1 || true
+}
+# handoff_add_ignored_dir <dir> — an ignored directory that holds tracked
+# files. Update only what is already tracked; `git add -f` here would force
+# every ignored render under it into history (feedback_c682f3ad). Untracked
+# ignored entries are reported as skipped instead of dropped silently.
+# --directory collapses a wholly untracked subdirectory into one entry.
+handoff_add_ignored_dir() {
+  local p="$1" f
+  hq_git_index_retry git add -u -- "$p" >/dev/null 2>"$STAGE_ERR_FILE" || return 1
+  while IFS= read -r -d '' f; do
+    [[ -n "$f" ]] || continue
+    handoff_queue_skip "ignored-untracked" "$f"
+  done < <(git ls-files -z -o -i --exclude-standard --directory -- "$p" 2>/dev/null)
+  return 0
+}
+# handoff_unstage_unwanted — inspect what the staging loop added at or under
+# the changeset paths and unstage what the rules above exclude. Sizes come from
+# the staged blobs, not the working tree, so a path spelled `a/./b` or in
+# another Unicode form cannot dodge the cap, and deleted files need no stat.
+handoff_unstage_unwanted() {
+  [[ -n "$HANDOFF_ADDED_PATHS_FILE" && -s "$HANDOFF_ADDED_PATHS_FILE" ]] || return 0
+  local raw_file renames_file shas_file sizes_file unstage_file
+  local meta rest path status size reason renamed n=0 i=0
+  local -a h_paths=() h_status=()
+  new_tmp raw_file
+  new_tmp renames_file
+  new_tmp shas_file
+  new_tmp sizes_file
+  new_tmp unstage_file
+  if ! xargs -0 git diff --cached --raw -z --no-abbrev --no-renames --diff-filter=AMT -- \
+      < "$HANDOFF_ADDED_PATHS_FILE" > "$raw_file" 2>/dev/null; then
+    handoff_filter_failed "could not list staged changes"
+    return 0
+  fi
+  # A tracked file moved to a new name shows as a rename here. Its destination
+  # is not new media and must stay staged next to the staged deletion.
+  if ! xargs -0 git diff --cached -z --name-status -M --diff-filter=R -- \
+      < "$HANDOFF_ADDED_PATHS_FILE" > "$renames_file" 2>/dev/null; then
+    handoff_filter_failed "could not list staged renames"
+    return 0
+  fi
+  renamed=$'\n'
+  while IFS= read -r -d '' status && IFS= read -r -d '' rest && IFS= read -r -d '' path; do
+    renamed="${renamed}${path}"$'\n'
+  done < "$renames_file"
+  # --raw -z: ":<mode> <mode> <sha> <sha> <status>" NUL "<path>" NUL.
+  while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+    status="${meta##* }"
+    rest="${meta% *}"
+    printf '%s\n' "${rest##* }" >> "$shas_file"
+    h_paths[n]="$path"
+    h_status[n]="$status"
+    n=$((n+1))
+  done < "$raw_file"
+  [[ $n -gt 0 ]] || return 0
+  # One cat-file call sizes every staged blob, in input order. A gitlink or
+  # missing object prints a non-numeric line and counts as size 0.
+  if ! git cat-file --batch-check='%(objectsize)' < "$shas_file" > "$sizes_file" 2>/dev/null; then
+    handoff_filter_failed "could not size staged files"
+    return 0
+  fi
+  while IFS= read -r size && [[ $i -lt $n ]]; do
+    path="${h_paths[i]}"
+    status="${h_status[i]}"
+    i=$((i+1))
+    handoff_is_exempt "$path" && continue
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    reason=""
+    [[ $size -gt $HANDOFF_MAX_BYTES ]] && reason="oversize"
+    # Only new media is swept in by a directory. A media file the changeset
+    # names directly still commits.
+    if [[ -z "$reason" && "$status" == "A" && "${HQ_HANDOFF_ALLOW_MEDIA:-}" != "1" ]] \
+       && handoff_is_media "$path"; then
+      case $'\n'"$HANDOFF_ADDED_PATHS"$renamed in
+        *$'\n'"$path"$'\n'*) ;;
+        *) reason="media-in-directory" ;;
+      esac
+    fi
+    [[ -n "$reason" ]] || continue
+    printf '%s\0' "$path" >> "$unstage_file"
+    handoff_queue_skip "$reason" "$path"
+  done < "$sizes_file"
+  if [[ $i -ne $n ]]; then
+    handoff_filter_failed "sized ${i} of ${n} staged files"
+    return 0
+  fi
+  if [[ -s "$unstage_file" ]] \
+     && ! hq_git_index_retry git reset -q --pathspec-from-file="$unstage_file" --pathspec-file-nul >/dev/null 2>&1; then
+    handoff_filter_failed "could not unstage filtered files"
+  fi
+  return 0
+}
 # Newline-separated, not an array: `${#arr[@]}` on an empty array is an unbound
 # variable under bash 3.2 + `set -u` (the same trap the SAFE_STAGE_PATHS
 # regression hit), and macOS still ships bash 3.2.
@@ -681,6 +900,32 @@ STAGE_FAILURE_COUNT=0
 FIRST_STAGE_ERROR=""
 STAGE_FAILURE_CLASS=""
 new_tmp STAGE_ERR_FILE
+NESTED_REPO_PATHS=""
+NESTED_DIRTY_MSG=""
+# nested_repo_root <path> -> prints the gitlink (a nested repository the HQ
+# index records, such as companies/<co>/knowledge) that contains <path>, or
+# nothing. A nested repo that is only excluded or ignored (repos/, info/exclude)
+# is not a gitlink; its paths keep the ordinary ignored-path handling below. `git add` from the
+# HQ root cannot stage a path inside one (feedback d4fcd2e4, 121735c2).
+# Gitlinks are listed once up front, so the per-path walk runs no git
+# command (it still costs one subshell per path for the substitution).
+HQ_GITLINKS=""
+if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
+  HQ_GITLINKS="$(git ls-files -s 2>/dev/null | awk '$1 == "160000" { sub(/^[^\t]*\t/, ""); print }')"
+fi
+nested_repo_root() {
+  local d="$1"
+  while [[ "$d" == */* ]]; do
+    d="${d%/*}"
+    [[ -n "$d" ]] || break
+    if [[ -n "$HQ_GITLINKS" ]]; then
+      case $'\n'"$HQ_GITLINKS"$'\n' in
+        *$'\n'"$d"$'\n'*) printf '%s' "$d"; return 0 ;;
+      esac
+    fi
+  done
+  return 0
+}
 # record_stage_failure <path> — append the path; keep the first stderr line.
 record_stage_failure() {
   STAGE_FAILURES="${STAGE_FAILURES}${1}"$'\n'
@@ -690,25 +935,67 @@ record_stage_failure() {
   fi
 }
 if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
+  # Changeset paths are file names, never globs: a file named `d/*` must not
+  # stage all of d/. Restored after the filter.
+  HANDOFF_PRIOR_LITERAL="${GIT_LITERAL_PATHSPECS-__unset__}"
+  export GIT_LITERAL_PATHSPECS=1
   for p in "${EXPLICIT_PATHS[@]}"; do
     [[ -n "$p" ]] || continue
+    nested="$(nested_repo_root "$p")"
+    if [[ -n "$nested" ]]; then
+      # The owning repository saves its own files (the knowledge helper commits
+      # them there). The HQ root can only record the nested repo's pointer, so
+      # stage that and report an inner file that is still uncommitted by name.
+      inner="${p#"$nested"/}"
+      if [[ -n "$(GIT_LITERAL_PATHSPECS=1 git -C "$nested" status --porcelain -- "$inner" 2>/dev/null)" ]]; then
+        record_stage_failure "$p"
+        NESTED_DIRTY_MSG="${NESTED_DIRTY_MSG:+$NESTED_DIRTY_MSG; }$p is uncommitted inside nested repository $nested (commit it there, then re-run)"
+        continue
+      fi
+      case $'\n'"$NESTED_REPO_PATHS" in *$'\n'"$p"$'\n'*) ;; *) NESTED_REPO_PATHS="${NESTED_REPO_PATHS}${p}"$'\n' ;; esac
+      if [[ -n "$(GIT_LITERAL_PATHSPECS=1 git status --porcelain --ignore-submodules=untracked -- "$nested" 2>/dev/null)" ]] \
+         && GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- "$nested" >/dev/null 2>&1; then
+        if GIT_LITERAL_PATHSPECS=1 hq_git_index_retry git add -- "$nested" >/dev/null 2>"$STAGE_ERR_FILE"; then
+          STAGED=$((STAGED+1))
+          handoff_note_added "$nested"
+        else
+          record_stage_failure "$nested"
+        fi
+      fi
+      continue
+    fi
     if [[ -e "$p" || -n "$(git status --porcelain -- "$p" 2>/dev/null)" ]]; then
       add_rc=0
-      git add -- "$p" >/dev/null 2>"$STAGE_ERR_FILE" || add_rc=$?
+      hq_git_index_retry git add -- "$p" >/dev/null 2>"$STAGE_ERR_FILE" || add_rc=$?
       if [[ $add_rc -eq 0 ]]; then
         STAGED=$((STAGED+1))
-      elif git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+        handoff_note_added "$p"
+      elif [[ -d "$p" ]] && GIT_LITERAL_PATHSPECS=0 git check-ignore --no-index -q -- "$p" 2>/dev/null \
+           && git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+        # An ignored DIRECTORY that holds tracked files. check-ignore rejects
+        # literal pathspec magic, hence the override; it takes plain paths.
+        if handoff_add_ignored_dir "$p"; then
+          STAGED=$((STAGED+1))
+          handoff_note_added "$p"
+        else
+          record_stage_failure "$p"
+        fi
+      elif [[ ! -d "$p" ]] && git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
         # The path is already TRACKED but a broad later ignore rule now shadows it
         # (the scaffold's /workspace/ entry over the tracked handoff pointer/index
         # files), so a plain `git add` refuses it. A tracked file must still be
         # committed, so force-add it. Only a force-add that ALSO fails (e.g. a held
-        # .git/index.lock) is a genuine stage failure.
-        if git add -f -- "$p" >/dev/null 2>"$STAGE_ERR_FILE"; then
+        # .git/index.lock) is a genuine stage failure. Never for a directory:
+        # `git add -f` there would force in every ignored file under it, and a
+        # directory whose plain add failed for another reason (an unreadable
+        # file) is a stage failure below.
+        if hq_git_index_retry git add -f -- "$p" >/dev/null 2>"$STAGE_ERR_FILE"; then
           STAGED=$((STAGED+1))
+          handoff_note_added "$p"
         else
           record_stage_failure "$p"
         fi
-      elif git check-ignore --no-index -q -- "$p" 2>/dev/null; then
+      elif GIT_LITERAL_PATHSPECS=0 git check-ignore --no-index -q -- "$p" 2>/dev/null; then
         # An UNtracked, gitignored path is a deliberate exclusion, not a failed
         # write. --no-index is required: plain `git check-ignore` SKIPS tracked
         # files (it would wrongly report a tracked-but-ignored path as not-ignored,
@@ -719,6 +1006,18 @@ if [[ "$HAS_GIT_CHECKOUT" == "true" ]]; then
       fi
     fi
   done
+  handoff_unstage_unwanted
+  if [[ "$HANDOFF_PRIOR_LITERAL" == "__unset__" ]]; then
+    unset GIT_LITERAL_PATHSPECS
+  else
+    export GIT_LITERAL_PATHSPECS="$HANDOFF_PRIOR_LITERAL"
+  fi
+fi
+handoff_flush_skips
+# Fold the staging skips into skipped_paths. It was materialized earlier for
+# the thread file; the emitted payload reads the file again below.
+if [[ $HANDOFF_STAGE_SKIPS -gt 0 && -s "$SKIPPED_NDJSON_FILE" ]]; then
+  jq -s '.' "$SKIPPED_NDJSON_FILE" > "$SKIPPED_PATHS_FILE"
 fi
 if [[ $STAGE_FAILURE_COUNT -gt 0 ]]; then
   case "$FIRST_STAGE_ERROR" in
@@ -738,11 +1037,24 @@ if [[ -n "$STAGE_FAILURES" ]]; then
   printf '%s' "$STAGE_FAILURES" \
     | jq -R -s 'split("\n") | map(select(length > 0))' > "$STAGE_FAILURES_FILE"
 fi
-if [[ $STAGED -gt 0 ]] && [[ -n "$(git diff --cached --name-only 2>/dev/null)" ]]; then
-  # Snapshot the staged set separately. It only becomes committed_paths once the
-  # commit actually lands; a refused commit must not report paths as committed.
+# `git diff` has no --pathspec-from-file, and a large changeset must stay off
+# argv, so feed this run's own paths through xargs (it splits an oversize list
+# into several git calls). A listed directory covers the files staged under it
+# (minus what the filter above unstaged); a staged nested-repo gitlink matches
+# itself. The result is this run's staged FILES, one per line; paths someone
+# else staged are not part of it.
+new_tmp OWN_STAGED_CHANGES_FILE
+: > "$OWN_STAGED_CHANGES_FILE"
+if [[ $STAGED -gt 0 && -s "$OWN_STAGED_FILE" ]]; then
+  GIT_LITERAL_PATHSPECS=1 xargs -0 git -c core.quotePath=false diff --cached --name-only --no-renames -- \
+    < "$OWN_STAGED_FILE" 2>/dev/null | awk 'NF && !seen[$0]++' > "$OWN_STAGED_CHANGES_FILE" || true
+fi
+if [[ $STAGED -gt 0 && $HANDOFF_FILTER_FAILED -eq 0 ]] && [[ -s "$OWN_STAGED_CHANGES_FILE" ]]; then
+  # Snapshot this run's staged set separately. It only becomes committed_paths
+  # once the commit actually lands; a refused commit must not report paths as
+  # committed.
   new_tmp PENDING_PATHS_FILE
-  git diff --cached --name-only | jq -R -s 'split("\n") | map(select(length > 0))' > "$PENDING_PATHS_FILE"
+  jq -R -s 'split("\n") | map(select(length > 0))' < "$OWN_STAGED_CHANGES_FILE" > "$PENDING_PATHS_FILE"
   commit_out=""
   commit_rc=0
   # This commit runs hooks. When the HQ git-hooks dispatcher is installed (a
@@ -757,7 +1069,23 @@ if [[ $STAGED -gt 0 ]] && [[ -n "$(git diff --cached --name-only 2>/dev/null)" ]
     { source "$HANDOFF_SCRIPT_DIR/lib/fingerprint.sh" 2>/dev/null \
         && hq_fingerprint_trailer_load "$HQ_ROOT"; } || HQ_FINGERPRINT_TRAILER_ARGS=()
   fi
-  commit_out="$(git commit -m "checkpoint: handoff ${THREAD_ID}" ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"} 2>&1)" || commit_rc=$?
+  # When the index holds only this run's changes, a plain commit is exact and
+  # fast. When something else is staged too, commit --only this run's paths so
+  # the foreign entries stay staged and out of the handoff commit. (--only
+  # matches every index entry against every pathspec, so it is not used for
+  # the common case, where a large changeset would make it quadratic.)
+  # The pathspec lists the staged FILES, never a listed directory: --only takes
+  # a path's working-tree state, so a directory pathspec would pull back in a
+  # file the media/oversize filter just unstaged.
+  COMMIT_SCOPE_ARGS=()
+  if [[ "$(git diff --cached --name-only --no-renames 2>/dev/null | wc -l | tr -d ' ')" != "$(jq 'length' "$PENDING_PATHS_FILE")" ]]; then
+    new_tmp COMMIT_PATHSPEC_FILE
+    tr '\n' '\0' < "$OWN_STAGED_CHANGES_FILE" > "$COMMIT_PATHSPEC_FILE"
+    COMMIT_SCOPE_ARGS=(--only --pathspec-from-file="$COMMIT_PATHSPEC_FILE" --pathspec-file-nul)
+  fi
+  new_tmp COMMIT_OUT_FILE
+  GIT_LITERAL_PATHSPECS=1 hq_git_index_retry git commit ${COMMIT_SCOPE_ARGS[@]+"${COMMIT_SCOPE_ARGS[@]}"} -m "checkpoint: handoff ${THREAD_ID}" ${HQ_FINGERPRINT_TRAILER_ARGS[@]+"${HQ_FINGERPRINT_TRAILER_ARGS[@]}"} >"$COMMIT_OUT_FILE" 2>&1 || commit_rc=$?
+  commit_out="$(cat "$COMMIT_OUT_FILE" 2>/dev/null || true)"
   if [[ $commit_rc -eq 0 ]]; then
     HQ_COMMITTED="true"
     HQ_COMMIT_STATUS="committed"
@@ -783,6 +1111,7 @@ if [[ $STAGE_FAILURE_COUNT -gt 0 && "$HQ_COMMIT_STATUS" != "failed" ]]; then
         HQ_COMMIT_ERROR="${HQ_COMMIT_ERROR}; another git process holds .git/index.lock (wait for it and re-run /handoff)" ;;
     esac
     [[ -z "$FIRST_STAGE_ERROR" ]] || HQ_COMMIT_ERROR="${HQ_COMMIT_ERROR}; first git error: ${FIRST_STAGE_ERROR}"
+    [[ -z "$NESTED_DIRTY_MSG" ]] || HQ_COMMIT_ERROR="${HQ_COMMIT_ERROR}: ${NESTED_DIRTY_MSG}"
   fi
 fi
 COMMIT_AFTER=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -869,7 +1198,9 @@ MSYS_NO_PATHCONV=1 jq -n \
   --slurpfile committed_paths "$COMMITTED_PATHS_JQ_FILE" \
   --slurpfile stage_failures "$STAGE_FAILURES_JQ_FILE" \
   --arg stage_failure_class "$STAGE_FAILURE_CLASS" \
+  --argjson index_lock_waits "$HQ_HANDOFF_INDEX_LOCK_WAITS" \
   --slurpfile skipped_paths "$SKIPPED_PATHS_JQ_FILE" \
+  --arg nested_repo_paths "$NESTED_REPO_PATHS" \
   --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
   --arg commit_after_finalize "$COMMIT_AFTER" \
   --arg next_command "$NEXT_COMMAND" \
@@ -889,7 +1220,9 @@ MSYS_NO_PATHCONV=1 jq -n \
     committed_paths: ($committed_paths[0] // []),
     stage_failures: ($stage_failures[0] // []),
     stage_failure_class: $stage_failure_class,
+    index_lock_waits: $index_lock_waits,
     skipped_paths: ($skipped_paths[0] // []),
+    nested_repo_paths: ($nested_repo_paths | split("\n") | map(select(length > 0))),
     baseline_noise_count: $baseline_noise_count,
     indexes_regen: $indexes_regen,
     qmd_pid: $qmd_pid,

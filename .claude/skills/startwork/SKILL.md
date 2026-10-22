@@ -46,6 +46,7 @@ If the argument contains a slash-command token (whitespace-delimited substring m
 - **`/deep-plan` token present** → STOP. Do not classify, do not enter Task Mode, do not pick a worker pipeline. Announce: *"`/deep-plan` detected in args — routing to deep-plan skill."* Then load `.claude/skills/deep-plan/SKILL.md` and execute it end-to-end with the remaining args (everything after `/deep-plan`) as the project description. The deep-plan skill produces `companies/{co}/projects/{name}/prd.json` + board entry and HARD STOPS at `/handoff`. Implementation MUST NOT happen in this session.
 - **`/prd` token present** → route to `.claude/skills/prd/SKILL.md` similarly.
 - **Other `/foo` tokens** → check `.claude/commands/foo.md`; if present, route to that command's skill (if any) or invoke the command directly.
+- **Bare skill names count the same.** The Claude desktop app refuses to send a message that starts with a slash command and contains another slash command, so desktop users write `/startwork {co} deep-plan {description}`. Treat a whole-word `deep-plan` or `prd` argument token exactly like `/deep-plan` or `/prd`. Other bare words are only routed when they exactly match a hyphenated command name in `.claude/commands/` (for example `run-project`); a plain English word such as `plan` or `review` stays task text.
 
 This rule supersedes the classification table below. The reason it exists: prior failure where `/startwork {company} vyg /deep-plan apps/...` was treated as free-text task description, causing the agent to enter Claude Code's built-in plan mode and start implementing instead of running the deep-plan questionnaire. Policy: `core/policies/deep-plan-skill-routing.md`.
 
@@ -313,9 +314,9 @@ Then present numbered options built from context:
 - **Company mode**: worker-recommended next actions + active projects for that company (up to 3) + "Run a worker" + "Something else"
 - **Project mode**: top 3 **queued** Board stories from work-mesh `stories[]` via `/execute-task` + matching worker route + "Something else". Skip `in_progress` unless the user already owns that row.
 - **Repo mode**: related projects with incomplete work (up to 3) + "Open repo (no project)" + "Something else"
-- **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Run /prd for full options" + "Something else"
+- **Task mode**: proposed worker pipeline phases (up to 5) + "Run this worker pipeline" + "Modify pipeline" + "Do it directly (no worker)" + "Plan it with /prd (send /prd as its own message)" + "Something else"
 
-Output the numbered list and wait for user input. After user picks, proceed directly into the work.
+Output the numbered list and wait for user input. When an option starts another skill, phrase it as the skill name for the user to send as its own message (for example "send `/deep-plan {co} {description}` as a new message"). Never suggest a message that chains two slash commands, such as `/startwork {co} /deep-plan ...`: the desktop app refuses to send it. If the user picks such an option by number, run the skill in this session instead of asking them to type it. After user picks, proceed directly into the work.
 
 ## Rules
 

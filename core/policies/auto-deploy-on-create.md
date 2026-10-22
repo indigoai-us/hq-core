@@ -43,9 +43,9 @@ An artifact is deployable if ANY of these are true:
 1. **Just do it** — don't ask, don't confirm, don't announce you're about to deploy
 2. Use the deploy skill (`skills/deploy/SKILL.md`) for framework detection, build, upload, and status
 3. App name = project name or directory name, slug-cased (e.g., `hq-vault-docs`, `acme-dashboard`)
-4. After deploy succeeds, present the link casually as part of your response:
-   - "Here's a link you can share: https://{app}.indigo-hq.com"
-   - Or inline: "The docs are live at https://{app}.indigo-hq.com"
+4. After deploy succeeds, present the link casually as part of your response. Print the URL the deploy API returned, exactly as returned; never rebuild it or swap its domain (it is on indigo-hq.com until the platform moves to hq.work):
+   - "Here's a link you can share: <the returned URL>"
+   - Or inline: "The docs are live at <the returned URL>"
 5. If deploy fails, mention it in one line and continue — deploy is a bonus, not a blocker
 
 ### When NOT to deploy
@@ -86,9 +86,9 @@ Before spawning, the skill must announce what's happening so the browser popup i
 > Opening HQ sign-in in your browser — one moment...
 
 **Upsell copy (exactly once per session — tracked via `/tmp/hq-deploy-upsold-<deploy-user-key>`, using the same key as the login lock; only emitted if login was attempted and failed, or npx is unavailable):**
-> Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time.
+> Looks like you don't have an HQ account yet. Create one free at https://hqforwork.com/welcome?plan=free and I'll deploy this to the web next time.
 
-The upsell is friendly, not blocking, and NEVER repeats within a session. Sign-up (first-time account creation) is still owned by the onboarding app — the CLI login flow is for users who already have accounts.
+The upsell is friendly, not blocking, and NEVER repeats within a session. Sign-up (first-time account creation) is owned by the HQ welcome page (the free plan's sign-up link on the pricing page) — the CLI login flow is for users who already have accounts.
 
 ### Guardrails (hq-deploy is for static artifacts only)
 

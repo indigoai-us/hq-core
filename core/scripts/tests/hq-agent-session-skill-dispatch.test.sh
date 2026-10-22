@@ -119,7 +119,7 @@ OUT2="$(printf '%s' "$(req_for '/handof')" | bash "$FIXTURE/core/scripts/hq-agen
 disp2="$(echo "$OUT2" | jq -r .disposition)"
 [ "$disp2" = "clarify" ] || fail "disposition=$disp2 want clarify"
 text2="$(echo "$OUT2" | jq -r .text)"
-printf '%s' "$text2" | grep -qi 'handoff\|alpha\|beta\|gamma\|Did you mean' \
+printf '%s' "$text2" | grep >/dev/null -i 'handoff\|alpha\|beta\|gamma\|Did you mean' \
   || fail "clarify text missing suggestions: $text2"
 RUN2="$(echo "$OUT2" | jq -r .runDir)"
 [ ! -f "$RUN2/skill.txt" ] || fail "skill.txt must not exist on clarify"

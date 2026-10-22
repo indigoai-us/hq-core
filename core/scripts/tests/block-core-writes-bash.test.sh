@@ -49,7 +49,7 @@ run() {
     FAIL=$((FAIL+1))
     echo "FAIL [$label]: expected exit $expect, got $rc -- cmd: $cmd" >&2
   fi
-  if printf '%s' "$err" | grep -q 'grep: warning'; then
+  if printf '%s' "$err" | grep >/dev/null 'grep: warning'; then
     FAIL=$((FAIL+1))
     echo "FAIL [$label]: hook leaked a grep warning on stderr -- cmd: $cmd" >&2
   else
@@ -160,7 +160,7 @@ fi
 # esc() previously escaped '/' as '\/' (invalid in ERE) -> "grep: warning: stray
 # \ before /" lines polluted stderr and the deny reason surfaced to Codex/Grok. ---
 stray_err="$(printf '%s' "$(jq -n --arg cmd "echo hi > $C/s.json" '{tool_input:{command:$cmd}}')" | CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 1>/dev/null || true)"
-if printf '%s' "$stray_err" | grep -q 'stray'; then
+if printf '%s' "$stray_err" | grep >/dev/null 'stray'; then
   FAIL=$((FAIL+1)); echo "FAIL [no-grep-warning]: deny output leaked a grep warning" >&2
 else
   PASS=$((PASS+1))

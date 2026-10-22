@@ -582,14 +582,22 @@ hq_hook_tool_failed() {
 # hq_hook_within_window <state_file> <seconds>
 #   Exit 0 when <state_file> holds an epoch stamp newer than <seconds> ago —
 #   i.e. the caller is still inside its debounce window and should stay quiet.
+#   A stamp that is not purely numeric, is oversized, or lies in the future
+#   counts as expired, so a corrupt stamp can never silence a hook for good;
+#   the caller fires and overwrites it.
 hq_hook_within_window() {
   local file="$1"
   local window="$2"
-  local last now
+  local raw last now
   [ -f "$file" ] || return 1
-  last="$(tr -dc '0-9' < "$file" 2>/dev/null)"
-  [ -n "$last" ] || return 1
+  raw="$(tr -d '[:space:]' < "$file" 2>/dev/null)"
+  case "$raw" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "${#raw}" -le 12 ] || return 1
+  last=$(( 10#$raw ))
   now="$(date +%s)"
+  [ "$last" -le "$now" ] || return 1
   [ $(( now - last )) -lt "$window" ]
 }
 

@@ -43,6 +43,7 @@ version: 1
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 public: false
+company: <slug>                      # optional; or companies: [a, b]. Personal/repo/core policy written for one client
 ---
 
 ## Rule
@@ -62,6 +63,8 @@ Optional. Concrete examples of correct and incorrect behavior under this policy.
 Optional. HQ-local evidence: who reported it, when, which company, which ticket.
 Stripped on publish.
 ```
+
+**`company:` / `companies:` (optional).** Marks a personal, repo, worker or core policy as written for one or more clients. When the session holds a company lock (`core/scripts/hq-session.sh`) that includes none of them, the reminder skips the policy if it is soft. Binding rules (hard, gate) are never skipped this way, and sessions with no lock or a personal lock see it as before. Words in `when:` are never read as company names. Policies in a company's own policies directory need no field: that directory already loads only for the session's companies. Each value must be a slug in `companies/manifest.yaml`: `validate-policy-frontmatter.sh` blocks any other value, and the reminder counts only whole slug items that have a `companies/<slug>/` folder, ignoring anything after a ` #` comment and any item with other text, so a placeholder never hides a rule. `/learn` writes this field when an explicit repo, command or global scope sends a rule about one client outside that client's policies directory (the slug the user named, or the active or locked session company the rule is about). Company rules still go to the company's policies directory by default. It never infers a company from the policy name or wording, and it omits the field for general rules.
 
 **`## Provenance` vs `## Rationale`.** Rationale explains the mechanism and the
 trade-offs, and ships with the policy. Provenance records who, when, which
@@ -359,7 +362,9 @@ path and can read the whole file when it needs the reasoning.
 fit `HQ_POLICY_HARD_MAX_BYTES` (default 2048) on its own, and the whole injection
 must fit `HQ_POLICY_HARD_BUDGET_BYTES` (default 5120) across all of them,
 consumed in relevance order (below) so the hard rules most relevant to the
-current event claim it first. A hard policy that exceeds either limit degrades to the
+current event claim it first. A hard policy with a *specific* match (below) is
+not limited by the shared budget; the per-policy limit and the output ceiling
+still apply to it. A hard policy that exceeds either limit degrades to the
 soft one-line shape **and is named** in a trailing notice, so a shortened set can
 never be misread as the complete text. A hard policy whose file is unreadable or
 has no body degrades the same way — never silently dropped.
@@ -373,13 +378,66 @@ reactive groups rank above the SessionStart baseline. Within a group, more
 matched identifiers rank first, and ties keep scope precedence
 (company > repo > personal > core).
 
+A direct match is *specific* when it matched two or more `when:` identifiers,
+or one identifier that at most `HQ_POLICY_RARE_TOKEN_MAX` (default 3) in-scope
+policies use in their `when:`, or a file name, path or slash command (an
+identifier with `.` or `/` in it, such as `settings.json` or `/prd`). A match on one common word, such as `deploy` or
+`slack` in an HQ with hundreds of policies keyed on it, is direct but not
+specific. Specific matches rank above the other direct matches.
+
+**Relevance cap.** The cap applies to soft and unset policies only; every
+matched hard policy is listed, at least as its summary line, and the full-text
+budget and output ceiling bound its size. Reactive policies with a specific
+match and `inject: always` policies are also always shown. The other soft
+policies fill what is left of `HQ_POLICY_RELEVANCE_CAP` slots (default 6) after
+those, in rank order. Soft matches over the cap are counted in a notice and not
+recorded as delivered, so they stay eligible for a later event that matches
+them more specifically. SessionStart is not capped, and an explicit legacy
+`HQ_SESSION_POLICY_CAP` replaces this cap. `HQ_POLICY_RELEVANCE_CAP=0` turns
+it off.
+
+**Generic cap on tool events.** A Bash call is one of dozens per turn, and a
+match on one common word of its command text (`git`, `status`, `deploy`) is a
+weak signal. On PreToolUse and PostToolUse at most `HQ_POLICY_GENERIC_CAP`
+(default 2) such soft rows are shown, in rank order, inside the relevance
+cap; the other soft ones are *parked* and named in the notice: written to the
+seen set under that word,
+so the same word does not surface them again for `HQ_POLICY_SEEN_TTL_SECONDS`
+(default 1800). A valid hard policy is never generic and never parked: it is shown, or
+deferred by name when the full-text budget is spent. When the output ceiling
+shortens a hard policy to its summary line or cuts it, it is not recorded or
+parked and is shown in full on its next matching event, and the reminder
+says how many hard policies the ceiling cut instead of claiming all are shown. A specific match, an `inject: always` policy, or a match on two
+or more identifiers or on a file name, path or slash command is never generic.
+A malformed-trigger fallback row did not match the command at all: on a tool
+event it is one of the weak rows and is shown as its summary line only. A
+baseline row (`when: always` and the rest of the SessionStart set) is not
+shown on a tool event; SessionStart introduces it and a prompt event backfills
+it. Prompts keep the relevance cap alone. `HQ_POLICY_GENERIC_CAP=0` turns the
+generic cap off (over-cap rows then stay eligible, as under the relevance cap
+alone).
+
+**Hard rules are never shortened below their Rule section on reactive
+events.** A hard policy whose body is over the per-policy limit shows its
+`## Rule` section when that fits, with a heading that says so and points at
+the file for the rest; only when the Rule section is itself over the limit does
+it fall back to the summary line and the oversize notice. A reactive hard rule
+that loses the shared full-text budget on a capped tool or prompt event is
+*deferred*: left out of that reminder, named in a notice, not recorded, and
+shown with its text on the next event it matches once the rules that took the
+budget have been recorded. Baseline rows keep their index line (that is the
+index), and the output-ceiling fallback below keeps its summaries.
+
 **Output ceiling.** The whole reminder must fit
 `HQ_POLICY_OUTPUT_CEILING_BYTES` (default 8000; for PostToolUse this is the
-JSON envelope). When the full text does not fit, the top-ranked hard rule keeps
-its full text and every other hard rule is shortened to its summary line, with a
-notice naming the kept rule and pointing at each file. If that still does not
-fit, every hard rule is summarised, then lower-ranked lines are cut and counted
-in a notice. Cut policies are not recorded as delivered, so they stay eligible
+JSON envelope). When the full text does not fit and a hard rule matched the
+event, soft and unset summary lines are cut first, lowest-ranked first,
+and every hard rule keeps its text. If that is not enough, the top-ranked hard
+rule keeps its full text (with specific matches, as many of the specific hard
+rules as fit) and every other hard rule is shortened to its summary line, with a notice
+naming the kept rules and pointing at each file. If that still does not fit,
+every hard rule is summarised, then lower-ranked lines are cut and counted in a
+notice. Cut policies are not recorded as delivered, so they stay eligible
 for the next event. The ceiling is not raised to make content fit.
 
 **No repeats inside a window.** A hard policy delivered in full is recorded in

@@ -86,13 +86,13 @@ else
   bad "slug count out of bounds (got $slug_count)"
 fi
 
-if printf '%s' "$out" | grep -q 'company-important'; then
+if grep -q 'company-important' <<<"$out"; then
   ok "company policy retained under cap"
 else
   bad "company policy missing under cap"
 fi
 
-if printf '%s' "$out" | grep -q 'withheld'; then
+if grep -q 'withheld' <<<"$out"; then
   ok "truncation is non-silent"
 else
   bad "truncation notice missing"
@@ -112,7 +112,7 @@ out_meta="$(
   HQ_ROOT="$tmp/hq" CLAUDE_PROJECT_DIR="$tmp/hq" HQ_SESSION_POLICY_CAP=16 \
     bash "$tmp/hq/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input_meta" 2>/dev/null || true
 )"
-if printf '%s' "$out_meta" | grep -q 'company-important'; then
+if grep -q 'company-important' <<<"$out_meta"; then
   ok "company policy survives the cap when injected via session meta"
 else
   bad "company policy (session-meta) missing under cap"
@@ -140,7 +140,7 @@ out2="$(
   HQ_ROOT="$tmp/hq" CLAUDE_PROJECT_DIR="$tmp/hq" HQ_SESSION_POLICY_CAP=16 \
     bash "$tmp/hq/.claude/hooks/inject-policy-on-trigger.sh" <<<"$input2" 2>/dev/null || true
 )"
-if ! printf '%s' "$out2" | grep -q 'withheld'; then
+if ! grep -q 'withheld' <<<"$out2"; then
   ok "no truncation notice under cap"
 else
   bad "spurious truncation under cap"

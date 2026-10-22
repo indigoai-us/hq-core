@@ -79,4 +79,10 @@ grep -q 'engine is chosen at first dispatch' <<<"$injected" || fail 'conductor c
 for mapping in 'backend.*backend-dev' 'frontend.*frontend-dev' 'designer.*paper-designer' 'qa.*qa-tester' 'orchestrator.*architect'; do
   grep -Eq "$mapping" "$MODULE" || fail "role mapping is missing: $mapping"
 done
+# feedback_fa7ed7fb: children must not hand back while their own background
+# reviewers still run, so the conductor never has to chase a final read.
+grep -q 'wait for every background reviewer or subagent' "$MODULE" || fail 'dispatch prompt lets a child finish with background reviewers still running'
+for f in "$ROOT/.claude/skills/conduct/roles"/*.md; do
+  grep -q 'never hand back while a child is still running' "$f" || fail "role $f lets a child hand back with background reviewers still running"
+done
 echo 'conduct-dispatch-split.test.sh: lane-native dispatch contract passed'

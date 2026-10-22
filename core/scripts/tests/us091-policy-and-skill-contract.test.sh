@@ -141,7 +141,7 @@ if [ ! -f "$skill" ]; then
   failures=$((failures + 1))
 else
   step4="$(sed -n '/^### Step 4: Record Changes for Company Vault Sync$/,/^### Step 5:/p' "$skill")"
-  if printf '%s\n' "$step4" | grep -Eq 'git([[:space:]]+-C|[[:space:]]+(add|commit|init|log))|/\.git'; then
+  if printf '%s\n' "$step4" | grep >/dev/null -E 'git([[:space:]]+-C|[[:space:]]+(add|commit|init|log))|/\.git'; then
     echo "FAIL: company knowledge Step 4 inspects or changes Git metadata" >&2
     failures=$((failures + 1))
   else

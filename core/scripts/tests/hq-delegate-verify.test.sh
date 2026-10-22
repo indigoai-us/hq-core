@@ -170,8 +170,8 @@ OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "failed probe must exit non-zero"
-printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/" || fail "output must name the failing prefix: $OUT"
-printf '%s' "$OUT" | grep -qi "likely cause" || fail "output must state a likely cause"
+printf '%s' "$OUT" | grep >/dev/null "FAIL  knowledge/insights/" || fail "output must name the failing prefix: $OUT"
+printf '%s' "$OUT" | grep >/dev/null -i "likely cause" || fail "output must state a likely cause"
 jq -e '.status == "granted"' "$M" >/dev/null || fail "failed probe must leave status at granted"
 if grep -Eq '^(dm|files share|sync push)' "$INVOKE_LOG"; then
   fail "probe must never send a dm, share, or push: $(cat "$INVOKE_LOG")"
@@ -195,7 +195,7 @@ OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "empty prefix must fail the probe"
-printf '%s' "$OUT" | grep -q "EMPTY" || fail "empty prefix failure must say so: $OUT"
+printf '%s' "$OUT" | grep >/dev/null "EMPTY" || fail "empty prefix failure must say so: $OUT"
 unset HQ_STUB_BROWSE_EMPTY
 
 # A textual "No objects" sentinel is still an empty listing, not proof that
@@ -207,7 +207,7 @@ OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "No objects sentinel must fail the browse probe"
-printf '%s' "$OUT" | grep -q "EMPTY" || fail "No objects sentinel must be reported as empty: $OUT"
+printf '%s' "$OUT" | grep >/dev/null "EMPTY" || fail "No objects sentinel must be reported as empty: $OUT"
 unset HQ_STUB_BROWSE_EMPTY_MESSAGE
 
 # --- 2. all reachable -> verified --------------------------------------------
@@ -232,7 +232,7 @@ OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "missing referenced file must fail the probe"
-printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/notes.md" \
+printf '%s' "$OUT" | grep >/dev/null "FAIL  knowledge/insights/notes.md" \
   || fail "failure must name the missing referenced file: $OUT"
 jq -e '.status == "granted"' "$M" >/dev/null || fail "missing-file probe must not advance status"
 unset HQ_STUB_BROWSE_NO_FILE
@@ -246,7 +246,7 @@ OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "a different key with a matching basename must not satisfy the reference"
-printf '%s' "$OUT" | grep -q "FAIL  knowledge/insights/notes.md" \
+printf '%s' "$OUT" | grep >/dev/null "FAIL  knowledge/insights/notes.md" \
   || fail "exact-key mismatch must name the missing key: $OUT"
 unset HQ_STUB_BROWSE_WRONG_FILE
 
@@ -340,8 +340,8 @@ if grep -Eq '^(dm|files share|sync push|secrets share)' "$INVOKE_LOG"; then
 fi
 for needle in "alice@acme.test" "transfer" "projects/widget/" "knowledge/insights/" \
   "WIDGET_API_KEY" "TEAM/US_API_KEY" "my_api_key" "feature/widget" "DM that would be sent"; do
-  printf '%s' "$OUT" | grep -qF "$needle" || fail "dry-run plan missing: $needle"
+  printf '%s' "$OUT" | grep >/dev/null -F "$needle" || fail "dry-run plan missing: $needle"
 done
-printf '%s' "$OUT" | grep -q "write" || fail "dry-run plan must show permissions"
+printf '%s' "$OUT" | grep >/dev/null "write" || fail "dry-run plan must show permissions"
 
 echo "hq-delegate-verify: ok (probe gates the DM, named failures with causes, resume without re-grant, empty=fail, shared-parent browsed once, transient-empty retried, large-listing early-match no SIGPIPE, dry run fully inert)"

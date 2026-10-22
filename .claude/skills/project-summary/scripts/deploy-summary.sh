@@ -38,7 +38,7 @@ cd "$HQ_ROOT"
 
 # Resolve the hq-deploy API base with the same chain + public default as the
 # canonical resolver .claude/skills/deploy/scripts/resolve-deploy-api.sh:
-#   $HQ_DEPLOY_API -> manifest services.hq-deploy.endpoint -> https://api.indigo-hq.com.
+#   $HQ_DEPLOY_API -> manifest services.hq-deploy.endpoint -> https://api.hq.work.
 # Kept inline here (rather than calling the resolver) so this script stays
 # self-contained, but the public default is intentionally identical so the two
 # stay reconciled. Never hardcode a tenant-specific host inline.
@@ -49,7 +49,7 @@ API="${HQ_DEPLOY_API:-}"
 if [ -z "$API" ] && [ -f companies/manifest.yaml ]; then
   API="$(awk -F'endpoint:[ \t]*' '/hq-deploy/{f=1} f&&/endpoint:/{gsub(/[ \t\r]+$/,"",$2); print $2; exit}' companies/manifest.yaml 2>/dev/null)"
 fi
-API="${API:-https://api.indigo-hq.com}"
+API="${API:-https://api.hq.work}"
 [ -d "$BUILD_DIR" ] || fail "build_dir_missing:$BUILD_DIR"
 [ -f "$BUILD_DIR/index.html" ] || fail "no_index_html:$BUILD_DIR"
 
@@ -75,6 +75,19 @@ if [ -n "$CO_SLUG" ] && [ -f companies/manifest.yaml ]; then
   ' companies/manifest.yaml)"
 fi
 
+# A company deck must land in that company's hq-deploy org and behind that
+# company's gate. Every API call names the org with X-Org-Slug, so a member of
+# several companies never deploys into whichever org the token defaults to
+# (feedback a9fdc51c: a metabolic-skincare deck landed in another tenant's org,
+# the company gate was refused with ACCESS_POLICY_COMPANY_MISMATCH, and the
+# script fell back to a password gate). A company deck never falls back to a
+# password gate; only personal / no-company decks use one.
+ORG_HDR=()
+if [ -n "$CO_SLUG" ]; then
+  [ -n "$CO_UID" ] || fail "company_uid_unresolved:$CO_SLUG (no cloud_uid in companies/manifest.yaml; nothing deployed)"
+  ORG_HDR=(-H "X-Org-Slug: $CO_SLUG")
+fi
+
 is_2xx() { [[ "$1" =~ ^2[0-9]{2}$ ]]; }
 
 # Gate proof polls the API and the anonymous edge. The edge caches each app's
@@ -90,13 +103,13 @@ GATE_SLEEP="${HQ_DEPLOY_GATE_SLEEP_SECS:-5}"
 # and the script exited before gating: two internal pages were public for
 # minutes. The id now comes from the lookup or from the create response, and
 # the gate is applied and proven BEFORE any content is uploaded.
-APP_JSON="$(HQ_DEPLOY_JWT="$JWT" "$DEPLOY/list-apps.sh" --api "$API" --name "$APP_NAME")" \
+APP_JSON="$(HQ_DEPLOY_JWT="$JWT" "$DEPLOY/list-apps.sh" --api "$API" --name "$APP_NAME" ${CO_SLUG:+--header "X-Org-Slug: $CO_SLUG"})" \
   || fail "app_list_failed"
 APP_EXISTED=false
 if [ -n "$APP_JSON" ]; then
   APP_EXISTED=true
 else
-  R="$(curl -sS -w $'\n%{http_code}' -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  R="$(curl -sS -w $'\n%{http_code}' -X POST -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} -H "Content-Type: application/json" \
         -d "{\"name\":\"$APP_NAME\",\"type\":\"static\"}" "$API/api/apps" || true)"
   is_2xx "${R##*$'\n'}" || fail "app_create_failed"
   APP_JSON="${R%$'\n'*}"
@@ -109,7 +122,7 @@ APP_URL="$(printf '%s' "$APP_JSON" | jq -r '.url // empty' 2>/dev/null || true)"
 
 read_app_state() {
   local response status
-  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" \
+  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} \
     "$API/api/apps/$APP_ID" || true)"
   status="${response##*$'\n'}"
   is_2xx "$status" || return 1
@@ -127,7 +140,7 @@ read_app_state() {
 # the API shape was mocked.
 read_access_policy() {
   local response status
-  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" \
+  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} \
     "$API/api/apps/$APP_ID/access-policy" || true)"
   status="${response##*$'\n'}"
   is_2xx "$status" || return 1
@@ -176,7 +189,7 @@ verify_gate() {
 set_company_gate() {
   local status
   status="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$API/api/apps/$APP_ID/access-policy" \
-    -H "Authorization: Bearer $JWT" \
+    -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} \
     ${HQ_PRO_JWT:+-H "X-HQ-Pro-Authorization: Bearer $HQ_PRO_JWT"} \
     -H "Content-Type: application/json" \
     -d "{\"mode\":\"company\",\"companyUid\":\"$CO_UID\",\"users\":[],\"groups\":[]}" || true)"
@@ -186,7 +199,7 @@ set_company_gate() {
 set_password_gate() {
   local status
   status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$API/api/apps/$APP_ID/access-mode" \
-    -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} -H "Content-Type: application/json" \
     -d "{\"mode\":\"password\",\"password\":\"$PW\"}" || true)"
   is_2xx "$status"
 }
@@ -196,7 +209,7 @@ set_password_gate() {
 take_down() {
   local status
   status="$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH "$API/api/apps/$APP_ID" \
-    -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} -H "Content-Type: application/json" \
     -d '{"active":false}' || true)"
   is_2xx "$status"
 }
@@ -211,11 +224,12 @@ if [ -n "$CO_UID" ]; then
   if set_company_gate && verify_gate company "$CO_UID"; then
     MODE=company
   else
-    echo "ERR: company_gate_unverified; trying password fallback" >&2
+    rm -f "$TB"
+    fail "company_gate_unverified (nothing uploaded; a company deck never falls back to a password gate)"
   fi
 fi
 if [ -z "$MODE" ]; then
-  # Password fallback (personal / no resolvable company, or unproven company gate).
+  # Password gate: personal / no-company decks only.
   PW="$("$DEPLOY/password-helper.sh" gen)"
   if set_password_gate && verify_gate password; then
     MODE=password
@@ -235,14 +249,14 @@ if [ "$APP_EXISTED" = true ] && [ -n "$APP_URL" ]; then
 fi
 
 # 6. Upload via presigned S3 URL, then complete.
-D="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+D="$(curl -s -X POST -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} -H "Content-Type: application/json" \
       -d "{\"appSlug\":\"$SUB\",\"manifest\":{\"files\":[],\"size\":$SZ,\"sha256\":\"$SHA\"}}" \
       "$API/api/deploys")"
 DID="$(echo "$D" | jq -r '.deployId')"
 PRES="$(echo "$D" | jq -r '.presignedUrl')"
 [ -n "$PRES" ] && [ "$PRES" != "null" ] || { rm -f "$TB"; fail "deploy_init_failed"; }
 curl -s -X PUT -H "Content-Type: application/gzip" --data-binary @"$TB" "$PRES" -o /dev/null
-LIVE="$(curl -s -X POST -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+LIVE="$(curl -s -X POST -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} -H "Content-Type: application/json" \
         -d "{\"appSlug\":\"$SUB\"}" "$API/api/deploys/$DID/complete" | jq -r '.url')"
 rm -f "$TB"
 # A complete call that went live without returning a url is still behind the

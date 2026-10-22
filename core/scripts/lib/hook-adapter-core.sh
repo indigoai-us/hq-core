@@ -149,16 +149,17 @@ hqad_policy_prefilter_check() {
     if [ "$stale" -eq 0 ] && [ "${#existing_dirs[@]}" -gt 0 ]; then
       # Keep edits detectable without 6,000 shell-level stat checks. Prune
       # nested directories to match the prior top-level *.md glob.
+      # One find over every policy root (it used to be one find process per
+      # root, three or four per tool event). -mindepth/-maxdepth 1 keeps the
+      # top-level *.md scope; GNU and BSD find both support them.
       local changed_policy_files=""
-      for dir in "${existing_dirs[@]}"; do
-        if ! changed_policy_files="$(find "$dir" -type d ! -path "$dir" -prune -o \
-          -type f -name '*.md' ! -name 'example-policy.md' ! -name 'README.md' \
-          ! -name '* *' ! -name '*.sync-conflict-*.md' ! -name '*.conflict-*' \
-          -newer "$cache" -print -quit 2>/dev/null)"; then
-          return 0
-        fi
-        [ -z "$changed_policy_files" ] || { stale=1; break; }
-      done
+      if ! changed_policy_files="$(find "${existing_dirs[@]}" -mindepth 1 -maxdepth 1 \
+        -type f -name '*.md' ! -name 'example-policy.md' ! -name 'README.md' \
+        ! -name '* *' ! -name '*.sync-conflict-*.md' ! -name '*.conflict-*' \
+        -newer "$cache" -print -quit 2>/dev/null)"; then
+        return 0
+      fi
+      [ -z "$changed_policy_files" ] || stale=1
     fi
     if [ "$stale" -eq 0 ]; then
       IFS= read -r line < "$cache" || line=""
@@ -294,6 +295,36 @@ hqad_policy_prefilter_check() {
   return 0
 }
 
+# hqad_prefilter_file_present <root> <file-prefilter> <session-id>
+# A file prefilter names a path under the HQ root that must exist for the hook
+# to have anything to do. `{session_id}` expands to the event's session id and
+# `*` is a shell glob, so a hook keyed on per-session state (a monitor inbox,
+# a lanes link, an enforcement state file) can be skipped without starting it
+# and its jq parse. A placeholder that cannot be resolved (no session id, or
+# one with characters outside [A-Za-z0-9._-]) proves nothing, so the hook runs.
+hqad_prefilter_file_present() {
+  local root="$1" file="$2" sid="$3" candidate nullglob_was=0
+  local IFS=$'\n'
+  if [[ "$file" == *"{session_id}"* ]]; then
+    case "$sid" in ''|.|..|*[!A-Za-z0-9._-]*) return 0 ;; esac
+    file="${file//\{session_id\}/$sid}"
+  fi
+  case "$file" in
+    *\**)
+      shopt -q nullglob && nullglob_was=1
+      shopt -s nullglob
+      for candidate in "$root"/$file; do
+        [ -e "$candidate" ] || continue
+        [ "$nullglob_was" -eq 1 ] || shopt -u nullglob
+        return 0
+      done
+      [ "$nullglob_was" -eq 1 ] || shopt -u nullglob
+      return 1
+      ;;
+  esac
+  [ -e "$root/$file" ]
+}
+
 # hqad_registry_prefilter_match sets HQAD_PREFILTER_REASON and returns 1 only
 # when a valid prefilter proves that a hook cannot match this event. Invalid
 # regex syntax reports a named error and keeps the guard in the dispatch set.
@@ -317,7 +348,7 @@ hqad_registry_prefilter_match() {
         invalid_prefilter=1
         ;;
       *)
-        if [ ! -e "$root/$file" ]; then
+        if ! hqad_prefilter_file_present "$root" "$file" "$session_id"; then
           [ -n "$skip_reason" ] || skip_reason="file"
         fi
         ;;
@@ -589,6 +620,12 @@ hqad_prefilter_payload_fields() {
     | map(if type == "string" then hq_flat else "" end)
     | @sh
   ' 2>/dev/null)" || return 1
+  # jq.exe on Windows ends the line with CR; see the read loops below.
+  # Check the last byte instead of using ${encoded%$'\r'}: bash suffix
+  # removal tries every position, which is quadratic on a long payload.
+  if [ "${encoded: -1}" = $'\r' ]; then
+    encoded="${encoded:0:${#encoded}-1}"
+  fi
   printf '%s' "$encoded"
 }
 
@@ -811,6 +848,9 @@ hqad_iter_registry() {
     return 0
   }
   while IFS= read -r line || [ -n "$line" ]; do
+    # Native Windows jq.exe writes CRLF in -r output. @sh records always end
+    # in a quote, so a line-end CR is never data; drop it before eval.
+    line="${line%$'\r'}"
     case "$line" in
       "hqad-reg "*) decoded="${line#hqad-reg }" ;;
       *) continue ;;
@@ -906,6 +946,9 @@ hqad_iter_settings() {
   # later row from partially dispatching settings and then duplicating guards
   # through the fallback set.
   while IFS= read -r line || [ -n "$line" ]; do
+    # Native Windows jq.exe writes CRLF in -r output. @sh records always end
+    # in a quote, so a line-end CR is never data; drop it before eval.
+    line="${line%$'\r'}"
     [ -n "$line" ] || continue
     case "$line" in
       "hqad-record "*) decoded="${line#hqad-record }"; want=2 ;;
@@ -943,6 +986,9 @@ EOF
   hqad_iter_registry "$event" "$tool" "$payload"
 
   while IFS= read -r line || [ -n "$line" ]; do
+    # Native Windows jq.exe writes CRLF in -r output. @sh records always end
+    # in a quote, so a line-end CR is never data; drop it before eval.
+    line="${line%$'\r'}"
     [ -n "$line" ] || continue
     case "$line" in
       "hqad-exec "*) decoded="${line#hqad-exec }"; exec_form=1 ;;

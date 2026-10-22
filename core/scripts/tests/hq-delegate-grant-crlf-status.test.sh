@@ -55,7 +55,7 @@ OUTPUT="$(PATH="$TMP/bin:$PATH" REAL_JQ="$REAL_JQ" TEST_OSTYPE=msys TEST_MSYSTEM
 RC=$?
 set -e
 [ "$RC" -eq 2 ] || fail "building status with CRLF jq output should reach confirmation (exit 2), got $RC: $OUTPUT"
-printf '%s' "$OUTPUT" | grep -qF 'confirmation required' \
+printf '%s' "$OUTPUT" | grep >/dev/null -F 'confirmation required' \
   || fail "building status with CRLF jq output should print the confirmation diagnostic: $OUTPUT"
 case "$OUTPUT" in *$'\r'*) fail "jq CRLF must not leak into the printed write-prefix plan: $OUTPUT" ;; esac
 

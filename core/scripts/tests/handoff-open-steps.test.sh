@@ -55,6 +55,32 @@ HQ_ROOT="$FX" bash "$S" close 'T-custom-steps#2' >/dev/null || fail "close by th
 rc=0; HQ_ROOT="$FX" bash "$S" close ns-nope-9 >/dev/null 2>&1 || rc=$?; [ "$rc" = 3 ] || fail "unknown custom id rc $rc"
 rc=0; HQ_ROOT="$FX" bash "$S" close 'T-custom-steps#7' >/dev/null 2>&1 || rc=$?; [ "$rc" = 3 ] || fail "out-of-range thread#n rc $rc"
 
+echo "[4c] thread file name differs from thread_id: list and close resolve by thread_id (feedback_9e0d68a2)"
+jq -n '{thread_id:"T-20260903-000000-auto", version:1, type:"checkpoint", created_at:"2026-09-03T00:00:00Z", updated_at:"2026-09-03T00:00:00Z", conversation_summary:"s", next_steps:["auto one","auto two"], metadata:{title:"auto", tags:[], company:["co-one"]}}' > "$FX/workspace/threads/T-autosave-renamed.json"
+h="$FX/workspace/threads/T-autosave-renamed.json"
+HQ_ROOT="$FX" bash "$S" list | grep -q '^T-20260903-000000-auto#1  auto one' || fail "synthetic id must use thread_id: $(HQ_ROOT="$FX" bash "$S" list)"
+HQ_ROOT="$FX" bash "$S" close 'T-20260903-000000-auto#1' >/dev/null || fail "close by thread_id when file name differs"
+[ "$(jq -r '.next_steps[0].status' "$h")" = done ] || fail "thread_id close: $(cat "$h")"
+[ "$(jq -r '.next_steps[0].id' "$h")" = 'T-20260903-000000-auto#1' ] || fail "written id must use thread_id"
+HQ_ROOT="$FX" bash "$S" close 'T-autosave-renamed#2' >/dev/null || fail "file-name thread#n form still accepted"
+[ "$(jq -r '.next_steps[1].status' "$h")" = done ] || fail "file-name form: $(cat "$h")"
+
+echo "[4d] bulk close: several ids, --ids-file, stdin; summary and rc 3 when one is missing (feedback_9e0d68a2)"
+mk T-bulk co-one '["b1","b2","b3","b4","b5"]'
+k="$FX/workspace/threads/T-bulk.json"
+HQ_ROOT="$FX" bash "$S" close 'T-bulk#1' 'T-bulk#2' --as dropped --note bulk >/dev/null || fail "multi-id close rc"
+[ "$(jq -r '[.next_steps[0,1].status] | join(",")' "$k")" = dropped,dropped ] || fail "multi-id: $(cat "$k")"
+[ "$(jq -r '.next_steps[1].note' "$k")" = bulk ] || fail "note on bulk"
+printf '# comment\n\nT-bulk#3\r\n  T-bulk#4  \n' > "$FX/ids.txt"
+out="$(HQ_ROOT="$FX" bash "$S" close --ids-file "$FX/ids.txt")" || fail "ids-file rc"
+grep -q '2 of 2 step(s) -> done; 0 not found' <<<"$out" || fail "summary: $out"
+[ "$(jq -r '[.next_steps[2,3].status] | join(",")' "$k")" = done,done ] || fail "ids-file: $(cat "$k")"
+rc=0; printf 'T-bulk#5\nT-bulk#99\n' | HQ_ROOT="$FX" bash "$S" close --ids-file - >"$FX/o" 2>/dev/null || rc=$?
+[ "$rc" = 3 ] || fail "missing id in bulk must exit 3, got $rc"
+[ "$(jq -r '.next_steps[4].status' "$k")" = done ] || fail "valid id in a partly bad batch still closes"
+grep -q '1 of 2' "$FX/o" || fail "partial summary: $(cat "$FX/o")"
+rc=0; HQ_ROOT="$FX" bash "$S" close --ids-file "$FX/nope.txt" >/dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || fail "unreadable ids-file rc $rc"
+
 echo "[5] handoff-finalize normalization jq (same expression) assigns ids and open status"
 norm="$(jq -c --arg tid T-X '
   to_entries | map(.key as $k |

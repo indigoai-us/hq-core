@@ -189,7 +189,7 @@ else
   fail "capabilities line count=$line_count (want 7)"
 fi
 for k in "${expected_keys[@]}"; do
-  if printf '%s\n' "$caps" | grep -q "^${k}="; then
+  if printf '%s\n' "$caps" | grep >/dev/null "^${k}="; then
     pass "capabilities has $k"
   else
     fail "capabilities missing key $k"

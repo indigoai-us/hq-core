@@ -124,6 +124,14 @@ hook-launched shell often does not see them:
 
 ```bash
 export PATH="$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/git-shim:$HOME/.local/bin:$PATH"
+# Windows (Git Bash): the toolchain is %LOCALAPPDATA%\IndigoHQ\toolchain, with
+# node.exe in node/ and npm shims in npm-prefix/. Without this every tool
+# reports MISSING even when the managed toolchain is installed.
+if [ -n "${LOCALAPPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
+  for d in node npm-prefix npm-global/bin; do
+    [ -d "$(cygpath -u "$LOCALAPPDATA")/IndigoHQ/toolchain/$d" ] && export PATH="$(cygpath -u "$LOCALAPPDATA")/IndigoHQ/toolchain/$d:$PATH"
+  done
+fi
 for t in node npm qmd hq git yq jq; do printf '%-5s %s\n' "$t" "$(command -v $t || echo MISSING)"; done
 ```
 

@@ -181,7 +181,7 @@ reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\",\"FOO\":\"bar\"},\"other\":1}"
 stub hq 'echo 5.108.2'   # hq is on ambient PATH ($BIN) but not on the settings PATH
 out="$(run_hook "$COREUTILS_PATH")"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-path-updated>' \
   || fail "off-settings-PATH hq should emit <hq-cli-path-updated>, got: $out"
 # settings.local.json now carries $BIN on env.PATH...
 case ":$(local_path):" in *":$BIN:"*) : ;; *) fail "auto-fix did not add $BIN to env.PATH: $(local_path)";; esac
@@ -208,7 +208,7 @@ stub pnpm "case \"\$*\" in
   *) exit 0 ;;
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-path-updated>' \
   || fail "install+fix should emit <hq-cli-path-updated>, got: $out"
 case ":$(local_path):" in *":$TMP/pnpm-prefix/bin:"*) : ;; *) fail "install did not add global bin to env.PATH: $(local_path)";; esac
 [ ! -f "$ROOTDIR/workspace/.hq-cli-ensure/last-attempt.stamp" ] \
@@ -234,7 +234,7 @@ stub pnpm "case \"\$*\" in
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
 [ -f "$TMP/stale-repaired" ] || fail "a stale hq binary did not trigger repair"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-path-updated>' \
   || fail "stale hq repair should emit <hq-cli-path-updated>, got: $out"
 case ":$(local_path):" in *":$TMP/prefix/bin:"*) : ;; *) fail "repaired hq bin was not preferred on settings PATH";; esac
 rm -f "$BIN/npm" "$BIN/pnpm"
@@ -261,7 +261,7 @@ out="$(run_hook "$COREUTILS_PATH" HQ_ENSURE_CLI_VERSION_TIMEOUT=1)"
 elapsed="$(( $(date +%s) - start ))"
 [ ! -f "$TMP/untrusted-executed" ] || fail "repo-controlled settings hq must never execute"
 [ "$elapsed" -lt 4 ] || fail "untrusted settings hq was executed (took ${elapsed}s)"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-path-updated>' \
   || fail "an untrusted settings hq should trigger repair, got: $out"
 rm -f "$BIN/npm" "$BIN/pnpm"
 
@@ -270,7 +270,7 @@ reset_root
 write_local_settings "{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}"
 rm -f "$BIN/hq" "$BIN/npm" "$BIN/pnpm"
 out="$(run_hook "$COREUTILS_PATH")"
-printf '%s' "$out" | grep -q '<hq-cli-missing>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-missing>' \
   || fail "npm missing should emit <hq-cli-missing>, got: $out"
 
 # --- 6. cooldown: fresh stamp -> no reinstall, still surfaces remedy ------
@@ -285,7 +285,7 @@ stub npm "case \"\$*\" in
 esac"
 out="$(run_hook "$COREUTILS_PATH" 2> "$TMP/stderr")"
 grep -q 'INSTALL_RAN' "$TMP/stderr" && fail "cooldown active must NOT re-run install"
-printf '%s' "$out" | grep -q '<hq-cli-missing>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-missing>' \
   || fail "cooldown active + hq missing should still emit remedy, got: $out"
 rm -f "$BIN/npm" "$BIN/pnpm"
 
@@ -298,7 +298,7 @@ stub hq 'echo 5.108.2'
 chmod 0500 "$ROOTDIR/.claude"
 out="$(run_hook "$COREUTILS_PATH")"
 chmod 0700 "$ROOTDIR/.claude"   # restore so the trap can clean up
-printf '%s' "$out" | grep -q '<hq-cli-not-on-path>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-not-on-path>' \
   || fail "unwritable settings should emit <hq-cli-not-on-path>, got: $out"
 rm -f "$BIN/hq"
 
@@ -347,7 +347,7 @@ rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "5.108.1 repair must exit 0 (advisory), got rc=$rc"
 [ -f "$TMP/below-floor-install" ] || fail "5.108.1 must trigger cooldown-limited install"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-path-updated>' \
   || fail "5.108.1 repair should emit <hq-cli-path-updated>, got: $out"
 rm -f "$BIN/npm" "$BIN/pnpm"
 
@@ -367,7 +367,7 @@ out="$(run_hook "$BIN:$NOTIMEOUT" \
   HQ_ENSURE_CLI_INSTALL_CMD='sleep 5' HQ_ENSURE_CLI_TIMEOUT=1)"
 elapsed="$(( $(date +%s) - start ))"
 [ "$elapsed" -lt 6 ] || fail "watchdog did not bound the install (took ${elapsed}s, expected under 6s including the re-probe)"
-printf '%s' "$out" | grep -q '<hq-cli-missing>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-missing>' \
   || fail "bounded-but-failed install should emit remedy, got: $out"
 rm -f "$BIN/npm"
 
@@ -381,7 +381,7 @@ stub pnpm "case \"\$*\" in
 esac"
 out="$(run_hook "$COREUTILS_PATH")"
 [ ! -f "$TMP/lock-marker" ] || fail "install ran despite a held lock (concurrent race)"
-printf '%s' "$out" | grep -q '<hq-cli-missing>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-missing>' \
   || fail "locked-out session should still emit remedy, got: $out"
 rm -f "$BIN/pnpm"
 
@@ -403,7 +403,7 @@ esac"
 out="$(run_hook "$COREUTILS_PATH")"
 [ -f "$TMP/pnpm-ran" ] || fail "pnpm present must drive CLI restore, got: $out"
 [ ! -f "$TMP/npm-ran" ] || fail "pnpm present must not fall back to npm"
-printf '%s' "$out" | grep -q '<hq-cli-path-updated>' \
+printf '%s' "$out" | grep >/dev/null '<hq-cli-path-updated>' \
   || fail "pnpm restore should emit <hq-cli-path-updated>, got: $out"
 case ":$(local_path):" in *":$TMP/pnpm-prefix/bin:"*) : ;; *) fail "pnpm restore did not add pnpm bin to env.PATH: $(local_path)";; esac
 printf '%s\n' 'PASS: truly missing hq still restores through pnpm'

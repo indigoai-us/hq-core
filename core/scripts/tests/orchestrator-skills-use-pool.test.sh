@@ -73,7 +73,7 @@ for f in "$EXEC_TASK" "$RUN_INTERACTIVE"; do
   else
     scan_text="$(cat "$f")"
   fi
-  if printf '%s\n' "$scan_text" | grep -qE 'conduct-(pool|inbox|link|reap|lane-status|lane-launch|lane-wait)\.sh'; then
+  if printf '%s\n' "$scan_text" | grep >/dev/null -E 'conduct-(pool|inbox|link|reap|lane-status|lane-launch|lane-wait)\.sh'; then
     fail "$(basename "$f") still calls a conduct helper"
   fi
 done

@@ -49,13 +49,14 @@ run_budget() {
 
 run_budget_expect_rejection() {
   local base_sha="$1" source_root="$2" expected_text="$3" budget_test="${4:-$BUDGET_TEST}"
-  local path_prefix="${5:-}" output
+  local path_prefix="${5:-}" fixture_sha="${6:-$POST_READ_BUILTIN_BASE_SHA}"
+  local fixture_root="${7:-$POST_READ_FIXTURE}" output
   if output="$(PATH="${path_prefix:+$path_prefix:}$PATH" \
     HQ_HOOK_PERF_BASE_SHA="$base_sha" \
     HQ_HOOK_PERF_SOURCE_ROOT="$source_root" \
     HQ_HOOK_PERF_FIXTURE_GIT_ROOT="$ROOT" \
-    HQ_HOOK_PERF_FIXTURE_BASE_SHA="$POST_READ_BUILTIN_BASE_SHA" \
-    HQ_HOOK_PERF_FIXTURE_BASE_ROOT="$POST_READ_FIXTURE" \
+    HQ_HOOK_PERF_FIXTURE_BASE_SHA="$fixture_sha" \
+    HQ_HOOK_PERF_FIXTURE_BASE_ROOT="$fixture_root" \
     HQ_HOOK_PERF_REAL_GIT="$REAL_GIT" timeout 240s bash "$budget_test" 2>&1)"; then
     printf '%s\n' "$output"
     fail "expected process-budget rejection with base $base_sha and source $source_root"
@@ -102,10 +103,22 @@ copy_hook_sources() {
   done
 }
 
+copy_fixture_hook_sources() { # <fixture-root> <source-root>
+  local fixture_root="$1" source_root="$2" relative
+  mkdir -p "$source_root"
+  for relative in "${SOURCE_PATHS[@]}"; do
+    mkdir -p "$source_root/${relative%/*}"
+    cp "$fixture_root/$relative" "$source_root/$relative"
+  done
+}
+
 replace_stdin_read_with_cat() {
   local source_file="$1" replacement_file="$1.c194-mutant" line replaced=0
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ "$line" = "master_read_all INPUT" ]; then
+    # HEAD reads stdin via master_read_all; the 995eb534 (#878) fixture
+    # sources use the inline read builtin. Either is the one stdin read.
+    if [ "$line" = "master_read_all INPUT" ] \
+      || [ "$line" = "IFS= read -r -d '' INPUT || true" ]; then
       printf '%s\n' 'INPUT="$(cat)"' >> "$replacement_file"
       replaced=$((replaced + 1))
     else
@@ -182,8 +195,15 @@ fi
 exec "$HQ_HOOK_PERF_REAL_GIT" "$@"
 SH
 chmod +x "$LEGACY_GIT_SHIM_DIR/git"
+# The equal-count case must be measured against the 995eb534 sources
+# themselves, not HEAD: once HEAD starts fewer processes than that baseline
+# (PR #1543), a HEAD candidate passes the old gate legitimately and no longer
+# proves that the gate rejects an equal count.
+legacy_comment_source="$TMP_DIR/legacy-comment-source"
+copy_fixture_hook_sources "$POST_READ_FIXTURE" "$legacy_comment_source"
+printf '\n# c194 no-op source change fixture\n' >> "$legacy_comment_source/.claude/hooks/master-hook.sh"
 legacy_output="$(run_budget_expect_rejection "$POST_READ_BUILTIN_BASE_SHA" \
-  "$comment_source" 'did not reduce execve count' "$BASE_BUDGET_TEST" \
+  "$legacy_comment_source" 'did not reduce execve count' "$BASE_BUDGET_TEST" \
   "$LEGACY_GIT_SHIM_DIR" 2>&1)"
 legacy_line="$(budget_line "$legacy_output" PreToolUse)"
 legacy_base_execs="$(count_from_line "$legacy_line" base)"
@@ -218,12 +238,24 @@ mutant_head_candidate_execs="$(count_from_line "$mutant_head_line" candidate)"
   || fail "base=HEAD did not expose the stdin-read regression ($mutant_head_line)"
 echo "PASS: stdin-read revert fails base=HEAD no-regression ($mutant_head_line)"
 
-mutant_pre_output="$(run_budget "$PRE_READ_BUILTIN_SHA" "$stdin_mutant_source" "$PRE_READ_FIXTURE")"
+# The strict pre-#878 proof compares the #878 sources with the revert applied,
+# not HEAD: HEAD has since cut other processes (PR #1543), so a HEAD mutant
+# still starts fewer processes than the pre-#878 base and would hide the revert.
+stdin_mutant_fixture_source="$TMP_DIR/stdin-mutant-fixture-source"
+copy_fixture_hook_sources "$POST_READ_FIXTURE" "$stdin_mutant_fixture_source"
+replace_stdin_read_with_cat "$stdin_mutant_fixture_source/.claude/hooks/master-hook.sh"
+# HEAD's budget test pins HEAD's dispatcher structure (MASTER_NOW_MS reads), so
+# the 995eb534 sources run under the 995eb534 budget test against the checked-in
+# pre-#878 fixture. That gate requires a reduction for changed sources; the
+# revert must lose the #878 gain and be rejected.
+mutant_pre_output="$(run_budget_expect_rejection "$PRE_READ_BUILTIN_SHA" \
+  "$stdin_mutant_fixture_source" 'did not reduce execve count' "$BASE_BUDGET_TEST" \
+  "$LEGACY_GIT_SHIM_DIR" "$PRE_READ_BUILTIN_SHA" "$PRE_READ_FIXTURE" 2>&1)"
 printf '%s\n' "$mutant_pre_output"
-mutant_pre_line="$(budget_line "$mutant_pre_output" SessionStart)"
+mutant_pre_line="$(budget_line "$mutant_pre_output" PreToolUse)"
 if strict_session_reduction_passes "$mutant_pre_line"; then
   fail "stdin-read revert survived the pre-#878 strict assertion ($mutant_pre_line)"
 fi
 mutant_pre_base_execs="$(count_from_line "$mutant_pre_line" base)"
 mutant_pre_candidate_execs="$(count_from_line "$mutant_pre_line" candidate)"
-echo "PASS: stdin-read revert fails pre-#878 strict SessionStart (execve base=$mutant_pre_base_execs candidate=$mutant_pre_candidate_execs)"
+echo "PASS: stdin-read revert fails the pre-#878 strict reduction gate (PreToolUse execve base=$mutant_pre_base_execs candidate=$mutant_pre_candidate_execs)"

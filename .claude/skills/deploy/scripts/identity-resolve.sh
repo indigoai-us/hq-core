@@ -78,6 +78,10 @@ DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
 _DEPLOY_TMPDIR="${TMPDIR:-/tmp}"
 _DEPLOY_TMPDIR="${_DEPLOY_TMPDIR%/}"
 LOGIN_LOCK="$_DEPLOY_TMPDIR/hq-deploy-login-attempted-$DEPLOY_USER_KEY"
+# The one-shot login lock expires so a lock left by an earlier session cannot
+# block every later deploy. Minutes; non-numeric or zero falls back to 10.
+LOGIN_LOCK_TTL_MIN="${HQ_DEPLOY_LOGIN_LOCK_TTL_MIN:-10}"
+case "$LOGIN_LOCK_TTL_MIN" in ''|*[!0-9]*|0) LOGIN_LOCK_TTL_MIN=10 ;; esac
 
 emit() { printf '%s\n' "$1"; exit 0; }
 err()  { printf '%s\n' "{\"status\":\"login_required\",\"reason\":\"$1\"}"; exit 0; }
@@ -218,29 +222,41 @@ if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then
   MINT_STDERR_FILE=$(mktemp "$_DEPLOY_TMPDIR/hq-auth-refresh.XXXXXX" 2>/dev/null || true)
   [ -n "$MINT_STDERR_FILE" ] || machine_mint_failed
   trap 'if [ -n "${MINT_STDERR_FILE:-}" ] && [ -f "$MINT_STDERR_FILE" ]; then rm -f "$MINT_STDERR_FILE"; fi' EXIT
-  MINT_OK=1
-  if command -v hq-auth-refresh >/dev/null 2>&1; then
-    HQ_AUTH_MIN_VALIDITY_SECONDS="$MACHINE_MIN_VALIDITY_SECONDS" \
-      hq-auth-refresh >/dev/null 2>"$MINT_STDERR_FILE" || MINT_OK=0
-  elif command -v npx >/dev/null 2>&1; then
-    HQ_AUTH_MIN_VALIDITY_SECONDS="$MACHINE_MIN_VALIDITY_SECONDS" \
-      npx -y --package=@indigoai-us/hq-cli hq-auth-refresh \
-        >/dev/null 2>"$MINT_STDERR_FILE" || MINT_OK=0
-  else
-    err "machine_mint_unavailable"
-  fi
-
+  run_machine_mint() {
+    MINT_OK=1
+    if command -v hq-auth-refresh >/dev/null 2>&1; then
+      HQ_AUTH_MIN_VALIDITY_SECONDS="$1" \
+        hq-auth-refresh >/dev/null 2>"$MINT_STDERR_FILE" || MINT_OK=0
+    elif command -v npx >/dev/null 2>&1; then
+      HQ_AUTH_MIN_VALIDITY_SECONDS="$1" \
+        npx -y --package=@indigoai-us/hq-cli hq-auth-refresh \
+          >/dev/null 2>"$MINT_STDERR_FILE" || MINT_OK=0
+    else
+      err "machine_mint_unavailable"
+    fi
+  }
   # hq-auth-refresh writes the canonical cache after either a healthy machine
   # cache hit or a fresh USER_PASSWORD_AUTH mint. Never accept a stale file if
   # the mint command itself failed.
-  if [ "$MINT_OK" -ne 1 ] || [ ! -f "$MACHINE_TOKEN_FILE" ]; then
-    machine_mint_failed
-  fi
-  IDT=$(token_field "$MACHINE_TOKEN_FILE" "idToken")
-  EXP=$(token_field "$MACHINE_TOKEN_FILE" "expiresAt")
-  [ -n "$EXP" ] || EXP=0
-  if [ -n "$IDT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
-    emit_machine_ok "$IDT" "$EXP"
+  try_machine_cache() {
+    [ "$MINT_OK" -eq 1 ] && [ -f "$MACHINE_TOKEN_FILE" ] || return 1
+    IDT=$(token_field "$MACHINE_TOKEN_FILE" "idToken")
+    EXP=$(token_field "$MACHINE_TOKEN_FILE" "expiresAt")
+    [ -n "$EXP" ] || EXP=0
+    if [ -n "$IDT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+      emit_machine_ok "$IDT" "$EXP"
+    fi
+    return 1
+  }
+  run_machine_mint "$MACHINE_MIN_VALIDITY_SECONDS"
+  try_machine_cache || true
+  # A cached machine token the daemon left behind can be stale, rejected, or
+  # fail its in-place refresh (feedback_1eaa57d7). Before failing, retry once
+  # with a one-day validity floor so hq-auth-refresh skips that cache and
+  # mints a fresh token from the machine credentials.
+  if [ "$MACHINE_MIN_VALIDITY_SECONDS" -lt 86400 ]; then
+    run_machine_mint 86400
+    try_machine_cache || true
   fi
   machine_mint_failed
 fi
@@ -305,7 +321,9 @@ if [ -n "$TF" ]; then
 fi
 
 # 4. Login path (no token, or refresh failed) — one-shot per session
-if [ -e "$LOGIN_LOCK" ]; then
+# A lock older than the TTL is stale: fall through and take it again.
+if [ -e "$LOGIN_LOCK" ] \
+  && [ -z "$(find "$LOGIN_LOCK" -prune -mmin +"$LOGIN_LOCK_TTL_MIN" 2>/dev/null)" ]; then
   err "login_already_attempted"
 fi
 if ! command -v npx >/dev/null 2>&1 && ! command -v hq >/dev/null 2>&1; then
@@ -321,7 +339,8 @@ else
   npx -y --package=@indigoai-us/hq-cli hq auth login >/dev/null 2>&1 &
 fi
 LOGIN_PID=$!
-( sleep 180 && kill "$LOGIN_PID" 2>/dev/null ) &
+# Detach the timer from stdout so a caller capturing it does not wait 180s.
+( sleep 180 && kill "$LOGIN_PID" 2>/dev/null ) >/dev/null 2>&1 &
 KILLER_PID=$!
 wait "$LOGIN_PID" 2>/dev/null
 kill "$KILLER_PID" 2>/dev/null

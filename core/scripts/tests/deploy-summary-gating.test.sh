@@ -63,7 +63,7 @@ EOF
   cat > "$case_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -uo pipefail
-url="" method="" out="" wfmt="" auth=0 args=("$@")
+url="" method="" out="" wfmt="" auth=0 org="-" args=("$@")
 for ((i=0; i < ${#args[@]}; i++)); do
   a="${args[$i]}"
   case "$a" in
@@ -71,11 +71,16 @@ for ((i=0; i < ${#args[@]}; i++)); do
     -o) out="${args[$((i+1))]}" ;;
     -w) wfmt="${args[$((i+1))]}" ;;
     *Authorization:*) auth=1 ;;
+    "X-Org-Slug: "*) org="${a#X-Org-Slug: }" ;;
     http://*|https://*) url="$a" ;;
   esac
 done
 [ -n "$method" ] || method=GET
 printf '%s %s\n' "$method" "$url" >> "$MOCK_DIR/calls"
+printf '%s %s %s\n' "$method" "$url" "$org" >> "$MOCK_DIR/orgs"
+# The default-API case runs against the public default; serve it from the same
+# mock once the real URL is logged above.
+[ -z "${MOCK_DEFAULT_API:-}" ] || url="${url/#https:\/\/api.hq.work/http://api.test}"
 next_value() {
   local name="$1" count_file="$MOCK_DIR/$1.count" values="$MOCK_DIR/$1.values" n value
   n=0; [ -f "$count_file" ] && n="$(cat "$count_file")"
@@ -162,7 +167,7 @@ run_case() {
   out="$(env PATH="$case_dir/bin:$PATH" MOCK_DIR="$case_dir" PUT_STATUS=204 PASSWORD_STATUS=200 \
     HQ_DEPLOY_API='http://api.test' HQ_DEPLOY_GATE_ATTEMPTS=3 HQ_DEPLOY_GATE_SLEEP_SECS=0 HOME="$case_dir" "$@" \
     bash "$case_dir/.claude/skills/project-summary/scripts/deploy-summary.sh" \
-    "$case_dir/build" summary acme 2>&1)"
+    "$case_dir/build" summary ${CASE_CO-acme} 2>&1)"
   code=$?
   set -e
   [ "$code" -eq "$expected_code" ] || fail "$name exit=$code, expected $expected_code: $out"
@@ -183,7 +188,7 @@ assert_no_upload() {
   [ ! -f "$1/completed" ] || fail "deploy was completed"
 }
 assert_no_mode() {
-  printf '%s' "$CASE_OUT" | grep -q '^MODE=' && fail "a gate mode was reported: $CASE_OUT"
+  printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=' && fail "a gate mode was reported: $CASE_OUT"
   return 0
 }
 
@@ -195,8 +200,8 @@ printf '%s\n' '{"apps":[{"name":"summary","subdomain":"summary","id":"app-1","ur
   > "$TMP/page2/pages/cur2.json"
 printf '%s\n' '{"apps":[],"nextCursor":null}' > "$TMP/page2/pages/cur3.json"
 run_case page2 0
-printf '%s' "$CASE_OUT" | grep -q '^MODE=company$' || fail "expected company mode: $CASE_OUT"
-printf '%s' "$CASE_OUT" | grep -q '^GATE=302$' || fail "expected GATE=302: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "expected company mode: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null '^GATE=302$' || fail "expected GATE=302: $CASE_OUT"
 grep -qF 'GET http://api.test/api/apps?limit=100&cursor=cur2' "$CASE_DIR/calls" || fail "page 2 was not requested"
 grep -qF 'cursor=cur3' "$CASE_DIR/calls" && fail "kept paging after the app was found"
 [ ! -f "$CASE_DIR/created" ] || fail "created a duplicate app although it exists on page 2"
@@ -210,7 +215,7 @@ jq -nc '{apps: [range(0;100) | {name: "other-\(.)", subdomain: "other-\(.)", id:
   > "$TMP/create/pages/first.json"
 printf '%s\n' '{"apps":[{"name":"else","subdomain":"else","id":"x"}],"nextCursor":null}' > "$TMP/create/pages/cur2.json"
 run_case create 0
-printf '%s' "$CASE_OUT" | grep -q '^MODE=company$' || fail "expected company mode: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "expected company mode: $CASE_OUT"
 [ -f "$CASE_DIR/created" ] || fail "app was not created"
 [ "$(grep -c 'GET http://api.test/api/apps?' "$CASE_DIR/calls")" = 2 ] || fail "expected exactly one full list pass (2 pages)"
 assert_before "$CASE_DIR" 'POST http://api.test/api/apps' 'PUT http://api.test/api/apps/app-1/access-policy'
@@ -221,24 +226,60 @@ echo "[3] a failed list page fails closed: no create, no upload"
 make_fixture "$TMP/list-fail"
 printf '%s\n' '{"apps":[],"nextCursor":"cur2"}' > "$TMP/list-fail/pages/first.json"
 run_case list-fail 1 LIST_FAIL_CURSOR=cur2
-printf '%s' "$CASE_OUT" | grep -q 'ERR: app_list_failed' || fail "missing app_list_failed: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: app_list_failed' || fail "missing app_list_failed: $CASE_OUT"
 [ ! -f "$CASE_DIR/created" ] || fail "a list failure was treated as 'not found'"
 assert_no_upload "$CASE_DIR"; assert_no_mode
 pass "list failure is not 'not found'"
 
-echo "[4] company PUT 400 falls back to a password gate, still before upload"
-run_case put-400 0 PUT_STATUS=400
-printf '%s' "$CASE_OUT" | grep -q '^MODE=password$' || fail "PUT 400 did not use password fallback: $CASE_OUT"
-printf '%s' "$CASE_OUT" | grep -q '^PASSWORD=test-password$' || fail "password not reported: $CASE_OUT"
-assert_before "$CASE_DIR" 'POST http://api.test/api/apps/app-1/access-mode' 'PUT http://upload.test/archive'
-pass "password fallback is applied before upload"
+echo "[4] company PUT 400 (wrong org) fails closed: no password fallback, nothing uploaded"
+# feedback a9fdc51c: the company PUT returned 400 ACCESS_POLICY_COMPANY_MISMATCH
+# and the script put a company deck behind a password gate in another org.
+run_case put-400 1 PUT_STATUS=400
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: company_gate_unverified (nothing uploaded; a company deck never falls back to a password gate)' \
+  || fail "PUT 400 did not fail closed: $CASE_OUT"
+grep -qF 'POST http://api.test/api/apps/app-1/access-mode' "$CASE_DIR/calls" && fail "a password gate was set on a company deck"
+printf '%s' "$CASE_OUT" | grep >/dev/null '^PASSWORD=' && fail "a password was reported for a company deck: $CASE_OUT"
+assert_no_upload "$CASE_DIR"; assert_no_mode
+pass "company gate failure fails closed without a password fallback"
+
+echo "[4b] every hq-deploy API call of a company deck names the company org"
+run_case org-header 0
+printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "expected company mode: $CASE_OUT"
+api_calls="$(grep -c ' http://api.test/' "$CASE_DIR/orgs")"
+[ "$api_calls" -gt 0 ] || fail "no API calls recorded"
+missing="$(grep ' http://api.test/' "$CASE_DIR/orgs" | grep -v ' acme$' || true)"
+[ -z "$missing" ] || fail "API calls without X-Org-Slug: acme: $missing"
+grep -v ' http://api.test/' "$CASE_DIR/orgs" | grep -q ' acme$' && fail "org header leaked to a non-API host: $(cat "$CASE_DIR/orgs")"
+pass "X-Org-Slug: acme on all $api_calls API calls, none on upload or edge"
+
+echo "[4c] company slug with no cloud_uid fails closed before any API call"
+make_fixture "$TMP/no-uid"
+printf 'companies:\n  acme:\n    name: Acme\n' > "$TMP/no-uid/companies/manifest.yaml"
+run_case no-uid 1
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: company_uid_unresolved:acme' || fail "missing cloud_uid did not fail closed: $CASE_OUT"
+[ ! -s "$CASE_DIR/calls" ] || fail "API was called for an unresolved company: $(cat "$CASE_DIR/calls")"
+assert_no_mode
+pass "unresolved company never deploys"
 
 echo "[5] gate failure before upload: nothing is uploaded"
 run_case gate-fail 1 PUT_STATUS=400 PASSWORD_STATUS=400
-printf '%s' "$CASE_OUT" | grep -q 'ERR: access_gate_unverified (nothing uploaded)' || fail "missing fail-closed error: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: company_gate_unverified (nothing uploaded' || fail "missing fail-closed error: $CASE_OUT"
 assert_no_upload "$CASE_DIR"; assert_no_mode
 grep -qF 'POST http://api.test/api/deploys' "$CASE_DIR/calls" && fail "a deploy was initiated without a gate"
 pass "no gate -> no upload"
+
+echo "[5b] personal deck: password gate before upload, no org header"
+CASE_CO="" run_case personal 0
+printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=password$' || fail "personal deck did not use a password gate: $CASE_OUT"
+assert_before "$CASE_DIR" 'POST http://api.test/api/apps/app-1/access-mode' 'PUT http://upload.test/archive'
+grep -q ' acme$' "$CASE_DIR/orgs" && fail "personal deck sent a company org header"
+pass "personal deck uses the password gate"
+
+echo "[5c] personal deck whose password gate fails: nothing is uploaded"
+CASE_CO="" run_case personal-gate-fail 1 PASSWORD_STATUS=400
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: access_gate_unverified (nothing uploaded)' || fail "missing fail-closed error: $CASE_OUT"
+assert_no_upload "$CASE_DIR"; assert_no_mode
+pass "personal deck with no gate -> no upload"
 
 echo "[6] API state never reflects the gate (stale): nothing is uploaded"
 run_case stale-state 1 STATE_FORCE='{"accessMode":"public","passwordProtected":false}'
@@ -249,7 +290,7 @@ echo "[7] existing app whose edge still serves it publicly: nothing is uploaded"
 make_fixture "$TMP/edge-stale"
 printf '200\n' > "$TMP/edge-stale/gate.values"
 run_case edge-stale 1
-printf '%s' "$CASE_OUT" | grep -q 'ERR: access_gate_not_at_edge' || fail "missing edge error: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: access_gate_not_at_edge' || fail "missing edge error: $CASE_OUT"
 assert_no_upload "$CASE_DIR"; assert_no_mode
 pass "upload waits for the edge to redirect"
 
@@ -261,7 +302,7 @@ run_case post-fail 1
 [ -f "$CASE_DIR/uploaded" ] || fail "fixture should reach upload (new app, no pre-upload edge check)"
 [ -f "$CASE_DIR/taken_down" ] || fail "app was not taken down: $(cat "$CASE_DIR/calls")"
 assert_before "$CASE_DIR" 'POST http://api.test/api/deploys/deploy-1/complete' 'PATCH http://api.test/api/apps/app-1'
-printf '%s' "$CASE_OUT" | grep -q 'ERR: access_gate_unverified_after_upload; app taken down' || fail "missing takedown error: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: access_gate_unverified_after_upload; app taken down' || fail "missing takedown error: $CASE_OUT"
 assert_no_mode
 pass "unproven live gate -> takedown, nothing reported as gated"
 
@@ -270,7 +311,7 @@ make_fixture "$TMP/takedown-fail"
 printf '%s\n' '{"apps":[],"nextCursor":null}' > "$TMP/takedown-fail/pages/first.json"
 printf '200\n' > "$TMP/takedown-fail/gate.values"
 run_case takedown-fail 1 TAKEDOWN_STATUS=500
-printf '%s' "$CASE_OUT" | grep -q 'TAKEDOWN FAILED' || fail "takedown failure not surfaced: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null 'TAKEDOWN FAILED' || fail "takedown failure not surfaced: $CASE_OUT"
 assert_no_mode
 pass "takedown failure is surfaced"
 
@@ -279,9 +320,18 @@ make_fixture "$TMP/propagation"
 printf '%s\n' '{"apps":[],"nextCursor":null}' > "$TMP/propagation/pages/first.json"
 printf '200\n302\n' > "$TMP/propagation/gate.values"
 run_case propagation 0
-printf '%s' "$CASE_OUT" | grep -q '^MODE=company$' || fail "propagated company gate was not accepted: $CASE_OUT"
+printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "propagated company gate was not accepted: $CASE_OUT"
 [ "$(cat "$CASE_DIR/gate.count")" = 2 ] || fail "expected a retry after anonymous edge response 200"
 [ ! -f "$CASE_DIR/taken_down" ] || fail "took down a gated app"
 pass "post-upload verify waits for edge propagation"
+
+echo "[11] no HQ_DEPLOY_API and no manifest endpoint: the public default https://api.hq.work is used"
+run_case default-api 0 HQ_DEPLOY_API= MOCK_DEFAULT_API=1
+printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "default-API deploy did not finish gated: $CASE_OUT"
+grep -qF 'GET https://api.hq.work/api/apps?limit=100' "$CASE_DIR/calls" || fail "app list did not go to https://api.hq.work: $(cat "$CASE_DIR/calls")"
+grep -qF 'PUT https://api.hq.work/api/apps/app-1/access-policy' "$CASE_DIR/calls" || fail "gate did not go to https://api.hq.work"
+grep -qF 'POST https://api.hq.work/api/deploys/deploy-1/complete' "$CASE_DIR/calls" || fail "completion did not go to https://api.hq.work"
+grep -q 'api\.indigo-hq\.com\|http://api\.test' "$CASE_DIR/calls" && fail "a request skipped the public default: $(cat "$CASE_DIR/calls")"
+pass "fresh install deploys through https://api.hq.work"
 
 echo "ALL PASS: deploy-summary-gating"

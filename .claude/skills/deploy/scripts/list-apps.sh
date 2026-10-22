@@ -13,7 +13,7 @@
 # Usage:
 #   list-apps.sh --api <base> [--name <app-name>] [deploy-api-request args...]
 #
-#   --api <base>     hq-deploy API base, e.g. https://api.indigo-hq.com
+#   --api <base>     hq-deploy API base, e.g. https://api.hq.work
 #   --name <name>    stop at the first app whose .name matches and print that
 #                    app object; print nothing (exit 0) when no page has it
 #   anything else    passed through to deploy-api-request.sh on every page

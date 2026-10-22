@@ -68,6 +68,36 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 _wt_args=("$@")
 _wt_arg_count=$#
+# A repo-relative --source (for example repos/private/x) resolves against the
+# caller's cwd first, then against HQ_ROOT, so the documented HQ-relative form
+# works from any cwd. Absolute paths and unresolvable values pass through.
+_wt_resolve_source() {
+  case "$1" in
+    ''|/*|[A-Za-z]:[\\/]*) printf '%s' "$1"; return ;;
+  esac
+  if [ -d "$1" ]; then
+    (cd "$1" && pwd)
+  elif [ -d "$HQ_ROOT/$1" ]; then
+    (cd "$HQ_ROOT/$1" && pwd)
+  else
+    printf '%s' "$1"
+  fi
+}
+for ((_wt_index = 0; _wt_index < _wt_arg_count; _wt_index++)); do
+  case "${_wt_args[_wt_index]}" in
+    --source)
+      if [ $((_wt_index + 1)) -lt "$_wt_arg_count" ]; then
+        _wt_index=$((_wt_index + 1))
+        _wt_args[_wt_index]="$(_wt_resolve_source "${_wt_args[_wt_index]}")"
+      fi
+      break
+      ;;
+    --source=*)
+      _wt_args[_wt_index]="--source=$(_wt_resolve_source "${_wt_args[_wt_index]#--source=}")"
+      break
+      ;;
+  esac
+done
 if command -v cygpath >/dev/null 2>&1; then
   for ((_wt_index = 0; _wt_index < _wt_arg_count; _wt_index++)); do
     if [ "${_wt_args[_wt_index]}" = "--source" ]; then

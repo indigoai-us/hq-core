@@ -406,19 +406,19 @@ for runtime in codex grok; do
   . "$ADAPTER_CORE"
   candidate_payload="$(payload "$runtime" 'sleep 45')"
   records="$(hqad_iter_settings PreToolUse Bash "$candidate_payload")"
-  if printf '%s' "$records" | grep -Fq 'hq-monitor-guard.sh'; then ok "$runtime adapter dispatches the guard from the registry"; else bad "$runtime adapter dispatches the guard from the registry"; fi
-  if printf '%s' "$records" | grep -Fq 'hq-monitor-session-hook.sh' && printf '%s' "$records" | grep -Fq $'master\tPreToolUse'; then ok "$runtime adapter keeps drain and master dispatch"; else bad "$runtime adapter keeps drain and master dispatch"; fi
+  if printf '%s' "$records" | grep >/dev/null -F 'hq-monitor-guard.sh'; then ok "$runtime adapter dispatches the guard from the registry"; else bad "$runtime adapter dispatches the guard from the registry"; fi
+  if printf '%s' "$records" | grep >/dev/null -F 'hq-monitor-session-hook.sh' && printf '%s' "$records" | grep >/dev/null -F $'master\tPreToolUse'; then ok "$runtime adapter keeps drain and master dispatch"; else bad "$runtime adapter keeps drain and master dispatch"; fi
   records="$(hqad_iter_settings UserPromptSubmit ANY '{}')"
-  if printf '%s' "$records" | grep -Fq 'hq-monitor-session-hook.sh'; then ok "$runtime adapter dispatches prompt drain from the registry"; else bad "$runtime adapter dispatches prompt drain from the registry"; fi
+  if printf '%s' "$records" | grep >/dev/null -F 'hq-monitor-session-hook.sh'; then ok "$runtime adapter dispatches prompt drain from the registry"; else bad "$runtime adapter dispatches prompt drain from the registry"; fi
   records="$(hqad_iter_settings SessionStart ANY '{}')"
-  if printf '%s' "$records" | grep -Fq 'hq-monitor-session-start.sh'; then ok "$runtime adapter dispatches SessionStart guidance from the registry"; else bad "$runtime adapter dispatches SessionStart guidance from the registry"; fi
+  if printf '%s' "$records" | grep >/dev/null -F 'hq-monitor-session-start.sh'; then ok "$runtime adapter dispatches SessionStart guidance from the registry"; else bad "$runtime adapter dispatches SessionStart guidance from the registry"; fi
   records="$(hqad_iter_settings Stop ANY '{}')"
-  if ! printf '%s' "$records" | grep -Fq 'hq-monitor-session-hook.sh'; then ok "$runtime adapter skips Stop waiter"; else bad "$runtime adapter skips Stop waiter"; fi
+  if ! printf '%s' "$records" | grep >/dev/null -F 'hq-monitor-session-hook.sh'; then ok "$runtime adapter skips Stop waiter"; else bad "$runtime adapter skips Stop waiter"; fi
 done
 export HQ_ROOT="$ROOT" HQ_CHECKPOINT_RUNTIME=claude
 . "$ADAPTER_CORE"
 records="$(hqad_iter_settings Stop ANY '{}')"
-if printf '%s' "$records" | grep -Fq 'hq-monitor-session-hook.sh'; then ok 'Claude-compatible settings retain Stop waiter'; else bad 'Claude-compatible settings retain Stop waiter'; fi
+if printf '%s' "$records" | grep >/dev/null -F 'hq-monitor-session-hook.sh'; then ok 'Claude-compatible settings retain Stop waiter'; else bad 'Claude-compatible settings retain Stop waiter'; fi
 
 echo '[9] the real provider adapters carry registry denies and drains'
 codex_block_payload="$(jq -nc --arg root "$TMP_ROOT" --arg sid codex-adapter-session '{hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$root,session_id:$sid,tool_input:{command:"sleep 45"}}')"

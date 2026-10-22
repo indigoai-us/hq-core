@@ -45,7 +45,7 @@ Pick `company` when the user asks for org/company/internal restriction. Pick `pr
 - Detect intent from the invocation: `--comments`/`--comments on` (or "with comments", "turn comments on") → on; `--comments off` (or "turn comments off") → off; otherwise leave unset.
 - Wire it in Phase C once `appId` is known and **before** `POST /api/deploys/:id/complete` (see C.2.6): `PATCH /api/apps/:id {commentsEnabled: true|false}`. The widget is injected during `…/complete`, which reads the flag at that moment.
 - **Off by default.** Without the flag `commentsEnabled` stays unset and the injector is a strict no-op — the served HTML is byte-identical to a pre-feature deploy (no widget markup, no script, no network calls). The flag takes effect on the *next* deploy's `…/complete`.
-- **Static deploys only.** Injection runs in the static `…/complete` path. `app` (`api/*`) deploys and Next.js/Hono live deploys do not get the widget. The widget resolves the app from the page's `{sub}.indigo-hq.com` origin, so comments work on the platform URL, not on a custom domain.
+- **Static deploys only.** Injection runs in the static `…/complete` path. `app` (`api/*`) deploys and Next.js/Hono live deploys do not get the widget. The widget resolves the app from the page's origin on the platform domain, so comments work on the platform URL, not on a custom domain. Turning comments on pins the URL the API returns for the app to that platform host, so share the returned URL: it is `{sub}.indigo-hq.com` until the platform default moves to `hq.work`.
 - **Turning comments off** (`commentsEnabled: false`) keeps every stored comment. The viewer-facing routes answer `403 COMMENTS_DISABLED`; a widget still present in already-served HTML removes itself on load, and a viewer's post is refused with "Comments are turned off for this page". The owner routes below keep working. Turning comments back on shows the same thread again.
 
 **Reading and answering comments as the owner (no browser needed).** When the user asks to see, answer, or resolve comments on a deploy, use the owner routes. They take the same `Authorization: Bearer $JWT` + `X-Org-Slug` headers as every other Phase C call (send them through `deploy-api-request.sh`), work on gated deploys, and work whether `commentsEnabled` is on or off. Only the app owner or an org admin can call them (others get `403 FORBIDDEN`).
@@ -84,7 +84,7 @@ Do **not** use `/api/apps/:id/comments` for this. That route serves the in-page 
 - Detect intent: `--events`/`--events on`, or a request for a site that "notifies me", "the agent answers", "visitors can ask/wish/vote and you respond" → on; `--events off` → off; otherwise leave unset.
 - Wire it once `appId` is known (C.2.7): `site-events.sh enable --app "$APP_ID" --org "$ORG_SLUG"` (or `--personal`). Unlike comments, nothing is injected at deploy time; the page calls the API itself, so the flag takes effect at once.
 - **Off by default.** With `eventsEnabled` unset or false, `POST /site-events` answers `403 EVENTS_DISABLED` and nothing is stored. Turning events off keeps stored events; the owner routes keep working.
-- **Platform URL only.** The API finds the app from the browser's `Origin` (`https://{sub}.indigo-hq.com`). Turning events on pins the app's public URL to the platform host, and the page must call the API from there. A custom domain will not work.
+- **Platform URL only.** The API finds the app from the browser's `Origin` on the platform domain (`https://{sub}.indigo-hq.com` until the platform default moves to `hq.work`). Turning events on pins the app's public URL, as the API returns it, to the platform host, and the page must call the API from there. A custom domain will not work.
 - **Access gates still apply.** On a password, company, selected, or private deploy, every visitor route needs the visitor's `hq-access` cookie for that app (`403 EVENT_ACCESS_REQUIRED` otherwise), and the event records the verified viewer as `actor`. Public deploys record no actor.
 
 Visitor routes (called by the page with `fetch(..., {credentials: 'include'})`; no app id, the `Origin` decides). `$API` is the deploy API base resolved in 1e; write that value into the page rather than assuming production:
@@ -133,7 +133,7 @@ The engine is **three phases**, structured by data-dependency. Independent work 
 | `.claude/skills/deploy/scripts/sensitivity-check.sh <path> [user_msg]` | Classifies artifact sensitivity (filename-list grep, no content surfaces) | `{"sensitive":bool,"trigger":string\|null}` |
 | `.claude/skills/deploy/scripts/guardrails-check.sh <output_dir>` | Caps + builds tarball | `{"pass":bool,"reason":string\|null,"tarball_path":string,...}` |
 | `.claude/skills/deploy/scripts/deploy-api-request.sh` | Makes a checked Phase C API/S3 request | validated body on stdout; safe failure diagnostic on stderr |
-| `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name]` | Injects OG/Twitter preview tags; with no page image, points og:image at hq-deploy's generated card (`https://api.<domain>/api/public/apps/<slug>/card.jpg`), using a blank `_hq-og.png` placeholder only when `base_url` is empty; on pages that already have tags, rewrites a legacy `card.png` image URL to `card.jpg` in place | `{"injected":int,"rewritten":int,"image":string,"changed":bool}` |
+| `.claude/skills/deploy/scripts/og-inject.sh <output_dir> [base_url] [app_name] [api_base]` | Injects OG/Twitter preview tags; `base_url` is the app URL the API returned. With no page image, points og:image at hq-deploy's generated card (`<api_base>/api/public/apps/<slug>/card.jpg`, or `https://api.<rest of the base_url host>` when `api_base` is not given), using a blank `_hq-og.png` placeholder only when `base_url` is empty; on pages that already have tags, rewrites a legacy `card.png` image URL to `card.jpg` in place | `{"injected":int,"rewritten":int,"image":string,"changed":bool}` |
 | `.claude/skills/deploy/scripts/password-helper.sh` | `gen` / `announce` / `persist` / `lookup` | password text, or persisted entry |
 | `.claude/skills/deploy/scripts/route-host.sh` | `hosts` / `merge` / `record`: local snapshots of live static sites, so a new artifact can be added as a route on an existing app | one JSON line |
 
@@ -214,7 +214,7 @@ fi
 | Thing | How |
 |-------|-----|
 | Deploy context | Company context via `$ORG_SLUG`, or explicit personal context when the signed-in user has no companies |
-| API endpoint | `$HQ_DEPLOY_API` → manifest `services.hq-deploy.endpoint` → `https://api.indigo-hq.com` (always-on public default) — via `resolve-deploy-api.sh` |
+| API endpoint | `$HQ_DEPLOY_API` → manifest `services.hq-deploy.endpoint` → `https://api.hq.work` (always-on public default) — via `resolve-deploy-api.sh` |
 | App name | `package.json` `name` → current directory name, slug-cased |
 
 Resolve the deploy API base **concretely, up front** — this must produce a non-empty
@@ -224,9 +224,16 @@ and always falls back to the public default, so a fresh install (no manifest, no
 
 ```bash
 API="$(.claude/skills/deploy/scripts/resolve-deploy-api.sh)"
-# $API is now guaranteed non-empty (public default https://api.indigo-hq.com when
+# $API is now guaranteed non-empty (public default https://api.hq.work when
 # nothing else is configured). Every Phase C hq-deploy call uses "$API/api/...".
 ```
+
+`https://api.indigo-hq.com` is the same API and keeps serving, so a manifest or
+`$HQ_DEPLOY_API` that still names it, and older installs whose default it is,
+keep working. Apps on the shared platform distribution serve on both
+`https://{sub}.hq.work` and `https://{sub}.indigo-hq.com`, and old
+indigo-hq.com links keep working. The link the skill prints is always the URL
+the API returns, which stays on indigo-hq.com until the platform switch.
 
 #### Org resolution chain
 
@@ -723,7 +730,7 @@ APPS_JSON=$(HQ_DEPLOY_JWT="$JWT" .claude/skills/deploy/scripts/list-apps.sh --ap
 
 #### Reuse an existing deploy (route mode, static only)
 
-Before creating a new app, check whether this artifact belongs on a site that is already live. When it does, add it as a route on that app (`https://<host>.indigo-hq.com/<route>/`) instead of creating another app. Related pages such as dated reports, a series of briefs, or documentation sections then share one link and one access gate.
+Before creating a new app, check whether this artifact belongs on a site that is already live. When it does, add it as a route on that app (`<host URL>/<route>/`, where the host URL is the one the API returns) instead of creating another app. Related pages such as dated reports, a series of briefs, or documentation sections then share one link and one access gate.
 
 hq-deploy has no merge upload. `POST /api/deploys/:id/complete` deletes every live file of the app and then uploads the new tarball, so adding a route means re-uploading the host's full current site with the artifact placed under `/<route>/`. hq-deploy also has no API for downloading a live site. `route-host.sh record` (run after every successful static upload, see "Static upload") therefore keeps a local snapshot of each static site this skill publishes under `~/.hq/deploy-hosts/<org>/<subdomain>/`, indexed in `~/.hq/deploy-routes.json`, and route mode merges against that snapshot. A site with no local snapshot (deployed from another machine, by the `hq-deploy` CLI, or before this step existed) cannot take a route here without losing its current pages.
 
@@ -759,7 +766,7 @@ if [ "$DEPLOY_TYPE" = "static" ] && [ "$NEW_APP" != "true" ]; then
   CANDIDATES=$(jq -c --argjson apps "$APPS_JSON" '
     [ (.hosts // [])[] | select(.siteExists == true) | . as $h
       | ($apps.apps[] | select(.id == $h.appId and .type == "static")) as $a
-      | $h + { name: $a.name, url: $a.url,
+      | $h + { name: $a.name, url: ($a.url // $h.url),
                liveAccess: (if $a.privateMode then "private"
                             elif ($a.accessMode // "") != "" then $a.accessMode
                             elif $a.passwordProtected then "password"
@@ -831,6 +838,7 @@ if [ -n "$HOST" ] && [ -z "$ROUTE_BLOCKER" ]; then
     ROUTE_MODE=true
     APP_ID="$HOST_APP_ID"
     APP_SUBDOMAIN=$(jq -r '.subdomain' <<<"$HOST")
+    APP_URL=$(jq -r '.url // empty' <<<"$HOST")
     HOST_ACCESS_MODE=$(jq -r '.liveAccess' <<<"$HOST")
     ROUTE_URL_PATH=$(jq -r '.route' <<<"$MERGE_JSON")   # e.g. /2026-09-29/
     # C.3 and C.4 key off SENSITIVE. The host keeps its own gate, so turn them
@@ -869,6 +877,7 @@ If keeping the pages makes the site too large, ask whether to replace the whole 
 if [ "$ROUTE_MODE" != "true" ]; then
 APP_ID=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '.apps[] | select(.name == $name) | .id' | head -1)
 APP_SUBDOMAIN=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '[.apps[] | select(.name == $name)][0].subdomain // empty')
+APP_URL=$(echo "$APPS_JSON" | jq -r --arg name "$APP_NAME" '[.apps[] | select(.name == $name)][0].url // empty')
 APP_EXISTED=false
 [ -n "$APP_ID" ] && APP_EXISTED=true
 
@@ -880,11 +889,35 @@ if [ -z "$APP_ID" ]; then
     --expect '(.id | type == "string" and length > 0)') || exit 1
   APP_ID=$(echo "$APP_RESPONSE" | jq -r '.id')
   APP_SUBDOMAIN=$(echo "$APP_RESPONSE" | jq -r '.subdomain')
+  APP_URL=$(echo "$APP_RESPONSE" | jq -r '.url // empty')
 fi
 fi
 # Subdomain anchors both the upload (appSlug) and the preview-tag base URL; fall
 # back to the app-name slug if the API response didn't surface one.
 if [ -z "$APP_SUBDOMAIN" ] || [ "$APP_SUBDOMAIN" = "null" ]; then APP_SUBDOMAIN="$APP_NAME"; fi
+# APP_URL is the app's public URL as the API returned it. The API knows the
+# serving domain (indigo-hq.com until the platform switch, hq.work after it, or
+# the company's own base domain), so every link and check below uses it. Never
+# build a link on a hardcoded hq.work: before the switch the API still returns
+# indigo-hq.com, and the skill must print what the API returns.
+APP_URL="${APP_URL%/}"
+[ "$APP_URL" = "null" ] && APP_URL=""
+# Lookup or create gave no url: read the app once more from the API.
+if [ -z "$APP_URL" ] && [ -n "$APP_ID" ]; then
+  APP_URL=$(deploy_request app-url-read --method GET --url "$API/api/apps/$APP_ID" \
+    --expect 'type == "object"' 2>/dev/null | jq -r '.url // empty' 2>/dev/null) || APP_URL=""
+  APP_URL="${APP_URL%/}"
+fi
+# Last resort, only when the API returned no url at all: build it on
+# $HQ_DEPLOY_DOMAIN, else on the domain the API uses for this org's other apps,
+# else on indigo-hq.com (the API's platform domain until the switch; it keeps
+# serving after it).
+if [ -z "$APP_URL" ]; then
+  PLATFORM_DOMAIN="${HQ_DEPLOY_DOMAIN:-}"
+  [ -n "$PLATFORM_DOMAIN" ] || PLATFORM_DOMAIN=$(echo "$APPS_JSON" | jq -r \
+    '[.apps[].url // empty | capture("^https://[^./]+\\.(?<d>[^/:]+)") | .d][0] // empty' 2>/dev/null)
+  APP_URL="https://${APP_SUBDOMAIN}.${PLATFORM_DOMAIN:-indigo-hq.com}"
+fi
 ```
 
 #### C.3 — Wire access mode BEFORE upload (sensitive only)
@@ -918,12 +951,13 @@ HQ_PRO_REQUEST_HEADERS=()
 # separate shell invocations it will be unset here — and an unset URL must not
 # silently turn the exposure warning into "artifact is live at  and its status
 # is unknown", which reads as reassuring noise at the exact moment the operator
-# needs a real answer. Fall back to reconstructing it from the subdomain, and
-# if even that is unavailable, say plainly that the state is unverified.
+# needs a real answer. Fall back to the API-returned APP_URL, then to
+# reconstructing it from the subdomain, and if even that is unavailable, say
+# plainly that the state is unverified.
 report_gate_exposure_and_fail() {
   local why="${1}" live_code url
-  url="${LIVE_URL:-}"
-  # Same construction as BASE_URL in the upload block — keep them in step.
+  url="${LIVE_URL:-${APP_URL:-}}"
+  # Last resort only, as in "Find or create the app": never a hardcoded hq.work.
   if [ -z "$url" ] && [ -n "${APP_SUBDOMAIN:-}" ]; then
     url="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
   fi
@@ -1013,7 +1047,7 @@ The edge caches each app's access state for up to 60 seconds. An existing app th
 
 ```bash
 if [ "$SENSITIVE" = "true" ] && [ "$ROUTE_MODE" != "true" ] && [ "$APP_EXISTED" = "true" ]; then
-  PRE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
+  PRE_URL="${APP_URL:-https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}}"
   PRE_CODE=""
   for _ in $(seq 1 12); do
     PRE_CODE=$(curl -sS -o /dev/null -w '%{http_code}' "$PRE_URL/" || true)
@@ -1029,12 +1063,12 @@ fi
 
 #### Inject social preview tags (static deploys only)
 
-Before tarring for upload, add Open Graph / Twitter Card tags so a shared link unfurls with a real card (title + description + 1200x630 image) instead of a bare URL. This is what makes Slack/iMessage/Twitter render a rich preview. Runs only for `DEPLOY_TYPE=static`, and never overwrites a page's author-supplied `og:title`. The base URL is derived from the resolved subdomain so `og:url`/`og:image` are absolute. If injection changes the output, the tarball is rebuilt so the deploy manifest's `size` + `sha256` match the bytes actually uploaded.
+Before tarring for upload, add Open Graph / Twitter Card tags so a shared link unfurls with a real card (title + description + 1200x630 image) instead of a bare URL. This is what makes Slack/iMessage/Twitter render a rich preview. Runs only for `DEPLOY_TYPE=static`, and never overwrites a page's author-supplied `og:title`. The base URL is the app URL the API returned (`$APP_URL`), so `og:url`/`og:image` are absolute and on the app's real serving domain. The generated card comes from the same API the deploy uses (`$API/api/public/apps/<slug>/card.jpg`). If injection changes the output, the tarball is rebuilt so the deploy manifest's `size` + `sha256` match the bytes actually uploaded.
 
 ```bash
 if [ "$DEPLOY_TYPE" = "static" ]; then
-  BASE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
-  OG_JSON=$(.claude/skills/deploy/scripts/og-inject.sh "$OUTPUT_DIR" "$BASE_URL" "$APP_NAME")
+  BASE_URL="${APP_URL:-https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}}"
+  OG_JSON=$(.claude/skills/deploy/scripts/og-inject.sh "$OUTPUT_DIR" "$BASE_URL" "$APP_NAME" "$API")
   if [ "$(echo "$OG_JSON" | jq -r '.changed')" = "true" ]; then
     NEW_TAR=$(mktemp -t hq-deploy-tar.XXXXXX)
     if ! tar -czf "$NEW_TAR" -C "$OUTPUT_DIR" . 2>/dev/null; then
@@ -1091,7 +1125,7 @@ LIVE_URL=$(echo "$COMPLETE_RESPONSE" | jq -r '.url')
 ROUTE_RECORD_JSON=$(.claude/skills/deploy/scripts/route-host.sh record --org "${ORG_SLUG:--}" \
   --subdomain "$APP_SUBDOMAIN" --app-id "$APP_ID" \
   --access-mode "${HOST_ACCESS_MODE:-${ACCESS_MODE:-public}}" \
-  --deploy-id "$DEPLOY_ID" --tarball "$TARBALL_PATH" 2>/dev/null) || ROUTE_RECORD_JSON=""
+  --deploy-id "$DEPLOY_ID" --tarball "$TARBALL_PATH" --url "$LIVE_URL" 2>/dev/null) || ROUTE_RECORD_JSON=""
 
 # What C.4.5 records. A merged route or kept-pages tree is a temp folder
 # removed below, so those deploys are recorded from the snapshot just taken.
@@ -1135,7 +1169,7 @@ if [ "$DEPLOY_TYPE" = "app" ]; then
     "${DB_ACK_FORM[@]}" \
     --form-file "file=$TARBALL_PATH" \
     --expect '(.deployId | type == "string" and length > 0) and (.statusUrl | type == "string" and length > 0)') || exit 1
-  LIVE_URL="https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}"
+  LIVE_URL="${APP_URL:-https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}}"
   UPLOAD_OK=true
   RECORD_SOURCE="$OUTPUT_DIR"
   rm -f "$TARBALL_PATH"
@@ -1406,7 +1440,7 @@ take_down_and_fail() {
 }
 
 if [ "$SENSITIVE" = "true" ] && [ "$ROUTE_MODE" != "true" ]; then
-  VERIFY_URL="${LIVE_URL:-https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}}"
+  VERIFY_URL="${LIVE_URL:-${APP_URL:-https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}}}"
   GATE_OK=false
   for _ in $(seq 1 12); do
     STATE_OK=false
@@ -1523,13 +1557,15 @@ The only user-visible output. Keep it casual. When C.4.5 set `$RECORD_LINE`, add
 
 **Reused an existing deploy (A.6 "Reuse"):** nothing uploaded. Give the chosen candidate's `url`: "This already exists: <url>".
 
+Every link below is `$LIVE_URL`, the URL the API returned, printed exactly as returned. Never rebuild it from the subdomain, and never swap its domain: the API knows whether the app serves on `indigo-hq.com` (every app until the platform switch), on `hq.work` (after it), or on the company's own domain.
+
 **On success (non-sensitive):** weave naturally:
-- "Here's a link you can share: https://{app}.indigo-hq.com"
-- "The docs are live at https://{app}.indigo-hq.com"
+- "Here's a link you can share: $LIVE_URL"
+- "The docs are live at $LIVE_URL"
 
 **On success (route mode, `ROUTE_MODE=true`):** give the route URL, `${LIVE_URL%/}$ROUTE_URL_PATH`, and name the host once. Describe access from `$HOST_ACCESS_MODE` without re-announcing any password:
-- Public host: "Added it to <host>: https://<host>.indigo-hq.com/<route>/"
-- Gated host: "Added it to <host>: https://<host>.indigo-hq.com/<route>/. It uses the same sign-in (or password) as the rest of <host>."
+- Public host: "Added it to <host>: ${LIVE_URL%/}$ROUTE_URL_PATH"
+- Gated host: "Added it to <host>: ${LIVE_URL%/}$ROUTE_URL_PATH. It uses the same sign-in (or password) as the rest of <host>."
 - If `ROUTE_VERIFY_FAILED` is non-empty, list those pages in plain words and say they did not load after the upload.
 
 When route mode was skipped because of a blocker the user should know about (step 3), add one plain line saying why the page got its own link.
@@ -1538,20 +1574,20 @@ When route mode was skipped because of a blocker the user should know about (ste
 user's own personal space (no company). Say so once, casually, so they know it
 isn't org-restricted — and only mention a password if the content was sensitive
 (personal sensitive deploys use password mode, see A.5 normalization):
-- Non-sensitive: "Deployed to your personal space — here's the link: https://$APP_SUBDOMAIN.indigo-hq.com (it's public; once you join a company you can deploy there too)."
+- Non-sensitive: "Deployed to your personal space — here's the link: $LIVE_URL (it's public; once you join a company you can deploy there too)."
 - Sensitive: same `password mode` line as below, plus a one-time note that it landed in your personal space.
 
 **On success (sensitive, password mode):** mention password ONCE:
-> Live at `https://$APP_SUBDOMAIN.indigo-hq.com` — password copied to your clipboard (also saved to `~/.hq/deploy-passwords.json`).
+> Live at `$LIVE_URL` — password copied to your clipboard (also saved to `~/.hq/deploy-passwords.json`).
 
 If the user asks "what was the password?" later, do NOT re-emit. Tell them:
 > Run `jq -r '."$APP_SUBDOMAIN".password' ~/.hq/deploy-passwords.json` to retrieve it.
 
 **On success (sensitive, private mode):** name the allowlist once, no password mention:
-> Live at `https://$APP_SUBDOMAIN.{your-domain}.com` — gated to {[EMAIL], @example.com}. They'll sign in via auth.{your-domain}.com on first visit.
+> Live at `$LIVE_URL` — gated to {[EMAIL], @example.com}. They'll sign in via auth.{your-domain}.com on first visit.
 
 **On success (sensitive, company mode):** name the org gate once, no password mention:
-> Live at `https://$APP_SUBDOMAIN.{your-domain}.com` — restricted to active `$ORG_SLUG` members. They'll sign in with HQ on first visit.
+> Live at `$LIVE_URL` — restricted to active `$ORG_SLUG` members. They'll sign in with HQ on first visit.
 
 For changes after the fact, point at the CLI rather than re-orchestrating from this skill:
 > Run `hq-deploy access share $APP_SUBDOMAIN <email|@domain>` to add a teammate, or `… unshare …` to revoke.
@@ -1565,7 +1601,7 @@ DEPLOY_USER_KEY=${USER:-${USERNAME:-unknown}}
 DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
 UPSOLD_FILE="/tmp/hq-deploy-upsold-$DEPLOY_USER_KEY"
 if [ ! -f "$UPSOLD_FILE" ]; then
-  echo "Looks like you don't have an HQ account yet. Create one free at https://onboarding.indigo-hq.com and I'll deploy this to the web next time."
+  echo "Looks like you don't have an HQ account yet. Create one free at https://hqforwork.com/welcome?plan=free and I'll deploy this to the web next time."
   touch "$UPSOLD_FILE"
 fi
 ```
@@ -1719,12 +1755,12 @@ Before telling the user the site works, open the deployed page in a browser (or 
 | `identity-resolve.sh` | `[--force-refresh]` (reads `~/.hq/cognito-tokens.json`) | `{"status":"ok","jwt":"...","id_token":"...","identity":"person\|machine","expires_at":<epoch-ms>,"source":"cache\|refresh\|login\|machine_mint"}` or `{"status":"login_required","reason":"..."}` or `{"status":"missing_dependency","dep":"jq\|node","install":"..."}`. A machine identity is detected from `HQ_MACHINE_CREDS_FILE` or `~/.hq-agent/machine-creds.json`, calls `hq-auth-refresh` without a browser, and returns its ID token in both `jwt` and `id_token` so agent claims reach hq-deploy and vault. A person keeps the access-token `jwt` path. `--force-refresh` bypasses a person's cache after an API 401. `id_token` is the only sanctioned source of the HQ Pro token — a raw `jq` read of the token file skips the expiry skew and the refresh path |
 | `sensitivity-check.sh <path> [user_msg]` | artifact path + latest user message excerpt | `{"sensitive":bool,"trigger":"companies-data-path\|private-repo\|pii-detected\|financial-filename\|user-stated-private"\|null}` |
 | `guardrails-check.sh <output_dir>` | build output directory | `{"pass":bool,"reason":string\|null,"tarball_path":string,"size_bytes":int,"sha256":string,"file_count":int}` |
-| `og-inject.sh <output_dir> [base_url] [app_name]` | static build dir (+ live base URL) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |
+| `og-inject.sh <output_dir> [base_url] [app_name] [api_base]` | static build dir (+ API-returned app URL, + deploy API base for the card) | `{"injected":int,"image":"generated\|existing\|none","changed":bool}` |
 | `password-helper.sh gen` | — | `<adjective-noun-NN>` on stdout |
 | `password-helper.sh announce <slug> <pw> [trigger]` | slug + password | stderr message + pbcopy + writes `~/.hq/deploy-passwords.json` |
-| `route-host.sh hosts [--org <slug>\|-]` | reads `~/.hq/deploy-routes.json` | `{"hosts":[{key,org,subdomain,appId,accessMode,deployId,site,siteExists,routes,updatedAt}]}` |
+| `route-host.sh hosts [--org <slug>\|-]` | reads `~/.hq/deploy-routes.json` | `{"hosts":[{key,org,subdomain,appId,accessMode,deployId,site,siteExists,routes,updatedAt,url?}]}` |
 | `route-host.sh merge <host_site> <artifact_dir> <route> <out_dir> [--replace]` | host snapshot + build output | `{"ok":true,"out_dir","route","replaced","file_count","routes"}` or `{"ok":false,"reason":"invalid_route\|route_exists\|route_blocked\|no_index\|root_absolute_paths\|host_missing\|artifact_missing\|out_not_empty\|copy_failed"}` |
-| `route-host.sh record --org <slug\|-> --subdomain <s> --app-id <id> --access-mode <m> --deploy-id <id> --tarball <path>` | the uploaded tarball | `{"ok":true,"key","site","routes"}`; snapshot at `~/.hq/deploy-hosts/<org>/<subdomain>/` |
+| `route-host.sh record --org <slug\|-> --subdomain <s> --app-id <id> --access-mode <m> --deploy-id <id> --tarball <path> [--url <app-url>]` | the uploaded tarball (+ the API-returned live URL, stored as the host's `url`) | `{"ok":true,"key","site","routes"}`; snapshot at `~/.hq/deploy-hosts/<org>/<subdomain>/` |
 | `deploy-reuse-check.sh --company <slug> --description <text> [--type static\|app]` | the deploy's description (A.6) | `{"ok":true,"decision":"ask\|note\|none","candidates":[{"subdomain","url","project","score","description"}],"ms":N}`; up to 3 records from one `qmd vsearch` on `<company>-projects` (absolute similarity; the index is never changed). Never blocks a deploy: qmd missing, collection missing, an error or a 20 s timeout return `"decision":"none"` |
 | `deploy-record-step.sh --app-json <file> --source <dir> --description <text> --type <type> [--access-mode <m>] [--company <slug>] [--deploy-id <id>] [--route </path/>] [--deploy-type static\|app]` | the app JSON re-read after upload, the folder that went live, the agent's one-paragraph description and content type | `{"ok":true,"record","home","resolution","copied","access_mode","words"}` or `{"ok":false,"stage":"args\|prepare\|home\|record","reason":...}` with exit 1. Runs `deploy-record-home.sh` then `deploy-record.sh`; never fails the deploy (C.4.5) |
 | `deploy-record-home.sh --subdomain <s> --source <dir> [--app-json <file>] [--access-mode <m>] [--company <slug>] [--project <slug>] [--copy yes\|no]` | where the record goes and whether to copy the source | `{"ok":true,"home","company","project","resolution","access_mode","copied","source","source_path",...}`; copies the source only for public and company deploys |

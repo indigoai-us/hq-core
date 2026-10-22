@@ -347,10 +347,10 @@ for marker in \
   'HQ_CHECKPOINT_SCOPE_GATE_DOMAINS' \
   'checkpoint-block-count' \
   'checkpoint-reply-nudge'; do
-  printf '%s' "$hook_body" | grep -qF -- "$marker" \
+  printf '%s' "$hook_body" | grep >/dev/null -F -- "$marker" \
     && fail "gate logic has returned to the shim (found: $marker) — it belongs in hq-cli"
 done
-printf '%s' "$hook_body" | grep -q 'decision' \
+printf '%s' "$hook_body" | grep >/dev/null 'decision' \
   && fail "the shim emits its own Stop decision — only the CLI may decide"
 [ "$(wc -l <"$HOOK")" -lt 120 ] \
   || fail "the shim has grown past a delegating wrapper ($(wc -l <"$HOOK") lines)"
@@ -367,7 +367,7 @@ jq -e '.hooks.Stop[]?.hooks[]? | select(.command | test("master-hook.sh"))' \
   "$ROOT/.claude/settings.json" >/dev/null || fail "settings.json has no Stop master-hook registration"
 for profile in standard strict; do
   profile_body="$(sed -n "/is_in_${profile}_profile()/,/^}/p" "$ROOT/.claude/hooks/hook-gate.sh")"
-  printf '%s' "$profile_body" | grep -q 'checkpoint-stop-gate' || fail "$profile hook profile omits checkpoint-stop-gate"
+  printf '%s' "$profile_body" | grep >/dev/null 'checkpoint-stop-gate' || fail "$profile hook profile omits checkpoint-stop-gate"
 done
 [ -x "$HOOK" ] || fail "checkpoint Stop hook is not executable"
 pass "registration and profile membership are present"
@@ -429,14 +429,14 @@ pass "Codex SessionStart guidance is injected at startup and compact"
   fail "Codex checkpoint re-prompt hook is not tracked as executable: $REPROMPT_HOOK"
 for profile in standard strict; do
   profile_body="$(sed -n "/is_in_${profile}_profile()/,/^}/p" "$ROOT/.claude/hooks/hook-gate.sh")"
-  printf '%s' "$profile_body" | grep -q 'inject-codex-checkpoint-reprompt' || \
+  printf '%s' "$profile_body" | grep >/dev/null 'inject-codex-checkpoint-reprompt' || \
     fail "$profile hook profile omits inject-codex-checkpoint-reprompt"
 done
 session_start_body="$(sed -n '/^  SessionStart)/,/^    ;;/p' "$ADAPTER")"
-printf '%s' "$session_start_body" | grep -qF 'run_hook "inject-codex-checkpoint-reprompt"' || \
+printf '%s' "$session_start_body" | grep >/dev/null -F 'run_hook "inject-codex-checkpoint-reprompt"' || \
   fail "Codex adapter does not preload checkpoint guidance at SessionStart"
 user_prompt_body="$(sed -n '/^  UserPromptSubmit)/,/^    ;;/p' "$ADAPTER")"
-if printf '%s' "$user_prompt_body" | grep -qF 'run_hook "inject-codex-checkpoint-reprompt"'; then
+if printf '%s' "$user_prompt_body" | grep >/dev/null -F 'run_hook "inject-codex-checkpoint-reprompt"'; then
   fail "Codex adapter must not proxy checkpoint guidance through UserPromptSubmit"
 fi
 if grep -qF 'inject-codex-checkpoint-reprompt' "$ROOT/.claude/settings.json"; then

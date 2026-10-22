@@ -7,8 +7,11 @@
 #
 # Args:
 #   $1 — output directory (build artifact root, served at the deploy domain)
-#   $2 — base URL for absolute og:url / og:image (e.g. https://myapp.indigo-hq.com); optional
+#   $2 — base URL for absolute og:url / og:image: the app URL the hq-deploy API
+#        returned (e.g. https://myapp.hq.work); optional
 #   $3 — app name, used as the og:site_name and title fallback; optional
+#   $4 — hq-deploy API base that serves the app's card (e.g. https://api.hq.work);
+#        optional
 #
 # Output (one JSON line on stdout):
 #   {"injected":N,"rewritten":N,"image":"card|generated|existing|none","changed":bool}
@@ -17,8 +20,10 @@
 #   - Only ever rewrites .html files; binary/asset files are left alone.
 #   - When no usable preview image exists and a base URL is given, points
 #     og:image at hq-deploy's generated card for the app:
-#     https://api.<deploy-domain>/api/public/apps/<slug>/card.jpg, where <slug>
-#     is the first label of the base URL host. Only when the base URL is empty
+#     <api-base>/api/public/apps/<slug>/card.jpg, where <slug> is the first
+#     label of the base URL host. <api-base> is $4 when given, else
+#     https://api.<rest of the base URL host> (myapp.hq.work -> api.hq.work,
+#     myapp.indigo-hq.com -> api.indigo-hq.com). Only when the base URL is empty
 #     does it fall back to a plain 1200x630 placeholder PNG (_hq-og.png), built
 #     with Node built-ins (zlib) -- no external deps, no network.
 #   - twitter:card is summary_large_image whenever an image is present.
@@ -29,13 +34,14 @@ set -u
 OUT_DIR="${1:-}"
 BASE_URL="${2:-}"
 APP_NAME="${3:-}"
+CARD_API="${4:-}"
 
 emit_noop() { printf '{"injected":0,"rewritten":0,"image":"none","changed":false}\n'; exit 0; }
 
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then emit_noop; fi
 if ! command -v node >/dev/null 2>&1; then emit_noop; fi
 
-OG_OUT_DIR="$OUT_DIR" OG_BASE_URL="$BASE_URL" OG_APP_NAME="$APP_NAME" node - <<'NODE'
+OG_OUT_DIR="$OUT_DIR" OG_BASE_URL="$BASE_URL" OG_APP_NAME="$APP_NAME" OG_CARD_API="$CARD_API" node - <<'NODE'
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
@@ -43,6 +49,7 @@ const zlib = require('zlib');
 const outDir = process.env.OG_OUT_DIR;
 const baseUrl = (process.env.OG_BASE_URL || '').replace(/\/+$/, '');
 const appName = process.env.OG_APP_NAME || 'App';
+const cardApi = (process.env.OG_CARD_API || '').replace(/\/+$/, '');
 
 const done = (obj) => { process.stdout.write(JSON.stringify(obj) + '\n'); process.exit(0); };
 
@@ -93,13 +100,19 @@ if (targets.length === 0) done({ injected: 0, rewritten, image: 'none', changed:
 
 const IMG_NAME = '_hq-og.png';
 // hq-deploy renders a wallpaper share card per app at
-// https://api.<deploy-domain>/api/public/apps/<slug>/card.jpg (JPEG).
+// <api-base>/api/public/apps/<slug>/card.jpg (JPEG). The API base is the one
+// the caller deployed through; without it, use api.<rest of the app host>.
 let cardUrl = null;
 try {
   if (baseUrl) {
     const labels = new URL(baseUrl).hostname.split('.');
     if (labels.length >= 3 && labels[0]) {
-      cardUrl = `https://api.${labels.slice(1).join('.')}/api/public/apps/${labels[0]}/card.jpg`;
+      let apiBase = `https://api.${labels.slice(1).join('.')}`;
+      try {
+        const u = cardApi ? new URL(cardApi) : null;
+        if (u && u.protocol === 'https:') apiBase = u.origin;
+      } catch { /* malformed $4: keep the derived base */ }
+      cardUrl = `${apiBase}/api/public/apps/${labels[0]}/card.jpg`;
     }
   }
 } catch { cardUrl = null; }

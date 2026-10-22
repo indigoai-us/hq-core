@@ -104,7 +104,7 @@ expect_red() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "$name: guard passed after restoring forbidden content"
-  printf '%s\n' "$output" | grep -Fq "$expected" || fail "$name: guard did not name '$expected': $output"
+  printf '%s\n' "$output" | grep >/dev/null -F "$expected" || fail "$name: guard did not name '$expected': $output"
   printf 'red/green probe: %s rejected (%s)\n' "$name" "$expected"
 }
 

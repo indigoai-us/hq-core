@@ -58,10 +58,10 @@ unexpected="$(printf '%s\n' "$forked" | awk 'NF && $2 != "cd" && !($2 == "pwd" &
 
 # Source-shape backup in case a future shell traces differently.
 code="$(grep -v '^[[:space:]]*#' "$HOOK")"
-if printf '%s\n' "$code" | grep -Eq '\|[[:space:]]*node([[:space:]]|$)'; then
+if printf '%s\n' "$code" | grep >/dev/null -E '\|[[:space:]]*node([[:space:]]|$)'; then
   fail 'refresh hook pipes into node'
 fi
-if printf '%s\n' "$code" | grep -Eq '(^|[^[:alnum:]_])dirname([[:space:]]|$)'; then
+if printf '%s\n' "$code" | grep >/dev/null -E '(^|[^[:alnum:]_])dirname([[:space:]]|$)'; then
   fail 'refresh hook calls external dirname'
 fi
 echo 'ALL PASS: merged-write-guard-shadow-refresh-process-count'

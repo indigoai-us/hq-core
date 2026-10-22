@@ -123,10 +123,10 @@ PY
 echo "PASS: register-project normalizes CRLF jq scalar values before registration"
 
 audit="$(bash "$SCRIPT" --audit acme)"
-printf '%s\n' "$audit" | grep -qx alpha || fail "audit missing alpha: $audit"
-printf '%s\n' "$audit" | grep -qx done-one || fail "audit missing done-one: $audit"
-printf '%s\n' "$audit" | grep -qx stale || fail "audit missing stale: $audit"
-printf '%s\n' "$audit" | grep -qx cached && fail "audit listed cached project"
+printf '%s\n' "$audit" | grep >/dev/null -x alpha || fail "audit missing alpha: $audit"
+printf '%s\n' "$audit" | grep >/dev/null -x done-one || fail "audit missing done-one: $audit"
+printf '%s\n' "$audit" | grep >/dev/null -x stale || fail "audit missing stale: $audit"
+printf '%s\n' "$audit" | grep >/dev/null -x cached && fail "audit listed cached project"
 
 : > "$HQ_FAKE_LOG"
 before="$(cat "$TMP/hq/companies/acme/board.json")"
@@ -173,10 +173,10 @@ json.dump(board, open("$TMP/hq/companies/acme/board.json", "w"))
 PY
 : > "$HQ_FAKE_LOG"
 retry_out="$(bash "$SCRIPT" --retry-pending acme)"
-printf '%s\n' "$retry_out" | grep -q 'registered acme/p1 ' || fail "retry missed p1: $retry_out"
-printf '%s\n' "$retry_out" | grep -q 'registered acme/p2 ' || fail "retry missed p2: $retry_out"
-printf '%s\n' "$retry_out" | grep -q 'registered acme/p3 ' || fail "retry missed p3: $retry_out"
-printf '%s\n' "$retry_out" | grep -q 'registered acme/p4 ' && fail "retry exceeded 3: $retry_out"
+printf '%s\n' "$retry_out" | grep >/dev/null 'registered acme/p1 ' || fail "retry missed p1: $retry_out"
+printf '%s\n' "$retry_out" | grep >/dev/null 'registered acme/p2 ' || fail "retry missed p2: $retry_out"
+printf '%s\n' "$retry_out" | grep >/dev/null 'registered acme/p3 ' || fail "retry missed p3: $retry_out"
+printf '%s\n' "$retry_out" | grep >/dev/null 'registered acme/p4 ' && fail "retry exceeded 3: $retry_out"
 ensure_calls="$(grep -c 'mesh project ensure ' "$HQ_FAKE_LOG" || true)"
 [ "$ensure_calls" = "3" ] || fail "ensure call count: $ensure_calls"
 python3 - <<PY

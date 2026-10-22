@@ -10,7 +10,8 @@
 #
 # Usage:
 #   handoff-open-steps.sh list [--limit N] [--company <slug>] [--json]
-#   handoff-open-steps.sh close <step-id> [--as done|dropped] [--note "<why>"]
+#   handoff-open-steps.sh close <step-id>... [--as done|dropped] [--note "<why>"]
+#   handoff-open-steps.sh close --ids-file <file|-> [--as done|dropped] [--note "<why>"]
 #   handoff-open-steps.sh reopen <step-id>
 #
 # Threads live in workspace/threads/T-*.json (and archive/**). Closing edits
@@ -18,6 +19,13 @@
 # `closed_by`, `note`) and bumps `updated_at`; nothing else in the thread is
 # touched. Legacy steps without an id are listed with a synthetic id and can be
 # closed the same way (the id is written on first close).
+#
+# Threads are resolved by their `thread_id` field, not only by file name: a
+# thread file whose name differs from its thread_id (auto-save threads) is
+# still found, and synthetic step ids use the thread_id. Bulk close takes
+# several ids, or one id per line from a file (`-` for stdin; blank lines and
+# `#` comments skipped), prints a summary, and exits 3 when any id was not
+# found (the others still close).
 set -uo pipefail
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 THREADS="$HQ_ROOT/workspace/threads"
@@ -43,9 +51,9 @@ thread_files() { # newest first, handoffs and checkpoints only
   fi
 }
 normalize_thread() { # <file> -> ensure every step has id/status (in memory)
-  jq -c '.next_steps = ((.next_steps // []) | to_entries | map(.key as $k |
+  jq -c '((.thread_id // "") | tostring) as $tid0 | .next_steps = ((.next_steps // []) | to_entries | map(.key as $k |
       (if (.value|type)=="string" then {step:.value} else .value end)
-      | .id = (.id // (input_filename|split("/")|last|sub("\\.json$";"")) + "#" + (($k+1)|tostring))
+      | .id = (.id // ((if $tid0 != "" then $tid0 else (input_filename|split("/")|last|sub("\\.json$";"")) end) + "#" + (($k+1)|tostring)))
       | .status = (.status // "open")) | map(del(.key)))' "$1"
 }
 
@@ -70,46 +78,82 @@ case "$CMD" in
     printf '%s' "$rows" | jq -r '"\(.id)  \(.step)  [\(.title)]"'
     ;;
   close|reopen)
-    ID="${1:-}"; shift || true
-    [ -n "$ID" ] || { echo "usage: $CMD <step-id>" >&2; exit 2; }
-    AS="done"; NOTE=""
-    while [ $# -gt 0 ]; do case "$1" in --as) AS="$2"; shift 2;; --note) NOTE="$2"; shift 2;; *) shift;; esac; done
+    IDS=(); AS="done"; NOTE=""; IDS_FILE=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --as) AS="$2"; shift 2;; --note) NOTE="$2"; shift 2;; --ids-file) IDS_FILE="$2"; shift 2;;
+      --*) shift;; *) IDS+=("$1"); shift;; esac; done
+    if [ -n "$IDS_FILE" ]; then
+      [ "$IDS_FILE" = - ] || [ -r "$IDS_FILE" ] || { echo "handoff-open-steps: cannot read --ids-file $IDS_FILE" >&2; exit 2; }
+      while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+        case "$line" in ''|'#'*) continue;; esac
+        IDS+=("$line")
+      done < <(if [ "$IDS_FILE" = - ]; then cat; else cat -- "$IDS_FILE"; fi)
+    fi
+    [ "${#IDS[@]}" -gt 0 ] || { echo "usage: $CMD <step-id>... | --ids-file <file|->" >&2; exit 2; }
     [ "$CMD" = reopen ] && AS="open"
     case "$AS" in done|dropped|open) ;; *) echo "--as must be done|dropped" >&2; exit 2;; esac
-    # `list` prints each step's own id. A step written with a custom id
-    # (`ns-1016c-3`) carries no thread prefix, so find the thread by that id
-    # when the `<thread_id>#` prefix does not name a thread file. The
-    # positional `<thread_id>#<n>` form also matches step n when the step
-    # has a custom id.
-    tid=""
-    case "$ID" in *'#'*) tid="${ID%%#*}" ;; esac
-    f=""
-    if [ -n "$tid" ]; then
-      f="$(find "$THREADS" -name "$tid.json" ! -path '*/resume-locks/*' 2>/dev/null | head -1)"
-    fi
-    if [ -z "$f" ]; then
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; by="${HQ_SESSION_ID:-${CLAUDE_SESSION_ID:-unknown-session}}"
+    # thread_id -> file map, built once on first need: a file name can differ
+    # from its thread_id, so a name lookup alone misses those threads.
+    TMAP=""; TMAP_BUILT=0
+    build_tmap() {
+      [ "$TMAP_BUILT" = 1 ] && return 0
+      TMAP_BUILT=1
+      local cand t
       while IFS= read -r cand; do
         [ -n "$cand" ] || continue
-        if normalize_thread "$cand" 2>/dev/null | jq -e --arg id "$ID" '[.next_steps[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
-          f="$cand"; break
-        fi
+        t="$(jq -r '.thread_id // empty' "$cand" 2>/dev/null)" || continue
+        [ -n "$t" ] && TMAP="$TMAP$t"$'\t'"$cand"$'\n'
       done < <(thread_files)
-    fi
-    [ -n "$f" ] || { echo "handoff-open-steps: step $ID not found in any thread under $THREADS" >&2; exit 3; }
-    tid="$(basename "$f" .json)"
-    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; by="${HQ_SESSION_ID:-${CLAUDE_SESSION_ID:-unknown-session}}"
-    normalize_thread "$f" | jq --arg id "$ID" --arg tid "$tid" --arg as "$AS" --arg now "$now" --arg by "$by" --arg note "$NOTE" '
-      # Exact id first; the positional thread#n form only when no step has that id.
-      (if ([.next_steps[] | select(.id == $id)] | length) > 0 then $id
-       else ([.next_steps | to_entries[] | select(($tid + "#" + ((.key + 1)|tostring)) == $id) | .value.id] | first) end) as $match
-      | if $match == null then error("step \($id) not in thread") else . end
-      | .next_steps = (.next_steps | map(if .id == $match then
-          (if $as == "open" then del(.closed_at, .closed_by) | .status = "open"
-           else .status = $as | .closed_at = $now | .closed_by = $by | (if $note != "" then .note = $note else . end) end)
-        else . end))
-      | .updated_at = $now' > "$f.tmp" 2>"$f.err" || { cat "$f.err" >&2; rm -f "$f.tmp" "$f.err"; exit 3; }
-    rm -f "$f.err"; mv "$f.tmp" "$f"
-    echo "handoff-open-steps: $ID -> $AS"
+    }
+    find_thread() { # <thread_id> -> file (name match first, then thread_id field)
+      local tid="$1" f
+      f="$(find "$THREADS" -name "$tid.json" ! -path '*/resume-locks/*' 2>/dev/null | head -1)"
+      if [ -n "$f" ]; then printf '%s' "$f"; return 0; fi
+      build_tmap
+      printf '%s' "$TMAP" | awk -F'\t' -v t="$tid" '$1 == t { print $2; exit }'
+    }
+    close_one() { # <step-id> -> 0 changed, 3 not found or failed
+      local ID="$1" tid="" ftid f="" cand
+      # `list` prints each step's own id. A step written with a custom id
+      # (`ns-1016c-3`) carries no thread prefix, so find the thread by that id
+      # when the `<thread_id>#` prefix does not name a thread. The positional
+      # `<thread_id>#<n>` form also matches step n when the step has a custom id.
+      case "$ID" in *'#'*) tid="${ID%%#*}" ;; esac
+      [ -n "$tid" ] && f="$(find_thread "$tid")"
+      if [ -z "$f" ]; then
+        while IFS= read -r cand; do
+          [ -n "$cand" ] || continue
+          if normalize_thread "$cand" 2>/dev/null | jq -e --arg id "$ID" '[.next_steps[] | select(.id == $id)] | length > 0' >/dev/null 2>&1; then
+            f="$cand"; break
+          fi
+        done < <(thread_files)
+      fi
+      [ -n "$f" ] || { echo "handoff-open-steps: step $ID not found in any thread under $THREADS" >&2; return 3; }
+      ftid="$(basename "$f" .json)"
+      tid="$(jq -r '.thread_id // empty' "$f" 2>/dev/null)"; [ -n "$tid" ] || tid="$ftid"
+      normalize_thread "$f" | jq --arg id "$ID" --arg tid "$tid" --arg ftid "$ftid" --arg as "$AS" --arg now "$now" --arg by "$by" --arg note "$NOTE" '
+        # Exact id first; the positional thread#n form (by thread_id or by file
+        # name) only when no step has that id.
+        (if ([.next_steps[] | select(.id == $id)] | length) > 0 then $id
+         else ([.next_steps | to_entries[] | select((.key + 1 | tostring) as $n | ($tid + "#" + $n) == $id or ($ftid + "#" + $n) == $id) | .value.id] | first) end) as $match
+        | if $match == null then error("step \($id) not in thread") else . end
+        | .next_steps = (.next_steps | map(if .id == $match then
+            (if $as == "open" then del(.closed_at, .closed_by) | .status = "open"
+             else .status = $as | .closed_at = $now | .closed_by = $by | (if $note != "" then .note = $note else . end) end)
+          else . end))
+        | .updated_at = $now' > "$f.tmp" 2>"$f.err" || { cat "$f.err" >&2; rm -f "$f.tmp" "$f.err"; return 3; }
+      rm -f "$f.err"; mv "$f.tmp" "$f"
+      echo "handoff-open-steps: $ID -> $AS"
+    }
+    ok=0; miss=0
+    for id in "${IDS[@]}"; do
+      if close_one "$id"; then ok=$((ok+1)); else miss=$((miss+1)); fi
+    done
+    if [ "${#IDS[@]}" -gt 1 ]; then echo "handoff-open-steps: $ok of ${#IDS[@]} step(s) -> $AS; $miss not found or failed"; fi
+    [ "$miss" -eq 0 ] || exit 3
     ;;
   *) sed -n 2,22p "$0"; exit 2 ;;
 esac

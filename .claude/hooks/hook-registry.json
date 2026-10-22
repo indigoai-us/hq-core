@@ -1,6 +1,6 @@
 {
   "$schema": "hq-hook-registry@1",
-  "description": "Gated hooks dispatched in-process by .claude/hooks/master-hook.sh. Same event/matcher semantics as settings.json hooks. prefilter.re is a POSIX ERE tested against the JSON text of tool_input (or the prompt for UserPromptSubmit); the hook only runs when it matches (must be a superset of the hook's own trigger). prefilter.env requires a non-empty env var; prefilter.file requires a path under the HQ root to exist. prefilter.policy_vocab=true skips the policy injector when the tool text contains none of the tokens any tool-event policy requires (compiled by master-hook from the policy dirs).",
+  "description": "Gated hooks dispatched in-process by .claude/hooks/master-hook.sh. Same event/matcher semantics as settings.json hooks. prefilter.re is a POSIX ERE tested against the JSON text of tool_input (or the prompt for UserPromptSubmit); the hook only runs when it matches (must be a superset of the hook's own trigger). prefilter.env requires a non-empty env var; prefilter.file requires a path under the HQ root to exist ({session_id} expands to the event's session id; * is a shell glob; an unresolvable placeholder runs the hook). prefilter.policy_vocab=true skips the policy injector when the tool text contains none of the tokens any tool-event policy requires (compiled by master-hook from the policy dirs).",
   "hooks": {
     "PreToolUse": [
       {

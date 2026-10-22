@@ -56,7 +56,9 @@ change with the runner.
    - `prompt`: "Read <brief path> whole and follow it. Write the JSON envelope
      to <envelope path> before you finish. Commit your own work on the named
      branch. Do not push, open a PR, merge, or deploy unless the brief says
-     so. End with a reply of at most 10 lines that names the envelope path."
+     so. Before you finish, wait for every background reviewer or subagent
+     you started; never end while one is still running. End with a reply of
+     at most 10 lines that names the envelope path."
 4. Record the run in
    `workspace/orchestrator/conduct-subagents/<session-id>/runs.json`: agent
    id, worker, task label, brief path, envelope path, worktree, `since`, and

@@ -12,12 +12,15 @@
 # Noise controls (all keyed by SESSION, never by $PPID — tool and hook processes
 # do not share a parent PID in every host, so a PID-keyed debounce silently
 # never applies and every edit re-fires):
-#   - Debounce: 5 min per session; git commit/push bypass it.
+#   - Debounce: 5 min per session across all trigger types, plus a 30 min
+#     window per trigger type per session (feedback_aba2d75e). No trigger
+#     bypasses either window, git commit and git push included.
 #   - Edits do not checkpoint one-by-one. A file-edit checkpoint needs both an
 #     edit threshold (10 edits since the last one) AND the elapsed debounce.
 #   - Failed tool calls are ignored.
 #
 # State: workspace/orchestrator/hook-state/checkpoint-{last,edits}-<session>
+#        and checkpoint-type-<session>-<trigger> (per-type window stamp)
 
 set -euo pipefail
 
@@ -65,26 +68,22 @@ DEBOUNCE_FILE="$STATE_DIR/checkpoint-last-$SESSION_KEY"
 EDITS_FILE="$STATE_DIR/checkpoint-edits-$SESSION_KEY"
 
 DEBOUNCE_SECONDS=300
+TRIGGER_WINDOW_SECONDS=1800
 EDIT_THRESHOLD=10
 
 should_checkpoint=false
-skip_debounce=false
 trigger=""
 FILE_PATH=""
 
 case "$TOOL_NAME" in
   Bash)
     CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
-    # Always checkpoint (bypass debounce)
     if echo "$CMD" | grep -qE 'git commit(\s|$)'; then
       should_checkpoint=true
-      skip_debounce=true
       trigger="git-commit"
     elif echo "$CMD" | grep -qE 'git push(\s|$)'; then
       should_checkpoint=true
-      skip_debounce=true
       trigger="git-push"
-    # Debounced triggers
     elif echo "$CMD" | grep -qE 'gh pr (create|merge)'; then
       should_checkpoint=true
       trigger="pr-operation"
@@ -138,8 +137,13 @@ if [ "$should_checkpoint" = false ]; then
   exit 0
 fi
 
-# Debounce check: suppress if the last nudge for THIS session was <300s ago.
-if [ "$skip_debounce" = false ] && hq_hook_within_window "$DEBOUNCE_FILE" "$DEBOUNCE_SECONDS"; then
+# Debounce check: suppress if the last nudge for THIS session was <300s ago,
+# or the last nudge for THIS trigger type in this session was <1800s ago.
+TRIGGER_FILE="$STATE_DIR/checkpoint-type-$SESSION_KEY-$trigger"
+if hq_hook_within_window "$DEBOUNCE_FILE" "$DEBOUNCE_SECONDS"; then
+  exit 0
+fi
+if hq_hook_within_window "$TRIGGER_FILE" "$TRIGGER_WINDOW_SECONDS"; then
   exit 0
 fi
 
@@ -165,6 +169,7 @@ TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
 
 # Update debounce timestamp and clear the edit budget this nudge consumed.
 hq_hook_stamp_now "$DEBOUNCE_FILE"
+hq_hook_stamp_now "$TRIGGER_FILE"
 printf '0' > "$EDITS_FILE" 2>/dev/null || true
 
 # Build the nudge message

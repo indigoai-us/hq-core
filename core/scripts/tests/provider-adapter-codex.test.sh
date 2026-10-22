@@ -109,7 +109,7 @@ fi
 # ---------------------------------------------------------------------------
 caps="$(hq_adapter_capabilities)"
 for k in system_prompt resume hooks plan_mode durable_writes telegram_eligible usage_source; do
-  if printf '%s\n' "$caps" | grep -q "^${k}="; then
+  if printf '%s\n' "$caps" | grep >/dev/null "^${k}="; then
     pass "capabilities has $k"
   else
     fail "capabilities missing $k"

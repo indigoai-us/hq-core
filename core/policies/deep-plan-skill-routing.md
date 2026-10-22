@@ -31,7 +31,7 @@ When `/deep-plan` is invoked — directly as a slash command, embedded in `/star
 
 5. **Auto mode is incompatible with the questionnaire.** If the auto-mode system reminder is active when `/deep-plan` fires, the agent MUST announce: *"Auto mode paused for /deep-plan — questionnaire requires user input."* Then proceed question-by-question via `AskUserQuestion`. Auto-mode behavior may resume after `/handoff`, at the user's discretion.
 
-6. **`/startwork` short-circuit:** If `/startwork`'s arguments contain a `/deep-plan` token (whitespace-delimited substring `/deep-plan`), `/startwork` MUST abort its classification flow and route directly to the deep-plan skill with the remaining args as the project description. It MUST NOT classify the task, pick a worker pipeline, or enter Task Mode.
+6. **`/startwork` short-circuit:** If `/startwork`'s arguments contain a `/deep-plan` token (whitespace-delimited substring `/deep-plan`), `/startwork` MUST abort its classification flow and route directly to the deep-plan skill with the remaining args as the project description. It MUST NOT classify the task, pick a worker pipeline, or enter Task Mode. A bare `deep-plan` token in `/startwork` arguments counts the same, because the Claude desktop app refuses to send a message that starts with a slash command and contains a second one; suggest `/startwork {co} deep-plan ...` or a separate `/deep-plan` message, never `/startwork {co} /deep-plan ...`.
 
 This rule supersedes `defaultMode: "plan"` in `.claude/settings.json`, the `<auto-mode>` system reminder, and any prior session context.
 

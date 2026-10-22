@@ -345,4 +345,48 @@ amb_out=$(HQ_ROOT="$AMB_ROOT" "$HELPER" ensure \
   --session-id test-ambiguous)
 assert_contains "$amb_out" '"reused": false' "ambiguous equal scores must not reuse"
 
+# Regression (feedback_c5558799): a new session must not inherit a stale
+# machine-global pointer that another session left behind.
+PTR_ROOT="$(mktemp -d)"
+mkdir -p "$PTR_ROOT/.claude/state" "$PTR_ROOT/personal/projects/old-unrelated/sessions" \
+  "$PTR_ROOT/personal/projects/mine/sessions"
+printf '{"name":"old-unrelated","metadata":{}}\n' > "$PTR_ROOT/personal/projects/old-unrelated/prd.json"
+printf '{"name":"mine","metadata":{}}\n' > "$PTR_ROOT/personal/projects/mine/prd.json"
+printf 'personal/projects/old-unrelated\n' > "$PTR_ROOT/.claude/state/active-session-project"
+touch -t 202001010000 "$PTR_ROOT/.claude/state/active-session-project"
+set +e
+stale_ptr_out=$(printf '## Plan\n' | HQ_ROOT="$PTR_ROOT" "$HELPER" ingest-plan --session-id fresh-1 2>&1)
+stale_ptr_status=$?
+set -e
+[[ "$stale_ptr_status" -eq 1 ]] || fail "stale global pointer was used (status $stale_ptr_status): $stale_ptr_out"
+assert_contains "$stale_ptr_out" "no active project" "stale global pointer ignored"
+[[ -z "$(ls "$PTR_ROOT/personal/projects/old-unrelated/sessions")" ]] || fail "plan filed under a stale project"
+set +e
+HQ_ROOT="$PTR_ROOT" "$HELPER" append-event --session-id fresh-1 --kind k --summary s >/dev/null 2>&1
+stale_evt_status=$?
+set -e
+[[ "$stale_evt_status" -eq 0 ]] || fail "append-event without a project should be a no-op"
+grep -q nativeEvents "$PTR_ROOT/personal/projects/old-unrelated/prd.json" && fail "event filed under a stale project"
+
+# The session's own pointer wins over a fresh global pointer.
+touch "$PTR_ROOT/.claude/state/active-session-project"
+printf '%s' "$PTR_ROOT/personal/projects/mine" > "$PTR_ROOT/.claude/state/auto-session-project-sess-2"
+printf '## Plan\n' | HQ_ROOT="$PTR_ROOT" "$HELPER" ingest-plan --session-id sess-2 >/dev/null
+[[ -n "$(ls "$PTR_ROOT/personal/projects/mine/sessions")" ]] || fail "session pointer not used"
+[[ -z "$(ls "$PTR_ROOT/personal/projects/old-unrelated/sessions")" ]] || fail "global pointer beat the session pointer"
+
+# An empty session pointer means "no project"; it does not fall back.
+: > "$PTR_ROOT/.claude/state/auto-session-project-sess-3"
+set +e
+printf '## Plan\n' | HQ_ROOT="$PTR_ROOT" "$HELPER" ingest-plan --session-id sess-3 >/dev/null 2>&1
+empty_status=$?
+set -e
+[[ "$empty_status" -eq 1 ]] || fail "empty session pointer fell back to the global pointer"
+[[ -z "$(ls "$PTR_ROOT/personal/projects/old-unrelated/sessions")" ]] || fail "empty session pointer filed under the global project"
+
+# ensure writes the session's own pointer.
+HQ_ROOT="$PTR_ROOT" "$HELPER" ensure --title "Zephyr quartz lantern" --prompt "zephyr quartz lantern" --session-id sess-4 >/dev/null
+[[ -s "$PTR_ROOT/.claude/state/auto-session-project-sess-4" ]] || fail "ensure did not write the session pointer"
+rm -rf "$PTR_ROOT"
+
 echo "session-project smoke: ok"

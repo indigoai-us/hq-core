@@ -55,9 +55,9 @@ echo "== 1. Policy is reactive-only: no SessionStart baseline =="
 FM="$(awk '/^---$/{d++; next} d==1' "$POLICY")"
 FM_ON="$(printf '%s\n' "$FM" | grep -E '^on:' || true)"
 FM_WHEN="$(printf '%s\n' "$FM" | grep -E '^when:' || true)"
-if printf '%s' "$FM_ON" | grep -Fq SessionStart; then
+if printf '%s' "$FM_ON" | grep >/dev/null -F SessionStart; then
   fail "frontmatter is reactive-only" "on: still lists SessionStart -> $FM_ON"
-elif printf '%s' "$FM_WHEN" | grep -Eq '^when:[[:space:]]*always([[:space:]]*\|\||[[:space:]]*$)'; then
+elif printf '%s' "$FM_WHEN" | grep >/dev/null -E '^when:[[:space:]]*always([[:space:]]*\|\||[[:space:]]*$)'; then
   fail "frontmatter is reactive-only" "when: still carries an 'always' head -> $FM_WHEN"
 else
   ok "frontmatter is reactive-only (no SessionStart, no 'always' head)"

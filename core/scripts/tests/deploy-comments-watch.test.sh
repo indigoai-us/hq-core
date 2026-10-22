@@ -109,6 +109,6 @@ set +e
 bad="$("$SRC" watch --app app-1 --org acme --cursor-file "$TMP/x" --interval 10 2>&1)"; code=$?
 set -e
 [ "$code" = 64 ] || fail "interval under 30s exited $code: $bad"
-printf "%s" "$bad" | grep -Fq "at least 30" || fail "interval under 30s was accepted: $bad"
+printf "%s" "$bad" | grep >/dev/null -F "at least 30" || fail "interval under 30s was accepted: $bad"
 ! grep -rFq "$TOKEN" "$TMP/stderr" "$TMP/state" || fail "token leaked"
 pass "short intervals are rejected and the token never leaks"

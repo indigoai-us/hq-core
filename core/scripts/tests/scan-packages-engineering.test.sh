@@ -50,7 +50,7 @@ run_scan() { ( cd "${HQ_ROOT}" && HQ_ROOT="${HQ_ROOT}" HQ_SCAN_QUIET=1 bash "${R
 mkdir -p "${HQ_ROOT}/.claude/skills/tdd"
 echo "INLINE (user copy)" > "${HQ_ROOT}/.claude/skills/tdd/SKILL.md"
 warn_out="$(run_scan 2>&1 1>/dev/null || true)"
-echo "${warn_out}" | grep -qi 'collision\|host content wins\|skipping' \
+echo "${warn_out}" | grep >/dev/null -i 'collision\|host content wins\|skipping' \
   || fail "Case A: expected a collision/host-wins warning, got: ${warn_out}"
 [[ -L "${HQ_ROOT}/.claude/skills/tdd" ]] && fail "Case A: tdd became a symlink despite inline copy present"
 grep -q "INLINE" "${HQ_ROOT}/.claude/skills/tdd/SKILL.md" || fail "Case A: inline copy was clobbered"
@@ -60,7 +60,7 @@ rm -rf "${HQ_ROOT}/.claude/skills/tdd"
 run_scan >/dev/null 2>&1 || fail "Case B: scan-packages exited non-zero"
 [[ -L "${HQ_ROOT}/.claude/skills/tdd" ]] || fail "Case B: tdd did not become a symlink"
 tgt="$(readlink "${HQ_ROOT}/.claude/skills/tdd")"
-echo "${tgt}" | grep -q 'core/packages/hq-pack-engineering/skills/tdd' \
+echo "${tgt}" | grep >/dev/null 'core/packages/hq-pack-engineering/skills/tdd' \
   || fail "Case B: tdd symlink points at '${tgt}', expected the pack"
 [[ -L "${HQ_ROOT}/core/workers/public/qa-tester" ]] || fail "Case B: qa-tester worker not symlinked"
 
