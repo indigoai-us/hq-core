@@ -267,11 +267,31 @@ if [ -z "$SESSION_ID" ]; then
   exit "$rc"
 fi
 
-HQ_BIN="$(command -v hq 2>/dev/null || true)"
+# Resolve hq the way the running session does before calling it missing
+# (feedback_26faa03c): the hook may run with a reduced PATH (a fleet agent's
+# monitor, a GUI host) while the session's own shell finds hq at /usr/bin/hq,
+# under the HQ root or in a user bin. Order: PATH, an executable HQ_CLI_BIN,
+# then HQ_CLI_FALLBACK_DIRS (default: HQ root bin, user bins, system bins).
+resolve_hq_bin() {
+  local found dir
+  found="$(command -v hq 2>/dev/null || true)"
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  if [ -n "${HQ_CLI_BIN:-}" ] && [ -f "$HQ_CLI_BIN" ] && [ -x "$HQ_CLI_BIN" ]; then
+    printf '%s' "$HQ_CLI_BIN"; return 0
+  fi
+  local dirs="${HQ_CLI_FALLBACK_DIRS-$HQ_ROOT/bin:${HOME:+$HOME/.local/bin:$HOME/.npm-global/bin:}/usr/local/bin:/opt/homebrew/bin:/usr/bin}"
+  local IFS=:
+  for dir in $dirs; do
+    [ -n "$dir" ] || continue
+    if [ -f "$dir/hq" ] && [ -x "$dir/hq" ]; then printf '%s' "$dir/hq"; return 0; fi
+  done
+  return 1
+}
+HQ_BIN="$(resolve_hq_bin || true)"
 if [ -z "$HQ_BIN" ]; then
   rc=0
   # MISSING_HQ_MUST_ERROR
-  gate_error "hq CLI is missing from PATH; install or update hq-cli" || rc=$?
+  gate_error "hq CLI is missing from PATH and the usual install locations; install or update hq-cli" || rc=$?
   exit "$rc"
 fi
 

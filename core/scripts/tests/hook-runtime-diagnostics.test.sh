@@ -84,7 +84,7 @@ warn2="$(hq_hook_launch_warning_text \
 [ -n "$warn1" ] || fail "first warning should be emitted"
 [ -z "$warn2" ] || fail "second identical warning should be deduped"
 [ "${#warn1}" -le 420 ] || fail "warning must be bounded to 420 chars"
-printf '%s' "$warn1" | grep -q 'Repair: chmod u+x "$HQ_ROOT/scripts/broken.sh"' \
+printf '%s' "$warn1" | grep >/dev/null 'Repair: chmod u+x "$HQ_ROOT/scripts/broken.sh"' \
   || fail "warning should include the root-contained repair command"
 pass "warning dedupe and bounded repair text work"
 
@@ -98,9 +98,9 @@ cat >"$LOG_FIX" <<'EOF'
 [sessions-bridge] Transport permanently closed code=4090
 EOF
 bridge_out="$(BRIDGE_STATE_FILE="$BRIDGE_STATE_FIX" LOG_FILE="$LOG_FIX" bash "$BRIDGE_HEALTH" <<<'{}')"
-printf '%s' "$bridge_out" | grep -q '<bridge-health-warning>' \
+printf '%s' "$bridge_out" | grep >/dev/null '<bridge-health-warning>' \
   || fail "bridge-health warning wrapper missing under fixture override"
-printf '%s' "$bridge_out" | grep -q '260 GB memory leak on 2026-04-10' \
+printf '%s' "$bridge_out" | grep >/dev/null '260 GB memory leak on 2026-04-10' \
   || fail "bridge-health warning text missing correlated incident date"
 pass "fixture overrides emit the correlated bridge-health warning"
 

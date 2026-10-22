@@ -35,12 +35,12 @@ if ! command -v hq >/dev/null 2>&1; then
   fail "hq CLI missing; install: npm install -g @indigoai-us/hq-cli (need core group; CI uses latest; 5.85.1+ known good)"
 fi
 _hq_core_probe="$(hq core --help 2>&1 || true)"
-if printf '%s\n' "$_hq_core_probe" | grep -qi "unknown command 'core'"; then
+if printf '%s\n' "$_hq_core_probe" | grep >/dev/null -i "unknown command 'core'"; then
   _hq_preflight_fail
 fi
 # Positive: core help must list the forwarder target, or live invoke emits JSON .counts.
 # Core-specific tokens only — rejects top-level help masquerading as core help.
-if ! printf '%s\n' "$_hq_core_probe" | grep -Eqi 'hq-status-summary'; then
+if ! printf '%s\n' "$_hq_core_probe" | grep >/dev/null -Ei 'hq-status-summary'; then
   if ! hq core hq-status-summary --porcelain-file /dev/null --json 2>/dev/null | grep -q '"counts"'; then
     _hq_preflight_fail
   fi

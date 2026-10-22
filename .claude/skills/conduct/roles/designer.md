@@ -66,3 +66,7 @@ Do not wait on a human. Report the blocker with what you tried.
 
 What changed, how you verified it, the PR link, the screenshot paths, and open
 risks.
+
+Before you report done, wait for every background reviewer or subagent you
+started and include its result. If one is still running, report `working`
+and name it; never hand back while a child is still running.

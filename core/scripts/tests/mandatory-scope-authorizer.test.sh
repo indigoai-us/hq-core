@@ -1472,7 +1472,7 @@ for probe_case in \
   'cat origin/main...$b:2' \
   'cat indigoai-us/$r:2' \
   'gh pr view 1 -R indigoai-us/${p%%:*}:0' \
-  'curl -s https://api.example.com/v1/$p:0' \
+  'curl -s https://api.example.com/v1/$p:2' \
   'gh pr create --body-file companies/$r/x -R indigoai-us/hq:2' \
   'curl -s -o companies/$c/x https://api.example.com/$p:2' \
   'cat file://companies/$c/x:2' \
@@ -2115,6 +2115,30 @@ scope_112_case a6d1ddf3 0 'for n in 1 2; do curl -s "https://shop.example.com/?p
 scope_112_case a6d1ddf3 2 'for n in 1; do cat "https://x/?p=$n"; done'
 scope_112_case a6d1ddf3 2 'for n in 1; do curl -s "https://shop.example.com/?p=$n" -o $D/out.html; done'
 scope_112_case a6d1ddf3 2 'for n in 1; do curl -s "https://shop.example.com/?p=$n" -o companies/otherco/settings/x; done'
+
+echo "[117a] feedback_07a4fda9: curl -w/--write-out format strings are not paths; @file still is"
+install_fixture "indigo"
+scope_112_case 07a4fda9 0 'curl -s -w "== /$p code=%{http_code}" https://example.com/'
+scope_112_case 07a4fda9 0 'for p in a b; do curl -s -w "== /$p code=%{http_code}" https://example.com/$p; done'
+scope_112_case 07a4fda9 0 'curl -s --write-out "== /$p code=%{http_code}\\n" https://example.com/'
+scope_112_case 07a4fda9 0 'curl -s --write-out="time=%{time_total} path=/$p" https://example.com/'
+scope_112_case 07a4fda9 2 'curl -s -w @companies/otherco/settings/x https://example.com/'
+scope_112_case 07a4fda9 2 'curl -s --write-out=@companies/otherco/settings/x https://example.com/'
+scope_112_case 07a4fda9 2 'curl -s -w "$(cat companies/otherco/settings/x)" https://example.com/'
+scope_112_case 07a4fda9 2 'curl -s -w "== /$p" -o companies/otherco/settings/x https://example.com/'
+# PR 1544 review 5609007801: %output{FILE} makes curl write the format to
+# FILE. A FILE split by an unset variable reached companies/otherco; the
+# directive is now refused outright. A plain %{http_code} format still passes.
+scope_112_case pr1544wo 2 'curl -s -o /dev/null -w "%output{compan${p}ies/other${p}co/settings/pwn.txt}PWNED" https://example.com'
+scope_112_case pr1544wo 2 'curl -s -o /dev/null -w "%output{>>compan${p}ies/other${p}co/settings/pwn.txt}PWNED" https://example.com'
+scope_112_case pr1544wo 2 'curl -s -o /dev/null --write-out="%output{companies/indigo/projects/alpha/code.txt}%{http_code}" https://example.com'
+scope_112_case pr1544wo 2 'curl -s -o /dev/null -w "%OUT${x}PUT{compan${p}ies/otherco/settings/pwn.txt}x" https://example.com'
+scope_112_case pr1544wo 0 "curl -s -o /dev/null -w '%{http_code}' https://example.com"
+scope_112_case pr1544wo 0 'curl -s -o /dev/null -w "%{http_code} output=%{size_download}" https://example.com'
+# No command head: assignment-only and a bare loop must return 1 from the
+# curl -w helper without crashing under set -u.
+scope_112_case 07a4fda9 0 'fmt="== /$p code=%{http_code}"'
+scope_112_case 07a4fda9 0 'for p in a b; do :; done'
 
 echo "[118] feedback_34ab4b26: a bare . argument in a loop body is data, not the dot-source command"
 install_fixture "indigo"
@@ -4209,6 +4233,222 @@ bash_case 2 fz-neg-py-system "python3 - <<'PY'
 import os
 os.system(\"cat \$(echo companies/\$CO)/x\")
 PY"
+
+# ---------------------------------------------------------------------------
+# Scope-guard hotfix 2026-10-21 (feedback-zero family, residue after #1512).
+# One block per root-cause group; the allow cases are the reported commands,
+# each with a cross-company negative that must stay blocked.
+# ---------------------------------------------------------------------------
+
+echo "[hotfix-1] interpreter heredoc string literals are source text (dfd6d198, e2b0f0b4 single-quoted form)"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/projects/p" "$TMP/companies/indigo/policies"
+bash_case 0 hf1-py-html-dollar-literals "python3 -I - <<'EOF'
+p='/tmp/site/src/page.html'
+open(p,'w').write(open(p).read().replace('<div class=\"p\">\$19</div>','<div class=\"p\">\$29</div>'))
+EOF"
+bash_case 0 hf1-py-single-quoted-own-policy-glob "python3 -I - <<'EOF'
+import json
+json.dump({'policies':['companies/indigo/policies/*.md']},open('companies/indigo/projects/p/prd.json','w'))
+EOF"
+bash_case 2 hf1-neg-py-single-quoted-other-policy-glob "python3 -I - <<'EOF'
+import json
+json.dump({'policies':['companies/otherco/policies/*.md']},open('companies/indigo/projects/p/prd.json','w'))
+EOF"
+bash_case 2 hf1-neg-py-opens-other-company "python3 -I - <<'EOF'
+p='companies/otherco/settings/x.yaml'
+open(p,'w').write('<div class=\"p\">\$19</div>')
+EOF"
+
+echo "[hotfix-2] sed scripts with plain variables are text, not paths (cbbd0e33, 2ec4335f, bcf948ff)"
+install_fixture "indigo"
+bash_case 0 hf2-sed-s-vars-assigned 'u=a; l=b; sed -i '"''"' "s|/old/$u|/new/$l|" /tmp/x.html'
+bash_case 0 hf2-sed-s-vars-loop 'for u in a b; do sed "s|/old/$u|/new/|" /tmp/x.html; done'
+bash_case 0 hf2-sed-s-prefix-var 'p=x; sed "s/^/$p: /" /tmp/x'
+# An unset name expands to nothing (`$p` meant as the last-line address, as
+# in [feedback_2b0a75a8]); the command must bind the name.
+bash_case 2 hf2-neg-sed-s-vars-unset 'sed -i '"''"' "s|/old/$u|/new/$l|" /tmp/x.html'
+bash_case 2 hf2-neg-sed-loop-word-holds-delimiter 'for u in '"'"'a|w /tmp/o'"'"'; do sed "s|/x|$u|" /tmp/x; done'
+bash_case 0 hf2-sed-address-from-grep-cut 's=$(grep -n START /tmp/x | cut -d: -f1); sed -n "${s},+5p" /tmp/x'
+bash_case 2 hf2-neg-sed-address-other-company-file 's=$(grep -n START /tmp/x | cut -d: -f1); sed -n "${s},+5p" companies/otherco/settings/x.yaml'
+bash_case 2 hf2-neg-sed-var-holds-w-other-company 'u='"'"'a|w companies/otherco/settings/x.yaml'"'"'; sed "s|/x|$u|" /tmp/x'
+bash_case 2 hf2-neg-sed-var-from-substitution 'u=$(cat /tmp/p); sed "s|x|$u|" /tmp/x'
+bash_case 2 hf2-neg-sed-var-read 'read u < /tmp/p; sed "s|/x/|$u|" /tmp/x'
+bash_case 2 hf2-neg-sed-vars-other-company-file 'sed "s|/old/$u|/new/$l|" companies/otherco/settings/x.yaml'
+
+echo "[hotfix-3] substitution output in a remote position is not a local path (aba2d75e, b7c03d1a, 3ee29d66, 2ec4335f)"
+install_fixture "indigo"
+mkdir -p "$TMP/repos/private/x"
+# PR 1544 review: curl also opens file:// URLs, so a URL taken whole from a
+# substitution or a tainted variable is not proven remote.
+bash_case 2 hf3-neg-until-curl-url-from-file 'until curl -sf "$(cat /tmp/url)" >/dev/null; do sleep 2; done'
+bash_case 2 hf3-neg-curl-url-var-from-file 'U=$(cat /tmp/url); curl -sf "$U"'
+bash_case 0 hf3-until-curl-literal-https-with-substitution 'until curl -sf "https://x.y/$(cat /tmp/path)" >/dev/null; do sleep 2; done'
+bash_case 0 hf3-gh-repo-from-git-remote 'R=$(git -C repos/private/x remote get-url origin); gh pr list -R "$R"'
+bash_case 0 hf3-gh-repo-substitution 'gh pr list -R "$(git -C repos/private/x remote get-url origin)"'
+bash_case 0 hf3-outposts-exec-command-from-file 'hq outposts exec x -- "$(cat /tmp/cmd.txt)"'
+bash_case 0 hf3-outposts-exec-unquoted-ls 'hq outposts exec x -- ls -d $(ls -d /tmp/x/*)'
+bash_case 0 hf3-ssh-command-from-file 'ssh host "$(cat /tmp/cmd.txt)"'
+bash_case 2 hf3-neg-ssh-localhost-command-from-file 'ssh localhost "$(cat /tmp/cmd.txt)"'
+bash_case 2 hf3-neg-ssh-loopback-command-from-file 'ssh me@127.0.0.1 "$(cat /tmp/cmd.txt)"'
+bash_case 2 hf3-neg-curl-url-from-other-company 'curl -sf "$(cat companies/otherco/settings/x.yaml)"'
+bash_case 2 hf3-neg-curl-output-from-substitution 'curl -o "$(cat /tmp/p)" https://x.y/a'
+bash_case 2 hf3-neg-ssh-identity-from-substitution 'ssh -i "$(cat /tmp/p)" host ls'
+bash_case 2 hf3-neg-outposts-exec-reads-other-company 'hq outposts exec x -- "$(cat companies/otherco/settings/x.yaml)"'
+bash_case 2 hf3-neg-outposts-exec-before-dashdash 'hq outposts exec "$(cat /tmp/p)" -- ls'
+bash_case 2 hf3-neg-gh-repo-reads-other-company 'gh pr list -R "$(cat companies/otherco/settings/x.yaml)"'
+bash_case 2 hf3-neg-ls-tainted-var 'R=$(cat /tmp/p); ls "$R"'
+bash_case 2 hf3-neg-ls-unquoted-substitution 'ls $(ls -d /tmp/d/*)'
+
+echo "[hotfix-4] a loop over an absolute glob outside companies/ binds to its matches (0ed4e446)"
+install_fixture "indigo"
+mkdir -p "$HOME/.claude/scheduled-tasks/a" "$HOME/.claude/scheduled-tasks/b" "$TMP/scratch/runs/a" "$TMP/scratch/links"
+touch "$HOME/.claude/scheduled-tasks/a/task.json" "$TMP/scratch/runs/a/out.json"
+ln -s ../../companies/otherco "$TMP/scratch/links/l"
+bash_case 0 hf4-loop-tilde-glob 'for d in ~/.claude/scheduled-tasks/*/; do cat "$d/task.json"; done'
+bash_case 0 hf4-loop-home-glob 'for d in $HOME/.claude/scheduled-tasks/*/; do cat "$d/task.json"; done'
+bash_case 0 hf4-loop-abs-glob-in-hq "for d in $TMP/scratch/runs/*; do cat \"\$d/out.json\"; done"
+bash_case 2 hf4-neg-loop-abs-glob-companies "for d in $TMP/companies/*/; do cat \"\$d/settings/x.yaml\"; done"
+bash_case 2 hf4-neg-loop-abs-glob-through-link "for d in $TMP/scratch/links/*; do cat \"\$d/settings/x.yaml\"; done"
+bash_case 2 hf4-neg-loop-abs-glob-no-match 'for d in ~/nope/*/; do cat "$d/x"; done'
+bash_case 2 hf4-neg-loop-abs-glob-dotdot 'for d in ~/.claude/../*/; do cat "$d/x"; done'
+bash_case 2 hf4-neg-loop-home-reassigned "HOME=$TMP; for d in \$HOME/companies/*/; do cat \"\$d/settings/x.yaml\"; done"
+
+echo "[hotfix-5] a fully double-quoted glob under the locked company is a literal word (36c3e8cb)"
+install_fixture "indigo"
+mkdir -p "$TMP/companies/indigo/people/a" "$TMP/companies/otherco/people/a"
+touch "$TMP/companies/indigo/people/a/meta.yaml"
+bash_case 0 hf5-ls-quoted-glob-own-company 'ls "companies/indigo/people/*/meta.yaml"'
+bash_case 0 hf5-find-path-quoted-glob-own-company 'find companies/indigo -path "companies/indigo/people/*/meta.yaml"'
+bash_case 2 hf5-neg-ls-quoted-glob-other-company 'ls "companies/otherco/people/*/meta.yaml"'
+bash_case 2 hf5-neg-ls-quoted-glob-company-segment 'ls "companies/*/people/meta.yaml"'
+bash_case 2 hf5-neg-ls-quoted-glob-dotdot 'ls "companies/indigo/../otherco/*/x"'
+bash_case 2 hf5-neg-ls-quoted-glob-with-var 'ls "companies/indigo/$d/*/x"'
+bash_case 2 hf5-neg-ls-quoted-glob-brace 'ls "companies/{indigo,otherco}/people/*"'
+
+echo "[hotfix-6] a leading hq-session.sh bind counts for the same command in an unbound main thread (f7a7126c, c52a2d2e, 1ad54d72, 74bfcdbc)"
+install_fixture ""
+bash_case 0 hf6-bind-then-find 'core/scripts/hq-session.sh set company_slug indigo && find companies/indigo -name '"'"'*.md'"'"' | head'
+# With `;` the read runs even if the bind fails, so only `&&` counts.
+bash_case 2 hf6-neg-bash-bind-semicolon-then-ls 'bash core/scripts/hq-session.sh set company_slug indigo; ls companies/indigo'
+bash_case 2 hf6-neg-bind-semicolon-then-cat 'core/scripts/hq-session.sh set company_slug indigo; cat companies/indigo/settings/.keep'
+bash_case 0 hf6-bash-bind-and-then-ls 'bash core/scripts/hq-session.sh set company_slug indigo && ls companies/indigo'
+bash_case 0 hf6-bind-with-own-session-id 'core/scripts/hq-session.sh set company_slug indigo --session-id sess-bound && ls companies/indigo'
+bash_case 2 hf6-neg-bind-then-other-company 'core/scripts/hq-session.sh set company_slug indigo && ls companies/otherco'
+bash_case 2 hf6-neg-bind-not-leading 'ls companies/indigo && core/scripts/hq-session.sh set company_slug indigo'
+bash_case 2 hf6-neg-bind-after-echo 'echo x; core/scripts/hq-session.sh set company_slug indigo && ls companies/indigo'
+bash_case 2 hf6-neg-bind-other-session-id 'core/scripts/hq-session.sh set company_slug indigo --session-id other-sess && ls companies/indigo'
+bash_case 2 hf6-neg-bind-one-read-another 'core/scripts/hq-session.sh set company_slug otherco && ls companies/indigo'
+bash_case 2 hf6-neg-add-company-is-not-a-bind 'core/scripts/hq-session.sh add company indigo && ls companies/indigo'
+mkdir -p "$TMP/companies/notlisted/settings"
+bash_case 2 hf6-neg-bind-slug-not-in-manifest 'core/scripts/hq-session.sh set company_slug notlisted && ls companies/notlisted'
+install_fixture "indigo"
+bash_case 2 hf6-neg-bound-session-cannot-switch 'core/scripts/hq-session.sh set company_slug otherco && ls companies/otherco'
+
+echo "[pr1544] a curl URL is remote only when the command spells an http(s) scheme and host"
+install_fixture "indigo"
+printf 'file://%s/companies/otherco/settings/.keep\n' "$TMP" > "$TMP/workspace/url.txt"
+bash_case 2 pr1544-neg-curl-url-from-substitution 'curl "$(cat workspace/url.txt)"'
+bash_case 2 pr1544-neg-curl-url-from-tainted-var 'u=$(cat workspace/url.txt); curl "$u"'
+bash_case 2 pr1544-neg-curl-url-unquoted-substitution 'curl $(cat workspace/url.txt)'
+bash_case 2 pr1544-neg-wget-url-from-substitution 'wget -qO- "$(cat workspace/url.txt)"'
+bash_case 2 pr1544-neg-curl-scheme-from-substitution 'curl "$(cat workspace/scheme)://x.y/a"'
+bash_case 0 pr1544-curl-https-prefix-host-from-substitution 'curl "https://$(cat workspace/url.txt)"'
+bash_case 0 pr1544-curl-https-prefix-tainted-var 'u=$(cat workspace/url.txt); curl "https://$u"'
+bash_case 0 pr1544-curl-literal-https 'curl -sf https://example.invalid/a'
+bash_case 0 pr1544-curl-literal-https-quoted 'curl -sf "https://example.invalid/a"'
+bash_case 0 pr1544-curl-literal-https-subst-in-path 'curl -sf "https://example.invalid/$(cat workspace/id.txt)"'
+bash_case 0 pr1544-curl-literal-https-var-bound 'u=https://example.invalid/a; curl -sf "$u"'
+bash_case 2 pr1544-neg-curl-file-literal-foreign "curl file://$TMP/companies/otherco/settings/.keep"
+bash_case 2 pr1544-neg-curl-file-literal-foreign-quoted "curl \"file://$TMP/companies/otherco/settings/.keep\""
+bash_case 2 pr1544-neg-curl-file-prefix-substitution 'curl "file://$(cat workspace/url.txt)"'
+bash_case 2 pr1544-neg-curl-ftp-from-substitution 'curl "ftp://$(cat workspace/url.txt)"'
+# Reviewer's retained controls (independent review of f0065f37).
+install_fixture ""
+bash_case 0 pr1544-ctl-unbound-bind-own 'core/scripts/hq-session.sh set company_slug indigo && cat companies/indigo/settings/.keep'
+bash_case 2 pr1544-ctl-unbound-bind-foreign 'core/scripts/hq-session.sh set company_slug indigo && cat companies/otherco/settings/.keep'
+bash_case 2 pr1544-ctl-unbound-other-session 'core/scripts/hq-session.sh set company_slug indigo --session-id other && cat companies/indigo/settings/.keep'
+bash_case 2 pr1544-ctl-unbound-not-leading 'echo ok; core/scripts/hq-session.sh set company_slug indigo && cat companies/indigo/settings/.keep'
+install_fixture "indigo"
+mkdir -p "$TMP/workspace/runs/a" "$TMP/workspace/links" "$TMP/companies/indigo/people/a"
+printf 'file://%s/companies/otherco/settings/.keep\n' "$TMP" > "$TMP/workspace/url.txt"
+touch "$TMP/workspace/runs/a/task.json" "$TMP/companies/indigo/README.md" "$TMP/companies/indigo/people/a/meta.yaml"
+ln -s ../../companies/otherco "$TMP/workspace/links/l"
+bash_case 2 pr1544-ctl-bound-cannot-switch 'core/scripts/hq-session.sh set company_slug otherco && cat companies/otherco/settings/.keep'
+bash_case 0 pr1544-ctl-absolute-glob-own "for d in $TMP/workspace/runs/*; do cat \"\$d/task.json\"; done"
+bash_case 2 pr1544-ctl-absolute-glob-link-foreign "for d in $TMP/workspace/links/*; do cat \"\$d/settings/.keep\"; done"
+bash_case 2 pr1544-ctl-curl-foreign-inner-read 'curl "$(cat companies/otherco/settings/.keep)"'
+bash_case 2 pr1544-ctl-curl-format-output-foreign 'curl -w "%output{companies/otherco/leak.txt}" https://example.invalid'
+bash_case 2 pr1544-ctl-curl-format-file-foreign 'curl -w @companies/otherco/format.txt https://example.invalid'
+bash_case 0 pr1544-ctl-curl-format-safe 'curl -w "== /$p code=%{http_code}" https://example.invalid'
+bash_case 2 pr1544-ctl-curl-upload-unknown 'curl -T "$(cat workspace/url.txt)" https://example.invalid'
+bash_case 2 pr1544-ctl-curl-config-unknown 'curl -K "$(cat workspace/url.txt)" https://example.invalid'
+bash_case 2 pr1544-ctl-foreign-file-query "google-chrome --headless \"file://$TMP/companies/otherco/report.html?segment=all\""
+bash_case 2 pr1544-ctl-bound-file-query-55ab-unchanged "google-chrome --headless --print-to-pdf=workspace/report.pdf \"file://$TMP/companies/indigo/report.html?segment=all\""
+bash_case 2 pr1544-ctl-foreign-quoted-glob 'ls "companies/otherco/people/*/meta.yaml"'
+bash_case 0 pr1544-ctl-bound-quoted-glob 'ls "companies/indigo/people/*/meta.yaml"'
+bash_case 2 pr1544-ctl-emptyquote-foreign-glob 'cat companies/""[!i]*/settings/.keep'
+bash_case 2 pr1544-ctl-bound-glob-traversal 'cat "companies/indigo/*/../../otherco/settings/.keep"'
+bash_case 2 pr1544-ctl-sed-delimiter-injection 'x="|w companies/otherco/leak.txt|"; sed "s|a|$x|" companies/indigo/README.md'
+
+# PR 1544 re-review: an unquoted expansion after a literal http(s) scheme is
+# word-split, so it can add a file:// operand; only quoted expansions stay remote.
+bash_case 2 pr1544-url-unquoted-subst 'curl https://$(cat /tmp/F)'
+bash_case 2 pr1544-url-unquoted-subst-flag 'curl -s https://$(cat /tmp/F)'
+bash_case 2 pr1544-url-quoted-scheme-unquoted-subst 'curl "https://"$(cat /tmp/F)'
+bash_case 2 pr1544-url-unquoted-subst-output 'curl https://$(cat /tmp/F) -o /tmp/out'
+bash_case 2 pr1544-url-unquoted-subst-wget 'wget https://$(cat /tmp/F)'
+bash_case 2 pr1544-url-unquoted-backtick 'curl https://`cat /tmp/F`'
+bash_case 2 pr1544-url-unquoted-var 'curl https://$HOST/x'
+bash_case 2 pr1544-url-loop-var-from-subst 'for n in $(cat /tmp/F); do curl https://a.example.com/$n; done'
+bash_case 0 pr1544-url-literal 'curl https://example.com/x'
+bash_case 0 pr1544-url-quoted-subst 'curl -s "https://example.com/$(date +%s)"'
+bash_case 0 pr1544-url-literal-api 'curl -L https://api.github.com/repos/a/b'
+bash_case 0 pr1544-url-literal-loop-var 'for n in 1 2; do curl -s https://a.example.com/?p=$n -o /dev/null; done'
+
+# feedback 944d2873: PR 1544 let a command substitution through as remote ssh
+# command text when the destination was really this machine. Every local
+# alias, in any case, and a HostName override keep the taint rule (exit 2);
+# a literal remote host stays allowed.
+bash_case 2 944d-ssh-upper-localhost 'ssh LOCALHOST "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-zero 'ssh 0 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-ip6-localhost 'ssh ip6-localhost "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-decimal-ipv4 'ssh 2130706433 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-attached-hostname 'ssh -oHostName=localhost foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-separate-hostname 'ssh -o HostName=localhost foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-hostname-lower-space 'ssh -o "hostname localhost" foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-hostname-upper-key 'ssh -o HOSTNAME=127.0.0.1 foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-hostname-quoted-attached 'ssh "-oHostname=LocalHost" foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-user-mixed-case 'ssh me@LocalHost.LocalDomain "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-user-upper-ip6 'ssh root@IP6-LOOPBACK "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-loopback-other 'ssh 127.0.0.2 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-short-ipv4 'ssh 127.1 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-hex-ipv4 'ssh 0x7f000001 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-ipv6-loopback 'ssh 0:0:0:0:0:0:0:1 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-unspecified 'ssh 0.0.0.0 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-uri-localhost 'ssh ssh://me@LOCALHOST:22 "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-machine-hostname "ssh $(hostname -s | tr '[:lower:]' '[:upper:]') \"\$(cat /tmp/cmd.txt)\""
+bash_case 2 944d-ssh-proxycommand 'ssh -o ProxyCommand=sh remote.example.test "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-config-file 'ssh -F /tmp/cfg remote.example.test "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-hostname-local-then-remote 'ssh -o HostName=localhost -o HostName=remote.example.test foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-hostname-remote-then-local 'ssh -o HostName=remote.example.test -oHostName=LOCALHOST foo "$(cat /tmp/cmd.txt)"'
+bash_case 0 944d-ctl-ssh-hostname-remote-twice 'ssh -o HostName=remote.example.test -o HostName=other.example.test foo "$(cat /tmp/cmd.txt)"'
+bash_case 2 944d-ssh-bundled-4o-attached 'ssh -4oHostName=localhost box1 "$(cat companies/indigo/README.md)"'
+bash_case 2 944d-ssh-bundled-vF-attached 'ssh -vF/tmp/cfg box1 "$(cat companies/indigo/README.md)"'
+bash_case 2 944d-ssh-bundled-4o-separate 'ssh -4o HostName=localhost box1 "$(cat companies/indigo/README.md)"'
+bash_case 2 944d-ssh-bundled-Ao-separate 'ssh -Ao HostName=localhost box1 "$(cat companies/indigo/README.md)"'
+bash_case 0 944d-ctl-ssh-bundled-4-remote 'ssh -4 box1.example.com "$(cat companies/indigo/README.md)"'
+bash_case 0 944d-ctl-ssh-bundled-4o-remote-hostname 'ssh -4oHostName=box2.example.com box1 "$(cat companies/indigo/README.md)"'
+bash_case 2 944d-ssh-tag-separate 'ssh -P tag localhost "$(cat companies/indigo/README.md)"'
+bash_case 2 944d-ssh-tag-bundled 'ssh -vP tag localhost "$(cat companies/indigo/README.md)"'
+bash_case 2 944d-ssh-tag-attached 'ssh -Ptag localhost "$(cat companies/indigo/README.md)"'
+bash_case 0 944d-ctl-ssh-tag-remote 'ssh -P tag box1.example.com "$(cat companies/indigo/README.md)"'
+bash_case 0 944d-ctl-ssh-tag-bundled-remote 'ssh -vP tag box1.example.com "$(cat companies/indigo/README.md)"'
+bash_case 0 944d-ctl-ssh-remote-substitution 'ssh remote.example.test "$(cat /tmp/cmd.txt)"'
+bash_case 0 944d-ctl-ssh-remote-user-port 'ssh -p 2222 me@remote.example.test "$(cat /tmp/cmd.txt)"'
+bash_case 0 944d-ctl-ssh-remote-hostname-option 'ssh -o HostName=remote.example.test box "$(cat /tmp/cmd.txt)"'
+bash_case 0 944d-ctl-ssh-remote-ipv4 'ssh 192.0.2.10 "$(cat /tmp/cmd.txt)"'
+bash_case 0 944d-ctl-ssh-remote-literal 'ssh remote.example.test uptime'
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

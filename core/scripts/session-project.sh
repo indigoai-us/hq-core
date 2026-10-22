@@ -442,10 +442,32 @@ function writeReadme(projectDir, prd) {
     "- Keep session notes in `journal/` or `sessions/`.\n");
 }
 
-function setActivePointer(projectDir) {
+function sessionKey(sessionId) {
+  return String(sessionId || "").replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+function setActivePointer(projectDir, sessionId) {
   const state = path.join(HQ_ROOT, ".claude", "state");
   fs.mkdirSync(state, { recursive: true });
   fs.writeFileSync(path.join(state, "active-session-project"), String(projectDir) + "\n");
+  // The session's own pointer, the same file auto-session-project.sh writes,
+  // so later calls for this session never fall back to the global one.
+  const key = sessionKey(sessionId);
+  if (key) fs.writeFileSync(path.join(state, "auto-session-project-" + key), String(projectDir));
+}
+
+// The global pointer is a machine-wide "last project anywhere" hint. A new
+// session that has no pointer of its own must not inherit a project another
+// session set yesterday (feedback_c5558799), so the global pointer is only
+// used while it is fresh: HQ_SESSION_PROJECT_POINTER_TTL_SECONDS, default
+// 6 hours; 0 turns the global fallback off.
+function globalPointerFresh(pointer) {
+  let ttl = parseInt(process.env.HQ_SESSION_PROJECT_POINTER_TTL_SECONDS || "21600", 10);
+  if (!Number.isFinite(ttl) || ttl < 0) ttl = 21600;
+  if (ttl === 0) return false;
+  try {
+    return (Date.now() - fs.statSync(pointer).mtimeMs) <= ttl * 1000;
+  } catch (e) { return false; }
 }
 
 function resolveProjectPath(raw) {
@@ -572,7 +594,7 @@ function ensureProject(args) {
   appendSession(prd, args.session_id, args.prompt, reused);
   writeJson(path.join(projectDir, "prd.json"), prd);
   writeReadme(projectDir, prd);
-  setActivePointer(projectDir);
+  setActivePointer(projectDir, args.session_id);
 
   const stamp = nowIso().split(":").join("").split("-").join("");
   const sessionFile = path.join(projectDir, "sessions", stamp + "-" + (args.session_id || "session") + ".json");
@@ -592,8 +614,11 @@ function ensureProject(args) {
   }, null, 2));
 }
 
-function resolveProjectDir(project, requiredMsg) {
-  const pointer = path.join(HQ_ROOT, ".claude", "state", "active-session-project");
+function resolveProjectDir(project, requiredMsg, sessionId) {
+  const state = path.join(HQ_ROOT, ".claude", "state");
+  const pointer = path.join(state, "active-session-project");
+  const key = sessionKey(sessionId);
+  const sessionPointer = key ? path.join(state, "auto-session-project-" + key) : "";
   let projectDir;
   if (project) {
     projectDir = resolveProjectPath(project);
@@ -601,7 +626,25 @@ function resolveProjectDir(project, requiredMsg) {
       process.stderr.write("session-project: invalid project path\n");
       process.exit(2);
     }
-  } else if (fs.existsSync(pointer)) {
+  } else if (sessionPointer && fs.existsSync(sessionPointer)) {
+    // This session's own resolution. An empty file means the session has no
+    // project; it must not fall through to another session's pointer.
+    let raw = "";
+    try { raw = fs.readFileSync(sessionPointer, "utf8"); } catch (e) {}
+    if (!raw.trim()) {
+      if (requiredMsg) { process.stderr.write(requiredMsg + "\n"); process.exit(1); }
+      process.exit(0);
+    }
+    // The hook writes an absolute path under its own (possibly logical) HQ
+    // root, for example /var/... for /private/var/... on macOS.
+    raw = raw.replace(/\r?\n$/, "");
+    if (path.isAbsolute(raw)) { try { raw = fs.realpathSync(raw); } catch (e) {} }
+    projectDir = resolveProjectPath(raw);
+    if (!projectDir) {
+      process.stderr.write("session-project: invalid session project pointer\n");
+      process.exit(2);
+    }
+  } else if (fs.existsSync(pointer) && globalPointerFresh(pointer)) {
     projectDir = readActivePointer(pointer);
     if (!projectDir) {
       process.stderr.write("session-project: invalid active project pointer\n");
@@ -618,7 +661,7 @@ function resolveProjectDir(project, requiredMsg) {
 }
 
 function ingestPlan(args) {
-  const projectDir = resolveProjectDir(args.project, "session-project: no active project; run ensure first");
+  const projectDir = resolveProjectDir(args.project, "session-project: no active project; run ensure first", args.session_id);
   const prdPath = path.join(projectDir, "prd.json");
   // Absent is fine (fresh project); corrupt must not be flattened into a
   // metadata-only stub by the writeJson() below.
@@ -650,7 +693,7 @@ function ingestPlan(args) {
 }
 
 function appendEvent(args) {
-  let projectDir = resolveProjectDir(args.project, "");
+  let projectDir = resolveProjectDir(args.project, "", args.session_id);
   let prdPath = path.join(projectDir, "prd.json");
   // Absent means the project moved and we reconcile by session id. Corrupt
   // means the file is damaged: readJsonForWrite exits rather than letting the

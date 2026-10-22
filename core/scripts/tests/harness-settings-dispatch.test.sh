@@ -161,7 +161,7 @@ framing_fallback="$({
   }
   hqad_iter_settings "PreToolUse" "Bash"
 } 2>/dev/null)"
-if printf '%s\n' "$framing_fallback" | grep -q $'^gate\tmandatory-scope-authorizer\t'; then
+if printf '%s\n' "$framing_fallback" | grep >/dev/null $'^gate\tmandatory-scope-authorizer\t'; then
   pass "malformed iterator framing uses critical PreToolUse fallback"
 else
   fail "malformed iterator framing silently emitted zero critical guards"
@@ -275,12 +275,12 @@ assert_combo "codex" "$CODEX" "PreToolUse" "Agent" \
 # it by its native name instead of being silently dropped by the adapter.
 custom_payload='{"hook_event_name":"PreToolUse","tool_name":"company_custom_tool","cwd":"'"$FIX"'","session_id":"t","tool_input":{"value":"x"}}'
 custom_recorded="$(run_recorded "$CODEX" "$custom_payload")"
-if printf '%s\n' "$custom_recorded" | grep -q '^master:PreToolUse$'; then
+if printf '%s\n' "$custom_recorded" | grep >/dev/null '^master:PreToolUse$'; then
   pass "codex custom PreToolUse reaches master fan-out"
 else
   fail "codex custom PreToolUse was dropped before master fan-out"
 fi
-if printf '%s\n' "$custom_recorded" | grep -q '^mtool:company_custom_tool$'; then
+if printf '%s\n' "$custom_recorded" | grep >/dev/null '^mtool:company_custom_tool$'; then
   pass "codex custom PreToolUse preserves its native tool name"
 else
   fail "codex custom PreToolUse did not preserve its native tool name"
@@ -351,12 +351,12 @@ done
 # native name and do not send it through completed-Agent result hooks.
 custom_post_payload='{"hook_event_name":"PostToolUse","tool_name":"company_custom_tool","cwd":"'"$FIX"'","session_id":"t","tool_input":{"value":"x"},"tool_response":{"ok":true}}'
 custom_post_recorded="$(run_recorded "$CODEX" "$custom_post_payload")"
-if printf '%s\n' "$custom_post_recorded" | grep -q '^master:PostToolUse$'; then
+if printf '%s\n' "$custom_post_recorded" | grep >/dev/null '^master:PostToolUse$'; then
   pass "codex custom PostToolUse reaches master fan-out"
 else
   fail "codex custom PostToolUse was dropped before master fan-out"
 fi
-if printf '%s\n' "$custom_post_recorded" | grep -q '^mtool:company_custom_tool$'; then
+if printf '%s\n' "$custom_post_recorded" | grep >/dev/null '^mtool:company_custom_tool$'; then
   pass "codex custom PostToolUse preserves its native tool name"
 else
   fail "codex custom PostToolUse did not preserve its native tool name"
@@ -395,12 +395,12 @@ assert_journal_tool "codex web_search" "$CODEX" \
   '{"hook_event_name":"PostToolUse","tool_name":"web_search","cwd":"'"$FIX"'","session_id":"t","tool_input":{"query":"x"}}' "WebSearch"
 codex_spawn_post='{"hook_event_name":"PostToolUse","tool_name":"spawn_agent","cwd":"'"$FIX"'","session_id":"t","tool_input":{"task_name":"probe"},"tool_response":{"agent_id":"agent-1","task_name":"probe","status":"running"}}'
 codex_spawn_post_recorded="$(run_recorded "$CODEX" "$codex_spawn_post")"
-if printf '%s\n' "$codex_spawn_post_recorded" | grep -q '^jtool:'; then
+if printf '%s\n' "$codex_spawn_post_recorded" | grep >/dev/null '^jtool:'; then
   fail "codex spawn acknowledgement was journaled as a completed Agent result"
 else
   pass "codex spawn acknowledgement bypasses completed-Agent journaling"
 fi
-if printf '%s\n' "$codex_spawn_post_recorded" | grep -q '^mtool:spawn_agent$'; then
+if printf '%s\n' "$codex_spawn_post_recorded" | grep >/dev/null '^mtool:spawn_agent$'; then
   pass "codex spawn acknowledgement preserves native tool_name for master hooks"
 else
   fail "codex spawn acknowledgement did not preserve native tool_name"
@@ -408,7 +408,7 @@ fi
 
 codex_subagent_stop='{"hook_event_name":"SubagentStop","cwd":"'"$FIX"'","session_id":"t","agent_id":"agent-1","agent_type":"explorer","last_assistant_message":"completed result"}'
 codex_subagent_stop_recorded="$(run_recorded "$CODEX" "$codex_subagent_stop")"
-if printf '%s\n' "$codex_subagent_stop_recorded" | grep -q '^jtool:Agent$'; then
+if printf '%s\n' "$codex_subagent_stop_recorded" | grep >/dev/null '^jtool:Agent$'; then
   pass "codex SubagentStop journals a completed Agent result"
 else
   fail "codex SubagentStop did not journal a completed Agent result"
@@ -464,7 +464,7 @@ while IFS=$'\t' read -r ev matcher; do
   for tool in $(printf '%s' "$matcher" | tr ',|' '  '); do
     [ -n "$tool" ] || continue
     key="$ev/$tool"
-    if printf '%s\n' "$ASSERTED" | grep -qxF "$key"; then
+    if printf '%s\n' "$ASSERTED" | grep >/dev/null -xF "$key"; then
       continue
     fi
     if reason="$(exception_reason "$key")"; then

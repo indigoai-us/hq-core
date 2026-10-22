@@ -208,7 +208,7 @@ pass "session_list_present_companies reflects content-based presence"
 # never pipe into `grep -q` (or --quiet/--silent/-m) — use a here-string.
 LIST="$(printf 'aaa-first\n'; awk 'BEGIN { for (i = 1; i <= 40000; i++) print "pad-" i }')"
 PIPED_RC=0
-printf '%s\n' "$LIST" | grep -Fxq -- aaa-first || PIPED_RC=$?
+printf '%s\n' "$LIST" | grep -Fxq -- aaa-first || PIPED_RC=$?  # pipefail-grep-q: intentional hazard demo
 [ "$PIPED_RC" -ne 0 ] \
   || fail "expected the piped form to report a false miss under pipefail; the hazard this guards against may no longer exist on this platform, so re-derive the guard rather than deleting it"
 HEREDOC_RC=0

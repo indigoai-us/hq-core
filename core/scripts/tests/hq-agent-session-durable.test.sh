@@ -53,7 +53,7 @@ pass "traversal rejection"
 # the function itself exports HQ_SESSION_PROJECT_DIR.
 DIR="$(session_resolve_project_dir "$ROOT" "indigo" "" "$CONV")"
 [ -d "$DIR" ] || fail "project dir not created: $DIR"
-echo "$DIR" | grep -q "/companies/indigo/projects/" || fail "dir not under projects: $DIR"
+echo "$DIR" | grep >/dev/null "/companies/indigo/projects/" || fail "dir not under projects: $DIR"
 # Direct call (no command substitution) stamps the env var for the process
 unset HQ_SESSION_PROJECT_DIR
 session_resolve_project_dir "$ROOT" "indigo" "" "$CONV" >/dev/null
@@ -61,7 +61,7 @@ session_resolve_project_dir "$ROOT" "indigo" "" "$CONV" >/dev/null
 # Explicit project field
 DIR2="$(session_resolve_project_dir "$ROOT" "indigo" "my-feature" "$CONV")"
 [ -d "$DIR2" ] || fail "explicit project dir missing"
-echo "$DIR2" | grep -q '/projects/my-feature$' || fail "explicit slug not used: $DIR2"
+echo "$DIR2" | grep >/dev/null '/projects/my-feature$' || fail "explicit slug not used: $DIR2"
 pass "resolve + export"
 
 # ── 4. durable guidance contains literal $HQ_SESSION_PROJECT_DIR ────────────
@@ -185,18 +185,18 @@ echo x > "$SCAN/.git/config"
 echo x > "$SCAN/.pnpm/pkg.js"
 echo x > "$SCAN/.session-logs/grok/session/events.jsonl"
 FOUND="$(_session_find_newer "$SCAN" 0 workspace)"
-printf '%s\n' "$FOUND" | grep -q 'real/artifact.txt' || fail "residual scan missed real artifact"
-printf '%s\n' "$FOUND" | grep -q 'node_modules' && fail "residual scan descended into node_modules"
-printf '%s\n' "$FOUND" | grep -q '.git/config' && fail "residual scan descended into .git"
-printf '%s\n' "$FOUND" | grep -q '.pnpm' && fail "residual scan descended into .pnpm"
-printf '%s\n' "$FOUND" | grep -q '.session-logs' && fail "residual scan descended into provider session logs"
+printf '%s\n' "$FOUND" | grep >/dev/null 'real/artifact.txt' || fail "residual scan missed real artifact"
+printf '%s\n' "$FOUND" | grep >/dev/null 'node_modules' && fail "residual scan descended into node_modules"
+printf '%s\n' "$FOUND" | grep >/dev/null '.git/config' && fail "residual scan descended into .git"
+printf '%s\n' "$FOUND" | grep >/dev/null '.pnpm' && fail "residual scan descended into .pnpm"
+printf '%s\n' "$FOUND" | grep >/dev/null '.session-logs' && fail "residual scan descended into provider session logs"
 pass "GNU residual scan prunes node_modules/.git/.pnpm/.session-logs"
 
 # The helper also scans durable project trees. A project-owned directory with
 # the same basename remains a legitimate artifact; only the top-level workspace
 # telemetry tree is implementation-owned.
 FOUND_PROJECT="$(_session_find_newer "$SCAN" 0 any)"
-printf '%s\n' "$FOUND_PROJECT" | grep -q '.session-logs/grok/session/events.jsonl' \
+printf '%s\n' "$FOUND_PROJECT" | grep >/dev/null '.session-logs/grok/session/events.jsonl' \
   || fail "project artifact scan incorrectly pruned a user .session-logs directory"
 pass "project artifact scan retains user .session-logs directories"
 
@@ -212,9 +212,9 @@ find() {
 }
 FOUND_PORTABLE="$(_session_find_newer "$SCAN" 0 workspace)"
 unset -f find
-printf '%s\n' "$FOUND_PORTABLE" | grep -q 'real/artifact.txt' \
+printf '%s\n' "$FOUND_PORTABLE" | grep >/dev/null 'real/artifact.txt' \
   || fail "portable residual scan missed real artifact"
-printf '%s\n' "$FOUND_PORTABLE" | grep -q '.session-logs' \
+printf '%s\n' "$FOUND_PORTABLE" | grep >/dev/null '.session-logs' \
   && fail "portable residual scan descended into provider session logs"
 pass "portable residual scan prunes provider session logs"
 

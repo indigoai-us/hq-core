@@ -116,7 +116,7 @@ git -C "$ANSI_REPO" add -A
 
 ansi_out="$(cd "$ANSI_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
 
-if printf '%s' "$ansi_out" | grep -q 'probe.sh:3:'; then
+if printf '%s' "$ansi_out" | grep >/dev/null 'probe.sh:3:'; then
   echo "  ok   real linter flags the unquoted backslash-bearing pattern"
 else
   echo "FAIL: linter did not flag the broken ANSI-C substitution pattern" >&2
@@ -125,7 +125,7 @@ else
 fi
 
 for safe_line in 4 5 7 8; do
-  if printf '%s' "$ansi_out" | grep -q "probe.sh:$safe_line:"; then
+  if printf '%s' "$ansi_out" | grep >/dev/null "probe.sh:$safe_line:"; then
     echo "FAIL: linter false-flagged probe.sh line $safe_line" >&2
     printf '%s\n' "$ansi_out" >&2
     exit 1
@@ -155,14 +155,14 @@ SH
 git -C "$ARRAY_REPO" add core/scripts
 
 array_out="$(cd "$ARRAY_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
-if printf '%s' "$array_out" | grep -q 'check-hq-hooks.sh:4:'; then
+if printf '%s' "$array_out" | grep >/dev/null 'check-hq-hooks.sh:4:'; then
   echo "  ok   real linter flags an unguarded array expansion in a nounset script"
 else
   echo "FAIL: linter did not flag the nounset empty-array expansion" >&2
   printf '%s\\n' "$array_out" >&2
   exit 1
 fi
-if printf '%s' "$array_out" | grep -q 'check-hq-hooks.sh:6:'; then
+if printf '%s' "$array_out" | grep >/dev/null 'check-hq-hooks.sh:6:'; then
   echo "FAIL: linter false-flagged the guarded empty-array expansion" >&2
   printf '%s\\n' "$array_out" >&2
   exit 1
@@ -186,14 +186,14 @@ f() {
 SH
 git -C "$ARRAY_REPO" add core/scripts
 empty_out="$(cd "$ARRAY_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
-if printf '%s' "$empty_out" | grep -q 'hq-storage.sh:5:.*signed'; then
+if printf '%s' "$empty_out" | grep >/dev/null 'hq-storage.sh:5:.*signed'; then
   echo "  ok   real linter flags a bare expansion of an empty-initialized array"
 else
   echo "FAIL: linter missed the empty-initialized array expansion" >&2
   printf '%s\n' "$empty_out" >&2
   exit 1
 fi
-if printf '%s' "$empty_out" | grep -q -e 'hq-storage.sh:7:' -e 'hq-storage.sh:9:'; then
+if printf '%s' "$empty_out" | grep >/dev/null -e 'hq-storage.sh:7:' -e 'hq-storage.sh:9:'; then
   echo "FAIL: linter false-flagged a guarded or never-empty array in empty-init scope" >&2
   printf '%s\n' "$empty_out" >&2
   exit 1
@@ -217,14 +217,14 @@ SH
 git -C "$MK_REPO" add core/scripts .claude/skills
 
 mktemp_out="$(cd "$MK_REPO" && bash core/scripts/lint-shell-portability.sh 2>&1 || true)"
-if printf '%s' "$mktemp_out" | grep -q 'mktemp-probe.sh:2:.*suffix'; then
+if printf '%s' "$mktemp_out" | grep >/dev/null 'mktemp-probe.sh:2:.*suffix'; then
   echo "  ok   real linter flags a mktemp suffix after XXXXXX"
 else
   echo "FAIL: linter did not flag a mktemp suffix after XXXXXX" >&2
   printf '%s\n' "$mktemp_out" >&2
   exit 1
 fi
-if printf '%s' "$mktemp_out" | grep -q 'mktemp-probe.sh:3:'; then
+if printf '%s' "$mktemp_out" | grep >/dev/null 'mktemp-probe.sh:3:'; then
   echo "FAIL: linter false-flagged a trailing-X mktemp template" >&2
   printf '%s\n' "$mktemp_out" >&2
   exit 1

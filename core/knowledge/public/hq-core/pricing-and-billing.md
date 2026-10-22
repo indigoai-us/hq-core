@@ -21,7 +21,11 @@ usage line, so the included usage covers it.
 The trial is `usage.trial.days` days of usage free, capped at
 `usage.trial.capUsd`. Meters marked `waivedInTrial` (the vault fee) are not
 charged during the trial. Items in `usage.free` (deploys, DMs, background AI)
-are never charged. Domains are priced in `usage.domains`.
+are never charged. Domains are priced in `usage.domains`: `standardUsd` and
+`premiumUsd` for connecting a domain, and `purchase` for buying a new domain
+through HQ (the registrar's price plus a yearly markup, renewed yearly on the
+same basis and charged before each renewal; see the `domain-purchase` billing
+rule).
 
 Hosted boxes for new accounts use the sizes in `usage.boxes` (small, medium,
 large, xlarge). Existing customers keep their current box prices (the agent
@@ -121,6 +125,7 @@ _Generated from pricing.json (statement generated 2026-10-20T05:12:44.286Z). Do 
 - Trial: 30 days, capped at $500 of usage.
 - Free: deploys, DMs, background AI.
 - Domains: $20 standard, $500 premium, per month.
+- Domain purchase: registrar price plus $3 a year, renewing yearly on the same basis, charged before each renewal; no refunds after a 5-day grace period.
 
 ### Boxes on the usage card (per box, per month)
 

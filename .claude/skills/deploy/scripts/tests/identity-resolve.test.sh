@@ -106,6 +106,41 @@ else
   fail "failed machine mint should fail closed without browser login (got: $OUTPUT)"
 fi
 
+# feedback_1eaa57d7: the daemon's cached machine token can make the normal
+# refresh fail (stale or rejected cache). The resolver must retry once with the
+# one-day floor, which skips that cache and mints fresh, instead of failing.
+BIN_MACHINE_STALE="$TMP/bin-machine-stale"
+mkdir -p "$BIN_MACHINE_STALE"
+cat > "$BIN_MACHINE_STALE/hq-auth-refresh" <<'STUB'
+#!/bin/bash
+printf '%s\n' "${HQ_AUTH_MIN_VALIDITY_SECONDS:-120}" >> "$MACHINE_STALE_LOG"
+[ "${HQ_AUTH_MIN_VALIDITY_SECONDS:-120}" -ge 86400 ] || exit 1
+mkdir -p "$HQ_MACHINE_TOKEN_STATE_DIR"
+printf '{"accessToken":"remint-access","idToken":"remint-id","expiresAt":%s}\n' \
+  "$(( ($(date +%s) + 3600) * 1000 ))" > "$HQ_MACHINE_TOKEN_STATE_DIR/cognito-tokens.json"
+STUB
+chmod +x "$BIN_MACHINE_STALE/hq-auth-refresh"
+HOME_MACHINE_STALE="$TMP/home-machine-stale"
+make_machine_creds "$HOME_MACHINE_STALE"
+MACHINE_STALE_STATE="$TMP/machine-stale-state"
+mkdir -p "$MACHINE_STALE_STATE" "$TMP/machine-stale-tmp"
+printf '{"accessToken":"old-access","idToken":"old-id","expiresAt":1}\n' > "$MACHINE_STALE_STATE/cognito-tokens.json"
+MACHINE_STALE_LOG="$TMP/machine-stale.log"
+OUTPUT=$(env -u HQ_AUTH_MIN_VALIDITY_SECONDS \
+  HOME="$HOME_MACHINE_STALE" USER=machine-stale TMPDIR="$TMP/machine-stale-tmp" \
+  HQ_MACHINE_CREDS_FILE="$HOME_MACHINE_STALE/.hq-agent/machine-creds.json" \
+  HQ_MACHINE_TOKEN_STATE_DIR="$MACHINE_STALE_STATE" \
+  MACHINE_STALE_LOG="$MACHINE_STALE_LOG" \
+  PATH="$BIN_MACHINE_STALE:$PATH" /bin/bash "$RESOLVER" 2>"$TMP/machine-stale.err")
+STATUS=$?
+if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
+  '.status == "ok" and .identity == "machine" and .jwt == "remint-id" and .source == "machine_mint"' >/dev/null \
+  && [ "$(tr '\n' ' ' < "$MACHINE_STALE_LOG")" = "300 86400 " ]; then
+  pass "stale cached machine token is re-minted once instead of machine_mint_failed"
+else
+  fail "stale cached machine token should be re-minted once (got: $OUTPUT; calls: $(cat "$MACHINE_STALE_LOG" 2>/dev/null))"
+fi
+
 # A realistic refresh stub follows the hq-auth-refresh cache threshold: it
 # keeps a cached token with more than HQ_AUTH_MIN_VALIDITY_SECONDS remaining
 # (default 120), otherwise it writes a fresh test placeholder. No real CLI or
@@ -340,6 +375,32 @@ if [ "$STATUS" = "0" ] && [ "$(printf '%s\n' "$OUTPUT" | jq -r '.reason // empty
   pass "USERNAME is sanitized for the login lock path under TMPDIR"
 else
   fail "resolver did not use the sanitized login lock path under TMPDIR (got: $OUTPUT)"
+fi
+
+# Regression (feedback_7dc25705): a login lock older than the TTL is stale and
+# must not block login forever. A stub hq makes the login attempt a no-op.
+mkdir -p "$TMP/stub-bin"
+printf '#!/bin/sh\nexit 0\n' > "$TMP/stub-bin/hq"
+chmod +x "$TMP/stub-bin/hq"
+touch -t 200001010000 "$LOGIN_LOCK"
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" TMPDIR="$TMPDIR_TEST" \
+  PATH="$TMP/stub-bin:$PATH" /bin/bash "$RESOLVER" 2>"$TMP/stale.err")
+STATUS=$?
+if [ "$STATUS" = "0" ] && [ "$(printf '%s\n' "$OUTPUT" | jq -r '.reason // empty')" = "login_attempt_failed" ] \
+  && [ -z "$(find "$LOGIN_LOCK" -prune -mmin +1 2>/dev/null)" ]; then
+  pass "a stale login lock past its TTL is retaken and login is retried"
+else
+  fail "stale login lock still blocked login (got: $OUTPUT)"
+fi
+# The freshly retaken lock blocks again within the TTL.
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" TMPDIR="$TMPDIR_TEST" \
+  PATH="$TMP/stub-bin:$PATH" /bin/bash "$RESOLVER" 2>/dev/null)
+if [ "$(printf '%s\n' "$OUTPUT" | jq -r '.reason // empty')" = "login_already_attempted" ]; then
+  pass "a fresh login lock still blocks a second login inside the TTL"
+else
+  fail "fresh login lock did not block (got: $OUTPUT)"
 fi
 
 if [ "$FAIL" = "0" ]; then echo "ALL PASS"; exit 0; else echo "FAILURES"; exit 1; fi

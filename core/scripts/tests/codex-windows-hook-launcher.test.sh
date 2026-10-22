@@ -139,7 +139,7 @@ if [ -f "$LAUNCHER" ]; then
   ok "launcher present"
   # Check executable lines only; `rem` comments may name what the launcher avoids.
   CODE="$(grep -viE '^[[:space:]]*(@?rem( |$)|::)' "$LAUNCHER")"
-  if printf '%s\n' "$CODE" | grep -q '/bin/bash'; then
+  if printf '%s\n' "$CODE" | grep >/dev/null '/bin/bash'; then
     fail "launcher /bin/bash" "launcher must not hardcode /bin/bash"
   else
     ok "launcher has no /bin/bash"
@@ -149,29 +149,29 @@ if [ -f "$LAUNCHER" ]; then
   done
   # `where bash` can return C:\Windows\System32\bash.exe (WSL), which cannot
   # run a Windows-path HQ hook. Resolve via git.exe or known Git dirs instead.
-  if printf '%s\n' "$CODE" | grep -qiE 'where(\.exe)? +bash'; then
+  if printf '%s\n' "$CODE" | grep >/dev/null -iE 'where(\.exe)? +bash'; then
     fail "launcher WSL bash" "launcher must not resolve bash via 'where bash'"
   else
     ok "launcher does not resolve bash via 'where bash'"
   fi
   # Fail closed: no silent exit 0. PreToolUse denies with 2 and the other
   # events exit 1, keyed on the event name passed as the first argument.
-  if printf '%s\n' "$CODE" | grep -qiE 'exit /b 0'; then
+  if printf '%s\n' "$CODE" | grep >/dev/null -iE 'exit /b 0'; then
     fail "launcher fail closed" "launcher must not exit 0 when it cannot run the adapter"
   else
     ok "launcher has no exit 0"
   fi
   for needle in '%~1' 'PreToolUse' 'set "HQ_HOOK_FAIL_RC=2"' 'exit /b %HQ_HOOK_FAIL_RC%' 'if not exist "%HQ_HOOK_ADAPTER%"'; do
-    if printf '%s\n' "$CODE" | grep -qF "$needle"; then ok "launcher fail closed: $needle"; else fail "launcher fail closed" "missing $needle"; fi
+    if printf '%s\n' "$CODE" | grep >/dev/null -F "$needle"; then ok "launcher fail closed: $needle"; else fail "launcher fail closed" "missing $needle"; fi
   done
   # The launcher must not read stdin; bash gets it byte for byte.
-  if printf '%s\n' "$CODE" | grep -qiE 'set +/p|(^|[^a-z])more([^a-z]|$)|findstr'; then
+  if printf '%s\n' "$CODE" | grep >/dev/null -iE 'set +/p|(^|[^a-z])more([^a-z]|$)|findstr'; then
     fail "launcher stdin" "launcher must leave stdin for bash"
   else
     ok "launcher leaves stdin for bash"
   fi
   # HQ_BASH_EXE under %SystemRoot% (the WSL bash) is ignored with a warning.
-  if printf '%s\n' "$CODE" | grep -qF '%%HQ_BASH_REL:%SystemRoot%\=%%'; then
+  if printf '%s\n' "$CODE" | grep >/dev/null -F '%%HQ_BASH_REL:%SystemRoot%\=%%'; then
     ok "launcher rejects HQ_BASH_EXE under SystemRoot"
   else
     fail "launcher SystemRoot" "HQ_BASH_EXE under %SystemRoot% is not rejected"

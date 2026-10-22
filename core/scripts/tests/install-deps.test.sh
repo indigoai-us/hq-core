@@ -48,7 +48,7 @@ run_lint_in() { ( cd "$1" && bash "$LINT" ); }
 # Case A: clean surface that only names the tool -> passes (exit 0)
 out="$(run_lint_in "$FX" 2>&1)" || fail "Case A: clean fixture should pass; got:
 ${out}"
-echo "$out" | grep -q '^OK:' || fail "Case A: expected OK line, got:
+echo "$out" | grep >/dev/null '^OK:' || fail "Case A: expected OK line, got:
 ${out}"
 
 # Case B: re-introduce the dependency (which + npm install -g) -> lint fails
@@ -64,7 +64,7 @@ if out="$(run_lint_in "$FX" 2>&1)"; then
   fail "Case B: re-introduced vercel install/check should fail the lint, but it passed:
 ${out}"
 fi
-echo "$out" | grep -q 'vercel' \
+echo "$out" | grep >/dev/null 'vercel' \
   || fail "Case B: failure output should name the denied tool; got:
 ${out}"
 

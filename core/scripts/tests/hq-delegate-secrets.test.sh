@@ -87,9 +87,9 @@ RC=$?
 set -e
 [ "$RC" -eq 2 ] || fail "without --yes must exit 2, got $RC"
 [ ! -s "$INVOKE_LOG" ] || fail "without --yes nothing may be invoked: $(cat "$INVOKE_LOG")"
-printf '%s' "$PLAN" | grep -q "WIDGET_API_KEY" || fail "confirmation prose must list the names"
-printf '%s' "$PLAN" | grep -q "SERVICE/API_KEY" || fail "confirmation prose must include slash-separated secret paths"
-printf '%s' "$PLAN" | grep -q "alice@acme.test" || fail "confirmation prose must name the principal"
+printf '%s' "$PLAN" | grep >/dev/null "WIDGET_API_KEY" || fail "confirmation prose must list the names"
+printf '%s' "$PLAN" | grep >/dev/null "SERVICE/API_KEY" || fail "confirmation prose must include slash-separated secret paths"
+printf '%s' "$PLAN" | grep >/dev/null "alice@acme.test" || fail "confirmation prose must name the principal"
 jq -e '.secrets == []' "$MANIFEST" >/dev/null || fail "declined run must not record names"
 
 # --- 1. with --yes: names granted, values never read -------------------------
@@ -137,7 +137,7 @@ rm "$PROJ/.env.schema"
 OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes 2>&1)" \
   || fail "no-schema run must exit 0"
 [ ! -s "$INVOKE_LOG" ] || fail "no-schema run must grant nothing"
-printf '%s' "$OUT" | grep -qi "no .env.schema" || fail "no-schema run must say so plainly: $OUT"
+printf '%s' "$OUT" | grep >/dev/null -i "no .env.schema" || fail "no-schema run must say so plainly: $OUT"
 jq -e '.secrets == [] and .secretsSkipped == false' "$MANIFEST" >/dev/null \
   || fail "no-schema run must record empty secrets without the skipped flag"
 

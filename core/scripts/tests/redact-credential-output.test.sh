@@ -68,7 +68,7 @@ redacts() {
       bad "$name ($stream): canary leaked"
     elif [ -z "$out" ]; then
       bad "$name ($stream): no updatedToolOutput"
-    elif ! printf '%s' "$out" | grep -qF -e "${expect}[REDACTED]"; then
+    elif ! printf '%s' "$out" | grep >/dev/null -F -e "${expect}[REDACTED]"; then
       bad "$name ($stream): expected '${expect}[REDACTED]' in: $(printf '%s' "$out" | tr '\n' ' ')"
     else
       ok "$name ($stream)"

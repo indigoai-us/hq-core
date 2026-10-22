@@ -215,7 +215,7 @@ for backend in jq node; do
     || { echo "FAIL: $backend local hooks not removed: $(cat "$fixture/.claude/settings.local.json")"; exit 1; }
   jq -e --arg engine "$HQ_TEST_PIN_NATIVE" '[.hooks[][] .hooks[] | select(has("args") and .command == $engine)] | length == 10' "$fixture/.claude/settings.json" >/dev/null \
     || { echo "FAIL: $backend base lacks engine entries with local hooks present"; exit 1; }
-  printf '%s' "$out" | grep -q 'registered the pinned hook engine' && printf '%s' "$out" | grep -q 'removed hooks key from .claude/settings.local.json' \
+  printf '%s' "$out" | grep >/dev/null 'registered the pinned hook engine' && printf '%s' "$out" | grep >/dev/null 'removed hooks key from .claude/settings.local.json' \
     || { echo "FAIL: $backend engine heal message: $out"; exit 1; }
   printf '%s\n' '{"hooks":{}}' > "$fixture/.claude/settings.json"
   HQ_HOOK_ENGINE="$backend" bash "$ROOT/core/scripts/restore-hook-settings.sh" "$fixture" >/dev/null

@@ -520,6 +520,10 @@ For the map of HQ surfaces (CLI, desktop app, console, bots, connectors, deploy,
 
 A macOS and Windows app. On a new machine it runs onboarding; after that it is a messaging workspace (DMs, groups, channels, bots, a home channel per company) with Files, Projects, Meetings, and Library pages, and it runs sync in the background. It has no built-in agent sessions: the **Launch** menu opens the HQ folder in Claude Code, Codex, or Grok. First run creates **your assistant**, a personal local bot you DM to finish setup. Reference: [hq-desktop-app.md](../../knowledge/public/hq-core/hq-desktop-app.md).
 
+## Using HQ in the ChatGPT or Codex desktop app
+
+The Codex desktop app runs chat commands in a workspace-write sandbox by default. That sandbox blocks network access, so `hq sync` and other commands that call HQ fail with `fetch failed`. To fix it, switch the chat's permission mode to **Full access**, or run `hq sync` yourself in Terminal.
+
 ## Bots & agents
 
 - **Local bots** run on your computer with your own Claude, Codex, or Grok login: `hq bot create <name>`, or desktop Settings → Bots.

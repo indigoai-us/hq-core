@@ -41,7 +41,7 @@ git -C "$FX" commit -qm scaffold
 # Case A: clean scaffold passes.
 out="$( ( cd "$FX" && bash .leak-scan/scan.sh instance-artifacts ) 2>&1 )" \
   || fail "Case A: clean scaffold should pass; got:\n${out}"
-printf '%s\n' "$out" | grep -q 'instance-artifacts: clean' \
+printf '%s\n' "$out" | grep >/dev/null 'instance-artifacts: clean' \
   || fail "Case A: expected clean output; got:\n${out}"
 
 # Case B: a leaked session thread under workspace/ must fail and be named.
@@ -50,7 +50,7 @@ git -C "$FX" add -A && git -C "$FX" commit -qm thread-leak
 if out="$( ( cd "$FX" && bash .leak-scan/scan.sh instance-artifacts ) 2>&1 )"; then
   fail "Case B: leaked workspace thread should fail, but passed:\n${out}"
 fi
-printf '%s\n' "$out" | grep -q 'workspace/threads/T-20260101-leak.json' \
+printf '%s\n' "$out" | grep >/dev/null 'workspace/threads/T-20260101-leak.json' \
   || fail "Case B: failure must name the leaked thread; got:\n${out}"
 git -C "$FX" rm -q "workspace/threads/T-20260101-leak.json"
 git -C "$FX" commit -qm drop-thread
@@ -61,7 +61,7 @@ git -C "$FX" add -A && git -C "$FX" commit -qm personal-leak
 if out="$( ( cd "$FX" && bash .leak-scan/scan.sh instance-artifacts ) 2>&1 )"; then
   fail "Case C: leaked personal policy should fail, but passed:\n${out}"
 fi
-printf '%s\n' "$out" | grep -q 'personal/policies/my-owner-rule.md' \
+printf '%s\n' "$out" | grep >/dev/null 'personal/policies/my-owner-rule.md' \
   || fail "Case C: failure must name the leaked personal file; got:\n${out}"
 git -C "$FX" rm -q "personal/policies/my-owner-rule.md"
 git -C "$FX" commit -qm drop-personal

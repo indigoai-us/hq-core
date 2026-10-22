@@ -139,8 +139,11 @@ write_one "$CLS/core/policies/other.md.conflict-123-abc.md" "hq-conflict-copy" "
 write_one "$CLS/core/policies/README.md"                    "readme-policy"    "README_MARKER skip me."
 write_one "$CLS/core/policies/example-policy.md"            "example-policy"   "EXAMPLE_MARKER skip me."
 
+# This case checks collection, not ranking: with the generic cap on, a
+# baseline (`when: always`) row is not backfilled on a tool event, so run it
+# with the cap off to keep the baseline rows as the vehicle.
 OUT="$(printf '{"hook_event_name":"PreToolUse","session_id":"nofork-cls-%s","tool_name":"Bash","cwd":"%s","tool_input":{"command":"git status"}}' \
-  "$$-${RANDOM}" "$CLS" | HQ_ROOT="$CLS" bash "$HOOK" 2>/dev/null || true)"
+  "$$-${RANDOM}" "$CLS" | HQ_ROOT="$CLS" HQ_POLICY_GENERIC_CAP=0 bash "$HOOK" 2>/dev/null || true)"
 
 case "$OUT" in
   *canonical-slug*) ok "canonical <slug>.md is still collected" ;;

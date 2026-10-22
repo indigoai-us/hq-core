@@ -18,7 +18,7 @@ assert_contains() {
   local haystack="$1"
   local needle="$2"
   local label="$3"
-  if ! printf '%s' "$haystack" | grep -qF "$needle"; then
+  if ! printf '%s' "$haystack" | grep >/dev/null -F "$needle"; then
     fail "$label: missing '$needle'"
   fi
 }
@@ -104,7 +104,7 @@ demo_out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$demo_payload")
 other_out=$(CLAUDE_PROJECT_DIR="$TMP_ROOT" bash "$HOOK" <<<"$other_payload")
 assert_contains "$demo_out" "/execute-task demo/US-001" "session demo journal selection"
 assert_contains "$other_out" "/execute-task other/US-999" "session other journal selection"
-if printf '%s' "$demo_out" | grep -qF "/execute-task other/US-999"; then
+if printf '%s' "$demo_out" | grep >/dev/null -F "/execute-task other/US-999"; then
   fail "session demo read another session's journal"
 fi
 
@@ -171,7 +171,7 @@ big_size="$(wc -c < "$BIG" | tr -d ' ')"
 big_payload=$(printf '{"session_id":"s-big","transcript_path":"%s"}' "$BIG")
 big_out=$(run_hook_with_shims <<<"$big_payload")
 assert_contains "$big_out" "resume from the handoff" "large transcript uses the newest assistant turn"
-if printf '%s' "$big_out" | grep -qF "/investigate"; then
+if printf '%s' "$big_out" | grep >/dev/null -F "/investigate"; then
   fail "large transcript: suggestion came from an older assistant turn"
 fi
 if [ -s "$SHIM_LOG" ]; then
@@ -196,7 +196,7 @@ TRAILING="$TMP_ROOT/trailing-big-transcript.jsonl"
 trailing_payload=$(printf '{"session_id":"s-trailing","transcript_path":"%s"}' "$TRAILING")
 trailing_out=$(run_hook_with_shims <<<"$trailing_payload")
 assert_contains "$trailing_out" "<hq-suggestions>" "long tail still emits suggestions"
-if printf '%s' "$trailing_out" | grep -qF "/investigate"; then
+if printf '%s' "$trailing_out" | grep >/dev/null -F "/investigate"; then
   fail "long tail: suggestion came from an older assistant turn"
 fi
 if [ -s "$SHIM_LOG" ]; then

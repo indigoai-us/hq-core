@@ -80,13 +80,13 @@ echo "[1] missing() lists only active rows whose path is gone"
 R1="$TMP/r1"
 make_root "$R1"
 got="$(hq_workers_registry_missing "$R1")"
-printf '%s\n' "$got" | grep -Fq 'acme-gtm-depletions-changes-load' \
+printf '%s\n' "$got" | grep >/dev/null -F 'acme-gtm-depletions-changes-load' \
   || fail "expected changes-load ghost"
-printf '%s\n' "$got" | grep -Fq 'gtm-depletions-refresh' \
+printf '%s\n' "$got" | grep >/dev/null -F 'gtm-depletions-refresh' \
   || fail "expected refresh ghost"
-printf '%s\n' "$got" | grep -Fq 'real' && fail "present core worker listed as missing"
-printf '%s\n' "$got" | grep -Fq 'other-ops' && fail "present company worker listed as missing"
-printf '%s\n' "$got" | grep -Fq 'planned-ghost' && fail "planned row listed as missing"
+printf '%s\n' "$got" | grep >/dev/null -F 'real' && fail "present core worker listed as missing"
+printf '%s\n' "$got" | grep >/dev/null -F 'other-ops' && fail "present company worker listed as missing"
+printf '%s\n' "$got" | grep >/dev/null -F 'planned-ghost' && fail "planned row listed as missing"
 pass "active ghosts only"
 
 echo "[2] missing() is silent with no registry"
@@ -102,15 +102,15 @@ out=""
 rc=0
 out="$(CLAUDE_PROJECT_DIR="$R3" bash "$HOOK" 2>&1)" || rc=$?
 [ "$rc" = "0" ] || fail "inject-local-context rc=$rc (must stay 0)"
-printf '%s\n' "$out" | grep -Fq '<local-context>' || fail "missing local-context"
-printf '%s\n' "$out" | grep -Fq 'Missing workers' || fail "no Missing workers warning"
-printf '%s\n' "$out" | grep -Fq 'acme-gtm-depletions-changes-load' \
+printf '%s\n' "$out" | grep >/dev/null -F '<local-context>' || fail "missing local-context"
+printf '%s\n' "$out" | grep >/dev/null -F 'Missing workers' || fail "no Missing workers warning"
+printf '%s\n' "$out" | grep >/dev/null -F 'acme-gtm-depletions-changes-load' \
   || fail "warning omitted changes-load id"
-printf '%s\n' "$out" | grep -Fq 'gtm-depletions-refresh' \
+printf '%s\n' "$out" | grep >/dev/null -F 'gtm-depletions-refresh' \
   || fail "warning omitted refresh id"
-printf '%s\n' "$out" | grep -Fq 'do not fall back' \
+printf '%s\n' "$out" | grep >/dev/null -F 'do not fall back' \
   || fail "warning omitted fallback instruction"
-printf '%s\n' "$out" | grep -Fq 'planned-ghost' && fail "planned ghost in warning"
+printf '%s\n' "$out" | grep >/dev/null -F 'planned-ghost' && fail "planned ghost in warning"
 pass "SessionStart warning names active ghosts"
 
 echo "[4] SessionStart stays quiet when every active path exists"
@@ -122,7 +122,7 @@ printf 'worker:\n  id: x\n' > "$R4/companies/acme/workers/gtm-depletions-changes
 printf 'worker:\n  id: y\n' > "$R4/companies/acme/workers/gtm-depletions-refresh/worker.yaml"
 out="$(CLAUDE_PROJECT_DIR="$R4" bash "$HOOK" 2>&1)" || rc=$?
 [ "$rc" = "0" ] || fail "clean inject-local-context rc=$rc"
-printf '%s\n' "$out" | grep -Fq 'Missing workers' && fail "false Missing workers warning"
+printf '%s\n' "$out" | grep >/dev/null -F 'Missing workers' && fail "false Missing workers warning"
 pass "no warning when paths exist"
 
 echo "[5] directory without worker.yaml still counts as missing"
@@ -130,7 +130,7 @@ R5="$TMP/r5"
 make_root "$R5"
 mkdir -p "$R5/companies/acme/workers/gtm-depletions-changes-load"
 got="$(hq_workers_registry_missing "$R5")"
-printf '%s\n' "$got" | grep -Fq 'acme-gtm-depletions-changes-load' \
+printf '%s\n' "$got" | grep >/dev/null -F 'acme-gtm-depletions-changes-load' \
   || fail "empty dir not reported"
 pass "missing worker.yaml is missing"
 

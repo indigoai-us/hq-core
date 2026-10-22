@@ -125,16 +125,16 @@ assert_case() {
   [ "$code" -ne 0 ] || fail "$stage unexpectedly succeeded"
   calls="$(wc -l < "$TMP/calls" | tr -d ' ')"
   [ "$calls" = "$expected_calls" ] || fail "$stage made $calls calls, expected $expected_calls: $output"
-  printf '%s' "$output" | grep -Fq "stage=$stage" || fail "$stage diagnostic missing exact stage: $output"
-  printf '%s' "$output" | grep -Fq "method=$expected_method" || fail "$stage diagnostic missing method: $output"
-  printf '%s' "$output" | grep -Fq "url=$expected_url" || fail "$stage diagnostic missing sanitized URL: $output"
-  printf '%s' "$output" | grep -Fq 'status=403' || fail "$stage diagnostic missing status: $output"
-  printf '%s' "$output" | grep -Fq 'api_code=FORBIDDEN' || fail "$stage diagnostic missing API code: $output"
-  printf '%s' "$output" | grep -Fq 'request_id=req-403' || fail "$stage diagnostic missing request ID: $output"
-  printf '%s' "$output" | grep -Fq 'org=acme scope=company authorization=forbidden' || fail "$stage diagnostic missing non-secret scope context: $output"
-  printf '%s' "$output" | grep -Fq 'Authorization' && fail "$stage diagnostic leaked an Authorization header: $output"
-  printf '%s' "$output" | grep -Fq "$TOKEN" && fail "$stage diagnostic leaked bearer token: $output"
-  printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "$stage diagnostic leaked presigned signature: $output"
+  printf '%s' "$output" | grep >/dev/null -F "stage=$stage" || fail "$stage diagnostic missing exact stage: $output"
+  printf '%s' "$output" | grep >/dev/null -F "method=$expected_method" || fail "$stage diagnostic missing method: $output"
+  printf '%s' "$output" | grep >/dev/null -F "url=$expected_url" || fail "$stage diagnostic missing sanitized URL: $output"
+  printf '%s' "$output" | grep >/dev/null -F 'status=403' || fail "$stage diagnostic missing status: $output"
+  printf '%s' "$output" | grep >/dev/null -F 'api_code=FORBIDDEN' || fail "$stage diagnostic missing API code: $output"
+  printf '%s' "$output" | grep >/dev/null -F 'request_id=req-403' || fail "$stage diagnostic missing request ID: $output"
+  printf '%s' "$output" | grep >/dev/null -F 'org=acme scope=company authorization=forbidden' || fail "$stage diagnostic missing non-secret scope context: $output"
+  printf '%s' "$output" | grep >/dev/null -F 'Authorization' && fail "$stage diagnostic leaked an Authorization header: $output"
+  printf '%s' "$output" | grep >/dev/null -F "$TOKEN" && fail "$stage diagnostic leaked bearer token: $output"
+  printf '%s' "$output" | grep >/dev/null -F "$SIGNATURE" && fail "$stage diagnostic leaked presigned signature: $output"
   pass "$stage reports 403 context and stops before later calls"
 }
 
@@ -159,9 +159,9 @@ output="$(PATH="$TMP/bin:$PATH" MOCK_DIR="$TMP" FAIL_STAGE=app-creation FAIL_STA
 code=$?
 set -e
 [ "$code" -ne 0 ] || fail "stale login unexpectedly succeeded"
-printf '%s' "$output" | grep -Fq 'status=401' \
+printf '%s' "$output" | grep >/dev/null -F 'status=401' \
   || fail "401 diagnostic missing status: $output"
-printf '%s' "$output" | grep -Fq 'live content was not updated' \
+printf '%s' "$output" | grep >/dev/null -F 'live content was not updated' \
   || fail "401 did not explicitly preserve live content: $output"
 pass 'failed refresh explicitly reports that live content was not updated'
 
@@ -175,9 +175,9 @@ code=$?
 set -e
 [ "$code" -ne 0 ] || fail "malformed deploy response unexpectedly succeeded"
 [ "$(wc -l < "$TMP/calls" | tr -d ' ')" = 3 ] || fail "malformed deploy response attempted a later call: $output"
-printf '%s' "$output" | grep -Fq 'stage=deploy-creation' \
+printf '%s' "$output" | grep >/dev/null -F 'stage=deploy-creation' \
   || fail "malformed response missing failed stage: $output"
-printf '%s' "$output" | grep -Fq 'api_code=INVALID_SUCCESS_RESPONSE' \
+printf '%s' "$output" | grep >/dev/null -F 'api_code=INVALID_SUCCESS_RESPONSE' \
   || fail "malformed response was not rejected by schema validation: $output"
 pass 'malformed 2xx response is rejected before later calls'
 
@@ -221,10 +221,10 @@ set -e
 [ "$code" -ne 0 ] || fail 'failed refresh unexpectedly continued'
 [ "$(wc -l < "$TMP/calls" | tr -d ' ')" = 3 ] || fail "failed refresh ran a later deploy stage: $output"
 [ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] || fail "failed refresh was attempted more than once: $output"
-printf '%s' "$output" | grep -Fq 'live content was not updated' || fail "failed refresh omitted live-content outcome: $output"
-printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed refresh leaked the original token: $output"
-printf '%s' "$output" | grep -Fq 'refreshed-no-leak' && fail "failed refresh leaked a refreshed token: $output"
-printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed refresh leaked a presigned signature: $output"
+printf '%s' "$output" | grep >/dev/null -F 'live content was not updated' || fail "failed refresh omitted live-content outcome: $output"
+printf '%s' "$output" | grep >/dev/null -F "$TOKEN" && fail "failed refresh leaked the original token: $output"
+printf '%s' "$output" | grep >/dev/null -F 'refreshed-no-leak' && fail "failed refresh leaked a refreshed token: $output"
+printf '%s' "$output" | grep >/dev/null -F "$SIGNATURE" && fail "failed refresh leaked a presigned signature: $output"
 pass 'failed refresh stops deployment with credential-redacted diagnostics'
 
 echo '[10] 401 retry at completion is attempted once and then stops'
@@ -240,10 +240,10 @@ set -e
 [ "$(grep -c '^POST http://api.test/api/deploys/deploy-1/complete$' "$TMP/calls")" = 2 ] \
   || fail "completion was not attempted exactly twice: $output"
 [ "$(wc -l < "$TMP/identity-calls" | tr -d ' ')" = 1 ] || fail "completion refreshed more than once: $output"
-printf '%s' "$output" | grep -Fq 'live content was not updated' || fail "failed retry omitted live-content outcome: $output"
-printf '%s' "$output" | grep -Fq "$TOKEN" && fail "failed retry leaked the original token: $output"
-printf '%s' "$output" | grep -Fq 'refreshed-no-leak' && fail "failed retry leaked the refreshed token: $output"
-printf '%s' "$output" | grep -Fq "$SIGNATURE" && fail "failed retry leaked a presigned signature: $output"
+printf '%s' "$output" | grep >/dev/null -F 'live content was not updated' || fail "failed retry omitted live-content outcome: $output"
+printf '%s' "$output" | grep >/dev/null -F "$TOKEN" && fail "failed retry leaked the original token: $output"
+printf '%s' "$output" | grep >/dev/null -F 'refreshed-no-leak' && fail "failed retry leaked the refreshed token: $output"
+printf '%s' "$output" | grep >/dev/null -F "$SIGNATURE" && fail "failed retry leaked a presigned signature: $output"
 pass 'completion enforces one retry and redacts failed-retry diagnostics'
 
 echo '[11] app deploy uses multipart fields through the checked request helper'

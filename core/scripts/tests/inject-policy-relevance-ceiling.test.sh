@@ -15,6 +15,12 @@
 #       the PostToolUse JSON envelope.
 set -euo pipefail
 
+# This file tests the byte ceiling and full-text fallback on their own, with
+# fixtures that match many policies at once. The per-event relevance cap would
+# hide most of them, so it is off here; inject-policy-relevance-cap.test.sh
+# covers the cap and its interaction with the ceiling.
+export HQ_POLICY_RELEVANCE_CAP=0
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="${HQ_TEST_INJECT_POLICY_HOOK:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}"
 FACT_LIB="$ROOT/core/scripts/lib/trigger-fact-text.awk"
@@ -120,7 +126,7 @@ full_count="$(grep -c '(HARD — binding rule from `' <<<"$out" || true)"
 [ "$full_count" = 1 ] && ok "lower-ranked HARD rules are not in full" \
   || bad "expected one full HARD body, found $full_count: $out"
 case "$out" in
-  *'HARD policy `zz-deploy-direct` keeps its full text as the top-ranked match'*'Read each in full at its own file'*) ok "notice names the kept rule and keeps the read-the-file pointer" ;;
+  *'HARD policy `zz-deploy-direct` keeps its full text as the top-ranked match'*'stays eligible and is shown in full on its next matching event. Read it at its file now'*) ok "notice names the kept rule, says the others stay eligible, and keeps the read-the-file pointer" ;;
   *) bad "ceiling notice missing the kept rule or the pointer: $out" ;;
 esac
 case "$out" in
@@ -140,9 +146,11 @@ first="$(printf '%s\n' "$out" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p' | head -
 n="$(bytes_of "$out")"
 [ "$n" -le 8000 ] && ok "default reminder within 8000 bytes ($n)" || bad "default reminder is $n bytes"
 
-echo "[b] summary-only HARD rules are not repeated inside the seen window"
+echo "[b] summary-only HARD rules are not parked; they come back in full (PR #1548 review)"
 seen_file="$RA/workspace/orchestrator/policy-trigger-state/sa.seen.tsv"
-[ -s "$seen_file" ] && ok "seen set written" || bad "seen set missing after a summarised HARD rule"
+grep -q 'aaa-generic-' "$seen_file" 2>/dev/null \
+  && bad "a summarised HARD rule was parked in the seen set: $(cat "$seen_file")" \
+  || ok "summarised HARD rules are not parked in the seen set"
 grep -q '^zz-deploy-direct$' "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" \
   && ok "full-text rule recorded in the session ledger" || bad "full-text rule not in the session ledger"
 if grep -q '^aaa-generic-1$' "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" 2>/dev/null; then
@@ -151,12 +159,16 @@ else
   ok "summarised HARD rule left out of the session ledger"
 fi
 out2="$(run "$RA" sa 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
-# Every policy shown by the first event (in full or as a summary) stays out;
-# policies the first event cut for space are still eligible.
+# The full-text rule and shown soft rows stay out; a HARD rule shown only as
+# its summary is still eligible and comes back.
 case "$out2" in
-  *'`aaa-generic-1`'*|*'`aaa-generic-2`'*|*'`yy-release-rule`'*|*'`zz-deploy-direct`'*|*'`soft-'*)
-    bad "same trigger repeated a shown policy inside the window: $out2" ;;
-  *) ok "same trigger inside the window repeats no shown policy" ;;
+  *'> Policy `zz-deploy-direct`'*|*'> Policy `soft-'*)
+    bad "same trigger repeated a policy delivered in full: $out2" ;;
+  *) ok "same trigger repeats no policy delivered in full" ;;
+esac
+case "$out2" in
+  *'`aaa-generic-1`'*) ok "a HARD rule shown only as a summary is shown again" ;;
+  *) bad "summarised HARD rule aaa-generic-1 did not come back: $out2" ;;
 esac
 case "$out2" in
   *'`aaa-generic-3`'*) ok "a policy cut for space earlier is shown on the next event" ;;
@@ -164,44 +176,28 @@ case "$out2" in
 esac
 out3="$(run "$RA" sa 'hq release now' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
 case "$out3" in
-  *'`yy-release-rule`'*) ok "a new trigger brings the rule back" ;;
-  *) bad "new trigger did not re-show yy-release-rule: $out3" ;;
+  *'> Policy `yy-release-rule`'*) bad "a rule delivered in full was repeated on a new trigger: $out3" ;;
+  *) ok "a rule delivered in full is not repeated on a new trigger" ;;
 esac
 case "$out3" in
-  *'`aaa-generic-'*) bad "generic rules repeated for an unchanged trigger key: $out3" ;;
-  *) ok "rules with an unchanged trigger key stay suppressed" ;;
+  *'> Policy `aaa-generic-1` (HARD — binding rule from `'*GENERIC_BODY_1*) ok "a HARD rule shortened earlier is now shown in full" ;;
+  *) bad "aaa-generic-1 still not in full: $out3" ;;
 esac
-# Age every seen entry past the default 1800-second window.
-old="$(( $(date +%s) - 4000 ))"
-awk -F '\t' -v old="$old" 'BEGIN { OFS="\t" } { $2 = old; print }' "$seen_file" > "$seen_file.tmp"
-mv "$seen_file.tmp" "$seen_file"
-out4="$(run "$RA" sa 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
-case "$out4" in
-  *'`aaa-generic-1`'*) ok "rule comes back after the TTL" ;;
-  *) bad "rule not re-shown after the TTL expired: $out4" ;;
-esac
-# A short configured TTL expires on its own.
-RB="$(new_root short-ttl)"
-seed "$RB"
-run "$RB" sb 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000 >/dev/null
-out5="$(run "$RB" sb 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000 HQ_POLICY_SEEN_TTL_SECONDS=0)"
-case "$out5" in
-  *'`aaa-generic-1`'*) ok "HQ_POLICY_SEEN_TTL_SECONDS=0 disables suppression" ;;
-  *) bad "zero TTL still suppressed the rule: $out5" ;;
-esac
-# A seen row stamped in the future (clock stepped back) counts as expired.
-RF="$(new_root future-ttl)"
-seed "$RF"
-run "$RF" sf 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000 >/dev/null
-future_file="$RF/workspace/orchestrator/policy-trigger-state/sf.seen.tsv"
-future="$(( $(date +%s) + 100000 ))"
-awk -F '\t' -v t="$future" 'BEGIN { OFS="\t" } { $2 = t; print }' "$future_file" > "$future_file.tmp"
-mv "$future_file.tmp" "$future_file"
-out6="$(run "$RF" sf 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
-case "$out6" in
-  *'`aaa-generic-1`'*) ok "a future-stamped seen row does not suppress" ;;
-  *) bad "future-stamped seen row still suppressed the rule: $out6" ;;
-esac
+# Shortened HARD rules drain: each later event shows the next one in full,
+# and none is shown in full twice. Nothing is parked in the seen set.
+full_seen=" aaa-generic-1 "
+for i in 1 2 3 4 5 6 7 8; do
+  outn="$(run "$RA" sa 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
+  for slug in $(printf '%s\n' "$outn" | sed -n 's/^> Policy `\([^`]*\)` (HARD — binding rule from .*/\1/p'); do
+    case "$full_seen" in *" $slug "*) bad "$slug shown in full twice" ;; esac
+    full_seen="$full_seen$slug "
+  done
+done
+for i in 1 2 3 4 5 6; do
+  case "$full_seen" in *" aaa-generic-$i "*) ;; *) bad "aaa-generic-$i never reached full text: $full_seen" ;; esac
+done
+ok "every shortened HARD rule reached full text once ($full_seen)"
+grep -q 'aaa-generic-' "$seen_file" 2>/dev/null && bad "a HARD rule was parked: $(cat "$seen_file")" || ok "no HARD rule parked across the drain"
 
 echo "[c] output never exceeds the ceiling"
 for ceiling in 200 500 900 1500 2500 4000 8000; do

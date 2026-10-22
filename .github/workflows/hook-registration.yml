@@ -23,6 +23,7 @@ on:
       - 'core/scripts/tests/restore-hook-settings.test.sh'
       - 'core/scripts/tests/restore-hook-engine.test.sh'
       - 'core/scripts/tests/hook-adapter-exec-form.test.sh'
+      - 'core/scripts/tests/hook-adapter-jq-crlf.test.sh'
       - '.github/workflows/hook-registration.yml'
 permissions:
   contents: read
@@ -56,3 +57,4 @@ jobs:
           bash core/scripts/tests/restore-hook-settings.test.sh
           bash core/scripts/tests/restore-hook-engine.test.sh
           bash core/scripts/tests/hook-adapter-exec-form.test.sh
+          bash core/scripts/tests/hook-adapter-jq-crlf.test.sh

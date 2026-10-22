@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # og-inject.test.sh — regression coverage for og-inject.sh.
 # Asserts: tags injected, existing-image preference, author-owned pages skipped,
-# subdir URL resolution, hq-deploy card image when a base URL is set,
-# placeholder PNG validity when it is not, idempotency, and the in-place
-# rewrite of a legacy card.png tag to card.jpg.
+# subdir URL resolution, hq-deploy card image when a base URL is set (from the
+# deploy API base when given, else api.<rest of the app host>, on hq.work,
+# indigo-hq.com and a custom base domain), placeholder PNG validity when it is
+# not, idempotency, and the in-place rewrite of a legacy card.png tag to card.jpg.
 set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OG="$SCRIPT_DIR/og-inject.sh"
@@ -26,7 +27,7 @@ cat > "$TMP/owned.html" <<'H'
 <!doctype html><html><head><title>Owned</title><meta property="og:title" content="Author"></head><body></body></html>
 H
 
-RES="$("$OG" "$TMP" "https://demo.indigo-hq.com" "Report App")"
+RES="$("$OG" "$TMP" "https://demo.hq.work" "Report App" "https://api.hq.work")"
 
 echo "result: $RES"
 [ "$(echo "$RES" | jq -r '.injected')" = "2" ] && pass "injected 2 pages (skips owned.html)" || fail "expected injected=2"
@@ -35,13 +36,13 @@ echo "result: $RES"
 
 have 'property="og:title" content="Quarterly Report"' "$TMP/index.html" && pass "og:title from <title>" || fail "og:title missing"
 have 'property="og:description" content="Numbers for the quarter."' "$TMP/index.html" && pass "og:description from meta" || fail "og:description missing"
-have 'property="og:image" content="https://api.indigo-hq.com/api/public/apps/demo/card.jpg"' "$TMP/index.html" && pass "og:image is the generated card" || fail "og:image wrong"
-have 'name="twitter:image" content="https://api.indigo-hq.com/api/public/apps/demo/card.jpg"' "$TMP/index.html" && pass "twitter:image is the generated card" || fail "twitter:image wrong"
+have 'property="og:image" content="https://api.hq.work/api/public/apps/demo/card.jpg"' "$TMP/index.html" && pass "og:image is the generated card" || fail "og:image wrong"
+have 'name="twitter:image" content="https://api.hq.work/api/public/apps/demo/card.jpg"' "$TMP/index.html" && pass "twitter:image is the generated card" || fail "twitter:image wrong"
 [ ! -e "$TMP/_hq-og.png" ] && pass "no placeholder PNG written when base url set" || fail "placeholder PNG written despite base url"
 have 'name="twitter:card" content="summary_large_image"' "$TMP/index.html" && pass "twitter large card" || fail "twitter:card wrong"
-have 'property="og:url" content="https://demo.indigo-hq.com/"' "$TMP/index.html" && pass "root url normalized" || fail "root og:url wrong"
+have 'property="og:url" content="https://demo.hq.work/"' "$TMP/index.html" && pass "root url normalized" || fail "root og:url wrong"
 
-have 'property="og:url" content="https://demo.indigo-hq.com/sub/about.html"' "$TMP/sub/about.html" && pass "subdir url" || fail "subdir og:url wrong"
+have 'property="og:url" content="https://demo.hq.work/sub/about.html"' "$TMP/sub/about.html" && pass "subdir url" || fail "subdir og:url wrong"
 have 'content="Paragraph fallback description."' "$TMP/sub/about.html" && pass "paragraph fallback desc" || fail "fallback desc missing"
 
 [ "$(grep -c 'hq-deploy: social preview' "$TMP/owned.html")" = "0" ] && pass "author-owned page untouched" || fail "owned.html was modified"
@@ -50,7 +51,7 @@ have 'content="Paragraph fallback description."' "$TMP/sub/about.html" && pass "
 TMP2="$(mktemp -d)"; cat > "$TMP2/index.html" <<'H'
 <!doctype html><html><head><title>NoBase</title></head><body></body></html>
 H
-RES3="$("$OG" "$TMP2" "" "NoBase")"
+RES3="$("$OG" "$TMP2" "" "NoBase" "https://api.hq.work")"
 [ "$(echo "$RES3" | jq -r '.image')" = "generated" ] && pass "placeholder generated when no base url" || fail "expected image=generated without base url"
 have 'property="og:image" content="/_hq-og.png"' "$TMP2/index.html" && pass "relative image when no base url" || fail "relative image path wrong"
 
@@ -64,13 +65,14 @@ sys.exit(0 if (ok and w==1200 and h==630) else 1)
 PY
 
 # Idempotency: a second run injects nothing new
-RES2="$("$OG" "$TMP" "https://demo.indigo-hq.com" "Report App")"
+RES2="$("$OG" "$TMP" "https://demo.hq.work" "Report App" "https://api.hq.work")"
 [ "$(echo "$RES2" | jq -r '.injected')" = "0" ] && pass "idempotent (re-run injects 0)" || fail "second run re-injected"
 
 rm -rf "$TMP2"
 
 # Legacy page already carrying a card.png tag: re-run rewrites it to card.jpg
-# in place and does not add a second tag.
+# in place and does not add a second tag. The page was published on
+# indigo-hq.com by an older version; its tag host is left as it is.
 TMP4="$(mktemp -d)"; cat > "$TMP4/index.html" <<'H'
 <!doctype html><html><head>
   <!-- hq-deploy: social preview tags -->
@@ -94,8 +96,40 @@ TMP3="$(mktemp -d)"; cat > "$TMP3/index.html" <<'H'
 <!doctype html><html><head><title>Img</title></head><body></body></html>
 H
 cp /dev/null "$TMP3/og.png"
-RES4="$("$OG" "$TMP3" "https://demo.indigo-hq.com" "Img")"
-[ "$(echo "$RES4" | jq -r '.image')" = "existing" ] && have 'content="https://demo.indigo-hq.com/og.png"' "$TMP3/index.html" && pass "existing og image preferred over card" || fail "existing image not preferred"
+RES4="$("$OG" "$TMP3" "https://demo.hq.work" "Img" "https://api.hq.work")"
+[ "$(echo "$RES4" | jq -r '.image')" = "existing" ] && have 'content="https://demo.hq.work/og.png"' "$TMP3/index.html" && pass "existing og image preferred over card" || fail "existing image not preferred"
 rm -rf "$TMP3"
+
+# Card host: the API base argument wins; without it the card host is derived
+# from the app URL, so older callers and old indigo-hq.com links keep working.
+card_case() {  # card_case <label> <base_url> <api_base> <expected og:image> <expected og:url>
+  local d res
+  d="$(mktemp -d)"
+  printf '%s\n' '<!doctype html><html><head><title>Card</title></head><body></body></html>' > "$d/index.html"
+  res="$("$OG" "$d" "$2" "Card" "$3")"
+  if [ "$(echo "$res" | jq -r '.image')" = "card" ] \
+    && have "property=\"og:image\" content=\"$4\"" "$d/index.html" \
+    && have "name=\"twitter:image\" content=\"$4\"" "$d/index.html" \
+    && have "property=\"og:url\" content=\"$5\"" "$d/index.html"; then
+    pass "$1"
+  else
+    fail "$1: $res $(grep -o 'og:image" content="[^"]*"' "$d/index.html")"
+  fi
+  rm -rf "$d"
+}
+card_case "hq.work app, no API base -> api.hq.work card" \
+  "https://demo.hq.work" "" "https://api.hq.work/api/public/apps/demo/card.jpg" "https://demo.hq.work/"
+card_case "indigo-hq.com app, no API base -> api.indigo-hq.com card (older callers)" \
+  "https://demo.indigo-hq.com" "" "https://api.indigo-hq.com/api/public/apps/demo/card.jpg" "https://demo.indigo-hq.com/"
+card_case "indigo-hq.com app URL from the API, deployed through api.hq.work" \
+  "https://demo.indigo-hq.com" "https://api.hq.work" "https://api.hq.work/api/public/apps/demo/card.jpg" "https://demo.indigo-hq.com/"
+card_case "custom base domain: card from the deploy API, og:url on the custom host" \
+  "https://docs.acme.example" "https://api.hq.work/" "https://api.hq.work/api/public/apps/docs/card.jpg" "https://docs.acme.example/"
+card_case "malformed API base is ignored" \
+  "https://demo.hq.work" "not a url" "https://api.hq.work/api/public/apps/demo/card.jpg" "https://demo.hq.work/"
+card_case "non-https API base is ignored" \
+  "https://demo.hq.work" "http://api.example.test" "https://api.hq.work/api/public/apps/demo/card.jpg" "https://demo.hq.work/"
+card_case "API base path is dropped, origin kept" \
+  "https://demo.hq.work" "https://api.hq.work/api" "https://api.hq.work/api/public/apps/demo/card.jpg" "https://demo.hq.work/"
 
 if [ "$FAIL" = "0" ]; then echo "ALL PASS"; exit 0; else echo "FAILURES"; exit 1; fi

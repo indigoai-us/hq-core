@@ -119,7 +119,7 @@ out="$(
 )" || true
 if [ -z "$out" ]; then
   fail '40 excludes: helper returned empty (fail-open)'
-elif ! printf '%s' "$out" | grep -q 'core/'; then
+elif ! printf '%s' "$out" | grep >/dev/null 'core/'; then
   fail '40 excludes: stripped command lost the protected core/ token'
 else
   pass '40 excludes: helper keeps protected tokens'
@@ -140,7 +140,7 @@ allow_out="$(
   PATH="$TMP/bins:$PATH"
   hq_bash_strip_core_yaml_exclude_tokens "$allow_cmd" "$TMP/hq" "$TMP/hq/core/core.yaml" 2>/dev/null
 )" || true
-if printf '%s' "$allow_out" | grep -q 'exclude-01'; then
+if printf '%s' "$allow_out" | grep >/dev/null 'exclude-01'; then
   fail 'successful strip still left the exclude path in the command'
 else
   pass 'successful strip still honours rules.exclude'
@@ -161,12 +161,12 @@ out="$(
   PATH="$TMP/bins:$PATH"
   hq_bash_strip_core_yaml_exclude_tokens "$allow_and_protected" "$TMP/hq" "$TMP/hq/core/core.yaml" 2>"$errfile"
 )" || true
-if printf '%s' "$out" | grep -q 'exclude-01'; then
+if printf '%s' "$out" | grep >/dev/null 'exclude-01'; then
   fail 'sed unavailable: excluded path token was not stripped'
 else
   pass 'sed unavailable: excluded path token is stripped'
 fi
-if ! printf '%s' "$out" | grep -q 'core/'; then
+if ! printf '%s' "$out" | grep >/dev/null 'core/'; then
   fail 'sed unavailable: stripping lost the protected core/ token'
 else
   pass 'sed unavailable: protected core/ token remains'

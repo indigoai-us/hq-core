@@ -222,4 +222,28 @@ for p in minimal standard strict; do
   [ "$rc" = "2" ] || fail "profile $p: want rc 2 got $rc (hook dead under this profile)"; pass "gate profile $p -> block"
 done
 
+echo "[8] company:/companies: values must be slugs in companies/manifest.yaml (#1571 review)"
+CO_MANIFEST="$PROJ/manifest-fixture.yaml"
+printf 'companies:\n  acme:\n    name: Acme\n  verdanote:\n    name: Verdanote\nother:\n  stray:\n    x: 1\n' > "$CO_MANIFEST"
+co_policy() { printf -- '---\nid: hq-x\nwhen: git && push\non: [PreToolUse]\nenforcement: soft\n%s\n---\n## Rule\nx\n' "$1"; }
+for engine in node jq; do
+  exp_co() {
+    local want="$1" line="$2" label="$3" got
+    got="$(printf '%s' "$(wp "$PROJ/core/policies/co.md" "$(co_policy "$line")")" \
+      | HQ_COMPANIES_MANIFEST="$CO_MANIFEST" HQ_HOOK_ENGINE="$engine" bash "$HOOK" >/dev/null 2>&1; echo $?)"
+    [ "$got" = "$want" ] || fail "$engine: want $want got $got :: $label"
+    pass "$engine: $label"
+  }
+  exp_co 0 'company: acme' "manifest slug -> allow"
+  exp_co 0 'companies: [acme, verdanote]' "list of manifest slugs -> allow"
+  exp_co 0 'company: acme   # client rule' "manifest slug with a comment -> allow"
+  exp_co 0 'title: no company field' "no company field -> allow"
+  exp_co 2 'company: <slug>' "literal <slug> -> block"
+  exp_co 2 'company: <slug>   # optional; see Company field below. Uncomment only with one real manifest slug' "uncommented /learn template line -> block"
+  exp_co 2 'company: nosuchco' "unknown slug -> block"
+  exp_co 2 'company: stray' "key outside the companies: map -> block"
+  exp_co 2 'companies: [acme, nosuchco]' "list with one unknown slug -> block"
+  exp_co 2 'company:' "empty value -> block"
+done
+
 echo "PASS: validate-policy-frontmatter"

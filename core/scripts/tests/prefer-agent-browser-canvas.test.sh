@@ -68,15 +68,15 @@ run_pre() {
 }
 
 MISSING_OUT="$(run_pre)"
-if printf '%s' "$MISSING_OUT" | grep -Fq 'do not click from screenshot coordinates' \
-  && printf '%s' "$MISSING_OUT" | grep -Fq 'silently write into the live document body' \
-  && printf '%s' "$MISSING_OUT" | grep -Fq 'cannot reuse a logged-in Chrome Google session'; then
+if printf '%s' "$MISSING_OUT" | grep >/dev/null -F 'do not click from screenshot coordinates' \
+  && printf '%s' "$MISSING_OUT" | grep >/dev/null -F 'silently write into the live document body' \
+  && printf '%s' "$MISSING_OUT" | grep >/dev/null -F 'cannot reuse a logged-in Chrome Google session'; then
   ok "missing-binary PreToolUse still warns canvas/type/Google-auth"
 else
   fail "missing-binary PreToolUse still warns canvas/type/Google-auth" \
     "got: $(printf '%s' "$MISSING_OUT" | tr '\n' ' ' | cut -c1-400)"
 fi
-if printf '%s' "$MISSING_OUT" | grep -Fq 'agent-browser is not on PATH'; then
+if printf '%s' "$MISSING_OUT" | grep >/dev/null -F 'agent-browser is not on PATH'; then
   ok "missing-binary PreToolUse tells the session to install"
 else
   fail "missing-binary PreToolUse tells the session to install" \
@@ -92,10 +92,10 @@ exit 0
 EOF
 chmod +x "$TMP/bin/agent-browser"
 HAVE_OUT="$(run_pre "$TMP/bin")"
-if printf '%s' "$HAVE_OUT" | grep -Fq 'do not click from screenshot coordinates' \
-  && printf '%s' "$HAVE_OUT" | grep -Fq 'silently write into the live document body' \
-  && printf '%s' "$HAVE_OUT" | grep -Fq 'cannot reuse a logged-in Chrome Google session' \
-  && printf '%s' "$HAVE_OUT" | grep -Fq 'agent-browser snapshot -i'; then
+if printf '%s' "$HAVE_OUT" | grep >/dev/null -F 'do not click from screenshot coordinates' \
+  && printf '%s' "$HAVE_OUT" | grep >/dev/null -F 'silently write into the live document body' \
+  && printf '%s' "$HAVE_OUT" | grep >/dev/null -F 'cannot reuse a logged-in Chrome Google session' \
+  && printf '%s' "$HAVE_OUT" | grep >/dev/null -F 'agent-browser snapshot -i'; then
   ok "installed-binary PreToolUse keeps CLI redirect plus canvas warning"
 else
   fail "installed-binary PreToolUse keeps CLI redirect plus canvas warning" \
@@ -112,9 +112,9 @@ fi
 
 echo "== 4. SessionStart missing-binary nudge names canvas/type/Google-auth =="
 START_OUT="$(printf '{}' | PATH="$BARE_PATH" env -u HQ_NO_AGENT_BROWSER_NUDGE bash "$START" 2>/dev/null)"
-if printf '%s' "$START_OUT" | grep -Fq 'screenshot-coordinate clicks miss' \
-  && printf '%s' "$START_OUT" | grep -Fq 'type can write into the document body' \
-  && printf '%s' "$START_OUT" | grep -Fq 'cannot reuse a logged-in Chrome Google session'; then
+if printf '%s' "$START_OUT" | grep >/dev/null -F 'screenshot-coordinate clicks miss' \
+  && printf '%s' "$START_OUT" | grep >/dev/null -F 'type can write into the document body' \
+  && printf '%s' "$START_OUT" | grep >/dev/null -F 'cannot reuse a logged-in Chrome Google session'; then
   ok "SessionStart fallback names canvas/type/Google-auth"
 else
   fail "SessionStart fallback names canvas/type/Google-auth" \
@@ -142,7 +142,7 @@ mkdir -p "$LEDGER_DIR"
 trap 'rm -rf "$TMP"; rm -f "$LEDGER_DIR"/abcanvas-*'"$RUN"'*.txt 2>/dev/null || true' EXIT
 INJECT_OUT="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"abcanvas-up-%s","prompt":"edit this Google Docs heading","cwd":"%s"}' "$RUN" "$ROOT" \
   | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$INJECT" 2>/dev/null)"
-if printf '%s' "$INJECT_OUT" | grep -Fq '`hq-prefer-agent-browser`'; then
+if printf '%s' "$INJECT_OUT" | grep >/dev/null -F '`hq-prefer-agent-browser`'; then
   ok "Google Docs prompt injects hq-prefer-agent-browser"
 else
   fail "Google Docs prompt injects hq-prefer-agent-browser" \
@@ -150,7 +150,7 @@ else
 fi
 NOISE_OUT="$(printf '{"hook_event_name":"UserPromptSubmit","session_id":"abcanvas-noise-%s","prompt":"summarize yesterday standup","cwd":"%s"}' "$RUN" "$ROOT" \
   | HQ_ROOT="$ROOT" CLAUDE_PROJECT_DIR="$ROOT" bash "$INJECT" 2>/dev/null)"
-if printf '%s' "$NOISE_OUT" | grep -Fq '`hq-prefer-agent-browser`'; then
+if printf '%s' "$NOISE_OUT" | grep >/dev/null -F '`hq-prefer-agent-browser`'; then
   fail "unrelated prompt does not inject hq-prefer-agent-browser" \
     "slug fired on standup prompt"
 else

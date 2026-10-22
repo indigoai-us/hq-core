@@ -328,6 +328,8 @@ jobs:
         run: bash core/scripts/tests/hq-heal-sync-classifier.test.sh
       - name: hq-heal sandbox-network classifier regression test
         run: bash core/scripts/tests/hq-heal-sandbox-network-classifier.test.sh
+      - name: hq-heal work-registry classifier regression test
+        run: bash core/scripts/tests/hq-heal-work-registry-classifier.test.sh
       - name: Discover shallow clone fetch refspec regression test
         run: bash core/scripts/tests/discover-shallow-clone-fetch-all.test.sh
       - name: Execute-task Codex model source regression test
@@ -370,6 +372,9 @@ jobs:
             core/scripts/tests/handoff-finalize-pointer.test.sh \
             core/scripts/tests/handoff-finalize-deficiencies.test.sh \
             core/scripts/tests/handoff-finalize-no-jq.test.sh \
+            core/scripts/tests/handoff-finalize-media-filter.test.sh \
+            core/scripts/tests/handoff-finalize-index-lock-retry.test.sh \
+            core/scripts/tests/handoff-finalize-logical-root.test.sh \
             core/scripts/tests/handoff-finalize-json-args.test.sh \
             core/scripts/tests/handoff-company-digit-slug.test.sh \
             core/scripts/handoff-autofile.sh \
@@ -487,6 +492,8 @@ jobs:
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=failure-context bash core/scripts/tests/hq-autocommit.test.sh
       - name: Autocommit commits never start automatic git maintenance
         run: HQ_AUTOCOMMIT_TEST_PATH_CASE=auto-maintenance bash core/scripts/tests/hq-autocommit.test.sh
+      - name: Autocommit reports pre-staged index holds without changing staged work
+        run: bash core/scripts/tests/hq-autocommit-prestaged.test.sh
       - name: HQ-root git re-init and repair never record nested repos as gitlinks
         run: bash core/scripts/tests/hq-root-git-reinit.test.sh
       - name: macOS Icon (carriage return) files are removed from .git and missing objects restored only from matching files
@@ -503,6 +510,10 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-pointer.test.sh
       - name: Handoff finalizer never reports a failed commit as success
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
+      - name: Handoff commit holds only its own paths and skips nested knowledge repos
+        run: bash core/scripts/tests/handoff-finalize-commit-scope.test.sh
+      - name: Handoff finalizer keeps swept-in media and oversize files out of commits
+        run: bash core/scripts/tests/handoff-finalize-media-filter.test.sh
       - name: Handoff finalizer stores deficiencies and system_info
         run: bash core/scripts/tests/handoff-finalize-deficiencies.test.sh
       - name: Handoff finalizer checks jq and JSON arguments before writing anything
@@ -511,6 +522,10 @@ jobs:
           bash core/scripts/tests/handoff-finalize-json-args.test.sh
       - name: Handoff finalizer surfaces and classifies git add errors
         run: bash core/scripts/tests/handoff-finalize-stage-error.test.sh
+      - name: Handoff finalizer waits out a held index.lock and scopes directory changesets
+        run: bash core/scripts/tests/handoff-finalize-index-lock-retry.test.sh
+      - name: Handoff finalizer counts alias-root company paths toward scope
+        run: bash core/scripts/tests/handoff-finalize-logical-root.test.sh
       - name: Handoff scripts accept company slugs that start with a digit
         run: bash core/scripts/tests/handoff-company-digit-slug.test.sh
       - name: Handoff auto-files hq-core deficiencies once per handoff
@@ -631,6 +646,8 @@ jobs:
         run: bash core/scripts/tests/auto-acl-suggest.test.sh
       - name: Stop reminder smoke test
         run: bash core/scripts/tests/auto-acl-share-reminder.test.sh
+      - name: /hq-share mints at delivery and re-mints stale links (feedback 1c1608cb)
+        run: bash core/scripts/tests/hq-share-mint-at-delivery.test.sh
       - name: Hooks parse + no bash-3.2 nested-heredoc (DEV-1513f1f5)
         run: bash core/scripts/tests/hooks-heredoc-syntax.test.sh
       - name: Supply-chain guard bypass is env-only, not inline prefix (DEV-1798)
@@ -782,6 +799,8 @@ jobs:
           timeout 240s bash core/scripts/tests/master-hook-event-process-budget.test.sh | tail -200
       - name: Master-hook per-event budget handles equal and pre-optimization bases
         run: timeout 600s bash core/scripts/tests/master-hook-event-process-budget-base-equal.test.sh
+      - name: Master-hook dispatch process budget and session-id prefilters
+        run: timeout 120s bash core/scripts/tests/master-hook-dispatch-process-budget.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: check-hq-update gates repeated failed network checks
@@ -792,6 +811,8 @@ jobs:
         run: bash core/scripts/tests/restore-hook-engine.test.sh
       - name: Codex and Grok adapters dispatch engine exec entries to master-hook.sh (US-015)
         run: bash core/scripts/tests/hook-adapter-exec-form.test.sh
+      - name: Codex and Grok adapters ignore CRLF from Windows jq.exe
+        run: bash core/scripts/tests/hook-adapter-jq-crlf.test.sh
       - name: Golden dispatcher contract and synthetic corpus integrity (US-003)
         run: |
           bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh'
@@ -1190,10 +1211,16 @@ jobs:
         run: /bin/bash core/scripts/tests/credential-read-guard.test.sh
       - name: Handoff finalizer git add error classification under stock macOS Bash
         run: /bin/bash core/scripts/tests/handoff-finalize-stage-error.test.sh
+      - name: Handoff finalizer index.lock retry under stock macOS Bash
+        run: /bin/bash core/scripts/tests/handoff-finalize-index-lock-retry.test.sh
       - name: Handoff post manifest cloud resolution under stock macOS Bash
         run: /bin/bash core/scripts/tests/handoff-post-cloud-manifest.test.sh
       - name: Native plan sync session scoping under stock macOS Bash
         run: /bin/bash core/scripts/tests/native-plan-session-project.test.sh
+      - name: Session project pointer scoping under stock macOS Bash
+        run: /bin/bash core/scripts/tests/session-project.test.sh
+      - name: Numbered policy sibling guard under stock macOS Bash
+        run: /bin/bash core/scripts/tests/block-numbered-policy-sibling.test.sh
       - name: .gitignore secret paths under stock macOS Bash
         run: /bin/bash core/scripts/tests/gitignore-secret-paths.test.sh
       - name: Credential output redactor under stock macOS Bash
@@ -1709,6 +1736,8 @@ jobs:
       id: t_hooks_no_python__4
       if: "${{ !cancelled() && steps.t_hooks_no_python__3.outcome == 'success' }}"
       run: bash core/scripts/tests/knowledge-pulse-policy-schema.test.sh
+    - name: Knowledge freshness preserves semantic status
+      run: node --test core/scripts/tests/knowledge-pulse-stale.test.mjs
     - name: "[hooks-no-python] Stray matcher-less hook-gate registrations are removed (jq + node)"
       id: t_hooks_no_python__5
       if: "${{ !cancelled() && steps.t_hooks_no_python__4.outcome == 'success' }}"
@@ -1880,6 +1909,14 @@ jobs:
       id: t_deploy_summary_nounset__2
       if: "${{ !cancelled() && steps.t_deploy_summary_nounset__1.outcome == 'success' }}"
       run: bash core/scripts/tests/deploy-summary-gating.test.sh
+    - name: "[deploy-summary-nounset] /startwork accepts bare skill names from the desktop app"
+      id: t_deploy_summary_nounset__3
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/startwork-desktop-skill-args.test.sh
+    - name: "[deploy-summary-nounset] pipefail tests never pipe printf into grep -q (SIGPIPE flake)"
+      id: t_deploy_summary_nounset__4
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/test-pipefail-grep-q.test.sh
     - name: "[resolve-deploy-org] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -1955,6 +1992,10 @@ jobs:
       id: t_journal_session_isolation__12
       if: "${{ !cancelled() && steps.t_journal_session_isolation__11.outcome == 'success' }}"
       run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
+    - name: "[journal-session-isolation] Checkpoint and journal reminders fire at most once per 30 minutes per trigger type"
+      id: t_journal_session_isolation__12b
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__12.outcome == 'success' }}"
+      run: bash core/scripts/tests/reminder-throttle-30m.test.sh
     - name: "[journal-session-isolation] Checkpoint auto lookup stays out of workspace/worktrees and is time-bounded"
       id: t_journal_session_isolation__13
       if: "${{ !cancelled() && steps.t_journal_session_isolation__12.outcome == 'success' }}"
@@ -2075,6 +2116,22 @@ jobs:
       id: t_journal_session_isolation__42
       if: "${{ !cancelled() && steps.t_journal_session_isolation__41.outcome == 'success' }}"
       run: bash core/scripts/tests/surface-company-infra-policy.test.sh
+    - name: "[journal-session-isolation] Policy reminder keeps every specific HARD rule in full and caps common-word matches"
+      id: t_journal_session_isolation__43
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__42.outcome == 'success' }}"
+      run: bash core/scripts/tests/inject-policy-relevance-cap.test.sh
+    - name: "[journal-session-isolation] Policy reminder caps one-word matches on tool events and never shortens a HARD rule below its Rule section"
+      id: t_journal_session_isolation__44
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__43.outcome == 'success' }}"
+      run: bash core/scripts/tests/inject-policy-generic-cap.test.sh
+    - name: "[journal-session-isolation] Policy reminder skips policies keyed on a company outside the session's company set"
+      id: t_journal_session_isolation__45
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__44.outcome == 'success' }}"
+      run: bash core/scripts/tests/inject-policy-other-company-skip.test.sh
+    - name: "[journal-session-isolation] /learn writes the company field for client-scoped rules outside a company policy directory"
+      id: t_journal_session_isolation__46
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__45.outcome == 'success' }}"
+      run: bash core/scripts/tests/learn-company-field.test.sh
     - name: "[hq-agent-session-harness] reset checkout"
       if: "${{ !cancelled() }}"
       run: |

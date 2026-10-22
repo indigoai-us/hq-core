@@ -21,6 +21,7 @@ For deployable projects (web, API, CLI), E2E coverage is the truth signal — no
 - **PRDs (`prd.json` per project):** Stories may declare an optional `e2eTests` array. Each entry names a test or test pattern that must pass before the story is counted as complete. Stories without `e2eTests` rely on the project-level smoke (declared at the PRD root).
 - **Workers:** Use the `e2e-testing` skill for writing and running these tests. Don't reinvent harnesses inline.
 - **Knowledge base path:** Templates, infra guides, and the `agent-browser` recipe live alongside this policy under `core/knowledge/` — search via `qmd vsearch -c hq-knowledge "e2e <topic>"` rather than hard-coding a path.
+- **Claude desktop Browser pane and local files:** The Browser pane will not screenshot a local HTML file that sits outside the session's project folder. Put the file inside the project, or serve it with `preview_start` (for example a `.claude/launch.json` entry that runs `python3 -m http.server <port>` in the file's folder).
 
 ## Rationale
 

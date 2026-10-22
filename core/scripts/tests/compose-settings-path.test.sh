@@ -77,4 +77,31 @@ grep -q 'configure-settings-path.sh' "$SRC_ROOT/core/scripts/setup.sh" ||
 grep -q 'compose-settings-path.sh' "$SRC_ROOT/core/scripts/configure-settings-path.sh" ||
   fail "PATH configuration helper no longer composes the PATH snapshot"
 
+# ── 8. Windows toolchain under LOCALAPPDATA → its layout is prepended ──────
+# feedback_ec9435cd: on Windows the toolchain is %LOCALAPPDATA%\IndigoHQ\toolchain
+# with node.exe in node/ and npm shims in npm-prefix/. A GUI-launched session
+# lacked hq/qmd/node on PATH because only the macOS root was probed.
+
+WIN_HOME="$TMP/win-home"
+WIN_LA="$TMP/Local App Data"
+WIN_TC="$WIN_LA/IndigoHQ/toolchain"
+mkdir -p "$WIN_HOME" "$WIN_TC/node" "$WIN_TC/npm-prefix" "$WIN_TC/git/cmd"
+: > "$WIN_TC/node/node.exe"
+OUT="$(env -u HQ_TOOLCHAIN_DIR -u APPDATA HOME="$WIN_HOME" LOCALAPPDATA="$WIN_LA" bash "$SCRIPT" "$BASE")"
+[[ "$OUT" == "$WIN_TC/node:$WIN_TC/npm-prefix:$WIN_TC/git/cmd:$BASE" ]] ||
+  fail "Windows LOCALAPPDATA toolchain not prepended — got: $OUT"
+
+# Legacy "Indigo HQ" root under APPDATA with node/bin only: node/ itself is
+# not added because it holds no node binary.
+WIN_AD="$TMP/Roaming"
+LEG_TC="$WIN_AD/Indigo HQ/toolchain"
+mkdir -p "$LEG_TC/node/bin" "$LEG_TC/npm-global/bin"
+OUT="$(env -u HQ_TOOLCHAIN_DIR -u LOCALAPPDATA HOME="$WIN_HOME" APPDATA="$WIN_AD" bash "$SCRIPT" "$BASE")"
+[[ "$OUT" == "$LEG_TC/node/bin:$LEG_TC/npm-global/bin:$BASE" ]] ||
+  fail "legacy APPDATA toolchain layout wrong — got: $OUT"
+
+# HQ_TOOLCHAIN_DIR still pins the root exactly (no Windows probing).
+OUT="$(HQ_TOOLCHAIN_DIR="$TMP/does-not-exist" HOME="$WIN_HOME" LOCALAPPDATA="$WIN_LA" bash "$SCRIPT" "$BASE")"
+[[ "$OUT" == "$BASE" ]] || fail "HQ_TOOLCHAIN_DIR override did not suppress Windows probing — got: $OUT"
+
 echo "PASS: compose-settings-path regression suite"

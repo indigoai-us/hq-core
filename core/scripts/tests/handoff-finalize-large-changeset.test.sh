@@ -175,7 +175,7 @@ missing_rc=$?
 set -e
 [[ "$missing_rc" -ne 0 ]] || fail "missing --files-touched-json-file should exit non-zero"
 pass_assert
-echo "$missing_err" | grep -q "not found" || fail "missing file error message absent (silent {} regression)"
+echo "$missing_err" | grep >/dev/null "not found" || fail "missing file error message absent (silent {} regression)"
 pass_assert
 
 # -------- Case: EXIT trap cleans registered temps (new_tmp must not use $()) --------

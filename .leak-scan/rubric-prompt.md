@@ -36,7 +36,7 @@ Return one of three verdicts in JSON. **No prose outside the JSON object.**
 
 # What is fine
 
-- The literal tokens `indigo`, `indigo-hq.com`, `anthropic`, generic SDK names
+- The literal tokens `indigo`, `hq.work`, `indigo-hq.com`, `anthropic`, generic SDK names
 - Public framework / tool names
 - Synthetic example values clearly marked as such (e.g. `<your-domain>.com`)
 - Generic incident classes ("a past 4xx leak"), not specific incidents

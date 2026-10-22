@@ -237,6 +237,18 @@ if (supersedes !== null) {
   const bad = ids.find((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id));
   if (bad !== undefined) lc("supersedes", "'" + bad + "' is not a policy id");
 }
+// company:/companies: name the clients a policy is for (the policy reminder
+// skips it in sessions locked to other companies). Each value must be a slug
+// in companies/manifest.yaml, so a placeholder or typo cannot hide a rule.
+for (const key of ["company", "companies"]) {
+  const raw = fmVal(key);
+  if (raw === null) continue;
+  const known = new Set((process.env.HQ_POLICY_KNOWN_COMPANIES || "").trim().split(/\s+/).filter(Boolean).map((x) => x.toLowerCase()));
+  const vals = raw.replace(/^\[|\]$/g, "").split(",").map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+  if (!vals.length) lc(key, "needs at least one company slug from companies/manifest.yaml");
+  const bad = vals.find((x) => !known.has(x.toLowerCase()));
+  if (bad !== undefined) lc(key, "'" + bad + "' is not a company slug in companies/manifest.yaml");
+}
 const enfRaw = fmVal("enforcement");
 const fmLines = fm.split("\n");
 const gateIdx = fmLines.findIndex((l) => /^gate:[ \t]*(#.*)?$/.test(l));
@@ -425,6 +437,14 @@ analyze_with_jq() {
         for (k=1; k<=n; k++) { id=ids[k]; gsub(/^[ \t"'"'"']+|[ \t"'"'"']+$/, "", id)
           if (id != "" && id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) { print "BLOCK|lifecycle|supersedes|'"'"'" id "'"'"' is not a policy id"; exit } }
       }
+      split("company companies", ck, " ")
+      for (ci=1; ci<=2; ci++) if (HAS[ck[ci]]) {
+        kn=" " tolower(ENVIRON["HQ_POLICY_KNOWN_COMPANIES"]) " "; gsub(/[ \t]+/, " ", kn)
+        cv=F[ck[ci]]; gsub(/^\[|\]$/, "", cv); cn=split(cv, cs, ","); got=0
+        for (cj=1; cj<=cn; cj++) { c=cs[cj]; gsub(/^[ \t"'"'"']+|[ \t"'"'"']+$/, "", c); if (c == "") continue; got=1
+          if (index(kn, " " tolower(c) " ") == 0) { print "BLOCK|lifecycle|" ck[ci] "|'"'"'" c "'"'"' is not a company slug in companies/manifest.yaml"; exit } }
+        if (!got) { print "BLOCK|lifecycle|" ck[ci] "|needs at least one company slug from companies/manifest.yaml"; exit }
+      }
       if (enf == "gate" || HAS["gate"]) {
         if (!HAS["gate"]) { print "BLOCK|lifecycle|gate|enforcement: gate requires a gate: block"; exit }
         for (k in GH) if (k !~ /^(tools|bash|requires|freshness|override)$/) { print "BLOCK|lifecycle|gate." k "|unknown gate field; allowed: tools, bash, requires, freshness, override"; exit }
@@ -457,6 +477,15 @@ analyze_with_jq() {
       for (k=1; k<=wc; k++) print "CHECK|" whens[k]
     }'
 }
+
+# Company slugs a company:/companies: value may name: the keys of the
+# companies: map in companies/manifest.yaml. No manifest means no valid slug.
+POLICY_MANIFEST="${HQ_COMPANIES_MANIFEST:-$HQ_ROOT/companies/manifest.yaml}"
+HQ_POLICY_KNOWN_COMPANIES=""
+if [ -r "$POLICY_MANIFEST" ]; then
+  HQ_POLICY_KNOWN_COMPANIES="$(awk '/^companies:/ { c = 1; next } c && /^[^ \t#]/ { c = 0 } c && /^  [A-Za-z0-9][A-Za-z0-9_-]*:/ { k = $1; sub(/:.*$/, "", k); printf "%s ", k }' "$POLICY_MANIFEST" 2>/dev/null || true)"
+fi
+export HQ_POLICY_KNOWN_COMPANIES
 
 if [ -n "$NODE" ]; then
   RESULT="$(HQ_HOOK_INPUT="$INPUT" HQ_PROJECT_DIR="$PROJECT_DIR" "$NODE" -e "$JSPROG" 2>/dev/null || echo ALLOW)"

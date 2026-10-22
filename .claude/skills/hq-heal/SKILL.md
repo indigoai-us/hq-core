@@ -17,7 +17,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 - `(no args)` → use `AskUserQuestion` to ask the user to paste the error text.
 - `<free text>` → treat the entire argument string as the error text.
 - `--last-session` → scan the most recent JSONL under `~/.claude/projects/-Users-*-Documents-HQ/` for the trailing error (uses the streaming Python pattern from `.claude/skills/recover-session/SKILL.md` step 3 — never read the full file).
-- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sandbox-network`, `sync`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `git-object-store`, `plan-mode`, `unknown`.
+- `--class <name>` → skip classification and jump straight to the diagnostics recipe for that class. Valid: `autocompact`, `hook`, `sandbox-network`, `sync`, `work-registry`, `denylist`, `mcp`, `qmd`, `reindex`, `symlink`, `git-root`, `git-object-store`, `plan-mode`, `unknown`.
 - `--dry-run` → diagnose and propose but do not apply any fix.
 - `--no-bug` → suppress the automatic `/hq-bug` filing step. By default, every heal run files a bug so HQ engineering accumulates signal on which error classes are recurring (see Step 6).
 - `--allow-core` → permit the apply step to edit files under `core/` (the hook-protected mirror) by prefixing the offending Write/Edit/Bash call with `HQ_BYPASS_CORE_PROTECT=1`. Off by default — heal will refuse a core edit and require this flag to be passed, even when the user confirms the numbered fix. Always documented in the heal report and the filed bug (see Step 5 + Step 6).
@@ -28,7 +28,7 @@ The first argument shapes how the error is collected. Everything after the flag 
 
 If `$ARGUMENTS` is empty, ask: *"Paste the error message you're seeing (or describe what went wrong)."* Wait for response, treat that as the error text.
 
-If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`), `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, `manifest.*throttled`, `fetch failed`, `connect EPERM`, or `EPERM`. Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
+If `--last-session`, run a Python streaming extract that scans the last 200 lines of the most recently modified JSONL for any of these signals: `Prompt is too long`, `Conversation too long`, `Error during compaction`, `Autocompact is thrashing`, `permission denied`, `EACCES`, `hook .* failed`, `block-hq-root-git-mutation`, `MCP server .* failed`, `qmd: error`, `reindex.sh.*abort` (legacy `master-sync.sh.*abort`), `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, `manifest.*throttled`, `fetch failed`, `connect EPERM`, `EPERM`, or `WORK_REGISTRY_DISABLED`. Capture the matched line plus 2 lines of surrounding context. Truncate to 2 KB.
 
 Store the resulting text in a local variable called `ERR`.
 
@@ -42,6 +42,7 @@ Unless `--class` is set, walk the pattern table top-to-bottom; first match wins.
 | `hook` | `hook .* failed`, `PreToolUse .* blocked`, `PostToolUse hook`, `hook-gate.sh`, `non-zero exit from hook` |
 | `sandbox-network` | `connect EPERM`, `EPERM .*:443`, `CODEX_SANDBOX_NETWORK_DISABLED`, `sandbox.*(network|egress)` — the OS refused an outbound HTTPS connect, or a write outside the workspace, under a Codex or ChatGPT desktop app sandbox. A bare `fetch failed` with no EPERM underneath is NOT this class: it stays with `sync` (offline, refused, timeout) |
 | `sync` | `hq sync .* conflict`, `conflictPath`, `resolve-conflicts`, `hq-sync.*error`, `originalPath.*conflict`, `FILES_PRESIGN_STALE_UPLOAD_FORBIDDEN`, `resend_full_scheduled`, `manifest.*throttled` |
+| `work-registry` | `WORK_REGISTRY_DISABLED`, `work-mesh.*register.*AUTH_DENIED`, `register.*quarantined.*AUTH_DENIED` — a work-mesh session register was refused. Older hq-cli versions (before 5.345.150) recorded the company's work registry being off as `AUTH_DENIED` in the outbox |
 | `access` | `caller lacks '.*' on '.*'`, `403 Forbidden`, `Access denied`, `AccessDenied`, `no such key`, `NoSuchKey`, `not found` (when the path is under `companies/`) |
 | `denylist` | `Read access blocked`, `denied by settings`, `~/.ssh`, `~/.aws/credentials`, `~/.zshrc`, `permission rule .* deny` |
 | `mcp` | `MCP server .* (failed|disconnected|timeout)`, `Error connecting to MCP`, `tool .* not found` (when the tool name matches a known MCP) |
@@ -164,6 +165,17 @@ do not propose `/resolve-conflicts` as the repair. Use `/hq-sync` to inspect the
 diagnostics identifies retryable interruption. For a transient network result,
 tell the user to run `/hq-sync` again after connectivity recovers. Report any
 remaining non-complete company status instead of claiming success.
+
+#### `work-registry`
+The company's work registry is off, so HQ refuses to register work sessions for it. This is a company setting, not a permission problem with the user. It defaults to off until a company owner turns it on. Older hq-cli versions reported it as `AUTH_DENIED`.
+
+Diagnostics:
+- `hq company --company <slug> settings get` shows both work tracking switches to an owner or admin (`workRegistryEnabled` and `workMeshLiveEnabled`).
+- `hq members list` confirms whether the user is the company owner.
+
+Fix proposals:
+1. If the user is the company owner: `hq company --company <slug> settings set --work-registry-enabled true`. Work tracking also needs live tracking on; if `settings get` shows it off, add `--work-mesh-live-enabled true`. Then each person runs `hq mesh context requeue` once to resend the sessions held on their machine.
+2. If the user is not the owner: tell them the company's work registry is off and only a company owner can turn it on with the command above. Do not retry or requeue until it is on; the ops will be refused again.
 
 #### `access`
 

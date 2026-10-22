@@ -22,13 +22,13 @@ printf '# demo\nRun `bash core/scripts/live.sh`.\n' > "$FX/.claude/skills/demo/S
 printf '#!/usr/bin/env bash\nexit 0\n' > "$FX/core/scripts/live.sh"
 
 out="$(run_lint_in "$FX" demo 2>&1)" || fail "Case A: valid local script references should pass; got:\n${out}"
-printf '%s\n' "$out" | grep -q '^OK:' || fail "Case A: expected OK output; got:\n${out}"
+printf '%s\n' "$out" | grep >/dev/null '^OK:' || fail "Case A: expected OK output; got:\n${out}"
 
 printf '# demo\nRun `bash core/scripts/retired.sh`.\n' > "$FX/.claude/skills/demo/SKILL.md"
 if out="$(run_lint_in "$FX" demo 2>&1)"; then
   fail "Case B: missing documented script should fail, but passed:\n${out}"
 fi
-printf '%s\n' "$out" | grep -q 'core/scripts/retired.sh' \
+printf '%s\n' "$out" | grep >/dev/null 'core/scripts/retired.sh' \
   || fail "Case B: failure must name the missing script; got:\n${out}"
 
 out="$( ( cd "$ROOT" && bash "$LINT" learn ) 2>&1 )" \
@@ -68,7 +68,7 @@ if out="$(run_lint_in "$FX2" demo 2>&1)"; then
 fi
 printf 'core/scripts/pending.sh\n' > "$FX2/core/scripts/lint-skill-script-refs.allow"
 out="$(run_lint_in "$FX2" demo 2>&1)" || fail "Case F: an allowlisted ref should pass; got:\n${out}"
-printf '%s\n' "$out" | grep -q '^OK:' || fail "Case F: expected OK once allowlisted; got:\n${out}"
+printf '%s\n' "$out" | grep >/dev/null '^OK:' || fail "Case F: expected OK once allowlisted; got:\n${out}"
 
 # Case G: local Markdown policy links are release guidance too. A link to a
 # shipped policy passes, while a dangling target fails and names the bad href.

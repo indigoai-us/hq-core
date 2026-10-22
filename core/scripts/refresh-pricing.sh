@@ -79,6 +79,9 @@ jq -r '
     "- Trial: \(.usage.trial.days) days, capped at \(.usage.trial.capUsd | usd) of usage.",
     "- Free: \(.usage.free | map(free) | join(", ")).",
     "- Domains: \(.usage.domains.standardUsd | usd) standard, \(.usage.domains.premiumUsd | usd) premium, per \(.interval).",
+    (if .usage.domains.purchase == null then empty else
+      "- Domain purchase: registrar price plus \(.usage.domains.purchase.markupUsdPerYear | usd) a year, renewing \(.usage.domains.purchase.renewal) on the same basis\(if .usage.domains.purchase.chargedBeforeRenewal then ", charged before each renewal" else "" end); no refunds after a \(.usage.domains.purchase.refundGraceDays)-day grace period."
+    end),
     "",
     "### Boxes on the usage card (per box, per \(.interval))",
     "",

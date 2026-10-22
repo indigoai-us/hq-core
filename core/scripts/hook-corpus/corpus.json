@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "a952afbd3e13af4e5be20697772bdbed322ce576c6dee395c127d7b78d6436da",
+  "registry_sha256": "9d51422d46cb35baf0d23fd02337fb206077b7aab1f23494b9564913133c72f3",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",

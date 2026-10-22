@@ -1,7 +1,7 @@
 ---
 name: knowledge-pulse
 description: Run a lightweight freshness pass over company knowledge and policies.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/knowledge-pulse-lock.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/knowledge-pulse-lock.sh:*), Bash(node core/scripts/knowledge-pulse-stale.mjs:*)
 ---
 
 # Knowledge Pulse — Background Gardening
@@ -107,11 +107,11 @@ For each `.md` file in `{knowledge_path}/` (skip `INDEX.md`, `README.md`):
 
 For each `.md` file in `{knowledge_path}/` (skip `INDEX.md`):
 
-1. Check the file's filesystem modification time (for example, with Python's `os.path.getmtime()`); do not use Git history for company knowledge.
-2. If the file has not been modified in more than 60 days:
-   - If file has frontmatter with `status:` field: update to `status: stale`
-   - If no frontmatter: skip (will be tagged in next pulse after 2b adds frontmatter)
-3. Track: `stale_flagged` count, collect files >90 days for report
+1. Run the deterministic helper for each file, using the resolved company knowledge root and absolute file path:
+   `node core/scripts/knowledge-pulse-stale.mjs --knowledge-root "{knowledge_path}" --file "{absolute_file_path}"`
+2. The helper uses filesystem modification time, not Git history. After more than 60 days it adds `stale_since: YYYY-MM-DD` to supported existing frontmatter. **Preserve every semantic `status` value and all other content. Never replace status with `stale`.**
+3. Count `flagged` results as `stale_flagged`; collect `over_90_days` results for review. `already_flagged` is an unchanged annotation, not another edit. Do not automatically clear annotations merely because an automated edit refreshed mtime.
+4. Leave missing/unsupported frontmatter, symlinks, files outside this company's knowledge root and changed files untouched. Report refused files or helper failures; do not substitute a manual status rewrite.
 
 #### 2d. company-info.md Check
 

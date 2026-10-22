@@ -61,7 +61,7 @@ DEFAULT_PREEXISTS=0
 
 echo "== 1. preflight is SessionStart-only, so a reactive policy must not appear =="
 OUT_A="$( (cd "$ROOT" && bash core/scripts/codex-preflight.sh policies --session "$RUN-a") 2>/dev/null )"
-if printf '%s' "$OUT_A" | grep -Fq "$SLUG"; then
+if printf '%s' "$OUT_A" | grep >/dev/null -F "$SLUG"; then
   fail "preflight omits $SLUG (policy is reactive-only)" "slug present in the SessionStart pull path"
 else
   ok "preflight omits $SLUG (policy is reactive-only)"
@@ -71,13 +71,13 @@ echo "== 1a. Codex reactive path: two distinct sessions BOTH receive $SLUG =="
 if [ -f "$ADAPTER" ]; then
   CX_A="$(codex_prompt cxa)"
   CX_B="$(codex_prompt cxb)"
-  if printf '%s' "$CX_A" | grep -Fq "$SLUG"; then
+  if printf '%s' "$CX_A" | grep >/dev/null -F "$SLUG"; then
     ok "Codex session A receives $SLUG on a matching prompt"
   else
     fail "Codex session A receives $SLUG on a matching prompt" \
       "slug missing; got: $(printf '%s' "$CX_A" | tr '\n' ' ' | cut -c1-300)"
   fi
-  if printf '%s' "$CX_B" | grep -Fq "$SLUG"; then
+  if printf '%s' "$CX_B" | grep >/dev/null -F "$SLUG"; then
     ok "Codex session B receives $SLUG (dedupe is per-session, not per-machine)"
   else
     fail "Codex session B receives $SLUG (dedupe is per-session, not per-machine)" \
@@ -95,7 +95,7 @@ fi
 echo "== 1b. codex adapter synthesizes a session_id when the payload lacks one =="
 if [ -f "$ADAPTER" ]; then
   AOUT="$(codex_prompt cx)"
-  if printf '%s' "$AOUT" | grep -Fq "$SLUG" && [ -f "$LEDGER_DIR/codex-$RUN-cx.txt" ]; then
+  if printf '%s' "$AOUT" | grep >/dev/null -F "$SLUG" && [ -f "$LEDGER_DIR/codex-$RUN-cx.txt" ]; then
     ok "adapter injects $SLUG under a synthesized session ledger"
   else
     fail "adapter injects $SLUG under a synthesized session ledger" "output or ledger codex-$RUN-cx.txt missing"
@@ -132,7 +132,7 @@ echo "== 3. codex-skill-bridge.sh status regression smoke =="
 BRIDGE="$ROOT/core/scripts/codex-skill-bridge.sh"
 if [ -f "$BRIDGE" ]; then
   BOUT="$( (cd "$ROOT" && bash "$BRIDGE" status) 2>&1 )"
-  if [ -n "$BOUT" ] && printf '%s' "$BOUT" | grep -Fq "bridge:"; then
+  if [ -n "$BOUT" ] && printf '%s' "$BOUT" | grep >/dev/null -F "bridge:"; then
     ok "codex-skill-bridge.sh status still reports bridge state"
   else
     fail "codex-skill-bridge.sh status still reports bridge state" "no report; got: $(printf '%s' "$BOUT" | tr '\n' ' ' | cut -c1-200)"

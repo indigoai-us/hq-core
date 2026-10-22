@@ -895,8 +895,42 @@ scope_shell_variable_values() {
       fi
     done
     values=("${range_values[@]}")
-    local glob_match glob_count=0 glob_cwd
+    local glob_match glob_count=0 glob_cwd glob_abs
     for value in "${values[@]}"; do
+      # A loop word that globs an absolute directory outside HQ (`for d in
+      # ~/.claude/scheduled-tasks/*/`, `/tmp/runs/*`) expands to the entries
+      # it matches now. Each one is printed as an absolute path and checked
+      # by the caller like a literal, so a match that resolves into
+      # companies/ still needs the lock (feedback 0ed4e446). `~` and $HOME
+      # are the caller's home unless the command reassigns it; a word with
+      # `..`, an unmatched glob, or an odd character stays unresolved.
+      glob_abs=""
+      case "$value" in
+        '~/'*) glob_abs="${HOME:-}/${value#\~/}" ;;
+        '$HOME/'*) glob_abs="${HOME:-}/${value#\$HOME/}" ;;
+        '${HOME}/'*) glob_abs="${HOME:-}/${value#\$\{HOME\}/}" ;;
+        /*) glob_abs="$value" ;;
+      esac
+      if [ -n "$glob_abs" ] && [[ "$glob_abs" == *[*?]* ]] && [[ "$glob_abs" != *'..'* ]] \
+        && [[ "$glob_abs" =~ ^/[A-Za-z0-9._/@+*?-]*$ ]] \
+        && [[ "${HOME:-}" == /* ]] && ! scope_command_may_set_var HOME "$command_text"; then
+        # Every match is substituted and checked by the caller as a literal
+        # path (a symlink is resolved there), so only a glob over the tenant
+        # tree itself is refused here outright.
+        case "$glob_abs" in
+          "$HQ_ROOT/companies"|"$HQ_ROOT/companies/"*) return 1 ;;
+        esac
+        glob_count=0
+        while IFS= read -r glob_match; do
+          [ -n "$glob_match" ] || continue
+          case "$glob_match" in *[!A-Za-z0-9._/@+-]*|*'..'*) return 1 ;; esac
+          glob_count=$((glob_count + 1))
+          [ "$glob_count" -le 2048 ] || return 1
+          printf '%s\n' "$glob_match"
+        done < <(compgen -G "$glob_abs" || true)
+        [ "$glob_count" -gt 0 ] || return 1
+        continue
+      fi
       # A loop word that globs an open HQ tree (`for d in workspace/x/*`)
       # expands to the existing entries it matches. Enumerate them here so
       # each one is checked as a literal path; anything else stays refused.
@@ -1356,8 +1390,10 @@ scope_check_normalized_word() {
     scope_word_quotes_outside_company_paths "$word" "${2:-}" && return 0
   fi
   if [ -n "${scope_interp_bodies:-}" ] \
-    && { [[ "$scope_interp_bodies" == *"$word"* ]] || [[ "${scope_interp_bodies_unquoted:-}" == *"$word"* ]]; } \
-    && [[ "${scope_interp_outside_unquoted:-}" != *"$word"* ]]; then
+    && { [[ "$scope_interp_bodies" == *"$word"* ]] || [[ "${scope_interp_bodies_unquoted:-}" == *"$word"* ]] \
+      || [[ "${scope_interp_bodies_masked:-}" == *"$word"* ]] || [[ "${scope_interp_bodies_masked_unquoted:-}" == *"$word"* ]]; } \
+    && [[ "${scope_interp_outside_unquoted:-}" != *"$word"* ]] \
+    && [[ "${scope_interp_outside_masked_unquoted:-}" != *"$word"* ]]; then
     return 0
   fi
   rest="$word"
@@ -1526,6 +1562,28 @@ scope_check_bash_glob_candidate() {
       esac
       ;;
   esac
+  # `ls "companies/x/people/*/meta.yaml"`, `find companies/x -path
+  # "companies/x/people/*/meta.yaml"`: a word double-quoted from end to end
+  # with no expansion inside is never globbed; the program gets the literal
+  # text, which names a path (or a pattern it matches itself) under the
+  # literal prefix before the first glob character. That prefix is checked
+  # against the lock below exactly as for an unquoted glob, and the word is
+  # then done: nothing expands, so no match can land anywhere else
+  # (feedback 36c3e8cb). A `..` after the prefix keeps the normal refusal.
+  local quoted_literal=0
+  case "$word_head:$candidate" in
+    '"':*'"')
+      case "${candidate%\"}" in
+        *'"'*|*"'"*|*\\*|*'$'*|*"$backtick"*|*'{'*|*'}'*) ;;
+        *)
+          candidate="${candidate%\"}"
+          masked="$(scope_mask_literal_expansions "$candidate")"
+          occurrence_prefix="${occurrence_prefix%\"}"
+          quoted_literal=1
+          ;;
+      esac
+      ;;
+  esac
   case "$candidate" in
     *"'"*|*'"'*|*\\*) scope_block_rel "$candidate" "quoted or escaped glob syntax cannot be checked safely" ;;
   esac
@@ -1580,6 +1638,12 @@ scope_check_bash_glob_candidate() {
     "$HQ_ROOT/companies/$glob_company"|"$HQ_ROOT/companies/$glob_company"/*) ;;
     *) scope_block_rel "$candidate" "the bound company directory resolves outside its literal company path" ;;
   esac
+  if [ "$quoted_literal" -eq 1 ]; then
+    case "/$candidate/" in
+      */../*) scope_block_rel "$candidate" "a quoted glob climbs out of its company with .." ;;
+    esac
+    return 0
+  fi
 
   full_pattern="$token_prefix$candidate"
   case "$full_pattern" in
@@ -1859,6 +1923,20 @@ scope_load_bound_company() {
       && session_scope_inherit_parent_session "$HQ_ROOT" "$SESSION_ID" "$CALLER_AGENT_ID" "$SCOPE_CALLER_PARENT_SID"; then
       scope_apply_bound_scope
     fi
+  fi
+  # `core/scripts/hq-session.sh set company_slug X && ls companies/X/...`:
+  # the hook runs before the command, so the bind the command opens with
+  # has not happened yet and the read after it was refused as unbound
+  # (feedback f7a7126c, c52a2d2e, 1ad54d72, 74bfcdbc). For a main thread
+  # with no binding at all, the lead bind is taken as this command's lock:
+  # it is the same first bind the next call would have seen, and a bound
+  # session (or a child) gets nothing from this, so no lock is widened or
+  # switched here.
+  if [ -z "$BOUND_CO" ] && [ -n "${SCOPE_SAME_CMD_BIND:-}" ] && [ "$CALLER_KIND" = "main" ] \
+    && [ -z "$CALLER_AGENT_ID" ] && [ "$SCOPE_CALLER_REPORTS_PARENT" -eq 0 ] \
+    && [ -d "$HQ_ROOT/companies/$SCOPE_SAME_CMD_BIND" ] && [ ! -L "$HQ_ROOT/companies/$SCOPE_SAME_CMD_BIND" ]; then
+    BOUND_CO="$SCOPE_SAME_CMD_BIND"
+    BOUND_COS="$SCOPE_SAME_CMD_BIND"
   fi
 }
 
@@ -3645,6 +3723,9 @@ scope_url_is_remote_operand() {
   case "$word" in http://*|https://*) ;; *) return 1 ;; esac
   case "$head" in curl|wget|gh|git|http|https|xh|open|lynx|w3m) ;; *) return 1 ;; esac
   case "$prev" in -o|-O|--output|--output-document|-T|--upload-file|-K|--config|-d|--data*|-F|--form) return 1 ;; esac
+  # An unquoted expansion after the scheme can split into a second,
+  # local operand (file:///...), so it is not proven remote.
+  scope_word_is_literal_remote_url "$word" || return 1
   return 0
 }
 
@@ -4407,13 +4488,53 @@ scope_substitution_prints_numbers() {
 # written `\$` in the command, so no shell variable is spliced into the
 # script. The substitution bodies are returned in scope_prose_subs and
 # checked as commands; the file operands are checked as usual.
+# A plain `$NAME` / `${NAME}` in the script (`sed "s|/old/$u|/new/$l|"`,
+# `sed -n "${s},+5p"`) is text sed matches or prints, not a path the shell
+# opens (feedback cbbd0e33, 2ec4335f, bcf948ff). It is accepted when no
+# assignment of NAME in the command can carry the script delimiter, a
+# newline or a backslash (which could end the s command early and add a
+# `w FILE` command), and no builtin binds NAME from input. A name that holds
+# a command substitution's output is still refused by the substitution scan.
+scope_sed_var_is_text() {
+  local name="${1:-}" delim="${2:-}" cmd="${scope_scan_cmd:-}" assign_re value bind_re loop_re bound=0 word
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|printf[[:space:]]+-v)([[:space:]]|$)'
+  [[ "$cmd" =~ $bind_re ]] && return 1
+  # The command itself must give the name a value: an assignment or a `for`
+  # list of plain words. An unset name expands to nothing, which turns the
+  # script into something else (`$p` meant as the last-line address), and a
+  # name from the environment is not visible here; both stay refused as
+  # before.
+  assign_re='(^|[;&|({[:space:]]|'$'\n'')(export[[:space:]]+|local[[:space:]]+|declare[[:space:]]+)?'"$name"'\+?=("[^"]*"|'"'[^']*'"'|[^;&|[:space:]]*)'
+  while [[ "$cmd" =~ $assign_re ]]; do
+    value="${BASH_REMATCH[3]}"
+    cmd="${cmd#*"${BASH_REMATCH[0]}"}"
+    case "$value" in *$'\n'*|*\\*|*$'\140'*|*'$('*) return 1 ;; esac
+    [ -n "$delim" ] && case "$value" in *"$delim"*) return 1 ;; esac
+    bound=1
+  done
+  loop_re='(^|[;&|({[:space:]]|'$'\n'')for[[:space:]]+'"$name"'[[:space:]]+in[[:space:]]+([^;'$'\n'']+)(;|'$'\n'')'
+  cmd="${scope_scan_cmd:-}"
+  while [[ "$cmd" =~ $loop_re ]]; do
+    cmd="${cmd#*"${BASH_REMATCH[0]}"}"
+    for word in ${BASH_REMATCH[2]}; do
+      case "$word" in *[!A-Za-z0-9._/@:+=-]*) return 1 ;; esac
+      [ -n "$delim" ] && case "$word" in *"$delim"*) return 1 ;; esac
+    done
+    bound=1
+  done
+  [ "$bound" -eq 1 ]
+}
+
 scope_token_is_sed_script() {
   local index="${1:-0}" token head i tok script_at=-1 saw_script_opt=0 reduced sub_re body escaped whole
-  local mark=$'\001' delim rest addr_re
+  local mark=$'\001' delim rest addr_re var_re var_name
+  local -a var_names=()
   scope_prose_subs=()
   [ "$index" -gt 0 ] || return 1
   token="${scope_tokens[$index]:-}"
-  case "$token" in *'$('*) ;; *) return 1 ;; esac
+  var_re='\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?'
+  case "$token" in *'$('*) ;; *) [[ "$token" =~ $var_re ]] || return 1 ;; esac
   case "$token" in *$'\140'*|*"$mark"*|*$'\n'*) return 1 ;; esac
   i="$(scope_command_head_index)"
   head="${scope_tokens[$i]:-}"
@@ -4454,6 +4575,24 @@ scope_token_is_sed_script() {
     [ "${#scope_prose_subs[@]}" -le 4 ] || return 1
   done
   case "$reduced" in *'$('*|*'('*|*')'*) return 1 ;; esac
+  # Plain variables are text in the script; each one is checked against the
+  # delimiter once that is known (scope_sed_var_is_text). An occurrence the
+  # command spells `\$NAME` (`",\$p"`, the last-line address) is a literal
+  # dollar, left in place for the escape check below.
+  local var_rest="$reduced" var_out="" var_match
+  while [[ "$var_rest" =~ $var_re ]]; do
+    var_match="${BASH_REMATCH[0]}"
+    var_out+="${var_rest%%"$var_match"*}"
+    var_rest="${var_rest#*"$var_match"}"
+    if scope_text_piece_is_escaped "$var_match"; then
+      var_out+="$var_match"
+    else
+      var_names[${#var_names[@]}]="${BASH_REMATCH[1]}"
+      var_out+="$mark"
+      [ "${#var_names[@]}" -le 8 ] || return 1
+    fi
+  done
+  reduced="$var_out$var_rest"
   # A literal `$` must be backslash-escaped inside the double-quoted word,
   # and that exact word must occur once.
   escaped="$token"
@@ -4461,6 +4600,12 @@ scope_token_is_sed_script() {
     local piece out="" restw="$token"
     while [ -n "$restw" ]; do
       if [[ "$restw" =~ ^\$\(([^()]*)\) ]]; then
+        out+="${BASH_REMATCH[0]}"
+        restw="${restw:${#BASH_REMATCH[0]}}"
+        continue
+      fi
+      if [[ "$restw" =~ ^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}? ]] \
+        && [[ " ${var_names[*]+"${var_names[*]}"} " == *" ${BASH_REMATCH[1]} "* ]]; then
         out+="${BASH_REMATCH[0]}"
         restw="${restw:${#BASH_REMATCH[0]}}"
         continue
@@ -4479,11 +4624,19 @@ scope_token_is_sed_script() {
   # so test the shape with a digit in its place (bash 3.2 uses \001
   # internally and cannot match it in a regex).
   addr_re='^([0-9]+|\$)(,([0-9]+|\$|\+[0-9]+|~[0-9]+))?[pd]?$'
-  [[ "${reduced//"$mark"/0}" =~ $addr_re ]] && return 0
+  if [[ "${reduced//"$mark"/0}" =~ $addr_re ]]; then
+    for var_name in ${var_names[@]+"${var_names[@]}"}; do
+      scope_sed_var_is_text "$var_name" "" || return 1
+    done
+    return 0
+  fi
   # One s command.
   [ "${reduced:0:1}" = s ] || return 1
   delim="${reduced:1:1}"
   case "$delim" in /|'|'|'#'|'@'|',') ;; *) return 1 ;; esac
+  for var_name in ${var_names[@]+"${var_names[@]}"}; do
+    scope_sed_var_is_text "$var_name" "$delim" || return 1
+  done
   rest="${reduced:2}"
   [[ "$rest" == *"$delim"*"$delim"* ]] || return 1
   rest="${rest#*"$delim"}"
@@ -4556,6 +4709,422 @@ scope_token_is_bounded_loop_read() {
     done < <(cd "$dir" && compgen -G '*' || true)
   done <<< "$values"
   [ "$count" -gt 0 ]
+}
+
+# curl -w/--write-out interpolates a format string onto stdout. That value
+# is not a filesystem path unless it starts with @ (curl then reads a file).
+# feedback_07a4fda9: `curl -w "== /$p code=%{http_code}"` failed closed
+# because /$p looked like an unresolved path.
+scope_token_is_curl_write_out_format() {
+  local index="${1:-0}" token prev="" opt head head_index reduced sub_re mark=$'\001'
+  scope_prose_subs=()
+  [ "$index" -ge 0 ] || return 1
+  token="${scope_tokens[$index]:-}"
+  [ "$index" -gt 0 ] && prev="${scope_tokens[$((index - 1))]:-}"
+  # An empty or past-the-end head index must not trip set -u. resumework
+  # bash blocks and assignment-only / bare-loop records hit this.
+  head_index="$(scope_command_head_index)"
+  case "$head_index" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$head_index" -lt "${#scope_tokens[@]}" ] || return 1
+  head="${scope_tokens[$head_index]:-}"
+  head="${head##*/}"
+  [ "$head" = curl ] || return 1
+  case "$token" in
+    --write-out=*)
+      opt=--write-out
+      token="${token#--write-out=}"
+      ;;
+    -w)
+      return 1
+      ;;
+    -w*)
+      if [ "$prev" = -w ] || [ "$prev" = --write-out ]; then
+        opt="$prev"
+      else
+        opt=-w
+        token="${token#-w}"
+      fi
+      ;;
+    *)
+      case "$prev" in
+        -w|--write-out) opt="$prev" ;;
+        *) return 1 ;;
+      esac
+      ;;
+  esac
+  case "$opt" in -w|--write-out) ;; *) return 1 ;; esac
+  case "$token" in @*) return 1 ;; esac
+  reduced="$token"
+  sub_re='\$\(([^()]*)\)'
+  while [[ "$reduced" =~ $sub_re ]]; do
+    scope_prose_subs[${#scope_prose_subs[@]}]="${BASH_REMATCH[1]}"
+    reduced="${reduced/"${BASH_REMATCH[0]}"/$mark}"
+    [ "${#scope_prose_subs[@]}" -le 16 ] || return 1
+  done
+  # curl's %output{FILE} / %output{>>FILE} directive writes the rest of the
+  # format to FILE, so a format holding it is a file write, not stdout text.
+  # Refuse it outright (PR 1544 review): a variable inside FILE expands at
+  # run time and could land in another company. Variables, substitutions,
+  # quotes and backslashes are removed first so they cannot split the name.
+  if scope_curl_write_out_has_output_directive "$token"; then
+    scope_block_rel "curl $opt %output{...}" "curl write-out %output{FILE} writes to a file and is refused; use -o/--output with a literal in-scope path instead"
+  fi
+  return 0
+}
+
+# scope_curl_write_out_has_output_directive <format>: 0 when the format holds
+# curl's %output{ directive in any case, after dropping $var, ${...}, $(...),
+# backticks, quotes and backslashes that could split the directive name.
+scope_curl_write_out_has_output_directive() {
+  local f="${1:-}" re
+  case "$f" in *%*) ;; *) return 1 ;; esac
+  re='\$\([^()]*\)'
+  while [[ "$f" =~ $re ]]; do f="${f/"${BASH_REMATCH[0]}"/}"; done
+  re='\$\{[^{}]*\}'
+  while [[ "$f" =~ $re ]]; do f="${f/"${BASH_REMATCH[0]}"/}"; done
+  re='\$[A-Za-z0-9_@*#?!$-]+'
+  while [[ "$f" =~ $re ]]; do f="${f/"${BASH_REMATCH[0]}"/}"; done
+  f="$(printf '%s' "$f" | LC_ALL=C tr -d "\140\"'\\\\\$" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  case "$f" in *%output\{*) return 0 ;; esac
+  return 1
+}
+
+# scope_url_word_scan <text> <start>: reads one shell word of <text> from
+# <start>, honouring quotes, backslashes and $(...). Sets scope_url_plain
+# (the word with quotes removed), scope_url_end (offset after it) and
+# scope_url_split (1 when the word holds an unquoted $ or backtick, which
+# bash expands and word-splits). Globs and braces are not counted: every word
+# they produce keeps the literal http(s) prefix typed before them.
+scope_url_word_scan() {
+  local t="${1:-}" i="${2:-0}" n c q="" depth
+  n=${#t}
+  scope_url_plain=""
+  scope_url_split=0
+  while [ "$i" -lt "$n" ]; do
+    c="${t:$i:1}"
+    if [ -z "$q" ]; then
+      case "$c" in ' '|$'\t'|$'\n'|';'|'&'|'|'|'<'|'>'|'('|')') break ;; esac
+    fi
+    i=$((i + 1))
+    if [ "$q" = "'" ]; then
+      if [ "$c" = "'" ]; then q=""; else scope_url_plain="$scope_url_plain$c"; fi
+      continue
+    fi
+    case "$c" in
+      \\) scope_url_plain="$scope_url_plain${t:$i:1}"; i=$((i + 1)); continue ;;
+      '"') if [ "$q" = '"' ]; then q=""; else q='"'; fi; continue ;;
+      "'") if [ -z "$q" ]; then q="'"; continue; fi ;;
+    esac
+    if [ "$c" = '$' ] && [ "${t:$i:1}" = "(" ]; then
+      # Copy $(...) whole so its inner spaces and quotes do not end the word.
+      [ -n "$q" ] || scope_url_split=1
+      scope_url_plain="$scope_url_plain$c"
+      depth=0
+      while [ "$i" -lt "$n" ]; do
+        c="${t:$i:1}"
+        i=$((i + 1))
+        scope_url_plain="$scope_url_plain$c"
+        case "$c" in
+          '(') depth=$((depth + 1)) ;;
+          ')') depth=$((depth - 1)); [ "$depth" -gt 0 ] || break ;;
+        esac
+      done
+      continue
+    fi
+    if [ -z "$q" ]; then
+      case "$c" in
+        '`') scope_url_split=1 ;;
+        '$')
+          # A loop variable whose list is literal words cannot split.
+          if [[ "${t:$i}" =~ ^\{?([A-Za-z_][A-Za-z0-9_]*) ]] \
+            && scope_url_is_literal_loop_var "${BASH_REMATCH[1]}"; then
+            :
+          else
+            scope_url_split=1
+          fi
+          ;;
+      esac
+    fi
+    scope_url_plain="$scope_url_plain$c"
+  done
+  scope_url_end=$i
+}
+
+# True when the raw command (scope_scan_cmd) binds <name> only through one
+# `for <name> in <words>` whose words hold no expansion or quote, so each
+# value is one literal word and $<name> cannot word-split.
+scope_url_is_literal_loop_var() {
+  local name="${1:-}" cmd="${scope_scan_cmd:-}" re bind_re
+  re="(^|[;&|({[:space:]])for[[:space:]]+${name}[[:space:]]+in[[:space:]]+([^;\$\`\"'\\]*);"
+  [[ "$cmd" =~ $re ]] || return 1
+  bind_re="(^|[^A-Za-z0-9_\$])${name}\+?=|(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|let|select)([[:space:]]|\$)|printf[[:space:]]+-v"
+  [[ "$cmd" =~ $bind_re ]] && return 1
+  [ "$(printf '%s' "$cmd" | grep -oE "for[[:space:]]+${name}[[:space:]]" | wc -l | tr -d '[:space:]')" = "1" ]
+}
+
+# True when <word> opens with a literal http:// or https:// scheme and holds
+# no unquoted expansion. An unquoted command substitution, backtick or
+# parameter expansion is expanded and word-split by bash, so
+# an operand like https://<unquoted substitution> can hand curl a second
+# operand such as file:///other/path (PR 1544 re-review). An expansion
+# inside double quotes does not split: the word stays one operand that
+# starts with the literal http(s) scheme, so it cannot become a local URL
+# and is allowed. Some callers pass a word whose quotes were already
+# removed; its quoting is then read back from the raw command text
+# (scope_scan_cmd): every raw word that unquotes to it must be free of
+# unquoted expansions, and at least one must exist (fail closed otherwise).
+scope_word_is_literal_remote_url() {
+  local w="${1:-}" re='^[Hh][Tt][Tt][Pp][Ss]?://' t="${scope_scan_cmd:-}" i=0 n found=0
+  scope_url_word_scan "$w" 0
+  [[ "$scope_url_plain" =~ $re ]] || return 1
+  [ "$scope_url_split" -eq 1 ] || return 0
+  case "$w" in *\"*|*\'*|*\\*) return 1 ;; esac
+  n=${#t}
+  while [ "$i" -lt "$n" ]; do
+    case "${t:$i:1}" in
+      ' '|$'\t'|$'\n'|';'|'&'|'|'|'<'|'>'|'('|')') i=$((i + 1)); continue ;;
+    esac
+    scope_url_word_scan "$t" "$i"
+    [ "$scope_url_end" -gt "$i" ] || scope_url_end=$((i + 1))
+    i=$scope_url_end
+    if [ "$scope_url_plain" = "$w" ]; then
+      [ "$scope_url_split" -eq 0 ] || return 1
+      found=1
+    fi
+  done
+  [ "$found" -eq 1 ]
+}
+
+# One `ssh -o` value. Records a HostName override in scope_ssh_hostname
+# (case-insensitive key, `=` or blank separator). Fails on options that run
+# local commands or pull in other config (ProxyCommand, LocalCommand,
+# Include, ...) and on a value the guard cannot read literally
+# (feedback 944d2873).
+scope_ssh_hostname=""
+scope_ssh_option_ok() {
+  local v="${1:-}" key val
+  v="${v//[\"\']/}"
+  case "$v" in ''|*'$'*|*$'\140'*|*'\'*) return 1 ;; esac
+  v="$(printf '%s' "$v" | tr '\t' ' ')"
+  key="${v%%[= ]*}"
+  val="${v#"$key"}"
+  val="${val#"${val%%[!= ]*}"}"
+  key="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
+  case "$key" in
+    hostname)
+      # OpenSSH uses the first HostName given; any local one fails closed.
+      [ -n "$val" ] || return 1
+      scope_ssh_host_is_remote "$val" || return 1
+      [ -n "$scope_ssh_hostname" ] || scope_ssh_hostname="$val" ;;
+    proxycommand|localcommand|permitlocalcommand|include|knownhostscommand|remotecommand|match|host|canonicalizehostname|proxyjump|proxyusefdpass) return 1 ;;
+  esac
+  return 0
+}
+
+# True only when an ssh destination is proven not to be this machine from
+# local text alone (no DNS, no ssh). Case-insensitive; strips ssh://, user@
+# and :port. Refuses loopback, unspecified and non-dotted-quad numeric IPv4
+# forms (0, 2130706433, 0x7f000001, 127.1, 017700000001), every IPv6
+# literal, localhost aliases, this machine's names, and names that
+# /etc/hosts maps to a loopback or unspecified address (feedback 944d2873).
+scope_ssh_host_is_remote() {
+  local h="${1:-}" name hn line addr rest part
+  case "$h" in ''|*'$'*|*$'\140'*|*'%'*|*'\'*) return 1 ;; esac
+  h="$(printf '%s' "$h" | tr '[:upper:]' '[:lower:]')"
+  h="${h#ssh://}"
+  h="${h##*@}"
+  case "$h" in '['*|*:*:*) return 1 ;; esac
+  h="${h%%:*}"
+  h="${h%/}"
+  h="${h%.}"
+  [ -n "$h" ] || return 1
+  case "$h" in *[!a-z0-9._-]*) return 1 ;; esac
+  case "$h" in
+    *[!0-9a-fx.]*) ;;
+    *)
+      # Only a plain dotted quad outside 0/8 and 127/8 counts as remote;
+      # inet_aton reads every other all-hex/number form as an address.
+      if [[ "$h" =~ ^([1-9][0-9]{0,2})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+        for part in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+          case "$part" in 0?*) return 1 ;; esac
+          [ "$part" -le 255 ] || return 1
+        done
+        [ "${BASH_REMATCH[1]}" -ne 127 ] || return 1
+        return 0
+      fi
+      # A name of hex letters only (e.g. `cafe.be`) is still a name, but an
+      # all-digit, 0x or dotted-number form is an address.
+      case "$h" in *[0-9]*|*x*|*.) return 1 ;; esac
+      ;;
+  esac
+  case "$h" in
+    localhost|localhost.*|*.localhost|localhost6|localhost6.*|ip6-localhost|ip6-loopback|loopback|broadcasthost|*.localdomain|localdomain|0.*|127.*) return 1 ;;
+  esac
+  for name in "$(hostname 2>/dev/null)" "$(hostname -s 2>/dev/null)" "$(uname -n 2>/dev/null)" "${HOSTNAME:-}"; do
+    hn="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+    hn="${hn%.}"
+    [ -n "$hn" ] || continue
+    [ "$h" != "$hn" ] || return 1
+    [ "$h" != "${hn%%.*}" ] || return 1
+    [ "$h" != "${hn%%.*}.local" ] || return 1
+  done
+  if [ -r /etc/hosts ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%%#*}"
+      line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]' | tr '\t' ' ')"
+      addr="${line%% *}"
+      rest=" ${line#* } "
+      [ -n "$addr" ] && [ "$addr" != "$line" ] || continue
+      case "$rest" in *" $h "*) ;; *) continue ;; esac
+      case "$addr" in 127.*|0.*|::1|::|*:*) return 1 ;; esac
+    done </etc/hosts
+  fi
+  return 0
+}
+
+# True when word <index> (scope_tokens) or word <k> (sw_raw, when <words>
+# is "sw") sits in a position whose value is sent to a remote program, never
+# opened as a local file: the URL operand of curl/wget (not the value of an
+# output or upload option), the command text after the host of ssh, the
+# words after `--` of `hq outposts exec NAME --`, or the repository of
+# `gh -R` / `--repo`. Such a word may carry a command substitution or a
+# variable the guard cannot resolve; the substitution body is still checked
+# as a command by the caller, so what it reads locally stays checked
+# (feedback aba2d75e, b7c03d1a, 3ee29d66, 2ec4335f).
+scope_remote_position() {
+  local words="${1:-tokens}" index="${2:-0}" head_index="${3:-0}" head word prev j host_seen=0 dashdash=0 host="" sshflags sshc sshval sshtake
+  scope_ssh_hostname=""
+  if [ "$words" = sw ]; then
+    scope_remote_word() { printf '%s' "${sw_raw[$1]:-}"; }
+  else
+    scope_remote_word() { printf '%s' "${scope_tokens[$1]:-}"; }
+  fi
+  # `until curl ...`, `while ssh ...`, `time curl ...`: the client follows
+  # the keyword or wrapper.
+  while [ "$head_index" -lt "$index" ]; do
+    case "$(scope_remote_word "$head_index")" in
+      until|while|if|time|nohup|command|builtin|exec) head_index=$((head_index + 1)) ;;
+      *) break ;;
+    esac
+  done
+  [ "$index" -gt "$head_index" ] || return 1
+  head="$(scope_remote_word "$head_index")"
+  head="${head//[\"\'\\]/}"
+  head="${head##*/}"
+  word="$(scope_remote_word "$index")"
+  prev="$(scope_remote_word "$((index - 1))")"
+  prev="${prev//[\"\'\\]/}"
+  case "${word#[\"\']}" in -*) return 1 ;; esac
+  case "$head" in
+    curl|wget)
+      case "$prev" in
+        -o|-O|--output|--output-document|-T|--upload-file|-K|--config|-d|--data*|-F|--form|-D|--dump-header|-c|--cookie-jar|-b|--cookie|-E|--cert|--key|--cacert|--capath|--netrc-file|--output-dir|--trace|--trace-ascii|-i|--input-file|-P|--directory-prefix|-a|--append-output|--load-cookies|--save-cookies|--post-file|--body-file|-w|--write-out|--unix-socket|--abstract-unix-socket|--proxy-cacert|--proxy-cert|--proxy-key|--etag-save|--etag-compare|--hsts|--alt-svc|--libcurl|--stderr|--crlfile|--pinnedpubkey|--proxy-crlfile|--warc-file|--rejected-log|--ca-certificate|--ca-directory|--certificate|--private-key|--hsts-file|--base)
+          return 1 ;;
+      esac
+      # Only a URL operand whose command text spells a literal http(s)
+      # scheme. curl and wget also open file:// (and other local
+      # schemes), so a URL taken whole from a substitution or a variable is
+      # not proven remote and keeps the taint rule (PR 1544 review).
+      scope_word_is_literal_remote_url "$word" && return 0
+      return 1
+      ;;
+    ssh)
+      case "$prev" in -i|-F|-E|-S|-o|-p|-l|-J|-L|-R|-D|-W|-b|-c|-m|-e|-I|-O|-Q|-w|-B|-P) return 1 ;; esac
+      j=$((head_index + 1))
+      while [ "$j" -lt "$index" ]; do
+        word="$(scope_remote_word "$j")"
+        case "$word" in
+          -?*|\"-?*|\'-?*)
+            # Walk bundled short flags (`-4oHostName=x`, `-vF/tmp/cfg`,
+            # `-Ao HostName=x`) as OpenSSH getopt does: the first
+            # value-taking letter takes the rest of the word, or the next
+            # word when the rest is empty. -o values are read; -F fails
+            # closed (feedback 944d2873).
+            sshflags="${word#[\"\']}"
+            sshflags="${sshflags#-}"
+            sshtake=0
+            while [ -n "$sshflags" ]; do
+              sshc="${sshflags:0:1}"
+              sshflags="${sshflags:1}"
+              case "$sshc" in
+                o|F|b|c|D|E|e|I|i|J|L|l|m|O|p|Q|R|S|W|w|B|P)
+                  if [ -n "$sshflags" ]; then
+                    sshval="$sshflags"
+                  else
+                    sshval="$(scope_remote_word "$((j + 1))")"
+                    sshtake=1
+                  fi
+                  case "$sshc" in
+                    o) scope_ssh_option_ok "$sshval" || return 1 ;;
+                    F) return 1 ;;
+                  esac
+                  break ;;
+              esac
+            done
+            j=$((j + 1 + sshtake)); continue ;;
+          *) if [ "$host_seen" -eq 0 ]; then host="${word//[\"\']/}"; fi; host_seen=1 ;;
+        esac
+        j=$((j + 1))
+      done
+      [ "$host_seen" -eq 1 ] || return 1
+      # The host must be literal and not this machine: `ssh localhost "..."`
+      # runs the text here, unchecked. A HostName option replaces the
+      # positional host; a -F config file is not read, so it fails closed
+      # (feedback 944d2873).
+      [ -z "$scope_ssh_hostname" ] || host="$scope_ssh_hostname"
+      scope_ssh_host_is_remote "$host" || return 1
+      return 0
+      ;;
+    hq)
+      [ "$(scope_remote_word "$((head_index + 1))")" = outposts ] || return 1
+      [ "$(scope_remote_word "$((head_index + 2))")" = exec ] || return 1
+      j=$((head_index + 3))
+      while [ "$j" -lt "$index" ]; do
+        [ "$(scope_remote_word "$j")" = -- ] && dashdash=1
+        j=$((j + 1))
+      done
+      [ "$dashdash" -eq 1 ] && return 0
+      return 1
+      ;;
+    gh)
+      case "$prev" in -R|--repo) return 0 ;; esac
+      case "${word#[\"\']}" in --repo=*) return 0 ;; esac
+      return 1
+      ;;
+  esac
+  return 1
+}
+
+# True when token <index> holds a `$(...)` in a remote position
+# (scope_remote_position) with no backtick, nested substitution or
+# backslash; the bodies are returned in scope_prose_subs.
+scope_token_is_remote_operand_substitution() {
+  local index="${1:-0}" token head_index reduced sub_re mark=$'\001'
+  scope_prose_subs=()
+  [ "$index" -gt 0 ] || return 1
+  token="${scope_tokens[$index]:-}"
+  case "$token" in *'$('*) ;; *) return 1 ;; esac
+  case "$token" in *$'\140'*|*"$mark"*|*$'\n'*) return 1 ;; esac
+  [[ "${scope_scan_cmd:-}" == *\\* ]] && return 1
+  # A single-quoted word expands nothing locally; the inert-text rule
+  # (scope_candidate_is_single_quoted) already covers it, and its `$(` with a
+  # glob inside is remote text that the prose-substitution rules would refuse.
+  [[ "${scope_scan_cmd:-}" == *"'$token'"* ]] && return 1
+  head_index="$(scope_command_head_index)"
+  case "$head_index" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$head_index" -lt "${#scope_tokens[@]}" ] || return 1
+  scope_remote_position tokens "$index" "$head_index" || return 1
+  reduced="$token"
+  sub_re='\$\(([^()]*)\)'
+  while [[ "$reduced" =~ $sub_re ]]; do
+    scope_prose_subs[${#scope_prose_subs[@]}]="${BASH_REMATCH[1]}"
+    reduced="${reduced/"${BASH_REMATCH[0]}"/$mark}"
+    [ "${#scope_prose_subs[@]}" -le 8 ] || return 1
+  done
+  case "$reduced" in *'$('*|*'('*|*')'*) return 1 ;; esac
+  return 0
 }
 
 scope_token_is_text_option_value() {
@@ -6882,11 +7451,29 @@ scope_subst_assignment_value() {
 # Mark the name of assignment word <k> (NAME=, NAME+=, NAME[i]=, NAME=(...))
 # when its value taints.
 scope_subst_mark_assignment() {
-  local k="${1:-0}" word name
+  local k="${1:-0}" word name value
   word="${sw_raw[$k]}"
   [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]] || return 0
   name="${word%%[=+[]*}"
-  scope_subst_value_taints "$(scope_subst_assignment_value "$k")" && scope_subst_mark "$name"
+  value="$(scope_subst_assignment_value "$k")"
+  scope_subst_value_taints "$value" || return 0
+  # `s=$(grep -n START f | cut -d: -f1)`: a value that is exactly one
+  # substitution whose pipeline prints only line numbers or counts
+  # (scope_substitution_prints_numbers) cannot hold a path, so the name is
+  # not marked (feedback 2ec4335f). The body is still lexed and checked as
+  # a command by scope_subst_scan.
+  local numeric_value="${value#[\"\']}"
+  numeric_value="${numeric_value%[\"\']}"
+  case "$numeric_value" in
+    '$('*')')
+      numeric_value="${numeric_value#\$(}"
+      numeric_value="${numeric_value%)}"
+      case "$numeric_value" in *'('*|*')'*|*$'\140'*) ;; *)
+        scope_substitution_prints_numbers "$numeric_value" && return 0 ;;
+      esac
+      ;;
+  esac
+  scope_subst_mark "$name"
   return 0
 }
 
@@ -7129,7 +7716,8 @@ scope_subst_check_command() {
       fi
       if ! { [ "$k" -gt "$i" ] && {
         [ "$allowed_head" -eq 1 ] || scope_subst_is_text_value "$k" "$head" \
-          || { case "$head" in curl|wget) [[ "${word#[\"\']}" =~ ^https?:// ]] ;; *) false ;; esac; }
+          || { case "$head" in curl|wget) scope_word_is_literal_remote_url "$word" ;; *) false ;; esac; } \
+          || scope_remote_position sw "$k" "$i"
       }; }; then
         scope_block_rel "\$$scope_subst_taint_hit" "an argument of ${head:-the command} uses \$$scope_subst_taint_hit, which holds a command substitution's output the guard cannot check; run the inner command first and use the literal path it printed"
       fi
@@ -7142,6 +7730,12 @@ scope_subst_check_command() {
       while IFS= read -r -d $'\036' body; do
         scope_subst_body_is_safe "$body" && continue
         if [ "${sw_redir[$k]}" -eq 0 ] && [ "$k" -gt "$i" ] && [ "$allowed_head" -eq 1 ]; then
+          continue
+        fi
+        # A remote position (curl URL, ssh command text, `hq outposts exec
+        # -- ...`, `gh -R`) sends the value away; the body is checked as a
+        # command of its own below.
+        if [ "${sw_redir[$k]}" -eq 0 ] && [ "$k" -gt "$i" ] && scope_remote_position sw "$k" "$i"; then
           continue
         fi
         if [ "${sw_redir[$k]}" -eq 1 ]; then
@@ -8353,6 +8947,30 @@ case "$TOOL" in
     SCOPE_LINK_MUTATION_DESTS=""
     SCOPE_REPO_CD_HANDLED=0
     scope_block_if_names_owner_roots "$cmd"
+    # A command that opens with the session bind (see scope_load_bound_company).
+    # Only the exact in-tree script, as the first simple command, followed by
+    # `&&` (with `;` the rest runs even when the bind fails), with a plain
+    # slug listed in companies/manifest.yaml and at most a --session-id for
+    # this session. A relative script path counts only when the payload cwd
+    # is HQ_ROOT, so a look-alike script elsewhere cannot stand in for it.
+    SCOPE_SAME_CMD_BIND=""
+    scope_same_bind_re='^[[:space:]]*(bash[[:space:]]+)?(\./|'"$HQ_ROOT"'/)?core/scripts/hq-session\.sh[[:space:]]+set[[:space:]]+company_slug[[:space:]]+([a-z0-9][a-z0-9_-]*)([[:space:]]+--session-id[[:space:]]+([A-Za-z0-9_-]+))?[[:space:]]*&&'
+    if [[ "$cmd" =~ $scope_same_bind_re ]]; then
+      scope_same_bind_slug="${BASH_REMATCH[3]}"
+      scope_same_bind_sid="${BASH_REMATCH[5]}"
+      scope_same_bind_path="${BASH_REMATCH[2]}"
+      scope_same_bind_ok=1
+      if [ "$scope_same_bind_path" != "$HQ_ROOT/" ]; then
+        [ "$(cd "$COMMAND_CWD" 2>/dev/null && pwd -P)" = "$(cd "$HQ_ROOT" 2>/dev/null && pwd -P)" ] || scope_same_bind_ok=0
+      fi
+      if [ ! -f "$HQ_ROOT/companies/manifest.yaml" ] || [ -L "$HQ_ROOT/companies/manifest.yaml" ] \
+        || ! grep -Eq "^  ${scope_same_bind_slug}:[[:space:]]*$" "$HQ_ROOT/companies/manifest.yaml" 2>/dev/null; then
+        scope_same_bind_ok=0
+      fi
+      if [ "$scope_same_bind_ok" -eq 1 ] && { [ -z "$scope_same_bind_sid" ] || [ "$scope_same_bind_sid" = "$SESSION_ID" ]; }; then
+        SCOPE_SAME_CMD_BIND="$scope_same_bind_slug"
+      fi
+    fi
     # `cd /abs/hq; grep x companies/co/policies/*.md`: a leading cd to a
     # literal, existing directory is where the rest of the command runs, so
     # globs and $(pwd) are expanded from there instead of the payload cwd.
@@ -8747,6 +9365,16 @@ case "$TOOL" in
     # r"\$(\w+)/" reaches the token loop as r$(w+)/ and must still match.
     scope_interp_bodies_unquoted="${scope_interp_bodies//[\"\'\\]/}"
     scope_interp_outside_unquoted="${scope_interp_outside//[\"\'\\]/}"
+    # The normalized split (scope_norm_scan) masks `*`, `?`, `[` and `$`
+    # inside single quotes, and a python body quotes its strings with the
+    # same character (`['companies/x/policies/*.md']`), so a word from that
+    # split carries the mask and is not in the body verbatim. Keep a masked
+    # copy of the bodies so such a word is still recognised as body text
+    # (feedback e2b0f0b4, single-quoted form).
+    scope_interp_bodies_masked="$(scope_mask_literal_expansions "$scope_interp_bodies")"
+    scope_interp_bodies_masked_unquoted="${scope_interp_bodies_masked//[\"\'\\]/}"
+    scope_interp_outside_masked_unquoted="$(scope_mask_literal_expansions "$scope_interp_outside")"
+    scope_interp_outside_masked_unquoted="${scope_interp_outside_masked_unquoted//[\"\'\\]/}"
     # The `$` relaxation applies only when every interpreter body in the
     # command is a python/node body with no shell handoff. 2 means the only
     # hand-off names were node requires of file and text modules (fs, path,
@@ -8801,6 +9429,14 @@ case "$TOOL" in
           scope_check_prose_substitutions
           continue
         fi
+        if scope_token_is_curl_write_out_format "$scope_token_index"; then
+          scope_check_prose_substitutions
+          continue
+        fi
+        if scope_token_is_remote_operand_substitution "$scope_token_index"; then
+          scope_check_prose_substitutions
+          continue
+        fi
         if scope_token_is_text_option_value "$scope_token_index"; then
           scope_check_prose_substitutions
           for scope_text_piece in ${scope_text_pieces[@]+"${scope_text_pieces[@]}"}; do
@@ -8814,8 +9450,13 @@ case "$TOOL" in
             && [[ "$scope_interp_outside" != *"$scope_token"* ]]; then
             scope_token_context=body
           elif { [[ "$scope_token" == *[[:space:]]* ]] || [[ "$scope_token" == *$'\140'* ]] || [ "$scope_text_bodies_only" -ge 1 ]; } \
-            && [[ "$scope_interp_bodies_unquoted" == *"$scope_token"* ]] \
-            && [[ "$scope_interp_outside_unquoted" != *"$scope_token"* ]]; then
+            && { [[ "$scope_interp_bodies_unquoted" == *"$scope_token"* ]] \
+              || [[ "$scope_interp_bodies_unquoted" == *"${scope_token//[\"\'\\]/}"* ]]; } \
+            && [[ "$scope_interp_outside_unquoted" != *"${scope_token//[\"\'\\]/}"* ]]; then
+            # Two adjacent string literals (`.replace('<b>$19</b>','x')`)
+            # arrive as one glued word that still carries the inner
+            # double quotes of each literal; compare it with those quotes
+            # removed too (feedback dfd6d198).
             # The tokenizer drops quotes, so adjacent string literals with
             # no space after the comma (`print('a','see `x`')`) reach here as
             # one glued word that is not in the body verbatim. Match it

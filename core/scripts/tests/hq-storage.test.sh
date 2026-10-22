@@ -208,8 +208,8 @@ set +e; ROUT="$("$RUN_BASH" "$SCRIPT" prune --before "$CUT" --yes --root "$REPO"
 ERR="$(cat "$TMP/err4")"
 [[ "$RC" == 4 ]] || fail "prune with nothing to free must refuse (rc 4), got $RC: $ERR"
 # Readable names in core's own text; the JSON keeps the ref names.
-echo "$ERR" | grep -q 'tag keep-old' || fail "refusal does not name the holding tag: $ERR"
-if echo "$ERR" | grep -q 'refs/'; then fail "refusal text shows raw ref names: $ERR"; fi
+echo "$ERR" | grep >/dev/null 'tag keep-old' || fail "refusal does not name the holding tag: $ERR"
+if echo "$ERR" | grep >/dev/null 'refs/'; then fail "refusal text shows raw ref names: $ERR"; fi
 echo "$ROUT" | jq -e '.holding_refs[0].name == "refs/tags/keep-old" and (.message | test("tag keep-old"))' >/dev/null || fail "refusal JSON: $ROUT"
 # Exit 4 also prints a JSON object on stdout, so callers need not parse stderr.
 echo "$ROUT" | jq -e '.refused == "nothing_to_free" and .holding_refs_count == 1 and .holding_refs[0].name == "refs/tags/keep-old"' >/dev/null \
@@ -589,7 +589,7 @@ echo "$L" | jq -e '.history.blobs[0].paths == ["a\nb.bin"] and .current.files[0]
 NOJQ="$TMP/nojq"; mkdir -p "$NOJQ"
 for t in git awk sed sort mktemp dirname perl date cat grep; do ln -sf "$(command -v "$t")" "$NOJQ/$t"; done
 set +e; ERR="$(PATH="$NOJQ" "$RUN_BASH" "$SCRIPT" large --json --root "$NL" 2>&1)"; RC=$?; set -e
-[[ "$RC" == 2 ]] && echo "$ERR" | grep -q 'jq is required' || fail "large without jq: rc=$RC $ERR"
+[[ "$RC" == 2 ]] && echo "$ERR" | grep >/dev/null 'jq is required' || fail "large without jq: rc=$RC $ERR"
 ok
 
 # N2: a normal stash on main neither blocks prune nor keeps old history alive.

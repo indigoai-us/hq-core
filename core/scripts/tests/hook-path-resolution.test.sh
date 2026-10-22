@@ -277,7 +277,7 @@ pass "guards accept quoted plain, braced, and embedded-in-a-quoted-token forms"
 # quoted segment can contain a space.
 relpaths_out="$(project_dir_relpaths 'bash "$CLAUDE_PROJECT_DIR/a dir/one.sh" "--pair=$CLAUDE_PROJECT_DIR/b/two.sh:$CLAUDE_PROJECT_DIR/c/three.sh"')"
 for expected in 'a dir/one.sh' 'b/two.sh' 'c/three.sh'; do
-  printf '%s\n' "$relpaths_out" | grep -qxF "$expected" \
+  printf '%s\n' "$relpaths_out" | grep >/dev/null -xF "$expected" \
     || fail "path extraction dropped $expected: $relpaths_out"
 done
 pass "every \$CLAUDE_PROJECT_DIR path in a token is extracted, spaces intact"

@@ -12,6 +12,12 @@
 #   [5] the final cut notice and trailing newline are counted before emission,
 #       including a 9 -> 10 cut-count transition and the no-lines-left fallback
 set -euo pipefail
+
+# This file tests the byte ceiling and full-text fallback on their own, with
+# fixtures that match many policies at once. The per-event relevance cap would
+# hide most of them, so it is off here; inject-policy-relevance-cap.test.sh
+# covers the cap and its interaction with the ceiling.
+export HQ_POLICY_RELEVANCE_CAP=0
 ROOT="$(git rev-parse --show-toplevel)"
 HOOK="${HQ_POLICY_HOOK_UNDER_TEST:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}"
 CEILING=8000

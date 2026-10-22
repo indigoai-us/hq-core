@@ -94,7 +94,15 @@ assert_discovery() {
 
 passed=0
 for skill in checkpoint cleanup; do
-  snippet="$(extract_knowledge_loop "$ROOT/.claude/skills/$skill/SKILL.md")"
+  if [[ "$skill" == checkpoint ]]; then
+    # /checkpoint runs the loop from a bash script (feedback 5ad007c4); the
+    # skill must call it, and the call is what an agent types into its shell.
+    grep -Fq 'bash core/scripts/checkpoint-knowledge-repos.sh "$PWD"' "$ROOT/.claude/skills/checkpoint/SKILL.md" ||
+      fail "checkpoint SKILL.md does not call core/scripts/checkpoint-knowledge-repos.sh"
+    snippet="bash '$ROOT/core/scripts/checkpoint-knowledge-repos.sh' \"\$PWD\""
+  else
+    snippet="$(extract_knowledge_loop "$ROOT/.claude/skills/$skill/SKILL.md")"
+  fi
   [[ -n "$snippet" ]] || fail "$skill knowledge-repo snippet not found"
 
   for layout in dotkeep absent; do

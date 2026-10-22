@@ -98,6 +98,9 @@ else
   # the user's title when the session was named via --name or renamed via /rename.
   SESSION_TITLE_INPUT="$(extract session_title)"
 fi
+# The real id from the hook input, before the "default" state-key fallback. The
+# first-turn nudge below hands it to the model, so it must never be invented.
+HOOK_SESSION_ID="$SESSION_ID"
 [ -z "$SESSION_ID" ] && SESSION_ID="default"
 
 # Infer the event if Claude Code did not provide hook_event_name.
@@ -144,14 +147,31 @@ strip_setting_quotes() {
   fi
   SETTING_VALUE="$value"
 }
+SESSION_ENABLED="true"
 read_title_settings() {
-  local file line key value mode_seen desktop_seen SETTING_VALUE
+  local file line key value mode_seen desktop_seen enabled_seen SETTING_VALUE
   for file in "$HQ_ROOT/core/settings/session-title.yaml" "$HQ_ROOT/personal/settings/session-title.yaml"; do
     [ -f "$file" ] || continue
     mode_seen=0
     desktop_seen=0
+    enabled_seen=0
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
+        enabled:*)
+          # `enabled: false` is the documented file switch (core/settings/
+          # session-title.yaml). It was only read by session-title-config.sh,
+          # which nothing on the hook path called, so the file could not
+          # silence the hook (feedback_abaac90d). Same precedence as mode:.
+          [ "$enabled_seen" -eq 0 ] || continue
+          enabled_seen=1
+          value="${line#*:}"
+          value="${value%%#*}"
+          while [[ "$value" == [[:space:]]* ]]; do value="${value:1}"; done
+          while [[ "$value" == *[[:space:]] ]]; do value="${value%?}"; done
+          strip_setting_quotes "$value"
+          value="$SETTING_VALUE"
+          [ -n "$value" ] && SESSION_ENABLED="$value"
+          ;;
         mode:*)
           [ "$mode_seen" -eq 0 ] || continue
           mode_seen=1
@@ -179,6 +199,12 @@ read_title_settings() {
   done
 }
 if [ -f "$CONFIG_HELPER" ]; then read_title_settings; fi
+# enabled: false means HQ never touches this session's title and never asks
+# the model to: no title, no first-turn naming instruction, no state written.
+# The env override (HQ_SESSION_TITLE=off) exited above; this is the file form.
+case "$SESSION_ENABLED" in
+  0|false|FALSE|False|off|OFF|no|NO) exit 0 ;;
+esac
 case "$SESSION_MODE" in
   auto|AUTO|hook|deterministic) SESSION_MODE="auto" ;;
   *) SESSION_MODE="full" ;;
@@ -359,24 +385,50 @@ fi
 # title is a stub and nothing is emitted — that is exactly the session that
 # would otherwise sit on the host's auto-summary forever.
 NUDGED="$STATE.nudged"
-NUDGE=""
+NUDGE=0
+NUDGE_HINT=""
 if [ "$EVENT" = "UserPromptSubmit" ] && [ "$SESSION_MODE" = "full" ] && [ ! -f "$NUDGED" ]; then
-  : > "$NUDGED" 2>/dev/null || true
-  hint="none resolved - derive company and subject from the user message"
-  [ -n "$title" ] && hint="$title"
-  NUDGE="HQ session naming (first turn): the host has no HQ-grammar title for this session yet. \
-If a session-rename tool is available (set_session_title, e.g. mcp__ccd_session_mgmt__set_session_title), \
-call it ONCE at the start of this turn, before other work, with a title in HQ grammar \
-'{glyph} {COMPANY} · {Product} · {subject}'. Hook-resolved hint: '${hint}'. Keep the COMPANY token \
-from the hint when present; write a short human subject (roughly 40 characters, prose, not a folder \
-slug) from what the user asked. At most one glyph, chosen per policy hq-session-title-grammar; \
-omit the glyph when none applies. Rename again later only if the subject changes. If no rename \
-tool exists, do nothing and do not mention this."
+  if [ -z "$HOOK_SESSION_ID" ]; then
+    # set_session_title requires a session_id. Without one from the hook input
+    # the instruction could only name the wrong session, so skip it entirely
+    # and leave the once-marker unspent.
+    printf 'session-title: hook input has no session_id; skipping the first-turn naming instruction\n' >&2
+  else
+    : > "$NUDGED" 2>/dev/null || true
+    NUDGE=1
+    NUDGE_HINT="none resolved - derive company and subject from the user message"
+    [ -n "$title" ] && NUDGE_HINT="$title"
+  fi
 fi
 
 emit_json() {
-  # $1 = sessionTitle or "" ; $2 = additionalContext or ""
-  jq -n --arg ev "$EVENT" --arg t "$1" --arg ctx "$2" '{
+  # $1 = sessionTitle or "" ; the first-turn instruction is added when NUDGE=1.
+  # The instruction is composed inside jq so the session id and hint reach the
+  # model as JSON-quoted strings, whatever characters they hold. The example
+  # call matches the rename tool's schema: { session_id, title }, where
+  # session_id "self" targets the calling session. The hook's own session id
+  # is stated alongside it, because the desktop host may track this session
+  # under a different (local_) id.
+  jq -n --arg ev "$EVENT" --arg t "$1" --arg nudge "$NUDGE" \
+    --arg sid "$HOOK_SESSION_ID" --arg hint "$NUDGE_HINT" '
+    (if $nudge == "1" then
+      "HQ session naming (first turn): the host has no HQ-grammar title for this session yet. "
+      + "If a session-rename tool is available (set_session_title, e.g. mcp__ccd_session_mgmt__set_session_title), "
+      + "call it ONCE at the start of this turn, before other work. It takes two required arguments, "
+      + "session_id and title: "
+      + ({ session_id: "self", title: "{glyph} {COMPANY} · {Product} · {subject}" } | tojson)
+      + ". Pass session_id \"self\" to rename this session; never pass another session id. "
+      + "This session id from the hook input is " + ($sid | tojson)
+      + "; if the tool rejects \"self\", pass this id instead. "
+      + "Write the title in HQ grammar \"{glyph} {COMPANY} · {Product} · {subject}\". "
+      + "Hook-resolved hint: " + ($hint | tojson) + ". Keep the COMPANY token "
+      + "from the hint when present; write a short human subject (roughly 40 characters, prose, not a folder "
+      + "slug) from what the user asked. At most one glyph, chosen per policy hq-session-title-grammar; "
+      + "omit the glyph when none applies. Rename again later only if the subject changes. If no rename "
+      + "tool exists, do nothing and do not mention this. If the rename call is denied, rejected, or "
+      + "fails for any reason, skip it, do not retry or mention it, and continue with the task the user asked for."
+    else "" end) as $ctx
+    | {
     hookSpecificOutput: ({ hookEventName: $ev }
       + (if $t   != "" then { sessionTitle: $t }        else {} end)
       + (if $ctx != "" then { additionalContext: $ctx } else {} end))
@@ -385,7 +437,7 @@ emit_json() {
 # --- first-turn naming nudge (END) ------------------------------------------
 
 if [ -z "$title" ]; then
-  [ -n "$NUDGE" ] && emit_json "" "$NUDGE"
+  [ "$NUDGE" = "1" ] && emit_json ""
   exit 0
 fi
 
@@ -505,12 +557,12 @@ record_emitted() {
 if [ "$title" = "$last_title" ] && [ "$FORCE_EMIT" != "1" ]; then
   record_emitted "$title"
   printf '%s\n%s\n' "$command" "$last_title" > "$STATE" 2>/dev/null || true
-  [ -n "$NUDGE" ] && emit_json "" "$NUDGE"
+  [ "$NUDGE" = "1" ] && emit_json ""
   exit 0
 fi
 
 record_emitted "$title"
 printf '%s\n%s\n' "$command" "$title" > "$STATE" 2>/dev/null || true
 
-emit_json "$title" "$NUDGE"
+emit_json "$title"
 exit 0

@@ -24,8 +24,8 @@ echo "[1] HQ_DEPLOY_API unset under set -u: no unbound abort; clean build_dir er
 set +e
 out="$(env -u HQ_DEPLOY_API bash "$FS" "$TMP/nope-build" appname 2>&1)"; code=$?
 set -e
-printf '%s' "$out" | grep -qi 'unbound variable' && fail "still aborts with unbound variable: $out"
-printf '%s' "$out" | grep -q 'build_dir_missing' || fail "did not reach the build-dir guard cleanly: $out"
+printf '%s' "$out" | grep >/dev/null -i 'unbound variable' && fail "still aborts with unbound variable: $out"
+printf '%s' "$out" | grep >/dev/null 'build_dir_missing' || fail "did not reach the build-dir guard cleanly: $out"
 [ "$code" -ne 0 ] || fail "expected non-zero exit for a missing build dir, got 0"
 pass "no unbound abort; failed cleanly at build_dir_missing"
 
@@ -33,7 +33,7 @@ echo "[2] no regression when HQ_DEPLOY_API IS set"
 set +e
 out2="$(HQ_DEPLOY_API='https://example.test' bash "$FS" "$TMP/nope-build" appname 2>&1)"
 set -e
-printf '%s' "$out2" | grep -q 'build_dir_missing' || fail "set-HQ_DEPLOY_API path regressed: $out2"
+printf '%s' "$out2" | grep >/dev/null 'build_dir_missing' || fail "set-HQ_DEPLOY_API path regressed: $out2"
 pass "set HQ_DEPLOY_API still resolves + fails cleanly at build_dir_missing"
 
 echo "[3] source-contract: optional env vars are guarded for set -u"

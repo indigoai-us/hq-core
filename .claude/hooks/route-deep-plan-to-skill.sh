@@ -38,7 +38,11 @@ SESSION_ID="$(extract session_id)"
 # Token detection — `/deep-plan` as a whole token (not e.g. inside a URL).
 # Matches: leading slash, optional whitespace, the literal `/deep-plan`,
 # followed by end-of-string, whitespace, or punctuation.
-if ! printf '%s' "$PROMPT" | grep -Eq '(^|[[:space:]])/deep-plan([[:space:]]|$|[,.;:!?])'; then
+# A `/startwork` prompt may also name the skill bare (`/startwork acme
+# deep-plan ...`): the Claude desktop app refuses to send a message that starts
+# with a slash command and contains a second one (feedback 608fd270).
+if ! printf '%s' "$PROMPT" | grep -Eq '(^|[[:space:]])/deep-plan([[:space:]]|$|[,.;:!?])' \
+  && ! printf '%s' "$PROMPT" | grep -Eq '^[[:space:]]*/startwork([[:space:]].*)?[[:space:]]deep-plan([[:space:]]|$|[,.;:!?])'; then
   exit 0
 fi
 

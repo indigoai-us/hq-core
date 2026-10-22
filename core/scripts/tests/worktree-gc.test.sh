@@ -165,7 +165,7 @@ git -C "$REPO" worktree list | grep -q "case-a" || fail "dry-run pruned a worktr
 # Every skip carries a printed reason.
 for pair in "dirty|$P_B" "unpushed|$P_C" "live-session|$P_I" "recent-session|$P_J" "recent-activity|$P_M"; do
   reason="${pair%%|*}"; wtp="${pair#*|}"
-  printf '%s\n' "$out" | grep -Fq "skip  [$reason] $wtp" || fail "dry-run did not print [$reason] for $wtp: $out"
+  printf '%s\n' "$out" | grep >/dev/null -F "skip  [$reason] $wtp" || fail "dry-run did not print [$reason] for $wtp: $out"
 done
 printf '%s\n' "$out" | grep -F "$P_K" | grep -q "would remove" || fail "(k) pushed stale worktree not a candidate: $out"
 
@@ -197,7 +197,7 @@ CRLF_JQ_READ_MARKER="$TMP/crlf-jq-read"
 crlf_output="$(PATH="$TMP/crlf-bin:$PATH" REAL_JQ="$REAL_JQ" CRLF_JQ_READ_MARKER="$CRLF_JQ_READ_MARKER" HQ_ROOT="$HQ" bash "$GC" --dry-run 2>&1)" \
   || fail "worktree-gc failed with CRLF jq timestamp output: $crlf_output"
 [[ -f "$CRLF_JQ_READ_MARKER" ]] || fail "worktree-gc did not read a stamped epoch under the CRLF jq stub"
-printf '%s\n' "$crlf_output" | grep -Fq "[too-recent] $(phys "$WT_H")" \
+printf '%s\n' "$crlf_output" | grep >/dev/null -F "[too-recent] $(phys "$WT_H")" \
   || fail "CRLF jq timestamp changed the too-recent classification for $WT_H: $crlf_output"
 echo "PASS: worktree-gc normalizes CRLF jq epoch values before arithmetic"
 

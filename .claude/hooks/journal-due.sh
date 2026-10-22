@@ -4,9 +4,14 @@
 # Triggers (any one):
 #   - Every 10 successful Edit/Write/MultiEdit tool calls, counted PER SESSION,
 #     announced once per threshold crossing (not on every later edit)
-#   - Successful `git commit`
-#   - Successful test/typecheck/lint run, debounced per session, and only when
-#     there has been real edit work since the last journal entry
+#   - Successful `git commit`, at most once per 30 minutes per session
+#   - Successful test/typecheck/lint run, at most once per 30 minutes per
+#     session, and only when there has been real edit work since the last
+#     journal entry
+#   (feedback_aba2d75e: the commit and test-run reminders fire at most once
+#   per 30 minutes per session each, and the window survives a new journal
+#   entry. The edit-count reminder stays count-gated, once per 10 edits; it is
+#   not time-windowed, and checkpoint-journal-noise.test.sh [7] pins that.)
 #
 # Reads the PostToolUse JSON from stdin (Claude Code hook contract). Emits nothing
 # to stdout unless a journal reminder is due — Claude Code surfaces stdout as
@@ -20,7 +25,8 @@
 # State (all session-keyed, so concurrent tasks never trip each other):
 #   workspace/threads/journal/<today>/.tool-count-<session>      edit counter
 #   workspace/orchestrator/hook-state/journal-remind-<session>   last announced count
-#   workspace/orchestrator/hook-state/journal-test-<session>     test-run debounce
+#   workspace/orchestrator/hook-state/journal-test-<session>     test-run window
+#   workspace/orchestrator/hook-state/journal-commit-<session>   git-commit window
 #   workspace/orchestrator/hook-state/journal-seen-<session>     entry count last seen
 #
 # Suppress with HQ_DISABLED_HOOKS=journal-due (handled by hook-gate.sh wrapper).
@@ -86,6 +92,7 @@ hook_timeout_child_phase_start child_wait
 state_dir=$(hq_hook_state_dir "$HQ_ROOT")
 remind_file="$state_dir/journal-remind-$session_key"
 test_debounce_file="$state_dir/journal-test-$session_key"
+commit_window_file="$state_dir/journal-commit-$session_key"
 seen_file="$state_dir/journal-seen-$session_key"
 
 # Self-heal on a fresh journal entry. `/journal` runs the helper from a plain
@@ -103,12 +110,13 @@ seen=""
 [ -f "$seen_file" ] && seen=$(tr -dc '0-9' < "$seen_file" 2>/dev/null)
 if [ -n "$seen" ] && [ "$entries" != "$seen" ]; then
   "$JOURNAL_HELPER" tool-counter reset --session "$session_key" 2>/dev/null
-  rm -f "$remind_file" "$test_debounce_file" 2>/dev/null || true
+  rm -f "$remind_file" 2>/dev/null || true
 fi
 printf '%s' "$entries" > "$seen_file" 2>/dev/null || true
 
 THRESHOLD=10
-TEST_DEBOUNCE_SECONDS=900
+TEST_DEBOUNCE_SECONDS=1800
+COMMIT_WINDOW_SECONDS=1800
 should_remind=0
 reason=""
 
@@ -145,6 +153,15 @@ case "$tool_name" in
     elif echo "$tool_cmd" | grep -qE '(^|[;&|[:space:]])(pytest|cargo test|go test|tsc|tsc --noEmit|eslint|biome check|ruff check)(\b|$)'; then
       should_remind=1
       reason="test/typecheck/lint run"
+    fi
+
+    # A commit reminds at most once per window per session.
+    if [ "$should_remind" = "1" ] && [ "$reason" = "git commit" ]; then
+      if hq_hook_within_window "$commit_window_file" "$COMMIT_WINDOW_SECONDS"; then
+        should_remind=0
+      else
+        hq_hook_stamp_now "$commit_window_file"
+      fi
     fi
 
     # A green test run is only a milestone if it certifies work that has not

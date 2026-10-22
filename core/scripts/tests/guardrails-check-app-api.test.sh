@@ -23,8 +23,8 @@ printf '%s\n' "$result" | jq -e '.pass == true and .file_count == 2' >/dev/null 
 TARBALL="$(printf '%s\n' "$result" | jq -r '.tarball_path')"
 [ -f "$TARBALL" ] || fail "guardrails did not create the app artifact"
 entries="$(tar -tzf "$TARBALL")"
-printf '%s\n' "$entries" | grep -Fxq 'api/health.js' \
+printf '%s\n' "$entries" | grep >/dev/null -Fx 'api/health.js' \
   || fail "app artifact omitted the root api handler: $entries"
-printf '%s\n' "$entries" | grep -Eq '(^|\./)index\.html$' \
+printf '%s\n' "$entries" | grep >/dev/null -E '(^|\./)index\.html$' \
   || fail "app artifact omitted the built frontend: $entries"
 echo 'PASS: app artifact contains both build output and root api handler'

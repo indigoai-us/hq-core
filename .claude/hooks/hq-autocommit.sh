@@ -297,10 +297,31 @@ PRESTAGED_RC=$?
 if [[ $PRESTAGED_RC -ne 0 ]]; then
   report_failure "diff-cached" "$PRESTAGED_RC" "$PRESTAGED"
 fi
+PRESTAGED_MARK="$WARN_DIR/prestaged-since"
 if [[ -n "$PRESTAGED" ]]; then
   # Someone else is mid-commit with a staged index. Not our index to touch.
+  # A brief overlap with a concurrent commit is normal; an index that stays
+  # staged means every autosave is skipped, so log each skip and warn once the
+  # staged set outlives the staleness window (feedback 09c2b7a0).
+  PRESTAGED_COUNT="$(printf '%s\n' "$PRESTAGED" | grep -c .)"
+  NOW_EPOCH="$(date +%s)"
+  mkdir -p "$WARN_DIR" 2>/dev/null || true
+  PRESTAGED_SINCE="$(cat "$PRESTAGED_MARK" 2>/dev/null || true)"
+  if ! [[ "$PRESTAGED_SINCE" =~ ^[0-9]+$ ]]; then
+    PRESTAGED_SINCE="$NOW_EPOCH"
+    printf '%s\n' "$NOW_EPOCH" >"$PRESTAGED_MARK" 2>/dev/null || true
+  fi
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=prestaged staged=${PRESTAGED_COUNT} path=${REL_PATH} session=${SESSION_KEY}"
+  PRESTAGED_STALE_MINUTES="${HQ_AUTOCOMMIT_PRESTAGED_STALE_MINUTES:-10}"
+  [[ "$PRESTAGED_STALE_MINUTES" =~ ^[0-9]+$ ]] || PRESTAGED_STALE_MINUTES=10
+  PRESTAGED_STALE_SECONDS=$(( PRESTAGED_STALE_MINUTES * 60 ))
+  if (( NOW_EPOCH - PRESTAGED_SINCE >= PRESTAGED_STALE_SECONDS )); then
+    warn_once "autocommit|prestaged" \
+      "WARNING: HQ autosave is skipping edits because the HQ git index already has ${PRESTAGED_COUNT} staged path(s) that nobody has committed. Local HQ edits are NOT being committed until those paths are committed or unstaged (see: git diff --cached --name-only). Details: workspace/logs/hq-autocommit.log"
+  fi
   exit 0
 fi
+rm -f "$PRESTAGED_MARK" 2>/dev/null || true
 
 LOCK_ACQUIRED=0
 if mkdir "$LOCK_DIR" 2>/dev/null; then

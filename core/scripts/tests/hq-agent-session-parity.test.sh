@@ -213,12 +213,12 @@ for id in "${SESSION_PARITY_FIXTURE_IDS[@]}"; do
   if ! MSG="$(session_parity_compare_golden "$id" "$RUNDIR/system.txt" system "$UPDATE_GOLDENS")"; then
     fail "$MSG"
   fi
-  [ "$UPDATE_GOLDENS" = "1" ] && printf '%s' "$MSG" | grep -q updated && echo "  $MSG"
+  [ "$UPDATE_GOLDENS" = "1" ] && printf '%s' "$MSG" | grep >/dev/null updated && echo "  $MSG"
 
   if ! MSG="$(session_parity_compare_golden "$id" "$RUNDIR/user.txt" user "$UPDATE_GOLDENS")"; then
     fail "$MSG"
   fi
-  [ "$UPDATE_GOLDENS" = "1" ] && printf '%s' "$MSG" | grep -q updated && echo "  $MSG"
+  [ "$UPDATE_GOLDENS" = "1" ] && printf '%s' "$MSG" | grep >/dev/null updated && echo "  $MSG"
 
   FIXTURE_COUNT=$((FIXTURE_COUNT + 1))
   pass "fixture $id"
@@ -244,7 +244,7 @@ if [ "$UPDATE_GOLDENS" != "1" ]; then
     if DRIFT_MSG="$(session_parity_compare_golden email-verified "$BROKEN_E" system 0 2>&1)"; then
       fail "expected golden drift detection to fail for email-verified"
     fi
-    printf '%s' "$DRIFT_MSG" | grep -q 'email-verified' \
+    printf '%s' "$DRIFT_MSG" | grep >/dev/null 'email-verified' \
       || fail "drift failure must name fixture email-verified: $DRIFT_MSG"
     pass "golden drift detection names email-verified"
   fi

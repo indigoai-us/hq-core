@@ -25,10 +25,10 @@ parse_field() {
 
 echo "[1] weekday NL → cron"
 out="$("$PARSE" --tz America/New_York "every weekday at 9am")"
-echo "$out" | grep -q '"ok":true' || fail "expected ok: $out"
+echo "$out" | grep >/dev/null '"ok":true' || fail "expected ok: $out"
 [ "$(parse_field "$out" cron)" = "0 9 * * 1-5" ] || fail "cron: $out"
 [ "$(parse_field "$out" timezone)" = "America/New_York" ] || fail "tz: $out"
-echo "$out" | grep -qi 'weekday' || fail "human should mention weekday: $out"
+echo "$out" | grep >/dev/null -i 'weekday' || fail "human should mention weekday: $out"
 pass "every weekday at 9am"
 
 echo "[2] daily with minutes"
@@ -56,7 +56,7 @@ echo "[6] unrecognized NL fails"
 rc=0
 err="$("$PARSE" --tz UTC "sometime soon maybe" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "expected non-zero for garbage NL"
-echo "$err" | grep -q '"ok":false' || fail "expected ok false: $err"
+echo "$err" | grep >/dev/null '"ok":false' || fail "expected ok false: $err"
 pass "garbage NL rejected"
 
 echo "[7] empty rejected"

@@ -76,8 +76,8 @@ rm -f "$SENT"; rc=0; err=""
 err="$(bash "$BIND" post --title "T" --line "$LONG_BULLET" 2>&1 >/dev/null)" || rc=$?
 [ "$rc" = 2 ] || fail "over-140-char --line must exit 2 (got $rc)"
 [ ! -e "$SENT" ] || fail "over-140-char --line must not send"
-echo "$err" | grep -q 'too long' || fail "refusal must say 'too long': $err"
-echo "$err" | grep -q 'AAAAAAAAAA' || fail "refusal must quote the first 60 chars of the offending bullet: $err"
+echo "$err" | grep >/dev/null 'too long' || fail "refusal must say 'too long': $err"
+echo "$err" | grep >/dev/null 'AAAAAAAAAA' || fail "refusal must quote the first 60 chars of the offending bullet: $err"
 echo "PASS: --line over 140 chars refuses and quotes the bullet"
 
 # --- PASS: a single --next over 140 chars refuses ---

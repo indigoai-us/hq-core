@@ -104,7 +104,7 @@ while IFS= read -r line; do
   done < "$TMPD/words"
   report="$(printf '%s' "$json" | jq -r '.import.report // empty')"
   if [ -n "$report" ]; then
-    printf '%s\n' "$report" | grep -qE '^workspace/imports/[^/\\]+/report\.json$' \
+    printf '%s\n' "$report" | grep >/dev/null -E '^workspace/imports/[^/\\]+/report\.json$' \
       || fail "fixture line $((n + 1)): report path '$report' does not fit the accepted form"
   fi
   n=$((n + 1))

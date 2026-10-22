@@ -54,12 +54,12 @@ EOF
 chmod +x "$TMP/node"
 : >"$TMP/node-log"
 help="$(PATH="$TMP:$PATH" PERSONAL_ONCALENDAR_NODE_LOG="$TMP/node-log" bash "$RECON" --help)" || fail "personal reconcile --help failed"
-printf '%s\n' "$help" | grep -q 'outpost-jobs-reconcile' || fail "personal reconcile help missing"
+printf '%s\n' "$help" | grep >/dev/null 'outpost-jobs-reconcile' || fail "personal reconcile help missing"
 if [ -s "$TMP/node-log" ]; then
   fail "personal reconcile --help executed node"
 fi
 run_help="$(PATH="$TMP:$PATH" PERSONAL_ONCALENDAR_NODE_LOG="$TMP/node-log" bash "$RUNNER" --help)" || fail "personal hq-job-run --help failed"
-printf '%s\n' "$run_help" | grep -q 'hq-job-run' || fail "personal hq-job-run help missing"
+printf '%s\n' "$run_help" | grep >/dev/null 'hq-job-run' || fail "personal hq-job-run help missing"
 if [ -s "$TMP/node-log" ]; then
   fail "personal entry points executed node without --company-machine"
 fi

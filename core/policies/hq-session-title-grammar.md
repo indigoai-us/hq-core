@@ -16,7 +16,7 @@ tags: [session, naming, ergonomics]
 
 ## Rule
 
-Name the session yourself with `set_session_title` on the first turn — outside the terminal CLI the hook's title never lands, so this call is the only namer. The hook injects a one-time first-turn reminder carrying its company/project hint; act on it before other work, then rename again only if the subject changes.
+Name the session yourself with `set_session_title` on the first turn — outside the terminal CLI the hook's title never lands, so this call is the only namer. The hook injects a one-time first-turn reminder carrying its company/project hint; act on it before other work, then rename again only if the subject changes. The tool takes two required arguments, `session_id` and `title`; pass `session_id: "self"` to rename the current session.
 
 HQ session titles follow one grammar:
 

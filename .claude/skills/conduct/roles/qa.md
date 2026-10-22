@@ -46,3 +46,7 @@ human.
 A verdict first — `pass`, `pass with notes` or `fail` — then one line per done
 criterion with its screenshot path, then each finding with steps to reproduce
 and the file or component you suspect.
+
+Before you report done, wait for every background reviewer or subagent you
+started and include its result. If one is still running, report `working`
+and name it; never hand back while a child is still running.

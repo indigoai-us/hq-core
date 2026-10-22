@@ -749,7 +749,7 @@ env HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" WORK_MESH_SPOOL="$WORK_MESH_SP
 # Expect session_end then session_start
 # Filter kinds
 kinds="$(jq -r '.kind' "$WORK_MESH_SPOOL")"
-printf '%s\n' "$kinds" | grep -qx 'session_end' || true
+printf '%s\n' "$kinds" | grep >/dev/null -x 'session_end' || true
 echo "$kinds" | head -n1 | grep -q session_end \
   && pass "rebind first line session_end" \
   || fail "rebind kinds: $kinds"

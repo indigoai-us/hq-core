@@ -30,8 +30,10 @@ jq -e '.usage.includedUsd == 10 and .usage.trial == {"days":30,"capUsd":500} and
 check "shipped copy carries \$10 included, 30-day trial capped at \$500, the cutover" 0 $?
 jq -e '[.usage.boxes[] | [.size, .instanceType, .monthlyUsd]] == [["small","t3.small",100],["medium","t3.medium",200],["large","t3.large",400],["xlarge","t3.xlarge",800]]' "$SHIPPED" >/dev/null
 check "shipped copy carries the four-size box ladder" 0 $?
-jq -e '(.usage.free | sort) == ["background-ai","deploys","dms"] and .usage.domains == {"standardUsd":20,"premiumUsd":500}' "$SHIPPED" >/dev/null
+jq -e '(.usage.free | sort) == ["background-ai","deploys","dms"] and .usage.domains.standardUsd == 20 and .usage.domains.premiumUsd == 500' "$SHIPPED" >/dev/null
 check "deploys, DMs and background AI are free; domains unchanged" 0 $?
+jq -e '.usage.domains.purchase == {"basis":"registrar-cost","markupUsdPerYear":3,"renewal":"yearly","chargedBeforeRenewal":true,"refundGraceDays":5} and ([.billingRules[] | select(.id == "domain-purchase")] | length == 1)' "$SHIPPED" >/dev/null
+check "domain purchase: registrar price plus \$3 a year, yearly, charged before renewal, 5-day refund grace" 0 $?
 jq -e '[.signup.options[].id] == ["free","enterprise"] and .signup.selfHosted.url == "https://docs.hq.computer/hq/guide/use-hq-for-free/"' "$SHIPPED" >/dev/null
 check "signup offers free and enterprise demo, with the self-hosted link" 0 $?
 jq -e '[.plans[] | select(.id != "enterprise") | .newSignupsUntil] | length == 3 and all(. == "2026-10-16T18:00:00Z")' "$SHIPPED" >/dev/null

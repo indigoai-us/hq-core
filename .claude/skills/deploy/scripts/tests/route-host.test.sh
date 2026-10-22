@@ -145,6 +145,26 @@ RES="$("$RH" record --org acme --subdomain x --app-id a --tarball "$TMP/nope.tar
 RES="$("$RH" record --org acme --subdomain x --app-id a)"
 [ "$(field "$RES" .reason)" = "bad_argument" ] && pass "record without site or tarball refused" || fail "expected bad_argument: $RES"
 
+# --url stores the app URL the API returned, as returned; it is never built
+# from the subdomain, so hq.work, indigo-hq.com and custom bases all round-trip.
+RES="$("$RH" hosts --org acme)"
+[ "$(field "$RES" '[.hosts[] | select(.subdomain == "standup")][0] | has("url")')" = "false" ] && pass "record without --url stores no url" || fail "url invented without --url: $RES"
+for u in "https://wk.hq.work" "https://old.indigo-hq.com/" "https://docs.acme.example"; do
+  sub="u$(printf '%s' "$u" | cksum | cut -d' ' -f1)"
+  RES="$("$RH" record --org urlco --subdomain "$sub" --app-id "app_$sub" --access-mode public --deploy-id dep_u --site "$TMP/host" --url "$u")"
+  got="$(field "$("$RH" hosts --org urlco)" "[.hosts[] | select(.subdomain == \"$sub\")][0].url")"
+  [ "$(field "$RES" .ok)" = "true" ] && [ "$got" = "${u%/}" ] && pass "url stored as returned: $u" || fail "url not stored for $u: got '$got' ($RES)"
+done
+for bad in "http://wk.hq.work" "https://wk.hq.work/path" "javascript:alert(1)" "https://wk.hq.work evil"; do
+  RES="$("$RH" record --org urlco --subdomain badurl --app-id app_bad --access-mode public --deploy-id dep_b --site "$TMP/host" --url "$bad")"
+  got="$(field "$("$RH" hosts --org urlco)" '[.hosts[] | select(.subdomain == "badurl")][0] | has("url")')"
+  [ "$(field "$RES" .ok)" = "true" ] && [ "$got" = "false" ] && pass "non-origin url dropped, snapshot kept: $bad" || fail "bad url handling wrong for '$bad': $got ($RES)"
+done
+"$RH" record --org urlco --subdomain badurl --app-id app_bad --access-mode public --deploy-id dep_b2 --site "$TMP/host" --url "https://wk.hq.work" >/dev/null
+"$RH" record --org urlco --subdomain badurl --app-id app_bad --access-mode public --deploy-id dep_b3 --site "$TMP/host" >/dev/null
+got="$(field "$("$RH" hosts --org urlco)" '[.hosts[] | select(.subdomain == "badurl")][0] | has("url")')"
+[ "$got" = "false" ] && pass "re-record without --url drops a stale url" || fail "stale url kept after re-record: $got"
+
 RES="$("$RH" hosts --org -)"
 [ "$(field "$RES" '.hosts[0].key')" = "_personal/mine" ] && pass "personal scope keyed as _personal" || fail "personal key wrong: $RES"
 

@@ -89,6 +89,10 @@ run 2 "$TMP/not-a-repo" 'git commit -m x'            'bare commit, cwd not a rep
 # --- Explicit anchors still work ------------------------------------------
 run 0 "$TMP" "git -C $NESTED commit -m x"            'git -C nested repo allowed'
 run 2 "$TMP" "git -C $TMP push origin main"          'git -C HQ root blocked'
+# feedback_a6e3a675: a relative -C resolves against the session cwd, not HQ.
+run 0 "$NESTED" 'git -C . commit -m x'                'git -C . from a repo below HQ allowed'
+run 2 "$TMP" 'git -C . commit -m x'                   'git -C . at the HQ root still blocked'
+run 2 "$TMP/companies" 'git -C .. commit -m x'        'git -C .. back to the HQ root blocked'
 run 0 "$TMP" 'gh pr create -R owner/repo --title x'  'gh -R allowed'
 # core/scripts/hq-pr-create.sh wraps `gh pr create` and follows the same rules.
 run 0 "$TMP" 'bash core/scripts/hq-pr-create.sh -R owner/repo --title x' 'hq-pr-create wrapper -R allowed'

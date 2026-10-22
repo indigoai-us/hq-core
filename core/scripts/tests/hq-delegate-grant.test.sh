@@ -184,9 +184,9 @@ RC=$?
 set -e
 [ "$RC" -eq 2 ] || fail "without --yes must exit 2, got $RC"
 [ ! -s "$INVOKE_LOG" ] || fail "without --yes nothing may be invoked, got: $(cat "$INVOKE_LOG")"
-printf '%s' "$PLAN" | grep -q "projects/widget/" || fail "plan must name the project prefix"
-printf '%s' "$PLAN" | grep -q "alice@acme.test" || fail "plan must name the principal"
-printf '%s' "$PLAN" | grep -qi "privilege escalation" || fail "plan must flag the write grant as a privilege escalation"
+printf '%s' "$PLAN" | grep >/dev/null "projects/widget/" || fail "plan must name the project prefix"
+printf '%s' "$PLAN" | grep >/dev/null "alice@acme.test" || fail "plan must name the principal"
+printf '%s' "$PLAN" | grep >/dev/null -i "privilege escalation" || fail "plan must flag the write grant as a privilege escalation"
 jq -e '.status == "building"' "$M" >/dev/null || fail "plan-only run must not advance status"
 
 # --- 1 + 1b. happy path, with the member email resolved to a prs_ uid --------
@@ -290,7 +290,7 @@ ERR="$(bash "$GRANT" --manifest "$M" --yes 2>&1 >/dev/null)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "company-anchored prefix must be a hard error"
-printf '%s' "$ERR" | grep -qi "convention" || fail "error must name the prefix-convention rule: $ERR"
+printf '%s' "$ERR" | grep >/dev/null -i "convention" || fail "error must name the prefix-convention rule: $ERR"
 [ ! -s "$INVOKE_LOG" ] || fail "convention violation must invoke nothing: $(cat "$INVOKE_LOG")"
 
 # bare (non-folder) prefix is equally hard an error
@@ -367,7 +367,7 @@ PLAN="$(bash "$GRANT" --manifest "$M" 2>/dev/null)"
 RC=$?
 set -e
 [ "$RC" -eq 2 ] || fail "prs_ plan-only must exit 2, got $RC"
-printf '%s' "$PLAN" | grep -q "prs_CAROL maps to carol@acme.test" || fail "prs_ plan must name the mapped email: $PLAN"
+printf '%s' "$PLAN" | grep >/dev/null "prs_CAROL maps to carol@acme.test" || fail "prs_ plan must name the mapped email: $PLAN"
 if grep -Eq '^(sync push|files share|groups )' "$INVOKE_LOG"; then fail "prs_ plan-only must not mutate: $(cat "$INVOKE_LOG")"; fi
 
 : > "$INVOKE_LOG"
@@ -394,7 +394,7 @@ for uid in prs_NOBODY prs_TWIN prs_MALLORY; do
   set -e
   [ "$RC" -ne 0 ] || fail "$uid must fail"
   if grep -q '^files share' "$INVOKE_LOG"; then fail "$uid must not reach files share"; fi
-  printf '%s' "$ERR" | grep -q "email" || fail "$uid error must tell the operator to use the email: $ERR"
+  printf '%s' "$ERR" | grep >/dev/null "email" || fail "$uid error must tell the operator to use the email: $ERR"
   jq -e '.status == "building" and .vaultPrefixes[0].grantReceipt == null' "$M" >/dev/null || fail "$uid advanced state"
 done
 

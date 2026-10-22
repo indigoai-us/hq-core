@@ -140,11 +140,11 @@ company_mode="$(awk '
   in_company { print }
 ' "$STARTWORK")"
 company_has() {
-  printf '%s\n' "$company_mode" | grep -qF -- "$1" \
+  printf '%s\n' "$company_mode" | grep >/dev/null -F -- "$1" \
     || fail "Company Mode: missing Board contract: $1"
 }
 company_lacks() {
-  ! printf '%s\n' "$company_mode" | grep -qF -- "$1" \
+  ! printf '%s\n' "$company_mode" | grep >/dev/null -F -- "$1" \
     || fail "Company Mode: stale local-PRD status rule returned: $1"
 }
 company_has "Board status comes from the work mesh, never local prd.passes."

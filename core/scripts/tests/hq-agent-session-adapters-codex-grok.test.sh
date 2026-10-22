@@ -89,7 +89,7 @@ for a in "${ARGS[@]}"; do
 done
 [ "$idx" -ge 0 ] || fail "no override index"
 sys_arg="${ARGS[$((idx+1))]}"
-echo "$sys_arg" | grep -q 'SYSTEM_CANARY_TEXT' || fail "grok system not in override"
+echo "$sys_arg" | grep >/dev/null 'SYSTEM_CANARY_TEXT' || fail "grok system not in override"
 # -p user text should not contain system
 idx=-1
 i=0
@@ -98,8 +98,8 @@ for a in "${ARGS[@]}"; do
   i=$((i+1))
 done
 user_arg="${ARGS[$((idx+1))]}"
-echo "$user_arg" | grep -q 'USER_PROMPT_TEXT' || fail "grok -p user missing"
-echo "$user_arg" | grep -q 'SYSTEM_CANARY_TEXT' && fail "grok system leaked into -p"
+echo "$user_arg" | grep >/dev/null 'USER_PROMPT_TEXT' || fail "grok -p user missing"
+echo "$user_arg" | grep >/dev/null 'SYSTEM_CANARY_TEXT' && fail "grok system leaked into -p"
 GROK_SKEL="$(printf '%s\n' "${ARGS[@]}" | awk '
   $0=="grok"{print}
   $0=="-p"{print}
@@ -145,6 +145,6 @@ export PATH="$STUB:$PATH"
 unset HQ_AGENT_SESSION_RENDER_ONLY
 SESSION_SYSTEM_PROMPT_MODE=""
 OUT="$(printf 'sentinel-stdin-content\n' | provider_adapter_codex "$RUN" "$TMP/company")" || fail "codex stub invoke failed"
-printf '%s\n' "$OUT" | grep -q 'NO_STDIN' || fail "codex CLI consumed inherited stdin: $OUT"
+printf '%s\n' "$OUT" | grep >/dev/null 'NO_STDIN' || fail "codex CLI consumed inherited stdin: $OUT"
 pass "codex invocation runs with stdin at EOF"
 export HQ_AGENT_SESSION_RENDER_ONLY=1

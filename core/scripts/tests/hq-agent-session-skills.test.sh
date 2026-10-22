@@ -254,7 +254,7 @@ pass "catalog preserves tail names (rendered=$body_bytes, available=$avail2)"
 # If the name-only catalog itself cannot fit, say so within the same byte cap.
 HQ_SESSION_SKILL_CATALOG_MAX_BYTES=180
 session_skill_catalog_build "$FIXTURE" indigo >/dev/null
-printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | grep -q 'catalog truncated' || \
+printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | grep >/dev/null 'catalog truncated' || \
   fail "name-only overflow must render a truncation indicator"
 overflow_bytes="$(printf '%s\n' "$SESSION_SKILL_CATALOG_BODY" | wc -c | tr -d '[:space:]')"
 [ "$SESSION_SKILL_CATALOG_RENDERED_BYTES" = "$overflow_bytes" ] || \

@@ -175,8 +175,12 @@ bash .claude/skills/project-summary/scripts/deploy-summary.sh \
 ```
 
 It is idempotent (stable app name → stable URL), gates to the project's company when a
-`cloud_uid` resolves from `companies/manifest.yaml`, and falls back to a password gate for
-personal / no-company projects. Parse its `KEY=VALUE` output and report:
+`cloud_uid` resolves from `companies/manifest.yaml`, and uses a password gate only for
+personal / no-company projects. A company deck is deployed into that company's org
+(`X-Org-Slug: {co}` on every call). If the company has no `cloud_uid` or its gate cannot be
+proven, the script exits with `ERR: company_uid_unresolved` or
+`ERR: company_gate_unverified` and uploads nothing. Report that error and do not retry
+without `{co}`. Parse its `KEY=VALUE` output and report:
 
 - Plan, company-gated → `Visual summary is live (members only): {LIVE}`
 - Deck, company-gated → `Brainstorm deck is live (members only): {LIVE}`

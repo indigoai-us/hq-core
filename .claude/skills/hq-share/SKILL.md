@@ -185,6 +185,13 @@ the HQ share form reads it on mount and seeds the textarea, showing a
 
 ### 4. Mint + open (share-session mode)
 
+**Mint at delivery.** The link is valid for 15 minutes from the moment it is
+minted, so mint it last. Finish scope confirmation (Step 3), the note draft
+and its picker (Step 3.5), and any other question or tool call first. Run the
+mint block below as the final tool call of the turn and go straight to Step 5
+in the same reply. Never mint, then ask a question, run more work, or wait on
+the user before showing the link.
+
 ```bash
 # Always mint with --no-open so the skill can append ?note= before
 # launching the browser. (Skipping the draft step → no `?note=` param,
@@ -206,8 +213,9 @@ fi
 ```
 
 The CLI prints `Share-session URL generated:` followed by the URL, the paths
-exactly as requested, and `Expires:` timestamp. Default TTL is 15 minutes,
-bounded `60s..7d`. The skill always reads the URL from `--no-open` output
+exactly as requested, and `Expires:` timestamp. Default TTL is 15 minutes
+(`--expires <duration>`, max 24h). Keep the default unless the user asks for a
+longer window. The skill always reads the URL from `--no-open` output
 and handles browser launch itself so the `?note=` param can be appended
 without a CLI release.
 
@@ -242,6 +250,20 @@ only writes the ACL; it does not upload files. If the prefix maps to a local
 `companies/{company}/` path that hasn't been pushed, run
 `hq sync push <local-path> --company <slug> --on-conflict keep` first
 (hq-files "Rules for Agent Workflows" #3). **Stop here — skip Step 5.**
+
+### 4a. Re-mint instead of delivering a stale link
+
+Before Step 5, compare the CLI's `Expires:` timestamp with the current time
+(`date -u`). Re-run the Step 4 mint, with the same paths, company and note,
+when any of these is true:
+
+- fewer than 5 minutes remain, or the link has already expired;
+- anything ran between the mint and this reply: a question to the user,
+  more tool calls, a compaction or a resumed session;
+- the user says the link expired, or asks for the link again in a later turn.
+
+Show only the newest link. Do not reprint an older URL. An unused older token
+expires on its own; nothing needs to be revoked.
 
 ### 5. Surface the URL + safe metadata (share-session mode)
 
@@ -289,10 +311,12 @@ artifact — in those contexts use the redacted form
    [`hq-files`](../hq-files/SKILL.md) → "Rules for Agent Workflows" #10 and
    [`hq-share-session-urls-are-capabilities`](../../../core/policies/hq-share-session-urls-are-capabilities.md).
 
-2. **Mint a fresh URL when an old one fails.** Tokens are single-use by
-   design. If the recipient reports an `expired` (403) or
-   `nonce_already_claimed` (409) error, re-run `/hq-share` to mint a new
-   URL rather than extending TTLs server-side or debugging the failed token.
+2. **Mint a fresh URL when an old one fails or is stale.** Tokens are
+   single-use by design. Mint at delivery (Step 4) and re-mint when the link
+   is near expiry or delayed (Step 4a). If the recipient reports an `expired`
+   (403) or `nonce_already_claimed` (409) error, re-run the mint with the same
+   paths rather than extending TTLs server-side or debugging the failed
+   token.
 
 3. **For company-wide intent,** prefer the direct grant
    `hq files share <prefix> --with @all --permission read` over the legacy

@@ -24,7 +24,7 @@ assert_fallback() { # <label>
     . "$FIX/core/scripts/lib/hook-adapter-core.sh"
     hqad_iter_settings PreToolUse Bash
   )"
-  if printf '%s\n' "$records" | grep -q $'^gate\tblock-policy-writes-bash\t'; then
+  if printf '%s\n' "$records" | grep >/dev/null $'^gate\tblock-policy-writes-bash\t'; then
     pass "$label retains block-policy-writes-bash"
   else
     fail "$label dropped block-policy-writes-bash: $records"

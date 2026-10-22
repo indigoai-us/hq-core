@@ -56,13 +56,13 @@ for a in "${ARGS[@]}"; do
 done
 [ "$idx" -ge 0 ] || fail "no append-system-prompt index"
 sys_arg="${ARGS[$((idx+1))]}"
-echo "$sys_arg" | grep -q 'SYSTEM_CANARY_TEXT' || fail "system text not in --append-system-prompt arg"
+echo "$sys_arg" | grep >/dev/null 'SYSTEM_CANARY_TEXT' || fail "system text not in --append-system-prompt arg"
 # Positional user text after --
 printf '%s\n' "${ARGS[@]}" | grep -qx -- '--' || fail "missing -- separator"
 # Last arg is user text
 last="${ARGS[$((${#ARGS[@]}-1))]}"
-echo "$last" | grep -q 'USER_PROMPT_TEXT' || fail "user text not positional: $last"
-echo "$last" | grep -q 'SYSTEM_CANARY_TEXT' && fail "system text leaked into positional prompt"
+echo "$last" | grep >/dev/null 'USER_PROMPT_TEXT' || fail "user text not positional: $last"
+echo "$last" | grep >/dev/null 'SYSTEM_CANARY_TEXT' && fail "system text leaked into positional prompt"
 [ "${SESSION_SYSTEM_PROMPT_MODE}" = "native" ] || fail "systemPromptMode=$SESSION_SYSTEM_PROMPT_MODE"
 pass "claude argv structure"
 

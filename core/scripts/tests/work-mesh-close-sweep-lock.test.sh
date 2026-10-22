@@ -66,7 +66,7 @@ wm_file_mtime() {
 wm_safe_path_component() {
   local value="${1:-}"
   [ -n "$value" ] || return 1
-  LC_ALL=C printf '%s\n' "$value" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+  LC_ALL=C printf '%s\n' "$value" | grep >/dev/null -E '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 }
 wm_registered_slugs() {
   local sid="${1:-}" spf

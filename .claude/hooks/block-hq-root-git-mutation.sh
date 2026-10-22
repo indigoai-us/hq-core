@@ -803,6 +803,11 @@ check_anchor_not_hq_root() {
   local kind="$1" path="$2" resolved target_git hq_git grok_worktrees
   if hq_path_is_absolute "$path" || [[ "$path" == \~* ]]; then
     resolved="$path"
+  elif [[ -n "$TOOL_CWD" ]] && hq_path_is_absolute "$TOOL_CWD"; then
+    # A relative -C (for example `git -C .`) runs against the shell cwd the
+    # harness reported, not the HQ root (feedback_a6e3a675). A worktree below
+    # HQ has its own git dir, so it no longer reads as an HQ-root mutation.
+    resolved="$TOOL_CWD/$path"
   else
     resolved="$HQ_ROOT/$path"
   fi

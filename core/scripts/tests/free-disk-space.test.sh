@@ -217,7 +217,7 @@ mkdir -p "$WT_SUB/vendor/build" "$WT_SUB/node_modules"
 printf 'inside\n' > "$WT_SUB/vendor/build/inside.txt"
 printf 'nm\n' > "$WT_SUB/node_modules/a.js"
 backdate "$WT_SUB"
-git -C "$WT_SUB" ls-files -s | grep -q '^160000 ' || fail "submodule gitlink missing"
+git -C "$WT_SUB" ls-files -s | grep >/dev/null '^160000 ' || fail "submodule gitlink missing"
 
 # skip-worktree and assume-unchanged hide local edits from git status and from
 # git worktree remove. prune and slim-idle must keep both checkouts.
@@ -238,7 +238,7 @@ printf '%s\n' '{"token":"LOCAL-ONLY"}' > "$WT_SKIP/config.json"
 mkdir -p "$WT_SKIP/node_modules"
 printf 'x\n' > "$WT_SKIP/node_modules/pkg.js"
 backdate "$WT_SKIP"
-git -C "$WT_SKIP" ls-files -v -- config.json | grep -q '^S ' || fail "skip-worktree tag is not S"
+git -C "$WT_SKIP" ls-files -v -- config.json | grep >/dev/null '^S ' || fail "skip-worktree tag is not S"
 [ -z "$(git -C "$WT_SKIP" status --porcelain --untracked-files=all --ignore-submodules=none)" ] \
   || fail "skip-worktree fixture is visible to status"
 
@@ -254,7 +254,7 @@ printf '%s\n' '{"edit":"LOCAL"}' > "$WT_ASSUME/config.json"
 mkdir -p "$WT_ASSUME/node_modules"
 printf 'x\n' > "$WT_ASSUME/node_modules/pkg.js"
 backdate "$WT_ASSUME"
-git -C "$WT_ASSUME" ls-files -v -- config.json | grep -q '^[a-z] ' || fail "assume-unchanged tag is not lowercase"
+git -C "$WT_ASSUME" ls-files -v -- config.json | grep >/dev/null '^[a-z] ' || fail "assume-unchanged tag is not lowercase"
 [ -z "$(git -C "$WT_ASSUME" status --porcelain --untracked-files=all --ignore-submodules=none)" ] \
   || fail "assume-unchanged fixture is visible to status"
 
@@ -275,8 +275,8 @@ GIT_AUTHOR_DATE=2020-01-01T00:00:00 GIT_COMMITTER_DATE=2020-01-01T00:00:00 \
 git -C "$WT_FORCED" push -q -u origin wt-forced
 printf 'v2 uncommitted\n' > "$WT_FORCED/build/keep.js"
 backdate "$WT_FORCED"
-git -C "$WT_FORCED" ls-files -v -- build/keep.js | grep -q '^H ' || fail "forced file is not a normal tracked file"
-git -C "$WT_FORCED" status --porcelain --untracked-files=all --ignore-submodules=none | grep -q 'build/keep.js' \
+git -C "$WT_FORCED" ls-files -v -- build/keep.js | grep >/dev/null '^H ' || fail "forced file is not a normal tracked file"
+git -C "$WT_FORCED" status --porcelain --untracked-files=all --ignore-submodules=none | grep >/dev/null 'build/keep.js' \
   || fail "forced-file edit is not a normal uncommitted change"
 
 # Separate git clone nested inside an ignored top-level build/ directory.
@@ -299,7 +299,7 @@ NESTED_SHA=$(git -C "$WT_NESTED/build/vendor" rev-parse HEAD)
 backdate "$WT_NESTED"
 [ -z "$(git -C "$WT_NESTED" status --porcelain --untracked-files=all --ignore-submodules=none)" ] \
   || fail "nested clone is visible to parent status"
-if git -C "$WT_NESTED" ls-files -s | grep -q '^160000 '; then
+if git -C "$WT_NESTED" ls-files -s | grep >/dev/null '^160000 '; then
   fail "nested clone was recorded as a submodule"
 fi
 
@@ -445,7 +445,7 @@ esac
 # ---- apply: only the safe linked worktree goes ----
 apply=$(run --apply prune-backed-up 6)
 [ ! -d "$WT_SAFE" ] || fail "apply left the safe worktree in place: $apply"
-git -C "$REPO_A" worktree list | grep -q safe && fail "safe worktree still registered" || true
+git -C "$REPO_A" worktree list | grep >/dev/null safe && fail "safe worktree still registered" || true
 [ -d "$WT_SIDE" ] || fail "apply removed the worktree with an unpushed side branch: $apply"
 git -C "$WT_SIDE" rev-parse --verify --quiet side >/dev/null || fail "unpushed side branch was lost"
 [ -d "$WT_ENV" ] || fail "apply removed the worktree with .env: $apply"
@@ -464,7 +464,7 @@ grep -q precious "$WT_NOTES/notes.md" || fail "notes.md contents changed"
 [ -f "$WT_NOTES/src/out/new.ts" ] || fail "apply deleted src/out/new.ts"
 [ -d "$WT_DET" ] || fail "apply removed worktree with a detached reflog commit: $apply"
 git -C "$WT_DET" cat-file -t "$LOST" >/dev/null || fail "detached commit object lost"
-git -C "$WT_DET" reflog show HEAD --format='%H' | grep -q "$LOST" || fail "detached commit left the worktree HEAD reflog"
+git -C "$WT_DET" reflog show HEAD --format='%H' | grep >/dev/null "$LOST" || fail "detached commit left the worktree HEAD reflog"
 case "$apply" in
   *"reason=reflog-not-pushed:"*) ;;
   *) fail "apply did not report the reflog commit: $apply" ;;

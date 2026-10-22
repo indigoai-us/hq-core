@@ -68,18 +68,18 @@ out="$(run_hook "$REPO/src/lib")"
 [ -n "$out" ] || fail "repo-rooted session got no note"
 [ "$(printf '%s' "$out" | jq -r '.hookSpecificOutput.hookEventName')" = "SessionStart" ] || fail "wrong event name: $out"
 note="$(printf '%s' "$out" | ctx)"
-printf '%s' "$note" | grep -q "repository root is $REPO," || fail "note does not name the repo root: $note"
-printf '%s' "$note" | grep -qF "/add-dir $HQ\`" || fail "note lacks /add-dir <HQ_ROOT>: $note"
-printf '%s' "$note" | grep -qF "$HQ/.claude/skills/<name>/SKILL.md" || fail "note lacks skill path pattern: $note"
+printf '%s' "$note" | grep >/dev/null "repository root is $REPO," || fail "note does not name the repo root: $note"
+printf '%s' "$note" | grep >/dev/null -F "/add-dir $HQ\`" || fail "note lacks /add-dir <HQ_ROOT>: $note"
+printf '%s' "$note" | grep >/dev/null -F "$HQ/.claude/skills/<name>/SKILL.md" || fail "note lacks skill path pattern: $note"
 for want in review handoff startwork hq-pack-eng:ship personal:mirrored; do
-  printf '%s' "$note" | grep -qE "(: |, )$want(,|$| )" || fail "note does not list $want: $note"
+  printf '%s' "$note" | grep >/dev/null -E "(: |, )$want(,|$| )" || fail "note does not list $want: $note"
 done
-printf '%s' "$note" | grep -qF "$HQ/personal/skills/<name>/SKILL.md): deep-review" \
+printf '%s' "$note" | grep >/dev/null -F "$HQ/personal/skills/<name>/SKILL.md): deep-review" \
   || fail "unmirrored personal skill not listed with its path: $note"
 for reject in _shared no-skill-file otherco:secret-flow otherco; do
-  if printf '%s' "$note" | grep -q "$reject"; then fail "note leaks or lists $reject: $note"; fi
+  if printf '%s' "$note" | grep >/dev/null "$reject"; then fail "note leaks or lists $reject: $note"; fi
 done
-if printf '%s' "$note" | grep -qE '(: |, )mirrored(,|$)'; then fail "mirrored personal skill listed twice: $note"; fi
+if printf '%s' "$note" | grep >/dev/null -E '(: |, )mirrored(,|$)'; then fail "mirrored personal skill listed twice: $note"; fi
 pass "repo-rooted session lists HQ, pack and personal skills with /add-dir"
 
 # 2. HQ-root session: no note (HQ skills already load natively).
@@ -92,16 +92,16 @@ pass "HQ-root session and HQ subfolders get no note"
 
 # 3. Worktree under workspace/worktrees (.git file) is repo-rooted too.
 note="$(run_hook "$WT" | ctx)"
-printf '%s' "$note" | grep -q "repository root is $WT," || fail "worktree session got no note: $note"
+printf '%s' "$note" | grep >/dev/null "repository root is $WT," || fail "worktree session got no note: $note"
 pass "worktree session gets the note"
 
 # 4. Skills the session already loads are not repeated.
 note="$(run_hook "$OWN" | ctx)"
-if printf '%s' "$note" | grep -qE '(: |, )review(,|$)'; then fail "repo's own review skill repeated: $note"; fi
-printf '%s' "$note" | grep -qE '(: |, )handoff(,|$)' || fail "handoff missing from own-skills repo note: $note"
+if printf '%s' "$note" | grep >/dev/null -E '(: |, )review(,|$)'; then fail "repo's own review skill repeated: $note"; fi
+printf '%s' "$note" | grep >/dev/null -E '(: |, )handoff(,|$)' || fail "handoff missing from own-skills repo note: $note"
 mkskill "$HOME_DIR/.claude/skills/handoff"
 note="$(run_hook "$REPO" | ctx)"
-if printf '%s' "$note" | grep -qE '(: |, )handoff(,|$)'; then fail "user-level handoff skill repeated: $note"; fi
+if printf '%s' "$note" | grep >/dev/null -E '(: |, )handoff(,|$)'; then fail "user-level handoff skill repeated: $note"; fi
 rm -rf "$HOME_DIR/.claude"
 pass "repo and user-level skills are not repeated"
 
@@ -121,10 +121,10 @@ for i in $(seq 1 400); do mkskill "$HQ/.claude/skills/hq-pack-eng:generated-skil
 out="$(run_hook "$REPO")"
 note="$(printf '%s' "$out" | ctx)"
 [ "${#note}" -le 4500 ] || fail "note is ${#note} chars, over the bound"
-printf '%s' "$note" | grep -qE '\(\+[0-9]+ more; list them with ls\)' || fail "truncated note lacks the +N more marker"
-printf '%s' "$note" | grep -qE '(: |, )review(,|$)' || fail "budget cut dropped review"
-printf '%s' "$note" | grep -qE '(: |, )handoff(,|$)' || fail "budget cut dropped handoff"
-printf '%s' "$note" | grep -qF "personal/skills/<name>/SKILL.md): deep-review" || fail "budget cut dropped personal skills"
+printf '%s' "$note" | grep >/dev/null -E '\(\+[0-9]+ more; list them with ls\)' || fail "truncated note lacks the +N more marker"
+printf '%s' "$note" | grep >/dev/null -E '(: |, )review(,|$)' || fail "budget cut dropped review"
+printf '%s' "$note" | grep >/dev/null -E '(: |, )handoff(,|$)' || fail "budget cut dropped handoff"
+printf '%s' "$note" | grep >/dev/null -F "personal/skills/<name>/SKILL.md): deep-review" || fail "budget cut dropped personal skills"
 pass "note is bounded (${#note} chars) and keeps core and personal skills"
 
 # 7b. Output is valid JSON when a skill folder name needs escaping.
@@ -179,7 +179,7 @@ count="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // ""
 [ "$count" = "1" ] || fail "repo-rooted dispatch emitted $count notes: $out"
 pass "master-hook dispatch emits one note for a repo-rooted session"
 out="$(dispatch "$HQ" root-sess-1)"
-if printf '%s' "$out" | grep -q "skill list"; then fail "HQ-root dispatch emitted the note: $out"; fi
+if printf '%s' "$out" | grep >/dev/null "skill list"; then fail "HQ-root dispatch emitted the note: $out"; fi
 pass "master-hook dispatch emits no note for an HQ-root session"
 
 echo "PASS sessionstart-repo-rooted-hq-skills"

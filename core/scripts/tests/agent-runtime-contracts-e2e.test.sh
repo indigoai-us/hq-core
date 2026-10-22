@@ -54,9 +54,9 @@ set -e
 warning="$(hq_hook_launch_warning_text \
   "$payload" "$FIX_ROOT" "advisory" "hook" "missing" "$missing" "$HQ_HOOK_LAST_CAUSE")"
 [ -n "$warning" ] || fail "missing hook must produce visible remediation"
-printf '%s' "$warning" | grep -Fq 'chmod u+x "$HQ_ROOT/.claude/hooks/missing.sh"' \
+printf '%s' "$warning" | grep >/dev/null -F 'chmod u+x "$HQ_ROOT/.claude/hooks/missing.sh"' \
   || fail "missing hook remediation must contain the exact safe chmod command"
-if printf '%s' "$warning" | grep -Fq 'token-must-not-leak'; then
+if printf '%s' "$warning" | grep >/dev/null -F 'token-must-not-leak'; then
   fail "hook payload leaked into remediation"
 fi
 

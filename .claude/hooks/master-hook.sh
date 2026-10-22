@@ -312,21 +312,44 @@ master_timeout_watchdog_enabled() {
   [ -f "$HOOK_TIMEOUT_WATCHDOG" ]
 }
 
+# One hash process per call; the hex field is split off with builtins instead
+# of a second awk process (the dispatcher hashes several values per event).
 master_timeout_sha256() {
+  local digest="" rest=""
   if command -v shasum >/dev/null 2>&1; then
-    printf '%s\0' "$@" | shasum -a 256 2>/dev/null | awk '{print $1}'
+    read -r digest rest < <(printf '%s\0' "$@" | shasum -a 256 2>/dev/null) || true
   elif command -v sha256sum >/dev/null 2>&1; then
-    printf '%s\0' "$@" | sha256sum 2>/dev/null | awk '{print $1}'
+    read -r digest rest < <(printf '%s\0' "$@" | sha256sum 2>/dev/null) || true
   elif command -v openssl >/dev/null 2>&1; then
-    printf '%s\0' "$@" | openssl dgst -sha256 2>/dev/null | awk '{print $NF}'
+    read -r rest < <(printf '%s\0' "$@" | openssl dgst -sha256 2>/dev/null) || true
+    digest="${rest##* }"
   fi
+  case "$digest" in
+    *[!0-9A-Fa-f]*|'') return 0 ;;
+  esac
+  printf '%s\n' "$digest"
+}
+
+# The session hash keys the timeout journal and breadcrumb directory. It was
+# recomputed (one hash process each) by four callers per event; compute once.
+# Callers read MASTER_SESSION_HASH after this runs (no command substitution,
+# so the memo survives in the dispatcher shell).
+MASTER_SESSION_HASH=""
+MASTER_SESSION_HASH_READY=0
+master_session_hash_ensure() {
+  [ "$MASTER_SESSION_HASH_READY" -eq 0 ] || return 0
+  MASTER_SESSION_HASH_READY=1
+  MASTER_SESSION_HASH=""
+  [ -z "${SESSION_ID:-}" ] || MASTER_SESSION_HASH="$(master_timeout_sha256 "$SESSION_ID")"
 }
 
 MASTER_INVOCATION_ID="$(master_timeout_sha256 "$$" "$MASTER_STARTED_MS" "$EVENT" 2>/dev/null || true)"
 [ -n "$MASTER_INVOCATION_ID" ] || MASTER_INVOCATION_ID="$$-$MASTER_STARTED_MS"
 MASTER_DEBUG_DIRECTORY_READY=0
+# mkdir only when the directory is missing: one fewer process per event.
 if master_timeout_watchdog_enabled \
-  && mkdir -p "$REPO_ROOT/workspace/.hook-timeout-journal" >/dev/null 2>&1; then
+  && { [ -d "$REPO_ROOT/workspace/.hook-timeout-journal" ] \
+    || mkdir -p "$REPO_ROOT/workspace/.hook-timeout-journal" >/dev/null 2>&1; }; then
   MASTER_DEBUG_DIRECTORY_READY=1
   master_debug_initialize "$REPO_ROOT" "$MASTER_INVOCATION_ID"
   if [ -n "$MASTER_DEBUG_PHASE_FILE" ]; then
@@ -635,7 +658,7 @@ if [ -n "$SESSION_ID" ]; then
   SESSIONS_DIR="$REPO_ROOT/workspace/sessions"
   SESSION_DIR="$SESSIONS_DIR/$SESSION_ID"
   META_FILE="$SESSION_DIR/meta.yaml"
-  mkdir -p "$SESSION_DIR"
+  [ -d "$SESSION_DIR" ] || mkdir -p "$SESSION_DIR"
   if [ ! -f "$META_FILE" ]; then
     printf 'session_id: %s\nstarted_at: "%s"\nsenior: user\n' \
       "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$META_FILE"
@@ -801,7 +824,8 @@ master_nproc() {
 timeout_journal_file=""
 active_child_file=""
 if master_timeout_watchdog_enabled && [ "$MASTER_DEBUG_DIRECTORY_READY" -eq 1 ] && [ -n "$SESSION_ID" ]; then
-  journal_session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  master_session_hash_ensure
+  journal_session_hash="$MASTER_SESSION_HASH"
   if [ -n "$journal_session_hash" ]; then
     timeout_journal_file="$REPO_ROOT/workspace/.hook-timeout-journal/$journal_session_hash.tsv"
     [ -z "$timeout_journal_file" ] || active_child_file="$timeout_journal_file.$MASTER_INVOCATION_ID.active"
@@ -934,11 +958,18 @@ master_policy_trigger_metadata_json() {
 }
 
 write_journal_runtime_metadata() {
-  local metadata_file temporary
+  local metadata_file temporary wanted existing=""
   [ -n "$timeout_journal_file" ] || return 0
   metadata_file="$timeout_journal_file.meta"
   temporary="$metadata_file.tmp.$$"
-  printf 'bash_env_set=%s\ntiming_precision=%s\n' "$(master_bash_env_state)" "$MASTER_TIMING_PRECISION" > "$temporary" 2>/dev/null || {
+  wanted="$(printf 'bash_env_set=%s\ntiming_precision=%s\n' "$(master_bash_env_state)" "$MASTER_TIMING_PRECISION")"
+  # The metadata is constant for a session; skip the write and the mv process
+  # when the file already says the same thing (builtin read, no fork).
+  if [ -r "$metadata_file" ]; then
+    existing="$(<"$metadata_file")" 2>/dev/null || existing=""
+    [ "$existing" != "$wanted" ] || return 0
+  fi
+  printf '%s\n' "$wanted" > "$temporary" 2>/dev/null || {
     rm -f "$temporary" >/dev/null 2>&1 || true
     return 0
   }
@@ -1005,7 +1036,8 @@ consume_timeout_breadcrumbs() {
   local session_hash breadcrumb_dir record claim stale text owner_id=""
   master_timeout_watchdog_enabled || return 0
   [ -n "$SESSION_ID" ] || return 0
-  session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  master_session_hash_ensure
+  session_hash="$MASTER_SESSION_HASH"
   [ -n "$session_hash" ] || return 0
   breadcrumb_dir="$REPO_ROOT/workspace/.hook-timeout-breadcrumbs/$session_hash"
   [ -d "$breadcrumb_dir" ] || return 0
@@ -1286,7 +1318,7 @@ if (length $marker) { open my $fh, ">", $marker; close $fh; }
 exit(($rc & 127) ? 128 + ($rc & 127) : ($rc >> 8));
 '
 child_completion_dir="$REPO_ROOT/workspace/.hook-timeout-completions"
-if [ -n "$child_timeout_cmd" ]; then
+if [ -n "$child_timeout_cmd" ] && [ ! -d "$child_completion_dir" ]; then
   mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
 fi
 child_sequence=0
@@ -1363,7 +1395,10 @@ record_child_execution() {
     esac
   fi
   [ -n "$completion_marker" ] || timed_out=0
-  rm -f "$completion_marker" >/dev/null 2>&1 || true
+  # Markers are removed in one rm at the end of the dispatch instead of one
+  # rm process per child (two per child with the pre-run cleanup).
+  [ -z "$completion_marker" ] || [ ! -e "$completion_marker" ] \
+    || child_completion_markers_pending+=("$completion_marker")
   if [ "$timed_out" -eq 1 ]; then
     timed_out_child_paths+=("$path")
     timed_out_child_elapsed_ms+=("$elapsed_ms")
@@ -1382,7 +1417,16 @@ prepare_child_completion_marker() {
   esac
   marker_name="${MASTER_INVOCATION_ID}.${child_sequence}.done"
   child_completion_marker="$child_completion_dir/$marker_name"
-  rm -f "$child_completion_marker" >/dev/null 2>&1 || true
+  # The invocation id is unique per dispatch, so a stale marker is rare; only
+  # then pay for the rm process.
+  [ ! -e "$child_completion_marker" ] || rm -f "$child_completion_marker" >/dev/null 2>&1 || true
+}
+
+child_completion_markers_pending=()
+master_remove_completion_markers() {
+  [ "${#child_completion_markers_pending[@]}" -gt 0 ] || return 0
+  rm -f "${child_completion_markers_pending[@]}" >/dev/null 2>&1 || true
+  child_completion_markers_pending=()
 }
 
 trace_ran() { # <id> <rc> <start-epochrealtime>
@@ -1530,7 +1574,8 @@ master_safe_hook_script() {
 master_timeout_record_exists() {
   local session_hash breadcrumb_dir record
   [ -n "$SESSION_ID" ] || return 1
-  session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  master_session_hash_ensure
+  session_hash="$MASTER_SESSION_HASH"
   [ -n "$session_hash" ] || return 1
   breadcrumb_dir="$REPO_ROOT/workspace/.hook-timeout-breadcrumbs/$session_hash"
   [ -d "$breadcrumb_dir" ] || return 1
@@ -1620,7 +1665,8 @@ wait_for_timeout_reporters() {
   [ -z "${HQ_HOOK_TIMEOUT_SENTRY_TEST_WAIT_FILE:-}" ] \
     || : > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_WAIT_FILE}" 2>/dev/null || true
   [ -n "$SESSION_ID" ] || return 0
-  session_hash="$(master_timeout_sha256 "$SESSION_ID")"
+  master_session_hash_ensure
+  session_hash="$MASTER_SESSION_HASH"
   [ -n "$session_hash" ] || return 0
   breadcrumb_dir="$REPO_ROOT/workspace/.hook-timeout-breadcrumbs/$session_hash"
   [ -d "$breadcrumb_dir" ] || return 0
@@ -1924,7 +1970,8 @@ registry_rows() {
   local key_safe="${MATCH_KEY//[^A-Za-z0-9_.-]/_}"
   local cache="$REPO_ROOT/workspace/orchestrator/hook-state/registry-rows/${EVENT}.${key_safe:-none}.rows"
   if [ -f "$cache" ] && [ "$cache" -nt "$REGISTRY" ] && [ "$cache" -nt "$SCRIPT_DIR/master-hook.sh" ]; then
-    cat "$cache"
+    # Builtin read: no cat process on the hot path.
+    printf '%s\n' "$(<"$cache")"
     return 0
   fi
   local rows
@@ -1969,6 +2016,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
         case "$HQAD_PREFILTER_REASON" in
           policy-vocab) [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (policy-vocab)\n' "$rid" >&2 ;;
           prefilter) [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (prefilter)\n' "$rid" >&2 ;;
+          env|file) [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (%s)\n' "$rid" "$HQAD_PREFILTER_REASON" >&2 ;;
         esac
         continue
       fi
@@ -2088,7 +2136,7 @@ hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 # (US-402 / agent-session blockedBy).
 
 for hook in ${hooks[@]+"${hooks[@]}"}; do
-  base="$(basename "$hook")"
+  base="${hook##*/}"
   matcher="$(parse_matcher "$base" "$hook")"
 
   if [ "$MONITOR_EXPIRY_NOTIFICATION" -eq 1 ]; then
@@ -2124,7 +2172,7 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   master_now_ms >/dev/null
   child_ended_ms="$MASTER_NOW_MS"
   record_child_execution "$hook" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$master_child_timeout"
-  [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$(basename "$hook")" "$rc" "$trace_start"
+  [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$base" "$rc" "$trace_start"
   master_debug_phase_start parse
   collect_output "$rc" "$out" "$hook"
   master_debug_phase_finish parse
@@ -2443,6 +2491,7 @@ if [ "$MASTER_OUTPUT_ABORTED" -eq 1 ]; then
   master_debug_phase_write_state "$(master_output_abandon_phase "${MASTER_OUTPUT_ABORT_PHASE:-output_stdout}")" "$output_write_ended_ms"
 fi
 emit_pending_late_finish_events
+master_remove_completion_markers
 
 [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "master-hook:$EVENT total" "$exit_code" "${MASTER_TRACE_START:-}"
 # Let a deduped twin of this event follow this verdict (see dedupe above).
