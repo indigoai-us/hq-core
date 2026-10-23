@@ -22,12 +22,13 @@ if none match, the first group whose keywords match a word in its description; o
 | Command | Scope | Description |
 | --- | --- | --- |
 | `/checkpoint` | core | Save a lightweight session checkpoint. |
-| `/conduct` | core | Orchestrator mode: route multi-step work to in-session background subagents (default) or hq worker lanes. Triggers: /conduct, run everything in the background. |
+| `/conduct` | core | Orchestrator mode: coordinate only; small tasks go to subagents, worker areas to standing hq lanes. Triggers: /conduct, run everything in the background. |
 | `/conduct-join` | core | Join this already-running session to a /conduct session as one of its children, so the conductor can send it instructions and receive its reports. Use when the user says "/conduct-join <link>", "join the conductor", "report to the conduct session", or pastes a link id that starts with "cl-". Also handles "leave" to detach. |
 | `/core:work-mesh` | package | Work Mesh Live — automatic presence via hq mesh daemon; context reconcile/organize; manual session task-status, blocked, and note only. |
 | `/daily-brief` | core | Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus meeting signals, fleet and connected integrations when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule. |
 | `/handoff` | core | Preserve session state for a follow-up agent with handoff files and commits. |
 | `/handoff-all` | core | Tell every open Claude Code desktop session to run /handoff, then collect each session's /resumework command. Triggers: \"handoff all sessions\", \"wrap up every session\". |
+| `/handoff-and-archive` | core | Run /handoff, then archive this Claude Code desktop session. Shortcut for /handoff --archive. Triggers: \"handoff and archive\", \"wrap up and close this session\". |
 | `/hq-bug` | core | Submit HQ bug reports or feature requests with session context. |
 | `/hq-heal` | core | Triage and repair HQ session errors such as hook crashes, sync conflicts, or MCP failures. |
 | `/hq-whoami` | core | Show current HQ Cognito identity and session expiry. |
@@ -153,12 +154,14 @@ if none match, the first group whose keywords match a word in its description; o
 | `/cleanup` | core | Audit and clean HQ structures, indexes, and stale content. |
 | `/convert-codex` | core | Add Codex support to older Claude-first HQ roots without breaking Claude setup. |
 | `/create-skill` | core | Create a shared company skill in HQ with a durable identity and ACL governance. Not for personal or local-only skills. |
+| `/decision-desk` | core | The owner's decision desk for one /super-conductor link. It opens one picker per queued decision, writes the answer back to the link's decision queue, and does nothing else. Use when the user says "/decision-desk <link>", "open the decision desk", or "ask me the conductor's decisions here". |
 | `/decision-queue` | core | Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor. |
 | `/domain-modeling` | core | Sharpen a project's domain terms and maintain GLOSSARY.md as its glossary. Triggers: \"what should we call this\", \"domain model\". |
 | `/free-disk-space` | core | Reclaim disk from stale linked worktrees, build dirs, and allowlisted dev caches. Dry-run unless --apply; never deletes full clones, .env, or unpushed work. |
 | `/garden` | core | Audit HQ content for stale, duplicate, or inaccurate information. |
 | `/harness-audit` | core | Score an HQ setup across hooks, context, gates, persistence, search, security, and cost. |
 | `/hq-checkup` | core | Check HQ health and fix what is safe: start the app, back up unsaved work, re-enable safety checks. Reports the rest in plain language. |
+| `/hq-cost` | core | Show HQ usage, projected bill and allowance left; preview fixes to cut it. |
 | `/hq-login` | core | Sign into HQ Cognito, preferring status, refresh, then browser login. |
 | `/hq-logout` | core | Sign out of HQ Cognito and clear local tokens. |
 | `/hq-pack-cowork:hq-cowork-cli` | package | Run long-tail HQ CLI commands through guarded host-side Cowork tools. |

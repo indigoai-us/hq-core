@@ -13,6 +13,17 @@
 #       {"company":"","candidates":[...]} and exits 3 when nothing matches.
 #   core/scripts/startwork-context.sh block --company <slug> [--project <name>]
 #       Prints the <startwork-context> block.
+#   core/scripts/startwork-context.sh orient --company <slug> --session-id <id>
+#       [--mode Company|Project|Repo|Task|Resume] [--project <name>]
+#       Trusted bind (company, optional project, mode) for the caller's own
+#       session, then the block, the handoff last-thread line when it belongs
+#       to <slug>, and the company's hard-policy digest. Exit 3: <slug> is not
+#       an exact manifest slug (nothing bound). Exit 4: the bind did not land.
+#
+# The block's Board line reads the local work mesh cache
+# (~/.hq/work-mesh/cache/projects/<cloud_uid>/, HQ_WORK_MESH_CACHE_DIR
+# overrides the parent dir) for the bound company's uid only. orient also
+# reads workspace/threads/handoff.json and the thread it names.
 #
 # Env: HQ_ROOT (default: derived from this script), HQ_STARTWORK_MAX_LIST
 #      (list items shown before "+N more", default 8).
@@ -25,7 +36,7 @@ MANIFEST="$ROOT/companies/manifest.yaml"
 REGISTRY="$ROOT/core/workers/registry.yaml"
 MAX="${HQ_STARTWORK_MAX_LIST:-8}"
 
-usage() { sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,33p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "startwork-context: $*" >&2; exit 2; }
 valid_slug() { [ -n "${1:-}" ] && printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9-]*$'; }
 
@@ -85,6 +96,127 @@ cmd_resolve() {
   return 3
 }
 
+# board_summary CO UID CDIR -> one line of Board counts for the five most
+# recently touched projects, read from the local work mesh cache for this
+# company's uid only. "no board" when a project has no cache file.
+board_summary() {
+  local co="$1" uid="$2" cdir="$3" dir p d mid f dup c out=""
+  case "$uid" in ''|*[!A-Za-z0-9_-]*) echo "none (invalid cloud_uid)"; return 0 ;; esac
+  command -v jq >/dev/null 2>&1 || { echo "jq missing"; return 0; }
+  dir="${HQ_WORK_MESH_CACHE_DIR:-${HOME:-/nonexistent}/.hq/work-mesh/cache/projects}/$uid"
+  [ -d "$cdir/projects" ] || { echo "none"; return 0; }
+  # shellcheck disable=SC2010 # same project order as the Projects line
+  while IFS= read -r p; do
+    d="$(basename "$(dirname "$p")")"
+    mid=""
+    [ -f "$cdir/board.json" ] && mid="$(jq -r --arg path "companies/$co/projects/$d/prd.json" --arg d "$d" \
+      '[.projects[]? | select(.prd_path == $path or .id == $d)] | first | (.mesh_project_id // .id // empty)' "$cdir/board.json" 2>/dev/null | tr -cd 'A-Za-z0-9._-')"
+    # board.json's mesh id and the project name can name two different mesh
+    # projects; show the one updated most recently and say there were two.
+    f="" dup=""
+    for c in "$mid" "$d"; do
+      [ -n "$c" ] && [ -f "$dir/$c.json" ] || continue
+      if [ -z "$f" ]; then f="$dir/$c.json"
+      elif [ "$dir/$c.json" != "$f" ]; then
+        dup=" [2 mesh boards: $(basename "$f" .json), $c; newest shown]"
+        [ "$(jq -r '.updatedAt // ""' "$dir/$c.json" 2>/dev/null)" \> "$(jq -r '.updatedAt // ""' "$f" 2>/dev/null)" ] && f="$dir/$c.json"
+      fi
+    done
+    if [ -z "$f" ]; then
+      out="$out${out:+; }$d: no board"
+      continue
+    fi
+    out="$out${out:+; }$(jq -r --arg d "$d" --arg dup "$dup" '
+      (.stories // []) as $s
+      | ([$s[] | select(.status == "queued")] | sort_by(.priority // 99) | first) as $n
+      | "\($d): \([$s[] | select(.status == "queued")] | length) queued, \([$s[] | select(.status == "in_progress")] | length) in progress, \([$s[] | select(.status == "review")] | length) review, \([$s[] | select(.status == "done")] | length) done"
+        + (if $n then " (next: \($n.id // "?") \(($n.title // "") | gsub("[\r\n\t]+"; " ") | .[0:50]))" else "" end) + $dup' "$f" 2>/dev/null || echo "$d: unreadable board cache")"
+  done < <(ls -t "$cdir"/projects/*/prd.json 2>/dev/null | grep -v '/_archive/' | head -5)
+  echo "${out:-none}"
+}
+
+# last_thread CO -> the handoff.json last thread when it belongs to CO.
+last_thread() {
+  local co="$1" handoff="$ROOT/workspace/threads/handoff.json" tpath hit=""
+  if [ -f "$handoff" ] && command -v jq >/dev/null 2>&1; then
+    tpath="$(jq -r '.thread_path // empty' "$handoff" 2>/dev/null || true)"
+    case "$tpath" in workspace/threads/*.json) case "$tpath" in *..*) tpath="" ;; esac ;; *) tpath="" ;; esac
+    if [ -n "$tpath" ] && [ -f "$ROOT/$tpath" ]; then
+      hit="$(jq -r --arg co "$co" '
+        ([.metadata.company // empty] | flatten | map(tostring)) as $cos
+        | if (($cos | index($co)) != null)
+             or ((.cwd // "") | tostring | contains("/companies/" + $co + "/"))
+             or ((.cwd // "") | tostring | endswith("/companies/" + $co))
+          then "\(.thread_id // "?") — \((.conversation_summary // "") | tostring | gsub("[\r\n\t]+"; " ") | .[0:200])"
+          else empty end' "$ROOT/$tpath" 2>/dev/null || true)"
+    fi
+  fi
+  echo "${hit:-none for $co}"
+}
+
+# orient: the whole company half of /startwork in one call. Binds this
+# session (trusted bind: company, optional project, mode), checks the bind
+# landed, then prints the capability block, the last-thread line and the
+# company's hard-policy digest. Needs the caller's own session id (flag or
+# harness env); it never falls back to workspace/sessions/.current.
+cmd_orient() {
+  local co="" project="" mode="Company" sid=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --company) co="${2:-}"; shift 2 ;;
+      --project) project="${2:-}"; shift 2 ;;
+      --mode) mode="${2:-}"; shift 2 ;;
+      --session-id) sid="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  valid_slug "$co" || die "orient needs --company <slug>"
+  [ -f "$MANIFEST" ] || die "no manifest at $MANIFEST"
+  if ! company_exists "$co" || [ ! -d "$ROOT/companies/$co" ] || [ -L "$ROOT/companies/$co" ]; then
+    echo "startwork-context: '$co' is not an exact company slug; resolve it with: startwork-context.sh resolve --arg $co" >&2
+    return 3
+  fi
+  case "$mode" in Company|Project|Repo|Task|Resume) ;; *) die "orient --mode must be Company, Project, Repo, Task or Resume" ;; esac
+  if [ -n "$project" ]; then valid_slug "$project" || die "invalid --project"; fi
+  if [ -z "$sid" ]; then
+    # shellcheck source=lib/session-id.sh
+    . "$ROOT/core/scripts/lib/session-id.sh" 2>/dev/null && sid="$(session_id_from_env 2>/dev/null || true)"
+  fi
+  case "$sid" in ''|.|..|*[!A-Za-z0-9._-]*) die "orient needs the caller's session id (--session-id <id> or the harness env); workspace/sessions/.current cannot authorize a bind" ;; esac
+
+  # The block reads nothing the bind writes, so render it while the bind runs.
+  # It is printed only after the bind is verified.
+  local digest bound blockf blockpid
+  blockf="$(mktemp "${TMPDIR:-/tmp}/startwork-orient.XXXXXX")" || die "mktemp failed"
+  if [ -n "$project" ]; then
+    cmd_block --company "$co" --project "$project" >"$blockf" 2>/dev/null &
+  else
+    cmd_block --company "$co" >"$blockf" 2>/dev/null &
+  fi
+  blockpid=$!
+  local pin=(--company "$co" --session-id "$sid" --root "$ROOT")
+  [ -n "$project" ] && pin+=(--project "$project")
+  if ! digest="$(HQ_COMPANY_BIND_POLICY_BYTES="${HQ_STARTWORK_POLICY_BYTES:-5120}" \
+    bash "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "${pin[@]}" 2>/dev/null)"; then
+    wait "$blockpid" 2>/dev/null; rm -f "$blockf"
+    echo "startwork-context: bind failed for '$co'" >&2; return 4
+  fi
+  # Read the record directly (a second hq-session process costs ~0.3 s).
+  bound="$(sed -n 's/^company_slug:[[:space:]]*//p' "$ROOT/workspace/sessions/$sid/meta.yaml" 2>/dev/null | tail -1 | tr -d "\"' ")"
+  if [ "$bound" != "$co" ]; then
+    wait "$blockpid" 2>/dev/null; rm -f "$blockf"
+    echo "startwork-context: bind did not land (session company: '${bound:-none}')" >&2; return 4
+  fi
+  bash "$ROOT/core/scripts/hq-session.sh" --session-id "$sid" set mode "$mode" >/dev/null 2>&1 || true
+
+  printf 'Bound: session %s company_slug=%s mode=%s%s (trusted bind; startwork §1.2 and §2.4 done)\n' \
+    "$sid" "$co" "$mode" "$([ -n "$project" ] && echo " project=$project")"
+  printf 'Last thread: %s\n' "$(last_thread "$co")"
+  wait "$blockpid" 2>/dev/null
+  cat "$blockf"; rm -f "$blockf"
+  [ -z "$digest" ] || printf '%s\n' "$digest"
+}
+
 cmd_block() {
   local co="" project=""
   while [ $# -gt 0 ]; do case "$1" in --company) co="${2:-}"; shift 2 ;; --project) project="${2:-}"; shift 2 ;; *) shift ;; esac; done
@@ -128,6 +260,8 @@ cmd_block() {
         done | paste -sd';' - | sed 's/;/; /g')"
   fi
   [ -n "$projects" ] || projects="none"
+  local board="none (company has no cloud_uid)"
+  [ -n "$cloud" ] && board="$(board_summary "$co" "$cloud" "$cdir")"
 
   # Workers: registry rows for this company (company field or path prefix).
   local workers="" nworkers=0
@@ -153,6 +287,7 @@ cmd_block() {
   printf 'Knowledge: %s%s · Sources: %s\n' "$knowledge" "$([ -n "$kfolders" ] && [ "$kfolders" != none ] && echo " [$kfolders]")" "$([ -n "$sfolders" ] && [ "$sfolders" != none ] && echo "companies/$co/sources/ [$sfolders]" || echo "$sources")"
   printf 'Integrations: %s\n' "$integ"
   printf 'Projects (recent, local counts): %s\n' "$projects"
+  printf 'Board (work mesh cache): %s\n' "$board"
   printf 'Workers (%s): %s\n' "$nworkers" "$workers"
   printf 'Skills: %s company skills (/%s:*) · full index: %s\n' "$nskills" "$co" "$index"
   if [ -n "$project" ]; then
@@ -169,6 +304,7 @@ cmd_block() {
 case "${1:-}" in
   resolve) shift; cmd_resolve "$@" ;;
   block) shift; cmd_block "$@" ;;
+  orient) shift; cmd_orient "$@" ;;
   -h|--help|"") usage; exit 0 ;;
   *) die "unknown command: $1" ;;
 esac

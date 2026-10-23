@@ -318,6 +318,49 @@ HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
 jq -e '.status == "verified"' "$M" >/dev/null || fail "big-listing probe must advance to verified"
 unset HQ_STUB_BIG_LISTING
 
+# --- 10. folder references (trailing slash) are probed as prefixes, not files
+#     (feedback_e1bcf891: knowledge[] held two folders; both FAILED with "file
+#     is NOT in the vault" although their files were pushed, blocking the DM).
+write_manifest_folders() { # status
+  cat > "$M" <<JSON
+{
+  "schemaVersion": 1, "delegationId": "dlg-test-widget", "mode": "transfer",
+  "company": "acme", "ownershipTransferredAt":"2026-09-11T00:00:00Z",
+  "to": {"kind": "person", "principal": "alice@acme.test"},
+  "project": {"name": "widget", "prdPath": "companies/acme/projects/widget/prd.json"},
+  "vaultPrefixes": [
+    {"prefix": "projects/widget/", "permission": "write"},
+    {"prefix": "knowledge/insights/", "permission": "read"}
+  ],
+  "knowledge": ["companies/acme/projects/widget/research/", "companies/acme/knowledge/insights/notes.md"],
+  "policies": [],
+  "status": "$1"
+}
+JSON
+}
+write_manifest_folders granted
+: > "$INVOKE_LOG"
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)" \
+  || fail "a populated folder reference must pass the probe: $OUT"
+printf '%s' "$OUT" | grep >/dev/null "pass  projects/widget/research/" \
+  || fail "folder reference must be reported as a pass: $OUT"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "folder-reference probe must advance to verified"
+grep >/dev/null '^files browse projects/widget/research/ ' "$INVOKE_LOG" \
+  || fail "folder reference must be browsed as its own prefix, not as parent+basename: $(cat "$INVOKE_LOG")"
+
+# An empty folder reference is a failure that names the folder (nothing to pull).
+write_manifest_folders granted
+export HQ_STUB_BROWSE_EMPTY="projects/widget/research/"
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "an empty folder reference must fail the probe"
+printf '%s' "$OUT" | grep >/dev/null "FAIL  projects/widget/research/" \
+  || fail "empty folder failure must name the folder: $OUT"
+jq -e '.status == "granted"' "$M" >/dev/null || fail "empty-folder probe must not advance status"
+unset HQ_STUB_BROWSE_EMPTY
+
 # --- 6. probe from 'building' refuses ----------------------------------------
 
 write_manifest building

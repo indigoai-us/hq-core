@@ -20,5 +20,9 @@ core/scripts/compute-checksums.sh
 # Outpost job runner is Linux-only and intentionally uses util-linux flock
 core/scripts/hq-job-run.sh
 
+# run-project state helper: flock(1) only behind `command -v flock`, else a
+# perl flock(2) on the same fd for macOS; the other hits are perl and message text
+core/scripts/run-project-state.sh
+
 # Docs-only sed example text
 .claude/hooks/check-core-yaml-parity.sh

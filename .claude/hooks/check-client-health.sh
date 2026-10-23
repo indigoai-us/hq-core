@@ -696,8 +696,18 @@ if ! ( : > "$STAMP" ) 2>/dev/null || [ ! -f "$STAMP" ]; then
   exit 0
 fi
 
+# Windows Git Bash/MSYS/Cygwin: setsid() drops the hidden console that the
+# desktop host gave this hook, so every native program the detached child runs
+# (node, powershell, curl) opens a visible console window. Only use setsid on
+# real POSIX hosts; on MSYS a plain background child keeps the hidden console.
+hq_setsid_available() {
+  # OSTYPE (set by bash itself) avoids forking uname on the hook hot path.
+  case "${OSTYPE:-}" in msys*|cygwin*) return 1 ;; esac
+  command -v setsid >/dev/null 2>&1
+}
+
 SELF="$HQ_ROOT/.claude/hooks/check-client-health.sh"
-if command -v setsid >/dev/null 2>&1; then
+if hq_setsid_available; then
   setsid bash "$SELF" --remediate "$HQ_ROOT" >/dev/null 2>&1 &
 else
   nohup bash "$SELF" --remediate "$HQ_ROOT" >/dev/null 2>&1 &

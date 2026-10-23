@@ -124,7 +124,7 @@ run_guard() {
 expect_block() {
   local runtime="$1" command_text="$2" label="$3" rc
   rc="$(run_guard "$runtime" "$command_text")"
-  if [ "$rc" = 0 ] && jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and .hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | startswith("Blocked: ") and endswith("Do not chain shorter sleeps to work around this block."))' "$TMP/stdout" >/dev/null; then ok "$label blocks"; else bad "$label blocks (rc=$rc stdout=$(cat "$TMP/stdout"))"; fi
+  if [ "$rc" = 0 ] && jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and .hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | startswith("Blocked: ") and contains("Background Bash waiters die at the 10-minute timeout cap, so for longer waits use the Monitor tool with timeout_ms 1800000 and re-arm it on expiry, or hq monitor start --persistent.") and endswith("Do not chain shorter sleeps to work around this block."))' "$TMP/stdout" >/dev/null; then ok "$label blocks"; else bad "$label blocks (rc=$rc stdout=$(cat "$TMP/stdout"))"; fi
 }
 
 expect_allow() {

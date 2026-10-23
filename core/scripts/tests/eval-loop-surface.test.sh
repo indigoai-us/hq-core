@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hq-core: public
 # US-001: closed surface and per-company eval library.
-# Uses temp company roots only. Does not read a live companies/ directory.
+# Uses temp company roots only. Does not read a real companies/ directory.
 
 set -euo pipefail
 
@@ -45,7 +45,7 @@ def bind(*slugs):
         return
     meta.write_text(f"company_slug: {slugs[0]}\ncompany_slugs: {','.join(slugs)}\n", encoding="utf-8")
 
-def hq_companies(name, lock="indigo"):
+def hq_companies(name, lock="example-co"):
     """Make tmp/name an HQ root bound to ``lock`` and return its companies dir."""
     hq = tmp / name
     hq.mkdir(parents=True, exist_ok=True)
@@ -158,7 +158,7 @@ if (inc_dir / "skills" / "keep.md").read_bytes() != b"KEEP":
 
 # Round-trip of an unchanged tree is byte-identical, including a NUL.
 tree = {
-    "skills/a.md": b"alpha\0beta",
+    "skills/a.md": b"alpha\0omega",
     "policies/b.md": b"policy",
     "worker-prompts/c.md": b"prompt",
     "tool-guidance/d.md": b"tool",
@@ -177,13 +177,13 @@ for key, data in tree.items():
     if empty_patch[key] != data:
         raise SystemExit(f"empty patch changed {key}")
 
-# Two temp company roots. The indigo fixture must not open the other company.
+# Two temp company roots. The example-co fixture must not open the other company.
 companies = hq_companies("hq-main")
-indigo = companies / "indigo" / "eval-library" / "class-001"
+example_co = companies / "example-co" / "eval-library" / "class-001"
 other = companies / "otherco" / "eval-library" / "class-001"
 other.mkdir(parents=True)
-indigo.mkdir(parents=True)
-(companies / "manifest.yaml").write_text("companies:\n  indigo:\n    name: Indigo\n")
+example_co.mkdir(parents=True)
+(companies / "manifest.yaml").write_text("companies:\n  example-co:\n    name: Example Co\n")
 marker = other / "secret.txt"
 marker.write_bytes(b"other-secret")
 other_before = marker.read_bytes()
@@ -236,27 +236,27 @@ os.stat = spy_stat
 os.lstat = spy_lstat
 os.mkdir = spy_mkdir
 try:
-    got = surface.run_indigo_fixture(companies)
+    got = surface.run_example_co_fixture(companies)
     if got != b"cue":
-        raise SystemExit(f"indigo fixture read {got!r}")
+        raise SystemExit(f"example-co fixture read {got!r}")
     # Foreign read and write fail closed and must not open otherco.
     # Do not touch the other company from this block: the spy treats that as a failure.
     try:
-        surface.read_library_bytes(companies, "otherco", "class-001", "secret.txt", "indigo")
+        surface.read_library_bytes(companies, "otherco", "class-001", "secret.txt", "example-co")
     except surface.SurfaceError as exc:
         if "session bind" not in str(exc):
             raise SystemExit(f"unexpected bind error: {exc}")
     else:
         raise SystemExit("foreign company read succeeded")
     try:
-        surface.write_library_bytes(companies, "otherco", "class-001", "secret.txt", b"overwrite", "indigo")
+        surface.write_library_bytes(companies, "otherco", "class-001", "secret.txt", b"overwrite", "example-co")
     except surface.SurfaceError:
         pass
     else:
         raise SystemExit("foreign company write succeeded")
-    stray = companies / "indigo" / "escaped"
+    stray = companies / "example-co" / "escaped"
     try:
-        surface.write_library_bytes(companies, "indigo", "class-001", "../escaped", b"nope", "indigo")
+        surface.write_library_bytes(companies, "example-co", "class-001", "../escaped", b"nope", "example-co")
     except surface.SurfaceError:
         pass
     else:
@@ -271,7 +271,7 @@ finally:
 
 if marker.read_bytes() != other_before:
     raise SystemExit("other company file changed")
-if (companies / "indigo" / "escaped").exists():
+if (companies / "example-co" / "escaped").exists():
     raise SystemExit("library write escaped the class directory")
 
 # Same assertion with the other company unreadable, in case a join-then-open
@@ -279,7 +279,7 @@ if (companies / "indigo" / "escaped").exists():
 os.chmod(other, 0)
 try:
     try:
-        surface.read_library_bytes(companies, "otherco", "class-001", "secret.txt", "indigo")
+        surface.read_library_bytes(companies, "otherco", "class-001", "secret.txt", "example-co")
     except surface.SurfaceError:
         pass
     except PermissionError:
@@ -293,14 +293,14 @@ if marker.read_bytes() != b"other-secret":
     raise SystemExit("other company marker changed after the locked read")
 
 # Own-company read still works and stays under the library root.
-own = surface.read_library_bytes(companies, "indigo", "class-001", "skills/cue.md", "indigo")
+own = surface.read_library_bytes(companies, "example-co", "class-001", "skills/cue.md", "example-co")
 if own != b"cue":
-    raise SystemExit(f"indigo read returned {own!r}")
-cue_path = companies / "indigo" / "eval-library" / "class-001" / "skills" / "cue.md"
+    raise SystemExit(f"example-co read returned {own!r}")
+cue_path = companies / "example-co" / "eval-library" / "class-001" / "skills" / "cue.md"
 if not cue_path.is_file():
     raise SystemExit("library root is not companies/{company}/eval-library/{classId}/")
-resolved_root = surface.library_root(companies, "indigo", "class-001", "indigo")
-if resolved_root != companies / "indigo" / "eval-library" / "class-001":
+resolved_root = surface.library_root(companies, "example-co", "class-001", "example-co")
+if resolved_root != companies / "example-co" / "eval-library" / "class-001":
     raise SystemExit(f"library_root returned {resolved_root}")
 
 # A symlink slot must not receive a write. The target bytes stay put.
@@ -355,23 +355,23 @@ if overlaid.get("skills/a.md") != b"new" or len(overlaid) != 1:
     raise SystemExit(f"overlay did not replace the normalized key: {overlaid!r}")
 
 # '..', empty, absolute, and non-ASCII slugs never join a company directory.
-for bad_company in ("", "..", ".", "../otherco", "/etc", "Indigo", "ïndigo", "indigo/../otherco"):
+for bad_company in ("", "..", ".", "../otherco", "/etc", "Example-co", "ëxample-co", "example-co/../otherco"):
     expect_surface(
         f"company {bad_company!r}",
-        lambda bad_company=bad_company: surface.library_root(companies, bad_company, "class-001", "indigo"),
+        lambda bad_company=bad_company: surface.library_root(companies, bad_company, "class-001", "example-co"),
     )
 for bad_class in ("", "..", ".", "../x", "/tmp", "Class_1"):
     expect_surface(
         f"class {bad_class!r}",
-        lambda bad_class=bad_class: surface.library_root(companies, "indigo", bad_class, "indigo"),
+        lambda bad_class=bad_class: surface.library_root(companies, "example-co", bad_class, "example-co"),
     )
 # Both sides non-ASCII, so the ASCII slug check is what refuses.
-nonascii = companies / "ïndigo" / "eval-library" / "class-001"
+nonascii = companies / "ëxample-co" / "eval-library" / "class-001"
 nonascii.mkdir(parents=True)
 for label, fn in (
-    ("non-ascii library_root", lambda: surface.library_root(companies, "ïndigo", "class-001", "ïndigo")),
-    ("non-ascii read", lambda: surface.read_library_bytes(companies, "ïndigo", "class-001", "skills/a.md", "ïndigo")),
-    ("non-ascii write", lambda: surface.write_library_bytes(companies, "ïndigo", "class-001", "skills/a.md", b"x", "ïndigo")),
+    ("non-ascii library_root", lambda: surface.library_root(companies, "ëxample-co", "class-001", "ëxample-co")),
+    ("non-ascii read", lambda: surface.read_library_bytes(companies, "ëxample-co", "class-001", "skills/a.md", "ëxample-co")),
+    ("non-ascii write", lambda: surface.write_library_bytes(companies, "ëxample-co", "class-001", "skills/a.md", b"x", "ëxample-co")),
 ):
     try:
         fn()
@@ -384,7 +384,7 @@ if any(nonascii.iterdir()):
     raise SystemExit("non-ascii company write created files")
 expect_surface(
     "empty session company",
-    lambda: surface.library_root(companies, "indigo", "class-001", ""),
+    lambda: surface.library_root(companies, "example-co", "class-001", ""),
 )
 
 # Unknown companies are refused even when the session slug matches, and a
@@ -402,7 +402,7 @@ expect_surface(
     "unknown company write",
     lambda: surface.write_library_bytes(companies, "newco", "class-001", "skills/a.md", b"x", "newco"),
 )
-bind("indigo")
+bind("example-co")
 if (companies / "newco").exists():
     raise SystemExit("write created an unknown company tree")
 if (ghost / "a.md").read_bytes() != b"ghost":
@@ -411,13 +411,13 @@ if (ghost / "a.md").read_bytes() != b"ghost":
 # Library paths are the five surface slots, same as a harness tree.
 expect_surface(
     "library path outside surface",
-    lambda: surface.read_library_bytes(companies, "indigo", "class-001", "anything.sh", "indigo"),
+    lambda: surface.read_library_bytes(companies, "example-co", "class-001", "anything.sh", "example-co"),
 )
 expect_surface(
     "library write outside surface",
-    lambda: surface.write_library_bytes(companies, "indigo", "class-001", "secret.txt", b"nope", "indigo"),
+    lambda: surface.write_library_bytes(companies, "example-co", "class-001", "secret.txt", b"nope", "example-co"),
 )
-if (companies / "indigo" / "eval-library" / "class-001" / "secret.txt").exists():
+if (companies / "example-co" / "eval-library" / "class-001" / "secret.txt").exists():
     raise SystemExit("library write created a path outside the surface")
 
 def write_manifest(root, slugs):
@@ -432,16 +432,16 @@ def write_manifest(root, slugs):
 linked_hq = tmp / "hq-linked"
 hq_companies("hq-linked")
 real_companies = tmp / "real-companies"
-(real_companies / "indigo" / "eval-library" / "class-001" / "skills").mkdir(parents=True)
-(real_companies / "indigo" / "eval-library" / "class-001" / "skills" / "secret.md").write_bytes(b"THROUGH-ROOT")
-write_manifest(real_companies, ["indigo"])
+(real_companies / "example-co" / "eval-library" / "class-001" / "skills").mkdir(parents=True)
+(real_companies / "example-co" / "eval-library" / "class-001" / "skills" / "secret.md").write_bytes(b"THROUGH-ROOT")
+write_manifest(real_companies, ["example-co"])
 linked_companies = linked_hq / "companies"
 os.symlink(real_companies, linked_companies, target_is_directory=True)
 expect_surface(
     "symlinked companies root",
-    lambda: surface.read_library_bytes(linked_companies, "indigo", "class-001", "skills/secret.md", "indigo"),
+    lambda: surface.read_library_bytes(linked_companies, "example-co", "class-001", "skills/secret.md", "example-co"),
 )
-if (real_companies / "indigo" / "eval-library" / "class-001" / "skills" / "secret.md").read_bytes() != b"THROUGH-ROOT":
+if (real_companies / "example-co" / "eval-library" / "class-001" / "skills" / "secret.md").read_bytes() != b"THROUGH-ROOT":
     raise SystemExit("symlinked companies root changed the target")
 
 # A symlinked company folder must not reach the other company.
@@ -449,70 +449,70 @@ sym_companies = hq_companies("hq-sym")
 (sym_companies / "otherco" / "eval-library" / "class-001" / "skills").mkdir(parents=True)
 sym_secret = sym_companies / "otherco" / "eval-library" / "class-001" / "skills" / "secret.md"
 sym_secret.write_bytes(b"OTHER")
-os.symlink(sym_companies / "otherco", sym_companies / "indigo", target_is_directory=True)
-write_manifest(sym_companies, ["indigo"])
+os.symlink(sym_companies / "otherco", sym_companies / "example-co", target_is_directory=True)
+write_manifest(sym_companies, ["example-co"])
 expect_surface(
     "symlinked company folder read",
-    lambda: surface.read_library_bytes(sym_companies, "indigo", "class-001", "skills/secret.md", "indigo"),
+    lambda: surface.read_library_bytes(sym_companies, "example-co", "class-001", "skills/secret.md", "example-co"),
 )
 expect_surface(
     "symlinked company folder write",
-    lambda: surface.write_library_bytes(sym_companies, "indigo", "class-001", "skills/secret.md", b"pwn", "indigo"),
+    lambda: surface.write_library_bytes(sym_companies, "example-co", "class-001", "skills/secret.md", b"pwn", "example-co"),
 )
 if sym_secret.read_bytes() != b"OTHER":
     raise SystemExit("company symlink write changed the other company")
 
 # A symlinked eval-library folder, class folder, or file below the class is refused.
 lib_companies = hq_companies("hq-lib")
-(lib_companies / "indigo").mkdir(parents=True)
+(lib_companies / "example-co").mkdir(parents=True)
 outside_lib = tmp / "outside-lib" / "class-001" / "skills"
 outside_lib.mkdir(parents=True)
 (outside_lib / "secret.md").write_bytes(b"LIB")
-os.symlink(tmp / "outside-lib", lib_companies / "indigo" / "eval-library", target_is_directory=True)
-write_manifest(lib_companies, ["indigo"])
+os.symlink(tmp / "outside-lib", lib_companies / "example-co" / "eval-library", target_is_directory=True)
+write_manifest(lib_companies, ["example-co"])
 expect_surface(
     "symlinked eval-library read",
-    lambda: surface.read_library_bytes(lib_companies, "indigo", "class-001", "skills/secret.md", "indigo"),
+    lambda: surface.read_library_bytes(lib_companies, "example-co", "class-001", "skills/secret.md", "example-co"),
 )
 expect_surface(
     "symlinked eval-library write",
-    lambda: surface.write_library_bytes(lib_companies, "indigo", "class-001", "skills/secret.md", b"pwn", "indigo"),
+    lambda: surface.write_library_bytes(lib_companies, "example-co", "class-001", "skills/secret.md", b"pwn", "example-co"),
 )
 if (outside_lib / "secret.md").read_bytes() != b"LIB":
     raise SystemExit("eval-library symlink write changed the target")
 
 class_companies = hq_companies("hq-class")
-(class_companies / "indigo" / "eval-library").mkdir(parents=True)
+(class_companies / "example-co" / "eval-library").mkdir(parents=True)
 outside_class = tmp / "outside-class" / "skills"
 outside_class.mkdir(parents=True)
 (outside_class / "secret.md").write_bytes(b"CLASS")
-os.symlink(tmp / "outside-class", class_companies / "indigo" / "eval-library" / "class-001", target_is_directory=True)
-write_manifest(class_companies, ["indigo"])
+os.symlink(tmp / "outside-class", class_companies / "example-co" / "eval-library" / "class-001", target_is_directory=True)
+write_manifest(class_companies, ["example-co"])
 expect_surface(
     "symlinked class folder read",
-    lambda: surface.read_library_bytes(class_companies, "indigo", "class-001", "skills/secret.md", "indigo"),
+    lambda: surface.read_library_bytes(class_companies, "example-co", "class-001", "skills/secret.md", "example-co"),
 )
 expect_surface(
     "symlinked class folder write",
-    lambda: surface.write_library_bytes(class_companies, "indigo", "class-001", "skills/secret.md", b"pwn", "indigo"),
+    lambda: surface.write_library_bytes(class_companies, "example-co", "class-001", "skills/secret.md", b"pwn", "example-co"),
 )
 if (outside_class / "secret.md").read_bytes() != b"CLASS":
     raise SystemExit("class symlink write changed the target")
 
 file_companies = hq_companies("hq-file")
-file_skills = file_companies / "indigo" / "eval-library" / "class-001" / "skills"
+file_skills = file_companies / "example-co" / "eval-library" / "class-001" / "skills"
 file_skills.mkdir(parents=True)
 file_target = tmp / "file-target.md"
 file_target.write_bytes(b"FILE")
 os.symlink(file_target, file_skills / "secret.md")
-write_manifest(file_companies, ["indigo"])
+write_manifest(file_companies, ["example-co"])
 expect_surface(
     "symlinked library file read",
-    lambda: surface.read_library_bytes(file_companies, "indigo", "class-001", "skills/secret.md", "indigo"),
+    lambda: surface.read_library_bytes(file_companies, "example-co", "class-001", "skills/secret.md", "example-co"),
 )
 expect_surface(
     "symlinked library file write",
-    lambda: surface.write_library_bytes(file_companies, "indigo", "class-001", "skills/secret.md", b"pwn", "indigo"),
+    lambda: surface.write_library_bytes(file_companies, "example-co", "class-001", "skills/secret.md", b"pwn", "example-co"),
 )
 if file_target.read_bytes() != b"FILE":
     raise SystemExit("library file symlink write changed the target")
@@ -520,22 +520,22 @@ if file_target.read_bytes() != b"FILE":
 # A known company with no directory is not created on write.
 listed = hq_companies("hq-listed")
 listed.mkdir()
-write_manifest(listed, ["indigo"])
+write_manifest(listed, ["example-co"])
 expect_surface(
     "missing company directory",
-    lambda: surface.write_library_bytes(listed, "indigo", "class-001", "skills/a.md", b"x", "indigo"),
+    lambda: surface.write_library_bytes(listed, "example-co", "class-001", "skills/a.md", b"x", "example-co"),
 )
-if (listed / "indigo").exists():
+if (listed / "example-co").exists():
     raise SystemExit("write created a company directory")
 
 # Company scope matches the ledger: the companies root must be the HQ root's
 # own companies directory, and the company must be in the session lock.
 scope = hq_companies("hq-scope")
-for slug in ("indigo", "otherco"):
+for slug in ("example-co", "otherco"):
     (scope / slug / "eval-library" / "class-001" / "skills").mkdir(parents=True)
     (scope / slug / "eval-library" / "class-001" / "skills" / "a.md").write_bytes(slug.encode())
-write_manifest(scope, ["indigo", "otherco"])
-if surface.read_library_bytes(scope, "indigo", "class-001", "skills/a.md", "indigo") != b"indigo":
+write_manifest(scope, ["example-co", "otherco"])
+if surface.read_library_bytes(scope, "example-co", "class-001", "skills/a.md", "example-co") != b"example-co":
     raise SystemExit("bound company read failed")
 
 def expect_scope(label, fn, reason):
@@ -572,24 +572,24 @@ bind("otherco")
 if surface.read_library_bytes(scope, "otherco", "class-001", "skills/a.md", "otherco") != b"otherco":
     raise SystemExit("read under the other company's own lock failed")
 expect_scope(
-    "indigo after the lock moves to otherco",
-    lambda: surface.read_library_bytes(scope, "indigo", "class-001", "skills/a.md", "indigo"),
+    "example-co after the lock moves to otherco",
+    lambda: surface.read_library_bytes(scope, "example-co", "class-001", "skills/a.md", "example-co"),
     "session bind",
 )
 bind()
 expect_scope(
     "no session lock",
-    lambda: surface.read_library_bytes(scope, "indigo", "class-001", "skills/a.md", "indigo"),
+    lambda: surface.read_library_bytes(scope, "example-co", "class-001", "skills/a.md", "example-co"),
     "no company lock",
 )
 expect_scope(
     "no session lock write",
-    lambda: surface.write_library_bytes(scope, "indigo", "class-001", "skills/new.md", b"x", "indigo"),
+    lambda: surface.write_library_bytes(scope, "example-co", "class-001", "skills/new.md", b"x", "example-co"),
     "no company lock",
 )
-if (scope / "indigo" / "eval-library" / "class-001" / "skills" / "new.md").exists():
+if (scope / "example-co" / "eval-library" / "class-001" / "skills" / "new.md").exists():
     raise SystemExit("write without a session lock created a file")
-bind("indigo")
+bind("example-co")
 
 # A second companies tree with its own manifest is refused, inside or outside
 # the HQ root.
@@ -597,40 +597,40 @@ for stray_label, stray in (
     ("companies root outside HQ_ROOT", tmp / "stray" / "companies"),
     ("nested companies root inside HQ_ROOT", tmp / "hq-scope" / "nested" / "companies"),
 ):
-    (stray / "indigo" / "eval-library" / "class-001" / "skills").mkdir(parents=True)
-    (stray / "indigo" / "eval-library" / "class-001" / "skills" / "a.md").write_bytes(b"STRAY")
-    write_manifest(stray, ["indigo"])
+    (stray / "example-co" / "eval-library" / "class-001" / "skills").mkdir(parents=True)
+    (stray / "example-co" / "eval-library" / "class-001" / "skills" / "a.md").write_bytes(b"STRAY")
+    write_manifest(stray, ["example-co"])
     expect_scope(
         f"{stray_label} read",
-        lambda stray=stray: surface.read_library_bytes(stray, "indigo", "class-001", "skills/a.md", "indigo"),
+        lambda stray=stray: surface.read_library_bytes(stray, "example-co", "class-001", "skills/a.md", "example-co"),
         "HQ root companies",
     )
     expect_scope(
         f"{stray_label} write",
-        lambda stray=stray: surface.write_library_bytes(stray, "indigo", "class-001", "skills/b.md", b"x", "indigo"),
+        lambda stray=stray: surface.write_library_bytes(stray, "example-co", "class-001", "skills/b.md", b"x", "example-co"),
         "HQ root companies",
     )
     expect_scope(
         f"{stray_label} root",
-        lambda stray=stray: surface.library_root(stray, "indigo", "class-001", "indigo"),
+        lambda stray=stray: surface.library_root(stray, "example-co", "class-001", "example-co"),
         "HQ root companies",
     )
-    if (stray / "indigo" / "eval-library" / "class-001" / "skills" / "b.md").exists():
+    if (stray / "example-co" / "eval-library" / "class-001" / "skills" / "b.md").exists():
         raise SystemExit(f"{stray_label}: write created a file")
 
 # A library file hardlinked to another company's file is refused on write
 # and on read. The other company's bytes do not change.
 other_file = scope / "otherco" / "eval-library" / "class-001" / "skills" / "a.md"
-hard = scope / "indigo" / "eval-library" / "class-001" / "skills" / "h.md"
+hard = scope / "example-co" / "eval-library" / "class-001" / "skills" / "h.md"
 os.link(other_file, hard)
 expect_scope(
     "hardlinked library write",
-    lambda: surface.write_library_bytes(scope, "indigo", "class-001", "skills/h.md", b"PWNED", "indigo"),
+    lambda: surface.write_library_bytes(scope, "example-co", "class-001", "skills/h.md", b"PWNED", "example-co"),
     "hardlink",
 )
 expect_scope(
     "hardlinked library read",
-    lambda: surface.read_library_bytes(scope, "indigo", "class-001", "skills/h.md", "indigo"),
+    lambda: surface.read_library_bytes(scope, "example-co", "class-001", "skills/h.md", "example-co"),
     "hardlink",
 )
 if other_file.read_bytes() != b"otherco":
@@ -638,8 +638,8 @@ if other_file.read_bytes() != b"otherco":
 os.unlink(hard)
 
 # A normal overwrite replaces the file in place and leaves no temp file.
-lib_skills = scope / "indigo" / "eval-library" / "class-001" / "skills"
-surface.write_library_bytes(scope, "indigo", "class-001", "skills/a.md", b"v2", "indigo")
+lib_skills = scope / "example-co" / "eval-library" / "class-001" / "skills"
+surface.write_library_bytes(scope, "example-co", "class-001", "skills/a.md", b"v2", "example-co")
 if (lib_skills / "a.md").read_bytes() != b"v2":
     raise SystemExit("overwrite did not take the new bytes")
 if sorted(p.name for p in lib_skills.iterdir()) != ["a.md"]:

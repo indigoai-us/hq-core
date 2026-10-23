@@ -28,6 +28,52 @@ json_block() {
   jq -nc --arg reason "$1" '{decision:"block",reason:$reason}'
 }
 
+# Pass stamp for the second PreToolUse Bash run. master-hook runs this gate
+# from the registry, then inject-policy-on-trigger.sh runs it again after it
+# persists the command's own policy matches. When the action is not outbound
+# and no gate-fact policy is matched, the decision depends only on the match
+# TSV and the state JSON. The stamp holds the tool_use_id, the exact payload,
+# and a byte copy of both files as this run read them when it passed. The
+# selector skips its re-run only when the same payload finds both files
+# byte-identical, so the re-run would read the same inputs and reach the same
+# pass. Any new match rewrites the TSV and forces the re-run. Everything here
+# is a bash builtin: the point is to save processes, not add them. Keep
+# pretool_pass_key and pretool_pass_snapshot identical to the copies in
+# inject-policy-on-trigger.sh.
+PRETOOL_PASS_STAMP="$STATE_DIR/${SID}.pretool-pass"
+pretool_pass_key() { # <payload> -> REPLY ("" without a tool_use_id)
+  local payload="$1" id=""
+  [[ "$payload" =~ \"tool_use_id\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9_-]+)\" ]] && id="${BASH_REMATCH[1]}"
+  REPLY=""
+  [ -n "$id" ] || return 0
+  payload="${payload%"${payload##*[!$'\n']}"}"
+  REPLY="id:${id}"$'\n'"payload:${#payload}"$'\n'"${payload}"$'\n'
+}
+pretool_pass_snapshot() { # <policies-tsv> <state-json> -> REPLY
+  local file content out=""
+  for file in "$1" "$2"; do
+    if [ -f "$file" ]; then
+      content=""
+      IFS= read -r -d '' content < "$file" || true
+      out="${out}present:${#content}"$'\n'"${content}"$'\n'
+    else
+      out="${out}missing"$'\n'
+    fi
+  done
+  REPLY="$out"
+}
+record_pretool_pass() {
+  local key
+  pretool_pass_key "$INPUT"; key="$REPLY"
+  if [ -z "$key" ]; then
+    rm -f "$PRETOOL_PASS_STAMP" 2>/dev/null
+    return 0
+  fi
+  pretool_pass_snapshot "$POLICIES" "$STATE"
+  printf '%s%s' "$key" "$REPLY" > "$PRETOOL_PASS_STAMP" 2>/dev/null || true
+  return 0
+}
+
 atomic_update() {
   local filter="$1" tmp lock attempts rc owner age now moved owner_alive created
   shift
@@ -509,9 +555,11 @@ case "$EVENT" in
     TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
     CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     OUTBOUND=0
+    GATE_FACTS=0
     if tool_is_outbound "$TOOL"; then OUTBOUND=1; fi
     if command_is_outbound "$CMD"; then OUTBOUND=1; fi
     if [ -s "$POLICIES" ] && awk -F '\t' '$4 == "gate" { found=1 } END { exit !found }' "$POLICIES"; then
+      GATE_FACTS=1
       . "$ROOT/core/scripts/hook-lib.sh" || {
         json_block "POLICY ENFORCEMENT BLOCK: the gate fact checker is unavailable; retry after repairing the installation."
         exit 2
@@ -522,7 +570,10 @@ case "$EVENT" in
       export HQ_SESSION_ID
       if ! enforce_gate_policies "$TOOL" "$CMD"; then exit 2; fi
     fi
-    [ "$OUTBOUND" -eq 1 ] || exit 0
+    if [ "$OUTBOUND" -eq 0 ]; then
+      [ "$GATE_FACTS" -eq 1 ] || [ "$TOOL" != Bash ] || record_pretool_pass
+      exit 0
+    fi
 
     MISSING_SKILLS="$(jq -r '[.requiredSkills[]? as $x | select((.receipts.skills // []) | index($x) | not) | $x] | join(", ")' "$STATE")"
     MISSING_BRIEFS="$(jq -r '[.briefs[]? as $x | select((.receipts.briefs // []) | index($x) | not) | $x] | join(", ")' "$STATE")"

@@ -26,4 +26,4 @@ If any check fails, the claim is false — fix the wiring or delete the claim. M
 
 ## Rationale
 
-2026-05-18: `hq-root-never-push-remote.md` v2 stated hard enforcement via `.claude/hooks/block-hq-push.sh` registered in `.claude/settings.local.json`. Neither the hook nor that settings file ever existed. Consequently a bare `git push` from the HQ root (cwd had drifted during a liverecover-gtm-hq session) was caught **only** by the `DISABLED` push-URL git-config backstop — luck, not the claimed hook. An unverified enforcement claim is strictly worse than an honest "advisory only": it suppresses the instinct to add real enforcement.
+2026-05-18: `hq-root-never-push-remote.md` v2 stated hard enforcement via `.claude/hooks/block-hq-push.sh` registered in `.claude/settings.local.json`. Neither the hook nor that settings file ever existed. Consequently a bare `git push` from the HQ root (cwd had drifted during a a client gtm-hq session) was caught **only** by the `DISABLED` push-URL git-config backstop — luck, not the claimed hook. An unverified enforcement claim is strictly worse than an honest "advisory only": it suppresses the instinct to add real enforcement.

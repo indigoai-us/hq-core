@@ -34,7 +34,7 @@ Optional:
 3. **Run Codex Exec for Improvements**
    - Build prompt with file list and goals:
      ```bash
-     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-6-astra" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && HQ_WELCOME_BRIEF_HOOK=0 codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-6-astra" --reasoning high --fast --cd {cwd} \
        "Improve these files: {file_list}. Goals: {goals}. Make targeted changes only — do not refactor unrelated code. Show what you changed." 2>&1
      ```
    - Codex runs in sandbox with workspace-write access

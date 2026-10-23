@@ -32,7 +32,7 @@ The adapter handles:
 | `PostToolUse` | Checkpoint, registry capture, autocommit, journal due; **carries hook `additionalContext` to the model** |
 | `Stop` | **Blocking** checkpoint gate and conduct inbox backstop; plus observe patterns, cleanup, estimates |
 | `SubagentStop` | **Blocking**, same translation as `Stop`; no HQ hook is registered on it today |
-| `PreCompact` | Thrashing detector, precompact checkpoint + journal |
+| `PreCompact` | Thrashing detector, precompact checkpoint + journal. After `/checkpoint`, Grok `/compact` takes no hint (1.0.44 dropped that argument). |
 
 Two Grok events are genuinely passive, and only two. `SessionStart` ignores hook
 stdout outright. `UserPromptSubmit` can reject a prompt but nothing it writes

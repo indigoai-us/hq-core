@@ -60,7 +60,9 @@ never rewrite its other sections.
 
 Verified CLI verbs (`hq dm --help`, `hq channels --help`):
 
-- `hq dm inbox --unread` lists unread direct messages.
+- `hq dm inbox --limit <n> --json` lists direct messages newest first; read
+  past the conductor's `hq_dm_cursor` (never `--unread`: the owner's own
+  reading marks threads read and would hide requests).
 - `hq dm read <person>` shows the two-way thread with one person and marks
   it read. `hq dm thread` is the same verb.
 - `hq dm channel <name>` shows recent messages in a DM channel or group DM.
@@ -72,7 +74,8 @@ Verified CLI verbs (`hq dm --help`, `hq channels --help`):
 
 Bounded read, in this order:
 
-1. `hq dm inbox --unread --limit 30`.
+1. `hq dm inbox --limit 30 --json`, keeping messages newer than
+   `hq_dm_cursor` in the conductor's save file.
 2. `hq channels list`, then keep only: the channel tagged `(company)` whose
    name is the active company, any channel the owner named when starting
    `/super-conductor`, and project channels whose project lives under
@@ -164,11 +167,20 @@ hq monitor start --persistent --json \
   --description "super-conductor heartbeat <link>" \
   -- bash core/scripts/super-conductor-heartbeat.sh \
     --link <link> --interval <watch_interval.away> --channels <csv> \
-    --state workspace/reports/conduct/<link>-state.json
+    --state workspace/reports/conduct/<link>-state.json \
+    --message-watch workspace/reports/conduct/<link>-message-watch.json \
+    --asks workspace/reports/conduct/<link>-asks.json \
+    --conductor <this session's local_ id> --exclude <this session's transcript id> \
+    --company "$(bash core/scripts/hq-session.sh get company_slugs)"
 ```
 
+Keep `--message-watch`, `--asks` and `--company` exactly as the conductor
+started them (super-conductor Step 2b): without them the message wake and the
+open-ask wake stop for the night, and a child's question waits until morning.
 `watch_interval.away` comes from the conductor's save file (default 1500;
-clamped to 30-3600). Update `heartbeat` in the save file. On `/overnight
+clamped to 30-3600). Write the new id with
+`node core/scripts/super-conductor-state.mjs set <save file> heartbeat.monitor_id <id from the --json output>`
+in the same step. On `/overnight
 off`, restart the heartbeat at `watch_interval.present` the same way.
 
 Only when no heartbeat can be started, fall back to:

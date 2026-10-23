@@ -87,6 +87,7 @@ If a skill is skipped as invalid YAML or a hook reports a launch failure, use th
 | `/hq-logout` | Clear the local HQ session |
 | `/hq-whoami` | Show current HQ identity and token expiry |
 | `/hq-sync` | Run a full HQ sync across cloud-backed companies |
+| `/hq-cost` | Show this month's usage, projected bill and allowance left, and preview fixes to stay under the allowance |
 | `/resolve-conflicts` | Walk through HQ Sync conflicts interactively |
 
 ### HQ CLI (most used)
@@ -107,6 +108,7 @@ Run `hq <command> --help` for options. Commonly used:
 | `hq bot` | Local bots on this computer |
 | `hq integrations` | Connected company apps |
 | `hq billing status --company <slug>` | Plan and subscription status |
+| `hq billing usage --company <slug>` | This month's usage, projected bill and biggest drivers (read-only) |
 | `hq db status\|sql\|migrate --company {co}` | Local vault SQLite database. Guide: [vault-databases.md](../../knowledge/public/hq-core/vault-databases.md) |
 | `hq db usage\|sql\|dump\|destroy --company {co} --app {app}` | Database of a deployed app (`database: true`, Team plan). Guide: [app-databases.md](../../knowledge/public/hq-core/app-databases.md) |
 

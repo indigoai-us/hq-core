@@ -365,3 +365,135 @@ test('watcher types a repeated code only once', async () => {
   await signin.signinTick(state, deps);
   assert.deepEqual(typed, ['abcDEF123#s']);
 });
+
+// Feedback 34753dc8: a box that was never signed in polled every ~5.6 s for
+// days, kept a two-day-old link, and never surfaced a code Claude refused.
+function pacedBox({hot = () => false, code = () => null, pending = () => false} = {}) {
+  const calls = [];
+  const api = async (_op, body) => {
+    calls.push(body.action);
+    if (body.action === 'login-code') return {code: code(), hot: hot()};
+    if (body.action === 'regenerate-pending') return {pending: pending()};
+    return {ok: true};
+  };
+  let starts = 0;
+  const typed = [];
+  const start = () => {
+    starts += 1;
+    const link = 'https://claude.ai/oauth/authorize?attempt=' + starts;
+    let alive = true;
+    return {alive: () => alive, output: () => 'visit: ' + link + '\r\n', sendCode: c => typed.push(c), stop: () => { alive = false; }};
+  };
+  let clock = 1_700_000_000_000;
+  const deps = {api, isSignedIn: () => false, start, now: () => clock};
+  return {calls, typed, deps, state: {}, starts: () => starts, advance: ms => { clock += ms; }, now: () => clock,
+    urls: () => calls.filter(a => a === 'login-url').length};
+}
+
+test('pacing: polls every 5 s while the link is fresh, every 30 s after 5 idle minutes, back to 5 s when someone is on the card', async () => {
+  let hot = false;
+  const b = pacedBox({hot: () => hot});
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 5000);
+  b.advance(signin.IDLE_AFTER_MS - 1);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 5000);
+  b.advance(1);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 30000);
+  assert(signin.IDLE_POLL_MS >= 30000 && signin.IDLE_POLL_MS <= 60000);
+  hot = true;
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 5000);
+  hot = false;
+  b.advance(signin.IDLE_AFTER_MS);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 30000);
+});
+
+test('pacing: a typed code, a regenerate, or a login still starting keeps the 5 s poll', async () => {
+  let code = null;
+  let pending = false;
+  const b = pacedBox({code: () => code});
+  assert.equal(signin.pollDelayMs({}, b.now()), 5000);
+  await signin.signinTick(b.state, b.deps);
+  b.advance(signin.IDLE_AFTER_MS);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 30000);
+  code = 'abcDEF123#state';
+  await signin.signinTick(b.state, b.deps);
+  assert.deepEqual(b.typed, ['abcDEF123#state']);
+  assert.equal(signin.pollDelayMs(b.state, b.now()), 5000);
+  const c = pacedBox({pending: () => pending});
+  await signin.signinTick(c.state, c.deps);
+  c.advance(signin.IDLE_AFTER_MS);
+  pending = true;
+  await signin.signinTick(c.state, c.deps);
+  pending = false;
+  assert.equal(signin.pollDelayMs(c.state, c.now()), 5000);
+});
+
+test('an expired link is replaced once someone is on the card, and kept while no one is', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(String(line)));
+  let hot = false;
+  const b = pacedBox({hot: () => hot});
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(b.urls(), 1);
+  // Two days with no one on the card: same login, same link, no churn.
+  b.advance(2 * 24 * 3600 * 1000);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(b.starts(), 1);
+  assert.equal(b.urls(), 1);
+  // An admin opens the card: the stale link is replaced with a new one.
+  hot = true;
+  await signin.signinTick(b.state, b.deps);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(b.starts(), 2);
+  assert.equal(b.urls(), 2);
+  assert.equal(b.state.posted, 'https://claude.ai/oauth/authorize?attempt=2');
+  // The fresh link is not replaced again while it is still inside its window.
+  b.advance(signin.LOGIN_URL_TTL_MS - 1);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(b.starts(), 2);
+  assert.deepEqual(lines.map(l => JSON.parse(l)), [{service: 'company-signin', code: 'login_url_expired_restart'}]);
+  assert(!lines.join('\n').includes('claude.ai'));
+});
+
+test('an old server with no hot hint never triggers an auto-restart', async () => {
+  const calls = [];
+  let starts = 0;
+  let t = 0;
+  const deps = {
+    api: async (_op, body) => { calls.push(body.action); return body.action === 'login-code' ? {code: null} : body.action === 'regenerate-pending' ? {pending: false} : {ok: true}; },
+    isSignedIn: () => false,
+    start: () => { starts++; return {alive: () => true, output: () => 'https://claude.ai/oauth/authorize?x=1\r\n', sendCode() {}, stop() {}}; },
+    now: () => (t += signin.LOGIN_URL_TTL_MS),
+  };
+  const state = {};
+  for (let i = 0; i < 4; i++) await signin.signinTick(state, deps);
+  assert.equal(starts, 1);
+  assert.equal(calls.filter(a => a === 'login-url').length, 1);
+});
+
+test('a typed code that neither signs in nor brings a new link restarts the login, so the server records it as rejected', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(String(line)));
+  let code = null;
+  const b = pacedBox({code: () => code});
+  await signin.signinTick(b.state, b.deps);
+  code = 'abcDEF123#state';
+  await signin.signinTick(b.state, b.deps);
+  code = null;
+  b.advance(signin.CODE_RESULT_TIMEOUT_MS - 1);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(b.starts(), 1);
+  b.advance(1);
+  await signin.signinTick(b.state, b.deps);
+  await signin.signinTick(b.state, b.deps);
+  assert.equal(b.starts(), 2);
+  assert.equal(b.urls(), 2);
+  assert.equal(b.state.sentCode, null);
+  assert.deepEqual(lines.map(l => JSON.parse(l)), [{service: 'company-signin', code: 'login_code_timeout'}]);
+  assert(!lines.join('\n').includes('abcDEF'));
+});

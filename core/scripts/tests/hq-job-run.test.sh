@@ -60,11 +60,14 @@ mkdir -p "$BIN"
 export HOME="$HOME_DIR"
 export HQ_ROOT="$HQ"
 export PATH="$BIN:$PATH"
+# The welcome-env cases compare exact values, so the runner's own list is cleared.
+unset HQ_DISABLED_HOOKS HQ_WELCOME_BRIEF_HOOK
 
 # Stub claude/codex that record invocations.
 cat >"$BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "claude-stub: $*" >>"${HQ_STUB_LOG:-/dev/null}"
+echo "welcome-env: hook=${HQ_WELCOME_BRIEF_HOOK:-} disabled=${HQ_DISABLED_HOOKS:-}" >>"${HQ_STUB_LOG:-/dev/null}"
 echo "OK"
 exit 0
 STUB
@@ -73,6 +76,7 @@ chmod +x "$BIN/claude"
 cat >"$BIN/codex" <<'STUB'
 #!/usr/bin/env bash
 echo "codex-stub: $*" >>"${HQ_STUB_LOG:-/dev/null}"
+echo "welcome-env: hook=${HQ_WELCOME_BRIEF_HOOK:-} disabled=${HQ_DISABLED_HOOKS:-}" >>"${HQ_STUB_LOG:-/dev/null}"
 # Verify spike flags present
 printf '%s\n' "$*" | grep -q -- '-s workspace-write' || exit 11
 printf '%s\n' "$*" | grep -q -- 'ask-for-approval' && exit 12
@@ -162,6 +166,28 @@ grep -q '"exit_status":0' "$HOME_DIR/.hq/jobs/meters/runs.jsonl" || fail "meter 
 ls "$HOME_DIR/.hq/jobs/logs/test-daily-digest/"*.log >/dev/null || fail "log file missing"
 pass "authed claude run writes log + meter"
 
+# 2b) A scheduled job is not a session the person sees: the welcome-brief hook
+# is off in the agent's env, and an operator's own disabled list is preserved.
+grep -qx 'welcome-env: hook=0 disabled=welcome-brief-ready' "$HQ_STUB_LOG" \
+  || fail "claude job env does not disable welcome-brief-ready: $(grep welcome-env "$HQ_STUB_LOG")"
+: >"$HQ_STUB_LOG"
+set +e
+HQ_DISABLED_HOOKS=operator-hook bash "$RUN" --hq-root "$HQ" --job-id test-daily-digest
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "authed run with operator disabled list should exit 0, got $rc"
+grep -qx 'welcome-env: hook=0 disabled=operator-hook,welcome-brief-ready' "$HQ_STUB_LOG" \
+  || fail "operator HQ_DISABLED_HOOKS not preserved: $(grep welcome-env "$HQ_STUB_LOG")"
+: >"$HQ_STUB_LOG"
+set +e
+HQ_DISABLED_HOOKS=welcome-brief-ready bash "$RUN" --hq-root "$HQ" --job-id test-daily-digest
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "authed run with hook already disabled should exit 0, got $rc"
+grep -qx 'welcome-env: hook=0 disabled=welcome-brief-ready' "$HQ_STUB_LOG" \
+  || fail "welcome-brief-ready listed twice: $(grep welcome-env "$HQ_STUB_LOG")"
+pass "scheduled jobs run with the welcome-brief hook disabled"
+
 # 3) Codex spike flags (not --ask-for-approval never)
 cat >"$HQ/personal/jobs/codex.yaml" <<'YAML'
 id: test-codex-hygiene
@@ -189,6 +215,8 @@ rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "codex run should exit 0, got $rc"
 grep -q 'codex-stub' "$HQ_STUB_LOG" || fail "codex was not invoked"
+grep -qx 'welcome-env: hook=0 disabled=welcome-brief-ready' "$HQ_STUB_LOG" \
+  || fail "codex job env does not disable welcome-brief-ready: $(grep welcome-env "$HQ_STUB_LOG")"
 pass "codex uses -s workspace-write (spike flags) with HQ_ALLOW_CODEX=1"
 
 # 3b) Without HQ_ALLOW_CODEX a runtime=codex job runs on claude, never codex

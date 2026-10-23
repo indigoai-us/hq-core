@@ -21,6 +21,12 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok — $*"; }
+set_mtime_seconds_ago() {
+  local seconds="$1" path="$2" stamp
+  stamp="$(node -e 'const d = new Date(Date.now() - Number(process.argv[1]) * 1000); const p = n => String(n).padStart(2, "0"); process.stdout.write(`${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}${p(d.getHours())}${p(d.getMinutes())}.${p(d.getSeconds())}`)' "$seconds")"
+  [ -n "$stamp" ] || fail "could not build a touch -t timestamp for $seconds seconds ago"
+  touch -t "$stamp" "$path" || fail "could not set a touch -t timestamp for $seconds seconds ago"
+}
 
 # A throwaway HQ root that carries the real scripts the hooks depend on.
 make_root() {
@@ -255,5 +261,150 @@ stale_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-stale-lock)"
 [ "$stale_n" = "1" ] || fail "dead-owner lock was not reclaimed (counter is $stale_n)"
 [ ! -d "$stale_lock_dir" ] || fail "stale lock directory remains after successful reclaim"
 pass "dead-owner lock was reclaimed and the increment ran under the new lock"
+
+# ---------------------------------------------------------------------------
+echo "[16] fresh PID-less counter locks are not reclaimed"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-pidless-fresh >/dev/null
+fresh_lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-pidless-fresh.lock"
+mkdir -p "$fresh_lock_dir"
+set_mtime_seconds_ago 30 "$fresh_lock_dir"
+HQ_JOURNAL_COUNTER_LOCK_TRIES=1 HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-pidless-fresh >/dev/null 2>&1
+fresh_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-pidless-fresh)"
+[ "$fresh_n" = "0" ] || fail "fresh PID-less lock was reclaimed (counter is $fresh_n)"
+[ -d "$fresh_lock_dir" ] || fail "fresh PID-less lock directory was removed"
+pass "30-second PID-less lock stayed in place and the update was skipped"
+
+# ---------------------------------------------------------------------------
+echo "[17] aged PID-less counter locks from interrupted creators are reclaimed"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-pidless-lock >/dev/null
+pidless_lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-pidless-lock.lock"
+mkdir -p "$pidless_lock_dir"
+set_mtime_seconds_ago 61 "$pidless_lock_dir"
+HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-pidless-lock >/dev/null 2>&1
+pidless_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-pidless-lock)"
+[ "$pidless_n" = "1" ] || fail "aged PID-less lock was not reclaimed (counter is $pidless_n)"
+[ ! -d "$pidless_lock_dir" ] || fail "aged PID-less lock directory remains after successful reclaim"
+pass "aged PID-less lock was reclaimed and increment ran under the new lock"
+
+echo "[18] paused publisher retries after reclaiming a legacy PID-less lock"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-paused-publisher >/dev/null
+paused_lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-paused-publisher.lock"
+pause_bin="$TMP_ROOT/pause-bin"
+mkdir -p "$pause_bin"
+mkfifo "$TMP_ROOT/publish-ready" "$TMP_ROOT/publish-release"
+real_mkdir="$(command -v mkdir)"
+cat > "$pause_bin/mkdir" <<'MKDIR'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$HQ_JOURNAL_TEST_PAUSE_TARGET.publish" ] && mkdir "$HQ_JOURNAL_TEST_PAUSE_ONCE" 2>/dev/null; then
+  : > "$HQ_JOURNAL_TEST_PUBLISH_READY"
+  IFS= read -r _ < "$HQ_JOURNAL_TEST_PUBLISH_RELEASE"
+fi
+exec "$HQ_JOURNAL_TEST_REAL_MKDIR" "$@"
+MKDIR
+chmod +x "$pause_bin/mkdir"
+PATH="$pause_bin:$PATH" HQ_ROOT="$FR" \
+  HQ_JOURNAL_TEST_PAUSE_TARGET="$paused_lock_dir" \
+  HQ_JOURNAL_TEST_PAUSE_ONCE="$TMP_ROOT/publish-paused" \
+  HQ_JOURNAL_TEST_PUBLISH_READY="$TMP_ROOT/publish-ready" \
+  HQ_JOURNAL_TEST_PUBLISH_RELEASE="$TMP_ROOT/publish-release" \
+  HQ_JOURNAL_TEST_REAL_MKDIR="$real_mkdir" "$HELPER" tool-counter increment --session s-paused-publisher >/dev/null 2>&1 &
+paused_publisher_pid=$!
+IFS= read -r _ < "$TMP_ROOT/publish-ready"
+mkdir -p "$paused_lock_dir"
+injected_now=$(($(date -u +%s) + 61))
+HQ_JOURNAL_COUNTER_NOW="$injected_now" HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-paused-publisher >/dev/null 2>&1
+: > "$TMP_ROOT/publish-release"
+wait "$paused_publisher_pid" || fail "paused publisher did not finish"
+paused_total="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-paused-publisher)"
+[ "$paused_total" = "2" ] || fail "paused publisher and reclaimer produced $paused_total increments instead of 2"
+pass "reclaimer took the aged legacy lock; resumed publisher retried and both increments landed"
+
+# ---------------------------------------------------------------------------
+echo "[19] dead publisher claims are reclaimed"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-dead-publish-claim >/dev/null
+dead_publish_claim="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-dead-publish-claim.lock.publish"
+mkdir -p "$dead_publish_claim"
+printf '%s\n' 999999999 > "$dead_publish_claim/pid"
+printf '%s\n' dead-owner > "$dead_publish_claim/owner-token"
+HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-dead-publish-claim >/dev/null 2>&1
+dead_publish_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-dead-publish-claim)"
+[ "$dead_publish_n" = "1" ] || fail "dead publisher claim blocked increment (counter is $dead_publish_n)"
+[ ! -e "$dead_publish_claim" ] || fail "dead publisher claim remains after successful reclaim"
+pass "dead publisher claim was reclaimed and the counter incremented"
+
+# ---------------------------------------------------------------------------
+echo "[20] aged PID-less publisher claims are reclaimed with the injected clock"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-pidless-publish-claim >/dev/null
+pidless_publish_claim="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-pidless-publish-claim.lock.publish"
+mkdir -p "$pidless_publish_claim"
+set_mtime_seconds_ago 61 "$pidless_publish_claim"
+injected_now=$(($(date -u +%s) + 61))
+HQ_JOURNAL_COUNTER_NOW="$injected_now" HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-pidless-publish-claim >/dev/null 2>&1
+pidless_publish_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-pidless-publish-claim)"
+[ "$pidless_publish_n" = "1" ] || fail "aged PID-less publisher claim blocked increment (counter is $pidless_publish_n)"
+[ ! -e "$pidless_publish_claim" ] || fail "aged PID-less publisher claim remains after successful reclaim"
+pass "aged PID-less publisher claim was reclaimed using the injected clock"
+
+# ---------------------------------------------------------------------------
+echo "[21] aged orphan publisher temp directories are cleaned"
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-orphan-publish-temp >/dev/null
+orphan_lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-orphan-publish-temp.lock"
+orphan_temp="${orphan_lock_dir}.tmp.orphan"
+mkdir -p "$orphan_temp"
+printf '%s\n' orphan-token > "$orphan_temp/owner-token"
+set_mtime_seconds_ago 61 "$orphan_temp"
+injected_now=$(($(date -u +%s) + 61))
+HQ_JOURNAL_COUNTER_NOW="$injected_now" HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-orphan-publish-temp >/dev/null 2>&1
+orphan_temp_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-orphan-publish-temp)"
+[ "$orphan_temp_n" = "1" ] || fail "orphan temp cleanup prevented increment (counter is $orphan_temp_n)"
+[ ! -e "$orphan_temp" ] || fail "aged orphan temp directory was not cleaned"
+pass "aged PID-less orphan temp directory was cleaned before publish"
+
+# ---------------------------------------------------------------------------
+echo "[21b] aged orphan temp directories left by the native helper are cleaned"
+# Older hq-cli native builds named publisher temp dirs <lock>.tmp-XXXXXX. The
+# shell reclaimer must still clean those so neither implementation strands
+# the other's orphans.
+HQ_ROOT="$FR" "$HELPER" tool-counter reset --session s-native-orphan-temp >/dev/null
+native_orphan_lock_dir="$(HQ_ROOT="$FR" "$HELPER" dir-path)/.tool-count-s-native-orphan-temp.lock"
+native_orphan_temp="${native_orphan_lock_dir}.tmp-AbC123"
+mkdir -p "$native_orphan_temp"
+printf '%s\n' 999999999 > "$native_orphan_temp/pid"
+printf '%s\n' native-orphan-token > "$native_orphan_temp/owner-token"
+set_mtime_seconds_ago 61 "$native_orphan_temp"
+injected_now=$(($(date -u +%s) + 61))
+HQ_JOURNAL_COUNTER_NOW="$injected_now" HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-native-orphan-temp >/dev/null 2>&1
+native_orphan_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-native-orphan-temp)"
+[ "$native_orphan_n" = "1" ] || fail "native orphan temp cleanup prevented increment (counter is $native_orphan_n)"
+[ ! -e "$native_orphan_temp" ] || fail "aged native-prefix orphan temp directory was not cleaned"
+pass "aged orphan temp directory from the native helper was cleaned before publish"
+
+# ---------------------------------------------------------------------------
+echo "[22] Windows cross-PID lock ownership diagnostics and parity"
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*)
+    winpid="$(cat "/proc/$$/winpid" 2>/dev/null || true)"
+    [ -n "$winpid" ] || fail "Git Bash did not expose this shell's Win32 PID"
+    echo "  tasklist.exe resolution: $(command -v tasklist.exe || echo MISSING)"
+    raw_tasklist="$(MSYS_NO_PATHCONV=1 tasklist.exe /FO CSV /NH /FI "PID eq $winpid" 2>&1)" \
+      || fail "tasklist.exe failed for live Win32 PID $winpid: $raw_tasklist"
+    parsed_tasklist="$(printf '%s\n' "$raw_tasklist" | tr -d '\r"' | cut -d, -f2)"
+    echo "  tasklist raw row: $raw_tasklist"
+    echo "  tasklist parsed PID: $parsed_tasklist"
+    printf '0\n' >"$FR/workspace/threads/journal/$(date +%Y-%m-%d)/.tool-count-s-winpid-busy"
+    winpid_lock_dir="$FR/workspace/threads/journal/$(date +%Y-%m-%d)/.tool-count-s-winpid-busy.lock"
+    mkdir -p "$winpid_lock_dir"
+    printf '%s\n' 999999999 >"$winpid_lock_dir/pid"
+    printf '%s\n' "$winpid" >"$winpid_lock_dir/winpid"
+    HQ_JOURNAL_COUNTER_LOCK_TRIES=1 HQ_ROOT="$FR" "$HELPER" tool-counter increment --session s-winpid-busy >/dev/null 2>&1
+    winpid_n="$(HQ_ROOT="$FR" "$HELPER" tool-counter read --session s-winpid-busy)"
+    [ "$winpid_n" = "0" ] || fail "live Win32 lock owner was treated as dead (counter is $winpid_n)"
+    [ -d "$winpid_lock_dir" ] || fail "lock with a live Win32 owner was reclaimed"
+    pass "live Win32 PID keeps the cross-PID lock busy"
+    ;;
+  *)
+    echo "  skipped: Windows Git Bash only"
+    ;;
+esac
 
 echo "checkpoint/journal over-trigger regressions: ok"

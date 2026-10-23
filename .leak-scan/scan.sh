@@ -8,6 +8,12 @@
 #   policy-rationale  fail if a policies/**/*.md file's ## Rationale section
 #                     references non-public context (heuristic regex list).
 #                     Additional to denylist, NOT a replacement.
+#   slugs             fail if a PR-changed file contains a private tenant slug.
+#                     manifest-snapshot.yaml holds only a salt and
+#                     sha256("<salt>:<slug>") per private slug (hash-slugs.sh);
+#                     every slug-shaped token in a changed file is hashed and
+#                     compared, exact case. No tenant name lives in this repo.
+#                     Restored 2026-10-23 by owner decision (arch-watch D1).
 #   users-path        fail if any tracked policy/script body contains a
 #                     literal /Users/... absolute path. Tripwire: rule
 #                     hq-promote-hq-core-users-path-tripwire.
@@ -163,6 +169,9 @@ case "$mode" in
       [[ ! -f "$f" ]] && continue
       [[ "$f" == "$deny_file" ]] && continue
       [[ "$f" == "CONTRIBUTING.md" ]] && continue
+      # The slug snapshot holds only salted hashes, but skip it anyway so the
+      # denylist scan never depends on the snapshot's format.
+      [[ "$f" == .leak-scan/manifest-snapshot.yaml ]] && continue
 
       for pat in "${patterns[@]}"; do
         while IFS= read -r hit; do
@@ -184,6 +193,45 @@ case "$mode" in
       exit 1
     fi
     echo "denylist-scan: clean"
+    ;;
+
+  slugs)
+    # The snapshot never names a tenant. It holds a salt and
+    # sha256("<salt>:<slug>") for every private slug (see hash-slugs.sh).
+    # The scan hashes every slug-shaped token in each PR-changed file with the
+    # same salt and fails on a match, so neither this repo nor public hq-core
+    # history carries the tenant list, and the cost is one pass over the
+    # changed files whatever the number of tenants. Matching is exact-case
+    # (owner decision 2026-10-23). public_slugs and allowlist.yaml are hashed
+    # too and removed from the match set, so they are never flagged.
+    allow_file=".leak-scan/allowlist.yaml"
+    snap_file=".leak-scan/manifest-snapshot.yaml"
+    if [[ ! -f "$allow_file" ]]; then
+      echo "::error::$allow_file missing" >&2; exit 2
+    fi
+    if [[ ! -f "$snap_file" ]]; then
+      echo "::error::$snap_file missing" >&2; exit 2
+    fi
+    if ! grep -qE '^salt: [0-9a-f]{32,}$' "$snap_file" || ! grep -q '^slug_hashes:' "$snap_file"; then
+      echo "::error::$snap_file is not a version-2 hashed snapshot; regenerate with .leak-scan/hash-slugs.sh" >&2; exit 2
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "::error::python3 is required for the slug scan" >&2; exit 2
+    fi
+
+    files_list="$(mktemp)"
+    trap 'rm -f "$files_list"' EXIT
+    for f in "${files[@]}"; do
+      [[ -z "$f" ]] && continue
+      [[ ! -f "$f" ]] && continue
+      [[ "$f" == .leak-scan/* ]] && continue
+      printf '%s\n' "$f" >> "$files_list"
+    done
+
+    # The matcher lives in .leak-scan/slug-scan.py so .leak-scan/tests can run
+    # it directly. It also catches a slug inside a longer token (cmp_<slug>,
+    # <slug>_prod, <slug>-prod) and refuses to run on an empty hash set.
+    python3 .leak-scan/slug-scan.py --snapshot "$snap_file" --allowlist "$allow_file" --files "$files_list"
     ;;
 
   policy-rationale)

@@ -306,6 +306,9 @@ def reserved(rule, value):
         if o[0] == 127 or value in ("0.0.0.0", "255.255.255.255"):
             return True
         return o[:3] in ([192, 0, 2], [198, 51, 100], [203, 0, 113])
+    if rule == "pii/credit-card":
+        # HQ thread-id timestamps (T-YYYYMMDD-HHMMSS) are not card numbers.
+        return re.fullmatch(r"20\d{2}[01]\d[0-3]\d-[0-2]\d[0-5]\d[0-5]\d", value) is not None
     if rule == "pii/phone":
         return re.sub(r"\D", "", value)[-7:].startswith("55501")
     return False

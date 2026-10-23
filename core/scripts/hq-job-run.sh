@@ -27,6 +27,7 @@
 #   HQ_ROOT, HOME, HQ_JOB_LOCK, HQ_JOB_LOG_DIR, HQ_JOB_METER_DIR
 #   HQ_JOB_TIMEOUT_BIN, HQ_JOB_FLOCK_BIN, HQ_JOB_NOW
 #   HQ_JOB_PROBE_CLAUDE_CRED, HQ_JOB_PROBE_CODEX_AUTH (auth paths; shared with probe)
+#   HQ_JOB_MANAGED_SETTINGS, HQ_JOB_SESSION_BIN (permission preflight / company bind)
 #   HQ_JOB_RUN_SKIP_EXEC=1  — acquire lock + write marker/logs without calling CLI
 #   HQ_JOB_NOTIFY_BIN, HQ_JOB_REMEDIATE_BIN, HQ_JOB_RUN_NO_NOTIFY=1, HQ_JOB_RUN_NO_INGEST=1
 #   HQ_JOB_RUN_CURL, HQ_PRO_API_URL, OUTPOST_USER_ID, OUTPOST_INSTANCE_TOKEN
@@ -774,6 +775,130 @@ if [ ! -d "$RUN_CWD" ]; then
   exit 0
 fi
 
+# --- approval-mode preflight (feedback 249: refuse and notify) ---
+# A scheduled run has nobody to approve tool calls. HQ keeps its interactive
+# posture (project defaultMode, hq-claude-code-default-mode-plan-not-auto) and
+# this runner does not change it. Instead, resolve the permission mode this
+# launch would actually get and refuse to start when it would stop for
+# approval. Only explicit non-prompting modes (bypassPermissions, dontAsk)
+# launch; plan, default, acceptEdits and any unrecognized value are refused
+# (fail closed). Claude honors --permission-mode bypassPermissions
+# unless a settings layer sets permissions.disableBypassPermissionsMode=disable;
+# it then falls back to the highest-precedence permissions.defaultMode.
+managed_settings_path() {
+  if [ -n "${HQ_JOB_MANAGED_SETTINGS:-}" ]; then
+    printf '%s' "$HQ_JOB_MANAGED_SETTINGS"
+  elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    printf '%s' "/Library/Application Support/ClaudeCode/managed-settings.json"
+  else
+    printf '%s' "/etc/claude-code/managed-settings.json"
+  fi
+}
+
+# Settings files, highest precedence first: managed, local, project, user.
+# Assumption: both $RUN_CWD/.claude and $HQ_ROOT/.claude are read, because HQ
+# jobs usually run inside the HQ tree where Claude loads the HQ root settings.
+# When RUN_CWD is a separate repo Claude may not load the HQ root files, so a
+# disableBypassPermissionsMode set only there can cause a conservative refusal.
+claude_settings_layers() {
+  local d
+  managed_settings_path
+  printf '\n'
+  for d in "$RUN_CWD" "$HQ_ROOT"; do
+    printf '%s\n' "$d/.claude/settings.local.json"
+  done
+  for d in "$RUN_CWD" "$HQ_ROOT"; do
+    printf '%s\n' "$d/.claude/settings.json"
+  done
+  printf '%s\n' "$HOME/.claude/settings.json"
+}
+
+# Prints the effective mode for a claude launch that requests $1.
+resolve_launch_permission_mode() {
+  local requested="$1" f bypass_disabled=0 fallback="" v
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    if ! jq -e . "$f" >/dev/null 2>&1; then
+      log "permission preflight: cannot parse settings file $f; treating it as unset"
+      echo "settings_unparseable=$f" >>"$LOG_FILE"
+      continue
+    fi
+    v="$(jq -r '.permissions.disableBypassPermissionsMode // empty' "$f" 2>/dev/null || true)"
+    [ "$v" = "disable" ] && bypass_disabled=1
+    if [ -z "$fallback" ]; then
+      fallback="$(jq -r '.permissions.defaultMode // empty' "$f" 2>/dev/null || true)"
+    fi
+  done < <(claude_settings_layers)
+  if [ "$requested" = "bypassPermissions" ] && [ "$bypass_disabled" = 1 ]; then
+    case "$fallback" in ""|bypassPermissions) fallback="default" ;; esac
+    printf '%s' "$fallback"
+    return 0
+  fi
+  printf '%s' "$requested"
+}
+
+# Shared exit path for a run refused before launch.
+block_before_launch() {
+  local reason="$1" tag="$2" next_act="$3"
+  SKIP_REASON="$reason"
+  log "$SKIP_REASON"
+  {
+    echo "skip_reason=$SKIP_REASON"
+    echo "failure_class=infra"
+  } >>"$LOG_FILE"
+  ENDED_AT="$(iso_now)"
+  ENDED_EPOCH="$(epoch_now)"
+  DUR=$((ENDED_EPOCH - STARTED_EPOCH))
+  [ "$DUR" -ge 0 ] || DUR=0
+  printf 'exit=0\nskip_reason=%s\nfailure_class=infra\nblocked=%s\nstarted_at=%s\nended_at=%s\n' \
+    "$SKIP_REASON" "$tag" "$STARTED_AT" "$ENDED_AT" >"$STATUS_FILE"
+  append_meter_marker "$JOB_ID" "$RUNTIME" "$STARTED_AT" "$ENDED_AT" 0 "$DUR" "$SKIP_REASON"
+  NA_JSON="$(jq -nc --arg a "$next_act" '[$a]')"
+  RUN_ID="run-${JOB_ID}-${RUN_STAMP}-${tag}"
+  ingest_run_status "$JOB_ID" "$ENDED_AT" "$RUN_ID" 1 "infra" "$NA_JSON"
+  call_notify "$JOB_ID" "$JOB_NAME" "blocked" "$SKIP_REASON" "$DUR" "$LOG_FILE" \
+    "infra" "$next_act" "$OWNER" "$NOTIFY_MODE"
+  exit 0
+}
+
+if [ "$RUNTIME" = "claude" ]; then
+  LAUNCH_MODE="$(resolve_launch_permission_mode bypassPermissions)"
+  echo "permission_mode=$LAUNCH_MODE" >>"$LOG_FILE"
+  case "$LAUNCH_MODE" in
+    bypassPermissions) ;;
+    dontAsk)
+      # Launches, but tools that are not pre-approved are denied without a
+      # prompt, so the run can finish having done nothing. Say so in the log.
+      echo "permission_note=dontAsk: tools not pre-approved in settings are denied; an empty result can mean a missing allow rule" >>"$LOG_FILE"
+      ;;
+    *)
+      block_before_launch \
+        "scheduled run not started: it would launch in permission mode '$LAUNCH_MODE', which can stop for approval with nobody to approve (bypassPermissions is disabled by settings)" \
+        "permission_mode" \
+        "run this job interactively, or allow bypassPermissions for scheduled runs on this Outpost (permissions.disableBypassPermissionsMode)"
+      ;;
+  esac
+fi
+
+# --- bind the job's company before the agent starts ---
+# Without a bound company the scope guard fails closed on the first company
+# path. Pre-mint the session id, bind it, and launch the agent under that id.
+SESSION_BIN="${HQ_JOB_SESSION_BIN:-$SCRIPT_DIR/hq-session.sh}"
+JOB_SESSION_ID=""
+if [ -n "$COMPANY" ] && [ "$COMPANY" != "null" ]; then
+  JOB_SESSION_ID="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+  [ -n "$JOB_SESSION_ID" ] || JOB_SESSION_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+  if [ -z "$JOB_SESSION_ID" ] || ! HQ_ROOT="$HQ_ROOT" bash "$SESSION_BIN" --session-id "$JOB_SESSION_ID" \
+      set company_slug "$COMPANY" >>"$LOG_FILE" 2>&1; then
+    block_before_launch \
+      "scheduled run not started: could not bind company '$COMPANY' to the job session" \
+      "company_bind" \
+      "check that requirements.company '$COMPANY' exists under companies/ on this Outpost"
+  fi
+  export HQ_SESSION_ID="$JOB_SESSION_ID"
+  echo "session_id=$JOB_SESSION_ID company=$COMPANY" >>"$LOG_FILE"
+fi
+
 PROMPT_TEXT="$(build_prompt "$JOB_FILE")"
 
 # Build secret name list for hq secrets exec allowlist injection.
@@ -821,7 +946,14 @@ Then stop."
     echo '#!/usr/bin/env bash'
     echo 'set -uo pipefail'
     printf 'cd %q\n' "$RUN_CWD"
-    printf 'claude --remote-control %q --permission-mode bypassPermissions --dangerously-skip-permissions %q\n' "$rc_name" "$remote_prompt"
+    # tmux starts the pane with the server's env, not this shell's.
+    printf 'export HQ_WELCOME_BRIEF_HOOK=0 HQ_DISABLED_HOOKS=%q\n' "${HQ_DISABLED_HOOKS:-welcome-brief-ready}"
+    if [ -n "$JOB_SESSION_ID" ]; then
+      printf 'export HQ_SESSION_ID=%q\n' "$JOB_SESSION_ID"
+      printf 'claude --remote-control %q --session-id %q --permission-mode bypassPermissions --dangerously-skip-permissions %q\n' "$rc_name" "$JOB_SESSION_ID" "$remote_prompt"
+    else
+      printf 'claude --remote-control %q --permission-mode bypassPermissions --dangerously-skip-permissions %q\n' "$rc_name" "$remote_prompt"
+    fi
     echo 'rc=$?'
     printf 'echo EXIT=$rc > %q\n' "$exit_file"
     echo 'sleep 15'
@@ -877,8 +1009,20 @@ Then stop."
   return "$cmd_rc"
 }
 
+# A scheduled job is not a session the person sees. The welcome-brief hook
+# must not use up its once-only announcement here.
+disable_person_hooks() {
+  export HQ_WELCOME_BRIEF_HOOK=0
+  case ",${HQ_DISABLED_HOOKS:-}," in
+    *,welcome-brief-ready,*) ;;
+    ,,) export HQ_DISABLED_HOOKS="welcome-brief-ready" ;;
+    *) export HQ_DISABLED_HOOKS="${HQ_DISABLED_HOOKS},welcome-brief-ready" ;;
+  esac
+}
+
 run_agent() {
   local cmd_rc=0
+  disable_person_hooks
   if [ "${HQ_JOB_RUN_SKIP_EXEC:-}" = "1" ]; then
     echo "(HQ_JOB_RUN_SKIP_EXEC=1 — not invoking runtime CLI)" >>"$LOG_FILE"
     return 0
@@ -902,6 +1046,7 @@ run_agent() {
   case "$RUNTIME" in
     claude)
       agent_cmd=(claude -p "$PROMPT_TEXT" --output-format text --permission-mode bypassPermissions)
+      [ -n "$JOB_SESSION_ID" ] && agent_cmd+=(--session-id "$JOB_SESSION_ID")
       ;;
     codex)
       # Spike-validated flags on codex-cli 0.147 (NOT --ask-for-approval never).

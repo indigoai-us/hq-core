@@ -1,0 +1,21 @@
+# Slug allowlist for hq-core-staging CI slug-scan
+#
+# Slugs are short ASCII identifiers found in file paths, package names, repo
+# references. The slug-scan job scans PR-changed files for any *lowercase
+# slug-shaped token* that is NOT in this allowlist and fails if it finds one
+# that looks like a company name (heuristic: 3-20 chars, lowercase, referenced
+# near "company" / "repos/" / "org" context).
+#
+# Keep this list tight. Adding a slug here implies it is safe to appear in
+# public hq-core content.
+
+version: 1
+
+allowed:
+  - indigoai-us       # GitHub org that owns hq-core + staging
+  - indigo            # parent brand; allowed because hq-core docs reference it
+  - hq-core
+  - hq-core-staging
+  - hq                # monorepo sibling
+  - hq-cloud
+  - hq-hello

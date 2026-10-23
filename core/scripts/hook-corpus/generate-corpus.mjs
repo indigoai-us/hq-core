@@ -61,7 +61,9 @@ export function generate() {
         const env = {};
         const files = {};
         if (pf.env) env[pf.env] = 'synthetic';
-        if (pf.file) files[pf.file] = '{}\n';
+        // {session_id} in a file prefilter expands to the payload's session.
+        const pfFile = pf.file ? pf.file.replaceAll('{session_id}', 'synthetic-corpus') : '';
+        if (pfFile) files[pfFile] = '{}\n';
         if (pf.policy_vocab) {
           files[policy.path] = `---\nwhen: ${policy.when}\non: ${policy.on}\n---\nSynthetic corpus policy.\n`;
           files['workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt'] = '';
@@ -72,7 +74,7 @@ export function generate() {
             else dispatchEvent = 'SyntheticUnregisteredEvent';
           } else if (rule === 'prefilter.re') input = witness(pf.re, false);
           else if (rule === 'prefilter.env') env[pf.env] = '';
-          else if (rule === 'prefilter.file') delete files[pf.file];
+          else if (rule === 'prefilter.file') delete files[pfFile];
           else if (rule === 'prefilter.policy_vocab') input = candidates[0];
         }
         const payload = {session_id: 'synthetic-corpus', cwd: '$FIXTURE', hook_event_name: dispatchEvent,

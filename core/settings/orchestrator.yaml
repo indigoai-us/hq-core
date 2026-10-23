@@ -99,3 +99,14 @@ repo_coordination:
 # Leave the mode mid-session with `/conduct off`.
 conduct:
   default_enabled: true
+  # Which worker runs a task (owner decision 2026-10-22, "Workers stay open").
+  #   mixed    (default) standing worker lanes, kept open with keep-alive, for
+  #            ongoing areas and tasks that match an HQ worker or --workers
+  #            role; background subagents for small bounded tasks; no project
+  #            work inline in the conductor.
+  #   subagent background subagents for everything; lanes only for work that
+  #            outlives the session or a non-Claude engine.
+  #   lane     hq lanes worker lanes for everything.
+  # A lane capacity refusal runs the task as a subagent under every runner.
+  # Per-session override: /conduct --runner mixed|subagent|lane.
+  runner: mixed

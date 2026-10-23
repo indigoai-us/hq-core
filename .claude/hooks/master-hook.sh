@@ -74,6 +74,20 @@ export BASH_ENV=/dev/null
 
 set -uo pipefail
 
+# hq-hook engine bridge (US-021). A registry hook whose id has a Rust port in
+# the hq-cli `hq-hook` binary runs through that binary when the per-hook flag
+# hook-engine-port-<id> is `shadow` or `on`. The engine must satisfy this
+# minimum version and bridge schema; `hq-hook bridge-plan` prints no plan
+# otherwise and master-hook keeps running the bash hook.
+HQ_HOOK_ENGINE_MIN_VERSION="0.2.0"
+HQ_HOOK_BRIDGE_SCHEMA="1"
+# Seconds the one-per-event `hq-hook bridge-plan` call may take before it is
+# killed and treated as an empty plan (a healthy engine answers in under 50 ms).
+HQ_HOOK_ENGINE_PLAN_TIMEOUT="${HQ_HOOK_ENGINE_PLAN_TIMEOUT:-5}"
+# A positive integer with no leading zero: `0`, `00` and `000` would disable
+# the timeout, and `05` is not a value anyone meant.
+case "$HQ_HOOK_ENGINE_PLAN_TIMEOUT" in ''|*[!0-9]*|0*) HQ_HOOK_ENGINE_PLAN_TIMEOUT=5 ;; esac
+
 master_now_ms() {
   local realtime seconds fraction now
   realtime="${EPOCHREALTIME:-}"
@@ -262,11 +276,19 @@ case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in
     if [ -n "${HQ_FLAGS_API_URL:-}" ] \
       && [[ "${HQ_COMPANY_UID:-}" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]]; then
       HQ_ANYWHERE_RUNTIME_CONFIGURED=true
+      # Live, bounded flag read (feedback_a5c390e9, Shepherd 2862). An
+      # unbounded per-event `node` read stalled every tool call when the
+      # reader hung. The read stays live so a remote flag-off applies at once;
+      # a timeout uses the default (on) and a short negative cache. The lib
+      # runs in a subshell so its globals stay out of this shell.
       if [ -f "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" ] \
-        && command -v node >/dev/null 2>&1; then
-        if flag_value="$(node "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs")"; then
-          [ "$flag_value" = "false" ] && HQ_ANYWHERE_RUNTIME_ENABLED=false
-        fi
+        && [ -f "$REPO_ROOT/core/scripts/hqd-hook-flag-cache-lib.sh" ]; then
+        flag_value="$(
+          # shellcheck disable=SC1091 # The path is rooted at the resolved HQ checkout.
+          . "$REPO_ROOT/core/scripts/hqd-hook-flag-cache-lib.sh" 2>/dev/null \
+            && hq_anywhere_flag_live_read "$REPO_ROOT/core/scripts/hq-anywhere-runtime-flag.cjs"
+        )" || flag_value=true
+        [ "$flag_value" = "false" ] && HQ_ANYWHERE_RUNTIME_ENABLED=false
       fi
     fi
     ;;
@@ -398,12 +420,22 @@ stop_master_timeout_watchdog() {
   fi
 }
 
+# Windows Git Bash/MSYS/Cygwin: setsid() drops the hidden console that the
+# desktop host gave this hook, so every native program the detached child runs
+# (node, powershell, curl) opens a visible console window. Only use setsid on
+# real POSIX hosts; on MSYS a plain background child keeps the hidden console.
+hq_setsid_available() {
+  # OSTYPE (set by bash itself) avoids forking uname on the hook hot path.
+  case "${OSTYPE:-}" in msys*|cygwin*) return 1 ;; esac
+  command -v setsid >/dev/null 2>&1
+}
+
 arm_master_timeout_watchdog() {
   local source_kind="$1" watched_path="$2" threshold session=0
   master_timeout_watchdog_enabled || return 0
   for threshold in absolute relative; do
     session=0
-    if command -v setsid >/dev/null 2>&1; then
+    if hq_setsid_available; then
       SECONDS="$SECONDS" setsid bash "$HOOK_TIMEOUT_WATCHDOG" \
         --root "$REPO_ROOT" \
         --source "$source_kind" \
@@ -1322,6 +1354,9 @@ if [ -n "$child_timeout_cmd" ] && [ ! -d "$child_completion_dir" ]; then
   mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
 fi
 child_sequence=0
+# Set by the hq-hook bridge so the active-child breadcrumb names the hook
+# script that is being bridged, not the engine binary that runs it.
+run_child_journal_path=""
 run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker> [args...]
   local t="$1" mode="$2" path="$3" completion_marker="$4"; shift 4
   local runner=()
@@ -1339,7 +1374,7 @@ run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker
   else
     runner=(bash "$path")
   fi
-  journal_active_child_start "$path"
+  journal_active_child_start "${run_child_journal_path:-$path}"
   # Build the command first so there is exactly ONE pipeline, and its status is
   # read from PIPESTATUS[1] on the line immediately after it. A hook that exits
   # before reading stdin kills `printf` with SIGPIPE; `pipefail` (set at the top
@@ -1457,6 +1492,86 @@ collect_output() { # <rc> <stdout> <source-path>
   elif [ "$rc" -ne 0 ] && [ "$exit_code" -eq 0 ]; then
     exit_code=$rc
   fi
+}
+
+# hq-hook engine bridge. The plan is resolved once per event, on the first
+# registry hook that reaches dispatch, and every check before the plan call
+# is a builtin or a file test so a disabled bridge starts no process:
+#   1. kill switch: HQ_HOOK_ENGINE=off (any case) or ~/.hq/hook-engine.off;
+#   2. binary: HQ_HOOK_ENGINE_BIN when executable, else the path on the first
+#      line of ~/.hq/bin/hq-hook/current (pointer file written by hq-cli);
+#   3. pre-gate: some ${XDG_CACHE_HOME:-~/.cache}/hq/flags/snapshot-*.json
+#      must mention a hook-engine-port- flag;
+#   4. `hq-hook bridge-plan` prints "<hook-id><TAB><shadow|on>" lines; a
+#      non-zero exit or empty plan disables the bridge for this event.
+HOOK_ENGINE_BRIDGE_BIN=""
+HOOK_ENGINE_BRIDGE_PLAN=""
+HOOK_ENGINE_BRIDGE_RESOLVED=0
+HOOK_ENGINE_BRIDGE_MODE=""
+master_hook_engine_bridge_plan() {
+  local home="${HOME:-}" bin="" pointer="" snapshot="" line="" found=0 plan="" plan_rc=0 saved_input=""
+  HOOK_ENGINE_BRIDGE_RESOLVED=1
+  case "${HQ_HOOK_ENGINE:-}" in
+    [Oo][Ff][Ff]) return 0 ;;
+  esac
+  [ ! -e "$home/.hq/hook-engine.off" ] || return 0
+  if [ -n "${HQ_HOOK_ENGINE_BIN:-}" ] && [ -x "${HQ_HOOK_ENGINE_BIN}" ]; then
+    bin="$HQ_HOOK_ENGINE_BIN"
+  elif [ -f "$home/.hq/bin/hq-hook/current" ]; then
+    IFS= read -r pointer < "$home/.hq/bin/hq-hook/current" || true
+    pointer="${pointer%$'\r'}"
+    case "$pointer" in
+      /*|[A-Za-z]:[/\\]*) [ -f "$pointer" ] && [ -x "$pointer" ] && bin="$pointer" ;;
+    esac
+  fi
+  [ -n "$bin" ] || return 0
+  # The plan call runs under the same per-child timeout runner as every hook
+  # (coreutils timeout or the perl process-group runner). Without one of those
+  # there is no way to bound a hung engine, so the bridge stays off.
+  [ -n "$child_timeout_cmd" ] || return 0
+  for snapshot in "${XDG_CACHE_HOME:-$home/.cache}"/hq/flags/snapshot-*.json; do
+    [ -f "$snapshot" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *hook-engine-port-*) found=1; break ;;
+      esac
+    done < "$snapshot"
+    [ "$found" -eq 0 ] || break
+  done
+  [ "$found" -eq 1 ] || return 0
+  # Bounded: a slow or hung engine must not stall the event. run_child kills
+  # the plan process (and its group) at HQ_HOOK_ENGINE_PLAN_TIMEOUT seconds;
+  # a timeout or any non-zero exit is an empty plan and every hook stays on
+  # bash. bridge-plan reads no payload, so run_child feeds it an empty stdin
+  # instead of the tool input; INPUT is restored before anything else runs.
+  saved_input="$INPUT"
+  INPUT=""
+  plan_rc=0
+  plan="$(run_child "$HQ_HOOK_ENGINE_PLAN_TIMEOUT" exec "$bin" "" \
+    bridge-plan --min-version "$HQ_HOOK_ENGINE_MIN_VERSION" \
+    --schema "$HQ_HOOK_BRIDGE_SCHEMA" 2>/dev/null)" || plan_rc=$?
+  INPUT="$saved_input"
+  saved_input=""
+  [ "$plan_rc" -eq 0 ] || return 0
+  [ -n "$plan" ] || return 0
+  HOOK_ENGINE_BRIDGE_BIN="$bin"
+  HOOK_ENGINE_BRIDGE_PLAN="$plan"
+}
+
+master_hook_engine_bridge_mode() { # <hook-id> -> HOOK_ENGINE_BRIDGE_MODE (shadow, on, or empty)
+  local id="$1" line="" mode=""
+  HOOK_ENGINE_BRIDGE_MODE=""
+  [ "$HOOK_ENGINE_BRIDGE_RESOLVED" -eq 1 ] || master_hook_engine_bridge_plan
+  [ -n "$HOOK_ENGINE_BRIDGE_PLAN" ] || return 0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ "${line%%$'\t'*}" = "$id" ] || continue
+    mode="${line#*$'\t'}"
+    case "$mode" in
+      shadow|on) HOOK_ENGINE_BRIDGE_MODE="$mode" ;;
+    esac
+    return 0
+  done <<< "$HOOK_ENGINE_BRIDGE_PLAN"
 }
 
 # In the HQ-root Claude project, the project registration is the only route to
@@ -2053,8 +2168,40 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     prepare_child_completion_marker
     master_debug_phase_start external_command
     master_record_dispatch_startup
-    # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-    out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+    master_hook_engine_bridge_mode "$rid"
+    if [ -n "$HOOK_ENGINE_BRIDGE_MODE" ]; then
+      # Same run_child path as the bash hook: per-child timeout, completion
+      # marker, fail-closed handling and output collection apply unchanged.
+      # The engine re-checks the kill switch and, in shadow mode, runs the
+      # bash script itself and returns its result.
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s (%s)\n' "$rid" "$HOOK_ENGINE_BRIDGE_MODE" >&2
+      run_child_journal_path="$REPO_ROOT/$rscript"
+      # shellcheck disable=SC2086 # args are space-separated literals from the registry.
+      out="$(run_child "$rtimeout" exec "$HOOK_ENGINE_BRIDGE_BIN" "$child_completion_marker" \
+        bridge "$rid" --mode "$HOOK_ENGINE_BRIDGE_MODE" --event "$EVENT" --timeout "$rtimeout" \
+        --script "$REPO_ROOT/$rscript" -- $rargs)" || rc=$?
+      run_child_journal_path=""
+      # Only 0 (allow or context) and 2 (block) are verdicts. Anything else
+      # (the engine's fault code 70, a crash, exit 1, missing binary 127,
+      # timeout 124/142, version skew) means the engine gave no verdict, so the
+      # bash hook runs and decides as if the bridge did not exist. A guard's
+      # block is never lost to an engine fault. In shadow mode the engine runs
+      # the native port before the bash script, so a fault happens before bash
+      # started and this fallback is the hook's only run for the event.
+      case "$rc" in
+        0|2) ;;
+        *)
+          [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s exited %s without a verdict; running bash\n' "$rid" "$rc" >&2
+          rc=0
+          prepare_child_completion_marker
+          # shellcheck disable=SC2086 # args are space-separated literals from the registry.
+          out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+          ;;
+      esac
+    else
+      # shellcheck disable=SC2086 # args are space-separated literals from the registry.
+      out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+    fi
     master_debug_phase_finish external_command
     master_now_ms >/dev/null
     child_ended_ms="$MASTER_NOW_MS"

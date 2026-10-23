@@ -100,7 +100,15 @@ atomic_copy "$STAGE/manifest.json" "$DEST/manifest.json"
 atomic_copy "$STAGE/manifest.json" "$MANIFEST"
 # keep may preserve stale canonical content. Read-back must catch that instead
 # of overwriting concurrent changes merely to make the check pass.
-hq sync push "$REL/" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
+# Push only the dossier paths, never the whole project folder: a large project
+# re-walks thousands of unchanged files and exceeds the foreground timeout.
+hq sync push "$REL/delegation/$ID/" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
+while IFS= read -r file; do
+  [ -n "$file" ] && [ -e "$file" ] || continue
+  hq sync push "${file#"$HQ_ROOT/"}" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
+done <<EOF
+$SNAPSHOT_FILES
+EOF
 cp "$STAGE/hashes" "$STAGE/receipts"
 jq -cn --arg key "$REL/delegation/$ID/manifest.json" --arg value "$(file_hash "$DEST/manifest.json")" '{key:$key,value:$value}' >> "$STAGE/receipts"
 while IFS= read -r row; do

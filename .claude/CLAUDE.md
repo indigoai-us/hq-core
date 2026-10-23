@@ -48,7 +48,8 @@ scaffolds, supervises, and syncs work across repos and companies.
   usable app covers it. Rule: `core/policies/hq-prefer-usable-integrations.md`.
 - Bots and agents: `hq bot` for local bots, `/new-agent` for hosted agents,
   `hq agent enroll` for external bots.
-- Billing: `hq billing`.
+- Billing: `hq billing`. Usage, projected bill and fixes to stay under the
+  allowance: `/hq-cost`.
 - Meetings, signals, and company context: `/meeting-notes`, `/signals`,
   `/ontology`.
 - Specialized design, content, security, data, and deploy work: check

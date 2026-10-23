@@ -37,6 +37,94 @@ hqd_hook_flag_cache_store_enabled() {
   store_flag_cache_value true
 }
 
+# hq_flag_reader_run <argv...>
+# Run the flag reader under a hard wall-clock bound so a stuck node start,
+# module import, token load, or network call cannot hold a hook event open.
+# The bound is HQ_FLAG_READER_TIMEOUT_MS (default 5000). On expiry the reader's
+# whole process group is killed and this returns 124; callers then use the
+# documented default. Order: perl (ms-precise, kills the process group),
+# coreutils timeout, gtimeout, then unbounded when none is installed.
+hq_flag_reader_run() {
+  reader_budget_ms=${HQ_FLAG_READER_TIMEOUT_MS:-5000}
+  case "$reader_budget_ms" in ''|*[!0-9]*) reader_budget_ms=5000 ;; esac
+  [ "$reader_budget_ms" -gt 0 ] || reader_budget_ms=5000
+  if command -v perl >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # perl program is single-quoted on purpose
+    perl -e '
+      my $ms = shift @ARGV;
+      my $pid = fork();
+      die "fork\n" unless defined $pid;
+      if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV; exit 127; }
+      local $SIG{ALRM} = sub { kill "KILL", -$pid; kill "KILL", $pid; waitpid($pid, 0); exit 124; };
+      select(undef, undef, undef, 0);
+      eval { require Time::HiRes; Time::HiRes::alarm($ms / 1000); 1 } or alarm(int(($ms + 999) / 1000));
+      waitpid($pid, 0);
+      my $status = $?;
+      exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+    ' "$reader_budget_ms" "$@"
+    return $?
+  fi
+  reader_budget_s=$(( (reader_budget_ms + 999) / 1000 ))
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -s KILL "$reader_budget_s" "$@"; return $?
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -s KILL "$reader_budget_s" "$@"; return $?
+  fi
+  "$@"
+}
+
+# hq_anywhere_flag_live_read <flag-script>
+# Hook routing path (master-hook, hook-gate). Prints true or false.
+# The read is live on every event, so a remote flag-off applies at once (the
+# kill-switch contract in master-hook-double-dispatch.test.sh); it never
+# trusts or renews the shared 60s snapshot, which the hqd shim keeps renewing.
+# The read is bounded (HQ_FLAG_READER_TIMEOUT_MS, default 2000 here). A read
+# that times out writes a short negative-cache stamp; for the next
+# HQ_FLAG_READER_NEGATIVE_TTL seconds (default 30) events skip the reader and
+# use the documented default (on), so a hung reader costs one timeout per
+# window instead of one per event. Run it in a subshell: it sets globals.
+hq_anywhere_flag_live_read() {
+  flag_script="$1"
+  neg_file="${CACHE_FILE}.timeout"
+  neg_ttl=${HQ_FLAG_READER_NEGATIVE_TTL:-30}
+  case "$neg_ttl" in ''|*[!0-9]*) neg_ttl=30 ;; esac
+  now=$(now_seconds)
+  if [ -n "${HOME:-}" ] && [ -f "$neg_file" ]; then
+    neg_at=''
+    IFS= read -r neg_at < "$neg_file" 2>/dev/null || neg_at=''
+    case "$neg_at:$now" in
+      *[!0-9:]*|:*|*:) ;;
+      *)
+        if [ "$now" -ge "$neg_at" ] && [ $((now - neg_at)) -lt "$neg_ttl" ]; then
+          printf 'true\n'
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  if ! command -v node >/dev/null 2>&1 || [ ! -f "$flag_script" ]; then
+    printf 'true\n'
+    return 0
+  fi
+  rc=0
+  value=$(HQ_FLAG_READER_TIMEOUT_MS="${HQ_FLAG_READER_TIMEOUT_MS:-2000}" \
+    hq_flag_reader_run node "$flag_script" 2>/dev/null) || rc=$?
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    if [ -n "${HOME:-}" ]; then
+      (umask 077; mkdir -p "${neg_file%/*}" && printf '%s\n' "$now" > "$neg_file") 2>/dev/null || true
+    fi
+    printf 'true\n'
+    return 0
+  fi
+  [ -f "$neg_file" ] && rm -f "$neg_file" 2>/dev/null
+  case "$rc:$value" in
+    0:false) printf 'false\n' ;;
+    *) printf 'true\n' ;;
+  esac
+  return 0
+}
+
 refresh_cache() {
   [ -n "${HOME:-}" ] || return 1
   command -v node >/dev/null 2>&1 || return 1
@@ -45,7 +133,7 @@ refresh_cache() {
   value=$(HQ_ROOT="${HQD_FLAG_ROOT:-${HQ_ROOT:-}}" \
     HQ_FLAG_KEY="${HQD_FLAG_KEY:-${HQ_FLAG_KEY:-}}" \
     HQ_COMPANY_SLUG="${HQ_COMPANY_SLUG:-}" \
-    node "$flag_script" 2>/dev/null) || return 1
+    hq_flag_reader_run node "$flag_script" 2>/dev/null) || return 1
   store_flag_cache_value "$value"
 }
 

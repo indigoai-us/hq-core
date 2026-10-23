@@ -78,3 +78,7 @@
 - path: "core/scripts/tests/pipeline-conductor.test.sh"
   rules: [pii/phone]
   reason: "PC_NOW is a fixed Unix timestamp used to make routing tests deterministic, not a phone number."
+
+- path: "core/scripts/tests/welcome-brief-ready.test.sh"
+  rules: [pii/credit-card]
+  reason: "Fixture welcome-brief run ids use the brief-YYYYMMDD-HHMMSS form. Those digits match the credit-card pattern and are not a card number."

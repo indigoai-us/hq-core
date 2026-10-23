@@ -22,7 +22,10 @@ for required in \
   'lower price' \
   '--checkin off' \
   'Silence is not success.' \
-  'grep --line-buffered'
+  'grep --line-buffered' \
+  'timeout cap (about 10 minutes)' \
+  '`timeout_ms` at its 30-minute maximum' \
+  're-armed on expiry'
 do
   if grep -Fq -- "$required" "$POLICY"; then PASS=$((PASS + 1)); echo "ok   [policy includes $required]"; else FAIL=$((FAIL + 1)); echo "FAIL [policy includes $required]"; fi
 done

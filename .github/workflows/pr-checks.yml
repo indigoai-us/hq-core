@@ -140,6 +140,8 @@ jobs:
         run: bash core/scripts/tests/anywhere-vm-test.test.sh
       - name: MSYS2 environment guards match UCRT64 and CLANG64
         run: bash core/scripts/tests/msys2-environment-guards.test.sh
+      - name: PR review checkout stays cached, scoped and cleaned up
+        run: bash core/scripts/tests/review-checkout.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist
 
@@ -154,15 +156,21 @@ jobs:
       - name: Run policy-rationale scan
         run: bash .leak-scan/scan.sh policy-rationale
 
-  # Stub: slug-scan is a required check in rulesets 17280851 (hq-core-staging) and
-  # 15744312 (hq-core). Keep the job name until both rulesets drop it.
+  # Restored 2026-10-23 (owner decision, arch-watch D1): the company-name slug
+  # scan is the only automated gate that checks a public-bound diff for a tenant
+  # name. Required check in rulesets 17280851 (hq-core-staging) and 15744312 (hq-core).
   slug-scan:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
     name: slug-scan
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
-      - name: Retired check (no-op)
-        run: echo "retired by owner direction 2026-10-21; remove from ruleset then delete this job"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Slug scan self-test (embedded forms, case, empty hash set)
+        run: bash .leak-scan/tests/slug-scan.test.sh
+      - name: Run private tenant slug scan
+        run: bash .leak-scan/scan.sh slugs
 
   users-path-tripwire:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -312,6 +320,8 @@ jobs:
         run: node core/scripts/validate-agent-runtime-contracts.mjs
       - name: Skill metadata regression test
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
+      - name: check-skill-edit local pre-push wrapper contract
+        run: bash core/scripts/tests/check-skill-edit.test.sh
       - name: Codex pack build regression test
         run: bash core/scripts/tests/build-codex-pack.test.sh
       - name: HQ Anywhere package contract regression test
@@ -320,6 +330,8 @@ jobs:
         run: bash core/scripts/tests/outpost-host-app.test.sh
       - name: HQ Anywhere hook flag cache regression test
         run: bash core/scripts/tests/hqd-hook-flag-cache.test.sh
+      - name: master-hook bounds the hq-anywhere flag read and keeps flag-off live
+        run: bash core/scripts/tests/master-hook-flag-reader-bounded.test.sh
       - name: Claude Code plugin build regression test
         run: bash core/scripts/tests/build-claude-plugin.test.sh
       - name: Agent bootstrap cloud sync guidance regression test
@@ -334,8 +346,10 @@ jobs:
         run: bash core/scripts/tests/discover-shallow-clone-fetch-all.test.sh
       - name: Execute-task Codex model source regression test
         run: bash core/scripts/tests/execute-task-codex-model-source.test.sh
-      - name: Worker Codex model override flag and scope regression test
-        run: node core/scripts/tests/worker-codex-model-overrides.test.cjs
+      - name: Worker Codex model company/personal override regression test
+        run: bash core/scripts/tests/worker-codex-model.test.sh
+      - name: run-project host-native path state.json progress regression test
+        run: bash core/scripts/tests/run-project-agent-path-state.test.sh
       - name: OpenAI YAML generator root regression test
         run: bash core/scripts/tests/generate-openai-yaml-root.test.sh
       - name: Codex skill metadata coverage regression test
@@ -354,6 +368,8 @@ jobs:
         run: |
           shellcheck -S warning \
             core/scripts/hook-lib.sh \
+            core/scripts/tests/hook-detach-msys-console.test.sh \
+            .claude/skills/deploy/scripts/tests/deploy-api-request-msys-upload-path.test.sh \
             core/scripts/lint-shell-portability.sh \
             core/scripts/hq-job-run.sh \
             core/scripts/hq-job-notify.sh \
@@ -361,6 +377,7 @@ jobs:
             core/scripts/handoff-finalize.sh \
             core/scripts/hq-job-probe.sh \
             core/scripts/tests/hq-job-run.test.sh \
+            core/scripts/tests/hq-job-run-approval-mode.test.sh \
             core/scripts/tests/hq-job-probe.test.sh \
             core/scripts/tests/outpost-jobs-reconcile.test.sh \
             core/scripts/tests/personal-job-oncalendar.test.sh \
@@ -381,9 +398,13 @@ jobs:
             core/scripts/tests/handoff-autofile.test.sh \
             core/scripts/handoff-builder-route.sh \
             core/scripts/tests/handoff-builder-route.test.sh \
+            core/scripts/handoff-archive-decision.sh \
+            core/scripts/tests/handoff-archive-decision.test.sh \
             core/scripts/retro-merge-deficiencies.sh \
             core/scripts/tests/retro-merge-deficiencies.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
+            core/scripts/check-skill-edit.sh \
+            core/scripts/tests/check-skill-edit.test.sh \
             core/scripts/skills-listing-budget.sh \
             core/scripts/tests/skills-listing-budget.test.sh \
             core/scripts/skill-inventory.sh \
@@ -391,6 +412,8 @@ jobs:
             core/scripts/generate-openai-yaml.sh \
             core/scripts/tests/discover-shallow-clone-fetch-all.test.sh \
             core/scripts/tests/execute-task-codex-model-source.test.sh \
+            core/scripts/worker-codex-model.sh \
+            core/scripts/tests/worker-codex-model.test.sh \
             core/scripts/tests/generate-openai-yaml-root.test.sh \
             core/scripts/tests/codex-skill-metadata-coverage.test.sh \
             core/scripts/tests/agent-runtime-permissions.test.sh \
@@ -532,6 +555,8 @@ jobs:
         run: bash core/scripts/tests/handoff-autofile.test.sh
       - name: Handoff builder route decides builder vs public from the staging repo
         run: bash core/scripts/tests/handoff-builder-route.test.sh
+      - name: Handoff decides whether to archive its own desktop session
+        run: bash core/scripts/tests/handoff-archive-decision.test.sh
       - name: Retro merges thread deficiencies with its own lever findings
         run: bash core/scripts/tests/retro-merge-deficiencies.test.sh
       - name: Handoff finalizer smoke
@@ -688,6 +713,7 @@ jobs:
           set -euo pipefail
           command -v yq >/dev/null
           bash core/scripts/tests/hq-job-run.test.sh
+          bash core/scripts/tests/hq-job-run-approval-mode.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
           bash core/scripts/tests/outpost-jobs-reconcile.test.sh
           bash core/scripts/tests/personal-job-oncalendar.test.sh
@@ -742,6 +768,8 @@ jobs:
         run: node core/scripts/hook-corpus/differential.mjs --engine-a 'bash .claude/hooks/master-hook.sh' --engine-b 'bash .claude/hooks/master-hook.sh'
       - name: Credential-file read guard blocks Read and Bash readers in every path form
         run: bash core/scripts/tests/credential-read-guard.test.sh
+      - name: Credential guard fast path allows only what the full check allows (zero verdict diff)
+        run: bash core/scripts/tests/credential-read-guard-fastpath.test.sh
       - name: PostToolUse redactor removes credential values from tool output
         run: bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed PreToolUse guard blocks on timeout; redaction survives sibling exits
@@ -774,6 +802,8 @@ jobs:
         run: bash core/scripts/tests/hook-id-desktop-leak-rename.test.sh
       - name: Retired desktop memory-leak hook id still disables the hook
         run: bash core/scripts/tests/hook-id-legacy-alias.test.sh
+      - name: Welcome brief SessionStart hook
+        run: bash core/scripts/tests/welcome-brief-ready.test.sh
       - name: Hook path does not source BASH_ENV in child bash
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
@@ -788,17 +818,26 @@ jobs:
         run: timeout 90s bash core/scripts/tests/sessionstart-slow-work-bounded.test.sh
       - name: Master-hook success path process budget
         env:
+          # Empty on workflow_dispatch and schedule; the resolver then uses
+          # the merge base with origin/main instead of fetching an empty ref.
           HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
+          set -euo pipefail
+          HQ_HOOK_PERF_BASE_SHA="$(bash core/scripts/ci/resolve-hook-perf-base.sh "$GITHUB_WORKSPACE")"
+          export HQ_HOOK_PERF_BASE_SHA
           timeout 60s bash core/scripts/tests/master-hook-hot-path-process-budget.test.sh
+      - name: Hooks skip setsid on MSYS/Cygwin without forking uname
+        run: timeout 60s bash core/scripts/tests/hook-detach-msys-console.test.sh
       - name: Master-hook per-event process budget
         env:
           HQ_HOOK_PERF_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
-          timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_PERF_BASE_SHA"
+          HQ_HOOK_PERF_BASE_SHA="$(bash core/scripts/ci/resolve-hook-perf-base.sh "$GITHUB_WORKSPACE")"
+          export HQ_HOOK_PERF_BASE_SHA
           timeout 240s bash core/scripts/tests/master-hook-event-process-budget.test.sh | tail -200
+      - name: Hook-perf base resolver handles workflow_dispatch (no event base sha)
+        run: bash core/scripts/tests/resolve-hook-perf-base.test.sh
       - name: Master-hook per-event budget handles equal and pre-optimization bases
         run: timeout 600s bash core/scripts/tests/master-hook-event-process-budget-base-equal.test.sh
       - name: Master-hook dispatch process budget and session-id prefilters
@@ -830,6 +869,7 @@ jobs:
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
           bash core/scripts/tests/resolve-hq-root.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
+          bash core/scripts/tests/master-hook-hook-engine-bridge.test.sh
           bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
@@ -1017,6 +1057,8 @@ jobs:
         run: bash core/scripts/tests/session-title-windows-argv.test.sh
       - name: Pipeline Windows path and lock identity
         run: bash core/scripts/tests/pipeline-windows-path-lock.test.sh
+      - name: Session journal cross-PID lock diagnostic and regression test
+        run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
       - name: Policy hook resolves the npm hq shim without starting node (US-001)
         run: bash .claude/hooks/tests/inject-policy-fact-helper-windows-shim.test.sh
       - name: Master hook checks the hqd daemon socket path (US-001)
@@ -1083,6 +1125,8 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: hook-gate exec-bit self-heal
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Welcome brief SessionStart hook
+        run: bash core/scripts/tests/welcome-brief-ready.test.sh
       - name: Hook path does not source BASH_ENV in child bash
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Registered SessionStart command bypasses BASH_ENV on Git Bash
@@ -1189,6 +1233,8 @@ jobs:
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: outpost reconcile PATH normalizer under stock macOS Bash
         run: /bin/bash core/scripts/tests/outpost-jobs-path-normalizer.test.sh
+      - name: Session journal counter lock age under macOS stat
+        run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
       - name: outpost cron to OnCalendar table under stock macOS Bash
         run: /bin/bash core/scripts/tests/outpost-cron-oncalendar.test.sh
       - name: session-journal CLI port behavior
@@ -1211,6 +1257,10 @@ jobs:
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer.test.sh
       - name: Quoted file URI scope under stock macOS Bash
         run: /bin/bash core/scripts/tests/scope-file-uri.test.sh
+      - name: Scope-guard hotfix ledger shapes under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/scope-guard-hotfix-ledger.test.sh
       - name: Credential-file read guard under stock macOS Bash
         run: /bin/bash core/scripts/tests/credential-read-guard.test.sh
       - name: Handoff finalizer git add error classification under stock macOS Bash
@@ -1227,6 +1277,10 @@ jobs:
         run: /bin/bash core/scripts/tests/block-numbered-policy-sibling.test.sh
       - name: .gitignore secret paths under stock macOS Bash
         run: /bin/bash core/scripts/tests/gitignore-secret-paths.test.sh
+      - name: Credential guard fast path under stock macOS Bash
+        env:
+          CRED_GUARD_HOOK_BASH: /bin/bash
+        run: /bin/bash core/scripts/tests/credential-read-guard-fastpath.test.sh
       - name: Credential output redactor under stock macOS Bash
         run: /bin/bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed guard timeout under stock macOS Bash
@@ -1237,6 +1291,10 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: hook-gate exec-bit self-heal
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Welcome brief SessionStart hook under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/welcome-brief-ready.test.sh
       - name: Gated hook IDs have profile coverage (US-157)
         run: bash core/scripts/tests/gated-hook-profile-coverage.test.sh
       - name: Hook path does not source BASH_ENV in child bash
@@ -1699,6 +1757,15 @@ jobs:
       id: t_eval_loop__1
       if: "${{ !cancelled() }}"
       run: bash core/scripts/tests/eval-loop-ledger.test.sh
+    - name: "[eval-loop] reset checkout"
+      if: "${{ !cancelled() }}"
+      run: |
+        git reset -q --hard
+        git clean -qffdx
+    - name: "[eval-loop] Eval loop grade-withheld packets"
+      id: t_eval_loop__2
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/eval-loop-packets.test.sh
     - name: "[bash-guard-process-budgets] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -2020,9 +2087,13 @@ jobs:
       id: t_journal_session_isolation__file_uri
       if: "${{ !cancelled() && steps.t_journal_session_isolation__16.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-file-uri.test.sh
+    - name: "[journal-session-isolation] Scope-guard hotfix ledger shapes (feedback cluster 2026-10-22)"
+      id: t_journal_session_isolation__ledger
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__file_uri.outcome == 'success' }}"
+      run: bash core/scripts/tests/scope-guard-hotfix-ledger.test.sh
     - name: "[journal-session-isolation] SCOPE-1112 tenant-boundary regression cases"
       id: t_journal_session_isolation__17
-      if: "${{ !cancelled() && steps.t_journal_session_isolation__file_uri.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__ledger.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-1112-regressions.test.sh all
     - name: "[journal-session-isolation] Resumework skill commands stay within allowed paths"
       id: t_journal_session_isolation__18
@@ -2405,153 +2476,217 @@ jobs:
       id: t_skill_script_refs__20
       if: "${{ !cancelled() && steps.t_skill_script_refs__19.outcome == 'success' }}"
       run: bash core/scripts/tests/super-conductor-prefs.test.sh
-    - name: "[skill-script-refs] /conduct worker selection (registry fields, definition load)"
+    - name: "[skill-script-refs] /super-conductor request ledger"
       id: t_skill_script_refs__21
+      if: "${{ !cancelled() && steps.t_skill_script_refs__20.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-requests.test.sh
+    - name: "[skill-script-refs] /super-conductor save-file state"
+      id: t_skill_script_refs__22
+      if: "${{ !cancelled() && steps.t_skill_script_refs__21.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-state.test.sh
+    - name: "[skill-script-refs] /super-conductor work-day schedule"
+      id: t_skill_script_refs__23
+      if: "${{ !cancelled() && steps.t_skill_script_refs__22.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-work-hours.test.sh
+    - name: "[skill-script-refs] /super-conductor per-channel cadence"
+      id: t_skill_script_refs__24
+      if: "${{ !cancelled() && steps.t_skill_script_refs__23.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-channel-cadence.test.sh
+    - name: "[skill-script-refs] /super-conductor sweep evidence"
+      id: t_skill_script_refs__25
+      if: "${{ !cancelled() && steps.t_skill_script_refs__24.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-sweep-check.test.sh
+    - name: "[skill-script-refs] /super-conductor symlinked HQ root"
+      id: t_skill_script_refs__26
+      if: "${{ !cancelled() && steps.t_skill_script_refs__25.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-symlink-root.test.sh
+    - name: "[skill-script-refs] /super-conductor open asks"
+      id: t_skill_script_refs__27
+      if: "${{ !cancelled() && steps.t_skill_script_refs__26.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-open-asks.test.sh
+    - name: "[skill-script-refs] /super-conductor escalation wake"
+      id: t_skill_script_refs__28
+      if: "${{ !cancelled() && steps.t_skill_script_refs__27.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-escalation.test.sh
+    - name: "[skill-script-refs] /super-conductor heartbeat"
+      id: t_skill_script_refs__29
+      if: "${{ !cancelled() && steps.t_skill_script_refs__28.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-heartbeat.test.sh
+    - name: "[skill-script-refs] /super-conductor message wake"
+      id: t_skill_script_refs__30
+      if: "${{ !cancelled() && steps.t_skill_script_refs__29.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-message-watch.test.sh
+    - name: "[skill-script-refs] /super-conductor decision queue"
+      id: t_skill_script_refs__31
+      if: "${{ !cancelled() && steps.t_skill_script_refs__30.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-decisions.test.sh
+    - name: "[skill-script-refs] /super-conductor merge gate (answered queue row per repo, PR and head)"
+      id: t_skill_script_refs__71
+      if: "${{ !cancelled() && steps.t_skill_script_refs__31.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-merge-gate.test.sh
+    - name: "[skill-script-refs] /decision-queue policy links"
+      id: t_skill_script_refs__72
+      if: "${{ !cancelled() && steps.t_skill_script_refs__71.outcome == 'success' }}"
+      run: bash core/scripts/tests/decision-queue-policy-links.test.sh
+    - name: "[skill-script-refs] /super-conductor triage daemon"
+      id: t_skill_script_refs__32
+      if: "${{ !cancelled() && steps.t_skill_script_refs__72.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-triage.test.sh
+    - name: "[skill-script-refs] /super-conductor critical channels and answered-in-source guard"
+      id: t_skill_script_refs__33
+      if: "${{ !cancelled() && steps.t_skill_script_refs__32.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-critical.test.sh
+    - name: "[skill-script-refs] /conduct worker selection (registry fields, definition load)"
+      id: t_skill_script_refs__34
       if: "${{ !cancelled() && steps.t_skill_script_refs__20.outcome == 'success' }}"
       run: bash core/scripts/tests/conduct-worker-selection.test.sh
     - name: "[skill-script-refs] /conduct lane workers and completion watcher"
-      id: t_skill_script_refs__22
-      if: "${{ !cancelled() && steps.t_skill_script_refs__21.outcome == 'success' }}"
-      run: bash core/scripts/tests/lanes-workers.test.sh
-    - name: "[skill-script-refs] /conduct skill split (triage in SKILL.md, lane mechanics in dispatch.md)"
-      id: t_skill_script_refs__23
-      if: "${{ !cancelled() && steps.t_skill_script_refs__22.outcome == 'success' }}"
-      run: bash core/scripts/tests/conduct-dispatch-split.test.sh
-    - name: "[skill-script-refs] Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)"
-      id: t_skill_script_refs__24
-      if: "${{ !cancelled() && steps.t_skill_script_refs__23.outcome == 'success' }}"
-      run: bash core/scripts/tests/ralph-orchestrator-policy.test.sh
-    - name: "[skill-script-refs] Orchestrator skills claim pool slots (execute-task + run-project)"
-      id: t_skill_script_refs__25
-      if: "${{ !cancelled() && steps.t_skill_script_refs__24.outcome == 'success' }}"
-      run: bash core/scripts/tests/orchestrator-skills-use-pool.test.sh
-    - name: "[skill-script-refs] Orchestrator skills dispatch detached lanes (run-project + conduct)"
-      id: t_skill_script_refs__26
-      if: "${{ !cancelled() && steps.t_skill_script_refs__25.outcome == 'success' }}"
-      run: bash core/scripts/tests/orchestrator-skills-dispatch-lanes.test.sh
-    - name: "[skill-script-refs] Pipeline conductor routes loop-lane phases"
-      id: t_skill_script_refs__27
-      if: "${{ !cancelled() && steps.t_skill_script_refs__26.outcome == 'success' }}"
-      run: bash core/scripts/tests/pipeline-conductor.test.sh
-    - name: "[skill-script-refs] Pipeline hq lanes contract and retries"
-      id: t_skill_script_refs__28
-      if: "${{ !cancelled() && steps.t_skill_script_refs__27.outcome == 'success' }}"
-      run: bash core/scripts/tests/pipeline-hq-lanes.test.sh
-    - name: "[skill-script-refs] Pipeline driver interrupt recovery"
-      id: t_skill_script_refs__29
-      if: "${{ !cancelled() && steps.t_skill_script_refs__28.outcome == 'success' }}"
-      run: bash core/scripts/tests/pipeline-interrupt.test.sh
-    - name: "[skill-script-refs] Pipeline driver runs without python3"
-      id: t_skill_script_refs__30
-      if: "${{ !cancelled() && steps.t_skill_script_refs__29.outcome == 'success' }}"
-      run: bash core/scripts/tests/pipeline-no-python.test.sh
-    - name: "[skill-script-refs] Intent hint (UserPromptSubmit, closest intent-index entries)"
-      id: t_skill_script_refs__31
-      if: "${{ !cancelled() && steps.t_skill_script_refs__30.outcome == 'success' }}"
-      run: bash core/scripts/tests/intent-hint.test.sh
-    - name: "[skill-script-refs] Regression test (fixture + all skills + allowlist + WC-17 fix)"
-      id: t_skill_script_refs__32
-      if: "${{ !cancelled() && steps.t_skill_script_refs__31.outcome == 'success' }}"
-      run: bash core/scripts/tests/skill-script-refs.test.sh
-    - name: "[skill-script-refs] Shipped skills reference existing core scripts"
-      id: t_skill_script_refs__33
-      if: "${{ !cancelled() && steps.t_skill_script_refs__32.outcome == 'success' }}"
-      run: bash core/scripts/tests/skill-core-script-references.test.sh
-    - name: "[skill-script-refs] Skill bodies carry no argument placeholders in code ($N, fenced $ARGUMENTS)"
-      id: t_skill_script_refs__34
-      if: "${{ !cancelled() && steps.t_skill_script_refs__33.outcome == 'success' }}"
-      run: bash core/scripts/tests/skill-body-positional-placeholders.test.sh
-    - name: "[skill-script-refs] Skills bind the session company before reading company paths"
       id: t_skill_script_refs__35
       if: "${{ !cancelled() && steps.t_skill_script_refs__34.outcome == 'success' }}"
-      run: bash core/scripts/tests/skill-company-bind-before-read.test.sh
-    - name: "[skill-script-refs] Command reports gate expandable technical details"
+      run: bash core/scripts/tests/lanes-workers.test.sh
+    - name: "[skill-script-refs] /conduct skill split (routing in SKILL.md, lane mechanics in dispatch.md)"
       id: t_skill_script_refs__36
       if: "${{ !cancelled() && steps.t_skill_script_refs__35.outcome == 'success' }}"
-      run: bash core/scripts/tests/skill-plain-report.test.sh
-    - name: "[skill-script-refs] Deploy skill app route and multipart helper contracts"
-      id: t_skill_script_refs__37
+      run: bash core/scripts/tests/conduct-dispatch-split.test.sh
+    - name: "[skill-script-refs] /conduct routing and standing worker lanes"
+      id: t_skill_script_refs__36_standing
       if: "${{ !cancelled() && steps.t_skill_script_refs__36.outcome == 'success' }}"
-      run: bash core/scripts/tests/deploy-skill-app-route.test.sh
-    - name: "[skill-script-refs] Deploy skill reads every app page and gates before upload"
+      run: bash core/scripts/tests/conduct-standing.test.sh
+    - name: "[skill-script-refs] Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)"
+      id: t_skill_script_refs__37
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36_standing.outcome == 'success' }}"
+      run: bash core/scripts/tests/ralph-orchestrator-policy.test.sh
+    - name: "[skill-script-refs] Orchestrator skills claim pool slots (execute-task + run-project)"
       id: t_skill_script_refs__38
       if: "${{ !cancelled() && steps.t_skill_script_refs__37.outcome == 'success' }}"
-      run: bash core/scripts/tests/deploy-skill-gate-before-upload.test.sh
-    - name: "[skill-script-refs] list-apps.sh follows nextCursor and fails closed"
+      run: bash core/scripts/tests/orchestrator-skills-use-pool.test.sh
+    - name: "[skill-script-refs] Orchestrator skills dispatch detached lanes (run-project + conduct)"
       id: t_skill_script_refs__39
       if: "${{ !cancelled() && steps.t_skill_script_refs__38.outcome == 'success' }}"
-      run: bash .claude/skills/deploy/scripts/tests/list-apps.test.sh
-    - name: "[skill-script-refs] Deploy request helper rejects errors and supports app multipart uploads"
+      run: bash core/scripts/tests/orchestrator-skills-dispatch-lanes.test.sh
+    - name: "[skill-script-refs] Pipeline conductor routes loop-lane phases"
       id: t_skill_script_refs__40
       if: "${{ !cancelled() && steps.t_skill_script_refs__39.outcome == 'success' }}"
-      run: bash core/scripts/tests/deploy-api-request.test.sh
-    - name: "[skill-script-refs] Deploy comment watcher reports each new comment once"
+      run: bash core/scripts/tests/pipeline-conductor.test.sh
+    - name: "[skill-script-refs] Pipeline hq lanes contract and retries"
       id: t_skill_script_refs__41
       if: "${{ !cancelled() && steps.t_skill_script_refs__40.outcome == 'success' }}"
-      run: bash core/scripts/tests/deploy-comments-watch.test.sh
-    - name: "[skill-script-refs] App deploy artifact includes root API handlers"
+      run: bash core/scripts/tests/pipeline-hq-lanes.test.sh
+    - name: "[skill-script-refs] Pipeline driver interrupt recovery"
       id: t_skill_script_refs__42
       if: "${{ !cancelled() && steps.t_skill_script_refs__41.outcome == 'success' }}"
-      run: bash core/scripts/tests/guardrails-check-app-api.test.sh
-    - name: "[skill-script-refs] HQ feedback summary and verbatim report contract"
+      run: bash core/scripts/tests/pipeline-interrupt.test.sh
+    - name: "[skill-script-refs] Pipeline driver runs without python3"
       id: t_skill_script_refs__43
       if: "${{ !cancelled() && steps.t_skill_script_refs__42.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-bug-skill.test.sh
-    - name: "[skill-script-refs] HQ feedback submit path avoids cleanup and fixed heredoc delimiters"
+      run: bash core/scripts/tests/pipeline-no-python.test.sh
+    - name: "[skill-script-refs] Intent hint (UserPromptSubmit, closest intent-index entries)"
       id: t_skill_script_refs__44
       if: "${{ !cancelled() && steps.t_skill_script_refs__43.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-bug-submit-no-rm.test.sh
-    - name: "[skill-script-refs] /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)"
+      run: bash core/scripts/tests/intent-hint.test.sh
+    - name: "[skill-script-refs] Regression test (fixture + all skills + allowlist + WC-17 fix)"
       id: t_skill_script_refs__45
       if: "${{ !cancelled() && steps.t_skill_script_refs__44.outcome == 'success' }}"
-      run: bash core/scripts/tests/team-access-skill.test.sh
-    - name: "[skill-script-refs] Pricing drift and refresh scripts (offline regression)"
+      run: bash core/scripts/tests/skill-script-refs.test.sh
+    - name: "[skill-script-refs] Shipped skills reference existing core scripts"
       id: t_skill_script_refs__46
       if: "${{ !cancelled() && steps.t_skill_script_refs__45.outcome == 'success' }}"
-      run: bash core/scripts/tests/pricing-drift.test.sh
-    - name: "[skill-script-refs] Shipped pricing.json matches the live GET /v1/pricing endpoint"
+      run: bash core/scripts/tests/skill-core-script-references.test.sh
+    - name: "[skill-script-refs] Skill bodies carry no argument placeholders in code ($N, fenced $ARGUMENTS)"
       id: t_skill_script_refs__47
       if: "${{ !cancelled() && steps.t_skill_script_refs__46.outcome == 'success' }}"
-      run: bash core/scripts/check-pricing-drift.sh
-    - name: "[skill-script-refs] Auto-session project uses the exact company directory entry"
+      run: bash core/scripts/tests/skill-body-positional-placeholders.test.sh
+    - name: "[skill-script-refs] Skills bind the session company before reading company paths"
       id: t_skill_script_refs__48
       if: "${{ !cancelled() && steps.t_skill_script_refs__47.outcome == 'success' }}"
-      run: bash core/scripts/tests/auto-session-project.test.sh
-    - name: "[skill-script-refs] Session project helper rejects symlink escapes"
+      run: bash core/scripts/tests/skill-company-bind-before-read.test.sh
+    - name: "[skill-script-refs] Command reports gate expandable technical details"
       id: t_skill_script_refs__49
       if: "${{ !cancelled() && steps.t_skill_script_refs__48.outcome == 'success' }}"
-      run: bash core/scripts/tests/session-project.test.sh
-    - name: "[skill-script-refs] Session title waits for project resolution and prunes stale markers"
+      run: bash core/scripts/tests/skill-plain-report.test.sh
+    - name: "[skill-script-refs] Deploy skill app route and multipart helper contracts"
       id: t_skill_script_refs__50
       if: "${{ !cancelled() && steps.t_skill_script_refs__49.outcome == 'success' }}"
-      run: bash core/scripts/tests/session-title-project-resolution.test.sh
-    - name: "[skill-script-refs] Company resolver (session bind + whole-token prompt scan)"
+      run: bash core/scripts/tests/deploy-skill-app-route.test.sh
+    - name: "[skill-script-refs] Deploy skill reads every app page and gates before upload"
       id: t_skill_script_refs__51
       if: "${{ !cancelled() && steps.t_skill_script_refs__50.outcome == 'success' }}"
-      run: bash core/scripts/tests/resolve-company.test.sh
-    - name: "[skill-script-refs] Session auto-bind honors device-default company boundaries"
+      run: bash core/scripts/tests/deploy-skill-gate-before-upload.test.sh
+    - name: "[skill-script-refs] list-apps.sh follows nextCursor and fails closed"
       id: t_skill_script_refs__52
       if: "${{ !cancelled() && steps.t_skill_script_refs__51.outcome == 'success' }}"
-      run: bash core/scripts/tests/session-auto-bind.test.sh
-    - name: "[skill-script-refs] SessionStart preserves multi-company session locks"
+      run: bash .claude/skills/deploy/scripts/tests/list-apps.test.sh
+    - name: "[skill-script-refs] Deploy request helper rejects errors and supports app multipart uploads"
       id: t_skill_script_refs__53
       if: "${{ !cancelled() && steps.t_skill_script_refs__52.outcome == 'success' }}"
-      run: bash core/scripts/tests/session-auto-bind-multicompany-sessionstart.test.sh
-    - name: "[skill-script-refs] Ontology source worklist retries transient ACL failures"
+      run: bash core/scripts/tests/deploy-api-request.test.sh
+    - name: "[skill-script-refs] Deploy comment watcher reports each new comment once"
       id: t_skill_script_refs__54
       if: "${{ !cancelled() && steps.t_skill_script_refs__53.outcome == 'success' }}"
-      run: bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
-    - name: "[skill-script-refs] /resumework requires explicit confirmation for locked threads"
+      run: bash core/scripts/tests/deploy-comments-watch.test.sh
+    - name: "[skill-script-refs] App deploy artifact includes root API handlers"
       id: t_skill_script_refs__55
       if: "${{ !cancelled() && steps.t_skill_script_refs__54.outcome == 'success' }}"
-      run: bash core/scripts/tests/resume-thread-lock.test.sh
-    - name: "[skill-script-refs] resumework resolves company-mirrored and vault handoffs and lists repeats by full id"
+      run: bash core/scripts/tests/guardrails-check-app-api.test.sh
+    - name: "[skill-script-refs] HQ feedback summary and verbatim report contract"
       id: t_skill_script_refs__56
       if: "${{ !cancelled() && steps.t_skill_script_refs__55.outcome == 'success' }}"
-      run: bash core/scripts/tests/resumework-resolve.test.sh
-    - name: "[skill-script-refs] Deploy skill documents live agent deploy identity"
+      run: bash core/scripts/tests/hq-bug-skill.test.sh
+    - name: "[skill-script-refs] HQ feedback submit path avoids cleanup and fixed heredoc delimiters"
       id: t_skill_script_refs__57
       if: "${{ !cancelled() && steps.t_skill_script_refs__56.outcome == 'success' }}"
+      run: bash core/scripts/tests/hq-bug-submit-no-rm.test.sh
+    - name: "[skill-script-refs] /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)"
+      id: t_skill_script_refs__58
+      if: "${{ !cancelled() && steps.t_skill_script_refs__57.outcome == 'success' }}"
+      run: bash core/scripts/tests/team-access-skill.test.sh
+    - name: "[skill-script-refs] Pricing drift and refresh scripts (offline regression)"
+      id: t_skill_script_refs__59
+      if: "${{ !cancelled() && steps.t_skill_script_refs__58.outcome == 'success' }}"
+      run: bash core/scripts/tests/pricing-drift.test.sh
+    - name: "[skill-script-refs] Shipped pricing.json matches the live GET /v1/pricing endpoint"
+      id: t_skill_script_refs__60
+      if: "${{ !cancelled() && steps.t_skill_script_refs__59.outcome == 'success' }}"
+      run: bash core/scripts/check-pricing-drift.sh
+    - name: "[skill-script-refs] Auto-session project uses the exact company directory entry"
+      id: t_skill_script_refs__61
+      if: "${{ !cancelled() && steps.t_skill_script_refs__60.outcome == 'success' }}"
+      run: bash core/scripts/tests/auto-session-project.test.sh
+    - name: "[skill-script-refs] Session project helper rejects symlink escapes"
+      id: t_skill_script_refs__62
+      if: "${{ !cancelled() && steps.t_skill_script_refs__61.outcome == 'success' }}"
+      run: bash core/scripts/tests/session-project.test.sh
+    - name: "[skill-script-refs] Session title waits for project resolution and prunes stale markers"
+      id: t_skill_script_refs__63
+      if: "${{ !cancelled() && steps.t_skill_script_refs__62.outcome == 'success' }}"
+      run: bash core/scripts/tests/session-title-project-resolution.test.sh
+    - name: "[skill-script-refs] Company resolver (session bind + whole-token prompt scan)"
+      id: t_skill_script_refs__64
+      if: "${{ !cancelled() && steps.t_skill_script_refs__63.outcome == 'success' }}"
+      run: bash core/scripts/tests/resolve-company.test.sh
+    - name: "[skill-script-refs] Session auto-bind honors device-default company boundaries"
+      id: t_skill_script_refs__65
+      if: "${{ !cancelled() && steps.t_skill_script_refs__64.outcome == 'success' }}"
+      run: bash core/scripts/tests/session-auto-bind.test.sh
+    - name: "[skill-script-refs] SessionStart preserves multi-company session locks"
+      id: t_skill_script_refs__66
+      if: "${{ !cancelled() && steps.t_skill_script_refs__65.outcome == 'success' }}"
+      run: bash core/scripts/tests/session-auto-bind-multicompany-sessionstart.test.sh
+    - name: "[skill-script-refs] Ontology source worklist retries transient ACL failures"
+      id: t_skill_script_refs__67
+      if: "${{ !cancelled() && steps.t_skill_script_refs__66.outcome == 'success' }}"
+      run: bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
+    - name: "[skill-script-refs] /resumework requires explicit confirmation for locked threads"
+      id: t_skill_script_refs__68
+      if: "${{ !cancelled() && steps.t_skill_script_refs__67.outcome == 'success' }}"
+      run: bash core/scripts/tests/resume-thread-lock.test.sh
+    - name: "[skill-script-refs] resumework resolves company-mirrored and vault handoffs and lists repeats by full id"
+      id: t_skill_script_refs__69
+      if: "${{ !cancelled() && steps.t_skill_script_refs__68.outcome == 'success' }}"
+      run: bash core/scripts/tests/resumework-resolve.test.sh
+    - name: "[skill-script-refs] Deploy skill documents live agent deploy identity"
+      id: t_skill_script_refs__70
+      if: "${{ !cancelled() && steps.t_skill_script_refs__69.outcome == 'success' }}"
       run: bash core/scripts/tests/deploy-skill-agent-identity-doc.test.sh
     - name: "[skill-command-script] reset checkout"
       if: "${{ !cancelled() }}"
@@ -2629,6 +2764,10 @@ jobs:
       id: t_identity_resolve__4
       if: "${{ !cancelled() && steps.t_identity_resolve__3.outcome == 'success' }}"
       run: bash .claude/skills/deploy/scripts/tests/deploy-api-request-error-body.test.sh
+    - name: "[identity-resolve] deploy uploads convert file paths with cygpath on MSYS"
+      id: t_identity_resolve__4b
+      if: "${{ !cancelled() && steps.t_identity_resolve__4.outcome == 'success' }}"
+      run: bash .claude/skills/deploy/scripts/tests/deploy-api-request-msys-upload-path.test.sh
     - name: "[identity-resolve] route-host merges routes onto an existing deploy"
       id: t_identity_resolve__5
       if: "${{ !cancelled() && steps.t_identity_resolve__4.outcome == 'success' }}"

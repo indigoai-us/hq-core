@@ -5,9 +5,9 @@ when: sleep || poll || watch || wait-for || monitor || run_in_background || ((lo
 on: [PreToolUse, UserPromptSubmit, AssistantIntent]
 enforcement: hard
 public: true
-version: 1
+version: 2
 created: 2026-09-25
-updated: 2026-09-25
+updated: 2026-10-19
 source: approved-design
 ---
 
@@ -18,3 +18,5 @@ source: approved-design
 - Keep watch output actionable: use `grep --line-buffered`, add `|| true` to poll loops, wait at least 30 seconds between remote API calls, match every terminal state, and print only lines that need action. Silence is not success.
 - Prompt caching only works within an hour. A turn that starts more than an hour after the previous one re-reads the whole conversation at full price. During a long watch, check in at least every 55 minutes; a short check-in reads the conversation from cache at the lower price and resets the hour. `hq monitor` sends a check-in every 55 minutes by default; use `--checkin` to change the interval or `--checkin off` to disable it. Keep check-in turns short: confirm the watch is armed, act only if something changed, then stop.
 - Claude sessions and lanes are woken by events. Interactive Codex sessions receive events at their next tool call or user message; interactive Grok sessions receive them at their next tool call.
+
+The harness kills background Bash tasks at its timeout cap (about 10 minutes), so a one-shot `until` waiter that runs longer dies silently. For longer waits, use `hq monitor start --persistent`, or the Monitor tool with `timeout_ms` at its 30-minute maximum, re-armed on expiry. A background Bash waiter is fine when the wait is certain to finish under the cap.

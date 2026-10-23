@@ -1,0 +1,3 @@
+interface:
+  display_name: "HQ Cost"
+  short_description: "Show HQ usage and projected bill, then preview fixes to stay under the allowance."

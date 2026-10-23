@@ -187,5 +187,5 @@ if [[ "$session_id" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
 else
   target="session:$runtime:<session-id>"
 fi
-reason="Blocked: $blocked_command. Use hq monitor start --target $target --description '<what>' --command 'until <check>; do sleep 30; done' for this wait. Do not chain shorter sleeps to work around this block."
+reason="Blocked: $blocked_command. Use hq monitor start --target $target --description '<what>' --command 'until <check>; do sleep 30; done' for this wait. Background Bash waiters die at the 10-minute timeout cap, so for longer waits use the Monitor tool with timeout_ms 1800000 and re-arm it on expiry, or hq monitor start --persistent. Do not chain shorter sleeps to work around this block."
 jq -cn --arg reason "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'

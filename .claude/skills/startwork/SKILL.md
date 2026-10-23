@@ -8,6 +8,28 @@ allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core
 
 Lightweight session entry point. Resolves context fast, presents smart options, gets you working.
 
+## Fast path: exact company slug (check first)
+
+One command does the whole company half of this skill:
+
+```bash
+bash core/scripts/startwork-context.sh orient --company "{co}" --mode Company
+```
+
+It does the Work Mesh trusted bind for this session (company and mode, with the company's hard-policy digest), checks that the bind landed, and prints the `<startwork-context>` block, including a Board line read from the work mesh cache, plus a `Last thread:` line that only names a thread of `{co}`. It needs the caller's own session id: the harness env, or `--session-id <id>` when the host does not export one. It never binds through `workspace/sessions/.current`. Exit 3 means `{co}` is not an exact manifest slug, and nothing was bound. Exit 4 means the bind did not land; stop and report it.
+
+**A. A `<startwork-prefetch company="{co}">` block is already in the prompt context** and `{co}` is the first word of the argument. The prompt hook already ran `orient` for `{co}`. It fires only for an exact slug, and only when the remaining args are not a slash command, a bare skill name, a bounded action (§1.0b), or a second company, and never when the session is already bound to a different company (that switch goes through the normal process). Do not run `orient` again.
+
+**B. No prefetch block, the first word looks like a company slug, and §1.0/§1.0b do not apply.** Run `orient` with that word as your first tool call, before §0.5. On exit 3, continue with the normal process below.
+
+After A or B, the trusted bind, §0.5, §1 resolution, §1.2, §2.4, Company Mode steps 1–3 and the handoff read are done. Do not run `resolve-company.sh`, `startwork-context.sh resolve` or `block`, `hq-session.sh set company_slug` or `set mode`, or `work-mesh-live-bind-trusted.sh`, and do not read `handoff.json` or the Board cache files. Then:
+
+1. No remaining args → go straight to §3 Present Options in Company mode. Show the block verbatim, its Board line included. Only run Company Mode step 4 when the block's Integrations line reads "not cached". Take the Worker route from the block's Workers line and skip the §2.5 policy counts; the digest already surfaced the company's hard rules.
+2. Remaining args → treat them as the focus inside `{co}`: a `{co}` project name continues in Project Mode from step 3, anything else is Task Mode starting at step 2. If they resolve to a project or repo owned by a different company, stop and ask which company the user means.
+3. If the host saved the prompt-hook output to a file and showed only a preview (the policy trigger hook adds the bound company's policies to the same output), read that file once with one tool call. It holds the full block; do not re-run the scripts.
+
+Without an exact slug, run the normal process below.
+
 ## When to Use
 
 Beginning of every session. Replaces ad-hoc orientation.
@@ -24,6 +46,9 @@ bash core/scripts/work-mesh-live-bind-trusted.sh \
 
 Omit `--task` when unknown. This writes `workspace/sessions/<sid>/meta.yaml`
 and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
+
+When a company is resolved, `startwork-context.sh orient` (fast path and
+§1.2) runs this same bind for you. Do not run both.
 
 ## Process
 
@@ -88,22 +113,25 @@ Determine mode from the user's argument (first match wins):
 ### 1.2 Bind a resolved company before gathering mode context
 
 As soon as normal mode resolution or the default-company fallback identifies a
-company, persist the company on this session before running project scans,
-`qmd`, worker selection, or any repository command:
+company, bind it on this session before running project scans, `qmd`, worker
+selection, or any repository command. Use the one `orient` call from the fast
+path, with the resolved mode (and the project in Project mode). It is the only
+bind call: it does the trusted bind, records the mode, and prints the
+capability block with the Board line and the last-thread line.
 
 ```bash
-bash core/scripts/hq-session.sh set company_slug "{co}"
+bash core/scripts/startwork-context.sh orient --company "{co}" --mode "{Company|Project|Repo|Task|Resume}" [--project "{name}"]
 ```
 
-Session metadata writes require the caller’s harness session identity. If the host does not supply it, use the exact `--session-id` shown by the scope hook; never select a write target from `workspace/sessions/.current` or the most recent session.
+Session metadata writes require the caller’s harness session identity. If the host does not supply it, pass the exact `--session-id` shown by the scope hook; never select a write target from `workspace/sessions/.current` or the most recent session.
 
+Skip this step when the fast path already ran `orient` for `{co}`.
 
 For Project or Repo mode, first resolve the project's owning company or the
 repo's company mapping when it is not already known, then run this bind before
 any Git command or project scan. A bounded-action short-circuit does not enter
 this flow, and an unresolved or personal-only context has no company to bind.
-When project/task context becomes available later, §2.4's trusted bind adds
-that context to the session.
+When a task id becomes available later, §2.4 adds it to the session.
 
 ### 2. Gather Context
 
@@ -146,20 +174,18 @@ session with `set_session_title` according to
 useful work subject from the predecessor summary; otherwise use the resolved
 target. Add company, product, or mode when it adds information. Rename again
 only when the subject changes, and preserve a title the user manually renamed.
+If the first-turn title hook already named this session for the same subject,
+keep that title and make no title call.
 
 #### Company Mode (arg = company slug)
 
-1. Render the capability block. One script call, no network, under 3 KB:
-   ```bash
-   bash core/scripts/startwork-context.sh block --company "{co}"
-   ```
-   It carries the company's repos, knowledge and source folders, the cached list of usable integrations with the flag for each, the five most recently touched projects with local open-story counts, the company's workers, and the path of the skill intent index. Do not grep the manifest, run the qmd/grep project scan, read `core/workers/registry.yaml`, or run git over the first manifest repo by hand; the block replaces those reads (HP-12 traced every one of them as a lookup startwork should have answered).
-2. Read `workspace/threads/handoff.json` — if last thread relates to this company, note it
-3. Board status comes from the work mesh, never local prd.passes. For each matching project, load the live Board from cache / Desktop live read (the matching projects are the ones the block listed) (presence is automatic via `hq mesh daemon`), using the Project Mode source and status wording. If the Board block is absent, use local prd only for project description and acceptance; never as live Board columns. The capability block's open counts are local too.
+1. The `orient` call (fast path or §1.2) already printed the capability block: no network, about 3 KB. It carries the company's repos, knowledge and source folders, the cached list of usable integrations with the flag for each, the five most recently touched projects with local open-story counts, the Board line, the company's workers, and the path of the skill intent index. Do not grep the manifest, run the qmd/grep project scan, read `core/workers/registry.yaml`, or run git over the first manifest repo by hand; the block replaces those reads (HP-12 traced every one of them as a lookup startwork should have answered).
+2. The `Last thread:` line from `orient` is the handoff check, already filtered to this company. Do not read `workspace/threads/handoff.json` yourself.
+3. Board status comes from the work mesh, never local prd.passes. For each matching project, load the live Board from cache / Desktop live read: `orient` already did the cache read, and the block's `Board (work mesh cache):` line has the queued / in progress / review / done counts and the next queued story for each listed project, from this company's cache only. Do not read the cache files one by one. A project marked `no board` has no cache entry. If the Board block is absent, use local prd only for project description and acceptance; never as live Board columns. The Projects line's open counts are local too.
    - `queued` = available next work
    - `in_progress` / `review` = already claimed; do not offer as free next work
    - `done` = done
-   Count story status from Board entries per project and summarize the company totals.
+   Summarize the company totals from the Board line.
 4. If the block's Integrations line reads "not cached", run `bash core/scripts/usable-integrations.sh show --company {co}` once. That is the only network call startwork may make, and it is skipped when the cache is fresh
 5. Git state only for a repo the user named (or the `via: repo` resolution in §1.1): `git -C {repo} branch --show-current` and `git -C {repo} log --oneline -3`
 #### Project Mode (arg = project name)
@@ -168,7 +194,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 
 1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`); when the path is under `companies/{co}`, bind that company now. Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos if the project path did not identify it (`bash core/scripts/startwork-context.sh resolve --arg "{repo basename}"`). Bind the resolved company before continuing.
-2b. Once `{co}` is known, render the capability block for the project: `bash core/scripts/startwork-context.sh block --company "{co}" --project "{name}"`. Its last line carries the project goal and branch; the rest is the company context from Company Mode step 1.
+2b. Once `{co}` is known, bind and render in one call: `bash core/scripts/startwork-context.sh orient --company "{co}" --mode Project --project "{name}"` (this is the §1.2 bind; do not run it twice). The block's last line carries the project goal and branch; the rest is the company context from Company Mode step 1. When the fast path already bound `{co}` and only the project is new, run `bash core/scripts/startwork-context.sh block --company "{co}" --project "{name}"` and record the project with §2.4.
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
 4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
    - `queued` = available next work
@@ -184,7 +210,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 #### Task Mode (arg = free-text task description)
 
 1. Resolve company/repo from cwd or recent handoff context (read `workspace/threads/handoff.json` if exists)
-   - If a company is found, immediately run `bash core/scripts/hq-session.sh set company_slug "{co}"` before task classification or company-specific context reads.
+   - If a company is found, immediately bind it with the §1.2 call, `bash core/scripts/startwork-context.sh orient --company "{co}" --mode Task`, before task classification or company-specific context reads.
 2. Classify task using inline pattern table:
    - DB/migration/schema/prisma → `schema_change`
    - API/endpoint/route/webhook → `api_development`
@@ -209,17 +235,17 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 
 ### 2.4 Persist Session Metadata
 
-Once company `{co}` is resolved (from any mode), write it into the current
-session's metadata so per-company hooks and other context-aware skills can
-find it:
+The `orient` call in §1.2 (or the fast path) already wrote company, mode and,
+in Project mode, the project into the current session's metadata, so
+per-company hooks and other context-aware skills can find them. Do not repeat
+it. Only add what `orient` could not know, in one call when there is anything:
 
 ```bash
+# A project or task found after orient ran (one call, both flags when known):
 bash core/scripts/work-mesh-live-bind-trusted.sh \
   --company "{co}" --project "{project_name}" --task "{task_id}"
-# Optional extras:
-bash core/scripts/hq-session.sh set repo    "{repo_name}"
-bash core/scripts/hq-session.sh set mode    "{Resume|Company|Project|Repo|Task}"
-# (bind-trusted already sets company_slug / project / task when provided)
+# Repo mode only:
+bash core/scripts/hq-session.sh set repo "{repo_name}"
 ```
 
 This file lives at `workspace/sessions/<session_id>/meta.yaml`. The current
@@ -237,7 +263,7 @@ session.
 
 Policy loading is NOT this skill's job. Two mechanisms already inject policies before this step runs:
 
-1. **Company policies**: surfaced automatically when §2.4 runs `hq-session.sh set company_slug` — the bind emits the company's hard-enforcement rules (deduped and budgeted) directly into the tool result. Do NOT re-scan `companies/{co}/policies/` frontmatter here; that duplicates the bind emission.
+1. **Company policies**: surfaced automatically when `orient` (§1.2 or the fast path) binds the company — the bind emits the company's hard-enforcement rules (deduped and budgeted) directly into the tool result. Do NOT re-scan `companies/{co}/policies/` frontmatter here; that duplicates the bind emission.
 2. **Repo policies**: if repo context resolved and `{repoPath}/.claude/policies/` exists, collect its files except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This is the one scan this step still owns; repo policies are not covered by the company bind.
 3. **Global policies**: injected by the SessionStart/PreToolUse trigger hook (`inject-policy-on-trigger.sh`). No action here.
 
@@ -247,7 +273,7 @@ Policies: {N} company, {M} repo, {K} global ({H} hard-enforcement)
 ```
 
 Rules:
-- This step performs no company-policy file reads. The bind emission (§2.4) is the company-policy surface
+- This step performs no company-policy file reads. The bind emission from `orient` is the company-policy surface
 - Repo policies: frontmatter only; for repo hard-enforcement policies read the `## Rule` section
 - If no company resolved (resume mode with no company context), the count line may omit company
 - Precedence: company > repo > global

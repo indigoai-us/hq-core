@@ -1,0 +1,36 @@
+# manifest-snapshot.yaml — hashed view of HQ companies/manifest.yaml tenant slugs.
+#
+# Private tenant slugs are stored as sha256("<salt>:<slug>") so this file can
+# sit in the repo and in public hq-core history without naming a tenant.
+# .leak-scan/scan.sh slugs hashes every slug-shaped token in a PR-changed
+# file with the same salt and fails on a match. Regenerate with
+# .leak-scan/hash-slugs.sh (HQ /promote-hq-core Phase 4 does this).
+#
+# public_slugs: brands hq-core may name; stored in plaintext and never flagged.
+
+version: 2
+generated: 2026-10-22
+generator: .leak-scan/hash-slugs.sh
+salt: d2189df624394995660a8a28130a49be38e4ef1145b7396435ae1ae837ce7f06
+
+public_slugs:
+- indigo
+- personal
+
+slug_hashes:  # 16 private slugs
+- 07eb7840c7e67a65065246aa390d9fb24640c2509ad8316e3fe9b36347420d0e
+- 09dcbdb97bc91941749a11278e0d7c186f190e028ff772fb7d862b8c6aa6b669
+- 174af0baa0fe7fa8ce17e0d289d19e0a48237fb4aea6e1b94ea6d329d4216fc2
+- 3e9ce1d88c6946581c15a354145d00562bd5c888ae5959a74d37a57703c78923
+- 3fca2965686d4051fd4ed489e3c3217632f8bdfafbd3f30e661cb3c87ca00a2a
+- 678f2d02d6ee42f3d97d797512ad9adb6796908794ff84cd829941970d92d1ad
+- 6b6348d477e0bba85aaad561f6680b15b86c0e07b1483354983eb1edc8e9d863
+- 7580b5ed65f3ec61a46abef1c074cf710b7ab616c1279ad895db5201f68dd4eb
+- 78846b5aa899cac8e03f5bacd2667f91026f7af732d85dc0bd2dcda645af7c40
+- 7e2eafb12fc5cbd83e5b6d3b3954a1a8a10a8b0fd4f0436e54b6b88f9f4fba89
+- 9e470eb7129fba836bf0436116ba2d7d326743c5ea761672314d03484956cfeb
+- a482ee225f658c48de0dce40713be433c22082ebf5b49fb20797a0c8cac6fc07
+- bd8239e5ddddb7a348194561828c6374e13914073c2044ee8cbd3549c09b6ae8
+- cf89731ec69b34f34dcb93a491517e62659e7aa5ab2f0b6818db2095ac7b4ded
+- e778a68fdb059c72279feae9af9637200396965bc341395e33e72dd80053c31b
+- f28eef57502dc5444e054e6b046d3ed0dd8b2a4504c7046a7bd00e531e73f3c0

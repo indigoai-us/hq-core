@@ -63,11 +63,14 @@ rec --target x --cursor x1
 out="$(node "$SC" verify --state "$state" --since "$since")"; check "full sweep passes" $?
 grep -q 'Skipped: email:a@example.com (superhuman needs re-auth)' <<<"$out"; check "status line names skipped account" $?
 
-# 5. An unavailable mark expires after an hour: recheck is due.
+# 5. An unavailable mark expires after an hour: recheck is due, but it is not a missed sweep.
 later="$(node -e 'console.log(new Date(Date.now()+61*60*1000).toISOString())')"
 set +e; out="$(node "$SC" verify --state "$state" --since "$since" --now "$later")"; rc=$?; set -e
-check "stale unavailable fails after an hour (rc $rc)" "$([[ $rc -eq 1 ]]; echo $?)"
-grep -q 'email:a@example.com (unavailable recheck due' <<<"$out"; check "names recheck due" $?
+check "stale unavailable is not a missed sweep (rc $rc)" "$([[ $rc -eq 0 ]]; echo $?)"
+grep -q 'Recheck due (unavailable over an hour): email:a@example.com (superhuman needs re-auth)' <<<"$out"; check "names recheck due (got: $out)" $?
+grep -q 'NOT SWEPT' <<<"$out" && check "recheck due is not listed as NOT SWEPT (got: $out)" 1
+out="$(node "$SC" due --state "$state" --now "$later")"
+grep -q '^email:a@example.com$' <<<"$out"; check "due lists the stale unavailable target again (got: $out)" $?
 
 # 6. Heartbeat wiring: second wake flags a sweep that missed channels.
 export SC_HEARTBEAT_MIN_INTERVAL=1
@@ -99,5 +102,37 @@ echo '{"error":"link_not_found"}'; exit 1
 EOF
 out="$(HQ_BIN="$tmp/hq" bash "$HB" --interval 1 --link cl-t --state "$state")"
 check "heartbeat passes a full sweep (out: $out)" "$(! grep -q SWEEP-INCOMPLETE <<<"$out"; echo $?)"
+
+# 8. Heartbeat wiring: sweep evidence is judged tick to tick. A REPORT wake
+# a moment after a tick is never itself judged as a sweep: the missing
+# evidence is reported at the next tick, after the REPORT, not before it.
+rm -f "$tmp/n"
+echo '{"sweep":{}}' >"$state"
+cat >"$tmp/hq" <<EOF
+#!/usr/bin/env bash
+n=\$(( \$(cat "$tmp/n" 2>/dev/null || echo 0) + 1 )); echo \$n >"$tmp/n"
+if (( n == 1 )); then exit 3; fi
+if (( n == 2 )); then echo '{"pending":true}'; exit 0; fi
+echo '{"error":"link_not_found"}'; exit 1
+EOF
+out="$(HQ_BIN="$tmp/hq" bash "$HB" --interval 1 --link cl-t --state "$state")"
+kinds="$(awk '/^SUPER-CONDUCTOR/{print $2}' <<<"$out" | tr '\n' ' ')"
+check "a REPORT right after a tick is not judged; the next tick is (got: $kinds)" "$([[ "$kinds" == "TICK REPORT SWEEP-INCOMPLETE TICK LINK-CLOSED " ]]; echo $?)"
+
+# 8. Heartbeat wiring: sweep evidence is judged tick to tick. A REPORT wake
+# a moment after a tick is never itself judged as a sweep: the missing
+# evidence is reported at the next tick, after the REPORT, not before it.
+rm -f "$tmp/n"
+echo '{"sweep":{}}' >"$state"
+cat >"$tmp/hq" <<EOF
+#!/usr/bin/env bash
+n=\$(( \$(cat "$tmp/n" 2>/dev/null || echo 0) + 1 )); echo \$n >"$tmp/n"
+if (( n == 1 )); then exit 3; fi
+if (( n == 2 )); then echo '{"pending":true}'; exit 0; fi
+echo '{"error":"link_not_found"}'; exit 1
+EOF
+out="$(HQ_BIN="$tmp/hq" bash "$HB" --interval 1 --link cl-t --state "$state")"
+kinds="$(awk '/^SUPER-CONDUCTOR/{print $2}' <<<"$out" | tr '\n' ' ')"
+check "a REPORT right after a tick is not judged; the next tick is (got: $kinds)" "$([[ "$kinds" == "TICK REPORT SWEEP-INCOMPLETE TICK LINK-CLOSED " ]]; echo $?)"
 
 [[ "$fail" -eq 0 ]] && echo "super-conductor-sweep-check: all checks passed" || exit 1

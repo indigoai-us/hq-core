@@ -1,0 +1,23 @@
+# /handoff — shipped defaults
+#
+# To change it, copy this file to personal/settings/handoff.yaml and edit
+# there. Do not edit this one — it is release-owned and replaced by /update-hq.
+#
+# Precedence, first match wins:
+#   1. /handoff --no-archive or /handoff --archive  (this one handoff;
+#      --archive counts only as the first word of the message)
+#   2. env HQ_HANDOFF_ARCHIVE=1|0
+#   3. personal/settings/handoff.yaml
+#   4. this file
+#
+# auto_archive:
+#   false  /handoff leaves the session open. Archive it with /handoff --archive.
+#   true   After the report, /handoff archives its own Claude Code desktop
+#          session. The transcript stays in the app's Archived list. Skipped
+#          outside the desktop app, when a follow-up still needs you to run a
+#          recovery command, when the handoff files are missing, when the
+#          session's worktree has uncommitted changes (archiving deletes that
+#          worktree), when its branch has an open PR, when it has background
+#          work (lanes, monitors, background tasks), when it has an ask waiting
+#          on you, and when any of these checks cannot run.
+auto_archive: false

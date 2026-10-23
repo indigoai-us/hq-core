@@ -15,7 +15,8 @@
 #   - without --yes: prints a full-prose confirmation listing every name and
 #     the principal, then exits 2 granting nothing — this step is a privilege
 #     handover and gets its own confirmation, separate from the file grants
-#   - with --yes: hq secrets share <NAME> --with <principal> --permission read
+#   - with --yes: hq secrets --company <co> share <NAME> --with <principal>
+#     --permission read (agent/person uids use the grant step's grantPrincipal)
 #     per name, then records the names (and only the names) in the manifest
 #   - --no-secrets: skips everything, records {secrets: [], secretsSkipped: true}
 #
@@ -56,6 +57,23 @@ PRINCIPAL="$(jq -r '.to.principal // empty' "$MANIFEST")"
 PROJECT="$(jq -r '.project.name // empty' "$MANIFEST")"
 [ -n "$COMPANY" ]   || die "manifest has no company"
 [ -n "$PRINCIPAL" ] || die "manifest has no to.principal"
+
+# Secret-ACL principals must be an email, grp_<id>, out_<id>, or @all. An
+# agent (agt_...) or person uid (prs_...) is rejected by `hq secrets share`, so
+# share with the principal the grant step resolved and recorded in
+# .grantPrincipal: the per-agent delegation group (grp_dlg...) for an agent,
+# the mapped email for a person uid. The grant step runs first.
+SHARE_PRINCIPAL="$PRINCIPAL"
+case "$PRINCIPAL" in
+  agt_*|prs_*)
+    RECORDED="$(jq -r '.grantPrincipal // empty' "$MANIFEST" | tr -d '\r')"
+    case "$PRINCIPAL:$RECORDED" in
+      agt_*:grp_dlg*) SHARE_PRINCIPAL="$RECORDED" ;;
+      prs_*:?*@?*)    SHARE_PRINCIPAL="$RECORDED" ;;
+      *)              SHARE_PRINCIPAL="" ;;
+    esac
+    ;;
+esac
 
 update_manifest() { # jq-filter
   local tmp
@@ -106,6 +124,14 @@ echo "The following $NAME_COUNT secret name(s), declared by $(basename "$ENV_SCH
 echo
 printf '%s\n' "$NAMES" | sed 's/^/  - /'
 echo
+if [ "$SHARE_PRINCIPAL" != "$PRINCIPAL" ]; then
+  if [ -n "$SHARE_PRINCIPAL" ]; then
+    echo "Access flows through '$SHARE_PRINCIPAL', the principal the grant step resolved for '$PRINCIPAL'."
+  else
+    echo "Access will flow through the principal the grant step records for '$PRINCIPAL' (run hq-delegate-grant.sh --yes first)."
+  fi
+  echo
+fi
 echo "Only the names are granted and recorded; no secret value is read, printed, or transmitted by this step. The recipient consumes them through 'hq run' / 'hq secrets exec'."
 
 if [ "$YES" -ne 1 ]; then
@@ -116,10 +142,13 @@ fi
 
 # --- grant each name (names only — never a value read) ------------------------
 
+[ -n "$SHARE_PRINCIPAL" ] \
+  || die "recipient '$PRINCIPAL' cannot be a secret-ACL principal and the manifest has no usable grantPrincipal — run hq-delegate-grant.sh --yes first; nothing granted"
+
 printf '%s\n' "$NAMES" | while IFS= read -r name; do
-  hq secrets share "$name" --with "$PRINCIPAL" --permission read --company "$COMPANY" \
-    || die "failed to grant '$name' to '$PRINCIPAL' — aborting; manifest not updated"
-  echo "hq-delegate-secrets: granted read on '$name' to '$PRINCIPAL'"
+  hq secrets --company "$COMPANY" share "$name" --with "$SHARE_PRINCIPAL" --permission read \
+    || die "failed to grant '$name' to '$SHARE_PRINCIPAL' — aborting; manifest not updated"
+  echo "hq-delegate-secrets: granted read on '$name' to '$SHARE_PRINCIPAL'"
 done
 
 NAMES_JSON="$(printf '%s\n' "$NAMES" | jq -R . | jq -cs .)"

@@ -44,9 +44,9 @@ marker_authority() {
 }
 
 # State is old. The trusted marker is newer and not expired, so the hook holds.
-printf '%s\n' '{"companySlug":"indigo","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
+printf '%s\n' '{"companySlug":"example-co","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
 touch -t 202001010000 "$STATE"
-printf 'companySlug=indigo\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
+printf 'companySlug=example-co\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
 touch "$MARKER"
 
 work_mesh_live_maybe_rebind_from_state "$SID"
@@ -56,60 +56,60 @@ work_mesh_live_maybe_rebind_from_state "$SID"
 pass "fresh trusted marker survives a hook while state still names the old project"
 
 # A newer marker without trusted authority must not hold.
-printf '%s\n' '{"companySlug":"indigo","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
+printf '%s\n' '{"companySlug":"example-co","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
 touch -t 202001010000 "$STATE"
-printf 'companySlug=indigo\nproject=install-flow-rethink\ntask=US-002\n' >"$MARKER"
+printf 'companySlug=example-co\nproject=install-flow-rethink\ntask=US-002\n' >"$MARKER"
 touch "$MARKER"
 work_mesh_live_maybe_rebind_from_state "$SID"
 [ "$(marker_project)" = "harness2-vs-hq" ] \
   || fail "newer marker without trusted authority was held"
-[ "$(marker_task)" = "US-001" ] || fail "untrusted marker kept its task"
+[ "$(marker_task)" = "US-001" ] || fail "untrusted marker retained its task"
 pass "a newer marker without trusted authority follows mesh state"
 
 # Trusted authority that is older than the hold window must not hold,
 # even when the marker is still newer than state.
-printf '%s\n' '{"companySlug":"indigo","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
+printf '%s\n' '{"companySlug":"example-co","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
 touch -t 202001010000 "$STATE"
-printf 'companySlug=indigo\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
+printf 'companySlug=example-co\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
 touch -t 202001020000 "$MARKER"
 work_mesh_live_maybe_rebind_from_state "$SID"
 [ "$(marker_project)" = "harness2-vs-hq" ] \
   || fail "expired trusted marker was held"
-[ "$(marker_task)" = "US-001" ] || fail "expired trusted marker kept its task"
+[ "$(marker_task)" = "US-001" ] || fail "expired trusted marker retained its task"
 pass "an expired trusted marker follows mesh state"
 
-printf '%s\n' '{"companySlug":"indigo","projectId":"install-flow-rethink","taskId":"US-009","projectBindAuthority":"trusted"}' >"$STATE"
+printf '%s\n' '{"companySlug":"example-co","projectId":"install-flow-rethink","taskId":"US-009","projectBindAuthority":"trusted"}' >"$STATE"
 touch -t 202001030000 "$STATE"
-printf 'companySlug=indigo\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
+printf 'companySlug=example-co\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
 touch -t 202001020000 "$MARKER"
 work_mesh_live_maybe_rebind_from_state "$SID"
 [ "$(marker_project)" = "install-flow-rethink" ] || fail "marker left the trusted project"
 [ "$(marker_task)" = "US-009" ] || fail "marker did not follow the newer trusted state"
 pass "marker follows state once the trusted project is stored and newer"
 
-printf 'companySlug=indigo\nproject=harness2-vs-hq\ntask=US-001\n' >"$MARKER"
+printf 'companySlug=example-co\nproject=harness2-vs-hq\ntask=US-001\n' >"$MARKER"
 touch -t 202001010000 "$MARKER"
 touch -t 202001030000 "$STATE"
 work_mesh_live_maybe_rebind_from_state "$SID"
 [ "$(marker_project)" = "install-flow-rethink" ] \
   || fail "older marker was not updated from the newer trusted state"
-[ "$(marker_task)" = "US-009" ] || fail "older marker kept the foreign task"
+[ "$(marker_task)" = "US-009" ] || fail "older marker retained the foreign task"
 pass "an older marker follows the newer trusted state"
 
 # A trusted marker with a future mtime must not hold. A skewed or touched
 # file would otherwise hold until state becomes newer than it.
-printf '%s\n' '{"companySlug":"indigo","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
+printf '%s\n' '{"companySlug":"example-co","projectId":"harness2-vs-hq","taskId":"US-001"}' >"$STATE"
 touch -t 202001010000 "$STATE"
-printf 'companySlug=indigo\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
+printf 'companySlug=example-co\nproject=install-flow-rethink\ntask=US-002\nauthority=trusted\n' >"$MARKER"
 touch -t 209901010000 "$MARKER"
 work_mesh_live_maybe_rebind_from_state "$SID"
 [ "$(marker_project)" = "harness2-vs-hq" ] \
   || fail "trusted marker with a future mtime was held"
 pass "a trusted marker with a future mtime follows mesh state"
 
-work_mesh_live_write_binding_marker "$SID" indigo harness2-vs-hq US-001
+work_mesh_live_write_binding_marker "$SID" example-co harness2-vs-hq US-001
 [ -z "$(marker_authority)" ] || fail "marker without authority recorded authority=$(marker_authority)"
-work_mesh_live_write_binding_marker "$SID" indigo install-flow-rethink US-002 trusted
+work_mesh_live_write_binding_marker "$SID" example-co install-flow-rethink US-002 trusted
 [ "$(marker_authority)" = "trusted" ] \
   || fail "write_binding_marker did not record authority=trusted"
 [ "$(marker_project)" = "install-flow-rethink" ] \

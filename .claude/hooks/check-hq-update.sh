@@ -21,6 +21,16 @@
 #
 # Wired in .claude/settings.json SessionStart and gated by hook-gate.sh under "check-hq-update" (standard profile).
 
+# Windows Git Bash/MSYS/Cygwin: setsid() drops the hidden console that the
+# desktop host gave this hook, so every native program the detached child runs
+# (node, powershell, curl) opens a visible console window. Only use setsid on
+# real POSIX hosts; on MSYS a plain background child keeps the hidden console.
+hq_setsid_available() {
+  # OSTYPE (set by bash itself) avoids forking uname on the hook hot path.
+  case "${OSTYPE:-}" in msys*|cygwin*) return 1 ;; esac
+  command -v setsid >/dev/null 2>&1
+}
+
 # Fail silently on ANY error — this hook is purely advisory and must never
 # surface noise, crash the session start, or block other hooks. No `set -e`,
 # no `set -u`. Belt-and-suspenders EXIT trap forces a clean exit code; the
@@ -338,7 +348,7 @@ if command -v hq >/dev/null 2>&1 && { command -v pnpm >/dev/null 2>&1 || command
           mkdir -p "$CACHE_DIR"
           : > "$CLI_STAMP"
           # Detach fully so the age-gated install outlives this hook process.
-          if command -v setsid >/dev/null 2>&1; then
+          if hq_setsid_available; then
             setsid sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &
           else
             nohup sh -c "$UPDATE_CMD >/dev/null 2>&1" >/dev/null 2>&1 &

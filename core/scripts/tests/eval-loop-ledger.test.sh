@@ -733,6 +733,21 @@ else:
     raise SystemExit("child of a finished run was accepted")
 if (companies / "done-root" / "eval-library" / "c2" / "ledger.json").exists():
     raise SystemExit("child of a finished run wrote a ledger")
+# A finished class takes no new stage and cannot be started.
+done_bytes = (companies / "done-root" / "eval-library" / "c1" / "ledger.json").read_bytes()
+for attempt, call in (
+    ("commit", lambda: done.commit({"label": ledger.format_label("done-root", done_id, "session:compose"), "kind": ledger.KIND_SESSION, "lane_id": "x", "provider": "none", "account": "none", "usd": ledger.UNPRICED})),
+    ("start", lambda: done.start([stage(done_id, "rollout:late", "rollout", "lane-late")])),
+):
+    try:
+        call()
+    except ledger.LedgerError as exc:
+        if "run is finished" not in str(exc):
+            raise SystemExit(f"{attempt} after finalize raised the wrong error: {exc}")
+    else:
+        raise SystemExit(f"{attempt} after finalize was accepted")
+if (companies / "done-root" / "eval-library" / "c1" / "ledger.json").read_bytes() != done_bytes:
+    raise SystemExit("refused stage changed a finished ledger")
 
 try:
     ledger.normalize_stage(

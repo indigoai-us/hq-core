@@ -2506,11 +2506,56 @@ if [ "$EVENT" = "UserPromptSubmit" ] && [ "${HQ_POLICY_EMIT:-}" != "tsv" ] \
     jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
 fi
 
+# The registry run of policy-enforcement-gate.sh leaves a pass stamp when this
+# Bash call was not outbound and matched no gate-fact policy (see the stamp
+# comment there). If the stamp holds this exact payload (tool_use_id included)
+# and the match TSV and state JSON are still byte-identical to the copies it
+# holds, the re-run below would read the same inputs and pass again, so it is
+# skipped. Any difference, a missing stamp, or a missing tool_use_id runs the
+# gate as before. Keep pretool_pass_key and pretool_pass_snapshot identical to
+# the gate's copies.
+pretool_pass_key() { # <payload> -> REPLY ("" without a tool_use_id)
+  local payload="$1" id=""
+  [[ "$payload" =~ \"tool_use_id\"[[:space:]]*:[[:space:]]*\"([A-Za-z0-9_-]+)\" ]] && id="${BASH_REMATCH[1]}"
+  REPLY=""
+  [ -n "$id" ] || return 0
+  payload="${payload%"${payload##*[!$'\n']}"}"
+  REPLY="id:${id}"$'\n'"payload:${#payload}"$'\n'"${payload}"$'\n'
+}
+pretool_pass_snapshot() { # <policies-tsv> <state-json> -> REPLY
+  local file content out=""
+  for file in "$1" "$2"; do
+    if [ -f "$file" ]; then
+      content=""
+      IFS= read -r -d '' content < "$file" || true
+      out="${out}present:${#content}"$'\n'"${content}"$'\n'
+    else
+      out="${out}missing"$'\n'
+    fi
+  done
+  REPLY="$out"
+}
+pretool_gate_pass_is_current() {
+  local dir stamp key stamp_content=""
+  [ -n "${SESSION_ID:-}" ] || return 1
+  case "$SESSION_ID" in */*|*..*) return 1 ;; esac
+  # The gate resolves its root from CLAUDE_PROJECT_DIR first; match it.
+  dir="${CLAUDE_PROJECT_DIR:-$HQ_ROOT}/workspace/orchestrator/policy-enforcement"
+  stamp="$dir/${SESSION_ID}.pretool-pass"
+  [ -f "$stamp" ] || return 1
+  pretool_pass_key "$STDIN_JSON"; key="$REPLY"
+  [ -n "$key" ] || return 1
+  IFS= read -r -d '' stamp_content < "$stamp" || true
+  pretool_pass_snapshot "$dir/${SESSION_ID}.policies.tsv" "$dir/${SESSION_ID}.json"
+  [ "$stamp_content" = "$key$REPLY" ]
+}
+
 # Bash policies may first match on the outbound command itself. Run the
 # enforcement gate only after that same-action match is durable.
 if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ] \
    && [ "${HQ_POLICY_EMIT:-}" != "tsv" ] \
-   && [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ]; then
+   && [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ] \
+   && ! pretool_gate_pass_is_current; then
   ENFORCEMENT_RC=0
   ENFORCEMENT_OUTPUT="$(printf '%s' "$STDIN_JSON" | \
     bash "$HQ_ROOT/.claude/hooks/policy-enforcement-gate.sh" PreToolUse 2>/dev/null)" || ENFORCEMENT_RC=$?

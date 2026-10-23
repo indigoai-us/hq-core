@@ -14,6 +14,7 @@ cat > "$TMP/bin/hq" <<'STUB'
 set -eu
 case "$1 $2" in
   'sync push')
+    echo "$3" >> "$HQ_TEST_CLOUD.pushes"
     [ "${HQ_TEST_PUSH_FAIL:-0}" = 0 ] || exit 1
     mkdir -p "$HQ_TEST_CLOUD/projects"
     cp -R "$HQ_ROOT/companies/acme/projects/widget" "$HQ_TEST_CLOUD/projects/"
@@ -38,6 +39,8 @@ JSON
 reset_manifest
 bash "$ROOT/core/scripts/hq-delegate-publish.sh" --manifest "$M" >/dev/null
 jq -e '.recipientAccess == "unconfirmed" and (.publication.files|length)==5' "$M" >/dev/null || fail 'publication evidence missing'
+if grep -qx 'companies/acme/projects/widget/' "$HQ_TEST_CLOUD.pushes"; then fail 'publish pushed the whole project folder'; fi
+grep -qx 'companies/acme/projects/widget/prd.json' "$HQ_TEST_CLOUD.pushes" || fail 'publish did not push prd.json'
 jq -e '.metadata.owner == "alice@example.test"' "$HQ_TEST_CLOUD/projects/widget/prd.json" >/dev/null || fail 'cloud owner stale'
 cmp "$PROJ/delegation/dlg-test/manifest.json" "$HQ_TEST_CLOUD/projects/widget/delegation/dlg-test/manifest.json" || fail 'cloud manifest differs'
 BEFORE="$(sha256sum "$PROJ/delegation/dlg-test/manifest.json")"

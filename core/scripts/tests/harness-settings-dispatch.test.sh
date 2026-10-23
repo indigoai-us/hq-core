@@ -167,9 +167,14 @@ else
   fail "malformed iterator framing silently emitted zero critical guards"
 fi
 
-expected_gate_ids() { # <event> <tool>
+expected_gate_ids() { # <event> <tool> [payload]
+  # The payload carries the session id, so a prefilter.file with
+  # {session_id} is judged for the same session the adapter run sees. Grok
+  # sends sessionId; its adapter maps it to session_id before dispatch.
+  local p="${3:-}"
+  [ -z "$p" ] || p="$(jq -c '.session_id //= (.sessionId // .conversationId // .threadId)' <<<"$p" 2>/dev/null || printf '%s' "$p")"
   ( set +u; . "$FIX/core/scripts/lib/hook-adapter-core.sh"
-    HQ_ROOT="$FIX" hqad_iter_settings "$1" "$2" \
+    HQ_ROOT="$FIX" hqad_iter_settings "$1" "$2" "$p" \
       | awk -F'\t' '$1=="gate"{print $2}' | sort -u )
 }
 
@@ -197,7 +202,7 @@ assert_combo() { # <runtime-label> <adapter> <event> <tool> <payload>
   local expected recorded gates missing
   ASSERTED="${ASSERTED}${event}/${tool}
 "
-  expected="$(expected_gate_ids "$event" "$tool")"
+  expected="$(expected_gate_ids "$event" "$tool" "$payload")"
   recorded="$(run_recorded "$adapter" "$payload")"
   gates="$(printf '%s\n' "$recorded" | grep '^gate:' | sed 's/^gate://' | sort -u)"
   missing="$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$gates") | grep -v '^$' || true)"

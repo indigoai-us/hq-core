@@ -155,6 +155,33 @@ grep -q "$APPDATA_FIX/npm/qmd" "$TMP/probe.out" \
   || fail "qmd not resolved from APPDATA/npm (got: $(cat "$TMP/probe.out"))"
 pass "Windows APPDATA/npm path discovered under simulated MINGW"
 
+# ---------------------------------------------------------------------------
+echo "[7] installer toolchain npm-global/bin and node/bin win over a stale ~/.local/bin hq"
+# feedback_54e69cd9: hq lived only in the Indigo HQ toolchain npm-global/bin,
+# which hq_augment_path never probed, so hooks reported hq missing from PATH.
+H7="$TMP/home-toolchain"
+TC7="$H7/Library/Application Support/Indigo HQ/toolchain"
+make_tools "$TC7/npm-global/bin"
+rm -f "$TC7/npm-global/bin/node"
+make_tools "$TC7/node/bin"
+rm -f "$TC7/node/bin/hq" "$TC7/node/bin/qmd"
+make_tools "$H7/.local/bin"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H7" \
+  PATH="$UTILS" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err7"
+set -e
+grep -q PROBE_HOOK_RAN "$TMP/err7" || fail "probe hook did not run for toolchain fixture (stderr: $(cat "$TMP/err7"))"
+grep -qxF "$TC7/npm-global/bin/hq" "$TMP/probe.out" \
+  || fail "hq not resolved from toolchain npm-global/bin (got: $(cat "$TMP/probe.out"))"
+grep -qxF "$TC7/npm-global/bin/qmd" "$TMP/probe.out" \
+  || fail "qmd not resolved from toolchain npm-global/bin (got: $(cat "$TMP/probe.out"))"
+grep -qxF "$TC7/node/bin/node" "$TMP/probe.out" \
+  || fail "node not resolved from toolchain node/bin (got: $(cat "$TMP/probe.out"))"
+pass "installer toolchain dirs discovered ahead of ~/.local/bin"
+
 echo "ALL PASS: hook-gate-path-augment"
 
 . "$GATE" --lib

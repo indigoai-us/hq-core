@@ -46,7 +46,9 @@
 # Bash coverage is best-effort (exhaustive shell analysis is intractable) and
 # follows the same parser contract as block-core-writes-bash.sh: segment
 # splitting on &&/||/;/|/&, whitespace tokenization, per-op target extraction,
-# and redirect detection. Inside a repos/ or workspace/worktrees/ checkout
+# and redirect detection. Words are split quote-aware; ~/ and $HOME/ prefixes
+# expand; relative targets resolve against the payload cwd and any cd/pushd in
+# the command. Inside a repos/ or workspace/worktrees/ checkout
 # (cd/pushd context), bare-relative "companies/…" tokens are the checkout's own
 # tree and are NOT enforced; absolute and $CLAUDE_PROJECT_DIR/$HQ_ROOT forms
 # always are.
@@ -161,6 +163,31 @@ effective_permission() {
 DENY_SLUG=""
 DENY_REL=""
 DENY_PERM=""
+# Exact-key grants that sit directly above the denied path, one per line as
+# "<path> (<permission>)". A grant written as "knowledge" (no trailing "/" or
+# "/*") covers only an object named exactly "knowledge" — on the server too —
+# so a member who was meant to get the folder is denied under it. Naming the
+# near miss in the block message turns a dead end into the right share command.
+DENY_NEAR=""
+
+# near_miss_grants <slug> <company-relative-path>
+# Prints exact-key grants whose path is a strict directory prefix of the path.
+near_miss_grants() {
+  local slug="$1" rel="$2"
+  [[ "$MANIFEST_INVALID" == 1 ]] && return 0
+  jq -r --arg slug "$slug" --arg rel "$rel" '
+    (.companies[$slug] // null) as $c
+    | if $c == null then empty else
+        ($c.grants // [])[]
+        | . as $g
+        | select(($g.path != "*")
+            and ($g.path | endswith("/*") | not)
+            and ($g.path | endswith("/") | not)
+            and ($rel | startswith($g.path + "/")))
+        | "\($g.path) (\($g.permission))"
+      end
+  ' "$MANIFEST" 2>/dev/null || true
+}
 
 # check_vault_path <absolute-path>
 # Returns 0 when the mutation is allowed (or not a vault path), 1 when denied.
@@ -199,6 +226,10 @@ check_vault_path() {
   DENY_SLUG="$slug"
   DENY_REL="$crel"
   DENY_PERM="$perm"
+  DENY_NEAR=""
+  if [[ "$perm" == "none" ]]; then
+    DENY_NEAR="$(near_miss_grants "$slug" "$crel")"
+  fi
   return 1
 }
 
@@ -230,6 +261,20 @@ EOF
 This path is synced from the company vault, and your membership grants do not
 include write permission on it. A local edit or delete here would be rejected
 (or clobbered) at the next sync — the server-side ACL is authoritative.
+EOF
+  fi
+  if [[ -n "$DENY_NEAR" ]]; then
+    local near_path near_first
+    near_first="${DENY_NEAR%%$'\n'*}"
+    near_path="${near_first% (*}"
+    cat >&2 <<EOF
+
+Near miss: your manifest lists an exact-key grant above this path:
+$(printf '%s\n' "$DENY_NEAR" | sed 's/^/  /')
+An exact-key grant covers only an object named exactly '$near_path', not the
+files under '$near_path/'. The server applies the same rule, so a push would be
+refused as well. Ask a company owner/admin to share the folder instead:
+    hq files share '$near_path/*' --with <you> --permission write
 EOF
   fi
   cat >&2 <<EOF
@@ -268,18 +313,48 @@ if [[ "$TOOL" != "Bash" ]]; then
   exit 0
 fi
 
+# Bash parsing is best effort. Known gaps: an unknown cwd (cd "$VAR", cd -,
+# cd $(...)) is not followed, so later relative targets are not checked;
+# popd and subshell scope are not tracked; writes inside $(...), backticks or
+# bash -c '...' strings are seen only when a companies/ token is visible.
+
 # ── Bash ────────────────────────────────────────────────────────────────────
 
 CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
 [[ -z "$CMD" ]] && exit 0
+# Join backslash-newline continuations so a target on the next line is seen.
+# The pattern sits in a quoted variable: bash 3.2 (macOS /bin/bash) matches
+# nothing for an unquoted $'\\\n' pattern.
+LINE_CONT=$'\\\n'
+CMD="${CMD//"$LINE_CONT"/ }"
+# `>|` (noclobber override) is a redirect; keep the segment splitter below
+# from reading its `|` as a pipe.
+CMD="${CMD//>|/>}"
 
-# Fast path: no companies token anywhere in the command → nothing to check.
+# The Bash tool's working directory. When it is inside companies/, relative
+# targets (cp x projects/y) land in the vault even without a companies/ token.
+PAYLOAD_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) || true
+if [[ -n "$PAYLOAD_CWD" ]]; then
+  if hq_path_is_absolute "$PAYLOAD_CWD"; then
+    PAYLOAD_CWD="$(hq_canonical_path "$PAYLOAD_CWD")"
+  else
+    PAYLOAD_CWD=""
+  fi
+fi
+
+# Fast path: no companies token anywhere in the command and the shell is not
+# already inside companies/ → nothing to check.
 case "$CMD" in
   *companies/*) ;;
-  *) exit 0 ;;
+  *)
+    case "$PAYLOAD_CWD" in
+      "$PROJECT_DIR"/companies/*) ;;
+      *) exit 0 ;;
+    esac
+    ;;
 esac
 
-WRITE_OPS='(^|[[:space:]])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln)([[:space:]]|$)'
+WRITE_OPS='(^|[[:space:](/])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln|install)([[:space:]]|$)'
 
 # True when the command cd/pushd-es into a checked-out repo tree (repos/ or
 # workspace/worktrees/) — there, bare-relative companies/ tokens denote the
@@ -296,30 +371,128 @@ fi
 
 strip_token_quotes() {
   local tok="$1"
-  case "$tok" in
-    \"*\") tok="${tok#\"}"; tok="${tok%\"}" ;;
-    \'*\') tok="${tok#\'}"; tok="${tok%\'}" ;;
-  esac
+  # Drop shell grouping characters glued to a word: (cp a b) / { cp a b; }.
+  while [[ "$tok" == \(* || "$tok" == \{* ]]; do tok="${tok#?}"; done
+  while [[ "$tok" == *\) || "$tok" == *\} ]]; do tok="${tok%?}"; done
+  tok="${tok//\"/}"
+  tok="${tok//\'/}"
   printf '%s' "$tok"
+}
+
+# split_words <string> — quote-aware word split. Whitespace inside '…' or "…"
+# does not split, so "companies/x/a b.md" stays one word. Quote characters are
+# kept (strip_token_quotes removes them). Fills WORDS.
+WORDS=()
+# Runs in the C locale: every delimiter is ASCII, UTF-8 continuation bytes
+# never equal one, and ${s:i:1} is then a constant-time byte index instead of
+# a rescan from the start of the string (quadratic under UTF-8).
+split_words() {
+  local LC_ALL=C
+  local s="$1" cur="" q="" c i n have=0
+  n=${#s}
+  WORDS=()
+  for ((i=0; i<n; i++)); do
+    c="${s:i:1}"
+    if [[ -n "$q" ]]; then
+      cur+="$c"
+      [[ "$c" == "$q" ]] && q=""
+      continue
+    fi
+    case "$c" in
+      \"|\') q="$c"; cur+="$c"; have=1 ;;
+      " "|$'\t'|$'\n')
+        if [[ "$have" == 1 ]]; then WORDS[${#WORDS[@]}]="$cur"; fi
+        cur=""; have=0 ;;
+      *) cur+="$c"; have=1 ;;
+    esac
+  done
+  if [[ "$have" == 1 ]]; then WORDS[${#WORDS[@]}]="$cur"; fi
+}
+
+# expand_home <token> — expand a leading ~/, $HOME/ or ${HOME}/.
+expand_home() {
+  local tok="$1"
+  if [[ -n "${HOME:-}" ]]; then
+    case "$tok" in
+      \~) tok="$HOME" ;;
+      \~/*) tok="$HOME/${tok#\~/}" ;;
+      "\$HOME") tok="$HOME" ;;
+      "\$HOME/"*) tok="$HOME/${tok#\$HOME/}" ;;
+      "\${HOME}") tok="$HOME" ;;
+      "\${HOME}/"*) tok="$HOME/${tok#\$\{HOME\}/}" ;;
+    esac
+  fi
+  printf '%s' "$tok"
+}
+
+# Effective working directory for relative tokens: the Bash tool's cwd, then
+# updated by cd/pushd segments in the command. Empty = unknown.
+CWD_CTX="$PAYLOAD_CWD"
+
+# update_cwd_ctx <segment> — follow cd/pushd so later relative targets resolve
+# against the directory the command actually moved into.
+update_cwd_ctx() {
+  local first target base
+  [[ "$1" =~ ^[[:space:]\(\{]*[\"\']?(cd|pushd)[\"\']?([[:space:]]|$) ]] || return 0
+  split_words "$1"
+  [[ "${#WORDS[@]}" -gt 0 ]] || return 0
+  first="$(strip_token_quotes "${WORDS[0]}")"
+  case "$first" in
+    cd|pushd) ;;
+    *) return 0 ;;
+  esac
+  target="$(strip_token_quotes "${WORDS[1]:-}")"
+  [[ "$target" == "-P" || "$target" == "-L" ]] && target="$(strip_token_quotes "${WORDS[2]:-}")"
+  if [[ -z "$target" ]]; then
+    target="${HOME:-}"
+  fi
+  target="$(expand_home "$target")"
+  case "$target" in
+    "\$CLAUDE_PROJECT_DIR"*|"\${CLAUDE_PROJECT_DIR}"*|"\$HQ_ROOT"*|"\${HQ_ROOT}"*)
+      target="$PROJECT_DIR/${target#*/}"
+      [[ "$target" == "$PROJECT_DIR/"*'$'* ]] && target="$PROJECT_DIR"
+      ;;
+    -|\$*|"") CWD_CTX=""; return 0 ;;
+  esac
+  if ! hq_path_is_absolute "$target"; then
+    base="${CWD_CTX:-$PROJECT_DIR}"
+    target="$base/$target"
+  fi
+  CWD_CTX="$(hq_canonical_path "$target")"
 }
 
 # resolve_vault_token <token>
 # Prints the absolute live-root path when the token denotes a companies/ path
 # this hook should check; prints nothing otherwise.
 resolve_vault_token() {
-  local tok="$1"
+  local tok
+  tok="$(expand_home "$1")"
   case "$tok" in
     "\$CLAUDE_PROJECT_DIR"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$CLAUDE_PROJECT_DIR/}" ;;
     "\${CLAUDE_PROJECT_DIR}"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$\{CLAUDE_PROJECT_DIR\}/}" ;;
     "\$HQ_ROOT"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$HQ_ROOT/}" ;;
     "\${HQ_ROOT}"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$\{HQ_ROOT\}/}" ;;
-    "$PROJECT_DIR"/companies/*) printf '%s' "$tok" ;;
-    /*) ;;
-    \$*) ;;
+    /*) printf '%s' "$tok" ;;
+    \$*|-*|"") ;;
     companies/*|./companies/*)
       if [[ "$REPO_CTX" == "no" ]]; then
-        printf '%s' "$PROJECT_DIR/${tok#./}"
+        printf '%s' "${CWD_CTX:-$PROJECT_DIR}/${tok#./}"
       fi
+      ;;
+    *)
+      # Other relative tokens: inside companies/ every relative path matters;
+      # elsewhere only ones that climb (../companies/...) can reach the vault.
+      # An unknown cwd (cd "$VAR", cd -, cd $(...)) leaves CWD_CTX empty and
+      # is not checked: best-effort parser, documented in the header.
+      case "$CWD_CTX" in
+        "$PROJECT_DIR"/companies/*) printf '%s' "$CWD_CTX/$tok" ;;
+        "") ;;
+        *)
+          case "$tok" in
+            ../*|*/../*) printf '%s' "$CWD_CTX/$tok" ;;
+          esac
+          ;;
+      esac
       ;;
   esac
 }
@@ -351,15 +524,17 @@ collect_write_targets() {
   local target_dir=""
   SEG_TARGETS=()
 
-  read -r -a words <<< "$segment"
+  split_words "$segment"
+  words=("${WORDS[@]+"${WORDS[@]}"}")
   for ((i=0; i<${#words[@]}; i++)); do
     clean[$i]="$(strip_token_quotes "${words[$i]}")"
   done
 
   for ((i=0; i<${#clean[@]}; i++)); do
-    case "${clean[$i]}" in
-      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed|awk|ln)
-        op="${clean[$i]}"
+    # /bin/cp and /usr/bin/install are the same ops as cp and install.
+    case "${clean[$i]##*/}" in
+      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed|awk|ln|install)
+        op="${clean[$i]##*/}"
         op_i=$i
         break
         ;;
@@ -377,6 +552,33 @@ collect_write_targets() {
       done
       ;;
 
+    install)
+      # install SRC... DEST, install -t DIR SRC..., install -d DIR...
+      for ((i=op_i+1; i<${#clean[@]}; i++)); do
+        tok="${clean[$i]}"
+        case "$tok" in
+          -d|--directory) has_inplace="dirs" ;;
+          -t|--target-directory)
+            i=$((i+1)); target_dir="${clean[$i]:-}"; [[ -n "$target_dir" ]] || return 2 ;;
+          --target-directory=*) target_dir="${tok#--target-directory=}" ;;
+          -m|-o|-g|--mode|--owner|--group|-S|--suffix) i=$((i+1)) ;;
+          -*) ;;
+          *) positionals[${#positionals[@]}]="$tok" ;;
+        esac
+      done
+      if [[ -n "$target_dir" ]]; then
+        SEG_TARGETS[${#SEG_TARGETS[@]}]="$target_dir"
+      elif [[ "${has_inplace:-}" == "dirs" ]]; then
+        for ((i=0; i<${#positionals[@]}; i++)); do
+          SEG_TARGETS[${#SEG_TARGETS[@]}]="${positionals[$i]}"
+        done
+      elif [[ "${#positionals[@]}" -gt 0 ]]; then
+        SEG_TARGETS[${#SEG_TARGETS[@]}]="${positionals[$((${#positionals[@]}-1))]}"
+      else
+        return 2
+      fi
+      ;;
+
     cp|rsync|mv)
       for ((i=op_i+1; i<${#clean[@]}; i++)); do
         tok="${clean[$i]}"
@@ -391,6 +593,24 @@ collect_write_targets() {
             ;;
           --target-directory=*)
             target_dir="${tok#--target-directory=}"
+            ;;
+          -[!-]*t)
+            # Grouped short options ending in t (cp -rt DIR): DIR is next.
+            if [[ "$op" != "rsync" ]]; then
+              i=$((i+1))
+              if [[ "$i" -lt "${#clean[@]}" ]]; then
+                target_dir="${clean[$i]}"
+              else
+                return 2
+              fi
+            fi
+            ;;
+          -[!-]*t?*)
+            # Glued target (cp -tDIR, cp -rtDIR) when every letter before t
+            # is a plain flag letter.
+            if [[ "$op" != "rsync" && "${tok%%t*}" =~ ^-[A-Za-z]*$ ]]; then
+              target_dir="${tok#"${tok%%t*}t"}"
+            fi
             ;;
           --target-directory)
             i=$((i+1))
@@ -513,9 +733,12 @@ collect_redirect_targets() {
   local segment="$1"
   local words=() i tok rest
   REDIR_TARGETS=()
-  read -r -a words <<< "$segment"
+  split_words "$segment"
+  words=("${WORDS[@]+"${WORDS[@]}"}")
   for ((i=0; i<${#words[@]}; i++)); do
     tok="${words[$i]}"
+    # A quoted word ("a>b") is data, not a redirection.
+    [[ "$tok" == \"* || "$tok" == \'* ]] && continue
     case "$tok" in
       *\>\>*) rest="${tok#*>>}" ;;
       *\>*)   rest="${tok#*>}" ;;
@@ -534,9 +757,41 @@ collect_redirect_targets() {
   done
 }
 
+# Segments longer than this skip the quote-aware parser (bounded hook time on
+# long one-line commands such as inline JSON or python3 -c). Instead every
+# whitespace token that can name a vault path (a companies/ or ../ token, a
+# ~ or $HOME form; redirect operands included) is checked. When the shell
+# already sits inside companies/, any relative token can land in the vault, so
+# a long segment there that has a write op or a redirect fails closed.
+SEGMENT_PARSE_MAX=4096
+
 check_segment() {
   local segment="$1" i rc tok
   [[ -z "$segment" ]] && return 0
+
+  if [[ "${#segment}" -gt "$SEGMENT_PARSE_MAX" ]]; then
+    local LC_ALL=C
+    local -a toks=()
+    case "$CWD_CTX" in
+      "$PROJECT_DIR"/companies/*)
+        if [[ "$segment" == *\>* ]] || echo "$segment" | grep -Eq "$WRITE_OPS"; then
+          return 1
+        fi
+        ;;
+    esac
+    read -r -a toks <<< "$segment"
+    for tok in "${toks[@]+"${toks[@]}"}"; do
+      tok="${tok##*>}"
+      case "$tok" in
+        *companies/*|*../*|*\~*|*HOME*) ;;
+        *) continue ;;
+      esac
+      if token_denied "$tok"; then
+        return 1
+      fi
+    done
+    return 0
+  fi
 
   collect_redirect_targets "$segment"
   for ((i=0; i<${#REDIR_TARGETS[@]}; i++)); do
@@ -558,7 +813,8 @@ check_segment() {
   elif [[ "$rc" -eq 2 ]]; then
     # Targets undeterminable — conservatively check every token that looks
     # like a vault path.
-    for tok in $segment; do
+    split_words "$segment"
+    for tok in "${WORDS[@]+"${WORDS[@]}"}"; do
       if token_denied "$tok"; then
         return 1
       fi
@@ -569,6 +825,7 @@ check_segment() {
 
 SEGMENTS=$(printf '%s' "$CMD" | sed -E 's/(&&|\|\||[;|&])/\n/g')
 while IFS= read -r SEGMENT; do
+  update_cwd_ctx "$SEGMENT"
   if ! check_segment "$SEGMENT"; then
     block_message "Command: $CMD"
     exit 2

@@ -194,8 +194,29 @@ fi
 # on the prefix and silently misses the file. Push every referenced
 # company-local knowledge/policy path alongside the dossier.)
 
-hq sync push "companies/$COMPANY/projects/$PROJECT/" --company "$COMPANY" --on-conflict keep \
-  || die "vault push failed for companies/$COMPANY/projects/$PROJECT/"
+# Skip the full-folder push when the vault already holds this project: a large
+# project re-walks thousands of unchanged files and can exceed the foreground
+# timeout. Compare the dossier files' checksums local vs vault first; any
+# mismatch, missing file, or unreadable vault copy falls back to the full push.
+vault_has_project() {
+  local f lp remote_hash local_hash compared=0
+  for f in prd.json README.md brainstorm.md; do
+    lp="$HQ_ROOT/companies/$COMPANY/projects/$PROJECT/$f"
+    [ -f "$lp" ] || continue
+    remote_hash="$(hq files cat "projects/$PROJECT/$f" --company "$COMPANY" 2>/dev/null | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d ' ' -f1)" || return 1
+    local_hash="$({ sha256sum "$lp" 2>/dev/null || shasum -a 256 "$lp"; } | cut -d ' ' -f1)"
+    [ -n "$remote_hash" ] && [ "$remote_hash" = "$local_hash" ] || return 1
+    compared=$((compared + 1))
+  done
+  [ "$compared" -gt 0 ]
+}
+
+if vault_has_project; then
+  echo "hq-delegate-grant: vault already has companies/$COMPANY/projects/$PROJECT/ (dossier checksums match) — skipping full-folder push"
+else
+  hq sync push "companies/$COMPANY/projects/$PROJECT/" --company "$COMPANY" --on-conflict keep \
+    || die "vault push failed for companies/$COMPANY/projects/$PROJECT/"
+fi
 
 jq -r --arg co "$COMPANY" \
   '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' \

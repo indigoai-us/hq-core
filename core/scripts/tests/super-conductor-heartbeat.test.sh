@@ -77,5 +77,36 @@ reset 3
 bash "$HB" --interval 99999 --link cl-test --once >/dev/null
 grep -q -- '--timeout 3600' "$tmp/calls"; check "interval clamps to 3600" $?
 
+# 8. Argument checks for the watcher flags.
+for args in "--interval 1 --message-watch /x/w.json" "--interval 1 --message-watch --company co-a" "--interval 1 --asks /x/a.json" "--interval 1 --asks --company co-a" "--interval 1 --bogus"; do
+  set +e; bash "$HB" $args --once >/dev/null 2>&1; rc=$?; set -e
+  check "bad arguments exit 2: $args (got $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+done
+
+# 8b. --asks passes --conductor and --exclude (each repeatable) through to the
+# open-asks watcher, which stops with the heartbeat.
+bash "$HB" --interval 60 --asks "$tmp/asks.json" --company co-a --conductor local_one --conductor local_two --exclude sid-self >"$tmp/hb-asks.out" 2>&1 &
+hb_pid=$!
+args=""
+for _ in $(seq 1 50); do
+  wp="$(pgrep -f "open-asks.mjs watch .*$tmp/asks.json" | head -n1 || true)"
+  [[ -n "$wp" ]] && { args="$(ps -o args= -p "$wp")"; break; }
+  sleep 0.1
+done
+kill "$hb_pid" 2>/dev/null || true; wait "$hb_pid" 2>/dev/null || true
+grep -q -- '--conductor local_one' <<<"$args" && grep -q -- '--conductor local_two' <<<"$args"; check "the heartbeat passes every --conductor to the ask watcher (got: $args)" $?
+grep -q -- '--exclude sid-self' <<<"$args"; check "the heartbeat passes --exclude to the ask watcher (got: $args)" $?
+gone=1
+for _ in $(seq 1 30); do pgrep -f "open-asks.mjs watch .*$tmp/asks.json" >/dev/null || { gone=0; break; }; sleep 0.1; done
+check "the ask watcher stops with the heartbeat" "$gone"
+
+# 9. Coverage map (review on #1583): the heartbeat grew its watcher flags in
+# one PR; each flag in its usage line must be exercised by some suite.
+usage_line="$(grep -m1 '^  echo "usage:' "$HB")"
+for flag in $(grep -o -E -- '--[a-z-]+' <<<"$usage_line" | sort -u); do
+  hits="$(grep -l -E -- "(HB|super-conductor-heartbeat\.sh).*${flag}([^a-z-]|$)" "$ROOT"/core/scripts/tests/super-conductor-*.test.sh 2>/dev/null | wc -l | tr -d ' ' || true)"
+  check "heartbeat flag $flag is exercised by a test (suites: $hits)" "$([[ "$hits" -gt 0 ]]; echo $?)"
+done
+
 [[ "$fail" -eq 0 ]] || exit 1
 echo "super-conductor heartbeat: ok"

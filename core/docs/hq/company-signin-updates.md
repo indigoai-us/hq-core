@@ -22,8 +22,9 @@ code, or credential:
 - `awaiting_person <epoch ms>` — a link has been posted and no login code has
   been returned for it. The timestamp is when that link was posted.
 - `code_entry <epoch ms>` — a login-code fetch returned a code and the watcher
-  typed it. This phase stays until that login exits, sign-in completes, or a
-  regenerate replaces the login.
+  typed it. This phase stays until that login exits, sign-in completes, a
+  regenerate replaces the login, or 2 minutes pass with neither a sign-in nor
+  a new link (the watcher then restarts the login).
 
 The helper pauses the Node parent, then reads the phase file and the child
 list. Pausing the parent closes the race where a new login or phase write
@@ -46,8 +47,9 @@ child's start time, which is when the login began, not when a person submitted
 a code. A code submitted in the last few seconds on a legacy box can be
 dropped; the replacement watcher posts a new link so the person is not left
 on a dead one. Once the updated watcher is running, a received code sets
-`code_entry` and the restart waits until that attempt ends. There is no age
-cap on `code_entry`.
+`code_entry` and the restart waits until that attempt ends. The helper puts
+no age cap on `code_entry`; the watcher itself ends the phase after 2 minutes
+without a result.
 
 Missing or unreadable process status fails closed. A corrupt phase file fails
 closed: the helper does not restart, and the timer tries again. The helper's

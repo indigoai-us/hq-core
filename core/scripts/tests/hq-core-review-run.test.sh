@@ -195,7 +195,7 @@ make_pr() { # make_pr <name> <setup-commands...>: commit on a branch, publish as
   git -C "$SEED" checkout -q main
 }
 
-make_pr clean 'printf "contact jane${AT}example.com or ops${AT}ci.example.test.\nhost 127.0.0.1 and 203.0.113.9\ncall 555-555-0123\nnpm install -g pkg${AT}2.1.296\n" > docs/new.md; echo "edit" >> docs/legacy.md'
+make_pr clean 'printf "contact jane${AT}example.com or ops${AT}ci.example.test.\nhost 127.0.0.1 and 203.0.113.9\ncall 555-555-0123\nthread T-20261020-202938\nnpm install -g pkg${AT}2.1.296\n" > docs/new.md; echo "edit" >> docs/legacy.md'
 make_pr email 'printf "line one\nreach jane.doe${AT}acme-corp.io today\n" > docs/contact.md'
 make_pr suppressed 'printf "example: real.person${AT}corp-mail.io\n" > core/policies/doc.md'
 make_pr selfsuppress 'printf -- "- path: \"**\"\n  reason: x\n" >> .claude/audit/suppressions.yaml; printf "boss${AT}corp-mail.io\n" > docs/x.md'

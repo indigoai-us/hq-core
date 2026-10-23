@@ -321,6 +321,10 @@ mirror_thread_id=$(jq -r '.thread_id' <<<"$mirror_out")
 assert_eq "$(jq -c '.mirror_companies' <<<"$mirror_out")" '["winks"]' "mirrored company output"
 jq -e '.metadata.company == ["winks"]' "$mirror_thread_path" >/dev/null \
   || fail "handoff metadata omitted touched company"
+jq -e '.company == "winks" and .companies == ["winks"]' workspace/threads/handoff.json >/dev/null \
+  || fail "compact handoff pointer omitted company context"
+[[ "$(HQ_ROOT="$PWD" bash "$SRC_ROOT/scripts/handoff-pointer-company.sh")" == "winks" ]] \
+  || fail "pointer company reader did not resolve the bound company"
 [[ -f "companies/winks/workspace/sessions/${mirror_thread_id}.json" ]] \
   || fail "non-executable mirror hook was not replayed"
 git show "HEAD:companies/winks/workspace/index.jsonl" | grep -q "${mirror_thread_id}" \
@@ -338,6 +342,8 @@ unbound_out=$(HQ_SESSION_ID=unbound-smoke-session bash core/scripts/handoff-fina
   --slug "winks-offer-unbound")
 unbound_thread_id=$(jq -r '.thread_id' <<<"$unbound_out")
 assert_eq "$(jq -c '.mirror_companies' <<<"$unbound_out")" '[]' "unbound mirrored company output"
+jq -e '(has("company") | not) and .companies == []' workspace/threads/handoff.json >/dev/null \
+  || fail "unbound handoff pointer claimed a company"
 [[ ! -e "companies/winks/workspace/sessions/${unbound_thread_id}.json" ]] \
   || fail "unbound handoff unexpectedly wrote a Winks session mirror"
 

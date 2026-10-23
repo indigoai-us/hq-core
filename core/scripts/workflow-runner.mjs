@@ -100,7 +100,7 @@
  *                              codex tier models (defaults gpt-5.6-sol /
  *                              gpt-5.6-terra)
  *   HQ_WORKFLOW_GROK_PLAN_MODEL / HQ_WORKFLOW_GROK_EXEC_MODEL
- *                              grok tier models (default grok-4.6 for both)
+ *                              grok tier models (default grok-4.7 for both)
  *   HQ_WORKFLOW_CLAUDE_PLAN_MODEL / HQ_WORKFLOW_CLAUDE_EXEC_MODEL
  *                              claude tier models (defaults opus / sonnet)
  *   HQ_WORKFLOW_MODEL          Global model pin overriding every tier map;
@@ -787,8 +787,8 @@ const ENGINES = {
   grok: {
     bin: process.env.HQ_WORKFLOW_GROK_BIN || 'grok',
     tierModels: {
-      plan: process.env.HQ_WORKFLOW_GROK_PLAN_MODEL || 'grok-4.6',
-      exec: process.env.HQ_WORKFLOW_GROK_EXEC_MODEL || 'grok-4.6',
+      plan: process.env.HQ_WORKFLOW_GROK_PLAN_MODEL || 'grok-4.7',
+      exec: process.env.HQ_WORKFLOW_GROK_EXEC_MODEL || 'grok-4.7',
     },
   },
   claude: {
@@ -837,7 +837,9 @@ function resolveEngineName(name) {
 // finished stage was reported as a failure and the pipeline stopped. Checkpoints
 // are the LAUNCHING session's job (the stage prompts say so already, but a hook
 // does not read prompts), and a spawned agent is not a session anyone resumes.
-const CHILD_DISABLED_HOOKS = ['checkpoint-stop-gate'];
+// welcome-brief-ready is off too: a child is not a session the person sees,
+// so it must not use up the once-only welcome announcement.
+const CHILD_DISABLED_HOOKS = ['checkpoint-stop-gate', 'welcome-brief-ready'];
 
 // Child env = ours plus those suppressions, preserving any the operator set.
 function childEnv(extra = {}) {
@@ -1052,24 +1054,43 @@ function tailOfFile(file, bytes) {
 // Glob-from-root) ends the run with stopReason "Cancelled", an empty-ish text,
 // and exit code 0. Silence there would look like a malformed reply instead of
 // "your agent was stopped", so the reason is surfaced in the error.
+//
+// Grok Build 1.0.46 redacts tool results over 128 KB and may attach
+// `toolResultTruncated` on the envelope (boolean, or a line/token beside the
+// JSON). That is a size marker, not a failed turn — keep unwrapping `.text`.
 const GROK_FAILURE_STOP_REASON = /cancel|error|refus|abort|max.?turns|limit/i;
+const GROK_TRUNCATION_TOKEN = /^\s*toolResultTruncated\s*$/i;
+
+function stripGrokTruncationMarker(raw) {
+  const lines = String(raw).split(/\r?\n/);
+  const kept = lines.filter((line) => !GROK_TRUNCATION_TOKEN.test(line));
+  return kept.join('\n').trim();
+}
 
 function unwrapGrokEnvelope(raw, label, lastFile, logFile) {
-  const trimmed = raw.trim();
+  const trimmed = String(raw ?? '').trim();
   if (!trimmed) {
     throw new Error(`${label} produced no output at all (grok exited 0 with an empty envelope). Result file: ${lastFile}. Log: ${logFile}`);
   }
+  const cleaned = stripGrokTruncationMarker(trimmed) || trimmed;
   let env;
   try {
-    env = JSON.parse(trimmed);
+    env = JSON.parse(cleaned);
   } catch {
     // Not an envelope (older CLI, or plain text slipped through) — the raw
     // reply is still the most useful thing to hand back.
-    return trimmed;
+    return cleaned;
   }
-  if (!env || typeof env !== 'object' || !('text' in env || 'stopReason' in env)) return trimmed;
+  if (
+    !env ||
+    typeof env !== 'object' ||
+    !('text' in env || 'stopReason' in env || 'toolResultTruncated' in env)
+  ) {
+    return cleaned;
+  }
   const stop = String(env.stopReason ?? '');
   const text = typeof env.text === 'string' ? env.text : '';
+  const truncated = Boolean(env.toolResultTruncated);
   if (stop && GROK_FAILURE_STOP_REASON.test(stop)) {
     throw new Error(
       `${label} stopped early: stopReason=${stop}. This is usually a denied tool ` +
@@ -1078,6 +1099,9 @@ function unwrapGrokEnvelope(raw, label, lastFile, logFile) {
       `Envelope: ${lastFile}. Log: ${logFile}`);
   }
   if (!text.trim()) {
+    if (truncated) {
+      return '[toolResultTruncated]';
+    }
     throw new Error(
       `${label} returned an empty reply (stopReason=${stop || 'none'}). ` +
       `Envelope: ${lastFile}. Log: ${logFile}`);

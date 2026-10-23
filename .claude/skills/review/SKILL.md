@@ -1,7 +1,7 @@
 ---
 name: review
 description: "Pre-landing code review of the git diff; critical issues block the PR. Use before a PR or when asked to review changes."
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(bash "$HQ_ROOT/core/scripts/commit-secret-scan.sh:*), AskUserQuestion, Task
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(bash "$HQ_ROOT/core/scripts/commit-secret-scan.sh:*), Bash(bash "$HQ_ROOT/core/scripts/review-checkout.sh:*), Bash(gh pr checks:*), AskUserQuestion, Task
 ---
 
 # Pre-Landing Code Review
@@ -24,6 +24,36 @@ git diff origin/main --stat       # must have changes
 ```
 
 If on main or no changes: stop and tell user.
+
+### Step 1b: Reviewing someone else's PR
+
+When the change is another author's pull request, not your own branch, review
+it in the cached checkout for that repo. Do not make a fresh clone per PR or
+per PR head, and do not put review checkouts in `/tmp`. Policy:
+`hq-pr-review-light-local-footprint`.
+
+```bash
+bash "$HQ_ROOT/core/scripts/review-checkout.sh" prepare --repo OWNER/NAME --pr N
+bash "$HQ_ROOT/core/scripts/review-checkout.sh" affected --repo OWNER/NAME
+gh pr checks N -R OWNER/NAME
+```
+
+`prepare` prints `checkout=`, `install=` and `changed=` lines. `affected`
+prints `package=` and `test=` lines for the diff. `gh pr checks` is the
+full-suite evidence, from CI.
+
+- Run Steps 2 to 5 from the printed `checkout=` directory, diffing against
+  `origin/<base>` with three dots.
+- Install dependencies only when `prepare` prints `install=needed`, then run
+  `review-checkout.sh installed --repo OWNER/NAME`.
+- Run only the tests, type checks and linters for the `package=` and `test=`
+  lines. Do not run the repo's full suite locally; read the CI checks.
+- Wrap every install, build, type check or test command in
+  `review-checkout.sh heavy -- <command>` so only one heavy run happens at a
+  time.
+- After the review is posted, run
+  `review-checkout.sh cleanup --repo OWNER/NAME --pr N` and delete any other
+  scratch file you made. Keep review notes in `workspace/reports/reviews/`.
 
 ### Step 2: Load Checklist
 

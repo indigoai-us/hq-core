@@ -33,7 +33,8 @@ cat > "$TMP/bin/hq" <<STUB
 #!/usr/bin/env bash
 echo "\$*" >> "\$HQ_STUB_LOG"
 case "\$1 \$2" in
-  "secrets share") exit 0 ;;
+  "secrets share") echo "error: unknown option --company placement" >&2; exit 1 ;;
+  "secrets --company") exit 0 ;;
   "secrets get"|"secrets env"|"secrets exec")
     echo "$SENTINEL"
     exit 0
@@ -98,10 +99,10 @@ jq -e '.secrets == []' "$MANIFEST" >/dev/null || fail "declined run must not rec
 HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 \
   || fail "grant run exited non-zero"
 
-SHARE_COUNT="$(grep -c '^secrets share' "$INVOKE_LOG")"
+SHARE_COUNT="$(grep -c '^secrets --company acme share' "$INVOKE_LOG")"
 [ "$SHARE_COUNT" -eq 4 ] || fail "expected exactly 4 share calls, got $SHARE_COUNT: $(cat "$INVOKE_LOG")"
 for name in DATABASE_URL WIDGET_API_KEY STRIPE_WEBHOOK_SECRET SERVICE/API_KEY; do
-  grep -q "^secrets share $name --with alice@acme.test --permission read --company acme$" "$INVOKE_LOG" \
+  grep -q "^secrets --company acme share $name --with alice@acme.test --permission read$" "$INVOKE_LOG" \
     || fail "missing read share for $name"
 done
 
@@ -140,5 +141,47 @@ OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes 2>&1)" \
 printf '%s' "$OUT" | grep >/dev/null -i "no .env.schema" || fail "no-schema run must say so plainly: $OUT"
 jq -e '.secrets == [] and .secretsSkipped == false' "$MANIFEST" >/dev/null \
   || fail "no-schema run must record empty secrets without the skipped flag"
+
+# --- 6. agent recipient: shares go to the grant step's delegation group ------
+
+cat > "$PROJ/.env.schema" <<'SCHEMA'
+WIDGET_API_KEY=
+SCHEMA
+write_agent_manifest() { # grantPrincipal-json
+  jq --argjson gp "$1" '.to = {"kind":"agent","principal":"agt_3AW3X306DC808FHSHNHY96VT6A"} | if $gp == null then del(.grantPrincipal) else .grantPrincipal = $gp end' \
+    > "$MANIFEST.tmp" <<'JSON'
+{"schemaVersion":1,"delegationId":"dlg-test-widget","company":"acme","to":{},"project":{"name":"widget"},"repo":null,"secrets":[],"status":"granted"}
+JSON
+  mv "$MANIFEST.tmp" "$MANIFEST"
+}
+write_agent_manifest '"grp_dlg0123456789abcdef0123456789abcdef"'
+: > "$INVOKE_LOG"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 \
+  || fail "agent recipient with a recorded delegation group must succeed"
+grep -q "^secrets --company acme share WIDGET_API_KEY --with grp_dlg0123456789abcdef0123456789abcdef --permission read$" "$INVOKE_LOG" \
+  || fail "agent secrets must be shared with the delegation group: $(cat "$INVOKE_LOG")"
+if grep -q -- "--with agt_" "$INVOKE_LOG"; then fail "agt_ id must never be passed to hq secrets share"; fi
+
+# --- 7. agent recipient before the grant step: refuse, share nothing ---------
+
+write_agent_manifest null
+: > "$INVOKE_LOG"
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "agent recipient without grantPrincipal must fail"
+[ ! -s "$INVOKE_LOG" ] || fail "agent recipient without grantPrincipal must share nothing: $(cat "$INVOKE_LOG")"
+printf '%s' "$OUT" | grep "hq-delegate-grant.sh" >/dev/null || fail "failure must point at the grant step: $OUT"
+jq -e '.secrets == []' "$MANIFEST" >/dev/null || fail "refused run must not record names"
+
+# --- 8. person uid: shares go to the email the grant step mapped -------------
+
+jq '.to = {"kind":"person","principal":"prs_01ABC"} | .grantPrincipal = "bob@acme.test"' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+: > "$INVOKE_LOG"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 \
+  || fail "person uid with a recorded email must succeed"
+grep -q "^secrets --company acme share WIDGET_API_KEY --with bob@acme.test --permission read$" "$INVOKE_LOG" \
+  || fail "person-uid secrets must be shared with the mapped email: $(cat "$INVOKE_LOG")"
 
 echo "hq-delegate-secrets: ok (names only, own confirm gate, --no-secrets and no-schema paths, sentinel value never surfaced)"

@@ -2,6 +2,154 @@
 
 Newest release first.
 
+## Release: v16.0.36-beta.15
+
+- No action needed. `/conduct` has a new default runner, `mixed` (owner
+  decision 2026-10-22). The conductor does no project work itself. A task that
+  matches an HQ worker opens that worker's standing lane, which stays open
+  with keep-alive and takes the later tasks for the same worker and company.
+  A small task with no matching worker runs as a background subagent.
+  `/conduct off` and `/handoff` close the standing lanes. To keep the
+  previous behavior, set `conduct.runner: subagent` in
+  `personal/settings/orchestrator.yaml`, or pin one session with
+  `/conduct --runner subagent`.
+## Release: v16.0.36-beta.25
+
+- No action needed. `/handoff` can now archive its own Claude Code desktop
+  session after the report. It is off by default. Use `/handoff --archive`
+  for one handoff, or set `auto_archive: true` in
+  `personal/settings/handoff.yaml` to make it the default (`--no-archive`
+  skips it once). The decision comes from
+  `core/scripts/handoff-archive-decision.sh`. The session stays open when a
+  follow-up still needs a recovery command, when the handoff files are
+  missing, when its linked worktree has uncommitted changes, when its branch
+  has an open PR, when it has background work (hq lanes, hq monitors, or
+  background tasks), when it has an ask waiting on you, when one of those
+  checks cannot run, or outside the desktop app. New `/handoff-and-archive`
+  shortcut runs `/handoff --archive` in one command.
+
+## Release: v16.0.36-beta.9
+
+- No action needed. New Stop hook enforce-final-message-link-placement,
+  registered right after enforce-capability-link-render. When an
+  https://*.hq.work link appears only in an assistant text block that was
+  followed by a tool call, the hook blocks the turn once and tells the agent
+  to restate the link after its last tool call. The desktop app folds
+  pre-tool-call text into a summary, which dropped deploy and share links.
+  Regression test: .claude/hooks/tests/enforce-final-message-link-placement.test.sh
+
+## Release: v16.0.36-beta.7
+
+- Action needed if you run `/super-conductor`: a merge from the conductor or one of its lanes now needs an answered `Merge` row in the link's decision queue with `--ref "merge <owner/repo> <pr> <full head sha>"`, and the merge command must use `-R <owner/repo>` and `--match-head-commit <sha>`. A desk session from before this release that answers without `--desk` is refused; restart `/decision-desk` so it loads the new steps.
+- Action needed if you use `/super-conductor` standing answers: rules in `personal/settings/super-conductor-standing-answers.json` written before this release have no expiry and stop firing. `decisions.mjs standing list` marks them `ignored`. Re-add the ones you still want through `/decision-desk` (`standing add --by desk --expires <days>d …`, at most 30 days); a rule for a merge, deploy or send also needs `--irreversible`, and a rule for a teammate's request needs `--from`. A merge lane now waits for a queue row answered on the head it merges.
+- No action needed. `/super-conductor` cadence now follows a work day. A new
+  `work_hours` key in `personal/settings/super-conductor.yaml` (`timezone`,
+  `days`, `start`, `end`; default Monday to Friday, 09:00 to 18:00 in the
+  machine's time zone) decides when `watch_interval.present` applies; outside
+  those hours the heartbeat uses `watch_interval.away`. Start the heartbeat
+  with `--interval auto` to use it.
+- New message wake: `super-conductor-heartbeat.sh --message-watch <file>`
+  polls the HQ DM inbox and the channel change feed every 30 seconds and
+  wakes the conductor only for an unseen inbound message. The owner's own
+  messages and system cards never wake it. The channel part needs an hq-cli
+  with `hq channels changes`; on an older hq the wake covers DMs only and
+  says so once.
+- The `hq_channels` sweep reads only channels with activity since the last
+  sweep (`hq channels list --json --active-since`, same hq-cli release), and
+  it falls back to reading every channel on an older hq. Items the owner has
+  already answered in the thread are no longer surfaced.
+- Every wakeup now runs `core/scripts/super-conductor-open-asks.mjs`, which
+  finds sessions that ended on an unanswered picker or a desktop next-step
+  box and puts them in the decision queue. A conductor relay counts as the
+  answer.
+- Company boundary: the message watcher, the open-asks check, and the
+  `hq_channels` sweep read only the session's locked company set.
+  `super-conductor-heartbeat.sh --message-watch` now requires
+  `--company "$(bash core/scripts/hq-session.sh get company_slugs)"`, and
+  `super-conductor-open-asks.mjs` requires `--company`. A channel of another
+  company, and a session whose `workspace/sessions/<id>/meta.yaml` is missing
+  or outside the set, is skipped unread. The sweep pipes its channel list
+  through `core/scripts/lib/super-conductor-scope.mjs filter-channels`.
+- Each open ask is queued once and relayed once. `super-conductor-open-asks.mjs
+  mark` records asks in `workspace/reports/conduct/<link>-asks.json`, and
+  `--state` hides asks already recorded.
+- The watcher keeps separate seen lists for DMs and channel messages
+  (`seen_inbox`, `seen_channels`); an existing state file's `seen` list is
+  read into both on first run, so no old message wakes the conductor again.
+- If the watcher stops on its own, the heartbeat prints one
+  `SUPER-CONDUCTOR MESSAGE-WATCH-EXITED` line and keeps ticking.
+- On Windows (Git Bash) the heartbeat passes the watcher the Windows pid from
+  `/proc/$$/winpid`, so the watcher's parent check sees a live parent. Other
+  systems pass `$$` as before.
+- The scripts now run correctly from a symlinked HQ root.
+- Message wake cost: the watcher polls every 30 seconds inside `work_hours`
+  and every 5 minutes outside them, prints at most one MESSAGE line every 2
+  minutes (`SC_MESSAGE_WATCH_MIN_GAP`), and ignores channels whose only new
+  activity is a system card. An inbox failure no longer stops the channel
+  wake, and the reverse; failed polls of either kind count toward
+  `MESSAGE-WATCH-ERROR`. An unknown owner identity prints one
+  `MESSAGE-WATCH-DEGRADED` line.
+- `work_hours` is validated: hours 00 to 23 (end may be 24:00), whole day
+  names only, and start equal to end is refused. A bad value prints one
+  `SUPER-CONDUCTOR CADENCE-ERROR` line.
+- The heartbeat stops at once on TERM, including during a long link wait, and
+  no longer uses `pkill`.
+- `super-conductor-open-asks.mjs` reads only the last 2 MB of each transcript,
+  also reads worktree sessions' transcript folders (`--dir` is repeatable),
+  and names each session by its transcript file.
+- Decisions from conducted sessions reach the conductor faster:
+  - `super-conductor-heartbeat.sh --asks <link>-asks.json` runs
+    `super-conductor-open-asks.mjs watch` once a minute and prints one
+    `SUPER-CONDUCTOR OPEN-ASK` line per session (of the locked company set)
+    that is waiting on an unanswered picker or next-step card, naming the
+    session and the question. `/super-conductor` Step 2b passes it.
+  - A `SUPER-CONDUCTOR REPORT` line names each child that reported, its
+    state, and a blocked child's question. Text is shown only for children
+    whose company is inside the heartbeat's `--company` set; other reports
+    are counted without their text.
+  - New hook `conduct-link-inherit`: a session started by a linked session
+    joins the same conduct link on its first prompt, as `<parent>-<name>`,
+    with the standing rules. It claims an invite when its first prompt holds
+    the whole brief of exactly one invite, and joins once its company is bound
+    and inside the parent's. Failures are logged to
+    `workspace/logs/conduct-link-inherit.log`.
+    No action needed; it is registered in `hook-registry.json` and in every
+    hook profile.
+  - `SUPER-CONDUCTOR SWEEP-INCOMPLETE` is printed once per missing set, not on
+    every wake while the conductor is mid-turn.
+- Per-channel cadence: `channel_cadence` in the owner settings splits
+  channels into constant (default `sessions`, `hq_dms`, `slack`: every
+  wakeup) and hourly (default `email`, `hq_channels`, `github`, `x`,
+  `teammates`: once an hour). `super-conductor-sweep-check.mjs due` lists the
+  targets due on a wakeup, and `verify` no longer flags an hourly target that
+  was swept within the hour. A free-text `channel_cadence` keeps the defaults.
+- Slack message wake: set `slack_watch.command` (and optionally
+  `slack_watch.interval`, default 60s) to a command that prints the owner's
+  new Slack DMs and mentions as JSON, and the watcher wakes the conductor on
+  them. Without `slack_watch`, Slack is swept on wakeups only, as before.
+  Map each workspace to its company slug in `slack_workspace_companies`; the
+  watcher polls only the workspaces of the session's locked companies and
+  never polls an unmapped one.
+- Super-conductor request ledger: every inbound item (HQ DM, channel message,
+  Slack item, hourly-sweep find, child report) is a row in
+  `workspace/reports/conduct/<link>-requests.jsonl`, written by the message
+  watcher and `super-conductor-requests.mjs`, with a status until it is done.
+  The conductor reads rows, not channels; hourly targets run as background
+  sweep workers that return envelopes; `work` rows are dispatched as lanes.
+  The save file is patched one key at a time (`super-conductor-state.mjs`);
+  a queued ask with no relay after 10 minutes is raised again; `/overnight`
+  keeps the message and open-ask wakes running.
+- Re-arm a running heartbeat per `/super-conductor` Step 2b to pick these up.
+
+## Release: v16.0.36-beta.1
+
+- No action needed. `master-hook.sh` can run a ported registry hook through
+  the hq-cli `hq-hook` engine when the per-hook flag `hook-engine-port-<id>`
+  is `shadow` or `on`. Nothing changes until the hq CLI installs the engine
+  and a flag is set; without them dispatch is byte-identical and starts no
+  extra process. To turn the engine off on one machine, set
+  `HQ_HOOK_ENGINE=off` or create `~/.hq/hook-engine.off`.
+
 ## Release: v16.0.32-beta.13
 
 - No action needed. New `/hq-library` skill: tells agents when and how to use

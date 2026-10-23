@@ -196,6 +196,33 @@ if [[ "$(mirrors)" -ne "$before_mirrors" ]]; then
   fail "invalid --company still wrote tenant mirrors"
 fi
 
+# 6. --company accepts any company in the session's locked set, not only the
+# first-bound one, and still rejects a company outside the set.
+cp "$SRC_ROOT/scripts/lib/session-scope-capability.sh" "$ROOT/core/scripts/lib/session-scope-capability.sh"
+jq -n --arg sid "$SESSION" \
+  '{session_id:$sid, agent_id:"", company_slug:"tenant-0", company_slugs:["tenant-0","tenant-1"]}' \
+  > "$ROOT/workspace/sessions/$SESSION/scope-capability.json"
+for spec in 'tenant-1|0' 'tenant-2|2'; do
+  owner="${spec%%|*}"
+  want_rc="${spec#*|}"
+  set_rc=0
+  (
+    cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_SESSION_ID="$SESSION" \
+      HQ_ROOT="$ROOT" HOME="$HOME" PATH="$PATH" LC_ALL=C \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      bash core/scripts/handoff-finalize.sh \
+        --company "$owner" \
+        --title "Handoff: locked set $owner" \
+        --summary "locked set membership" \
+        --files-touched-json "[\"companies/$owner/note.md\"]" \
+        --next-command '' \
+        --slug "locked-set-$owner"
+  ) >/dev/null 2>&1 || set_rc=$?
+  if [[ "$set_rc" -ne "$want_rc" ]]; then
+    fail "--company $owner exited $set_rc with locked set tenant-0,tenant-1 (want $want_rc)"
+  fi
+done
+
 if [[ "$failures" -gt 0 ]]; then
   echo "Failed $failures handoff isolation assertions" >&2
   exit 1

@@ -54,7 +54,10 @@
 # .git, e.g. a sandboxed run; re-run outside the sandbox), "index-lock" (another
 # git process holds .git/index.lock), or "other". It is "" when nothing failed.
 # index_lock_waits counts the retries of git index operations that waited for
-# another process to release .git/index.lock (feedback 29213da4).
+# another process to release .git/index.lock (feedback 29213da4). The wait is
+# bounded by HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS (default 60) so a long
+# `git status` from the desktop app or Xcode is waited out (thread
+# T-20261022-140549).
 #
 # --deficiencies-json <path> takes a file holding the Step 2 environment
 # deficiencies array (lever, kind, severity, summary, evidence, proposed_fix).
@@ -327,13 +330,28 @@ bound_session_company() {
   printf '%s' "$company"
 }
 
+# True when the company is in the session's locked set (the primary plus any
+# added with hq-session.sh add company), not only the first-bound company.
+owner_in_locked_set() {
+  local want="$1" sid locked cap
+  sid="$(session_id_resolve "$HQ_ROOT")"
+  [[ -n "$sid" ]] || return 1
+  cap="$HQ_ROOT/workspace/sessions/$sid/scope-capability.json"
+  [[ -f "$cap" && -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]] || return 1
+  # shellcheck source=lib/session-scope-capability.sh
+  . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh"
+  locked="$(session_scope_read_companies "$HQ_ROOT" "$sid" 2>/dev/null || true)"
+  grep -qxF -- "$want" <<< "$locked"
+}
+
 BOUND_SESSION_COMPANY="$(bound_session_company)"
 if [[ -n "$OWNER_COMPANY" ]]; then
   if [[ ! "$OWNER_COMPANY" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || [[ ! -d "$HQ_ROOT/companies/$OWNER_COMPANY" ]]; then
     echo "handoff-finalize: invalid or missing owner company: $OWNER_COMPANY" >&2
     exit 2
   fi
-  if [[ -n "$BOUND_SESSION_COMPANY" && "$BOUND_SESSION_COMPANY" != "$OWNER_COMPANY" ]]; then
+  if [[ -n "$BOUND_SESSION_COMPANY" && "$BOUND_SESSION_COMPANY" != "$OWNER_COMPANY" ]] \
+     && ! owner_in_locked_set "$OWNER_COMPANY"; then
     echo "handoff-finalize: --company $OWNER_COMPANY does not match the bound session company $BOUND_SESSION_COMPANY" >&2
     exit 2
   fi
@@ -598,13 +616,17 @@ write_handoff_pointer() {
   mkdir -p "$destination_dir"
   pointer_tmp="$(mktemp "$destination_dir/.handoff-pointer.XXXXXX")"
   FINALIZE_TMP_FILES+=("$pointer_tmp")
-  if ! jq -n --arg ts "$TS" --arg msg "$MESSAGE" --arg thread_id "$THREAD_ID" --arg thread_path "$thread_path" --arg summary "$SUMMARY" '{
+  # Company context: /discover reads a scalar top-level `.company` from this
+  # pointer, so write the slug when exactly one company is bound. `companies`
+  # carries the full list (same values as the thread's metadata.company).
+  if ! jq -n --arg ts "$TS" --arg msg "$MESSAGE" --arg thread_id "$THREAD_ID" --arg thread_path "$thread_path" --arg summary "$SUMMARY" --argjson companies "$MIRROR_COMPANIES_JSON" '{
     created_at: $ts,
     message: $msg,
     last_thread: $thread_id,
     thread_path: $thread_path,
-    context_notes: $summary
-  }' > "$pointer_tmp"; then
+    context_notes: $summary,
+    companies: $companies
+  } + (if ($companies | length) == 1 then {company: $companies[0]} else {} end)' > "$pointer_tmp"; then
     rm -f "$pointer_tmp"
     return 1
   fi
@@ -712,30 +734,58 @@ HANDOFF_ADDED_PATHS=""
 # hq_git_index_retry <git args...> — run a git command that takes the index
 # lock. When it fails because another process holds .git/index.lock (concurrent
 # sessions commit their own handoff checkpoints in the same minute, feedback
-# 29213da4), wait with a short backoff and try again, up to
-# HQ_HANDOFF_INDEX_LOCK_RETRIES times (default 8, about 6 s in total). Any other
-# failure, and a lock that outlives the retries, returns git's status with its
-# stderr intact so the caller classifies it.
-HQ_HANDOFF_INDEX_LOCK_RETRIES="${HQ_HANDOFF_INDEX_LOCK_RETRIES:-8}"
-[[ "$HQ_HANDOFF_INDEX_LOCK_RETRIES" =~ ^[0-9]+$ ]] || HQ_HANDOFF_INDEX_LOCK_RETRIES=8
+# 29213da4; the desktop app's or Xcode's own `git status --porcelain --ignored`
+# over the whole HQ tree, thread T-20261022-140549), wait for the lock to go
+# away and try again. The wait is bounded by wall clock, not by a count: a
+# `git status` over a large tree holds the lock for tens of seconds, which the
+# old 8-try (~6 s) budget never covered, so the handoff ended stage-failed
+# while the holder was about to exit. HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS
+# (default 60) is the total budget; HQ_HANDOFF_INDEX_LOCK_RETRIES (default 0 =
+# no cap) additionally caps the number of retries. Between tries the lock file
+# is polled every 0.1 s (up to a 1 s backoff), so a released lock is noticed
+# at once. Any other failure, and a lock that outlives the budget, returns
+# git's status with its stderr intact so the caller classifies it.
+HQ_HANDOFF_INDEX_LOCK_RETRIES="${HQ_HANDOFF_INDEX_LOCK_RETRIES:-0}"
+[[ "$HQ_HANDOFF_INDEX_LOCK_RETRIES" =~ ^[0-9]+$ ]] || HQ_HANDOFF_INDEX_LOCK_RETRIES=0
+HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS="${HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS:-60}"
+[[ "$HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS" =~ ^[0-9]+$ ]] || HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS=60
 HQ_HANDOFF_INDEX_LOCK_WAITS=0
+# Tenths of a second spent waiting on the lock so far, across every index
+# operation of this run: the budget is per handoff, not per `git add`, so a
+# lock that is never released cannot stall the finalizer for 60 s per path.
+HQ_HANDOFF_INDEX_LOCK_WAITED_TENTHS=0
 new_tmp HQ_RETRY_ERR_FILE
 hq_git_index_retry() {
-  local attempt=0 rc=0 delay
+  local attempt=0 rc=0 polls lock_path budget_tenths
+  budget_tenths=$((HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS * 10))
+  lock_path="$(git rev-parse --git-path index.lock 2>/dev/null || true)"
   while :; do
     rc=0
     "$@" 2>"$HQ_RETRY_ERR_FILE" || rc=$?
+    # Only a HELD lock is worth waiting for: git says "File exists", or the
+    # lock file is on disk. "Permission denied" / "Operation not permitted" on
+    # index.lock is a sandbox or ownership problem that no wait fixes, so it
+    # returns at once for the caller to classify.
     if [[ $rc -eq 0 ]] || ! grep -q 'index\.lock' "$HQ_RETRY_ERR_FILE" 2>/dev/null \
-       || [[ $attempt -ge $HQ_HANDOFF_INDEX_LOCK_RETRIES ]]; then
+       || { ! grep -qi 'File exists' "$HQ_RETRY_ERR_FILE" 2>/dev/null && [[ -z "$lock_path" || ! -e "$lock_path" ]]; } \
+       || [[ $HQ_HANDOFF_INDEX_LOCK_WAITED_TENTHS -ge $budget_tenths ]] \
+       || { [[ $HQ_HANDOFF_INDEX_LOCK_RETRIES -gt 0 ]] && [[ $attempt -ge $HQ_HANDOFF_INDEX_LOCK_RETRIES ]]; }; then
       cat "$HQ_RETRY_ERR_FILE" >&2
       return $rc
     fi
     attempt=$((attempt+1))
     HQ_HANDOFF_INDEX_LOCK_WAITS=$((HQ_HANDOFF_INDEX_LOCK_WAITS+1))
-    # 0.1, 0.2, 0.4, 0.8, then 1 s per try; capped so a lock that is never
-    # released still ends in a classified stage-failed within seconds.
-    case $attempt in 1) delay=0.1 ;; 2) delay=0.2 ;; 3) delay=0.4 ;; 4) delay=0.8 ;; *) delay=1 ;; esac
-    sleep "$delay"
+    # Backoff 0.1, 0.2, 0.4, 0.8, then 1 s per try, each spent polling the
+    # lock file in 0.1 s steps so the retry fires as soon as the holder exits.
+    case $attempt in 1) polls=1 ;; 2) polls=2 ;; 3) polls=4 ;; 4) polls=8 ;; *) polls=10 ;; esac
+    while [[ $polls -gt 0 ]]; do
+      sleep 0.1
+      polls=$((polls-1))
+      HQ_HANDOFF_INDEX_LOCK_WAITED_TENTHS=$((HQ_HANDOFF_INDEX_LOCK_WAITED_TENTHS+1))
+      if [[ -n "$lock_path" && ! -e "$lock_path" ]]; then
+        break
+      fi
+    done
   done
 }
 # Set when the filter could not run or could not unstage. The commit is then

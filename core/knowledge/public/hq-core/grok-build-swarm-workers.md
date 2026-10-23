@@ -161,13 +161,17 @@ see `grok-build-message-canvas.md`.
 
 Prefer `/run {worker} {skill}` skill flow when the user invokes workers
 explicitly; for autonomous swarms, replicate the same load + isolate + handoff
-behavior via `spawn_subagent`.
+behavior via `spawn_subagent`. Pass `prompt` and a short `description`. Do
+**not** name built-in types (`explore`, `plan`, `general-purpose`) on
+`spawn_subagent` — Grok Build 1.0.45 removed those from the model-facing
+schema. Omit `subagent_type` unless you are selecting a custom plugin or
+config agent.
 
 ### Isolation
 
 | Work | `isolation` / capability |
 |------|---------------------------|
-| Research / map / review (read-only) | shared workspace, `read-only` or explore type |
+| Research / map / review (read-only) | shared workspace, read-only capability; do not pass built-in type names on spawn |
 | Parallel implementation tracks | `worktree` when edits may collide |
 | Single-owner sequential edit | shared workspace OK with clear ownership |
 
