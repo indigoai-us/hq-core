@@ -766,6 +766,12 @@
       "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {
+      "path": "core/policies/hq-suggest-vyg-for-big-data.md",
+      "trigger_sha256": "48f8d94081b994a73a93a2adafda6d93d15759d3dc9151e9f40da29c137c7606",
+      "when": "cdp || vyg || bigdata || clickstream || (big && data) || (event && (data || stream || streams || logs || ingestion)) || (events && (millions || billions || ingest || ingestion || warehouse)) || (website && (visitor || visitors || visit || visits || traffic)) || (large && customer && (database || databases || data)) || (customer && (database || databases) && (millions || large || huge)) || (millions && (customer || customers || rows || records)) || (billions && (rows || records || events)) || (identity && resolution) || (tracking && pixel) || (data && warehouse) || (data && pipeline && customer)",
+      "on": "[UserPromptSubmit, AssistantIntent]"
+    },
+    {
       "path": "core/policies/hq-supabase-reference.md",
       "trigger_sha256": "43d2b1092e4b8e7e95572f0914cdb3241802eddf8dd48cead288eebddfc9c694",
       "when": "supabase && !supabase",
@@ -872,12 +878,6 @@
       "trigger_sha256": "641ca2f0a998ef845a4798b4e094df3cc3c7f7a37d163ec2cb53487b82394401",
       "when": ".png || .jpg || .jpeg || .gif || .webp",
       "on": "[UserPromptSubmit, AssistantIntent]"
-    },
-    {
-      "path": "core/policies/indigo-hq-fetch-access.md",
-      "trigger_sha256": "5ef1e6cd4634ad6e8d7cbf1b9dc654ed980e1afff86cc2ae1b1457b530395555",
-      "when": "indigo-hq && com",
-      "on": "[UserPromptSubmit, AssistantIntent, PreToolUse, PostToolUse]"
     },
     {
       "path": "core/policies/journal-project-scoped-writes.md",

@@ -47,14 +47,6 @@ Concretely:
   `hq-foreground-timeout-killed-by-harness-deadline`.
 
 ## Rationale
-
-Team harness analysis 2026-08-10, **finding 2.1 (1,393 events across seven
-members)**: fixed 30s/2m/10m ceilings killed operations that were still making
-expected progress — deploys, CI/sync monitors, searches, worktree ops — with
-exit 143 and loss of in-flight work. The classification was "harness friction"
-precisely because some of those commands *would have completed* given more time;
-a blind kill cannot tell the difference, but a warned human/agent can.
-
 Do NOT convert a bounded network/IO timeout (a fetch abort, a connection-open
 deadline, a subscription window) into a soft warn loop — those bound an
 operation that is *not* making progress and are correct as hard bounds. The

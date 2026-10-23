@@ -97,6 +97,12 @@ Regardless of chat verbosity, content written to disk stays full prose: handoff 
 
 HQ's Auto-Clarity blocks (security warnings, irreversible actions, plan-mode plans, multi-step destructive sequences, files-to-disk full prose) are referenced rather than duplicated. They align with categories above.
 
+## Sample
+
+A lint failure that auto-fix resolves gets no narration. Report only the
+outcome that needs the user, for example: "Lint still fails on one rule that
+auto-fix cannot repair; it needs your call."
+
 ## Relationship to other rules
 
 | Rule | This policy's relationship |
@@ -106,79 +112,6 @@ HQ's Auto-Clarity blocks (security warnings, irreversible actions, plan-mode pla
 | `.claude/output-styles/hq.md` voice rules | **Orthogonal layer.** This policy governs *whether* to surface text; HQ governs *how* (terseness, warmth tokens) when surfacing. They compose: silent stays silent; surfaced text follows the active style. |
 | Active output-style insight blocks | **Surfaced** — insights are substantive. The policy does not suppress them. |
 | Auto-checkpoint `AUTO-CHECKPOINT REQUIRED` / `AUTO-CHECKPOINT SUGGESTED` hook injection | The injection is system-to-agent. Silently write the thread file; no chat narration about checkpointing. `REQUIRED` (context threshold, pre-compaction) is acted on immediately; `SUGGESTED` (PostToolUse trigger) waits for a natural pause. |
-
-## Examples
-
-**Routine deps install (success)**
-
-NOT:
-> Running `pnpm install`.
-> Pulling dependencies…
-> Installed 47 packages. All green.
-
-YES: *(silent — go straight to the next substantive step)*
-
-**Recoverable lint failure**
-
-NOT:
-> Running lint.
-> Lint failed: 3 errors in src/foo.ts.
-> Auto-fixing…
-> Re-running lint.
-> Lint passed.
-
-YES: *(silent — auto-fix and continue)*
-
-**Recoverable install failure (transient)**
-
-NOT:
-```
-npm ERR! ENOTFOUND registry.npmjs.org
-npm ERR! network request failed
-...
-```
-
-YES: *(silent — retry once, succeed, continue)*
-
-**Unrecoverable blocker — missing creds**
-
-NOT:
-```
-Error: AWS credentials not found
-[stack trace]
-```
-
-YES:
-> Missing AWS credentials for {company}. Need `AWS_PROFILE={company}` set, or run `hq login` and `/run {company}-deploy aws-creds`.
-> Pick:
->   1. I'll set the env var
->   2. Run the credential fetch skill
->   3. Skip this step
-
-**User decision required**
-
-YES (unchanged from current behavior):
-```
-Two repos match "acme-web":
-  1. repos/private/acme-web (canonical)
-  2. companies/acme/repos/acme-web (symlink)
-Pick:
-```
-
-**Tool call pre-sentence — ops vs substantive**
-
-Operational (silent):
-> *(no message — just runs `pnpm install`)*
-
-Substantive (one-liner OK):
-> Reading [foo.ts](src/foo.ts:42) to confirm the export shape.
-
-**Destructive op (unchanged — Auto-Clarity full prose)**
-
-YES (full prose, explicit confirm):
-> **Warning:** This force-pushes to `main` and rewrites 4 commits already on origin. Anyone else with the branch checked out will lose work on next pull.
->
-> Confirm before proceeding.
 
 ## Verification
 

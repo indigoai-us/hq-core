@@ -37,9 +37,6 @@ If reporting status to the user or writing to handoff/thread state, always state
 Composes with `hq-no-force-push-diverged-release-branch.md` (which requires counting ahead/behind before force-push) and `hq-pull-before-work.md` (which mandates pulling before work starts). This rule tightens the *methodology* for producing those counts.
 
 ## Rationale
-
-Observed 2026-04-19 during a release-branch divergence investigation. An earlier session reported "local is 3 commits ahead of origin/release/v11.1.1" based on `git log origin/release/v11.1.1..release/v11.1.1`. The one-sided view hid the fact that origin had 6 commits local didn't have — the branch was diverged, not simply ahead. Acting on "3 ahead" would have pointed toward a clean force-push; the reality required a merge or cherry-pick to preserve origin's 6 commits.
-
 `git rev-list --left-right --count A...B` (three dots, symmetric) produces both numbers in a single call with unambiguous tab-separated output. It's the canonical answer to "how diverged are these refs?" and should be the default for any divergence question.
 
 The deeper principle: "N commits ahead" is only meaningful relative to a specific base. Without the "behind" count, readers (human and AI) fill in "behind = 0" and make wrong decisions. Always produce the symmetric view and always report both numbers.

@@ -66,15 +66,6 @@ blanket-automate. The auto-install authorization above covers *installing
 agent-browser*, nothing else.
 
 ## Rationale
-
-Product direction (Hassaan, 2026-06-29): agent-browser is the one sanctioned
-browser tool, so HQ should be *forced* onto it rather than merely nudged, and it
-should self-provision — installing without an approval prompt — so a browser task
-never dead-ends on a missing binary or per-action MCP prompts. This supersedes
-the earlier "auto-allow specific browser verbs in `.claude/settings.json`"
-approach (that settings allow-list is removed): governing the behavior with a
-policy is the chosen mechanism, not a static permission allow-list.
-
 The earlier soft form of this rule (prefer agent-browser over Claude-in-Chrome
 for QA audits) holds for the same reasons: Claude-in-Chrome needs an extension
 connection that frequently disconnects, whereas agent-browser is self-contained

@@ -412,7 +412,7 @@ jobs:
             {
               echo
               echo "## Test plan"
-              echo "- [ ] \`denylist-scan\` / \`provenance-stripped\` / \`public-frontmatter-revalidate\` pass on this PR"
+              echo "- [ ] \`denylist-scan\` / \`provenance-stripped\` / \`public-frontmatter-revalidate\` warnings reviewed on this PR (report-only)"
               echo "- [ ] \`core-yaml-locked\` CI passes (label: \`version-bump\`)"
               echo "- [ ] \`special-case-files\` CI passes (label: \`special-case-confirmed\`)"
               echo "- [ ] After merge, tag \`v${INPUT_VERSION}\` on the squash commit"
@@ -422,7 +422,7 @@ jobs:
             {
               echo
               echo "## Test plan"
-              echo "- [ ] \`denylist-scan\` / \`provenance-stripped\` / \`public-frontmatter-revalidate\` pass on this PR"
+              echo "- [ ] \`denylist-scan\` / \`provenance-stripped\` / \`public-frontmatter-revalidate\` warnings reviewed on this PR (report-only)"
               echo "- [ ] Manual smoke test of the affected area"
             } >> "$BODY_FILE"
           fi

@@ -87,6 +87,10 @@ HQ_HOOK_ENGINE_PLAN_TIMEOUT="${HQ_HOOK_ENGINE_PLAN_TIMEOUT:-5}"
 # A positive integer with no leading zero: `0`, `00` and `000` would disable
 # the timeout, and `05` is not a value anyone meant.
 case "$HQ_HOOK_ENGINE_PLAN_TIMEOUT" in ''|*[!0-9]*|0*) HQ_HOOK_ENGINE_PLAN_TIMEOUT=5 ;; esac
+# The plan this event exports to its hooks (see master_hook_engine_bridge_plan).
+# A plan inherited from a parent event (a hook that starts a nested agent) must
+# not leak into this one, where the kill switch or flags may differ.
+unset HQ_HOOK_BRIDGE_PLAN HQ_HOOK_BRIDGE_BIN
 
 master_now_ms() {
   local realtime seconds fraction now
@@ -1556,6 +1560,11 @@ master_hook_engine_bridge_plan() {
   [ -n "$plan" ] || return 0
   HOOK_ENGINE_BRIDGE_BIN="$bin"
   HOOK_ENGINE_BRIDGE_PLAN="$plan"
+  # Hooks read the plan for the helpers they call (the policy injector's
+  # derive-trigger-facts, US-008) without starting a process of their own.
+  # Registry dispatch below matches only hook ids, so a helper line never
+  # bridges a hook.
+  export HQ_HOOK_BRIDGE_BIN="$bin" HQ_HOOK_BRIDGE_PLAN="$plan"
 }
 
 master_hook_engine_bridge_mode() { # <hook-id> -> HOOK_ENGINE_BRIDGE_MODE (shadow, on, or empty)

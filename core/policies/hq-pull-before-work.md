@@ -21,4 +21,3 @@ At session start, after identifying the target repo:
 2. `git fetch origin`
 3. Check `git rev-list --count HEAD..origin/main` — if > 0, pull before proceeding
 4. If pull fails due to local changes, stash first
-

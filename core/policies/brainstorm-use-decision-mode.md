@@ -34,19 +34,6 @@ Version 3 added the attended-session boundary after an owner interview corrected
 
 Version 4 replaces the end-of-brainstorm next-step menu with the three-option plan gate, so a user can reach prd.json in the same session without re-answering questions.
 
-## Examples
-
-**Correct:**
-- Step 3 asks the brainstorm question set one `AskUserQuestion` at a time, each with 2–4 labeled options.
-- Step 7 summary followed by one `AskUserQuestion` with options `Plan it now`, `Upgrade to deep-plan`, `Stop here`.
-- Output at `companies/{co}/projects/{slug}/brainstorm.md` after `mkdir -p` on the parent dir.
-
-**Incorrect:**
-- "How would you like to proceed?" followed by a 1./2./3./4. markdown list.
-- Writing prd.json before the gate, or after the gate answers `Stop here`.
-- Writing `brainstorm.md` contents into a plan file at `~/.claude/plans/*.md`.
-- Skipping `mkdir -p` and letting Write fail silently against a nonexistent project dir.
-
 ## Operator Fallback (Plan Mode)
 
 When `/brainstorm` refuses in Plan Mode (rule #4), the operator can still make progress by following this two-phase workflow:

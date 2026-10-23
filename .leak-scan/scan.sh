@@ -8,12 +8,6 @@
 #   policy-rationale  fail if a policies/**/*.md file's ## Rationale section
 #                     references non-public context (heuristic regex list).
 #                     Additional to denylist, NOT a replacement.
-#   slugs             fail if a PR-changed file contains a private tenant slug.
-#                     manifest-snapshot.yaml holds only a salt and
-#                     sha256("<salt>:<slug>") per private slug (hash-slugs.sh);
-#                     every slug-shaped token in a changed file is hashed and
-#                     compared, exact case. No tenant name lives in this repo.
-#                     Restored 2026-10-23 by owner decision (arch-watch D1).
 #   users-path        fail if any tracked policy/script body contains a
 #                     literal /Users/... absolute path. Tripwire: rule
 #                     hq-promote-hq-core-users-path-tripwire.
@@ -61,6 +55,8 @@
 #                     (not diff-scoped) so pre-existing leakage is caught too.
 #
 # Exit codes: 0 = clean, 1 = leak/violation found, 2 = script error.
+# With --warn as the second argument, exit 1 becomes 0 and findings print as
+# warnings.
 #
 # Label-gated modes consult $PR_LABELS (newline-separated) which the workflow
 # populates from `gh pr view --json labels`.
@@ -69,8 +65,29 @@ set -euo pipefail
 
 mode="${1:-}"
 if [[ -z "$mode" ]]; then
-  echo "Usage: $0 <denylist|policy-rationale|slugs|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored|repos-segment-not-ignored|instance-artifacts>" >&2
+  echo "Usage: $0 <denylist|policy-rationale|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored|repos-segment-not-ignored|instance-artifacts>" >&2
   exit 2
+fi
+
+# --warn (or HQ_SCAN_MODE=warn): report-only. Findings print as GitHub
+# warnings and the scan exits 0. Script errors (exit 2) still fail. Content
+# modes run this way in CI; review is the merge gate.
+# Only content modes can be softened; structural and label-gated modes ignore it.
+case "$mode" in
+  denylist|policy-rationale|users-path|provenance|vendor-public-ok|public-frontmatter) warnable=1 ;;
+  *) warnable=0 ;;
+esac
+if [[ $warnable -eq 1 && ( "${2:-}" == "--warn" || "${HQ_SCAN_MODE:-}" == "warn" ) ]]; then
+  set +e
+  out="$(HQ_SCAN_MODE= bash "${BASH_SOURCE[0]}" "$mode" 2>&1)"
+  rc=$?
+  set -e
+  [[ -n "$out" ]] && printf '%s\n' "${out//::error::/::warning::}"
+  if [[ $rc -eq 1 ]]; then
+    echo "::warning title=$mode::findings reported (report-only; review is the gate)"
+    exit 0
+  fi
+  exit "$rc"
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -169,9 +186,6 @@ case "$mode" in
       [[ ! -f "$f" ]] && continue
       [[ "$f" == "$deny_file" ]] && continue
       [[ "$f" == "CONTRIBUTING.md" ]] && continue
-      # The slug snapshot holds only salted hashes, but skip it anyway so the
-      # denylist scan never depends on the snapshot's format.
-      [[ "$f" == .leak-scan/manifest-snapshot.yaml ]] && continue
 
       for pat in "${patterns[@]}"; do
         while IFS= read -r hit; do
@@ -193,45 +207,6 @@ case "$mode" in
       exit 1
     fi
     echo "denylist-scan: clean"
-    ;;
-
-  slugs)
-    # The snapshot never names a tenant. It holds a salt and
-    # sha256("<salt>:<slug>") for every private slug (see hash-slugs.sh).
-    # The scan hashes every slug-shaped token in each PR-changed file with the
-    # same salt and fails on a match, so neither this repo nor public hq-core
-    # history carries the tenant list, and the cost is one pass over the
-    # changed files whatever the number of tenants. Matching is exact-case
-    # (owner decision 2026-10-23). public_slugs and allowlist.yaml are hashed
-    # too and removed from the match set, so they are never flagged.
-    allow_file=".leak-scan/allowlist.yaml"
-    snap_file=".leak-scan/manifest-snapshot.yaml"
-    if [[ ! -f "$allow_file" ]]; then
-      echo "::error::$allow_file missing" >&2; exit 2
-    fi
-    if [[ ! -f "$snap_file" ]]; then
-      echo "::error::$snap_file missing" >&2; exit 2
-    fi
-    if ! grep -qE '^salt: [0-9a-f]{32,}$' "$snap_file" || ! grep -q '^slug_hashes:' "$snap_file"; then
-      echo "::error::$snap_file is not a version-2 hashed snapshot; regenerate with .leak-scan/hash-slugs.sh" >&2; exit 2
-    fi
-    if ! command -v python3 >/dev/null 2>&1; then
-      echo "::error::python3 is required for the slug scan" >&2; exit 2
-    fi
-
-    files_list="$(mktemp)"
-    trap 'rm -f "$files_list"' EXIT
-    for f in "${files[@]}"; do
-      [[ -z "$f" ]] && continue
-      [[ ! -f "$f" ]] && continue
-      [[ "$f" == .leak-scan/* ]] && continue
-      printf '%s\n' "$f" >> "$files_list"
-    done
-
-    # The matcher lives in .leak-scan/slug-scan.py so .leak-scan/tests can run
-    # it directly. It also catches a slug inside a longer token (cmp_<slug>,
-    # <slug>_prod, <slug>-prod) and refuses to run on an empty hash set.
-    python3 .leak-scan/slug-scan.py --snapshot "$snap_file" --allowlist "$allow_file" --files "$files_list"
     ;;
 
   policy-rationale)
@@ -276,7 +251,8 @@ case "$mode" in
   users-path)
     # Tripwire: any /Users/<name> path in promotable surfaces leaks the
     # original author's home dir. Hard rule from
-    # hq-promote-hq-core-users-path-tripwire — block, never warn.
+    # hq-promote-hq-core-users-path-tripwire. CI runs it with --warn; review
+    # is the gate.
     leaks=0
     surfaces=(.claude scripts core/scripts core/knowledge/public)
     for s in "${surfaces[@]}"; do

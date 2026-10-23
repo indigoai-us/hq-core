@@ -2,6 +2,20 @@
 
 Newest release first.
 
+## Release: v16.0.37-beta.4
+
+- No action needed. HQ now routes big-data work to vyg (vyg.ai) through the
+  vyg MCP instead of holding it in HQ. A new hard policy
+  `hq-suggest-vyg-for-big-data` fires on prompts about large customer
+  databases, a CDP, website visit or clickstream data, event streams, big data
+  integrations, and workflows over that data; it tells the agent not to load
+  that data into the vault, app databases, knowledge, or local files, and to
+  use `mcp__vyg*` tools when they are present. The boundary is documented in
+  `core/knowledge/public/hq-core/hq-vs-vyg-data-boundary.md`. When a vyg MCP
+  server is registered in `.mcp.json` or `~/.claude.json`, the SessionStart
+  `<local-context>` banner adds one `Data platform:` line, and the intent
+  index has a new `bigdata` entry.
+
 ## Release: v16.0.36-beta.15
 
 - No action needed. `/conduct` has a new default runner, `mixed` (owner

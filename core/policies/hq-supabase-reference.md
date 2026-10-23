@@ -77,4 +77,3 @@ When debugging "table not found" errors on a Supabase-backed app, ALWAYS verify 
 Before uploading to Supabase Storage via `PUT /storage/v1/object/{bucket}/{path}`, verify the bucket exists. If it returns 404 "Bucket not found", create it first via `POST /storage/v1/bucket` with `{"id":"{name}","name":"{name}","public":false}`. Use the service role key for both operations.
 
 **Rationale:** A book upload failed with 404 because the `books` bucket had never been created in Supabase. The upload endpoint does not auto-create buckets.
-

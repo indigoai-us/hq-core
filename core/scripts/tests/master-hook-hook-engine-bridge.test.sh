@@ -27,6 +27,9 @@
 #       (default 5 s); the event finishes with byte-identical bash output
 #   [k] an engine exit other than 0 or 2 (1, 127, timeout) is no verdict: the
 #       bash guard runs and its block lands; exit 2 from the engine blocks
+#   [l] the plan is exported to hooks as HQ_HOOK_BRIDGE_PLAN/HQ_HOOK_BRIDGE_BIN
+#       (the policy injector's bridged helper, US-008); a helper-only plan
+#       bridges no hook; a plan inherited from a parent event is cleared
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -90,6 +93,10 @@ HOOK
 cat >/dev/null
 here="$(cd "$(dirname "$0")" && pwd)"
 printf 'plain args=%s\n' "$*" >> "$here/ran.log"
+# The plan master-hook exports to hooks, tabs and newlines made visible.
+plan="${HQ_HOOK_BRIDGE_PLAN-<unset>}"
+plan="${plan//$'\t'/|}"
+printf 'env bin=%s plan=%s\n' "${HQ_HOOK_BRIDGE_BIN-<unset>}" "${plan//$'\n'/;}" >> "$here/env.log"
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"bash-hook:fixture-plain:%s"}}\n' "$*"
 exit 0
 HOOK
@@ -498,6 +505,40 @@ run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
   && ok "engine exit 2 is a block verdict; bash not run" \
   || bad "engine exit 2: rc=$RC ran=$(ran_count "$FIX" block)"
 cp "$TMP/registry.orig" "$FIX/.claude/hooks/hook-registry.json"
+reset_logs
+
+echo "[l] the plan is exported to hooks for bridged helpers (US-008)"
+TAB=$'\t'
+env_line() { [ -f "$FIX/.claude/hooks/env.log" ] && tail -1 "$FIX/.claude/hooks/env.log" || echo "<none>"; }
+reset_logs
+rm -f "$FIX/.claude/hooks/env.log"
+snapshot_with_port
+printf '%s\t%s\n' derive-trigger-facts on > "$PLAN"
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+[ "$RC" = "0" ] && [ "$(bridge_calls)" = "0" ] && [ "$(ran_count "$FIX" port)" = "1" ] && [ "$(ran_count "$FIX" plain)" = "1" ] \
+  && ok "a helper-only plan bridges no hook" \
+  || bad "helper-only plan: rc=$RC bridge=$(bridge_calls) port=$(ran_count "$FIX" port) plain=$(ran_count "$FIX" plain)"
+[ "$(env_line)" = "env bin=$STUB plan=derive-trigger-facts|on" ] \
+  && ok "hooks see HQ_HOOK_BRIDGE_BIN and HQ_HOOK_BRIDGE_PLAN" || bad "env: $(env_line)"
+reset_logs
+printf '%s\t%s\n%s\t%s\n' "$HOOK_ID" shadow derive-trigger-facts on > "$PLAN"
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+[ "$(env_line)" = "env bin=$STUB plan=$HOOK_ID|shadow;derive-trigger-facts|on" ] \
+  && ok "the whole plan is exported" || bad "env: $(env_line)"
+# A plan inherited from a parent event never reaches this event's hooks.
+for case_env in "HQ_HOOK_ENGINE=off" "HQ_HOOK_ENGINE_BIN=/nonexistent/hq-hook"; do
+  reset_logs
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" HQ_HOOK_BRIDGE_BIN="$STUB" \
+    HQ_HOOK_BRIDGE_PLAN="derive-trigger-facts${TAB}on" "$case_env"
+  [ "$(env_line)" = "env bin=<unset> plan=<unset>" ] \
+    && ok "$case_env: inherited plan cleared" || bad "$case_env: env $(env_line)"
+done
+reset_logs
+snapshot_without_port
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" HQ_HOOK_BRIDGE_BIN="$STUB" HQ_HOOK_BRIDGE_PLAN="derive-trigger-facts${TAB}on"
+[ "$(env_line)" = "env bin=<unset> plan=<unset>" ] && [ ! -e "$CALLS" ] \
+  && ok "no port flag: inherited plan cleared, engine never started" || bad "no port flag: env $(env_line)"
+rm -f "$FIX/.claude/hooks/env.log"
 reset_logs
 
 if [ "$fail" -eq 0 ]; then

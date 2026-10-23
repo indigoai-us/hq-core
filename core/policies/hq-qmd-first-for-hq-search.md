@@ -33,5 +33,3 @@ On Windows, batch independent shell work into one Bash tool call. Each Git Bash 
 HQ is indexed with qmd so searches stay scoped, fast, and aligned with the workspace's semantic collections. Broad Grep or shell search from HQ root is noisy, can traverse irrelevant generated data, and misses the intended collection model.
 
 `qmd vsearch` / `qmd query` / `qmd embed` / `qmd pull` auto-download GGUF models into `~/.cache/qmd/models/` on first use (~300MB embedding, ~640MB reranker, ~1.1GB query expansion). A Windows Git Bash session (cli 5.114.0, core 15.0.136) spent more than two hours on one prompt after `/learn` ran an in-turn `qmd vsearch` dedup that pulled ~1.28GB, on top of dozens of sequential Bash/PowerShell calls. BM25 (`qmd search`) does not pull models and is the in-turn default.
-
-Empty-result escalation (2026-10-13): a session asked to find an existing deployed document ran one BM25 query worded differently from the document, got zero results, and switched to grep. The grep pipeline also hid a failed CLI subcommand. The session needed several user corrections and never found the document. One `qmd query` with similar wording returned it as the top hit.

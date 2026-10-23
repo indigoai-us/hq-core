@@ -30,40 +30,6 @@ The pattern is structural, not specific to that command:
 - **Cheap filters carry most of the value.** If 80% of items can be classified by regex, only the residual 20% needs LLM judgment.
 - **Unbounded fanout breaks the user's mental model of cost.** A run that "feels" small (one slash command) can quietly consume tens of millions of effective tokens.
 
-## Examples
-
-### ✅ Compliant: batch with structured output
-
-```python
-# /some-command processes N files in K subagents (K = N/10)
-batches = chunk(files, 10)
-for batch in parallel(batches, max=10):
-    spawn_subagent(prompt=f"For each of these {len(batch)} files, return JSON [{{path, verdict}}, ...]")
-```
-
-### ✅ Compliant: deterministic pre-filter
-
-```bash
-# /promote-hq-core after US-003/US-004
-scripts/promote-hq-core-scan.sh  # deterministic regex; 0 subagents
-# Files with non-empty pii_flags get surfaced for user decision — still 0 LLM calls
-```
-
-### ❌ Non-compliant: 1:1 fanout, no pre-filter
-
-```python
-# /promote-hq-core BEFORE the fix
-for file in push_candidates:  # 700+ files
-    spawn_subagent(prompt=f"Read {file} and return PASS/EDIT/DROP")
-```
-
-### ✅ Compliant: bounded by domain, doc'd
-
-```yaml
-# /run-project frontmatter
-# subagent_count: { typical: N stories, worst_case: N stories × 3 phases }
-```
-
 ## Enforcement
 
 **Soft.** Authors should self-enforce when adding new commands. Repeated violations should be raised as follow-up tickets via `mcp__ccd_session__spawn_task` or the relevant company's PRD process.

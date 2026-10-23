@@ -43,8 +43,6 @@ Do NOT edit the shipped `.claude/settings.json` to change your mode. It is relea
 
 ## Rationale
 
-**Why `auto` is the shipped default.** HQ ran with `auto` shipped through at least August 2026. On 2026-09-16 the value flipped to `plan` as an unrelated one-line change inside a hooks fix (`020f891f`, shipped in v15.0.146). It was not a knowing change. Within a day, operators who ran `hq rescue` were booted into Plan mode on every new session and reported the app as unusable. The author confirmed the intended value is `auto`, and it was restored on 2026-09-18. v2 of this policy documented Plan as the hard default; that text never matched what shipped, and v3 corrects the record.
-
 **Why Plan stays Plan.** `useAutoModeDuringPlan` defaults on upstream, which lets Auto's classifier approve mutations while the operator believes they are in a read-only planning mode. When an operator chooses Plan, that choice must mean no mutations until the plan is approved. This composes with `/plan`, `/prd`, `/brainstorm`, `/architect`, and the "Vague → Verifiable" principle.
 
 **Why the shipped value matters less than it looks.** Claude Code ignores `auto` at project scope, so the shipped `auto` mostly acts as a statement of intent and a guard against a permissive-or-restrictive value being smuggled in. The desktop app applies its own remembered mode. Neither fact excuses changing the shipped value silently: the September incident showed that the file is still applied in some paths and that a silent flip generates support load.

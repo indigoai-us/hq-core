@@ -112,6 +112,17 @@ if [ -n "$COMPANIES" ]; then
   QMD_COLLECTIONS="hq, $COMPANIES"
 fi
 
+# --- Data platform (vyg) ---
+# One line when a vyg MCP server is registered for this HQ or this user, so
+# sessions route customer-scale and event-scale data to vyg instead of HQ.
+# Server names only; config values are never read. HOME is honored so tests
+# can isolate the user-level registration.
+VYG_MCP=""
+for mcp_cfg in "$HQ_ROOT/.mcp.json" "${HOME:-/nonexistent}/.claude.json"; do
+  [ -f "$mcp_cfg" ] || continue
+  if grep -q '"[^"]*vyg[^"]*"[[:space:]]*:' "$mcp_cfg" 2>/dev/null; then VYG_MCP=1; break; fi
+done
+
 # --- Emit ---
 echo "<local-context>"
 echo "Owner: $OWNER"
@@ -134,4 +145,7 @@ if [ -n "$MISSING_WORKERS" ]; then
   echo "Do not treat missing workers as available and do not fall back to a raw ingest script. Run hq sync to fetch the directories, or hq reindex to drop stale registry rows."
 fi
 echo "QMD collections: $QMD_COLLECTIONS"
+if [ -n "$VYG_MCP" ]; then
+  echo "Data platform: vyg MCP connected. Large customer databases, CDP, website visit/event data, big data integrations and data workflows go to vyg (mcp__vyg*), not the HQ vault or app databases. Policy: hq-suggest-vyg-for-big-data."
+fi
 echo "</local-context>"

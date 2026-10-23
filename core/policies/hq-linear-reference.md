@@ -85,4 +85,3 @@ Do NOT fire a separate HTTP request per issue. For a 15-story PRD, N+1 costs ~30
 [from linear-scan-check-existing-prds.md] — enforcement: hard
 
 Before recommending a new PRD from a Linear scan, always check `companies/{product}/projects/` for existing PRDs that cover the same Linear issues. Use `ls companies/{product}/projects/` and read matching `prd.json` files to check `linearIssueId` fields against scan results.
-

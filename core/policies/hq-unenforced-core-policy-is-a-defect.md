@@ -28,7 +28,4 @@ Before shipping or trusting a core policy as a control:
 Related: `hq-policy-enforcement-claims-verify-wiring` (do not claim wiring you did not check). A guardrail that lives only in the prompt is not a guardrail.
 
 ## Rationale
-
-`image-context-isolation` shipped in core on 2026-03-30 as `enforcement: soft` with a count cap. Nothing measured bytes. A six-image call stayed inside the count, inlined 14.3M characters, and drained a weekly Codex plan with no warning. The charter repeated the count cap. Compliance with the written rule was high and irrelevant.
-
 A policy only a well-behaved agent can violate is not a control. Unenforced core policies are their own defect class: they suppress the instinct to add a real hook.

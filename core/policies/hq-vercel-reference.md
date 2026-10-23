@@ -338,4 +338,3 @@ Removing `@clerk/nextjs` from code + env vars is NOT enough to remove Clerk auth
 [from hq-vercel-discipline.md]
 
 The prior `hq-vercel-discipline.md` consolidated 14 of these rules into a single doc on 2026-04-27. This file (`hq-vercel.md`) further consolidates that doc plus the remaining standalone Vercel policies. If you encounter `hq-vercel-discipline.md` in the wild, treat its rules as already merged here — same content, organized topically rather than as a numbered list.
-

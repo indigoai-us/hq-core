@@ -66,17 +66,6 @@ harmless "pattern reference" and allow it, and this policy told agents that an
 `echo`-based test proved nothing. That was an accurate description of the code
 and an indefensible design:
 
-- `echo <secret> | pbcopy`, `echo <secret> >> file`, and `echo <secret> | curl`
-  are precisely how a credential leaks into a transcript, a log, or a synced
-  file. The guard failed open on its entire primary threat model.
-- The keyword match was **unanchored**, so it was never limited to the first
-  token as earlier versions of this policy claimed. Appending `&& echo ok` to
-  any command disarmed the detector for that line.
-- After the 2026-09-07 change that extended scanning to file content, the same
-  escape applied per line of a written file — so a secret written into a file
-  under `companies/` (which syncs to the vault and to teammates) passed if the
-  line happened to mention `echo`.
-
 Reported as hq-core#91 and fixed by removing the carve-out outright. The
 token-boundary anchoring landed in the same change because it had to: measured
 against a corpus of roughly 93,000 real shell commands, removing the carve-out

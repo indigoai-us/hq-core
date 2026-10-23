@@ -79,7 +79,8 @@ QMD collections: hq, indigo, acme
 OUTPUT
 
 rc=0
-PATH="$SHIMS:$PATH" HP29_EXEC_TRACE="$TRACE" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$HOOK" > "$ACTUAL" 2>"$TMP/stderr" || rc=$?
+mkdir -p "$TMP/home"
+HOME="$TMP/home" PATH="$SHIMS:$PATH" HP29_EXEC_TRACE="$TRACE" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$HOOK" > "$ACTUAL" 2>"$TMP/stderr" || rc=$?
 [ "$rc" -eq 0 ] || fail "hook exited $rc"
 cmp -s "$EXPECTED" "$ACTUAL" || { diff -u "$EXPECTED" "$ACTUAL" >&2 || true; fail "local-context output changed"; }
 pass "local-context output matches the synchronous contract byte-for-byte"
@@ -90,4 +91,11 @@ for utility in dirname grep head paste sed uniq; do
   if grep -Fxq "$utility" "$TRACE"; then fail "hook still launches $utility"; fi
 done
 pass "hook launches at most 7 measured utility processes and avoids repeated text-pipeline utilities"
+
+# vyg MCP registered for the user -> one extra Data platform line, nothing else changes.
+printf '{"mcpServers":{"vyg-internal-mcp":{"type":"http","url":"https://example.invalid"}}}\n' > "$TMP/home/.claude.json"
+HOME="$TMP/home" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$HOOK" > "$TMP/with-vyg.txt" 2>/dev/null || fail "hook failed with vyg registered"
+grep -q '^Data platform: vyg MCP connected' "$TMP/with-vyg.txt" || fail "vyg Data platform line missing when a vyg MCP is registered"
+grep -v '^Data platform:' "$TMP/with-vyg.txt" | cmp -s "$EXPECTED" - || fail "vyg line changed the rest of the banner"
+pass "vyg MCP registration adds exactly one Data platform line"
 echo "inject-local-context-process-budget: ok"

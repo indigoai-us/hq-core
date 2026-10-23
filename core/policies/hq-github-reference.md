@@ -175,4 +175,3 @@ content: [
 …or add `@source "../node_modules/<lib-name>/dist/**/*.{js,mjs}";` in Tailwind v4 CSS.
 
 **Rationale.** Tailwind only emits a utility class if its content scanner finds a string match somewhere in the scanned tree. The default content glob stops at the app source tree; `node_modules/` is excluded for performance. A github-installed library that ships only source files therefore contributes zero matches to the consumer's CSS, even though its components render correctly at the DOM level — the classes just have no corresponding rules. Symptoms present as "styles missing on one component," "form inputs look unstyled," or "dark mode toggle doesn't work" after a fresh install. Pre-built dist files with inlined class strings sidestep the scanner limitation entirely.
-

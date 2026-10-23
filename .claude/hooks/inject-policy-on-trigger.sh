@@ -627,6 +627,8 @@ FACTS_FILE=""
 INTENT_FACTS_FILE=""
 OUTPUT_FACTS_FILE=""
 FACT_PAIR_FILE=""
+# Set by resolve_policy_fact_bridge; defined here so the EXIT trap can read it.
+POLICY_FACT_BRIDGE_OUT=""
 POLICY_BODY_TMP_DIR=""
 POLICY_ARG_INLINE_LIMIT=65536
 
@@ -637,6 +639,7 @@ cleanup_policy_fact_files() {
   [ -z "$OUTPUT_FACTS_FILE" ] || rm -f "$OUTPUT_FACTS_FILE" 2>/dev/null || true
   [ -z "$FACT_PAIR_FILE" ] || rm -f "$FACT_PAIR_FILE" 2>/dev/null || true
   [ -z "$POLICY_BODY_TMP_DIR" ] || rm -rf "$POLICY_BODY_TMP_DIR" 2>/dev/null || true
+  [ -z "$POLICY_FACT_BRIDGE_OUT" ] || rm -f "$POLICY_FACT_BRIDGE_OUT" "$POLICY_FACT_BRIDGE_OUT.fault" 2>/dev/null || true
 }
 
 trap cleanup_policy_fact_files EXIT
@@ -848,10 +851,101 @@ resolve_policy_fact_helper() {
   return 0
 }
 
+# hq-hook engine bridge for the fact helper (windows-hook-parity US-008).
+# master-hook.sh resolves the bridge plan once per event and exports it as
+# HQ_HOOK_BRIDGE_PLAN ("<id><TAB><shadow|on>" lines) with the engine path in
+# HQ_HOOK_BRIDGE_BIN. When the plan names derive-trigger-facts, the helper runs
+# through `hq-hook bridge` (flag hook-engine-port-derive-trigger-facts): shadow
+# returns the shell helper's output and logs a comparison, on returns the
+# native port's output. Builtins only, so a disabled bridge starts nothing.
+# The kill switch is checked here as well as in master-hook and the engine.
+#
+# The bridge's stdout goes to POLICY_FACT_BRIDGE_OUT and is printed only when
+# the exit code is an answer. In shadow mode (and on an `on` fallback) the
+# engine returns the shell helper's own stdout and exit code, so a fault code
+# can come with partial output; discarding it before the shell helper runs
+# again keeps the facts from being duplicated. After a fault the marker file
+# POLICY_FACT_BRIDGE_OUT.fault keeps the bridge off for the rest of the event,
+# including calls made from $(...) subshells.
+#
+# resolve_policy_fact_bridge runs once in the hook's own shell, before the
+# first helper call, so the output path is known to the EXIT cleanup.
+POLICY_FACT_BRIDGE_MODE=""
+POLICY_FACT_BRIDGE_RESOLVED=0
+resolve_policy_fact_bridge() {
+  local line="" mode=""
+  [ "$POLICY_FACT_BRIDGE_RESOLVED" = "1" ] && return 0
+  POLICY_FACT_BRIDGE_RESOLVED=1
+  case "${HQ_HOOK_ENGINE:-}" in
+    [Oo][Ff][Ff]) return 0 ;;
+  esac
+  [ ! -e "${HOME:-}/.hq/hook-engine.off" ] || return 0
+  [ -n "${HQ_HOOK_BRIDGE_PLAN:-}" ] || return 0
+  [ -n "${HQ_HOOK_BRIDGE_BIN:-}" ] && [ -f "$HQ_HOOK_BRIDGE_BIN" ] && [ -x "$HQ_HOOK_BRIDGE_BIN" ] || return 0
+  [ -n "$FACTS_TMP_DIR" ] && [ -d "$FACTS_TMP_DIR" ] || return 0
+  # A payload large enough to need STDIN_FILE can produce facts over the
+  # engine's 64 KiB capture limit; that is a fault and a third derivation.
+  [ -z "$STDIN_FILE" ] || return 0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ "${line%%$'\t'*}" = "derive-trigger-facts" ] || continue
+    mode="${line#*$'\t'}"
+    case "$mode" in
+      shadow|on) POLICY_FACT_BRIDGE_MODE="$mode" ;;
+    esac
+    break
+  done <<< "$HQ_HOOK_BRIDGE_PLAN"
+  [ -z "$POLICY_FACT_BRIDGE_MODE" ] || POLICY_FACT_BRIDGE_OUT="$FACTS_TMP_DIR/.policy-trigger-bridge.$$.${RANDOM}"
+  return 0
+}
+
+# run_derive_trigger_facts_bridge <helper> <event> <with-intent 0|1> — the
+# helper call through the engine, stdout to POLICY_FACT_BRIDGE_OUT. The inner
+# timeout stays under the injector's 60 s registry timeout so a hung helper is
+# killed by the engine (and the shell helper gets a turn) before master-hook
+# kills the injector.
+run_derive_trigger_facts_bridge() {
+  local helper="$1" event="$2" with_intent="$3"
+  local -a helper_args=("$event")
+  [ "$with_intent" != "1" ] || helper_args+=(--with-assistant-intent)
+  printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$HQ_HOOK_BRIDGE_BIN" bridge derive-trigger-facts \
+    --mode "$POLICY_FACT_BRIDGE_MODE" --event "$event" --timeout 20 --script "$helper" \
+    -- "${helper_args[@]}" > "$POLICY_FACT_BRIDGE_OUT"
+}
+
 run_derive_trigger_facts() {
   local event="$1" with_intent="${2:-0}" helper="" helper_status=0
   resolve_policy_fact_helper
   helper="${POLICY_FACT_HELPER:-$HELPERS/derive-trigger-facts.sh}"
+  resolve_policy_fact_bridge
+  # The capture file must be writable first: a failed redirect would read as
+  # the helper's own exit 1 and leave the event with no facts.
+  if [ -n "$POLICY_FACT_BRIDGE_OUT" ] && [ ! -e "$POLICY_FACT_BRIDGE_OUT.fault" ] \
+    && { : > "$POLICY_FACT_BRIDGE_OUT"; } 2>/dev/null; then
+    local bridge_output="" bridge_fault=0
+    if run_derive_trigger_facts_bridge "$helper" "$event" "$with_intent"; then
+      helper_status=0
+    else
+      helper_status=$?
+    fi
+    # 70 (engine fault), 101 (panic), 124 (timeout), 126 and 127 (not
+    # runnable) and any signal mean there is no usable result, whether the
+    # engine or the helper inside it failed: drop the captured output and run
+    # the shell helper below as if the bridge were off. The helper may run
+    # twice then, but its facts are printed once. Any other code (the helper
+    # answers 0 or 1) passes through with its output, as on the shell path.
+    case "$helper_status" in
+      70|101|124|126|127) bridge_fault=1 ;;
+      *) [ "$helper_status" -lt 128 ] || bridge_fault=1 ;;
+    esac
+    if [ "$bridge_fault" -eq 0 ]; then
+      IFS= read -r -d '' bridge_output < "$POLICY_FACT_BRIDGE_OUT" || true
+      printf '%s' "$bridge_output"
+      return "$helper_status"
+    fi
+    : > "$POLICY_FACT_BRIDGE_OUT.fault" 2>/dev/null || true
+    helper_status=0
+  fi
   # The companion derives HQ_ROOT from its own location, which inside the CLI
   # package is not an HQ root. The forwarder passes --hq-root for the same
   # reason; here the env carries it.
@@ -979,6 +1073,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # deadline moving an already-buffered JSON string through a pipe. Hand the
   # helper a regular file once the payload crosses the inline threshold.
   prepare_policy_trigger_input
+  # In this shell, not in a $(...) helper call: sets the bridge output path
+  # that cleanup_policy_fact_files removes.
+  resolve_policy_fact_bridge
   # AssistantIntent channel: AI-message-only facts, available where there is a
   # transcript look-back (PreToolUse + UserPromptSubmit). Policies with
   # `on: [AssistantIntent]` are evaluated against THIS set, not the event facts.

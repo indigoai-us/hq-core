@@ -25,44 +25,7 @@ When there are multiple questions or decisions, present them as a **sequential q
 
 Applies to: `/brainstorm`, `/prd`, `/deep-plan`, `/architect`, `/diagnose`, `/run-project`, `/execute-task`, `/strategize`, `/review-plan`, and any other skill or ad-hoc moment where the model needs user input on multiple separable choices.
 
-## Examples
-
-**Correct:**
-
-```
-[Insight block explaining why Q1 is foundational]
-AskUserQuestion(questions=[Q1])
-→ user answers
-[Update plan/brainstorm with Q1's decision]
-[Insight block explaining why Q2 follows]
-AskUserQuestion(questions=[Q2])
-→ user answers
-...
-```
-
-Codex equivalent:
-
-```
-request_user_input(questions=[Q1])
-→ user answers
-[Update state]
-request_user_input(questions=[Q2])
-→ user answers
-```
-
-**Incorrect:**
-
-```
-AskUserQuestion(questions=[Q1, Q2, Q3, Q4])
-request_user_input(questions=[Q1, Q2])
-```
-
-Some tools allow multiple questions per call. Hard cap at 1 in HQ.
-
 ## Rationale
-
-Stated explicitly by the user during a deep planning brainstorm session on 2026-05-08, then promoted to a global HQ setting at user request later in the same session.
-
 The user's reasoning, as observed: each decision benefits from a focused educational insight block in context (kept by HQ's active output style) and from seeing the *previous* decisions land before evaluating the next. Batching forces the user to weigh 4 unrelated choices simultaneously, which:
 
 1. Loses the per-decision insight-block scaffolding (you can only fit one short rationale into a batched form, or it bloats unmanageable).

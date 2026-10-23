@@ -130,13 +130,6 @@ This caused `run-project.sh` to silently exit instead of retrying failed stories
 
 All seven rules share the same failure shape: **silent success on the developer's machine, late-binding noisy failure on a fresh Mac, on CI rotation, or under load**. Each one was paid for in production:
 
-- IFS-tab and IFS-colon corruption: bash auditing scripts and multi-repo loops in 2026-04-25/26.
-- BSD coreutils: a `timeout 60 pnpm playwright test` that died on `command not found` before the test runner started; a `date +%s%3N` that emitted `1729742400N` into duration_ms telemetry.
-- Bash 3.2: a `mapfile -t threads < <(find ...)` in `handoff-post.sh` that ran in dev and crashed on a collaborator's Mac.
-- pgrep PID drift: a stale parent PID across a relaunch sent SIGTERM to the wrong process during the curriculum-expansion hard-pause sequence (2026-04-26).
-- pgrep self-match: a `pkill -TERM -f 'run-project.sh.*curriculum-expansion'` that killed the agent's own bash shell mid-tool-call.
-- `set -e` returns: `run-project.sh` silently terminating instead of retrying — direct `handle_failure` call without `|| result=$?`.
-
 Keeping the rules on one page rather than seven separate files preserves the cross-references (rules 5 and 6 only work together; rule 4 is invalid without rule 3) and reduces cold-start context weight without losing any failure mode.
 
 ## Related

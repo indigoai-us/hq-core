@@ -33,9 +33,6 @@ timeout --foreground 2400s node core/scripts/workflow-runner.mjs <script> 2>&1 |
 For anything that can plausibly exceed ~2 minutes — a full test/e2e suite, a real build, a Codex runner invocation, a batch extraction over large data — launch it with `run_in_background: true` and wait for the completion notification (or poll its log), rather than blocking a foreground call and hoping the declared timeout is honored. It will not be.
 
 ## Rationale
-
-Discovered 2026-08-10 by the harness-error analysis and confirmed team-wide as **finding 2.1 — "Fixed deadlines and forced kills," 1,393 events across seven members** (Hassaan 916, Stefan 215, Shawon 96, Jacob 91, Geoff 38, Shahzaib 34, Jonathan 3), on Claude Opus/Fable/Sonnet and Codex. A representative case launched the workflow runner under `timeout --foreground 2400s …` with the tool `timeout` set to 2,460,000 ms, and the harness still killed it at exactly 10m 0s with exit 143 — the runner never finished and produced nothing.
-
 The declared timeout gives false confidence: the coreutils `timeout` prefix and the tool's `timeout` field bound the command from *inside*, but the harness bounds it from *outside* at a lower ceiling, and the outer bound always wins. The only reliable way to run past the ceiling is to move the work off the foreground call entirely (harness-tracked background task, or a supervised out-of-session unit for durable monitors).
 
 We cannot change the harness ceiling, and we cannot make it warn-and-continue instead of kill. So the mechanical guard prevents the *kill* by redirecting long foreground declarations to background before they are launched — background is the warn-and-continue equivalent for the one deadline seam HQ does not own. Where HQ *does* own the supervision (its own child processes), warn-and-continue is implemented directly; see `hq-soft-timeouts-warn-dont-kill`.

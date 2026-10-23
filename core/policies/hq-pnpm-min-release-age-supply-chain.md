@@ -45,9 +45,6 @@ learned_from: npm-supply-chain-leak-2026-05-12
    It is **session-scoped, not per-invocation** — remove it again once the install is done. Each install while it is set appends an audit row to `workspace/learnings/unsafe-install-bypasses.jsonl`. Use only when (a) you have read the package's release notes, (b) you trust the maintainer, and (c) the package version is ≥ 24h old by independent verification.
 
 ## Rationale
-
-Modern npm supply-chain attacks (Shai-Hulud-class worms, the chalk/debug 2025 incident, the 2026-05-12 leak that prompted this policy) all share one timing window: malicious version → published → installed by CI/devs within minutes → credentials exfiltrated → next maintainer's token compromised → next package poisoned. The window between "malicious version is live on npm" and "the maintainer or npm security team yanks it" is usually < 24 hours. A 1440-minute (24h) release-age gate makes that window unreachable.
-
 npm and yarn do not implement this gate. pnpm does (`minimumReleaseAge` introduced in pnpm 10.x, see pnpm settings reference). Therefore the policy is *both* "use pnpm" *and* "configure the gate" — neither alone is enough.
 
 Hard enforcement because:
@@ -55,21 +52,6 @@ Hard enforcement because:
 - The cost of a true-positive miss (a compromised package version reaches a dev machine with shell access to AWS / Cognito / git credentials) is hours-to-days of incident response and credential rotation, plus possible downstream blast radius.
 
 Soft enforcement does not justify those odds.
-
-## Examples
-
-**Correct:**
-- `pnpm add chalk` in a repo with `.npmrc` containing `minimum-release-age=1440`
-- `pnpm install` (lockfile hydration) — uses the version already pinned, no fresh resolution
-- `npm ci` — strict lockfile install, no fresh resolution
-- `pnpm add lodash --config.minimumReleaseAge=1440` (per-invocation override when no `.npmrc` is present; in a non-pnpm repo also add `--config.node-linker=hoisted`)
-- `pnpm add -g @indigoai-us/hq-cli@latest --config.minimumReleaseAge=1440` (CLI restore / heal)
-
-**Incorrect (blocked):**
-- `npm install left-pad` — npm does not support the gate, switch to pnpm
-- `yarn add react-router` — same
-- `bun add tailwindcss` — same
-- `pnpm add some-pkg` in a repo without `.npmrc` / `pnpm-workspace.yaml` config and without `--config.minimumReleaseAge=...`
 
 ## Enforcement
 
@@ -98,13 +80,4 @@ have a narrow, reviewed carve-out:
   `npm install @tobilu/qmd@2.5.3` (not global)
 
 ## References
-
-- pnpm `minimumReleaseAge` setting: https://pnpm.io/settings#minimumreleaseage
-- Related policies:
-  - `.claude/policies/package-manager-per-repo.md` — per-repo manager pin (broader rule about which manager each repo uses)
-  - `.claude/policies/vercel-pnpm-version-pin.md` — pinning the pnpm version itself
-- 2026-05-12 incident reference: workspace/learnings (incident notes), captured this policy
-
-### First-party exemption (2026-08-05, owner request)
-
 Packages under a trusted first-party npm scope — default **`@indigoai-us/*`** (the HQ CLI and packs) — are exempt from the release-age gate in `block-unsafe-package-install.sh`: HQ publishes these itself, so the 24h quarantine only delays our own releases. A mixed install (trusted + third-party in one command) still blocks. Override the scope list via `HQ_TRUSTED_INSTALL_SCOPES` (space-separated) in the hook environment.
