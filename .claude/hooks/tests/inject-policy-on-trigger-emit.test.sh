@@ -421,12 +421,17 @@ grep -q 'ZZZ_BODY_MARKER' <<<"$OUT13" \
   && fail "second hard policy exceeded the budget but was injected: $OUT13"
 grep -q 'Policy `zzz-hard` applies here: ZZZ_RULE_LINE' <<<"$OUT13" \
   || fail "over-budget hard policy did not fall back to its summary: $OUT13"
-# Truncation must be loud and must NAME the shortened policy.
-grep -q 'Full-text budget of 100 bytes reached' <<<"$OUT13" \
+# Truncation must be loud: the budget notice counts the HARD rule listed as
+# one line (its own summary line above names it). An unconditional rule
+# (`when: always`, score 0) delivered as one line is recorded in the session
+# ledger; only a command-specific rule (score 1 or more) is parked in the
+# seen set for its trigger instead.
+grep -q '^> Output budget [0-9]* bytes: 1 HARD policy listed as one line' <<<"$OUT13" \
   || fail "budget overflow was silent: $OUT13"
-grep -q 'Full-text budget.*zzz-hard' <<<"$OUT13" \
-  || fail "budget notice did not name the shortened policy: $OUT13"
-ok "byte budget overflow falls back to summary and names it"
+SID13="$(cat "$ROOT/.last-run-hook-session-id")"
+grep -qx 'zzz-hard' "$ROOT/workspace/orchestrator/policy-trigger-state/$SID13.txt" \
+  || fail "summarised unconditional HARD rule zzz-hard was not recorded as delivered"
+ok "byte budget overflow falls back to summary, is counted, and is recorded"
 
 # ── Case 14: HQ_POLICY_HARD_FULL_TEXT=0 restores summary-only ────────────────
 rm -rf "$ROOT"

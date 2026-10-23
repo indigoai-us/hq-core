@@ -114,7 +114,10 @@ if [ "$v1" = true ] && [ "$v2" = false ]; then pass "flag-off applies at once de
 # A reader that recovers clears the negative cache.
 touch "$TMP/home/.hq/hq-anywhere-runtime.flag.cmp_123456.timeout"
 printf '0\n' > "$TMP/home/.hq/hq-anywhere-runtime.flag.cmp_123456.timeout"
-v3="$(live_read false)"
+# now_seconds reads /proc/uptime on Linux, so on a runner booted under 30s
+# ago a stamp of 0 is still inside the default window. A TTL of 0 makes the
+# stamp expired whatever the clock reads.
+v3="$(HQ_FLAG_READER_NEGATIVE_TTL=0 live_read false)"
 if [ "$v3" = false ] && [ ! -f "$TMP/home/.hq/hq-anywhere-runtime.flag.cmp_123456.timeout" ]; then pass "expired negative cache is retried and cleared"; else fail "expired negative cache: got $v3"; fi
 
 if [ "$FAIL" -eq 0 ]; then echo "master-hook-flag-reader-bounded: all checks passed"; exit 0; fi

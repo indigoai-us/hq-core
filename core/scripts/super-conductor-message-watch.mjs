@@ -54,10 +54,16 @@
 //
 // Its ledger row carries `priority: critical` and every row carries `seen_at`.
 //
+// Excluded channels (--exclude, plus `hq_channels_exclude` in the owner
+// settings, re-read with the Slack settings): a channel whose slug or id is
+// listed is dropped from the feed like an out-of-scope one. It is never read,
+// stored, or named, so it produces no MESSAGE or CRITICAL line and no ledger
+// row.
+//
 // Usage:
 //   node core/scripts/super-conductor-message-watch.mjs --state <file> --company <csv>
 //       [--interval <s>] [--away-interval <s>] [--min-wake-gap <s>] [--once]
-//       [--critical <csv>] [--team <csv>]
+//       [--critical <csv>] [--team <csv>] [--exclude <csv>]
 //       [--owner-uid <prs_...>]... [--owner-email <e>]... [--hint <text>] [--parent-pid <pid>]
 //
 // --company: the session's locked company set (`hq-session.sh get
@@ -87,7 +93,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { replaceFile } from './lib/super-conductor-lock.mjs';
 import { prepareWindowsCommand } from './lib/windows-cmd-spawn.mjs';
-import { isMain, makeScope, manifestUids, parseCompanies, rowInScope } from './lib/super-conductor-scope.mjs';
+import { isMain, makeScope, manifestUids, parseCompanies, rowExcluded, rowInScope } from './lib/super-conductor-scope.mjs';
 import { addRequest, guessKind } from './super-conductor-requests.mjs';
 
 const HQ_BIN = process.env.HQ_BIN || 'hq';
@@ -108,7 +114,7 @@ function parseArgs(argv) {
   const o = {
     interval: 30, awayInterval: 300, minWakeGap: 120, once: false,
     ownerUids: [], ownerEmails: [], companies: [], hint: 'Run the /super-conductor wakeup (Step 7) now',
-    critical: [], team: [],
+    critical: [], team: [], exclude: [],
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -135,6 +141,8 @@ function parseArgs(argv) {
     // line at once; --team: display names whose HQ DMs count for hq_dm:team.
     else if (a === '--critical') o.critical.push(...val().split(',').map((s) => s.trim()).filter(Boolean));
     else if (a === '--team') o.team.push(...val().split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+    // --exclude: HQ channel slugs or ids never read or named.
+    else if (a === '--exclude') o.exclude.push(...val().split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
     else die(`unknown argument ${a}`);
   }
   if (!o.state) die('--state is required');
@@ -227,10 +235,10 @@ function touch(set, id) {
 // are passed to onDms as soon as the inbox is read, before the slower channel
 // feed call, so a DM wake does not wait on channels. `scope` (makeScope)
 // limits channels to the locked company set; the default lets only
-// person-to-person channels through.
+// person-to-person channels through. `crit.exclude` drops listed channels.
 const textOf = (m) => m.text || m.body || m.message || m.preview || '';
 
-export async function poll(state, owner, call = hq, onDms = () => {}, scope = { slugs: new Set(), uids: new Set() }, sink = () => {}, crit = { critical: [], team: [] }) {
+export async function poll(state, owner, call = hq, onDms = () => {}, scope = { slugs: new Set(), uids: new Set() }, sink = () => {}, crit = { critical: [], team: [], exclude: [] }) {
   const baseline = !state.initialized;
   // Critical items are named here, printed at once by the caller, and never
   // held in `pending`.
@@ -296,8 +304,9 @@ export async function poll(state, owner, call = hq, onDms = () => {}, scope = { 
     return items;
   }
   delete state.channel_error;
-  // Out-of-scope channels are dropped here: never read, stored, or named.
-  const rows = [...(feed.rows || []), ...(feed.changed || [])].filter((r) => rowInScope(r, scope));
+  // Out-of-scope and excluded channels are dropped here: never read, stored,
+  // or named.
+  const rows = [...(feed.rows || []), ...(feed.changed || [])].filter((r) => rowInScope(r, scope) && !rowExcluded(r, crit.exclude));
   const known = state.channels || {};
   const candidates = [];
   const advance = {};
@@ -530,6 +539,11 @@ async function main() {
   let ownerGapReported = false;
   let slackGapReported = false;
   let slackNext = 0;
+  // --exclude plus the settings' hq_channels_exclude, refreshed whenever the
+  // settings are re-read (with the Slack settings), so a saved exclusion
+  // applies without a restart.
+  const excludeFrom = (prefs) => [...new Set([...o.exclude, ...(Array.isArray(prefs.hq_channels_exclude) ? prefs.hq_channels_exclude : []).map((s) => String(s).trim().toLowerCase()).filter(Boolean)])];
+  let exclude = excludeFrom(await readPrefs());
   const stamp = () => new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   const say = (line) => process.stdout.write(`${line}\n`);
   // Ledger rows. A row carries the company it belongs to: a channel's
@@ -615,7 +629,7 @@ async function main() {
     const inboxBaseline = state.inbox_initialized === undefined ? !state.initialized : !state.inbox_initialized;
     const channelBaseline = !state.initialized;
     try {
-      const items = await poll(state, owner, hq, (dms) => flush(dms), scope, sink, { critical: o.critical, team: o.team });
+      const items = await poll(state, owner, hq, (dms) => flush(dms), scope, sink, { critical: o.critical, team: o.team, exclude });
       if (!inboxBaseline && state.inbox_initialized && !(state.poll_errors || []).some((e) => /^hq dm inbox/.test(e))) record('hq_dms', stamp());
       if (!channelBaseline && state.cursor && !state.channel_error) record('hq_channels', stamp());
       failures = state.poll_errors || [];
@@ -635,7 +649,9 @@ async function main() {
     // Slack, on its own interval. Settings are re-read each time so a change
     // to slack_watch applies without a restart.
     if (Date.now() >= slackNext) {
-      const slackCfg = slackConfig(await readPrefs(), scope);
+      const prefs = await readPrefs();
+      exclude = excludeFrom(prefs);
+      const slackCfg = slackConfig(prefs, scope);
       wsCompanies = slackCfg ? slackCfg.companies : {};
       slackNext = Date.now() + (slackCfg ? slackCfg.intervalMs : 300_000);
       // Report a Slack scope gap once per change, across restarts.

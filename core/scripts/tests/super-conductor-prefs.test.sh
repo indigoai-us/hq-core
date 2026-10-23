@@ -97,6 +97,18 @@ set +e; prefs set channels x >/dev/null 2>&1; rc=$?; set -e
 check "set on a list key is refused with exit 3 (got $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
 cmp -s "$tmp/before-bad.yaml" "$tmp/p.yaml"; check "refused writes leave the file unchanged" $?
 
+# 6b. hq_channels_exclude round-trips: add extends the list, get returns it
+# normalized (trimmed, lowercased, slug or id), exclude prints it as CSV, and
+# it is a known key, not an extension.
+prefs add hq_channels_exclude 'Project-Core-PR-Reviews-6e234042 ' chn_abc123 >/dev/null
+out="$(prefs get)"
+check "get returns hq_channels_exclude normalized and known (got: $(grep -A3 hq_channels_exclude <<<"$out" | tr -d '\n'))" \
+  "$(node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); process.exit(JSON.stringify(j.hq_channels_exclude)==="[\"project-core-pr-reviews-6e234042\",\"chn_abc123\"]"&&!j._extension_keys.includes("hq_channels_exclude")?0:1)' <<<"$out"; echo $?)"
+check "exclude prints the list as CSV (got $(prefs exclude 2>/dev/null))" "$([[ "$(prefs exclude 2>/dev/null)" == "project-core-pr-reviews-6e234042,chn_abc123" ]]; echo $?)"
+check "exclude is empty when unset" "$([[ "$(SC_PREFS_FILE="$tmp/missing.yaml" node "$PREFS" exclude 2>/dev/null)" == "" ]]; echo $?)"
+printf 'hq_channels_exclude: chn_one, Chn_Two\n' >"$tmp/csv.yaml"
+check "a comma-separated hq_channels_exclude string is accepted" "$([[ "$(SC_PREFS_FILE="$tmp/csv.yaml" node "$PREFS" exclude 2>/dev/null)" == "chn_one,chn_two" ]]; echo $?)"
+
 # 7. Heartbeat reads channels from settings when --channels is omitted, on every wake.
 export SC_HEARTBEAT_MIN_INTERVAL=1 SC_PREFS_FILE="$tmp/p.yaml"
 out="$(bash "$HB" --interval 1 --once)"
@@ -119,6 +131,8 @@ need 'super-conductor-prefs\.mjs (add|set)' 'durable preferences are written thr
 need 'never rewrite' 'durable writes never rewrite other keys'
 need '`slack_workspaces`' 'documents slack_workspaces'
 need '`hq_channels`' 'documents the hq_channels channel key'
+need '`hq_channels_exclude`' 'documents hq_channels_exclude'
+need 'hq_channels_exclude: \[\]' 'the settings example lists hq_channels_exclude'
 need 'hq channels list' 'hq_channels sweep uses hq channels'
 need '`email_accounts`' 'documents email_accounts'
 need 'every listed account' 'sweeps every listed email account'

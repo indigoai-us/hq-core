@@ -8,9 +8,10 @@
 #   [a] a trigger that matches many policies keeps the most relevant HARD rule
 #       (a direct `when:` match on the command) in full; the generic matches
 #       are summarised and the "read the file" pointer stays.
-#   [b] a HARD rule shown only as a summary is not repeated for the same
-#       trigger inside the seen window; it comes back on a new trigger or once
-#       the window expires.
+#   [b] a HARD rule shown only as a summary is parked in the seen set: it is
+#       not repeated for the same trigger inside the window (the footer names
+#       it), and it comes back in full on a new trigger or once the window
+#       expires (reminder-ceiling design, 2026-10-22).
 #   [c] output never exceeds the configured ceiling, for plain stdout and for
 #       the PostToolUse JSON envelope.
 set -euo pipefail
@@ -116,6 +117,7 @@ echo "[a] the most relevant HARD rule keeps its full text"
 RA="$(new_root keep-top)"
 seed "$RA"
 out="$(run "$RA" sa 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
+listed_a="$(printf '%s\n' "$out" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p')"
 n="$(bytes_of "$out")"
 [ "$n" -le 3000 ] && ok "reminder within the 3000-byte ceiling ($n bytes)" || bad "reminder is $n bytes, over 3000"
 case "$out" in
@@ -126,8 +128,9 @@ full_count="$(grep -c '(HARD — binding rule from `' <<<"$out" || true)"
 [ "$full_count" = 1 ] && ok "lower-ranked HARD rules are not in full" \
   || bad "expected one full HARD body, found $full_count: $out"
 case "$out" in
-  *'HARD policy `zz-deploy-direct` keeps its full text as the top-ranked match'*'stays eligible and is shown in full on its next matching event. Read it at its file now'*) ok "notice names the kept rule, says the others stay eligible, and keeps the read-the-file pointer" ;;
-  *) bad "ceiling notice missing the kept rule or the pointer: $out" ;;
+  *'HARD policy `zz-deploy-direct` keeps its full text as the top-ranked match'*'Read a listed rule at its file now'*) ok "notice names the kept rule and keeps the read-the-file pointer" ;;
+  *'> Output budget 3000 bytes: '*' HARD policies listed as one line.'*) ok "the full-text budget alone listed the other HARD rules as one line" ;;
+  *) bad "neither the ceiling notice nor the budget notice is present: $out" ;;
 esac
 case "$out" in
   *'> Policy `yy-release-rule` applies here:'*) ok "second direct HARD rule is summarised" ;;
@@ -144,60 +147,55 @@ out="$(run "$RA2" sa2 'hq deploy prod')"
 first="$(printf '%s\n' "$out" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p' | head -1)"
 [ "$first" = zz-deploy-direct ] && ok "direct match ranks first under the default ceiling" || bad "default ordering starts with $first"
 n="$(bytes_of "$out")"
-[ "$n" -le 8000 ] && ok "default reminder within 8000 bytes ($n)" || bad "default reminder is $n bytes"
+[ "$n" -le 4000 ] && ok "default reminder within 4000 bytes ($n)" || bad "default reminder is $n bytes"
 
-echo "[b] summary-only HARD rules are not parked; they come back in full (PR #1548 review)"
+echo "[b] summary-only HARD rules are parked for their trigger and come back in full later"
 seen_file="$RA/workspace/orchestrator/policy-trigger-state/sa.seen.tsv"
-grep -q 'aaa-generic-' "$seen_file" 2>/dev/null \
-  && bad "a summarised HARD rule was parked in the seen set: $(cat "$seen_file")" \
-  || ok "summarised HARD rules are not parked in the seen set"
+# `when: always` rows score 0: delivered as one line they go to the session
+# ledger (a score-0 seen entry could also mean "parked unseen", and the
+# footer must name only delivered rows).
+grep -q '^aaa-generic-1$' "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" 2>/dev/null \
+  && ok "a summarised unconditional HARD rule is recorded as delivered" \
+  || bad "summarised HARD rule aaa-generic-1 was not recorded: $(cat "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" 2>/dev/null)"
 grep -q '^zz-deploy-direct$' "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" \
   && ok "full-text rule recorded in the session ledger" || bad "full-text rule not in the session ledger"
-if grep -q '^aaa-generic-1$' "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" 2>/dev/null; then
-  bad "summarised HARD rule was consumed by the session ledger"
-else
-  ok "summarised HARD rule left out of the session ledger"
-fi
+listed1="$listed_a"
 out2="$(run "$RA" sa 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
-# The full-text rule and shown soft rows stay out; a HARD rule shown only as
-# its summary is still eligible and comes back.
+# Delivered rows are not listed again (ledger or seen set); rows the ceiling
+# cut on the first event are listed now. The footer names the delivered
+# command-specific HARD rules.
+repeat=0
+for s in $(printf '%s\n' "$out2" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p'); do printf '%s\n' "$listed1" | grep -x "$s" >/dev/null && repeat=$((repeat + 1)); done
+[ "$repeat" = 0 ] && ok "same trigger repeats no delivered row" || bad "same trigger re-listed $repeat rows: $out2"
 case "$out2" in
-  *'> Policy `zz-deploy-direct`'*|*'> Policy `soft-'*)
-    bad "same trigger repeated a policy delivered in full: $out2" ;;
-  *) ok "same trigger repeats no policy delivered in full" ;;
+  *'> Already shown this session, still binding: '*'zz-deploy-direct'*) ok "the footer names the rule shown in full" ;;
+  *) bad "footer missing or wrong: $out2" ;;
 esac
-case "$out2" in
-  *'`aaa-generic-1`'*) ok "a HARD rule shown only as a summary is shown again" ;;
-  *) bad "summarised HARD rule aaa-generic-1 did not come back: $out2" ;;
-esac
-case "$out2" in
-  *'`aaa-generic-3`'*) ok "a policy cut for space earlier is shown on the next event" ;;
-  *) bad "policy cut for space was not shown on the next event: $out2" ;;
-esac
+case "$out2" in *'still binding: '*'yy-release-rule'*) ok "the footer names the HARD rule delivered as one line" ;; *) bad "footer lacks yy-release-rule: $out2" ;; esac
+# A different trigger (release, not deploy): yy-release-rule matched only
+# the common word deploy before (score 0), so its summary line consumed it;
+# it is named in the footer, not re-shown.
 out3="$(run "$RA" sa 'hq release now' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
 case "$out3" in
-  *'> Policy `yy-release-rule`'*) bad "a rule delivered in full was repeated on a new trigger: $out3" ;;
-  *) ok "a rule delivered in full is not repeated on a new trigger" ;;
+  *'> Policy `yy-release-rule`'*) bad "a delivered rule was re-listed on a new trigger: $out3" ;;
+  *'still binding: '*'yy-release-rule'*) ok "a delivered rule is named in the footer on a new trigger" ;;
+  *) bad "yy-release-rule missing from the footer: $out3" ;;
 esac
-case "$out3" in
-  *'> Policy `aaa-generic-1` (HARD — binding rule from `'*GENERIC_BODY_1*) ok "a HARD rule shortened earlier is now shown in full" ;;
-  *) bad "aaa-generic-1 still not in full: $out3" ;;
-esac
-# Shortened HARD rules drain: each later event shows the next one in full,
-# and none is shown in full twice. Nothing is parked in the seen set.
-full_seen=" aaa-generic-1 "
+# The rest drains: no slug is listed as its own line twice, every rule is
+# listed once, and the output then shrinks to the footer.
+delivered="$listed1"$'\n'"$(printf '%s\n' "$out2" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p')"
+footer_only=""
 for i in 1 2 3 4 5 6 7 8; do
   outn="$(run "$RA" sa 'hq deploy prod' HQ_POLICY_OUTPUT_CEILING_BYTES=3000)"
-  for slug in $(printf '%s\n' "$outn" | sed -n 's/^> Policy `\([^`]*\)` (HARD — binding rule from .*/\1/p'); do
-    case "$full_seen" in *" $slug "*) bad "$slug shown in full twice" ;; esac
-    full_seen="$full_seen$slug "
-  done
+  ln="$(printf '%s\n' "$outn" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p')"
+  if [ -z "$ln" ]; then footer_only=$i; break; fi
+  for s in $ln; do printf '%s\n' "$delivered" | grep -x "$s" >/dev/null && bad "$s listed twice (drain event $i)"; done
+  delivered="$delivered"$'\n'"$ln"
 done
 for i in 1 2 3 4 5 6; do
-  case "$full_seen" in *" aaa-generic-$i "*) ;; *) bad "aaa-generic-$i never reached full text: $full_seen" ;; esac
+  printf '%s\n' "$delivered" | grep -x "aaa-generic-$i" >/dev/null || bad "aaa-generic-$i never delivered"
 done
-ok "every shortened HARD rule reached full text once ($full_seen)"
-grep -q 'aaa-generic-' "$seen_file" 2>/dev/null && bad "a HARD rule was parked: $(cat "$seen_file")" || ok "no HARD rule parked across the drain"
+[ -n "$footer_only" ] && ok "every HARD rule was delivered once; the output then shrank to footer-only (drain event $footer_only)" || bad "the output never became footer-only"
 
 echo "[c] output never exceeds the ceiling"
 for ceiling in 200 500 900 1500 2500 4000 8000; do
@@ -262,8 +260,9 @@ Policy \`soft-8\` covers the soft case."
       *'> Policy `'"$slug"'` applies here:'*|*'> Policy `'"$slug"'` (HARD — binding rule from `'*) continue ;;
     esac
     cut_hits=$((cut_hits + 1))
-    if grep -q "^$slug\$" "$state/e-$ceiling.txt" 2>/dev/null \
-      || grep -q "^$slug	" "$state/e-$ceiling.seen.tsv" 2>/dev/null; then
+    # A cut row is parked in the seen set for this trigger; it must never
+    # reach the session ledger, which would mark it delivered.
+    if grep -q "^$slug\$" "$state/e-$ceiling.txt" 2>/dev/null; then
       bad "ceiling $ceiling: $slug was cut but recorded as delivered"
     fi
   done
@@ -285,7 +284,7 @@ for event in prompt post; do
     out="$(post "$RF" "f-$event" 'hq deploy prod' ok)"
     reminder="$(printf '%s' "$out" | context)"
   fi
-  [ "$(bytes_of "$out")" -le 8000 ] && ok "$event malformed flood stays within ceiling" || bad "$event malformed flood exceeds ceiling"
+  [ "$(bytes_of "$out")" -le 4000 ] && ok "$event malformed flood stays within ceiling" || bad "$event malformed flood exceeds ceiling"
   case "$reminder" in
     *'REACTIVE_BODY'*) ok "$event retains reactive policy body despite malformed flood" ;;
     *) bad "$event malformed notice crowded out reactive policy: $reminder" ;;

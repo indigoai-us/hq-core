@@ -128,6 +128,41 @@ git -C "$pr" checkout -q base; git -C "$pr" checkout -q -b added-then-deleted
 fake >"$pr/t.py"; git -C "$pr" add t.py; git -C "$pr" commit -q --no-verify -m leak >/dev/null 2>&1
 git -C "$pr" rm -q t.py; git -C "$pr" commit -q -m "remove it" >/dev/null 2>&1
 (cd "$pr" && bash "$S" pr-check base >/dev/null 2>&1); ok "pr-check finds a secret deleted later on the branch" 1 $?
+# pr-check passes the repo, the base commit's allowlist and the history-copy
+# root to a CLI that takes --allowlist-rev, so only allowlists already on the
+# base apply. A CLI without it (even one with --snapshot-root, which would
+# trust HEAD's allowlist) gets the plain file list.
+for v in new mid old; do
+  case "$v" in
+    new) help="usage: hq scan secrets [--staged] [--repo <dir> [--allowlist-rev <rev>] [--snapshot-root <dir>]] [files...]" ;;
+    mid) help="usage: hq scan secrets [--staged] [--repo <dir> [--snapshot-root <dir>]] [files...]" ;;
+    old) help="usage: hq scan secrets [--staged] [files...]" ;;
+  esac
+  cat >"$T/argv-hq-$v" <<ARGV
+#!/usr/bin/env bash
+[ "\$1 \$2" = "scan secrets" ] || exit 2
+shift 2
+if [ "\${1:-}" = "--help" ]; then
+  echo "$help"
+  exit 0
+fi
+printf '%s\n' "\$@" >"$T/argv-$v"
+ARGV
+  chmod +x "$T/argv-hq-$v"
+  (cd "$pr" && HQ_SECRET_SCAN_BIN="$T/argv-hq-$v" bash "$S" pr-check base >/dev/null 2>&1)
+done
+top=$(git -C "$pr" rev-parse --show-toplevel)
+a1=$(sed -n 1p "$T/argv-new"); a2=$(sed -n 2p "$T/argv-new"); a3=$(sed -n 3p "$T/argv-new"); a4=$(sed -n 4p "$T/argv-new")
+a5=$(sed -n 5p "$T/argv-new"); a6=$(sed -n 6p "$T/argv-new")
+ok "pr-check passes --repo <top> to a new CLI" "--repo $top" "$a1 $a2"
+ok "pr-check reads the allowlist from the base commit, not HEAD" "--allowlist-rev $(git -C "$pr" rev-parse base)" "$a3 $a4"
+ok "pr-check passes --snapshot-root to a new CLI" "--snapshot-root" "$a5"
+grep -qxF "$a6/$(git -C "$pr" rev-parse --short=12 HEAD~1)/t.py" "$T/argv-new" && s=yes || s=no
+ok "history copies sit under the snapshot root as <commit>/<path>" yes "$s"
+grep -qx -- '--repo' "$T/argv-mid" && o=yes || o=no
+ok "pr-check sends no --repo to a CLI without --allowlist-rev" no "$o"
+grep -qx -- '--repo' "$T/argv-old" && o=yes || o=no
+ok "pr-check sends no --repo to an older CLI" no "$o"
 
 # --- generated hook scripts quote the HQ path (it contains a space and a quote)
 grep "dispatch pre-commit" "$HOME/.hq/git-hooks/pre-commit" | grep -qF "'$T/my hq'\\''s root'" && q=yes || q=no

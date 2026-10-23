@@ -6,12 +6,13 @@
 # matched 20+ policies per event, most on one common word, and cut every HARD
 # rule but one to its summary line.
 #   [a] 25 policies match; the 3 HARD rules with a specific match (two
-#       identifiers, or one rare identifier) all print in full and rank
-#       first, every other matched HARD rule is still listed, and only soft
-#       rows are left out (PR #1526 review: the cap never drops a HARD rule).
-#   [b] an event that matches only on one common word lists every HARD match
-#       and at most the cap of soft rows; the soft rows left out stay
-#       eligible for a later event.
+#       identifiers, or one rare identifier) rank first by score, the top one
+#       prints in full and the others are listed as one line; HARD rules that
+#       matched only the common word score 0 and are listed up to the
+#       generic cap, the rest parked; soft common-word rows are parked.
+#   [b] an event that matches only on one common word lists HARD matches up
+#       to the generic cap and parks the rest; the next event with the same
+#       word names them only in the footer.
 #   [c] a HARD rule over the per-policy limit is still summarised with the
 #       per-policy notice, even when its match is specific.
 #   [d] over the output ceiling, soft lines go first; when full text still
@@ -19,10 +20,12 @@
 #   [e] SessionStart is not capped.
 # 2026-10-21 (RC4 hook noise, stacked on #1526): on tool events at most
 # HQ_POLICY_GENERIC_CAP (default 2) one-common-word matches are shown and the
-# rest are parked on that word; a reactive HARD rule that loses the shared
-# budget is deferred (no one-line summary). The pre-existing contracts are
-# kept under HQ_POLICY_GENERIC_CAP=0 where they differ; the new defaults have
-# their own file, inject-policy-generic-cap.test.sh.
+# rest are parked on that word. 2026-10-22 (reminder-ceiling design): a HARD
+# row scoring 0 (only common words) is generic too; a HARD rule that loses
+# the full-text budget is listed as one line and parked for its trigger; the
+# default ceiling is 4000 bytes. HQ_POLICY_GENERIC_CAP=0 keeps every HARD row
+# listed; the generic-cap defaults have their own file,
+# inject-policy-generic-cap.test.sh.
 #   [f] specific SOFT hints and malformed fallbacks never push an applicable
 #       HARD rule out.
 set -euo pipefail
@@ -116,112 +119,132 @@ seed() {
   policy "$root" zz-specific-rare 'zebra-cluster' hard "The zebra cluster is shared. SPECIFIC_RARE_BODY $FILLER"
 }
 
-echo "[a] 25 matches: every specific HARD rule keeps its full text"
+echo "[a] 25 matches: the specific HARD rules rank first by score; the top one is in full"
 RA="$(new_root many)"
 seed "$RA"
 out="$(run "$RA" sa 'hq deploy vercel prod zebra-cluster')"
-for s in vercel prod rare; do
+# Scores: prod (vercel + prod, two rare words) 4; vercel (common deploy +
+# rare vercel) 2; rare (zebra-cluster) 2; the common-word HARD rules 0.
+case "$out" in
+  *'> Policy `zz-specific-prod` (HARD — binding rule from `'*SPECIFIC_PROD_BODY*) ok "the highest-scored specific HARD rule is printed in full" ;;
+  *) bad "zz-specific-prod lost its full text: $out" ;;
+esac
+for s in vercel rare; do
   case "$out" in
-    *'> Policy `zz-specific-'"$s"'` (HARD — binding rule from `'*) ok "specific HARD rule ($s) printed in full" ;;
-    *) bad "specific HARD rule ($s) lost its full text: $out" ;;
+    *'> Policy `zz-specific-'"$s"'`'*) ok "specific HARD rule ($s) is listed" ;;
+    *) bad "specific HARD rule ($s) missing: $out" ;;
   esac
 done
 n="$(full_count "$out")"
-[ "$n" = 3 ] && ok "exactly the 3 specific HARD rules are in full" || bad "expected 3 full HARD bodies, found $n"
+[ "$n" -ge 1 ] && [ "$n" -le 2 ] && ok "$n full HARD bodies within the 2600-byte full-text budget" || bad "expected 1-2 full HARD bodies, found $n"
+first="$(slugs "$out" | head -1)"
+[ "$first" = zz-specific-prod ] && ok "the specific HARD rule with the highest score ranks first" || bad "first policy is $first"
 first3="$(slugs "$out" | head -3 | sort | tr '\n' ' ')"
 [ "$first3" = "zz-specific-prod zz-specific-rare zz-specific-vercel " ] \
   && ok "specific HARD rules rank first" || bad "first three policies are: $first3"
-# Every matched HARD rule is listed, including the 10 keyed on the common
-# word `deploy`; only the 12 common-word soft rows are left out.
-n="$(hard_named "$out" aa-common-hard-)"
-[ "$n" = 10 ] && ok "all 10 common-word HARD rules are shown or named" || bad "$n of 10 common-word HARD rules shown or named: $out"
+# The 10 HARD rules keyed on the common word `deploy` score 0. A HARD row is
+# never parked (PR #1600 review): each is listed as one line or cut by the
+# output ceiling and held for a later call. All 12 common-word soft rows are
+# parked.
+listed_a="$(printf '%s\n' "$out" | grep -c '^> Policy `aa-common-hard-.*\[HARD · core\]' || true)"
+[ "$listed_a" -ge 3 ] && ok "score-0 HARD rules are not held to the generic cap ($listed_a listed as one line)" || bad "$listed_a common-word HARD lines, expected 3 or more: $out"
+n="$(grep -c '^aa-common-hard-' "$RA/workspace/orchestrator/policy-trigger-state/sa.seen.tsv" 2>/dev/null || true)"
+[ "$n" = 0 ] && ok "no score-0 HARD rule is parked in the seen set" || bad "$n common-word HARD rules parked, expected 0"
+n="$(grep -c '^aa-common-hard-' "$RA/workspace/orchestrator/policy-trigger-state/sa.txt" 2>/dev/null || true)"
+[ "$n" = "$listed_a" ] && ok "the $n score-0 HARD rules listed as one line are recorded in the session ledger (delivered)" || bad "$n listed score-0 HARD rules in the ledger, expected $listed_a"
 n="$(printf '%s\n' "$out" | grep -c '^> Policy `ab-common-soft-' || true)"
 [ "$n" = 0 ] && ok "common-word soft rows are left out" || bad "$n common-word soft rows shown"
 case "$out" in
-  *'> Relevance cap 6: 12 lower-ranked soft matches not shown; every HARD match is shown or named above.'*) ok "relevance-cap notice counts the 12 soft rows left out" ;;
-  *) bad "relevance-cap notice missing or wrong: $out" ;;
+  *'> Skipped: 12 matched only common words (parked 30 min).'*) ok "skip notice counts the 12 soft rows parked and no HARD row" ;;
+  *) bad "skip notice missing or wrong: $out" ;;
 esac
 case "$out" in
-  *'> Policy `aa-common-hard-'*'[HARD · core]'*) bad "a common HARD rule was shortened to a one-line summary: $out" ;;
-  *) ok "no common HARD rule is a one-line summary" ;;
+  *'> Output budget 4000 bytes: '*' HARD policies listed as one line.'*) ok "budget notice counts the HARD rules listed as one line" ;;
+  *) bad "budget notice missing or wrong: $out" ;;
 esac
-case "$out" in
-  *'> Deferred, full-text budget of 5120 bytes spent: HARD policies `aa-common-hard-01`, `aa-common-hard-02`, '*'`aa-common-hard-10` are not shown as one-line summaries'*) ok "the common HARD rules that lost the budget are deferred by name" ;;
-  *) bad "deferred notice missing or wrong: $out" ;;
-esac
-case "$out" in
-  *'Output ceiling of'*) bad "the output ceiling was hit: $out" ;;
-  *) ok "no output-ceiling fallback was needed" ;;
-esac
+case "$out" in *'> Deferred,'*|*'Full-text budget of'*|*'> Relevance cap'*) bad "an old notice is still printed: $out" ;; *) ok "no old notice" ;; esac
 n="$(bytes_of "$out")"
-[ "$n" -le 8000 ] && ok "reminder within the 8000-byte ceiling ($n bytes)" || bad "reminder is $n bytes"
-# Without the generic cap, the #1526 contract: six slots, 19 left out, still eligible.
+[ "$n" -le 4000 ] && ok "reminder within the 4000-byte ceiling ($n bytes)" || bad "reminder is $n bytes"
+# Without the generic cap every HARD row is listed; the soft rows over the
+# relevance cap are counted, not parked.
 RA0="$(new_root many-nocap)"
 seed "$RA0"
 out="$(run "$RA0" sa0 'hq deploy vercel prod zebra-cluster' HQ_POLICY_GENERIC_CAP=0)"
 n="$(full_count "$out")"
-[ "$n" = 3 ] && ok "generic cap off: the 3 specific HARD rules are in full" || bad "generic cap off: expected 3 full HARD bodies, found $n"
+[ "$n" -ge 1 ] && ok "generic cap off: $n specific HARD rules in full" || bad "generic cap off: no full HARD body: $out"
+n="$(hard_named "$out" aa-common-hard-)"
+[ "$n" -ge 3 ] && ok "generic cap off: common-word HARD rules are listed ($n)" || bad "generic cap off: $n common-word HARD rules listed: $out"
 case "$out" in
-  *'> Relevance cap 6: 12 lower-ranked soft matches not shown; every HARD match is shown or named above.'*) ok "generic cap off: relevance-cap notice counts the 12 soft rows left out" ;;
-  *) bad "generic cap off: relevance-cap notice missing or wrong: $out" ;;
+  *' HARD policies listed as one line; 12 soft matches not shown.'*) ok "generic cap off: notice counts the 12 soft rows left out" ;;
+  *) bad "generic cap off: notice missing or wrong: $out" ;;
 esac
+[ ! -s "$RA0/workspace/orchestrator/policy-trigger-state/sa0.seen.tsv" ] || ! grep -q '^ab-common-soft-' "$RA0/workspace/orchestrator/policy-trigger-state/sa0.seen.tsv" \
+  && ok "generic cap off: soft rows over the cap are not parked" || bad "generic cap off: soft rows were parked"
 
-# The shared full-text budget limits only less specific HARD rules.
+# The full-text budget applies to specific HARD rules too: bodies are added
+# in rank order while they fit, the rest are listed as one line.
 RA2="$(new_root small-budget)"
 seed "$RA2"
 out="$(run "$RA2" sa2 'hq deploy vercel prod zebra-cluster' HQ_POLICY_HARD_BUDGET_BYTES=1500)"
 n="$(full_count "$out")"
-[ "$n" = 3 ] && ok "specific HARD rules stay in full under a 1500-byte budget" || bad "expected 3 full HARD bodies under a small budget, found $n: $out"
+[ "$n" = 1 ] && ok "one specific HARD rule in full under a 1500-byte budget" || bad "expected 1 full HARD body under a small budget, found $n: $out"
+case "$out" in *'> Policy `zz-specific-vercel` applies here:'*'> Policy `zz-specific-rare` applies here:'*|*'> Policy `zz-specific-rare` applies here:'*'> Policy `zz-specific-vercel` applies here:'*) ok "the other specific rules are listed as one line" ;; *) bad "specific rules over the budget not listed: $out" ;; esac
 
-echo "[b] one common word: every HARD match listed, soft rows capped"
+echo "[b] one common word: every HARD match is listed or held, none parked"
 RB="$(new_root common)"
 seed "$RB"
 out="$(run "$RB" sb 'hq deploy')"
-n="$(hard_named "$out" aa-common-hard-)"
-[ "$n" = 10 ] && ok "all 10 HARD matches shown or named" || bad "$n of 10 HARD matches shown or named: $out"
+n="$(printf '%s\n' "$out" | grep -c '^> Policy `aa-common-hard-' || true)"
+[ "$n" -ge 3 ] && ok "$n of 10 common-word HARD matches listed (no generic cap for HARD)" || bad "$n of 10 HARD matches listed: $out"
+first_b="$(slugs "$out")"
 n="$(printf '%s\n' "$out" | grep -c '^> Policy `ab-common-soft-' || true)"
-[ "$n" -le 6 ] && ok "at most 6 soft rows ($n)" || bad "$n soft rows shown, over the cap of 6"
+[ "$n" = 0 ] && ok "no soft row takes a generic slot a HARD row needed" || bad "$n soft rows shown"
 n="$(full_count "$out")"
-[ "$n" -ge 2 ] && [ "$n" -le 4 ] && ok "HARD rules in full within the shared budget ($n bodies)" || bad "$n full HARD bodies for a common-word match, expected 2-4"
+[ "$n" -ge 1 ] && [ "$n" -le 2 ] && ok "HARD rules in full within the full-text budget ($n bodies)" || bad "$n full HARD bodies for a common-word match, expected 1-2"
 case "$out" in
-  *'> Relevance cap 6: 12 lower-ranked soft matches not shown; every HARD match is shown or named above.'*) ok "notice counts the 12 soft rows left out" ;;
-  *) bad "relevance-cap notice missing or wrong: $out" ;;
+  *'> Skipped: 12 matched only common words (parked 30 min).'*) ok "skip notice counts the 12 soft rows parked and no HARD row" ;;
+  *) bad "skip notice missing or wrong: $out" ;;
 esac
 n="$(bytes_of "$out")"
-[ "$n" -le 8000 ] && ok "reminder within the 8000-byte ceiling ($n bytes)" || bad "reminder is $n bytes"
-first="$(slugs "$out" | sort)"
+[ "$n" -le 4000 ] && ok "reminder within the 4000-byte ceiling ($n bytes)" || bad "reminder is $n bytes"
 again="$(run "$RB" sb 'hq deploy')"
+repeat=0
+for s in $(slugs "$again"); do printf '%s\n' "$first_b" | grep -x "$s" >/dev/null && repeat=$((repeat + 1)); done
+[ "$repeat" = 0 ] && ok "the same word again lists no row delivered on the first event" || bad "second event re-listed $repeat rows: $again"
+missing=""
+for i in 01 02 03 04 05 06 07 08 09 10; do
+  printf '%s\n%s\n' "$first_b" "$(slugs "$again")" | grep -x "aa-common-hard-$i" >/dev/null || missing="$missing aa-common-hard-$i"
+done
+[ -z "$missing" ] && ok "every common-word HARD rule is delivered within two events" || bad "HARD rules never delivered:$missing"
 case "$again" in
-  *'> Policy `ab-common-soft-'*) bad "a parked soft row came back on the same word: $again" ;;
-  *) ok "parked soft rows stay parked on the same word" ;;
+  *'> Already shown this session, still binding: aa-common-hard-01'*) ok "the footer names the HARD rules shown before" ;;
+  *) bad "footer missing or wrong: $again" ;;
 esac
-n="$(hard_named "$again" aa-common-hard-)"
-[ "$n" -ge 1 ] && ok "deferred HARD rows come back on the next event ($n)" || bad "deferred HARD rows were lost: $again"
-case "$again" in
-  *'> Policy `aa-common-hard-01` (HARD'*|*'> Policy `aa-common-hard-02` (HARD'*) bad "a HARD row shown in full was repeated: $again" ;;
-  *) ok "HARD rows already shown are not repeated" ;;
-esac
-# Without the generic cap, the #1526 contract: six slots, the rest eligible later.
+case "$again" in *ab-common-soft*) bad "a parked soft row is named: $again" ;; *) ok "parked soft rows are not named" ;; esac
+# Without the generic cap every HARD row is listed; the soft rows over the
+# relevance cap stay eligible (not parked) but there is no slot for them.
 RB1="$(new_root common-nocap)"
 seed "$RB1"
 out="$(run "$RB1" sb1 'hq deploy' HQ_POLICY_GENERIC_CAP=0)"
-n="$(policy_lines "$out")"
-[ "$n" -le 6 ] && ok "generic cap off: single common word shows $n policies (cap 6)" || bad "generic cap off: single common word shows $n policies"
+n="$(printf '%s\n' "$out" | grep -c '^> Policy `aa-common-hard-' || true)"
+[ "$n" -ge 3 ] && ok "generic cap off: common-word HARD rules are listed ($n)" || bad "generic cap off: $n HARD rows listed: $out"
+n="$(printf '%s\n' "$out" | grep -c '^> Policy `ab-common-soft-' || true)"
+[ "$n" = 0 ] && ok "generic cap off: no soft row shown (HARD rows took the slots)" || bad "generic cap off: $n soft rows shown"
 n="$(full_count "$out")"
-[ "$n" -le 4 ] && ok "generic cap off: full text stays within the shared budget ($n bodies)" || bad "generic cap off: $n full HARD bodies for a common-word match"
+[ "$n" -le 2 ] && ok "generic cap off: full text stays within the full-text budget ($n bodies)" || bad "generic cap off: $n full HARD bodies for a common-word match"
 case "$out" in
-  *'> Relevance cap 6: 12 lower-ranked soft matches not shown; every HARD match is shown or named above.'*) ok "generic cap off: notice counts the 12 soft rows left out" ;;
-  *) bad "generic cap off: relevance-cap notice missing or wrong: $out" ;;
+  *' HARD policies listed as one line; 12 soft matches not shown.'*) ok "generic cap off: notice counts the 12 soft rows left out" ;;
+  *) bad "generic cap off: notice missing or wrong: $out" ;;
 esac
-first="$(slugs "$out" | sort)"
+first_b1="$(slugs "$out")"
 again="$(run "$RB1" sb1 'hq deploy' HQ_POLICY_GENERIC_CAP=0)"
-second="$(slugs "$again" | sort)"
-[ -n "$second" ] && [ -z "$(comm -12 <(printf '%s\n' "$first") <(printf '%s\n' "$second"))" ] \
-  && ok "generic cap off: rows left out come back on a later event, without repeats" \
-  || bad "generic cap off: second event repeated or lost rows: first=[$first] second=[$second]"
+repeat=0
+for s in $(slugs "$again"); do printf '%s\n' "$first_b1" | grep -x "$s" >/dev/null && repeat=$((repeat + 1)); done
+[ "$repeat" = 0 ] && ok "generic cap off: no row delivered on the first event is listed again" || bad "generic cap off: second event re-listed $repeat rows: $again"
+case "$again" in *'> Already shown this session, still binding: aa-common-hard-01'*) ok "generic cap off: the footer names the HARD rows" ;; *) bad "generic cap off: footer missing: $again" ;; esac
 out="$(run "$RB" sb0 'hq deploy' HQ_POLICY_RELEVANCE_CAP=0)"
 case "$out" in
-  *'Relevance cap'*) bad "HQ_POLICY_RELEVANCE_CAP=0 still capped: $out" ;;
+  *'> Skipped:'*) bad "HQ_POLICY_RELEVANCE_CAP=0 still parked rows: $out" ;;
   *) ok "HQ_POLICY_RELEVANCE_CAP=0 turns the cap off" ;;
 esac
 
@@ -264,36 +287,48 @@ long_note="$(printf 'soft note text %.0s' $(seq 1 12))"
 for i in 1 2 3; do
   policy "$RD" "ac-specific-soft-$i" 'deploy && vercel' soft "Specific soft note $i. $long_note"
 done
-full="$(run "$RD" sd0 'hq deploy vercel prod zebra-cluster')"
+# Unmatched filler so that `vercel` (5 of 28 policies) is not a common word
+# in this small fixture, while `deploy` (6 of 28) still is.
+for i in $(seq -w 1 20); do
+  policy "$RD" "docker-note-$i" docker soft "Docker note $i."
+done
+# At the operator's 8000-byte ceiling the full-text budget is 5120 bytes:
+# all three specific HARD rules print in full, the two common HARD rules
+# (score 0) are listed as one line, the three specific soft hints are shown.
+full="$(run "$RD" sd0 'hq deploy vercel prod zebra-cluster' HQ_POLICY_OUTPUT_CEILING_BYTES=8000)"
 full_bytes="$(bytes_of "$full")"
+[ "$(full_count "$full")" = 3 ] && ok "fixture: 3 specific HARD rules in full at the 8000-byte ceiling" || bad "fixture: $(full_count "$full") full bodies: $full"
 case "$full" in
-  *'> Policy `ac-specific-soft-'*'> Deferred, full-text budget of 5120 bytes spent: HARD policies `aa-common-hard-1`, `aa-common-hard-2`'*) ok "fixture: soft lines are shown and the two common HARD rules are deferred, not summarised" ;;
+  *'> Policy `ac-specific-soft-'*'> Output budget 8000 bytes: 2 HARD policies listed as one line.'*) ok "fixture: soft lines are shown and the two common HARD rules are listed as one line" ;;
   *) bad "fixture ordering unexpected: $full" ;;
 esac
-# Room for the cut notice, minus about two soft lines.
+# Room for the cut notice, minus about two soft lines: soft lines go first.
 ceiling=$((full_bytes - 200))
 out="$(run "$RD" sd 'hq deploy vercel prod zebra-cluster' HQ_POLICY_OUTPUT_CEILING_BYTES=$ceiling)"
 n="$(bytes_of "$out")"
 [ "$n" -le "$ceiling" ] && ok "reminder within the $ceiling-byte ceiling ($n bytes)" || bad "reminder is $n bytes, over $ceiling"
-n="$(full_count "$out")"
-[ "$n" = 3 ] && ok "all 3 specific HARD rules kept in full once soft lines are cut" || bad "expected 3 full bodies, found $n: $out"
 case "$out" in
-  *'lower-ranked policy line(s) cut from this reminder'*) ok "notice says lines were cut" ;;
+  *'lower-ranked policy line(s) held for a later call'*) ok "notice says lines were cut" ;;
   *) bad "no cut notice: $out" ;;
 esac
 soft_left="$(printf '%s\n' "$out" | grep -c '^> Policy `ac-specific-soft-' || true)"
 hard_left="$(printf '%s\n' "$out" | grep -c '^> Policy `aa-common-hard-.*\[HARD · core\]' || true)"
-[ "$soft_left" -lt 3 ] && [ "$hard_left" = 0 ] \
-  && ok "soft lines were cut and no HARD rule became a one-line summary" \
-  || bad "expected soft lines cut and no HARD summaries (soft=$soft_left hard=$hard_left): $out"
-out="$(run "$RD" sd2 'hq deploy vercel prod zebra-cluster' HQ_POLICY_OUTPUT_CEILING_BYTES=3600)"
+[ "$soft_left" -lt 3 ] && [ "$hard_left" = 2 ] \
+  && ok "soft lines were cut before any HARD line" \
+  || bad "expected soft lines cut and both HARD lines kept (soft=$soft_left hard=$hard_left): $out"
+# At the 4000-byte default the full-text budget is 2600 bytes: one body.
+out="$(run "$RD" sd2 'hq deploy vercel prod zebra-cluster')"
 n="$(bytes_of "$out")"
-[ "$n" -le 3600 ] && ok "reminder within the 3600-byte ceiling ($n bytes)" || bad "reminder is $n bytes, over 3600"
+[ "$n" -le 4000 ] && ok "reminder within the 4000-byte default ($n bytes)" || bad "reminder is $n bytes, over 4000"
 n="$(full_count "$out")"
-[ "$n" = 2 ] && ok "two specific HARD rules kept in full under a tighter ceiling" || bad "expected 2 full bodies, found $n: $out"
+[ "$n" = 1 ] && ok "one specific HARD rule in full under the default budget" || bad "expected 1 full body, found $n: $out"
 case "$out" in
-  *'HARD policies `zz-specific-'*'`, `zz-specific-'*'` keep their full text as the top-ranked matches'*) ok "notice names both kept rules" ;;
-  *) bad "keep notice missing: $out" ;;
+  *'> Policy `zz-specific-prod` (HARD — binding rule from `'*) ok "the highest-scored rule is the one in full" ;;
+  *) bad "zz-specific-prod not in full: $out" ;;
+esac
+case "$out" in
+  *'> Output budget 4000 bytes: 4 HARD policies listed as one line.'*) ok "the other four HARD rules are counted as one-line listings" ;;
+  *) bad "budget notice missing or wrong: $out" ;;
 esac
 
 echo "[f] specific SOFT hints never push an applicable HARD rule out (PR #1526 review)"
@@ -337,7 +372,9 @@ for i in 1 2 3 4 5 6 7 8; do
 done
 out="$(run "$RF3" sf3 'hq deploy')"
 n="$(printf '%s\n' "$out" | grep -c '^> Policy `zz-hard-' || true)"
-[ "$n" = 8 ] && ok "default generic cap: every HARD row is kept, never parked" || bad "$n of 8 HARD rows under the default generic cap: $out"
+[ "$n" = 8 ] && ok "default generic cap: all 8 HARD rows on the common word are listed (HARD is never parked)" || bad "$n of 8 HARD rows under the default generic cap: $out"
+[ "$(grep -c '^zz-hard-' "$RF3/workspace/orchestrator/policy-trigger-state/sf3.seen.tsv" 2>/dev/null || true)" = 0 ] \
+  && ok "default generic cap: no HARD row is parked on the word" || bad "default generic cap: parked HARD rows: $(cat "$RF3/workspace/orchestrator/policy-trigger-state/sf3.seen.tsv" 2>/dev/null)"
 case "$out" in
   *'> Policy `aa-soft-'*) bad "default generic cap: a SOFT row took a generic slot a HARD row needed: $out" ;;
   *) ok "default generic cap: SOFT one-word rows are parked" ;;

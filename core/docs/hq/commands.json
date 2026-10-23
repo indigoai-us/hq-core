@@ -1779,7 +1779,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:dc7c4ed2f1e4d54f7d8b95d7180be51fd40fbdfbb8103a7d85b3dc9805cca0d0",
+      "hash": "sha256:51ac7995c535b4872063332433e19176ee1889393e6936f1fb31e212c8e3ec90",
       "duplicates": {
         "exact": [],
         "drifted": [],
