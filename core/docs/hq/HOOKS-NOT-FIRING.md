@@ -153,6 +153,16 @@ either value, then rerun the `--require-ledger` check; a `NOT OBSERVED` result
 on an SDK host means use the desktop app, the terminal CLI, or host-side
 enforcement for safety-critical work.
 
+## A registry hook runs through the hq-hook engine
+
+`master-hook.sh` runs a registry hook through the hq-cli `hq-hook` binary
+instead of its bash script when the per-hook flag `hook-engine-port-<id>` is
+`shadow` or `on` and the binary is installed (`HQ_HOOK_ENGINE_BIN` or the
+`~/.hq/bin/hq-hook/current` pointer). `HQ_HOOK_TRACE=1` prints
+`master-hook: bridge <id> (<mode>)` for each bridged hook. To rule the engine
+out, set `HQ_HOOK_ENGINE=off` or create `~/.hq/hook-engine.off`; both restore
+the bash script for every hook on this machine.
+
 ## Windows: core files unreadable (`Permission denied`)
 
 Git Bash `chmod` maps POSIX modes onto NTFS DENY ACEs. A subset of `core/`

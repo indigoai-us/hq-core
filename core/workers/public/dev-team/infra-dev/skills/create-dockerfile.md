@@ -14,7 +14,7 @@ Optional:
 ## Codex Execution
 
 ```bash
-cd {repo} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
+cd {repo} && HQ_WELCOME_BRIEF_HOOK=0 codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {repo} \
   "Create optimized Dockerfile for this {project_type} project. Use multi-stage build, non-root user, minimal final image. Generate .dockerignore too." 2>&1
 ```
 

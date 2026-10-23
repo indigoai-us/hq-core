@@ -13,7 +13,9 @@
 #   - fail-open behavior: missing manifest and known owner/admin roles;
 #     unknown roles, absent companies, and malformed manifests preserve the
 #     default-off behavior and are denied only when the hq-flags gate is on;
-#   - Bash coverage: rm/mv/sed -i/tee/redirects into denied paths blocked;
+#   - Bash coverage: rm/mv/cp/mkdir/install/sed -i/tee/redirects into denied
+#     paths blocked, including quoted paths, ~/ and $HOME forms, subshells,
+#     line continuations, and targets relative to the cwd or a cd;
 #     reads and cp FROM a read-only path allowed; bare-relative companies/
 #     tokens exempt inside a repos/ checkout context;
 #   - companies/manifest.yaml and companies/_template/ exemptions;
@@ -22,6 +24,9 @@
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
+# The shell that runs the hook. On macOS the suite re-runs itself under
+# /bin/bash (3.2), the shell hooks get there, so bash 3.2-only failures show.
+HOOK_BASH="${HOOK_BASH:-bash}"
 HOOK="$ROOT/.claude/hooks/enforce-vault-write-access.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -77,7 +82,8 @@ write_manifest() {
         { "path": "docs/open.md", "permission": "write" },
         { "path": "private/*", "permission": "read" },
         { "path": "dropbox/", "permission": "write" },
-        { "path": "reports/peek/", "permission": "read" }
+        { "path": "reports/peek/", "permission": "read" },
+        { "path": "bare", "permission": "write" }
       ]
     },
     "beta": { "role": "owner", "grants": [] },
@@ -107,7 +113,7 @@ run() {
     '{tool_name: $t, tool_input: {($k): $v}}')
   printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
     HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo \
-    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" >/dev/null 2>&1 || rc=$?
+    CLAUDE_PROJECT_DIR="$TMP" "$HOOK_BASH" "$HOOK" >/dev/null 2>&1 || rc=$?
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS+1))
   else
@@ -122,12 +128,44 @@ run_flag() {
   output=$(printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
     HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED="$enabled" \
     HQ_TEST_FLAG_ERROR="$registry_error" \
-    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null) || rc=$?
+    CLAUDE_PROJECT_DIR="$TMP" "$HOOK_BASH" "$HOOK" 2>&1 >/dev/null) || rc=$?
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))
     echo "FAIL [$label]: expected exit $expect, got $rc; stderr=$output" >&2
+  fi
+}
+# An exact-key grant ("bare", no trailing "/" or "/*") above the denied path is
+# named in the block message with the folder-glob share command (feedback
+# DEV-5173: an admin shared "knowledge" and members were blocked under it).
+run_near_miss_message() {
+  local payload output rc=0
+  payload=$(jq -n --arg p "$TMP/companies/acme/bare/new.md" \
+    '{tool_name: "Write", tool_input: {file_path: $p}}')
+  output=$(printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+    HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo \
+    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null) || rc=$?
+  if [[ "$rc" -eq 2 && "$output" == *"exact-key grant"* && "$output" == *"  bare (write)"* \
+        && "$output" == *"hq files share 'bare/*' --with <you> --permission write"* ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [exact-key near-miss guidance]: expected exit 2 with the folder-glob share hint, got exit $rc; stderr=$output" >&2
+  fi
+}
+run_no_near_miss_message() {
+  local payload output rc=0
+  payload=$(jq -n --arg p "$TMP/companies/acme/ungrant/x.md" \
+    '{tool_name: "Write", tool_input: {file_path: $p}}')
+  output=$(printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+    HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo \
+    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null) || rc=$?
+  if [[ "$rc" -eq 2 && "$output" != *"Near miss"* ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [no near-miss hint without an exact-key grant above]: got exit $rc; stderr=$output" >&2
   fi
 }
 run_unknown_message() {
@@ -136,7 +174,7 @@ run_unknown_message() {
     '{tool_name: "Edit", tool_input: {file_path: $p}}')
   output=$(printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
     HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo HQ_TEST_FLAG_ENABLED=true \
-    CLAUDE_PROJECT_DIR="$TMP" bash "$HOOK" 2>&1 >/dev/null) || rc=$?
+    CLAUDE_PROJECT_DIR="$TMP" "$HOOK_BASH" "$HOOK" 2>&1 >/dev/null) || rc=$?
   if [[ "$rc" -eq 2 && "$output" == *"Run HQ sync or"* && "$output" == *"sign in again"* ]]; then
     PASS=$((PASS+1))
   else
@@ -163,6 +201,11 @@ run 2 Edit  file_path "$W/frozen/x.md"              'specific read carve under s
 run 0 Write file_path "$A/dropbox/new.md"           'private-folder write allows direct child'
 run 2 Write file_path "$A/dropbox/sub/new.md"       'private-folder write does not cover nested path'
 run 0 Edit  file_path "$A/reports/peek/x.md"        'private-folder read does not carve broader write'
+# Exact-key rows ("bare") cover the named object only, never the subtree.
+run 0 Edit  file_path "$A/bare"                     'exact-key write grant allows the object itself'
+run 2 Write file_path "$A/bare/new.md"              'exact-key write grant does not cover the subtree'
+run_near_miss_message
+run_no_near_miss_message
 
 # --- Known bypass and unknown-role paths --------------------------------
 run 0 Edit file_path "$TMP/companies/beta/x.md"     'owner role fail-open'
@@ -205,6 +248,69 @@ runb 0 "cd repos/private/hq-core-staging && rm companies/acme/private/a.md" \
 runb 0 "rm $TMP/companies/beta/x.md"                'bash rm owner company allowed'
 runb 0 "rm /tmp/companies/acme/private/a.md"        'bash foreign absolute companies path ignored'
 runb 0 "ls $A/private"                              'bash non-write op allowed'
+
+# --- Bash: copy/create forms that used to slip past (feedback acbf130d) -----
+# runc <expected_exit> <cwd> <command> <label> — Bash payload with a cwd field.
+runc() {
+  local expect="$1" cwd="$2" cmd="$3" label="$4" rc=0 payload
+  payload=$(jq -n --arg c "$cmd" --arg d "$cwd" \
+    '{tool_name: "Bash", cwd: $d, tool_input: {command: $c}}')
+  printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HOME="$(dirname "$TMP")" \
+    CLAUDE_PROJECT_DIR="$TMP" "$HOOK_BASH" "$HOOK" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq "$expect" ]]; then
+    PASS=$((PASS+1))
+  else
+    FAIL=$((FAIL+1))
+    echo "FAIL [$label]: expected exit $expect, got $rc" >&2
+  fi
+}
+HB="$(basename "$TMP")"
+runb 2 "cp /tmp/a.md \"$A/private/a b.md\""         'bash cp into quoted path with a space blocked'
+runb 2 "cd $A && cp /tmp/a.md private/a.md"         'bash cd into company then relative cp blocked'
+runb 2 "cd companies/acme && cp /tmp/a.md private/a.md" 'bash cd relative company then cp blocked'
+runb 2 "cd companies/acme && mkdir private/new"     'bash cd company then mkdir blocked'
+runc 2 "$TMP" "cp /tmp/a.md ~/$HB/companies/acme/private/a.md" 'bash cp into ~/ form blocked'
+runc 2 "$TMP" "cp /tmp/a.md \$HOME/$HB/companies/acme/private/a.md" 'bash cp into $HOME form blocked'
+runc 2 "$TMP" "cp /tmp/a.md \${HOME}/$HB/companies/acme/private/a.md" 'bash cp into ${HOME} form blocked'
+runb 2 "(cp /tmp/a.md $A/private/a.md)"             'bash cp inside subshell blocked'
+runb 2 "/bin/cp /tmp/a.md $A/private/a.md"          'bash absolute /bin/cp blocked'
+runb 2 "install -m 644 /tmp/a.md $A/private/a.md"   'bash install into denied path blocked'
+runb 2 "cp /tmp/a.md \\
+  $A/private/a.md"                                  'bash cp with line continuation blocked'
+runc 2 "$A" "cp /tmp/a.md private/a.md"             'bash cp relative to cwd inside company blocked'
+runc 2 "$A/private" "echo x > note.md"              'bash redirect relative to cwd inside read-only dir blocked'
+runc 0 "$A" "cp /tmp/a.md reports/a.md"             'bash cp relative to cwd into write grant allowed'
+runc 0 "$A" "cat private/a.md"                      'bash read relative to cwd allowed'
+runc 0 "$TMP" "cp /tmp/a.md notes.md"               'bash relative cp at HQ root ignored'
+runc 0 "$A" "echo \"a>private/x\""                  'bash quoted > is not a redirect'
+runb 0 "cd /tmp && cp a.md companies/acme/private/a.md" 'bash cd elsewhere then relative companies/ ignored'
+runb 0 "cp $A/private/a.md \"/tmp/a b.md\""         'bash cp FROM read-only to quoted path allowed'
+# Review on #1506: ../ climbs, grouped/glued -t, >| and long commands.
+runc 2 "$TMP/workspace" "cp /tmp/a.md ../companies/acme/private/a.md" 'bash ../ climb into read-only path blocked'
+runc 0 "$TMP/workspace" "cp /tmp/a.md ../notes.md" 'bash ../ climb outside companies allowed'
+runb 2 "cp -rt $A/private /tmp/a /tmp/b"            'bash cp grouped -rt target blocked'
+runb 2 "cp -t$A/private /tmp/a"                     'bash cp glued -tDIR target blocked'
+runb 0 "rsync -rt $A/private/a.md /tmp/a.md"        'bash rsync -rt is --times, source not a target'
+runb 2 "echo x >| $A/private/a.md"                  'bash >| noclobber redirect blocked'
+runc 0 "$A/private" "echo x 2>/dev/null"            'bash 2>/dev/null inside read-only dir allowed'
+runc 0 "$A/private" "echo x >&2"                    'bash >&2 inside read-only dir allowed'
+LONG="$(printf 'x%.0s' $(seq 1 6000))"
+runb 2 "echo $LONG && cp /tmp/a.md $A/private/a.md" 'bash write after a long segment blocked'
+runb 2 "echo $LONG > $A/private/a.md"               'bash long segment redirect blocked'
+runb 0 "echo $LONG > /tmp/long.txt"                 'bash long segment outside vault allowed'
+# Bounded time: a 40,000-character one-line command with a companies/ token
+# must finish well inside the hook timeout (was ~22 s under bash 3.2).
+BIG="$(printf 'ab\"c d é %.0s' $(seq 1 4000))"
+start=$SECONDS
+runb 0 "python3 -c 'print(1)' $BIG companies/acme/reports/x" 'bash 40k-char command allowed'
+runb 0 "echo \"$(printf 'é%.0s' $(seq 1 2000))\" > $A/reports/x.md" 'bash 2k multibyte quoted segment parsed'
+elapsed=$((SECONDS - start))
+if [[ "$elapsed" -le 5 ]]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "FAIL [bash long command bounded time]: took ${elapsed}s" >&2
+fi
 
 # --- Manifest edge cases --------------------------------------------------
 printf 'not json' > "$TMP/.hq/vault-access.json"
@@ -253,6 +359,9 @@ else
   echo "FAIL [gate disabled-hooks passthrough]: expected exit 0, got $rc" >&2
 fi
 
-echo "PASS=$PASS FAIL=$FAIL"
+echo "PASS=$PASS FAIL=$FAIL (hook shell: $HOOK_BASH)"
 [[ "$FAIL" -eq 0 ]] || exit 1
+if [[ "$HOOK_BASH" == "bash" && -x /bin/bash && "$(uname -s)" == "Darwin" ]]; then
+  HOOK_BASH=/bin/bash bash "${BASH_SOURCE[0]}"
+fi
 exit 0

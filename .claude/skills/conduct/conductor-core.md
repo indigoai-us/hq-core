@@ -3,7 +3,7 @@
 The small always-on part of `/conduct`. It is what a fresh session gets when
 conduct mode is the HQ default, and what every runtime (Claude, Codex, Grok,
 hosted agents) reads before deciding how to handle a message. Lane mechanics,
-engine choice, briefs, and the pool live in `SKILL.md` and load only when work
+engine choice, standing lanes, and briefs live in `SKILL.md` and load only when work
 actually leaves the session.
 
 The block between the inject markers is what hq-cli's `hq lanes session-start`
@@ -12,29 +12,35 @@ is for the skill and for people.
 
 <!-- inject:start -->
 <auto-conduct>
-Conduct mode is on (conduct.default_enabled). Triage each message:
-- Inline here: answers, lookups, reads, status, one skill within about six tool calls.
-- Lane: multi-file edits, builds and tests, long-running, multi-repo or multi-story work. Run `/conduct` with the task; the engine is chosen at first dispatch, not now.
-Route by the intent index at core/settings/intent-index.yaml before reading any skill body. Charter non-negotiables stay in force.
+Conduct mode is on (conduct.default_enabled). The conductor coordinates and never does project work itself.
+- Inline only: answer from context already loaded, or one status read.
+- Standing lane: a task or ongoing area that matches a worker; it stays open for follow-ups.
+- Subagent: a small bounded task with no matching worker.
+Run `/conduct` with the task; the engine is chosen at first dispatch, not now.
+Route by core/settings/intent-index.yaml before reading any skill body. Charter non-negotiables stay in force.
 Leave with `/conduct off`; disable the default with HQ_AUTO_CONDUCT=0, HQ_DISABLED_HOOKS=auto-conduct, or conduct.default_enabled: false in personal/settings/orchestrator.yaml.
 </auto-conduct>
 <!-- inject:end -->
 
-## Triage rule
+## Routing rule
 
-The old rule was "the conductor never does the work itself". That made a
-question-only session open a lane for a lookup. The rule is now a triage:
+Owner decision, 2026-10-22 ("Workers stay open"): the conductor coordinates
+and never does project work itself. This restores the rule from the first
+`/conduct` and replaces the 2026-10-07 triage that kept reads, lookups, and
+short skills inline.
 
-| Handle inline | Send to a lane |
+| Where | What |
 |---|---|
-| Answer a question from context or one search | Edit more than one or two files |
-| Read, grep, or look something up | Build, run tests, or watch CI |
-| Report status, read a board, read a journal | Run longer than a few minutes |
-| One skill that completes in about six tool calls | Touch more than one repo or story |
-| Draft a message or a short document for review | Anything that should survive this session ending |
+| Inline | An answer from context already loaded in this session, or one status read (`/conduct status`, one board or lane read) |
+| Standing worker lane | A task or an ongoing area of work that matches an HQ worker or a `--workers` role; it stays open with keep-alive and takes the follow-up tasks for that worker |
+| Background subagent | A small, bounded task with no matching worker: a lookup that needs searching, a check, a draft, one skill run |
+| One-shot lane | Work that outlives this session or runs on a non-Claude engine, with no matching worker |
 
-When unsure, start inline. If the work grows past the budget, stop and
-dispatch the remainder as a lane with what you learned in the brief.
+This is the `mixed` runner, the default in `core/settings/orchestrator.yaml`.
+`bash core/scripts/conduct-standing.sh route --kind <answer|status|lookup|small|ongoing>`
+applies the table, including reuse of a standing lane already open for the
+same worker and company. When unsure between inline and a subagent, use a
+subagent.
 
 ## Intent index
 
@@ -55,6 +61,6 @@ no exceptions to them and lanes inherit them through the same charter.
 
 ## What stays in SKILL.md
 
-Engine roster and resolution, worker selection, pool slots, briefs, detached
-launch, lane messaging, outcome verification, and the per-turn lane rows.
+Engine roster and resolution, worker selection, standing lanes, briefs,
+detached launch, lane messaging, outcome verification, and the per-turn rows.
 `/conduct off`, `/conduct status`, and steering a running lane are unchanged.

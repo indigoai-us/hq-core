@@ -35,12 +35,13 @@ grep -q 'since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"' "$PROTOCOL" || fail 'shared pro
 grep -qi 'one watcher per lane.*round\|new watcher for each dispatch round' "$PROTOCOL" || fail 'shared protocol omits watcher re-arm per round'
 grep -q -- '--since "$since"' "$PROTOCOL" || fail 'shared protocol does not pass the round baseline'
 grep -q -- '--round-id "$round_id"' "$PROTOCOL" || fail 'shared protocol does not pass its unique round ID'
-# Owner decision 2026-10-17: subagents are the default runner, and a lane
-# capacity refusal runs the same brief as a subagent instead of queuing.
+# Owner decision 2026-10-22: mixed (standing worker lanes plus subagents) is
+# the default runner; 2026-10-17 still holds that a lane capacity refusal runs
+# the same brief as a subagent instead of queuing.
 grep -q '^## Runner$' "$MODULE" || fail 'dispatch lost the runner choice'
 grep -q '^## Subagent dispatch$' "$MODULE" || fail 'dispatch lost subagent dispatch'
 grep -q 'conduct_runner' "$MODULE" || fail 'runner session pin is missing'
-grep -q '^4\. `subagent`\.$' "$MODULE" || fail 'subagent is not the default runner'
+grep -q '^5\. `mixed`\.$' "$MODULE" || fail 'mixed is not the default runner'
 grep -q 'run_in_background: true' "$MODULE" || fail 'subagents must launch in the background'
 grep -q 'refusal, including' "$MODULE" && grep -q 'moves the task to a subagent' "$MODULE" \
   || fail 'a lane capacity refusal must fall back to a subagent'

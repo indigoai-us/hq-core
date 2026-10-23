@@ -201,7 +201,7 @@ Grok Build Desktop’s right-rail **Swarms** tab builds rows from subagent tool 
 
 | Field | Source | Agent guidance |
 |-------|--------|----------------|
-| **name** | `description` arg, or `name` / `subagent_type` / `role` in input; else first ~48 chars of prompt | Pass a short human name (3–6 words) in `description` (spawn tool) — e.g. `Explore auth module`, not a paragraph |
+| **name** | `description` arg, or `name` / `role` in input; else first ~48 chars of prompt | Pass a short human name (3–6 words) in `description` (spawn tool) — e.g. `Explore auth module`, not a paragraph. Do not pass built-in `subagent_type` names on Grok `spawn_subagent`. |
 | **status** | tool status mapped to `pending` \| `running` \| `done` \| `error` \| `cancelled` | Let the harness drive status; do not fake completion in prose while tools still run |
 | **summary** | completion result: prefer `summary` / `message` / `text` / `output` fields (≤ ~280 chars in UI) | End subagent work with a **one-paragraph summary first**; optional detail after |
 | **files** | `files` / `paths` / `touched` arrays, or `path` / `file_path` / `target_file` scalars on input or result | List concrete paths the subagent edited or key-read (cap ~24 shown) |

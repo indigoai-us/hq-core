@@ -1,0 +1,3 @@
+interface:
+  display_name: "decision desk"
+  short_description: "Ask the owner the conductor's queued decisions, one picker each."

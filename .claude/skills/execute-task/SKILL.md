@@ -1,7 +1,7 @@
 ---
 name: execute-task
 description: "Execute one PRD story through coordinated worker phases with test, lint, and typecheck gates."
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/worker-codex-model.sh:*)
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -580,21 +580,24 @@ For each worker in the sequence, create or continue its HQ worker lane with `hq 
    profile. A missing `worker.execution.codex_model` is a configuration error;
    stop and report it rather than selecting a model in this skill.
 
-   Before reading a company-scoped flag, resolve the active project company UID from its local checkout file. Do not rely on inherited `HQ_COMPANY_UID` or `HQ_COMPANY_SLUG`, which may describe the session launch company. Use the company slug established in step 1 and run the flag helper with explicit `HQ_COMPANY_UID="$active_company_uid"` and `HQ_COMPANY_SLUG="{active-company}"` values, where the UID came from `companies/{active-company}/.company-uid` in the local checkout. If the file is missing, pass an empty UID so the helper stays default-off.
-
-   When the independently resolved worker profile is under `core/workers/`, first read the
-   `workers.codex-model-overrides` hq-flags value with
-   `HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" node
-   .claude/hooks/worker-codex-model-overrides-flag.cjs`. The flag is default-off;
-   a missing flag context or lookup error means off. Only when it prints `true`,
-   check `companies/{active-company}/workers/{worker-id}/worker.yaml` and then
-   `personal/workers/{worker-id}/worker.yaml`. A non-empty
-   `execution.codex_model` in the company overlay takes precedence; otherwise a
-   non-empty value in the personal overlay takes precedence over the core
-   profile. Overlays for a worker already selected from a company or personal
-   path are not layered again. Keep `execution.codex_flags` from the selected
-   worker profile unchanged. Do not read or merge overlay `execution.codex_flags`.
-   The task-level `codex_model_hint` remains the highest-priority model source.
+   Users change a core worker's Codex model without editing `core/` through
+   company or personal override files. Resolve the model with
+   `core/scripts/worker-codex-model.sh`, passing the company slug established
+   in step 1 (not an inherited `HQ_COMPANY_SLUG`, which may describe the
+   session launch company) and the story hint when present:
+   ```bash
+   bash core/scripts/worker-codex-model.sh --company {active-company} [--story-hint {codex_model_hint}] {worker-id}
+   ```
+   It prints `<model><TAB><source>`; use the model as `codex_model`.
+   Precedence: the story `codex_model_hint`, then
+   `companies/{active-company}/workers/{worker-id}/overrides.yaml` (or a same-id
+   `worker.yaml` there), then `personal/workers/{worker-id}/overrides.yaml` (or a
+   same-id `worker.yaml` there), then the core profile. An override file holds
+   only `execution.codex_model`. Overrides apply only when the selected profile
+   is under `core/workers/`; a worker already selected from a company or
+   personal path is not layered again. Exit 2 means no model is configured;
+   stop and report it. Keep `execution.codex_flags` from the selected worker
+   profile unchanged. Do not read or merge override `execution.codex_flags`.
 
 5. If the worker has a skill file relevant to the task, note its path so the sub-agent prompt can reference it.
 
@@ -835,7 +838,7 @@ Then parse the worker's JSON output.
    - Check `codex_debug_attempts` — skip if this phase already had a codex-debugger intervention.
    - **If `codex_available == true`:** Run Codex debugger inline via CLI:
      ```bash
-     cd {target_repo_path} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="{codex_model}" --cd {target_repo_path} \
+     cd {target_repo_path} && HQ_WELCOME_BRIEF_HOOK=0 codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="{codex_model}" --cd {target_repo_path} \
        "Diagnose and fix back-pressure failure. Check: {failed_check_name}. Error: {stdout_stderr_from_failed_check}. Then re-run: {verification.post_execute commands}" 2>&1
      ```
    - **If `codex_available == false`:** Build a `codex-debugger` phase brief with the

@@ -13,8 +13,19 @@
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] get
 //       Resolved prefs as JSON: core defaults overlaid with the file. Unknown
 //       keys are kept and listed in "_extension_keys".
+//   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] critical
+//       Critical-channel settings as one line: "<critical_channels csv>\t<team
+//       csv>\t<max_delay>" (see DEFAULTS.critical_channels).
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] channels
 //       Swept channels as CSV, always starting with "sessions".
+//   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] interval [--at <iso>]
+//       The heartbeat cadence for that moment (default now) from the work-day
+//       schedule: "<seconds> present" inside work_hours, "<seconds> away"
+//       outside them, using watch_interval.present / watch_interval.away.
+//   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] cadence
+//       Per-channel sweep cadence as JSON: {constant: [...], hourly: [...],
+//       hourly_seconds}. Constant channels are swept on every wakeup; hourly
+//       channels only when their last sweep is older than hourly_seconds.
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] add <key> <value>...
 //       Append values to a top-level list key (created when missing). Values
 //       already present are skipped.
@@ -27,6 +38,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { replaceFile } from './lib/super-conductor-lock.mjs';
 
 const ROOT = process.env.HQ_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 let file = process.env.SC_PREFS_FILE || path.join(ROOT, 'personal/settings/super-conductor.yaml');
@@ -39,14 +51,35 @@ const [cmd, ...args] = argv;
 
 // Keys the core skill knows. Anything else in the file is an owner extension:
 // kept, returned by `get`, and never dropped by a write.
+// work_hours: when the owner counts as present. timezone defaults to this
+// machine's zone; days is a list (mon, tue, ...) or a range string ("mon-fri").
 const DEFAULTS = {
   channels: ['hq_dms'],
   watch_interval: { present: 60, away: 1500 },
+  work_hours: { timezone: null, days: 'mon-fri', start: '09:00', end: '18:00' },
+  // Constant channels are swept on every wakeup (and wake it early when a
+  // watcher covers them); hourly channels at most once an hour. A channel in
+  // neither list is constant.
+  channel_cadence: {
+    constant: ['sessions', 'hq_dms', 'slack'],
+    hourly: ['email', 'hq_channels', 'github', 'x', 'teammates'],
+    hourly_seconds: 3600,
+  },
   surface: 'needs_attention',
+  // Critical channels: messages there bypass the watcher's wake gap and the
+  // away cadence, get a `SUPER-CONDUCTOR CRITICAL` line within critical_wake
+  // .max_delay seconds, and a `priority: critical` ledger row the wakeup
+  // reads first. Entries: `hq_channel:<slug or channel id>` and
+  // `hq_dm:team` (person-to-person HQ DMs from anyone in `team`).
+  critical_channels: [],
+  team: [],
+  critical_wake: { max_delay: 60 },
 };
 const KNOWN = new Set([
-  'channels', 'watch_interval', 'surface', 'slack_workspaces', 'slack_channels',
+  'channels', 'watch_interval', 'work_hours', 'channel_cadence', 'slack_watch', 'surface', 'slack_workspaces', 'slack_channels',
+  'slack_workspace_companies',
   'hq_channels', 'email_accounts', 'company', 'github_org', 'teammates',
+  'critical_channels', 'team', 'critical_wake',
 ]);
 const KEY_RE = /^([A-Za-z_][\w-]*):(.*)$/;
 
@@ -152,6 +185,26 @@ function resolved() {
     out[k] = d && typeof d === 'object' && !Array.isArray(d) && v && typeof v === 'object' && !Array.isArray(v)
       ? { ...d, ...v } : v;
   }
+  // A free-text channel_cadence (an owner note) keeps the default lists and is
+  // carried as _channel_cadence_note.
+  if (!out.channel_cadence || typeof out.channel_cadence !== 'object' || Array.isArray(out.channel_cadence)) {
+    if (out.channel_cadence != null) out._channel_cadence_note = String(out.channel_cadence);
+    out.channel_cadence = structuredClone(DEFAULTS.channel_cadence);
+  }
+  // Lists may be YAML lists or comma-separated strings; normalize once here so
+  // every reader (cadence, sweep-check) sees the same arrays. A channel the
+  // owner lists as constant leaves the default hourly list even when the owner
+  // did not restate `hourly`; an explicit hourly list wins over constant.
+  {
+    const c = out.channel_cadence;
+    const own = data.channel_cadence && typeof data.channel_cadence === 'object' && !Array.isArray(data.channel_cadence) ? data.channel_cadence : {};
+    const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x) => String(x).trim()).filter(Boolean);
+    let hourly = list(c.hourly);
+    const constant = list(c.constant);
+    if (own.constant != null && own.hourly == null) hourly = hourly.filter((x) => !constant.includes(x));
+    c.hourly = hourly;
+    c.constant = constant.filter((x) => !hourly.includes(x));
+  }
   out._extension_keys = Object.keys(data).filter((k) => !KNOWN.has(k)).sort();
   out._file = file;
   return out;
@@ -202,7 +255,7 @@ function writeChecked(beforeText, afterText, changedKey) {
   const tmp = path.join(path.dirname(file), `.super-conductor-prefs.${process.pid}`);
   fs.writeFileSync(tmp, afterText);
   try { fs.chmodSync(tmp, fs.statSync(file).mode & 0o777); } catch { /* new file */ }
-  fs.renameSync(tmp, file);
+  replaceFile(tmp, file);
   return after;
 }
 
@@ -280,6 +333,75 @@ function cmdSet(dotted, value) {
   process.stdout.write(`${JSON.stringify({ key: dotted, value: after[key] })}\n`);
 }
 
+const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+const FULL_DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+// A day as its three-letter or full English name ("mon", "monday"); anything
+// else ("monkey", "mo") is refused.
+function dayIndex(name) {
+  const n = String(name).trim().toLowerCase();
+  let i = DAY_NAMES.indexOf(n);
+  if (i === -1) i = FULL_DAY_NAMES.indexOf(n);
+  if (i === -1) die(`work_hours.days: unknown day '${name}' (use mon..sun or monday..sunday)`, 3);
+  return i;
+}
+
+// Set of weekday indexes (0 = Sunday) from a list or "mon-fri" / "mon,wed".
+export function workDays(days) {
+  const parts = Array.isArray(days) ? days.map(String) : String(days ?? 'mon-fri').split(',');
+  const out = new Set();
+  for (const raw of parts) {
+    const part = raw.trim();
+    if (!part) continue;
+    const [a, b] = part.split('-');
+    if (b === undefined) { out.add(dayIndex(a)); continue; }
+    for (let i = dayIndex(a), n = 0; n < 7; i = (i + 1) % 7, n++) {
+      out.add(i);
+      if (i === dayIndex(b)) break;
+    }
+  }
+  return out;
+}
+
+// HH:MM from 00:00 to 23:59; 24:00 is accepted as an end of day only.
+function minutesOf(hhmm, field) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm).trim());
+  const h = m ? Number(m[1]) : NaN;
+  const min = m ? Number(m[2]) : NaN;
+  const ok = m && min <= 59 && (h <= 23 || (field === 'end' && h === 24 && min === 0));
+  if (!ok) die(`work_hours.${field} must be HH:MM between 00:00 and 23:59${field === 'end' ? ' (or 24:00)' : ''}, got '${hhmm}'`, 3);
+  return h * 60 + min;
+}
+
+// {present: bool, timezone} for an instant under the work_hours schedule.
+// An end before the start wraps past midnight (for example 20:00-04:00).
+export function isWorkTime(workHours, at) {
+  if (workHours != null && (typeof workHours !== 'object' || Array.isArray(workHours))) {
+    die(`work_hours must be a map (timezone, days, start, end), got '${workHours}'`, 3);
+  }
+  const wh = workHours || {};
+  let tz = wh.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  let fmt;
+  try {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  } catch {
+    die(`work_hours.timezone: unknown time zone '${tz}'`, 3);
+  }
+  const parts = Object.fromEntries(fmt.formatToParts(at).map((p) => [p.type, p.value]));
+  const day = dayIndex(parts.weekday);
+  const now = Number(parts.hour) * 60 + Number(parts.minute);
+  const start = minutesOf(wh.start ?? '09:00', 'start');
+  const end = minutesOf(wh.end ?? '18:00', 'end');
+  if (start === end) die(`work_hours.start and work_hours.end are both ${wh.start ?? '09:00'}; an empty window would never be present`, 3);
+  const days = workDays(wh.days);
+  let present;
+  if (start <= end) present = days.has(day) && now >= start && now < end;
+  // Overnight shift: the late part belongs to today, the early part to yesterday.
+  else present = (days.has(day) && now >= start) || (days.has((day + 6) % 7) && now < end);
+  return { present, timezone: tz };
+}
+
 switch (cmd) {
   case 'get':
     process.stdout.write(`${JSON.stringify(resolved(), null, 2)}\n`);
@@ -288,6 +410,40 @@ switch (cmd) {
     let chans = resolved().channels || [];
     if (typeof chans === 'string') chans = chans.split(',').map((c) => c.trim());
     process.stdout.write(`${['sessions', ...chans.map(String).filter((c) => c && c !== 'sessions')].join(',')}\n`);
+    break;
+  }
+  case 'interval': {
+    let at = new Date();
+    if (args[0] === '--at') {
+      at = new Date(args[1] || '');
+      if (Number.isNaN(at.getTime())) die(`interval: bad --at '${args[1]}'`, 2);
+    } else if (args.length) die('usage: interval [--at <iso>]', 2);
+    const p = resolved();
+    const { present } = isWorkTime(p.work_hours, at);
+    const wi = p.watch_interval || {};
+    // Whole seconds: the heartbeat accepts only integers.
+    const pick = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.max(1, Math.round(Number(v))) : d);
+    const secs = present ? pick(wi.present, DEFAULTS.watch_interval.present) : pick(wi.away, DEFAULTS.watch_interval.away);
+    process.stdout.write(`${secs} ${present ? 'present' : 'away'}\n`);
+    break;
+  }
+  case 'critical': {
+    // "<critical_channels csv>\t<team csv>\t<max_delay seconds>" for the
+    // heartbeat to pass to the watcher. Empty fields when unset.
+    const p = resolved();
+    // An unquoted `- hq_channel:slug` parses as a one-key map; render it back.
+    const item = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.entries(x).map(([k, v]) => `${k}:${v ?? ''}`).join(',') : String(x ?? ''));
+    const list = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v ? v.split(',') : []).map((x) => item(x).trim()).filter(Boolean);
+    const cw = p.critical_wake && typeof p.critical_wake === 'object' ? p.critical_wake : {};
+    const delay = Number(cw.max_delay);
+    process.stdout.write(`${list(p.critical_channels).join(',')}\t${list(p.team).join(',')}\t${Number.isFinite(delay) && delay >= 10 ? Math.round(delay) : 60}\n`);
+    break;
+  }
+  case 'cadence': {
+    const c = resolved().channel_cadence;
+    const { hourly, constant } = c;
+    const secs = Number(c.hourly_seconds);
+    process.stdout.write(`${JSON.stringify({ constant, hourly, hourly_seconds: Number.isFinite(secs) && secs > 0 ? secs : 3600 })}\n`);
     break;
   }
   case 'add':
@@ -299,5 +455,5 @@ switch (cmd) {
     cmdSet(args[0], args[1]);
     break;
   default:
-    die(`usage: get | channels | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
+    die(`usage: get | channels | interval | cadence | critical | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
 }

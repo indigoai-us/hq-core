@@ -51,7 +51,7 @@ Resolve owning company in priority order:
 | Tier | Source | Win condition |
 |---|---|---|
 | 1 | `--company <slug>` flag | Always wins if present |
-| 2 | Active session: `workspace/threads/handoff.json` `.company`, or `$HQ_ACTIVE_COMPANY` | Use if non-empty and present in `companies/manifest.yaml` |
+| 2 | Active session: `bash core/scripts/handoff-pointer-company.sh` (reads `workspace/threads/handoff.json` `.company`, accepting a string, a one-element array, or the linked thread's `metadata.company` for older pointers), or `$HQ_ACTIVE_COMPANY` | Use if non-empty and present in `companies/manifest.yaml` |
 | 3 | GitHub org match: owner login → `companies/{co}.github_org` in manifest | Single match auto-uses; multiple → AskUserQuestion |
 | 4 | Path heuristic: target lives under `companies/<co>/repos/...` | Infer that company |
 | 5 | Standalone | Knowledge writes to `core/knowledge/public/repos/<name>/`; manifest gets `unaffiliated_repos[]` append |

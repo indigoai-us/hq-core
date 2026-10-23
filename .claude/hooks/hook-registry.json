@@ -179,6 +179,15 @@
             "runner": "source"
           },
           {
+            "id": "super-conductor-merge-gate",
+            "script": ".claude/hooks/super-conductor-merge-gate.sh",
+            "timeout": 10,
+            "gated": true,
+            "prefilter": {
+              "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+            }
+          },
+          {
             "id": "block-env-dump",
             "script": ".claude/hooks/block-env-dump.sh",
             "timeout": 30,
@@ -687,6 +696,23 @@
             "gated": true
           }
         ]
+      },
+      {
+        "matcher": "mcp__ccd_session__start_session|start_session",
+        "hooks": [
+          {
+            "id": "conduct-link-inherit",
+            "script": ".claude/hooks/conduct-link-inherit.sh",
+            "timeout": 10,
+            "gated": true,
+            "args": [
+              "PreToolUse"
+            ],
+            "prefilter": {
+              "file": "workspace/lanes-links/by-session"
+            }
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -994,6 +1020,23 @@
             ]
           }
         ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "conduct-link-inherit",
+            "script": ".claude/hooks/conduct-link-inherit.sh",
+            "timeout": 15,
+            "gated": true,
+            "args": [
+              "PostToolUse"
+            ],
+            "prefilter": {
+              "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+            }
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -1063,6 +1106,12 @@
           {
             "id": "enforce-capability-link-render",
             "script": ".claude/hooks/enforce-capability-link-render.sh",
+            "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "enforce-final-message-link-placement",
+            "script": ".claude/hooks/enforce-final-message-link-placement.sh",
             "timeout": 30,
             "gated": true
           },
@@ -1154,6 +1203,12 @@
             "id": "auto-startwork",
             "script": ".claude/hooks/auto-startwork.sh",
             "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "welcome-brief-ready",
+            "script": ".claude/hooks/welcome-brief-ready.sh",
+            "timeout": 10,
             "gated": true
           },
           {
@@ -1291,6 +1346,23 @@
             "script": ".claude/hooks/inject-policy-on-trigger.sh",
             "timeout": 60,
             "gated": true
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "id": "conduct-link-inherit",
+            "script": ".claude/hooks/conduct-link-inherit.sh",
+            "timeout": 15,
+            "gated": true,
+            "args": [
+              "UserPromptSubmit"
+            ],
+            "prefilter": {
+              "file": "workspace/lanes-links/invites"
+            }
           }
         ]
       }

@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(bash core/scripts/handoff-knowledge-commit.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(bash core/scripts/handoff-autofile.sh:*), Bash(bash core/scripts/handoff-builder-route.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash(bash core/scripts/handoff-knowledge-commit.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(bash core/scripts/handoff-autofile.sh:*), Bash(bash core/scripts/handoff-builder-route.sh:*), Bash(bash core/scripts/handoff-archive-decision.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -349,6 +349,28 @@ If `git_bg_errors` was non-empty, append:
 ```
 
 If recovery is still needed in operator mode, put the same `WARN: Follow-up recovery required` block at the top (before `Handoff ready.`), substituting actual values and including only applicable commands.
+
+### 7. Archive this session (optional, desktop app only)
+
+Run this last, after the Step 6 report is written in full. Archiving ends the conversation at once, so nothing may come after it. When `/handoff-all` asked for an `HQ-RESUME:` line, write that line before this step.
+
+Skip the step silently when `handoff-finalize.sh` failed, or when the `archive_session` tool (`mcp__ccd_session_mgmt__archive_session`) is not available, as in the terminal CLI, Codex, and Grok. Otherwise decide once.
+
+Never paste the user's message into a shell command. Create an empty file with `mktemp workspace/threads/.handoff-tmp/archive-args.XXXXXX`, write the user's handoff message (the optional message at the top of this skill) into it with the `Write` tool, exactly as typed, and pass the path as `--args-file`. An empty message is an empty file. Then run:
+
+```bash
+bash core/scripts/handoff-archive-decision.sh --root "$PWD" --cwd "$PWD" \
+  --thread "{thread_path from Step 3}" --args-file "{args file}"
+rm -f "{args file}"
+```
+
+Add `--repo-dir "{dir}"` for each other repo checkout this session committed or pushed in, so its branch is checked for open PRs. Add `--recovery-pending` when the Step 6 report includes the `WARN: Follow-up recovery required` block. Add `--background-running` when any background task, background Bash command, or subagent started in this session is still running.
+
+The script reads `--archive` / `--no-archive` from the message, then `HQ_HANDOFF_ARCHIVE`, then `auto_archive` in `personal/settings/handoff.yaml` and `core/settings/handoff.yaml` (default off). `--archive` counts only as a leading flag, so "don't --archive" never archives. A wanted archive is refused when recovery is pending; when the thread file, its changeset, or the `handoff.json` pointer is missing; when the session's linked worktree has uncommitted changes, since archiving deletes that worktree; when a checked branch has an open PR; when the session has background work (`--background-running`, an active hq lane with this session as senior, or a running hq monitor aimed at it); or when the session has an ask waiting on the owner in `workspace/reports/conduct/`. A check that cannot run refuses with "could not verify".
+
+- `archive: yes` → add one plain sentence to the end of the report saying the session is being archived and can be reopened from the Archived list. Then call `archive_session` with `session_id: "self"` and `reason: "Handoff complete"`. If the tool returns an error (the session is pinned, still working, or the user declined), say in one plain sentence that the session stayed open.
+- `archive: no (off…)` → do nothing and say nothing.
+- Any other `archive: no (<reason>)` → add one plain sentence saying the session was left open and why.
 
 ## Thread vs Checkpoint
 

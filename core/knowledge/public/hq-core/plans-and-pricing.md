@@ -185,8 +185,10 @@ personal scopes have their own ceilings (table above).
 - **Deploys.** Counts are unlimited on every plan, and a deploy is never
   refused due to deployment count. Deploy responses do not include a
   deployment-count limit nag.
-- **Custom deploy domains** check a separate staff-assigned plan field
-  (`pro` or `enterprise`); see the `/deploy` skill.
+- **Custom deploy domains** are add-ons on any plan and need a card on file.
+  The per-app (standard) and company base-domain (premium) prices are in the
+  Domains row above. People add them in the desktop app; see the `/deploy`
+  skill for the API.
 - **Remote vault DB** (`hq db provision`) requires Workforce; see
   `vault-databases.md`.
 - **App databases** (`database: true` on a deploy) require Workforce (or a

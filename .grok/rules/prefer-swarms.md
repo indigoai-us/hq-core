@@ -110,8 +110,10 @@ Before spawning a research/dev/ops/review swarm:
 | Knowledge / docs | `knowledge-curator`, `context-manager` |
 | Garden / cleanup | gardener-team workers |
 
-Use `explore` / `plan` / `general-purpose` subagent types when no worker fits,
-but still write durable handoffs.
+When no worker fits, spawn with `prompt` and a short `description` only.
+Grok Build 1.0.45 dropped built-in type names from the model-facing
+`spawn_subagent` schema — omit `subagent_type` (default is general-purpose).
+Name custom plugin or config agents only. Still write durable handoffs.
 
 ## Missing worker → suggest or scaffold
 

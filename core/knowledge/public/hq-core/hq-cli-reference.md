@@ -486,6 +486,7 @@ The prices in these descriptions are the CLI's help text at the version above. H
 | `hq billing status` | Show subscription status and whether a card is on file |
 | `hq billing checkout` | Mint a Stripe card-capture link (shareable) to add a card |
 | `hq billing upgrade` | Open Stripe Checkout to upgrade this company to HQ Workforce ($500/mo) |
+| `hq billing usage` | Show this month's usage, projected bill, allowance left and what drives it (read-only; `--card` prints the live price card; hq-cli 5.345.144+) |
 | `hq billing sponsor` | Ask a company to cover your $50 plan, or answer a request |
 | `hq billing sponsor request` | Ask a company to cover your $50 HQ plan |
 | `hq billing sponsor list` | Show sponsorship requests — the company's queue, or your own |

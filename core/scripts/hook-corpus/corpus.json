@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "9d51422d46cb35baf0d23fd02337fb206077b7aab1f23494b9564913133c72f3",
+  "registry_sha256": "d915a2ad2566e59e836262af485da2a922196945fcfdc68d7294bb8a82bef421",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -608,6 +608,12 @@
       "trigger_sha256": "acafb54840287a337032dcbcaf082822595500f573a8320bafea76c2028829aa",
       "when": "parallel || subagent || sub-agent || sub-agents",
       "on": "[UserPromptSubmit, AssistantIntent]"
+    },
+    {
+      "path": "core/policies/hq-pr-review-light-local-footprint.md",
+      "trigger_sha256": "f4732084cc6a8d42638e43fad3ac9ffd26c30260f76fed93c7ac2395c603c8a8",
+      "when": "(review || reviewer || conductor) && (pr || pull || clone || checkout || /tmp || install || vitest || tsc || suite)",
+      "on": "[UserPromptSubmit, AssistantIntent, PreToolUse]"
     },
     {
       "path": "core/policies/hq-pr-single-concern.md",
@@ -5135,8 +5141,348 @@
       }
     },
     {
-      "hook_id": "block-env-dump",
+      "hook_id": "super-conductor-merge-gate",
       "entry": "PreToolUse/5/5",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "merge",
+          "file_path": "merge"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "merge",
+          "file_path": "merge"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "merge",
+          "file_path": "merge"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "merge",
+          "file_path": "merge"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "merge",
+          "file_path": "merge"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "merge",
+          "file_path": "merge"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "super-conductor-merge-gate",
+      "entry": "PreToolUse/5/5",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "super-conductor-merge-gate",
+                  "script": ".claude/hooks/super-conductor-merge-gate.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "[mM][\"'\\\\]*[eE][\"'\\\\]*[rR][\"'\\\\]*[gG][\"'\\\\]*[eE]"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-env-dump",
+      "entry": "PreToolUse/5/6",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -5179,7 +5525,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -5223,7 +5569,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -5266,7 +5612,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -5310,7 +5656,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -5353,7 +5699,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -5397,7 +5743,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -5440,7 +5786,7 @@
     },
     {
       "hook_id": "block-env-dump",
-      "entry": "PreToolUse/5/5",
+      "entry": "PreToolUse/5/6",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -5484,7 +5830,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -5527,7 +5873,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -5571,7 +5917,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -5614,7 +5960,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -5658,7 +6004,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -5701,7 +6047,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -5745,7 +6091,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -5788,7 +6134,7 @@
     },
     {
       "hook_id": "block-core-writes-bash",
-      "entry": "PreToolUse/5/6",
+      "entry": "PreToolUse/5/7",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -5832,7 +6178,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -5875,7 +6221,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -5919,7 +6265,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -5962,7 +6308,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -6006,7 +6352,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -6049,7 +6395,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -6093,7 +6439,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -6136,7 +6482,7 @@
     },
     {
       "hook_id": "block-policy-writes-bash",
-      "entry": "PreToolUse/5/7",
+      "entry": "PreToolUse/5/8",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -6180,7 +6526,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -6225,7 +6571,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -6271,7 +6617,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -6316,7 +6662,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -6362,7 +6708,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": true,
@@ -6407,7 +6753,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": true,
@@ -6453,7 +6799,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": false,
@@ -6496,7 +6842,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/5/8",
+      "entry": "PreToolUse/5/9",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": false,
@@ -6540,7 +6886,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -6583,7 +6929,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -6627,7 +6973,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -6670,7 +7016,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -6714,7 +7060,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -6757,7 +7103,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -6801,7 +7147,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -6844,7 +7190,7 @@
     },
     {
       "hook_id": "block-hq-root-git-mutation",
-      "entry": "PreToolUse/5/9",
+      "entry": "PreToolUse/5/10",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -6888,7 +7234,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -6931,7 +7277,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -6975,7 +7321,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -7018,7 +7364,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -7062,7 +7408,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -7105,7 +7451,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -7149,7 +7495,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -7192,7 +7538,7 @@
     },
     {
       "hook_id": "block-company-repo-creation",
-      "entry": "PreToolUse/5/10",
+      "entry": "PreToolUse/5/11",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -7236,7 +7582,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -7279,7 +7625,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -7323,7 +7669,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -7366,7 +7712,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -7410,7 +7756,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -7453,7 +7799,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -7497,7 +7843,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -7540,7 +7886,7 @@
     },
     {
       "hook_id": "block-foreground-timeout-over-harness-ceiling",
-      "entry": "PreToolUse/5/11",
+      "entry": "PreToolUse/5/12",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -7584,7 +7930,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -7626,7 +7972,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -7669,7 +8015,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -7711,7 +8057,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -7754,7 +8100,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -7796,7 +8142,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -7839,7 +8185,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -7881,7 +8227,7 @@
     },
     {
       "hook_id": "hq-monitor-guard",
-      "entry": "PreToolUse/5/12",
+      "entry": "PreToolUse/5/13",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -7924,7 +8270,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -7967,7 +8313,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -8011,7 +8357,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -8054,7 +8400,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -8098,7 +8444,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -8141,7 +8487,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -8185,7 +8531,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -8228,7 +8574,7 @@
     },
     {
       "hook_id": "block-qmd-model-download",
-      "entry": "PreToolUse/5/13",
+      "entry": "PreToolUse/5/14",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -8272,7 +8618,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -8317,7 +8663,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -8363,7 +8709,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -8408,7 +8754,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -8454,7 +8800,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": true,
@@ -8499,7 +8845,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": true,
@@ -8545,7 +8891,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": false,
@@ -8588,7 +8934,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/14",
+      "entry": "PreToolUse/5/15",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": false,
@@ -8632,7 +8978,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -8677,7 +9023,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -8723,7 +9069,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -8768,7 +9114,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -8814,7 +9160,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.policy_vocab",
       "runtime": "claude",
       "matching": true,
@@ -8859,7 +9205,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.policy_vocab",
       "runtime": "codex",
       "matching": true,
@@ -8905,7 +9251,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.policy_vocab",
       "runtime": "claude",
       "matching": false,
@@ -8949,7 +9295,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.policy_vocab",
       "runtime": "codex",
       "matching": false,
@@ -8994,7 +9340,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9037,7 +9383,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9081,7 +9427,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9124,7 +9470,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9168,7 +9514,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -9211,7 +9557,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -9255,7 +9601,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -9298,7 +9644,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -9342,7 +9688,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9384,7 +9730,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9427,7 +9773,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9469,7 +9815,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9512,7 +9858,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -9554,7 +9900,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -9597,7 +9943,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -9639,7 +9985,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -21509,6 +21855,382 @@
       }
     },
     {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/by-session": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/by-session": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/by-session": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/by-session": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/by-session": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/by-session": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PreToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "PreToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/by-session"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
       "hook_id": "policy-enforcement-gate",
       "entry": "PostToolUse/0/0",
       "rule": "entry",
@@ -30059,6 +30781,388 @@
       }
     },
     {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites/pending/synthetic-corpus.json": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites/pending/synthetic-corpus.json": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites/pending/synthetic-corpus.json": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites/pending/synthetic-corpus.json": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites/pending/synthetic-corpus.json": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites/pending/synthetic-corpus.json": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "PostToolUse/12/0",
+      "rule": "prefilter.file",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "PostToolUse"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites/pending/{session_id}.json"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
       "hook_id": "precompact-thrashing-detector",
       "entry": "PreCompact/0/0",
       "rule": "entry",
@@ -31254,6 +32358,140 @@
                 {
                   "id": "enforce-capability-link-render",
                   "script": ".claude/hooks/enforce-capability-link-render.sh",
+                  "timeout": 30,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "enforce-final-message-link-placement",
+      "entry": "Stop/0/5",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "Stop",
+      "registry": {
+        "hooks": {
+          "Stop": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "enforce-final-message-link-placement",
+                  "script": ".claude/hooks/enforce-final-message-link-placement.sh",
+                  "timeout": 30,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "Stop",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "enforce-final-message-link-placement",
+      "entry": "Stop/0/5",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "Stop",
+      "registry": {
+        "hooks": {
+          "Stop": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "enforce-final-message-link-placement",
+                  "script": ".claude/hooks/enforce-final-message-link-placement.sh",
+                  "timeout": 30,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "Stop",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "enforce-final-message-link-placement",
+      "entry": "Stop/0/5",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "Stop": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "enforce-final-message-link-placement",
+                  "script": ".claude/hooks/enforce-final-message-link-placement.sh",
+                  "timeout": 30,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "enforce-final-message-link-placement",
+      "entry": "Stop/0/5",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "Stop": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "enforce-final-message-link-placement",
+                  "script": ".claude/hooks/enforce-final-message-link-placement.sh",
                   "timeout": 30,
                   "gated": false
                 }
@@ -31274,7 +32512,7 @@
     },
     {
       "hook_id": "enforce-humanize-before-send",
-      "entry": "Stop/0/5",
+      "entry": "Stop/0/6",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -31307,7 +32545,7 @@
     },
     {
       "hook_id": "enforce-humanize-before-send",
-      "entry": "Stop/0/5",
+      "entry": "Stop/0/6",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -31341,7 +32579,7 @@
     },
     {
       "hook_id": "enforce-humanize-before-send",
-      "entry": "Stop/0/5",
+      "entry": "Stop/0/6",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -31374,7 +32612,7 @@
     },
     {
       "hook_id": "enforce-humanize-before-send",
-      "entry": "Stop/0/5",
+      "entry": "Stop/0/6",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -31408,7 +32646,7 @@
     },
     {
       "hook_id": "lanes-senior-monitor-stop-gate",
-      "entry": "Stop/0/6",
+      "entry": "Stop/0/7",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -31441,7 +32679,7 @@
     },
     {
       "hook_id": "lanes-senior-monitor-stop-gate",
-      "entry": "Stop/0/6",
+      "entry": "Stop/0/7",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -31475,7 +32713,7 @@
     },
     {
       "hook_id": "lanes-senior-monitor-stop-gate",
-      "entry": "Stop/0/6",
+      "entry": "Stop/0/7",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -31508,7 +32746,7 @@
     },
     {
       "hook_id": "lanes-senior-monitor-stop-gate",
-      "entry": "Stop/0/6",
+      "entry": "Stop/0/7",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -31542,7 +32780,7 @@
     },
     {
       "hook_id": "conduct-lanes-link-deliver",
-      "entry": "Stop/0/7",
+      "entry": "Stop/0/8",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -31578,7 +32816,7 @@
     },
     {
       "hook_id": "conduct-lanes-link-deliver",
-      "entry": "Stop/0/7",
+      "entry": "Stop/0/8",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -31615,7 +32853,7 @@
     },
     {
       "hook_id": "conduct-lanes-link-deliver",
-      "entry": "Stop/0/7",
+      "entry": "Stop/0/8",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -31651,7 +32889,7 @@
     },
     {
       "hook_id": "conduct-lanes-link-deliver",
-      "entry": "Stop/0/7",
+      "entry": "Stop/0/8",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -32925,6 +34163,142 @@
                   "id": "auto-startwork",
                   "script": ".claude/hooks/auto-startwork.sh",
                   "timeout": 30,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "welcome-brief-ready",
+      "entry": "SessionStart/0/9",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "SessionStart",
+      "registry": {
+        "hooks": {
+          "SessionStart": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "welcome-brief-ready",
+                  "script": ".claude/hooks/welcome-brief-ready.sh",
+                  "timeout": 10,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SessionStart",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "source": "startup"
+      }
+    },
+    {
+      "hook_id": "welcome-brief-ready",
+      "entry": "SessionStart/0/9",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "SessionStart",
+      "registry": {
+        "hooks": {
+          "SessionStart": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "welcome-brief-ready",
+                  "script": ".claude/hooks/welcome-brief-ready.sh",
+                  "timeout": 10,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SessionStart",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "source": "startup",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "welcome-brief-ready",
+      "entry": "SessionStart/0/9",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "SessionStart": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "welcome-brief-ready",
+                  "script": ".claude/hooks/welcome-brief-ready.sh",
+                  "timeout": 10,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "welcome-brief-ready",
+      "entry": "SessionStart/0/9",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "SessionStart": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "welcome-brief-ready",
+                  "script": ".claude/hooks/welcome-brief-ready.sh",
+                  "timeout": 10,
                   "gated": false
                 }
               ]
@@ -32944,7 +34318,7 @@
     },
     {
       "hook_id": "conduct-lanes-session-start",
-      "entry": "SessionStart/0/9",
+      "entry": "SessionStart/0/10",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -32978,7 +34352,7 @@
     },
     {
       "hook_id": "conduct-lanes-session-start",
-      "entry": "SessionStart/0/9",
+      "entry": "SessionStart/0/10",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33013,7 +34387,7 @@
     },
     {
       "hook_id": "conduct-lanes-session-start",
-      "entry": "SessionStart/0/9",
+      "entry": "SessionStart/0/10",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33046,7 +34420,7 @@
     },
     {
       "hook_id": "conduct-lanes-session-start",
-      "entry": "SessionStart/0/9",
+      "entry": "SessionStart/0/10",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33080,7 +34454,7 @@
     },
     {
       "hook_id": "check-stale-model-pin",
-      "entry": "SessionStart/0/10",
+      "entry": "SessionStart/0/11",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33114,7 +34488,7 @@
     },
     {
       "hook_id": "check-stale-model-pin",
-      "entry": "SessionStart/0/10",
+      "entry": "SessionStart/0/11",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33149,7 +34523,7 @@
     },
     {
       "hook_id": "check-stale-model-pin",
-      "entry": "SessionStart/0/10",
+      "entry": "SessionStart/0/11",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33182,7 +34556,7 @@
     },
     {
       "hook_id": "check-stale-model-pin",
-      "entry": "SessionStart/0/10",
+      "entry": "SessionStart/0/11",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33216,7 +34590,7 @@
     },
     {
       "hook_id": "check-core-yaml-parity",
-      "entry": "SessionStart/0/11",
+      "entry": "SessionStart/0/12",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33250,7 +34624,7 @@
     },
     {
       "hook_id": "check-core-yaml-parity",
-      "entry": "SessionStart/0/11",
+      "entry": "SessionStart/0/12",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33285,7 +34659,7 @@
     },
     {
       "hook_id": "check-core-yaml-parity",
-      "entry": "SessionStart/0/11",
+      "entry": "SessionStart/0/12",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33318,7 +34692,7 @@
     },
     {
       "hook_id": "check-core-yaml-parity",
-      "entry": "SessionStart/0/11",
+      "entry": "SessionStart/0/12",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33352,7 +34726,7 @@
     },
     {
       "hook_id": "load-journal-index-on-start",
-      "entry": "SessionStart/0/12",
+      "entry": "SessionStart/0/13",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33386,7 +34760,7 @@
     },
     {
       "hook_id": "load-journal-index-on-start",
-      "entry": "SessionStart/0/12",
+      "entry": "SessionStart/0/13",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33421,7 +34795,7 @@
     },
     {
       "hook_id": "load-journal-index-on-start",
-      "entry": "SessionStart/0/12",
+      "entry": "SessionStart/0/13",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33454,7 +34828,7 @@
     },
     {
       "hook_id": "load-journal-index-on-start",
-      "entry": "SessionStart/0/12",
+      "entry": "SessionStart/0/13",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33488,7 +34862,7 @@
     },
     {
       "hook_id": "check-hq-update",
-      "entry": "SessionStart/0/13",
+      "entry": "SessionStart/0/14",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33522,7 +34896,7 @@
     },
     {
       "hook_id": "check-hq-update",
-      "entry": "SessionStart/0/13",
+      "entry": "SessionStart/0/14",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33557,7 +34931,7 @@
     },
     {
       "hook_id": "check-hq-update",
-      "entry": "SessionStart/0/13",
+      "entry": "SessionStart/0/14",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33590,7 +34964,7 @@
     },
     {
       "hook_id": "check-hq-update",
-      "entry": "SessionStart/0/13",
+      "entry": "SessionStart/0/14",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33624,7 +34998,7 @@
     },
     {
       "hook_id": "check-client-health",
-      "entry": "SessionStart/0/14",
+      "entry": "SessionStart/0/15",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33658,7 +35032,7 @@
     },
     {
       "hook_id": "check-client-health",
-      "entry": "SessionStart/0/14",
+      "entry": "SessionStart/0/15",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33693,7 +35067,7 @@
     },
     {
       "hook_id": "check-client-health",
-      "entry": "SessionStart/0/14",
+      "entry": "SessionStart/0/15",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33726,7 +35100,7 @@
     },
     {
       "hook_id": "check-client-health",
-      "entry": "SessionStart/0/14",
+      "entry": "SessionStart/0/15",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33760,7 +35134,7 @@
     },
     {
       "hook_id": "repair-stale-review-base",
-      "entry": "SessionStart/0/15",
+      "entry": "SessionStart/0/16",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33794,7 +35168,7 @@
     },
     {
       "hook_id": "repair-stale-review-base",
-      "entry": "SessionStart/0/15",
+      "entry": "SessionStart/0/16",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33829,7 +35203,7 @@
     },
     {
       "hook_id": "repair-stale-review-base",
-      "entry": "SessionStart/0/15",
+      "entry": "SessionStart/0/16",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -33862,7 +35236,7 @@
     },
     {
       "hook_id": "repair-stale-review-base",
-      "entry": "SessionStart/0/15",
+      "entry": "SessionStart/0/16",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -33896,7 +35270,7 @@
     },
     {
       "hook_id": "session-title",
-      "entry": "SessionStart/0/16",
+      "entry": "SessionStart/0/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -33931,7 +35305,7 @@
     },
     {
       "hook_id": "session-title",
-      "entry": "SessionStart/0/16",
+      "entry": "SessionStart/0/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -33967,7 +35341,7 @@
     },
     {
       "hook_id": "session-title",
-      "entry": "SessionStart/0/16",
+      "entry": "SessionStart/0/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -34001,7 +35375,7 @@
     },
     {
       "hook_id": "session-title",
-      "entry": "SessionStart/0/16",
+      "entry": "SessionStart/0/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -34036,7 +35410,7 @@
     },
     {
       "hook_id": "hq-monitor-session-start",
-      "entry": "SessionStart/0/17",
+      "entry": "SessionStart/0/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -34070,7 +35444,7 @@
     },
     {
       "hook_id": "hq-monitor-session-start",
-      "entry": "SessionStart/0/17",
+      "entry": "SessionStart/0/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -34105,7 +35479,7 @@
     },
     {
       "hook_id": "hq-monitor-session-start",
-      "entry": "SessionStart/0/17",
+      "entry": "SessionStart/0/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -34138,7 +35512,7 @@
     },
     {
       "hook_id": "hq-monitor-session-start",
-      "entry": "SessionStart/0/17",
+      "entry": "SessionStart/0/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -35563,6 +36937,340 @@
         "cwd": "$FIXTURE",
         "hook_event_name": "SyntheticUnregisteredEvent",
         "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "prefilter.file",
+      "runtime": "claude",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "prefilter.file",
+      "runtime": "codex",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "workspace/lanes-links/invites": "{}\n"
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "prefilter.file",
+      "runtime": "claude",
+      "matching": false,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz"
+      }
+    },
+    {
+      "hook_id": "conduct-link-inherit",
+      "entry": "UserPromptSubmit/1/0",
+      "rule": "prefilter.file",
+      "runtime": "codex",
+      "matching": false,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "conduct-link-inherit",
+                  "script": ".claude/hooks/conduct-link-inherit.sh",
+                  "timeout": 15,
+                  "gated": false,
+                  "args": [
+                    "UserPromptSubmit"
+                  ],
+                  "prefilter": {
+                    "file": "workspace/lanes-links/invites"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz",
         "turn_id": "synthetic-turn"
       }
     },

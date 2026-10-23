@@ -65,6 +65,9 @@ resolve_grantee() {
 
 case "$1 $2" in
   "sync push")     exit 0 ;;
+  "files cat")
+    [ -n "${HQ_STUB_CAT_DIR:-}" ] && [ -f "$HQ_STUB_CAT_DIR/${3##*/}" ] && { cat "$HQ_STUB_CAT_DIR/${3##*/}"; exit 0; }
+    exit 1 ;;
   "groups create") exit 0 ;;
   "groups add")    exit 0 ;;
   "groups members") printf 'PERSON_UID\nagt_01KTXDEACON\n'; exit 0 ;;
@@ -197,6 +200,23 @@ bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "happy path exited n
 
 grep -q "^sync push companies/acme/projects/widget/ --company acme --on-conflict keep" "$INVOKE_LOG" \
   || fail "must push the project dir to the vault first: $(cat "$INVOKE_LOG")"
+
+# Regression (tool-economy): when the vault already holds the dossier files with
+# matching checksums, the full-folder push is skipped; a mismatch pushes again.
+mkdir -p "$FIXROOT/companies/acme/projects/widget" "$TMP/vaultcopy"
+echo '{"x":1}' > "$FIXROOT/companies/acme/projects/widget/prd.json"
+cp "$FIXROOT/companies/acme/projects/widget/prd.json" "$TMP/vaultcopy/prd.json"
+reset_acl_state; : > "$INVOKE_LOG"
+HQ_STUB_CAT_DIR="$TMP/vaultcopy" bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "skip-push run exited non-zero"
+if grep -q "^sync push companies/acme/projects/widget/ " "$INVOKE_LOG"; then
+  fail "full-folder push must be skipped when vault dossier checksums match: $(cat "$INVOKE_LOG")"
+fi
+echo '{"x":2}' > "$TMP/vaultcopy/prd.json"
+reset_acl_state; : > "$INVOKE_LOG"
+HQ_STUB_CAT_DIR="$TMP/vaultcopy" bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "stale-vault run exited non-zero"
+grep -q "^sync push companies/acme/projects/widget/ " "$INVOKE_LOG" \
+  || fail "checksum mismatch must still push the project dir"
+rm -f "$FIXROOT/companies/acme/projects/widget/prd.json"
 
 # Referenced company-local knowledge/policies are pushed too (live finding:
 # a read grant on a prefix is useless if the referenced file was never

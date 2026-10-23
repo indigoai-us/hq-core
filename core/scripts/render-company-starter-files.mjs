@@ -19,6 +19,23 @@ const MANIFEST_SECTIONS = new Set([
   'seed_exceptions',
 ]);
 const PLACEHOLDER_PATTERN = /\{([A-Za-z][A-Za-z0-9_]*)\}/g;
+// Installed HQ copies have been seen without the template's nested workspace/
+// and repos/ folders, because some install and sync paths treat any folder with
+// those names as machine-local. These structural files have fixed contents, so
+// the renderer writes them itself when the template copy is missing. Every
+// other missing template file still fails. A test pins these values to the
+// committed template files.
+export const STRUCTURAL_DEFAULTS = Object.freeze({
+  'workspace/.gitignore':
+    '# HQ workspace mirror — sessions are gitignored, index.jsonl is committed\nsessions/*\n!sessions/.gitkeep\n',
+  'workspace/index.jsonl': '',
+});
+
+export function structuralDefault(relativePath) {
+  if (Object.hasOwn(STRUCTURAL_DEFAULTS, relativePath)) return STRUCTURAL_DEFAULTS[relativePath];
+  if (relativePath === '.gitkeep' || relativePath.endsWith('/.gitkeep')) return '';
+  return undefined;
+}
 
 function fail(message) {
   throw new Error(message);
@@ -153,6 +170,22 @@ function sourcePath(templateRoot, relativePath) {
   return absolutePath;
 }
 
+function readTemplateFile(templateRoot, relativePath, onFallback) {
+  assertRelativeTemplatePath(relativePath);
+  try {
+    lstatSync(path.resolve(templateRoot, ...relativePath.split('/')));
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
+    const fallback = structuralDefault(relativePath);
+    if (fallback !== undefined) {
+      onFallback?.(relativePath);
+      return fallback;
+    }
+    fail(`Company template file is missing: companies/_template/${relativePath}. Run /update-hq to restore the template.`);
+  }
+  return readFileSync(sourcePath(templateRoot, relativePath), 'utf8');
+}
+
 function resolveDestinationPath(destination) {
   let existingParent = path.resolve(destination);
   const suffix = [];
@@ -180,7 +213,7 @@ export function loadSeedManifest(templateRoot = TEMPLATE_ROOT) {
     fail('A path cannot be both shared and local-only');
   }
 
-  for (const relativePath of paths) sourcePath(templateRoot, relativePath);
+  const contentsByPath = new Map(paths.map((relativePath) => [relativePath, readTemplateFile(templateRoot, relativePath)]));
   for (const relativePath of substituted) {
     if (!seeded.has(relativePath) && !localOnly.has(relativePath)) {
       fail(`Substitution path is not rendered: ${relativePath}`);
@@ -212,8 +245,7 @@ export function loadSeedManifest(templateRoot = TEMPLATE_ROOT) {
     }
   }
 
-  for (const relativePath of [...seeded, ...localOnly]) {
-    const contents = readFileSync(sourcePath(templateRoot, relativePath), 'utf8');
+  for (const [relativePath, contents] of contentsByPath) {
     // Validate tokens in template text before substituting user-provided values.
     const tokens = [...contents.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[1]);
     if (tokens.length > 0 && !substituted.has(relativePath)) {
@@ -243,6 +275,7 @@ export function renderCompanyStarterFiles({
   destination,
   mode = 'seed',
   templateRoot = TEMPLATE_ROOT,
+  warn = (message) => process.stderr.write(`${message}\n`),
 }) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug ?? '')) {
     fail(`Invalid company slug: ${slug ?? ''}`);
@@ -280,11 +313,27 @@ export function renderCompanyStarterFiles({
     ? outputPaths
     : outputPaths.filter((item) => !isServerOwnedPath(item));
   mkdirSync(absoluteDestination, { recursive: true });
+  const realDestination = realpathSync(absoluteDestination);
+  const written = [];
+  const skipped = [];
+  const warnFallback = (relativePath) => {
+    warn(`Warning: companies/_template/${relativePath} is missing, so the built-in default was used. Run /update-hq to restore the template.`);
+  };
 
+  // Rendering never replaces a file that is already there, so running the
+  // bootstrap again on an existing company only fills in missing files.
   for (const relativePath of renderPaths) {
-    const source = sourcePath(templateRoot, relativePath);
     const target = path.join(absoluteDestination, ...relativePath.split('/'));
-    let contents = resolvePlaceholders(readFileSync(source, 'utf8'), relativePath, manifest, values);
+    if (pathEntryExists(target) || !isWithinPath(realDestination, resolveDestinationPath(path.dirname(target)))) {
+      skipped.push(relativePath);
+      continue;
+    }
+    let contents = resolvePlaceholders(
+      readTemplateFile(templateRoot, relativePath, warnFallback),
+      relativePath,
+      manifest,
+      values,
+    );
     if (mode === 'newcompany-cloud-first' && relativePath === 'company.yaml') {
       if (!/^cloud: false\s*$/m.test(contents)) {
         fail('Cloud-first company template must start with cloud: false');
@@ -292,14 +341,32 @@ export function renderCompanyStarterFiles({
       contents = contents.replace(/^cloud: false\s*$/m, 'cloud: true');
     }
     mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, contents, 'utf8');
+    try {
+      // 'wx' refuses an existing entry, including one created after the check above.
+      writeFileSync(target, contents, { encoding: 'utf8', flag: 'wx' });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      skipped.push(relativePath);
+      continue;
+    }
+    written.push(relativePath);
   }
   if (mode !== 'seed') {
     for (const relativePath of EMPTY_PIPELINE_DIRECTORIES) {
       mkdirSync(path.join(absoluteDestination, ...relativePath.split('/')), { recursive: true });
     }
   }
-  return renderPaths;
+  return { written, skipped };
+}
+
+function pathEntryExists(target) {
+  try {
+    lstatSync(target);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
 }
 
 function runCli(args) {
@@ -314,8 +381,11 @@ function runCli(args) {
     mode = args[4];
   }
   const [slug, companyName, destination] = args;
-  const written = renderCompanyStarterFiles({ slug, companyName, destination, mode });
+  const { written, skipped } = renderCompanyStarterFiles({ slug, companyName, destination, mode });
   process.stdout.write(`Rendered ${written.length} company starter files for ${slug} (${mode})\n`);
+  if (skipped.length > 0) {
+    process.stdout.write(`Kept ${skipped.length} existing files unchanged: ${skipped.join(', ')}\n`);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

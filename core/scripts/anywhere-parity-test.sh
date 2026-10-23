@@ -151,11 +151,11 @@ PROMPT="HQ parity probe $NONCE. Non-interactive: do not ask questions.
 
 if [ -n "$EXPECTED" ]; then
   if [ -n "${PARITY_RUNNER:-}" ]; then
-    (cd "$REPO" && env "${UNSET_ARGS[@]}" CLAUDE_HEADLESS=1 HQ_PARITY_NONCE="$NONCE" "$PARITY_RUNNER" "$RUNTIME" "$PROMPT") >"$OUT" 2>&1
+    (cd "$REPO" && env "${UNSET_ARGS[@]}" CLAUDE_HEADLESS=1 HQ_WELCOME_BRIEF_HOOK=0 HQ_PARITY_NONCE="$NONCE" "$PARITY_RUNNER" "$RUNTIME" "$PROMPT") >"$OUT" 2>&1
   elif [ "$RUNTIME" = claude ]; then
-    (cd "$REPO" && env "${UNSET_ARGS[@]}" CLAUDE_HEADLESS=1 claude -p "$PROMPT" --permission-mode bypassPermissions) >"$OUT" 2>&1
+    (cd "$REPO" && env "${UNSET_ARGS[@]}" CLAUDE_HEADLESS=1 HQ_WELCOME_BRIEF_HOOK=0 claude -p "$PROMPT" --permission-mode bypassPermissions) >"$OUT" 2>&1
   else
-    (cd "$REPO" && env "${UNSET_ARGS[@]}" CLAUDE_HEADLESS=1 codex exec \
+    (cd "$REPO" && env "${UNSET_ARGS[@]}" CLAUDE_HEADLESS=1 HQ_WELCOME_BRIEF_HOOK=0 codex exec \
       --dangerously-bypass-hook-trust --sandbox danger-full-access -C "$REPO" "$PROMPT") >"$OUT" 2>&1
   fi
   RC=$?

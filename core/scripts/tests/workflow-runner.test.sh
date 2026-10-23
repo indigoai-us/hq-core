@@ -31,9 +31,10 @@
 #   1c. spawned agents run with HQ's end-of-turn checkpoint gate suppressed
 #      (HQ_DISABLED_HOOKS), on every engine, without clobbering a suppression
 #      the operator set: the gate demands a turn AFTER the answer, which ends a
-#      headless run on a tool call and returns an empty result
+#      headless run on a tool call and returns an empty result. The welcome
+#      brief hook is off too, so a child cannot use up the once-only welcome
 #   3. tiers are engine-neutral: "plan"/"exec" required; codex maps to
-#      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.6, claude to opus/sonnet; the
+#      gpt-5.6-sol / gpt-5.6-terra, grok to grok-4.7, claude to opus/sonnet; the
 #      HQ_WORKFLOW_{CODEX,GROK,CLAUDE}_{PLAN,EXEC}_MODEL envs re-point them; an
 #      unknown engine or tier throws
 #   7z. an unpinned claude exec lane never drops to sonnet silently: it takes
@@ -195,6 +196,11 @@ case "$prompt" in
     printf '{"text":"Listing the directory.","stopReason":"Cancelled","sessionId":"s1","requestId":"r1"}\n' ;;
   *EMPTYREPLY*)
     printf '{"text":"","stopReason":"EndTurn","sessionId":"s1","requestId":"r1"}\n' ;;
+  *TRUNC128*)
+    # Grok Build 1.0.46: tool results over 128 KB are redacted and the
+    # envelope carries toolResultTruncated. Reply text must still unwrap.
+    python3 -c 'import json; print(json.dumps({"text":"ok-truncated","stopReason":"EndTurn","sessionId":"s1","requestId":"r1","toolResultTruncated":True,"toolResult":"x"*(128*1024+1)}))'
+    printf '\ntoolResultTruncated\n' ;;
   *PROSEJSON*)
     # observed live: grok prefixes narration straight onto the JSON answer, and
     # may quote an earlier draft object mid-thought — the LAST block wins
@@ -398,9 +404,9 @@ check "hook-suppression workflow exits 0" "$RC"
 env_ok=0
 for e in codex grok claude; do
   f="$(ls "$TMP/rec"/$e-hooksenv.* 2>/dev/null | head -1)"
-  [ -n "$f" ] && grep -q 'checkpoint-stop-gate' "$f" || env_ok=1
+  [ -n "$f" ] && grep -q 'checkpoint-stop-gate' "$f" && grep -q 'welcome-brief-ready' "$f" || env_ok=1
 done
-check "every engine's child is spawned with the checkpoint stop gate disabled" "$env_ok"
+check "every engine's child is spawned with the checkpoint stop gate and welcome brief disabled" "$env_ok"
 
 # An operator suppression must survive — the runner adds to it, never replaces it.
 rm -f "$TMP/rec"/*-hooksenv.* 2>/dev/null
@@ -476,10 +482,10 @@ if [ -n "$gf" ]; then
   grep -qx -- '--single' "$gf" || grok_ok=1
   grep -qx -- 'bypassPermissions' "$gf" || grok_ok=1
   grep -qx -- '--always-approve' "$gf" || grok_ok=1
-  grep -qx -- 'grok-4.6' "$gf" || grok_ok=1
+  grep -qx -- 'grok-4.7' "$gf" || grok_ok=1
   grep -q -- '--dangerously-bypass' "$gf" && grok_ok=1
 fi
-check "grok: --single + bypassPermissions + --always-approve + grok-4.6, no codex flags" "$grok_ok"
+check "grok: --single + bypassPermissions + --always-approve + grok-4.7, no codex flags" "$grok_ok"
 
 # the JSON envelope is mandatory: plain mode prints nothing on a cancelled run
 env_fmt=1
@@ -530,6 +536,20 @@ echo "$OUT" | node -e '
     && x.empty.threw && x.empty.marker ? 0 : 1);
 '
 check "cancelled run throws naming stopReason + last text; empty reply throws too" "$?"
+
+# Grok 1.0.46 redacts tool results over 128 KB. The envelope still has reply
+# text plus toolResultTruncated — unwrap must return the text, not fail.
+cat > "$TMP/wf-grok-trunc.mjs" <<'WF'
+const r = await agent('TRUNC128 please', { engine: 'grok', tier: 'exec', timeoutSecs: 30 })
+return { text: r }
+WF
+run_wf "$TMP/wf-grok-trunc.mjs"
+check "truncated-tool-result workflow exits 0" "$RC"
+echo "$OUT" | node -e '
+  const x = JSON.parse(require("fs").readFileSync(0, "utf8"));
+  process.exit(x.text === "ok-truncated" ? 0 : 1);
+'
+check "toolResultTruncated envelope with >128KB tool result still unwraps text" "$?"
 
 # An engine with no schema flag narrates before answering, so the JSON arrives
 # glued to prose (and sometimes after a discarded draft object). The schema
@@ -769,6 +789,19 @@ for f in "$TMP/rec"/claude-argv.*; do
   if grep -qx -- 'env-claude-plan' "$f"; then grep -qx -- 'custom-claude-plan' "$f" && env_cl=0; fi
 done
 check "model envs re-point tier models per engine" "$(( env_c + env_g + env_cl ))"
+
+cat > "$TMP/wf-grok-46-pin.mjs" <<'WF'
+await agent('pin-grok-46', { engine: 'grok', tier: 'exec', timeoutSecs: 30 })
+return 'ok'
+WF
+export HQ_WORKFLOW_GROK_EXEC_MODEL="grok-4.6"
+run_wf "$TMP/wf-grok-46-pin.mjs"
+unset HQ_WORKFLOW_GROK_EXEC_MODEL
+pin46=1
+for f in "$TMP/rec"/grok-argv.*; do
+  if grep -qx -- 'pin-grok-46' "$f"; then grep -qx -- 'grok-4.6' "$f" && pin46=0; fi
+done
+check "explicit HQ_WORKFLOW_GROK_EXEC_MODEL=grok-4.6 still pins grok-4.6" "$pin46"
 
 # ---- 4: parallel errors -> null ----------------------------------------------
 cat > "$TMP/wf-parallel.mjs" <<'WF'

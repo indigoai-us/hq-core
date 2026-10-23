@@ -1,0 +1,3 @@
+interface:
+  display_name: "Handoff and archive"
+  short_description: "Save working state, then archive this session."

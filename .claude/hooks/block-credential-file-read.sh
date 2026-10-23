@@ -33,12 +33,19 @@
 # through symlinks before the fast path exits. Only these commands may name a
 # credential file:
 #   ls stat test [ [[ chmod chown chgrp touch rm rmdir mkdir unlink wc file du
-#   echo printf true false realpath readlink basename dirname tee ln ssh
+#   echo printf true false realpath readlink basename dirname tee ssh
 #   ssh-add, the shell builtins pwd read mapfile readarray exit return unset
 #   set shift trap wait sleep type which hash kill break continue :,
-#   ssh-keygen without -i, mv onto a non-credential name, and git
-#   status / add / rm / mv / commit / check-ignore / check-attr / ls-files
-#   (add without -p / -i / -e).
+#   ssh-keygen without -i, ln -s, and git status / add / rm / commit /
+#   check-ignore / check-attr / ls-files (add without -p / -i / -e).
+# mv, gmv, git mv and ln without -s (a hard link) may move a credential file
+# only to a name the guard still covers (mv ~/.ssh/id_rsa backup/ keeps
+# id_rsa); a rename to an uncovered name (mv ~/.ssh/deploy_key /tmp/k) would
+# let a later read of the new name through, so it is blocked (DEV-5254).
+# Identity files: scp and sftp -i <key> and -o IdentityFile=<key>, and rsync
+# -e / --rsh "ssh -i <key>", are allowed like ssh -i. ssh reads the key to
+# authenticate and never prints it. rsync's remote-shell command is checked
+# as a command of its own, and every other operand keeps the usual checks.
 # Interpreters (python, node, deno, bun, perl, ruby, php, lua, osascript, ...)
 # and shells reading stdin are also blocked when their code (-c / -e text,
 # arguments, heredoc or here-string bodies, or text piped in from the same
@@ -60,17 +67,26 @@
 # realpath is missing, any operand that passes through a symlink below the
 # top level is blocked, since its target cannot be checked.
 #
-# Known limits (see the PR body): hard links to a credential file (Read and
-# Bash; pinned by credential-read-guard.test.sh [10]), paths computed at runtime without a credential word (for example
+# Known limits (see the PR body): hard links to a credential file that already
+# exist (Read and Bash; pinned by credential-read-guard.test.sh [10]; creating
+# one with ln is blocked), paths computed at runtime without a credential word (for example
 # string concatenation inside interpreter code, or a script file that opens
-# the credential), a link or rename created and read in the same command,
+# the credential), a symlink created and read in the same command,
 # and the Grep tool. redact-credential-output.sh is the backstop for output.
 #
 # Exit 2 + short plain stderr. The message names the path, never contents.
 
 set -o pipefail
 
-INPUT=$(cat)
+# Read stdin once without a subprocess. Same value as INPUT=$(cat): NUL
+# bytes are dropped (the loop concatenates the NUL-separated chunks) and
+# trailing newlines are removed.
+INPUT=""
+_cg_chunk=""
+while IFS= read -r -d '' _cg_chunk; do INPUT="$INPUT$_cg_chunk"; done
+INPUT="$INPUT$_cg_chunk"
+while [ "${INPUT%$'\n'}" != "$INPUT" ]; do INPUT="${INPUT%$'\n'}"; done
+unset _cg_chunk
 
 block() { # <reason-line>
   local reason="$1"
@@ -92,25 +108,28 @@ EOF
   exit 2
 }
 
-command -v jq >/dev/null 2>&1 || block "credential guard cannot parse the tool call (jq missing)"
-
-TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null) \
-  || block "credential guard cannot parse the tool call"
-
-case "$TOOL" in
-  Read|Bash) ;;
-  *) exit 0 ;;
-esac
-
-PAYLOAD_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null) \
-  || block "credential guard cannot parse the tool call"
-[ -n "$PAYLOAD_CWD" ] || PAYLOAD_CWD="$PWD"
 H="${HOME:-}"
 [ -n "$H" ] || H="/nonexistent-home"
 # Squeeze repeated slashes (TMPDIR ends in "/" on macOS) so HOME compares
 # equal to normalized operand paths.
 while case "$H" in *//*) true ;; *) false ;; esac; do H="${H%%//*}/${H#*//}"; done
 [ "$H" = "/" ] || H="${H%/}"
+
+# lc_word <word> -> LCW, the word in lower case. ${1,,} needs bash 4; with
+# bash 3.2 (macOS /bin/bash), or for any character outside plain ASCII
+# letters, digits and ._+@:/=,%~- , tr is used as before.
+LCW=""
+if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
+  eval 'lc_word() {
+    case "$1" in
+      *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._+@:/=,%~-]*)
+        LCW="$(printf "%s" "$1" | tr "[:upper:]" "[:lower:]")" ;;
+      *) LCW="${1,,}" ;;
+    esac
+  }'
+else
+  lc_word() { LCW="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"; }
+fi
 
 # ---------------------------------------------------------------- paths
 
@@ -295,6 +314,329 @@ norm_path() {
   fi
 }
 
+
+# ---------------------------------------------------------------- fast path
+#
+# Most calls name no credential file. This block decides those calls with
+# bash builtins only (no subprocess), before jq runs. It allows a call only
+# when the full check below would also allow it; anything unexpected returns
+# 1 and the full check runs. Set HQ_CRED_GUARD_FASTPATH=0 to skip it (the
+# tests compare both paths).
+#
+# Conditions for the fast exit, all required:
+#   - jq and realpath are installed (the full check blocks without jq and
+#     cannot take its own fast exit without realpath);
+#   - the payload is at most 16 KiB of printable ASCII (plus tab, CR, LF);
+#   - the payload with quotes and backslashes removed contains none of the
+#     credential words in CG_SCREEN_RE (CRED_WORD_RE plus the path words of
+#     the prefilter), so \u escapes, split words and case variants fall
+#     through;
+#   - it parses as exactly one strict JSON object with no \u escapes, and
+#     tool_name, cwd, tool_input.command and tool_input.file_path, when
+#     present, are strings that occur once (tool_input must be an object);
+#   - Bash: the command has no $(...) or backtick substitution (the full
+#     check analyzes those as computed paths), the full check's own
+#     prefilter (PREFILTER_RE on the command with
+#     quotes and backslashes removed) does not match, the cwd is not a
+#     credential directory, and no word of the command is an existing
+#     symlink or an existing path two levels below the cwd (the full check
+#     resolves those with realpath; here they fall through);
+#   - Read: the path has no ~ after normalization, is not a credential path,
+#     and no component of it is a symlink, so realpath would return it
+#     unchanged.
+
+CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh/hosts|\.env|credentials'
+# Also wake for home references and recursive readers: `grep -r token ~`
+# reaches credential files without naming one.
+PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive"
+CG_SCREEN_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y"
+
+# cg_unescape <json string body> [key] -> CG_U (decoded; for values, trailing
+# newlines are then removed as command substitution of `jq -r` would; keys
+# are kept exact).
+CG_U=""
+cg_unescape() {
+  local b="$1" out="" pre c
+  while :; do
+    case "$b" in *\\*) ;; *) break ;; esac
+    pre="${b%%\\*}"
+    b="${b#*\\}"
+    c="${b:0:1}"
+    b="${b:1}"
+    case "$c" in
+      n) c=$'\n' ;;
+      t) c=$'\t' ;;
+      r) c=$'\r' ;;
+      b) c=$'\b' ;;
+      f) c=$'\f' ;;
+    esac
+    out="$out$pre$c"
+  done
+  out="$out$b"
+  if [ "${2:-}" != "key" ]; then
+    while [ "${out%$'\n'}" != "$out" ]; do out="${out%$'\n'}"; done
+  fi
+  CG_U="$out"
+}
+
+# cg_parse <json>: strict JSON object parser. Sets CG_TOOL CG_CWD CG_CMD
+# CG_FILE (and CG_HAVE_* flags). Returns 1 on anything it does not accept.
+cg_parse() {
+  local s="$1" stack="" expect="v" key="" k1="" c kind body
+  local re_ws=$'^[ \t\n\r]+'
+  # Any character except quote, backslash and raw tab/CR/LF (the input is
+  # already printable ASCII), or a short escape. No ranges: same in every
+  # locale.
+  local re_str='^"(([^"\'$'\t\r\n'']|\\["\\/bfnrt])*)"'
+  local re_num='^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?'
+  local re_lit='^(true|false|null)'
+  CG_TOOL="" CG_CWD="" CG_CMD="" CG_FILE=""
+  CG_HAVE_TOOL=0 CG_HAVE_CWD=0 CG_HAVE_CMD=0 CG_HAVE_FILE=0 CG_HAVE_TI=0
+  while :; do
+    if [[ "$s" =~ $re_ws ]]; then s="${s:${#BASH_REMATCH[0]}}"; fi
+    [ -n "$s" ] || break
+    [ "$expect" != "e" ] || return 1
+    c="${s:0:1}"
+    case "$expect" in
+      k0|k)
+        if [ "$c" = "}" ] && [ "$expect" = "k0" ]; then
+          stack="${stack%o}"; s="${s:1}"
+        else
+          [[ "$s" =~ $re_str ]] || return 1
+          body="${BASH_REMATCH[1]}"
+          s="${s:${#BASH_REMATCH[0]}}"
+          cg_unescape "$body" key
+          key="$CG_U"
+          [ ${#stack} -ne 1 ] || k1="$key"
+          expect=":"
+          continue
+        fi
+        ;;
+      :)
+        [ "$c" = ":" ] || return 1
+        s="${s:1}"; expect="v"; continue
+        ;;
+      c)
+        case "$c" in
+          ,) s="${s:1}"
+             case "$stack" in *o) expect="k" ;; *a) expect="v" ;; *) return 1 ;; esac
+             continue ;;
+          "}") [ "${stack%o}" != "$stack" ] || return 1; stack="${stack%o}"; s="${s:1}" ;;
+          "]") [ "${stack%a}" != "$stack" ] || return 1; stack="${stack%a}"; s="${s:1}" ;;
+          *) return 1 ;;
+        esac
+        ;;
+      v|a0)
+        if [ "$c" = "]" ] && [ "$expect" = "a0" ]; then
+          stack="${stack%a}"; s="${s:1}"
+        else
+          case "$c" in
+            "{") kind=o ;;
+            "[") kind=a ;;
+            '"') kind=s ;;
+            *) kind=x ;;
+          esac
+          # The top level must be an object.
+          if [ -z "$stack" ] && [ "$kind" != "o" ]; then return 1; fi
+          # Watched fields: tool_input must be an object, the others strings,
+          # and each may occur only once.
+          if [ "$stack" = "o" ] && [ "$expect" = "v" ]; then
+            case "$key" in
+              tool_input) [ "$kind" = o ] && [ "$CG_HAVE_TI" -eq 0 ] || return 1; CG_HAVE_TI=1 ;;
+              tool_name|cwd) [ "$kind" = s ] || return 1 ;;
+            esac
+          elif [ "$stack" = "oo" ] && [ "$k1" = "tool_input" ] && [ "$expect" = "v" ]; then
+            case "$key" in
+              command|file_path) [ "$kind" = s ] || return 1 ;;
+            esac
+          fi
+          case "$kind" in
+            o) stack="${stack}o"; s="${s:1}"; expect="k0"; continue ;;
+            a) stack="${stack}a"; s="${s:1}"; expect="a0"; continue ;;
+            s)
+              [[ "$s" =~ $re_str ]] || return 1
+              body="${BASH_REMATCH[1]}"
+              s="${s:${#BASH_REMATCH[0]}}"
+              if [ "$stack" = "o" ] && [ "$expect" = "v" ]; then
+                case "$key" in
+                  tool_name) [ "$CG_HAVE_TOOL" -eq 0 ] || return 1; CG_HAVE_TOOL=1; cg_unescape "$body"; CG_TOOL="$CG_U" ;;
+                  cwd) [ "$CG_HAVE_CWD" -eq 0 ] || return 1; CG_HAVE_CWD=1; cg_unescape "$body"; CG_CWD="$CG_U" ;;
+                esac
+              elif [ "$stack" = "oo" ] && [ "$k1" = "tool_input" ] && [ "$expect" = "v" ]; then
+                case "$key" in
+                  command) [ "$CG_HAVE_CMD" -eq 0 ] || return 1; CG_HAVE_CMD=1; cg_unescape "$body"; CG_CMD="$CG_U" ;;
+                  file_path) [ "$CG_HAVE_FILE" -eq 0 ] || return 1; CG_HAVE_FILE=1; cg_unescape "$body"; CG_FILE="$CG_U" ;;
+                esac
+              fi
+              ;;
+            x)
+              if [[ "$s" =~ $re_lit ]] || [[ "$s" =~ $re_num ]]; then
+                s="${s:${#BASH_REMATCH[0]}}"
+              else
+                return 1
+              fi
+              ;;
+          esac
+        fi
+        ;;
+      *) return 1 ;;
+    esac
+    # A value (or a closed container) just ended.
+    if [ -z "$stack" ]; then expect="e"; else expect="c"; fi
+  done
+  [ "$expect" = "e" ] || return 1
+  # tool_input is required so that "no command" means the same as in jq.
+  [ "$CG_HAVE_TOOL" -eq 1 ] && [ "$CG_HAVE_TI" -eq 1 ] || return 1
+  return 0
+}
+
+# cg_strip_q <s> -> CG_SQ: <s> with every " ' and \ removed. Same result as
+# ${s//[\"\'\\]/}, which is quadratic in bash 3.2: split on those three
+# characters and join the pieces with nothing between them.
+CG_SQ=""
+cg_strip_q() {
+  local old_ifs="$IFS" parts
+  IFS="\"'\\"
+  set -f
+  # shellcheck disable=SC2206
+  parts=($1)
+  set +f
+  IFS=""
+  CG_SQ="${parts[*]-}"
+  IFS="$old_ifs"
+}
+
+# cg_fast_scan: character checks and parse. The locale is never changed:
+# assigning LC_ALL makes bash print a setlocale warning on stderr when the
+# inherited locale is not installed, and this hook must stay silent. The
+# allowed characters are listed one by one instead of as a range, so the
+# check means the same in every locale.
+cg_fast_scan() {
+  # Printable ASCII, tab, CR and LF only.
+  case "$INPUT" in
+    *[!' !"#$%&'\''()*+,./01234:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~56789-'$'\t\r\n']*) return 1 ;;
+  esac
+  cg_strip_q "$INPUT" || return 1
+  local raw="$CG_SQ"
+  shopt -s nocasematch
+  if [[ "$raw" =~ $CG_SCREEN_RE ]]; then shopt -u nocasematch; return 1; fi
+  shopt -u nocasematch
+  cg_parse "$INPUT"
+}
+
+# cg_fast_allow: return 0 when the call can be allowed without the full
+# check.
+cg_fast_allow() {
+  [ "${HQ_CRED_GUARD_FASTPATH:-1}" != "0" ] || return 1
+  # Every helper must be defined; a missing one would otherwise read as "no
+  # match" and allow the call.
+  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
+  [ ${#INPUT} -le 16384 ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  command -v realpath >/dev/null 2>&1 || return 1
+  cg_fast_scan || return 1
+  shopt -u nocasematch
+  local cwd="$CG_CWD"
+  [ -n "$cwd" ] || cwd="$PWD"
+  case "$CG_TOOL" in
+    Bash)
+      [ -n "$CG_CMD" ] || return 0
+      # Same computed-path rule as the full check (COMPUTED_PATH): a $(...)
+      # or backtick body can build a credential name from neutral text
+      # (`cat "workspace/$(echo c)redlink"`), so it always gets the full
+      # analysis. Without this the fast path allowed what the full check
+      # blocks (scope-guard-hotfix-security.test.sh, 14 cases).
+      case "$CG_CMD" in *'$('*|*'`'*) return 1 ;; esac
+      cg_strip_q "$CG_CMD" || return 1
+      local st="$CG_SQ"
+      # Same cwd rule as the full check.
+      local in_cred=0
+      if is_cred_dir "$cwd" && [ "$cwd" != "/" ] && [ "$cwd" != "$H" ]; then in_cred=1; fi
+      case "$H/" in "$cwd"/*) in_cred=0 ;; esac
+      [ "$in_cred" -eq 0 ] || return 1
+      shopt -s nocasematch
+      if [[ "$st" =~ $PREFILTER_RE ]]; then shopt -u nocasematch; return 1; fi
+      shopt -u nocasematch
+      # Words that the full check would resolve with realpath: fall through.
+      # Split on the same characters as the full check (empty words are
+      # skipped there too). Field splitting, not ${st//[...]/}, which is
+      # quadratic in bash 3.2.
+      local lw old_ifs="$IFS"
+      IFS=$' \t;|&()<>\n'
+      set -f
+      # shellcheck disable=SC2206
+      local arr=($st)
+      set +f
+      IFS="$old_ifs"
+      for lw in ${arr[@]+"${arr[@]}"}; do
+        lw="${lw#@}"
+        case "$lw" in file://*|FILE://*) lw="${lw#*://}" ;; *://*) continue ;; esac
+        case "$lw" in *=*) lw="${lw#*=}" ;; esac
+        [ -n "$lw" ] || continue
+        case "$lw" in /*) ;; *) lw="$cwd/$lw" ;; esac
+        if [ -L "$lw" ] || { [[ "$lw" == "$cwd"/*/* ]] && [ -e "$lw" ]; }; then
+          return 1
+        fi
+      done
+      return 0
+      ;;
+    Read)
+      [ -n "$CG_FILE" ] || return 0
+      norm_path "$CG_FILE" "$cwd"
+      case "$NP" in *'~'*) return 1 ;; esac
+      is_cred_path "$NP" && return 1
+      local q="$NP"
+      while [ -n "$q" ] && [ "$q" != "/" ]; do
+        [ -L "$q" ] && return 1
+        q="${q%/*}"
+      done
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+if cg_fast_allow; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------- full check
+
+command -v jq >/dev/null 2>&1 || block "credential guard cannot parse the tool call (jq missing)"
+
+# One jq call for every field. @sh quotes each value for eval; non-string
+# values are rejected (the guard blocks), and more than one JSON document
+# blocks. NUL bytes inside values are dropped by the command substitution,
+# and trailing newlines are removed below, as with the old per-field
+# TOOL=$(jq -r ...) calls.
+CG_JQ='def s: if type == "string" then . else error("non-string field") end;
+def norm: tostring | explode | map(select(. != 0)) | implode
+  | until((endswith("\n") | not); .[:-1]);
+[inputs] as $docs
+| if ($docs | length) == 0 then "TOOL="
+  elif ($docs | length) > 1 then error("more than one document")
+  else $docs[0]
+  | (if .tool_name == null or .tool_name == false then "" else (.tool_name | norm) end) as $t
+  | if $t == "Read" then
+      @sh "TOOL=Read PAYLOAD_CWD=\(.cwd // "" | s) VAL=\(.tool_input.file_path // "" | s)"
+    elif $t == "Bash" then
+      @sh "TOOL=Bash PAYLOAD_CWD=\(.cwd // "" | s) VAL=\(.tool_input.command // "" | s)"
+    else "TOOL=" end
+  end'
+TOOL="" PAYLOAD_CWD="" VAL=""
+CG_OUT=$(jq -nr "$CG_JQ" 2>/dev/null <<<"$INPUT") \
+  || block "credential guard cannot parse the tool call"
+eval "$CG_OUT" || block "credential guard cannot parse the tool call"
+while [ "${PAYLOAD_CWD%$'\n'}" != "$PAYLOAD_CWD" ]; do PAYLOAD_CWD="${PAYLOAD_CWD%$'\n'}"; done
+while [ "${VAL%$'\n'}" != "$VAL" ]; do VAL="${VAL%$'\n'}"; done
+
+case "$TOOL" in
+  Read|Bash) ;;
+  *) exit 0 ;;
+esac
+
+[ -n "$PAYLOAD_CWD" ] || PAYLOAD_CWD="$PWD"
+
 REALPATH_BIN=$(command -v realpath 2>/dev/null || true)
 
 # link_in_path <normalized absolute path>: the path or one of its parent
@@ -331,8 +673,7 @@ check_abs() {
 # ---------------------------------------------------------------- Read tool
 
 if [ "$TOOL" = "Read" ]; then
-  FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) \
-    || block "credential guard cannot parse the tool call"
+  FP="$VAL"
   [ -n "$FP" ] || exit 0
   norm_path "$FP" "$PAYLOAD_CWD"
   check_abs "$NP"
@@ -341,16 +682,15 @@ fi
 
 # ---------------------------------------------------------------- Bash tool
 
-CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) \
-  || block "credential guard cannot parse the tool call"
+CMD="$VAL"
 [ -n "$CMD" ] || exit 0
-
-CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh/hosts|\.env|credentials'
-# Also wake for home references and recursive readers: `grep -r token ~`
-# reaches credential files without naming one.
-PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive"
+# CRED_WORD_RE and PREFILTER_RE are defined above the fast path.
 
 STRIPPED="${CMD//[\"\'\\]/}"
+# Computed neutral names can resolve to credential symlinks even when no
+# credential word appears in the command. Analyze, never execute, the body.
+COMPUTED_PATH=0
+case "$CMD" in *'$('*|*'`'*) COMPUTED_PATH=1 ;; esac
 shopt -s nocasematch
 CWD_IN_CRED=0
 if is_cred_dir "$PAYLOAD_CWD" && [ "$PAYLOAD_CWD" != "/" ] && [ "$PAYLOAD_CWD" != "$H" ]; then
@@ -379,7 +719,7 @@ if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$RE
     if [ -L "$lw" ] || { [[ "$lw" == "$PAYLOAD_CWD"/*/* ]] && [ -e "$lw" ]; }; then
       LINK_CANDS+=("$lw")
     fi
-  done < <(printf '%s\n' "$STRIPPED" | tr -s ' \t;|&()<>' '\n\n\n\n\n\n\n\n')
+  done <<<"${STRIPPED//[$' \t;|&()<>']/$'\n'}"
   if [ ${#LINK_CANDS[@]} -gt 0 ]; then
     while IFS= read -r lr; do
       [ -n "$lr" ] || continue
@@ -388,7 +728,7 @@ if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$RE
   fi
   shopt -s nocasematch
 fi
-if [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
+if [ "$COMPUTED_PATH" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
   shopt -u nocasematch
   exit 0
 fi
@@ -399,7 +739,7 @@ for allowed in .env.example .env.sample .env.template .env.schema .env.dist .pub
   ALLOW_STRIPPED="${ALLOW_STRIPPED//$allowed/}"
 done
 CRED_ANY=0
-if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ]; then
+if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ] || [ "$COMPUTED_PATH" -eq 1 ]; then
   CRED_ANY=1
 fi
 shopt -u nocasematch
@@ -779,9 +1119,32 @@ CRED_BASENAMES=(.npmrc .netrc _netrc .pypirc .yarnrc .yarnrc.yml .git-credential
   credentials config.json hosts.yml id_rsa id_dsa id_ecdsa id_ed25519 identity
   .env .env.local .env.production .envrc)
 
-# check_pattern <absolute pattern with * wildcards> <basename-from-cred-subst 0|1>
+# check_pattern <absolute pattern with * wildcards> <basename-from-cred-subst 0|1> [<dot-wild 0|1>]
+# A `*` or `?` that opens a path segment does not match a leading dot in
+# bash or zsh (no dotglob), so `.github/workflows/*.yml` cannot name
+# `.yarnrc.yml` (feedback b625002d). The third argument is 1 when the
+# wildcards stand for a variable or substitution the guard cannot read;
+# those can expand to any name and keep matching a dot (the default here).
 check_pattern() {
-  local pat="$1" cand dir base t
+  local pat="$1" dotwild="${3:-1}" cand dir base t
+  # The command can turn dot matching on (`shopt -s dotglob`, `bash -O
+  # dotglob`, zsh `setopt GLOB_DOTS`, a GLOBIGNORE assignment, which also
+  # sets dotglob); any mention keeps the wildcard matching a dot (review C2).
+  case "$STRIPPED" in
+    *dotglob*|*DOTGLOB*|*GLOB_DOTS*|*glob_dots*|*globdots*|*GLOBDOTS*|*GLOBIGNORE*|*globignore*|*setopt*|*shopt*|*"zsh -4"*) dotwild=1 ;;
+  esac
+  # A wildcard aimed straight at $HOME or a credential directory keeps
+  # matching dot files, whatever the shell would expand: the home-dir
+  # star and question-mark forms stay blocked. Only project trees get the
+  # no-dot reading.
+  dir="${pat%/*}"
+  case "$dir" in
+    *'*'*|*'?'*|*'['*) ;;
+    *) if [ "$dir" = "$H" ] || is_cred_dir "$dir"; then dotwild=1; fi ;;
+  esac
+  if [ "$dotwild" -ne 1 ]; then
+    pat="$(printf '%s' "$pat" | sed -e 's#/\*#/[!.]*#g' -e 's#/?#/[!.]#g' -e 's#^\*#[!.]*#' -e 's#^?#[!.]#')"
+  fi
   for t in "${CRED_TAILS[@]}"; do
     cand="$H/$t"
     # shellcheck disable=SC2053 # pattern match is intended.
@@ -844,12 +1207,17 @@ check_word() {
           *) if is_cred_path "$NP"; then block "reading a credential file through a variable path ($(show_path "$pat"))"; fi ;;
         esac
         check_pattern "$NP" 0
+        # A wildcard cannot model unknown separators or parent segments.
+        # Missing matches are not proof: output can name a deeper neutral
+        # link, or leave this directory entirely. Metadata-only commands
+        # never reach this read-operand check.
+        block "reading a path whose computed value the credential guard cannot prove"
         ;;
       *)
         norm_path "$cand" "$cwd"
         case "$flags" in
           *g*)
-            check_pattern "$NP" 0
+            check_pattern "$NP" 0 0
             local matches=() mm cnt=0
             local old_ifs="$IFS"
             shopt -s nullglob
@@ -860,7 +1228,7 @@ check_word() {
             shopt -u nullglob
             for mm in ${matches[@]+"${matches[@]}"}; do
               cnt=$((cnt + 1))
-              [ $cnt -le 500 ] || break
+              [ $cnt -le 500 ] || block "path has more matches than the credential guard can check"
               check_abs "$mm"
             done
             ;;
@@ -1079,6 +1447,248 @@ copy_onto_cred() {
     is_template_name "${src##*/}" || block "copying onto a credential file name ($(show_path "$NP"))"
   done
   return 0
+}
+
+# is_key_tree <normalized path>: .ssh/ or .aws/ or inside one, where every
+# name the guard does not allow by name is a credential.
+is_key_tree() {
+  local r=1 nc=0
+  shopt -q nocasematch && nc=1
+  shopt -s nocasematch
+  case "$1" in */.ssh|*/.ssh/*|*/.aws|*/.aws/*) r=0 ;; esac
+  [ "$nc" -eq 1 ] || shopt -u nocasematch
+  return $r
+}
+
+# is_cred_store <normalized path>: a directory whose name makes the files in
+# it credentials (.ssh/id_x, .docker/config.json, .config/gh/hosts.yml).
+is_cred_store() {
+  local r=1 nc=0
+  shopt -q nocasematch && nc=1
+  shopt -s nocasematch
+  case "$1" in */.ssh|*/.aws|*/.docker|*/.gem|*/.config|*/.config/gh) r=0 ;; esac
+  [ "$nc" -eq 1 ] || shopt -u nocasematch
+  return $r
+}
+
+# keeps_cred_name <source> <new path>: the new path is still covered, so a
+# later read of it is blocked the same as a read of the source.
+keeps_cred_name() {
+  local src="$1" eff="$2" sb eb pb
+  if is_cred_store "$src" || [ -d "$src" ]; then
+    is_key_tree "$eff" && return 0
+    sb="$(printf '%s' "${src##*/}" | tr '[:upper:]' '[:lower:]')"
+    eb="$(printf '%s' "${eff##*/}" | tr '[:upper:]' '[:lower:]')"
+    [ "$sb" = "$eb" ] || return 1
+    case "$sb" in
+      .ssh|.aws|.docker|.gem|.config) return 0 ;;
+      gh)
+        pb="${eff%/*}"
+        pb="$(printf '%s' "${pb##*/}" | tr '[:upper:]' '[:lower:]')"
+        [ "$pb" = ".config" ] && return 0
+        ;;
+    esac
+    return 1
+  fi
+  is_cred_path "$eff"
+}
+
+# cred_sources <word> <flags> <cwd>: append to CRED_SRC each path the move
+# source names that is a credential file or a directory that holds them.
+# A source the guard cannot expand (unknown variable) is added as "?" when it
+# may name one.
+CRED_SRC=()
+cred_sources() {
+  local text="$1" fl="$2" cwd="$3" cand m cnt
+  local cands=() matches=()
+  case "$fl" in *v*) expand_vars "$text"; text="$EV" ;; esac
+  case "$fl" in
+    *b*) expand_braces "$text"; cands=("${BR[@]}") ;;
+    *) cands=("$text") ;;
+  esac
+  for cand in "${cands[@]}"; do
+    [ -n "$cand" ] || continue
+    case "$cand" in
+      *$'\001'*)
+        ( check_word "$1" "$fl" "$cwd" ) >/dev/null 2>&1 || CRED_SRC+=("?")
+        continue
+        ;;
+    esac
+    norm_path "$cand" "$cwd"
+    matches=("$NP")
+    case "$fl" in
+      *g*)
+        local old_ifs="$IFS"
+        shopt -s nullglob
+        IFS=
+        # shellcheck disable=SC2206 # glob expansion is the point.
+        matches=($NP)
+        IFS="$old_ifs"
+        shopt -u nullglob
+        ;;
+    esac
+    cnt=0
+    for m in ${matches[@]+"${matches[@]}"}; do
+      cnt=$((cnt + 1))
+      [ $cnt -le 500 ] || block "a move of more files than the credential guard can check"
+      if is_cred_path "$m" || is_cred_store "$m"; then CRED_SRC+=("$m"); fi
+    done
+  done
+}
+
+# move_like <cmd> <start> <end> <cwd>: mv, git mv, and ln without -s. A move
+# or hard link that gives a credential file a name the guard does not cover
+# would let a later read of the new name through, so it is blocked. Moves
+# that keep a covered name (mv ~/.ssh/id_rsa backup/) are allowed, and so are
+# symlinks, which reads resolve.
+move_like() {
+  local cmd="$1" s="$2" e="$3" cwd="$4" k w rest ch endo=0 notdir=0
+  local tdir="" tdirf="" has_t=0
+  local ops=() opf=()
+  for ((k = s; k < e; k++)); do
+    w="${CW[$k]}"
+    if [ $endo -eq 0 ] && [ "$w" = "--" ]; then endo=1; continue; fi
+    if [ $endo -eq 0 ] && [[ "$w" == -?* ]]; then
+      case "$w" in
+        --target-directory) k=$((k + 1)); tdir="${CW[$k]:-}"; tdirf="${CF[$k]:-}"; has_t=1 ;;
+        --target-directory=*) tdir="${w#*=}"; tdirf="${CF[$k]}"; has_t=1 ;;
+        --suffix) k=$((k + 1)) ;;
+        --symbolic) [ "$cmd" = "ln" ] && return 0 ;;
+        --no-target-directory) notdir=1 ;;
+        --*) ;;
+        *)
+          rest="${w#-}"
+          while [ -n "$rest" ]; do
+            ch="${rest:0:1}"
+            rest="${rest:1}"
+            case "$ch" in
+              s) [ "$cmd" = "ln" ] && return 0 ;;
+              T) notdir=1 ;;
+              t)
+                has_t=1
+                if [ -n "$rest" ]; then
+                  tdir="$rest"; tdirf="${CF[$k]}"
+                else
+                  k=$((k + 1)); tdir="${CW[$k]:-}"; tdirf="${CF[$k]:-}"
+                fi
+                rest=""
+                ;;
+              S) [ -n "$rest" ] || k=$((k + 1)); rest="" ;;
+            esac
+          done
+          ;;
+      esac
+      continue
+    fi
+    ops+=("$w"); opf+=("${CF[$k]}")
+  done
+  local n=${#ops[@]} dest destf ddir=0
+  if [ $has_t -eq 1 ]; then
+    dest="$tdir"; destf="$tdirf"; ddir=1
+  elif [ "$n" -eq 1 ] && [ "$cmd" = "ln" ]; then
+    # ln with one operand links into the cwd under the same base name.
+    dest="."; destf=""; ddir=1
+  elif [ "$n" -ge 2 ]; then
+    n=$((n - 1))
+    dest="${ops[$n]}"; destf="${opf[$n]}"
+    [ "$n" -gt 1 ] && ddir=1
+    case "$cmd" in
+      mv|gmv) copy_onto_cred "$dest" "$destf" "$cwd" "${ops[@]:0:$n}" ;;
+    esac
+  else
+    return 0
+  fi
+  CRED_SRC=()
+  for ((k = 0; k < n; k++)); do
+    cred_sources "${ops[$k]}" "${opf[$k]}" "$cwd"
+  done
+  [ ${#CRED_SRC[@]} -gt 0 ] || return 0
+  case "$destf" in *v*) expand_vars "$dest"; dest="$EV" ;; esac
+  case "$destf" in *g*|*b*) block "$cmd of a credential file to a wildcard destination" ;; esac
+  case "$dest" in *$'\001'*) block "$cmd of a credential file to a destination the credential guard cannot resolve" ;; esac
+  norm_path "$dest" "$cwd"
+  local dn="$NP" src eff
+  if [ $notdir -eq 0 ]; then
+    case "$dest" in */) ddir=1 ;; esac
+    [ -d "$dn" ] && ddir=1
+  fi
+  for src in "${CRED_SRC[@]}"; do
+    if [ "$src" = "?" ]; then
+      [ $ddir -eq 1 ] && is_key_tree "$dn" && continue
+      block "$cmd of a path the credential guard cannot resolve, which may be a credential file"
+    fi
+    if [ $ddir -eq 1 ]; then eff="$dn/${src##*/}"; else eff="$dn"; fi
+    keeps_cred_name "$src" "$eff" && continue
+    block "$cmd of a credential file to a name the guard does not cover ($(show_path "$src") -> $(show_path "$eff")); a later read of it would not be blocked"
+  done
+  return 0
+}
+
+# strip_identity_opts <cmd> <start> <end>: scp, sftp and rsync hand an
+# identity file to ssh, which reads it to authenticate and never prints it,
+# the same as `ssh -i key` on the safe list. Removes scp/sftp -i <file> and
+# -o IdentityFile=<file>, and rsync -e / --rsh <command>, from CW/CF. The
+# rsync remote-shell commands are left in RSH_CMDS to be checked as commands
+# of their own. Every other option and operand keeps the usual checks.
+RSH_CMDS=()
+strip_identity_opts() {
+  local cmd="$1" s="$2" e="$3" k w f rest ch val vf kept used endo=0 argopts
+  local nw=() nf=()
+  RSH_CMDS=()
+  case "$cmd" in
+    scp) argopts='cFiJloPS' ;;
+    sftp) argopts='BbcDFiJloPRSs' ;;
+    rsync) argopts="$(argopts_for rsync)" ;;
+  esac
+  for ((k = 0; k < s; k++)); do nw+=("${CW[$k]}"); nf+=("${CF[$k]}"); done
+  k=$s
+  while [ "$k" -lt "$e" ]; do
+    w="${CW[$k]}"; f="${CF[$k]}"
+    if [ $endo -eq 1 ] || [[ "$w" != -?* ]]; then
+      nw+=("$w"); nf+=("$f"); k=$((k + 1)); continue
+    fi
+    if [ "$w" = "--" ]; then
+      endo=1; nw+=("$w"); nf+=("$f"); k=$((k + 1)); continue
+    fi
+    if [[ "$w" == --* ]]; then
+      if [ "$cmd" = "rsync" ]; then
+        case "$w" in
+          --rsh=*) RSH_CMDS+=("${w#--rsh=}"); k=$((k + 1)); continue ;;
+          --rsh) [ $((k + 1)) -lt "$e" ] && RSH_CMDS+=("${CW[$((k + 1))]}"); k=$((k + 2)); continue ;;
+        esac
+      fi
+      nw+=("$w"); nf+=("$f"); k=$((k + 1)); continue
+    fi
+    rest="${w#-}"; kept=""; used=0
+    while [ -n "$rest" ]; do
+      ch="${rest:0:1}"
+      rest="${rest:1}"
+      case "$argopts" in
+        *"$ch"*)
+          if [ -n "$rest" ]; then
+            val="$rest"; vf="$f"
+          else
+            val="${CW[$((k + 1))]:-}"; vf="${CF[$((k + 1))]:-}"; used=1
+          fi
+          rest=""
+          if [ "$cmd" = "rsync" ] && [ "$ch" = "e" ]; then
+            RSH_CMDS+=("$val")
+          elif [ "$cmd" != "rsync" ] && [ "$ch" = "i" ]; then
+            :
+          elif [ "$cmd" != "rsync" ] && [ "$ch" = "o" ] && [[ "$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')" =~ ^[[:space:]]*identityfile([[:space:]]*=|[[:space:]]) ]]; then
+            :
+          else
+            if [ -n "$kept" ]; then nw+=("-$kept"); nf+=("$f"); kept=""; fi
+            nw+=("-$ch" "$val"); nf+=("$f" "$vf")
+          fi
+          ;;
+        *) kept="$kept$ch" ;;
+      esac
+    done
+    if [ -n "$kept" ]; then nw+=("-$kept"); nf+=("$f"); fi
+    k=$((k + 1 + used))
+  done
+  CW=(${nw[@]+"${nw[@]}"}); CF=(${nf[@]+"${nf[@]}"})
 }
 
 # Words of the current simple command, and its stdin text when that is a
@@ -1363,7 +1973,8 @@ analyze_simple() {
     return 0
   fi
   local cmd
-  cmd="$(printf '%s' "${cw0##*/}" | tr '[:upper:]' '[:lower:]')"
+  lc_word "${cw0##*/}"
+  cmd="$LCW"
   case "$cmd" in
     cd|pushd)
       local target=""
@@ -1386,6 +1997,9 @@ analyze_simple() {
               return 0
             fi
             ;;
+          # `bash -O dotglob -c ...` / `-o pipefail`: the option name is not
+          # the script, so skip it and keep looking for -c (review C2).
+          -O|+O|-o|+o|--rcfile|--init-file) k=$((k + 1)) ;;
           -*) ;;
           *) check_word "$w" "${CF[$k]}" "$CUR_CWD"; return 0 ;;
         esac
@@ -1410,7 +2024,10 @@ analyze_simple() {
       [ $k -lt $e ] || return 0
       local k2
       case "${CW[$k]}" in
-        status|rm|mv|check-ignore|check-attr|ls-files)
+        status|rm|check-ignore|check-attr|ls-files)
+          return 0 ;;
+        mv)
+          move_like "git-mv" $((k + 1)) "$e" "$CUR_CWD"
           return 0 ;;
         commit)
           # The message file is the only operand commit reads.
@@ -1441,22 +2058,23 @@ analyze_simple() {
       done
       return 0
       ;;
-    mv|gmv)
-      local mv_ops=() mv_fl=() endo=0
-      for ((k = a; k < e; k++)); do
-        w="${CW[$k]}"
-        if [ $endo -eq 0 ] && [ "$w" = "--" ]; then endo=1; continue; fi
-        if [ $endo -eq 0 ] && [[ "$w" == -?* ]]; then
-          case "$w" in -t|--target-directory|--target-directory=*|-t?*) return 0 ;; esac
-          continue
-        fi
-        mv_ops+=("$w"); mv_fl+=("${CF[$k]}")
-      done
-      k=${#mv_ops[@]}
-      if [ $k -ge 2 ]; then
-        k=$((k - 1))
-        copy_onto_cred "${mv_ops[$k]}" "${mv_fl[$k]}" "$CUR_CWD" "${mv_ops[@]:0:$k}"
+    mv|gmv|ln)
+      move_like "$cmd" "$a" "$e" "$CUR_CWD"
+      return 0
+      ;;
+    scp|sftp|rsync)
+      strip_identity_opts "$cmd" "$a" "$e"
+      e=${#CW[@]}
+      local rsh_cmds=(${RSH_CMDS[@]+"${RSH_CMDS[@]}"})
+      if [ "$cmd" = "sftp" ]; then
+        check_generic "$a" "$e" "$CUR_CWD"
+      else
+        check_reader "$cmd" "$a" "$e" "$CUR_CWD"
       fi
+      # analyze_cmd replaces CW, so the remote-shell commands go last.
+      for w in ${rsh_cmds[@]+"${rsh_cmds[@]}"}; do
+        analyze_cmd "$w" $((depth + 1)) "$CUR_CWD"
+      done
       return 0
       ;;
     source|.)
@@ -1481,7 +2099,7 @@ analyze_simple() {
         esac
         break
       done
-      if [ $k -lt $e ] && ! is_safe_cmd "$(printf '%s' "${CW[$k]##*/}" | tr '[:upper:]' '[:lower:]')" && [ "$CRED_ANY" -eq 1 ]; then
+      if [ $k -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$k]##*/}"; ! is_safe_cmd "$LCW"; }; then
         block "xargs feeding a command in a command line that names a credential file"
       fi
       return 0
@@ -1490,7 +2108,7 @@ analyze_simple() {
       for ((k = a; k < e; k++)); do
         case "${CW[$k]}" in
           -exec|-execdir|-ok|-okdir)
-            if [ $((k + 1)) -lt $e ] && ! is_safe_cmd "$(printf '%s' "${CW[$((k + 1))]##*/}" | tr '[:upper:]' '[:lower:]')" && [ "$CRED_ANY" -eq 1 ]; then
+            if [ $((k + 1)) -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$((k + 1))]##*/}"; ! is_safe_cmd "$LCW"; }; then
               block "find -exec in a command line that names a credential file"
             fi
             ;;
@@ -1506,6 +2124,27 @@ analyze_simple() {
     code_check "$joined" "$cmd"
     [ -n "$in_kind" ] && code_check "$in_text" "$cmd"
     check_generic "$a" "$e" "$CUR_CWD"
+    return 0
+  fi
+  # `hq dm send --body "$(cat workspace/drafts/x.md)"`: the message text
+  # option takes the text itself, never a path. A value that is exactly one
+  # substitution is data; the substitution's own script is analyzed as its
+  # own token, so `$(cat ~/.npmrc)` is still blocked there. Every other
+  # operand is checked as usual.
+  if [ "$cmd" = "hq" ] && [ "${CW[$a]:-}" = "dm" ]; then
+    local dm_data=0 dw
+    for ((k = a; k < e; k++)); do
+      dw="${CW[$k]}"
+      if [ $dm_data -eq 1 ]; then
+        dm_data=0
+        case "${CF[$k]}" in *s*) [ "$dw" = $'\001' ] && continue ;; esac
+      fi
+      case "$dw" in
+        --body|--message|--text|--prompt) dm_data=1; continue ;;
+        --body=$'\001'|--message=$'\001'|--text=$'\001'|--prompt=$'\001') continue ;;
+      esac
+      check_generic "$k" $((k + 1)) "$CUR_CWD"
+    done
     return 0
   fi
   case "$cmd" in

@@ -71,8 +71,8 @@ thread_id="$(basename "$thread_file" .json)"
 session_id="$(bash core/scripts/hq-session.sh current)"
 [ -n "$session_id" ] || session_id=unknown-session
 lock_json="$(bash core/scripts/resume-thread-lock.sh inspect "$thread_id")"
-status="$(jq -r '.status // empty' <<<"$lock_json")"
-case "$status" in
+lock_status="$(jq -r '.status // empty' <<<"$lock_json")"
+case "$lock_status" in
   unlocked)
     if bash core/scripts/resume-thread-lock.sh acquire "$thread_id" --session-id "$session_id"; then
       bash core/scripts/handoff-open-steps.sh list --limit 10
@@ -84,7 +84,7 @@ case "$status" in
     fi
     ;;
   locked|stale) printf '%s\n' "$lock_json" ;;
-  *) printf 'Unexpected resume lock status: %s\n' "$status" >&2; exit 1 ;;
+  *) printf 'Unexpected resume lock status: %s\n' "$lock_status" >&2; exit 1 ;;
 esac
 ```
 

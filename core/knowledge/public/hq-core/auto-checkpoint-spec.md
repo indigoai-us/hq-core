@@ -33,6 +33,8 @@ Context-threshold checkpoints run in two stages. Both are mandatory checkpoint d
 1. **50% checkpoint (Stop hook).** `.claude/hooks/context-warning-50.sh` fires after an assistant turn when the transcript size crosses ~50% of the context window. Prints once per session (gated via `workspace/.context-warnings/{session_id}`). This leaves enough context to preserve state and, if the remaining task is large, orchestrate subagents after the checkpoint.
 2. **PreCompact backup.** `.claude/hooks/auto-checkpoint-precompact.sh` fires immediately before autocompact runs (threshold set by `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). Autocompact cannot be blocked in Claude Code or Codex, so the banner tells the next assistant turn to run `/checkpoint` before continuing.
 
+**Grok compaction:** Grok Build 1.0.44 removed the hint argument from `/compact`. After `/checkpoint`, run `/compact` with no extra text. Do not use `/compact with a hint`, `/compact [context]`, or `/compact keep …`. Auto-compact still fires from PreCompact; the HQ step is checkpoint first, then a bare `/compact`.
+
 **Fallback (instruction-based):** `/checkpoint` is available at any natural pause; do not try to estimate context usage yourself — the PreCompact hook is the mechanical trigger. For end-of-session wrap-up, run `/handoff` manually.
 
 ## CLI checkpoint & Stop gate

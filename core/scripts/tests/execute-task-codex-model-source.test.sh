@@ -12,15 +12,15 @@ grep -Fq 'codex_model = task.codex_model_hint || worker.execution.codex_model' "
   echo "FAIL: Codex model resolution must use the existing worker profile field" >&2
   exit 1
 }
-grep -Fq 'workers.codex-model-overrides' "$SKILL" || {
-  echo "FAIL: model overlay resolution must be gated by the default-off hq-flags key" >&2
+grep -Fq 'core/scripts/worker-codex-model.sh' "$SKILL" || {
+  echo "FAIL: model override resolution must go through core/scripts/worker-codex-model.sh" >&2
   exit 1
 }
-grep -Fq 'personal/workers/{worker-id}/worker.yaml' "$SKILL" || {
+grep -Fq 'personal/workers/{worker-id}/overrides.yaml' "$SKILL" || {
   echo "FAIL: personal worker model overlay path must be documented" >&2
   exit 1
 }
-grep -Fq 'companies/{active-company}/workers/{worker-id}/worker.yaml' "$SKILL" || {
+grep -Fq 'companies/{active-company}/workers/{worker-id}/overrides.yaml' "$SKILL" || {
   echo "FAIL: company worker model overlay path must be documented" >&2
   exit 1
 }

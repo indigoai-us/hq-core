@@ -184,6 +184,35 @@ function rememberPhase(state, recordPhase, status) {
   state.phase = status?.phase ?? null;
 }
 
+// Poll pacing. While someone is on the sign-in card (the server's `hot` hint),
+// a code was just typed, or the login is starting, the watcher polls every
+// 5 s. After IDLE_AFTER_MS with no such activity it polls every IDLE_POLL_MS.
+export const ACTIVE_POLL_MS = 5000;
+export const IDLE_POLL_MS = 30000;
+export const IDLE_AFTER_MS = 5 * 60 * 1000;
+// A Claude sign-in link stops working about 10 minutes after the CLI prints
+// it (same window the server reports as loginUrlExpiresAt).
+export const LOGIN_URL_TTL_MS = 10 * 60 * 1000;
+// A typed code that neither signs in nor makes the CLI print a new link
+// within this window counts as not accepted; the login restarts.
+export const CODE_RESULT_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** Stop the login process; the next tick starts a new one, which posts a new link. */
+function restartLogin(state, recordPhase) {
+  state.login?.stop();
+  state.login = null;
+  state.posted = null;
+  state.sentCode = null;
+  rememberPhase(state, recordPhase, null);
+}
+
+/** Delay before the next tick. */
+export function pollDelayMs(state, now = Date.now(), {activeMs = ACTIVE_POLL_MS, idleMs = IDLE_POLL_MS} = {}) {
+  if (!state.posted || state.sentCode) return activeMs;
+  const since = Math.max(state.activeAt ?? 0, state.urlSince ?? 0);
+  return now - since >= IDLE_AFTER_MS ? Math.max(idleMs, activeMs) : activeMs;
+}
+
 /** One watcher step. All side effects are injected for tests. */
 export async function signinTick(state, {api, isSignedIn, start, recordPhase = () => {}, now = Date.now}) {
   if (isSignedIn()) {
@@ -223,18 +252,26 @@ export async function signinTick(state, {api, isSignedIn, start, recordPhase = (
     }
     state.posted = url;
     state.urlSince = now();
+    state.activeAt = state.urlSince;
   }
   // No code yet: this is idle waiting, not code entry. The phase file stores neither the URL nor a code.
   if (state.posted && !state.sentCode && state.phase !== 'awaiting_person') {
     rememberPhase(state, recordPhase, {phase: 'awaiting_person', since: state.urlSince ?? now()});
   }
+  // `hot` (newer servers) says someone is on the sign-in card or a code or
+  // regenerate is waiting. Absent means unknown: no auto-restart.
+  let hot = false;
   if (state.posted) {
-    const {code} = await api('signin', {action: 'login-code'});
+    const reply = await api('signin', {action: 'login-code'});
+    const code = reply?.code;
+    hot = reply?.hot === true;
+    if (hot) state.activeAt = now();
     // A one-time code is typed once; a repeated poll result is ignored.
     if (validLoginCode(code) && code !== state.sentCode) {
       state.login.sendCode(code);
       state.sentCode = code;
       state.codeSince = now();
+      state.activeAt = state.codeSince;
     }
   }
   if (state.sentCode && state.phase !== 'code_entry') {
@@ -242,16 +279,25 @@ export async function signinTick(state, {api, isSignedIn, start, recordPhase = (
   }
   const {pending} = await api('signin', {action: 'regenerate-pending'});
   if (pending === true) {
-    state.login.stop();
-    state.login = null;
-    state.posted = null;
-    state.sentCode = null;
-    rememberPhase(state, recordPhase, null);
+    state.activeAt = now();
+    restartLogin(state, recordPhase);
+    return 'awaiting_sign_in';
+  }
+  if (state.sentCode && now() - (state.codeSince ?? now()) >= CODE_RESULT_TIMEOUT_MS) {
+    // The typed code neither signed in nor made the CLI print a new link. A
+    // new login posts a new link, which the server records as a rejected code.
+    console.error(JSON.stringify({service: 'company-signin', code: 'login_code_timeout'}));
+    restartLogin(state, recordPhase);
+  } else if (state.posted && !state.sentCode && hot && now() - (state.urlSince ?? now()) >= LOGIN_URL_TTL_MS) {
+    // Someone is looking at a link that no longer works: replace it. With no
+    // one on the card the old link stays, so an idle box does not churn.
+    console.error(JSON.stringify({service: 'company-signin', code: 'login_url_expired_restart'}));
+    restartLogin(state, recordPhase);
   }
   return 'awaiting_sign_in';
 }
 
-export async function watch(configPath, {intervalMs = 5000} = {}) {
+export async function watch(configPath, {intervalMs = ACTIVE_POLL_MS, idleIntervalMs = IDLE_POLL_MS} = {}) {
   const stat = fs.statSync(configPath);
   if (stat.uid !== 0 || (stat.mode & 0o022) !== 0) throw new Refusal('config_must_be_root_owned');
   if (process.getuid() !== 0) throw new Refusal('runner_must_be_root');
@@ -273,7 +319,7 @@ export async function watch(configPath, {intervalMs = 5000} = {}) {
   for (;;) {
     try { await signinTick(state, deps); }
     catch (error) { console.error(JSON.stringify({service: 'company-signin', code: error instanceof Refusal ? error.code : 'signin_error', status: error?.status ?? null})); }
-    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    await new Promise(resolve => setTimeout(resolve, pollDelayMs(state, Date.now(), {activeMs: intervalMs, idleMs: idleIntervalMs})));
   }
 }
 

@@ -38,7 +38,7 @@ if env \
   HQ_HQ_SESSION_NO_CLI=1 \
   HQ_WORK_MESH_RECONCILE_STUB=1 \
   /bin/bash "$HQ/core/scripts/work-mesh-live-bind-trusted.sh" \
-    --company acme --root "$HQ"; then
+    --company example-co --root "$HQ"; then
   fail "/bin/bash trusted bind accepted .current without caller identity"
 fi
 
@@ -60,7 +60,7 @@ if ! env \
   HQ_HQ_SESSION_NO_CLI=1 \
   HQ_WORK_MESH_RECONCILE_STUB=1 \
   /bin/bash "$HQ/core/scripts/work-mesh-live-bind-trusted.sh" \
-    --company acme --project install-flow-rethink --task US-002 \
+    --company example-co --project install-flow-rethink --task US-002 \
     --session "$SID" --root "$HQ" --no-reconcile; then
   fail "/bin/bash trusted project bind failed"
 fi
@@ -94,7 +94,7 @@ run_bind() {
     HQ_WORK_MESH_RECONCILE_STUB=1 \
     "$@" \
     "$bash_bin" "$HQ/core/scripts/work-mesh-live-bind-trusted.sh" \
-      --company acme --project install-flow-rethink --task US-002 \
+      --company example-co --project install-flow-rethink --task US-002 \
       ${BIND_SESSION_ARGS:+$BIND_SESSION_ARGS} --root "$HQ"
 }
 obs_file() { find "$OBS_TMP/hq-work-mesh-obs" -name "$SID.bind.*.json" 2>/dev/null | head -1; }
@@ -139,7 +139,7 @@ for BASH_BIN in /bin/bash bash; do
   # A trusted bind back to a project the marker no longer names rebinds the
   # marker and stamps it trusted.
   mkdir -p "$(dirname "$MARKER")"
-  printf 'companySlug=acme\nproject=other-project\ntask=US-009\nauthority=trusted\n' >"$MARKER"
+  printf 'companySlug=example-co\nproject=other-project\ntask=US-009\nauthority=trusted\n' >"$MARKER"
   BIND_SESSION_ARGS="--session $SID" run_bind "$BASH_BIN" \
     || fail "$BASH_BIN revert bind failed"
   grep -qx 'project=install-flow-rethink' "$MARKER" \

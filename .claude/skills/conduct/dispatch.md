@@ -1,6 +1,7 @@
 # Conduct dispatch — subagents and worker lanes
 
-This module applies only after the conductor decides work needs a worker. A
+This module applies to every task except an inline answer from loaded
+context or one status read: the conductor does no project work itself. A
 worker is a background subagent in this session or an `hq lanes` worker lane;
 the invoking session is its senior either way. Lanes use the shared mapping in
 `.claude/skills/_shared/lane-dispatch-protocol.md` and the same lifecycle used
@@ -10,13 +11,31 @@ by `/execute-task` and `/run-project`.
 
 Resolve the runner before the first dispatch, in this order:
 
-1. A `--runner subagent|lane` flag or an owner instruction in this session.
-   Persist it with `bash core/scripts/hq-session.sh set conduct_runner <runner>`.
+1. A `--runner mixed|subagent|lane` flag or an owner instruction in this
+   session. Persist it with
+   `bash core/scripts/hq-session.sh set conduct_runner <runner>`.
 2. The `conduct_runner` session pin.
 3. `conduct.runner` in `personal/settings/orchestrator.yaml`.
-4. `subagent`.
+4. `conduct.runner` in `core/settings/orchestrator.yaml`, which ships `mixed`.
+5. `mixed`.
 
-Use a lane even when the runner is `subagent` when any of these hold:
+Under `mixed` (the default, owner decision 2026-10-22):
+
+- A task that matches an HQ worker or a `--workers` role goes to that
+  worker's standing lane (see "Standing worker lanes"): opened on the first
+  such task, reused for every later task for the same worker and company.
+- Ongoing work with no matching worker, and every small bounded task with no
+  matching worker (a lookup, a check, a draft), goes to a background
+  subagent. `hq lanes create --worker` needs a registered worker, so there is
+  no standing lane without one.
+- Nothing runs inline beyond an answer from loaded context or one status read.
+
+Under `subagent`, no standing lane is opened: every task is a subagent unless
+one of the one-shot lane conditions below holds. Under `lane`, a task that
+matches a worker uses that worker's standing lane and any other task gets a
+one-shot lane.
+
+Use a one-shot lane even when the runner is `subagent` when any of these hold:
 
 - The work must outlive this session: overnight or away work, lead lanes
   that resume on their own, `--loop`, `--remote-control`, or `--outpost`.
@@ -29,17 +48,74 @@ code. Report the switch in one line, for example
 `lanes refused (no_account_with_room, next reset <next_reset>); running as a subagent`.
 Still raise the signed-out owner cards from the refusal's `skipped[]`.
 
+`bash core/scripts/conduct-standing.sh route --kind <answer|status|lookup|small|ongoing>
+[--worker <id> --company <slug>] [--outlives] [--engine <e>] [--runner <r>]`
+resolves the runner as above, applies these rules, and prints `inline`,
+`subagent`, `lane-reuse` (with the lane id), or `lane-open` (with
+`standing`).
+
 Steps 1, 2, and 4 (worker choice and the brief) are the same for both
 runners. The brief, its done criteria, and the Step 6 verification do not
 change with the runner.
 
+## Standing worker lanes
+
+Owner decision, 2026-10-22 ("Workers stay open"). A standing lane is one
+worker lane per worker and company that stays open for the whole conduct run
+and takes every task in its area.
+
+1. Open early. As soon as the work shows which specialties it needs (or at
+   `/conduct --workers`, one per role), open those lanes before the first
+   task finishes, so later tasks find them ready.
+2. Open or reuse with one command, from the HQ root:
+   ```bash
+   bash core/scripts/conduct-standing.sh send --worker <worker> \
+     --company <company> --brief-file <brief> [--project <p>] \
+     [--story <s> | --no-story <reason>] -- <pin flags>
+   ```
+   The `<pin flags>` are the `--provider`, `--model`, `--effort`, `--account`
+   (or `--account auto`), and `--allow-extra-usage` flags from "How work
+   leaves this session". When the session already recorded a lane for that
+   worker and company and the lane can still take messages, `send` passes the
+   brief with `hq lanes message <lane> --text-file <brief>` and prints
+   `"action":"reused"`. Otherwise it runs `hq lanes create --company <company>
+   --worker <worker> --keep-alive --senior session:<session-id>`, then
+   `hq lanes keep-alive <lane> --on --standing` so the lane waits for queued
+   work after every done turn, records the lane in
+   `workspace/sessions/<session-id>/conduct-standing-lanes.json`, and prints
+   `"action":"opened"`. A repeated create for the same worker and senior
+   continues that worker's prior thread.
+3. `--company` is required. Every lane is bound to its company
+   (`hq-background-jobs-require-bound-company`), and a standing lane is never
+   reused across companies.
+4. Exit 3 means `hq lanes create` refused (capacity or admission). The create
+   JSON is on stdout. Run the same brief as a subagent and report the switch
+   in one line, as in "Runner".
+5. Arm the watcher for the lane round as for any lane message or create
+   (round id, `since`, `Monitor(hq lanes watch <lane>)` or the Codex watcher).
+6. Close on `/conduct off`, `/handoff`, or when the owner says the area is
+   finished: `bash core/scripts/conduct-standing.sh close` turns keep-alive
+   off with `hq lanes keep-alive <lane> --off` and interrupts each lane with
+   `hq lanes interrupt`, so the lane stays resumable for a later session.
+   `--dry-run` lists what it would close. Use `conduct-standing.sh forget
+   --lane <id>` to drop one lane from the record after closing it by hand.
+
+`hq lanes doctor` and `hq lanes keep-alive-audit` report keep-alive lanes
+blocked by retired, superseded, or pending-question state; run them in
+`/conduct status` when a standing lane looks stuck.
+
 ## Subagent dispatch
 
-1. Write the brief exactly as for a lane, to a file. Name the envelope path
+1. Write the brief exactly as for a lane, to a file. The brief names the
+   resolved company explicitly, and the subagent checks it against its own
+   bound company before it starts. Name the envelope path
    `workspace/orchestrator/conduct-subagents/<session-id>/<run-id>/envelope.json`,
-   where `run-id` is the round id below. The envelope uses the same fields as a
+   where `run-id` is the round id below. Name the report path
+   `workspace/orchestrator/conduct-subagents/<session-id>/<run-id>/report.md`
+   in the same brief. The envelope uses the same fields as a
    lane envelope (`decision` of `done`, `ask`, or `blocked`, a summary, changed
-   files, commits, PR, tests run with their output, and open questions).
+   files, commits, PR, tests run with pass/fail and sidecar log paths, and open
+   questions).
 2. When the brief changes a repo, create a dedicated worktree on a feature
    branch before dispatch (`git -C <repo> worktree add -b <branch>
    workspace/worktrees/<name> origin/<base>`) and name it in the brief. Two
@@ -47,39 +123,58 @@ change with the runner.
    the first subagent to finish.
 3. Generate `round_id` and capture `since` as for a lane, then call the
    `Agent` tool with `run_in_background: true`:
-   - `subagent_type`: the matched worker's agent type when one exists,
-     otherwise `general-purpose`.
+   - `subagent_type`: from `bash core/scripts/conduct-standing.sh agent-type
+     --worker <worker> --company <company>`. It returns the worker id when a
+     Claude agent definition of that name exists (`.claude/agents/<id>.md`
+     or the user's agents dir), otherwise `general-purpose`. For
+     `general-purpose`, list the returned `worker_yaml` and `skill_files` in
+     the brief and tell the subagent to read them first.
    - `model`: the family of `conduct_child_model` (`opus`, `sonnet`, `haiku`,
      or `fable`); omit it when no pin is set. Pass `effort` only when the
      owner set `conduct_child_effort` explicitly.
    - `description`: the worker name and a 3-5 word task label.
    - `prompt`: "Read <brief path> whole and follow it. Write the JSON envelope
-     to <envelope path> before you finish. Commit your own work on the named
-     branch. Do not push, open a PR, merge, or deploy unless the brief says
-     so. Before you finish, wait for every background reviewer or subagent
-     you started; never end while one is still running. End with a reply of
-     at most 10 lines that names the envelope path."
+     to <envelope path> before you finish, and a plain-text hand-back report
+     of at most 200 lines to <report path> (`report.md` beside the envelope):
+     outcome, changed files, commits, PR, tests run with pass/fail, and open
+     questions. Keep the envelope under 64 KB: put full test or build output
+     in a log file beside the envelope and name it from the envelope, never
+     inline it. Commit your own work on the named branch. Do not push, open a
+     PR, merge, or deploy unless the brief says so. Before you finish,
+     wait for every background reviewer or subagent you started; never end
+     while one is still running. End with a reply of at most 10 lines that
+     names the envelope path and the report path."
 4. Record the run in
    `workspace/orchestrator/conduct-subagents/<session-id>/runs.json`: agent
-   id, worker, task label, brief path, envelope path, worktree, `since`, and
+   id, worker, task label, brief path, envelope path, report path, worktree, `since`, and
    `round_id`. Write it through a temp file and `mv`.
 5. Return to the owner. The app wakes this session when the subagent
    finishes; do not poll it. Send a correction to a running subagent with
    `SendMessage` to its agent id. That message is an instruction, as with
    `hq lanes message`.
-6. On completion, read the envelope file, not only the closing message, and
-   verify it as in Step 6. A missing envelope is a failed delivery: report it
-   and resume the subagent once with `SendMessage` asking for the envelope.
-   Delete the worktree only after its branch is merged or the owner drops it.
+6. On completion, read `report.md` and the envelope file, not only the
+   closing message, and verify them as in Step 6. Never Read the harness's
+   own task transcript (the `<agent-id>.output` JSONL the Agent tool writes
+   under the user's `.claude/tasks/` folder): it is the raw tool log, grows to
+   many MB, and the Read tool refuses it (feedback_49f72048). Everything the
+   parent needs is in the report and the envelope. A missing envelope or
+   report is a failed delivery: report it and resume the subagent once with
+   `SendMessage` asking for both files. Delete the worktree only after its
+   branch is merged or the owner drops it.
 
 Subagent runs spend this session's Claude usage and stop if this session
-ends. Keep long results in the envelope and the worktree so they do not fill
-this session's context.
+ends. Keep long results in sidecar logs in the worktree and name those logs
+from the envelope so they do not fill this session's context.
 
-Subagent runs do not appear in `hq lanes list` yet. Until hq-cli can register
-a lane that an in-session subagent runs (planned as
-`hq lanes create --runner subagent`), the status rows in Step 7 come from
-`runs.json`.
+hq-cli 5.345.151 ships `hq lanes create --runner subagent`, which registers a
+lane that an in-session subagent runs: it skips admission and starts no
+process. Register each subagent run with it (with `--company`, `--worker`,
+`--brief-file`, and `--senior session:<session-id>`) so the run shows in
+`hq lanes list`, record the returned lane id in `runs.json`, and report the
+result with `hq lanes progress <lane> --envelope <path>` (or `--failed
+<reason>` when the subagent ended without an envelope). On an older hq-cli,
+or when the registration fails, the status rows in Step 7 come from
+`runs.json` alone.
 
 ## Engine roster
 
@@ -105,9 +200,10 @@ are one pool across companies, and hq-cli records its pick as the lane's
 
 ## How work leaves this session
 
-1. Resolve the active company, project, story, and worker profile. Reuse an
-   existing lane under this senior when its repo and task fit. Check
-   `hq lanes list --json --senior session:<session-id>` first.
+1. Resolve the active company, project, story, and worker profile. A task in
+   a worker area goes through "Standing worker lanes" above. For any other
+   lane, reuse an existing lane under this senior when its repo and task fit.
+   Check `hq lanes list --json --senior session:<session-id>` first.
 2. Write the complete task brief to a file. Include done criteria, company and
    repo paths, constraints, required tests, and the JSON envelope path.
 3. Create a worker lane using the mapping below. Keep HQ root as the CLI cwd.
@@ -463,7 +559,8 @@ Codex watcher for that lane round with `--since "$since" --round-id
 "$round_id"`.
 
 For a lane, use `hq lanes show <lane> --json` and the lane's envelope. For a
-subagent, use the envelope file named in its brief. Treat
+subagent, use the envelope file named in its brief and the report file
+named in the same brief. Treat
 `decision: "done"` as a report to verify, not proof by itself. Inspect the
 branch diff, commit, PR, and exact CI head. For a `decision: "ask"`, deliver the
 question and wait for an answer; for `blocked`, report the named blocker. A
@@ -479,7 +576,9 @@ one Codex completion watcher with that lane, `--since "$since"`, and
 round on a reused lane. Claude parents keep the `Monitor(hq lanes watch ...)`
 path.
 
-`--workers <roles>` creates one lane for each requested role. Pin provider,
+`--workers <roles>` opens one standing lane for each requested role with
+`conduct-standing.sh send --worker <profile>`, using the role mapping in
+Step 2. Pin provider,
 model, effort, and account once per session and pass those pins to each
 `hq lanes create`. With no account pin, pass `--account auto` to each one. Build each brief from the matching role template. The role
 slot is one worker lane; create resumes that worker's previous lane thread when
@@ -501,10 +600,12 @@ implementation lane with `hq lanes message`; report the QA result with CI.
 List lanes launched by this session with `hq lanes list --json --senior
 session:<this session>`. For each active row include the lane id, worker,
 state, `last_line`, PR, pending inbox count, elapsed time, and exit status when
-present. Add one row per running subagent from `runs.json`, in the same row
-format, with `subagent` as the runner chip, the agent id in place of the lane
-id, and elapsed time from `since`. Name the blocker on blocked or review work. Use a named reviewing
-lane for `review` state.
+present. Mark standing lanes from `conduct-standing.sh list` with a
+`standing` chip; an idle standing lane waiting for work still gets a row.
+Add one row per running subagent from `runs.json`, in the same row format,
+with `subagent` as the runner chip, the agent id in place of the lane id, and
+elapsed time from `since`. Name the blocker on blocked or review work. Use a
+named reviewing lane for `review` state.
 
 ## Testing capacity distribution locally
 

@@ -864,16 +864,16 @@ def write_library_bytes(
         _close_all(opened)
 
 
-def run_indigo_fixture(companies_root: os.PathLike[str] | str) -> bytes:
-    """Exercise the indigo library only.
+def run_example_co_fixture(companies_root: os.PathLike[str] | str) -> bytes:
+    """Exercise the example-co library only.
 
-    The session bind is ``indigo``. The companies root must already contain
-    ``manifest.yaml`` listing indigo and a real ``indigo`` directory. This
+    The session bind is ``example-co``. The companies root must already contain
+    ``manifest.yaml`` listing example-co and a real ``example-co`` directory. This
     function does not receive another company's slug and does not build
     another company's path. Callers that place a second company next to
-    indigo can assert it is never opened.
+    example-co can assert it is never opened.
     """
-    write_library_bytes(companies_root, "indigo", "class-001", "skills/cue.md", b"cue", "indigo")
+    write_library_bytes(companies_root, "example-co", "class-001", "skills/cue.md", b"cue", "example-co")
     merged = apply_tree(
         {"skills/cue.md": b"cue", "policies/keep.md": b"keep-me"},
         {"skills/cue.md": b"cue-2"},
@@ -883,7 +883,7 @@ def run_indigo_fixture(companies_root: os.PathLike[str] | str) -> bytes:
     restored = round_trip(merged)
     if restored["policies/keep.md"] != b"keep-me" or restored["skills/cue.md"] != b"cue-2":
         raise SurfaceError("round-trip changed bytes")
-    return read_library_bytes(companies_root, "indigo", "class-001", "skills/cue.md", "indigo")
+    return read_library_bytes(companies_root, "example-co", "class-001", "skills/cue.md", "example-co")
 
 
 def main(argv: list[str]) -> int:

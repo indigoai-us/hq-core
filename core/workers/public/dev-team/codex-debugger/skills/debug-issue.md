@@ -28,7 +28,7 @@ Optional:
 3. **Run Codex to Diagnose and Fix**
    - Run Codex with full error context:
      ```bash
-     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && HQ_WELCOME_BRIEF_HOOK=0 codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Diagnose and fix this issue: {issue_description}. Error output: {error_output}. Suspect files: {file_list}. Apply the fix directly." 2>&1
      ```
    - Codex runs in sandbox, reads code, diagnoses issue, and applies fix
@@ -49,7 +49,7 @@ Optional:
    - Capture new error output from failed checks
    - Feed errors back to Codex:
      ```bash
-     cd {cwd} && codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
+     cd {cwd} && HQ_WELCOME_BRIEF_HOOK=0 codex exec --dangerously-bypass-hook-trust --sandbox danger-full-access -c model="gpt-5.4" --reasoning high --fast --cd {cwd} \
        "Fix attempt introduced new errors: {new_error_output}. Previous issue: {issue_description}. Fix while preserving the original fix." 2>&1
      ```
    - Re-run back-pressure after each fix attempt

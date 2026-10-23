@@ -57,6 +57,17 @@ Ask questions **one at a time**. Keep it conversational, not interrogative. Adap
 
 18. Anything else your AI workers should know about you — values, pet peeves, preferences?
 
+### Block 7: Profile Photo (final step)
+
+Always ask this last, after every other question, as the step that finishes the interview and gets them into the HQ app.
+
+If `agents-profile.md` already says "Profile photo: set", skip this step.
+
+19. Ask whether they have set a profile photo in HQ. You can't check this yourself. If they haven't, ask them to finish by setting one: in the HQ app, open **Settings → Profile → Change photo**, or go to https://hq.computer/personal/profile. Any photo works; HQ crops it to a square.
+
+- Wait until they confirm it's done or say "skip". Don't try to upload it yourself; there is no command for that. Don't ask them to paste or attach the photo in chat.
+- Record the result in `agents-profile.md` only: "Profile photo: set" or "Profile photo: not set". Never write it to `companies/{company}/knowledge/profile.md`, which is company-scoped.
+
 ## Output
 
 After the interview, update these files:
@@ -121,4 +132,5 @@ Update or create both files. `agents-profile.md` holds the owner profile + worki
 - Don't fabricate answers — only write what was actually said.
 - If profile/voice files already exist, merge new content with existing. Don't overwrite without asking.
 - Keep the tone of the interview itself warm and conversational — not clinical.
+- Always end the interview with the profile photo step (Block 7).
 - After finishing, suggest: "Run `/newworker` to create your first worker, or `/prd` to plan a project."

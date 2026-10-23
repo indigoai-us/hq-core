@@ -274,6 +274,18 @@ Post-sync reconcile probes jobs that lack ready status, then re-reads cache.
 - Codex: `codex exec -s workspace-write --skip-git-repo-check` (box 0.147;
   **not** `--ask-for-approval never`)
 - Missing CLI auth → log clear skip reason, exit 0 (do not fail the unit)
+- Approval-mode preflight: before launch, resolve the Claude permission mode the
+  run would get (bypass disabled by `permissions.disableBypassPermissionsMode`
+  falls back to `defaultMode`). Only `bypassPermissions` and `dontAsk` launch;
+  any other mode (`plan`, `default`, `acceptEdits`, `auto`, or an unrecognized
+  value) is refused. `auto` is refused because its classifier can fall back to
+  asking. A `dontAsk` run logs `permission_note=dontAsk` (tools that are not
+  pre-approved are denied, so the run can finish with nothing done). Refused:
+  mark the run blocked (`blocked=permission_mode`) and notify the owner. The
+  interactive `defaultMode` is not changed.
+- Company bind: when `requirements.company` is set, bind it to a pre-minted
+  session id (`hq-session.sh --session-id <id> set company_slug <slug>`) and
+  launch the agent under that id; a failed bind blocks the run and notifies.
 - Logs: `~/.hq/jobs/logs/{id}/`
 - Compute-meter marker (JSONL): `~/.hq/jobs/meters/runs.jsonl` schema
   `hq.outpost.job-run/v1` (`kind=scheduled-job-run`, job_id, runtime,
@@ -411,6 +423,21 @@ under a pty. It posts the URL to `POST /outpost/company/signin`
 code a company owner or admin submits, types it, and reports `login-complete`.
 It also restarts the login on `regenerate-pending`. Codes must match
 `^[A-Za-z0-9][A-Za-z0-9#_.~-]{7,511}$` before they are typed.
+
+While it waits for a person, the watcher polls every 5 seconds. After 5
+minutes with no activity it polls every 30 seconds. Activity is a new link, a
+code, a regenerate, or `hot: true` on the `login-code` reply, which the server
+sends while an owner or admin has read the sign-in status in the last 2
+minutes or a code or regenerate is waiting. When `hot` is true and the posted
+link is older than 10 minutes (the window the server reports as
+`loginUrlExpiresAt`), the watcher restarts the login so the person gets a
+working link. With no one on the card, an old link is kept and the login is
+not restarted. A server that sends no `hot` field never triggers that
+restart. A typed code that neither signs in nor makes the CLI print a new link
+within 2 minutes restarts the login. Either way the box posts a new link
+after a code it took, and the server records that as `lastCodeRejectedAt`.
+The watcher logs `login_url_expired_restart` and `login_code_timeout` to its
+journal, with no URL or code.
 
 For each run the root runner reads only `accessToken` and `expiresAt` from the
 sign-in file (regular file, owned by `hq-claude-auth`, mode 600). If the token

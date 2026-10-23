@@ -1,7 +1,7 @@
 ---
 name: run-project
 description: "Execute a project's PRD stories through HQ worker lanes that survive compaction. Interactive mode runs in the parent."
-allowed-tools: Read, spawn_agent, wait_agent, Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(hq lanes questions:*), Bash(hq lanes story:*), Bash(bash core/scripts/hq-session.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(sh core/scripts/pipeline-lane-rows.sh:*), Bash(bash core/scripts/pipeline-conductor.sh:*), Bash(bash core/scripts/pipeline-worker-table.sh:*), Bash(sh core/scripts/pipeline-driver.sh:*), Bash, Write, AskUserQuestion, Task, mcp__visualize__read_me, mcp__visualize__show_widget
+allowed-tools: Read, spawn_agent, wait_agent, Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(hq lanes questions:*), Bash(hq lanes story:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/run-project-state.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(sh core/scripts/pipeline-lane-rows.sh:*), Bash(bash core/scripts/pipeline-conductor.sh:*), Bash(bash core/scripts/pipeline-worker-table.sh:*), Bash(sh core/scripts/pipeline-driver.sh:*), Bash, Write, AskUserQuestion, Task, mcp__visualize__read_me, mcp__visualize__show_widget
 argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--pipeline] [--in-place] [--timeout N]"
 ---
 
@@ -129,15 +129,29 @@ extra approval pause. Otherwise ask the user to approve or adjust the plan,
 switch to `--interactive` or `--ralph-mode`, or stop. The parent may use a read-only explorer to produce the plan; it does not own a story or change board status.
 
 Before dispatch, record the run's company, project, session id, provider choice,
-model, and effort in `workspace/orchestrator/{project}/state.json`. On resume,
-keep the original session id and lane ownership. Never infer company from cwd.
+model, and effort in `workspace/orchestrator/{project}/state.json` with the
+state helper. Do not write state.json by hand: the progress band reads the
+standard shape (`prd_path`, `progress`, `current_tasks`, `completed_tasks`,
+`failed_tasks`) that `.claude/scripts/run-project.sh` writes, and a hand-written
+file shows 0/0.
+
+```bash
+bash core/scripts/run-project-state.sh init {project} --company {company} \
+  --session-id {session-id} --provider {provider} --model {model} --effort {effort}
+```
+
+On resume, run the same `init`: it keeps the original `started_at`, session id
+and finished tasks, drops the earlier session's running entries, and refuses a
+different `--company` than the one recorded. Run `start` again for each story
+whose lane is still live. Keep lane ownership. Never infer company from cwd.
 
 ### 3b. Story Loop
 
 For each approved incomplete story:
 
 1. Announce the story id, title, and worker sequence. Keep the existing branch
-   setup, state tracking, and best-effort Linear sync.
+   setup and best-effort Linear sync. Record the story as running:
+   `bash core/scripts/run-project-state.sh start {project} {story-id}`.
 2. Write the story brief to a file and create the story worker lane:
 
    ```bash
@@ -175,6 +189,13 @@ For each approved incomplete story:
    skill already updates status. Do not add status fields to local `prd.json`;
    `passes` remains spec acceptance data, not a board column. Mark `passes: true`
    only after the existing evidence and quality gates pass.
+7. Update state.json after every story, before dispatching the next one. A
+   verified story: `bash core/scripts/run-project-state.sh complete {project} {story-id} --commit {sha}`
+   (after `passes: true` is written; the last one marks the run completed). A
+   failed story: `bash core/scripts/run-project-state.sh fail {project} {story-id} --error "{reason}"`;
+   add `--blocked` for `INVALID_RETURN_FORMAT`, `NEEDS_INTERACTION`, `TIMEOUT`
+   and other blocks. When the run stops early, `bash core/scripts/run-project-state.sh finish {project}`
+   marks it `paused`. Each command recomputes `progress` from prd.json.
 
 Stories are dispatched one at a time by default. Independent stories may run
 concurrently only when their worker ids differ, they have no dependency or file
@@ -648,7 +669,7 @@ Process:
    - commit per story
    - mark `passes: true` only after verification (worker proof, commits, and the evidence check `verify-story-deliverables.sh --evidence-json … --commits-json … --write` exit 0)
    - do not claim `workers_run` or worker-backed completion unless `/execute-task` actually ran through the worker system
-   - update `workspace/orchestrator/{project}/state.json`
+   - update `workspace/orchestrator/{project}/state.json` with `core/scripts/run-project-state.sh` (`init` once, then `start` and `complete`/`fail` per story, as in Step 3b)
 6. Pause between stories and ask continue / adjust / stop.
 
 Do not spawn an end-to-end `/execute-task` sub-agent in Codex interactive mode unless the user explicitly asks for delegated agent work. Bounded helper agents are okay only when explicitly requested or clearly available, and they must return compact structured output.
@@ -688,7 +709,7 @@ If any pre-flight check cannot be satisfied, stop and surface it; do not start t
 The operational differences from default inline are then:
 
 1. **Skip the preflight approval gate (Step 3a).** Still run the preflight explorer slot to build the plan (claimed or resumed the same way), but do not pause for approval — log the plan to `workspace/orchestrator/{project}/codex-session-plan.md` and proceed.
-2. **Auto-advance.** Run the Step 3b story loop for every approved incomplete story back to back. Do not pause between stories (Step 3b.10 already auto-advances; ralph-mode also skips the >10-story and session-mode pauses). All per-story invariants still hold: JSON-validate the worker return, enforce the worker-proof gate, verify parent-visible commits, mark `passes: true` only after verification, and update `state.json` after each story.
+2. **Auto-advance.** Run the Step 3b story loop for every approved incomplete story back to back. Do not pause between stories (Step 3b.10 already auto-advances; ralph-mode also skips the >10-story and session-mode pauses). All per-story invariants still hold: JSON-validate the worker return, enforce the worker-proof gate, verify parent-visible commits, mark `passes: true` only after verification, and update `state.json` after each story with `core/scripts/run-project-state.sh` (Step 3b.7).
 3. **Run regression gates on cadence.** Apply Step 3c every 3 completed stories exactly as in inline mode.
 4. **Report once.** Emit one compact line per story to the transcript (`[{story_id}] {status} · {files_changed} files · {first_commit_short_sha}`); send anything longer to `workspace/threads/journal/<date>/<story-id>.md`. Surface a single summary at the end rather than pausing throughout.
 5. **Bound wedge time.** A lane that never returns must not stall the run forever. Set the waiter's `deadline` file from the per-story budget (default ~20 min; honor `--timeout N` minutes if passed) — **not** the runner's `timeoutSecs`, which only prints a repeating warning and never kills, so on its own it bounds nothing and the waiter would loop for a `CONDUCT_EXIT` marker that never arrives. When the waiter returns `outcome: deadline`, the lane is **still running**: ask the runner to stop and wait for its `CONDUCT_EXIT` marker (dispatch protocol §5 — signalling the wrapper group never reaches the engine, which the runner spawns detached into a group of its own). Mark the story `blocked` with reason `TIMEOUT`, stop, and surface it either way. Retire the slot with `recycle --force` **only if the lane stopped cleanly and §5's confirmation reported `engine_gone=yes`** — that confirmation runs on every outcome, not just this one, so a `died` or `never-started` lane with a surviving engine group is held back the same way; if the marker never arrived or the group still has members, leave the slot `running`, say the engine may still be live, and let the user decide — reusing an unconfirmed slot puts the next worker in a lane the old one is still writing to. Do not silently move on. Slow back-pressure (e.g. heavy E2E) is the usual cause.

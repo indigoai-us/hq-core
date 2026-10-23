@@ -13,6 +13,10 @@
 # order. Nothing is printed when nothing matches or the prompt is a slash
 # command (the user already chose).
 #
+# `/startwork <slug>` with an exact manifest slug also runs
+# core/scripts/startwork-prefetch.sh, which binds the company and prints a
+# <startwork-prefetch> block (HQ_STARTWORK_PREFETCH=0 disables only that part).
+#
 # Disable with HQ_INTENT_HINT=0 or HQ_DISABLED_HOOKS=intent-hint.
 # Exit 0 always (additive context only).
 set -uo pipefail
@@ -28,6 +32,18 @@ HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.
 STDIN_JSON="$(cat 2>/dev/null || echo '{}')"
 PROMPT="$(printf '%s' "$STDIN_JSON" | hq_json_get prompt)"
 [ -n "$PROMPT" ] || exit 0
+# `/startwork <exact company slug>` gets the company half of /startwork done
+# here (bind + capability block + last thread) so the skill can skip it. The
+# script prints nothing for anything that is not an exact slug.
+case "$PROMPT" in
+  /startwork[[:space:]]*)
+    PREFETCH_SID="${HQ_HOOK_SESSION_ID:-}"
+    [ -n "$PREFETCH_SID" ] || PREFETCH_SID="$(printf '%s' "$STDIN_JSON" | hq_json_get session_id)"
+    PREFETCH="$HQ_ROOT/core/scripts/startwork-prefetch.sh"
+    env HQ_ROOT="$HQ_ROOT" bash "$PREFETCH" \
+      --prompt "$PROMPT" --session-id "$PREFETCH_SID" 2>/dev/null || true
+    ;;
+esac
 # A slash command still carries the ask in its arguments ("/startwork acme
 # summarize slack"). Drop the command token so the skill does not hint itself,
 # then match on what is left; a bare command stays silent.

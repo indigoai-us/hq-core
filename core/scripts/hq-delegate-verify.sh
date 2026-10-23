@@ -214,6 +214,23 @@ if [ "$REF_COUNT" -gt 0 ]; then
   while IFS= read -r kpath; do
     [ -n "$kpath" ] || continue
     REL="${kpath#companies/$COMPANY/}"
+    # A trailing slash names a FOLDER reference (feedback_e1bcf891). Probing it
+    # as dirname/basename asks the parent listing for a key that can never
+    # exist, so every folder reference failed and blocked the DM. A folder is
+    # proven present by a non-empty listing of the folder itself.
+    case "$REL" in
+      */)
+        LISTING="$(browse_parent "$REL")"
+        if [ -z "$(printf '%s' "$LISTING" | tr -d '[:space:]')" ] \
+           || [ "$(printf '%s' "$LISTING" | tr -d '[:space:]')" = "Noobjectsunderthatprefix." ]; then
+          echo "  FAIL  $REL — referenced folder is EMPTY or not in the vault (likely cause: its files were never pushed — hq sync push $kpath --company $COMPANY and re-run)"
+          FAILED=1
+        else
+          echo "  pass  $REL (folder)"
+        fi
+        continue
+        ;;
+    esac
     PARENT="$(dirname "$REL")/"
     BASE="$(basename "$REL")"
     LISTING="$(browse_parent "$PARENT")"

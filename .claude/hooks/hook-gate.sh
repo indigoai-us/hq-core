@@ -36,7 +36,7 @@ export BASH_ENV=/dev/null
 # Minimal: critical safety hooks
 is_in_minimal_profile() {
   case "$1" in
-    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|inject-policy-on-trigger|session-title|surface-company-infra-policy|conduct-lanes-link-deliver|image-context-guard|env-file-no-trailing-newline|block-credential-file-read|redact-credential-output)
+    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|super-conductor-merge-gate|block-env-dump|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|lanes-senior-monitor-stop-gate|block-unsafe-package-install|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|inject-policy-on-trigger|session-title|surface-company-infra-policy|conduct-lanes-link-deliver|conduct-link-inherit|image-context-guard|env-file-no-trailing-newline|block-credential-file-read|redact-credential-output)
       return 0
       ;;
     *)
@@ -48,7 +48,7 @@ is_in_minimal_profile() {
 # Standard: minimal + checkpoint/handoff + pattern learning + core governance + policy loading
 is_in_standard_profile() {
   case "$1" in
-    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|desktop-memory-leak-check|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard|env-file-no-trailing-newline|check-core-yaml-parity|block-credential-file-read|redact-credential-output)
+    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|super-conductor-merge-gate|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|desktop-memory-leak-check|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|enforce-final-message-link-placement|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|welcome-brief-ready|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|conduct-link-inherit|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard|env-file-no-trailing-newline|check-core-yaml-parity|block-credential-file-read|redact-credential-output)
       return 0
       ;;
     *)
@@ -60,7 +60,7 @@ is_in_standard_profile() {
 # Strict: standard + future quality hooks (reserved for expansion)
 is_in_strict_profile() {
   case "$1" in
-    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|desktop-memory-leak-check|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard|env-file-no-trailing-newline|check-core-yaml-parity|block-credential-file-read|redact-credential-output)
+    refresh-vault-access|block-hq-glob|block-hq-grep|warn-cross-company-settings|mandatory-scope-authorizer|detect-secrets|block-agent-secrets-reveal|lanes-repo-merge-hold|super-conductor-merge-gate|block-env-dump|auto-checkpoint-trigger|auto-checkpoint-precompact|hq-autocommit|hq-autocommit-bash-sweep|capture-estimates|precompact-thrashing-detector|observe-patterns|block-inline-story-impl|screenshot-resize-trigger|protect-core|block-core-writes|block-core-writes-bash|block-policy-writes-bash|enforce-vault-write-access|route-company-skill-creation|validate-policy-frontmatter|cleanup-mcp-processes|desktop-memory-leak-check|check-repo-active-runs|block-on-active-run|checkpoint-stop-gate|enforce-final-message-link-placement|lanes-senior-monitor-stop-gate|inject-codex-checkpoint-reprompt|inject-local-context|auto-startwork|welcome-brief-ready|conduct-lanes-session-start|auto-session-project|native-plan-project-sync|rewrite-resume-sentinel|mirror-thread-to-company|inject-policy-on-trigger|natural-language-router|intent-hint|route-deep-plan-to-skill|block-builtin-plan-mode-during-deep-plan|block-plans-dir-during-deep-plan|journal-autocapture|journal-due|journal-precompact|purge-policy-ledger-precompact|record-policy-retrieval|load-journal-index-on-start|block-unsafe-package-install|check-hq-update|check-stale-model-pin|check-client-health|repair-stale-review-base|block-hq-root-git-mutation|block-company-repo-creation|block-company-git-metadata|block-foreground-timeout-over-harness-ceiling|block-qmd-model-download|block-hq-worktree-session|enforce-capability-link-render|enforce-humanize-before-send|policy-enforcement-gate|session-title|surface-company-infra-policy|migrate-policy-triggers|hq-auto-acl-suggest|work-mesh-live|conduct-lanes-link-deliver|conduct-link-inherit|hq-monitor-guard|hq-monitor-session-hook|hq-monitor-session-start|merged-write-guard-shadow|merged-write-guard-shadow-refresh|usable-integrations|pr-fingerprint-footer|image-context-guard|env-file-no-trailing-newline|check-core-yaml-parity|block-credential-file-read|redact-credential-output)
       return 0
       ;;
     *)
@@ -214,6 +214,12 @@ hq_augment_path() {
   # a stable shim/bin dir are listed directly; nvm/fnm keep versioned dirs, so we
   # resolve the highest installed version. Homebrew + system come last.
   local candidates=()
+  # The HQ installer's managed toolchain (node, hq, qmd) comes first, in the
+  # same order compose-settings-path.sh uses, so the installer-managed hq wins
+  # over a stale copy in ~/.local/bin or a version manager. The path contains
+  # spaces; candidates are always quoted below.
+  local toolchain="${HQ_TOOLCHAIN_DIR:-$home/Library/Application Support/Indigo HQ/toolchain}"
+  candidates+=("$toolchain/node/bin" "$toolchain/npm-global/bin")
   [ -n "${VOLTA_HOME:-}" ] && candidates+=("$VOLTA_HOME/bin")
   candidates+=("$home/.volta/bin")
   [ -n "${ASDF_DATA_DIR:-}" ] && candidates+=("$ASDF_DATA_DIR/shims")
@@ -329,7 +335,18 @@ if [ -z "$HQ_ROOT_RESOLVED" ]; then
   anywhere_enabled=true
   if [ -n "$self_dir" ] && command -v node >/dev/null 2>&1 \
     && [ -f "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs" ]; then
-    anywhere_enabled="$(node "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs" || printf true)"
+    if [ -f "$self_dir/../../core/scripts/hqd-hook-flag-cache-lib.sh" ]; then
+      # Live, bounded read in a subshell; see hq_anywhere_flag_live_read
+      # (feedback_a5c390e9).
+      anywhere_enabled="$(
+        # shellcheck disable=SC1091
+        . "$self_dir/../../core/scripts/hqd-hook-flag-cache-lib.sh" 2>/dev/null \
+          && hq_anywhere_flag_live_read "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs"
+      )" || anywhere_enabled=true
+      [ -n "$anywhere_enabled" ] || anywhere_enabled=true
+    else
+      anywhere_enabled="$(node "$self_dir/../../core/scripts/hq-anywhere-runtime-flag.cjs" || printf true)"
+    fi
   fi
   case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in false|0) anywhere_enabled=false;; esac
   if [ "$anywhere_enabled" != "false" ] && [ -n "$self_dir" ] \
@@ -500,13 +517,23 @@ stop_hook_timeout_watchdog() {
   hook_timeout_watchdog_session=0
 }
 
+# Windows Git Bash/MSYS/Cygwin: setsid() drops the hidden console that the
+# desktop host gave this hook, so every native program the detached child runs
+# (node, powershell, curl) opens a visible console window. Only use setsid on
+# real POSIX hosts; on MSYS a plain background child keeps the hidden console.
+hq_setsid_available() {
+  # OSTYPE (set by bash itself) avoids forking uname on the hook hot path.
+  case "${OSTYPE:-}" in msys*|cygwin*) return 1 ;; esac
+  command -v setsid >/dev/null 2>&1
+}
+
 if hook_timeout_watchdog_enabled; then
   # Test-only arming receipt. It is deliberately written by the foreground
   # gate, rather than the asynchronous helper, so disable coverage does not
   # depend on scheduler timing.
   [ -z "${HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE:-}" ] \
     || : > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE}" 2>/dev/null || true
-  if command -v setsid >/dev/null 2>&1; then
+  if hq_setsid_available; then
     setsid bash "$HOOK_TIMEOUT_WATCHDOG" \
       --root "$HQ_ROOT_RESOLVED" \
       --source hook-gate \

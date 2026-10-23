@@ -132,6 +132,23 @@ diagnostic() {
     "$(scrub_value "$request_id")" "$safe_org" "$safe_scope" "$extra" >&2
 }
 
+# Git Bash rewrites a bare /tmp/x argument into a Windows path before it
+# starts a native curl.exe, but it leaves "@/tmp/x" alone because the argument
+# does not start with a slash. Mingw curl then cannot open the file and the
+# request fails with status 000. Convert the file part ourselves on MSYS.
+curl_file_path() {
+  local path="$1"
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -w -- "$path" 2>/dev/null || printf '%s' "$path"
+        return 0
+      fi
+      ;;
+  esac
+  printf '%s' "$path"
+}
+
 request_once() {
   local curl_args=(-sS -o "$RESPONSE_BODY" -w '%{http_code}' -X "$METHOD")
   if [ "$USE_AUTH" -eq 1 ]; then
@@ -143,14 +160,14 @@ request_once() {
   if [ -n "$DATA" ]; then
     curl_args+=(--data "$DATA")
   elif [ -n "$UPLOAD_FILE" ]; then
-    curl_args+=(--data-binary "@$UPLOAD_FILE")
+    curl_args+=(--data-binary "@$(curl_file_path "$UPLOAD_FILE")")
   else
     for form_value in "${FORM_STRINGS[@]}"; do
       curl_args+=(--form-string "$form_value")
     done
     for form_file in "${FORM_FILES[@]}"; do
       form_name="${form_file%%=*}"
-      form_path="${form_file#*=}"
+      form_path="$(curl_file_path "${form_file#*=}")"
       curl_args+=(--form "$form_name=@$form_path;type=application/gzip;filename=upload.tar.gz")
     done
   fi

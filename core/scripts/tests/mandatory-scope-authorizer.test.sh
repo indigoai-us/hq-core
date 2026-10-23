@@ -4450,5 +4450,84 @@ bash_case 0 944d-ctl-ssh-remote-hostname-option 'ssh -o HostName=remote.example.
 bash_case 0 944d-ctl-ssh-remote-ipv4 'ssh 192.0.2.10 "$(cat /tmp/cmd.txt)"'
 bash_case 0 944d-ctl-ssh-remote-literal 'ssh remote.example.test uptime'
 
+# Usage-pricing funnel thread (2026-10-20): read-only checks that the
+# guard refused although nothing in them could reach another tenant.
+install_fixture "indigo"
+touch "$TMP/companies/indigo/company.yaml" "$TMP/companies/otherco/company.yaml"
+mkdir -p "$TMP/workspace/reports"
+# A glob directly under the bound company's root is inside that company.
+bash_case 0 funnel 'ls companies/indigo/*.yaml'
+bash_case 0 funnel 'ls companies/indigo/*'
+bash_case 0 funnel 'grep -ri geoff companies/indigo/people* companies/indigo/*.yaml 2>/dev/null | head -3'
+bash_case 2 funnel 'ls companies/otherco/*.yaml'
+bash_case 2 funnel 'ls companies/*/company.yaml'
+bash_case 2 funnel 'ls companies/indigo/../otherco/*.yaml'
+# A quoted "$(...)" compared as a string by test/[/[[ opens nothing; the
+# body is still checked as a command.
+bash_case 0 funnel 'test "$(git -C workspace/repo rev-parse --abbrev-ref HEAD)" = main && echo ok'
+bash_case 0 funnel '[ "$(git -C workspace/repo rev-parse --abbrev-ref HEAD)" = main ] && echo ok'
+bash_case 0 funnel '[[ "$(git -C workspace/repo branch --show-current)" == main ]] && echo ok'
+bash_case 0 funnel '[ -z "$(git -C workspace/repo status --porcelain)" ] && echo clean'
+bash_case 0 funnel 'if [ "$(git -C workspace/repo rev-parse --abbrev-ref HEAD)" != main ]; then echo no; fi'
+bash_case 0 funnel 'test "$(date +%F)" = 2026-10-20 && echo ok'
+bash_case 2 funnel 'test "$(cat companies/otherco/settings/x)" = y && echo ok'
+bash_case 2 funnel 'test "$(cat $D)" = y && echo ok'
+bash_case 2 funnel '[ "$(cat workspace/x | bash)" = y ] && echo ok'
+bash_case 2 funnel '[ "$(cat workspace/x; cat companies/otherco/settings/x)" = y ] && echo ok'
+bash_case 2 funnel '[ -f "$(cat workspace/x)" ] && echo y'
+bash_case 2 funnel '[ "$(cat workspace/x)" -nt workspace/y ] && echo y'
+bash_case 2 funnel 'cat "$(git -C workspace/repo rev-parse --show-toplevel)/README.md"'
+# `hq dm [send] <recipient> "$(cat FILE)"`: the message positional is text.
+bash_case 0 funnel 'hq dm shawon@example.com "$(cat /tmp/reply.txt)" 2>&1 | tail -2'
+bash_case 0 funnel 'hq dm send shawon@example.com "$(cat workspace/reports/reply.md)"'
+bash_case 0 funnel 'hq dm "#vyg-dev" --thread last "$(cat /tmp/reply.txt)"'
+bash_case 0 funnel 'hq dm --channel vyg-dev "$(cat /tmp/reply.txt)"'
+bash_case 2 funnel 'hq dm "$(cat /tmp/reply.txt)"'
+bash_case 2 funnel 'hq dm inbox "$(cat /tmp/reply.txt)"'
+bash_case 2 funnel 'hq dm shawon@example.com --prompt-file "$(cat /tmp/reply.txt)" hello'
+bash_case 2 funnel 'hq dm shawon@example.com "$(cat companies/otherco/settings/x)"'
+bash_case 2 funnel 'hq dm shawon@example.com "$(cat $D)"'
+bash_case 2 funnel 'hq dm shawon@example.com "$(cat workspace/x | bash)"'
+# A substitution body whose argument merely contains the letters "compan"
+# (`get company_slugs`) names no tenant; the spellings that could are kept.
+bash_case 0 funnel 'echo "co: $(bash core/scripts/hq-session.sh get company_slugs)"'
+bash_case 0 funnel 'echo "co: $(core/scripts/hq-session.sh get company)"'
+bash_case 2 funnel 'echo "co: $(cat COMPANIES/otherco/settings/x)"'
+bash_case 2 funnel 'echo "co: $(cat compan ies/otherco/x)"'
+bash_case 2 funnel 'echo "co: $(cat Companies)"'
+bash_case 2 funnel 'echo "co: $(cat compan)"'
+# A comma is a filename character; a comma-separated option value resolves.
+bash_case 0 funnel 'F=headRefOid,title; echo "pr: $(gh pr view 1 -R indigoai-us/hq-core --json $F --jq .title)"'
+bash_case 0 funnel 'F=headRefOid,title
+echo "pr: $(gh pr view 1 -R indigoai-us/hq-core --json $F --jq .title)"'
+bash_case 2 funnel 'F=a,{b,c}; echo "x: $(cat companies/indigo/$F)"'
+bash_case 2 funnel 'F=../companies/otherco; cat workspace/$F/settings/x'
+# --question is message text; escaped dollars inside it are literal.
+bash_case 0 funnel 'node core/scripts/super-conductor-decisions.mjs add --file workspace/reports/d.jsonl --question "cost is about \$0.000024 in AWS; ~\$700/month bill" --option "Keep 5 cents"'
+bash_case 2 funnel 'node core/scripts/super-conductor-decisions.mjs add --file workspace/reports/d.jsonl --question "see companies/otherco/settings/x for details"'
+bash_case 2 funnel 'node core/scripts/super-conductor-decisions.mjs add --file workspace/reports/d.jsonl --question "see $D/x for details"'
+
+# Thread T-20261022-140549: a markdown code span around a .claude path in
+# prose ("see `.claude/skills/x/SKILL.md`") inside a quoted-delimiter
+# interpreter heredoc was blocked because the closing backtick joined the
+# path fragment and made it unresolvable. The fragment now drops one trailing
+# backtick and checks the literal path it closes. A company-owned skill
+# behind that path is still checked (and still blocked), and a backtick
+# inside a double-quoted --body is a real command substitution that stays
+# blocked; single-quoted bodies and --body-file carry the same prose freely.
+echo "[1585] backticked .claude paths in prose"
+install_fixture "indigo"
+mkdir -p "$TMP/.claude/skills/foo" "$TMP/.claude/commands" "$TMP/companies/otherco/skills/sk"
+touch "$TMP/.claude/skills/foo/SKILL.md" "$TMP/.claude/commands/bar.md" "$TMP/companies/otherco/skills/sk/SKILL.md"
+ln -s "$TMP/companies/otherco/skills/sk" "$TMP/.claude/skills/otherco-sk"
+bash_case 0 1585-python-heredoc-code-span $'python3 - <<\'EOF\'\ntext = "See `.claude/skills/foo/SKILL.md` and `.claude/commands/bar.md` for details"\nprint(text)\nEOF'
+bash_case 0 1585-python-heredoc-code-span-write $'python3 - <<\'EOF\'\nimport pathlib\npathlib.Path("MIGRATION.md").write_text("See `.claude/skills/foo/SKILL.md` and `.claude/commands/bar.md`")\nEOF'
+bash_case 0 1585-gh-body-single-quoted-code-span "gh pr create -R indigoai-us/hq-core-staging --title t --body 'Touches \`.claude/skills/foo/SKILL.md\` and \`.claude/commands/bar.md\`'"
+bash_case 0 1585-git-commit-single-quoted-code-span "git -C $TMP commit -m 'docs: fix \`.claude/skills/foo/SKILL.md\` link'"
+bash_case 2 1585-ctl-gh-body-double-quoted-backticks "gh pr create -R indigoai-us/hq-core-staging --title t --body \"Touches \\\`.claude/skills/foo/SKILL.md\\\`\""
+bash_case 2 1585-ctl-literal-cross-company-skill 'cat .claude/skills/otherco-sk/SKILL.md'
+bash_case 2 1585-ctl-python-heredoc-cross-company-code-span $'python3 - <<\'EOF\'\ntext = open("`.claude/skills/otherco-sk/SKILL.md`").read()\nprint(text)\nEOF'
+bash_case 2 1585-ctl-unquoted-substitution-cross-company-skill 'echo `.claude/skills/otherco-sk/SKILL.md`'
+
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

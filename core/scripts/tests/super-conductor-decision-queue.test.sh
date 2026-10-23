@@ -47,13 +47,16 @@ sc = body(sc_path)
 dq = body(dq_path)
 
 # --- super-conductor: /decision-queue is the only owner-facing ask path ---
-need(sc, r"`/decision-queue` is the only way", "names /decision-queue as the only ask path", sc_path)
+need(sc, r"The decision queue \(`workspace/reports/conduct/<link>-decisions.jsonl`", "names the decision queue as the only ask path", sc_path)
+need(sc, r"the `/decision-desk` session \(Step 2b\) is the only\s+place a picker opens", "names the decision desk as the only picker surface", sc_path)
+need(sc, r"This session never calls `AskUserQuestion` for an owner decision", "the conductor opens no owner picker itself", sc_path)
+need(sc, r"open-asks.mjs check", "checks the source window before queueing or relaying an ask", sc_path)
 need(sc, r"Never end a turn with a question to the owner in prose",
      "forbids ending a turn with a prose owner question", sc_path)
-for kind in ("merges", "sends", "replies", "product choices", "picks between options",
+for kind in ("merges", "sends", "replies", "product choices", r"picks between\s+options",
              "approvals", "unblocks"):
-    need(sc, re.escape(kind), f"lists '{kind}' as a decision-queue item", sc_path)
-need(sc, r"one picker per item", "one picker per item", sc_path)
+    need(sc, kind, f"lists '{kind}' as a decision-queue item", sc_path)
+need(sc, r"one picker per row", "one picker per row", sc_path)
 need(sc, r"recommended option first", "recommended option first", sc_path)
 need(sc, r"Status-only updates", "status-only updates stay prose", sc_path)
 need(sc, r"tell me your picks", "names the 'tell me your picks' failure", sc_path)

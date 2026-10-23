@@ -18,6 +18,7 @@
 # "unscoped". A date-global counter let concurrent Claude and Codex tasks
 # trigger and reset each other's journal reminders.
 #
+# HQ_JOURNAL_COUNTER_NOW overrides epoch seconds only in the counter-lock age check, for deterministic tests.
 # All commands fail-soft: warn to stderr, exit 0 — never block the caller.
 
 set -uo pipefail
@@ -128,12 +129,59 @@ resolve_session_key() {
 }
 
 # Read-modify-write on the counter must not interleave across concurrent tasks.
+counter_lock_is_aged() {
+  local lockdir="$1" lock_mtime now
+  lock_mtime="$(stat -c %Y "$lockdir" 2>/dev/null)" || lock_mtime="$(stat -f %m "$lockdir" 2>/dev/null)" || return 1
+  now="${HQ_JOURNAL_COUNTER_NOW:-$(date -u +%s 2>/dev/null)}"
+  [ -n "$now" ] || return 1
+  case "$lock_mtime:$now" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  [ "$now" -ge "$lock_mtime" ] && [ "$((now - lock_mtime))" -ge 60 ]
+}
+
+counter_windows_pid_is_alive() {
+  local pid="$1" output
+  case "${OSTYPE:-}" in msys*|cygwin*|win32*) ;; *) return 1 ;; esac
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  output="$(MSYS_NO_PATHCONV=1 tasklist.exe /FO CSV /NH /FI "PID eq $pid" 2>/dev/null)" || return 1
+  printf '%s\n' "$output" | tr -d '\r"' | cut -d, -f2 | grep -Fxq "$pid"
+}
+
+counter_lock_owner_is_alive() {
+  local lockdir="$1" owner_pid="$2" windows_pid
+  kill -0 "$owner_pid" 2>/dev/null && return 0
+  windows_pid="$(cat "$lockdir/winpid" 2>/dev/null || true)"
+  if [ -n "$windows_pid" ]; then
+    counter_windows_pid_is_alive "$windows_pid" && return 0
+  elif counter_windows_pid_is_alive "$owner_pid"; then
+    # Old native clients wrote only a Win32 process.pid to pid.
+    return 0
+  fi
+  return 1
+}
+
 reclaim_stale_counter_lock() {
-  local lockdir="$1" owner_pid current_owner claim stale_dir suffix=0
+  local lockdir="$1" owner_pid current_owner current_windows_pid windows_pid owner_token current_token claim stale_dir suffix=0 pidless=0
   owner_pid="$(cat "$lockdir/pid" 2>/dev/null || true)"
-  case "$owner_pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$owner_pid" -gt 1 ] 2>/dev/null || return 1
-  kill -0 "$owner_pid" 2>/dev/null && return 1
+  owner_token="$(cat "$lockdir/owner-token" 2>/dev/null || true)"
+  case "$owner_pid" in
+    '')
+      windows_pid="$(cat "$lockdir/winpid" 2>/dev/null || true)"
+      if [ -n "$windows_pid" ]; then
+        counter_windows_pid_is_alive "$windows_pid" && return 1
+      fi
+      # The complete counter retry window is 5 seconds (250 x 20 ms). A
+      # PID-less lock is reclaimable after one minute, twelve retry windows,
+      # allowing for a creator paused between mkdir and writing pid. The stat
+      # fallback keeps this elapsed-time threshold consistent on GNU/BSD find.
+      counter_lock_is_aged "$lockdir" || return 1
+      pidless=1
+      ;;
+    *[!0-9]*) return 1 ;;
+    *)
+      [ "$owner_pid" -gt 1 ] 2>/dev/null || return 1
+      counter_lock_owner_is_alive "$lockdir" "$owner_pid" && return 1
+      ;;
+  esac
 
   claim="${lockdir}.reclaim"
   mkdir "$claim" 2>/dev/null || return 1
@@ -143,7 +191,21 @@ reclaim_stale_counter_lock() {
   fi
 
   current_owner="$(cat "$lockdir/pid" 2>/dev/null || true)"
-  if [ "$current_owner" = "$owner_pid" ] && ! kill -0 "$owner_pid" 2>/dev/null; then
+  current_windows_pid="$(cat "$lockdir/winpid" 2>/dev/null || true)"
+  current_token="$(cat "$lockdir/owner-token" 2>/dev/null || true)"
+  if [ "$pidless" -eq 1 ]; then
+    # Recheck both identity and age after winning the claim, before renaming.
+    if [ -z "$current_owner" ] && [ "$current_windows_pid" = "$windows_pid" ] \
+      && { [ -z "$current_windows_pid" ] || ! counter_windows_pid_is_alive "$current_windows_pid"; } \
+      && counter_lock_is_aged "$lockdir"; then
+      owner_pid=""
+    else
+      owner_pid="changed"
+    fi
+  fi
+  if [ "$current_owner" = "$owner_pid" ] && [ "$current_windows_pid" = "${windows_pid:-$(cat "$lockdir/winpid" 2>/dev/null || true)}" ] \
+    && [ "$current_token" = "$owner_token" ] \
+    && { [ "$pidless" -eq 1 ] || ! counter_lock_owner_is_alive "$lockdir" "$owner_pid"; }; then
     stale_dir="${lockdir}.stale.$$.$RANDOM"
     while [ -e "$stale_dir" ]; do
       suffix=$((suffix + 1))
@@ -160,33 +222,111 @@ reclaim_stale_counter_lock() {
   return 1
 }
 
+reclaim_stale_counter_tempdirs() {
+  local lockdir="$1" candidate owner_pid windows_pid owner_token current_pid current_windows current_token stale_dir suffix=0
+  # Publishers create <lock>.tmp.XXXXXX. Older native hq-cli builds used
+  # <lock>.tmp-XXXXXX, so reclaim aged orphans with either prefix.
+  for candidate in "${lockdir}.tmp."* "${lockdir}.tmp-"*; do
+    [ -d "$candidate" ] || continue
+    counter_lock_is_aged "$candidate" || continue
+    owner_pid="$(cat "$candidate/pid" 2>/dev/null || true)"
+    windows_pid="$(cat "$candidate/winpid" 2>/dev/null || true)"
+    owner_token="$(cat "$candidate/owner-token" 2>/dev/null || true)"
+    case "$owner_pid" in
+      '')
+        if [ -n "$windows_pid" ] && counter_windows_pid_is_alive "$windows_pid"; then continue; fi
+        ;;
+      *[!0-9]*) continue ;;
+      *)
+        [ "$owner_pid" -gt 1 ] 2>/dev/null || continue
+        counter_lock_owner_is_alive "$candidate" "$owner_pid" && continue
+        ;;
+    esac
+    current_pid="$(cat "$candidate/pid" 2>/dev/null || true)"
+    current_windows="$(cat "$candidate/winpid" 2>/dev/null || true)"
+    current_token="$(cat "$candidate/owner-token" 2>/dev/null || true)"
+    [ "$current_pid" = "$owner_pid" ] && [ "$current_windows" = "$windows_pid" ] \
+      && [ "$current_token" = "$owner_token" ] && counter_lock_is_aged "$candidate" || continue
+    [ -z "$current_pid" ] || ! counter_lock_owner_is_alive "$candidate" "$current_pid" || continue
+    [ -z "$current_windows" ] || ! counter_windows_pid_is_alive "$current_windows" || continue
+    stale_dir="${candidate}.stale.$$.$RANDOM"
+    while [ -e "$stale_dir" ]; do suffix=$((suffix + 1)); stale_dir="${candidate}.stale.$$.$RANDOM.$suffix"; done
+    if mv "$candidate" "$stale_dir" 2>/dev/null; then rm -rf "$stale_dir" 2>/dev/null || true; fi
+  done
+}
+
 with_counter_lock() {
   local lockdir="$1"; shift
-  local i=0 acquired=0 rc=0 tries="${HQ_JOURNAL_COUNTER_LOCK_TRIES:-250}"
+  local i=0 acquired=0 rc=0 tries="${HQ_JOURNAL_COUNTER_LOCK_TRIES:-250}" owner_token tempdir windows_pid token_file publish_claim
   case "$tries" in ''|*[!0-9]*) tries=250 ;; esac
   while [ "$i" -lt "$tries" ]; do
-    if mkdir "$lockdir" 2>/dev/null; then
-      acquired=1
-      if ! printf '%s\n' "$$" > "$lockdir/pid" 2>/dev/null; then
-        rm -rf "$lockdir" 2>/dev/null || true
-        return 0
+    reclaim_stale_counter_tempdirs "$lockdir"
+    # Publish a complete owner record in one rename. Legacy clients may still
+    # leave PID-less lock directories, which the age-based reclaim handles.
+    tempdir="$(mktemp -d "${lockdir}.tmp.XXXXXX" 2>/dev/null)" || tempdir=""
+    if [ -n "$tempdir" ]; then
+      owner_token="$$.$RANDOM.$RANDOM.$(date -u +%s 2>/dev/null)"
+      if [[ "${OSTYPE:-}" == msys* ]] || [[ "${OSTYPE:-}" == cygwin* ]]; then
+        windows_pid="$(cat "/proc/$$/winpid" 2>/dev/null || true)"
+        case "$windows_pid" in ''|*[!0-9]*) windows_pid="" ;; esac
+        if [ -n "$windows_pid" ] && ! printf '%s\n' "$windows_pid" > "$tempdir/winpid"; then rm -rf "$tempdir"; tempdir=""; fi
       fi
-      break
+      if [ -n "$tempdir" ] && printf '%s\n' "$$" > "$tempdir/pid" \
+        && printf '%s\n' "$owner_token" > "$tempdir/owner-token"; then
+        # Serialize publishers so mv cannot interpret a concurrently-created
+        # lock directory as a destination directory and nest the temp folder.
+        publish_claim="${lockdir}.publish"
+        if mkdir "$publish_claim" 2>/dev/null; then
+          # Exclusive token creation fences a publisher resumed after a stale
+          # PID-less claim was reclaimed and reused by another process.
+          if (set -C; printf '%s\n' "$owner_token" > "$publish_claim/owner-token") 2>/dev/null \
+            && [ "$(cat "$publish_claim/owner-token" 2>/dev/null || true)" = "$owner_token" ] \
+            && (set -C; printf '%s\n' "$$" > "$publish_claim/pid") 2>/dev/null \
+            && [ "$(cat "$publish_claim/owner-token" 2>/dev/null || true)" = "$owner_token" ] \
+            && [ ! -e "$lockdir" ] && mv "$tempdir" "$lockdir" 2>/dev/null; then :; fi
+          if [ "$(cat "$publish_claim/owner-token" 2>/dev/null || true)" = "$owner_token" ]; then
+            rm -rf "$publish_claim" 2>/dev/null || true
+          fi
+        else
+          rm -rf "$tempdir" 2>/dev/null || true
+          reclaim_stale_counter_lock "$publish_claim" && continue
+        fi
+        if [ ! -e "$tempdir" ] && [ "$(cat "$lockdir/owner-token" 2>/dev/null || true)" = "$owner_token" ]; then
+          acquired=1
+          rmdir "$tempdir" 2>/dev/null || true
+          token_file="$lockdir/owner-token"
+          if [ "$(cat "$token_file" 2>/dev/null || true)" = "$owner_token" ]; then
+            "$@" "$owner_token"
+            rc=$?
+            if [ "$rc" -eq 75 ]; then
+              acquired=0
+              i=$((i + 1))
+              continue
+            fi
+            if [ "$(cat "$token_file" 2>/dev/null || true)" = "$owner_token" ]; then
+              rm -rf "$lockdir" 2>/dev/null || true
+            fi
+            return "$rc"
+          fi
+          acquired=0
+          i=$((i + 1))
+          continue
+        fi
+        if [ ! -e "$tempdir" ]; then rm -rf "$lockdir/$(basename "$tempdir")" 2>/dev/null || true; fi
+      fi
+      if [ -n "$tempdir" ]; then rm -rf "$tempdir" 2>/dev/null || true; fi
     fi
     reclaim_stale_counter_lock "$lockdir" && continue
     i=$((i + 1))
     [ "$i" -ge "$tries" ] || sleep 0.02 2>/dev/null || sleep 1
   done
-  if [ "$acquired" -ne 1 ]; then
-    warn "tool-counter: lock remained busy; skipped update"
-    return 0
-  fi
+  warn "tool-counter: lock remained busy; skipped update"
+  return 0
+}
 
-  "$@" || rc=$?
-  if [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$$" ]; then
-    rm -rf "$lockdir" 2>/dev/null || true
-  fi
-  return "$rc"
+counter_lock_token_is_current() {
+  local lockdir="$1" owner_token="$2"
+  [ -n "$owner_token" ] && [ "$(cat "$lockdir/owner-token" 2>/dev/null || true)" = "$owner_token" ]
 }
 
 counter_read_raw() {
@@ -398,8 +538,10 @@ case "$cmd" in
     case "$sub" in
       increment)
         do_increment() {
-          local n
+          local owner_token="${1:-}" n
+          counter_lock_token_is_current "$lockdir" "$owner_token" || return 75
           n=$(counter_read_raw "$counter")
+          counter_lock_token_is_current "$lockdir" "$owner_token" || return 75
           echo $((n + 1)) > "$counter" 2>/dev/null || true
         }
         with_counter_lock "$lockdir" do_increment
@@ -408,7 +550,11 @@ case "$cmd" in
         printf '%d\n' "$(counter_read_raw "$counter")"
         ;;
       reset)
-        do_reset() { echo 0 > "$counter" 2>/dev/null || true; }
+        do_reset() {
+          local owner_token="${1:-}"
+          counter_lock_token_is_current "$lockdir" "$owner_token" || return 75
+          echo 0 > "$counter" 2>/dev/null || true
+        }
         with_counter_lock "$lockdir" do_reset
         ;;
       *) warn "tool-counter: subcommand required (increment|read|reset)" ;;
