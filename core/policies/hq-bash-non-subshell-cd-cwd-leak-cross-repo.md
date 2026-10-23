@@ -31,9 +31,6 @@ Do NOT trust an earlier `cd` to "set up" a repo context for later calls. If a la
 This rule also applies inside shell scripts that are themselves invoked from a Bash tool call: a script that does `cd $WORKDIR` without a subshell and then exits leaves the parent Bash tool cwd unchanged (script ran in a subprocess), but a script that's `source`d or whose contents are inlined into the tool call WILL drift parent cwd. Prefer explicit `pushd`/`popd` pairs or subshells inside scripts that change directory.
 
 ## Rationale
-
-Session 2026-05-28: a `/handoff` mid-session wrote HQ thread file, handoff.json, and INDEX.md commits INTO `repos/private/<some-repo>` instead of HQ root. Root cause traced to an earlier Bash tool call that started with `cd repos/private/<some-repo>; ...` without a subshell. The Bash tool's persistent cwd meant every subsequent call ran from inside the staging repo, including `handoff-finalize.sh`'s `git add` / `git commit` lines that used cwd-relative resolution.
-
 This is a distinct failure mode from `hq-parallel-bash-cwd-prefix` (parallel calls leaking cwd to siblings) and `hq-anchor-repo-build-cwd` (a later build picking the wrong repo because cwd persisted). Those two policies are correct but did not surface "cross-repo git commit contamination via handoff-finalize" as a concrete bite. Codifying it here so future sessions reject the `cd <path>; ...` pattern at authoring time and reach for `( cd /abs && ... )`, `git -C /abs`, or absolute paths instead.
 
 Mechanical follow-up worth considering separately: a PreToolUse Bash hook that flags any tool call whose first token is `cd ` (without enclosing parens) and either warns or blocks unless the call is wrapped in a subshell. Not part of this policy — captured here as future work.

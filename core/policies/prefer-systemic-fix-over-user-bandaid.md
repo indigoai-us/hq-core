@@ -24,17 +24,6 @@ Individual-user unblocks also leak diagnostic surface. If only one user has the 
 
 This policy compounds with `hq-fix-root-cause-not-symptoms`: that one bans masking errors at the UI layer; this one bans masking them at the operator layer.
 
-## Examples
-
-**Correct:**
-- "{your-name}'s `/designate-team` failed because hq-cli still defaulted to the dev Cognito pool in the create-hq bootstrapper. Fixing `packages/create-hq/src/auth.ts` so prod is the only default; bumping create-hq, ship release. Everyone upgrades, everyone is unblocked."
-- "Service export 500s for one customer because of an integration ID drift. Removing the dead ID from the union type at the source; new release ships in next deploy; reproduces zero-out for all tenants."
-
-**Incorrect:**
-- "Layer A: have Corey run `export HQ_VAULT_API_URL=…`. Layer B: we'll patch the CLI when we get to it."
-- "Add a try/catch around the personal sync 401 so it doesn't abort the run." (Masks the auth-path bug — see `hq-fix-root-cause-not-symptoms`.)
-- "Customer can use the dashboard while we fix the API." (If the API is broken for that customer, it's broken for all of them in the same code path; ship the fix.)
-
 ## Related
 
 - `hq-fix-root-cause-not-symptoms.md` — sibling policy: never mask errors at the UI layer.

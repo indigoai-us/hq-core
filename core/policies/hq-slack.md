@@ -91,4 +91,3 @@ All three must return quoted JSON with `"ok": true`. If any returns the bare-ide
 **Rationale:** Initial debugging treated it as a JSON parser bug in the client library; actual root cause was that the bot token had `chat:write` only and was not invited into the target channel. The Slack API surfaces this ambiguity as a non-JSON 200 response instead of a clean error code, which is the worst possible error shape: the HTTP layer says "success" but the payload is unparseable. `auth.test` is not a proxy for "the bot can do the thing you're about to ask it to do." Always probe the exact operation with the exact scope requirements before declaring a Slack integration healthy.
 
 Observed in the signup-safeguards heartbeat work 2026-04-22: a Slack notification poster succeeded on `auth.test` (confirming token validity) but every `chat.postMessage` returned the schema-echo pseudo-JSON.
-

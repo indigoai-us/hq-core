@@ -52,7 +52,3 @@ ls -l /proc/<claude-pid>/fd | grep pressure   # armed watcher holds /proc/pressu
 ```
 
 These were verified in Claude Code 2.1.215, 2.1.263, and 2.1.271: the 30-minute idle constant is `1800000`, and the reason code `memory_pressure` maps to the kill message.
-
-## Rationale
-
-On 2026-09-14 an operator's idle `until … sleep 120` pollers were killed dozens of times over several hours, each 30–180 s after being re-armed, while `free` showed 34 GB available. There were no kernel OOM events, no memcg limits, and oomd was disabled. The cause was the CLI's PSI reap. Peak rolling-2s memory stall ran just under the trigger, and it crossed during reclaim bursts on a 16-core host at load average 42–52 with about 15.6k file refaults/sec. Re-arming the loop could never work, and blaming RAM sent the diagnosis the wrong way. Detached processes survived the whole time.

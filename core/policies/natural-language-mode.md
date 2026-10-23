@@ -169,6 +169,11 @@ Natural Language Mode is not only about the first turn. Once work is underway, "
 
 The test: if this session died right now, a fresh session reading `workspace/threads/`, the journal, and the project folder could pick up the thread without re-deriving what was learned. That is the durable-memory bar Natural Language Mode holds itself to.
 
+## Sample
+
+User: "why does checkout fail sometimes?"
+> Reading this as a debugging task: running `/diagnose`.
+
 ## Relationship to other rules
 
 | Rule | Relationship |
@@ -182,44 +187,6 @@ The test: if this session died right now, a fresh session reading `workspace/thr
 | `credential-access-protocol` | **Inherited and strict.** Context resolution never guesses or crosses company credentials. |
 | Charter irreversible-action rules | **Strictly inherited.** The ⚠ gate never weakens them. |
 | Explicit slash commands typed by the user | **Honored literally.** Do not re-infer or override an explicit command. |
-
-## Examples
-
-**Clear cheap route — proceed**
-
-User: "why does the acme checkout 500 sometimes?"
-> Reading this as a debugging task → running `/diagnose` (intermittent, so diagnose not investigate). Resolving acme context now.
-
-*(proceeds)*
-
-**Clear heavy route — announce then stop**
-
-User: "ok ship the acme cart PR"
-> Reading this as a land request → `/land` on the acme cart PR. This merges and monitors production. Confirm and I'll start.
-
-*(waits for go)*
-
-**Context resolution then route**
-
-User: "let's keep going on the thing from yesterday"
-> Checking `workspace/threads/handoff.json` for the last project… picking up the `northwind/scheduling-v2` story. Reading this as resume-work → `/startwork northwind`, then continuing US-003.
-
-**Genuine ambiguity — one tight question**
-
-User: "plan the new onboarding flow"
-> "Plan" could be a quick PRD or a full deep-plan. Which fits?
->   1. `/prd` — one-question-at-a-time interview on the grilling engine
->   2. `/deep-plan` — research subagents + 3-tier interview (large/strategic)
-
-**Explicit command — honored, not re-inferred**
-
-User: "/review"
-> *(runs `/review` directly — no intent inference, no re-routing)*
-
-**Builder intent**
-
-User: "I want to tweak the secrets-handling policy"
-> HQ-core edit → editing the policy in the hq-core source repo on a feature branch. Narrowing to the secrets policies now.
 
 ## Verification
 

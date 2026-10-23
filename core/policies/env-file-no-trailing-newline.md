@@ -49,12 +49,6 @@ Related defense in depth (installed the same day):
 - `repos/private/acme-platform/apps/api/src/router.test.ts` — regression test pins the byte-exact compare.
 - `repos/private/acme-comms/.github/workflows/smoke-crm-auth.yml` — nightly smoke test hitting `/api/agent/health` with the real `AGENT_API_KEY` from AWS SM.
 
-## Examples
-
-- **Block (hard, exit 2):** Write `/path/.env.prod` with content `API_SECRET="abc\n"`.
-- **Allow:** Write the same file with `API_SECRET=abc` or `API_SECRET="abc"`.
-- **Allow:** `ANTHROPIC_API_KEY=sk-ant-api03-...` (no quotes, no trailing whitespace).
-
 ## Related artifacts
 
 - Hook: `.claude/hooks/env-file-no-trailing-newline.sh`

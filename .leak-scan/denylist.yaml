@@ -44,7 +44,6 @@ persons:
 domains:
   coreyepstein.com: "{your-domain}.com"
   getindigo.ai: "{your-domain}.ai"
-  vyg.ai: "{your-domain}.ai"
 
 exceptions:
   # Strings that literally contain a denylist key but are allowed.

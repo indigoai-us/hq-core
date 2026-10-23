@@ -42,10 +42,3 @@ Least-privilege defaults matter here:
 4. Existing surfaces already know how to apply ACLs and deploy access changes, so this rule should guide those surfaces instead of creating a parallel path.
 
 This policy complements `auto-deploy-on-create.md` by covering the share decision after an artifact exists, and it stays compatible with `hq-share-session-urls-are-capabilities.md` by refusing to persist capability links.
-
-## Examples
-
-- A report written to `companies/{co}/data/reports/q2-summary.md` should trigger one vault-share suggestion with `read` permission and same-company recipients only.
-- A project deliverable written to `companies/{co}/projects/{project}/deliverables/demo.html` should trigger one suggestion, not a batch of multiple share questions.
-- A completed deploy that returns an app id should suggest tightening access with the deploy access-policy surface rather than auto-opening access.
-- A raw file under `companies/{co}/settings/`, `companies/{co}/signals/`, or `companies/{co}/sources/meetings/` should never produce a share suggestion.

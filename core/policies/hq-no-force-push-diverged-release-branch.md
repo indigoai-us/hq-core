@@ -33,7 +33,4 @@ Force-push is acceptable only when:
 This rule composes with, does not replace, `hq-force-push-pii-scrub-completeness`.
 
 ## Rationale
-
-Observed 2026-04-18: `origin/release/v11.1.1` had diverged with 6 commits (including `719ac9d fix(v11.1.1)...`) that local didn't have. Force-pushing would have silently erased those commits. Correct recovery: stashed local drift, fast-forwarded main to `94b5410`, flagged v11.1.1 divergence as a v11.3.0 follow-up task.
-
 The general principle: force-push destroys origin history atomically — once done, recovery requires reflog on every collaborator's clone. For release branches (which other workflows depend on), this can cascade through CI, deployments, tags, and external consumers. Stash + follow-up is always the safer sequence.

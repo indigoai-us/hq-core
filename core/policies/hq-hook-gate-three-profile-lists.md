@@ -29,7 +29,3 @@ When adding a safety-critical hook:
    done
    ```
    Expect `rc=2` for all three.
-
-## Rationale
-
-2026-05-18: `block-hq-root-git-mutation.sh` was added only to `is_in_minimal_profile`. Direct invocation of the hook passed a 17-case test matrix, but routed through `hook-gate.sh` under the default `standard` profile it returned `exit 0` (allow) — the guard was effectively dead. Caught only because the work explicitly tested the gate path. A safety hook that no-ops under the default profile is worse than no hook: it creates false confidence.

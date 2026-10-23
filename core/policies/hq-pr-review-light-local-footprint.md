@@ -57,12 +57,3 @@ remove the ones your own reviews created.
 
 This covers checking out a PR for review. The `hq-core-review` audit script
 keeps its own private worktree and cleans it up on exit; it needs no change.
-
-## Why
-
-On 2026-10-22 one conductor's review duty had left 81 full repo clones in
-`/tmp` (23 created in two hours, some 1.6 to 2 GB with `node_modules`) and
-ran a full install, the full test suite and `tsc` for every PR head, several
-at once. macOS `fseventsd` sat near 100% CPU with 9 to 10 GB of memory and the
-load average reached 51, which slowed the whole Mac and every HQ session.
-Regression test: `core/scripts/tests/review-checkout.test.sh`.

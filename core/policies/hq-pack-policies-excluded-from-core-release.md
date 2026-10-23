@@ -33,14 +33,6 @@ When deciding where a new default-tooling or capability policy belongs:
 - If the concern is already an HQ-wide default that core assumes → `core/policies`.
 
 ## Precedent
-
-`hq-pack-engineering` was promoted into core on 2026-08-06 (23 skills, 6
-workers, 4 knowledge sets, 3 policies, 3 hooks). Its guardrails —
-`e2e-testing-standards`, `hq-bugfix-requires-tests`, `hq-no-test-shortcuts` —
-now ship with the base release because HQ's own charter already treats them as
-non-negotiable, so gating them behind an optional install left core asserting
-rules it did not ship.
-
 Note the one exception made during that promotion: the pack's older, soft copy
 of `hq-prefer-agent-browser` was NOT copied over the newer hard-enforcement
 version already in core. When promoting a pack, diff every colliding file

@@ -15,4 +15,3 @@ When archiving or deleting a company, always:
 3. Remove from CLAUDE.md companies list
 
 Stale collections pointing to deleted directories crash `qmd update` with ENOENT, blocking all reindexing.
-

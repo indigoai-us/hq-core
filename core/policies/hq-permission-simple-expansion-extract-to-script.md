@@ -18,9 +18,6 @@ NEVER try to defeat Claude Code's `simple_expansion` permission gate by adding m
 Fix: extract the inline heredoc / expansion-heavy pipeline into a script file (`core/scripts/foo.sh`) and invoke it via `bash core/scripts/foo.sh`. The invocation string contains zero expansions, so the existing `Bash(bash:*)` allow rule covers it with no `simple_expansion` trigger.
 
 ## Rationale
-
-Session 2026-04-20 (`handoff-bg-script-extract` thread): repeatedly added `Bash(nohup:*)`, `Bash(nohup bash:*)`, wildcard allow rules to `.claude/settings.local.json` trying to make a `nohup bash -c '...'` invocation with `$!` / `$(...)` content stop prompting. Every permutation still triggered simple_expansion because the matcher found `$(...)` in the body. Only the refactor — moving the heredoc body into `core/scripts/handoff-bg-commit.sh` and calling it via `bash core/scripts/handoff-bg-commit.sh` — silenced the prompt.
-
 The underlying principle: Claude Code's permission gate is shape-aware (presence of `$(...)`, backticks, `$!`), not just prefix-aware. Changing the shape of the command at the call site is the only reliable fix.
 
 ## Anti-patterns

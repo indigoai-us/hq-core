@@ -29,9 +29,6 @@ Implementation notes:
 - If the probe legitimately needs a local build (e.g. verifying a new route that doesn't exist in prod yet), separate it into a "pre-flight" stage that the developer runs manually, and keep the automatic pre-push gate on prod-probes only.
 
 ## Rationale
-
-Observed in the signup-safeguards arc (lr-proj-384) 2026-04-22: a pre-push hook that spun up a local Next.js dev server + Playwright failed repeatedly due to port drift and missing local `.env.local` values, even though production was fine. Developers started routinely using `git push --no-verify` to get work out the door, which trained the reflex of bypassing *all* gates. The pre-push hook was doing the opposite of its job — it was eroding gate discipline instead of enforcing it.
-
 The charter reframe ("don't push onto broken prod" vs. "prove local renders") is the fix. Prod is the single source of truth, requires no local bootstrapping, and produces true-positive signals. A 5-second curl against `https://{prod}/api/health` is strictly better back-pressure than a 45-second local Playwright run that flakes on missing secrets.
 
 Scheduled heartbeats close the temporal gap between pushes: a canary that runs every 60 minutes bounds MTTD at ≤1 hour regardless of how long the release window is.

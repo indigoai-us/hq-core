@@ -102,33 +102,6 @@ When `git status` shows the same path as both `D` (staged deletion) and `??` (un
 
 To land a single-concern PR while uncommitted WIP exists: `git stash push -u -m "wip-<context>"`, branch from the clean tree, make the targeted edit, commit, push, open the PR, then `git stash pop`. The `-u` is the difference between saving your modified files and saving your whole working state — untracked fixtures and scratch scripts are lost without it. NEVER bundle unrelated WIP into a "while I'm in here" PR; a focused diff must contain exactly what its title describes, or revert safety breaks.
 
-## Examples
-
-Extended recovery procedures and the incidents each rule was paid for.
-
-**Rule 1 recovery.** Committed on the wrong branch: create the correct branch, cherry-pick the commit onto it, revert it from the wrong branch.
-
-**Rule 2.** A 2026-03-21 session built a control plane on a local main 372 commits behind origin/main; the merge produced 21 conflicted files and took hours. A session-start `git pull` would have cost 10 seconds.
-
-**Rule 3.** On a research project `npm install` ran before `git init`, so the first commit captured `next-swc.darwin-arm64.node` (100.35 MB) and the repo had to be reinitialized from scratch.
-
-**Rule 5.** For submodule or nested repository pointer drift inside a code checkout, check whether it represents in-progress upstream work before staging. Company directories are not Git repositories. To isolate changes before staging under concurrent edits: `git stash push --include-untracked -m "<label>" -- <paths>`, then pop after.
-
-**Rule 6 recovery.** Verify `git rev-parse HEAD` and `git rev-parse origin/{branch}`; if both are intact, `git reset --hard HEAD` restores cleanly. With unpushed commits, confirm they are in `git reflog` first — `checkout -- .` only touches the working tree, never commits. To compare lint/build across branches: `git stash -u && git switch main && npm run lint && git switch - && git stash pop`.
-
-**Rule 7.** A v9.0.0 history scrub left 65 hits after a lowercase-only first pass; the second pass needed 29 additional case variants (74 rules total).
-
-**Rule 11.** Promote every stash to a branch before expiring:
-
-```bash
-git stash list | awk -F: '{print $1}' | while read s; do
-  git stash branch "rescue/${s//[\/]/-}" "$s" || true
-done
-git branch --list 'rescue/*'    # verify before gc
-```
-
-The blast radius is non-obvious: stashes look like a separate structure in porcelain, but are reflog entries on `refs/stash`. The same `--all` that cleans up old branch reflogs wipes them with no prompt.
-
 ## Rationale
 
 All eleven rules share the same failure shape: **a routine git command does the wrong thing because git's surface area conflates read-vs-write, branch-vs-pathspec, all-refs-vs-one-ref, or session-local-vs-shared state**. Each was paid for in production:

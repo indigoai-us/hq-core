@@ -48,26 +48,6 @@ This is also why the in-session loop **is** Ralph mode now (re-engined 2026-05).
 
 Codex adds one more failure mode: it is easy for the parent to keep spawning helpful side agents or to inspect raw outputs while debugging. That defeats the savings even when the worker's return is JSON. Budget mode keeps the parent focused on coordination. It reads one compact result at a time, runs bounded gates, and reuses each worker lane across related phases.
 
-## Examples
-
-**Correct (orchestrator side):**
-
-```
-spawn_agent(message: "Execute story X. RETURN CONTRACT: json. Emit ONLY:\n{...schema...}")
--> raw_reply = wait_agent(...)
--> if ! echo "$raw_reply" | jq -e . > /dev/null; then retry once; fi
--> if still invalid: mark blocked, surface to user
--> on success: parse fields, narrate `[X] passed · 3 files · a1b2c3d`
-```
-
-**Incorrect:**
-
-```
-spawn_agent(message: "Execute story X. Tell me what happened.")
--> reply is 400 words of prose
--> orchestrator decides "looks like it passed" by string-matching
-```
-
 ## Scope
 
 Applies to:

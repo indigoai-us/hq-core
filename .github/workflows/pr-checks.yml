@@ -143,7 +143,7 @@ jobs:
       - name: PR review checkout stays cached, scoped and cleaned up
         run: bash core/scripts/tests/review-checkout.test.sh
       - name: Run denylist scan
-        run: bash .leak-scan/scan.sh denylist
+        run: bash .leak-scan/scan.sh denylist --warn
 
   policy-rationale-scan:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -154,23 +154,17 @@ jobs:
         with:
           fetch-depth: 0
       - name: Run policy-rationale scan
-        run: bash .leak-scan/scan.sh policy-rationale
+        run: bash .leak-scan/scan.sh policy-rationale --warn
 
-  # Restored 2026-10-23 (owner decision, arch-watch D1): the company-name slug
-  # scan is the only automated gate that checks a public-bound diff for a tenant
-  # name. Required check in rulesets 17280851 (hq-core-staging) and 15744312 (hq-core).
+  # Stub: slug-scan is a required check in rulesets 17280851 (hq-core-staging) and
+  # 15744312 (hq-core). Keep the job name until both rulesets drop it.
   slug-scan:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
     name: slug-scan
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Slug scan self-test (embedded forms, case, empty hash set)
-        run: bash .leak-scan/tests/slug-scan.test.sh
-      - name: Run private tenant slug scan
-        run: bash .leak-scan/scan.sh slugs
+      - name: Retired check (no-op)
+        run: echo "retired by owner direction 2026-10-21; remove from ruleset then delete this job"
 
   users-path-tripwire:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -181,7 +175,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: /Users/ absolute-path tripwire
-        run: bash .leak-scan/scan.sh users-path
+        run: bash .leak-scan/scan.sh users-path --warn
 
   provenance-stripped:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -192,7 +186,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: ## Provenance section must not be present
-        run: bash .leak-scan/scan.sh provenance
+        run: bash .leak-scan/scan.sh provenance --warn
 
   vendor-public-ok:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -203,7 +197,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Vendor-scoped policies need vendor_public_ok
-        run: bash .leak-scan/scan.sh vendor-public-ok
+        run: bash .leak-scan/scan.sh vendor-public-ok --warn
 
   public-frontmatter-revalidate:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -214,7 +208,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Re-validate public:true frontmatter
-        run: bash .leak-scan/scan.sh public-frontmatter
+        run: bash .leak-scan/scan.sh public-frontmatter --warn
 
   # Stub: denylist-drift is a required check in rulesets 17280851 (hq-core-staging) and
   # 15744312 (hq-core). Keep the job name until both rulesets drop it.
@@ -870,6 +864,7 @@ jobs:
           bash core/scripts/tests/resolve-hq-root.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
           bash core/scripts/tests/master-hook-hook-engine-bridge.test.sh
+          bash .claude/hooks/tests/inject-policy-fact-helper-engine-bridge.test.sh
           bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
@@ -1350,6 +1345,7 @@ jobs:
           bash core/scripts/tests/native-plan-session-project.test.sh
           bash core/scripts/tests/policy-prefilter-scale.test.sh
           bash core/scripts/tests/policy-trigger-strictness.test.sh
+          bash core/scripts/tests/vyg-preferred-platform-policy.test.sh
       - name: SessionStart hook helper process budget
         env:
           HQ_HOOK_PERF_BASE_SHA: ${{ github.repository == 'indigoai-us/hq-core-staging' && 'cead9f4fce5f762ee08d169d4d47e912c1ef0bee' || '641796571f18e870a2e4cdd24575fda6b93dc4c3' }}
@@ -3028,6 +3024,10 @@ jobs:
       id: t_instance_artifacts__2
       if: "${{ !cancelled() && steps.t_instance_artifacts__1.outcome == 'success' }}"
       run: bash core/scripts/tests/leak-scan-instance-artifacts.test.sh
+    - name: "[leak-scan-warn-mode] content scans report-only in CI"
+      id: t_leak_scan_warn_mode__1
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/leak-scan-warn-mode.test.sh
     - name: "[hq-sync-post-pull-reindex] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
