@@ -710,7 +710,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/hq-bug/SKILL.md",
-      "hash": "sha256:3c60c48adb88019de2098696c79a9cd6b676f383b34f0b173d5f9c1c9afcfe37",
+      "hash": "sha256:e65ac8bcb26d5d945a8a658f446bf8a7cfd0dff3c5ed0b8c7696c418f5b7c3ac",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1439,7 +1439,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/quality-gate/SKILL.md",
-      "hash": "sha256:6b972968101205697469aa9e0059434deb34af0661a901beb667f875b0dcb7f8",
+      "hash": "sha256:dd4756be373ddf04a693c292f3d71c8bd8435e41fc1aea2c39c7ba17dac9d3f3",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1694,7 +1694,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/ship/SKILL.md",
-      "hash": "sha256:8ca5bbeb6562b1eca8e4e1476b5de17a0ecdfba6ff7d89bcba3eb82ef5247e9c",
+      "hash": "sha256:58f34da0d7f68a00886f3f4c37e9dd0176a854d416a905f1675cd36801c192ef",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1898,7 +1898,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/update-hq/SKILL.md",
-      "hash": "sha256:7ec53611703825685d96dc22fe5ca75b1476b38713a8e9effb310900503151dc",
+      "hash": "sha256:b8881f758647822fe3d77809ab84ea5d2959d6c703dea3faec704e768f89d912",
       "duplicates": {
         "exact": [],
         "drifted": [],

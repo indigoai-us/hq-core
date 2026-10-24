@@ -201,6 +201,10 @@ install records, so it survives HQ core updates. If installation fails after
 acceptance, report the failure and give the user `hq install --global` as a
 manual retry command; do not ask again.
 
+Setup steps for users live in one page:
+`core/knowledge/public/hq-core/hq-anywhere-runtime.md`. Point users there
+instead of restating them.
+
 ## Phase 5: Normalize line endings (post-rescue)
 
 After a successful apply (skip on `--check` / dry-run), rewrite the worktree so tracked text is LF on disk. Existing Windows installs that already materialized CRLF do not pick up `eol=lf` from `.gitattributes` on pull alone — `git status` stays clean while on-disk bytes stay CRLF.

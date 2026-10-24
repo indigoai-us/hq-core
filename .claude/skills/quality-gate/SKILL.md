@@ -6,7 +6,7 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 # /quality-gate - Pre-Commit Quality Checks
 
-Run universal quality checks (typecheck, lint, test, coverage) before committing. Auto-detects project type and available tools.
+Run universal quality checks (typecheck, lint, test, coverage) before committing. Auto-detects project type and available tools, including HQ Core script and skill repositories.
 
 **Arguments:** Optional flags: `--fix` (auto-fix lint issues), `--coverage-min=80` (coverage threshold percentage), `--deadcode` (run dead code detection)
 
@@ -37,7 +37,28 @@ Auto-detect the project type by checking for manifest files in priority order:
 
 **If multiple detected:** Run checks for ALL project types (e.g., monorepo with Node + Python)
 
-**If none detected:** Stop and ask the user which project type to use.
+Also detect an **HQ Core script/skill repository** when the repository contains
+both `<repo>/core/scripts/skill-inventory.mjs` and `<repo>/core/docs/hq/commands.json`.
+This applies alongside any detected language manifests and also works when
+there is no language manifest. Resolve paths from this repository's root;
+do not use a different HQ checkout for the check.
+
+For this repository type, run the existing cheap, read-only freshness check
+**before slower checks and before committing or pushing**:
+
+```bash
+repo_root="$(git rev-parse --show-toplevel)"
+node "$repo_root/core/scripts/skill-inventory.mjs" --root "$repo_root" --check --scope shipped
+```
+
+A stale inventory is a source failure, not an infrastructure retry. If the
+change intentionally edits shipped skills or commands, regenerate the affected
+inventory with the existing generator, inspect its diff, and rerun the check.
+Commit the intended source and generated inventory together. A missing Node
+runtime or failed check is not a pass; report it and resolve it before push.
+This local preflight does not replace the repository's CI or review gates.
+
+**If none of these repository types is detected:** Stop and ask the user which project type to use.
 
 **Report detected project type(s) before proceeding.**
 

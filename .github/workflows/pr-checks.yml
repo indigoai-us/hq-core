@@ -156,16 +156,6 @@ jobs:
       - name: Run policy-rationale scan
         run: bash .leak-scan/scan.sh policy-rationale --warn
 
-  # Stub: slug-scan is a required check in rulesets 17280851 (hq-core-staging) and
-  # 15744312 (hq-core). Keep the job name until both rulesets drop it.
-  slug-scan:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
-    name: slug-scan
-    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
-    steps:
-      - name: Retired check (no-op)
-        run: echo "retired by owner direction 2026-10-21; remove from ruleset then delete this job"
-
   users-path-tripwire:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
     name: users-path-tripwire
@@ -209,16 +199,6 @@ jobs:
           fetch-depth: 0
       - name: Re-validate public:true frontmatter
         run: bash .leak-scan/scan.sh public-frontmatter --warn
-
-  # Stub: denylist-drift is a required check in rulesets 17280851 (hq-core-staging) and
-  # 15744312 (hq-core). Keep the job name until both rulesets drop it.
-  denylist-drift:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
-    name: denylist-drift
-    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
-    steps:
-      - name: Retired check (no-op)
-        run: echo "retired by owner direction 2026-10-21; remove from ruleset then delete this job"
 
   settings-local-not-ignored:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
@@ -2135,9 +2115,13 @@ jobs:
       id: t_journal_session_isolation__28
       if: "${{ !cancelled() && steps.t_journal_session_isolation__27.outcome == 'success' }}"
       run: bash core/scripts/tests/inject-policy-principals.test.sh
+    - name: "[journal-session-isolation] Policy repos field limits injection to the listed repos"
+      id: t_journal_session_isolation__28_repos
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__28.outcome == 'success' }}"
+      run: bash core/scripts/tests/inject-policy-repos-scope.test.sh
     - name: "[journal-session-isolation] Policy reminder output trimming avoids per-line tail launches"
       id: t_journal_session_isolation__29
-      if: "${{ !cancelled() && steps.t_journal_session_isolation__28.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__28_repos.outcome == 'success' }}"
       run: bash core/scripts/tests/inject-policy-output-trim-performance.test.sh
     - name: "[journal-session-isolation] Policy evaluator loads policies under a UTF-8 locale; summary cut is byte-safe"
       id: t_journal_session_isolation__30
@@ -2628,10 +2612,10 @@ jobs:
       id: t_skill_script_refs__56
       if: "${{ !cancelled() && steps.t_skill_script_refs__55.outcome == 'success' }}"
       run: bash core/scripts/tests/hq-bug-skill.test.sh
-    - name: "[skill-script-refs] HQ feedback submit path avoids cleanup and fixed heredoc delimiters"
+    - name: "[skill-script-refs] HQ feedback submit path deletes the body file and avoids fixed heredoc delimiters"
       id: t_skill_script_refs__57
       if: "${{ !cancelled() && steps.t_skill_script_refs__56.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-bug-submit-no-rm.test.sh
+      run: bash core/scripts/tests/hq-bug-submit-no-rm.test.sh && bash core/scripts/tests/hq-bug-submit-cleanup.test.sh
     - name: "[skill-script-refs] /team-access heal contract (bare rows, hidden grants, DEV-3405, readback)"
       id: t_skill_script_refs__58
       if: "${{ !cancelled() && steps.t_skill_script_refs__57.outcome == 'success' }}"

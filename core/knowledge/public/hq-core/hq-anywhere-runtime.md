@@ -1,26 +1,43 @@
 ---
-title: HQ Anywhere runtime protocol and registry
-description: Local hqd socket messages and the per-user folder-to-company registry format.
+title: HQ Anywhere setup, runtime protocol, and registry
+description: How to set up HQ Anywhere with hq install --global, plus the local hqd socket messages and folder-to-company registry format.
 public: true
 ---
 
-# HQ Anywhere runtime protocol and registry
+# HQ Anywhere
 
-HQ Anywhere adds a global CLI install and the hqd local daemon. A per-user
-registry links folders to companies. The `hq-anywhere-runtime` flag is an
-operator kill switch: absent, archived, or unreadable registry rows default on,
-while an explicit false row or local `HQ_FLAG_HQ_ANYWHERE_RUNTIME=false|0`
-override turns it off. The flag controls
-these features and is off by default. The socket and registry stay in the
-user's home directory. They are local to that host and are not stored in a
-project or synced HQ folder.
+HQ Anywhere makes HQ skills such as `/handoff` available in any folder, not
+only inside your HQ folder. It is available to everyone.
 
-## Global install and daemon
+## Set up
 
-Run `hq install --global` from an HQ checkout to register HQ hooks for the
-agent runtime. The install records the HQ root in `~/.hq/root`. When the
-runtime flag is enabled, hooks can send work to hqd. Install and check the
-daemon with `hq daemon install` and `hq daemon status`.
+From your HQ folder, run:
+
+```bash
+hq install --global
+```
+
+That is the whole setup. Open Claude Code in any folder and HQ skills work
+there. Skills are linked into `~/.claude/skills`. For Codex, run
+`hq install --global --runtime codex` instead; skills go to
+`$CODEX_HOME/skills`. If Codex reports untrusted hooks, approve them with
+`/hooks` in Codex. The
+install records your HQ folder in `~/.hq/root`.
+
+The hqd daemon is optional (`hq daemon install`, `hq daemon status`). When it
+is installed for this HQ folder, hooks route through it. Skills work without
+it.
+
+## Kill switch
+
+The `hq-anywhere-runtime` flag is an operator kill switch. It is on unless its
+registry row is set to false or `HQ_FLAG_HQ_ANYWHERE_RUNTIME=false|0` is set
+locally. It does not block `hq install --global` for Claude or Codex: skills,
+hooks, and `~/.hq/root` still install. When the flag is off, the install skips
+the `~/.hq/bin` provider wrappers. The socket and registry described below stay in your home directory
+and are not stored in a project or synced HQ folder.
+
+## Folder links
 
 Run `hq link <company>` from a repository to associate its normalized Git
 remote, or its canonical folder path when it has no recognized remote, with a

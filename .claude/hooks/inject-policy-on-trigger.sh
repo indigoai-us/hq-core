@@ -1427,6 +1427,35 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   esac
   DIRS+=("$HQ_ROOT/personal/policies" "$HQ_ROOT/core/policies")
 
+  # Repos this event touches, for the optional `repos:` policy field. A policy
+  # that lists repos loads only when one of them is here; a policy without the
+  # field is unaffected. Sources, all read without forking:
+  #   - any repos/<public|private>/<name> path in the cwd or the command
+  #     (covers `git -C <dir>` and file operands),
+  #   - a workspace/worktrees/<name>/ path in the cwd or the command (HQ
+  #     worktrees are grouped by repo name),
+  #   - `-R owner/name` or `--repo owner/name` in the command (gh).
+  # The awk evaluator lower-cases the set before matching.
+  EVENT_REPOS=" "
+  policy_collect_event_repos() {
+    local src="$1" re
+    for re in 'repos/(public|private)/([A-Za-z0-9._-]+)' 'workspace/worktrees/()([A-Za-z0-9._-]+)/'; do
+      local rest="$src"
+      while [[ $rest =~ $re ]]; do
+        EVENT_REPOS="$EVENT_REPOS${BASH_REMATCH[2]} "
+        rest="${rest#*"${BASH_REMATCH[0]}"}"
+      done
+    done
+  }
+  policy_collect_event_repos "$CWD"
+  policy_collect_event_repos "$ARG"
+  policy_repo_flag_re='(^|[[:space:]])(-R|--repo)([[:space:]]+|=)["'"'"']?[A-Za-z0-9._-]+/([A-Za-z0-9._-]+)'
+  policy_repo_flag_rest="$ARG"
+  while [[ $policy_repo_flag_rest =~ $policy_repo_flag_re ]]; do
+    EVENT_REPOS="$EVENT_REPOS${BASH_REMATCH[4]} "
+    policy_repo_flag_rest="${policy_repo_flag_rest#*"${BASH_REMATCH[0]}"}"
+  done
+
   # Collect in-scope policy files (skip generated/template/readme AND sync
   # conflict/drift copies). A real policy filename is a kebab-case slug —
   # `<slug>.md`, never containing a space or a sync-conflict marker. Cross-
@@ -1586,7 +1615,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # `principals:` field to each record, so v3 records (one field short)
         # are never decoded with the new layout. v6 records carry the summary
         # rule line cut on a word boundary with an ellipsis.
-        CACHE_HEADER="hq-policy-cache-v6${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
+        CACHE_HEADER="hq-policy-cache-v7${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
         if [ -r "$CACHE_FILE" ]; then
           IFS= read -r cache_header < "$CACHE_FILE" || true
@@ -1693,10 +1722,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       {
         # SESSION_PRINCIPAL is part of the key: a verdict computed for one
         # principal must never be replayed for another.
-        printf '%s\034%s\034%s\034%s\034output=%s\034%s\034%s\034%s\034%s\034principal=%s\034rare=%s\034heads=%s\034' \
+        # EVENT_REPOS is part of the key for the same reason: a `repos:`
+        # verdict computed in one repo must never be replayed in another.
+        printf '%s\034%s\034%s\034%s\034output=%s\034%s\034%s\034%s\034%s\034principal=%s\034rare=%s\034heads=%s\034repos=%s\034' \
           "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" "$OUTPUT_FACTS" \
           "${HQ_POLICY_TOOL_EVENTS:-}" "$STALE_TODAY" "$INJECT_PERSONAL_SOFT" "$retrieval_ledger_key" \
-          "$SESSION_PRINCIPAL" "$RARE_TOKEN_MAX" "$HEAD_WORDS"
+          "$SESSION_PRINCIPAL" "$RARE_TOKEN_MAX" "$HEAD_WORDS" "$EVENT_REPOS"
         append_policy_ledger "$DEDUPE_FILE"
         printf '\034'
         append_policy_ledger "$TURN_FILE"
@@ -1770,7 +1801,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" -v TODAY="$STALE_TODAY" \
           -v RETRIEVAL_LEDGER="$STALE_LEDGER" -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" \
-          -v PRINCIPAL="$SESSION_PRINCIPAL" -v RARE_MAX="$RARE_TOKEN_MAX" -v HEADWORDS="$HEAD_WORDS" '
+          -v PRINCIPAL="$SESSION_PRINCIPAL" -v RARE_MAX="$RARE_TOKEN_MAX" -v HEADWORDS="$HEAD_WORDS" \
+          -v EVREPOS="$EVENT_REPOS" '
       # Keep this hot-path parser structurally identical to eval-trigger.sh.
       # In particular, an opening paren needs a closing paren: accepting it
       # here while --check rejects it makes authoring and runtime disagree.
@@ -1867,8 +1899,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (CACHE_WRITE) {
           cache_rule=rule
           gsub(/\t/," ",cache_rule)
-          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(crx,CSEP) || index(tagx,CSEP) || index(cache_rule,CSEP) || index(prx,CSEP)) cache_unsafe=1
-          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP crx CSEP rwx CSEP tagx CSEP cache_rule CSEP prx CSEP "." >> CACHE_TMP
+          if (index(id,CSEP) || index(fname,CSEP) || index(whenx,CSEP) || index(onx,CSEP) || index(enf,CSEP) || index(injx,CSEP) || index(statx,CSEP) || index(crx,CSEP) || index(tagx,CSEP) || index(cache_rule,CSEP) || index(prx,CSEP) || index(rpx,CSEP)) cache_unsafe=1
+          else print id CSEP scopeof(fname) CSEP fname CSEP whenx CSEP onx CSEP enf CSEP injx CSEP statx CSEP crx CSEP rwx CSEP tagx CSEP cache_rule CSEP prx CSEP rpx CSEP "." >> CACHE_TMP
         }
         # Count how many policies key on each `when:` identifier, before any
         # event filter, so rarity reflects the whole in-scope policy set.
@@ -1878,6 +1910,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # policy addressed to another principal never takes an output slot.
         # prx holds the normalized valid values; empty means everyone.
         if (prx!="" && index(" " prx " ", " " PRINCIPAL " ")==0) return
+        # `repos:` filter. rpx holds the normalized repo names; empty means
+        # every repo. The policy loads only when the event touches one of them.
+        if (rpx!="" && !repo_in_event(rpx)) return
         onpad=" " onx " "
         ev_on = (index(onpad," " EVENT " ")>0)
         ai_on = (index(onpad," AssistantIntent ")>0)
@@ -2038,7 +2073,22 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         n=split(v,a,/[ \t]+/)
         for (i=1; i<=n; i++) { t=tolower(a[i]); if (t=="human" || t=="agent" || t=="bot") prx=(prx=="" ? t : prx " " t) }
       }
-      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; crx=""; rwx=0; tagx=""; tsec=0; rule=""; rsec=0; rcap=0; prx=""; psec=0 }
+      # repos: [name, owner/name, repos/private/name]: each entry is reduced to
+      # its last path segment and lower-cased, so it compares with EVREPOS.
+      function add_repos(v,   n,a,i,t) {
+        gsub(/[][,"\047]/," ",v)
+        n=split(v,a,/[ \t]+/)
+        for (i=1; i<=n; i++) {
+          t=tolower(a[i]); sub(/\/+$/,"",t); sub(/.*\//,"",t)
+          if (t ~ /^[a-z0-9._-]+$/) rpx=(rpx=="" ? t : rpx " " t)
+        }
+      }
+      function repo_in_event(list,   n,a,i) {
+        n=split(list,a,/ /)
+        for (i=1; i<=n; i++) if (a[i]!="" && index(EVREPOS_LC, " " a[i] " ")) return 1
+        return 0
+      }
+      function reset_file(){ d=0; id=""; whenx=""; onx=""; enf=""; injx=""; statx=""; crx=""; rwx=0; tagx=""; tsec=0; rule=""; rsec=0; rcap=0; prx=""; psec=0; rpx=""; rposec=0 }
       # specificity(expr, which): how many distinct identifiers in the `when:`
       # expression are present in the fact set. A policy keyed on
       # `deploy && vercel && indigo` outranks one keyed on `deploy` alone when
@@ -2109,6 +2159,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         while ((getline turnline < ALREADY_TURN_FILE) > 0) if(turnline!="") turnalready[turnline]=1
         close(ALREADY_TURN_FILE)
         TODAY_D=civil(TODAY)
+        EVREPOS_LC=" " tolower(EVREPOS) " "
         n=split(HEADWORDS,hw,/[ ,]+/)
         for(i=1;i<=n;i++) if(hw[i]!="") headw[tolower(hw[i])]=1
         if (RETRIEVAL_LEDGER!="") {
@@ -2127,9 +2178,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       CACHE_RECORDS {
         if (FNR==1) next
         n=split($0,cr,CSEP)
-        if (n < 14) next
+        if (n < 15) next
         id=cr[1]; fname=cr[3]; whenx=cr[4]; onx=cr[5]; enf=cr[6]
-        injx=cr[7]; statx=cr[8]; crx=cr[9]; rwx=cr[10]; tagx=cr[11]; rule=cr[12]; prx=cr[13]
+        injx=cr[7]; statx=cr[8]; crx=cr[9]; rwx=cr[10]; tagx=cr[11]; rule=cr[12]; prx=cr[13]; rpx=cr[14]
         finalize()
         next
       }
@@ -2138,11 +2189,15 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       /^---[ \t]*$/ { if (d<2) { d++; next } }
       d==1 && tsec && /^[^ \t-]/ { tsec=0 }
       d==1 && psec && /^[^ \t-]/ { psec=0 }
+      d==1 && rposec && /^[^ \t-]/ { rposec=0 }
       # principals: [human, agent] or a block list. Unknown values are dropped
       # here (the linter rejects them); a list with no valid value applies to
       # everyone, so a typo never hides a policy.
       d==1 && /^principals:/ { s=$0; sub(/^principals:[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); add_principals(s); psec=(s==""); next }
       d==1 && psec && /^[ \t]*-/ { s=$0; sub(/^[ \t]*-[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); add_principals(s); next }
+      # repos: [vyg] or a block list. Opt-in repo scope; see repo_in_event.
+      d==1 && /^repos:/ { s=$0; sub(/^repos:[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); add_repos(s); rposec=(s==""); next }
+      d==1 && rposec && /^[ \t]*-/ { s=$0; sub(/^[ \t]*-[ \t]*/,"",s); sub(/[ \t]*#.*/,"",s); add_repos(s); next }
       d==1 && /^id:/   { s=$0; sub(/^id:[ \t]*/,"",s);   gsub(/^["'"'"']|["'"'"']$/,"",s); id=s; next }
       d==1 && /^status:/ { s=$0; sub(/^status:[ \t]*/,"",s); gsub(/[ \t"]/,"",s); statx=s; next }
       d==1 && /^when:/ { s=$0; sub(/^when:[ \t]*/,"",s); sub(/[ \t]+#.*/,"",s); gsub(/^["'"'"']|["'"'"']$/,"",s); whenx=s; next }

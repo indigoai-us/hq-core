@@ -9,7 +9,7 @@
 #     nightly schedule and push for stable v* tags only, never v*-* pre-release
 #     tags (no branches, no paths).
 #   - Job reachability, evaluated from each job's `if:` for every event:
-#       * the 18 required checks run on ready PRs, dispatch and the schedule;
+#       * the 16 required-on-schedule checks run on ready PRs, dispatch and the schedule;
 #       * every other Linux job runs only on ready PRs and dispatch;
 #       * shell-smoke-macos, shell-smoke-windows and codex-windows-hook-launcher
 #         run only on dispatch, the schedule and staging release tags, never
@@ -149,9 +149,9 @@ if pr.get("branches") != ["main"]:
     failures.append("pull_request must stay limited to PRs against main")
 
 REQUIRED = set("""auto-acl-share-hooks auto-checkpoint-cmds collect-policy-changes
-core-write-protection denylist-drift denylist-scan dm-people-resolve git-mutation-guard
+core-write-protection denylist-scan dm-people-resolve git-mutation-guard
 install-deps policy-rationale-scan provenance-stripped public-frontmatter-revalidate
-settings-local-not-ignored skill-command-refs slug-scan users-path-tripwire vendor-public-ok
+settings-local-not-ignored skill-command-refs users-path-tripwire vendor-public-ok
 prefer-native-capabilities""".split())
 SMOKE = {"shell-smoke-macos", "shell-smoke-windows", "codex-windows-hook-launcher"}
 jobs = workflow["jobs"]

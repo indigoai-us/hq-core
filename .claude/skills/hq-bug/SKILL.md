@@ -21,19 +21,39 @@ From `$ARGUMENTS`, extract:
 - `TYPE` — `bug` or `feature`. **If the first whitespace-delimited token of `$ARGUMENTS` is neither `bug` nor `feature`, use the ENTIRE `$ARGUMENTS` string as the report description and default TYPE to `bug` — do not consume the first token.** If `$ARGUMENTS` is empty, default TYPE to `bug`.
 - `TITLE` — a concise one-line summary passed via `--title`, ideally under 120 characters. Describe the observed failure or requested behavior using the full report description (after removing an explicit TYPE token). Preserve a short, clear supplied title; summarize long input without inventing a cause or losing the affected surface. The full input stays verbatim in User Message. If the report description is missing or empty, use the **AskUserQuestion** tool: _"What is the title for this feedback?"_
 
-### 2. Allocate body file
+### 2. Resolve the submit wrapper and allocate the body file
 
-Run this as a **single** Bash call (do not split mktemp and cygpath across tool calls):
+Run this as a **single** Bash call (do not split it across tool calls):
 
 ```bash
+hq_ok() { [ -n "$cand" ] && [ -f "$cand/core/core.yaml" ] && [ -f "$cand/core/scripts"/hq-bug-submit.sh ]; }
+HQ_DIR=""
+cand="${HQ_ROOT:-}"; if hq_ok; then HQ_DIR="$cand"; fi
+if [ -z "$HQ_DIR" ] && [ -f "$HOME/.hq/root" ]; then
+  p=$(head -n 1 "$HOME/.hq/root" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  cand="$p"; case "$p" in /*|[A-Za-z]:/*) hq_ok && HQ_DIR="$p" ;; esac
+fi
+if [ -z "$HQ_DIR" ]; then
+  d=$(pwd)
+  while [ -n "$d" ] && [ "$d" != "/" ]; do
+    cand="$d"; if hq_ok; then HQ_DIR="$d"; break; fi
+    d=$(dirname "$d")
+  done
+fi
+SUBMIT_PATH="$HQ_DIR/core/scripts"/hq-bug-submit.sh
+if [ -z "$HQ_DIR" ]; then
+  echo "hq-bug: cannot find core/scripts/hq-bug-submit.sh under the HQ root (set HQ_ROOT or run from inside HQ)" >&2
+  exit 1
+fi
+umask 077
 BODY_PATH=$(mktemp -t hq-feedback-body.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
 if command -v cygpath >/dev/null 2>&1; then
   BODY_PATH=$(cygpath -m "$BODY_PATH") || { echo "cygpath failed" >&2; exit 1; }
 fi
-printf '%s\n' "$BODY_PATH"
+printf 'SUBMIT_PATH=%s\nBODY_PATH=%s\n' "$SUBMIT_PATH" "$BODY_PATH"
 ```
 
-Capture the absolute path printed to stdout. On Windows Git Bash, `cygpath -m` makes the path readable by the native `hq` binary. Use this path in Steps 6 and 8. Leave the small body file in the OS temp directory after submission; do not run a cleanup command.
+Capture both absolute paths printed to stdout. If the command fails, report its error to the user and stop; no body file was created. On Windows Git Bash, `cygpath -m` makes the path readable by the native `hq` binary. Use BODY_PATH in Steps 6 and 8 and SUBMIT_PATH in Step 8. `umask 077` keeps the file readable only by you. The Step 8 wrapper deletes it after the submit, whether the submit succeeds or fails.
 
 ### 3. Capture CWD
 
@@ -98,7 +118,7 @@ Rules for the collected list:
 
 ### 6. Assemble four-section body
 
-Compose the following markdown, substituting the literal values captured in Steps 1–5, then use the **Write** tool to write it to the body path from Step 2:
+Compose the following markdown, substituting the literal values captured in Steps 1–5, then use the **Write** tool to write it to the body path from Step 2. Before writing, replace any secret value (tokens, passwords, API keys, presigned URL query strings such as `X-Amz-*`, `Signature=` or `Policy=`, cookies) with `[REDACTED]`; the body file must never hold a raw secret:
 
 ```markdown
 ## User Message
@@ -127,23 +147,26 @@ Capture the output. If empty or blank, omit `--company` from the submit call.
 **Primary path:** use the Write-created file from Step 6. Construct and run this command directly:
 
 ```bash
-hq feedback "<type>" --title "<title>" --body-file "<body-path>" [--company "<slug>"] [--screenshot "<path>" ...]
+bash "<submit-path>" hq feedback "<type>" --title "<title>" --body-file "<body-path>" [--company "<slug>"] [--screenshot "<path>" ...]
 ```
+
+`core/scripts/hq-bug-submit.sh` runs the `hq feedback` command unchanged, returns its exit status, and deletes the body file on exit (success, failure, INT or TERM). It only deletes a regular file named `hq-feedback-body.*`. If the submit fails and you retry, run Step 2 and Step 6 again first; the old body file is gone.
 
 Substitution map:
 - `<type>` → TYPE from Step 1 (e.g., `bug`)
 - `<title>` → TITLE from Step 1 (e.g., `Login broken on mobile`) — always pass via `--title`, never as a positional argument to `hq feedback`
-- `<body-path>` → absolute path printed in Step 2 (native-visible; `cygpath -m` converts Git Bash paths on Windows)
+- `<submit-path>` → SUBMIT_PATH printed in Step 2
+- `<body-path>` → BODY_PATH printed in Step 2 (native-visible; `cygpath -m` converts Git Bash paths on Windows)
 - `[--company "<slug>"]` → `--company "indigo"` if Step 7 returned a non-empty slug; omit entirely if empty
 - `[--screenshot "<path>" ...]` → one `--screenshot "<abs-path>"` per image from Step 5b, repeated (the flag is repeatable, max 5). Omit entirely when Step 5b collected none.
 
 Example fully-substituted command:
 
 ```bash
-hq feedback "bug" --title "Login broken on mobile" --body-file "/tmp/hq-feedback-body.AbCdEf" --company "indigo"
+bash "<submit-path>" hq feedback "bug" --title "Login broken on mobile" --body-file "/tmp/hq-feedback-body.AbCdEf" --company "indigo"
 ```
 
-Do not append cleanup commands. The file stays in the OS temp directory.
+Do not append separate cleanup commands; the wrapper owns deletion.
 
 **Fallback only when the host has no Write tool:** `hq feedback --body-file -` reads stdin. Before constructing the command, choose `HQ_FEEDBACK_BODY_` followed by at least 12 random alphanumeric characters for this submission. Confirm that no line in the complete body exactly equals the chosen delimiter. Replace `<unique-delimiter>` with that same chosen value in both locations below; never reuse a fixed delimiter:
 
@@ -153,7 +176,7 @@ hq feedback "<type>" --title "<title>" --body-file - [--company "<slug>"] [--scr
 <unique-delimiter>
 ```
 
-Run the command directly (without a `bash -c '...'` wrapper). The primary command has no cleanup step; its exit status is the `hq feedback` result.
+Run the command directly (without a `bash -c '...'` wrapper). The stdin fallback writes no file. In both paths the exit status is the `hq feedback` result.
 
 ### 9. Report
 
@@ -164,7 +187,7 @@ Print the `Submitted: feedback_<uuid>` line returned by the CLI. If the command 
 - **Literal substitution only in Step 8.** Never rely on shell variables from a prior Bash tool call — they do not survive across invocations. Paste the captured values directly into the command string.
 - **Always pass `--title` explicitly.** Do not pass the title as a positional to the `bug`/`feature` subcommand — the subcommand's positional parser would either reject it or swallow it depending on Commander's mode. Always use `--title "<title>"`.
 - **Input without a type → use the whole description.** If `$ARGUMENTS` does not begin with `bug` or `feature`, do not consume any token as TYPE. Derive a concise TITLE and preserve the whole input in User Message.
-- Run the primary submit command directly (no `bash -c '...'` wrapper). Leave its body file in the OS temp directory; do not chain cleanup. If a host lacks Write, use the random-delimiter stdin fallback from Step 8 and verify that no body line equals the delimiter before running it.
+- Run the primary submit through `bash "<submit-path>"` (the absolute wrapper path from Step 2) (no `bash -c '...'` wrapper, no chained `rm`); the wrapper deletes the body file. If a host lacks Write, use the random-delimiter stdin fallback from Step 8 and verify that no body line equals the delimiter before running it.
 - Use **AskUserQuestion** for any missing title — never inline questions in chat text.
 - For stdin fallback only, choose `HQ_FEEDBACK_BODY_` plus at least 12 random alphanumeric characters per submission. Confirm no line of the body exactly equals that delimiter, and use that same unique delimiter to open and close the quoted here-document. Never use a fixed here-document delimiter.
 - **Attach screenshots for visual defects.** A UI, layout, or rendering report

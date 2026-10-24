@@ -975,6 +975,44 @@ scope_shell_variable_values() {
         [ "$glob_count" -gt 0 ] || return 1
         continue
       fi
+      # A loop word that globs the tenant tree (`for d in companies/*/knowledge`,
+      # `for f in companies/indigo/people/*/meta.yaml`) expands to the entries
+      # it matches now (feedback 36c3e8cb). A glob in the company segment is
+      # accepted only when every tenant folder that segment matches is locked
+      # to this session, whether or not the rest of the path exists there, so
+      # in a multi-company HQ `companies/*/x` stays refused. Each match is then
+      # printed and checked by the caller as a literal path (symlinks resolved
+      # there), so a match that resolves into another tenant still blocks.
+      if [[ "$value" =~ ^companies/[A-Za-z0-9._/*?-]*$ ]] \
+        && [[ "$value" == *[*?]* ]] && [[ "$value" != *'..'* ]] && [[ "$value" != *'**'* ]]; then
+        glob_cwd="${COMMAND_CWD:-$HQ_ROOT}"
+        [ "$(cd "$glob_cwd" 2>/dev/null && pwd -P)" = "$HQ_ROOT" ] || return 1
+        # The lock set loads lazily; the inline-program and -C option scans
+        # can reach this before any company path has loaded it. A `**` word
+        # is refused: zsh recurses through symlinks there, bash compgen does not.
+        scope_load_bound_company
+        local loop_co_segment="${value#companies/}" loop_co_word
+        loop_co_segment="${loop_co_segment%%/*}"
+        [ -n "$loop_co_segment" ] || return 1
+        if [[ "$loop_co_segment" == *[*?]* ]]; then
+          scope_expand_company_segment_glob "$value" "$loop_co_segment" || return 1
+          for loop_co_word in ${scope_glob_words[@]+"${scope_glob_words[@]}"}; do
+            loop_co_word="${loop_co_word#companies/}"
+            scope_company_is_locked "${loop_co_word%%/*}" || return 1
+          done
+        else
+          scope_company_is_locked "$loop_co_segment" || return 1
+        fi
+        while IFS= read -r glob_match; do
+          [ -n "$glob_match" ] || continue
+          case "$glob_match" in *[!A-Za-z0-9._/@+-]*|*'..'*) return 1 ;; esac
+          glob_count=$((glob_count + 1))
+          [ "$glob_count" -le 2048 ] || return 1
+          printf '%s\n' "$glob_match"
+        done < <(cd "$glob_cwd" && compgen -G "$value" || true)
+        [ "$glob_count" -gt 0 ] || return 1
+        continue
+      fi
       case "$value" in
         ""|*[!A-Za-z0-9._/-]*) return 1 ;;
       esac
@@ -1900,6 +1938,119 @@ esac
 # Resolve an absolute path one component at a time. This mirrors filesystem
 # traversal for existing symlinks while retaining a normalized missing tail,
 # without relying on GNU-only realpath flags or changing the process cwd.
+# Case folding for company paths. On a case-insensitive volume (macOS APFS by
+# default) `Companies/otherco`, `COMPANIES/OtherCo`, or the HQ root spelled in
+# another case open the same tenant folder as the canonical spelling, but the
+# checks below match `companies/<slug>` and "$HQ_ROOT" by exact string. These
+# helpers rewrite such spellings to the on-disk names before any check runs,
+# so a case variant is classified as the company path it opens. They only
+# turn a spelling the checks did not recognise into one they do.
+# Detection is one `-ef` test (same device and inode); no process is spawned.
+scope_case_folds() {
+  if [ -z "${SCOPE_CASE_FOLDS:-}" ]; then
+    SCOPE_CASE_FOLDS=0
+    if [ -n "${HQ_ROOT:-}" ] && [ -d "$HQ_ROOT/companies" ] \
+      && [ "$HQ_ROOT/COMPANIES" -ef "$HQ_ROOT/companies" ]; then
+      SCOPE_CASE_FOLDS=1
+    fi
+  fi
+  [ "$SCOPE_CASE_FOLDS" = 1 ]
+}
+
+# Print a glob that matches <text> in any letter case (`ab` -> `[aA][bB]`),
+# built without spawning a process. Glob metacharacters match only themselves.
+# Result in SCOPE_CASE_PAT (no command substitution, so no fork).
+scope_case_pattern() {
+  local text="${1:-}" out="" ch i rest
+  local lower="abcdefghijklmnopqrstuvwxyz" upper="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  for ((i = 0; i < ${#text}; i++)); do
+    ch="${text:i:1}"
+    case "$ch" in
+      [a-z]) rest="${lower%%"$ch"*}"; out="${out}[${ch}${upper:${#rest}:1}]" ;;
+      [A-Z]) rest="${upper%%"$ch"*}"; out="${out}[${lower:${#rest}:1}${ch}]" ;;
+      '['|']'|'*'|'?'|'\'|'!'|'^') out="${out}[${ch}]" ;;
+      *) out="$out$ch" ;;
+    esac
+  done
+  SCOPE_CASE_PAT="$out"
+}
+
+# Replace every case variant of <word> (matched by glob <pat>) in <text>.
+scope_case_replace_all() {
+  local text="${1:-}" word="${2:-}" pat="${3:-}" out="" pre
+  # shellcheck disable=SC2295
+  while [[ "$text" == *$pat* ]]; do
+    pre="${text%%$pat*}"
+    out="$out$pre$word"
+    text="${text:$((${#pre} + ${#word}))}"
+  done
+  SCOPE_CASE_OUT="$out$text"
+}
+
+# The on-disk name of the companies/ entry that <segment> opens when it is a
+# case variant of one; otherwise <segment> unchanged. Result in SCOPE_CASE_ENTRY.
+scope_case_company_entry() {
+  local seg="${1:-}" pat entry
+  SCOPE_CASE_ENTRY="$seg"
+  case "$seg" in ""|.|..) return 0 ;; esac
+  [ -e "$HQ_ROOT/companies/$seg" ] || return 0
+  for entry in "$HQ_ROOT"/companies/* "$HQ_ROOT"/companies/.[!.]*; do
+    [ "${entry##*/}" = "$seg" ] && return 0
+  done
+  scope_case_pattern "$seg"
+  pat="$SCOPE_CASE_PAT"
+  for entry in "$HQ_ROOT"/companies/* "$HQ_ROOT"/companies/.[!.]*; do
+    entry="${entry##*/}"
+    # shellcheck disable=SC2053
+    if [[ "$entry" == $pat ]] && [ "$HQ_ROOT/companies/$entry" -ef "$HQ_ROOT/companies/$seg" ]; then
+      SCOPE_CASE_ENTRY="$entry"
+      return 0
+    fi
+  done
+}
+
+SCOPE_CASE_COMPANIES_PAT='[cC][oO][mM][pP][aA][nN][iI][eE][sS]'
+
+# Rewrite <text> (a payload, a command, or a path) so that case variants of
+# the HQ root, of the companies segment, and of a company slug right after
+# companies/ use the on-disk spelling. A no-op unless the volume folds case.
+# Result in SCOPE_CASE_TEXT.
+scope_case_fold_text() {
+  local text="${1:-}" stripped out="" pre seg
+  SCOPE_CASE_TEXT="$text"
+  scope_case_folds || return 0
+  # Unicode case folding maps two non-ASCII letters onto ASCII ones: U+017F
+  # (long s) folds to s and U+212A (Kelvin sign) to k, so `companie\u017f/x`
+  # opens companies/x. Spell them as the ASCII letter first.
+  text="${text//$'\xc5\xbf'/s}"
+  text="${text//$'\xe2\x84\xaa'/k}"
+  if [ -z "${SCOPE_CASE_ROOT_PAT:-}" ]; then
+    scope_case_pattern "$HQ_ROOT"
+    SCOPE_CASE_ROOT_PAT="$SCOPE_CASE_PAT"
+  fi
+  stripped="${text//"$HQ_ROOT"/}"
+  if [[ "$stripped" == *$SCOPE_CASE_ROOT_PAT* ]]; then
+    scope_case_replace_all "$text" "$HQ_ROOT" "$SCOPE_CASE_ROOT_PAT"
+    text="$SCOPE_CASE_OUT"
+  fi
+  stripped="${text//companies/}"
+  if [[ "$stripped" == *$SCOPE_CASE_COMPANIES_PAT* ]]; then
+    scope_case_replace_all "$text" companies "$SCOPE_CASE_COMPANIES_PAT"
+    text="$SCOPE_CASE_OUT"
+  fi
+  while [[ "$text" == *companies/* ]]; do
+    pre="${text%%companies/*}"
+    out="${out}${pre}companies/"
+    text="${text:$((${#pre} + 10))}"
+    seg="${text%%[!A-Za-z0-9._-]*}"
+    [ -n "$seg" ] || continue
+    scope_case_company_entry "$seg"
+    out="$out$SCOPE_CASE_ENTRY"
+    text="${text:${#seg}}"
+  done
+  SCOPE_CASE_TEXT="$out$text"
+}
+
 scope_resolve_absolute_path() {
   local input="${1:-}" resolved="/" pending segment candidate target hops=0
   [ -n "$input" ] || return 1
@@ -1939,7 +2090,9 @@ scope_resolve_absolute_path() {
     fi
     resolved="$candidate"
   done
-  printf '%s' "$resolved"
+  # A case variant of the HQ root, companies/, or a slug names the same folder.
+  scope_case_fold_text "$resolved"
+  printf '%s' "$SCOPE_CASE_TEXT"
 }
 
 self_src="${BASH_SOURCE[0]:-$0}"
@@ -1967,6 +2120,7 @@ fi
 [ -n "$HQ_ROOT" ] && [ -d "$HQ_ROOT/companies" ] || exit 0
 physical_root="$(scope_resolve_absolute_path "$HQ_ROOT" 2>/dev/null || true)"
 [ -n "$physical_root" ] && HQ_ROOT="$physical_root"
+unset SCOPE_CASE_FOLDS SCOPE_CASE_ROOT_PAT
 [ -f "$HQ_ROOT/core/scripts/lib/session-authz.sh" ] || exit 0
 
 LIB_DIR="$HQ_ROOT/core/scripts/lib"
@@ -1976,6 +2130,13 @@ LIB_DIR="$HQ_ROOT/core/scripts/lib"
 . "$LIB_DIR/session-scope-capability.sh"
 # shellcheck source=../../core/scripts/lib/session-id.sh
 . "$LIB_DIR/session-id.sh"
+
+# Fold case variants of company paths in everything the checks read: the
+# payload (paths, commands) and the working directory.
+scope_case_fold_text "$INPUT"
+INPUT="$SCOPE_CASE_TEXT"
+scope_case_fold_text "$PAYLOAD_CWD"
+PAYLOAD_CWD="$SCOPE_CASE_TEXT"
 
 # The hook payload is the ONLY identity this guard accepts. It names the session
 # that fired this event; nothing else here describes the caller reliably.

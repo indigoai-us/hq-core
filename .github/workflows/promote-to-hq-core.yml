@@ -1,22 +1,24 @@
 name: Promote to hq-core
 
 # Opens (or updates) a PR against indigoai-us/hq-core carrying the current
-# staging tree. Two trigger modes:
+# staging tree. It runs ONLY on workflow_dispatch: a staging merge (and the
+# Auto-beta stamp commit that follows it) promotes nothing. The release
+# operator dispatches it when it is time to release, so each release head is
+# built once and the hq-core checks run once on it. Two dispatch modes:
 #
-#   1. push to main  (mode=auto)  — fires on every push to staging main.
-#      Maintains ONE standing PR on a fixed branch (promote/auto-main).
-#      Each push force-updates that branch with the latest staging tree, so
-#      an already-open PR is "rebased" onto the new code rather than a new PR
-#      being opened. Version follows a patch train: next = hq-core main
-#      hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). Auto-mode arms GitHub
-#      auto-merge (squash) once required checks are green. Automation never
-#      labels the PR; a human can apply `hold-release` to hold a release.
-#      Minor/major releases are still cut manually via workflow_dispatch with
-#      an explicit version.
+#   1. version empty, pr_type=release (mode=auto) — patch train on ONE
+#      standing PR on a fixed branch (promote/auto-main). Version: hq-core
+#      main hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). Arms GitHub
+#      auto-merge (squash); the gate below merges once every check passes and
+#      the required approval is given. Automation never labels the PR; a
+#      human can apply `hold-release` to hold a release.
 #
-#   2. workflow_dispatch (mode=manual) — explicit release/v<ver> or fix/<slug>
-#      PR with an operator-supplied version (unchanged from the original
-#      behavior, including dry_run).
+#   2. version set (mode=manual) — explicit release/v<ver> or fix/<slug> PR
+#      with an operator-supplied version.
+#
+# Open-PR guard (core/scripts/promote-release-pr-guard.sh), both modes: a
+# dispatch never updates an open PR labelled `hold-release`, and refuses to
+# replace the head of an open, approved PR unless the `force` input is true.
 #
 # Models the shape of past hq-core PRs:
 #   - branch:  promote/auto-main (auto) | release/v<version> | fix/<slug>
@@ -43,13 +45,14 @@ name: Promote to hq-core
 # before any push/PR step runs.
 
 on:
-  push:
-    branches: [main]
+  # Dispatch only. No push trigger: staging merges and Auto-beta stamp
+  # commits must not rebuild or force-push the hq-core release PR.
   workflow_dispatch:
     inputs:
       version:
-        description: 'Semver without v-prefix (e.g. 14.1.3 or 14.1.3-beta.1)'
-        required: true
+        description: 'Semver without v-prefix (e.g. 14.1.3). Empty with pr_type=release = patch-train release on promote/auto-main.'
+        required: false
+        default: ''
         type: string
       pr_type:
         description: 'Release PR (release/v<ver>) or fix PR (fix/<slug>)'
@@ -72,6 +75,11 @@ on:
         required: true
         type: boolean
         default: true
+      force:
+        description: 'Replace the head of an open, approved release PR (dismisses the approval, restarts checks). Never overrides hold-release.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -110,6 +118,10 @@ jobs:
           INPUT_SLUG: ${{ inputs.slug }}
         run: |
           set -euo pipefail
+          if [ -z "$INPUT_VERSION" ] && [ "$INPUT_TYPE" = "release" ]; then
+            echo "::notice::No version given: patch-train release on promote/auto-main."
+            exit 0
+          fi
           if ! printf '%s' "$INPUT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$'; then
             echo "::error::version is not a valid semver"
             exit 1
@@ -147,11 +159,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$EVENT" = "push" ]; then
+          if [ -z "$INPUT_VERSION" ] && [ "$INPUT_TYPE" = "release" ]; then
             # ── Auto mode: patch train off hq-core's current main hqVersion ──
             MODE="auto"
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::A patch-train release must be dispatched from main (got ${GITHUB_REF})."
+              exit 1
+            fi
             PR_TYPE="release"
-            DRY_RUN="false"
+            DRY_RUN="$INPUT_DRY_RUN"
             BRANCH="promote/auto-main"
             CUR="$(gh api "repos/${TARGET_REPO}/contents/core/core.yaml" --jq '.content' \
               | base64 -d \
@@ -333,7 +349,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ steps.params.outputs.mode }}" = "auto" ]; then
-            echo "::notice::No tree differences between staging and hq-core — nothing to promote on this push."
+            echo "::notice::No tree differences between staging and hq-core — nothing to promote."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "::error::No tree differences between staging and hq-core — nothing to promote."
@@ -341,12 +357,19 @@ jobs:
           fi
 
       - name: Close stale standing PR (auto, no promotable changes)
-        if: steps.params.outputs.mode == 'auto' && steps.realchanges.outputs.skip == 'true'
+        if: steps.params.outputs.mode == 'auto' && steps.realchanges.outputs.skip == 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.params.outputs.branch }}
+          INPUT_FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
+          # Same guard as before a push: never close a held PR, or an approved
+          # one without force=true.
+          if ! bash staging/core/scripts/promote-release-pr-guard.sh "$TARGET_REPO" "$BRANCH" "${INPUT_FORCE:-false}"; then
+            echo "::notice::Leaving the open release PR for ${BRANCH} as is."
+            exit 0
+          fi
           EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [ -n "$EXISTING" ]; then
             gh pr close "$EXISTING" --repo "$TARGET_REPO" \
@@ -387,7 +410,7 @@ jobs:
           fi
           if [ "$INPUT_MODE" = "auto" ]; then
             {
-              echo "- 🤖 Auto-promote: this PR tracks staging \`main\` and is force-updated on every push."
+              echo "- 🤖 Release PR built by a \`promote-to-hq-core\` dispatch. Staging merges do not update it; a new dispatch refuses to replace an approved head unless \`force=true\`, and never touches a held PR."
               echo "- ✅ The release workflow waits for every check and status on the exact hq-core PR head, then merges only that checked SHA."
               echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). The gate disables auto-merge and will not merge while the label is present. Automation never adds this label. If a check fails, re-run it; the scheduled recheck reads the current results and merges once every check passes."
             } >> "$BODY_FILE"
@@ -449,6 +472,17 @@ jobs:
       # Auto-merge stays armed across this update on purpose: release PRs are
       # always ready to merge. Only a manual hold-release disarms it, and that
       # must happen before the push so a held PR cannot merge on the new head.
+      # Refuse before touching an open PR that is held, or approved without
+      # force=true. Runs before any push in both modes.
+      - name: Guard open release PR (hold-release / approved)
+        id: guard
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.params.outputs.branch }}
+          INPUT_FORCE: ${{ inputs.force }}
+        run: bash staging/core/scripts/promote-release-pr-guard.sh "$TARGET_REPO" "$BRANCH" "${INPUT_FORCE:-false}"
+
       - name: Disarm auto-merge on a held standing PR before updating it
         if: steps.params.outputs.mode == 'auto' && steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
@@ -475,8 +509,8 @@ jobs:
           set -euo pipefail
           cd target
           if [ "$MODE" = "auto" ]; then
-            # Force-update the standing branch so an already-open PR is rebased
-            # onto the new staging tree instead of opening a fresh PR.
+            # Force-update the standing branch. The guard step above already
+            # refused a held PR, and an approved one unless force=true.
             git push --force --set-upstream origin "$BRANCH"
           else
             git push --set-upstream origin "$BRANCH"
