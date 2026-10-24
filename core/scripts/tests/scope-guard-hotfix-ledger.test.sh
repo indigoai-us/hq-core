@@ -348,6 +348,58 @@ bash_case 0 0ae14829-ln 'ln -s workspace/a.txt workspace/b.txt'
 bash_case 0 0ae14829-gh-comment-backticks "gh pr comment 1 -R a/b --body 'use \`foo\` here, see \`a/b/c\`'"
 bash_case 0 41420292-cp-tmp 'cp workspace/a.txt /tmp/a.txt'
 
+echo "[ledger] shape: loop word that globs the tenant tree (feedback 36c3e8cb)"
+# Own-company loop globs in a two-company HQ.
+mkdir -p "$TMP/companies/indigo/knowledge/.git" "$TMP/companies/indigo/people/a" "$TMP/companies/otherco/knowledge"
+touch "$TMP/companies/indigo/people/a/meta.yaml" "$TMP/companies/otherco/knowledge/k.md"
+bash_case 0 36c3-loop-own-glob 'for f in companies/indigo/people/*/meta.yaml; do cat "$f"; done'
+bash_case 0 36c3-loop-own-glob-git 'for d in companies/indigo/*; do git -C "$d" status; done'
+# Must stay blocked: the company segment globs an unlocked tenant, a literal
+# foreign tenant, a `..` climb, a symlink out of the own company, or a cwd
+# other than the HQ root.
+bash_case 2 36c3-loop-star-two-co 'for d in companies/*/knowledge; do git -C "$d/.git" status; done'
+bash_case 2 36c3-loop-star-two-co-cat 'for f in companies/*/knowledge/*.md; do cat "$f"; done'
+bash_case 2 36c3-loop-qmark-foreign 'for d in companies/o?herco/knowledge; do ls "$d"; done'
+bash_case 2 36c3-loop-foreign-literal 'for f in companies/otherco/knowledge/*; do cat "$f"; done'
+bash_case 2 36c3-loop-dotdot 'for f in companies/indigo/../otherco/*; do cat "$f"; done'
+bash_case 2 36c3-loop-star-dotdot 'for f in companies/indigo/*/../../otherco/knowledge/*; do cat "$f"; done'
+ln -s "$TMP/companies/otherco/knowledge" "$TMP/companies/indigo/people/evil"
+bash_case 2 36c3-loop-own-glob-symlink-out 'for f in companies/indigo/people/*/k.md; do cat "$f"; done'
+bash_case 2 36c3-loop-own-glob-symlink-write 'for d in companies/indigo/people/*; do echo x > "$d/new.md"; done'
+rm "$TMP/companies/indigo/people/evil"
+bash_case 2 36c3-loop-glob-rebound 'for d in companies/indigo/*; do d=companies/otherco; cat "$d/knowledge/k.md"; done'
+# Single-company HQ (the reporter's shape): `companies/*` can only match the
+# locked company, so the loop resolves.
+rm -rf "$TMP/companies/otherco"
+printf 'companies:\n  indigo:\n    name: Indigo\n' > "$TMP/companies/manifest.yaml"
+bash_case 0 36c3-loop-star-one-co 'for d in companies/*/knowledge; do git -C "$d/.git" status; done'
+bash_case 0 36c3-loop-star-one-co-meta 'for f in companies/*/people/*/meta.yaml; do cat "$f"; done'
+# A tenant folder that exists without the globbed subpath still counts.
+mkdir -p "$TMP/companies/otherco/settings"
+bash_case 2 36c3-loop-star-other-without-subpath 'for d in companies/*/knowledge; do git -C "$d/.git" status; done'
+install_fixture "indigo"
+
+echo "[ledger] shape: read-only loops, heredoc appends and \$(date) logs (feedback 630200a0)"
+mkdir -p "$TMP/personal/knowledge"; touch "$TMP/personal/knowledge/machine-setup.md"
+bash_case 0 630200a0-loop-core-pol 'for f in core/policies/*.md; do grep -l rule "$f"; done'
+bash_case 0 630200a0-loop-own-pol 'for f in companies/indigo/policies/*.md; do grep -l rule "$f"; done'
+bash_case 0 630200a0-loop-own-pol-subst 'for f in $(ls companies/indigo/policies); do grep -c x "companies/indigo/policies/$f"; done'
+bash_case 0 630200a0-heredoc-personal "cat >> personal/knowledge/machine-setup.md <<'EOF'
+## Node
+- installed via brew
+EOF"
+bash_case 0 630200a0-heredoc-personal-unq 'cat >> personal/knowledge/machine-setup.md <<EOF
+- set on $(date +%F)
+EOF'
+bash_case 0 630200a0-json-date 'echo "{\"ts\":\"$(date -u +%FT%TZ)\",\"event\":\"x\"}" >> workspace/logs/events.jsonl'
+bash_case 0 630200a0-printf-date 'printf "%s\n" "{\"ts\":\"$(date +%s)\"}" >> workspace/logs/events.jsonl'
+bash_case 2 630200a0-loop-foreign-pol 'for f in companies/otherco/policies/*.md; do grep -l rule "$f"; done'
+bash_case 2 630200a0-heredoc-foreign "cat >> companies/otherco/policies/x.md <<'EOF'
+x
+EOF"
+bash_case 2 630200a0-json-foreign 'echo "{\"ts\":\"$(date)\"}" >> companies/otherco/settings/log.jsonl'
+install_fixture "indigo"
+
 echo "[ledger] blocked cases keep the rewrite hint"
 hint_case hint-subst 'cat "$(cat companies/otherco/settings/x)"' "command substitution's output cannot be checked"
 hint_case hint-var 'cat "$X/settings/x"' "the guard follows a variable only when"

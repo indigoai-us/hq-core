@@ -251,6 +251,72 @@ if [ "${1:-}" = "--remediate" ]; then
       return 1
     }
 
+    # "<checkId>\t<class>" for each refresh-sync attempt in the --fix JSON,
+    # where class is one fixed word: succeeded, timeout, handed-off,
+    # lock-busy, 4xx, 5xx, network or other. Unknown outcomes are dropped.
+    # Only the class leaves the machine: no paths, messages or values.
+    refresh_sync_outcome_classes() {
+      local document="$1"
+      [ -n "$document" ] || return 0
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        printf '%s\n' "$document" | "$HQ_LIB_JQ" -r '
+          if type == "object" and (.refreshSync | type == "array") then
+            .refreshSync[]
+            | select((.checkId | type == "string") and (.outcome | type == "string"))
+            | select(.checkId | test("^sync\\.journal\\.[A-Za-z0-9._-]{1,160}$"))
+            | [.checkId, ({"pull-succeeded":"succeeded","pull-timeout":"timeout",
+                "pull-handed-off":"handed-off","pull-failed:lock-busy":"lock-busy",
+                "pull-failed:4xx":"4xx","pull-failed:5xx":"5xx",
+                "pull-failed:network":"network","pull-failed:other":"other"}[.outcome] // empty)]
+            | select(length == 2) | @tsv
+          else empty end' 2>/dev/null || true
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        printf '%s\n' "$document" | "$HQ_LIB_NODE" -e '
+          let input = "";
+          process.stdin.on("data", chunk => input += chunk).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(input); } catch { return; }
+            if (!doc || typeof doc !== "object" || !Array.isArray(doc.refreshSync)) return;
+            const classes = {
+              "pull-succeeded": "succeeded", "pull-timeout": "timeout",
+              "pull-handed-off": "handed-off", "pull-failed:lock-busy": "lock-busy",
+              "pull-failed:4xx": "4xx", "pull-failed:5xx": "5xx",
+              "pull-failed:network": "network", "pull-failed:other": "other"
+            };
+            for (const item of doc.refreshSync) {
+              if (!item || typeof item.checkId !== "string" || typeof item.outcome !== "string") continue;
+              if (!/^sync\.journal\.[A-Za-z0-9._-]{1,160}$/.test(item.checkId)) continue;
+              const cls = Object.prototype.hasOwnProperty.call(classes, item.outcome) ? classes[item.outcome] : null;
+              if (cls) process.stdout.write(item.checkId + "\t" + cls + "\n");
+            }
+          });' 2>/dev/null || true
+      fi
+      return 0
+    }
+
+    # 0 when the installed hq-cli is older than the release that made --fix
+    # skip unresolvable companies and refresh up to 10 journals per run
+    # (5.345.159). Most stale-journal and manifest reports come from those
+    # builds, and only an update fixes them.
+    HQ_CLI_FIX_FLOOR="5.345.159"
+    cli_older_than_fix_floor() {
+      local version="$1"
+      case "$version" in
+        [0-9]*.[0-9]*.[0-9]*) ;;
+        *) return 1 ;;
+      esac
+      awk -v a="$version" -v b="$HQ_CLI_FIX_FLOOR" 'BEGIN {
+        split(a, x, "."); split(b, y, ".");
+        for (i = 1; i <= 3; i++) {
+          if ((x[i] + 0) < (y[i] + 0)) exit 0;
+          if ((x[i] + 0) > (y[i] + 0)) exit 1;
+        }
+        exit 1
+      }'
+    }
+
     doctor_degraded() {
       # Newer CLI versions resolve the opt-in hq-flags gate. Older versions
       # reject the private option, so fall back to ordinary JSON output. Both
@@ -304,22 +370,34 @@ if [ "${1:-}" = "--remediate" ]; then
       FLAG_VALUE=$(HQ_CLI_BIN="${HQ_CLI_BIN:-$(command -v hq 2>/dev/null)}" "$HQ_LIB_NODE" "$FLAG_READER" 2>/dev/null) || FLAG_VALUE=false
       [ "$FLAG_VALUE" = true ] && UNREACHED_FILTER_ENABLED=true
     fi
-    FIX_RESULT=""
-    if [ "$UNREACHED_FILTER_ENABLED" = true ]; then
-      # Capture to a private state file: on the portable watchdog path, a killed
-      # command can leave a grandchild holding stdout open. A command
-      # substitution around bounded would then wait for that pipe after the
-      # deadline. Reading the completed file keeps the same deadline and output.
-      FIX_RESULT_FILE="$STATE_DIR/fix-result.$$"
-      ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json \
-          > "$FIX_RESULT_FILE" 2>/dev/null ) || true
-      FIX_RESULT=$(cat "$FIX_RESULT_FILE" 2>/dev/null || true)
-      rm -f "$FIX_RESULT_FILE" 2>/dev/null || true
-    else
-      ( cd "$HQ_ROOT" 2>/dev/null && bounded 300 hq doctor --fix --yes --json >/dev/null 2>&1 )
-    fi
+    # The --fix JSON is always captured now: its per-journal refresh outcomes
+    # go into the report (feedback cd56a501), and the unreached filter below
+    # reads it when its flag is on. Capture to a private state file: on the
+    # portable watchdog path, a killed command can leave a grandchild holding
+    # stdout open. A command substitution around bounded would then wait for
+    # that pipe after the deadline. Reading the completed file keeps the same
+    # deadline and output.
+    FIX_RESULT_FILE="$STATE_DIR/fix-result.$$"
+    ( cd "$HQ_ROOT" 2>/dev/null && umask 077 && bounded 300 hq doctor --fix --yes --json \
+        > "$FIX_RESULT_FILE" 2>/dev/null ) || true
+    FIX_RESULT=$(cat "$FIX_RESULT_FILE" 2>/dev/null || true)
+    rm -f "$FIX_RESULT_FILE" 2>/dev/null || true
     REMAINING=$(doctor_degraded)
     REMAINING_RC=$?
+    HQ_CLI_VERSION_SEEN=$(cd "$HQ_ROOT" 2>/dev/null && bounded 15 hq --version 2>/dev/null \
+      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    # An outdated hq-cli cannot repair these checks itself. Tell the user once
+    # at the next session start (feedback cd56a501); only the version leaves
+    # this file.
+    if [ -n "$REMAINING" ] && cli_older_than_fix_floor "$HQ_CLI_VERSION_SEEN"; then
+      PENDING_TMP="$STATE_DIR/cli-outdated.pending.$$"
+      if (umask 077; printf '%s\n' "$HQ_CLI_VERSION_SEEN" > "$PENDING_TMP") 2>/dev/null \
+          && mv -f "$PENDING_TMP" "$STATE_DIR/cli-outdated.pending" 2>/dev/null; then
+        :
+      else
+        rm -f "$PENDING_TMP" 2>/dev/null
+      fi
+    fi
     # The repair pass cleared everything: a later recurrence is a new report.
     # Checked before the unreached-journal filter, which hides rows that
     # are still failing.
@@ -440,7 +518,23 @@ EOF_FINDINGS
     # The removed direct-Sentry CLI route is no longer available. Keep sending
     # the same sanitized summary through the feedback report path below.
     CHECK_COUNT=$(printf '%s\n' "$CHECK_IDS" | wc -l | tr -d ' ')
-    CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | sed 's/^/- /')
+    # Annotate each journal row with how its --fix pull ended. The fingerprint
+    # above is computed from CHECK_IDS alone, so outcomes never change dedup.
+    OUTCOME_CLASSES=$(refresh_sync_outcome_classes "$FIX_RESULT")
+    CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      id="${line%%:*}"
+      cls=$(printf '%s\n' "$OUTCOME_CLASSES" | awk -F '\t' -v id="$id" '$1 == id { print $2; exit }')
+      if [ -n "$cls" ]; then
+        printf -- '- %s (--fix pull: %s)\n' "$line" "$cls"
+      else
+        printf -- '- %s\n' "$line"
+      fi
+    done)
+    CLI_NOTE=""
+    if cli_older_than_fix_floor "$HQ_CLI_VERSION_SEEN"; then
+      CLI_NOTE="hq-cli $HQ_CLI_VERSION_SEEN is older than $HQ_CLI_FIX_FLOOR. Updating hq-cli fixes most of these checks."
+    fi
     # Automatic reports must opt out explicitly: the feedback CLI otherwise
     # collects and uploads the same log bundle for every report.
     if ( cd "$HQ_ROOT" 2>/dev/null && bounded 60 hq feedback bug \
@@ -449,9 +543,12 @@ EOF_FINDINGS
 Automated report from the check-client-health SessionStart hook.
 
 After the safe repair pass, $CHECK_COUNT sync checks still report FAIL or WARN.
-Check IDs or opted-in checkId: reasonCode pairs (up to 50 shown):
+Check IDs or opted-in checkId: reasonCode pairs (up to 50 shown), with the
+--fix pull outcome for sync journals when known:
 $CHECK_LIST
-
+${CLI_NOTE:+
+$CLI_NOTE
+}
 Doctor messages and log bundles are not attached. Reproduce locally with
 \`hq doctor --json\`. Component versions are attached by the feedback pipeline.
 Automatic reporting is limited to one attempt per HQ install every 24 hours,
@@ -541,6 +638,25 @@ show_unreached_count_once() {
   rm -f "$pending_file" "$lock_file" 2>/dev/null || true
 }
 show_unreached_count_once
+
+# Tell the user once that their hq-cli is too old for --fix to repair their
+# sync checks (written by remediation; feedback cd56a501).
+show_cli_outdated_once() {
+  local pending_file="$STATE_DIR/cli-outdated.pending"
+  local version
+  [ -f "$pending_file" ] || return 0
+  version=$(head -c 32 "$pending_file" 2>/dev/null | tr -d '\r\n')
+  rm -f "$pending_file" 2>/dev/null || return 0
+  case "$version" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) return 0 ;;
+  esac
+  case "$version" in
+    *[!0-9.]*) return 0 ;;
+  esac
+  printf '<hq-client-health-result>\nHQ sync checks are still failing after the automatic fix, and hq-cli %s is older than 5.345.159, the release that fixes most of them. Update hq-cli with: npm install -g @indigoai-us/hq-cli@latest (then start a new session).\n</hq-client-health-result>\n' "$version"
+}
+show_cli_outdated_once
 
 # Display the latest locally stored next step once. The display claim uses a
 # lock and a result id, so parallel SessionStarts cannot print it twice.

@@ -14,6 +14,7 @@ commands = [
     (number, line.strip())
     for number, line in enumerate(path.read_text().splitlines(), start=1)
     if line.lstrip().startswith("hq feedback ")
+    or line.lstrip().startswith('bash "<submit-path>" hq feedback ')
 ]
 if not commands:
     print("FAIL: no hq feedback submit commands found", file=sys.stderr)
@@ -37,9 +38,18 @@ if template is None:
     template_text = blocks[0] if blocks else ""
 else:
     template_text = template.group(1)
-primary = next((line.strip() for line in template_text.splitlines() if line.lstrip().startswith("hq feedback ")), "")
+primary = next((line.strip() for line in template_text.splitlines() if "hq feedback " in line), "")
 if '--body-file "<body-path>"' not in primary:
     failures.append('primary Step 8 template must use --body-file "<body-path>"')
+if not primary.startswith('bash "<submit-path>" hq feedback '):
+    failures.append("primary Step 8 template must run the absolute hq-bug-submit.sh path from Step 2 so the body file is deleted")
+alloc = text.split("### 2. Resolve the submit wrapper and allocate the body file", 1)[-1].split("### 3.", 1)[0]
+if "umask 077" not in alloc:
+    failures.append("Step 2 must set umask 077 before mktemp")
+if 'bash "<submit-path>"' not in step8 or "<submit-path>` → SUBMIT_PATH" not in step8:
+    failures.append("Step 8 must run the wrapper from the SUBMIT_PATH printed in Step 2")
+if 'SUBMIT_PATH="$HQ_DIR/core/scripts"/hq-bug-submit.sh' not in alloc or not (0 <= alloc.find("cannot find core/scripts/hq-bug-submit.sh") < alloc.find("mktemp")):
+    failures.append("Step 2 must resolve the absolute wrapper path and fail before mktemp when it is missing")
 
 if failures:
     for failure in failures:

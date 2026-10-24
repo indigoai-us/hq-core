@@ -175,3 +175,85 @@ if [[ -z "$GATE_TEST_CASE" ]]; then
   grep -Fq 'bash core/scripts/release-pr-check-gate.sh ' "$RECHECK_WORKFLOW" || fail "recheck workflow must invoke the gate from its root checkout"
   printf '%s\n' 'PASS: promotion and scheduled recheck workflows invoke the gate from their checkout paths'
 fi
+
+# ── Promote on dispatch only, and the open release PR guard ──
+# Promote must not run on push: each staging merge and its Auto-beta stamp
+# commit used to force-push the release PR and restart the hq-core checks.
+GUARD="$ROOT/core/scripts/promote-release-pr-guard.sh"
+[ -x "$GUARD" ] || fail "open release PR guard is missing"
+mkdir -p "$TMP/guardbin"
+cat > "$TMP/guardbin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$GUARD_LOG"
+case "$*" in
+  *'pr list '*) printf '%s\n' "${GUARD_OPEN_PR:-}" ;;
+  *'pr view '*)
+    held=false; approved=false
+    [[ "${GUARD_HELD:-no}" == yes ]] && held=true
+    [[ "${GUARD_APPROVED:-no}" == yes ]] && approved=true
+    printf '%s %s\n' "$held" "$approved" ;;
+  *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 90 ;;
+esac
+GH
+chmod +x "$TMP/guardbin/gh"
+
+guard_case() {
+  local id="$1" open_pr="$2" held="$3" approved="$4" force="$5" expected_rc="$6" expected_text="$7"
+  [[ -z "$GATE_TEST_CASE" || "$GATE_TEST_CASE" == "guard-$id" ]] || return 0
+  local dir="$TMP/guard-$id" out rc
+  mkdir -p "$dir"
+  : > "$dir/gh.log"
+  set +e
+  out="$(PATH="$TMP/guardbin:$PATH" GUARD_LOG="$dir/gh.log" GUARD_OPEN_PR="$open_pr" \
+    GUARD_HELD="$held" GUARD_APPROVED="$approved" GITHUB_OUTPUT="$dir/out" \
+    bash "$GUARD" "$REPO" promote/auto-main "$force" 2>&1)"
+  rc=$?
+  set -e
+  [[ "$rc" == "$expected_rc" ]] || fail "guard $id: expected exit $expected_rc, got $rc; output: $out"
+  grep -Fq -- "$expected_text" <<< "$out" || fail "guard $id: missing '$expected_text'; output: $out"
+  if grep -Eq 'pr (merge|edit|close)|push' "$dir/gh.log"; then fail "guard $id: guard must only read PR state"; fi
+  grep -Fxq "existing=${open_pr}" "$dir/out" || fail "guard $id: must record existing=${open_pr}"
+  printf 'PASS: guard %s\n' "$id"
+}
+guard_case no-open-pr '' no no false 0 'a new release PR will be opened'
+guard_case open-unapproved 392 no no false 0 'updated in place'
+guard_case approved-no-force 392 no yes false 3 'already open and approved'
+guard_case approved-force 392 no yes true 0 'force=true'
+guard_case held-no-force 392 yes no false 3 'hold-release'
+guard_case held-force 392 yes no true 3 'hold-release'
+guard_case held-approved-force 392 yes yes true 3 'hold-release'
+
+if [[ -z "$GATE_TEST_CASE" ]]; then
+  PROMOTE_WORKFLOW="$ROOT/.github/workflows/promote-to-hq-core.yml"
+  on_keys="$(awk '/^on:[[:space:]]*$/ {f=1; next} f && /^[^[:space:]#]/ {exit} f && /^  [a-z_]+:/ {sub(/:.*/,""); gsub(/ /,""); print}' "$PROMOTE_WORKFLOW")"
+  [[ "$on_keys" == workflow_dispatch ]] || fail "promotion workflow must trigger only on workflow_dispatch (got: $(tr '\n' ' ' <<< "$on_keys"))"
+  grep -Eq '^      force:$' "$PROMOTE_WORKFLOW" || fail "promotion dispatch must offer a force input"
+  if grep -Fq '"$EVENT" = "push"' "$PROMOTE_WORKFLOW"; then fail "promotion workflow must not branch on a push event"; fi
+  grep -Fq 'run: bash staging/core/scripts/promote-release-pr-guard.sh "$TARGET_REPO" "$BRANCH" "${INPUT_FORCE:-false}"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must run the open-PR guard"
+  # The guard step must come before every push to hq-core.
+  guard_line="$(grep -n 'promote-release-pr-guard.sh' "$PROMOTE_WORKFLOW" | head -1 | cut -d: -f1)"
+  push_count=0
+  while IFS=: read -r ln _; do
+    push_count=$((push_count + 1))
+    (( ln > guard_line )) || fail "promotion workflow pushes (line $ln) before the open-PR guard (line $guard_line)"
+  done < <(grep -n 'git push' "$PROMOTE_WORKFLOW")
+  (( push_count > 0 )) || fail "expected git push steps in the promotion workflow"
+  # Closing the standing PR is guarded too: a held or approved PR is never closed.
+  close_block="$(awk '/- name: Close stale standing PR/ {f=1} f && /- name: Build PR body/ {exit} f {print}' "$PROMOTE_WORKFLOW")"
+  grep -Fq 'gh pr close' <<< "$close_block" || fail "expected the stale standing PR close step"
+  grep -Fq 'if ! bash staging/core/scripts/promote-release-pr-guard.sh "$TARGET_REPO" "$BRANCH" "${INPUT_FORCE:-false}"; then' <<< "$close_block" \
+    || fail "closing the standing PR must go through the open-PR guard"
+  (( $(grep -n 'promote-release-pr-guard' <<< "$close_block" | head -1 | cut -d: -f1) < $(grep -n 'gh pr close' <<< "$close_block" | cut -d: -f1) )) \
+    || fail "the guard must run before gh pr close"
+  grep -Fq 'refs/heads/main' "$PROMOTE_WORKFLOW" || fail "patch-train dispatch must be limited to main"
+  # No other workflow may dispatch or chain into promote.
+  for wf in "$ROOT"/.github/workflows/*.yml; do
+    [[ "$wf" == "$PROMOTE_WORKFLOW" ]] && continue
+    if grep -Eq 'workflow run promote-to-hq-core|promote-to-hq-core\.yml/dispatches|workflow_run:' "$wf" \
+       && grep -Fq 'Promote to hq-core' "$wf"; then
+      fail "$(basename "$wf") must not dispatch or chain into promote-to-hq-core"
+    fi
+  done
+  printf '%s\n' 'PASS: promotion runs on dispatch only and guards held/approved release PRs before any push'
+fi

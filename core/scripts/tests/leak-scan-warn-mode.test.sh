@@ -55,6 +55,17 @@ set +e
 (cd "$FX" && HQ_SCAN_MODE=warn bash .leak-scan/scan.sh settings-local-not-ignored --warn >/dev/null 2>&1); rc_struct=$?
 set -e
 [[ $rc_struct -eq 1 ]] || fail "structural modes must not be softened by warn mode (got $rc_struct)"
+# File-scoped annotations ("::error file=...::") are downgraded too.
+mkdir -p "$FX/core/policies"
+printf -- '---\nid: p\n---\n\n## Rule\n\nx\n\n## Provenance\n\ny\n' > "$FX/core/policies/p.md"
+git -C "$FX" add -A
+git -C "$FX" commit -qm prov
+set +e
+out_file="$(cd "$FX" && bash .leak-scan/scan.sh provenance --warn 2>&1)"; rc_file=$?
+set -e
+[[ $rc_file -eq 0 ]] || fail "provenance --warn must exit 0 (got $rc_file)"
+grep -q '^::warning file=core/policies/p.md::' <<<"$out_file" || fail "file-scoped finding must print as ::warning file=...::"
+if grep -q '::error' <<<"$out_file"; then fail "file-scoped finding must not print ::error"; fi
 [[ $rc_bad -eq 2 ]] || fail "unknown mode must still exit 2 under --warn (got $rc_bad)"
 
 # CI wiring: every content scan runs report-only.

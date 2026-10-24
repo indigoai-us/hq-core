@@ -97,6 +97,7 @@ heading, so it is never injected.
 | `command` | string | Command name for a command-scoped policy (e.g. `prd`, `email`); pair with a `when:` keyed on the `/command` token |
 | `inject` | enum | `once` (default) or `always`. Sets injection **cadence** — how *often* the policy re-surfaces — and is orthogonal to `enforcement:` (which sets **depth**). See **Injection Cadence** below. |
 | `principals` | list | Session principals the policy is injected for: any of `human`, `agent`, `bot`, as `[agent, bot]` or a YAML block list of `- agent` lines. Omitted means every principal. See **Principals** below. |
+| `repos` | list | Repos the policy applies to, as `[repo-a, repo-b]` or a YAML block list. Omitted or empty means every repo. See **Repo Scope** below. |
 
 ### Principals
 
@@ -120,6 +121,32 @@ matching and ranking, so it never takes a slot under the output ceiling. A missi
 everyone. `core/scripts/lint-policy-triggers.sh` reports unknown values, empty lists, and malformed
 syntax as `PRINCIPALS` findings and exits non-zero. At runtime a list with no recognized value
 applies to everyone, so a typo cannot hide a policy.
+
+### Repo Scope
+
+`repos:` limits a policy to events that touch one of the listed repos. It is opt-in: a policy
+without the field, or with an empty list, behaves exactly as before. It works in any policy scope,
+and is most useful for a company policy that is about one of the company's repos.
+
+```yaml
+repos: [web-app]        # or a block list:
+# repos:
+#   - web-app
+#   - acme-org/api      # owner/name and repos/<public|private>/name are accepted
+```
+
+Each entry is reduced to its last path segment and compared case-insensitively with the repo names
+the event touches. The injector reads those names, without running git, from:
+
+- any `repos/public/<name>` or `repos/private/<name>` path in the session cwd or the tool command
+  (this covers `git -C <dir>` and file operands);
+- any `workspace/worktrees/<name>/` path in the cwd or the command (HQ worktrees are grouped by repo
+  name);
+- `-R owner/<name>` or `--repo owner/<name>` in the command.
+
+A policy whose `repos:` list matches none of these is dropped before trigger matching and ranking,
+so it never takes a slot under the output ceiling. Matching is by directory name only: the git remote
+is not read, so a clone checked out under a different directory name does not match.
 
 ### Lifecycle Fields
 

@@ -128,6 +128,39 @@ For each merged PR, watch its production deploy to a terminal state:
 Respect the Step 0 ordering here too: do not start a consumer's deploy until
 its producer's deploy is live, when the consumer needs the new contract.
 
+### Own an infrastructure-only post-merge CI failure
+
+The shipping owner keeps the next action when main CI fails and its automatic
+deploy is skipped. Do not leave an approved change merely "waiting for deploy."
+Under the existing merge/deploy authorization, the same owner may make **one
+failed-jobs-only CI retry** for a documented runner disconnect or other
+confirmed infrastructure interruption:
+
+1. Verify the repository, merged revision, CI run and failed job. Read the
+   failure evidence: an assertion failure, security/policy finding, permission
+   denial, failed approval or unexplained timeout is **not** an infra-only
+   classification. Route those to their existing owner; do not retry them into
+   green or weaken a check.
+2. Immediately before retrying, re-read the run's current attempt/state and
+   check for another owner's recovery, a newer/superseding run or deployment.
+   If one already covers this revision, follow that work instead. If a prior
+   recovery retry failed, route to Infra with the exact evidence; do not loop.
+3. Confirm this is CI, not a publish, release or manual deployment job, and
+   that the existing production authorization covers its normal downstream
+   deploy. A hold or missing authorization stays in force. Do not dispatch a
+   deploy, provision capacity, change credentials or bypass a gate.
+4. Record the exact SHA, run/job, infra evidence and retry owner, then run
+   `gh run rerun {run_id} -R {repo} --failed` once. Record its attempt/result.
+   Follow the ordinary automatic deploy to its terminal exact-revision status,
+   then continue the existing smoke/KPI requirements. A retry succeeding is
+   neither deployment nor acceptance proof.
+
+Use the current project's receipt/journal and existing watch. This needs no
+new desk, monitor or approval when the existing authorization already applies.
+If another owner is actively recovering it, coordinate there rather than
+starting a duplicate attempt. Report a repeated failure with its next owner
+and action, not an indefinite "waiting" state.
+
 ## Step 4: SMOKE (live, end-to-end)
 
 Hard gate per `hq-smoke-cross-repo-contracts-before-done`:

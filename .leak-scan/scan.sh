@@ -65,7 +65,7 @@ set -euo pipefail
 
 mode="${1:-}"
 if [[ -z "$mode" ]]; then
-  echo "Usage: $0 <denylist|policy-rationale|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|denylist-drift|settings-local-not-ignored|repos-segment-not-ignored|instance-artifacts>" >&2
+  echo "Usage: $0 <denylist|policy-rationale|users-path|provenance|vendor-public-ok|public-frontmatter|commands-skills-tripwire|core-yaml-locked|core-yaml-version-monotonic|special-case-files|settings-local-not-ignored|repos-segment-not-ignored|instance-artifacts>" >&2
   exit 2
 fi
 
@@ -82,7 +82,10 @@ if [[ $warnable -eq 1 && ( "${2:-}" == "--warn" || "${HQ_SCAN_MODE:-}" == "warn"
   out="$(HQ_SCAN_MODE= bash "${BASH_SOURCE[0]}" "$mode" 2>&1)"
   rc=$?
   set -e
-  [[ -n "$out" ]] && printf '%s\n' "${out//::error::/::warning::}"
+  # Both annotation forms: "::error::msg" and "::error file=...::msg".
+  out="${out//::error::/::warning::}"
+  out="${out//::error file=/::warning file=}"
+  [[ -n "$out" ]] && printf '%s\n' "$out"
   if [[ $rc -eq 1 ]]; then
     echo "::warning title=$mode::findings reported (report-only; review is the gate)"
     exit 0

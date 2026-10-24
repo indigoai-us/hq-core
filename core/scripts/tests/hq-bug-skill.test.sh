@@ -23,7 +23,7 @@ assert.match(body, /## User Message\n<User Message verbatim from Step 1.*full \$
 assert.match(submit, /Primary path.*Write-created file/);
 assert.match(submit, /hq feedback "<type>" --title "<title>" --body-file "<body-path>"/);
 assert.match(parse, /missing or empty.*AskUserQuestion/);
-const alloc = skill.split('### 2. Allocate body file')[1].split('### 3.')[0];
+const alloc = skill.split('### 2. Resolve the submit wrapper and allocate the body file')[1].split('### 3.')[0];
 assert.match(alloc, /cygpath -m/);
 assert.match(alloc, /mktemp/);
 assert.match(alloc, /single.*Bash call/i);
