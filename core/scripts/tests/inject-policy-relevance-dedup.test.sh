@@ -102,7 +102,8 @@ case "$out" in
   *) bad "command naming the trigger did not fire the HARD policy: $out" ;;
 esac
 out="$(post "$R1" s1 'hq slack read --channel general' 'a.txt b.txt' | context)"
-case "$out" in *slack-rule*) bad "delivered policy re-sent in the same session: $out" ;; *) ok "delivered policy is not re-sent in the same session" ;; esac
+case "$out" in *'> Policy `slack-rule`'*) bad "delivered policy re-sent in the same session: $out" ;; *) ok "delivered policy is not re-sent as a line in the same session" ;; esac
+case "$out" in *'> Already shown this session, still binding: slack-rule.'*) ok "delivered HARD policy is named in the footer" ;; *) bad "footer does not name the delivered HARD policy: $out" ;; esac
 
 echo "[2] a PostToolUse-only listener still keys on tool output"
 R2="$(new_root output-listener)"
@@ -150,6 +151,10 @@ recorded="$(grep -E '^quoted-' "$ledger" 2>/dev/null | sort || true)"
 [ -n "$first_delivered" ] && [ "$first_delivered" = "$recorded" ] \
   && ok "delivered policies recorded in the session ledger" \
   || bad "ledger [$recorded] does not match delivered [$first_delivered]"
+# Rows the ceiling cut were never delivered: they are not recorded anywhere
+# and the next event delivers them once the delivered rows are deduped.
+seen5="$R5/workspace/orchestrator/policy-trigger-state/s5.seen.tsv"
+! grep -q '^quoted-' "$seen5" 2>/dev/null && ok "ceiling-cut policies are not parked in the seen set" || bad "ceiling-cut policies were parked: $(cat "$seen5")"
 out2="$(post "$R5" s5 'cat a' 'x' HQ_POLICY_OUTPUT_CEILING_BYTES=2000 | context)"
 repeat=0
 for slug in $first_delivered; do case "$out2" in *"\`$slug\`"*) repeat=1 ;; esac; done

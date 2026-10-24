@@ -73,6 +73,7 @@ Keys this release knows (all optional):
 | `slack_workspaces` | every Slack workspace to sweep, on every wakeup |
 | `slack_channels` | extra Slack channel names to read in full |
 | `hq_channels` | `all`, or a list of HQ channel names, for the `hq_channels` sweep |
+| `hq_channels_exclude` | HQ channel slugs or ids never read: the message wake and the `hq_channels` sweep skip them, they print no MESSAGE or CRITICAL line, and they never count as unswept |
 | `email_accounts` | every mailbox to sweep; each listed account is swept |
 | `surface` | `needs_attention` (default) or `all` (Step 6, "Surface") |
 | `watch_interval` | `present` and `away` seconds (Step 7) |
@@ -514,7 +515,9 @@ On the first sweep of a run use the previous save file's
 `hq_channels_swept_at`, or `24h` when there is none. The owner belongs to
 about a thousand channels, so never walk the whole list and never pick a
 fixed few: every channel and group DM in this result is read, and only those.
-When `hq_channels` is a list of names, keep only those names. Read each one
+When `hq_channels` is a list of names, keep only those names. The filter also
+drops every channel in `hq_channels_exclude` (slug or id); such a channel is
+never read, named, or counted as unswept. Read each one
 with `hq dm channel <id> --json` past its cursor in `hq_channel_cursors`
 (this does not mark anything read). Set `hq_channels_swept_at` to this
 wakeup's start once every listed channel is read.
@@ -575,6 +578,7 @@ a key is absent:
 channels:                  # swept on every wakeup; sessions are always on
   - hq_dms                 # hq_dms | hq_channels | slack | email | x | teammates
 hq_channels: all           # all, or a list of HQ channel names
+hq_channels_exclude: []    # channel slugs or ids never read by the watcher or the sweep
 slack_workspaces: []       # every Slack workspace to sweep, every wakeup
 slack_workspace_companies: {}  # workspace -> company slug; the message wake polls only locked companies' workspaces
 email_accounts: []         # every mailbox to sweep

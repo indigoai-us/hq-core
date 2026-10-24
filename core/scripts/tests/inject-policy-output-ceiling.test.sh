@@ -159,8 +159,10 @@ rm -f "$FX/workspace/orchestrator/policy-trigger-state/"*.txt
 echo "[2] oversize hard corpus emits under the ceiling, non-silently"
 big="$(printf 'HARDBODY %.0s' $(seq 1 150))"   # ~1.4 KB body, under HARD_MAX
 for n in $(seq 1 16); do wp "$FX/core/policies/hard-$(printf '%02d' $n).md" "hard-$(printf '%02d' $n)" hard "$big"; done
-# 2a. defaults: the full-text budget alone keeps the emission under the ceiling
-out="$(run)"
+# 2a. at the operator's 8000-byte ceiling the full-text budget alone keeps the
+# emission under it (the 4000-byte default reserves room for summaries and
+# the footer, so this corpus needs the ceiling fallback there: see 2b).
+out="$(run HQ_POLICY_OUTPUT_CEILING_BYTES=8000)"
 bytes="$(printf '%s' "$out" | wc -c | tr -d ' ')"
 [ "$bytes" -le "$CEILING" ] || fail "default emission is $bytes bytes, over the $CEILING ceiling"
 grep -q 'Output ceiling of' <<<"$out" && fail "defaults should not need the ceiling fallback: $out"
@@ -194,11 +196,11 @@ digit_sid="ceil-digit-$$-$RANDOM"
 run_to_file "$digit_out" "$digit_sid" HQ_POLICY_HARD_FULL_TEXT=0
 bytes="$(wc -c < "$digit_out" | tr -d ' ')"
 [ "$bytes" -le "$CEILING" ] || fail "digit-boundary emission is $bytes bytes, over the $CEILING ceiling"
-cut_count="$(sed -nE 's/^> Output ceiling of [0-9]+ bytes: ([1-9][0-9]*) lower-ranked policy line\(s\) cut from this reminder\..*/\1/p' "$digit_out")"
+cut_count="$(sed -nE 's/^> Output ceiling of [0-9]+ bytes: ([1-9][0-9]*) lower-ranked policy line\(s\) held for a later call.*/\1/p' "$digit_out")"
 [ -n "$cut_count" ] || fail "digit-boundary cut notice missing or reports zero cuts"
 [ "$cut_count" -ge 10 ] || fail "digit-boundary did not cross 9 -> 10 cuts (got $cut_count)"
-grep -q 'Omitted policies remain eligible for a later event' "$digit_out" \
-  || fail "cut notice must say omitted policies remain eligible for a later event"
+grep -q 'held for a later call; see the policy files.' "$digit_out" \
+  || fail "cut notice must say cut policies are held for a later call"
 stats_file="$FX/workspace/orchestrator/policy-emit-stats/$digit_sid.txt"
 [ -f "$stats_file" ] || fail "missing emission stats for $digit_sid"
 stats_bytes="$(awk -F '\t' 'END { print $3 }' "$stats_file")"

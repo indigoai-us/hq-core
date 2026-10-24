@@ -135,4 +135,21 @@ out="$(HQ_BIN="$tmp/hq" bash "$HB" --interval 1 --link cl-t --state "$state")"
 kinds="$(awk '/^SUPER-CONDUCTOR/{print $2}' <<<"$out" | tr '\n' ' ')"
 check "a REPORT right after a tick is not judged; the next tick is (got: $kinds)" "$([[ "$kinds" == "TICK REPORT SWEEP-INCOMPLETE TICK LINK-CLOSED " ]]; echo $?)"
 
+# 9. hq_channels sweep: the channel filter drops every channel in
+# hq_channels_exclude (slug or id, case-insensitive) and --exclude, so an
+# excluded channel is never read or counted as unswept; the rest stay.
+SCOPE="$ROOT/core/scripts/lib/super-conductor-scope.mjs"
+mkdir -p "$tmp/root/companies"
+printf 'companies:\n  co-a:\n    cloud_uid: cmp_co-a\n' >"$tmp/root/companies/manifest.yaml"
+echo '[{"channelId":"chn_keep","companyUid":"cmp_co-a","slug":"hq-dev"},{"channelId":"chn_rev","companyUid":"cmp_co-a","slug":"project-core-pr-reviews-6e234042"},{"channelId":"chn_fb","companyUid":"cmp_co-a","slug":"project-hq-feedback-zero-8cfb3210"}]' >"$tmp/rows.json"
+ids() { node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")); process.stdout.write((Array.isArray(d)?d:d.rows).map(r=>r.channelId).join(","))'; }
+got="$(HQ_ROOT="$tmp/root" node "$SCOPE" filter-channels --company co-a <"$tmp/rows.json" | ids)"
+check "without an exclude list every in-scope channel stays (got: $got)" "$([[ "$got" == "chn_keep,chn_rev,chn_fb" ]]; echo $?)"
+printf 'hq_channels_exclude:\n  - Project-Core-PR-Reviews-6e234042\n  - chn_fb\n' >>"$tmp/prefs.yaml"
+got="$(HQ_ROOT="$tmp/root" node "$SCOPE" filter-channels --company co-a <"$tmp/rows.json" | ids)"
+check "hq_channels_exclude drops the listed channels by slug or id (got: $got)" "$([[ "$got" == "chn_keep" ]]; echo $?)"
+printf '{"rows":%s}' "$(cat "$tmp/rows.json")" >"$tmp/changes.json"
+got="$(HQ_ROOT="$tmp/root" node "$SCOPE" filter-channels --company co-a --exclude hq-dev <"$tmp/changes.json" | ids)"
+check "--exclude drops a channel from a changes object too (got: $got)" "$([[ "$got" == "" ]]; echo $?)"
+
 [[ "$fail" -eq 0 ]] && echo "super-conductor-sweep-check: all checks passed" || exit 1

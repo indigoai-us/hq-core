@@ -82,7 +82,7 @@ tail_calls="$(wc -c < "$TAIL_COUNT" | tr -d '[:space:]')"
 printf 'trim tail process launches: %s\n' "$tail_calls"
 [ "$tail_calls" -le 1 ] \
   || fail "overflow trim launched $tail_calls tail processes; expected at most one"
-grep -q '^> Output ceiling of 1000 bytes: [1-9][0-9]* lower-ranked policy line(s) cut from this reminder\.' "$TMP/trim.out" \
+grep -q '^> Output ceiling of 1000 bytes: [1-9][0-9]* lower-ranked policy line(s) held for a later call' "$TMP/trim.out" \
   || fail "overflow trim omitted its named cut notice"
 grep -q '</policy-reminder>' "$TMP/trim.out" || fail "overflow trim did not close the reminder"
 

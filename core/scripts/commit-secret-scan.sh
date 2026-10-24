@@ -203,7 +203,17 @@ pr_check() {
     done < <(git -c core.quotePath=false diff-tree --no-commit-id --name-only -r --diff-filter=ACMR "$c")
   done < <(git rev-list --no-merges "$base..HEAD")
   if [ "${#files[@]}" -eq 0 ]; then rm -rf "$hist"; echo "HQ secret scan: no changed files since $base."; return 0; fi
-  hq_cmd scan secrets "${files[@]}"
+  # A CLI with --allowlist-rev applies the .gitleaks.toml allowlists committed
+  # on the base branch; history copies match by their repo path. The base copy
+  # is used for every file, so an allowlist the branch adds cannot exempt the
+  # branch's own commits. An older CLI scans without allowlists (stricter,
+  # never looser).
+  local base_sha
+  base_sha="$(git rev-parse --verify -q "$base^{commit}")" || { rm -rf "$hist"; die "base '$base' is not a commit"; }
+  case "$(hq_cmd scan secrets --help 2>&1)" in
+    *--allowlist-rev*) hq_cmd scan secrets --repo "$top" --allowlist-rev "$base_sha" --snapshot-root "$hist" "${files[@]}" ;;
+    *) hq_cmd scan secrets "${files[@]}" ;;
+  esac
   local rc=$?
   rm -rf "$hist"
   if [ "$rc" -eq 0 ]; then echo "HQ secret scan: $n_commits commits since $base and their files, no secrets found."; fi

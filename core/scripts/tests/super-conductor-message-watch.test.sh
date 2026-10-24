@@ -592,5 +592,50 @@ grep -q 'SUPER-CONDUCTOR MESSAGE .*DM from Bo' <<<"$out"; check "the wake still 
 sleep 1
 check "no sweep evidence is recorded for a poll whose ledger write failed" "$([[ ! -e "$SAVE2" ]] || ! grep -q '"swept"' "$SAVE2"; echo $?)"
 
+# 22. hq_channels_exclude: a channel listed in the settings (slug or id) or
+# in --exclude is never read, prints no MESSAGE line, and prints no CRITICAL
+# line even when it is also a critical channel; the other channels still wake.
+printf 'work_hours: {timezone: UTC, days: sun-sat, start: "00:00", end: "24:00"}\nhq_channels_exclude:\n  - Project-Core-PR-Reviews-6e234042\n  - chn_fb\n' >"$tmp/excl.yaml"
+echo '[]' >"$tmp/fx/inbox.json"
+cat >"$tmp/fx/snapshot.json" <<'EOF'
+{"snapshot":true,"cursor":"c1","rows":[
+ {"channelId":"chn_rev","companyUid":"cmp_co-a","slug":"project-core-pr-reviews-6e234042","lastHumanMessageAt":"2026-10-19T10:00:00Z"},
+ {"channelId":"chn_fb","companyUid":"cmp_co-a","slug":"project-hq-feedback-zero-8cfb3210","lastHumanMessageAt":"2026-10-19T10:00:00Z"},
+ {"channelId":"chn_ok","companyUid":"cmp_co-a","slug":"hq-dev","lastHumanMessageAt":"2026-10-19T10:00:00Z"}
+],"removedChannelIds":[]}
+EOF
+echo '{"snapshot":false,"cursor":"c2","rows":[],"changed":[],"removedChannelIds":[]}' >"$tmp/fx/delta.json"
+xrun() { SC_PREFS_FILE="$tmp/excl.yaml" node "$WATCH" --state "$tmp/excl-state.json" --company co-a --min-wake-gap 0 --critical hq_channel:project-core-pr-reviews-6e234042 --once "$@"; }
+xrun >/dev/null
+cat >"$tmp/fx/delta.json" <<'EOF'
+{"snapshot":false,"cursor":"c3","rows":[],"changed":[
+ {"channelId":"chn_rev","companyUid":"cmp_co-a","slug":"project-core-pr-reviews-6e234042","lastHumanMessageAt":"2026-10-19T20:00:00Z"},
+ {"channelId":"chn_fb","companyUid":"cmp_co-a","slug":"project-hq-feedback-zero-8cfb3210","lastHumanMessageAt":"2026-10-19T20:00:00Z"},
+ {"channelId":"chn_ok","companyUid":"cmp_co-a","slug":"hq-dev","lastHumanMessageAt":"2026-10-19T20:00:00Z"}
+],"removedChannelIds":[]}
+EOF
+for c in chn_rev chn_fb chn_ok; do
+  printf '[{"eventId":"%s_1","fromPersonUid":"prs_cy","fromDisplayName":"Cy","createdAt":"2026-10-19T20:00:00Z","text":"review please"}]\n' "$c" >"$tmp/fx/chan-$c.json"
+done
+rm -f "$tmp/calls"
+out="$(xrun)"
+check "an excluded channel is never read (calls: $(calls | grep 'dm channel' | tr '\n' ';'))" "$(! grep -q 'dm channel chn_rev' <(calls) && ! grep -q 'dm channel chn_fb' <(calls); echo $?)"
+grep -q 'dm channel chn_ok' <(calls); check "a channel that is not excluded is still read" $?
+check "an excluded critical channel prints no CRITICAL line (got: $out)" "$(! grep -q 'CRITICAL' <<<"$out"; echo $?)"
+check "an excluded channel is never named in a MESSAGE line (got: $out)" "$(! grep -Eq 'pr-reviews|feedback-zero' <<<"$out"; echo $?)"
+grep -q '^SUPER-CONDUCTOR MESSAGE .* 1 new: #hq-dev (Cy)' <<<"$out"; check "the other channel still wakes (got: $out)" $?
+check "an excluded channel is never stored in the watch state" "$(! grep -Eq 'chn_rev|chn_fb' "$tmp/excl-state.json"; echo $?)"
+# --exclude alone, without the settings key, drops a channel too.
+rm -f "$tmp/calls" "$tmp/excl-state.json"
+echo '{"snapshot":false,"cursor":"c2","rows":[],"changed":[],"removedChannelIds":[]}' >"$tmp/fx/delta.json"
+SC_PREFS_FILE="$tmp/always.yaml" node "$WATCH" --state "$tmp/excl-state.json" --company co-a --min-wake-gap 0 --exclude chn_ok --once >/dev/null
+cat >"$tmp/fx/delta.json" <<'EOF'
+{"snapshot":false,"cursor":"c3","rows":[],"changed":[
+ {"channelId":"chn_ok","companyUid":"cmp_co-a","slug":"hq-dev","lastHumanMessageAt":"2026-10-19T20:00:00Z"}
+],"removedChannelIds":[]}
+EOF
+out="$(SC_PREFS_FILE="$tmp/always.yaml" node "$WATCH" --state "$tmp/excl-state.json" --company co-a --min-wake-gap 0 --exclude chn_ok --once)"
+check "--exclude drops a channel by id without the settings key (got: $out; calls: $(calls | grep 'dm channel' | tr '\n' ';'))" "$(! grep -q 'dm channel chn_ok' <(calls) && [[ -z "$out" ]]; echo $?)"
+
 [[ "$fail" -eq 0 ]] || exit 1
 echo "super-conductor-message-watch: ok"

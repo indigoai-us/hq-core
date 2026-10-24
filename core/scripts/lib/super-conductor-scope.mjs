@@ -20,9 +20,12 @@
 // needs no shell substitution. An empty set fails closed.
 //
 // CLI:
-//   node core/scripts/lib/super-conductor-scope.mjs filter-channels --company <csv>|--session-companies
+//   node core/scripts/lib/super-conductor-scope.mjs filter-channels --company <csv>|--session-companies [--exclude <csv>]
 //       Reads `hq channels list --json` (an array) or a `hq channels changes`
-//       object on stdin and prints it with out-of-scope rows removed.
+//       object on stdin and prints it with out-of-scope rows removed. Rows
+//       whose slug, name or id is in `hq_channels_exclude` (owner settings,
+//       super-conductor-prefs.mjs exclude) or --exclude are removed too, so
+//       the hq_channels sweep never reads or counts them.
 // Exit: 0 ok, 2 bad arguments or input.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -116,12 +119,29 @@ export function sessionInScope(root, sid, scope) {
   return !!cos && cos.every((c) => scope.slugs.has(c));
 }
 
+// Is this channel row on the exclude list (slugs, names or ids, lowercased)?
+export function rowExcluded(row, exclude) {
+  if (!exclude || !exclude.length || !row || typeof row !== 'object') return false;
+  const keys = new Set([row.channelId, row.slug, row.name].filter(Boolean).map((k) => String(k).toLowerCase()));
+  return exclude.some((c) => keys.has(String(c).toLowerCase()));
+}
+
+// `hq_channels_exclude` from the owner settings (prefs.mjs exclude), or [].
+export function prefsExclude(root) {
+  try {
+    const prefs = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'super-conductor-prefs.mjs');
+    const out = execFileSync(process.execPath, [prefs, 'exclude'], { cwd: root, encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return out.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  } catch { return []; }
+}
+
 // Filter a `channels list` array or a `channels changes` object.
-export function filterChannels(data, scope) {
-  if (Array.isArray(data)) return data.filter((r) => rowInScope(r, scope));
+export function filterChannels(data, scope, exclude = []) {
+  const keep = (r) => rowInScope(r, scope) && !rowExcluded(r, exclude);
+  if (Array.isArray(data)) return data.filter(keep);
   if (data && typeof data === 'object') {
     const out = { ...data };
-    for (const k of ['rows', 'changed', 'channels']) if (Array.isArray(out[k])) out[k] = out[k].filter((r) => rowInScope(r, scope));
+    for (const k of ['rows', 'changed', 'channels']) if (Array.isArray(out[k])) out[k] = out[k].filter(keep);
     return out;
   }
   throw new Error('expected a channel list or a channel changes object');
@@ -137,12 +157,14 @@ export function isMain(metaUrl, argv1 = process.argv[1]) {
 function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const fail = (msg) => { process.stderr.write(`super-conductor-scope: ${msg}\n`); process.exit(2); };
-  if (cmd !== 'filter-channels') fail('usage: filter-channels --company <csv>|--session-companies');
+  if (cmd !== 'filter-channels') fail('usage: filter-channels --company <csv>|--session-companies [--exclude <csv>]');
   const companies = [];
+  const exclude = [];
   let fromSession = false;
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === '--company' && rest[i + 1] !== undefined) companies.push(rest[++i]);
     else if (rest[i] === '--session-companies') fromSession = true;
+    else if (rest[i] === '--exclude' && rest[i + 1] !== undefined) exclude.push(...rest[++i].split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
     else fail(`unexpected argument ${rest[i]}`);
   }
   let scope;
@@ -150,10 +172,11 @@ function main() {
     const root = process.env.HQ_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
     if (fromSession) companies.push(...sessionCompanySlugs(root));
     scope = makeScope(root, parseCompanies(companies));
+    exclude.push(...prefsExclude(root));
   } catch (e) { fail(e.message); }
   let data;
   try { data = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (e) { fail(`stdin is not JSON: ${e.message}`); }
-  try { process.stdout.write(`${JSON.stringify(filterChannels(data, scope), null, 2)}\n`); } catch (e) { fail(e.message); }
+  try { process.stdout.write(`${JSON.stringify(filterChannels(data, scope, exclude), null, 2)}\n`); } catch (e) { fail(e.message); }
 }
 
 if (isMain(import.meta.url)) main();

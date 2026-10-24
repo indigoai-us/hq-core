@@ -39,6 +39,48 @@
 #   load its bound company; it never widens scope to a second company.
 # Dedupe: per session-id; a slug never fires twice in one session.
 # Exit: always 0 (advisory hook, never blocks).
+#
+# RELEVANCE SCORE (2026-10-22, reminder-ceiling design; mirror this table in
+# any port of the emit stage). The evaluator prints a 14th TSV field, the
+# integer score of each matched row. It is the sum over the `when:`
+# identifiers present in the fact set (the trigger key), one weight each,
+# the first matching line wins:
+#   identifier contains "/" or "."  (path, extension, slash command)    3
+#   synthetic fact: secret, apikey, shared_branch, completed             2
+#   command head word (first word of a command segment; `cd`, `sudo`,
+#     `env`, `time`, `nohup`, `exec` and VAR=value prefixes are skipped) 2
+#   rare: used by at most HQ_POLICY_RARE_TOKEN_MAX (3) in-scope policies 2
+#   common word: used by more than 20% of the in-scope policies          0
+#   any other identifier                                                 1
+# A row whose identifiers all weigh 0 but that matched two or more of them
+# (specificity 2 or more) scores 1. Scope bonus when the identifier sum is
+# above zero: worker +1, company +1, personal 0, core 0. A row whose
+# identifiers sum to zero (one common word, or no identifier at all) is treated as
+# a generic match under the generic cap, HARD or not. Groups stay
+# (reactive before baseline, HARD before soft inside a relevance tier);
+# inside a group the sort key is score desc, then specificity desc, then
+# staleness asc, then scope and file order.
+#
+# SEEN SET (<sid>.seen.tsv, "slug<TAB>epoch<TAB>trigger-key"). A `once` row
+# is written here, not to the session ledger, when it reached the reminder
+# as anything less than its full text for a reason that can change:
+#   - a HARD row with score 1 or more listed as a one-line summary because
+#     the full-text budget or the output ceiling demoted it (a body that can
+#     never print in full, or a score-0 row, goes to the session ledger
+#     instead so the footer can tell it from a row parked unseen);
+#   - a generic row (score 0 or one common word) parked by the generic cap.
+# A row the output ceiling cut was never delivered: it is not recorded
+# anywhere and stays eligible, so it rotates into the next call once the
+# delivered rows have moved to the footer (that is the drain).
+# While the entry is younger than HQ_POLICY_SEEN_TTL_SECONDS (1800) and the
+# row matches again on the same trigger key, the row is not listed as its
+# own line; a HARD row that was delivered (score 1 or more: such rows are
+# never parked by the generic cap, so a seen entry means an emitted summary
+# line) is named in the "Already shown this session" footer instead. A
+# different trigger key or an expired entry makes it eligible again,
+# including for full text. Rows shown in full stay in the session ledger and
+# are named in the same footer when they match again. The footer never
+# names a row that was not delivered.
 
 set -euo pipefail
 
@@ -255,12 +297,13 @@ STATS_DIR="$HQ_ROOT/workspace/orchestrator/policy-emit-stats"
 # ledgers are disjoint by policy: a `once` slug is only ever recorded in the
 # session ledger, an `always` slug only in the turn ledger.
 TURN_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.turn.txt"
-# Seen set with a TTL, for HARD rules the output ceiling shortened to a summary
-# line. Those rules are not written to the session ledger, so a later event can
-# still deliver their full text, but the same rule for the same trigger is not
-# repeated inside the window. Lines are "slug<TAB>epoch<TAB>trigger-key". A rule
-# comes back after HQ_POLICY_SEEN_TTL_SECONDS, or at once when a different
-# trigger matches it.
+# Seen set with a TTL (see SEEN SET in the header): rows delivered as less
+# than their full text (summary line, cut by the ceiling, parked by the
+# generic cap). Not written to the session ledger, so a later event can still
+# deliver their full text, but the same rule for the same trigger is not
+# repeated inside the window. Lines are "slug<TAB>epoch<TAB>trigger-key". A
+# rule comes back after HQ_POLICY_SEEN_TTL_SECONDS, or at once when a
+# different trigger matches it.
 SEEN_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.seen.tsv"
 SEEN_TTL="${HQ_POLICY_SEEN_TTL_SECONDS:-1800}"
 case "$SEEN_TTL" in ''|*[!0-9]*) SEEN_TTL=1800 ;; esac
@@ -431,13 +474,13 @@ record_slug() {
 # Record a batch of evaluator rows with one lock and append per ledger. The
 # evaluator already returns unique policy slugs in its established order.
 record_match_rows() {
-  local rows="$1" row slug scope path enf rule kind injv ws spec stale exempt rel tkey
+  local rows="$1" row slug scope path enf rule kind injv ws spec stale exempt rel tkey score
   local once_slugs="" always_slugs=""
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     # Tab is IFS whitespace: split on a non-blank separator so empty fields
     # do not shift `injv` (a shifted row was filed in the per-turn ledger).
-    IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey <<< "${row//$'\t'/$'\x1f'}"
+    IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score <<< "${row//$'\t'/$'\x1f'}"
     [ -n "$slug" ] || continue
     if [ "$injv" = "always" ]; then
       always_slugs+="$slug"$'\n'
@@ -449,25 +492,40 @@ record_match_rows() {
   [ -z "$always_slugs" ] || record_slugs "$TURN_FILE" "$always_slugs"
 }
 
-# A slug is delivered only when its policy heading survives output budgeting.
-# Keep omitted matches eligible for a later tool event instead of consuming the
-# session ledger before the final reminder has been assembled.
-# A `once` HARD rule that reached the output only as its summary line, and
-# whose full text could fit on a later event, goes to the TTL seen set instead
-# of the session ledger. Rows are MATCHES in emit order, so a row's position is
-# its batch body-size index.
+# Record what the final reminder delivered (see SEEN SET in the header).
+#   - a row shown in full (binding rule or Rule section heading), a soft or
+#     unset row listed, an `always` row listed: its cadence ledger;
+#   - a HARD row with score 1 or more listed as a one-line summary whose
+#     full text could still be shown later (body or Rule section within
+#     HARD_MAX): the seen set under its trigger key. A body that can never
+#     print in full, or a score-0 row (only common words), is recorded in
+#     the session ledger instead, so the footer can name it as delivered;
+#   - a row the output ceiling cut from the reminder: nothing. It was never
+#     delivered, so it stays eligible and rotates into the next call once the
+#     delivered rows have moved to the footer.
+# Rows are MATCHES in emit order, so a row's position is its batch body-size
+# index. When the reminder carries no policy line at all (a last-resort
+# fallback) nothing is recorded, so the set stays eligible for the next event.
 record_emitted_match_rows() {
-  local rows="$1" output="$2" row slug scope path enf rule kind injv ws spec stale exempt rel tkey
-  local delivered="" seen="" row_index=0 size now
+  local rows="$1" output="$2" row slug scope path enf rule kind injv ws spec stale exempt rel tkey score
+  local delivered="" seen="" row_index=0 size rule_size now
+  case "$output" in
+    *$'\n> Policy `'*) ;;
+    *) return 0 ;;
+  esac
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     row_index=$((row_index + 1))
-    slug="${row%%$'\t'*}"
+    IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score <<< "${row//$'\t'/$'\x1f'}"
+    [ -n "$slug" ] || continue
     case "$output" in
       *$'\n> Policy `'"$slug"'` '*) ;;
-      *) continue ;;
+      *)
+        # Cut by the output ceiling: never delivered, not recorded, eligible
+        # for the next call.
+        continue
+        ;;
     esac
-    IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey <<< "${row//$'\t'/$'\x1f'}"
     if [ "$HARD_FULL" != "0" ] && [ "$enf" = "hard" ] && [ "$injv" != "always" ] \
        && [ "$ws" != "malformed" ] && [ -n "$path" ] && [ -r "$path" ]; then
       case "$output" in
@@ -476,16 +534,26 @@ record_emitted_match_rows() {
         *)
           if [ "$POLICY_BODY_BATCH_MODE" -eq 1 ]; then
             size="${POLICY_BODY_SIZES[$row_index]:-0}"
+            rule_size="${POLICY_RULE_SIZES[$row_index]:-0}"
           else
             policy_value_bytes "$(policy_body "$path")"
             size="$POLICY_VALUE_BYTES"
+            policy_value_bytes "$(policy_rule_body "$path")"
+            rule_size="$POLICY_VALUE_BYTES"
           fi
-          if [ "$size" -gt 0 ] && [ "$size" -le "$HARD_MAX" ]; then
-            # Shortened to its summary line by the full-text budget or the
-            # output ceiling, although its full text fits on its own. It is
-            # neither recorded nor parked: it stays eligible and is shown in
-            # full on its next matching event (PR #1548 review). Only a body
-            # over HARD_MAX, which can never print in full, is recorded.
+          case "$score" in ''|*[!0-9]*) score=0 ;; esac
+          if [ "$score" -ge 1 ] && { { [ "$size" -gt 0 ] && [ "$size" -le "$HARD_MAX" ]; } \
+            || { [ "$rule_size" -gt 0 ] && [ "$rule_size" -le "$HARD_MAX" ]; }; }; then
+            # Listed as its summary line by the full-text budget or the
+            # output ceiling, although its text fits on its own: seen set,
+            # so the same trigger does not list it again inside the window
+            # and a new trigger or the window's end can show it in full.
+            # A score-0 row (only common words) falls through to the session
+            # ledger instead: the seen set also holds score-0 rows the
+            # generic cap parked unseen, and the footer must name only rows
+            # that were delivered, so a delivered score-0 row is recorded
+            # where the footer can tell it apart.
+            seen+="$slug"$'\t'"$tkey"$'\n'
             continue
           fi
           ;;
@@ -501,12 +569,15 @@ record_emitted_match_rows() {
   fi
 }
 
-# filter_seen_matches — drop `once` rows whose slug was shown as a summary for
-# the same trigger key within SEEN_TTL seconds. One awk pass; a missing or
-# empty seen file costs nothing.
+# filter_seen_matches — drop `once` rows whose slug was delivered for the
+# same trigger key within SEEN_TTL seconds (summary line, ceiling cut, or
+# parked). One awk pass; a missing or empty seen file costs nothing. The
+# valid HARD rows it drops that were delivered earlier are collected in
+# SEEN_HARD_SLUGS for the "Already shown this session" footer.
+SEEN_HARD_SLUGS=""
 filter_seen_matches() {
   [ -s "$SEEN_FILE" ] && [ -n "$MATCHES" ] || return 0
-  local now filtered
+  local now filtered row slug scope path enf rule kind injv ws spec stale exempt rel tkey score
   now="$(date +%s)"
   if filtered="$(awk -F '\t' -v now="$now" -v ttl="$SEEN_TTL" '
       FNR == NR {
@@ -514,10 +585,26 @@ filter_seen_matches() {
         next
       }
       $0 == "" { next }
-      $7 != "always" && (($1 "\t" $13) in recent) { next }
+      $7 != "always" && (($1 "\t" $13) in recent) { print "\037" $0; next }
       { print }
     ' "$SEEN_FILE" - <<< "$MATCHES")"; then
-    MATCHES="${filtered:+$filtered$'\n'}"
+    MATCHES=""
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      case "$row" in
+        $'\037'*)
+          row="${row#$'\037'}"
+          IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score <<< "${row//$'\t'/$'\x1f'}"
+          # Only a delivered row may reach the footer. A valid HARD row is
+          # never parked by the generic cap, so its seen entry can only come
+          # from an emitted summary line.
+          if [ "$enf" = "hard" ] && [ "$ws" != "malformed" ]; then
+            SEEN_HARD_SLUGS+="$slug"$'\n'
+          fi
+          ;;
+        *) MATCHES+="$row"$'\n' ;;
+      esac
+    done <<< "$filtered"
   fi
 }
 
@@ -1023,10 +1110,14 @@ spill_policy_facts() {
 # tab is the field delimiter, so match on "<slug><TAB>".
 pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac; }
 
+# Valid HARD rows that matched this event again after an earlier delivery in
+# full (kind `shown` from the evaluator). Never emitted as lines; named in the
+# "Already shown this session" footer. Newline-separated slugs.
+SHOWN_AGAIN_SLUGS=""
 add_match() {
-  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline] [once|always] [ok|malformed] [specificity] [staleness] [exempt 0|1] [direct|generic] [trigger-key]
+  # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline|shown] [once|always] [ok|malformed] [specificity] [staleness] [exempt 0|1] [specific|direct|generic] [trigger-key] [score]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
-  local slug="$1" scope rule path enf kind injv ws spec stale exempt rel tkey
+  local slug="$1" scope rule path enf kind injv ws spec stale exempt rel tkey score
   if [ "$#" -ge 5 ]; then
     scope="$2"; path="$3"; enf="$4"; rule="$5"
     kind="${6:-reactive}"
@@ -1037,11 +1128,21 @@ add_match() {
     exempt="${11:-0}"
     rel="${12:-generic}"
     tkey="${13:-}"
+    score="${14:-0}"
   else
-    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"; spec=0; stale=0; exempt=0; rel="generic"; tkey=""
+    scope="core"; path=""; enf="unset"; rule="${2:-}"; kind="reactive"; injv="once"; ws="ok"; spec=0; stale=0; exempt=0; rel="generic"; tkey=""; score=0
   fi
   case "$spec" in ''|*[!0-9]*) spec=0 ;; esac
   case "$stale" in ''|*[!0-9]*) stale=0 ;; esac
+  case "$score" in ''|*[!0-9]*) score=0 ;; esac
+  if [ "$kind" = "shown" ]; then
+    [ -n "$slug" ] || return 0
+    case "$enf" in hard) ;; *) return 0 ;; esac
+    [ "$ws" != "malformed" ] || return 0
+    case $'\n'"$SHOWN_AGAIN_SLUGS" in *$'\n'"$slug"$'\n'*) return 0 ;; esac
+    SHOWN_AGAIN_SLUGS+="$slug"$'\n'
+    return 0
+  fi
   [ "$exempt" = "1" ] || exempt=0
   # Relevance: `direct` rows matched identifiers in the action itself (the
   # command or tool input); `specific` rows are direct rows that matched on
@@ -1062,7 +1163,7 @@ add_match() {
   [ "$ws" = "malformed" ] || ws="ok"
   # Tabs inside rule would break the field layout — collapse them.
   rule="${rule//$'\t'/ }"
-  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}	${spec}	${stale}	${exempt}	${rel}	${tkey}
+  MATCHES="${MATCHES}${slug}	${scope}	${path}	${enf}	${rule}	${kind}	${injv}	${ws}	${spec}	${stale}	${exempt}	${rel}	${tkey}	${score}
 "
 }
 
@@ -1439,6 +1540,36 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   # `slack` is not. Part of the evaluation cache key below.
   RARE_TOKEN_MAX="${HQ_POLICY_RARE_TOKEN_MAX:-3}"
   case "$RARE_TOKEN_MAX" in ''|*[!0-9]*) RARE_TOKEN_MAX=3 ;; esac
+  # HEAD_WORDS — the first word of each command segment (split on &&, ||, ;,
+  # | and newlines), with VAR=value prefixes, wrapper words (`sudo`, `env`,
+  # `time`, `nohup`, `exec`, ...), shell keywords and `$(` skipped, a `cd`
+  # segment ignored (its operand is a directory), and a leading directory or
+  # backslash removed. Builtins only, bounded to the first 4 KB of the command. Part of
+  # the relevance score (see RELEVANCE SCORE in the header) and of the
+  # evaluation cache key. Empty on prompt events.
+  HEAD_WORDS=""
+  policy_head_words() {
+    local text="${1:0:4096}" seg word
+    text="${text//&&/$'\n'}"; text="${text//||/$'\n'}"
+    text="${text//;/$'\n'}"; text="${text//|/$'\n'}"
+    set -f
+    while IFS= read -r seg; do
+      for word in $seg; do
+        word="${word#\(}"; word="${word#\{}"; word="${word#\\}"
+        case "$word" in
+          # `cd` ends the segment: its operand is a directory, not a command.
+          cd) break ;;
+          ''|*=*|sudo|env|time|nohup|exec|command|builtin|then|do|done|else|fi|esac|if|while|until|for|'!'|'$('*) continue ;;
+        esac
+        word="${word##*/}"
+        case "$word" in ''|-*) break ;; esac
+        HEAD_WORDS="${HEAD_WORDS:+$HEAD_WORDS }$word"
+        break
+      done
+    done <<< "$text"
+    set +f
+  }
+  case "$EVENT" in PreToolUse|PostToolUse) [ -z "$ARG" ] || policy_head_words "$ARG" ;; esac
   if [ "${#POLICY_FILES[@]}" -gt 0 ] && [ -n "$POLICY_HASH_MODE" ] && [ -n "$POLICY_FINGERPRINT_MODE" ]; then
     POLICY_FINGERPRINT="$(policy_fingerprint "${POLICY_FILES[@]}" 2>/dev/null || true)"
     if [ -n "$POLICY_FINGERPRINT" ]; then
@@ -1446,15 +1577,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       scope_key="${scope_hash%% *}"
       CACHE_DIR="$HQ_ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"
       if [ -n "$scope_key" ]; then
-        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v8" "$CACHE_DIR/eval-v9" "$STATS_DIR" 2>/dev/null || true
+        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v8" "$CACHE_DIR/eval-v10" "$STATS_DIR" 2>/dev/null || true
       fi
       if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
         # The parser cache now stores PostToolUse as the omitted-on default;
         # invalidate v2 records, which baked in PreToolUse. v4 adds the parsed
         # `principals:` field to each record, so v3 records (one field short)
-        # are never decoded with the new layout.
-        CACHE_HEADER="hq-policy-cache-v5${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
+        # are never decoded with the new layout. v6 records carry the summary
+        # rule line cut on a word boundary with an ellipsis.
+        CACHE_HEADER="hq-policy-cache-v6${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
         if [ -r "$CACHE_FILE" ]; then
           IFS= read -r cache_header < "$CACHE_FILE" || true
@@ -1561,10 +1693,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       {
         # SESSION_PRINCIPAL is part of the key: a verdict computed for one
         # principal must never be replayed for another.
-        printf '%s\034%s\034%s\034%s\034output=%s\034%s\034%s\034%s\034%s\034principal=%s\034rare=%s\034' \
+        printf '%s\034%s\034%s\034%s\034output=%s\034%s\034%s\034%s\034%s\034principal=%s\034rare=%s\034heads=%s\034' \
           "$EVENT" "$INTENT_MODE" "$FACTS" "$INTENT_FACTS" "$OUTPUT_FACTS" \
           "${HQ_POLICY_TOOL_EVENTS:-}" "$STALE_TODAY" "$INJECT_PERSONAL_SOFT" "$retrieval_ledger_key" \
-          "$SESSION_PRINCIPAL" "$RARE_TOKEN_MAX"
+          "$SESSION_PRINCIPAL" "$RARE_TOKEN_MAX" "$HEAD_WORDS"
         append_policy_ledger "$DEDUPE_FILE"
         printf '\034'
         append_policy_ledger "$TURN_FILE"
@@ -1580,19 +1712,22 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # records at v1, but namespace evaluation results by evaluator semantics
       # so old verdicts cannot survive case-insensitive trigger matching.
       # v8/v9 rows carry two more fields: relevance class and trigger key.
+      # v10 rows carry the relevance score as a 14th field and `shown`
+      # rows (matched again after a full delivery) for the footer; the
+      # command head words are part of the input key.
       # The `specific` relevance class needs no new version: the rare-token
       # threshold is part of the input key, so older entries never match.
       if [ "$EVENT" = "SessionStart" ]; then
         EVAL_CACHE_DIR="$CACHE_DIR/eval-v8"
       else
-        EVAL_CACHE_DIR="$CACHE_DIR/eval-v9"
+        EVAL_CACHE_DIR="$CACHE_DIR/eval-v10"
       fi
       if [ -d "$EVAL_CACHE_DIR" ]; then
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
         if [ "$EVENT" = "SessionStart" ]; then
           EVAL_CACHE_HEADER="hq-policy-eval-v8${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_input_key}"
         else
-          EVAL_CACHE_HEADER="hq-policy-eval-v9${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+          EVAL_CACHE_HEADER="hq-policy-eval-v10${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         fi
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
@@ -1635,7 +1770,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" -v TODAY="$STALE_TODAY" \
           -v RETRIEVAL_LEDGER="$STALE_LEDGER" -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" \
-          -v PRINCIPAL="$SESSION_PRINCIPAL" -v RARE_MAX="$RARE_TOKEN_MAX" '
+          -v PRINCIPAL="$SESSION_PRINCIPAL" -v RARE_MAX="$RARE_TOKEN_MAX" -v HEADWORDS="$HEAD_WORDS" '
       # Keep this hot-path parser structurally identical to eval-trigger.sh.
       # In particular, an opening paren needs a closing paren: accepting it
       # here while --check rejects it makes authoring and runtime disagree.
@@ -1719,7 +1854,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         C=out; cpos=1
         return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule,evset,chan,rel,tkey) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule,evset,chan,rel,tkey,shown) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         # An omitted `on:` defaults to the tool event. The `_omitted_` marker
@@ -1738,6 +1873,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # Count how many policies key on each `when:` identifier, before any
         # event filter, so rarity reflects the whole in-scope policy set.
         count_tokens(whenx)
+        npolicies++
         # `principals:` audience filter. Runs before matching and ranking, so a
         # policy addressed to another principal never takes an output slot.
         # prx holds the normalized valid values; empty means everyone.
@@ -1756,8 +1892,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # the per-turn ledger (re-injects each user turn) vs the per-session
         # ledger (fires at most once for the whole session).
         ij = (injx=="always" ? "always" : "once")
+        # A `once` HARD policy already in the session ledger (delivered in
+        # full earlier) is still evaluated: when it matches the action again
+        # it is reported as a `shown` row for the footer, never as a line.
+        shown=0
         if (ij=="always") { if (id in turnalready) return }        # per-turn dedup ledger
-        else { if (id in already) return }                         # per-session dedup ledger
+        else if (id in already) { if (enf=="hard") shown=1; else return }   # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
         if (statx=="retired") return                               # retired policies never inject (policy-retire.sh)
         # Owner decision D4: personal soft/unset policies are not emitted unless
@@ -1794,6 +1934,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           # policies are reactive as well: they matched facts from this event.
           # Only the unconditional SessionStart backfill is baseline.
           kind=((degraded || (ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx))) ? "baseline" : "reactive")
+          if (shown) { if (degraded || chan!="ev" || spec==0) return; kind="shown" }
           # Relevance to the actual trigger. A row is `direct` only when
           # identifiers in its `when:` are present in the action facts (the
           # command or tool input). Unconditional and negation-only triggers,
@@ -1808,8 +1949,33 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           # token counts from policies that have not been read yet.
           nrows++
           rowhead[nrows]=id "\t" sc "\t" fname "\t" en "\t" rule "\t" kind "\t" ij "\t" ws "\t" spec "\t" staleness() "\t" stale_exempt(ij)
-          rowrel[nrows]=rel; rowspec[nrows]=spec; rowkey[nrows]=tkey
+          rowrel[nrows]=rel; rowspec[nrows]=spec; rowkey[nrows]=tkey; rowsc[nrows]=sc
         }
+      }
+      # score_row(spec, tkey, scope): the RELEVANCE SCORE of the header. One
+      # weight per present identifier, first matching line wins; scope bonus
+      # only when the identifier sum is above zero. Malformed and legacy rows
+      # never reach this function with a real trigger key.
+      function score_row(spec, tkey, sc,   keys,n,i,k,base,w) {
+        base=0
+        if (tkey=="malformed") return 0
+        sub(/^[a-z]*:/,"",tkey)
+        n=split(tkey,keys,"+")
+        for (i=1; i<=n; i++) {
+          k=keys[i]; if (k=="") continue
+          if (k ~ /[.\/]/) w=3
+          else if (k=="secret" || k=="apikey" || k=="shared_branch" || k=="completed") w=2
+          else if (k in headw) w=2
+          else if (tokdf[k]<=RARE_MAX) w=2
+          else if (tokdf[k]*5 > npolicies) w=0
+          else w=1
+          base+=w
+        }
+        # Two or more identifiers, all common, still beat one common word:
+        # a HARD rule on `deploy && prod` is not a generic match.
+        if (base==0 && spec>=2) base=1
+        if (base>0 && (sc=="company" || sc ~ /^worker:/)) base++
+        return base
       }
       function count_tokens(expr,   s,tok,tok_lc,seen) {
         s=expr; delete seen
@@ -1943,6 +2109,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         while ((getline turnline < ALREADY_TURN_FILE) > 0) if(turnline!="") turnalready[turnline]=1
         close(ALREADY_TURN_FILE)
         TODAY_D=civil(TODAY)
+        n=split(HEADWORDS,hw,/[ ,]+/)
+        for(i=1;i<=n;i++) if(hw[i]!="") headw[tolower(hw[i])]=1
         if (RETRIEVAL_LEDGER!="") {
           while ((getline rl < RETRIEVAL_LEDGER) > 0) {
             if (match(rl, /"policy":"[^"]*"/)) rp=substr(rl,RSTART+10,RLENGTH-11); else continue
@@ -2001,6 +2169,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (length(line)>160) {
           cut=157
           while (cut>0 && index(UTF8_CONT, substr(line,cut+1,1))) cut--
+          # Word boundary: back off to the last blank before the cut, then
+          # drop trailing blanks and punctuation, so a summary line never
+          # ends in a split token. A single 157-byte token keeps the
+          # byte-safe cut.
+          wb=cut
+          while (wb>0 && substr(line,wb,1) !~ /[ \t]/) wb--
+          if (wb>0) cut=wb
+          while (cut>0 && substr(line,cut,1) ~ /[ \t.,;:]/) cut--
           line=substr(line,1,cut)"..."
         }
         rule=line; rcap=1
@@ -2009,7 +2185,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (!CACHE_RECORDS && seen) finalize()
         for (i=1; i<=nrows; i++) {
           if (rowrel[i]=="direct" && specific_row(rowspec[i], rowkey[i])) rowrel[i]="specific"
-          print rowhead[i] "\t" rowrel[i] "\t" rowkey[i]
+          print rowhead[i] "\t" rowrel[i] "\t" rowkey[i] "\t" score_row(rowspec[i], rowkey[i], rowsc[i])
         }
         if (CACHE_WRITE) print (cache_unsafe ? "unsafe" : "ok") > CACHE_STATUS
       }
@@ -2022,12 +2198,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     POLICY_EVALUATION_OK=1
     if [ "$EVAL_CACHE_HIT" = "1" ]; then
       eval_cache_first_line=1
-      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
         if [ "$eval_cache_first_line" = "1" ]; then
           eval_cache_first_line=0
           continue
         fi
-        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt" "$rel" "$tkey"
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt" "$rel" "$tkey" "$score"
       done < "$EVAL_CACHE_FILE"
     elif [ "$EVAL_CACHE_WRITE" = "1" ]; then
       EVAL_RESULTS_TMP="${EVAL_CACHE_TMP}.results"
@@ -2041,13 +2217,13 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           POLICY_EVALUATION_OK=0
         fi
       fi
-      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
-        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt" "$rel" "$tkey"
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt" "$rel" "$tkey" "$score"
       done < "$EVAL_RESULTS_TMP"
       rm -f "$EVAL_RESULTS_TMP" 2>/dev/null || true
     else
-      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
-        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt" "$rel" "$tkey"
+      while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
+        add_match "$slug" "$scope" "$path" "$enf" "$rule" "$kind" "$injv" "$ws" "$spec" "$stale" "$exempt" "$rel" "$tkey" "$score"
       done < <(policy_evaluator)
     fi
     # The evaluator has completed before the process substitution returns. A
@@ -2106,7 +2282,7 @@ if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ]; then
       if [[ "$ARG" =~ $t_pat ]]; then
         # Legacy rows have no on-disk path; scope=core, enforcement=unset.
         # An exact command pattern is a direct match on the action.
-        add_match "$t_slug" "core" "" "unset" "$t_rule" "reactive" "once" "ok" "1" "0" "0" "direct" "re:$t_pat"
+        add_match "$t_slug" "core" "" "unset" "$t_rule" "reactive" "once" "ok" "1" "0" "0" "direct" "re:$t_pat" "1"
       fi
     done <<< "$TRIGGERS"
   fi
@@ -2192,7 +2368,7 @@ fi
 # wrapper, no interactive 16-cap (consumer applies HQ_SESSION_POLICY_MAX_*).
 if [ "${HQ_POLICY_EMIT:-}" = "tsv" ]; then
   record_match_rows "$MATCHES"
-  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+  printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
     [ -z "$slug" ] && continue
     printf '%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule"
   done
@@ -2236,14 +2412,17 @@ GROUP_ROWS=()
 GROUP_SPECS=()
 GROUP_COUNT=0
 # Parse each row once and assign its group number (0-7), so the eight group
-# passes below compare integers instead of re-reading every row.
+# passes below compare integers instead of re-reading every row. The in-group
+# sort key is the relevance score (RELEVANCE SCORE in the header) with the
+# specificity count as the tie-breaker: score * 10000 + spec. Staleness then
+# reorders equal keys, and scope and file order break the remaining ties.
 ALL_ROWS=()
 ALL_GROUPS=()
 ALL_SPECS=()
 ALL_COUNT=0
 while IFS= read -r match; do
   [ -n "$match" ] || continue
-  IFS=$'\t' read -r _m_slug _m_scope _m_path _m_enf _m_rule _m_kind _m_inj _m_ws _m_spec _m_stale _m_exempt _m_rel _m_tkey <<< "$match"
+  IFS=$'\x1f' read -r _m_slug _m_scope _m_path _m_enf _m_rule _m_kind _m_inj _m_ws _m_spec _m_stale _m_exempt _m_rel _m_tkey _m_score <<< "${match//$'\t'/$'\x1f'}"
   if [ "$_m_kind" = "reactive" ]; then
     case "$_m_rel" in
       specific) _m_group=0 ;;
@@ -2255,6 +2434,8 @@ while IFS= read -r match; do
   fi
   [ "$_m_enf" = "hard" ] || _m_group=$((_m_group + 1))
   case "$_m_spec" in ''|*[!0-9]*) _m_spec=0 ;; esac
+  case "$_m_score" in ''|*[!0-9]*) _m_score=0 ;; esac
+  _m_spec=$((_m_score * 10000 + _m_spec))
   ALL_ROWS[$ALL_COUNT]="$match"
   ALL_GROUPS[$ALL_COUNT]="$_m_group"
   ALL_SPECS[$ALL_COUNT]="$_m_spec"
@@ -2384,8 +2565,10 @@ case "$GENERIC_CAP" in ''|*[!0-9]*) GENERIC_CAP=2 ;; esac
 # came from.
 case "$EVENT" in PreToolUse|PostToolUse) ;; *) GENERIC_CAP=0 ;; esac
 RELEVANCE_DROPPED=0
+RELEVANCE_SOFT_HIDDEN=0
 GENERIC_PARKED=0
-GENERIC_PARKED_SLUGS=""
+GENERIC_PARKED_HARD=0
+GENERIC_PARKED_HARD_NAMES=""
 if [ "$RELEVANCE_CAP" -gt 0 ] && [ "$EVENT" != "SessionStart" ] && [ -n "$MATCHES" ]; then
   # Decide each row: 2 = always kept, 1 = kept in a cap slot, 0 = dropped.
   # Only always-kept HARD rows use up slots, and HARD rows take the slots
@@ -2402,15 +2585,20 @@ if [ "$RELEVANCE_CAP" -gt 0 ] && [ "$EVENT" != "SessionStart" ] && [ -n "$MATCHE
     [ -n "$match" ] || continue
     # Tab is IFS whitespace, so `read` would merge the empty fields of a row
     # with no path and shift `kind` and `rel`. Split on a non-blank separator.
-    IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey <<< "${match//$'\t'/$'\x1f'}"
+    IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score <<< "${match//$'\t'/$'\x1f'}"
     RELEVANCE_ROWS[$relevance_n]="$match"
     RELEVANCE_HARD[$relevance_n]=0
     [ "$enf" = "hard" ] && RELEVANCE_HARD[$relevance_n]=1
     RELEVANCE_KEEP[$relevance_n]=0
     RELEVANCE_GENERIC[$relevance_n]=0
-    # A valid HARD row is always kept and never generic or parked (PR #1526
-    # review, ad6b69ce; PR #1548 review): the cap trims soft rows only, and
-    # the full-text budget and output ceiling bound a HARD row's size.
+    case "$score" in ''|*[!0-9]*) score=0 ;; esac
+    # A valid HARD row is always kept (as full text, a summary line or a
+    # footer slug) and never parked, whatever its relevance score: a HARD
+    # rule whose trigger words are common across policies (review, pr, test)
+    # scores 0 even on the event it is about, and parking it would hide it
+    # for SEEN_TTL seconds (PR #1600 review). The full-text budget and the
+    # output ceiling bound its size; a row cut by the ceiling is held for a
+    # later call.
     if { [ "$enf" = "hard" ] && [ "$ws" != "malformed" ]; } \
       || { [ "$rel" = "specific" ] && [ "$kind" = "reactive" ]; } \
       || [ "$injv" = "always" ] || { [ "$ws" = "malformed" ] && [ "$GENERIC_CAP" -eq 0 ]; }; then
@@ -2462,16 +2650,28 @@ if [ "$RELEVANCE_CAP" -gt 0 ] && [ "$EVENT" != "SessionStart" ] && [ -n "$MATCHE
   for ((relevance_i=0; relevance_i<relevance_n; relevance_i++)); do
     if [ "${RELEVANCE_KEEP[$relevance_i]}" = 0 ]; then
       RELEVANCE_DROPPED=$((RELEVANCE_DROPPED + 1))
+      relevance_row="${RELEVANCE_ROWS[$relevance_i]}"
+      IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score <<< "${relevance_row//$'\t'/$'\x1f'}"
       if [ "${RELEVANCE_GENERIC[$relevance_i]}" = 1 ]; then
-        relevance_row="${RELEVANCE_ROWS[$relevance_i]}"
-        IFS=$'\x1f' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey <<< "${relevance_row//$'\t'/$'\x1f'}"
-        # No identifier, nothing to park on: the row just stays eligible.
-        case "${tkey#*:}" in ''|always) ;; *)
-          relevance_parked+="$slug"$'\t'"$tkey"$'\n'
-          GENERIC_PARKED=$((GENERIC_PARKED + 1))
-          GENERIC_PARKED_SLUGS+="${GENERIC_PARKED_SLUGS:+, }\`$slug\`"
-          ;;
+        # Parked on its trigger key. A row with no identifier (an
+        # unconditional or negation-only trigger) has nothing to park on
+        # and just stays eligible, as before.
+        case "${tkey#*:}" in
+          ''|always) [ "$enf" = "hard" ] || RELEVANCE_SOFT_HIDDEN=$((RELEVANCE_SOFT_HIDDEN + 1)) ;;
+          *)
+            relevance_parked+="$slug"$'\t'"$tkey"$'\n'
+            GENERIC_PARKED=$((GENERIC_PARKED + 1))
+            # A valid HARD row is never generic here, so this is a guard:
+            # if one is ever parked, every such slug is named in the skip
+            # notice, with no "+K more" (PR #1600 review).
+            if [ "$enf" = "hard" ] && [ "$ws" != "malformed" ]; then
+              GENERIC_PARKED_HARD=$((GENERIC_PARKED_HARD + 1))
+              GENERIC_PARKED_HARD_NAMES="${GENERIC_PARKED_HARD_NAMES:+$GENERIC_PARKED_HARD_NAMES, }$slug"
+            fi
+            ;;
         esac
+      elif [ "$enf" != "hard" ]; then
+        RELEVANCE_SOFT_HIDDEN=$((RELEVANCE_SOFT_HIDDEN + 1))
       fi
     else
       RELEVANCE_KEPT+="${RELEVANCE_ROWS[$relevance_i]}"$'\n'
@@ -2531,7 +2731,7 @@ if [ -n "$WITHHELD_MATCHES" ]; then
   # session; preserve that existing contract. Output-ceiling omissions are
   # handled separately after the final reminder is assembled.
   record_match_rows "$WITHHELD_MATCHES"
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
     [ -n "$slug" ] || continue
     if [ "$WITHHELD_NAMED" -lt 10 ]; then
       WITHHELD_NAMES="${WITHHELD_NAMES}${WITHHELD_NAMES:+, }${slug}"
@@ -2580,7 +2780,7 @@ if [ -n "${SESSION_ID:-}" ] \
     ENFORCEMENT_TMP="$(mktemp "$ENFORCEMENT_DIR/.matches.XXXXXX")"
     {
       cat "$ENFORCEMENT_MATCHES" 2>/dev/null || true
-      printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+      printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
         [ -n "$slug" ] || continue
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule" "$kind"
       done
@@ -2662,7 +2862,10 @@ if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ] \
   fi
 fi
 
-if [ -z "$MATCHES" ]; then
+# No new line to deliver. When every match was delivered earlier in this
+# session (ledger or seen set) the reminder still carries the footer naming
+# the HARD rules that apply again, so the model keeps the pointer.
+if [ -z "$MATCHES" ] && [ -z "${SHOWN_AGAIN_SLUGS}${SEEN_HARD_SLUGS}" ]; then
   if [ -n "$ENFORCEMENT_CONTEXT" ]; then
     printf '<policy-enforcement>\n%s\n</policy-enforcement>\n' "$ENFORCEMENT_CONTEXT"
   fi
@@ -2694,13 +2897,17 @@ HARD_FULL="${HQ_POLICY_HARD_FULL_TEXT:-1}"
 # ceiling, and the WHOLE emission is capped by OUTPUT_CEILING below, with a
 # non-silent fallback to summaries when the cap would otherwise be exceeded.
 HARD_BUDGET="${HQ_POLICY_HARD_BUDGET_BYTES:-5120}"
+case "$HARD_BUDGET" in ''|*[!0-9]*) HARD_BUDGET=5120 ;; esac
 # Per-policy ceiling. Without it a single long hard policy can swallow most of
 # the shared budget and push every other hard rule down to its summary line.
 HARD_MAX="${HQ_POLICY_HARD_MAX_BYTES:-2048}"
 # Absolute ceiling on this hook's stdout. Must stay below the host's ~10,000
 # byte persist threshold with margin; core/scripts/tests/inject-policy-output-ceiling.test.sh
-# fails if either default is raised past it.
-OUTPUT_CEILING="${HQ_POLICY_OUTPUT_CEILING_BYTES:-8000}"
+# fails if either default is raised past it. 4000 since 2026-10-22
+# (reminder-ceiling design): measured on a live HQ root every call filled an
+# 8000-byte reminder with the same summary lines. Operators who want the old
+# size set HQ_POLICY_OUTPUT_CEILING_BYTES=8000; the semantics are unchanged.
+OUTPUT_CEILING="${HQ_POLICY_OUTPUT_CEILING_BYTES:-4000}"
 # A configured ceiling is an absolute stdout bound, not a request we may round
 # up to a more convenient value. Refuse a malformed value explicitly instead
 # of falling through to an arithmetic comparison (and a silent hook failure).
@@ -2710,6 +2917,20 @@ case "$OUTPUT_CEILING" in
     exit 0
     ;;
 esac
+# Budget split (reminder-ceiling design §4). Full HARD text takes at most
+# FULL_BUDGET bytes per call: the shared HARD_BUDGET, or the ceiling minus a
+# reserve for the summary lines, the footer and the notices, whichever is
+# smaller. At the 4000-byte default that is 2600 bytes, one or two bodies.
+# The "Already shown this session" footer has its own small budget; overflow
+# collapses to a count.
+FULL_TEXT_RESERVE=1400
+FULL_BUDGET="$HARD_BUDGET"
+if [ $((OUTPUT_CEILING - FULL_TEXT_RESERVE)) -lt "$FULL_BUDGET" ]; then
+  FULL_BUDGET=$((OUTPUT_CEILING - FULL_TEXT_RESERVE))
+  [ "$FULL_BUDGET" -ge 0 ] || FULL_BUDGET=0
+fi
+FOOTER_BUDGET="${HQ_POLICY_FOOTER_BYTES:-400}"
+case "$FOOTER_BUDGET" in ''|*[!0-9]*) FOOTER_BUDGET=400 ;; esac
 # Everything from the first archival heading on is history and justification,
 # not the binding rule: it is what the agent must NOT be made to re-read on
 # every injection. `## Rule`, `## Scope`, `## Enforcement` and friends stay.
@@ -2724,7 +2945,7 @@ POLICY_BODY_BATCH_MODE=0
 POLICY_BODY_SIZES=()
 POLICY_RULE_SIZES=()
 prepare_policy_bodies() {
-  local map_file="" size_file="" row_index=0 slug scope path enf rule kind injv ws spec stale exempt rel tkey
+  local map_file="" size_file="" row_index=0 slug scope path enf rule kind injv ws spec stale exempt rel tkey score
   [ "$HARD_FULL" != "0" ] || return 0
   [ -n "$MATCHES" ] || return 0
   [ -n "$FACTS_TMP_DIR" ] || FACTS_TMP_DIR="$HQ_ROOT/workspace/orchestrator/hook-state"
@@ -2734,7 +2955,7 @@ prepare_policy_bodies() {
   map_file="$POLICY_BODY_TMP_DIR/map.tsv"
   size_file="$POLICY_BODY_TMP_DIR/sizes.tsv"
   : > "$map_file" || return 0
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
     [ -n "$slug" ] || continue
     row_index=$((row_index + 1))
     if [ "$enf" = "hard" ] && [ -n "$path" ] && [ -r "$path" ]; then
@@ -2894,12 +3115,58 @@ record_malformed_notice() {
   [ -z "$markers" ] || record_slugs "$DEDUPE_FILE" "$markers"
 }
 
+# ALREADY_FOOTER — one line naming the valid HARD policies that matched this
+# event again after an earlier delivery (in full: session ledger; as a summary
+# line, a ceiling cut or a parked row for the same trigger: seen set). Slugs
+# are added in rank order while the line stays under FOOTER_BUDGET bytes;
+# the rest collapse to "+K more", or to a bare count when no slug fits.
+# Slugs of malformed-trigger fallback rows in MATCHES, space separated, for
+# the output-ceiling trim: they are cut before any row that matched.
+MALFORMED_SLUGS=""
+while IFS= read -r _mf_row; do
+  [ -n "$_mf_row" ] || continue
+  IFS=$'\x1f' read -r _mf_slug _ _ _ _ _ _ _mf_ws _ <<< "${_mf_row//$'\t'/$'\x1f'}"
+  [ "$_mf_ws" = "malformed" ] && MALFORMED_SLUGS="${MALFORMED_SLUGS:+$MALFORMED_SLUGS }$_mf_slug"
+done <<< "$MATCHES"
+ALREADY_FOOTER=""
+build_already_footer() {
+  local slugs="${SHOWN_AGAIN_SLUGS}${SEEN_HARD_SLUGS}" slug list="" count=0 named=0
+  local prefix='> Already shown this session, still binding: ' line candidate
+  [ -n "$slugs" ] || return 0
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    case $'\n'"$list" in *$'\n'"$slug"$'\n'*) continue ;; esac
+    list+="$slug"$'\n'
+    count=$((count + 1))
+  done <<< "$slugs"
+  [ "$count" -gt 0 ] || return 0
+  line="$prefix"
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    if [ "$named" -gt 0 ]; then candidate="$line, $slug"; else candidate="$line$slug"; fi
+    policy_value_bytes "$candidate"
+    # Keep room for ", +NNN more." after the last named slug.
+    [ $((POLICY_VALUE_BYTES + 14)) -le "$FOOTER_BUDGET" ] || break
+    line="$candidate"
+    named=$((named + 1))
+  done <<< "$list"
+  if [ "$named" -eq 0 ]; then
+    line="${prefix}${count} HARD policies."
+  elif [ "$named" -lt "$count" ]; then
+    line="$line, +$((count - named)) more."
+  else
+    line="$line."
+  fi
+  ALREADY_FOOTER="$line"
+}
+build_already_footer
+
 emit_reminder() {
 printf '<policy-reminder>\n'
 printf '%s' "$MATCHES" | {
   spent=0
   match_index=0
-  shortened=""
+  hard_summary=0
   oversize=""
   malformed=""
   malformed_count=0
@@ -2909,10 +3176,10 @@ printf '%s' "$MATCHES" | {
   # A malformed-trigger fallback row did not match this event, so it is never
   # the kept rule.
   kept_full=0
-  deferred=""
-  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+  while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
     [ -z "$slug" ] && continue
     match_index=$((match_index + 1))
+    row_oversize=0
     # The malformed-trigger notice names a slug once per session. A malformed
     # hard policy is a low-ranked baseline row, so the output ceiling often
     # cuts its line and leaves it eligible; without this marker the notice
@@ -2971,12 +3238,14 @@ printf '%s' "$MATCHES" | {
       if [ "$size" -gt "$HARD_MAX" ]; then
         # One policy must not crowd out every other hard rule in the budget.
         oversize="${oversize:+$oversize, }$slug"
+        row_oversize=1
         body=""
-      elif [ $((spent + size)) -le "$HARD_BUDGET" ] \
-        || { [ "$rel" = "specific" ] && [ "$kind" = "reactive" ]; }; then
-        # A reactive HARD rule with a specific match always gets its full
-        # text; the shared budget only limits the less specific ones. The
-        # per-policy limit above and the output ceiling still apply.
+      elif [ $((spent + size)) -le "$FULL_BUDGET" ]; then
+        # Full bodies are added in rank order while they fit FULL_BUDGET
+        # (reminder-ceiling design §3). A body is printed whole or not at
+        # all; a row that does not fit is listed as its summary line and
+        # recorded in the seen set, so it is not repeated for this trigger
+        # and comes back in full on a new trigger or after the window.
         spent=$((spent + size))
         kept_full=$((kept_full + 1))
         if [ "$body_kind" = "rule" ]; then
@@ -2997,20 +3266,9 @@ printf '%s' "$MATCHES" | {
                 -e 's/^/> /' -e 's/^> $/>/'
         continue
       fi
-      if [ -n "$body" ] && [ "$kind" = "reactive" ] && [ "$ws" != "malformed" ] \
-         && [ "${HARD_FULL_KEEP:-0}" = "0" ] && [ "$RELEVANCE_CAP" -gt 0 ] && [ "$EVENT" != "SessionStart" ]; then
-        # A reactive HARD rule that lost the shared budget is DEFERRED, not
-        # shortened to one line: it is left out of this reminder, stays
-        # unrecorded and so eligible, and is shown with its text on the next
-        # event it matches, once the rules that took the budget have been
-        # recorded. Baseline rows keep their index line (that is the index),
-        # and the ceiling fallback (HARD_FULL_KEEP) keeps its summaries.
-        deferred="${deferred:+$deferred, }\`$slug\`"
-        continue
-      fi
-      [ -n "$body" ] && shortened="${shortened:+$shortened, }$slug"
     fi
     if [ "$enf" = "hard" ]; then
+      [ "$row_oversize" = 1 ] || hard_summary=$((hard_summary + 1))
       printf '> Policy `%s` applies here: %s  [HARD · %s] (`%s`)\n' "$slug" "$rule" "$scope" "${path#"$HQ_ROOT"/}"
     elif [[ "$scope" == worker:* ]]; then
       printf '> Policy `%s` applies here: %s  [%s] (`%s`)\n' "$slug" "$rule" "$scope" "${path#"$HQ_ROOT"/}"
@@ -3018,25 +3276,30 @@ printf '%s' "$MATCHES" | {
       printf '> Policy `%s` applies here: %s (`%s`)\n' "$slug" "$rule" "${path#"$HQ_ROOT"/}"
     fi
   done
-  if [ -n "$shortened" ]; then
-    printf '> Full-text budget of %s bytes reached: these HARD policies were shortened to one-line summaries — %s. Read each in full at its own file before acting on it.\n' \
-      "$HARD_BUDGET" "$shortened"
-  fi
+  # Notices (reminder-ceiling design §5): one line each, in this order, only
+  # when true. A HARD row listed as one line is recorded in the seen set by
+  # record_emitted_match_rows, so no notice needs to promise a later full text.
   if [ -n "$oversize" ]; then
     printf '> Over the %s-byte per-policy limit, so shortened to one-line summaries — %s. Read each in full at its own file before acting on it, and consider trimming the rule.\n' \
       "$HARD_MAX" "$oversize"
   fi
-  if [ -n "$deferred" ]; then
-    printf '> Deferred, full-text budget of %s bytes spent: HARD policies %s are not shown as one-line summaries; each stays eligible and is shown with its text on the next event it matches. Read them at their files now if this task touches them.\n' \
-      "$HARD_BUDGET" "$deferred"
+  hard_word="policies"; [ "$hard_summary" -ne 1 ] || hard_word="policy"
+  soft_word="matches"; [ "$RELEVANCE_SOFT_HIDDEN" -ne 1 ] || soft_word="match"
+  if [ "$hard_summary" -gt 0 ] && [ "$RELEVANCE_SOFT_HIDDEN" -gt 0 ]; then
+    printf '> Output budget %s bytes: %s HARD %s listed as one line; %s soft %s not shown.\n' \
+      "$OUTPUT_CEILING" "$hard_summary" "$hard_word" "$RELEVANCE_SOFT_HIDDEN" "$soft_word"
+  elif [ "$hard_summary" -gt 0 ]; then
+    printf '> Output budget %s bytes: %s HARD %s listed as one line.\n' "$OUTPUT_CEILING" "$hard_summary" "$hard_word"
+  elif [ "$RELEVANCE_SOFT_HIDDEN" -gt 0 ]; then
+    printf '> Output budget %s bytes: %s soft %s not shown.\n' "$OUTPUT_CEILING" "$RELEVANCE_SOFT_HIDDEN" "$soft_word"
   fi
-  if [ "$RELEVANCE_DROPPED" -gt 0 ]; then
-    if [ "$GENERIC_PARKED" -gt 0 ]; then
-      printf '> Relevance cap %s: %s lower-ranked soft matches not shown; every HARD match is shown or named above. %s matched only one common word and are parked on it for %s min (%s), %s still eligible later.\n' \
-        "$RELEVANCE_CAP" "$RELEVANCE_DROPPED" "$GENERIC_PARKED" "$((SEEN_TTL / 60))" "$GENERIC_PARKED_SLUGS" "$((RELEVANCE_DROPPED - GENERIC_PARKED))"
+  [ -z "$ALREADY_FOOTER" ] || printf '%s\n' "$ALREADY_FOOTER"
+  if [ "$GENERIC_PARKED" -gt 0 ]; then
+    if [ "$GENERIC_PARKED_HARD" -gt 0 ]; then
+      printf '> Skipped: %s matched only common words (parked %s min); HARD among them: %s.\n' \
+        "$GENERIC_PARKED" "$((SEEN_TTL / 60))" "$GENERIC_PARKED_HARD_NAMES"
     else
-      printf '> Relevance cap %s: %s lower-ranked soft matches not shown; every HARD match is shown or named above.\n' \
-        "$RELEVANCE_CAP" "$RELEVANCE_DROPPED"
+      printf '> Skipped: %s matched only common words (parked %s min).\n' "$GENERIC_PARKED" "$((SEEN_TTL / 60))"
     fi
   fi
   if [ "$malformed_count" -gt 0 ]; then
@@ -3103,16 +3366,28 @@ trim_policy_lines() {
     return 0
   fi
   TRIM_RESULT=""
-  if ! TRIM_RESULT="$(LC_ALL=C awk -v ceiling="$FIT_CEILING" -v shown="$OUTPUT_CEILING" -v sep="$TRIM_SEPARATOR" -v soft_only="${TRIM_SOFT_ONLY:-0}" '
+  if ! TRIM_RESULT="$(LC_ALL=C awk -v ceiling="$FIT_CEILING" -v shown="$OUTPUT_CEILING" -v sep="$TRIM_SEPARATOR" -v soft_only="${TRIM_SOFT_ONLY:-0}" -v ttl_min="$((SEEN_TTL / 60))" -v malformed="$MALFORMED_SLUGS" '
+          BEGIN { n=split(malformed, ma, " "); for (i=1; i<=n; i++) if (ma[i]!="") malf[ma[i]]=1 }
           {
             lines[NR]=$0
             total_bytes += length($0) + 1
-            if ($0 ~ /^> Policy `/ && $0 !~ /^> Policy `[^`]*` \(HARD .* (binding rule|Rule section) from `/) policy_line[NR]=($0 ~ / \[HARD · / ? 2 : 1)
+            if ($0 ~ /^> Policy `/ && $0 !~ /^> Policy `[^`]*` \(HARD .* (binding rule|Rule section) from `/) {
+              policy_line[NR]=($0 ~ / \[HARD · / ? 2 : 1)
+              # A malformed-trigger fallback row did not match this event:
+              # whatever its tier, it is the first line to go.
+              slug=$0; sub(/^> Policy `/, "", slug); sub(/`.*$/, "", slug)
+              if (slug in malf) policy_line[NR]=0
+            }
           }
           END {
-            # Cut order: bottom-up; with soft_only, soft and unset lines only.
+            # Cut order: soft and unset lines bottom-up first, then HARD
+            # summary lines bottom-up; with soft_only, soft and unset only.
+            # A HARD rule that matched this event outranks any soft hint
+            # under the ceiling, whatever group order put the lines in.
             order_n=0
-            for (i=NR; i>=1; i--) if ((i in policy_line) && (!soft_only || policy_line[i]==1)) order[++order_n]=i
+            for (i=NR; i>=1; i--) if ((i in policy_line) && policy_line[i]==0) order[++order_n]=i
+            for (i=NR; i>=1; i--) if ((i in policy_line) && policy_line[i]==1) order[++order_n]=i
+            if (!soft_only) for (i=NR; i>=1; i--) if ((i in policy_line) && policy_line[i]==2) order[++order_n]=i
             removed_bytes=0
             candidate_cut=0
             chosen_cut=0
@@ -3120,7 +3395,7 @@ trim_policy_lines() {
               i=order[k]
               removed_bytes += length(lines[i]) + 1
               candidate_cut++
-              notice = "> Output ceiling of " shown " bytes: " candidate_cut " lower-ranked policy line(s) cut from this reminder. Omitted policies remain eligible for a later event; see the policy files."
+              notice = "> Output ceiling of " shown " bytes: " candidate_cut " lower-ranked policy line(s) held for a later call; see the policy files."
               candidate_bytes = total_bytes - removed_bytes + length(notice) + 1
               if (candidate_bytes <= ceiling) {
                 chosen_cut=candidate_cut
@@ -3133,7 +3408,38 @@ trim_policy_lines() {
               printf "%snone%s%d%s0", sep, sep, candidate_cut, sep
               exit
             }
-            for (k=1; k<=chosen_cut; k++) drop[order[k]]=1
+            hard_cut=0
+            for (k=1; k<=chosen_cut; k++) { drop[order[k]]=1; if (policy_line[order[k]]==2) hard_cut++ }
+            # The budget notice counted the HARD summary lines before the
+            # cut (oversize and malformed summary lines excluded). Recount
+            # from the surviving lines so the number stays true whatever the
+            # cut removed: a surviving `[HARD · ` line that is neither a
+            # malformed fallback nor named in the per-policy-limit notice.
+            # The replacement is never longer than the original, so the fit
+            # computed above still holds.
+            if (hard_cut > 0) {
+              over=""
+              for (i=1; i<=NR; i++) if (match(lines[i], /^> Over the [0-9]+-byte per-policy limit, so shortened to one-line summaries — /)) {
+                over=substr(lines[i], RLENGTH+1); sub(/\. Read each in full.*$/, "", over)
+              }
+              no=split(over, oa, ", "); for (i=1; i<=no; i++) if (oa[i]!="") overs[oa[i]]=1
+              n_hard=0
+              for (i=1; i<=NR; i++) {
+                if ((i in drop) || !(i in policy_line) || policy_line[i]!=2) continue
+                slug=lines[i]; sub(/^> Policy `/, "", slug); sub(/`.*$/, "", slug)
+                if (!(slug in overs)) n_hard++
+              }
+              for (i=1; i<=NR; i++) {
+                if (match(lines[i], /^> Output budget [0-9]+ bytes: [0-9]+ HARD polic(y|ies) listed as one line/)) {
+                  head=lines[i]; sub(/: [0-9]+ HARD polic(y|ies) listed as one line.*$/, "", head)
+                  rest=substr(lines[i], RLENGTH+1)
+                  if (n_hard > 0) lines[i]=head ": " n_hard " HARD polic" (n_hard==1 ? "y" : "ies") " listed as one line" rest
+                  else if (rest ~ /^; /) lines[i]=head ": " substr(rest, 3)
+                  else drop[i]=1
+                  break
+                }
+              }
+            }
             for (i=1; i<=NR; i++) {
               if (lines[i] == "</policy-reminder>") {
                 printf "%s\n", chosen_notice
@@ -3211,7 +3517,7 @@ keep_top_reminder() {
     *', '*) keep_line="HARD policies ${keep_names} keep their full text as the top-ranked matches" ;;
     *) keep_line="HARD policy ${keep_names} keeps its full text as the top-ranked match" ;;
   esac
-  OUT="${keep_out%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${full_bytes} bytes with full text): ${keep_line}; every other HARD policy above is shortened to its summary line, stays eligible and is shown in full on its next matching event. Read it at its file now if this task touches it.
+  OUT="${keep_out%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${full_bytes} bytes with full text): ${keep_line}; the other HARD policies above are listed as one line (a listed line is parked for this trigger for $((SEEN_TTL / 60)) min; a cut line is held for a later call). Read a listed rule at its file now if this task touches it.
 </policy-reminder>"
   policy_value_bytes "$OUT"
   OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
@@ -3233,8 +3539,8 @@ fit_reminder_inner() {
   if [ "$OUT_BYTES" -gt "$FIT_CEILING" ] && [ "$HARD_FULL" != "0" ]; then
     # Too big for the host to deliver.
     local full_bytes="$OUT_BYTES" keep_n full_n=0 full_line
-    local slug scope path enf rule kind injv ws spec stale exempt rel tkey specific_n=0 reactive_hard_n=0
-    while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey; do
+    local slug scope path enf rule kind injv ws spec stale exempt rel tkey score specific_n=0 reactive_hard_n=0
+    while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
       [ "$enf" = "hard" ] && [ "$kind" = "reactive" ] && [ "$ws" != "malformed" ] || continue
       reactive_hard_n=$((reactive_hard_n + 1))
       [ "$rel" = "specific" ] && specific_n=$((specific_n + 1))
@@ -3271,7 +3577,7 @@ fit_reminder_inner() {
     # it never sees. keep_top_reminder overwrote OUT_BYTES, so report the
     # full-text size saved above.
     OUT="$(HARD_FULL=0 emit_reminder)"
-    OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${full_bytes} bytes with full text): every HARD policy above is shortened to its summary line, stays eligible and is shown in full on its next matching event. Read it at its file now if this task touches it.
+    OUT="${OUT%</policy-reminder>*}> Output ceiling of ${OUTPUT_CEILING} bytes would have been exceeded (${full_bytes} bytes with full text): every HARD policy above is listed as one line (a listed line is parked for this trigger for $((SEEN_TTL / 60)) min; a cut line is held for a later call). Read a listed rule at its file now if this task touches it.
 </policy-reminder>"
     policy_value_bytes "$OUT"
     OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
@@ -3326,27 +3632,10 @@ fit_reminder_inner() {
         esac
   fi
 }
-# fit_reminder <ceiling> — fit_reminder_inner, then keep the relevance-cap
-# notice truthful (PR #1548 review): "every HARD match is shown or named
-# above" stays only when every matched HARD row still appears in the final
-# reminder. Otherwise the line says how many were cut. Cut rows are not
-# recorded, so they stay eligible for a later event. The replacement is no
-# longer than the claim it replaces, so the reminder stays under the ceiling.
-HARD_CLAIM='every HARD match is shown or named above.'
+# fit_reminder <ceiling> — fit_reminder_inner. Rows the ceiling cuts stay
+# unrecorded and eligible; the cut notice counts them.
 fit_reminder() {
   fit_reminder_inner "$@"
-  case "$OUT" in *"$HARD_CLAIM"*) ;; *) return 0 ;; esac
-  local row slug enf ws rest cut=0
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    IFS=$'\x1f' read -r slug _ _ enf _ _ _ ws rest <<< "${row//$'\t'/$'\x1f'}"
-    [ "$enf" = "hard" ] && [ "$ws" != "malformed" ] || continue
-    case "$OUT" in *'`'"$slug"'`'*) ;; *) cut=$((cut + 1)) ;; esac
-  done <<< "$MATCHES"
-  [ "$cut" -gt 0 ] || return 0
-  OUT="${OUT/"$HARD_CLAIM"/"$cut HARD cut by ceiling; still eligible."}"
-  policy_value_bytes "$OUT"
-  OUT_BYTES=$((POLICY_VALUE_BYTES + 1))
 }
 fit_reminder "$OUTPUT_CEILING"
 HOOK_OUTPUT="$OUT"

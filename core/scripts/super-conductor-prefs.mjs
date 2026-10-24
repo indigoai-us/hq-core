@@ -18,6 +18,9 @@
 //       csv>\t<max_delay>" (see DEFAULTS.critical_channels).
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] channels
 //       Swept channels as CSV, always starting with "sessions".
+//   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] exclude
+//       hq_channels_exclude as CSV: HQ channel slugs or ids the watcher and
+//       the hq_channels sweep never read (trimmed, lowercased).
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] interval [--at <iso>]
 //       The heartbeat cadence for that moment (default now) from the work-day
 //       schedule: "<seconds> present" inside work_hours, "<seconds> away"
@@ -74,12 +77,15 @@ const DEFAULTS = {
   critical_channels: [],
   team: [],
   critical_wake: { max_delay: 60 },
+  // HQ channels (slug or channel id) the message watcher and the hq_channels
+  // sweep never read, name, or count as unswept.
+  hq_channels_exclude: [],
 };
 const KNOWN = new Set([
   'channels', 'watch_interval', 'work_hours', 'channel_cadence', 'slack_watch', 'surface', 'slack_workspaces', 'slack_channels',
   'slack_workspace_companies',
   'hq_channels', 'email_accounts', 'company', 'github_org', 'teammates',
-  'critical_channels', 'team', 'critical_wake',
+  'critical_channels', 'team', 'critical_wake', 'hq_channels_exclude',
 ]);
 const KEY_RE = /^([A-Za-z_][\w-]*):(.*)$/;
 
@@ -205,9 +211,16 @@ function resolved() {
     c.hourly = hourly;
     c.constant = constant.filter((x) => !hourly.includes(x));
   }
+  // A YAML list or a comma-separated string; one lowercased slug or id each.
+  out.hq_channels_exclude = excludeList(out.hq_channels_exclude);
   out._extension_keys = Object.keys(data).filter((k) => !KNOWN.has(k)).sort();
   out._file = file;
   return out;
+}
+
+function excludeList(v) {
+  const raw = Array.isArray(v) ? v : typeof v === 'string' && v ? v.split(',') : [];
+  return [...new Set(raw.map((x) => String(x ?? '').trim().toLowerCase()).filter(Boolean))];
 }
 
 const fmt = (v) => (/^[A-Za-z0-9@._/+-]+$/.test(String(v)) ? String(v) : JSON.stringify(String(v)));
@@ -439,6 +452,9 @@ switch (cmd) {
     process.stdout.write(`${list(p.critical_channels).join(',')}\t${list(p.team).join(',')}\t${Number.isFinite(delay) && delay >= 10 ? Math.round(delay) : 60}\n`);
     break;
   }
+  case 'exclude':
+    process.stdout.write(`${resolved().hq_channels_exclude.join(',')}\n`);
+    break;
   case 'cadence': {
     const c = resolved().channel_cadence;
     const { hourly, constant } = c;
@@ -455,5 +471,5 @@ switch (cmd) {
     cmdSet(args[0], args[1]);
     break;
   default:
-    die(`usage: get | channels | interval | cadence | critical | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
+    die(`usage: get | channels | interval | cadence | critical | exclude | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
 }
