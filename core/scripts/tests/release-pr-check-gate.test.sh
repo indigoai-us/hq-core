@@ -158,6 +158,9 @@ if [[ -z "$GATE_TEST_CASE" ]]; then
   RECHECK_WORKFLOW="$ROOT/.github/workflows/recheck-hq-core-release-gate.yml"
   grep -Fq 'path: staging' "$PROMOTE_WORKFLOW" || fail "promotion workflow must check out staging under staging/"
   grep -Fq 'run: bash staging/core/scripts/release-pr-check-gate.sh ' "$PROMOTE_WORKFLOW" || fail "promotion workflow must invoke the gate from staging/"
+  # hq-core linux-checks-2/-3 run past 10 minutes; a 600s wait timed out every promotion.
+  gate_wait="$(sed -nE 's/.*release-pr-check-gate\.sh "\$TARGET_REPO" "\$PR_NUMBER" "\$PR_HEAD_SHA" ([0-9]+) [0-9]+.*/\1/p' "$PROMOTE_WORKFLOW")"
+  [[ -n "$gate_wait" ]] && (( gate_wait >= 1800 )) || fail "promotion gate must wait at least 1800s for hq-core checks (got '${gate_wait}')"
   grep -Fq 'gh pr merge "$NUM" --repo "$TARGET_REPO" --auto --squash --match-head-commit "$PR_HEAD_SHA"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must arm auto-merge on the release PR"
   # The workflow disarms auto-merge only on a held PR (hq-core #366 lost it to
   # an unconditional disarm before every update).

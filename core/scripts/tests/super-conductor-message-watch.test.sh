@@ -625,6 +625,30 @@ check "an excluded critical channel prints no CRITICAL line (got: $out)" "$(! gr
 check "an excluded channel is never named in a MESSAGE line (got: $out)" "$(! grep -Eq 'pr-reviews|feedback-zero' <<<"$out"; echo $?)"
 grep -q '^SUPER-CONDUCTOR MESSAGE .* 1 new: #hq-dev (Cy)' <<<"$out"; check "the other channel still wakes (got: $out)" $?
 check "an excluded channel is never stored in the watch state" "$(! grep -Eq 'chn_rev|chn_fb' "$tmp/excl-state.json"; echo $?)"
+# 22b. Regression: the live channel feed has no slug field, only channelId and
+# a display name ("Project core-pr-reviews 6e234042"). A slug-only exclusion
+# must still drop that row, by the name in slug form.
+printf 'work_hours: {timezone: UTC, days: sun-sat, start: "00:00", end: "24:00"}\nhq_channels_exclude:\n  - project-core-pr-reviews-6e234042\n' >"$tmp/excl-name.yaml"
+rm -f "$tmp/excl-name-state.json"
+cat >"$tmp/fx/snapshot.json" <<'EOF'
+{"snapshot":true,"cursor":"n1","rows":[
+ {"channelId":"chn_rev","companyUid":"cmp_co-a","type":"project","name":"Project core-pr-reviews 6e234042","lastHumanMessageAt":"2026-10-19T10:00:00Z"},
+ {"channelId":"chn_ok","companyUid":"cmp_co-a","type":"project","name":"HQ dev","lastHumanMessageAt":"2026-10-19T10:00:00Z"}
+],"removedChannelIds":[]}
+EOF
+echo '{"snapshot":false,"cursor":"n2","rows":[],"changed":[],"removedChannelIds":[]}' >"$tmp/fx/delta.json"
+SC_PREFS_FILE="$tmp/excl-name.yaml" node "$WATCH" --state "$tmp/excl-name-state.json" --company co-a --min-wake-gap 0 --once >/dev/null
+cat >"$tmp/fx/delta.json" <<'EOF'
+{"snapshot":false,"cursor":"n3","rows":[],"changed":[
+ {"channelId":"chn_rev","companyUid":"cmp_co-a","type":"project","name":"Project core-pr-reviews 6e234042","lastHumanMessageAt":"2026-10-19T20:00:00Z"},
+ {"channelId":"chn_ok","companyUid":"cmp_co-a","type":"project","name":"HQ dev","lastHumanMessageAt":"2026-10-19T20:00:00Z"}
+],"removedChannelIds":[]}
+EOF
+rm -f "$tmp/calls"
+SC_PREFS_FILE="$tmp/excl-name.yaml" node "$WATCH" --state "$tmp/excl-name-state.json" --company co-a --min-wake-gap 0 --once >/dev/null
+check "a slug exclusion drops a live-feed row that has only a display name" "$(! grep -q 'dm channel chn_rev' <(calls); echo $?)"
+grep -q 'dm channel chn_ok' <(calls); check "a live-feed row that is not excluded is still read" $?
+check "a slug-excluded live-feed row is never stored in the watch state" "$(! grep -q 'chn_rev' "$tmp/excl-name-state.json"; echo $?)"
 # --exclude alone, without the settings key, drops a channel too.
 rm -f "$tmp/calls" "$tmp/excl-state.json"
 echo '{"snapshot":false,"cursor":"c2","rows":[],"changed":[],"removedChannelIds":[]}' >"$tmp/fx/delta.json"

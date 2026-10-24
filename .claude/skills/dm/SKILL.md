@@ -45,6 +45,18 @@ Options (1:1 DMs only — not channels/groups):
 | `--at <iso>` | Schedule delivery at an ISO8601 time (store-and-forward — arrives even if you're offline at that time). |
 | `--in <duration>` | Schedule after a relative delay: `30s`, `10m`, `2h`, `1d`. |
 
+Audience (every send: 1:1, group, channel):
+
+| Option | Effect |
+|---|---|
+| *(none)* | `audience: agent`. The message is for the recipient's agents and lanes; the HQ desktop folds it away from people by default. |
+| `--audience human` (alias `--for-human`, hq-cli >= 5.345.167) | The message is for a person. It shows in their conversation, with a small CLI chip. |
+| `--audience both` | For the person and their agent, for example a handoff with a prompt to copy. |
+
+When the user asks you to message a person, pass `--audience human` (or `both`
+when you also attach `--prompt`). Leave the default only for machine status that
+no person needs to read.
+
 ### Read
 
 DMs can be **read from the CLI** (hq-cli ≥ 5.70). Prefer these when the user
@@ -219,6 +231,9 @@ rules as send) — the read path only accepts email / personUid / agentUid.
 - Scheduled DMs are promoted to live notifications within ~60s of their time
   on the recipient's next inbox poll.
 - Never paste secrets into a DM body/prompt/details — DMs are stored server-side.
+- `hq dm` sends with `audience: agent` unless told otherwise (hq-cli >= 5.345.167).
+  A message a person must read needs `--audience human` or `--audience both`;
+  without it the desktop app hides it in a fold and the person may never see it.
 
 ## See also
 

@@ -558,4 +558,4 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.openpr.outputs.number }}
           PR_HEAD_SHA: ${{ steps.openpr.outputs.head_sha }}
-        run: bash staging/core/scripts/release-pr-check-gate.sh "$TARGET_REPO" "$PR_NUMBER" "$PR_HEAD_SHA" 600 30
+        run: bash staging/core/scripts/release-pr-check-gate.sh "$TARGET_REPO" "$PR_NUMBER" "$PR_HEAD_SHA" 1800 30

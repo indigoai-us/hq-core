@@ -179,6 +179,47 @@ grep -q "git add failed" "$err_file" || fail "locked-index run must warn loudly 
 assert_eq "$(git rev-parse HEAD)" "$head_before" "locked-index run must not move HEAD"
 rm -f .git/index.lock
 
+# ── 4b. STALE lock: an orphaned index.lock older than the stale threshold with
+#        no git process older than it is removed once, the stage re-runs, and
+#        the handoff commits (exit 0). Case 4 above pins the other side: a fresh
+#        lock is treated as held and stays stage-failed. The removal must be
+#        visible on stderr and in the payload, never silent.
+STALE_REPO="$TMP_ROOT/stale-lock"
+scaffold_repo "$STALE_REPO"
+cd "$STALE_REPO"
+echo "changed" > tracked.txt
+: > .git/index.lock
+# Backdate the lock by 15 minutes (900 s): past the 600 s default threshold.
+touch -t "$(date -r $(( $(date +%s) - 900 )) +%Y%m%d%H%M.%S 2>/dev/null \
+  || date -d "@$(( $(date +%s) - 900 ))" +%Y%m%d%H%M.%S)" .git/index.lock
+head_before="$(git rev-parse HEAD)"
+
+rc=0
+err_file="$TMP_ROOT/stale-lock.err"
+out=$(bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: stale lock" \
+  --summary "Stale index lock" \
+  --message "Stale index lock" \
+  --files-touched-json '["tracked.txt"]' \
+  --slug "stale-lock" 2>"$err_file") || rc=$?
+
+assert_eq "$rc" "0" "stale-lock finalize exit code (stale lock must be cleared)"
+assert_eq "$(jq -r '.hq_commit_status' <<<"$out")" "committed" "stale-lock hq_commit_status"
+assert_eq "$(jq -r '.hq_committed' <<<"$out")" "true" "stale-lock hq_committed"
+assert_eq "$(jq -r '.stale_index_lock_removed' <<<"$out")" "true" "stale-lock payload must report the removal"
+assert_eq "$(jq -r '.stage_failures | length' <<<"$out")" "0" "stale-lock run must not report stage failures"
+grep -q "removed stale" "$err_file" || fail "stale-lock removal must be reported on stderr"
+[[ ! -e .git/index.lock ]] || fail "stale index.lock must be gone after the run"
+[[ "$(git rev-parse HEAD)" != "$head_before" ]] || fail "stale-lock run must land the handoff commit"
+
+# A fresh lock must still never be removed: the held-lock payload says so.
+assert_eq "$(jq -r '.stale_index_lock_removed' <<<"$(cd "$LOCKED_REPO" && : > .git/index.lock && bash core/scripts/handoff-finalize.sh \
+  --title "Handoff: locked again" --summary "Locked index" --message "Locked index" \
+  --files-touched-json '["tracked.txt"]' --slug "locked-again" 2>/dev/null || true)")" "false" \
+  "a fresh index.lock must not be reported as a stale removal"
+[[ -e "$LOCKED_REPO/.git/index.lock" ]] || fail "a fresh index.lock must be left in place"
+rm -f "$LOCKED_REPO/.git/index.lock"
+
 # ── 5. Gitignored /workspace/ (deacon's box): user content commits, the
 #       handoff's OWN metadata is skipped, and the run stays a SUCCESS (exit 0).
 #       Regression lock for hq-agent-ritual.service exit-4 on a box whose ignore

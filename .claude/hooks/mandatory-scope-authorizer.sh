@@ -4286,6 +4286,28 @@ scope_command_head_index() {
   printf '%s' "$i"
 }
 
+# scope_mask_simple_arithmetic <word> — sets scope_arith_view to <word> with
+# every simple arithmetic expansion replaced by the digit 0. Arithmetic yields
+# an integer, so `$((tot/10))` can never name a path and its `/` is division;
+# `0` keeps the word's shape for the path checks that follow (`$((n))/x`
+# becomes the literal `0/x`). Only a body made of names, digits, blanks, and
+# the operators + - * / % is simple. A body with `$`, brackets, braces,
+# parentheses, backticks, or any other punctuation is left as written and
+# stays on the fail-closed path: bash evaluates `$(cmd)` inside arithmetic,
+# and array subscripts can hold commands.
+scope_mask_simple_arithmetic() {
+  local word="${1:-}" re out="" rest
+  scope_arith_view="$word"
+  case "$word" in *'$(('*) ;; *) return 0 ;; esac
+  re='\$\(\(([A-Za-z0-9_[:space:]+*/%-]*)\)\)'
+  rest="$word"
+  while [[ "$rest" =~ $re ]]; do
+    out+="${rest%%"${BASH_REMATCH[0]}"*}0"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+  scope_arith_view="$out$rest"
+}
+
 # A shell word such as "EXISTS: $(wc -l < f) lines" or the prose line of an
 # interpreter heredoc ("see `companies/x` and ...") contains a slash but is
 # not a path anyone opens: its first path component begins with a plain word
@@ -4363,7 +4385,7 @@ scope_token_is_nofile_substitution() {
 
 scope_token_is_prose() {
   local token="${1:-}" context="${2:-shell}" index="${3:-0}"
-  local reduced lead sub_re body cwd head prev backtick=$'\140' mark=$'\001' lead_is_var=0 shell_pipe_re
+  local reduced lead sub_re body cwd head prev backtick=$'\140' mark=$'\001' lead_is_var=0 shell_pipe_re whole_sub=0
   scope_prose_subs=()
   case "$token" in /*|~*|*"$mark"*) return 1 ;; esac
   reduced="$token"
@@ -4381,7 +4403,23 @@ scope_token_is_prose() {
     reduced="${reduced/"${BASH_REMATCH[0]}"/$mark}"
     [ "${#scope_prose_subs[@]}" -le 16 ] || return 1
   done
-  case "$reduced" in *[[:space:]]*) ;; *) return 1 ;; esac
+  # A word that is exactly one substitution (`echo "$(wc -l core/x)"`) prints
+  # the substitution's output and opens nothing itself, the same as the
+  # `"n: $(...)"` form with a text lead. It is accepted only as an echo/printf
+  # argument in shell context (the checks below), and its body is still
+  # scanned as a command by the caller.
+  if [ "$context" != body ] && [ "$reduced" = "$mark" ]; then
+    whole_sub=1
+    lead_is_var=1
+  fi
+  # A substitution body that pipes text into a shell or interpreter
+  # (`echo "$(cat f | sh)"`) runs that text; no prose exemption for it.
+  shell_pipe_re='\|[[:space:]]*(sudo[[:space:]]+|env[[:space:]]+|command[[:space:]]+|exec[[:space:]]+)*([^[:space:]|;&]*/)?(bash|sh|zsh|dash|ksh|fish|xargs|eval|source|python[0-9.]*|node|perl|ruby|parallel|while|read)([[:space:]]|$)'
+  local sub_body
+  for sub_body in ${scope_prose_subs[@]+"${scope_prose_subs[@]}"}; do
+    [[ "$sub_body" =~ $shell_pipe_re ]] && return 1
+  done
+  case "$reduced" in *[[:space:]]*) ;; *) [ "$whole_sub" -eq 1 ] || return 1 ;; esac
   # A `..` in the text itself can climb out of the first component. A `..`
   # inside a substitution body (`git log origin/main..HEAD`) is an argument
   # of that command; the body is checked as a command by the caller.
@@ -4400,12 +4438,14 @@ scope_token_is_prose() {
   # which prints the word and opens nothing.
   lead="${reduced%%[[:space:]]*}"
   [ -n "$lead" ] || return 1
-  case "$lead" in
-    *'/'*|*'$'*|*"$mark"*|*'*'*|*'?'*|*'['*|*'{'*|*'~'*)
-      [ "$context" != body ] && [[ "$lead" =~ ^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[:,]?$ ]] || return 1
-      lead_is_var=1
-      ;;
-  esac
+  if [ "$whole_sub" -eq 0 ]; then
+    case "$lead" in
+      *'/'*|*'$'*|*"$mark"*|*'*'*|*'?'*|*'['*|*'{'*|*'~'*)
+        [ "$context" != body ] && [[ "$lead" =~ ^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[:,]?$ ]] || return 1
+        lead_is_var=1
+        ;;
+    esac
+  fi
   if [ "$context" != body ]; then
     case "$reduced" in
       *'$'*|*"$mark"*)
@@ -10268,12 +10308,17 @@ case "$TOOL" in
           scope_check_prose_substitutions
           continue
         fi
-        if scope_token_is_prose "$scope_token" "$scope_token_context" "$scope_token_index"; then
+        # `$((tot/10))` is a number, never a path: its `/` is division. Check
+        # the word with each simple arithmetic expansion read as a number, so
+        # `echo "$label: avg $((tot/10))"` is the echo text it is instead of an
+        # unresolvable path (feedback: four echo/loop rewrites per handoff).
+        scope_mask_simple_arithmetic "$scope_token"
+        if scope_token_is_prose "$scope_arith_view" "$scope_token_context" "$scope_token_index"; then
           scope_check_prose_substitutions
           continue
         fi
-        case "$scope_token" in
-          */*|/*) scope_check_bash_skill_path "$scope_token" "$scope_scan_cmd" "" "" ;;
+        case "$scope_arith_view" in
+          */*|/*) scope_check_bash_skill_path "$scope_arith_view" "$scope_scan_cmd" "" "" ;;
         esac
       done
       scope_strip_command_wrappers

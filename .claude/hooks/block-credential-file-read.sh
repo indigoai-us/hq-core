@@ -691,6 +691,51 @@ STRIPPED="${CMD//[\"\'\\]/}"
 # credential word appears in the command. Analyze, never execute, the body.
 COMPUTED_PATH=0
 case "$CMD" in *'$('*|*'`'*) COMPUTED_PATH=1 ;; esac
+
+# SAFE_TMP_VARS: names exempted as a fresh temp path. This is an allowlist; a
+# name qualifies only when every condition holds:
+#   - it is assigned exactly once, as N=$(mktemp) or N=$(mktemp -d) (the
+#     substitution may be double-quoted), ending at the closing paren;
+#   - every other mention of N is a plain read, $N or ${N};
+#   - the command has no TMPDIR mention, no `..`, and none of the builtins
+#     that can assign a variable by name or indirection (read, mapfile,
+#     readarray, select, getopts, declare, typeset, local, export, eval, let,
+#     source, printf -v, ((, $[, ${!).
+# mktemp then prints a fresh path under the default temp directory, so "$N"/*
+# is a project-neutral path and not a wildcard that could reach a credential.
+SAFE_TMP_VARS=" "
+if [[ "$CMD" == *mktemp* ]]; then
+  _tmp_global_ok=1
+  _tmp_deny_re='(^|[^A-Za-z0-9_])(read|mapfile|readarray|select|getopts|declare|typeset|local|export|eval|let|source)([^A-Za-z0-9_]|$)|TMPDIR|\.\.|\(\(|\$\[|\$\{!|printf.*[[:space:]]-[A-Za-z]*v'
+  [[ "$CMD" =~ $_tmp_deny_re ]] && _tmp_global_ok=0
+  _tmp_rest="$CMD"
+  _tmp_safe_re='(^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)=("?)\$\(mktemp( +-d)?\)'
+  while [ "$_tmp_global_ok" = 1 ] && [[ "$_tmp_rest" =~ $_tmp_safe_re ]]; do
+    _tmp_name="${BASH_REMATCH[2]}"
+    _tmp_rest="${_tmp_rest#*"${BASH_REMATCH[0]}"}"
+    case "$SAFE_TMP_VARS" in *" $_tmp_name "*) continue ;; esac
+    # Remove the one allowed assignment (exact text, followed by a separator
+    # or the end) and then every plain read; any mention left over is a
+    # disqualifying use.
+    _tmp_assign_re="(^|[^A-Za-z0-9_])${_tmp_name}=(\\\$\\(mktemp( +-d)?\\)|\"\\\$\\(mktemp( +-d)?\\)\")([[:space:];&|)]|\$)"
+    _tmp_scan="$CMD"
+    _tmp_n=0
+    while [[ "$_tmp_scan" =~ $_tmp_assign_re ]]; do
+      _tmp_n=$((_tmp_n + 1))
+      _tmp_scan="${_tmp_scan/"${BASH_REMATCH[0]}"/${BASH_REMATCH[1]} ${BASH_REMATCH[5]}}"
+    done
+    [ "$_tmp_n" -eq 1 ] || continue
+    _tmp_read_re="\\\$(\\{${_tmp_name}\\}|${_tmp_name}([^A-Za-z0-9_]|\$))"
+    while [[ "$_tmp_scan" =~ $_tmp_read_re ]]; do
+      _tmp_tail="${BASH_REMATCH[3]}"
+      _tmp_scan="${_tmp_scan/"${BASH_REMATCH[0]}"/ ${_tmp_tail}}"
+    done
+    # Any remaining occurrence of the name, even inside another word such as
+    # -vN or R=N, disqualifies it.
+    case "$_tmp_scan" in *"$_tmp_name"*) continue ;; esac
+    SAFE_TMP_VARS="$SAFE_TMP_VARS$_tmp_name "
+  done
+fi
 shopt -s nocasematch
 CWD_IN_CRED=0
 if is_cred_dir "$PAYLOAD_CWD" && [ "$PAYLOAD_CWD" != "/" ] && [ "$PAYLOAD_CWD" != "$H" ]; then
@@ -1026,6 +1071,11 @@ VAR_VALS=()
 
 set_var() { # <name> <value>
   local i
+  # A bare mktemp substitution (see SAFE_TMP_VARS) is a fresh temp path, not
+  # an unknown wildcard.
+  if [ "$2" = $'\001' ]; then
+    case "$SAFE_TMP_VARS" in *" $1 "*) set -- "$1" "/tmp/hq-mktemp-$1" ;; esac
+  fi
   for ((i = 0; i < ${#VAR_NAMES[@]}; i++)); do
     if [ "${VAR_NAMES[$i]}" = "$1" ]; then VAR_VALS[$i]="$2"; return; fi
   done

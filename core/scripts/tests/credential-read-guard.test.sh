@@ -234,6 +234,36 @@ for _ in 1 2 3 4 5 6 7 8; do deep="bash -c $(printf '%q' "$deep")"; done
 bash_case 2 "nesting deeper than the limit" "$deep"
 
 echo "[6] controls"
+# A variable assigned only from a bare mktemp substitution is a fresh temp
+# path, not an unknown wildcard.
+bash_case 0 "mktemp var as option value" 'T=$(mktemp); handoff-finalize --file $T'
+bash_case 0 "two mktemp vars quoted" 'F=$(mktemp); D=$(mktemp -d); handoff-finalize --a "$F" --b "$D"'
+bash_case 0 "mktemp -d var in file path" 'T=$(mktemp -d); cat "$T/x.json"'
+bash_case 0 "mktemp var braced read" 'T=$(mktemp); handoff-finalize --out "${T}"'
+# Only bare mktemp and mktemp -d qualify; -t honours TMPDIR and is not exempt.
+bash_case 2 "mktemp template var not exempt" 'T=$(mktemp -t hq.XXXXXX); cat "$T"/*'
+# The exemption stays narrow: any other assignment, a path argument, or a
+# credential operand keeps the block.
+bash_case 2 "var also assigned from other substitution" 'T=$(mktemp); T=$(echo x); cat $T'
+bash_case 2 "var also assigned from unknown var" 'T=$(mktemp); T=$UNKNOWN; cat $T'
+bash_case 2 "mktemp -p into credential dir" 'T=$(mktemp -p ~/.ssh); cat $T'
+bash_case 2 "mktemp var plus credential file" 'T=$(mktemp); cat $T ~/.npmrc'
+bash_case 2 "unrelated var still blocked" 'T=$(mktemp); cat $OTHER/.npmrc'
+# PR #1617 review: other assignment forms must also disqualify the name.
+bash_case 2 "mktemp var appended with traversal" 'T=$(mktemp -d); T+=/../../../../../..$HOME/.aws/credentials; cat $T'
+bash_case 2 "mktemp var array element assignment" 'T=$(mktemp); T[0]=~/.aws/credentials; cat $T'
+bash_case 2 "mktemp var unset then default-assigned" 'T=$(mktemp); unset T; cat ${T:=~/.aws/credentials}'
+bash_case 2 "mktemp var assigning expansion" 'T=$(mktemp); cat ${T=~/.aws/credentials} $T'
+bash_case 2 "mktemp var with suffix in the assignment" 'T=$(mktemp)/../../../..$HOME/.aws/credentials; cat $T'
+# PR #1617 second review: the exemption is an allowlist. Names reassigned by
+# nameref, read, printf -v or select, and TMPDIR overrides, stay blocked.
+bash_case 2 "mktemp var via declare -n nameref" 'T=$(mktemp); declare -n R=T; R=$HOME/.aws/credentials; cat $T'
+bash_case 2 "mktemp var via typeset -n nameref" 'T=$(mktemp); typeset -n R=T; R=$HOME/.aws/credentials; cat $T'
+bash_case 2 "mktemp var via read herestring" 'T=$(mktemp); read T<<<"$HOME/.aws/credentials"; cat $T'
+bash_case 2 "mktemp var via printf -v" 'T=$(mktemp); printf -vT %s ~/.aws/credentials; cat $T'
+bash_case 2 "mktemp var via select" 'T=$(mktemp); select T in ~/.aws/credentials; do cat $T; break; done <<< 1'
+bash_case 2 "mktemp with TMPDIR prefix and traversal" 'TMPDIR=~/.aws T=$(mktemp); cat $T/../credentials'
+bash_case 2 "mktemp -d with exported TMPDIR" 'export TMPDIR=$HOME/.aws; T=$(mktemp -d); cat $T/../credentials'
 read_case 0 "project README" "$PROJ/README.md"
 read_case 0 ".env.example" "$PROJ/.env.example"
 read_case 0 "public key" "$FH/.ssh/id_ed25519.pub"

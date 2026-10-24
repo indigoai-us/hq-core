@@ -136,7 +136,7 @@
           {
             "id": "block-credential-file-read",
             "script": ".claude/hooks/block-credential-file-read.sh",
-            "timeout": 30,
+            "timeout": 60,
             "gated": true,
             "fail_closed": true,
             "runner": "exec"

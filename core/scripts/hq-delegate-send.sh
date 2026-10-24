@@ -306,7 +306,7 @@ if ! jq '.status = "sending"' "$MANIFEST" > "$TMP_MANIFEST" || ! mv "$TMP_MANIFE
   rm -f "$TMP_MANIFEST"
   die "could not persist sending state; no DM attempted"
 fi
-DM_OUT="$(hq dm "$PRINCIPAL" "$HEADLINE" --prompt-file "$PROMPT" --details-file "$BRIEF")" \
+DM_OUT="$(hq dm "$PRINCIPAL" "$HEADLINE" --audience both --prompt-file "$PROMPT" --details-file "$BRIEF")" \
   || die "hq dm delivery outcome is uncertain; status is sending, inspect DM history before retrying"
 
 EVENT_ID="$(printf '%s' "$DM_OUT" | grep -oE 'eventId[: ]+[A-Za-z0-9_-]+' | head -1 | sed -E 's/eventId[: ]+//' || true)"
