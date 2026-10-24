@@ -619,6 +619,128 @@ bash_case 2 "dm send other operand is .npmrc" 'hq dm send --to x --body "$(cat w
 bash_case 2 "dm send body mixes text and substitution" 'hq dm send --to x --body "x$(cat workspace/drafts/dm1.md)"'
 bash_case 2 "non-dm hq command keeps operand check" 'hq other --body "$(cat workspace/drafts/dm1.md)"'
 
+echo "[12] computed substitutions: benign shapes pass, credential reads still block"
+# The guard computes what a small set of substitutions print (cat/head/tail
+# of a literal file, ls of literal or glob paths, pwd, git rev-parse
+# --show-toplevel, date with a numeric format). Before, any $(...) operand
+# turned into the pattern /* and matched home-dir dot files, so ordinary
+# work was blocked. Commands are only fed to the hook as JSON; none runs.
+mkdir -p "$PROJ/workspace/threads" "$PROJ/repo/.git" "$PROJ/repo/sub"
+printf '{}\n' > "$PROJ/workspace/threads/t1.json"
+printf 'notes.txt README.md\n' > "$PROJ/list.txt"
+printf 'Fix the guard\n' > "$PROJ/title.txt"
+printf 'notes.txt\n' > "$PROJ/one.txt"
+printf 'hello\n' > "$PROJ/repo/README.md"
+printf '%s\n' "$FH/.npmrc" > "$PROJ/to-npmrc.txt"
+printf '%s\n' "$FH/.ssh/id_rsa" > "$PROJ/to-key.txt"
+printf '%s/.aws\n' "$FH" > "$PROJ/to-awsdir.txt"
+printf 'notes.txt\n%s\n' "$FH/.netrc" > "$PROJ/mixed.txt"
+printf 'x -f\n' > "$PROJ/optlike.txt"
+printf '%s:notes.txt\n' "$FH/.npmrc" > "$PROJ/colon.txt"
+ln -sf "$FH/.npmrc" "$PROJ/npm-link.txt"
+td="$(date +%F)"
+printf '{}\n' > "$PROJ/workspace/threads/${td}-a.json"
+# benign shapes from the feedback rows (all were blocked as pattern /*)
+bash_case 0 "grep over \$(cat list) operands (10e92984, d029ab4c)" 'grep -n registry $(cat list.txt)'
+bash_case 0 "quoted \$(ls glob | head -1) thread read (5c50ff3e)" 'cat "$(ls workspace/threads/*.json | head -1)"'
+bash_case 0 "handoff-finalize with \$(cat title) args (653edbb3, 43412fe7)" 'bash core/scripts/handoff-finalize.sh --title "$(cat title.txt)" --summary "$(head -1 list.txt)"'
+bash_case 0 "multi-file read with \$(cat list) (5c50ff3e)" 'head -3 README.md $(cat list.txt) notes.txt'
+bash_case 0 "dated glob with \$(date +%F) (175bdcda)" 'head -5 workspace/threads/$(date +%F)*.json'
+bash_case 0 "toplevel-anchored read (b625002d)" 'cat "$(git rev-parse --show-toplevel)/README.md"' "$PROJ/repo/sub"
+bash_case 0 "pwd-anchored read (175bdcda)" 'wc -l "$(pwd)/README.md"'
+bash_case 0 "heredoc then \$(cat) operand (21ea3463, 75384dec)" "$(printf 'cat <<%s\nprint(1)\n%s\ngrep -c x $(cat list.txt)' "'PY'" "PY")"
+bash_case 0 "backtick \`cat list\` operand (07ed4383)" 'wc -c `cat list.txt`'
+bash_case 0 "xargs-free read of \$(ls glob) matches (175bdcda)" 'head -1 $(ls workspace/threads/*.json)'
+bash_case 0 "slash-star glob with \$(...) in the same command (07ed4383)" 'ls workspace/threads/* && wc -l $(cat list.txt)'
+bash_case 0 "redirect from \$(cat) target (5030216e)" 'wc -l < "$(head -1 one.txt | head -1)"'
+# credential reads through a computed substitution still block
+bash_case 2 "\$(cat file) naming ~/.npmrc" 'cat $(cat to-npmrc.txt)'
+bash_case 2 "quoted \$(cat file) naming a key" 'cat "$(cat to-key.txt)"'
+bash_case 2 "grep over a list holding ~/.netrc" 'grep -n x $(cat mixed.txt)'
+bash_case 2 "\$(cat dir)/credentials" 'cat $(cat to-awsdir.txt)/credentials'
+bash_case 2 "\$(cat) of a link to ~/.npmrc" 'cat $(cat npm-link.txt)'
+bash_case 2 "option-like output keeps fail closed" 'grep x $(cat optlike.txt) ~/.npmrc'
+bash_case 2 "\$(pwd) after cd ~" 'cd ~ && cat "$(pwd)/.npmrc"'
+bash_case 2 "\$(pwd) after an unresolved cd" 'cd "$D" && cat $(cat list.txt)'
+bash_case 2 "relative \$(cat) after cd -" 'cd - && cat $(cat list.txt)'
+bash_case 2 "\$(ls) of the home dot files" 'cat $(ls -d ~/.n*)'
+bash_case 2 "\$(ls -d) of an absolute home dot path" "cat \$(ls -d $FH/.npmrc)"
+bash_case 2 "\$(ls) of a home glob under dotglob" "shopt -s dotglob; cat \$(ls $FH/*)"
+bash_case 2 "\$(date) with a name-building format" 'cat ~/$(date +.npmrc)'
+# adversarial review: a changed IFS splits the output differently, and an
+# earlier write in the same command can change the file before it is read
+bash_case 2 "IFS change splits a computed word onto ~/.npmrc" 'IFS=:; cat $(cat colon.txt)'
+bash_case 2 "same-command write to the list file before \$(cat)" "printf '%s\\n' $FH/.npmrc > list.txt; cat \$(cat list.txt)"
+bash_case 2 "same-command copy onto the list file before \$(cat)" 'cp to-npmrc.txt list.txt && cat $(cat list.txt)'
+bash_case 2 "write into a listed dir before \$(ls)" 'ln -s ~/.npmrc workspace/threads/z.json; cat $(ls workspace/threads/*.json)'
+bash_case 2 "write to an unnamed target before \$(cat)" 'echo x > "$T"; cat $(cat list.txt)'
+# review round 2: read-only-looking commands with write or exec options
+bash_case 2 "sort -uo cluster writes the list file" 'sort -uo list.txt to-npmrc.txt; cat $(cat list.txt)'
+bash_case 2 "sort -o writes the list file" 'sort -o list.txt to-npmrc.txt && cat $(cat list.txt)'
+bash_case 2 "git --output= writes the list file" 'git diff --output=list.txt && cat $(cat list.txt)'
+bash_case 2 "git log --output writes the list file" 'git log -1 --output=list.txt; cat $(cat list.txt)'
+bash_case 2 "rg --pre runs a program" 'rg --pre ./x.sh foo . ; cat $(cat list.txt)'
+bash_case 2 "background writer before \$(cat)" 'cp to-npmrc.txt list.txt & cat $(cat list.txt)'
+bash_case 2 "loop writer before \$(cat)" 'for i in 1; do cp to-npmrc.txt list.txt; done; cat $(cat list.txt)'
+bash_case 2 "git branch is not read-only" 'git branch x; cat $(cat list.txt)'
+# review round 3: a cd that does not change the substitution's directory
+mkdir -p "$PROJ/sub2"
+printf 'notes.txt\n' > "$PROJ/sub2/to-npmrc.txt"
+bash_case 2 "cd in a pipeline before \$(cat)" 'cd sub2 | true; cat $(cat to-npmrc.txt)'
+bash_case 2 "cd in a subshell before \$(cat)" '(cd sub2); cat $(cat to-npmrc.txt)'
+bash_case 2 "cd after || before \$(cat)" 'true || cd sub2; cat $(cat to-npmrc.txt)'
+bash_case 2 "cd in the background before \$(cat)" 'cd sub2 & cat $(cat to-npmrc.txt)'
+bash_case 2 "CDPATH cd before \$(cat)" 'CDPATH=/tmp cd sub2; cat $(cat to-npmrc.txt)'
+# review round 4: a write through a link to the substituted file
+ln -sf list.txt "$PROJ/list-link"
+bash_case 2 "write through a symlink to the list file" "printf '%s\\n' $FH/.npmrc > list-link; cat \$(cat list.txt)"
+bash_case 2 "any named write turns computing off" 'echo x > other.txt; cat $(cat to-npmrc.txt)'
+# review round 6: a skipped credential-word substitution must not shift the
+# match between later words and their substitutions
+printf 'notes.txt\n' > "$PROJ/safe1.txt"
+bash_case 2 "skipped credential-word substitution keeps order" 'echo $(cat safe1.txt)$(echo .npmrc); cat $(cat to-npmrc.txt)'
+bash_case 2 "skipped credential-word redirect keeps order" 'wc -l < $(echo .gem)x; cat $(cat to-npmrc.txt)'
+# review round 7: eval/source can cd; sort and git can run programs
+mkdir -p "$PROJ/r7"
+printf 'cd ..\n' > "$PROJ/r7/s.sh"
+bash_case 2 "eval cd before \$(pwd)" 'eval cd ..; cat $(pwd)/.npmrc' "$PROJ"
+bash_case 2 "source before \$(pwd)" 'source r7/s.sh; cat "$(pwd)/.npmrc"' "$PROJ"
+bash_case 2 "dot-source before git toplevel" '. r7/s.sh; cat "$(git rev-parse --show-toplevel)/.npmrc"' "$PROJ/repo"
+bash_case 2 "sort --compress-program before \$(cat)" 'sort --compress-program=./x list.txt; cat $(cat to-npmrc.txt)'
+bash_case 2 "git diff before \$(cat)" 'git diff; cat $(cat to-npmrc.txt)'
+# review round 8: a function or PATH change replaces the modeled command
+bash_case 2 "ls function before \$(ls)" 'ls() { echo ~/.npmrc; }; grep x $(ls notes.txt)'
+bash_case 2 "cat function before \$(cat)" 'cat() { echo ~/.npmrc; }; grep x $(cat notes.txt)'
+bash_case 2 "date function before \$(date)" 'date() { echo ~/.npmrc; }; grep x $(date)'
+bash_case 2 "PATH change before \$(cat)" 'PATH=./bin:/usr/bin:/bin; grep x $(cat notes.txt) ~/.npmrc'
+bash_case 2 "printf -v PATH before \$(cat)" 'printf -v PATH %s ./bin; grep x $(cat notes.txt) ~/.npmrc'
+# review round 9: sort before head reorders the lines
+printf 'notes.txt\n%s\n' "$FH/.ssh/id_rsa" > "$PROJ/sortme.txt"
+bash_case 2 "sort | head picks a different line" 'cat $(cat sortme.txt | sort | head -1)'
+bash_case 2 "sort -r | tail picks a different line" 'cat $(cat sortme.txt | sort -r | tail -1)'
+bash_case 0 "head -1 alone is exact" 'cat $(cat sortme.txt | head -1)'
+# review round 10: bash expands braces before substitution
+printf 'x}\n' > "$PROJ/close.txt"
+printf '{\n' > "$PROJ/open.txt"
+bash_case 2 "brace word with a computed close brace" 'cat ~/{$(cat close.txt),.npmrc}'
+bash_case 2 "brace word with a computed open brace" 'cat ~/{.npmrc,$(cat open.txt)}'
+bash_case 2 "brace word around a key path" 'cat {$(cat close.txt),~/.ssh/id_rsa}'
+# review round 11: blanks at the edge of the output split the outer word
+printf ' .env\n' > "$PROJ/lead.txt"
+printf '.env \n' > "$PROJ/trail.txt"
+bash_case 2 "leading blank splits off a credential name" 'cat x$(cat lead.txt)'
+bash_case 2 "trailing blank splits off a credential name" 'cat $(cat trail.txt)x'
+bash_case 2 "\$(echo) stays unknown" 'cat $(echo L25wbXJj | base64 -d)'
+bash_case 2 "unknown substitution with a credential tail" 'cat "$(cat title.txt)/.ssh/id_rsa"'
+bash_case 2 "\$(cat ~/.npmrc) inner read" 'grep x $(cat ~/.npmrc)'
+bash_case 2 "process substitution is not computed" 'cat <(cat ~/.npmrc)'
+bash_case 2 "unknown inner command" 'cat $(some-tool --print-path)'
+bash_case 2 "plain home dot read" 'cat ~/.npmrc'
+bash_case 2 "home-anchored wildcard" 'cat $HOME/.n*'
+bash_case 2 "credential-directory wildcard" 'cat ~/.ssh/*'
+bash_case 2 "variable dir with credential tail" 'cat "$X/.aws/credentials"'
+bash_case 2 "project .env through \$(pwd)" 'cat "$(pwd)/.env"'
+
 echo "[7] profile matrix via hook-gate"
 for p in minimal standard strict; do
   for spec in "Read" "Bash"; do
