@@ -808,8 +808,10 @@ function credword(x,  y) {
   return (y ~ /npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh\/hosts|\.env|credentials/)
 }
 function err(m) { print "E\tf-\to-\tx" m; failed = 1 }
-function emit_s(inner) {
-  print "S\tf-\to-\tx" enc(inner)
+function emit_s(inner, kind) {
+  # kind: "w" for $(...) and backticks, "p" for <(...) and >(...). Both put
+  # one \001 into the current word, in token order (see SUBQ in analyze_cmd).
+  print "S\tf" kind "\to-\tx" enc(inner)
   w = w "\001"; ws = 1; fs_ = fs_ "s"
   if (credword(inner)) fs_ = fs_ "c"
 }
@@ -875,13 +877,13 @@ function sub_dollar_paren(j,  k, inner) {
   if (!k) { err("unterminated $("); return n + 1 }
   inner = substr(s, j + 2, k - j - 2)
   if (substr(inner, 1, 1) == "(") inner = substr(inner, 2, length(inner) - 2)
-  emit_s(inner)
+  emit_s(inner, "w")
   return k + 1
 }
 function sub_backtick(j,  k) {
   k = find_bt(j + 1)
   if (!k) { err("unterminated backtick"); return n + 1 }
-  emit_s(substr(s, j + 1, k - j - 1))
+  emit_s(substr(s, j + 1, k - j - 1), "w")
   return k + 1
 }
 # read_var(j): a[j] == "$"; appends the variable reference text; returns next index.
@@ -1021,7 +1023,7 @@ END {
     if ((c == "<" || c == ">") && a[i + 1] == "(") {
       k = find_close(i + 2)
       if (!k) { err("unterminated process substitution"); break }
-      emit_s(substr(s, i + 2, k - i - 2))
+      emit_s(substr(s, i + 2, k - i - 2), "p")
       i = k + 1; continue
     }
     if (c == "<") {
@@ -1218,6 +1220,321 @@ check_pattern() {
       fi
       ;;
   esac
+}
+
+# prescan <text> <depth>: one pass over the whole command, nested scripts
+# included, before any check. eval_subst reads files at check time, so it
+# must know whether anything in the command can change them first:
+# SUBST_IMPURE=1 when a command outside a small read-only set runs anywhere,
+# or a write goes to a target the guard cannot name; SUBST_WRITES holds the
+# basenames of named write targets.
+SUBST_IMPURE=0
+SUBST_WRITES=" "
+# 1 when the command changes directory anywhere. The guard does not model
+# subshells, pipelines, & or && / || branches, so it cannot know which
+# directory a substitution runs in.
+SUBST_CD=0
+prescan() {
+  local text="$1" depth="$2" toks t fl op tx first=1 name="" sub=""
+  [ "$depth" -le 6 ] || { SUBST_IMPURE=1; return; }
+  toks=$(printf '%s' "$text" | LC_ALL=C awk "$AWK_PROG") || { SUBST_IMPURE=1; return; }
+  while IFS=$'\t' read -r t fl op tx; do
+    fl="${fl#f}"; op="${op#o}"; tx="${tx#x}"
+    case "$t" in
+      E) SUBST_IMPURE=1 ;;
+      S) prescan "${tx//$'\003'/$'\n'}" $((depth + 1)) ;;
+      O) first=1; name="" ;;
+      R)
+        case "$op" in
+          '>'|'>>'|'>|'|'&>'|'&>>'|'<>')
+            case "$tx" in
+              /dev/null|/dev/stderr|/dev/stdout) ;;
+              *[\$\`$'\001']*|'') SUBST_IMPURE=1 ;;
+              # Any named write can reach the file through a link, so it counts
+              # as a change too (SUBST_WRITES is kept for the messages).
+              *) SUBST_WRITES="$SUBST_WRITES${tx##*/} "; SUBST_IMPURE=1 ;;
+            esac
+            ;;
+          '>&') case "$tx" in [0-9]|-) ;; *) SUBST_IMPURE=1 ;; esac ;;
+        esac
+        ;;
+      W)
+        if [ "$first" -eq 1 ]; then
+          case "$fl" in *s*|*v*) SUBST_IMPURE=1; first=0; continue ;; esac
+          case "$tx" in
+            [A-Za-z_]*=*) continue ;;
+            if|then|else|elif|fi|do|done|while|until|'!'|'{'|'}'|time) continue ;;
+          esac
+          first=0
+          name="${tx##*/}"
+          case "$name" in cd|pushd|popd) SUBST_CD=1 ;; esac
+          case "$name" in
+            cat|head|tail|ls|grep|egrep|fgrep|wc|echo|printf|pwd|date|sort|cut|tr|test|'['|'[['|true|false|cd|basename|dirname|jq|stat|realpath|readlink|diff|cmp|column|nl|fold|expand|seq|mktemp) ;;
+            git) sub=1 ;;
+            *) SUBST_IMPURE=1 ;;
+          esac
+        elif [ "$name" = "git" ] && [ "$sub" = 1 ]; then
+          sub=""
+          # Other subcommands can run configured programs (diff drivers,
+          # textconv, fsmonitor).
+          case "$tx" in rev-parse) ;; *) SUBST_IMPURE=1 ;; esac
+        else
+          # An option that writes a file or runs a program, on any command.
+          case "$tx" in --output*|--out-file*|--pre*|--exec*|--ext-diff*|--textconv*) SUBST_IMPURE=1 ;; esac
+          case "$name" in
+            # Short-option clusters: sort -uo FILE writes FILE.
+            sort) case "$tx" in --*) SUBST_IMPURE=1 ;; -*o*|-*T*) SUBST_IMPURE=1 ;; esac ;;
+            git) case "$tx" in --*) ;; -*o*|-*O*) SUBST_IMPURE=1 ;; esac ;;
+          esac
+        fi
+        ;;
+    esac
+  done <<< "$toks"
+}
+
+# eval_subst <inner script> <cwd> -> SUBST_OUT, return 0 when the guard can
+# compute what the substitution prints without running the payload
+# (feedback 10e92984). Before this, every $(...) or backtick operand became a
+# wildcard that matched home-dir dot files (pattern /*) or was blocked as
+# unprovable, so `grep x $(cat list.txt)` and handoff reads were blocked.
+# Only these inner forms are computed; everything else keeps the old
+# fail-closed handling:
+#   cat FILE | head [-n N|-N] FILE | tail [-n N|-N] FILE   (file read here)
+#   ls [-1|-d|-1d] ARG...       (ARG literal or glob; expanded here)
+#   pwd | git rev-parse --show-toplevel | date [+FMT]
+# optionally followed by `| head [-n N|-N]`, `| tail [-n N|-N]`, `| sort [-r|-u]`.
+# The inner script has already been checked as a command of its own, so a
+# credential FILE was blocked before this runs.
+SUBST_OUT=""
+CWD_UNCERTAIN=0
+subst_count_opt() { # <word> [<next>] -> SC_N, SC_USED (1 or 2); 1 if not a count
+  SC_USED=1
+  case "$1" in
+    -n) [[ "${2:-}" =~ ^[0-9]{1,6}$ ]] || return 1; SC_N="$2"; SC_USED=2 ;;
+    -n[0-9]*) [[ "${1#-n}" =~ ^[0-9]{1,6}$ ]] || return 1; SC_N="${1#-n}" ;;
+    -[0-9]*) [[ "${1#-}" =~ ^[0-9]{1,6}$ ]] || return 1; SC_N="${1#-}" ;;
+    *) return 1 ;;
+  esac
+}
+subst_read_file() { # <literal path> <cwd> -> NP (regular, small, not a credential)
+  case "$1" in ''|-*|*'*'*|*'?'*|*'['*|'~'*) return 1 ;; esac
+  case "$1" in /*) ;; *) [ "$CWD_UNCERTAIN" -eq 0 ] || return 1 ;; esac
+  norm_path "$1" "$2"
+  [ -f "$NP" ] && [ -r "$NP" ] || return 1
+  is_cred_path "$NP" && return 1
+  if [ -n "$REALPATH_BIN" ]; then
+    local rp
+    rp=$("$REALPATH_BIN" "$NP" 2>/dev/null) || return 1
+    is_cred_path "$rp" && return 1
+  elif [ -L "$NP" ]; then
+    return 1
+  fi
+  local sz
+  sz=$(wc -c < "$NP" 2>/dev/null | tr -d ' ') || return 1
+  [ -n "$sz" ] && [ "$sz" -le 65536 ] || return 1
+}
+# subst_unchanged <path>: nothing in the command can rewrite the file before
+# the substitution reads it (prescan).
+subst_unchanged() {
+  [ "$SUBST_IMPURE" -eq 0 ] || return 1
+  case "$SUBST_WRITES" in *" ${1##*/} "*) return 1 ;; esac
+}
+eval_subst() {
+  # Anything outside the read-only set (eval, source, a program) can change
+  # files or the directory first, so nothing is computed.
+  [ "$SUBST_IMPURE" -eq 0 ] || return 1
+  local CWD_UNCERTAIN="$CWD_UNCERTAIN"
+  [ "$SUBST_CD" -eq 0 ] || CWD_UNCERTAIN=1
+  case "$STRIPPED" in *CDPATH*|*cdpath*) CWD_UNCERTAIN=1 ;; esac
+  local s="$1" cwd="$2" out="" w=() st i k n listed=0
+  SUBST_OUT=""
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  case "$s" in
+    ''|*[\$\`\;\&\(\)\<\>\\\"\'\{\}\#\!]*|*$'\n'*|*$'\r'*|*'||'*|*'|') return 1 ;;
+  esac
+  # A shell option can change how the substitution's globs expand.
+  # IFS changes how the output splits into words.
+  case "$STRIPPED" in *shopt*|*setopt*|*glob*|*GLOB*|*'set -'*|*'set +'*|*IFS*|*ifs*) return 1 ;; esac
+  # A function or a PATH change can replace the command the guard models.
+  case "$STRIPPED" in *'('*')'*'{'*|*function*|*PATH*|*path=*|*BASH_FUNC*|*enable*|*hash*) return 1 ;; esac
+  local stages=() old_ifs="$IFS"
+  IFS='|'
+  read -r -a stages <<< "$s"
+  IFS="$old_ifs"
+  [ ${#stages[@]} -ge 1 ] && [ ${#stages[@]} -le 4 ] || return 1
+  read -r -a w <<< "${stages[0]}"
+  [ ${#w[@]} -ge 1 ] || return 1
+  case "${w[0]}" in
+    pwd)
+      [ ${#w[@]} -eq 1 ] && [ "$CWD_UNCERTAIN" -eq 0 ] || return 1
+      out="$cwd"
+      ;;
+    git)
+      [ "${w[*]}" = "git rev-parse --show-toplevel" ] && [ "$CWD_UNCERTAIN" -eq 0 ] || return 1
+      [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] || return 1
+      local d="$cwd"
+      while [ -n "$d" ] && [ ! -e "$d/.git" ]; do
+        [ "$d" = "/" ] && return 1
+        d="${d%/*}"; [ -n "$d" ] || d="/"
+      done
+      [ -e "$d/.git" ] || return 1
+      out="$d"
+      ;;
+    date)
+      if [ ${#w[@]} -eq 1 ]; then
+        out=$(LC_ALL=C date 2>/dev/null) || return 1
+      else
+        [ ${#w[@]} -eq 2 ] || return 1
+        # Digits, separators and numeric fields only: no "/" and no ".",
+        # so the output cannot spell a path segment or a dot-file name.
+        [[ "${w[1]}" =~ ^\+([-_:T0-9]|%[YmdHMSFjyesuT])+$ ]] || return 1
+        out=$(LC_ALL=C date "${w[1]}" 2>/dev/null) || return 1
+      fi
+      ;;
+    cat)
+      [ ${#w[@]} -eq 2 ] || return 1
+      subst_read_file "${w[1]}" "$cwd" || return 1
+      subst_unchanged "$NP" || return 1
+      out=$(LC_ALL=C tr -d '\000' < "$NP") || return 1
+      ;;
+    head|tail)
+      local f="" cnt=10
+      i=1
+      if [ ${#w[@]} -gt 2 ]; then
+        subst_count_opt "${w[1]}" "${w[2]:-}" || return 1
+        cnt="$SC_N"; i=$((1 + SC_USED))
+      fi
+      [ $((i + 1)) -eq ${#w[@]} ] || return 1
+      f="${w[$i]}"
+      subst_read_file "$f" "$cwd" || return 1
+      subst_unchanged "$NP" || return 1
+      out=$(LC_ALL=C tr -d '\000' < "$NP" | "${w[0]}" -n "$cnt") || return 1
+      ;;
+    ls)
+      [ "$SUBST_IMPURE" -eq 0 ] && [ "$SUBST_WRITES" = " " ] || return 1
+      case "$cwd" in *'*'*|*'?'*|*'['*) return 1 ;; esac
+      local dirok=0 arg pat prefix m matches=() cntm=0
+      for ((i = 1; i < ${#w[@]}; i++)); do
+        arg="${w[$i]}"
+        case "$arg" in
+          -1) continue ;;
+          -d|-1d|-d1) dirok=1; continue ;;
+          -*|'~'*|*'['*) return 1 ;;
+        esac
+        case "$arg" in /*) prefix="" ; pat="$arg" ;; *) [ "$CWD_UNCERTAIN" -eq 0 ] || return 1; prefix="$cwd/"; pat="$cwd/$arg" ;; esac
+        case "$arg" in
+          *'*'*|*'?'*)
+            shopt -s nullglob
+            IFS=
+            # shellcheck disable=SC2206 # glob expansion is the point.
+            matches=($pat)
+            IFS="$old_ifs"
+            shopt -u nullglob
+            ;;
+          *) matches=("$pat") ;;
+        esac
+        for m in ${matches[@]+"${matches[@]}"}; do
+          [ -e "$m" ] || [ -L "$m" ] || continue
+          if [ -d "$m" ] && [ $dirok -eq 0 ]; then return 1; fi
+          cntm=$((cntm + 1)); [ $cntm -le 256 ] || return 1
+          out="$out${m#"$prefix"}"$'\n'
+        done
+      done
+      [ $cntm -gt 0 ] || return 1
+      out="${out%$'\n'}"
+      listed=1
+      ;;
+    *) return 1 ;;
+  esac
+  for ((k = 1; k < ${#stages[@]}; k++)); do
+    read -r -a w <<< "${stages[$k]}"
+    [ ${#w[@]} -ge 1 ] || return 1
+    case "${w[0]}" in
+      head|tail)
+        local cnt=10
+        if [ ${#w[@]} -gt 1 ]; then
+          subst_count_opt "${w[1]}" "${w[2]:-}" || return 1
+          [ $((1 + SC_USED)) -eq ${#w[@]} ] || return 1
+          cnt="$SC_N"
+        fi
+        # ls order can differ from the guard's glob order, so a filter over
+        # a listing keeps every line (a superset); other outputs are exact.
+        [ $listed -eq 1 ] || out=$(printf '%s\n' "$out" | "${w[0]}" -n "$cnt")
+        ;;
+      sort)
+        [ ${#w[@]} -eq 1 ] || { [ ${#w[@]} -eq 2 ] && case "${w[1]}" in -r|-u) true ;; *) false ;; esac; } || return 1
+        # Not applied here, so a later head or tail keeps every line.
+        listed=1
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  # Output words must be plain: no option-like words, wildcards, or the
+  # guard's own marker bytes.
+  local ow=()
+  read -r -d '' -a ow <<< "$out" || true
+  [ ${#ow[@]} -ge 1 ] && [ ${#ow[@]} -le 256 ] || return 1
+  for m in "${ow[@]}"; do
+    case "$m" in -*|*'*'*|*'?'*|*'['*|*'{'*|*'}'*|*,*|*[$'\001'-$'\006']*) return 1 ;; esac
+  done
+  SUBST_OUT="$out"
+}
+
+# subst_word <text> -> SW (the words that stand for the text after
+# substitution), SW_LEFT (1 when a substitution stayed unknown, and SW is
+# then the text unchanged). Consumes one SUBQ entry per \001 in the text,
+# from SUBQ_I. SW holds the exact unquoted split first; when an output has
+# several words, the quoted reading (one word with the whitespace kept)
+# follows as an extra operand, so both readings are checked.
+# subq_skip <text>: a word whose substitutions are not computed still uses
+# up one SUBQ entry per \001, so later words stay matched to their own
+# substitution.
+subq_skip() {
+  local r="$1"
+  while :; do
+    case "$r" in *$'\001'*) ;; *) break ;; esac
+    r="${r#*$'\001'}"
+    SUBQ_I=$((SUBQ_I + 1))
+  done
+}
+SW=()
+SW_LEFT=0
+subst_word() {
+  local text="$1" pre cur rest j q="" multi=0 kind inner
+  local outw=()
+  SW_LEFT=0
+  SW=()
+  cur=""
+  rest="$text"
+  while :; do
+    case "$rest" in *$'\001'*) ;; *) break ;; esac
+    pre="${rest%%$'\001'*}"
+    rest="${rest#*$'\001'}"
+    kind="${SUBQK[$SUBQ_I]:-}"
+    inner="${SUBQ[$SUBQ_I]:-}"
+    SUBQ_I=$((SUBQ_I + 1))
+    if [ "$SW_LEFT" -eq 1 ] || [ "$kind" != "w" ] || ! eval_subst "$inner" "$CUR_CWD"; then
+      SW_LEFT=1
+      continue
+    fi
+    # Leading or trailing blanks end the outer word in bash; not modeled.
+    case "$SUBST_OUT" in [[:space:]]*|*[[:space:]]) SW_LEFT=1; continue ;; esac
+    outw=()
+    read -r -d '' -a outw <<< "$SUBST_OUT" || true
+    q="$q$pre$SUBST_OUT"
+    if [ ${#outw[@]} -eq 1 ]; then
+      cur="$cur$pre${outw[0]}"
+    else
+      multi=1
+      SW+=("$cur$pre${outw[0]}")
+      for ((j = 1; j < ${#outw[@]} - 1; j++)); do SW+=("${outw[$j]}"); done
+      cur="${outw[$((${#outw[@]} - 1))]}"
+    fi
+  done
+  SW+=("$cur$rest")
+  [ "$multi" -eq 0 ] || SW+=("$q$rest")
+  if [ "$SW_LEFT" -eq 1 ]; then SW=("$text"); fi
 }
 
 # check_word <text> <flags> <cwd>: an operand that the command reads.
@@ -2025,16 +2342,22 @@ analyze_simple() {
   local cmd
   lc_word "${cw0##*/}"
   cmd="$LCW"
+  [ "$cmd" != "popd" ] || CWD_UNCERTAIN=1
   case "$cmd" in
     cd|pushd)
       local target=""
       for ((k = a; k < e; k++)); do
         case "${CW[$k]}" in -?*) continue ;; esac
         target="${CW[$k]}"; resolve_dir "$target" "${CF[$k]}" "$CUR_CWD"
-        [ -n "$NP" ] && CUR_CWD="$NP"
+        # An unresolved or history target (cd -, cd $X) leaves the working
+        # directory unknown, so substitutions with relative paths are no
+        # longer computed (eval_subst).
+        if [ -n "$NP" ] && [ "$target" != "-" ]; then CUR_CWD="$NP"; else CWD_UNCERTAIN=1; fi
         break
       done
-      [ -n "$target" ] || CUR_CWD="$H"
+      if [ -z "$target" ]; then
+        if [ "$a" -lt "$e" ]; then CWD_UNCERTAIN=1; else CUR_CWD="$H"; fi
+      fi
       return 0
       ;;
     bash|sh|zsh|dash|ksh)
@@ -2225,6 +2548,9 @@ analyze_cmd() {
   toks=$(printf '%s' "$text" | LC_ALL=C awk "$AWK_PROG") \
     || block "credential guard could not parse the command"
   local T=() F=() O=() X=() HB=()
+  # Substitutions that put a \001 into a word, in token order (SUBQK: w or p).
+  local SUBQ=() SUBQK=() SUBQ_I=0
+  local CWD_UNCERTAIN="$CWD_UNCERTAIN"
   local t fl op tx hb_next=0 pipe_text=""
   while IFS=$'\t' read -r t fl op tx; do
     [ -n "$t" ] || continue
@@ -2238,6 +2564,9 @@ analyze_cmd() {
         ;;
       S)
         analyze_cmd "${X[$i]//$'\003'/$'\n'}" $((depth + 1)) "$CUR_CWD"
+        case "${F[$i]}" in
+          w|p) SUBQ+=("${X[$i]//$'\003'/$'\n'}"); SUBQK+=("${F[$i]}") ;;
+        esac
         ;;
       H)
         HB+=("${X[$i]//$'\003'/$'\n'}")
@@ -2260,8 +2589,37 @@ analyze_cmd() {
     local rt=() rf=() rx=()
     for ((i = ${starts[$c]}; i < ${ends[$c]}; i++)); do
       case "${T[$i]}" in
-        W) CW+=("${X[$i]//$'\003'/$'\n'}"); CF+=("${F[$i]}") ;;
-        R) rt+=("${O[$i]}"); rf+=("${F[$i]}"); rx+=("${X[$i]//$'\003'/$'\n'}") ;;
+        W)
+          tx="${X[$i]//$'\003'/$'\n'}"
+          case "${F[$i]}" in
+            *c*|*b*) subq_skip "$tx" ;;
+            *s*)
+              # A substitution the guard can compute is replaced by its output.
+              subst_word "$tx"
+              if [ "$SW_LEFT" -eq 0 ]; then
+                local swf="${F[$i]//s/}" sww
+                for sww in "${SW[@]}"; do CW+=("$sww"); CF+=("${swf:--}"); done
+                continue
+              fi
+              ;;
+          esac
+          CW+=("$tx"); CF+=("${F[$i]}")
+          ;;
+        R)
+          tx="${X[$i]//$'\003'/$'\n'}"
+          case "${F[$i]}" in
+            *c*|*b*) subq_skip "$tx" ;;
+            *s*)
+              subst_word "$tx"
+              if [ "$SW_LEFT" -eq 0 ] && [ ${#SW[@]} -eq 1 ]; then
+                local srf="${F[$i]//s/}"
+                rt+=("${O[$i]}"); rf+=("${srf:--}"); rx+=("${SW[0]}")
+                continue
+              fi
+              ;;
+          esac
+          rt+=("${O[$i]}"); rf+=("${F[$i]}"); rx+=("$tx")
+          ;;
       esac
     done
     # Standard input for this command: a heredoc or herestring, or text that
@@ -2308,5 +2666,6 @@ analyze_cmd() {
   [ "$depth" -eq 0 ] || CUR_CWD="$saved_cwd"
 }
 
+case "$CMD" in *'$('*|*'`'*) prescan "$CMD" 0 ;; esac
 analyze_cmd "$CMD" 0 "$PAYLOAD_CWD"
 exit 0

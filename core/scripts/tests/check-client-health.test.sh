@@ -113,6 +113,10 @@ make_hq_stub() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HQ_STUB_LOG"
 case "$1" in
+  --version)
+    [ -n "${HQ_STUB_VERSION:-}" ] && printf '%s\n' "$HQ_STUB_VERSION"
+    exit 0
+    ;;
   doctor)
     case "$*" in
       *--client-health-sentry*)
@@ -1753,6 +1757,63 @@ for variant in garbage set-only future extra-line; do
     && ok "corrupt ledger ($variant) is replaced by a valid record" \
     || bad "corrupt ledger ($variant) is replaced by a valid record" "ledger [$(cat "$L33" 2>/dev/null)]"
 done
+
+echo "== --fix pull outcomes and outdated hq-cli in the report (feedback cd56a501) =="
+FIX_OUTCOMES="$TMP/fix-outcomes.json"
+cat > "$FIX_OUTCOMES" <<'JSON'
+{ "refreshSync": [
+    { "checkId": "sync.journal.stale", "outcome": "pull-timeout" },
+    { "checkId": "sync.journal.__hq_personal_vault__", "outcome": "pull-failed:lock-busy" },
+    { "checkId": "sync.journal.other", "outcome": "pull-failed:/Users/jane/secret" },
+    { "checkId": "sync.vault.missing", "outcome": "pull-failed:4xx" }
+] }
+JSON
+R40="$TMP/fix-outcomes-root"
+build_root "$R40"
+REM_STATE="$TMP/rem-fix-outcomes"
+mkdir -p "$REM_STATE"
+export HQ_STUB_VERSION="5.345.150"
+run_remediate "$R40" "-" "$DOCTOR_DEGRADED" "$FIX_OUTCOMES"
+unset HQ_STUB_VERSION
+BODY40=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+grep -Fq -- "- sync.journal.stale (--fix pull: timeout)" <<<"$BODY40" \
+  && ok "a timed-out --fix pull is named per journal" \
+  || bad "a timed-out --fix pull is named per journal" "body: $BODY40"
+! grep -Fq -- "/Users/jane" <<<"$BODY40" && ! grep -Fq -- "sync.vault.missing (--fix" <<<"$BODY40" \
+  && ok "unknown outcome values and non-journal ids never reach the report" \
+  || bad "unknown outcome values and non-journal ids never reach the report" "body: $BODY40"
+grep -Fq -- "hq-cli 5.345.150 is older than 5.345.159" <<<"$BODY40" \
+  && ok "an outdated hq-cli is named in the report" \
+  || bad "an outdated hq-cli is named in the report" "body: $BODY40"
+[ "$(cat "$R40/workspace/.hq-client-health/cli-outdated.pending" 2>/dev/null)" = "5.345.150" ] \
+  && ok "an outdated hq-cli queues a one-time update notice" \
+  || bad "an outdated hq-cli queues a one-time update notice" "pending missing"
+run_hook "$R40"
+grep -Fq -- "npm install -g @indigoai-us/hq-cli@latest" <<<"$HOOK_OUT" \
+  && grep -Fq -- "hq-cli 5.345.150 is older than 5.345.159" <<<"$HOOK_OUT" \
+  && ok "the next session start shows the update command" \
+  || bad "the next session start shows the update command" "out: $HOOK_OUT"
+run_hook "$R40"
+! grep -Fq -- "npm install -g @indigoai-us/hq-cli@latest" <<<"$HOOK_OUT" \
+  && ok "the update notice is shown only once" \
+  || bad "the update notice is shown only once" "out: $HOOK_OUT"
+
+R41="$TMP/fix-outcomes-current-root"
+build_root "$R41"
+REM_STATE="$TMP/rem-fix-outcomes-current"
+mkdir -p "$REM_STATE"
+FIX_OUTCOMES_LOCK="$TMP/fix-outcomes-lock.json"
+printf '%s\n' '{ "refreshSync": [ { "checkId": "sync.journal.stale", "outcome": "pull-failed:lock-busy" } ] }' > "$FIX_OUTCOMES_LOCK"
+export HQ_STUB_VERSION="5.345.159"
+run_remediate "$R41" "-" "$DOCTOR_DEGRADED" "$FIX_OUTCOMES_LOCK"
+unset HQ_STUB_VERSION
+BODY41=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+! grep -Fq -- "is older than" <<<"$BODY41" && [ ! -f "$R41/workspace/.hq-client-health/cli-outdated.pending" ] \
+  && ok "a current hq-cli gets no update nudge" \
+  || bad "a current hq-cli gets no update nudge" "body: $BODY41"
+grep -Fq -- "- sync.journal.stale (--fix pull: lock-busy)" <<<"$BODY41" \
+  && ok "a lock-busy --fix pull is named per journal" \
+  || bad "a lock-busy --fix pull is named per journal" "body: $BODY41"
 
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="
