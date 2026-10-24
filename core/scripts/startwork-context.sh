@@ -13,6 +13,10 @@
 #       {"company":"","candidates":[...]} and exits 3 when nothing matches.
 #   core/scripts/startwork-context.sh block --company <slug> [--project <name>]
 #       Prints the <startwork-context> block.
+#   core/scripts/startwork-context.sh edit-target --repo <name|repos/...> [--name <slug>]
+#       Prints the worktree command to run before editing that repo. Write and
+#       Edit are blocked under repos/, so work starts in workspace/worktrees/.
+#       Exits 3 when the repo is not under repos/private or repos/public.
 #   core/scripts/startwork-context.sh orient --company <slug> --session-id <id>
 #       [--mode Company|Project|Repo|Task|Resume] [--project <name>]
 #       Trusted bind (company, optional project, mode) for the caller's own
@@ -301,7 +305,42 @@ cmd_block() {
   printf '</startwork-context>\n'
 }
 
+cmd_edit_target() {
+  local repo="" name=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --name) name="${2:-}"; shift 2 ;;
+      *) die "edit-target: unknown option $1" ;;
+    esac
+  done
+  [ -n "$repo" ] || die "edit-target: --repo is required"
+  repo="${repo%/}"; repo="${repo#"$ROOT"/}"
+  local rel=""
+  case "$repo" in
+    # Exactly repos/{private,public}/<repo>: a subdirectory would name the
+    # worktree after the subdirectory and point --source inside the repo.
+    repos/private/*/*|repos/public/*/*) rel="" ;;
+    repos/private/*|repos/public/*) rel="$repo" ;;
+    */*) rel="" ;;
+    *) for d in private public; do [ -d "$ROOT/repos/$d/$repo" ] && { rel="repos/$d/$repo"; break; }; done ;;
+  esac
+  case "$rel" in *..*) rel="" ;; esac
+  if [ -z "$rel" ] || [ ! -d "$ROOT/$rel" ]; then
+    printf 'Edit target: %s not found under repos/private or repos/public\n' "$repo"; return 3
+  fi
+  local base; base="$(basename "$rel")"
+  [ -n "$name" ] || name="$base-work"
+  valid_slug "$name" || die "edit-target: --name must be a kebab-case slug"
+  printf 'Edit target: %s is a source checkout; Write/Edit there is blocked, and a branch made in place has to be undone.\n' "$rel"
+  # Same entry point the worktree skill documents. --source is shell-quoted
+  # so a repo directory with a space still pastes as one argument.
+  printf 'Before any edit run from the HQ root (%s): bash .claude/skills/worktree/worktree.sh --name %s --source %q\n' "$ROOT" "$name" "$rel"
+  printf 'Then work in: workspace/worktrees/%s/%s/\n' "$base" "$name"
+}
+
 case "${1:-}" in
+  edit-target) shift; cmd_edit_target "$@" ;;
   resolve) shift; cmd_resolve "$@" ;;
   block) shift; cmd_block "$@" ;;
   orient) shift; cmd_orient "$@" ;;

@@ -88,6 +88,9 @@ subscription.
 
 An outpost is an add-on with its own flat monthly price.
 
+Existing $80 Outposts move to the Outpost price for their size at the usage
+switch on December 19, 2026: $100 small, $200 medium, $400 large, $800 xlarge.
+
 ## Trials
 
 On the usage card, see the trial above. On the legacy plans, an eligible Starter company can take a free-month offer once. The Workforce

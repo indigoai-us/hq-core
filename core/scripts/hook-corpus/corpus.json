@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "d915a2ad2566e59e836262af485da2a922196945fcfdc68d7294bb8a82bef421",
+  "registry_sha256": "e69cfa8cb6ee8bee38e8f054b8967ff08b39a928230d01dff2eba6e1fa16b377",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -3784,7 +3784,7 @@
                 {
                   "id": "block-credential-file-read",
                   "script": ".claude/hooks/block-credential-file-read.sh",
-                  "timeout": 30,
+                  "timeout": 60,
                   "gated": false,
                   "fail_closed": true,
                   "runner": "exec"
@@ -3825,7 +3825,7 @@
                 {
                   "id": "block-credential-file-read",
                   "script": ".claude/hooks/block-credential-file-read.sh",
-                  "timeout": 30,
+                  "timeout": 60,
                   "gated": false,
                   "fail_closed": true,
                   "runner": "exec"
@@ -3867,7 +3867,7 @@
                 {
                   "id": "block-credential-file-read",
                   "script": ".claude/hooks/block-credential-file-read.sh",
-                  "timeout": 30,
+                  "timeout": 60,
                   "gated": false,
                   "fail_closed": true,
                   "runner": "exec"
@@ -3908,7 +3908,7 @@
                 {
                   "id": "block-credential-file-read",
                   "script": ".claude/hooks/block-credential-file-read.sh",
-                  "timeout": 30,
+                  "timeout": 60,
                   "gated": false,
                   "fail_closed": true,
                   "runner": "exec"

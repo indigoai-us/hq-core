@@ -192,4 +192,27 @@ set +e; out="$(run resolve --arg zzz)"; rc=$?; set -e
 [ "$out" = '{"company":"","candidates":[]}' ] || fail "miss payload: $out"
 echo "  ok"
 
+echo "edit-target: prints the worktree command before work starts (feedback 9b51f5f3)"
+mkdir -p "$FIX/repos/private/acme-site" "$FIX/repos/public/acme-cli"
+out="$(run edit-target --repo acme-site)"
+grep -qxF "Before any edit run from the HQ root ($FIX): bash .claude/skills/worktree/worktree.sh --name acme-site-work --source repos/private/acme-site" <<<"$out" || fail "edit-target command wrong: $out"
+grep -qx 'Then work in: workspace/worktrees/acme-site/acme-site-work/' <<<"$out" || fail "edit-target path wrong: $out"
+out="$(run edit-target --repo "$FIX/repos/public/acme-cli/" --name fix-login)"
+grep -qxF "Before any edit run from the HQ root ($FIX): bash .claude/skills/worktree/worktree.sh --name fix-login --source repos/public/acme-cli" <<<"$out" || fail "edit-target absolute path wrong: $out"
+set +e; run edit-target --repo nosuch >/dev/null; rc=$?; run edit-target --repo "repos/private/$(printf '.%.0s' 1 2)/x" >/dev/null; rc2=$?; set -e
+[ "$rc" -eq 3 ] || fail "missing repo should exit 3 (got $rc)"
+[ "$rc2" -eq 3 ] || fail "dot-dot repo should exit 3 (got $rc2)"
+run edit-target --repo acme-site --name 'Bad Name' >/dev/null 2>&1 && fail "bad --name accepted"
+# Review on #1510: a repo directory with a space prints a quoted --source.
+mkdir -p "$FIX/repos/private/acme web"
+out="$(run edit-target --repo 'acme web' --name acme-web)"
+grep -qxF "Before any edit run from the HQ root ($FIX): bash .claude/skills/worktree/worktree.sh --name acme-web --source repos/private/acme\\ web" <<<"$out" || fail "edit-target --source not quoted: $out"
+# Review on #1510: a subdirectory under a repo is not an edit target.
+mkdir -p "$FIX/repos/private/acme-site/sub"
+set +e; run edit-target --repo repos/private/acme-site/sub >/dev/null; rc3=$?; set -e
+[ "$rc3" -eq 3 ] || fail "repo subdirectory should exit 3 (got $rc3)"
+SKILL="$HERE/../../../.claude/skills/startwork/SKILL.md"
+[ "$(grep -c 'startwork-context.sh edit-target --repo' "$SKILL")" -ge 3 ] || fail "startwork SKILL.md must run edit-target in company, project and repo mode"
+echo "  ok"
+
 echo "startwork-context: all checks passed"

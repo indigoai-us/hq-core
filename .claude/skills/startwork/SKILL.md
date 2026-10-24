@@ -188,6 +188,7 @@ keep that title and make no title call.
    Summarize the company totals from the Board line.
 4. If the block's Integrations line reads "not cached", run `bash core/scripts/usable-integrations.sh show --company {co}` once. That is the only network call startwork may make, and it is skipped when the cache is fresh
 5. Git state only for a repo the user named (or the `via: repo` resolution in §1.1): `git -C {repo} branch --show-current` and `git -C {repo} log --oneline -3`
+6. For that same repo, run `bash core/scripts/startwork-context.sh edit-target --repo "{repo}"` and show its lines in the orientation block (see "Edit target" below).
 #### Project Mode (arg = project name)
 
 Board status comes from the work mesh, never local prd.passes. If ground/check and the project-view cache both fail, then and only then use local prd for description — still not as live Board columns.
@@ -195,7 +196,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 1. Resolve the project dir (`personal/projects/{name}` or `companies/{co}/projects/{name}`); when the path is under `companies/{co}`, bind that company now. Read `prd.json` only for `name`, `description`, `branchName`, and acceptance text — not story status.
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos if the project path did not identify it (`bash core/scripts/startwork-context.sh resolve --arg "{repo basename}"`). Bind the resolved company before continuing.
 2b. Once `{co}` is known, bind and render in one call: `bash core/scripts/startwork-context.sh orient --company "{co}" --mode Project --project "{name}"` (this is the §1.2 bind; do not run it twice). The block's last line carries the project goal and branch; the rest is the company context from Company Mode step 1. When the fast path already bound `{co}` and only the project is new, run `bash core/scripts/startwork-context.sh block --company "{co}" --project "{name}"` and record the project with §2.4.
-3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`
+3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`, then `bash core/scripts/startwork-context.sh edit-target --repo "{repoPath}"` for the orientation block's "Edit target" lines
 4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
    - `queued` = available next work
    - `in_progress` / `review` = already claimed; do not offer as free next work
@@ -228,6 +229,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 1. Resolve full path: check `repos/private/{arg}` then `repos/public/{arg}`
 2. Owning company: scan `companies/manifest.yaml` for a company whose `repos:` list contains this path, then bind it before repository commands
 3. Git state: `git -C {repoPath} branch --show-current`, `git -C {repoPath} log --oneline -5`, `git -C {repoPath} status --short`
+3b. Edit target: `bash core/scripts/startwork-context.sh edit-target --repo "{repoPath}"`. Show its lines in the orientation block. Write and Edit are blocked under `repos/`, so do not create a branch in the main checkout; run the printed `worktree.sh` command before the first edit.
 4. Related projects:
    - Primary: `qmd search "{repo-name} prd.json" --json -n 10` via shell
    - Fallback: use Grep to find prd.json files referencing this repo
@@ -318,6 +320,7 @@ Session Start
 {If resume: "Last session: {summary}" + "Next steps: {next_steps with status: open}" + "Still open from earlier handoffs: {bash core/scripts/handoff-open-steps.sh list --limit 10, excluding this thread}"; any delegation manifest under workspace/delegations/ still at status `sent` gets `bash core/scripts/hq-delegate-pickup.sh --manifest <m> --check` and its result shown as verified / waiting / FAILED}
 {If project: "Goal: {description}" + "Branch: {branchName}"}
 {If repo: "Repo: {repoPath}" + "Company: {slug}" + "Branch: {branch}"}
+{If a repo was resolved (Repo mode, `via: repo`, or a project repoPath): the `edit-target` lines verbatim, so the worktree command is on screen before any work starts}
 {If task: "Task: {description}" + "Intent: {classified_intent}" + "Pipeline: {worker count} workers"}
 
 Git: {branch} @ {short-hash} {" (dirty)" if dirty}

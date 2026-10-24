@@ -175,6 +175,8 @@ DM_COUNT="$(grep -c '^dm ' "$INVOKE_LOG")"
 [ "$DM_COUNT" -eq 1 ] || fail "expected exactly one hq dm invocation, got $DM_COUNT"
 grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--prompt-file' \
   || fail "dm must use --prompt-file"
+grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--audience both' \
+  || fail "dm must send --audience both: the pickup DM is for the person and their agent, and hq dm defaults to agent-only"
 grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--details-file' \
   || fail "dm must use --details-file"
 jq -e '.status == "sent" and .dmEventId == "evt_stub123" and .sentAt != null' "$MANIFEST" >/dev/null \

@@ -47,6 +47,9 @@ workflow_path = root / ".github/workflows/pr-checks.yml"
 # are intentionally limited to tests that install same-named fixture stubs or
 # copies but are not run by pr-checks; add a pair here only with that rationale.
 NON_EXECUTING_REFERENCE_ALLOWLIST = {
+    # startwork-context.test.sh only compares the printed worktree.sh command
+    # text from `startwork-context.sh edit-target`; it never runs worktree.sh.
+    ("core/scripts/tests/startwork-context.test.sh", "worktree.sh"),
     ("core/scripts/tests/handoff-post-no-claude.test.sh", "archive-old-threads.sh"),
     ("core/scripts/tests/handoff-post-no-claude.test.sh", "rebuild-orchestrator-index.sh"),
     ("core/scripts/tests/handoff-post-no-claude.test.sh", "rebuild-threads-index.sh"),

@@ -58,6 +58,9 @@
 # bounded by HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS (default 60) so a long
 # `git status` from the desktop app or Xcode is waited out (thread
 # T-20261022-140549).
+# stale_index_lock_removed is true when the run deleted an orphaned
+# .git/index.lock (older than HQ_HANDOFF_STALE_LOCK_SECONDS, default 600, with
+# no git process older than it) and re-ran the stage; see hq_clear_stale_index_lock.
 #
 # --deficiencies-json <path> takes a file holding the Step 2 environment
 # deficiencies array (lever, kind, severity, summary, evidence, proposed_fix).
@@ -755,6 +758,80 @@ HQ_HANDOFF_INDEX_LOCK_WAITS=0
 # lock that is never released cannot stall the finalizer for 60 s per path.
 HQ_HANDOFF_INDEX_LOCK_WAITED_TENTHS=0
 new_tmp HQ_RETRY_ERR_FILE
+# A lock nobody holds. A git process that died mid-write (a killed session, a
+# crashed editor integration) leaves .git/index.lock behind for good, and every
+# later handoff ends stage-failed (rc=4) until someone deletes the file by hand
+# — which the HQ-root git-mutation hook then refuses to let the agent do. The
+# backoff below cannot help there: that lock never clears on its own.
+#
+# A lock counts as stale only when BOTH hold:
+#   - it is older than HQ_HANDOFF_STALE_LOCK_SECONDS (default 600, 10 min);
+#   - no git process on this machine is older than the lock. The process that
+#     created the lock started before it, so any git older than the lock could
+#     still be its holder and the lock is left alone. Younger git processes
+#     (other sessions' quick commits) cannot own it.
+# At most one stale lock is removed per run, and the removal is reported on
+# stderr and in the payload (stale_index_lock_removed) so it is never silent.
+HQ_HANDOFF_STALE_LOCK_SECONDS="${HQ_HANDOFF_STALE_LOCK_SECONDS:-600}"
+[[ "$HQ_HANDOFF_STALE_LOCK_SECONDS" =~ ^[0-9]+$ ]] || HQ_HANDOFF_STALE_LOCK_SECONDS=600
+HQ_HANDOFF_STALE_LOCK_REMOVED="false"
+HQ_HANDOFF_STALE_LOCK_CHECKED=0
+# Callers redirect the retry wrapper's stderr into a per-path error file, so
+# the stale-lock notes go to the script's own stderr through a saved fd.
+exec 7>&2
+hq_index_lock_mtime() { # hq_index_lock_mtime <file> — epoch seconds, or empty
+  # GNU `stat -f` is file-system status and exits 0 with a non-number for %m,
+  # so take whichever form prints digits (GNU -c first, then BSD -f).
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)" && [[ "$m" =~ ^[0-9]+$ ]] && { printf '%s\n' "$m"; return 0; }
+  m="$(stat -f %m "$1" 2>/dev/null)" && [[ "$m" =~ ^[0-9]+$ ]] && { printf '%s\n' "$m"; return 0; }
+  return 0
+}
+# hq_git_process_older_than <seconds> — true when any running git process has
+# been alive at least that long. `ps -o etime` prints [[dd-]hh:]mm:ss on macOS
+# and Linux (macOS ps has no `etimes`); unparseable rows count as older, so a
+# doubt keeps the lock.
+hq_git_process_older_than() {
+  local min="$1" etime comm days=0 hms secs
+  while read -r etime comm; do
+    case "$comm" in git|*/git) ;; *) continue ;; esac
+    hms="$etime"
+    case "$hms" in *-*) days="${hms%%-*}"; hms="${hms#*-}" ;; *) days=0 ;; esac
+    case "$hms" in
+      [0-9]*:[0-9][0-9]:[0-9][0-9])
+        secs=$(( 10#${hms%%:*} * 3600 ))
+        hms="${hms#*:}"
+        secs=$(( secs + 10#${hms%%:*} * 60 + 10#${hms#*:} )) ;;
+      [0-9]*:[0-9][0-9])
+        secs=$(( 10#${hms%%:*} * 60 + 10#${hms#*:} )) ;;
+      *) return 0 ;;
+    esac
+    [[ "$days" =~ ^[0-9]+$ ]] || return 0
+    secs=$(( days * 86400 + secs ))
+    [[ $secs -lt $min ]] || return 0
+  done < <(ps -axo etime=,comm= 2>/dev/null)
+  return 1
+}
+hq_clear_stale_index_lock() {
+  [[ $HQ_HANDOFF_STALE_LOCK_CHECKED -eq 0 ]] || return 1
+  HQ_HANDOFF_STALE_LOCK_CHECKED=1
+  local lock mtime now age
+  lock="$(git rev-parse --git-path index.lock 2>/dev/null)" || return 1
+  [[ -n "$lock" && -f "$lock" ]] || return 1
+  mtime="$(hq_index_lock_mtime "$lock")"
+  [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  age=$((now - mtime))
+  [[ $age -ge $HQ_HANDOFF_STALE_LOCK_SECONDS ]] || return 1
+  if hq_git_process_older_than "$age"; then
+    echo "handoff-finalize: ${lock} is ${age}s old but a git process older than it is still running; leaving it alone" >&7
+    return 1
+  fi
+  rm -f -- "$lock" 2>/dev/null || return 1
+  HQ_HANDOFF_STALE_LOCK_REMOVED="true"
+  echo "handoff-finalize: removed stale ${lock} (${age}s old, no git process older than it); retrying the stage" >&7
+  return 0
+}
 hq_git_index_retry() {
   local attempt=0 rc=0 polls lock_path budget_tenths
   budget_tenths=$((HQ_HANDOFF_INDEX_LOCK_WAIT_SECONDS * 10))
@@ -762,12 +839,20 @@ hq_git_index_retry() {
   while :; do
     rc=0
     "$@" 2>"$HQ_RETRY_ERR_FILE" || rc=$?
+    if [[ $rc -eq 0 ]] || ! grep -q 'index\.lock' "$HQ_RETRY_ERR_FILE" 2>/dev/null; then
+      cat "$HQ_RETRY_ERR_FILE" >&2
+      return $rc
+    fi
+    # A stale lock is removed once per run and the command re-run at once; the
+    # backoff below is for a lock a live process is about to release.
+    if hq_clear_stale_index_lock; then
+      continue
+    fi
     # Only a HELD lock is worth waiting for: git says "File exists", or the
     # lock file is on disk. "Permission denied" / "Operation not permitted" on
     # index.lock is a sandbox or ownership problem that no wait fixes, so it
     # returns at once for the caller to classify.
-    if [[ $rc -eq 0 ]] || ! grep -q 'index\.lock' "$HQ_RETRY_ERR_FILE" 2>/dev/null \
-       || { ! grep -qi 'File exists' "$HQ_RETRY_ERR_FILE" 2>/dev/null && [[ -z "$lock_path" || ! -e "$lock_path" ]]; } \
+    if { ! grep -qi 'File exists' "$HQ_RETRY_ERR_FILE" 2>/dev/null && [[ -z "$lock_path" || ! -e "$lock_path" ]]; } \
        || [[ $HQ_HANDOFF_INDEX_LOCK_WAITED_TENTHS -ge $budget_tenths ]] \
        || { [[ $HQ_HANDOFF_INDEX_LOCK_RETRIES -gt 0 ]] && [[ $attempt -ge $HQ_HANDOFF_INDEX_LOCK_RETRIES ]]; }; then
       cat "$HQ_RETRY_ERR_FILE" >&2
@@ -1249,6 +1334,7 @@ MSYS_NO_PATHCONV=1 jq -n \
   --slurpfile stage_failures "$STAGE_FAILURES_JQ_FILE" \
   --arg stage_failure_class "$STAGE_FAILURE_CLASS" \
   --argjson index_lock_waits "$HQ_HANDOFF_INDEX_LOCK_WAITS" \
+  --argjson stale_index_lock_removed "$HQ_HANDOFF_STALE_LOCK_REMOVED" \
   --slurpfile skipped_paths "$SKIPPED_PATHS_JQ_FILE" \
   --arg nested_repo_paths "$NESTED_REPO_PATHS" \
   --argjson baseline_noise_count "$BASELINE_NOISE_COUNT" \
@@ -1271,6 +1357,7 @@ MSYS_NO_PATHCONV=1 jq -n \
     stage_failures: ($stage_failures[0] // []),
     stage_failure_class: $stage_failure_class,
     index_lock_waits: $index_lock_waits,
+    stale_index_lock_removed: $stale_index_lock_removed,
     skipped_paths: ($skipped_paths[0] // []),
     nested_repo_paths: ($nested_repo_paths | split("\n") | map(select(length > 0))),
     baseline_noise_count: $baseline_noise_count,

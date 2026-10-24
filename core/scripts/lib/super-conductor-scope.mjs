@@ -120,10 +120,18 @@ export function sessionInScope(root, sid, scope) {
 }
 
 // Is this channel row on the exclude list (slugs, names or ids, lowercased)?
+// The live `hq channels changes` feed carries channelId and a display name such
+// as "Project core-pr-reviews 6e234042", but no slug. A slug in the exclude
+// list is matched against the name in slug form (lowercase, runs of other
+// characters to "-"), so "project-core-pr-reviews-6e234042" drops that row.
+export function slugOf(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
 export function rowExcluded(row, exclude) {
   if (!exclude || !exclude.length || !row || typeof row !== 'object') return false;
   const keys = new Set([row.channelId, row.slug, row.name].filter(Boolean).map((k) => String(k).toLowerCase()));
-  return exclude.some((c) => keys.has(String(c).toLowerCase()));
+  if (row.name) keys.add(slugOf(row.name));
+  return exclude.some((c) => keys.has(String(c).trim().toLowerCase()));
 }
 
 // `hq_channels_exclude` from the owner settings (prefs.mjs exclude), or [].

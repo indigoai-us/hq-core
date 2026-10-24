@@ -4507,6 +4507,38 @@ bash_case 0 funnel 'node core/scripts/super-conductor-decisions.mjs add --file w
 bash_case 2 funnel 'node core/scripts/super-conductor-decisions.mjs add --file workspace/reports/d.jsonl --question "see companies/otherco/settings/x for details"'
 bash_case 2 funnel 'node core/scripts/super-conductor-decisions.mjs add --file workspace/reports/d.jsonl --question "see $D/x for details"'
 
+echo "[T-20261022-160854-devday-bench] arithmetic expansions are numbers, not paths; a whole-word substitution is echo text"
+install_fixture "indigo"
+mkdir -p "$TMP/core/skills/a" "$TMP/core/skills/b"
+touch "$TMP/core/skills/a/SKILL.md" "$TMP/core/skills/b/SKILL.md"
+# `$((tot/10))`: the `/` is division. The word is echo text, never a path.
+bash_case 0 bench-arith-echo-label 'tot=50; label=x; echo "$label: avg $((tot/10))"'
+bash_case 0 bench-arith-echo-alone 'echo "$((tot/10))"'
+bash_case 0 bench-arith-printf-arg 'printf "%s avg %s\n" "$label" "$((tot/10))"'
+bash_case 0 bench-arith-in-loop 'tot=0; for s in a b; do n=$(wc -l < core/skills/$s/SKILL.md); tot=$((tot+n)); done; echo "avg $((tot/2))"'
+bash_case 0 bench-arith-with-open-tree-text 'tot=50; echo "$label: $((tot/10)) over core/skills/$s/SKILL.md"'
+# An arithmetic result is an integer: `$((n))/x` is the literal path 0/x
+# under the cwd, and a locked-company path stays checked as before.
+bash_case 0 bench-arith-path-component-own 'cat "companies/indigo/settings/$((1+1)).keep" || true'
+bash_case 2 bench-neg-arith-path-component-foreign 'cat "companies/otherco/settings/$((1+1)).keep"'
+# Arithmetic that can run a command, or hold an array subscript, is not simple.
+bash_case 2 bench-neg-arith-nested-substitution 'echo "x: $(( $(cat companies/otherco/settings/.keep) ))"'
+bash_case 2 bench-neg-arith-subscript-var 'echo "x: $((a[0]/10))/core/x"'
+bash_case 2 bench-neg-arith-dollar-var 'echo "x: $(($D/10))/core/x"'
+bash_case 2 bench-neg-arith-echo-redirect-foreign 'echo "$label: avg $((tot/10))" > companies/otherco/x'
+# A word that is exactly one substitution prints the output; its body is
+# still scanned as a command and keeps the fail-closed rules.
+bash_case 0 bench-whole-sub-echo-ls 'echo "$(ls core/skills)"'
+bash_case 0 bench-whole-sub-echo-wc 'echo "$(wc -l core/skills/a/SKILL.md)"'
+bash_case 0 bench-whole-sub-printf 'printf "%s" "$(wc -l core/skills/a/SKILL.md)"'
+bash_case 2 bench-neg-whole-sub-foreign-body 'echo "$(cat companies/otherco/settings/.keep)"'
+bash_case 2 bench-neg-whole-sub-unresolved-var-body 'echo "$(cat $D/x)"'
+bash_case 2 bench-neg-whole-sub-piped-to-shell 'echo "$(cat workspace/x)" | sh'
+bash_case 2 bench-neg-whole-sub-non-echo-head 'cat "$(ls core/skills)"'
+bash_case 2 bench-neg-whole-sub-mkdir 'mkdir -p "$(cat workspace/x)"'
+bash_case 2 bench-neg-whole-sub-redirect-target 'echo x > "$(cat workspace/x)"'
+bash_case 2 bench-neg-whole-sub-nested 'echo "$(cat $(cat workspace/x))"'
+
 # Thread T-20261022-140549: a markdown code span around a .claude path in
 # prose ("see `.claude/skills/x/SKILL.md`") inside a quoted-delimiter
 # interpreter heredoc was blocked because the closing backtick joined the

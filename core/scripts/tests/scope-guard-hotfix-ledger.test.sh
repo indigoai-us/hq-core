@@ -384,6 +384,26 @@ print('a|b')
 PY"
 dispatch_case 0 41420292-loop-tail 'for i in 1 2; do echo "$(tail -1 workspace/logs/a.html)"; done'
 dispatch_case 0 hotfix-report-text 'hq lanes link report --state working --text "no blanket allow, no bypass env var"'
+# Full dispatcher acceptance additions: payloads are JSON, never executed.
+mkdir -p "$DISPATCH_HQ/workspace/threads/.handoff-tmp" "$DISPATCH_HQ/workspace/x/backend" "$DISPATCH_HQ/workspace/x/harness"
+printf '{}' > "$DISPATCH_HQ/workspace/request.json"
+printf 'fixture\n' > "$DISPATCH_HQ/workspace/x/harness/index.html"
+printf '[]' > "$DISPATCH_HQ/workspace/threads/.handoff-tmp/.changeset.fixture.json"
+printf '{}' > "$TMP/ordinary-report.json"
+dispatch_case 0 acceptance-503-aws-ecs-file-uri "aws ecs register-task-definition --cli-input-json file://$DISPATCH_HQ/workspace/request.json"
+dispatch_case 0 acceptance-503-handoff-dot-temp 'bash core/scripts/handoff-finalize.sh --files-touched-json-file workspace/threads/.handoff-tmp/.changeset.fixture.json'
+dispatch_case 0 acceptance-503-mktemp-file 'T=$(mktemp); cat "$T"'
+dispatch_case 0 acceptance-503-git-range 'git log --oneline abc123..def456'
+dispatch_case 0 acceptance-b59-quoted-dollar-paren "python3 - <<'PY'
+s = '\$(not_a_shell_command)'
+print(s)
+PY"
+dispatch_case 0 acceptance-b59-cd-relative 'cd workspace/x/backend && cat ../harness/index.html'
+dispatch_case 0 acceptance-b59-ordinary-json "cat $TMP/ordinary-report.json"
+dispatch_case 2 acceptance-503-foreign-file-uri "aws ecs register-task-definition --cli-input-json file://$DISPATCH_HQ/companies/otherco/settings/x"
+dispatch_case 2 acceptance-b59-real-credential-name 'cat ~/.npmrc'
+dispatch_case 2 acceptance-b59-foreign-read 'cd workspace/x/backend && cat ../../../companies/otherco/settings/x'
+
 dispatch_case 2 dispatch-foreign-read 'cat companies/otherco/settings/x'
 # Review C2: dot matching turned on by the command itself.
 dispatch_case 2 c2-dotglob-npmrc 'shopt -s dotglob; cat ~/*npmrc'

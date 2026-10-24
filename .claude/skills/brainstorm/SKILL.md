@@ -111,7 +111,7 @@ Search for anything that already does part of the job, inside the company scope 
 | Projects and ideas | `companies/{co}/projects/*/` (brainstorm.md, prd.json status), `board.json` entries in any status, including in-flight and parked |
 | Knowledge and policies | qmd hits from above, `companies/{co}/policies/`, `core/policies/` |
 
-When the surface is broad, delegate the sweep to an `Explore` subagent with the keyword list and the table above, and have it return paths plus one-line verdicts.
+When the surface is broad, delegate the sweep to an `Explore` subagent with the keyword list and the table above, and have it return paths plus one-line verdicts. `Explore` is read-only: it cannot create files. When a sweep must write its own research note (for example `research/*.md`), dispatch it as a `general-purpose` agent instead, so the parent does not re-emit the findings by hand.
 
 Give every hit one verdict:
 
