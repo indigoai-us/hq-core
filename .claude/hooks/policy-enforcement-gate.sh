@@ -406,7 +406,16 @@ case "$EVENT" in
 
     INSTRUCTIONS="$(printf '%s' "$INPUT" | jq -r '[.prompt?,.message?,.user_prompt?,.system_prompt?,.developer_instructions?,(.instructions[]?)] | map(select(type=="string")) | join("\n")' 2>/dev/null || printf '%s' "$PROMPT")"
     HARD_JSON='[]'
-    if [ -s "$POLICIES" ]; then
+    # The conflict scan below pairs a HARD policy statement with an
+    # instruction statement of opposite polarity. An instruction text with no
+    # polarity word (never, must, not, forbid, banned, always, require, shall)
+    # has no statement, so the scan returns []. This substring test is a
+    # superset of the node regex, so it skips only when the answer is
+    # certainly []; it saves one awk and one jq per HARD policy plus a node
+    # boot on most prompts.
+    CONFLICT_SCAN=1
+    grep -Eqi 'never|must|not|forbid|banned|always|requir|shall' <<< "$INSTRUCTIONS" || CONFLICT_SCAN=0
+    if [ "$CONFLICT_SCAN" -eq 1 ] && [ -s "$POLICIES" ]; then
       HARD_JSON="$(while IFS=$'\t' read -r id scope path enf excerpt kind; do
         [ "$enf" = "hard" ] || continue
         rule="$excerpt"
@@ -419,7 +428,8 @@ case "$EVENT" in
     fi
     CONFLICT_INPUT="$(jq -nc --argjson policies "$HARD_JSON" --arg instructions "$INSTRUCTIONS" \
       '{policies:$policies,instructions:$instructions}')"
-    CONFLICTS="$(printf '%s' "$CONFLICT_INPUT" | node -e '
+    CONFLICTS='[]'
+    [ "$HARD_JSON" = '[]' ] || CONFLICTS="$(printf '%s' "$CONFLICT_INPUT" | node -e '
       let p=""; process.stdin.on("data",c=>p+=c).on("end",()=>{
         const input=JSON.parse(p||"{}"), policies=input.policies||[], ins=input.instructions||"";
         const stop=new Set("a an and are as at be by for from in is it of on or that the this to with your you".split(" "));

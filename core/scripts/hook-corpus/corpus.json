@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "e69cfa8cb6ee8bee38e8f054b8967ff08b39a928230d01dff2eba6e1fa16b377",
+  "registry_sha256": "2f562b586784605deae042fcadfd66996f03a0df73b23595823c38c99ec73f57",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -25294,7 +25294,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25342,7 +25342,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25391,7 +25391,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25439,7 +25439,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25488,7 +25488,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25536,7 +25536,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25585,7 +25585,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
@@ -25632,7 +25632,7 @@
                 {
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
-                  "timeout": 60,
+                  "timeout": 20,
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true

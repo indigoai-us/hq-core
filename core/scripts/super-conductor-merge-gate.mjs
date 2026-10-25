@@ -36,14 +36,53 @@ export function gatedLink(root, sid) {
 
 const VALUE_FLAGS = new Set(['-R', '--repo', '--match-head-commit', '-b', '--body', '-F', '--body-file', '-t', '--subject', '-A', '--author-email', '-X', '--method', '-H', '--header', '-f', '--raw-field', '--field', '--hostname', '-q', '--jq', '--template']);
 
+// Text-processing commands. The words after one of these are text (a grep
+// pattern, a sed script, an echo line), not a command to run. The exemption
+// is decided for the whole command, not per segment, and only holds when
+// nothing in the command can run or export that text: every segment's
+// command word is a text command (or cd), there is no substitution,
+// subshell, redirection or brace group anywhere ($ ` ( ) < > { }), no alias,
+// function, exec, eval or source word, sed has no e or w flag or command,
+// awk has no system, getline or in-place, and printf has no -v. Anything
+// else — a launcher such as env, sudo, timeout 60, hq secrets exec ... --,
+// a pipe into sh, a wrapper this list has never heard of — keeps the gate,
+// so unknown shapes fail closed.
+const TEXT_COMMANDS = new Set(['grep', 'rg', 'sed', 'awk', 'echo', 'printf', 'cat']);
+
+function splitTokens(seg) {
+  // Braces split too, so BEGIN{gh ... (awk) and { gh ...; } expose gh.
+  return seg.trim().split(/[\s{}]+/).filter(Boolean).map((t) => t.replace(/^[({`$]+/, '').replace(/[)}`]+$/, '')).filter(Boolean);
+}
+function commandWord(tok) {
+  return tok.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) || '';
+}
+function textOnlyCommand(text, parts) {
+  if (/[$`()<>{}]/.test(text)) return false;
+  if (/\b(alias|function|exec|eval|source)\b/.test(text)) return false;
+  for (let p = 0; p < parts.length; p += 2) {
+    const tok = splitTokens(parts[p]);
+    if (tok.length === 0) continue;
+    const name = path.basename(commandWord(tok));
+    if (name === 'cd') continue;
+    if (!TEXT_COMMANDS.has(name)) return false;
+    if (name === 'sed' && tok.some((t) => /(^|[^a-z])e[a-z]*$/.test(t) || /\/[a-zA-Z0-9#]*[eEwW]/.test(t))) return false;
+    if (name === 'awk' && /system|getline|inplace|(^|\s)-i/.test(parts[p])) return false;
+    if (name === 'printf' && tok.includes('-v')) return false;
+  }
+  return true;
+}
+
 // Every `gh ... pr merge` and `gh api .../pulls/<n>/merge` in a command, read
 // from a copy with shell quotes and backslashes removed (so g'h' and "pr"
 // cannot slip past), split on ; & | and newlines.
 export function findMerges(command) {
   const text = String(command || '').replace(/["'\\]/g, '');
   const out = [];
-  for (const seg of text.split(/[;&|\n]+/)) {
-    const tok = seg.trim().split(/\s+/).filter(Boolean);
+  const parts = text.split(/([;&|\n]+)/);
+  const textOnly = textOnlyCommand(text, parts);
+  for (let p = 0; p < parts.length; p += 2) {
+    const seg = parts[p];
+    const tok = splitTokens(seg);
     // No guessing at the subcommand position (a value flag before it, as in
     // gh -R owner/repo pr merge or gh -X PUT api, would shift it). After any
     // gh token: the words "pr merge" in sequence anywhere make it a PR merge;
@@ -52,6 +91,9 @@ export function findMerges(command) {
     // through.
     const g = tok.findIndex((t) => path.basename(t) === 'gh');
     if (g < 0) continue;
+    // In a text-only command, gh is a word in a text command's text, not the
+    // command being run.
+    if (textOnly && commandWord(tok) !== tok[g]) continue;
     let k = -1;
     for (let i = g + 1; i < tok.length - 1; i++) if (tok[i] === 'pr' && tok[i + 1] === 'merge') { k = i; break; }
     if (k < 0) {

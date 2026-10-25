@@ -107,7 +107,9 @@ else
   add_check "profile" "profile is filled in" "required" true ""
 fi
 
-agents_profile="$ROOT/agents-profile.md"
+# Same lookup as the SessionStart hook: personal/ first, legacy root second.
+agents_profile="$ROOT/personal/agents-profile.md"
+[ -f "$agents_profile" ] || agents_profile="$ROOT/agents-profile.md"
 if [ -f "$agents_profile" ] && head -n 1 "$agents_profile" 2>/dev/null | grep -Eq '^# .+ - Profile$'; then
   add_check "agents-profile" "agents profile has a valid heading" "required" true ""
 else

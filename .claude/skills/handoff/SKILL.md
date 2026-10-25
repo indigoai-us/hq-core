@@ -274,8 +274,9 @@ Wait for the result. Keep its final `pr:` line value as `{builder_pr_result}`. A
 # absent — zsh aborts a bare unmatched glob with "no matches found".
 find workspace/orchestrator/_pipeline -mindepth 2 -maxdepth 2 \
   -name pipeline-state.json 2>/dev/null | while read -r sf; do
-  status=$(jq -r '.status // ""' "$sf" 2>/dev/null)
-  if [ "$status" = "in_progress" ] || [ "$status" = "paused" ]; then
+  # Not `status`: it is a read-only special parameter in zsh.
+  pipeline_status=$(jq -r '.status // ""' "$sf" 2>/dev/null)
+  if [ "$pipeline_status" = "in_progress" ] || [ "$pipeline_status" = "paused" ]; then
     pipeline_id=$(jq -r '.pipeline_id' "$sf")
     company=$(jq -r '.company' "$sf")
     done_count=$(jq -r '.summary.done // 0' "$sf")

@@ -73,6 +73,16 @@ while [ "$#" -gt 0 ]; do
     --session-id)
       [ "$#" -ge 2 ] || { echo "--session-id requires an id" >&2; usage >&2; exit 64; }
       SESSION_ID="$2"
+      # The id becomes a file name under policy-trigger-state; reject anything
+      # that could leave that directory or name a non-session file.
+      # [[ =~ ]] tests the whole value; grep would accept a value whose first
+      # line matches and whose later lines hold a path.
+      if ! [[ "$SESSION_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
+         || ! printf '%s' "$SESSION_ID" | grep -q '[^.]'; then
+        echo "--session-id must match ^[A-Za-z0-9._-]+\$ and not be only dots: $SESSION_ID" >&2
+        usage >&2
+        exit 64
+      fi
       REQUIRE_LEDGER=1
       shift 2
       ;;
@@ -152,9 +162,47 @@ emit_runtime_off_explanation() {
     echo "  agents-v2 (hermes) box the on-box adapter writes this SAME ledger via the" >&2
     echo "  SAME .claude hooks, but only during a live turn — so a box with no live" >&2
     echo "  turn yet is expected to read NOT OBSERVED until the agent takes one." >&2
+  elif [ "$(session_ledger_state)" = "stale" ]; then
+    echo "  The policy-trigger ledger for session $SESSION_ID is stale (older than" >&2
+    echo "  ${HQ_SESSION_LEDGER_MAX_AGE_MINUTES} minutes), so it does not show that this runtime dispatches" >&2
+    echo "  hooks. Rerun this check right after a hook fires in this session." >&2
+  elif any_ledger_present; then
+    echo "  A policy-trigger ledger exists, but it could not be tied to this session" >&2
+    echo "  (hq doctor did not recognize the host). Re-run with --session-id <this" >&2
+    echo "  session's id> to check this session's ledger directly." >&2
   else
     echo "  The policy-trigger hook did not write a ledger in this session." >&2
     echo "  Some SDK hosts skip command hooks; the desktop app and terminal CLI dispatch them." >&2
+  fi
+}
+
+# True when any policy-trigger ledger file exists under the tree.
+any_ledger_present() {
+  local dir="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+  [ -d "$dir" ] || return 1
+  find "$dir" -type f -name '*.txt' -print -quit 2>/dev/null | grep -q .
+}
+
+# Minutes a --session-id ledger may age and still prove that the CURRENT runtime
+# dispatches hooks. A session started in the CLI and resumed under an SDK host
+# that skips hooks keeps the same id and an old ledger, so only a recently
+# written ledger overrides hq doctor's refusal. Overridable (chiefly for tests).
+HQ_SESSION_LEDGER_MAX_AGE_MINUTES="${HQ_SESSION_LEDGER_MAX_AGE_MINUTES:-15}"
+
+# Prints fresh, stale, or missing for the exact --session-id ledger. The
+# policy-trigger hook writes this file only when it runs in that session, so a
+# fresh one proves hooks dispatched there regardless of which host hq doctor
+# detected (feedback_a3c5913f: Claude desktop read as platform "unknown").
+# find -mmin is the portable mtime test (BSD and GNU) this script already uses.
+session_ledger_state() {
+  local f="$HQ_ROOT/workspace/orchestrator/policy-trigger-state/$SESSION_ID.txt"
+  if [ -z "$SESSION_ID" ] || [ ! -f "$f" ]; then
+    printf 'missing'; return 0
+  fi
+  if find "$f" -prune -mmin "-${HQ_SESSION_LEDGER_MAX_AGE_MINUTES}" -print 2>/dev/null | grep -q .; then
+    printf 'fresh'
+  else
+    printf 'stale'
   fi
 }
 
@@ -602,9 +650,17 @@ EOF
       # failure.
       runtime_obs="OBSERVED"
       AGENTS_V2_ATTESTED=1
+    elif [ "$(session_ledger_state)" = "fresh" ]; then
+      # The exact session's ledger is direct proof that hooks ran in this
+      # session. hq doctor may still refuse to attest because it does not
+      # recognize the host (Claude desktop reads as "unknown"); do not relay
+      # that as a failure when the ledger it is unsure about is present.
+      runtime_obs="OBSERVED"
     else
       runtime_obs="NOT OBSERVED"
-      if [ -n "$runtime_message" ]; then
+      if [ "$(session_ledger_state)" = "stale" ]; then
+        issues+=("policy-trigger ledger for session $SESSION_ID is stale (older than ${HQ_SESSION_LEDGER_MAX_AGE_MINUTES} minutes); rerun after a hook fires")
+      elif [ -n "$runtime_message" ]; then
         issues+=("$runtime_message")
       elif [ -n "$SESSION_ID" ]; then
         issues+=("policy-trigger ledger was not found for session $SESSION_ID under workspace/orchestrator/policy-trigger-state")

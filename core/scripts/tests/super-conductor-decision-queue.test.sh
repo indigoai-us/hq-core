@@ -3,7 +3,7 @@
 # owner reaches them as a /decision-queue picker (one picker per item,
 # recommended option first), never as a prose question, a "tell me your picks"
 # table, a "still to come" list, a bare ad hoc AskUserQuestion, or a decision
-# card. Status-only updates stay short prose. /decision-queue must support what
+# card outside the queue path. Status-only updates stay short prose. /decision-queue must support what
 # the conductor needs: a queue of one or more items, draft previews, and
 # relaying each answer back before the next picker.
 set -euo pipefail
@@ -70,6 +70,13 @@ forbid(sc, r"decision cards?\b", "allows decision cards as an alternative to /de
 forbid(sc, r"^### Decision card", "keeps a Decision card section", sc_path)
 forbid(sc, r"instead of a bare `AskUserQuestion`", "allows a bare AskUserQuestion path", sc_path)
 forbid(sc, r"Fall back to `AskUserQuestion`", "allows an ad hoc AskUserQuestion fallback", sc_path)
+
+# Primary server surface and fallback restrictions are mandatory.
+need(sc, r"hq decide list --open --json", "refreshes server decisions every sweep", sc_path)
+need(sc, r"hq decide show", "reads answered records missing from open list", sc_path)
+need(sc, r"Chat is a fallback only after `hq decide ask` fails", "gates chat fallback on ask failure", sc_path)
+need(dq, r"--ledger-evidence", "requires ledger evidence before advancing", dq_path)
+need(dq, r"Never withdraw a foreign decision", "preserves foreign asks", dq_path)
 
 # Every body mention of AskUserQuestion must route through /decision-queue or forbid ad hoc use.
 # Exempt: the Sources list, which reads a child window's open AskUserQuestion from its transcript.

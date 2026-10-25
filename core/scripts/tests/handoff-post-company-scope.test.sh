@@ -518,6 +518,83 @@ handoff_post_test_run --clean-env "$ZERO_REPO" "$NOYAML_PATH" "" \
 grep -Fq 'workspace-sync: skipped (company is local-only: no cloud: true and no manifest cloud_uid)' "$TMP_ROOT/noyaml-logs/handoff-post.log" \
   || fail "missing company.yaml did not log the local-only skip"
 
+# feedback_c8465cde: a handoff whose files are all outside companies/ is
+# personal or HQ-only work. Post must not stamp the bound company onto it,
+# mirror it, or push it, even though the session is bound to a company.
+: > "$TMP_ROOT/hq-sync-calls"
+cat > "$TMP_ROOT/repo/workspace/threads/T-personal.json" <<'JSON'
+{
+  "thread_id": "T-personal",
+  "files_touched": ["personal/notes/todo.md", {"path": "workspace/reports/machine-admin.md"}],
+  "metadata": {"company": []}
+}
+JSON
+run_post "workspace/threads/T-personal.json"
+[[ ! -s "$TMP_ROOT/hq-sync-calls" ]] || fail "personal-only handoff was pushed: $(cat "$TMP_ROOT/hq-sync-calls")"
+[[ ! -e "$TMP_ROOT/repo/companies/indigo/workspace/sessions/T-personal.json" ]] || fail "personal-only handoff was mirrored into the bound company"
+[[ "$(jq -c '.metadata.company' "$TMP_ROOT/repo/workspace/threads/T-personal.json")" == '[]' ]] || fail "personal-only handoff was stamped with the bound company"
+grep -Fq 'workspace-sync: skipped (handoff touched no company or repo paths; personal or HQ-only work)' "$TMP_ROOT/logs/handoff-post.log" \
+  || fail "personal-only handoff did not log the skip reason"
+
+# A handoff that touched the bound company's paths still syncs.
+: > "$TMP_ROOT/hq-sync-calls"
+cat > "$TMP_ROOT/repo/workspace/threads/T-bound-paths.json" <<'JSON'
+{
+  "thread_id": "T-bound-paths",
+  "files_touched": ["personal/notes/todo.md", "companies/indigo/knowledge/a.md"],
+  "metadata": {"company": []}
+}
+JSON
+run_post "workspace/threads/T-bound-paths.json"
+grep -Fxq 'sync push --company indigo companies/indigo/workspace' "$TMP_ROOT/hq-sync-calls" \
+  || fail "handoff touching bound-company paths stopped syncing"
+
+# Repo code in a bound session is company work: it still syncs.
+: > "$TMP_ROOT/hq-sync-calls"
+cat > "$TMP_ROOT/repo/workspace/threads/T-repo-only.json" <<'JSON'
+{
+  "thread_id": "T-repo-only",
+  "files_touched": ["repos/private/example/src/change.sh", "./personal/notes/todo.md"],
+  "metadata": {"company": []}
+}
+JSON
+run_post "workspace/threads/T-repo-only.json"
+grep -Fxq 'sync push --company indigo companies/indigo/workspace' "$TMP_ROOT/hq-sync-calls" \
+  || fail "repo-only handoff in a bound session stopped syncing"
+
+# Absolute personal paths under HQ_ROOT are personal too.
+: > "$TMP_ROOT/hq-sync-calls"
+jq -n --arg p "$TMP_ROOT/repo/personal/notes/todo.md" \
+  '{thread_id:"T-personal-abs", files_touched:[$p], metadata:{company:[]}}' \
+  > "$TMP_ROOT/repo/workspace/threads/T-personal-abs.json"
+run_post "workspace/threads/T-personal-abs.json"
+[[ ! -s "$TMP_ROOT/hq-sync-calls" ]] || fail "absolute personal-only path was pushed"
+
+# Finalize applies the same rule: personal-only files, no --company, no mirror.
+PERS_SESSION="synthetic-session-personal"
+mkdir -p "$ZERO_REPO/workspace/sessions/$PERS_SESSION" "$ZERO_REPO/personal/notes"
+printf 'company_slug: acme\n' > "$ZERO_REPO/workspace/sessions/$PERS_SESSION/meta.yaml"
+printf 'note\n' > "$ZERO_REPO/personal/notes/todo.md"
+rc=0
+pout="$(cd "$ZERO_REPO" && env -i CODEX_THREAD_ID="$PERS_SESSION" \
+  HQ_ROOT="$ZERO_REPO" HOME="$TMP_ROOT/zero-change-home" \
+  HQ_SYNC_CALLS="$TMP_ROOT/zero-change-hq-sync-calls" \
+  HQ_CLOUD_CALLS="$TMP_ROOT/zero-change-hq-cloud-calls" \
+  HANDOFF_LOG_DIR="$TMP_ROOT/zero-change-logs" PATH="$ZERO_BIN:/usr/bin:/bin" \
+  bash core/scripts/handoff-finalize.sh \
+    --title "Handoff: synthetic personal work" \
+    --summary "Synthetic personal-only handoff" \
+    --files-touched-json '["personal/notes/todo.md"]' \
+    --next-command '' \
+    --slug "synthetic-personal" 2>/dev/null)" || rc=$?
+[[ "$rc" -eq 0 ]] || fail "personal-only finalize exit code: expected 0, got $rc"
+pthread_path="$(jq -r '.thread_path' <<<"$pout")"
+pthread_id="$(jq -r '.thread_id' <<<"$pout")"
+[[ "$(jq -c '.metadata.company' "$ZERO_REPO/$pthread_path")" == '[]' ]] \
+  || fail "finalize stamped the bound company onto a personal-only handoff"
+[[ ! -e "$ZERO_REPO/companies/acme/workspace/sessions/$pthread_id.json" ]] \
+  || fail "finalize mirrored a personal-only handoff into the bound company"
+
 # 11-tenant isolation lives in a sibling suite. Invoke it here so pr-checks
 # runs it without editing GitHub workflow files.
 if ! bash "$(dirname "$0")/handoff-thread-isolation.test.sh"; then

@@ -98,11 +98,50 @@ run_with_timeout() {
   return "$rc"
 }
 
+# The pull lands the vault's copy of workspace/threads/handoff.json over the
+# local one. The vault copy can be OLDER than what this machine already has
+# (a handoff finalized here minutes ago that the vault has not caught up to,
+# or a stale replay): seen 2026-10-25 when an 11:46 pointer replaced a 22:06
+# one and the newer session's archive check then refused. Snapshot the local
+# pointer first and, if the pull regressed it by created_at, put the newer one
+# back. A pulled pointer that is not valid JSON never replaces a valid one.
+POINTER="$HQ_ROOT/workspace/threads/handoff.json"
+POINTER_SNAPSHOT=""
+if [[ -f "$POINTER" ]] && command -v jq >/dev/null 2>&1 \
+   && jq -e 'type == "object"' "$POINTER" >/dev/null 2>&1; then
+  POINTER_SNAPSHOT="$(mktemp "${TMPDIR:-/tmp}/handoff-pointer-snapshot.XXXXXX")"
+  cp "$POINTER" "$POINTER_SNAPSHOT" 2>/dev/null || { rm -f "$POINTER_SNAPSHOT"; POINTER_SNAPSHOT=""; }
+fi
+
 rc=0
 run_with_timeout "$TIMEOUT" \
   hq sync pull --personal --hq-root "$HQ_ROOT" --lock-timeout 0 \
   || rc=$?
 printf 'exit=%s\n' "$rc" >>"$LOG"
+
+if [[ -n "$POINTER_SNAPSHOT" ]]; then
+  keep_local=0
+  if [[ ! -f "$POINTER" ]] || ! jq -e 'type == "object"' "$POINTER" >/dev/null 2>&1; then
+    keep_local=1
+  else
+    local_ts="$(jq -r '.created_at // empty' "$POINTER_SNAPSHOT" 2>/dev/null || true)"
+    pulled_ts="$(jq -r '.created_at // empty' "$POINTER" 2>/dev/null || true)"
+    if [[ -n "$local_ts" && -n "$pulled_ts" && "$pulled_ts" < "$local_ts" ]]; then
+      keep_local=1
+    fi
+  fi
+  if [[ "$keep_local" = 1 ]]; then
+    restore_tmp="$(mktemp "$(dirname "$POINTER")/.handoff-pointer.XXXXXX")"
+    if cp "$POINTER_SNAPSHOT" "$restore_tmp" && mv -f "$restore_tmp" "$POINTER"; then
+      printf 'kept newer local handoff pointer (local created_at=%s, pulled created_at=%s)\n' \
+        "${local_ts:-?}" "${pulled_ts:-invalid}" >>"$LOG"
+    else
+      rm -f "$restore_tmp"
+      printf 'could not restore the newer local handoff pointer\n' >>"$LOG"
+    fi
+  fi
+  rm -f "$POINTER_SNAPSHOT"
+fi
 
 case "$rc" in
   0)   echo "ok" ;;

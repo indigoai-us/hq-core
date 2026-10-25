@@ -810,14 +810,20 @@ scope_shell_variable_values() {
       local loop_count loop_bind_re
       loop_count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_])(for|select)[[:space:]]+${name}([[:space:]]|;|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
       [ "$loop_count" = "1" ] || return 1
-      loop_bind_re="(^|[^A-Za-z0-9_\$])${name}\+?="
-      [[ "$command_text" =~ $loop_bind_re ]] && return 1
+      local loop_dq
+      loop_dq="$(scope_dequote_text "$command_text")"
+      scope_text_has_ansi_escape "$command_text" && return 1
+      scope_text_touches_ifs "$command_text" && return 1
+      loop_count="$(printf '%s' "$loop_dq" | grep -oE "(^|[^A-Za-z0-9_])(for|select)[[:space:]]+${name}([[:space:]]|;|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
+      [ "$loop_count" = "1" ] || return 1
+      loop_bind_re="(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?="
+      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
       loop_bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|unset|let|export)([[:space:]]|$)'
-      [[ "$command_text" =~ $loop_bind_re ]] && return 1
+      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
       loop_bind_re='printf[[:space:]]+-v|\$\{'"$name"':?='
-      [[ "$command_text" =~ $loop_bind_re ]] && return 1
+      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
       loop_bind_re='(^|[;&|({]|'$'\n'')[[:space:]]*\.[[:space:]]'
-      [[ "$command_text" =~ $loop_bind_re ]] && return 1
+      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
     fi
     [[ "$command_prefix" =~ (^|[[:space:]])${name}= ]] && return 1
     case "$command_prefix" in
@@ -1040,14 +1046,20 @@ scope_shell_variable_values() {
       local_before="${local_match%%"${BASH_REMATCH[0]}"*}"
       local_bind_re='(^|[;&|[:space:]])(if|then|else|elif|while|until|for|select|case|do)([[:space:]]|;|$)|&&|\|\||[({]'
       [[ "$local_before" =~ $local_bind_re ]] && return 1
-      local_count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_\$])${name}\+?=" 2>/dev/null | wc -l | tr -d '[:space:]')"
+      local_count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?=" 2>/dev/null | wc -l | tr -d '[:space:]')"
+      [ "$local_count" = "1" ] || return 1
+      local local_dq
+      local_dq="$(scope_dequote_text "$command_text")"
+      scope_text_has_ansi_escape "$command_text" && return 1
+      scope_text_touches_ifs "$command_text" && return 1
+      local_count="$(printf '%s' "$local_dq" | grep -oE "(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?=" 2>/dev/null | wc -l | tr -d '[:space:]')"
       [ "$local_count" = "1" ] || return 1
       local_bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|unset|let|export)([[:space:]]|$)'
-      [[ "$command_text" =~ $local_bind_re ]] && return 1
+      [[ "$command_text" =~ $local_bind_re || "$local_dq" =~ $local_bind_re ]] && return 1
       local_bind_re='printf[[:space:]]+-v|\$\{'"$name"':?=|(^|[;&|({[:space:]])(for|select)[[:space:]]+'"$name"'([[:space:]]|;|$)'
-      [[ "$command_text" =~ $local_bind_re ]] && return 1
+      [[ "$command_text" =~ $local_bind_re || "$local_dq" =~ $local_bind_re ]] && return 1
       local_bind_re='(^|[;&|({]|'$'\n'')[[:space:]]*\.[[:space:]]'
-      [[ "$command_text" =~ $local_bind_re ]] && return 1
+      [[ "$command_text" =~ $local_bind_re || "$local_dq" =~ $local_bind_re ]] && return 1
       local_values="$(scope_shell_variable_values "$local_pos" "$prefix" "$command_text")" || return 1
       [ -n "$local_values" ] || return 1
       while IFS= read -r local_value; do
@@ -3118,6 +3130,10 @@ scope_default_expansion_value() {
       [ "$op" = ":-" ] || return 1
       re="(^|[^A-Za-z0-9_])(${name}\\+?=|unset|export|read[[:space:]]|declare|typeset|local[[:space:]]|eval|source|\\.[[:space:]]|cd[[:space:]]|pushd|popd)"
       [[ "$command_text" =~ $re ]] && return 1
+      local default_dq
+      default_dq="$(scope_dequote_text "$command_text")"
+      [[ "$default_dq" =~ $re ]] && return 1
+      scope_text_has_ansi_escape "$command_text" && return 1
       case "$name" in
         HQ_ROOT) known="${HQ_ROOT:-}" ;;
         HOME) known="${HOME:-}" ;;
@@ -4031,6 +4047,80 @@ scope_date_substitution_value() {
   printf '%s' "$out"
 }
 
+# Assignment counts match NAME=, NAME+=, and NAME[...]= / NAME[...]+=:
+# assigning element 0 (W[0]=, W[1-1]=) rebinds the scalar $W too.
+# scope_dequote_text <text>: the text with every quote and backslash removed,
+# so a quoted or escaped command word (u''nset, de"clare, \\read, f""or)
+# reads as the word the shell runs. Rebinding checks run on this copy as well
+# as on the raw text.
+scope_dequote_text() {
+  local t="${1:-}"
+  printf '%s' "${t//[\"\'\\]/}"
+}
+
+# scope_text_has_ansi_escape <text>: true when the text holds a $'...' string
+# with a backslash escape. $'\x75nset' is `unset` to the shell, and no
+# dequoted copy shows that, so rebinding checks fail closed on it.
+scope_text_has_ansi_escape() {
+  local t="${1:-}" re
+  re="\\$'[^']*\\\\"
+  [[ "$t" =~ $re ]]
+}
+
+# scope_text_touches_ifs <text>: true when the text names IFS other than as
+# a $IFS read (IFS=, IFS+=, read IFS, for IFS, declare IFS, I""FS=). A changed
+# IFS splits an unquoted $W ("indigo" with IFS=i becomes "", "nd", "go"), so
+# the guard cannot know which words a followed variable produces.
+scope_text_touches_ifs() {
+  local t="${1:-}" re dq
+  dq="$(scope_dequote_text "$t")"
+  re='(^|[^A-Za-z0-9_$])IFS([^A-Za-z0-9_}]|$)'
+  [[ "$t" =~ $re || "$dq" =~ $re ]]
+}
+
+# scope_unset_may_touch <name> <command text>: true when an `unset` in the
+# command can remove <name>. `unset GH_TOKEN GITHUB_TOKEN` names other
+# variables and cannot, so it no longer voids an unrelated literal binding
+# (feedback_9095ae4c). Any unset whose operands the guard cannot read word by
+# word (an expansion, a quote, a glob, `-n`, or an unset not followed by plain
+# words) counts as touching every name.
+scope_unset_may_touch() {
+  local name="${1:-}" cmd="${2:-}" rest args w re dq
+  # A quoted or escaped command word (u''nset, un"set, \unset) is still unset
+  # to the shell. Match on a copy with quotes and backslashes removed; if that
+  # copy names unset but the raw text does not, the guard cannot read the
+  # operands, so treat it as touching every name.
+  scope_text_has_ansi_escape "$cmd" && return 0
+  dq="$(scope_dequote_text "$cmd")"
+  re='(^|[^A-Za-z0-9_.-])unset([[:space:]]|$)'
+  [[ "$dq" =~ $re ]] || return 1
+  # More unset words in the dequoted copy than in the raw text means at least
+  # one unset is quoted or escaped (u''nset, un"set", \unset, $'unset'), even
+  # when a plain `unset OTHER` is also present. Its operands are not read here.
+  local n_dq n_raw
+  n_dq="$(printf '%s' "$dq" | grep -oE "$re" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  n_raw="$(printf '%s' "$cmd" | grep -oE "$re" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ "$n_dq" = "$n_raw" ] || return 0
+  rest="$cmd"
+  re='(^|[^A-Za-z0-9_.-])unset([[:space:]]+[^;&|'$'\n'')}]*)?'
+  while [[ "$rest" =~ $re ]]; do
+    args="${BASH_REMATCH[2]:-}"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+    [ -n "${args//[[:space:]]/}" ] || continue
+    local -a unset_words=()
+    read -r -a unset_words <<<"$args"
+    for w in ${unset_words[@]+"${unset_words[@]}"}; do
+      case "$w" in
+        -v|-f) ;;
+        -*) return 0 ;;
+        "$name") return 0 ;;
+        *[!A-Za-z0-9_]*) return 0 ;;
+      esac
+    done
+  done
+  return 1
+}
+
 # Print "<text before the assignment>\037<value>" for the one assignment of
 # <name> that the shell is guaranteed to have run before the use whose
 # preceding text is <use_prefix>. Returns 1 unless all of these hold:
@@ -4054,19 +4144,30 @@ scope_assignment_literal_value() {
   local backtick=$'\140' us=$'\037' nl=$'\n'
   [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
   case "$command_text$use_prefix" in *"$us"*) return 1 ;; esac
-  count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_\$])${name}\+?=" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?=" 2>/dev/null | wc -l | tr -d '[:space:]')"
   [ "$count" = "1" ] || return 1
-  re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|unset|let)([[:space:]]|$)'
+  re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|let)([[:space:]]|$)'
   [[ "$command_text" =~ $re ]] && return 1
+  # Same check on a copy without quotes or backslashes (r''ead, de"clare).
+  local dq_text
+  dq_text="$(scope_dequote_text "$command_text")"
+  [[ "$dq_text" =~ $re ]] && return 1
+  scope_unset_may_touch "$name" "$command_text" && return 1
+  scope_text_has_ansi_escape "$command_text" && return 1
+  scope_text_touches_ifs "$command_text" && return 1
   re='printf[[:space:]]+-v'
-  [[ "$command_text" =~ $re ]] && return 1
+  [[ "$command_text" =~ $re || "$dq_text" =~ $re ]] && return 1
   re='(^|[;&|({[:space:]])(for|select)[[:space:]]+'"$name"'([[:space:]]|;|$)'
-  [[ "$command_text" =~ $re ]] && return 1
+  [[ "$command_text" =~ $re || "$dq_text" =~ $re ]] && return 1
   re='\$\{'"$name"':?='
-  [[ "$command_text" =~ $re ]] && return 1
+  [[ "$command_text" =~ $re || "$dq_text" =~ $re ]] && return 1
+  # Count assignments again on the dequoted copy, so ((W""=1)) or a quoted
+  # second assignment is not missed.
+  count="$(printf '%s' "$dq_text" | grep -oE "(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?=" 2>/dev/null | wc -l | tr -d '[:space:]')"
+  [ "$count" = "1" ] || return 1
   # `. file` at a command position sources code that can set anything.
   re='(^|[;&|({]|'"$nl"')[[:space:]]*\.[[:space:]]'
-  [[ "$command_text" =~ $re ]] && return 1
+  [[ "$command_text" =~ $re || "$dq_text" =~ $re ]] && return 1
 
   assign_re="(^|[;&|[:space:](\{${backtick}])(export[[:space:]]+)?${name}="
   assign_re+='(\$\([^()]*\)|[A-Za-z0-9_./@+:-]*\$\([^()]*\)[A-Za-z0-9_./@+:-]*|"[^"]*"|'"'[^']*'"'|[^][;&|[:space:]<>()"'"'"'\\*?{}~`]*)'
@@ -4360,11 +4461,16 @@ scope_token_is_url_variable_operand() {
   value="${BASH_REMATCH[3]}"
   [ "${BASH_REMATCH[2]}" = "${BASH_REMATCH[4]}" ] || return 1
   # Exactly one assignment in the whole command, and it comes before the use.
-  count_re="(^|[^A-Za-z0-9_\$])${name}\+?="
+  count_re="(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?="
   [ "$(printf '%s' "$cmd" | grep -oE "$count_re" 2>/dev/null | wc -l | tr -d '[:space:]')" = "1" ] || return 1
   [[ "$cmd" == *"${BASH_REMATCH[0]}"*"$token"* ]] || return 1
   bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|unset|let|for|select)([[:space:]]|$)|printf[[:space:]]+-v|(^|[;&|({]|'$'\n'')[[:space:]]*\.[[:space:]]'
   [[ "$cmd" =~ $bind_re ]] && return 1
+  local url_dq
+  url_dq="$(scope_dequote_text "$cmd")"
+  [[ "$url_dq" =~ $bind_re ]] && return 1
+  [ "$(printf '%s' "$url_dq" | grep -oE "$count_re" 2>/dev/null | wc -l | tr -d '[:space:]')" = "1" ] || return 1
+  scope_text_has_ansi_escape "$cmd" && return 1
   case "$value" in http://*|https://*) return 0 ;; esac
   return 1
 }
@@ -5666,7 +5772,7 @@ scope_url_is_literal_loop_var() {
     [[ "$cmd" =~ $re ]] || return 1
     scope_subst_body_prints_https_urls "${BASH_REMATCH[2]}" || return 1
   fi
-  bind_re="(^|[^A-Za-z0-9_\$])${name}\+?=|(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|let|select)([[:space:]]|\$)|printf[[:space:]]+-v"
+  bind_re="(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?=|(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|let|select)([[:space:]]|\$)|printf[[:space:]]+-v"
   [[ "$cmd" =~ $bind_re ]] && return 1
   [ "$(printf '%s' "$cmd" | grep -oE "for[[:space:]]+${name}[[:space:]]" | wc -l | tr -d '[:space:]')" = "1" ]
 }

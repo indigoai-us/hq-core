@@ -125,6 +125,407 @@ then
   invalid_release_age=1
 fi
 
+# feedback_a041edbc: the candidate denies package installs launched through a
+# wrapper (mise exec, env, npx, sudo, nice, xargs, ...) that the pinned
+# baseline let through. Accept exactly that divergence: baseline allowed,
+# candidate denied with the supply-chain message, and the segment that holds
+# the install starts with a known launcher. A bare install segment anywhere in
+# the command disqualifies the allowance.
+launcher_wrapper_block=0
+if [ "$target_kind" = unsafe ] && [ "$base_rc" -eq 0 ] && [ "$candidate_rc" -eq 2 ] \
+  && grep -Fq 'BLOCKED — supply-chain guard' "$record/candidate/stderr" \
+  && python3 - "$record/input" <<'PY'
+import json
+import re
+import sys
+
+LAUNCHERS = {
+    "mise", "env", "npx", "bunx", "command", "exec", "nohup", "time", "sudo",
+    "doas", "nice", "timeout", "stdbuf", "caffeinate", "xargs", "corepack",
+    "ionice", "chrt", "taskset", "volta", "pnpx",
+}
+INSTALL = re.compile(r"(^|[\s'\"\\])(npm|yarn|bun|pnpm)(@\S*)?[\s'\"]+(install|i|add)\b")
+XARGS_INSTALL = re.compile(r"\bxargs\b.*\b(npm|yarn|bun|pnpm)\b")
+MANAGER_LAUNCH = re.compile(r"^(pnpm|yarn)\s+dlx\b|^(pnpm|yarn|npm|bun)\s+exec\b|^(bun|npm|pnpm)\s+x\b")
+try:
+    command = json.loads(open(sys.argv[1], encoding="utf-8").read())["tool_input"]["command"]
+except (KeyError, TypeError, ValueError):
+    sys.exit(1)
+wrapped = False
+for segment in re.split(r"&&|\|\||[;|\n]", command):
+    segment = segment.strip()
+    while re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s", segment):
+        segment = segment.split(None, 1)[1].strip()
+    words = segment.split()
+    if not words:
+        continue
+    if not (INSTALL.search(segment) or XARGS_INSTALL.search(segment)):
+        continue
+    first = words[0].strip("\"'\\").rsplit("/", 1)[-1]
+    if (MANAGER_LAUNCH.match(segment) or first in LAUNCHERS
+            or (words[0][:1] in "\"'\\" and first in {"npm", "pnpm", "yarn", "bun"})
+            or (first == "yarn" and len(words) > 1 and words[1] in {"npx", "pnpx", "bunx", "npm", "pnpm", "bun"})
+            or (first in {"npm", "pnpm"} and len(words) > 1 and words[1] == "x")):
+        wrapped = True
+    elif re.match(r"^(npm|yarn|bun|pnpm)\s+(install|i|add)\b", segment):
+        sys.exit(1)
+sys.exit(0 if wrapped else 1)
+PY
+then
+  launcher_wrapper_block=1
+fi
+
+# feedback_03770784: the candidate checks every command unit with a
+# quote-aware split, so installs after a leading text command, inside $( ) /
+# backticks / unquoted heredoc bodies, or in bash -c / eval / `| bash` scripts
+# are denied where the pinned baseline allowed them. Accept exactly that
+# divergence: baseline allowed, candidate denied with the supply-chain message,
+# and an independent quote-aware parse finds a unit that runs
+# `<pm> install|i|add <package>`.
+segment_install_block=0
+if [ "$target_kind" = unsafe ] && [ "$base_rc" -eq 0 ] && [ "$candidate_rc" -eq 2 ] \
+  && grep -Fq 'BLOCKED — supply-chain guard' "$record/candidate/stderr" \
+  && python3 - "$record/input" <<'PY'
+import json
+import re
+import shlex
+import sys
+
+# feedback_03770784: the candidate checks every command unit, including units
+# after a leading text command, units inside $( ) / backticks / unquoted
+# heredoc bodies, and the scripts of bash -c, eval, find -exec, watch, and
+# shells fed through a pipe, here-string or heredoc. Accept base 0 ->
+# candidate 2 only when this independent quote-aware parse finds a unit that
+# really runs `<pm> <install alias> <package>`, or when substitutions nest
+# past the parser limit around package-manager text (the candidate fails
+# closed there).
+PMS = {"npm", "pnpm", "yarn", "bun"}
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "ash", "fish", "tcsh", "csh"}
+KEYWORDS = {"{", "!", "if", "then", "elif", "else", "while", "until", "do", "coproc", "time"}
+LAUNCHERS = {"env", "command", "exec", "nohup", "sudo", "doas", "nice", "xargs", "time",
+             "stdbuf", "timeout", "ionice", "chrt", "taskset", "caffeinate", "busybox",
+             "arch", "chronic", "unbuffer"}
+VALUE_OPTS = {"-u", "-g", "-C", "-D", "-n", "-o", "-e", "-i", "-s", "-k", "-c", "-p",
+              "--signal", "--kill-after", "--user", "--group"}
+INSTALL_SUBS = {"install", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta",
+                "isntal", "isntall", "it", "install-test", "add"}
+PM_TEXT = re.compile(r"npm|yarn|bun")
+MAX_NEST = 60
+
+
+def split_units(text, depth):
+    """Return a list of (kind, payload) records for one command list."""
+    if depth > MAX_NEST:
+        return [("deep", text)]
+    out = []
+    n = len(text)
+    i = 0
+    start = 0
+    heredocs = []
+    line_first = 0
+
+    def close(end):
+        unit = text[start:end].strip()
+        if unit:
+            out.append(("unit", unit))
+
+    def subst(j, closer):
+        k = j
+        level = 0
+        while k < n:
+            ch = text[k]
+            if ch == "\\":
+                k += 2
+                continue
+            if ch == "'" and closer == ")":
+                end = text.find("'", k + 1)
+                k = n if end < 0 else end + 1
+                continue
+            if ch == '"' and closer == ")":
+                k = dquote(k + 1)
+                continue
+            if closer == ")" and ch == "(":
+                level += 1
+            elif ch == closer and (closer == "`" or level == 0):
+                out.extend(split_units(text[j:k], depth + 1))
+                return k + 1
+            elif closer == ")" and ch == ")":
+                level -= 1
+            k += 1
+        out.extend(split_units(text[j:], depth + 1))
+        return n
+
+    def dquote(k):
+        while k < n:
+            ch = text[k]
+            if ch == "\\":
+                k += 2
+                continue
+            if ch == '"':
+                return k + 1
+            if ch == "`":
+                k = subst(k + 1, "`")
+                continue
+            if text.startswith("$((", k):
+                end = text.find("))", k)
+                k = n if end < 0 else end + 2
+                continue
+            if text.startswith("$(", k):
+                k = subst(k + 2, ")")
+                continue
+            k += 1
+        return n
+
+    while i < n:
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "'":
+            end = text.find("'", i + 1)
+            i = n if end < 0 else end + 1
+            continue
+        if text.startswith("$'", i):
+            k = i + 2
+            while k < n and text[k] != "'":
+                k += 2 if text[k] == "\\" else 1
+            i = k + 1
+            continue
+        if ch == '"':
+            i = dquote(i + 1)
+            continue
+        if text.startswith("$((", i) or (text.startswith("((", i) and not text[start:i].strip()):
+            end = text.find("))", i)
+            i = n if end < 0 else end + 2
+            continue
+        if text.startswith("$(", i):
+            i = subst(i + 2, ")")
+            continue
+        if ch == "`":
+            i = subst(i + 1, "`")
+            continue
+        if ch == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            close(i)
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+            start = i
+            continue
+        if text.startswith("<<<", i):
+            i += 3
+            continue
+        if text.startswith("<<", i):
+            m = re.match(r"<<-?[ \t]*\$'((?:[^'\\]|\\.)*)'", text[i:])
+            if m:
+                # ANSI-C quoted delimiter: bash matches the decoded text.
+                heredocs.append((ansi_decode(m.group(1)), True))
+                i += m.end()
+                continue
+            m = re.match(r"<<-?[ \t]*(\$?)(['\"]?)(\\?)([A-Za-z0-9_.-]+)\2", text[i:])
+            if m:
+                quoted = bool(m.group(2) or m.group(3))
+                heredocs.append((m.group(4), quoted))
+                i += m.end()
+                continue
+        if ch == "&" and ((i > 0 and text[i - 1] in "<>") or text[i + 1:i + 2] == ">"):
+            i += 1
+            continue
+        if ch in ";|&()\n":
+            close(i)
+            if ch == "|" and i + 1 < n and text[i + 1] != "|":
+                out.append(("pipe", ""))
+            i += 1
+            start = i
+            if ch == "\n":
+                if heredocs:
+                    # A body is a script only when a shell on this line reads stdin.
+                    fed = any(kind == "unit" and stdin_shell(words_of(payload))
+                              for kind, payload in out[line_first:])
+                    for delim, quoted in heredocs:
+                        body_start = i
+                        body = text[body_start:]
+                        while i < n:
+                            end = text.find("\n", i)
+                            line = text[i:] if end < 0 else text[i:end]
+                            if line.lstrip("\t").rstrip("\r") == delim:
+                                body = text[body_start:i]
+                                i = n if end < 0 else end + 1
+                                break
+                            i = n if end < 0 else end + 1
+                        else:
+                            i = n
+                        if fed:
+                            out.append(("script", body))
+                        if not quoted:
+                            for sm in re.finditer(r"\$\(([^()]*)\)|`([^`]*)`", body):
+                                out.extend(split_units(sm.group(1) or sm.group(2) or "", depth + 1))
+                    heredocs = []
+                    start = i
+                line_first = len(out)
+            continue
+        i += 1
+    close(n)
+    return out
+
+
+def ansi_decode(body):
+    try:
+        return body.encode("latin-1", "backslashreplace").decode("unicode_escape")
+    except (UnicodeDecodeError, ValueError):
+        return body
+
+
+def words_of(unit):
+    unit = unit.replace("\\\n", "")
+    unit = re.sub(r"\$'((?:[^'\\]|\\.)*)'", lambda m: shlex.quote(ansi_decode(m.group(1))), unit)
+    try:
+        return shlex.split(unit, comments=False, posix=True)
+    except ValueError:
+        return unit.split()
+
+
+def strip_launchers(words):
+    while words:
+        base = words[0].rsplit("/", 1)[-1]
+        if words[0] in KEYWORDS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words = words[1:]
+        elif words[0] == "function" and len(words) > 1:
+            words = words[2:]
+        elif base in LAUNCHERS:
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[2:] if words[0] in VALUE_OPTS else words[1:]
+            if base in ("timeout", "chrt", "taskset"):
+                words = words[1:]
+        else:
+            break
+    return words
+
+
+def stdin_shell(words):
+    words = strip_launchers(words)
+    if not words or words[0].rsplit("/", 1)[-1] not in SHELLS:
+        return False
+    return len(words) == 1 or words[1].startswith(("-", "+", "<"))
+
+
+def shell_script(rest, shell):
+    seen_c = False
+    k = 0
+    while k < len(rest):
+        w = rest[k]
+        if w == "--":
+            k += 1
+            break
+        if w.startswith("--command="):
+            return w.split("=", 1)[1]
+        if w == "--command" or re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", w):
+            seen_c = True
+        elif w in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file", "--init-command") \
+                or (shell == "fish" and w == "-C"):
+            k += 1
+        elif not w.startswith(("-", "+")):
+            break
+        k += 1
+    if seen_c and k < len(rest):
+        return rest[k]
+    if "<<<" in rest and rest.index("<<<") + 1 < len(rest):
+        return rest[rest.index("<<<") + 1]
+    return None
+
+
+def installs(text, depth=0):
+    if depth > 8:
+        return False
+    piped_text = []
+    in_pipe = False
+    for kind, payload in split_units(text, depth):
+        if kind == "deep":
+            if PM_TEXT.search(payload):
+                return True
+            continue
+        if kind == "pipe":
+            in_pipe = True
+            continue
+        if kind == "script":
+            if installs(payload, depth + 1):
+                return True
+            continue
+        words = strip_launchers(words_of(payload))
+        if not words:
+            piped_text, in_pipe = [], False
+            continue
+        first = words[0].rsplit("/", 1)[-1]
+        if first == "busybox" and len(words) > 1:
+            words = words[1:]
+            first = words[0].rsplit("/", 1)[-1]
+        if first == "eval" and installs(" ".join(words[1:]), depth + 1):
+            return True
+        if first == "watch":
+            rest = words[1:]
+            while rest and rest[0].startswith("-"):
+                rest = rest[2:] if rest[0] in ("-n", "--interval", "-q", "--equexit") else rest[1:]
+            if rest and installs(" ".join(rest), depth + 1):
+                return True
+        if first in ("flock", "script", "parallel"):
+            rest = words[1:]
+            while rest and rest[0].startswith("-") and rest[0] not in ("-c", "--command"):
+                rest = rest[2:] if rest[0] in ("-w", "--timeout", "-E", "-t", "-T", "-F", "-j", "--jobs", "-S") else rest[1:]
+            if rest and rest[0] in ("-c", "--command"):
+                if len(rest) > 1 and installs(rest[1], depth + 1):
+                    return True
+            else:
+                if first != "parallel":
+                    rest = rest[1:]
+                if rest and rest[0] in ("-c", "--command") and len(rest) > 1:
+                    if installs(rest[1], depth + 1):
+                        return True
+                cmd = [w for w in rest if w not in (":::", "::::", ":::+")]
+                if cmd and installs(" ".join(shlex.quote(c) for c in cmd), depth + 1):
+                    return True
+        if first == "find":
+            cmd = []
+            collecting = False
+            for w in words[1:] + [";"]:
+                if collecting and w in (";", "+"):
+                    if cmd and installs(" ".join(shlex.quote(c) for c in cmd), depth + 1):
+                        return True
+                    cmd, collecting = [], False
+                elif collecting:
+                    cmd.append(w)
+                elif w in ("-exec", "-execdir", "-ok", "-okdir"):
+                    collecting = True
+        if first in SHELLS:
+            script = shell_script(words[1:], first)
+            if script is not None and installs(script, depth + 1):
+                return True
+            if script is None and stdin_shell(words) and in_pipe and piped_text:
+                if installs(" ".join(w for w in piped_text if not w.startswith("-")), depth + 1):
+                    return True
+        if first in PMS:
+            k = 1
+            while k < len(words) and words[k].startswith("-"):
+                k += 1
+                if k < len(words) and words[k - 1] in ("--prefix", "--registry", "--dir", "-C", "--cache"):
+                    k += 1
+            if k < len(words) and words[k] in INSTALL_SUBS:
+                if not (first == "yarn" and words[k] != "add"):
+                    if any(not w.startswith("-") for w in words[k + 1:]):
+                        return True
+        piped_text = (piped_text if in_pipe else []) + words[1:]
+        in_pipe = False
+    return False
+
+
+try:
+    command = json.loads(open(sys.argv[1], encoding="utf-8").read())["tool_input"]["command"]
+except (KeyError, TypeError, ValueError):
+    sys.exit(1)
+sys.exit(0 if installs(command) else 1)
+PY
+then
+  segment_install_block=1
+fi
+
 # US-008: the candidate exempts a single-line hq-pr-create.sh invocation (via
 # bash, sh, or direct execution) the same way it exempts `gh pr create`, so PR
 # body text is not parsed as install commands. The pinned baseline predates the
@@ -164,6 +565,10 @@ if [ "$pr_create_wrapper" -eq 1 ]; then
   grep -Fq 'BLOCKED' "$record/base/stderr" \
     && [ ! -s "$record/candidate/stdout" ] && [ ! -s "$record/candidate/stderr" ] \
     || { printf 'FAIL: US-008 hq-pr-create.sh exemption has unexpected output\n' >&2; exit 1; }
+elif [ "$launcher_wrapper_block" -eq 1 ]; then
+  :
+elif [ "$segment_install_block" -eq 1 ]; then
+  :
 elif [ "$base_rc" -ne "$candidate_rc" ]; then
   if [ "$target_kind" != unsafe ] || [ "$invalid_release_age" -ne 1 ] \
     || [ "$base_rc" -ne 0 ] || [ "$candidate_rc" -ne 2 ]; then
@@ -178,7 +583,8 @@ elif [ "$base_rc" -ne "$candidate_rc" ]; then
 fi
 
 for field in stdout stderr exit; do
-  if { [ "$intentional_release_age_block" -eq 1 ] || [ "$pr_create_wrapper" -eq 1 ]; } \
+  if { [ "$intentional_release_age_block" -eq 1 ] || [ "$pr_create_wrapper" -eq 1 ] \
+      || [ "$launcher_wrapper_block" -eq 1 ] || [ "$segment_install_block" -eq 1 ]; } \
     && { [ "$field" = stderr ] || [ "$field" = exit ]; }; then
     continue
   fi
@@ -232,9 +638,10 @@ run_fixture_suites() {
     }
   done
 
-  # US-008 negative cases: the candidate exempts these chained wrapper commands
-  # and the baseline blocks them, but they fall outside the carve-out, so the
-  # wrapper must still report the exit divergence.
+  # US-008 negative cases: chained wrapper commands fall outside the
+  # hq-pr-create.sh carve-out. Since feedback_03770784 the candidate checks
+  # every unit and denies them like the baseline, so the wrapper must pass the
+  # denial through (exit 2, supply-chain message) and never exempt them.
   local negative negative_err payload
   negative_err="$C138C_TMP/negative.err"
   mkdir -p "$C138C_TMP/negative-records" "$C138C_TMP/negative-cwd"
@@ -251,7 +658,7 @@ run_fixture_suites() {
     else
       rc=$?
     fi
-    if [ "$rc" -ne 1 ] || ! grep -Fq '(base 2, candidate 0)' "$negative_err"; then
+    if [ "$rc" -ne 2 ] || ! grep -Fq 'BLOCKED — supply-chain guard' "$negative_err"; then
       printf 'FAIL: US-008 carve-out accepted a chained wrapper command (exit %s): %s\n' \
         "$rc" "$negative" >&2
       cat "$negative_err" >&2
@@ -295,8 +702,10 @@ run_adversarial_pair unsafe adversarial_env_assignment_untrusted \
   'FOO=bar npm install left-pad' 2 plain
 run_adversarial_pair unsafe adversarial_env_assignment_quoted_prefix \
   "NPM_CONFIG_PREFIX='$env_prefix' npm install left-pad" parity plain
+# feedback_a041edbc: the pinned baseline missed installs behind launcher
+# wrappers; the candidate denies them.
 run_adversarial_pair unsafe adversarial_env_wrapper_untrusted \
-  'env FOO=bar pnpm add left-pad' 0 plain
+  'env FOO=bar pnpm add left-pad' tightened plain
 run_adversarial_pair unsafe adversarial_env_assignment_first_party \
   'FOO=bar npm install -g @indigoai-us/hq-cli@5.109.8' 0 plain
 run_adversarial_pair unsafe adversarial_and_chain \
@@ -317,10 +726,11 @@ run_adversarial_pair unsafe adversarial_later_segment_or \
   'false || npm install left-pad' 2 plain
 run_adversarial_pair unsafe adversarial_pipe_chain \
   'npm install left-pad | cat' 2 plain
+# feedback_03770784: subshells and command substitutions are now checked.
 run_adversarial_pair unsafe adversarial_subshell \
-  '( npm install left-pad )' parity plain
+  '( npm install left-pad )' tightened plain
 run_adversarial_pair unsafe adversarial_command_substitution \
-  'echo "$(npm install left-pad)"' parity plain
+  'echo "$(npm install left-pad)"' tightened plain
 run_adversarial_pair unsafe adversarial_heredoc_literal \
   $'cat <<\'EOF\'\nnpm install left-pad\nEOF' parity plain
 run_adversarial_pair unsafe adversarial_symlink_cwd_age_gate \

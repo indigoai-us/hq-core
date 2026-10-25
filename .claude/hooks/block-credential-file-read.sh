@@ -1216,7 +1216,7 @@ CRED_BASENAMES=(.npmrc .netrc _netrc .pypirc .yarnrc .yarnrc.yml .git-credential
 # wildcards stand for a variable or substitution the guard cannot read;
 # those can expand to any name and keep matching a dot (the default here).
 check_pattern() {
-  local pat="$1" dotwild="${3:-1}" cand dir base t
+  local pat="$1" dotwild="${3:-1}" concrete="${4:-0}" cand dir base t
   # The command can turn dot matching on (`shopt -s dotglob`, `bash -O
   # dotglob`, zsh `setopt GLOB_DOTS`, a GLOBIGNORE assignment, which also
   # sets dotglob); any mention keeps the wildcard matching a dot (review C2).
@@ -1238,19 +1238,32 @@ check_pattern() {
   for t in "${CRED_TAILS[@]}"; do
     cand="$H/$t"
     # shellcheck disable=SC2053 # pattern match is intended.
-    if [[ "$cand" == $pat ]]; then block "reading a credential file (pattern $(show_path "$pat"))"; fi
+    if [[ "$cand" == $pat ]]; then block "reading a credential file ($(show_path "$cand") matches pattern $(show_path "$pat"))"; fi
   done
   dir="${pat%/*}"
   base="${pat##*/}"
   case "$dir" in
     *'*'*|*'?'*|*'['*) ;;
     *)
-      for t in "${CRED_BASENAMES[@]}"; do
-        cand="$dir/$t"
-        if [[ "$cand" == $pat ]] && is_cred_path "$cand"; then
-          block "reading a credential file (pattern $(show_path "$pat"))"
-        fi
-      done
+      # concrete=1: the caller expands this literal glob and checks every
+      # real match, so a credential name that is not there cannot be read.
+      # That only holds when nothing in the command can create a file first
+      # (SUBST_IMPURE=0) and the directory is not HOME or a credential
+      # directory (feedback_0ae14829: `cat dir/*` in a project tree).
+      # prescan normally runs only for commands with a substitution; run it
+      # here too so a write anywhere in the command is seen.
+      if [ "$concrete" -eq 1 ] && [ "${PRESCAN_DONE:-0}" -ne 1 ]; then
+        prescan "$CMD" 0
+        PRESCAN_DONE=1
+      fi
+      if [ "$concrete" -ne 1 ] || [ "$SUBST_IMPURE" -ne 0 ] || [ "$dir" = "$H" ] || is_cred_dir "$dir"; then
+        for t in "${CRED_BASENAMES[@]}"; do
+          cand="$dir/$t"
+          if [[ "$cand" == $pat ]] && is_cred_path "$cand"; then
+            block "reading a credential file ($(show_path "$cand") matches pattern $(show_path "$pat"))"
+          fi
+        done
+      fi
       if is_cred_dir "$dir" && [ "$dir" != "$H" ] && [ "$dir" != "/" ]; then
         case "$H/" in "$dir"/*) ;; *)
           case "$base" in *.pub) ;; *) block "reading a credential directory with a wildcard ($(show_path "$pat"))" ;; esac
@@ -1572,7 +1585,13 @@ check_word() {
           *$'\001'*) ;;
           *) if is_cred_path "$NP"; then block "reading a credential file through a variable path ($(show_path "$pat"))"; fi ;;
         esac
-        check_pattern "$NP" 0
+        # A pattern that is only wildcards (a leading $(...) or variable the
+        # guard cannot read) names no path: say which operand it could not
+        # prove, not "pattern /*" (it still blocks, fail closed).
+        case "$NP" in
+          *[!/*?]*) check_pattern "$NP" 0 ;;
+          *) block "reading a path computed by a substitution or variable the credential guard cannot evaluate (operand: ${text})" ;;
+        esac
         # A wildcard cannot model unknown separators or parent segments.
         # Missing matches are not proof: output can name a deeper neutral
         # link, or leave this directory entirely. Metadata-only commands
@@ -1583,8 +1602,8 @@ check_word() {
         norm_path "$cand" "$cwd"
         case "$flags" in
           *g*)
-            check_pattern "$NP" 0 0
-            local matches=() mm cnt=0
+            check_pattern "$NP" 0 0 1
+            local matches=() mm cnt=0 rps=() ri
             local old_ifs="$IFS"
             shopt -s nullglob
             IFS=
@@ -1592,11 +1611,42 @@ check_word() {
             matches=($NP)
             IFS="$old_ifs"
             shopt -u nullglob
+            # The cap bounds hook time, not safety: every match is still
+            # checked. 500 blocked an ordinary `grep x policies/*.md` over a
+            # folder of about 2,000 files (feedback_0ae14829).
+            [ ${#matches[@]} -le 10000 ] || block "path has more matches than the credential guard can check"
             for mm in ${matches[@]+"${matches[@]}"}; do
-              cnt=$((cnt + 1))
-              [ $cnt -le 500 ] || block "path has more matches than the credential guard can check"
-              check_abs "$mm"
+              is_cred_path "$mm" && block "reading a credential file ($(show_path "$mm"))"
             done
+            if [ ${#matches[@]} -gt 0 ] && [ -n "$REALPATH_BIN" ]; then
+              # Resolve symlink targets in chunks of 500 paths, one realpath
+              # call per chunk, so a large folder stays fast and under the
+              # argument limit. A chunk whose realpath exits non-zero (a
+              # dangling link) or prints a different number of lines (a
+              # newline in a name) is checked file by file instead, so the
+              # line order is never trusted on its own.
+              local cs ce chunk rpout rprc
+              for ((cs = 0; cs < ${#matches[@]}; cs += 500)); do
+                chunk=("${matches[@]:cs:500}")
+                rprc=0
+                rpout="$("$REALPATH_BIN" -- "${chunk[@]}" 2>/dev/null)" || rprc=$?
+                rps=()
+                if [ "$rprc" -eq 0 ]; then
+                  while IFS= read -r ri; do rps+=("$ri"); done <<< "$rpout"
+                fi
+                if [ "$rprc" -eq 0 ] && [ ${#rps[@]} -eq ${#chunk[@]} ]; then
+                  for ((ce = 0; ce < ${#chunk[@]}; ce++)); do
+                    if [ "${rps[$ce]}" != "${chunk[$ce]}" ] && is_cred_path "${rps[$ce]}"; then
+                      block "reading a credential file ($(show_path "${chunk[$ce]}") -> $(show_path "${rps[$ce]}"))"
+                    fi
+                  done
+                else
+                  for mm in "${chunk[@]}"; do check_abs "$mm"; done
+                fi
+              done
+            else
+              for mm in ${matches[@]+"${matches[@]}"}; do check_abs "$mm"; done
+            fi
             ;;
           *) check_abs "$NP" ;;
         esac
@@ -2696,6 +2746,7 @@ analyze_cmd() {
   [ "$depth" -eq 0 ] || CUR_CWD="$saved_cwd"
 }
 
-case "$CMD" in *'$('*|*'`'*) prescan "$CMD" 0 ;; esac
+PRESCAN_DONE=0
+case "$CMD" in *'$('*|*'`'*) prescan "$CMD" 0; PRESCAN_DONE=1 ;; esac
 analyze_cmd "$CMD" 0 "$PAYLOAD_CWD"
 exit 0

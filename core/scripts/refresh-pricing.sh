@@ -64,7 +64,11 @@ jq -r '
   def usd: if . == null then "contract" elif . == (. | floor) then "$\(. | floor)" else "$\(.)" end;
   def lim: if . == null then "unlimited" else tostring end;
   def gb: if . == null then "unlimited" else "\(. / 1073741824 | floor) GB" end;
-  def cents: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length == 1 then "0" + . else . end)";
+  def pad($n): tostring | until(length >= $n; "0" + .);
+  # Two decimals, or three when the price has a tenth of a cent ($0.001).
+  def cents: (. * 1000 | round) as $m
+    | if $m % 10 == 0 then "$\($m / 1000 | floor).\($m % 1000 / 10 | floor | pad(2))"
+      else "$\($m / 1000 | floor).\($m % 1000 | pad(3))" end;
   def free: {"deploys": "deploys", "dms": "DMs", "background-ai": "background AI"}[.] // .;
   "_Generated from pricing.json (statement generated \(.generatedAt)). Do not edit by hand; run core/scripts/refresh-pricing.sh._",
   "",

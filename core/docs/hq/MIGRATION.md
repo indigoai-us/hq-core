@@ -2,6 +2,44 @@
 
 Newest release first.
 
+## Release: v16.0.41-beta.12
+
+- No action needed. `/handoff` and `/handoff-and-archive` no longer refuse to
+  archive a session whose handoff is saved when another session's handoff (or
+  a vault pull replaying an older copy) moved the shared
+  `workspace/threads/handoff.json` pointer in the same window. The archive
+  check in `core/scripts/handoff-archive-decision.sh` now accepts the
+  session's own handoff when the pointer carries this session id or the
+  thread file is committed unchanged in the HQ root; only an uncommitted
+  thread behind a foreign pointer still refuses, with the reason
+  `handoff.json points at another thread and this thread is not committed`.
+  `handoff-finalize.sh` records `session_id` on the thread file and the
+  pointer, never replaces a pointer whose `created_at` is newer than the
+  handoff being written (the payload reports `pointer_kept_newer`), and
+  `handoff-sync-prefetch.sh` restores the newer local pointer when a vault
+  pull lands an older one. Regression tests:
+  `core/scripts/tests/handoff-archive-decision.test.sh`,
+  `core/scripts/tests/handoff-finalize-pointer.test.sh` (`newer`), and
+  `core/scripts/tests/handoff-sync-prefetch-pointer-regress.test.sh`.
+
+## Release: v16.0.41-beta.5
+
+- No action needed. The SessionStart `<local-context>` banner now groups the
+  `Companies` list by the owner's relationship to each company instead of one
+  flat list. Each entry in `companies/manifest.yaml` may carry optional
+  `owner_role` (`self`, `operate`, `side`, `client`, `family`, `system`,
+  `unclassified`), `owner_status` (`active`, `slow-burn`, `on-hold`,
+  `handover-pending`, `review`) and `owner_note` keys. The banner prints one
+  line per role (`Self`, `Jobs (operate)`, `Side projects`,
+  `Client / consulting`, `Family`, `Unclassified (confirm)`), hides `system`
+  entries, and appends `(hold)` or `(handover)` for on-hold and
+  handover-pending companies. Companies with no `owner_role` land in
+  `Unclassified`, so existing manifests keep working unchanged. An optional
+  top-level `owner_summary` string prints as an `Owner jobs:` line under the
+  groups. Fields are documented in
+  `core/knowledge/public/hq-core/quick-reference.md`; regression test at
+  `.claude/hooks/tests/inject-local-context-owner-groups.test.sh`.
+
 ## Release: v16.0.37-beta.4
 
 - No action needed. HQ now routes big-data work to vyg (vyg.ai) through the

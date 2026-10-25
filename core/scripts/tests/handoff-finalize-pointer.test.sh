@@ -245,8 +245,8 @@ test_same_second_same_slug_gets_unique_ids() {
   # Freeze the clock: every date call sees the same second.
   cat > "$datebin/date" <<SH
 #!/usr/bin/env bash
-if "$real_date" -r 0 >/dev/null 2>&1; then exec "$real_date" -r 1792000000 "\$@"; fi
-exec "$real_date" -d @1792000000 "\$@"
+if "$real_date" -r 0 >/dev/null 2>&1; then exec "$real_date" -r 999999999 "\$@"; fi
+exec "$real_date" -d @999999999 "\$@"
 SH
   chmod +x "$datebin/date"
   local saved_path="$TEST_BIN"
@@ -265,12 +265,58 @@ SH
   pass "same-second same-slug handoffs get unique thread ids ($id1, -2, -3)"
 }
 
+# Two desktop sessions handing off within minutes share one pointer. The
+# second finalize may legitimately take the pointer, but a finalize whose
+# thread is OLDER than the pointer on disk (clock skew, a replayed older copy
+# racing a fresh handoff) must not win: the newest handoff stays resumable.
+# Both the thread and the pointer also record the session that wrote them so
+# the archive check can match on session id when the pointer moves on.
+test_older_finalize_does_not_overwrite_newer_pointer() {
+  local repo="$TMP_ROOT/newer-wins" datebin="$TMP_ROOT/old-date-bin" real_date out_new out_old id_new id_old
+  scaffold_repo "$repo"
+  out_new="$(HQ_SESSION_ID=sess-new run_finalize "$repo")" || fail "fresh handoff failed"
+  id_new="$(jq -r '.thread_id' <<<"$out_new")"
+  [[ "$(jq -r '.session_id' "$repo/workspace/threads/$id_new.json")" == "sess-new" ]] \
+    || fail "thread file does not record the writing session id"
+  [[ "$(jq -r '.session_id' "$repo/workspace/threads/handoff.json")" == "sess-new" ]] \
+    || fail "pointer does not record the writing session id"
+  # Freeze the clock in the past (epoch 999999999, 2001-09-09) so the second handoff is older.
+  mkdir -p "$datebin"
+  real_date="$(command -v date)"
+  cat > "$datebin/date" <<SH
+#!/usr/bin/env bash
+if "$real_date" -r 0 >/dev/null 2>&1; then exec "$real_date" -r 999999999 "\$@"; fi
+exec "$real_date" -d @999999999 "\$@"
+SH
+  chmod +x "$datebin/date"
+  local saved_path="$TEST_BIN"
+  TEST_BIN="$datebin:$saved_path"
+  out_old="$(HQ_SESSION_ID=sess-old run_finalize "$repo")" || fail "older handoff failed"
+  TEST_BIN="$saved_path"
+  id_old="$(jq -r '.thread_id' <<<"$out_old")"
+  [[ -f "$repo/workspace/threads/$id_old.json" ]] || fail "older handoff did not keep its own thread file"
+  [[ "$(jq -r '.last_thread' "$repo/workspace/threads/handoff.json")" == "$id_new" ]] \
+    || fail "older handoff overwrote the newer pointer: $(jq -c . "$repo/workspace/threads/handoff.json")"
+  [[ "$(jq -r '.session_id' "$repo/workspace/threads/handoff.json")" == "sess-new" ]] \
+    || fail "older handoff replaced the pointer's session id"
+  [[ "$(jq -r '.pointer_kept_newer' <<<"$out_old")" == "true" ]] \
+    || fail "finalize output does not report that the newer pointer was kept: $out_old"
+  [[ "$(jq -r '.pointer_kept_newer' <<<"$out_new")" == "false" ]] \
+    || fail "fresh finalize wrongly reports a kept pointer"
+  # A later handoff (real clock) takes the pointer as usual.
+  out_new="$(HQ_SESSION_ID=sess-later run_finalize "$repo")" || fail "later handoff failed"
+  [[ "$(jq -r '.last_thread' "$repo/workspace/threads/handoff.json")" == "$(jq -r '.thread_id' <<<"$out_new")" ]] \
+    || fail "a newer handoff did not take the pointer"
+  pass "an older finalize keeps the newer pointer; thread and pointer carry the session id"
+}
+
 case "${1:-all}" in
   worktree) test_linked_worktree_copies_thread_and_updates_main_pointer ;;
   atomic) test_pointer_is_atomically_replaced_in_its_directory ;;
   reconcile) test_clean_worktree_reconciles_only_matching_handoff_mirrors ;;
   unique) test_same_second_same_slug_gets_unique_ids ;;
-  all) test_linked_worktree_copies_thread_and_updates_main_pointer; test_pointer_is_atomically_replaced_in_its_directory; test_clean_worktree_reconciles_only_matching_handoff_mirrors; test_same_second_same_slug_gets_unique_ids ;;
+  newer) test_older_finalize_does_not_overwrite_newer_pointer ;;
+  all) test_linked_worktree_copies_thread_and_updates_main_pointer; test_pointer_is_atomically_replaced_in_its_directory; test_clean_worktree_reconciles_only_matching_handoff_mirrors; test_same_second_same_slug_gets_unique_ids; test_older_finalize_does_not_overwrite_newer_pointer ;;
   *) fail "unknown test selector: $1" ;;
 esac
 echo "PASS: handoff-finalize-pointer"

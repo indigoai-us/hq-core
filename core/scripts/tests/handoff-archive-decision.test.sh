@@ -142,11 +142,38 @@ write_handoff; rm "$root/workspace/threads/T-test.changeset.json"
 expect "archive: no (handoff not verified: changeset file missing)" --msg "--archive"
 write_handoff; rm "$root/workspace/threads/handoff.json"
 expect "archive: no (handoff not verified: handoff.json missing)" --msg "--archive"
-write_handoff; printf '{"last_thread":"T-other","thread_path":"workspace/threads/T-other.json"}\n' > "$root/workspace/threads/handoff.json"
-expect "archive: no (handoff not verified: handoff.json does not point at this thread)" --msg "--archive"
 write_handoff
 expect "archive: yes" --msg "--archive" --thread "$root/$thread"
 pass "handoff files are verified"
+
+# 9b. handoff.json is one shared last-writer-wins pointer. When another session
+#     hands off in the same window (or a vault pull replays an older copy), the
+#     pointer names a different thread even though this session's handoff is
+#     on disk. The thread still counts as this session's when the pointer
+#     carries this session id, or when the thread file is committed in the
+#     HQ root. Only an uncommitted thread behind a foreign pointer refuses.
+other_pointer() {
+  printf '{"last_thread":"T-other","thread_path":"workspace/threads/T-other.json","created_at":"%s"%s}\n' \
+    "$1" "${2:-}" > "$root/workspace/threads/handoff.json"
+}
+write_handoff; other_pointer 20261025T050000Z
+expect "archive: no (handoff not verified: handoff.json points at another thread and this thread is not committed)" --msg "--archive"
+other_pointer 20261025T050000Z ',"session_id":"'"$SID"'"'
+expect "archive: yes" --msg "--archive"
+other_pointer 20261025T050000Z ',"session_id":"sess-other"'
+expect "archive: no (handoff not verified: handoff.json points at another thread and this thread is not committed)" --msg "--archive"
+git -C "$root" init -q -b main
+git -C "$root" -c user.email=t@t -c user.name=t add "$thread" workspace/threads/T-test.changeset.json
+git -C "$root" -c user.email=t@t -c user.name=t commit -q -m "checkpoint: handoff T-test"
+expect "archive: yes" --msg "--archive"
+# A thread that changed since its commit is not durable yet.
+printf '{"thread_id":"T-test","edited":true}\n' > "$root/$thread"
+expect "archive: no (handoff not verified: handoff.json points at another thread and this thread is not committed)" --msg "--archive"
+git -C "$root" checkout -q -- "$thread"
+expect "archive: yes" --msg "--archive"
+rm -rf "$root/.git"
+write_handoff
+pass "own committed thread (or own session id in the pointer) archives behind a foreign pointer"
 
 # 10. Linked worktree: clean is fine, dirty refuses. Main checkout dirt is ignored.
 repo="$TMP_ROOT/repo"

@@ -42,7 +42,7 @@ up free puts the account on the usage card: no plan fee, no seat price, and
 $10 of usage included every month. Past the $10, they pay for what they use:
 
 - sync: $0.10 per moved file, per leg
-- a call to a connected app or an outside MCP server through HQ: $0.05
+- a call to a connected app or an outside MCP server through HQ: $0.001
 - an HQ MCP call: $0.05
 - an agent run: $0.05
 - files: $2.00 per GB a month

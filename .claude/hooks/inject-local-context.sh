@@ -7,9 +7,16 @@
 # Sources:
 #   companies/manifest.yaml → company slugs + qmd collections
 #   core/workers/registry.yaml → company worker counts + missing-path drift
-#   agents-profile.md       → owner name + ## Challenges section
+#   personal/agents-profile.md (or legacy agents-profile.md) → owner name + ## Challenges section
 #
 # Falls back gracefully if files are missing (fresh install).
+#
+# Tests that pin this script's output (run them after any banner change):
+#   .claude/hooks/tests/inject-local-context-owner-groups.test.sh
+#   core/scripts/tests/manifest-nested-parse.test.sh        (Companies line)
+#   core/scripts/tests/inject-local-context-process-budget.test.sh
+#   core/scripts/tests/workers-registry-missing.test.sh     (worker drift line)
+#   core/scripts/tests/hook-runtime-diagnostics.test.sh
 
 set -euo pipefail
 
@@ -20,7 +27,10 @@ HOOK_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
 
 MANIFEST="$HQ_ROOT/companies/manifest.yaml"
 REGISTRY="$HQ_ROOT/core/workers/registry.yaml"
-PROFILE="$HQ_ROOT/agents-profile.md"
+# /personal-interview writes personal/agents-profile.md (the charter's path).
+# Older installs kept it at the HQ root, so fall back there (feedback_e5ed5205).
+PROFILE="$HQ_ROOT/personal/agents-profile.md"
+[ -f "$PROFILE" ] || PROFILE="$HQ_ROOT/agents-profile.md"
 
 MISSING_WORKERS=""
 if [ -r "$HOOK_ROOT/core/scripts/lib/workers-registry.sh" ]; then
@@ -61,27 +71,85 @@ if [ -f "$PROFILE" ]; then
   ' "$PROFILE" || true)
 fi
 
-# --- Company slugs ---
+# --- Company slugs, grouped by the owner's relationship ---
+# Each company may carry `owner_role` (self | operate | side | client | family |
+# system | unclassified) and `owner_status` (active | slow-burn | on-hold |
+# handover-pending | review). Missing role → unclassified, so older manifests
+# keep working. `system` companies (workspace scaffold) are hidden from the
+# banner but still count toward QMD collections.
 COMPANIES=""
 COMPANY_COUNT=0
+GROUP_LINES=""
+OWNER_SUMMARY=""
 if [ -f "$MANIFEST" ]; then
-  # Direct child keys under the top-level companies: block.
-  while IFS= read -r slug; do
+  # One awk pass (process budget: inject-local-context-process-budget.test.sh)
+  # emits the optional top-level owner_summary as "@summary<TAB>summary<TAB>text"
+  # (tabs are IFS whitespace, so a leading field cannot be empty) and
+  # each direct child of the companies: block as "slug<TAB>role<TAB>status".
+  ROLE_SELF=""; ROLE_OPERATE=""; ROLE_SIDE=""; ROLE_CLIENT=""
+  ROLE_FAMILY=""; ROLE_UNCLASSIFIED=""
+  while IFS=$'\t' read -r slug role st; do
+    if [ "$slug" = "@summary" ]; then
+      OWNER_SUMMARY="$st"
+      continue
+    fi
     [ -n "$slug" ] || continue
     COMPANIES="${COMPANIES:+$COMPANIES, }$slug"
     COMPANY_COUNT=$((COMPANY_COUNT + 1))
+    label="$slug"
+    case "$st" in
+      handover-pending) label="$slug (handover)" ;;
+      on-hold) label="$slug (hold)" ;;
+    esac
+    case "$role" in
+      self) ROLE_SELF="${ROLE_SELF:+$ROLE_SELF, }$label" ;;
+      operate) ROLE_OPERATE="${ROLE_OPERATE:+$ROLE_OPERATE, }$label" ;;
+      side) ROLE_SIDE="${ROLE_SIDE:+$ROLE_SIDE, }$label" ;;
+      client) ROLE_CLIENT="${ROLE_CLIENT:+$ROLE_CLIENT, }$label" ;;
+      family) ROLE_FAMILY="${ROLE_FAMILY:+$ROLE_FAMILY, }$label" ;;
+      system) : ;;
+      *) ROLE_UNCLASSIFIED="${ROLE_UNCLASSIFIED:+$ROLE_UNCLASSIFIED, }$label" ;;
+    esac
   done < <(awk '
+    function flush() {
+      if (slug != "" && slug != "_template") printf "%s\t%s\t%s\n", slug, role, status
+      slug=""; role=""; status=""
+    }
     /^[[:space:]]*$/ { next }
     /^[[:space:]]*#/ { next }
-    in_companies && /^[^[:space:]#]/ { exit }
+    /^owner_summary:[[:space:]]*/ {
+      v=$0
+      sub(/^owner_summary:[[:space:]]*/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^\x27.*\x27$/) v=substr(v, 2, length(v)-2)
+      if (v != "") printf "@summary\tsummary\t%s\n", v
+      next
+    }
+    in_companies && /^[^[:space:]#]/ { flush(); in_companies=0; next }
     /^companies:[[:space:]]*$/ { in_companies=1; next }
     in_companies && /^  [a-z][a-z0-9_-]*:[[:space:]]*$/ {
+      flush()
       slug=$0
       sub(/^  /, "", slug)
       sub(/:[[:space:]]*$/, "", slug)
-      if (slug != "_template") print slug
+      next
     }
+    in_companies && slug != "" && /^    owner_role:[[:space:]]*/ {
+      role=$0; sub(/^    owner_role:[[:space:]]*/, "", role)
+      gsub(/[[:space:]\x27"]/, "", role); next
+    }
+    in_companies && slug != "" && /^    owner_status:[[:space:]]*/ {
+      status=$0; sub(/^    owner_status:[[:space:]]*/, "", status)
+      gsub(/[[:space:]\x27"]/, "", status); next
+    }
+    END { flush() }
   ' "$MANIFEST")
+  [ -z "$ROLE_SELF" ] || GROUP_LINES="${GROUP_LINES}Self: $ROLE_SELF"$'\n'
+  [ -z "$ROLE_OPERATE" ] || GROUP_LINES="${GROUP_LINES}Jobs (operate): $ROLE_OPERATE"$'\n'
+  [ -z "$ROLE_SIDE" ] || GROUP_LINES="${GROUP_LINES}Side projects: $ROLE_SIDE"$'\n'
+  [ -z "$ROLE_CLIENT" ] || GROUP_LINES="${GROUP_LINES}Client / consulting: $ROLE_CLIENT"$'\n'
+  [ -z "$ROLE_FAMILY" ] || GROUP_LINES="${GROUP_LINES}Family: $ROLE_FAMILY"$'\n'
+  [ -z "$ROLE_UNCLASSIFIED" ] || GROUP_LINES="${GROUP_LINES}Unclassified (confirm): $ROLE_UNCLASSIFIED"$'\n'
 fi
 
 # --- Company worker counts ---
@@ -130,7 +198,11 @@ if [ -n "$CHALLENGES" ]; then
   echo "Challenges: $CHALLENGES"
 fi
 if [ -n "$COMPANIES" ]; then
-  echo "Companies ($COMPANY_COUNT): $COMPANIES"
+  echo "Companies ($COMPANY_COUNT), grouped by the owner's relationship:"
+  printf '%s' "$GROUP_LINES"
+  if [ -n "$OWNER_SUMMARY" ]; then
+    echo "Owner jobs: $OWNER_SUMMARY"
+  fi
 fi
 if [ -n "$WORKER_COUNTS" ]; then
   echo "Company workers: $WORKER_COUNTS"

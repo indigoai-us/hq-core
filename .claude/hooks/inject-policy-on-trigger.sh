@@ -2827,14 +2827,18 @@ if [ -n "${SESSION_ID:-}" ] \
     fi
   else
     ACTIVE_ENFORCEMENT_LOCK="$ENFORCEMENT_LOCK"
-    if [ "$EVENT" = "UserPromptSubmit" ]; then
-      ENFORCEMENT_BASELINES="$(mktemp "$ENFORCEMENT_DIR/.baselines.XXXXXX")"
-      awk -F '\t' '$6 == "baseline"' "$ENFORCEMENT_MATCHES" 2>/dev/null > "$ENFORCEMENT_BASELINES" || true
-      mv "$ENFORCEMENT_BASELINES" "$ENFORCEMENT_MATCHES"
-    fi
+    # One atomic replace. A prompt keeps only the baseline rows and adds this
+    # turn's matches in the same temp file; truncating first in a separate
+    # rename left a window where a hook killed by its timeout published a
+    # match set with no HARD rows for the turn, and the PreToolUse gate then
+    # passed outbound actions it should block.
     ENFORCEMENT_TMP="$(mktemp "$ENFORCEMENT_DIR/.matches.XXXXXX")"
     {
-      cat "$ENFORCEMENT_MATCHES" 2>/dev/null || true
+      if [ "$EVENT" = "UserPromptSubmit" ]; then
+        awk -F '\t' '$6 == "baseline"' "$ENFORCEMENT_MATCHES" 2>/dev/null || true
+      else
+        cat "$ENFORCEMENT_MATCHES" 2>/dev/null || true
+      fi
       printf '%s' "$MATCHES" | while IFS=$'\t' read -r slug scope path enf rule kind injv ws spec stale exempt rel tkey score; do
         [ -n "$slug" ] || continue
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule" "$kind"
@@ -3693,6 +3697,45 @@ fit_reminder() {
   fit_reminder_inner "$@"
 }
 fit_reminder "$OUTPUT_CEILING"
+# Footer-only repeat: once every matched HARD
+# row has been delivered, each later event that matches the same rows emits a
+# reminder whose only line is the "Already shown this session" footer. That
+# block carried no new rule but was attached to every tool result. Emit a
+# footer-only reminder only when its text differs from the last footer this
+# session emitted, or when that footer is older than SEEN_TTL; otherwise emit
+# nothing. A reminder with any policy line or notice is never suppressed, and
+# the session and seen ledgers are untouched, so what binds is unchanged.
+# HQ_POLICY_FOOTER_REPEAT=1 restores the footer on every event.
+FOOTER_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.footer.txt"
+footer_only_reminder() {
+  [ -n "$ALREADY_FOOTER" ] || return 1
+  [ "$OUT" = "<policy-reminder>"$'\n'"$ALREADY_FOOTER"$'\n'"</policy-reminder>" ]
+}
+footer_repeat_is_fresh() {
+  local stamp="" text="" now=""
+  [ -n "${SESSION_ID:-}" ] && [ -f "$FOOTER_FILE" ] || return 1
+  { IFS= read -r stamp; IFS= read -r text; } < "$FOOTER_FILE" 2>/dev/null || true
+  [ "$text" = "$ALREADY_FOOTER" ] || return 1
+  case "$stamp" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s 2>/dev/null || true)"
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  [ $((now - stamp)) -ge 0 ] && [ $((now - stamp)) -lt "$SEEN_TTL" ]
+}
+record_emitted_footer() {
+  [ -n "${SESSION_ID:-}" ] && [ -n "$ALREADY_FOOTER" ] || return 0
+  case "$OUT" in *"$ALREADY_FOOTER"*) ;; *) return 0 ;; esac
+  local tmp=""
+  tmp="$(mktemp "$DEDUPE_DIR/.footer.XXXXXX" 2>/dev/null)" || return 0
+  if printf '%s\n%s\n' "$(date +%s 2>/dev/null || echo 0)" "$ALREADY_FOOTER" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$FOOTER_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  else
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+}
+if [ -z "${NO_STDOUT_REASON:-}" ] && [ -n "$OUT" ] && [ "${HQ_POLICY_FOOTER_REPEAT:-0}" != "1" ] \
+  && footer_only_reminder && footer_repeat_is_fresh; then
+  OUT=""
+fi
 HOOK_OUTPUT="$OUT"
 if [ -z "${NO_STDOUT_REASON:-}" ] && [ -n "$OUT" ]; then
   if [ "$EVENT" = "PostToolUse" ]; then
@@ -3752,6 +3795,7 @@ if [ -n "$HOOK_OUTPUT" ]; then
   if [ -n "$HOOK_OUTPUT" ]; then
     record_emitted_match_rows "$MATCHES" "$OUT"
     record_malformed_notice "$OUT"
+    record_emitted_footer
   fi
 else
   OUT_BYTES=0

@@ -489,7 +489,7 @@ resolve_vault_token() {
         "") ;;
         *)
           case "$tok" in
-            ../*|*/../*) printf '%s' "$CWD_CTX/$tok" ;;
+            ..|../*|*/../*|*/..) printf '%s' "$CWD_CTX/$tok" ;;
           esac
           ;;
       esac

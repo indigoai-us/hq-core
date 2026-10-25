@@ -1,7 +1,7 @@
 ---
 name: super-conductor
 description: Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
-allowed-tools: Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Bash(node core/scripts/super-conductor-open-asks.mjs:*), Bash(node core/scripts/super-conductor-state.mjs:*), Bash(node core/scripts/super-conductor-requests.mjs:*), Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(node core/scripts/super-conductor-triage.mjs:*), mcp__ccd_session__start_session, Bash(hq lanes questions:*), Bash(hq mesh story:*), Agent, Bash(node core/scripts/lib/super-conductor-scope.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
+allowed-tools: Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Bash(node core/scripts/super-conductor-open-asks.mjs:*), Bash(node core/scripts/super-conductor-state.mjs:*), Bash(node core/scripts/super-conductor-requests.mjs:*), Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(node core/scripts/super-conductor-triage.mjs:*), mcp__ccd_session__start_session, Bash(hq lanes questions:*), Bash(hq mesh story:*), Agent, Bash(node core/scripts/lib/super-conductor-scope.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
 argument-hint: "[off | status | interval <1m|5m|10m|seconds> | channels <hq_dms,slack,email,x> | <note for the team>]"
 ---
 
@@ -122,10 +122,11 @@ On a full start, resolve the channel set and the present interval in this
 order: per-run argument, then `channels` and `watch_interval.present` from
 `node core/scripts/super-conductor-prefs.mjs get` (the owner's settings), then
 the save file of a resumed link. When either one is still unresolved, ask the owner through
-`/decision-queue`, one picker per question:
+`/decision-queue`, one Queue card per question:
 
-1. "Which channels should I watch?" — `multiSelect: true`, options HQ DMs,
-   Slack, Email, X. Sessions are always watched; say so in the question.
+1. Ask whether to watch each optional channel (HQ DMs, Slack, Email, X),
+   one Yes/No step at a time. Sessions are always watched. The decision
+   record accepts one choice; do not encode a multi-select picker as one card.
 2. "How often should I check for new things?" — options 1 minute
    (Recommended), 5 minutes, 10 minutes, 30 minutes. "Other" accepts any
    value, clamped per "Watch interval".
@@ -824,7 +825,7 @@ wakeup `noop: true` when nothing changed.
 
 ## Step 8: Everything, always, here — the continuous decision queue
 
-Every open owner decision from any source is asked in this window. Never tell
+Every open owner decision from any source is asked through the personal local bot in the owner’s Queue. Never tell
 the owner to "answer it in its window", and never list owner decisions in
 prose or ask "want me to walk these?" first.
 
@@ -941,6 +942,16 @@ same.
   for the next wakeup or park it in the log first. Rows the triage daemon
   queues from the ledger arrive the same way; do not add them twice (the
   queue dedupes on source and ref).
+- The desk asks each row as a Queue card first (US-003): it runs
+  `core/scripts/decision-queue.sh`, which asks through `hq decide ask` as the
+  owner's personal local bot, one card at a time, and on every drain runs
+  `hq decide list --open --json` and `hq decide show` on the card it owns.
+  Release 1 allows only that bot to ask; never switch to owner credentials
+  to get past a refused ask.
+  Chat is a fallback only after `hq decide ask` fails (for example the decisions API returning 404 before it is deployed,
+  or the asker gate refusing): the failure is saved in the card state file
+  and the desk opens its picker for that row as before. The conductor's side
+  does not change: it adds rows and relays answers.
 - This session never calls `AskUserQuestion` for an owner decision and never
   waits for an answer. The desk asks, one picker per row, critical first,
   then arrival order; the answer comes back as a `SUPER-CONDUCTOR ANSWER`
@@ -994,15 +1005,16 @@ same.
 - An item the owner deferred ("I'm replying live", "hold") is re-offered only
   when new information about it arrives.
 
-### What goes on each picker
+### What goes on each Queue card
 
 - The question names who asked and what happens on each answer, in one or two
   short lines.
 - Two to four options of a few words each, recommended option first and
-  marked `(Recommended)`; "Other" is always available.
-- Outbound drafts and visual or audio candidates go in the option's
-  `preview`: the full draft text, or the asset name, link, and a one-line
-  description. Picking a send option is the owner's go for that exact text.
+  identified by `--recommend`. A fallback picker marks `(Recommended)` and
+  offers the chat tool’s free-text response. Queue cards use explicit choices.
+- Put full outbound drafts in the decision context and asset links in its
+  context links. A fallback picker uses the option’s `preview`. Picking a
+  send option is the owner’s go for that exact text.
 
 ### Relaying the answer
 
@@ -1045,9 +1057,8 @@ does not take a turn.
   it to drain the mailbox. A child whose `send_message` returns "archived" is
   dropped from the board and logged.
 
-When the owner is away (`/overnight` running), decisions queue under
-`## Waiting on the owner` and are walked through `/decision-queue` the moment
-the owner is back.
+When the owner is away (`/overnight` running), keep one active Queue card
+and append later steps. Continue checking answers on every sweep.
 
 ## Save file (survives compacts)
 
@@ -1126,7 +1137,8 @@ End every turn in which children are working with one row per session
 name, state and company, a plain-words task, and the last thing it reported.
 Green working, yellow waiting on the owner or on CI, blue done or idle.
 The board is status only. When an item waits on the owner, show the board
-first and end the turn on the `/decision-queue` picker.
+first and leave the active Queue card available. A fallback picker is used
+only after a logged ask failure.
 
 ## Rules
 

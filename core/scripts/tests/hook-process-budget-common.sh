@@ -102,9 +102,18 @@ c138c_measure_pair() {
   candidate_forks="$C138C_HOOK_FORKS"; candidate_execves="$C138C_HOOK_EXECVES"
   candidate_exit="$C138C_HOOK_EXIT"; candidate_out="$C138C_HOOK_OUT"; candidate_err="$C138C_HOOK_ERR"
 
+  local tightened=0
   if [ "$expected_exit" = parity ]; then
     [ "$base_exit" -eq "$candidate_exit" ] \
       || { echo "FAIL: exit differs for $hook_kind/$label: base $base_exit, candidate $candidate_exit" >&2; return 1; }
+  elif [ "$expected_exit" = tightened ]; then
+    # An intentional new denial: the pinned source allowed it, the candidate
+    # must deny it with the guard's block message.
+    [ "$base_exit" -eq 0 ] && [ "$candidate_exit" -eq 2 ] \
+      || { echo "FAIL: $hook_kind/$label expected base 0 and candidate 2, got $base_exit and $candidate_exit" >&2; return 1; }
+    grep -Fq 'BLOCKED — supply-chain guard' "$candidate_err" \
+      || { echo "FAIL: $hook_kind/$label candidate denial has no BLOCKED message" >&2; return 1; }
+    tightened=1
   else
     [ "$base_exit" -eq "$expected_exit" ] \
       || { echo "FAIL: pinned source $hook_kind/$label exited $base_exit, expected $expected_exit" >&2; return 1; }
@@ -113,7 +122,7 @@ c138c_measure_pair() {
   fi
   cmp -s "$base_out" "$candidate_out" \
     || { echo "FAIL: stdout differs for $hook_kind/$label" >&2; return 1; }
-  cmp -s "$base_err" "$candidate_err" \
+  [ "$tightened" -eq 1 ] || cmp -s "$base_err" "$candidate_err" \
     || { echo "FAIL: stderr differs for $hook_kind/$label" >&2; return 1; }
 
   # shellcheck disable=SC2034 # Sourcing budget tests consume these globals.

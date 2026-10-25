@@ -374,6 +374,8 @@ jobs:
             core/scripts/tests/handoff-builder-route.test.sh \
             core/scripts/handoff-archive-decision.sh \
             core/scripts/tests/handoff-archive-decision.test.sh \
+            core/scripts/handoff-sync-prefetch.sh \
+            core/scripts/tests/handoff-sync-prefetch-pointer-regress.test.sh \
             core/scripts/retro-merge-deficiencies.sh \
             core/scripts/tests/retro-merge-deficiencies.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
@@ -509,6 +511,8 @@ jobs:
         run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
       - name: Handoff commit holds only its own paths and skips nested knowledge repos
         run: bash core/scripts/tests/handoff-finalize-commit-scope.test.sh
+      - name: Handoff paths cannot escape into another company
+        run: bash core/scripts/tests/handoff-finalize-path-escape.test.sh
       - name: Handoff finalizer keeps swept-in media and oversize files out of commits
         run: bash core/scripts/tests/handoff-finalize-media-filter.test.sh
       - name: Handoff finalizer stores deficiencies and system_info
@@ -531,6 +535,8 @@ jobs:
         run: bash core/scripts/tests/handoff-builder-route.test.sh
       - name: Handoff decides whether to archive its own desktop session
         run: bash core/scripts/tests/handoff-archive-decision.test.sh
+      - name: Handoff prefetch keeps the newer local pointer over an older pulled copy
+        run: bash core/scripts/tests/handoff-sync-prefetch-pointer-regress.test.sh
       - name: Retro merges thread deficiencies with its own lever findings
         run: bash core/scripts/tests/retro-merge-deficiencies.test.sh
       - name: Handoff finalizer smoke
@@ -2508,9 +2514,13 @@ jobs:
       id: t_skill_script_refs__72
       if: "${{ !cancelled() && steps.t_skill_script_refs__71.outcome == 'success' }}"
       run: bash core/scripts/tests/decision-queue-policy-links.test.sh
+    - name: "[skill-script-refs] /decision-queue Queue cards through hq decide, chat fallback"
+      id: t_skill_script_refs__73
+      if: "${{ !cancelled() && steps.t_skill_script_refs__72.outcome == 'success' }}"
+      run: bash core/scripts/tests/decision-queue.test.sh
     - name: "[skill-script-refs] /super-conductor triage daemon"
       id: t_skill_script_refs__32
-      if: "${{ !cancelled() && steps.t_skill_script_refs__72.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_skill_script_refs__73.outcome == 'success' }}"
       run: bash core/scripts/tests/super-conductor-triage.test.sh
     - name: "[skill-script-refs] /super-conductor critical channels and answered-in-source guard"
       id: t_skill_script_refs__33

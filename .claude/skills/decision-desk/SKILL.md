@@ -1,7 +1,7 @@
 ---
 name: decision-desk
 description: The owner's decision desk for one /super-conductor link. It opens one picker per queued decision, writes the answer back to the link's decision queue, and does nothing else. Use when the user says "/decision-desk <link>", "open the decision desk", or "ask me the conductor's decisions here".
-allowed-tools: Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(hq monitor:*), Bash(hq lanes link send:*), Bash(bash core/scripts/hq-session.sh:*), Bash(cat:*), Bash(ls:*), Read, AskUserQuestion, PushNotification, mcp__ccd_session_mgmt__set_session_title, mcp__ccd_session_mgmt__send_message
+allowed-tools: Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(hq monitor:*), Bash(hq lanes link send:*), Bash(bash core/scripts/hq-session.sh:*), Bash(cat:*), Bash(ls:*), Read, AskUserQuestion, PushNotification, mcp__ccd_session_mgmt__set_session_title, mcp__ccd_session_mgmt__send_message
 argument-hint: "<link>"
 ---
 
@@ -80,7 +80,60 @@ The watcher keeps its own seen file next to the queue
 
 ## Step 3: Drain
 
-Loop until the queue has no open row:
+### Step 3a: Queue card first
+
+Ask each row as a card in the owner's HQ Queue before any picker
+(`/decision-queue`, "Queue cards"). Card state:
+`workspace/reports/conduct/<link>-queue-cards.json`. `<company>` is this
+session's primary locked company (the first slug printed by
+`bash core/scripts/hq-session.sh get company_slugs`).
+
+1. Run `bash core/scripts/decision-queue.sh --state <cards> sweep` and act
+   on the active step it returns (step 3). `idle` means no active step: go
+   to 2.
+2. Claim one row: `node core/scripts/super-conductor-decisions.mjs next
+   --file <queue> --json --claim <desk name> --count 1`, saved to a
+   temporary row file. Exit 3: the drain is done. Then `bash
+   core/scripts/decision-queue.sh --state <cards> enqueue-row <row file>
+   --company <company>` and sweep again. A non-zero exit from `enqueue-row`
+   (a row it cannot map), or `idle` after it, sends that row to the picker
+   path.
+3. Act on the step's status:
+   - `open`: the card is on the owner's Queue. Keep the claim fresh with
+     `claim --file <queue> --id <step_id> --desk <desk name>` on every wake.
+     When the row is no longer open (answered or dropped elsewhere), or the
+     claim exits 3 (another desk holds it), run `withdraw <decision_id>` so
+     the owner is not asked twice. When another open row is `critical`
+     (`list --file <queue> --status open --json`), run one picker round for
+     it now; `next` returns only critical rows while one is open. Otherwise
+     open no picker and end the drain.
+   - `answer_pending`: re-claim the row (`claim --id <step_id> --desk <desk
+     name>`; a card often outlives the 15-minute claim), then write the pick
+     with `answer --id <step_id> --answer "<label of step.answer.choiceId>"
+     --desk <desk name>` (plus `--relay-by desk` and Step 3b for a child
+     session's row). Run `ack <step_id> --evidence <decision_id>` only after
+     `answer` exits 0. When the row is no longer open (resolved elsewhere)
+     or the re-claim exits 3 (another desk holds it), run `cancel <step_id>
+     --reason "<why>; Queue pick: <label>"` so later rows are not blocked,
+     and name the unwritten pick in the status line. Repeat from 1.
+   - `fallback`: `hq decide` failed (the decisions API returning 404 before
+     it is deployed, or the asker gate refusing); the failure is saved in the
+     card file. Release the step with `cancel <step_id> --reason "hq decide
+     failed; asked on the desk"`, then run one round of the picker path. The
+     row is still open and claimed by this desk, so the picker asks it. A
+     row left open (the picker was dismissed) gets a new attempt on the next
+     wake.
+   - `expired`: `resolve-expired <step_id> --action drop --reason "expired on
+     the Queue"`, then run one round of the picker path.
+   - `ask_uncertain`, `reconcile_required`, or a non-zero exit: stop. Open no
+     picker; say so in the status line and retry on the next wake. A
+     `queue locked` error names the lock; clear it only after checking that
+     the recorded pid has exited.
+
+### Picker path
+
+The desk's picker, used only after Step 3a sends a row here (a failed ask,
+an expired card, or a row it cannot map). One round:
 
 1. Claim up to four rows in one call:
    `node core/scripts/super-conductor-decisions.mjs next --file <queue> --json --claim <desk name> --count 4`.
@@ -106,7 +159,7 @@ Loop until the queue has no open row:
    - `--desk` is the name this desk claimed with. `answer` refuses a row
      another desk claimed in the last 15 minutes: that desk's picker is open.
      Exit 2 with "is claimed by" means skip the row; it is not this desk's.
-4. Repeat from 1.
+4. Return to Step 3a.
 
 A `SUPER-CONDUCTOR DECISION` line arriving in this session is the wake:
 send the owner one `PushNotification` with the open count only (never the
@@ -205,8 +258,9 @@ status line instead and continue.
   session only asks, writes answers, and relays a child session's answer to
   that session (Step 3b).
 - No prose questions. Everything the owner is asked is one `AskUserQuestion`.
-- Never end a turn with an open row unasked. The turn ends on a picker, or
-  after `next` exits 3.
+- Never end a turn with an open row unasked. The turn ends on an open Queue
+  card (one at a time; later rows wait for it), on a picker, or after `next`
+  exits 3.
 - The owner's typed "Other" text is the answer verbatim: no paraphrase, no
   cleanup, no added recommendation.
 - Secrets never go in a row. If a queued question or an answer would carry a

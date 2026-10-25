@@ -875,6 +875,94 @@ assert_contains "$out" 'session: old-session' \
   || fail "19d: the exact session identity should be reported: $out"
 pass "19d: freshness gates the no-session case; --session-id bypasses it by identity"
 
+echo "[20] a non-v2 host with the exact session's ledger reads OBSERVED under the doctor path"
+# feedback_a3c5913f: on Claude desktop `hq doctor` reports the host as
+# "unknown" and fails hooks.runtime.enforcement even though the session's own
+# ledger is present. The checker relayed that verdict as FAIL / NOT OBSERVED and
+# printed "did not write a ledger" next to the doctor's "ledger is present".
+DESKTOP="$TMP/doctor-desktop-session"
+make_healthy_root "$DESKTOP"
+mkdir -p "$DESKTOP/workspace/orchestrator/policy-trigger-state"
+: >"$DESKTOP/workspace/orchestrator/policy-trigger-state/desk-session-1.txt"
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$DESKTOP" --require-ledger --session-id desk-session-1 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "20a: exact session ledger on an unknown host must exit 0: $out"
+assert_contains "$out" 'checked via: hq doctor' \
+  || fail "20a: the doctor path must be the one exercised: $out"
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
+  || fail "20a: exact session ledger must read OBSERVED: $out"
+if assert_contains "$out" 'host platform is unknown'; then
+  fail "20a: the doctor host-unknown message must not be relayed as a failure: $out"
+fi
+pass "20a: exact session ledger reads OBSERVED on an unknown host"
+
+# 20b: a different session's id still fails (the ledger must be this session's).
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$DESKTOP" --session-id other-session 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "20b: another session's ledger must not attest: $out"
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "20b: another session's id must read NOT OBSERVED: $out"
+pass "20b: another session's ledger does not attest this session"
+
+# 20c: without --session-id a ledger is present but unattributed. The verdict
+# stays NOT OBSERVED (19c), but the text must not claim no ledger was written.
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$DESKTOP" --require-ledger 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "20c: unattributed ledger should stay exit 2: $out"
+if assert_contains "$out" 'did not write a ledger'; then
+  fail "20c: output contradicts itself while a ledger is present: $out"
+fi
+assert_contains "$out" 'Re-run with --session-id' \
+  || fail "20c: output should point to --session-id: $out"
+pass "20c: unattributed ledger gets consistent wording and a --session-id hint"
+
+echo "[21] --session-id is validated and the session ledger must be fresh"
+# 21a: a traversal id must never read OBSERVED, even when the target .txt exists.
+TRAV="$TMP/doctor-traversal"
+make_healthy_root "$TRAV"
+mkdir -p "$TRAV/workspace/orchestrator/policy-trigger-state"
+: >"$TRAV/outside.txt"
+for bad in "../../../outside" ".." "." "a/b" "x y"; do
+  set +e
+  out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$TRAV" --session-id "$bad" 2>&1)"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "21a: invalid session id '$bad' must not exit 0: $out"
+  if assert_contains "$out" 'HQ runtime enforcement: OBSERVED'; then
+    fail "21a: invalid session id '$bad' read OBSERVED: $out"
+  fi
+done
+pass "21a: traversal and malformed session ids are rejected"
+
+# 21b: a stale exact-session ledger does not override the doctor on a non-v2 host.
+STALEDESK="$TMP/doctor-desktop-stale"
+make_healthy_root "$STALEDESK"
+mkdir -p "$STALEDESK/workspace/orchestrator/policy-trigger-state"
+: >"$STALEDESK/workspace/orchestrator/policy-trigger-state/resumed-1.txt"
+touch -t 202001010000 "$STALEDESK/workspace/orchestrator/policy-trigger-state/resumed-1.txt"
+set +e
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$STALEDESK" --session-id resumed-1 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "21b: stale session ledger must exit 2: $out"
+assert_contains "$out" 'HQ runtime enforcement: NOT OBSERVED' \
+  || fail "21b: stale session ledger must read NOT OBSERVED: $out"
+assert_contains "$out" 'is stale' \
+  || fail "21b: output should say the ledger is stale: $out"
+pass "21b: a stale session ledger stays NOT OBSERVED and says so"
+
+# 21c: the same ledger freshly touched reads OBSERVED; the window is overridable.
+touch "$STALEDESK/workspace/orchestrator/policy-trigger-state/resumed-1.txt"
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" bash "$CHECKER" --root "$STALEDESK" --session-id resumed-1 2>&1)"
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
+  || fail "21c: fresh session ledger must read OBSERVED: $out"
+touch -t 202001010000 "$STALEDESK/workspace/orchestrator/policy-trigger-state/resumed-1.txt"
+out="$(PATH="$STUBBIN:$PATH" HQ_RUNTIME_MARKER_FILE="$NOMARK" HQ_SESSION_LEDGER_MAX_AGE_MINUTES=99999999 bash "$CHECKER" --root "$STALEDESK" --session-id resumed-1 2>&1)"
+assert_contains "$out" 'HQ runtime enforcement: OBSERVED' \
+  || fail "21c: HQ_SESSION_LEDGER_MAX_AGE_MINUTES should widen the window: $out"
+pass "21c: a fresh session ledger reads OBSERVED and the window is overridable"
+
 bash "$ROOT/core/scripts/tests/check-hook-helper-doctor.test.sh"
 bash "$ROOT/core/scripts/tests/check-hook-helper-call-forms.test.sh"
 bash "$ROOT/core/scripts/tests/check-hook-helper-callsite-coverage.test.sh"

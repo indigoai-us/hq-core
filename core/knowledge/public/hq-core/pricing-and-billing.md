@@ -110,14 +110,14 @@ portal, which HQ opens for the company's owner.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-10-20T05:12:44.286Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-10-24T19:53:40.002Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
 ### Usage card (new signups from 2026-10-16, card version 2026-10-16)
 
 | Meter | Price | Per | Waived in trial |
 |---|---|---|---|
 | Sync | $0.10 | sync | no |
-| Gateway call | $0.05 | call | no |
+| Gateway call | $0.001 | call | no |
 | HQ MCP call | $0.05 | call | no |
 | Agent run | $0.05 | run | no |
 | Storage | $2.00 | GB-month | no |
