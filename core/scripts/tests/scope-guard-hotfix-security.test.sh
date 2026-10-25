@@ -154,7 +154,9 @@ bash_case 2 control-dangling-foreign-lsd 'for d in $(ls -d workspace/dangling-lo
 bash_case 2 control-split-name-lsd 'for d in $(ls -d workspace/space-loop/*); do cat "$d"; done'
 for ((n=0;n<2049;n++)); do : > "$TMP/workspace/many-loop/a$n"; done
 bash_case 2 control-lsd-cap 'for d in $(ls -d workspace/many-loop/*); do cat "$d"; done'
-for ((n=0;n<501;n++)); do : > "$TMP/workspace/computed-many/a$n"; done
+# The credential guard's literal-glob match cap is 10000 (feedback_0ae14829);
+# one past it must still fail closed.
+for ((n=0;n<10001;n++)); do : > "$TMP/workspace/computed-many/a$n"; done
 credential_case control-glob-cap 'cat workspace/computed-many/*'
 bash_case 2 control-grep-line-number-url 'for u in $(grep -on "https://[^[:space:]]*" workspace/urls); do curl "$u"; done'
 bash_case 2 control-grep-filename-url 'for u in $(grep -oH "https://[^[:space:]]*" workspace/urls); do curl "$u"; done'

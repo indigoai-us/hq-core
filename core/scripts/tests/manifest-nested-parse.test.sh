@@ -79,11 +79,14 @@ YAML
 
 hook_rc=0
 multi_out="$(CLAUDE_PROJECT_DIR="$MULTI" bash "$HOOK" 2>&1)" || hook_rc=$?
-multi_companies="$(printf '%s\n' "$multi_out" | awk '/^Companies \(/ { print; exit }')"
+# The Companies block is a header line plus one line per owner_role group.
+# Entries without owner_role land in the Unclassified group.
+multi_companies="$(printf '%s\n' "$multi_out" | awk '/^Companies \(/ { p=1 } p && /^(Company workers|Missing workers|QMD collections|Data platform):/ { exit } p { print }')"
 
 assert_equals "$hook_rc" "0" "inject-local-context exits cleanly"
 assert_contains "$multi_out" "<local-context>" "inject-local-context emits local-context"
-assert_equals "$multi_companies" "Companies (2): indigo, acme" "multiple nested companies listed"
+assert_equals "$multi_companies" "Companies (2), grouped by the owner's relationship:
+Unclassified (confirm): indigo, acme" "multiple nested companies listed"
 assert_contains "$multi_companies" "indigo" "indigo listed"
 assert_contains "$multi_companies" "acme" "acme listed"
 assert_not_contains "$multi_companies" "companies" "top-level companies key not listed"

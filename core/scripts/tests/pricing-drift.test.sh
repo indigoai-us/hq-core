@@ -22,7 +22,7 @@ jq '.agentRungs[0].monthlyUsd = 120' "$SHIPPED" >"$TMP/rung.json"
 bash "$DRIFT" --live-file "$TMP/rung.json" >/dev/null 2>&1; check "rung price change exits 1" 1 $?
 
 # Usage card (2026-10-16 card): the shipped copy carries the contract shape.
-jq -e '[.usage.meters[] | {(.id): .unitUsd}] | add == {"member-sync":0.10,"integration-call":0.05,"hq-mcp-call":0.05,"agent-run":0.05,"storage":2,"secret":0.5,"vault":5}' "$SHIPPED" >/dev/null
+jq -e '[.usage.meters[] | {(.id): .unitUsd}] | add == {"member-sync":0.10,"integration-call":0.001,"hq-mcp-call":0.05,"agent-run":0.05,"storage":2,"secret":0.5,"vault":5}' "$SHIPPED" >/dev/null
 check "shipped copy carries the card's meter rates, vault included" 0 $?
 jq -e '[.usage.meters[] | select(.waivedInTrial == true) | .id] == ["vault"]' "$SHIPPED" >/dev/null
 check "only the vault fee is waived in the trial" 0 $?
@@ -83,6 +83,7 @@ bash "$TMP/r/core/scripts/refresh-pricing.sh" --from-file "$SHIPPED" >/dev/null 
 cmp -s "$MD" "$ROOT/core/knowledge/public/hq-core/pricing-and-billing.md"; check "shipped md matches its pricing.json" 0 $?
 grep -q '^| Sync | \$0.10 | sync | no |$' "$MD"; check "refresh writes the usage meter table" 0 $?
 grep -q '^| Vault | \$5.00 | vault-month | yes |$' "$MD"; check "refresh writes the vault fee, waived in trial" 0 $?
+grep -q '^| Gateway call | \$0.001 | call | no |$' "$MD"; check "refresh keeps a tenth-of-a-cent price" 0 $?
 grep -q '^- Trial: 30 days, capped at \$500 of usage\.$' "$MD"; check "refresh writes the trial cap" 0 $?
 grep -q '^| xlarge | t3.xlarge | \$800 |$' "$MD"; check "refresh writes the box ladder" 0 $?
 grep -q '^- Use HQ free, self-hosted or on-prem: https://docs.hq.computer/hq/guide/use-hq-for-free/$' "$MD"; check "refresh writes the self-hosted link" 0 $?

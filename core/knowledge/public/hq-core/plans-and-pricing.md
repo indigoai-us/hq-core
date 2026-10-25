@@ -44,7 +44,7 @@ account gets $10 of included usage every month and pays for usage past it.
 | Line | Price |
 |---|---|
 | Sync (moved files, per leg) | $0.10 |
-| Gateway call (integrations and external MCP through HQ) | $0.05 |
+| Gateway call (integrations and external MCP through HQ) | $0.001 |
 | HQ MCP call | $0.05 |
 | Agent run | $0.05 |
 | Storage | $2.00 per GB-month |

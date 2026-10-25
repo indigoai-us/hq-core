@@ -653,6 +653,31 @@ bash_case 0 "backtick \`cat list\` operand (07ed4383)" 'wc -c `cat list.txt`'
 bash_case 0 "xargs-free read of \$(ls glob) matches (175bdcda)" 'head -1 $(ls workspace/threads/*.json)'
 bash_case 0 "slash-star glob with \$(...) in the same command (07ed4383)" 'ls workspace/threads/* && wc -l $(cat list.txt)'
 bash_case 2 "file-read substitution not computed: redirect from \$(cat) target (5030216e)" 'wc -l < "$(head -1 one.txt | head -1)"'
+# feedback_0ae14829: a literal project glob is expanded and every real match
+# checked, so a credential name that is not there no longer blocks it.
+mkdir -p "$PROJ/inbox/pending" "$PROJ/many" "$PROJ/keys-here" "$PROJ/linkdir"
+printf 'a\n' > "$PROJ/inbox/pending/m1.json"
+printf 'b\n' > "$PROJ/inbox/pending/m2.json"
+for i in $(seq 1 700); do : > "$PROJ/many/p$i.md"; done
+printf 'k\n' > "$PROJ/keys-here/id_rsa"
+printf 'n\n' > "$PROJ/linkdir/notes.txt"
+ln -sf "$FH/.npmrc" "$PROJ/linkdir/npm.txt"
+bash_case 0 "project slash-star glob with only neutral files (0ae14829)" 'cat inbox/pending/*'
+bash_case 0 "glob over 700 project files (0ae14829 match cap)" 'grep -n foo many/*.md'
+bash_case 2 "project glob that really matches a private key" 'cat keys-here/*'
+bash_case 2 "project glob that matches a symlink to ~/.npmrc" 'cat linkdir/*'
+mkdir -p "$PROJ/danglemix"
+ln -sf "$PROJ/no-such-target" "$PROJ/danglemix/a-dangling"
+ln -sf "$FH/.npmrc" "$PROJ/danglemix/b-npm.txt"
+bash_case 2 "dangling link beside a credential link still blocks (per-file fallback)" 'cat danglemix/*'
+bash_case 2 "project glob after a write in the same command keeps the hypothetical check" 'cp notes.txt inbox/pending/ && cat inbox/pending/*'
+bash_case 2 "home slash-star glob still blocks" 'cat ~/*'
+bash_case 2 "credential directory glob still blocks" 'cat ~/.aws/*'
+# feedback: an unprovable substitution operand is named in the message, not
+# reported as "pattern /*" with no path (still blocked, fail closed).
+msg_json="$(jq -nc --arg c 'grep -n registry $(cat list.txt)' --arg d "$PROJ" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}')"
+msg_out="$(printf '%s' "$msg_json" | HOME="$FH" bash "$HOOK" 2>&1 >/dev/null)"; msg_rc=$?
+if [ "$msg_rc" -eq 2 ] && [[ "$msg_out" != *"(pattern /*)"* ]] && [[ "$msg_out" == *"operand:"* ]]; then ok "unprovable substitution message names the operand, not pattern /*"; else bad "unprovable substitution message (rc $msg_rc): ${msg_out%%$'\n'*}"; fi
 # credential reads through a computed substitution still block
 bash_case 2 "\$(cat file) naming ~/.npmrc" 'cat $(cat to-npmrc.txt)'
 bash_case 2 "quoted \$(cat file) naming a key" 'cat "$(cat to-key.txt)"'

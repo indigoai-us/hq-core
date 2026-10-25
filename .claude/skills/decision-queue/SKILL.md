@@ -1,7 +1,7 @@
 ---
 name: decision-queue
 description: Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor.
-allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, Bash(bash core/scripts/decision-queue.sh:*), AskUserQuestion
 ---
 
 # /decision-queue — Sequential Decision Walkthrough
@@ -18,7 +18,7 @@ Forces strict compliance with `decision-queue-one-at-a-time.md` (global policy, 
 
 ## Rule
 
-Each decision = **one** `AskUserQuestion` call with **one** question. Wait for the answer. Update any working state (plan file, brainstorm.md, PRD, in-memory state, or just an explicit acknowledgement). Then proceed to the next decision.
+Outside conductor mode, each decision = **one** `AskUserQuestion` call with **one** question. Wait for the answer. Update any working state (plan file, brainstorm.md, PRD, in-memory state, or just an explicit acknowledgement). Then proceed to the next decision.
 
 **Never** batch 2+ decisions into a single `AskUserQuestion` invocation, even though the tool accepts up to 4 questions per call. That capacity is for *disambiguating a single decision* (e.g. "Which DB?" + "Which migration tool?" as a tightly-coupled pair), not for stacking unrelated decisions.
 
@@ -49,6 +49,72 @@ Each decision = **one** `AskUserQuestion` call with **one** question. Wait for t
 - Standing answers: a row that matches one of the owner's standing rules (`super-conductor-decisions.mjs standing list`) is answered at `add` time and never reaches the desk. Its ANSWER line says "answered by standing <id>, never asked"; relay it exactly like a desk answer, quoting the rule rather than an OWNER GO from today. Only the desk writes rules (`standing add --by desk`), and only on the owner's explicit "from now on" words. In code, a rule needs an expiry (at most 30 days), never answers a merge, deploy, send, delete or money row without the owner's `--irreversible`, and never answers a teammate's request without `--from`.
 - New items found while the desk is draining are appended to the queue and the desk asks them in the same drain.
 - Never end the turn with unasked items listed in prose ("still to come", "next I'll ask about"), and never open an `AskUserQuestion` for an owner item in the conductor, except a `priority: critical` row the conductor has claimed first (`claim --id <id> --desk conductor`; see /super-conductor "Critical cards interrupt"). `answer` always needs `--desk <name>` holding the row's fresh claim. The item goes to the queue; the turn ends after the last relay or the last `add`.
+
+### Queue cards (`core/scripts/decision-queue.sh`)
+
+The desk asks each row as a server-backed Queue card before it opens a
+picker. `decision-queue.sh` asks through `hq decide ask` as the owner's
+personal local bot; the CLI and server enforce that only that bot may ask in
+release 1. Never substitute owner credentials when that gate refuses. Card
+state lives in `workspace/reports/conduct/<link>-queue-cards.json`, owned by
+the script (it locks and writes atomically). There is one active card at a
+time: later rows wait until the active one is answered and acknowledged,
+withdrawn, cancelled, or resolved after expiry.
+
+```bash
+bash core/scripts/decision-queue.sh --state <cards> enqueue-row <row.json> --company <slug>
+bash core/scripts/decision-queue.sh --state <cards> sweep
+```
+
+`enqueue-row` takes one row printed by `super-conductor-decisions.mjs next
+--json` and maps its options to ids A to D, its recommended option to
+`--recommend`, and option descriptions to the card context. The row's
+`company` wins over `--company`. A conductor item can also be enqueued
+directly with `enqueue <step.json>`, which takes `step_id`, `statement`,
+`source`, `relay_target`, `options`, `recommend`, `company`, and optional
+`context`, `context_links`, `expires` (default `72h`) and `commitment_id`.
+Context links are checked against the shared secret patterns; signed URLs
+are rejected.
+
+`sweep` runs `hq decide list --open --json`, then `hq decide show <id>` for
+the card it owns (an answered record leaves the open list). Its status:
+
+- `open`: the card is on the owner's Queue. Open no picker; end the drain.
+- `answer_pending`: `step.answer.choiceId` is the owner's pick. Write it
+  back, relay it, then `ack <step-id> --evidence <relay receipt>`. A step
+  with a `commitment_id` also needs `--ledger-evidence` from the commitments
+  ledger write; without it `ack` saves the relay receipt and does not advance.
+- `fallback`: `hq decide ask` (or the list before any card existed) failed,
+  and the failure is saved under `decision_queue.failures`. Only this status
+  permits the chat picker for that step. Record the pick with
+  `fallback-answer <step-id> --choice <A-D>` or `--text "<Other text>"`,
+  then `ack <step-id> --evidence chat-fallback:<step-id>`. The next step
+  tries `hq decide ask` again.
+- `ask_uncertain` or `reconcile_required`: an ask was interrupted or returned
+  no id and may have created a card. Do not re-ask, open a picker or advance;
+  check the Queue and say so in the status line.
+- `expired`: expiry is not an answer. `resolve-expired <step-id> --action
+  reask --reason "..."` keeps the step first and asks a new card on the next
+  sweep; `--action drop --reason "..."` lets the next step go.
+- A non-zero exit while a card is open is a failed read. Keep the card and
+  retry on the next wake; it is not permission for a picker.
+
+When the source row was answered or dropped elsewhere, `withdraw
+<decision-id>` an open card or `cancel <step-id> --reason "..."` a step with
+no card, or an answered step whose answer can no longer be written. `withdraw` refuses ids this script did not ask.
+Never withdraw a foreign decision from the open list, and never infer an
+answer from a record missing from that list.
+
+```bash
+bash core/scripts/decision-queue.sh --state <cards> ack <step-id> --evidence <receipt> [--ledger-evidence <ledger receipt>]
+bash core/scripts/decision-queue.sh --state <cards> fallback-answer <step-id> --choice A
+bash core/scripts/decision-queue.sh --state <cards> withdraw <decision-id>
+bash core/scripts/decision-queue.sh --state <cards> cancel <step-id> --reason 'answered in source'
+bash core/scripts/decision-queue.sh --state <cards> resolve-expired <step-id> --action drop --reason 'Request obsolete'
+```
+
+An external relay and the local receipt are not one transaction: after an
+interruption, check the target before relaying again.
 
 ## Examples
 
@@ -86,7 +152,7 @@ AskUserQuestion([Q1, Q2, Q3])  ← never do this; even though the schema allows 
 
 ## Rules
 
-- One `AskUserQuestion` call per decision.
+- Outside conductor mode, one `AskUserQuestion` call per decision. In conductor mode, the desk asks a Queue card first and opens a picker only after a failed ask.
 - Recommended option goes first with `(Recommended)` in the label, per `AskUserQuestion` tool conventions.
 - Never reference "the plan" if you are in plan mode — the user can't see it. Use `ExitPlanMode` for plan approval, not `AskUserQuestion`.
 - If only **one** decision is in scope outside conductor mode, asking it directly with one `AskUserQuestion` is fine. In conductor mode every item, even a single one, goes through this skill.

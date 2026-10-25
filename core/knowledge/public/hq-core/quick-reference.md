@@ -88,6 +88,36 @@ companies on this machine and their cloud state (`cloud_uid` when
 cloud-backed). Each company's workers, repos, knowledge, and policies live
 under `companies/{co}/`, which follows `companies/_template/`.
 
+### Manifest owner fields
+
+Each entry under `companies:` may carry three optional keys that describe the
+owner's relationship to the company. The SessionStart banner
+(`.claude/hooks/inject-local-context.sh`) groups the `Companies` list by them
+so sessions do not assume the owner is staff at every company listed.
+
+| Key | Values | Banner effect |
+|---|---|---|
+| `owner_role` | `self`, `operate`, `side`, `client`, `family`, `system`, `unclassified` | One line per role: `Self`, `Jobs (operate)`, `Side projects`, `Client / consulting`, `Family`, `Unclassified (confirm)`. `system` entries (scaffold such as `workspace`) are hidden. A missing role counts as `unclassified`. |
+| `owner_status` | `active`, `slow-burn`, `on-hold`, `handover-pending`, `review` | `on-hold` adds `(hold)` and `handover-pending` adds `(handover)` after the slug. Other values print nothing. |
+| `owner_note` | free text | Not printed; context for operators reading the manifest. |
+
+A top-level `owner_summary: "<one line>"` prints as `Owner jobs: <one line>`
+under the groups. Omit it and the line is omitted. Example:
+
+```yaml
+owner_summary: "CEO at Acme (acme), Co-CEO at Beta (beta). Not Gamma staff."
+companies:
+  acme:
+    owner_role: operate
+    owner_status: active
+    owner_note: 'Day job.'
+  gamma:
+    owner_role: client
+    owner_status: handover-pending
+```
+
+Regression test: `.claude/hooks/tests/inject-local-context-owner-groups.test.sh`.
+
 ## Workers
 
 **Public (`core/workers/public/`):** frontend-designer, qa-tester, security-scanner, pretty-mermaid, site-builder, knowledge-tagger, exec-summary, accessibility-auditor, performance-benchmarker

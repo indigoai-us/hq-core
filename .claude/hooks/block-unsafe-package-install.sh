@@ -439,10 +439,226 @@ allowed_global_install() {
   [ "$is_global" = "1" ] && [ "$npos" -gt 0 ]
 }
 
+# Remove leading launcher wrappers so `mise exec -- bun install x`,
+# `env FOO=1 npm i x` or `npx pnpm add x` are matched like the bare command.
+# Each pass must shrink the segment, with a fixed pass cap, so a crafted
+# segment cannot spin.
+skip_word() {
+  SKIP_WORD_RESULT="${1#"${1%%[![:space:]]*}"}"
+  case "$SKIP_WORD_RESULT" in
+    *[[:space:]]*) SKIP_WORD_RESULT="${SKIP_WORD_RESULT#*[[:space:]]}" ;;
+    *) SKIP_WORD_RESULT="" ;;
+  esac
+  SKIP_WORD_RESULT="${SKIP_WORD_RESULT#"${SKIP_WORD_RESULT%%[![:space:]]*}"}"
+}
+
+strip_launcher_wrappers() {
+  local seg="$1" before pass=0 w w2 inner guard
+  local mise_re='^[^[:space:]]+[[:space:]]+(exec|x)([[:space:]]+[^[:space:]]+)*[[:space:]]+--[[:space:]]+(.*)$'
+  local assign_re='^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]'
+  local -a words=()
+  STRIP_LAUNCHER_XARGS=0
+  seg="${seg#"${seg%%[![:space:]]*}"}"
+  while [ "$pass" -lt 8 ]; do
+    pass=$((pass + 1))
+    before="$seg"
+    # A quoted or backslash-escaped first word ("npm", 'env', \npm) runs
+    # the same program; unwrap it so the match below sees the bare name.
+    if [[ "$seg" =~ ^(\\|\"|\')([A-Za-z0-9_./@+-]+)(\"|\')?([[:space:]]|$) ]]; then
+      case "${BASH_REMATCH[1]}:${BASH_REMATCH[3]}" in
+        '\:'|'":"'|"':'") seg="${BASH_REMATCH[2]}${seg:$(( ${#BASH_REMATCH[1]} + ${#BASH_REMATCH[2]} + ${#BASH_REMATCH[3]} ))}" ;;
+      esac
+    fi
+    words=()
+    read -r -a words <<< "$seg"
+    w="${words[0]:-}"
+    w="${w##*/}"
+    w2="${words[1]:-}"
+    case "$w" in
+      mise)
+        if [ "$w2" = "exec" ] || [ "$w2" = "x" ]; then
+          IFS= read -r inner <<< "$seg" || :
+          if [[ "$inner" =~ $mise_re ]]; then
+            # The command starts after the FIRST `--`; later `--` tokens
+            # belong to the command itself.
+            inner="${inner#*[[:space:]]--[[:space:]]}"
+            seg="${inner#"${inner%%[![:space:]]*}"}${seg:${#BASH_REMATCH[0]}}"
+          fi
+        fi
+        ;;
+      env)
+        skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+        guard=0
+        while [ "$guard" -lt 64 ] && [ -n "$seg" ]; do
+          guard=$((guard + 1))
+          case "$seg" in
+            -S[[:space:]]*|--split-string[[:space:]]*|-S[!-[:space:]]*|--split-string=*)
+              # -S takes the command as one (usually quoted) string.
+              case "$seg" in
+                --split-string=*) seg="${seg#--split-string=}" ;;
+                -S[[:space:]]*|--split-string[[:space:]]*) skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+                *) seg="${seg#-S}" ;;
+              esac
+              case "$seg" in
+                \'*) seg="${seg#\'}"; seg="${seg/\'/ }" ;;
+                \"*) seg="${seg#\"}"; seg="${seg/\"/ }" ;;
+              esac
+              break ;;
+            -u[[:space:]]*|-C[[:space:]]*|--unset[[:space:]]*|--chdir[[:space:]]*)
+              skip_word "$seg"; skip_word "$SKIP_WORD_RESULT"; seg="$SKIP_WORD_RESULT" ;;
+            -*)
+              skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+            *)
+              if [[ "$seg" =~ $assign_re ]]; then
+                skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+              else
+                break
+              fi ;;
+          esac
+        done
+        ;;
+      npx|pnpx|bunx|command|exec|nohup|time|sudo|doas|nice|timeout|stdbuf|caffeinate|xargs|corepack|ionice|chrt|taskset|arch|chronic|unbuffer)
+        [ "$w" != xargs ] || STRIP_LAUNCHER_XARGS=1
+        skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+        guard=0
+        while [ "$guard" -lt 64 ] && [[ "$seg" == -* ]]; do
+          guard=$((guard + 1))
+          # sudo combined short flags (-iu x, -Hu x): the first value-taking
+          # letter takes the rest of the token, or the next word when it is
+          # the last letter.
+          if [ "$w" = sudo ] && [[ "$seg" =~ ^-([A-Za-z]+)([[:space:]]|$) ]]; then
+            local flags="${BASH_REMATCH[1]}" k
+            for ((k = 0; k < ${#flags}; k++)); do
+              case "${flags:$k:1}" in
+                u|g|C|D|h|p|r|t|U|T)
+                  if [ "$k" -eq $((${#flags} - 1)) ]; then
+                    skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+                  fi
+                  break ;;
+              esac
+            done
+            skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+            continue
+          fi
+          case "$w:$seg" in
+            # Value-taking options consume the following word.
+            sudo:-u[[:space:]]*|sudo:-g[[:space:]]*|sudo:-C[[:space:]]*|sudo:-D[[:space:]]*|doas:-u[[:space:]]*|npx:-p[[:space:]]*|npx:--package[[:space:]]*|exec:-a[[:space:]]*|nice:-n[[:space:]]*|timeout:-s[[:space:]]*|timeout:-k[[:space:]]*|timeout:--signal[[:space:]]*|timeout:--kill-after[[:space:]]*|xargs:-[IdEnLPs][[:space:]]*|xargs:-a[[:space:]]*|ionice:-[cn][[:space:]]*|taskset:-c[[:space:]]*|stdbuf:-[oei][[:space:]]*)
+              skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+          esac
+          skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+        done
+        # timeout and taskset take a positional DURATION / mask before the
+        # command; chrt takes a priority.
+        case "$w" in
+          timeout|chrt|taskset)
+            if [[ "$seg" =~ ^[0-9.]+[smhd]?([[:space:]]|$) ]] || { [ "$w" = taskset ] && [[ "$seg" =~ ^0?x?[0-9a-fA-F,-]+[[:space:]] ]]; }; then
+              skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+            fi ;;
+        esac
+        # npx npm@10 install x: the launched manager may carry a version.
+        if [[ "$seg" =~ ^(npm|yarn|bun|pnpm)@[^[:space:]]*([[:space:]].*)?$ ]]; then
+          seg="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+        fi
+        ;;
+      pnpm|yarn|npm|bun)
+        # pnpm/yarn dlx, pnpm/yarn/npm/bun exec, bun x and volta-style
+        # launchers run the following command as a child.
+        case "$w:$w2" in
+          yarn:npx|yarn:pnpx|yarn:bunx|yarn:npm|yarn:pnpm|yarn:bun)
+            # `yarn <bin>` runs a binary; these binaries are launchers or
+            # package managers themselves.
+            skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+          pnpm:dlx|yarn:dlx|pnpm:exec|yarn:exec|npm:exec|bun:exec|bun:x|npm:x|pnpm:x)
+            skip_word "$seg"; skip_word "$SKIP_WORD_RESULT"; seg="$SKIP_WORD_RESULT"
+            guard=0
+            while [ "$guard" -lt 64 ] && [[ "$seg" == -* ]]; do
+              guard=$((guard + 1))
+              case "$seg" in
+                -c[[:space:]]*|--call[[:space:]]*|--call=*)
+                  # -c/--call take the command as one (usually quoted)
+                  # string; analyse that string as the command.
+                  case "$seg" in
+                    --call=*) seg="${seg#--call=}" ;;
+                    *) skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+                  esac
+                  case "$seg" in
+                    \'*) seg="${seg#\'}"; seg="${seg%%\'*}" ;;
+                    \"*) seg="${seg#\"}"; seg="${seg%%\"*}" ;;
+                  esac
+                  break ;;
+                -p[[:space:]]*|--package[[:space:]]*|-w[[:space:]]*|--workspace[[:space:]]*)
+                  skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+              esac
+              skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+            done
+            if [[ "$seg" =~ ^(npm|yarn|bun|pnpm)@[^[:space:]]*([[:space:]].*)?$ ]]; then
+              seg="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            fi ;;
+        esac
+        ;;
+      volta)
+        if [ "$w2" = "run" ]; then
+          skip_word "$seg"; skip_word "$SKIP_WORD_RESULT"; seg="$SKIP_WORD_RESULT"
+          guard=0
+          while [ "$guard" -lt 64 ] && [[ "$seg" == -* ]]; do
+            guard=$((guard + 1))
+            case "$seg" in
+              --node[[:space:]]*|--npm[[:space:]]*|--yarn[[:space:]]*|--pnpm[[:space:]]*|--env[[:space:]]*)
+                skip_word "$seg"; seg="$SKIP_WORD_RESULT" ;;
+            esac
+            skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+          done
+        fi
+        ;;
+    esac
+    guard=0
+    while [ "$guard" -lt 64 ] && [[ "$seg" =~ $assign_re ]]; do
+      guard=$((guard + 1))
+      skip_word "$seg"; seg="$SKIP_WORD_RESULT"
+    done
+    [ "$seg" != "$before" ] || break
+  done
+  # The last allowed pass still stripped a wrapper, so more may remain that
+  # the guard never inspected. Fail closed.
+  STRIP_LAUNCHER_CAPPED=0
+  if [ "$pass" -ge 8 ] && [ "$seg" != "$before" ]; then
+    STRIP_LAUNCHER_CAPPED=1
+  fi
+  STRIP_LAUNCHER_RESULT="$seg"
+}
+
 check_segment() {
-  local seg="$1"
+  local seg="$1" depth="${2:-0}"
+  # Nothing to check unless a package-manager name appears once quotes and
+  # backslashes are removed (this also covers bash -c / eval script text).
+  local probe="${seg//[\"\'\\]/}"
+  case "$probe" in
+    *npm*|*yarn*|*bun*) ;;
+    *) return 0 ;;
+  esac
   # Strip ALL leading whitespace (spaces, tabs, newlines).
   seg="${seg#"${seg%%[![:space:]]*}"}"
+
+  # Strip reserved words and grouping that can start a command:
+  # { ! if then elif else while until do coproc.
+  local kw_pass=0
+  while [ "$kw_pass" -lt 16 ]; do
+    case "$seg" in
+      "{"[[:space:]]*|"!"[[:space:]]*|if[[:space:]]*|then[[:space:]]*|elif[[:space:]]*|else[[:space:]]*|while[[:space:]]*|until[[:space:]]*|do[[:space:]]*|coproc[[:space:]]*)
+        seg="${seg#*[[:space:]]}"
+        seg="${seg#"${seg%%[![:space:]]*}"}"
+        ;;
+      function[[:space:]]*)
+        # `function name [()] {`: drop the keyword and the name.
+        seg="${seg#function}"
+        seg="${seg#"${seg%%[![:space:]]*}"}"
+        seg="${seg#"${seg%%[[:space:]]*}"}"
+        seg="${seg#"${seg%%[![:space:]]*}"}"
+        ;;
+      *) break ;;
+    esac
+    kw_pass=$((kw_pass + 1))
+  done
 
   # Strip a leading env-assignment prefix (FOO=bar BAR=baz pm install ...).
   # Every iteration must shrink the segment. A prefix the strip cannot
@@ -457,18 +673,174 @@ check_segment() {
     [ "$seg" != "$seg_before" ] || break
   done
 
+  # Strip launcher wrappers that run the package manager as a child command
+  # (feedback_a041edbc): mise exec/x ... --, env [opts] [VAR=val]..., npx,
+  # bunx, pnpm/yarn dlx, command, exec, nohup, time.
+  strip_launcher_wrappers "$seg"
+  seg="$STRIP_LAUNCHER_RESULT"
+  if [ "${STRIP_LAUNCHER_CAPPED:-0}" = 1 ]; then
+    emit_block "launcher" "wrapper" "more than 8 stacked launcher wrappers; the guard cannot see the command they run."
+  fi
+
+  # eval runs its arguments as a command line.
+  case "$seg" in
+    eval[[:space:]]*)
+      local eval_line
+      eval_line="$(LC_ALL=C awk -v mode=evalargs "$SHELL_SPLIT_AWK" <<< "$seg")"
+      analyze_command "$eval_line" $((depth + 1))
+      return 0
+      ;;
+  esac
+  # A shell: analyze the -c script operand as a command line. Option forms
+  # such as -lc, -c -- 'x', -c -e 'x', --norc -c 'x', -o errexit -c 'x' and
+  # /bin/bash are handled by mode=shellc. A shell without -c reads stdin,
+  # which the splitter already checked.
+  local first_word="${seg%%[[:space:]]*}"
+  case "${first_word##*/}" in
+    find)
+      # find ... -exec|-execdir|-ok|-okdir <command> ; or +
+      local -a find_words=()
+      read -r -a find_words <<< "$seg"
+      local find_word find_cmd="" find_in=0
+      for find_word in ${find_words[@]+"${find_words[@]}"}; do
+        if [ "$find_in" = 1 ]; then
+          case "$find_word" in
+            ';'|'\;'|'+')
+              find_in=0
+              [ -n "$find_cmd" ] && analyze_command "$find_cmd" $((depth + 1))
+              find_cmd=""
+              continue
+              ;;
+          esac
+          find_cmd="${find_cmd:+$find_cmd }$find_word"
+        else
+          case "$find_word" in -exec|-execdir|-ok|-okdir) find_in=1 ;; esac
+        fi
+      done
+      [ -n "$find_cmd" ] && analyze_command "$find_cmd" $((depth + 1))
+      return 0
+      ;;
+    watch)
+      # watch [options] <command...> runs its arguments through sh -c.
+      local -a watch_words=()
+      read -r -a watch_words <<< "$seg"
+      local wk=1
+      while [ "$wk" -lt "${#watch_words[@]}" ]; do
+        case "${watch_words[$wk]}" in
+          -n|--interval|-q|--equexit) wk=$((wk + 2)) ;;
+          -*) wk=$((wk + 1)) ;;
+          *) break ;;
+        esac
+      done
+      if [ "$wk" -lt "${#watch_words[@]}" ]; then
+        local watch_line
+        watch_line="$(LC_ALL=C awk -v mode=evalargs "$SHELL_SPLIT_AWK" <<< "watch ${watch_words[*]:$wk}")"
+        analyze_command "$watch_line" $((depth + 1))
+      fi
+      return 0
+      ;;
+    flock|script|parallel)
+      # flock(1): [opts] <lockfile> <cmd...> | flock(1) <lockfile> -c <script>
+      # script [opts] <file> <cmd...> (BSD) | script -c <script> <file> (Linux)
+      # parallel [opts] <cmd...> ::: <args...>
+      local -a lw=()
+      read -r -a lw <<< "$seg"
+      local lk=1 lname="${first_word##*/}" lcmd="" lword
+      while [ "$lk" -lt "${#lw[@]}" ]; do
+        case "$lname:${lw[$lk]}" in
+          *:-c|*:--command)
+            lk=$((lk + 1))
+            local lscript
+            lscript="$(LC_ALL=C awk -v mode=evalargs "$SHELL_SPLIT_AWK" <<< "x ${lw[*]:$lk}")"
+            analyze_command "$lscript" $((depth + 1))
+            return 0
+            ;;
+          flock:-w|flock:--timeout|flock:-E|flock:--conflict-exit-code|script:-t|script:-T|script:-F|script:-I|script:-O|script:-B|script:-E|parallel:-j|parallel:--jobs|parallel:-S|parallel:--sshlogin)
+            lk=$((lk + 2)) ;;
+          *:-*) lk=$((lk + 1)) ;;
+          *) break ;;
+        esac
+      done
+      # flock(1)/script(1) take a lock/typescript file before the command.
+      [ "$lname" = parallel ] || lk=$((lk + 1))
+      while [ "$lk" -lt "${#lw[@]}" ]; do
+        lword="${lw[$lk]}"
+        case "$lword" in
+          ':::'|'::::'|':::+') : ;;  # parallel separators; the arguments are appended
+          -c|--command)
+            if [ "$lname" = "flock" ] && [ -z "$lcmd" ]; then
+              lk=$((lk + 1))
+              local lscript2
+              lscript2="$(LC_ALL=C awk -v mode=evalargs "$SHELL_SPLIT_AWK" <<< "x ${lw[*]:$lk}")"
+              analyze_command "$lscript2" $((depth + 1))
+              return 0
+            fi
+            lcmd="${lcmd:+$lcmd }$lword" ;;
+          *) lcmd="${lcmd:+$lcmd }$lword" ;;
+        esac
+        lk=$((lk + 1))
+      done
+      [ -n "$lcmd" ] && analyze_command "$lcmd" $((depth + 1))
+      return 0
+      ;;
+    bash|sh|zsh|dash|ksh|ash|fish|tcsh|csh|busybox)
+      local inner
+      inner="$(LC_ALL=C awk -v mode=shellc "$SHELL_SPLIT_AWK" <<< "$seg")"
+      [ -n "$inner" ] && analyze_command "$inner" $((depth + 1))
+      return 0
+      ;;
+  esac
+
+  # Global options before the subcommand (`npm --prefix /tmp i x`): move
+  # them after it so the matcher below sees `<pm> <subcmd>`.
+  if [[ "$seg" =~ ^(npm|yarn|bun|pnpm)[[:space:]]+- ]]; then
+    local -a pm_words=() pm_opts=()
+    read -r -a pm_words <<< "$seg"
+    local pk=1 pm_word pm_prev_opt=0
+    while [ "$pk" -lt "${#pm_words[@]}" ]; do
+      pm_word="${pm_words[$pk]}"
+      case "$pm_word" in
+        install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|it|install-test|add|ci) break ;;
+        -*)
+          pm_opts+=("$pm_word")
+          case "$pm_word" in *=*) pm_prev_opt=0 ;; *) pm_prev_opt=1 ;; esac
+          ;;
+        *)
+          [ "$pm_prev_opt" = 1 ] || break
+          pm_opts+=("$pm_word"); pm_prev_opt=0
+          ;;
+      esac
+      pk=$((pk + 1))
+    done
+    if [ "$pk" -lt "${#pm_words[@]}" ]; then
+      case "${pm_words[$pk]}" in
+        install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|it|install-test|add|ci)
+          seg="${pm_words[0]} ${pm_words[$pk]} ${pm_opts[*]+"${pm_opts[*]}"} ${pm_words[*]:$((pk + 1))}"
+          ;;
+      esac
+    fi
+  fi
+
   # Match: <pm> <subcmd> <rest>
   # pm in {npm, yarn, bun, pnpm}; sub in {install, i, add, ci}.
   # NOTE: no `$` end anchor — `rest` may span multiple lines (heredocs); we
   # only care that the segment STARTS with the pm command.
   local pm="" sub="" rest=""
-  if [[ "$seg" =~ ^(npm|yarn|bun|pnpm)[[:space:]]+(install|i|add|ci)([[:space:]]+(.*))? ]]; then
+  # Subcommand aliases (npm in/ins/isntall/it/install-test, ...) count as
+  # install; the subcommand must be a whole word (`npm init` is not `npm i`).
+  if [[ "$seg" =~ ^(npm|yarn|bun|pnpm)[[:space:]]+(install|i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|it|install-test|add|ci)([[:space:]]+(.*)|$) ]]; then
     pm="${BASH_REMATCH[1]}"
     sub="${BASH_REMATCH[2]}"
+    case "$sub" in
+      ci|add|i) ;;
+      *) sub=install ;;
+    esac
     rest="${BASH_REMATCH[4]:-}"
     # `rest` may include trailing content from later lines (heredoc body, etc.) —
     # we only need the FIRST line for positional-arg detection.
-    rest="${rest%%$'\n'*}"
+    # (read takes the first line in linear time; ${rest%%<newline>*} is
+    # quadratic on a long single-line payload.)
+    IFS= read -r rest <<< "$rest" || :
     # Redirections are shell plumbing, never package arguments. Strip them once
     # here so every token loop below (hydration detection, trusted-scope check,
     # allow-list check) sees the same package-only argument list.
@@ -478,6 +850,11 @@ check_segment() {
     # space-separated value is never mistaken for a positional package name.
     strip_flag_values "$rest"
     rest="$STRIP_FLAG_VALUES_RESULT"
+    # `... | xargs npm i` takes its package names from stdin, which the hook
+    # cannot see. Treat them as one unknown, untrusted package.
+    if [ "${STRIP_LAUNCHER_XARGS:-0}" = 1 ]; then
+      rest="${rest:+$rest }xargs-stdin-package"
+    fi
   else
     return 0
   fi
@@ -547,107 +924,569 @@ check_segment() {
   esac
 }
 
-# False-positive guards before splitting:
+# Quote-aware command splitting (feedback_03770784).
 #
-#   (1) Heredoc present (`<<` or `<<-`) — body is text, not a fresh shell
-#       invocation. Skip the whole check.
-#   (2) Command starts with a "text-wrapping" command — these accept long
-#       string args (commit messages, scripts, JSON, etc.) that often contain
-#       shell metacharacters (&&, |, ;) inside quotes. Naive operator
-#       splitting would FP on text like `echo "... npm install x ..."`.
-#       Wrappers: echo, printf, cat, git commit/tag/stash, gh pr/issue/release,
-#       bash -c, sh -c, python -c, python3 -c, node -e, ruby -e, perl -e,
-#       osascript, awk, sed (when given a script body).
+# Earlier versions exited 0 for the WHOLE command when it started with a
+# text-wrapping word (echo, printf, cat, git commit, gh pr create, bash -c,
+# ...) or contained `<<`, because the operator splitter was not quote-aware.
+# That let `echo x | npm install pkg` or `git commit -m x; npm i pkg` through.
 #
-# If a real install command is chained AFTER one of these (e.g.
-# `git commit -m "..." && npm install x`), we WILL miss it — but the cost
-# of a chained miss is low (the user can re-invoke) compared to the FP rate
-# of blocking every commit message that mentions npm.
-
-if [[ "$CMD" == *"<<"* ]]; then
-  exit 0
-fi
-
-# First non-whitespace token of the command (after env-assignment strip).
-FIRST="$CMD"
-FIRST="${FIRST#"${FIRST%%[![:space:]]*}"}"
-# Same no-progress guard as check_segment: never loop without shrinking.
-while [[ "$FIRST" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]] ]]; do
-  FIRST_BEFORE="$FIRST"
-  FIRST="${FIRST#*[[:space:]]}"
-  FIRST="${FIRST#"${FIRST%%[![:space:]]*}"}"
-  [ "$FIRST" != "$FIRST_BEFORE" ] || break
-done
-# Take the first two tokens to recognize "git commit", "gh pr create", etc.
-FIRST_TWO=""
-FIRST_THREE=""
-FIRST_ONE=""
-FIRST_LINE_COUNT=0
-while IFS= read -r first_line || [ -n "$first_line" ]; do
-  first_words=()
-  read -r -a first_words <<< "$first_line"
-  first_two="${first_words[0]:-} ${first_words[1]:-}"
-  first_three="${first_words[0]:-} ${first_words[1]:-} ${first_words[2]:-}"
-  first_one="${first_words[0]:-}"
-  if [ "$FIRST_LINE_COUNT" -gt 0 ]; then
-    FIRST_TWO+=$'\n'
-    FIRST_THREE+=$'\n'
-    FIRST_ONE+=$'\n'
-  fi
-  FIRST_TWO+="$first_two"
-  FIRST_THREE+="$first_three"
-  FIRST_ONE+="$first_one"
-  FIRST_LINE_COUNT=$((FIRST_LINE_COUNT + 1))
-done <<< "$FIRST"
-
-case "$FIRST_ONE" in
-  echo|printf|cat|osascript|awk|sed) exit 0 ;;
-esac
-case "$FIRST_TWO" in
-  "git commit"|"git tag"|"git stash"|"bash -c"|"sh -c"|"zsh -c"|"python -c"|"python3 -c"|"node -e"|"ruby -e"|"perl -e") exit 0 ;;
-esac
-# The gh pr create wrapper gets the "gh pr create" exemption below under any
-# path form: bash/sh/zsh or direct execution, relative, ./, or absolute.
-if [ "$FIRST_LINE_COUNT" -eq 1 ]; then
-  case "$FIRST_ONE" in
-    bash|sh|zsh) pr_wrapper_word="${FIRST_TWO#* }" ;;
-    *) pr_wrapper_word="$FIRST_ONE" ;;
-  esac
-  pr_wrapper_re='^"?([^[:space:]"]*/)?core/scripts/hq-pr-create\.sh"?$'
-  [[ "$pr_wrapper_word" =~ $pr_wrapper_re ]] && exit 0
-fi
-case "$FIRST_THREE" in
-  "gh pr create"|"gh pr edit"|"gh issue create"|"gh issue edit"|"gh release create") exit 0 ;;
-esac
-
-# Split on shell operators (&& / || / ; / |) ONLY — never on newlines, since
-# newlines inside heredocs / quoted message bodies are not shell-command
-# boundaries. Each operator-separated chunk is one shell "command unit"; the
-# regex inside check_segment then requires the pm command to be at the START
-# of that unit, which prevents false positives on text like
-# `git commit -m "... npm install x ..."`.
+# SHELL_SPLIT_AWK parses the command once, over a character array so long
+# inputs stay linear, and prints the command units that name a package
+# manager, separated by \x01:
+#   - splits on unquoted ; & | ( ) and newlines; keeps >& &> >| redirections;
+#   - never splits inside '...', $'...' (where \' is escaped), "..." or after
+#     a backslash; backslash-newline joins lines; # starts a comment;
+#   - $( ), backticks and ${ } are parsed recursively, also inside "..." and
+#     inside unquoted heredoc bodies, so their commands become units too;
+#   - $(( )) and (( )) are arithmetic, so << inside them is not a heredoc;
+#   - heredoc bodies are skipped (quoted delimiters keep them inert text);
+#   - each unit is printed raw and, when different, with its first words
+#     dequoted (n''pm, \npm, "npm");
+#   - text a shell reads from stdin (`| bash`, `bash <<< ...`, `bash <<EOF`)
+#     is printed with a \x02 prefix and analyzed again as a command.
+# An unterminated quote keeps the rest of the payload inside that quote.
+# check_segment only matches a package manager at the START of a unit, so
+# `echo "a; npm i x"` is one unit that starts with echo.
+#
+# mode=shellc prints the script operand of `bash [opts] -c [opts] [--] <script>`;
+# mode=evalargs prints the command line `eval <args>` runs.
+# Out of scope: interpreters that spawn a shell themselves (python -c
+# "os.system(...)", node -e "child_process...").
 DELIM=$'\x01'
-normalize_shell_separators() {
-  local input="$1"
-
-  # Bash's global substitutions process the whole payload in native code.
-  # Split two-character operators first to avoid turning them into two delimiters.
-  NORMALIZED="${input//&&/$DELIM}"
-  NORMALIZED="${NORMALIZED//||/$DELIM}"
-  NORMALIZED="${NORMALIZED//;/$DELIM}"
-  NORMALIZED="${NORMALIZED//|/$DELIM}"
+SHELL_SPLIT_AWK='
+function sl(a, b,    t, k) {
+  if (b < a) return ""
+  if (b - a < 256) { t = ""; for (k = a; k <= b; k++) t = t C[k]; return t }
+  return substr(s, a, b - a + 1)
 }
-normalize_shell_separators "$CMD"
-remaining="$NORMALIZED"
-while [ -n "$remaining" ]; do
-  if [[ "$remaining" == *"${DELIM}"* ]]; then
-    seg="${remaining%%${DELIM}*}"
-    remaining="${remaining#*${DELIM}}"
-  else
-    seg="$remaining"
-    remaining=""
+function relevant(t) {
+  gsub(/["\\\047]/, "", t)
+  return t ~ /npm|yarn|bun/
+}
+function emitscript(t) {
+  if (relevant(t)) addunit("\002" t)
+}
+function skipparen(k,    d) {
+  d = 0
+  while (k <= N) {
+    if (C[k] == "(") d++
+    else if (C[k] == ")") { d--; if (d == 0) return k + 1 }
+    k++
+  }
+  return N + 1
+}
+function arith(k,    d) {
+  d = 2
+  while (k <= N) {
+    if (C[k] == "(") d++
+    else if (C[k] == ")") { d--; if (d == 0) return k + 1 }
+    k++
+  }
+  return N + 1
+}
+# Last path component; a regex like /.*\// is quadratic on long words.
+function basename(t,    p) {
+  while ((p = index(t, "/")) > 0) t = substr(t, p + 1)
+  return t
+}
+function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+# Decode an ANSI-C quoted body starting at j; sets AEND past the closing quote.
+function ansi(j, lim,    w, c, d, v, h, t) {
+  w = ""
+  while (j <= lim && C[j] != "\047") {
+    c = C[j]
+    if (c != "\\") {
+      t = j
+      while (j <= lim && C[j] != "\\" && C[j] != "\047") j++
+      w = w sl(t, j - 1)
+      continue
+    }
+    d = C[j + 1]; j += 2
+    if (d == "n") w = w "\n"
+    else if (d == "t") w = w "\t"
+    else if (d == "r") w = w "\r"
+    else if (d == "a") w = w "\007"
+    else if (d == "b") w = w "\b"
+    else if (d == "e" || d == "E") w = w "\033"
+    else if (d == "f") w = w "\f"
+    else if (d == "v") w = w "\v"
+    else if (d == "x" || d == "u" || d == "U") {
+      t = (d == "x") ? 2 : ((d == "u") ? 4 : 8); v = 0; h = 0
+      while (h < t && j <= lim && index("0123456789abcdefABCDEF", C[j]) > 0) { v = v * 16 + hexv(C[j]); j++; h++ }
+      if (h == 0) w = w "\\" d
+      else if (v > 0 && v < 128) w = w sprintf("%c", v)
+      else w = w "?"
+    } else if (d ~ /[0-7]/) {
+      v = d + 0; h = 1
+      while (h < 3 && j <= lim && C[j] ~ /[0-7]/) { v = v * 8 + C[j]; j++; h++ }
+      if (v > 0 && v < 128) w = w sprintf("%c", v); else w = w "?"
+    } else w = w d
+  }
+  AEND = j + 1
+  return w
+}
+function dqword(k, lim,    w, c, j, a) {
+  w = ""
+  while (k <= lim) {
+    c = C[k]
+    if (c == " " || c == "\t" || c == "\n") break
+    if (c == "\\") { if (C[k + 1] != "\n") w = w C[k + 1]; k += 2; continue }
+    if (c == "\047") {
+      j = k + 1; while (j <= lim && C[j] != "\047") j++
+      w = w sl(k + 1, j - 1); k = j + 1; continue
+    }
+    if (c == "$" && C[k + 1] == "\047") { w = w ansi(k + 2, lim); k = AEND; continue }
+    if (c == "\"") {
+      j = k + 1
+      while (j <= lim && C[j] != "\"") {
+        a = j; while (j <= lim && C[j] != "\"" && C[j] != "\\") j++
+        w = w sl(a, j - 1)
+        if (j <= lim && C[j] == "\\") {
+          if (C[j + 1] ~ /[\\"$`]/) w = w C[j + 1]
+          else if (C[j + 1] != "\n") w = w "\\" C[j + 1]
+          j += 2
+        }
+      }
+      k = j + 1; continue
+    }
+    if (c == "$" && C[k + 1] == "(") { j = skipparen(k + 1); w = w sl(k, j - 1); k = j; continue }
+    # Copy a run of ordinary characters in one step.
+    a = k
+    while (k <= lim && C[k] != " " && C[k] != "\t" && C[k] != "\n" && C[k] != "\\" && C[k] != "\047" && C[k] != "\"" && C[k] != "$") k++
+    if (k == a) k++
+    w = w sl(a, k - 1)
+  }
+  WEND = k
+  return w
+}
+function dqwords(us, ue,    k, nw, j) {
+  k = us; nw = 0
+  while (nw < 16) {
+    while (k <= ue && (C[k] == " " || C[k] == "\t" || (C[k] == "\\" && C[k + 1] == "\n"))) k += (C[k] == "\\") ? 2 : 1
+    if (k > ue) break
+    W[++nw] = dqword(k, ue)
+    if (WEND == k) {
+      j = k; while (j <= ue && C[j] != " " && C[j] != "\t") j++
+      W[nw] = sl(k, j - 1); WEND = j
+    }
+    k = WEND
+  }
+  DQEND = k
+  return nw
+}
+# Close one command unit [us, ue]. Emits it (raw, plus a dequoted form of
+# its first words) when it names a package manager. Sets EU_SHELL when the
+# unit is a shell reading its script from stdin, and EU_ARGS (its
+# dequoted arguments) for a following `| bash`.
+function endunit(us, ue, prevsep, prevargs, hs,    k, c, p1, p2, p3, rel, nw, j, dq, b, n, parts, joined, t, f) {
+  EU_SHELL = 0; EU_ARGS = ""
+  if (us == 0 || ABORT) return
+  while (ue >= us && (C[ue] == " " || C[ue] == "\t" || C[ue] == "\r")) ue--
+  if (ue < us) return
+  rel = 0; p1 = ""; p2 = ""; p3 = ""
+  for (k = us; k <= ue; k++) {
+    c = C[k]
+    if (c == "\047" || c == "\"" || c == "\\") continue
+    if ((c == "m" && p1 == "p" && p2 == "n") || (c == "n" && p1 == "u" && p2 == "b") || (c == "n" && p1 == "r" && p2 == "a" && p3 == "y")) { rel = 1; break }
+    p3 = p2; p2 = p1; p1 = c
+  }
+  nw = dqwords(us, ue)
+  # Decoded ANSI-C words can name a manager the raw text hides.
+  if (!rel) for (j = 1; j <= nw; j++) if (W[j] ~ /npm|yarn|bun/) rel = 1
+  # Skip assignments and launcher wrappers (sudo bash, env bash, ...).
+  f = 1
+  while (f <= nw) {
+    t = W[f]; b = basename(t)
+    if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { f++; continue }
+    if (b ~ /^(env|sudo|doas|nohup|time|command|exec|stdbuf|nice|timeout|ionice|chrt|taskset|caffeinate|busybox|arch|chronic|unbuffer|flock|script)$/) {
+      f++
+      while (f <= nw && W[f] ~ /^-/) {
+        if (W[f] ~ /^-[ugCDnoeiskcp]$/ || W[f] ~ /^--(signal|kill-after|user|group)$/) f++
+        f++
+      }
+      if (b ~ /^(timeout|chrt|taskset|flock|script)$/) f++
+      continue
+    }
+    break
+  }
+  b = basename(W[f])
+  if (b ~ /^(bash|sh|zsh|dash|ksh|ash|fish|tcsh|csh)$/ && (f == nw || W[f + 1] ~ /^[-+<]/ || hs > 0)) {
+    EU_SHELL = 1
+    if (prevsep == "|" && prevargs != "") {
+      n = split(prevargs, parts, "\002"); joined = ""
+      for (j = 2; j <= n; j++) {
+        emitscript(parts[j])
+        if (joined == "" && parts[j] ~ /^-/) continue
+        joined = (joined == "") ? parts[j] : joined " " parts[j]
+      }
+      emitscript(joined)
+    }
+    if (hs > 0) emitscript(dqword(hs, ue))
+  }
+  if (!rel) return
+  for (j = 2; j <= nw; j++) EU_ARGS = EU_ARGS "\002" W[j]
+  # Plain text commands never run their arguments; skip them so a long
+  # list of `echo npm ...` lines costs nothing downstream.
+  if (b ~ /^(echo|printf|cat|grep|egrep|fgrep|rg|awk|sed|jq|head|tail|ls|cd|test|true|false|wc|sort|uniq|tr|cut|mkdir|touch|git|gh)$/) return
+  # `<pm> ci` is always allowed, and identical units need one check.
+  if (W[1] ~ /^(npm|pnpm|yarn|bun)$/ && W[2] == "ci" && nw == 2) return
+  addunit(sl(us, ue))
+  dq = ""
+  for (j = 1; j <= nw; j++) {
+    t = W[j]
+    if (t ~ /[ \t\n]/ && t !~ /\047/) t = "\047" t "\047"
+    dq = (j == 1) ? t : dq " " t
+  }
+  if (DQEND <= ue) dq = dq " " sl(DQEND, ue)
+  addunit(dq)
+}
+function addunit(t) {
+  if (t in SEEN) return
+  SEEN[t] = 1
+  U[++NU] = t
+}
+function hdreg(k,    dash, w, q, c) {
+  dash = 0; if (C[k] == "-") { dash = 1; k++ }
+  while (C[k] == " " || C[k] == "\t") k++
+  w = ""; q = 0
+  # ANSI-C and locale quoted delimiters (dollar-quote) are quoted too.
+  if (C[k] == "$" && C[k + 1] == "\047") { w = ansi(k + 2, N); q = 1; k = AEND }
+  else if (C[k] == "$" && C[k + 1] == "\"") k++
+  while (k <= N) {
+    c = C[k]
+    if (c == "\047" || c == "\"") { q = 1; k++; while (k <= N && C[k] != c) { w = w C[k]; k++ }; k++; continue }
+    if (c == "\\") { q = 1; w = w C[k + 1]; k += 2; continue }
+    if (c == " " || c == "\t" || c == "\n" || c == ";" || c == "&" || c == "|" || c == "<" || c == ">" || c == "(" || c == ")") break
+    w = w c; k++
+  }
+  if (w != "") { HN++; HD[HN] = w; HQ[HN] = q; HDASH[HN] = dash }
+  return k
+}
+function isdelim(a, d,    l, t) {
+  l = length(d)
+  if (a + l - 1 > N) return 0
+  if (a + l <= N && C[a + l] != "\n" && C[a + l] != "\r") return 0
+  for (t = 1; t <= l; t++) if (C[a + t - 1] != substr(d, t, 1)) return 0
+  return 1
+}
+# Skip the bodies of the heredocs registered since index hb. Unquoted
+# bodies still run $( ) and backticks, so those are scanned as commands.
+function heredocs(i, hb, ls, depth,    he, h, bs, be, a) {
+  he = HN
+  for (h = hb + 1; h <= he; h++) {
+    bs = i; be = N
+    while (i <= N) {
+      a = i; if (HDASH[h]) while (C[a] == "\t") a++
+      if (isdelim(a, HD[h])) {
+        be = i - 1; i = a + length(HD[h])
+        while (i <= N && C[i] != "\n") i++
+        i++
+        break
+      }
+      while (i <= N && C[i] != "\n") {
+        if (!HQ[h]) {
+          if (C[i] == "\\") { i += 2; continue }
+          if (C[i] == "`") { i = scan(i + 1, "bq", depth + 1); continue }
+          if (C[i] == "$" && C[i + 1] == "(") {
+            if (C[i + 2] == "(") i = arith(i + 3); else i = scan(i + 2, "subst", depth + 1)
+            continue
+          }
+        }
+        i++
+      }
+      i++
+    }
+    if (ls) emitscript(sl(bs, be))
+  }
+  return i
+}
+function dqscan(k, depth,    c) {
+  while (k <= N) {
+    c = C[k]
+    if (c == "\\") { k += 2; continue }
+    if (c == "\"") return k + 1
+    if (c == "`") { k = scan(k + 1, "bq", depth + 1); continue }
+    if (c == "$" && C[k + 1] == "(") {
+      if (C[k + 2] == "(") k = arith(k + 3); else k = scan(k + 2, "subst", depth + 1)
+      continue
+    }
+    if (c == "$" && C[k + 1] == "{") { k = brace(k + 2, depth); continue }
+    k++
+  }
+  return N + 1
+}
+function brace(k, depth,    d, c) {
+  d = 1
+  while (k <= N) {
+    c = C[k]
+    if (c == "\\") { k += 2; continue }
+    if (c == "\047") { k++; while (k <= N && C[k] != "\047") k++; k++; continue }
+    if (c == "\"") { k = dqscan(k + 1, depth); continue }
+    if (c == "$" && C[k + 1] == "(") {
+      if (C[k + 2] == "(") k = arith(k + 3); else k = scan(k + 2, "subst", depth + 1)
+      continue
+    }
+    if (c == "{") d++
+    else if (c == "}") { d--; if (d == 0) return k + 1 }
+    k++
+  }
+  return N + 1
+}
+# Walk a command list. m is top, subst (ends at the matching `)`), or bq
+# (ends at the closing backtick).
+function scan(i, m, depth,    c, a, j, us, pd, hb, ls, sep, pargs, hs) {
+  us = 0; pd = 0; hb = HN; ls = 0; sep = ""; pargs = ""; hs = 0
+  # Past the nesting limit the guard cannot see the commands: stop parsing
+  # and fail closed (\003 record) when the payload names a package manager.
+  if (depth > 64) { ABORT = 1; return N + 1 }
+  while (i <= N) {
+    c = C[i]
+    if (c == " " || c == "\t") { i++; continue }
+    if (c == "\\") {
+      if (C[i + 1] == "\n") { i += 2; continue }
+      if (!us) us = i
+      i += 2; continue
+    }
+    if (c == "\n") {
+      endunit(us, i - 1, sep, pargs, hs); if (EU_SHELL) ls = 1
+      us = 0; sep = ""; pargs = ""; hs = 0
+      i = heredocs(i + 1, hb, ls, depth); HN = hb; ls = 0
+      continue
+    }
+    if ((c == "`" && m == "bq") || (c == ")" && m == "subst" && pd == 0)) {
+      endunit(us, i - 1, sep, pargs, hs)
+      HN = hb
+      return i + 1
+    }
+    if (c == ";" || c == "|" || c == "&" || c == "(" || c == ")") {
+      if (c == "&" && (C[i - 1] == ">" || C[i - 1] == "<" || C[i + 1] == ">")) { if (!us) us = i; i++; continue }
+      if (c == "|" && C[i - 1] == ">") { i++; continue }
+      if (c == "(" && C[i + 1] == "(" && !us) { i = arith(i + 2); continue }
+      endunit(us, i - 1, sep, pargs, hs); if (EU_SHELL) ls = 1
+      # A pipeline feeds the text of every earlier stage toward a later shell.
+      if (c == "|" && C[i + 1] != "|") pargs = ((sep == "|") ? pargs : "") EU_ARGS
+      else pargs = ""
+      sep = c
+      if (c == "|" && C[i + 1] == "|") { sep = "||"; i++ }
+      else if (c == "|" && C[i + 1] == "&") i++
+      if (c == "(") pd++
+      else if (c == ")" && pd > 0) pd--
+      us = 0; hs = 0; i++
+      continue
+    }
+    if (c == "#" && (!us || C[i - 1] == " " || C[i - 1] == "\t")) {
+      endunit(us, i - 1, sep, pargs, hs); if (EU_SHELL) ls = 1
+      us = 0; hs = 0
+      while (i <= N && C[i] != "\n") i++
+      continue
+    }
+    if (!us) us = i
+    if (c == "\047") { j = i + 1; while (j <= N && C[j] != "\047") j++; i = j + 1; continue }
+    if (c == "\"") { i = dqscan(i + 1, depth); continue }
+    if (c == "`") { i = scan(i + 1, "bq", depth + 1); continue }
+    if (c == "$") {
+      a = C[i + 1]
+      if (a == "\047") {
+        j = i + 2
+        while (j <= N && C[j] != "\047") { if (C[j] == "\\") j++; j++ }
+        i = j + 1; continue
+      }
+      if (a == "(" && C[i + 2] == "(") { i = arith(i + 3); continue }
+      if (a == "(") { i = scan(i + 2, "subst", depth + 1); continue }
+      if (a == "{") { i = brace(i + 2, depth); continue }
+      i++; continue
+    }
+    if (c == "<" && C[i + 1] == "<") {
+      if (C[i + 2] == "<") { j = i + 3; while (C[j] == " " || C[j] == "\t") j++; hs = j; i = j; continue }
+      i = hdreg(i + 2); continue
+    }
+    i++
+  }
+  endunit(us, N, sep, pargs, hs)
+  HN = hb
+  return N + 1
+}
+# mode=shellc: print the script operand of `bash [opts] -c [opts] [--] <script>`.
+function shellc(    k, nw, b, sc, w, f) {
+  k = 1; nw = 0
+  while (k <= N && nw < 64) {
+    while (k <= N && (C[k] == " " || C[k] == "\t" || C[k] == "\n")) k++
+    if (k > N) break
+    w = dqword(k, N)
+    if (WEND == k) break
+    SW[++nw] = w; k = WEND
+  }
+  f = 1; b = basename(SW[1])
+  if (b == "busybox") { f = 2; b = basename(SW[2]) }
+  if (b !~ /^(bash|sh|zsh|dash|ksh|ash|fish|tcsh|csh)$/) return
+  sc = 0
+  for (k = f + 1; k <= nw; k++) {
+    w = SW[k]
+    if (w == "--") { k++; break }
+    if (w ~ /^--command=/) { printf "%s", substr(w, 11); return }
+    if (w == "--command") { sc = 1; continue }
+    if (w ~ /^--(rcfile|init-file|init-command)$/ || (b == "fish" && w == "-C")) { k++; continue }
+    if (w ~ /^-[A-Za-z]*c[A-Za-z]*$/) { sc = 1; continue }
+    if (w ~ /^[-+][oO]$/) { k++; continue }
+    if (w ~ /^[-+]/) continue
+    break
+  }
+  if (sc && k <= nw) printf "%s", SW[k]
+}
+# mode=evalargs: print the dequoted words after the first, joined by spaces,
+# which is the command line eval runs.
+function evalargs(    k, nw, w, out) {
+  k = 1; nw = 0; out = ""
+  while (k <= N) {
+    while (k <= N && (C[k] == " " || C[k] == "\t" || C[k] == "\n")) k++
+    if (k > N) break
+    w = dqword(k, N)
+    if (WEND == k) { w = C[k]; WEND = k + 1 }
+    nw++; k = WEND
+    if (nw > 1) out = (out == "") ? w : out " " w
+  }
+  printf "%s", out
+}
+BEGIN { RS = "\002" }
+{ s = (NR > 1) ? s "\002" $0 : $0 }
+END {
+  N = split(s, C, "")
+  if (N > 0 && C[N] == "\n") N--
+  HN = 0; NU = 0
+  if (mode == "shellc") { shellc(); exit }
+  if (mode == "evalargs") { evalargs(); exit }
+  scan(1, "top", 0)
+  if (ABORT) { if (relevant(s)) printf "\003\001"; exit }
+  for (k = 1; k <= NU; k++) printf "%s\001", U[k]
+}
+'
+
+ANALYZE_MAX_DEPTH=4
+analyze_command() {
+  local cmd="$1" depth="${2:-0}" normalized seg
+  if [ "$depth" -gt "$ANALYZE_MAX_DEPTH" ]; then
+    case "$cmd" in
+      *npm*|*yarn*|*pnpm*|*bun*)
+        emit_block "shell" "-c" "more than $ANALYZE_MAX_DEPTH nested shell -c layers; the guard cannot see the command they run." ;;
+    esac
+    return 0
   fi
-  check_segment "$seg"
-done
+  normalized="$(LC_ALL=C awk -v mode=split "$SHELL_SPLIT_AWK" <<< "$cmd")"
+  # read -d walks the units in one pass; pattern expansions on a large
+  # remainder cost seconds on big payloads.
+  local -a units=()
+  local unit
+  while IFS= read -r -d "$DELIM" unit; do
+    units+=("$unit")
+  done < <(printf '%s%s' "$normalized" "$DELIM")
+  for seg in ${units[@]+"${units[@]}"}; do
+    case "$seg" in
+      $'\x02'*) analyze_command "${seg#?}" $((depth + 1)) ;;
+      $'\x03')
+        emit_block "shell" "nesting" "command substitutions nested past the parser limit; the guard cannot see the command they run." ;;
+      *) check_segment "$seg" "$depth" ;;
+    esac
+  done
+}
+
+# Legacy whole-command pass, kept as an extra check on top of the
+# quote-aware pass above. It splits on operators even inside quotes, so it
+# still blocks install text passed as quoted arguments to an unknown command
+# (`bash other.sh --body "x; npm i pkg"`). Its whole-command text-wrapper
+# exemptions now only skip THIS pass; the quote-aware pass already checked
+# every unit of those commands.
+legacy_unquoted_pass() {
+  case "$CMD" in
+    *npm*|*yarn*|*bun*) ;;
+    *) return 0 ;;
+  esac
+  if [[ "$CMD" == *"<<"* ]]; then
+    return 0
+  fi
+
+  # First non-whitespace token of the command (after env-assignment strip).
+  FIRST="$CMD"
+  FIRST="${FIRST#"${FIRST%%[![:space:]]*}"}"
+  # Same no-progress guard as check_segment: never loop without shrinking.
+  while [[ "$FIRST" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]] ]]; do
+    FIRST_BEFORE="$FIRST"
+    FIRST="${FIRST#*[[:space:]]}"
+    FIRST="${FIRST#"${FIRST%%[![:space:]]*}"}"
+    [ "$FIRST" != "$FIRST_BEFORE" ] || break
+  done
+  # Take the first two tokens to recognize "git commit", "gh pr create", etc.
+  FIRST_TWO=""
+  FIRST_THREE=""
+  FIRST_ONE=""
+  FIRST_LINE_COUNT=0
+  while IFS= read -r first_line || [ -n "$first_line" ]; do
+    first_words=()
+    read -r -a first_words <<< "$first_line"
+    first_two="${first_words[0]:-} ${first_words[1]:-}"
+    first_three="${first_words[0]:-} ${first_words[1]:-} ${first_words[2]:-}"
+    first_one="${first_words[0]:-}"
+    if [ "$FIRST_LINE_COUNT" -gt 0 ]; then
+      FIRST_TWO+=$'\n'
+      FIRST_THREE+=$'\n'
+      FIRST_ONE+=$'\n'
+    fi
+    FIRST_TWO+="$first_two"
+    FIRST_THREE+="$first_three"
+    FIRST_ONE+="$first_one"
+    FIRST_LINE_COUNT=$((FIRST_LINE_COUNT + 1))
+  done <<< "$FIRST"
+
+  case "$FIRST_ONE" in
+    echo|printf|cat|osascript|awk|sed) return 0 ;;
+  esac
+  case "$FIRST_TWO" in
+    "git commit"|"git tag"|"git stash"|"bash -c"|"sh -c"|"zsh -c"|"python -c"|"python3 -c"|"node -e"|"ruby -e"|"perl -e") return 0 ;;
+  esac
+  # The gh pr create wrapper gets the "gh pr create" exemption below under any
+  # path form: bash/sh/zsh or direct execution, relative, ./, or absolute.
+  if [ "$FIRST_LINE_COUNT" -eq 1 ]; then
+    case "$FIRST_ONE" in
+      bash|sh|zsh) pr_wrapper_word="${FIRST_TWO#* }" ;;
+      *) pr_wrapper_word="$FIRST_ONE" ;;
+    esac
+    pr_wrapper_re='^"?([^[:space:]"]*/)?core/scripts/hq-pr-create\.sh"?$'
+    [[ "$pr_wrapper_word" =~ $pr_wrapper_re ]] && return 0
+  fi
+  case "$FIRST_THREE" in
+    "gh pr create"|"gh pr edit"|"gh issue create"|"gh issue edit"|"gh release create") return 0 ;;
+  esac
+
+  # Split on shell operators (&& / || / ; / |) ONLY — never on newlines, since
+  # newlines inside heredocs / quoted message bodies are not shell-command
+  # boundaries. Each operator-separated chunk is one shell "command unit"; the
+  # regex inside check_segment then requires the pm command to be at the START
+  # of that unit, which prevents false positives on text like
+  # `git commit -m "... npm install x ..."`.
+  DELIM=$'\x01'
+  normalize_shell_separators() {
+    local input="$1"
+
+    # Bash's global substitutions process the whole payload in native code.
+    # Split two-character operators first to avoid turning them into two delimiters.
+    NORMALIZED="${input//&&/$DELIM}"
+    NORMALIZED="${NORMALIZED//||/$DELIM}"
+    NORMALIZED="${NORMALIZED//;/$DELIM}"
+    NORMALIZED="${NORMALIZED//|/$DELIM}"
+  }
+  normalize_shell_separators "$CMD"
+  local -a legacy_units=()
+  local legacy_unit
+  while IFS= read -r -d "$DELIM" legacy_unit; do
+    legacy_units+=("$legacy_unit")
+  done < <(printf '%s%s' "$NORMALIZED" "$DELIM")
+  for seg in ${legacy_units[@]+"${legacy_units[@]}"}; do
+    check_segment "$seg"
+  done
+
+}
+
+analyze_command "$CMD" 0
+legacy_unquoted_pass
 
 exit 0

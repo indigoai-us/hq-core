@@ -156,6 +156,24 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
       | select(type == "string")
     ] | unique
   ' "$THREAD_FILE" 2>/dev/null || printf '[]')"
+  # A handoff that names files, none under companies/ or repos/, is personal or
+  # HQ-only work and must not be stamped with the session's bound company
+  # (feedback_c8465cde). Repo code is company work in a bound session, so a
+  # repos/ path keeps the bound company. THREAD_FILE_COUNT counts every usable
+  # entry; THREAD_COMPANYISH_COUNT counts the companies/ and repos/ ones.
+  HQ_ROOT_PHYSICAL="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P || printf '%s' "$HQ_ROOT")"
+  read -r THREAD_FILE_COUNT THREAD_COMPANYISH_COUNT < <(jq -r --arg hq_root "$HQ_ROOT" --arg hq_phys "$HQ_ROOT_PHYSICAL" '
+    [ ((.files_touched // []) | if type == "array" then .[] else empty end)
+    | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
+    | select(. != "")
+    | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):]
+       elif startswith($hq_phys + "/") then .[(($hq_phys | length) + 1):]
+       else . end)
+    | sub("^\\./"; "")
+    ] | "\(length) \(map(select(startswith("companies/") or startswith("repos/"))) | length)"
+  ' "$THREAD_FILE" 2>/dev/null || printf '0 0\n')
+  THREAD_FILE_COUNT="${THREAD_FILE_COUNT:-0}"
+  THREAD_COMPANYISH_COUNT="${THREAD_COMPANYISH_COUNT:-0}"
   BOUND_COMPANY="$(bound_session_company)"
   THREAD_COMPANY_COUNT="$(jq 'length' <<< "$THREAD_COMPANIES_JSON")"
   THREAD_PATH_COMPANY_COUNT="$(jq 'length' <<< "$THREAD_PATH_COMPANIES_JSON")"
@@ -164,6 +182,9 @@ if [[ -n "$THREAD_PATH" && -f "$THREAD_PATH" ]] && command -v hq >/dev/null 2>&1
     log "workspace-sync: skipped (handoff spans multiple companies)"
   elif [[ -z "$BOUND_COMPANY" || ! -d "$HQ_ROOT/companies/$BOUND_COMPANY" ]]; then
     log "workspace-sync: skipped (no bound company for this session)"
+  elif [[ "$THREAD_COMPANY_COUNT" -eq 0 && "$THREAD_FILE_COUNT" -gt 0 && "$THREAD_COMPANYISH_COUNT" -eq 0 ]]; then
+    log "workspace-sync: skipped (handoff touched no company or repo paths; personal or HQ-only work)"
+    echo "handoff-post: not syncing this handoff to $BOUND_COMPANY: it touched no company or repo files. To file work like this under the company next time, pass --company $BOUND_COMPANY to the handoff finalizer." >&2
   elif { [[ "$THREAD_COMPANY_COUNT" -eq 1 ]] && [[ "$(jq -r '.[0]' <<< "$THREAD_COMPANIES_JSON")" != "$BOUND_COMPANY" ]]; } || \
        { [[ "$THREAD_PATH_COMPANY_COUNT" -eq 1 ]] && [[ "$(jq -r '.[0]' <<< "$THREAD_PATH_COMPANIES_JSON")" != "$BOUND_COMPANY" ]]; }; then
     log "workspace-sync: skipped (handoff paths do not match the bound company)"

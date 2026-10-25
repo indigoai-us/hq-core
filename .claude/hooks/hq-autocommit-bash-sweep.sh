@@ -78,7 +78,7 @@ fi
 
 for REL_PATH in "${CANDIDATE_PATHS[@]}"; do
   case "$REL_PATH" in
-    /*|..|../*|*/../*)
+    /*|..|../*|*/../*|*/..)
       log_line 'SKIP stage=bash-sweep reason=unsafe-path'
       continue
       ;;

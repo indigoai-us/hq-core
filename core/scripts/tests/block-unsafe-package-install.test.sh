@@ -348,6 +348,256 @@ then
   fail "assignment whitespace regression"
 fi
 
+# feedback_a041edbc: a package install run through a launcher wrapper must be
+# matched like the bare command. Lockfile hydration through a wrapper still passes.
+wrapper_case() {  # <expected-ec> <cmd>
+  local want="$1" cmd="$2" ec
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook "$cmd")"
+  [ "$ec" = "$want" ] && pass "wrapper: $cmd -> exit $want" \
+                      || fail "wrapper: $cmd: expected exit $want, got $ec"
+}
+wrapper_case 2 "mise exec -- bun install left-pad"
+wrapper_case 2 "mise x node@20 -- npm i left-pad"
+wrapper_case 2 "npx -y pnpm add left-pad"
+wrapper_case 2 "bunx yarn add left-pad"
+wrapper_case 2 "env FOO=1 npm install left-pad"
+wrapper_case 2 "/usr/bin/env -i -u HOME npm install left-pad"
+wrapper_case 2 "nohup npm i left-pad"
+wrapper_case 2 "command bun add left-pad"
+wrapper_case 2 "cd /tmp && mise exec -- env A=1 npm i left-pad"
+wrapper_case 2 "mise exec -- npm i left-pad -- x"
+wrapper_case 2 "env -S 'npm install left-pad'"
+wrapper_case 2 "env -S\"npm install left-pad\""
+wrapper_case 2 "npx npm@latest install left-pad"
+wrapper_case 2 "sudo -E npm i left-pad"
+wrapper_case 2 "sudo -u builder npm i left-pad"
+wrapper_case 2 "npx --yes pnpm@9 add left-pad"
+wrapper_case 2 "npx -p pnpm pnpm add left-pad"
+wrapper_case 2 "env -i npm i left-pad"
+wrapper_case 2 "time -p npm i left-pad"
+wrapper_case 2 "nice npm i left-pad"
+wrapper_case 2 "nice -n 5 npm i left-pad"
+wrapper_case 2 "timeout 60 npm i left-pad"
+wrapper_case 2 "timeout -k 5 1m pnpm add left-pad"
+wrapper_case 2 "stdbuf -oL npm i left-pad"
+wrapper_case 2 "caffeinate npm i left-pad"
+wrapper_case 2 "exec -a foo npm i left-pad"
+wrapper_case 2 "xargs npm i"
+wrapper_case 2 "true | xargs -n 1 pnpm add"
+wrapper_case 2 "yarn dlx -p x npm i left-pad"
+wrapper_case 2 "npm exec -- pnpm add left-pad"
+wrapper_case 2 "pnpm exec npm i left-pad"
+wrapper_case 2 "corepack pnpm add left-pad"
+wrapper_case 2 "volta run --node 20 npm i left-pad"
+wrapper_case 2 "\"npm\" i left-pad"
+wrapper_case 2 "'env' npm i left-pad"
+wrapper_case 2 "\\npm i left-pad"
+wrapper_case 2 "sudo -iu x npm i left-pad"
+wrapper_case 2 "sudo -Hu x npm i left-pad"
+wrapper_case 2 "sudo -uroot npm i left-pad"
+wrapper_case 2 "stdbuf -o L npm i left-pad"
+wrapper_case 2 "npm exec -c 'npm i left-pad'"
+wrapper_case 2 "npm exec --call \"pnpm add left-pad\""
+wrapper_case 2 "npm x -- npm i left-pad"
+wrapper_case 2 "pnpm x npm i left-pad"
+wrapper_case 2 "yarn npx npm i left-pad"
+wrapper_case 2 "pnpx pnpm add left-pad"
+wrapper_case 2 "nohup nohup nohup nohup nohup nohup nohup nohup nohup npm i left-pad"
+wrapper_case 0 "npm exec -c 'tsc --noEmit'"
+wrapper_case 0 "sudo make install"
+wrapper_case 0 "nohup npm run dev"
+wrapper_case 0 "pnpx tsc"
+wrapper_case 0 "xargs npm ci"
+wrapper_case 0 "xargs rm"
+wrapper_case 0 "nice make"
+wrapper_case 0 "timeout 5 npm ci"
+wrapper_case 0 "npm exec -- tsc --noEmit"
+wrapper_case 0 "pnpm exec vitest run"
+wrapper_case 0 "corepack enable"
+wrapper_case 0 "\"npm\" ci"
+wrapper_case 0 "mise exec -- bun install --frozen-lockfile"
+wrapper_case 0 "env -S 'npm ci'"
+wrapper_case 0 "sudo npm ci"
+wrapper_case 0 "env CI=1 npm ci"
+wrapper_case 0 "npx create-react-app demo"
+wrapper_case 0 "mise exec -- node script.js"
+wrapper_case 0 "env"
+
+# feedback_03770784: a leading text command (echo, printf, cat, awk, sed,
+# git commit, gh pr create, python3 -c, bash -c) used to exempt the WHOLE
+# command line, so an install chained after it was never checked. The split
+# is now quote-aware and every unit is checked.
+segment_case() {  # <expected-ec> <cmd>
+  local want="$1" cmd="$2" ec
+  ec="$(unset HQ_ALLOW_UNSAFE_INSTALL; run_hook "$cmd")"
+  [ "$ec" = "$want" ] && pass "segment: $(printf '%s' "$cmd" | tr '\n' '~') -> exit $want" \
+                      || fail "segment: $(printf '%s' "$cmd" | tr '\n' '~'): expected exit $want, got $ec"
+}
+segment_case 2 "echo x | npm install left-pad"
+segment_case 2 "echo x | npm i left-pad"
+segment_case 2 "echo x|npm install left-pad"
+segment_case 2 "echo x; npm install left-pad"
+segment_case 2 "printf x | npm install left-pad"
+segment_case 2 "echo \"a\" && pnpm add left-pad"
+segment_case 2 "cat foo | yarn add left-pad"
+segment_case 2 "ls | bun add left-pad"
+segment_case 2 "git commit -m x; npm install left-pad"
+segment_case 2 "bash -c 'npm install left-pad'"
+segment_case 2 "sh -c \"npm i left-pad\""
+segment_case 2 "bash -lc \"cd /tmp && npm i left-pad\""
+segment_case 2 "python3 -c \"print(1)\"; npm install left-pad"
+segment_case 2 "gh pr create --title x; npm install left-pad"
+segment_case 2 "awk '{print}' f | npm install left-pad"
+segment_case 2 "sed -n 1p f && npm install left-pad"
+segment_case 2 "echo x 2>&1 | npm install left-pad"
+segment_case 2 $'echo x\nnpm install left-pad'
+segment_case 2 $'cat <<EOF\nhi\nEOF\nnpm install left-pad'
+# npm ci is lockfile hydration and allowed standalone; chaining keeps that.
+segment_case 0 "echo x | npm ci"
+segment_case 0 "echo npm install left-pad"
+segment_case 0 "echo \"npm install left-pad\""
+segment_case 0 "grep -n \"npm install left-pad\" README.md"
+segment_case 0 "git commit -m \"fix: npm install left-pad\""
+segment_case 0 "git commit -m \"a; npm install left-pad\""
+segment_case 0 $'git commit -m "line1\nnpm install left-pad\nline3"'
+segment_case 0 $'git commit -m "$(cat <<\'EOF\'\nfix: x; npm install left-pad\n| pnpm add y\nEOF\n)"'
+segment_case 0 "git commit -F msg.txt && echo ok"
+segment_case 0 "gh pr create --title x --body \"run npm install left-pad\""
+segment_case 0 "gh pr create --title x --body-file body.md"
+segment_case 0 "bash core/scripts/hq-pr-create.sh --title \"x; npm install left-pad\" --body \"a | npm i b\""
+segment_case 0 "echo \"a | npm install left-pad\""
+segment_case 0 "echo 'x; pnpm add y'"
+segment_case 0 "bash -c \"echo \\\"npm i left-pad\\\"\""
+segment_case 0 $'cat <<\'EOF\'\nnpm install left-pad\nEOF'
+segment_case 0 $'cat <<-EOF > f\n\tnpm install left-pad; x\n\tEOF\necho done'
+
+# feedback_03770784 review: substitutions, ANSI-C quotes, arithmetic, shell
+# option forms, keywords, eval, dequoting, line continuation, stdin shells,
+# and global options before the subcommand.
+segment_case 2 "foo \"\$(npm i left-pad)\""
+segment_case 2 "echo \"\$(npm i left-pad)\""
+segment_case 2 "foo \"\`npm i left-pad\`\""
+segment_case 2 "foo \$(npm i left-pad)"
+segment_case 2 "foo <(npm i left-pad)"
+segment_case 2 $'cat <<EOF\n$(npm i left-pad)\nEOF'
+segment_case 2 $'cat <<EOF\n`npm i left-pad`\nEOF'
+segment_case 2 "true \$'\\'' & npm i left-pad & #'"
+segment_case 2 $'true $\'\\\'\'\nnpm i left-pad\n#\''
+segment_case 2 $'true $((1<<2))\nnpm i left-pad'
+segment_case 2 $'echo $((1<<2))\nnpm i left-pad\n2'
+segment_case 2 "bash -ec 'npm i left-pad'"
+segment_case 2 "bash -c -- 'npm i left-pad'"
+segment_case 2 "bash -c -e 'npm i left-pad'"
+segment_case 2 "bash --norc -c 'npm i left-pad'"
+segment_case 2 "bash -o errexit -c 'npm i left-pad'"
+segment_case 2 "/bin/bash -c 'npm i left-pad'"
+segment_case 2 "/usr/bin/env bash -c 'npm i left-pad'"
+segment_case 2 "sudo bash -c 'npm i left-pad'"
+segment_case 2 "bash -c \"bash -c 'npm i left-pad'\""
+segment_case 2 "bash -c 'true' && npm i left-pad"
+segment_case 2 "{ npm i left-pad; }"
+segment_case 2 "if true; then npm i left-pad; fi"
+segment_case 2 "while false; do npm i left-pad; done"
+segment_case 2 "! npm i left-pad"
+segment_case 2 "coproc npm i left-pad"
+segment_case 2 "eval \"npm i left-pad\""
+segment_case 2 "eval npm i left-pad"
+segment_case 2 "n''pm i left-pad"
+segment_case 2 $'npm \\\n i left-pad'
+segment_case 2 "bash <<< 'npm i left-pad'"
+segment_case 2 "echo 'npm i left-pad' | bash"
+segment_case 2 $'bash <<EOF\nnpm i left-pad\nEOF'
+segment_case 2 $'cat <<\'EOF\' | sh\nnpm i left-pad\nEOF'
+segment_case 2 "npm --prefix /tmp i left-pad"
+segment_case 2 "true |& npm i left-pad"
+segment_case 2 "true 2>&1 & npm i left-pad"
+segment_case 2 $'true\r\nnpm i left-pad'
+segment_case 2 $'true #x\nnpm i left-pad'
+segment_case 2 $'true\ncat <<\'E\'\nx\nE\nnpm i left-pad'
+segment_case 0 $'git commit -m "$(cat <<\'EOF\'\nfix: pad 6" wide\nnpm install left-pad\nEOF\n)"'
+segment_case 0 $'gh pr create --title x --body "$(cat <<\'EOF\'\nUse a 3" margin\nnpm install left-pad\nEOF\n)"'
+segment_case 0 $'git commit -m "$(cat <<\'EOF\'\nFixes `a | b` and it\'s "quoted\n- npm i left-pad\nEOF\n)"'
+segment_case 0 $'cat > f.md <<EOF\n$(date)\nnpm install left-pad\nEOF'
+segment_case 0 $'gh issue create --title x --body \'npm-ish: run\'\n\'npm i left-pad\''
+segment_case 0 "bash -c \"echo 'a' && echo \\\"npm i left-pad\\\"\""
+segment_case 0 "echo \"don't\" && echo \"npm i left-pad\""
+segment_case 0 "printf '%s\\n' 'step 1' 'npm i left-pad'"
+segment_case 0 $'cat <<\\EOF\n$(npm i left-pad)\nEOF'
+segment_case 0 $'cat <<"EOF"\n`npm i left-pad`\nEOF'
+segment_case 0 "npm --prefix /tmp ci"
+segment_case 0 "bash <<< 'npm ci'"
+
+# feedback_03770784 round 2: dollar-quoted heredoc delimiters, nesting limit,
+# ANSI-C escapes, wrappers before stdin shells, shell option forms, npm
+# subcommand aliases, function bodies, find -exec and watch.
+segment_case 2 $'cat <<$\'E\'\nx\nE\nnpm i left-pad\n$E'
+segment_case 2 $'cat <<$"E"\nx\nE\nnpm i left-pad\n$E'
+segment_case 2 "$(printf '$(%.0s' $(seq 1 70))"$'\nnpm i left-pad'
+segment_case 2 "\$'\\x6e'pm i left-pad"
+segment_case 2 "\$'\\156'pm i left-pad"
+segment_case 2 "\$'\\u006e'pm i left-pad"
+segment_case 2 "echo 'npm i left-pad' | sudo bash"
+segment_case 2 "echo 'npm i left-pad' | env bash"
+segment_case 2 "echo 'npm i left-pad' | tee /dev/null | bash"
+segment_case 2 $'sudo bash <<EOF\nnpm i left-pad\nEOF'
+segment_case 2 $'env bash <<EOF\nnpm i left-pad\nEOF'
+segment_case 2 "bash --rcfile /dev/null -c 'npm i left-pad'"
+segment_case 2 "bash --init-file /dev/null -c 'npm i left-pad'"
+segment_case 2 "busybox sh -c 'npm i left-pad'"
+segment_case 2 "fish -c 'npm i left-pad'"
+segment_case 2 "npm in left-pad"
+segment_case 2 "npm ins left-pad"
+segment_case 2 "npm inst left-pad"
+segment_case 2 "npm insta left-pad"
+segment_case 2 "npm instal left-pad"
+segment_case 2 "npm isnt left-pad"
+segment_case 2 "npm isnta left-pad"
+segment_case 2 "npm isntal left-pad"
+segment_case 2 "npm isntall left-pad"
+segment_case 2 "npm it left-pad"
+segment_case 2 "npm install-test left-pad"
+segment_case 2 "pnpm it left-pad"
+segment_case 2 "function f { npm i left-pad; }"
+segment_case 2 "f() { npm i left-pad; }"
+segment_case 2 "find . -maxdepth 0 -exec npm i left-pad \\;"
+segment_case 2 "find . -execdir sh -c 'npm i left-pad' {} +"
+segment_case 2 "watch -n 5 npm i left-pad"
+segment_case 2 "watch 'npm i left-pad'"
+segment_case 0 "npm init foo"
+segment_case 0 "npm it"
+segment_case 0 "npm isntall"
+segment_case 0 "npm ci"
+segment_case 0 $'cat <<$\'E\'\n$(npm i left-pad)\nE'
+segment_case 0 "echo \$'\\x6e'pm i left-pad"
+segment_case 0 "find . -name '*.json' -exec grep -l npm {} +"
+segment_case 0 "watch -n 5 'npm ls'"
+segment_case 0 "echo 'npm ls' | sudo bash"
+
+# feedback_03770784 round 3: ANSI-C heredoc delimiters and more launchers.
+segment_case 2 $'cat <<$\'E\\x46\'\nx\nEF\nnpm i left-pad\nE\\x46'
+segment_case 2 $'cat <<$\'E\\106\'\nx\nEF\nnpm i left-pad'
+segment_case 2 "arch -arm64 npm i left-pad"
+segment_case 2 "arch -x86_64 npm i left-pad"
+segment_case 2 "flock /tmp/lock npm i left-pad"
+segment_case 2 "flock -w 5 /tmp/lock npm i left-pad"
+segment_case 2 "flock /tmp/lock -c 'npm i left-pad'"
+segment_case 2 "flock -c 'npm i left-pad' /tmp/lock"
+segment_case 2 "script -q /dev/null npm i left-pad"
+segment_case 2 "script -q -c 'npm i left-pad' /dev/null"
+segment_case 2 "parallel npm i ::: left-pad"
+segment_case 2 "parallel -j 2 npm i ::: left-pad is-odd"
+segment_case 2 "chronic npm i left-pad"
+segment_case 2 "unbuffer npm i left-pad"
+segment_case 2 "tcsh -c 'npm i left-pad'"
+segment_case 2 "csh -c 'npm i left-pad'"
+segment_case 2 "echo 'npm i left-pad' | arch -arm64 bash"
+segment_case 0 $'cat <<$\'E\\x46\'\nnpm i left-pad\nEF'
+segment_case 0 "arch -arm64 npm ci"
+segment_case 0 "flock /tmp/lock npm ci"
+segment_case 0 "script -q /dev/null npm run build"
+segment_case 0 "parallel echo ::: npm i left-pad"
+segment_case 0 "tcsh -c 'echo npm i left-pad'"
+
 if [ "$fails" -gt 0 ]; then
   echo "block-unsafe-package-install.test.sh: $fails check(s) failed" >&2
   exit 1

@@ -10,8 +10,8 @@ Deep conversational interview to build a rich profile and authentic voice guide.
 
 ## Context to Load
 
-1. Read `agents-profile.md` if it exists (owner profile + working preferences)
-2. Read `agents-companies.md` if it exists (company roster + roles)
+1. Read `personal/agents-profile.md` if it exists (owner profile + working preferences)
+2. Read `personal/agents-companies.md` if it exists (company roster + roles)
 3. Read `companies/*/knowledge/profile.md` if it exists
 4. Read `companies/*/knowledge/voice-style.md` if it exists
 
@@ -61,12 +61,12 @@ Ask questions **one at a time**. Keep it conversational, not interrogative. Adap
 
 Always ask this last, after every other question, as the step that finishes the interview and gets them into the HQ app.
 
-If `agents-profile.md` already says "Profile photo: set", skip this step.
+If `personal/agents-profile.md` already says "Profile photo: set", skip this step.
 
 19. Ask whether they have set a profile photo in HQ. You can't check this yourself. If they haven't, ask them to finish by setting one: in the HQ app, open **Settings → Profile → Change photo**, or go to https://hq.computer/personal/profile. Any photo works; HQ crops it to a square.
 
 - Wait until they confirm it's done or say "skip". Don't try to upload it yourself; there is no command for that. Don't ask them to paste or attach the photo in chat.
-- Record the result in `agents-profile.md` only: "Profile photo: set" or "Profile photo: not set". Never write it to `companies/{company}/knowledge/profile.md`, which is company-scoped.
+- Record the result in `personal/agents-profile.md` only: "Profile photo: set" or "Profile photo: not set". Never write it to `companies/{company}/knowledge/profile.md`, which is company-scoped.
 
 ## Output
 
@@ -121,9 +121,9 @@ After the interview, update these files:
 {2-3 real examples from the interview, quoted}
 ```
 
-### `agents-profile.md` + `agents-companies.md`
+### `personal/agents-profile.md` + `personal/agents-companies.md`
 
-Update or create both files. `agents-profile.md` holds the owner profile + working preferences (loaded for writing/comms tasks). `agents-companies.md` holds the three-tier company roster (loaded for company routing). The first line of `agents-profile.md` MUST stay `# {Name} - Profile` — the SessionStart hook `inject-local-context.sh` parses the owner name from that exact pattern.
+Update or create both files. `personal/agents-profile.md` holds the owner profile + working preferences (loaded for writing/comms tasks). `personal/agents-companies.md` holds the three-tier company roster (loaded for company routing). The first line of `personal/agents-profile.md` MUST stay `# {Name} - Profile` — the SessionStart hook `inject-local-context.sh` parses the owner name from that exact pattern.
 
 ## Rules
 

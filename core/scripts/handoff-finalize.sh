@@ -256,9 +256,36 @@ is_sensitive_path() {
   esac
 }
 
-normalize_rel_path() {
-  local raw="$1"
-  local rel="$raw"
+# canonical_rel_path <raw> — print the one canonical HQ-relative spelling of a
+# changeset path, or return 1 when it is unsafe. The same value is used for
+# validation, company detection, and git add/commit, so no later consumer can
+# read a different path than the one that was checked.
+#   - absolute paths must sit under the physical or logical HQ root;
+#   - repeated slashes, "./" segments and a trailing "/" or "/." are folded;
+#   - any ".." component (leading, inner or trailing) is refused outright;
+#   - the parent directory is resolved with symlinks (pwd -P) and must stay
+#     inside the physical HQ root; a symlink leaf must point inside the root
+#     and inside the same company folder as the link itself;
+#   - "companies" itself (every company at once) is refused.
+# hq_first_seg_spoofed <rel> — true when the first segment is a case variant
+# (not the exact spelling) of "companies" or ".git".
+# The filesystem decides, not the spelling: a name that resolves to the same
+# directory as companies/ or .git/ (ASCII case variants, Unicode case folding
+# such as U+017F on APFS) but is not the exact name is a spoof.
+hq_first_seg_spoofed() {
+  local first="${1%%/*}" lower real
+  lower="$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')"
+  [[ ( "$lower" == companies || "$lower" == .git ) && "$first" != "$lower" ]] && return 0
+  for real in companies .git; do
+    [[ "$first" == "$real" ]] && continue
+    [[ -e "$HQ_ROOT/$first" && "$HQ_ROOT/$first" -ef "$HQ_ROOT/$real" ]] && return 0
+  done
+  return 1
+}
+
+canonical_rel_path() {
+  local raw="$1" rel seg out="" parent leaf rest="" phys target tco lco
+  rel="$raw"
   if [[ "$raw" == "$HQ_ROOT/"* ]]; then
     rel="${raw#"$HQ_ROOT/"}"
   elif [[ "$raw" == "$HQ_ROOT_LOGICAL/"* ]]; then
@@ -266,11 +293,73 @@ normalize_rel_path() {
   elif [[ "$raw" == /* ]]; then
     return 1
   fi
-  rel="${rel#./}"
+  [[ "$rel" == -* ]] && return 1
+  local IFS=/
+  local -a parts
+  read -r -a parts <<< "$rel"
+  unset IFS
+  for seg in ${parts[@]+"${parts[@]}"}; do
+    case "$seg" in
+      ''|.) continue ;;
+      ..) return 1 ;;
+    esac
+    out="${out:+$out/}$seg"
+  done
+  rel="$out"
   [[ -z "$rel" ]] && return 1
-  [[ "$rel" == -* || "$rel" == ".." || "$rel" == ../* || "$rel" == */../* || "$rel" == .git || "$rel" == .git/* ]] && return 1
+  [[ "$rel" == -* || "$rel" == .git || "$rel" == .git/* || "$rel" == companies ]] && return 1
+  # Resolve the deepest existing ancestor physically; deleted paths keep their
+  # missing tail verbatim (it has no symlinks to resolve).
+  parent="${rel%/*}"; leaf="${rel##*/}"
+  [[ "$parent" == "$rel" ]] && parent=""
+  while [[ -n "$parent" && ! -d "$HQ_ROOT/$parent" ]]; do
+    rest="${parent##*/}${rest:+/$rest}"
+    if [[ "$parent" == */* ]]; then parent="${parent%/*}"; else parent=""; fi
+  done
+  phys="$(cd "$HQ_ROOT/${parent:-.}" 2>/dev/null && pwd -P)" || return 1
+  if [[ "$phys" == "$HQ_ROOT" ]]; then
+    out=""
+  elif [[ "$phys" == "$HQ_ROOT/"* ]]; then
+    out="${phys#"$HQ_ROOT/"}"
+  else
+    return 1
+  fi
+  [[ -n "$rest" ]] && out="${out:+$out/}$rest"
+  rel="${out:+$out/}$leaf"
+  [[ "$rel" == .git || "$rel" == .git/* || "$rel" == companies ]] && return 1
+  # Case-insensitive filesystems (macOS default) keep the typed case through
+  # pwd -P, and git (core.ignorecase) stages the real file. Refuse any other
+  # spelling of the top-level companies or .git folder so company detection
+  # cannot be dodged with "Companies/<sibling>/...".
+  hq_first_seg_spoofed "$rel" && return 1
+  if [[ -L "$HQ_ROOT/$rel" ]]; then
+    if [[ -d "$HQ_ROOT/$rel" ]]; then
+      target="$(cd "$HQ_ROOT/$rel" 2>/dev/null && pwd -P)" || return 1
+    elif [[ -e "$HQ_ROOT/$rel" ]]; then
+      target="$(cd "$(dirname "$HQ_ROOT/$rel")" && cd "$(dirname "$(readlink "$HQ_ROOT/$rel")")" 2>/dev/null && pwd -P)/$(basename "$(readlink "$HQ_ROOT/$rel")")" || return 1
+    else
+      return 1
+    fi
+    [[ "$target" == "$HQ_ROOT" || "$target" == "$HQ_ROOT/"* ]] || return 1
+    target="${target#"$HQ_ROOT"}"; target="${target#/}"
+    hq_first_seg_spoofed "$target" && return 1
+    lco=""; tco=""
+    [[ "$rel" == companies/*/* ]] && { lco="${rel#companies/}"; lco="${lco%%/*}"; }
+    [[ "$target" == companies || "$target" == companies/* ]] && { tco="${target#companies}"; tco="${tco#/}"; tco="${tco%%/*}"; [[ -n "$tco" ]] || return 1; }
+    [[ "$tco" == "$lco" ]] || return 1
+  fi
   printf '%s\n' "$rel"
 }
+
+# company_of_rel <canonical-rel> — company slug that owns the path, or empty.
+company_of_rel() {
+  local r="$1" co
+  [[ "$r" == companies/* ]] || return 0
+  co="${r#companies/}"; co="${co%%/*}"
+  printf '%s' "$co"
+}
+
+normalize_rel_path() { canonical_rel_path "$1"; }
 
 while IFS=$'\t' read -r raw_path deleted_flag; do
   [[ -z "${raw_path:-}" ]] && continue
@@ -284,7 +373,7 @@ while IFS=$'\t' read -r raw_path deleted_flag; do
   fi
   if [[ ! -e "$rel_path" ]]; then
     if [[ "$HAS_GIT_CHECKOUT" == "true" && "$deleted_flag" == "true" ]] \
-      && git ls-files --error-unmatch "$rel_path" >/dev/null 2>&1; then
+      && GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
       SAFE_STAGE_PATHS+=("$rel_path")
     else
       record_skip "$rel_path" "missing"
@@ -320,6 +409,13 @@ TOUCHED_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" --arg hq_root_logical "$
     | select(type == "string")
   ] | unique
 ' "$FILES_TOUCHED_FILE" 2>/dev/null || printf '[]')
+# Union in the companies of the canonical stage paths, so a path that only
+# reaches a company after canonicalisation (symlinked parent) still counts.
+for _canon in ${SAFE_STAGE_PATHS[@]+"${SAFE_STAGE_PATHS[@]}"}; do
+  _co="$(company_of_rel "$_canon")"
+  [[ -n "$_co" ]] || continue
+  TOUCHED_COMPANIES_JSON="$(jq -c --arg c "$_co" '. + [$c] | unique' <<< "$TOUCHED_COMPANIES_JSON")"
+done
 MIRROR_COMPANIES_JSON='[]'
 
 bound_session_company() {
@@ -372,6 +468,41 @@ if [[ -n "$BOUND_SESSION_COMPANY" ]]; then
   fi
   [[ -n "$LOCKED_COMPANIES" ]] && SESSION_LOCKED_COMPANIES_JSON="$(jq -cn --arg slugs "$LOCKED_COMPANIES" '$slugs | split(",") | map(select(length > 0))')"
 fi
+# A handoff with an owner may only stage paths in companies it owns (the bound
+# company plus the session's locked set). Anything else is refused, never
+# committed under this owner's label.
+if [[ -n "$BOUND_SESSION_COMPANY" ]]; then
+  _owned=",${LOCKED_COMPANIES:-$BOUND_SESSION_COMPANY},$BOUND_SESSION_COMPANY,"
+  _kept=()
+  for _canon in ${SAFE_STAGE_PATHS[@]+"${SAFE_STAGE_PATHS[@]}"}; do
+    _co="$(company_of_rel "$_canon")"
+    if [[ -n "$_co" && "$_owned" != *",$_co,"* ]]; then
+      record_skip "$_canon" "foreign-company"
+      continue
+    fi
+    _kept+=("$_canon")
+  done
+  SAFE_STAGE_PATHS=(${_kept[@]+"${_kept[@]}"})
+else
+  # No owner: a handoff may still carry one company's paths, but never two
+  # companies in one commit with nobody to own it.
+  _seen=""
+  for _canon in ${SAFE_STAGE_PATHS[@]+"${SAFE_STAGE_PATHS[@]}"}; do
+    _co="$(company_of_rel "$_canon")"
+    [[ -n "$_co" && ",$_seen," != *",$_co,"* ]] && _seen="${_seen:+$_seen,}$_co"
+  done
+  if [[ "$_seen" == *,* ]]; then
+    _kept=()
+    for _canon in ${SAFE_STAGE_PATHS[@]+"${SAFE_STAGE_PATHS[@]}"}; do
+      if [[ -n "$(company_of_rel "$_canon")" ]]; then
+        record_skip "$_canon" "multi-company-no-owner"
+        continue
+      fi
+      _kept+=("$_canon")
+    done
+    SAFE_STAGE_PATHS=(${_kept[@]+"${_kept[@]}"})
+  fi
+fi
 TOUCHED_COMPANY_COUNT="$(jq 'length' <<< "$TOUCHED_COMPANIES_JSON")"
 if [[ "$TOUCHED_COMPANY_COUNT" -gt 1 ]]; then
   printf 'handoff-finalize: company mirror skipped (handoff spans multiple companies)\n' >&2
@@ -380,6 +511,22 @@ elif [[ -z "$BOUND_SESSION_COMPANY" || ! -d "companies/$BOUND_SESSION_COMPANY" ]
 elif [[ "$TOUCHED_COMPANY_COUNT" -eq 1 ]] && \
      [[ "$(jq -r '.[0]' <<< "$TOUCHED_COMPANIES_JSON")" != "$BOUND_SESSION_COMPANY" ]]; then
   printf 'handoff-finalize: company mirror skipped (handoff paths do not match the bound company)\n' >&2
+elif [[ -z "$OWNER_COMPANY" && "$TOUCHED_COMPANY_COUNT" -eq 0 ]] && \
+     [[ "$(jq -r --arg hq_root "$HQ_ROOT" --arg hq_root_logical "$HQ_ROOT_LOGICAL" '
+         [ (if type == "array" then .[] else empty end)
+         | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
+         | select(. != "")
+         | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):]
+            elif startswith($hq_root_logical + "/") then .[(($hq_root_logical | length) + 1):]
+            else . end)
+         | sub("^\\./"; "")
+         ] | if length > 0 and (map(select(startswith("companies/") or startswith("repos/"))) | length) == 0
+             then "personal" else "other" end' <<< "$FILES_TOUCHED_JSON" 2>/dev/null || printf 'other')" == "personal" ]]; then
+  # Files were touched but none under companies/ or repos/: personal or
+  # HQ-only work. Do not stamp or mirror it into the bound company
+  # (feedback_c8465cde). Repo code still follows the bound company. Pass
+  # --company to file a handoff under a company on purpose.
+  printf 'handoff-finalize: company mirror skipped (handoff touched no company or repo paths; pass --company %s to file it there)\n' "$BOUND_SESSION_COMPANY" >&2
 else
   MIRROR_COMPANIES_JSON="$(jq -cn --arg company "$BOUND_SESSION_COMPANY" '[$company]')"
 fi
@@ -399,6 +546,10 @@ fi
 
 # -------- thread file --------
 TS=$(date -u +%Y%m%dT%H%M%SZ)
+# The session that writes this handoff. Recorded on the thread and the pointer
+# so the archive check can recognize its own handoff after another session's
+# finalize moved the shared pointer on.
+HANDOFF_SESSION_ID="$(session_id_resolve "$HQ_ROOT" 2>/dev/null || true)"
 DAY=$(date +%Y%m%d)
 HM=$(date +%H%M%S)
 THREAD_ID="T-${DAY}-${HM}-${SLUG}"
@@ -524,12 +675,14 @@ jq -n \
   --argjson tags "$TAGS_JSON" \
   --argjson companies "$MIRROR_COMPANIES_JSON" \
   --argjson company_slugs "$SESSION_LOCKED_COMPANIES_JSON" \
+  --arg session_id "$HANDOFF_SESSION_ID" \
   '{
     thread_id: $thread_id,
     version: 1,
     type: "handoff",
     created_at: $ts,
     updated_at: $ts,
+    session_id: (if $session_id == "" then null else $session_id end),
     workspace_root: $root,
     cwd: $cwd,
     git: { branch: $branch, current_commit: $commit, dirty: $dirty },
@@ -613,22 +766,39 @@ jq -n \
 # Keep the pointer readable as one complete file at all times. The temp is in
 # the destination directory so mv publishes it with a same-filesystem rename.
 # The pointer path is checkout-relative so the synced handoff stays portable.
+#
+# The pointer is one shared, last-writer-wins file for every session on this
+# checkout. Two sessions handing off minutes apart is normal and the later one
+# takes it. What must not happen is an OLDER handoff (clock skew, a replayed
+# copy racing a fresh one) replacing a NEWER pointer: /startwork would then
+# resume the wrong thread and the newer session's archive check would refuse.
+# created_at is a sortable UTC stamp, so a plain string compare orders them.
+POINTER_KEPT_NEWER="false"
 write_handoff_pointer() {
-  local destination="$1" thread_path="$2" destination_dir pointer_tmp
+  local destination="$1" thread_path="$2" destination_dir pointer_tmp existing_ts
   destination_dir="$(dirname "$destination")"
   mkdir -p "$destination_dir"
+  if [[ -f "$destination" ]]; then
+    existing_ts="$(jq -r '.created_at // empty' "$destination" 2>/dev/null || true)"
+    if [[ -n "$existing_ts" && "$existing_ts" > "$TS" ]]; then
+      echo "handoff-finalize: kept newer handoff pointer at $destination ($existing_ts > $TS); this thread stays at $thread_path" >&2
+      POINTER_KEPT_NEWER="true"
+      return 0
+    fi
+  fi
   pointer_tmp="$(mktemp "$destination_dir/.handoff-pointer.XXXXXX")"
   FINALIZE_TMP_FILES+=("$pointer_tmp")
   # Company context: /discover reads a scalar top-level `.company` from this
   # pointer, so write the slug when exactly one company is bound. `companies`
   # carries the full list (same values as the thread's metadata.company).
-  if ! jq -n --arg ts "$TS" --arg msg "$MESSAGE" --arg thread_id "$THREAD_ID" --arg thread_path "$thread_path" --arg summary "$SUMMARY" --argjson companies "$MIRROR_COMPANIES_JSON" '{
+  if ! jq -n --arg ts "$TS" --arg msg "$MESSAGE" --arg thread_id "$THREAD_ID" --arg thread_path "$thread_path" --arg summary "$SUMMARY" --argjson companies "$MIRROR_COMPANIES_JSON" --arg session_id "$HANDOFF_SESSION_ID" '{
     created_at: $ts,
     message: $msg,
     last_thread: $thread_id,
     thread_path: $thread_path,
     context_notes: $summary,
-    companies: $companies
+    companies: $companies,
+    session_id: (if $session_id == "" then null else $session_id end)
   } + (if ($companies | length) == 1 then {company: $companies[0]} else {} end)' > "$pointer_tmp"; then
     rm -f "$pointer_tmp"
     return 1
@@ -1344,11 +1514,13 @@ MSYS_NO_PATHCONV=1 jq -n \
   --argjson mirror_companies "$MIRRORED_COMPANIES_JSON" \
   --arg handoff_publish_pid "${HANDOFF_PUBLISH_PID:-}" \
   --arg handoff_publish_status "${HANDOFF_PUBLISH_STATUS:-skipped}" \
+  --argjson pointer_kept_newer "$POINTER_KEPT_NEWER" \
   '{
     thread_id: $thread_id,
     thread_path: $thread_path,
     changeset_path: $changeset_path,
     handoff_path: $handoff_path,
+    pointer_kept_newer: $pointer_kept_newer,
     hq_committed: $hq_committed,
     hq_commit_status: $hq_commit_status,
     hq_commit_error: $hq_commit_error,

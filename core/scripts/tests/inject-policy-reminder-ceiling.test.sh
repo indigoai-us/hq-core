@@ -179,6 +179,13 @@ for i in $(seq -w 1 12); do printf '%s\n' "$delivered" | grep -x "git-hard-$i" >
 printf '%s\n' "$delivered" | grep -x zz-git-or-gh >/dev/null || missing="$missing zz-git-or-gh"
 [ -z "$missing" ] && ok "every HARD rule was delivered once over the drain" || bad "never delivered:$missing"
 [ -n "$footer_only" ] && ok "the output shrank to footer-only at event $footer_only" || bad "the output never became footer-only"
+# Footer-only repeat: the same footer on the next event
+# carries no new rule, so the hook emits nothing; the opt-out restores it.
+drep="$(run "$R2" s2 'git status --short' "${small[@]}")"
+[ -z "$drep" ] && ok "an identical footer-only reminder is not repeated" || bad "footer-only reminder repeated: $drep"
+drep_on="$(run "$R2" s2 'git status --short' "${small[@]}" HQ_POLICY_FOOTER_REPEAT=1)"
+case "$drep_on" in *'> Already shown this session, still binding: '*) ok "HQ_POLICY_FOOTER_REPEAT=1 restores the repeated footer" ;; *) bad "opt-out did not restore the footer: $drep_on" ;; esac
+grep -qx 'git-hard-01' "$(ledger_file "$R2" s2)" && ok "suppressing the footer leaves the session ledger intact" || bad "session ledger lost git-hard-01"
 d3="$(run "$R2" s2 'gh pr view 12' "${small[@]}")"
 case "$d3" in *'> Policy `'*) bad "a different trigger (gh) re-listed a delivered rule: $d3" ;; *) ok "a different trigger (gh) lists no delivered rule again" ;; esac
 case "$d3" in *'> Already shown this session, still binding: zz-git-or-gh.'*) ok "and names only the rule that matches gh in the footer" ;; *) bad "footer for gh wrong: $d3" ;; esac

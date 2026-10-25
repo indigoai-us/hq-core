@@ -37,6 +37,86 @@ check "a link with no decision queue is not gated (rc $rc)" "$([[ $rc -eq 0 ]]; 
 out="$(gate sid-host "git status && gh pr list")"; rc=$?
 check "a command with no merge is not gated (rc $rc)" "$([[ $rc -eq 0 ]]; echo $?)"
 
+out="$(gate sid-lane "grep -rn 'gh pr merge' core/hooks")"; rc=$?
+check "grep text naming the merge command is not a merge (rc $rc, got: $out)" "$([[ $rc -eq 0 ]]; echo $?)"
+out="$(gate sid-lane "sed -i 's/x/gh pr merge 7/' f.sh && echo gh pr merge 7")"; rc=$?
+check "sed/echo text naming the merge command is not a merge (rc $rc, got: $out)" "$([[ $rc -eq 0 ]]; echo $?)"
+out="$(gate sid-lane "cd r && env GH_TOKEN=x gh pr merge 7 --squash")"; rc=$?
+check "a launcher-prefixed merge is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "bash -c 'gh pr merge 7 --squash'")"; rc=$?
+check "a bash -c merge is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+# A launcher with its own operands, a wrapper the gate has never heard of, and
+# a computed env assignment all still run gh: unknown prefixes fail closed.
+out="$(gate sid-lane "timeout 60 gh pr merge 7 -R x/y --squash")"; rc=$?
+check "timeout N gh pr merge is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "hq secrets exec --company indigo --only GH_TOKEN -- gh pr merge 7 -R x/y --squash")"; rc=$?
+check "hq secrets exec -- gh pr merge is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "GH_TOKEN=\$(cat tok) gh pr merge 7 -R x/y --squash")"; rc=$?
+check "NAME=\$(...) gh pr merge is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "nice -n 5 gh pr merge 7 -R x/y --squash")"; rc=$?
+check "nice -n N gh pr merge is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+# Text commands lose the exemption when the text can run: a substitution or
+# subshell (with or without a launcher inside), a pipe onward, a redirection,
+# sed's e command, awk's system().
+out="$(gate sid-lane "echo \$(gh pr merge 7 -R x/y --squash)")"; rc=$?
+check "a merge inside a substitution is still gated even under echo (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "cat \$(env gh pr merge 7 -R x/y --squash)")"; rc=$?
+check "a launcher inside a substitution under cat is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "echo \$(timeout 60 gh pr merge 7 -R x/y --squash)")"; rc=$?
+check "timeout inside a substitution under echo is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "echo \`sudo gh pr merge 7 -R x/y --squash\`")"; rc=$?
+check "a backtick substitution under echo is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "echo gh pr merge 7 -R x/y --squash | sh")"; rc=$?
+check "echo piped into sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "printf '%s' 'gh pr merge 7 -R x/y --squash' | bash")"; rc=$?
+check "printf piped into bash is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "echo gh pr merge 7 -R x/y --squash > run.sh")"; rc=$?
+check "echo redirected to a file is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed '1e gh pr merge 7 -R x/y --squash' f")"; rc=$?
+check "sed e command is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "awk 'BEGIN{system( \"gh pr merge 7 -R x/y --squash\")}'")"; rc=$?
+check "awk system() is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed 's/^/gh pr merge 7 -R x/y --squash/e' f")"; rc=$?
+check "sed s///e flag is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed -n 's/^/gh pr merge 7 -R x/y --squash/ep' f")"; rc=$?
+check "sed s///ep flags are still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "echo() { sh -c \"\$*\"; }; echo gh pr merge 7 -R x/y --squash")"; rc=$?
+check "a redefined echo is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "function cat { \"\$@\"; }
+cat gh pr merge 7 -R x/y --squash")"; rc=$?
+check "a redefined cat is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "awk 'BEGIN{\"gh pr merge 7 -R x/y --squash\" | getline}'")"; rc=$?
+check "awk getline is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed 's/x/gh pr merge 7/' f.sh")"; rc=$?
+check "a plain sed substitution naming the merge is text only (rc $rc, got: $out)" "$([[ $rc -eq 0 ]]; echo $?)"
+# Text can leave a segment without a | or > inside it: a brace group or
+# function body piped as a whole, &> (the & splits the segment), exec
+# redirects, printf -v, sed w/-i writes, sed flags in any order, alias forms.
+out="$(gate sid-lane "{ echo gh pr merge 7 -R x/y --squash; } | sh")"; rc=$?
+check "a brace group piped into sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "if true; then
+echo gh pr merge 7 -R x/y --squash
+fi | sh")"; rc=$?
+check "an if block piped into sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "echo gh pr merge 7 -R x/y --squash &>x; sh x")"; rc=$?
+check "echo &> file then sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "exec >x; echo gh pr merge 7 -R x/y --squash; sh x")"; rc=$?
+check "exec redirect then echo then sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "printf -v c %s gh pr merge 7 -R x/y --squash; \$c")"; rc=$?
+check "printf -v then expansion is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed -i '1i gh pr merge 7 -R x/y --squash' x; sh x")"; rc=$?
+check "sed -i then sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed -n 's/^/gh pr merge 7 -R x/y --squash/w s.sh' f")"; rc=$?
+check "sed w flag is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "sed 's/^/gh pr merge 7 -R x/y --squash/ge' f")"; rc=$?
+check "sed ge flags are still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "alias -g echo=sh; echo gh pr merge 7 -R x/y --squash")"; rc=$?
+check "alias -g redefinition is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "awk -i inplace '{print \"gh pr merge 7 -R x/y --squash\"}' s.sh; sh s.sh")"; rc=$?
+check "gawk in-place then sh is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "cat notes.txt | gh pr merge 7 -R x/y --squash")"; rc=$?
+check "a merge after a pipe from cat is still gated (rc $rc, got: $out)" "$([[ $rc -eq 3 ]]; echo $?)"
+
 out="$(gate sid-lane "gh pr merge 7 -R x/y --squash")"; rc=$?
 check "a gated merge without --match-head-commit is refused (rc $rc, got: $out)" "$([[ $rc -eq 3 && "$out" == *match-head-commit* ]]; echo $?)"
 out="$(gate sid-lane "gh pr merge 7 -R x/y --squash --match-head-commit $SHA")"; rc=$?

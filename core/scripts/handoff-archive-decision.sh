@@ -25,7 +25,12 @@
 #   - --recovery-pending is passed (the user must read the recovery warning);
 #   - the handoff is not on disk: --thread <path> must name a thread JSON file
 #     with a matching <id>.changeset.json beside it, and
-#     workspace/threads/handoff.json must point at that thread;
+#     workspace/threads/handoff.json must exist. The pointer is one shared
+#     last-writer-wins file, so when another session handed off in the same
+#     window (or a vault pull replayed an older copy) it names a different
+#     thread. That is still this session's handoff when the pointer carries
+#     this session id or the thread file is committed unchanged in the HQ
+#     root; an uncommitted thread behind a foreign pointer refuses;
 #   - --cwd is inside a linked git worktree with uncommitted changes (the app
 #     deletes the session's worktree on archive, which would lose them);
 #   - an open PR exists for the current branch of --cwd or any --repo-dir
@@ -163,8 +168,39 @@ thread_id="$(basename "$thread_abs" .json)"
 [ -f "$(dirname "$thread_abs")/$thread_id.changeset.json" ] || no "handoff not verified: changeset file missing"
 pointer="$HQ_ROOT/workspace/threads/handoff.json"
 [ -f "$pointer" ] || no "handoff not verified: handoff.json missing"
-jq -e --arg id "$thread_id" '.last_thread == $id' "$pointer" >/dev/null 2>&1 \
-  || no "handoff not verified: handoff.json does not point at this thread"
+
+# Session id (also used by the background-work and pending-ask checks below).
+if [ -z "$SID" ]; then
+  SID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
+fi
+if [ -z "$SID" ] && [ -f "$HQ_ROOT/core/scripts/hq-session.sh" ]; then
+  SID="$(bash "$HQ_ROOT/core/scripts/hq-session.sh" current 2>/dev/null || true)"
+fi
+
+# The pointer names this thread, or this session wrote the pointer, or the
+# thread file is committed unchanged in the HQ root. Any one of these proves
+# the handoff is durable; the shared pointer alone cannot, since a later
+# handoff from another session (or a replayed older copy) overwrites it.
+thread_is_committed() {
+  local rel root_abs
+  root_abs="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P)" || return 1
+  rel="$(cd "$(dirname "$thread_abs")" 2>/dev/null && pwd -P)/$(basename "$thread_abs")"
+  case "$rel" in "$root_abs"/*) rel="${rel#"$root_abs"/}" ;; *) return 1 ;; esac
+  git -C "$HQ_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 1
+  git -C "$HQ_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 1
+  [ -n "$(git -C "$HQ_ROOT" log -1 --format=%H -- "$rel" 2>/dev/null)" ] || return 1
+  [ -z "$(git -C "$HQ_ROOT" status --porcelain -- "$rel" 2>/dev/null)" ] || return 1
+  return 0
+}
+if ! jq -e --arg id "$thread_id" '.last_thread == $id' "$pointer" >/dev/null 2>&1; then
+  if [ -n "$SID" ] && jq -e --arg sid "$SID" '(.session_id // "") == $sid' "$pointer" >/dev/null 2>&1; then
+    :
+  elif thread_is_committed; then
+    :
+  else
+    no "handoff not verified: handoff.json points at another thread and this thread is not committed"
+  fi
+fi
 
 # Linked worktree = git dir differs from the common git dir.
 real_git_path() {
@@ -208,12 +244,6 @@ done
 
 # Background work.
 [ "$BACKGROUND_RUNNING" = "1" ] && no "background work running in this session"
-if [ -z "$SID" ]; then
-  SID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}}"
-fi
-if [ -z "$SID" ] && [ -f "$HQ_ROOT/core/scripts/hq-session.sh" ]; then
-  SID="$(bash "$HQ_ROOT/core/scripts/hq-session.sh" current 2>/dev/null || true)"
-fi
 [ -n "$SID" ] || no "could not verify background work: no session id"
 case "$SID" in *[!A-Za-z0-9._-]*|.*) no "could not verify background work: invalid session id" ;; esac
 

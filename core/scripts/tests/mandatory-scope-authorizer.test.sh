@@ -1692,6 +1692,77 @@ scope_112_case() {
   rc="$(run_hook "$payload")"
   expect_exit "$expect" "$rc" "feedback_$id: $(printf '%s' "$command" | tr '\n' ' ')"
 }
+# An unrelated `unset` no longer voids a literal binding (feedback_9095ae4c).
+mkdir -p "$TMP/repos/private/demo"
+scope_112_case 9095ae4c 0 'W=repos/private/demo; unset GH_TOKEN GITHUB_TOKEN; git -C $W status'
+scope_112_case 9095ae4c 0 'unset GH_TOKEN; W=repos/private/demo; git -C $W status'
+scope_112_case 9095ae4c 0 'W=repos/private/demo; unset -v GH_TOKEN; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; unset W; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; unset -v W; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; unset -n W; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; n=W; unset $n; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; unset "W"; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; unset GH_TOKEN W; git -C $W status'
+scope_112_case 9095ae4c 2 'W=repos/private/demo; unset GH_TOKEN; cat companies/otherco/settings/x'
+scope_112_case 9095ae4c 2 'W=companies/otherco; unset GH_TOKEN; git -C $W status'
+# A quoted unset or rebinding word is still that builtin to the shell.
+scope_112_case 9095ae4c 2 "W=indigo; u''nset W; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 'W=indigo; un"set" W; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; \\unset W; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 "W=indigo; r''ead W < /dev/null; cat companies/otherco\$W/x"
+# A plain `unset OTHER` must not hide a quoted unset of the bound name
+# (security review of PR 1675). Every quoted, escaped, or $'...' unset word
+# counts as touching every name.
+scope_112_case 9095ae4c 2 "W=indigo; unset FOO; u''nset W; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 'W=indigo; unset FOO; un"set" W; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 "W=indigo; unset FOO; \$'unset' W; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 'W=indigo; unset FOO; builtin u""nset W; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; unset FOO; \\unset W; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 "W=indigo; \$'unset' W; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 "W=indigo; \$'\\x75nset' W; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 "W=indigo; unset FOO; \$'\\165nset' W; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 'W=indigo; unset FOO; $"unset" W; cat companies/otherco$W/x'
+# Quoted or escaped forms of the other rebinding builtins.
+scope_112_case 9095ae4c 2 'W=indigo; p""rintf -v W x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; printf "-v" W x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; f""or W in x; do :; done; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 "W=indigo; sel''ect W in x; do break; done; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 'W=indigo; de"clare" W=x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 "W=indigo; t''ypeset W=x; cat companies/otherco\$W/x"
+scope_112_case 9095ae4c 2 'W=indigo; lo"cal" W=x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; ex""port W=x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; ma"pfile" W < /dev/null; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; read""array W < /dev/null; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; l""et W=1; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; (( W""=1 )); cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; : ${W:"="x}; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; e""val W=x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; so""urce /tmp/x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 "W=indigo; \$'\\x72ead' W < /dev/null; cat companies/otherco\$W/x"
+# Allow cases stay allowed.
+scope_112_case 9095ae4c 0 'W=/tmp; git -C $W status'
+scope_112_case 9095ae4c 0 'unset FOO; git -C /tmp status'
+scope_112_case 9095ae4c 0 'unset -v FOO; git -C /tmp status'
+scope_112_case 9095ae4c 0 'unset -f bar; git -C /tmp status'
+scope_112_case 9095ae4c 0 'W=repos/private/demo; unset FOO; git -C $W status'
+# Assigning an array element rebinds the scalar (W[0] is $W).
+scope_112_case 9095ae4c 2 'W=indigo; W[0]=; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; W[0]=x; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; W[00]=; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; W[0]+=; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; W[1-1]=; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; W""[0]=; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; W["0"]=; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; for f in a; do W[0]=; cat companies/otherco$W/$f; done'
+scope_112_case 9095ae4c 0 'W=repos/private/demo; X[0]=a; git -C $W status'
+scope_112_case 9095ae4c 0 'W=repos/private/demo; echo ${W[0]}; git -C $W status'
+# A changed IFS splits an unquoted followed variable into other words.
+scope_112_case 9095ae4c 2 'W=indigo; IFS=i; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; I""FS=i; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; IFS+=i; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 2 'W=indigo; for f in a; do IFS=i; cat companies/otherco$W/$f; done'
+scope_112_case 9095ae4c 2 'W=indigo; f(){ W=; }; f; cat companies/otherco$W/x'
+scope_112_case 9095ae4c 0 'W=repos/private/demo; echo "$IFS"; git -C $W status'
 # Variable assigned earlier in the same command (blocked live on 2026-10-14
 # with "No company path is involved").
 scope_112_case 7b152dda 0 'D=workspace/x; mkdir -p $D; python3 s.py > $D/out.txt'

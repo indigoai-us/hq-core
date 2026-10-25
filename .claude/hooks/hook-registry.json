@@ -815,7 +815,7 @@
           {
             "id": "inject-policy-on-trigger",
             "script": ".claude/hooks/inject-policy-on-trigger.sh",
-            "timeout": 60,
+            "timeout": 20,
             "gated": true,
             "prefilter": {
               "policy_vocab": true

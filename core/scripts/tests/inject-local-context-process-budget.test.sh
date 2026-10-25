@@ -70,7 +70,8 @@ cat > "$EXPECTED" <<'OUTPUT'
 <local-context>
 Owner: Asha Rao
 Challenges: Challenge one; Challenge two; Challenge three; Challenge four; Challenge five
-Companies (2): indigo, acme
+Companies (2), grouped by the owner's relationship:
+Unclassified (confirm): indigo, acme
 Company workers: acme (2), indigo (1)
 Missing workers (registry path absent): indigo-ghost → companies/indigo/workers/ghost
 Do not treat missing workers as available and do not fall back to a raw ingest script. Run hq sync to fetch the directories, or hq reindex to drop stale registry rows.
@@ -98,4 +99,17 @@ HOME="$TMP/home" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$HOOK" > "$TMP/with-vyg.txt
 grep -q '^Data platform: vyg MCP connected' "$TMP/with-vyg.txt" || fail "vyg Data platform line missing when a vyg MCP is registered"
 grep -v '^Data platform:' "$TMP/with-vyg.txt" | cmp -s "$EXPECTED" - || fail "vyg line changed the rest of the banner"
 pass "vyg MCP registration adds exactly one Data platform line"
+
+# feedback_e5ed5205: /personal-interview writes personal/agents-profile.md.
+# The hook reads it there first, and still reads the legacy root file.
+mkdir -p "$FIXTURE/personal"
+mv "$FIXTURE/agents-profile.md" "$FIXTURE/personal/agents-profile.md"
+rm -f "$TMP/home/.claude.json"
+HOME="$TMP/home" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$HOOK" > "$TMP/personal.txt" 2>/dev/null || fail "hook failed with personal profile"
+cmp -s "$EXPECTED" "$TMP/personal.txt" || { diff -u "$EXPECTED" "$TMP/personal.txt" >&2 || true; fail "personal/agents-profile.md not read"; }
+pass "owner and challenges come from personal/agents-profile.md"
+printf '# Legacy Root - Profile\n' > "$FIXTURE/agents-profile.md"
+HOME="$TMP/home" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$HOOK" > "$TMP/both.txt" 2>/dev/null || fail "hook failed with both profiles"
+grep -qx 'Owner: Asha Rao' "$TMP/both.txt" || fail "personal profile did not win over the legacy root file"
+pass "personal profile wins over a legacy root profile"
 echo "inject-local-context-process-budget: ok"
