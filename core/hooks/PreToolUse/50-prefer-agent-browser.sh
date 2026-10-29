@@ -62,7 +62,7 @@ EOF
 else
 read -r -d '' MSG <<EOF || true
 <prefer-agent-browser>
-HQ default for browser automation is the agent-browser CLI (policy hq-prefer-agent-browser). You called: ${tool:-a browser MCP tool}. agent-browser is not on PATH — install with: npm install -g agent-browser && agent-browser install.
+HQ default for browser automation is the agent-browser CLI (policy hq-prefer-agent-browser). You called: ${tool:-a browser MCP tool}. agent-browser is not on PATH — install with: npm install -g agent-browser@0.39.2 && agent-browser install.
 
 Until then, if you must use this MCP tool on a canvas app (Google Docs, Sheets, Slides, Figma): do not click from screenshot coordinates — they miss. Use find/DOM refs for real controls and keyboard for canvas text. computer:type / type can silently write into the live document body instead of a find box. agent-browser cannot reuse a logged-in Chrome Google session; Google Workspace needs headed sign-in after install.
 

@@ -299,7 +299,9 @@ tool_is_outbound() {
 # message (hq dm, Slack chat.postMessage, broadcast endpoints). Match the
 # commands that run, not text they only search or print: a pipeline segment
 # whose command is a read-only viewer (grep, rg, cat, head, tail, ...) is
-# skipped, so `grep -n "hq dm" SKILL.md` is a read. The whole command is
+# skipped, so `grep -n "hq dm" SKILL.md` is a read. The read-only hq dm
+# subcommands (inbox, thread|read, channel|history) deliver nothing and are
+# skipped too. The whole command is
 # matched as before when it contains a command substitution, process
 # substitution, backtick, or a segment that executes text (sh, bash, eval,
 # xargs, source), or when rg is given --pre.
@@ -326,7 +328,9 @@ command_is_outbound() {
       const viewers=new Set(["grep","egrep","fgrep","rg","cat","head","tail","less","more","wc","ls"]);
       const parsed=segs.map(seg=>({seg,...cmdWord(seg)}));
       if(parsed.some(p=>executes.has(p.name))){process.stdout.write(s);return;}
-      const kept=parsed.filter(p=>!(viewers.has(p.name)&&!(p.name==="rg"&&p.args.some(a=>/^--pre(=|$)/.test(a)))));
+      const dmReads=new Set(["inbox","thread","read","channel","history"]);
+      const isDmRead=p=>{if(p.name!=="hq")return false;const a=p.args;let i=0;if(a[i]==="cowork")i++;return a[i]==="dm"&&dmReads.has(a[i+1]||"");};
+      const kept=parsed.filter(p=>!(viewers.has(p.name)&&!(p.name==="rg"&&p.args.some(a=>/^--pre(=|$)/.test(a))))&&!isDmRead(p));
       process.stdout.write(kept.map(p=>p.seg).join("\n"));
     });' 2>/dev/null)" || scan="$command"
   printf '%s' "$scan" | grep -Eqi "$pattern"

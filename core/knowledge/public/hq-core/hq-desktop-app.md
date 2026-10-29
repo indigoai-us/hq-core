@@ -137,23 +137,25 @@ started in those tools.
 ## Local bots
 
 Settings → Bots and the sidebar's **New bot** flow wrap the `hq bot` CLI
-(`hq bot … --json`). The CLI owns the bot's identity, credentials, launchd
-agent and process; the app never sees secrets.
+(`hq bot … --json`). The CLI owns the bot's identity, credentials, HQ Fleet
+profile and process; the app never sees secrets.
 
 | App action | CLI |
 |---|---|
-| Create | `hq bot create <name> --runtime claude\|codex\|grok [--kind company --company <slug>…] [--display-name] [--worker] [--intro] [--kickoff] [--memory synced\|local] [--model] [--no-auto-approve]` |
+| Create personal | `hq bot create <name> --hq-fleet-runtime --provider claude\|codex\|grok [--display-name] [--worker] [--intro] [--kickoff] [--memory synced\|local] [--model] [--no-auto-approve]` |
+| Create company-scoped | `hq bot create <name> --legacy-runtime --runtime claude\|codex\|grok --kind company --company <slug>…` |
 | List | `hq bot list` (`--remote` for bots you own on other machines) |
 | Start / stop / remove | `hq bot start\|stop\|rm <name>` |
 | Model and effort | `hq bot set <name> --model … --effort …` |
 | Start on this computer | `hq bot adopt <name>` |
 | Restore my bots | `hq bot restore [--all]` |
-| Promote to cloud (company bots only) | `hq bot promote <name> --company <cmp_uid>` |
+| Promote to cloud | `hq bot promote <name> --company <cmp_uid>`; the cloud bot pairs with Codex/ChatGPT and does not require Claude |
 
 Rules the app enforces:
 
 - **Kinds.** "Personal - acts as you" works under the owner's account, stays
-  on this machine, and has no company identity, so teammates cannot find it.
+  on this machine, and receives every active company the owner can access. It
+  has no separate company identity, so teammates cannot find it.
   "For a company" has its own identity, belongs to one or more companies, only
   reaches those companies' files, and can be promoted to the cloud. Setup is
   always a personal bot.
@@ -168,6 +170,10 @@ Rules the app enforces:
   machine and a coding tool is signed in, it restores them automatically.
   Settings → Bots keeps "Restore my bots" and a per-bot "Start on this
   computer" action. Cloud-hosted bots are never offered for local restore.
+- **Provider authorization.** New personal and setup bots use the local HQ
+  Fleet Runtime. Desktop passes the selected provider, completes any required
+  sign-in, and then lets the existing introduction and kickoff message start
+  the bot. Codex reuses the machine's current Codex login when possible.
 - **Sidebar.** A bot gets a sidebar row only after it has messaged you, you
   messaged it, you pinned it, or you own it.
 - **Cloud bots.** New bot → Cloud → pick a company → name and @handle. The app

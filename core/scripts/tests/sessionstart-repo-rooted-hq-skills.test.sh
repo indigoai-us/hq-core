@@ -158,7 +158,7 @@ pass "HQ-root early exit is within 5ms CPU of a bare bash"
 rm -rf "$HQ/.claude/skills/hq-pack-eng:generated-skill-"*
 mkdir -p "$HQ/.claude/hooks" "$HQ/core/scripts/lib" "$HQ/personal"
 cp "$ROOT/.claude/hooks/master-hook.sh" "$ROOT/.claude/hooks/hook-timeout-probe.sh" \
-  "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$HQ/.claude/hooks/"
+  "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$HQ/.claude/hooks/"
 cp "$ROOT/core/scripts/resolve-hq-root.sh" "$ROOT/core/scripts/resolve-company.sh" \
   "$ROOT/core/scripts/hq-anywhere-runtime-flag.cjs" "$ROOT/core/scripts/hq-session.sh" \
   "$ROOT/core/scripts/hook-lib.sh" "$HQ/core/scripts/"

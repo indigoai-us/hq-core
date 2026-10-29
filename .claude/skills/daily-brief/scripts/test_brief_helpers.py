@@ -305,6 +305,34 @@ def test_check_brief():
     assert 'd1' in ids and 'd2' not in ids
 
 
+def test_week_rollup_counts_only_your_meetings():
+    # The brief once reported every meeting the company recorded as the person's own,
+    # because the per-day rollup counted every meeting the company recorded.
+    # Only the ones they attended or own an item in are theirs.
+    me = ['Sam Rivera']
+    day = '2026-10-27'
+    team = [{'id': f't{i}', 'title': f'Client sync {i}', 'start': f'{day}T{10 + i % 8:02d}:{i:02d}:00Z',
+             'participants': ['Ann Lee', 'Bo Park'], 'recorded_by_me': False} for i in range(44)]
+    mine = [
+        {'id': 'm1', 'title': 'Dev standup', 'start': f'{day}T15:00:00Z', 'participants': 3,
+         'recorded_by_me': True},
+        {'id': 'm2', 'title': 'Pricing review', 'start': f'{day}T16:00:00Z',
+         'participants': ['Ann Lee', 'Sam Rivera'], 'recorded_by_me': False},
+        {'id': 'm3', 'title': 'Roadmap', 'start': f'{day}T17:00:00Z', 'participants': 2,
+         'recorded_by_me': False},
+    ]
+    # the same standup stored twice by the recorder counts once
+    dup = dict(mine[0], id='m1b')
+    signals = [{'meeting_id': 'm3', 'action_items': [{'text': 'send deck', 'owner': 'Sam', 'mine': True}]}]
+    rows = sweep.rollup_meetings(team + mine + [dup], signals, me)
+    assert len(rows) == 47
+    assert sum(1 for d, m in rows if m) == 3
+    assert sum(1 for d, m in rows if not m) == 44
+    assert {d for d, _ in rows} == {day}
+    # a teammate's signal row with no item of theirs does not make the meeting theirs
+    assert sweep.rollup_meetings(team[:1], [{'meeting_id': 't0', 'action_items': [{'owner': 'Ann', 'mine': False}]}], me) == [(day, False)]
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

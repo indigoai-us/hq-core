@@ -95,13 +95,6 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/core/scripts/hook-lib.sh"
 PROJECT_DIR="$(hq_canonical_path "$PROJECT_DIR")"
 
-MANIFEST="$PROJECT_DIR/.hq/vault-access.json"
-# A missing manifest is expected before the first successful manual refresh on
-# a fresh install; preserve usability until access data has been created.
-[[ -f "$MANIFEST" ]] || exit 0
-MANIFEST_INVALID=0
-jq -e 'type == "object"' "$MANIFEST" >/dev/null 2>&1 || MANIFEST_INVALID=1
-
 SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
 
 # Bypass: must be declared in .claude/settings.local.json env section.
@@ -117,6 +110,28 @@ is_bypass_authorized() {
 if is_bypass_authorized; then
   exit 0
 fi
+
+# Arithmetic is independent of vault membership data, so check Bash even on
+# a fresh install. Parse the command once and reuse it in the Bash path below.
+if [ "$TOOL" = Bash ]; then
+  CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+  [[ -z "$CMD" ]] && exit 0
+  if [ ! -f "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" ]; then
+    printf '%s\n' 'BLOCKED: Bash arithmetic check. The arithmetic guard helper is missing; refresh the hook installation.' >&2
+    exit 2
+  fi
+  . "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh"
+  if ! hq_arith_guard_check "$CMD"; then
+    hq_arith_guard_message
+    exit 2
+  fi
+fi
+
+MANIFEST="$PROJECT_DIR/.hq/vault-access.json"
+# A missing manifest still allows ordinary writes before the first refresh.
+[[ -f "$MANIFEST" ]] || exit 0
+MANIFEST_INVALID=0
+jq -e 'type == "object"' "$MANIFEST" >/dev/null 2>&1 || MANIFEST_INVALID=1
 
 # effective_permission <slug> <company-relative-path>
 # Prints: bypass | write | admin | read | none
@@ -320,8 +335,6 @@ fi
 
 # ── Bash ────────────────────────────────────────────────────────────────────
 
-CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
-[[ -z "$CMD" ]] && exit 0
 # Join backslash-newline continuations so a target on the next line is seen.
 # The pattern sits in a quoted variable: bash 3.2 (macOS /bin/bash) matches
 # nothing for an unquoted $'\\\n' pattern.
@@ -344,15 +357,16 @@ fi
 
 # Fast path: no companies token anywhere in the command and the shell is not
 # already inside companies/ → nothing to check.
-case "$CMD" in
-  *companies/*) ;;
-  *)
-    case "$PAYLOAD_CWD" in
-      "$PROJECT_DIR"/companies/*) ;;
-      *) exit 0 ;;
-    esac
-    ;;
-esac
+# Match the prefix as if quotes/backslashes were removed. A regex avoids
+# Bash 3.2's quadratic whole-string replacement on large quoted commands.
+VAULT_QUOTE_RUN="[\"'\\\\]*"
+VAULT_PREFIX_RE="[cC]${VAULT_QUOTE_RUN}[oO]${VAULT_QUOTE_RUN}[mM]${VAULT_QUOTE_RUN}[pP]${VAULT_QUOTE_RUN}[aA]${VAULT_QUOTE_RUN}[nN]${VAULT_QUOTE_RUN}[iI]${VAULT_QUOTE_RUN}[eE]${VAULT_QUOTE_RUN}[sS]${VAULT_QUOTE_RUN}/"
+if ! [[ "$CMD" =~ $VAULT_PREFIX_RE ]]; then
+  case "$PAYLOAD_CWD" in
+    "$PROJECT_DIR"/companies/*) ;;
+    *) exit 0 ;;
+  esac
+fi
 
 WRITE_OPS='(^|[[:space:](/])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln|install)([[:space:]]|$)'
 
@@ -376,6 +390,7 @@ strip_token_quotes() {
   while [[ "$tok" == *\) || "$tok" == *\} ]]; do tok="${tok%?}"; done
   tok="${tok//\"/}"
   tok="${tok//\'/}"
+  tok="${tok//\\/}"
   printf '%s' "$tok"
 }
 

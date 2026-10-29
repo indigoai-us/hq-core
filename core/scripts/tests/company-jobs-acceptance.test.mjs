@@ -29,7 +29,7 @@ function harness(t) {
   }
   response=delivery();
   const api=async(operation,body)=>{transport.push({operation,...body});assert.equal(operation,'jobs','unexpected transport operation');return structuredClone(body.action==='reconcile'?discovery:response);};
-  const execute=async(command,args,options)=>{executions.push({command,args,options});return {code:0,text:JSON.stringify({disposition:'reply',outcome:'succeeded'})};};
+  const execute=async(command,args,options)=>{executions.push({command,args,options});return {code:0,text:JSON.stringify({disposition:'reply',outcome:'complete'})};};
   let runner=new CompanyRunner(config,api,{clock:()=>now,systemctl:args=>system.push(args),execute});
   t.after(()=>{runner.close();fs.rmSync(dir,{recursive:true,force:true});});
   return {dir,config,job,delivery,transport,system,executions,get runner(){return runner;},setDiscovery:d=>{discovery=d;},setDelivery:d=>{response=d;},setNow:n=>{now=Date.parse(n);},restart(){runner.close();runner=new CompanyRunner(config,api,{clock:()=>now,systemctl:a=>system.push(a),execute});},files:()=>fs.readdirSync(config.unitDir),receipt:id=>JSON.parse(runner.ledger.db.prepare('SELECT receipt FROM runs WHERE run_id=?').get(id).receipt)};
@@ -107,7 +107,7 @@ test('same-instant manual UUIDs remain distinct and preserve requesting admin',a
 test('runtime secret rotation uses company environment without persisted secret bytes',async t=>{
   const f=harness(t);f.job.context={companyJob:{secrets:['ACCEPTANCE_SECRET']}};seal(f.job);
   let value='SENTINEL_ONE';const seen=[];f.runner.api=async(op,b)=>{assert.equal(op,'secret');assert.deepEqual(b,{secretName:'ACCEPTANCE_SECRET'});return {value};};
-  f.runner.execute=async(_cmd,_args,o)=>{seen.push(o.env.ACCEPTANCE_SECRET);assert.equal(o.env.HQ_MACHINE_AUTH_REQUIRED,undefined);assert.equal(o.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(o.env.HQ_MACHINE_TOKEN_STATE_DIR,undefined);assert.equal(JSON.stringify(o.env).includes(f.config.stateDir),false);assert.equal(JSON.stringify(o.env).includes(f.config.machineCredsFile),false);assert.equal(o.env.HQ_COMPANY_UID,f.config.companyUid);return {code:0,text:'{"disposition":"reply"}'};};
+  f.runner.execute=async(_cmd,_args,o)=>{seen.push(o.env.ACCEPTANCE_SECRET);assert.equal(o.env.HQ_MACHINE_AUTH_REQUIRED,undefined);assert.equal(o.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(o.env.HQ_MACHINE_TOKEN_STATE_DIR,undefined);assert.equal(JSON.stringify(o.env).includes(f.config.stateDir),false);assert.equal(JSON.stringify(o.env).includes(f.config.machineCredsFile),false);assert.equal(o.env.HQ_COMPANY_UID,f.config.companyUid);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
   await f.runner.runDelivery(f.job,f.delivery());value='SENTINEL_TWO';await f.runner.runDelivery(f.job,f.delivery('2026-01-02T01:00:00Z'));assert.deepEqual(seen,['SENTINEL_ONE','SENTINEL_TWO']);
   for(const name of fs.readdirSync(f.config.stateDir))assert(!fs.readFileSync(path.join(f.config.stateDir,name)).includes(Buffer.from('SENTINEL_')),name);
   f.runner.api=async()=>{throw new Error('denied');};const denied=await f.runner.runDelivery(f.job,f.delivery('2026-01-02T17:00:00Z'));assert.equal(denied.outcome,'blocked');assert.equal(seen.length,2);

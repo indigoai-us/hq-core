@@ -33,8 +33,8 @@ Prices are not repeated here. See
 
 | Kind | Created by | Runs where | Identity and credentials | Cost basis |
 |---|---|---|---|---|
-| Local bot, personal | `hq bot create <name>` (default `--kind personal`), or desktop Settings → Bots → New bot → Local | The owner's computer. launchd LaunchAgent on macOS (`hq bot daemon install`), otherwise a detached process | Own `agt_` machine identity. Acts as the owner, in every company the owner belongs to. Uses the owner's own `claude`, `codex`, or `grok` CLI login | No HQ hosting charge in the create path (`POST /v1/agents` with `computeMode: "local"` is identity only). Model usage bills to the owner's provider account |
-| Local bot, company | `hq bot create <name> --kind company --company <slug>` (repeat `--company`), or the desktop flow with scope "company" | Same as personal | Acts as itself, as a member of each listed company. `hq bot companies <name> --add/--remove <slug>` changes the list | Same as personal |
+| Local bot, personal | `hq bot create <name> --hq-fleet-runtime --provider claude\|codex\|grok`, or desktop Settings → Bots → New bot → Local | The owner's computer, under the local HQ Fleet Runtime background service | Own `agt_` machine identity. Acts as the owner in every active company the owner can access. Uses the owner's existing provider login when available, or asks the owner to sign in | No HQ hosting charge in the create path (`POST /v1/agents` with `computeMode: "local"` is identity only). Model usage bills to the owner's provider account |
+| Local bot, company | `hq bot create <name> --kind company --company <slug>` (repeat `--company`), or the desktop flow with scope "company" | The owner's computer under the legacy local runner during the company-identity migration | Acts as itself, as a member of each listed company. `hq bot companies <name> --add/--remove <slug>` changes the list | Same as personal |
 | Hosted agent (agents-v2) | Console Bots page → Add bot → Hosted by HQ, `hq agents provision` (aliases `create`, `new`), or desktop New bot → Cloud | An HQ-managed EC2 box running the HqFleet runtime plus the HQ citizenship package from hq-agents-v2 | Own `agt_` identity and company membership. Brain is Codex, Grok, or Claude (Claude is behind a rollout flag in the console and requires the account to be enabled). Auth mode `subscription` (default) or `apiKey` | Company-specific monthly quote shown before creation; see pricing page |
 | Agents-v3 worker | Not created directly. A v2 box with the agents-v3 opt-in dispatches scoped tasks to short-lived worker containers | Worker containers (ECS task definitions, optional per-company EFS access point) | Runs under the dispatching agent's task scope | Part of the hosted agent |
 | External bot | Console Bots page → Add bot → External bot → framework → Create and get code; then `hq agent enroll <code>` on the bot's host | Hardware HQ does not own (laptop, VPS, container) | `agt_` identity with `runtime: "external"`. Ed25519 host key generated at enroll; mints are signed with it | No per-agent charge and zero seats. Blocked on the free plan (402); unlimited on paid plans |
@@ -55,9 +55,9 @@ computer with your own model login".
 
 | Command | Purpose |
 |---|---|
-| `create <name>` | Provision the identity, scaffold the worker folder, install the LaunchAgent, start it. Options: `--kind personal\|company`, `--company <slug>` (repeatable), `--runtime claude\|codex\|grok` (default `claude`), `--model`, `--effort`, `--worker <id>`, `--display-name`, `--intro`, `--kickoff`, `--memory synced\|local`, `--no-auto-approve`, `--no-daemon`, `--no-start` |
+| `create <name>` | Provision the identity, scaffold the worker folder, and start it. New personal bots use `--hq-fleet-runtime` and choose `--provider claude\|codex\|grok`; an interactive command prompts with Codex as the default, while a non-interactive explicit Fleet command requires `--provider`. `--runtime` remains a compatibility alias. Other options include `--kind personal\|company`, `--company <slug>` (repeatable), `--model`, `--effort`, `--worker <id>`, `--display-name`, `--intro`, `--kickoff`, `--memory synced\|local`, `--no-auto-approve`, `--no-daemon`, and `--no-start` |
 | `list [--remote]` | Local bots, or with `--remote` every local bot the account owns |
-| `status`, `logs`, `start`, `stop`, `restart`, `run` | Process control. `run` is what launchd runs |
+| `status`, `logs`, `start`, `stop`, `restart`, `run` | Process control. Fleet bots route lifecycle through HQ Fleet; `run` is only for the legacy runner |
 | `set <name>` | Change model and thinking level |
 | `intro <name>` | Re-send the introduction DM |
 | `companies <name>` | Show or change a company bot's memberships |
@@ -65,15 +65,25 @@ computer with your own model login".
 | `adopt <name>`, `restore [--all]` | Bring owned bots back to this computer. Re-issuing credentials rotates the machine secret; one machine runs a local bot at a time |
 | `jobs <name>` | List, add (`--add` with `--every` or `--cron`, `--tz`), or remove (`--rm`) recurring jobs. The schedule lives in hq-pro-agents on EventBridge, not on the computer |
 | `promote <name> --company <cmp_uid>` | Move the bot to HQ Fleet compute while keeping its agent UID and DM conversation |
-| `rm <name>` | Stop, remove the LaunchAgent, delete the cloud identity and local state |
-| `daemon install\|uninstall\|status <name>` | Manage the LaunchAgent |
+| `rm <name>` | Stop the runtime, remove its local profile and credentials, and delete the cloud identity and local state |
+| `daemon install\|uninstall\|status <name>` | Manage the LaunchAgent for legacy local bots |
+
+Codex creation first imports the existing Codex machine login when one is
+available; otherwise it starts Codex device authorization. Grok uses device
+authorization. Claude uses the machine's native Claude login. A bot that still
+needs authorization stays stopped and reports the exact `hq bot auth` command;
+Desktop completes this step as part of its creation flow. The first intro and
+optional kickoff are stored in the Fleet profile and sent on first start.
+
+The local Fleet profile follows the cloud bot defaults for supported gateway,
+approval, compression, context, clarification, streaming, onboarding, and
+provider-failure settings. Cloud-only services and transports, including cloud
+memory, Slack, Telegram, monitoring, and autoscaling, are not added locally.
 
 Promotion notes (hq-cli `docs/local-bot-promotion.md`): the command takes a
 company UID, not a slug; re-running it resumes the same operation; the cloud
-instance needs its own model subscription sign-in (local OAuth tokens are not
-copied); the local bot stays held after activation. The doc states the
-feature depends on backend changes and does not imply general production
-availability.
+instance pairs with Codex/ChatGPT and does not copy local OAuth tokens or
+require a Claude subscription; the local bot stays held after activation.
 
 ## Hosted agents (`hq agents …`)
 

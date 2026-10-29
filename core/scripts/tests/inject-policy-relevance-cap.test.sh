@@ -29,6 +29,12 @@
 #   [f] specific SOFT hints and malformed fallbacks never push an applicable
 #       HARD rule out.
 set -euo pipefail
+# These fixtures use common verbs (deploy, run, release) as neutral vehicle
+# words for the cap and ceiling mechanics. The tool-event subject filter
+# (feedback_9eda6433) would treat them as generic words and keep them off the
+# tool call, so it is switched off here; inject-policy-tool-subject-match.test.sh
+# covers the filter itself.
+export HQ_POLICY_TOOL_STOP_WORDS=
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="${HQ_TEST_INJECT_POLICY_HOOK:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}"
@@ -392,10 +398,15 @@ case "$out" in
   *'> Policy `zz-approval` (HARD — binding rule from `'*APPROVAL_BODY*) ok "malformed fallback rows do not push the HARD rule out" ;;
   *) bad "malformed fallback rows crowded out the HARD rule: $out" ;;
 esac
+# An unparseable trigger did not match this tool call, so it is not shown on
+# it at all (feedback_9eda6433): no fallback lines and no notice. The HARD
+# rows still reach the enforcement set.
 case "$out" in
-  *'Malformed `when:` trigger'*'lint-policy-triggers.sh'*) ok "malformed notice still delivered under the cap" ;;
-  *) bad "malformed notice missing under the cap: $out" ;;
+  *'Malformed `when:` trigger'*|*'> Policy `broken-'*) bad "malformed fallback shown on an unrelated tool call: $out" ;;
+  *) ok "malformed fallback rows are not shown on a tool call" ;;
 esac
+grep -q '^broken-1	' "$RF3/workspace/orchestrator/policy-enforcement/sf3.policies.tsv" 2>/dev/null \
+  && ok "malformed HARD rows stay in the enforcement set" || bad "malformed HARD rows left the enforcement set"
 
 echo "[e] SessionStart is not capped"
 RE="$(new_root sessionstart)"

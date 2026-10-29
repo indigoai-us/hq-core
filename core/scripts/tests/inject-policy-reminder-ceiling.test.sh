@@ -29,6 +29,12 @@
 # HOOK (or HQ_TEST_INJECT_POLICY_HOOK) points the run at another copy of the
 # hook, e.g. the main branch extracted beside a copy of core/scripts.
 set -euo pipefail
+# These fixtures use common verbs (deploy, run, release) as neutral vehicle
+# words for the cap and ceiling mechanics. The tool-event subject filter
+# (feedback_9eda6433) would treat them as generic words and keep them off the
+# tool call, so it is switched off here; inject-policy-tool-subject-match.test.sh
+# covers the filter itself.
+export HQ_POLICY_TOOL_STOP_WORDS=
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="${HOOK:-${HQ_TEST_INJECT_POLICY_HOOK:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}}"

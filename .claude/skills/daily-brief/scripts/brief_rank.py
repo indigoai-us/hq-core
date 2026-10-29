@@ -365,7 +365,8 @@ def check_brief(brief):
                         isolation.append({'section': slug, 'list': name, 'id': row.get('id'),
                                           'problem': 'item company does not match section'})
             reports[slug or 'personal'] = check_brief(dict(section, mode='company' if slug else 'personal'))
-        return {'sections': reports, 'isolation_problems': isolation, 'welcome_problems': welcome_problems(brief)}
+        return {'sections': reports, 'isolation_problems': isolation, 'welcome_problems': welcome_problems(brief),
+                'page_problems': page_problems(brief)}
     items = brief.get('items') or {}
     repos = _origin_repos(items)
     problems = []
@@ -411,7 +412,23 @@ def check_brief(brief):
             'widget_problems': widget_problems((brief.get('prefs_applied') or {}).get('widgets')),
             'today_problem': None if isinstance(today, str) and _DATE.match(today) else 'today must be YYYY-MM-DD',
             'index_counts': index_counts(brief), 'landed': landed(brief),
-            'welcome_problems': welcome_problems(brief)}
+            'welcome_problems': welcome_problems(brief),
+            'page_problems': page_problems(brief)}
+
+
+def page_problems(brief):
+    """brief_page.validate_page errors for `brief.page`; [] when there is no page."""
+    if not isinstance(brief, dict) or 'page' not in brief:
+        return []
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'brief_page.py')
+    spec = importlib.util.spec_from_file_location('brief_page', path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        return mod.validate_page(brief['page'])['errors']
+    except Exception as e:  # validate_page does not raise; never let the page break --check
+        return [{'where': 'page', 'problem': f'could not check the page ({type(e).__name__})'}]
 
 
 def main():

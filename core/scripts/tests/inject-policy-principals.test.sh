@@ -160,7 +160,7 @@ cache_dir="$FX/workspace/orchestrator/hook-state/policy-trigger-cache"
 find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit | grep -q . || fail "parse cache was not written"
 head -n 1 "$(find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit)" | grep -Fq 'hq-policy-cache-v7' \
   || fail "parse cache header was not bumped to v7"
-find "$cache_dir/eval-v10" -name '*.eval' -print -quit | grep -q . || fail "eval cache was not written"
+find "$cache_dir/eval-v12" -name '*.eval' -print -quit | grep -q . || fail "eval cache was not written"
 out="$(run "$leak_sid" HQ_SESSION_PRINCIPAL=agent)"    # same session, same facts, same ledger
 grep -q 'CACHE AGENT rule' <<<"$out" || fail "cached human verdict leaked into the agent session: $out"
 

@@ -664,6 +664,47 @@ and then some afterthought'
   exit "$FAILED"
 ) || FAILED=1
 
+# ── scheduled job outcome envelope for every provider (liveops-09) ─────────
+# A company Outpost job recorded "succeeded" for runs whose claude reply said
+# the work did not run, because the outcome envelope was parsed only for grok.
+# The entrypoint now parses it for channel=job whatever the provider.
+(
+  load_helpers
+  SESSION_SH="$SCRIPT_DIR/../hq-agent-session.sh"
+  block="$(awk '/^  if session_reply_contract_required "\$provider"; then$/{on=1} on && /^  SESSION_EXIT_CODE=0$/{exit} on{print}' "$SESSION_SH")"
+  [ -n "$block" ] || { echo "  FAIL — reply contract block not found in hq-agent-session.sh"; exit 1; }
+  eval "job_contract_block() { $block
+}"
+  run_block() { provider="$1"; channel="$2"; prov_out="$3"; SESSION_DISPOSITION=""; SESSION_TEXT=""; SESSION_OUTCOME="stale"; SESSION_OUTCOME_REASON="stale"; job_contract_block; }
+
+  run_block claude job 'I could not run it.{"action":"reply","text":"Did not run: no HQ login","outcome":"blocked","reason":"No valid HQ session"}'
+  [ "$SESSION_DISPOSITION" = reply ] && [ "$SESSION_TEXT" = "Did not run: no HQ login" ] \
+    && [ "$SESSION_OUTCOME" = blocked ] && [ "$SESSION_OUTCOME_REASON" = "No valid HQ session" ] \
+    && pass "claude job reply carries the parsed blocked outcome" \
+    || fail "claude job envelope not parsed (out=$SESSION_OUTCOME text=$SESSION_TEXT)"
+
+  run_block claude job '{"action":"reply","text":"Posted","outcome":"complete"}'
+  [ "$SESSION_OUTCOME" = complete ] && [ "$SESSION_TEXT" = Posted ] \
+    && pass "claude job reply carries outcome complete" \
+    || fail "claude job complete outcome not parsed"
+
+  run_block claude job 'The alert script did not run.'
+  [ "$SESSION_DISPOSITION" = reply ] && [ "$SESSION_TEXT" = "The alert script did not run." ] && [ -z "$SESSION_OUTCOME" ] \
+    && pass "claude job reply without envelope ships raw text with no outcome" \
+    || fail "raw job reply mishandled (out=$SESSION_OUTCOME)"
+
+  run_block claude job '{"action":"no_reply"}'
+  [ "$SESSION_DISPOSITION" = reply ] && [ "$SESSION_TEXT" = '{"action":"no_reply"}' ] && [ -z "$SESSION_OUTCOME" ] \
+    && pass "no_reply envelope on a job is not treated as an outcome" \
+    || fail "no_reply on a job changed disposition (disp=$SESSION_DISPOSITION)"
+
+  run_block claude slack '{"action":"reply","text":"hi","outcome":"complete"}'
+  [ "$SESSION_TEXT" = '{"action":"reply","text":"hi","outcome":"complete"}' ] && [ -z "$SESSION_OUTCOME" ] \
+    && pass "non-job channels keep raw output for non-enforced providers" \
+    || fail "non-job channel behavior changed (text=$SESSION_TEXT)"
+  exit "$FAILED"
+) || FAILED=1
+
 if [ "$FAILED" -eq 0 ]; then
   echo "hq-agent-session-reply-contract: PASS"
 else

@@ -13,7 +13,10 @@ sweep = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sweep)
 
 class PersonBrief(unittest.TestCase):
-    def build(self, members=(), locked=(), flags=(), prior_mode=None, membership_error=None, lock_error=None, fail_company=None):
+    def build(self, members=(), locked=(), flags=(), prior_mode=None, membership_error=None, lock_error=None, fail_company=None,
+              rosters=None, roster_error=None, inbox=None, names=None, roster_raises=None):
+        self.rosters, self.roster_error, self.names = rosters or {}, roster_error, names or {}
+        self.roster_raises = roster_raises
         with tempfile.TemporaryDirectory() as root:
             out = Path(root) / 'workspace/brief/current/brief-data.json'
             out.parent.mkdir(parents=True)
@@ -26,13 +29,24 @@ class PersonBrief(unittest.TestCase):
                 stack.enter_context(patch.object(sweep, 'membership_slugs', return_value=list(members), side_effect=membership_error))
                 stack.enter_context(patch.object(sweep, 'read_session_lock', return_value=list(locked), side_effect=lock_error))
                 for name, result in [('sessions', []), ('meetings', []), ('meeting_signals', []), ('dms', []), ('fleet', None), ('prs', []), ('main_health', {})]:
+                    if name == 'dms' and inbox is not None:
+                        continue
                     stack.enter_context(patch.object(sweep, name, return_value=result))
                 meeting = stack.enter_context(patch.object(sweep, 'meetings', side_effect=lambda co, since: []))
                 def messages(co):
                     if co is not None and co == fail_company:
                         raise RuntimeError('private upstream details\nsecond line')
                     return [{'title': 'private-' + str(co), 'company': co}]
-                stack.enter_context(patch.object(sweep, 'dms', side_effect=messages))
+                if inbox is None:
+                    stack.enter_context(patch.object(sweep, 'dms', side_effect=messages))
+                else:
+                    # The real DM source over a stubbed inbox page: one read per run.
+                    self.inbox_reads = 0
+                    def fake_jrun(cmd, timeout=90):
+                        assert cmd[:3] == ['hq', 'dm', 'inbox'], cmd
+                        self.inbox_reads += 1
+                        return json.loads(json.dumps(inbox))
+                    stack.enter_context(patch.object(sweep, 'jrun', side_effect=fake_jrun))
                 self.progress_snapshots = []
                 original_write = sweep.Status._write
                 def record_status(instance, fn):
@@ -41,6 +55,9 @@ class PersonBrief(unittest.TestCase):
                         self.progress_snapshots.append(json.loads(Path(instance.path).read_text()))
                 stack.enter_context(patch.object(sweep.Status, '_write', record_status))
                 stack.enter_context(patch.object(sweep, 'latest_import', return_value=None))
+                # Member rosters (DM sender attribution) are a live CLI read; none here.
+                stack.enter_context(patch.object(sweep._sibling('brief_company'), 'read_rosters',
+                                                 side_effect=self.fake_rosters))
                 local = sweep._load_local_sessions()
                 stack.enter_context(patch.object(local, 'scan', return_value=[]))
                 stack.enter_context(patch.object(local, 'inventory', side_effect=AssertionError('inventory read')))
@@ -50,6 +67,38 @@ class PersonBrief(unittest.TestCase):
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 sweep.main(list(flags) + ['--hq-root', root, '--out', str(out), '--me', 'Test', '--status', str(out.parent / 'status.json')])
                 return json.loads(out.read_text()), meeting.call_args_list
+
+    def fake_rosters(self, included, run_json, names_out=None):
+        if self.roster_raises:
+            raise self.roster_raises
+        if names_out is not None:
+            for slug, names in self.names.items():
+                names_out.setdefault(slug, {}).update(names)
+        return self.rosters, self.roster_error
+
+    def test_dm_senders_get_display_names_from_member_lists(self):
+        inbox = [{'fromPersonUid': 'prs_a', 'fromDisplayName': 'annlee77', 'body': 'can you look?', 'createdAt': '2026-10-01T10:00:00Z'},
+                 {'fromPersonUid': 'prs_q', 'fromDisplayName': 'qq123', 'body': 'hi', 'createdAt': '2026-10-01T10:00:00Z'}]
+        data, _ = self.build(['a'], ['a'], rosters={'a': {'prs_a'}}, inbox=inbox, names={'a': {'prs_a': 'Ann Lee'}})
+        self.assertEqual([(r['from'], r['from_name']) for r in data['companies']['a']['dms']], [('annlee77', 'Ann')])
+        self.assertEqual([(r['from'], r['from_name']) for r in data['personal']['dms']], [('qq123', 'qq123')])
+
+    def test_names_resolve_only_from_the_sections_own_company(self):
+        # prs_x is in both companies, so the DM stays personal; a's member list must not name it there,
+        # and b's section must not be named from a's list.
+        inbox = [{'fromPersonUid': 'prs_x', 'fromDisplayName': 'xpark9', 'body': 'can you?', 'createdAt': '2026-10-01T10:00:00Z'},
+                 {'fromPersonUid': 'prs_b', 'fromDisplayName': 'bkim7', 'body': 'can you?', 'createdAt': '2026-10-01T10:00:00Z'}]
+        data, _ = self.build(['a', 'b'], ['a', 'b'], rosters={'a': {'prs_x'}, 'b': {'prs_x', 'prs_b'}}, inbox=inbox,
+                             names={'a': {'prs_x': 'Xena Park', 'prs_b': 'Bo Kim'}})
+        self.assertEqual([r['from_name'] for r in data['personal']['dms']], ['xpark9'])
+        self.assertEqual([r['from_name'] for r in data['companies']['b']['dms']], ['bkim7'])
+        self.assertIsNone(sweep.LOCKED)
+
+    def test_attribution_helper_failure_falls_back_to_no_attribution(self):
+        inbox = [{'fromPersonUid': 'prs_a', 'fromDisplayName': 'Ann', 'body': 'hi', 'createdAt': '2026-10-01T10:00:00Z'}]
+        data, _ = self.build(['a'], ['a'], roster_error=None, inbox=inbox, roster_raises=ImportError('no helper'))
+        self.assertEqual(data['sources']['dm_attribution']['state'], 'skipped')
+        self.assertEqual([r['from'] for r in data['personal']['dms']], ['Ann'])
 
     def test_zero_companies_default_welcome(self):
         data, calls = self.build()
@@ -178,6 +227,36 @@ class PersonBrief(unittest.TestCase):
             self.assertEqual(opened.call_count, 14)
             self.assertTrue(opened.call_args_list[0].args[0].endswith('/99/brief-data.json'))
             self.assertTrue(opened.call_args_list[-1].args[0].endswith('/86/brief-data.json'))
+
+    def test_dms_sorted_by_sender_into_company_sections(self):
+        inbox = [
+            {'fromPersonUid': 'prs_a', 'fromDisplayName': 'Ann', 'body': 'can you review?', 'createdAt': '2026-10-01T10:00:00Z'},
+            {'fromPersonUid': 'prs_b', 'fromDisplayName': 'Bo', 'body': 'b work', 'createdAt': '2026-10-01T10:00:00Z'},
+            {'fromPersonUid': 'prs_both', 'fromDisplayName': 'Cy', 'body': 'either', 'createdAt': '2026-10-01T10:00:00Z'},
+            {'fromPersonUid': 'prs_friend', 'fromDisplayName': 'Di', 'body': 'dinner?', 'createdAt': '2026-10-01T10:00:00Z'},
+            {'fromPersonUid': 'prs_a', 'fromDisplayName': 'Ann', 'body': 'tagged b', 'company': 'b', 'createdAt': '2026-10-01T10:00:00Z'},
+        ]
+        rosters = {'a': {'prs_a', 'prs_both'}, 'b': {'prs_b', 'prs_both'}}
+        data, _ = self.build(['a', 'b'], ['a', 'b'], rosters=rosters, inbox=inbox)
+        self.assertEqual(self.inbox_reads, 1)
+        a = data['companies']['a']['dms']
+        b = data['companies']['b']['dms']
+        self.assertEqual([(r['from'], r['company'], r['company_basis']) for r in a], [('Ann', 'a', 'sender')])
+        # The explicit tag wins over the sender's roster.
+        self.assertEqual(sorted((r['from'], r['preview'], r['company_basis']) for r in b),
+                         [('Ann', 'tagged b', 'tag'), ('Bo', 'b work', 'sender')])
+        # In both companies, or in none: stays personal, never guessed.
+        self.assertEqual(sorted(r['from'] for r in data['personal']['dms']), ['Cy', 'Di'])
+        self.assertEqual(data['sources']['dm_attribution']['state'], 'ok')
+        self.assertIsNone(sweep.DM_SENDERS)
+        self.assertIsNone(sweep._INBOX_CACHE)
+
+    def test_roster_failure_turns_sender_attribution_off(self):
+        inbox = [{'fromPersonUid': 'prs_a', 'fromDisplayName': 'Ann', 'body': 'hi', 'createdAt': '2026-10-01T10:00:00Z'}]
+        data, _ = self.build(['a'], ['a'], rosters={}, roster_error='could not read', inbox=inbox)
+        self.assertEqual(data['sources']['dm_attribution']['state'], 'skipped')
+        self.assertEqual(data['companies']['a']['sources']['dms']['state'], 'skipped')
+        self.assertEqual([r['from'] for r in data['personal']['dms']], ['Ann'])
 
     def test_membership_inventory(self):
         with patch.object(sweep, 'run', return_value='COMPANY  MODE  UPDATED  MEMBERSHIP\n────  ───  ───  ───\na  all  —  key\nb  shared  —  key2'):

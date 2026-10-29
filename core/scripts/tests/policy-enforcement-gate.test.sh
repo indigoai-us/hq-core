@@ -236,6 +236,12 @@ for cmd in 'grep -n "hq dm" .claude/skills/dm/SKILL.md' \
   run_hook PreToolUse "$GREP_DM" >/dev/null || fail "read-only command was treated as outbound: $cmd"
 done
 pass "does not treat hq dm inside a read-only grep or cat as outbound"
+for cmd in 'hq dm channel hq-dev --limit 60' 'hq dm inbox --unread' 'hq dm thread stefan@example.com --no-ack' \
+           'hq dm history "#launch" --mark-read' 'hq dm read someone@example.com'; do
+  READ_DM="$(jq -nc --arg sid "$SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  run_hook PreToolUse "$READ_DM" >/dev/null || fail "read-only hq dm subcommand was treated as outbound: $cmd"
+done
+pass "does not treat read-only hq dm inbox|thread|channel|history as outbound"
 for cmd in 'hq dm send --to someone' 'cd /tmp && hq dm send --to someone' \
            'grep -n x f.md; hq dm send --to someone' 'grep -l "hq dm send" f.md | sh' \
            'grep "$(hq dm send --to someone)" f.md' 'rg --pre "hq dm send" x .' \

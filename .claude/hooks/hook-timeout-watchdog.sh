@@ -15,7 +15,7 @@ esac
 
 DEFAULT_TIMEOUT_SECONDS=30
 DEFAULT_GATE_LEAD_SECONDS=10
-DEFAULT_MASTER_LEAD_SECONDS=20
+DEFAULT_MASTER_WARN_PERCENT=80
 DEFAULT_MASTER_ABSOLUTE_SECONDS=120
 DEFAULT_THROTTLE_SECONDS=900
 
@@ -648,7 +648,9 @@ resolve_grok_timeout() {
   ' "$config" 2>/dev/null || true
 }
 
-resolve_timeout() {
+# Prints the configured timeout in seconds, or nothing when the harness
+# config does not declare exactly one for this hook.
+resolve_configured_timeout() {
   local harness result=""
   harness="$(printf '%s' "${HQ_HARNESS:-claude}" | tr '[:upper:]' '[:lower:]')"
   case "$harness" in
@@ -658,30 +660,54 @@ resolve_timeout() {
   esac
   if is_nonnegative_integer "$result" && [ "$result" -ge 1 ]; then
     printf '%s' "$result"
-  else
-    printf '%s' "$DEFAULT_TIMEOUT_SECONDS"
   fi
 }
 
-declared_timeout="$(resolve_timeout)"
+# Seconds after start at which the master relative warning fires. The default
+# is 80% of the timeout, rounded up, so a 30 s budget warns at 24 s, not at 10 s
+# as the old fixed 20 s lead did (feedback_5ec0fd09). An explicit
+# HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS still sets a fixed lead instead.
+# Must stay in step with master_watchdog_timeout_ms in master-hook.sh.
+master_relative_warn_seconds() {
+  local declared="$1" lead percent result
+  lead="${HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS:-}"
+  if is_nonnegative_integer "$lead"; then
+    result=$((declared - lead))
+  else
+    percent="${HQ_HOOK_TIMEOUT_MASTER_WARN_PERCENT:-$DEFAULT_MASTER_WARN_PERCENT}"
+    if ! is_nonnegative_integer "$percent" || [ "$percent" -lt 1 ] || [ "$percent" -gt 100 ]; then
+      percent="$DEFAULT_MASTER_WARN_PERCENT"
+    fi
+    result=$(((declared * percent + 99) / 100))
+    # Rounding up must not land on the timeout itself, where the harness can
+    # stop the hook before the warning is written.
+    [ "$declared" -le 1 ] || [ "$result" -lt "$declared" ] || result=$((declared - 1))
+  fi
+  [ "$result" -ge 0 ] || result=0
+  printf '%s' "$result"
+}
+
+# The breadcrumb says whether the timeout came from the harness config or is
+# the assumed default, so the warning text never states a timeout as real when
+# it was not found (feedback_5ec0fd09).
+declared_timeout="$(resolve_configured_timeout)"
+declared_timeout_source=config
+if [ -z "$declared_timeout" ]; then
+  declared_timeout="$DEFAULT_TIMEOUT_SECONDS"
+  declared_timeout_source=default
+fi
 case "$source_kind" in
   master-dispatch|master-child)
     case "$threshold_kind" in
       absolute)
         absolute_seconds="${HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS:-$DEFAULT_MASTER_ABSOLUTE_SECONDS}"
         is_nonnegative_integer "$absolute_seconds" || absolute_seconds="$DEFAULT_MASTER_ABSOLUTE_SECONDS"
-        lead_seconds="${HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS:-$DEFAULT_MASTER_LEAD_SECONDS}"
-        is_nonnegative_integer "$lead_seconds" || lead_seconds="$DEFAULT_MASTER_LEAD_SECONDS"
-        latest_safe_warning=$((declared_timeout - lead_seconds))
-        [ "$latest_safe_warning" -ge 0 ] || latest_safe_warning=0
+        latest_safe_warning="$(master_relative_warn_seconds "$declared_timeout")"
         [ "$absolute_seconds" -le "$latest_safe_warning" ] || absolute_seconds="$latest_safe_warning"
         watchdog_timeout_seconds="$absolute_seconds"
         ;;
       relative)
-        lead_seconds="${HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS:-$DEFAULT_MASTER_LEAD_SECONDS}"
-        is_nonnegative_integer "$lead_seconds" || lead_seconds="$DEFAULT_MASTER_LEAD_SECONDS"
-        watchdog_timeout_seconds=$((declared_timeout - lead_seconds))
-        [ "$watchdog_timeout_seconds" -ge 0 ] || watchdog_timeout_seconds=0
+        watchdog_timeout_seconds="$(master_relative_warn_seconds "$declared_timeout")"
         ;;
       *) exit 0 ;;
     esac
@@ -710,7 +736,7 @@ case "$source_kind:$threshold_kind" in
     warning_at=$((started_at + watchdog_timeout_seconds))
     ;;
   master-dispatch:relative|master-child:relative)
-    warning_at=$((started_at + declared_timeout - lead_seconds))
+    warning_at=$((started_at + watchdog_timeout_seconds))
     ;;
   *) warning_at=$((started_at + declared_timeout - lead_seconds)) ;;
 esac
@@ -818,7 +844,9 @@ write_master_breadcrumb() {
     --arg invocation_id "$invocation_id" \
     --argjson elapsed_ms "$elapsed_ms" \
     --argjson declared_timeout_ms "$declared_timeout_ms" \
-    '{hook_path: $hook_path, hook_event: $hook_event, threshold: $threshold, invocation_id: $invocation_id, elapsed_ms: $elapsed_ms, declared_timeout_ms: $declared_timeout_ms}' \
+    --arg declared_timeout_source "$declared_timeout_source" \
+    --argjson written_at "$warning_seconds" \
+    '{hook_path: $hook_path, hook_event: $hook_event, threshold: $threshold, invocation_id: $invocation_id, elapsed_ms: $elapsed_ms, declared_timeout_ms: $declared_timeout_ms, declared_timeout_source: $declared_timeout_source, written_at: $written_at}' \
     > "$temporary" 2>/dev/null || { rm -f "$temporary"; return 1; }
   mv "$temporary" "$record" 2>/dev/null || { rm -f "$temporary"; return 1; }
   return 0

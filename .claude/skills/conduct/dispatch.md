@@ -112,10 +112,13 @@ blocked by retired, superseded, or pending-question state; run them in
    `workspace/orchestrator/conduct-subagents/<session-id>/<run-id>/envelope.json`,
    where `run-id` is the round id below. Name the report path
    `workspace/orchestrator/conduct-subagents/<session-id>/<run-id>/report.md`
-   in the same brief. The envelope uses the same fields as a
-   lane envelope (`decision` of `done`, `ask`, or `blocked`, a summary, changed
-   files, commits, PR, tests run with pass/fail and sidecar log paths, and open
-   questions).
+   in the same brief. The envelope uses only the fields the
+   `hq-lane-envelope.v1` validator accepts (`schema_version`, `decision` of
+   `done`, `ask`, or `blocked`, `summary`, `story_status`, and `artifacts`).
+   `hq lanes progress` rejects other top-level fields such as `prs`, `tests`,
+   or `open_questions`. Name changed files, commits, PR, tests run with
+   pass/fail and sidecar log paths, and open questions in `report.md`, and
+   reference log files from `artifacts`.
 2. When the brief changes a repo, create a dedicated worktree on a feature
    branch before dispatch (`git -C <repo> worktree add -b <branch>
    workspace/worktrees/<name> origin/<base>`) and name it in the brief. Two

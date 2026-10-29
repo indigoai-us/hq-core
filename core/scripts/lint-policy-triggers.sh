@@ -11,8 +11,9 @@
 #
 # Why it matters: a `when:` the evaluator cannot parse is not a no-op. Until it
 # is repaired the policy cannot be matched against the event at all, so it is
-# either injected as an unconditional fallback (hard) or not injected at all
-# (soft) — never for the reason its author intended.
+# either surfaced once per session as a fallback on a prompt or SessionStart
+# (hard; never on a tool call, where it only feeds enforcement) or not
+# injected at all (soft) — never for the reason its author intended.
 #
 # Findings:
 #   MALFORMED  `when:` is outside the documented grammar — quoted phrases,
@@ -145,7 +146,7 @@ if [ "$USAGE" = "1" ]; then
   # Injector matches: each per-session once-ledger lists every slug it emitted.
   : > "$TMPROOT/matched"
   if [ -d "$TSTATE" ]; then
-    find "$TSTATE" -maxdepth 1 -type f -name '*.txt' ! -name '*.turn.txt' -print0 \
+    find "$TSTATE" -maxdepth 1 -type f -name '*.txt' ! -name '*.turn.txt' ! -name '*.full.txt' -print0 \
       | xargs -0 cat > "$TMPROOT/matched" \
       || die "failed to read injector ledgers under $TSTATE"
   fi

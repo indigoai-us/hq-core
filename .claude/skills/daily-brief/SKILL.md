@@ -1,6 +1,6 @@
 ---
 name: daily-brief
-description: Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus meeting signals, fleet and connected integrations when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule.
+description: Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus synced signals, meeting signals and fleet when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule.
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash
 ---
 
@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash
 
 Builds one person's Daily Brief across personal work and every permitted company by default. The HQ desktop app starts this through the main local bot when the user presses **Create brief**. A person can also run it directly with `/daily-brief [--all|company|--personal] [--welcome] [--today YYYY-MM-DD]`.
 
-An explicit personal brief (`--personal`) reads only what belongs to the person on this machine and in GitHub: work sessions, PRs, main-branch CI and personal DM messages (messages with no company). The company-only sources (meetings, meeting signals, fleet agents and integrations) are skipped and recorded as skipped, and housekeeping skips the doctor and sync checks. A new user with no company gets a useful first brief this way.
+An explicit personal brief (`--personal`) reads only what belongs to the person on this machine and in GitHub: work sessions, PRs, main-branch CI and personal DM messages (messages with no company). The company-only sources (meetings, synced signals, meeting signals, fleet agents and integrations) are skipped and recorded as skipped, and housekeeping skips the doctor and sync checks. A new user with no company gets a useful first brief this way.
 
 The output is a set of files the desktop app reads. This skill never posts, sends, merges or deploys anything.
 
@@ -29,7 +29,8 @@ Briefs are manually triggered, so several can exist per day. Each run gets its o
 |---|---|---|
 | `status.json` | At every step | Progress the app polls |
 | `brief-data.json` | Step 3 | Raw normalized sweep output |
-| `brief.json` | Step 4 | Synthesized items with prompts, read by the generator |
+| `brief.json` | Step 4 | Synthesized items with prompts, read by the generator, plus the optional `page` the card design draws (Step 4b) |
+| `page-draft.json` | Step 4b | The page frame and card candidates from `brief_page.py skeleton`; a working file, not read by the app |
 | `housekeeping.json` | Step 5 | Cleanup results and proposed cleanup actions |
 
 When a run finishes, ready or failed, append one line to `workspace/brief/index.jsonl`. The desktop app's history navigator reads this file:
@@ -46,7 +47,7 @@ When a run finishes, ready or failed, append one line to `workspace/brief/index.
 {"run_id":"…","state":"running|ready|failed","step":"…","progress":0.0,"started_at":"…","updated_at":"…","error":null,"sources":{}}
 ```
 
-Write `status.json` before each step, and again after every source and integration check, so the app's progress bar stays truthful and keeps moving. Also keep a rolling `activity` list in `status.json`, newest last, capped at 12 entries. The app shows it under the sunrise so the user can see the run is alive:
+Write `status.json` before each step, and again after every source, so the app's progress bar stays truthful and keeps moving. Also keep a rolling `activity` list in `status.json`, newest last, capped at 12 entries. The app shows it under the sunrise so the user can see the run is alive:
 
 ```json
 "activity":[{"at":"…","label":"Read 42 work sessions","state":"done","detail":"Oct 4–9"},{"at":"…","label":"Checking GitHub PRs","state":"running"}]
@@ -61,7 +62,7 @@ As each source lands, also update `findings` and `samples` in `status.json`. The
 
 `samples` holds at most 8 items, all from the active company only (`company` is null on a personal brief). Titles are short and plain. Never include DM body text: use the sender name and a summary instead.
 
-`state` is `running`, `done`, `skipped` or `failed`. Labels are plain, user-facing language with real counts ("Found 31 DMs, 4 need you"), never commands or file paths. For other-company items, give counts only. Spread progress evenly across the sweep (0.25 → 0.7) by source, and across the integration checks. Read every timestamp from the clock in the same command that writes it.
+`state` is `running`, `done`, `skipped` or `failed`. Labels are plain, user-facing language with real counts ("Found 31 DMs, 4 need you"), never commands or file paths. For other-company items, give counts only. Spread progress evenly across the sweep (0.25 → 0.7) by source. Read every timestamp from the clock in the same command that writes it.
 
 ## Step 1. Start
 
@@ -99,15 +100,17 @@ python3 -I .claude/skills/daily-brief/scripts/brief-sweep.py \
 
 For a narrow brief, replace `--all` with `--company <slug>` or `--personal`. Add `--welcome` to force the welcome edition.
 
-On a company brief, PR search is limited to the company's GitHub owner: `--org <owner>`, or else the company's `github_org` in `companies/manifest.yaml`. With neither, and on a personal brief, it covers every owner the user's `gh` login can see. PRs from an owner that `companies/manifest.yaml` maps to another company (to any company, on a personal brief) are dropped and only counted in `prs_other`. The worktree scan treats worktrees the same way: they count in `detail.other` and their paths are never listed. Main-branch CI checks the repos of the user's own PRs in the window (most PRs first, at most 8); `--repos a,b` names them instead, as bare names (owner from `--org` or the PR rows) or owner-qualified names.
+On a company brief, PR search is limited to the company's GitHub owner: `--org <owner>`, or else the company's `github_org` in `companies/manifest.yaml`. With neither, and on a personal brief, it covers every owner the user's `gh` login can see (one search, shared by every section of a person brief). Each PR row is then tagged with its company from the manifest (`scripts/brief_company.py`), reading git remotes only for the repos of companies in the session lock: a locked company's `repos:` entries and their `origin` remotes map an owner-qualified repo to that company. A whole GitHub owner maps to a company only when it is an organization (checked with `gh api`; never a personal account and never the person's own login) whose known repos all belong to that company, or when it is the company's explicit `github_org`. Otherwise a PR matches on its full owner/name only, and an unmatched PR is the person's own. A repo listed under two companies belongs to neither section, and a PR in a repo whose folder name the manifest lists under a company outside the lock is kept out of the personal section. A company section keeps only its own rows; the personal section keeps only rows mapped to no company. Everything else is dropped and only counted in `prs_other`. The worktree scan treats worktrees the same way: they count in `detail.other` and their paths are never listed. Main-branch CI checks the repos of the user's own PRs in the window (most PRs first, at most 8); `--repos a,b` names them instead, as bare names (owner from `--org` or the PR rows) or owner-qualified names.
 
 The script covers these sources:
 
 | Source | Read through |
 |---|---|
 | Work sessions | Sessions come from `workspace/sessions` meta files plus the Claude and Codex transcripts (title, and kind you, agent or lane), for the last 24 hours (`--hours`). Other-company sessions are a count only. |
-| Recorded meetings, plus each meeting's signals (company only) | `hq meetings list` and `get`. Per meeting, up to 5 decisions and 5 action items carry `text` (the signal's summary line, never transcript text), `owner`, and `mine` (the owner is the user, matched against `--me` or `git config user.name`) |
-| DM inbox | `hq dm inbox`, then only this company's messages. A personal brief keeps messages with no company. Another company's messages are dropped and never written. Agent senders, with `agt_` IDs, are labeled. On a company brief, if the inbox page has messages and none carry a company slug field (`company`, `companySlug` or `company_slug` on the message or its channel), the source is skipped with `skipped_reason: "inbox has no company tag"`. `companyUid` is an id, not that field, so a page that only has it is still skipped. An empty inbox is a real empty result, not a skip. |
+| Recorded meetings (company only) | `hq meetings list`. The list row supplies the title, start and participants |
+| Synced signals (company only) | The company vault's signal index, `signals/_index/{UTC day}.json`, for the last 24 hours (`--hours`). No integration or meeting service is called. Only the person's own audience keys are read: the company folders (`signals/{type}/`) and the person's own folder (`signals/@{key}/{type}/`, keys from the HQ login via `hq whoami --json`: key(email), also used for the sync ledger and cursors, and key(personUid); `--email` or `git config user.email` only when `hq whoami` is unavailable; the result records `identity_source`). Another person's folder is never read. A day with no index file falls back to the type folders, including the older `signals/slack-dm/{type}/`. Code: `scripts/brief_signals.py` |
+| Meeting signals (company only) | Built from the synced signals whose `source_ref` is a meeting pointer (`sources/meeting-events/…`), grouped by the pointer's transcript id. Per meeting, up to 5 decisions and 5 action items carry `text` (the signal's summary line, never transcript text), `owner`, `mine` (the owner is the user, matched against `--me` or `git config user.name`), `source_ref` and `cite` |
+| DM inbox | `hq dm inbox`, then only this company's messages. A personal brief keeps messages with no company. Another company's messages are dropped and never written. Agent senders, with `agt_` IDs, are labeled. A message's company is its slug field (`company`, `companySlug` or `company_slug` on the message or its channel); an explicit field always wins. In person mode, a message with no such field is attributed by its sender: a sender who is an active member of exactly one included company (`hq members --company <slug> list --json`, read for the included companies only) belongs to that company, and the row records `company_basis: "sender"` (`"tag"` for an explicit field). A sender in two included companies, or in none, stays personal. If any included roster cannot be read, sender attribution is off for the run and `sources.dm_attribution` says so. On a company brief with attribution off, if the inbox page has messages and none carry a company slug field, the source is skipped with `skipped_reason: "inbox has no company tag"`. `companyUid` is an id, not that field. An empty inbox is a real empty result, not a skip. |
 | Fleet agents (company only) | `hq agents list` |
 | The user's PRs | `gh search prs --author @me` (with `author`), plus open PRs where the user is a requested reviewer (`--review-requested @me`, marked `review_requested: true` and `reviewRequests: ["@me"]`). Each row has `product`, `repo`, `repo_full` (the owner-qualified name), `authored_by_me` and `is_release`. Read-only |
 | Main-branch CI health | `gh run list` |
@@ -128,20 +131,19 @@ Derived data the sweep adds for the app's widgets (all computed, never estimated
 | `releases[]` | `{product, repo, version, merged_at, url, pending_count, pending_by_day: [{day, count, theme}]}`: the latest merged Release PR per repo and the merges that landed after it |
 | `main_health[repo].red[]` | `{workflow, since, merges_on_top}`; `since` is the first red run found (carried back to the previous run's value when it was already red). `delta: {newly_red, still_red, recovered}` against the previous ready run, null when there is none |
 | `fleet` | `stuck: [{name, status, phase, since}]` (setup failed or waiting, or a status that is not resting; dormant is not stuck), `delta: {newly_stuck, still_stuck, recovered}` by name, `series: [{generated_at, stuck}]` one bucket per prior ready run. `sources.fleet.count` is the agent count |
-| `meetings[]` | only meetings whose start is inside the window, deduped by title and start (`duplicate_ids` keeps the folded ids), with `participants` (names), `end`, `duration_min` and `attended` (the user is in the participants, the title or owns one of its signals). The `days` rollup still counts every meeting fetched |
-| `meeting_signals[]` | unchanged shape, plus `detail`; owner inference also reads "X decided to" and "X agreed to" |
+| `meetings[]` | only meetings whose start is inside the window, deduped by title and start (`duplicate_ids` keeps the folded ids), with `participants` (names when the list row has them), `end` and `duration_min` (null when the list row has none), `attended` (the user's own recorder took it, or the user is in the participants, the title or owns one of its synced signals) and `whose` (`mine` when attended, else `team`). The `days` rollup counts the same way: `days[d].meetings` is the user's own meetings that day and `days[d].team_meetings` the teammates' ones, never added together |
+| `meeting_signals[]` | `{meeting, title, meeting_id, start, counts, decisions[], action_items[]}`; each item is `{text, owner, mine, source_ref, cite}` |
+| `synced_signals` | `lines[]` (`{signal_id, type, text, owner, source_ref, cite, written_at, key}`, plus `meeting: {title, transcript_id}` for meeting refs; a row with no `source_ref` is dropped and counted in `dropped_uncited`), `lag` (null when today's index exists, else `{newest_index_date, days_behind, last_run, line}` with the last sync run from `sources/_runs/@{key}/`), `freshness[]` (`{adapter, connection, last_synced, source}` per sync cursor: `source` is `cursor` when the cursor has `updatedAt`, `mtime` when the file time was used), `legacy_days`, `keys`, and `meetings_without_signals` (`{count, line}` when meetings fall in the window but no meeting signals were synced, else null) |
+| `timings` | wall seconds per source, for finding a slow sweep. Independent sources (sessions, meetings, synced signals, DMs, fleet, PRs) run at the same time, so their seconds overlap and add up to more than the run |
 | `dms[]` | `need_you` (looks like an ask: "?", "can you", "please", "need you", "waiting on"; the writer confirms each one by reading the preview), `direction` and `thread_id` (null until the inbox exposes them). `sources.dms` records `truncated` and a `note` when the 40-message page did not reach back to the window start. When the source is skipped, `dms` is null and there is no truncation note |
 | `previous_run` | `{run_id, generated_at}` of the previous ready run, found through `index.jsonl`; null for a first brief |
 | `welcome` | The welcome edition (below), or null |
 
-Then, on a company brief only, run the **integration checks** that matter to this user. A personal brief skips them; the sweep has already recorded `sources.integrations` as skipped. Use `bash core/scripts/usable-integrations.sh show --company <company>`, and only check apps that are connected:
-- **Linear or Jira:** issues assigned to the user that changed or are due.
-- **GitHub:** review requests waiting on the user.
-- **Gmail:** threads from VIP people with no reply.
-- **Calendar:** today's events. The desktop app supplies these from /v1/calendar/events, so only fill them when running outside the app.
-- **Anything listed in `prefs.integrations`.**
-
-Record each check in `brief-data.json.integrations[<app>] = {ok, count, items, error}`. Skip an app quietly when it is not connected. Never ask the user to connect one in the middle of a run.
+On a company brief, read connected apps through `brief-data.json.synced_signals` only. The sync service has already turned Slack, Gmail, meetings and the other connected apps into signals, so the brief makes no live integration calls. Record `sources.integrations` as `{ok: false, state: "skipped", skipped_reason: "read from synced signals"}`. Use the synced data this way:
+- Every line the brief writes from a signal keeps its `source_ref`, and shows its short `cite` so the user can find the source.
+- When `synced_signals.lag` is set, write its `line` once near the top, as given ("Signals are behind: newest index is 2026-10-25 (last sync run 2026-10-25, gmail, error)."). Do not fill the gap by calling the apps.
+- Show `synced_signals.freshness` as one "last synced" marker per app.
+- When `synced_signals.meetings_without_signals` is set, write its `line` once in the meetings part ("Signals not yet generated for 2 meetings."). Never show those meetings as having no decisions.
 
 Write status `step: "Sweeping your day"`, from `progress: 0.25` up to `0.7`. Include the per-source `sources` map so far.
 
@@ -221,7 +223,7 @@ Mark the previous entry `done` with a plain detail ("4 decisions") when the next
 
 Every item carries `id` (short and unique within the brief, like `d1`, `p2`, `m3`), `title`, `why`, `company` (the slug, or null on a personal brief), `product` (the human name, see Product names), `source` (where it came from), and `origin: {repo, number, url}` when it comes from GitHub. Actionable items also carry `unlocks[]`, `people_waiting` (a count), `revenue` (true when money waits on it), `effort` (`quick`, `medium` or `large`), `risk`, `age_hours` and `prompt`. The app shows the company logo and the `product` label, never a repo chip.
 
-`age_hours` is always computed from a timestamp in `brief-data.json`, never estimated: the meeting start, the PR `created`, the earliest matching DM `at`, or the `since` of a red workflow (the first prior run that listed it red). `source` is required on decisions and incidents: `meeting_signals`, `dms`, `main_health`, `prs` or `fleet`. The app folds the sweep's own red-main risk into the decision or incident with `source: main_health` on the same repo or product, so write exactly one item per red repo.
+`age_hours` is always computed from a timestamp in `brief-data.json`, never estimated: the meeting start, the PR `created`, the earliest matching DM `at`, or the `since` of a red workflow (the first prior run that listed it red). `source` is required on decisions and incidents: `meeting_signals`, `synced_signals`, `dms`, `main_health`, `prs` or `fleet`. An item from a signal also carries its `source_ref`. The app folds the sweep's own red-main risk into the decision or incident with `source: main_health` on the same repo or product, so write exactly one item per red repo.
 
 `action` is required on every decision and names the kind of call, which decides the button the app shows and how the picker treats it:
 
@@ -241,7 +243,7 @@ The app defaults a missing or unknown `action` to `decide`; `brief_rank.py --che
 - `prefs_applied.widgets`: `{pinned: [kind], muted: [kind], weights: {kind: -2..2}, density: auto|calm|full}` copied from `brief-prefs.yaml` (`pinned_widgets`, `muted_widgets`, `widget_weights`, `density`). `sunrise`, `needs` and `catchup` may not be muted: drop the entry and add one `learned_notes` line saying so. Clamp weights to -2..2 with a note. `brief_rank.apply_widget_prefs` does both.
 - `mode`: `company` or `personal`, copied from `brief-data.json.mode`. Write `mode` and `company` on the run's `index.jsonl` line too.
 - `welcome`: copied from `brief-data.json.welcome` when it is set; omit it or write null otherwise. The writer may shorten each `next_steps[].reason` but adds no new steps. On a first run where `welcome.sessions.total` is above 0, the brief writes no empty-state lines anywhere: no "Nothing owed", "No sessions", "Nothing needs a call from you today" or similar. Lead with the person's own work from `headline`, `top_projects` and `recent_work`, and turn quiet lists into the `actions` (primary first). The first brief has no technical sentences.
-- `week`: `[{date, sessions, meetings, merged, opened, beat?}]`, the last 7 local days of the active company (or of the person's own work on a personal brief), copied from `brief-data.json.days` (that is what `--days 7` is for). `beat` is optional: `{kind: turn|crisis|resolution|push, label, evidence}` where `crisis` is the day an incident opened, `resolution` the day something in `items.recovered` recovered, `push` the day with the most merges, and `turn` the event that led into the crisis. One beat per day at most.
+- `week`: `[{date, sessions, meetings, merged, opened, beat?}]`, the last 7 local days of the active company (or of the person's own work on a personal brief), copied from `brief-data.json.days` (that is what `--days 7` is for). `meetings` there is the user's own meetings only; never add `team_meetings` into it. `beat` is optional: `{kind: turn|crisis|resolution|push, label, evidence}` where `crisis` is the day an incident opened, `resolution` the day something in `items.recovered` recovered, `push` the day with the most merges, and `turn` the event that led into the crisis. One beat per day at most.
 - `landed_days`: `[YYYY-MM-DD]` days in `week` with at least one merged PR or release.
 - `time_to_clear_min`: the sum over decisions of effort minutes (`quick` 2, `medium` 6, `large` 15).
 
@@ -280,11 +282,11 @@ Each file is a JSON object of repo slug to product name, for example `{"web-app"
 - **incidents** (the app calls them problems): red main branches, agents that are not active, risk signals, and outages named in sessions. At most 5. A missing or empty `workspace/brief/` with a sibling `workspace/brief-backup-*` folder is a deliberate reset and never an incident (Step 2).
 - **watch:** open PRs and threads worth knowing about that do not need the user yet. At most 5. Each carries `kind` (`ci`, `pr`, `thread` or `fleet`) and an optional `prompt`.
 - **people:** the latest work-level status for each teammate, with agents labeled. Use a summary, never the message text, unless the item is marked very important. Each carries `uid` (`prs_` or `agt_`), `load` (`clear`, `steady`, `heavy` or `storm`: `storm` owns an incident or a red main, `heavy` has 3+ meetings or 2+ open asks), `owes` (plain action items they own, from meeting signals and DMs) and `thanks` (one plain line about a win, or null).
-- **meetings:** only meetings whose start is inside the window (`brief-data.json.meetings[]` is already filtered to `window.attended_meetings_from..sessions_to`, deduped, and marked `attended`); a catch-up brief widens that to the gap. Each meeting item carries:
+- **meetings:** lead with the user's own meetings (`whose: mine`). Teammates' meetings (`whose: team`) get no item of their own; mention them only as one plain count line ("4 team meetings you weren't in") or when one carries an action item the user owns. Only meetings whose start is inside the window (`brief-data.json.meetings[]` is already filtered to `window.attended_meetings_from..sessions_to`, deduped, and marked `attended`); a catch-up brief widens that to the gap. Each meeting item carries:
   - `attended` (copied), `duration_min` (copied), `with`: the other participants in plain words ("Robin Bell", "Alex and Jamie");
   - `decided`: up to 3 lines from `meeting_signals[*].decisions[*].text`, each shortened to one plain line;
   - `todo`: up to 3 `{text, owner, mine}` from `action_items`, the user's own first.
-  The app's meeting hover shows the title, the decided lines and the to-do lines (the user's own marked), nothing else. Every action item with `mine: true` is also a decision candidate under (d), with a launch prompt, even when the meeting itself is older than the window.
+  The app's meeting hover shows the title, the decided lines and the to-do lines (the user's own marked), nothing else. Every action item with `mine: true` is also a decision candidate under (d), with a launch prompt. Meeting signals cover only signals synced inside the window, so an older meeting's action items appear only while they are inside it.
 - **carry:** open items from the last brief that are still open. Each carries `carried_from` (the last run id), `carried_since` (the `created_at` of the first run that listed it, from `index.jsonl`), `briefs` (consecutive runs it has appeared in, chained through `origin.url` or `origin.number`, else the normalized title, using the last brief's own `carry` rows), `item_id` (today's decision or incident that continues it, or null) and `prompt`.
 - **handoffs** (new): `{id: h1.., object, from, to, me, production, since, receipts: {access, ack, active}, note, company, product, origin, prompt}`. From DM ownership verbs (owns, handed, took over, needs to acknowledge), `/delegate` events and board assignee changes. `me` is true when the user is the receiver; `production` when the object is live. Each receipt is `true`, `false` or `null` (unknown); `access` stays null unless a grants source exists. `note` is work-level, never message text. `object` follows the title rules.
 - **recovered** (new): `{id: f1.., title, what, at, source: main_health|fleet|session, company, product, origin, timeline?: [{at, text}], post_incident?: {broke, did, changes}}`. From `brief-data.json.main_health[*].delta.recovered`, `fleet.delta.recovered`, and outages a session names as closed. `at` is the run's `generated_at` when nothing more precise exists.
@@ -335,6 +337,55 @@ python3 -I .claude/skills/daily-brief/scripts/brief_rank.py --check workspace/br
 
 Fix every `title_problems` entry (it now covers `shipped[].title`, `shipped[].highlights`, `handoffs[].object`, `recovered[].title`, `releases[].held[].title` and `waiting[].what`; reminders are exempt), every `field_problems` entry (a decision without a valid `action`, a wait without `who` or `what`), every `over_cap` list, every `dangling_priorities` and `priority_problems` entry, `lead_hint_problem`, `widget_problems`, `today_problem` and `welcome_problems` (empty-state lines on a first run with sessions, or exception text in `welcome`), and write the file again. Write status `step: "Writing your brief"`, `progress: 0.9`.
 
+## Step 4b. Write the page
+
+The desktop app draws the brief as cards from `brief.json.page`, a BriefPage. Write it after `brief.json` passes `brief_rank.py --check`, from the same data. The page is optional and additive: everything in Step 4 stays as it is.
+
+### Frame and candidates (deterministic)
+
+```bash
+python3 -I .claude/skills/daily-brief/scripts/brief_page.py skeleton \
+  --data workspace/brief/<run_id>/brief-data.json --person "<first name>" \
+  --hq-root "$PWD" --out workspace/brief/<run_id>/page-draft.json
+```
+
+`page-draft.json` holds `page` (the frame) and `candidates`. The frame already has `version`, `companies` (each included company by slug with its manifest name, plus `personal`), `person`, `window` (`from` is the previous brief, `hoursAway`, `zoom` and a plain `label`), `theme: {style: "merged"}`, the lead card with the window's real numbers (your meetings, people waiting on you in DMs, your to-dos when there are any, the "your day" line of your meetings, work sessions and asks, and chart labels in local time such as "Fri morning" or "Mon 3 pm"), and the cards beside the lead with real data and empty titles. Each candidate is one card's worth of computed facts: `company`, `type`, `kind`, `size`, `symbol`, `data` (hours from timestamps, counts from rows, people), `drill.signals`, `facts`, `rank`, and for asks `dropped_candidate` (waited a day or more) and `basis` (`sender` when the DM's company came from its sender). Candidates come ranked, most important first: cards about people, meetings and tasks first (dropped-ball candidates by longest wait, then asks, your tasks, meetings, broke), then cards whose evidence is only PRs or CI (review requests, red builds, stalled and merged PRs). Most people do not run builds: keep PR and CI cards in the stream, never the lead or the summary band, and write the lead's headline about people, meetings and decisions rather than merges. A suggested `data.visual` is kept only when the card holds what that drawing reads.
+
+People's names are display first names. The sweep resolves each DM sender (`from_name`) and PR author (`author_name`) from the member list of that section's own company only (the personal section uses none), the GitHub profile name of a login, a full name on a member list whose login shape matches, or an email of the form first.last. A handle is kept only when nothing resolves.
+
+### What you write
+
+Turn candidates into cards. You choose which cards appear, their title, `why`, kind, size and order, and you may merge candidates (two asks from one person) or drop them. You never add a number or a fact that is not in a candidate or in `brief-data.json`.
+
+- **The lead.** `summary[0]` is the frame's lead card: kind `focus`, size `XL`, type `summary`. Write its `title` and `data.headline` (one short line about where today's attention goes, with an `accent` word) and up to three `data.bets` (`{label, symbol, share, itemId}`, shares summing to at most 1, `itemId` naming a card on the page). Keep its stats, spark and chart labels. Chart labels anywhere on the page read like "Fri morning" or "Mon 3 pm", never a timestamp.
+- **Beside the lead.** The lead takes four of the six columns and two rows, so the summary band needs cards that fill the other two columns by two rows with no gap: M + S + S, M + M, or one L (S is 1 cell, M 2, L 4; 4 in all). The frame already has them: the people waiting on you in one company, and counts that span the page. Write their titles. You may swap one for a better card from the candidates, but keep the band at exactly 4 cells. A count-only summary card may leave `company` out; a card that names a person or quotes anyone carries its company.
+- **Caps are hard.** The app draws at most 5 dropped balls and 12 stream cards and drops the rest without a "+N more", so fill each band in rank order and leave out what does not fit.
+- **Dropped balls.** At most 5, longest wait first: asks where this person is the one not moving (`dropped_candidate`, carry-over items still open, owed meeting actions). Each is kind `ball`, type `dropped`, size `M`, with `data.pickup` (the one-press action in plain words, such as "Reply to Ann about the memo"), `data.hours` and `data.people`. Zero dropped balls is a real result: leave the band empty.
+- **The stream.** At most 12 cards, ranked by how much this person would care, size following rank (L for the top one or two, then M, then S). At most 3 per type.
+- **Colour is meaning, so do not set `field`.** The type picks the colour, one meaning each: pink dropped, sunset broke or due (a launch, or a task due within 7 days), violet your move (asks, client, your tasks), teal landed or learned, graphite for the record (decided, moved, stalled, meetings, waiting on someone else). A card whose type does not fit its meaning gets a different type, never a different colour.
+- **Every card carries its company:** the candidate's slug (`personal` for the person's own work), which must be a key of `page.companies`. A card holds one company's facts only. Never name one company's people, work or words on another company's card, and never merge candidates from two companies into one card. Treat a `basis: sender` ask with care: if its words are clearly about another of the person's companies, leave it out.
+- **A drawing holds real information.** Set `data.visual` only to a recipe the card can fill: `clock`, `dial` and `tide` need `hours`; `letters` and `lock` need a person (`mailbox`, `constellation` and `drawers` two or more); `tally` and `stack` a whole `value`; `sparkline` 3 or more `spark` points (`skyline` 4 or more); `checklist` 2 or more `steps`; `track`, `fuse` and `rocket` steps, milestones or days; `compare` hours with `usual`, or 2 to 5 `bars`; `trace` and `breaker` a `to`; `agenda` a meeting; `fork` and `switch` a decided or moved note; `bell` a landed note; `book` a learning note; `siren` and `lighthouse` a broke `value`. Leave `visual` out when unsure, and the app picks one and varies the page. Name the same drawing at most twice a page, and at most 3 pixel scenes and 2 iso objects.
+- **Names.** Use the candidate's people names as given (resolved first names). Never write a login or handle when the candidate, `from_name` or `author_name` has a name; `check` warns on handle-looking names.
+- **Titles** follow the Step 4 title rules: verb first, 8 words or fewer, product names, no repo names, PR numbers, prefixes or paths. `why` is one sentence for this reader.
+- **Drill-in.** `drill.signals` (at most 4, `{source, text, at}`, `source` one of dm, meeting, session, pr, ci, calendar, task, email, analytics, doc), `drill.prompt` (the item's launch prompt from Step 4, same rules) and `drill.bot` (one line for Ask my bot). Summarize DM text in your own words; quote at most a short phrase in `data.quote`.
+
+### Check and attach (fail soft)
+
+Write the page to `workspace/brief/<run_id>/page.json`, then:
+
+```bash
+python3 -I .claude/skills/daily-brief/scripts/brief_page.py check workspace/brief/<run_id>/page.json
+```
+
+Fix every error and check again, at most twice. Then attach it:
+
+```bash
+python3 -I .claude/skills/daily-brief/scripts/brief_page.py attach \
+  --brief workspace/brief/<run_id>/brief.json --page workspace/brief/<run_id>/page.json
+```
+
+`attach` validates again. A valid page is written into `brief.json` as `page`. An invalid or missing page is left out, every other field of `brief.json` stays as it was, and the reasons go to `brief.json.page_problems` and stderr. Never fail the brief because of the page; add a `learned_notes` line when it was left out. `brief_rank.py --check` also reports `page_problems` for a page already in `brief.json`.
+
 ## Step 5. Housekeeping
 
 Housekeeping runs every time, through one script. Start it in the background at the beginning of Step 4 so it runs while you write; it never blocks `brief.json`. Do not run the checks by hand, and do not skip the script.
@@ -373,7 +424,7 @@ Each proposal states, in plain words, what it frees or fixes and its risk.
 
 ## Step 6. Finish
 
-- Write status `state: ready`, `progress: 1.0`, as soon as `brief.json` is written. Housekeeping updates `status.json.housekeeping` afterwards without changing `state`.
+- Write status `state: ready`, `progress: 1.0`, as soon as `brief.json` is written and Step 4b's `attach` has run (it never blocks: a failed page is simply left out). Housekeeping updates `status.json.housekeeping` afterwards without changing `state`.
 - Append the run to `workspace/brief/index.jsonl`.
 - Print one line: `BRIEF READY <run_id> <path to brief.json>`. The desktop app watches `status.json` and shows the notification.
 - When run outside the app, also send the user a short HQ DM to themselves: "Your daily brief is ready."
@@ -403,6 +454,7 @@ The app appends to `brief-log.jsonl` through a host command that writes only tha
 - **No app files.** The writer never writes `brief-log.jsonl` or the app's plan files; it reads the log and writes `brief-prefs.yaml` only in the weekly fold.
 - **Retention.** Use product usage only. Never use payments.
 - **Secrets.** Never read or print secrets.
+- **The page is additive.** `brief.json.page` is optional. Never drop or rename an existing field to make room for it; an app that does not read `page` keeps working from the rest of the file.
 - **Read-only, except housekeeping.** Do not post, send, merge, deploy or change anything outside `workspace/brief/` and `personal/brief/`. The only exceptions are the Step 5 auto-run tasks. Destructive cleanup is always a proposal the user launches.
 
 ## Default brief-prefs.yaml

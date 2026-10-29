@@ -156,7 +156,9 @@ case "$1" in
     # "stamp written", so a check-then-act dedupe races deterministically.
     [ -n "${HQ_STUB_FEEDBACK_SLEEP:-}" ] && sleep "$HQ_STUB_FEEDBACK_SLEEP"
     # `hq feedback bug --body-file -` reads the report body from stdin.
-    cat >> "$HQ_STUB_STATE/bug-bodies.txt" 2>/dev/null || true
+    printf '%s\n' "$*" >> "$HQ_STUB_STATE/bug-args.txt" 2>/dev/null || true
+    cat > "$HQ_STUB_STATE/bug-body-last.txt" 2>/dev/null || true
+    cat "$HQ_STUB_STATE/bug-body-last.txt" >> "$HQ_STUB_STATE/bug-bodies.txt" 2>/dev/null || true
     printf 'x\n' >> "$HQ_STUB_STATE/bugs-filed"
     exit "${HQ_STUB_FEEDBACK_RC:-0}"
     ;;
@@ -301,6 +303,9 @@ cat > "$DOCTOR_REASON_CODES" <<JSON
       "message": "private manifest prose $LEAK_PATH" },
     { "family": "sync", "status": "WARN", "checkId": "sync.journal.other-company", "reasonCode": "never-synced", "fix": { "autoFixable": true },
       "message": "private company prose must stay local" },
+    { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.upload", "reasonCode": "manifest-upload-rejected",
+      "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": true },
+      "message": "private upload prose $LEAK_PATH" },
     { "family": "hooks", "status": "FAIL", "checkId": "hooks.private", "reasonCode": "never-synced" }
   ]
 }
@@ -853,6 +858,9 @@ MANIFEST_FAIL_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
 grep -Fq -- "sync.manifest.personal: stale-threshold" <<<"$MANIFEST_FAIL_BODY" \
   && ok "opted-in report keeps personal manifest FAIL reason code reportable" \
   || bad "opted-in report keeps personal manifest FAIL reason code reportable" "missing checkId: reasonCode pair"
+grep -Fq -- "sync.manifest.upload: manifest-upload-rejected" <<<"$MANIFEST_FAIL_BODY" \
+  && ok "opted-in report carries the manifest-upload-rejected reason code (feedback_84d7a862)" \
+  || bad "opted-in report carries the manifest-upload-rejected reason code (feedback_84d7a862)" "missing checkId: reasonCode pair"
 grep -Fq "sync.journal.other-company" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
   && ok "non-opted-in company finding remains reportable" \
   || bad "non-opted-in company finding remains reportable" "bare check id missing"
@@ -1442,6 +1450,19 @@ run_remediate "$R20" "-"
 [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
   && ok "degraded checks still file one feedback report" \
   || bad "degraded checks still file one feedback report" "feedback was not filed"
+grep -Fq -- '--reporter agent' "$REM_STATE/bug-args.txt" \
+  && ok "feedback report is filed with --reporter agent" \
+  || bad "feedback report is filed with --reporter agent" "args: $(cat "$REM_STATE/bug-args.txt" 2>/dev/null)"
+grep -Fq -- '--title [observation] Client health: sync checks unresolved after hq doctor --fix' "$REM_STATE/bug-args.txt" \
+  && ok "feedback title carries the [observation] prefix" \
+  || bad "feedback title carries the [observation] prefix" "args: $(cat "$REM_STATE/bug-args.txt" 2>/dev/null)"
+[ "$(head -n 1 "$REM_STATE/bug-body-last.txt")" = "src=client-health impact=inferred" ] \
+  && [ "$(sed -n '2p' "$REM_STATE/bug-body-last.txt")" = "Automated report from the check-client-health SessionStart hook." ] \
+  && ok "first body line is the src/impact tag, existing first line follows" \
+  || bad "first body line is the src/impact tag, existing first line follows" "body: $(head -n 2 "$REM_STATE/bug-body-last.txt")"
+! grep -Fq -- 'likely-cause=stale-cli' "$REM_STATE/bug-body-last.txt" \
+  && ok "no stale-cli cause without an outdated hq-cli" \
+  || bad "no stale-cli cause without an outdated hq-cli" "stale-cli line present"
 grep -Fq 'sync.journal.stale' "$REM_STATE/bug-bodies.txt" \
   && ok "feedback report keeps the sanitized check id" \
   || bad "feedback report keeps the sanitized check id" "check id missing"
@@ -1785,6 +1806,9 @@ grep -Fq -- "- sync.journal.stale (--fix pull: timeout)" <<<"$BODY40" \
 grep -Fq -- "hq-cli 5.345.150 is older than 5.345.159" <<<"$BODY40" \
   && ok "an outdated hq-cli is named in the report" \
   || bad "an outdated hq-cli is named in the report" "body: $BODY40"
+grep -Fxq -- "likely-cause=stale-cli" <<<"$BODY40" \
+  && ok "an outdated hq-cli adds likely-cause=stale-cli" \
+  || bad "an outdated hq-cli adds likely-cause=stale-cli" "body: $BODY40"
 [ "$(cat "$R40/workspace/.hq-client-health/cli-outdated.pending" 2>/dev/null)" = "5.345.150" ] \
   && ok "an outdated hq-cli queues a one-time update notice" \
   || bad "an outdated hq-cli queues a one-time update notice" "pending missing"
@@ -1808,12 +1832,270 @@ export HQ_STUB_VERSION="5.345.159"
 run_remediate "$R41" "-" "$DOCTOR_DEGRADED" "$FIX_OUTCOMES_LOCK"
 unset HQ_STUB_VERSION
 BODY41=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
-! grep -Fq -- "is older than" <<<"$BODY41" && [ ! -f "$R41/workspace/.hq-client-health/cli-outdated.pending" ] \
+! grep -Fq -- "is older than" <<<"$BODY41" && ! grep -Fq -- "likely-cause=stale-cli" <<<"$BODY41" && [ ! -f "$R41/workspace/.hq-client-health/cli-outdated.pending" ] \
   && ok "a current hq-cli gets no update nudge" \
   || bad "a current hq-cli gets no update nudge" "body: $BODY41"
 grep -Fq -- "- sync.journal.stale (--fix pull: lock-busy)" <<<"$BODY41" \
   && ok "a lock-busy --fix pull is named per journal" \
   || bad "a lock-busy --fix pull is named per journal" "body: $BODY41"
+
+echo "== feedback 84d7a862: sync rows the doctor cannot fix are not filed =="
+# Made-up ids only. Each case runs under every available JSON engine.
+DOCTOR_STALE_CLI="$TMP/doctor-stale-cli.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"FAIL","checkId":"sync.journal.acme","fix":{"autoFixable":true}},{"family":"sync","status":"WARN","checkId":"sync.manifest.personal","fix":{"autoFixable":true}}]}' > "$DOCTOR_STALE_CLI"
+DOCTOR_CO_MANIFEST_WARN="$TMP/doctor-co-manifest-warn.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_x","fix":{"autoFixable":false}}]}' > "$DOCTOR_CO_MANIFEST_WARN"
+DOCTOR_CO_MANIFEST_FAIL="$TMP/doctor-co-manifest-fail.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"FAIL","checkId":"sync.manifest.company.cmp_x","fix":{"autoFixable":false}}]}' > "$DOCTOR_CO_MANIFEST_FAIL"
+# 25 stale company journals before --fix; --fix refreshes the first 10 (the
+# per-run cap) and they clear, so the 15 left were never reached.
+CAP_BEFORE="$TMP/doctor-cap-before.json"
+CAP_AFTER="$TMP/doctor-cap-after.json"
+CAP_FIX="$TMP/fix-cap.json"
+cap_rows=""; cap_after_rows=""; cap_refresh=""
+for n in 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+  row="{\"family\":\"sync\",\"status\":\"FAIL\",\"checkId\":\"sync.journal.co$n\",\"fix\":{\"autoFixable\":true}}"
+  cap_rows="${cap_rows:+$cap_rows,}$row"
+  if [ "${n#0}" -le 10 ]; then
+    cap_refresh="${cap_refresh:+$cap_refresh,}{\"checkId\":\"sync.journal.co$n\",\"outcome\":\"pull-succeeded\",\"postStatus\":\"OK\"}"
+  else
+    cap_after_rows="${cap_after_rows:+$cap_after_rows,}$row"
+  fi
+done
+printf '{"results":[%s]}\n' "$cap_rows" > "$CAP_BEFORE"
+printf '{"results":[%s]}\n' "$cap_after_rows" > "$CAP_AFTER"
+printf '{"exitCode":1,"applied":[],"refreshSync":[%s]}\n' "$cap_refresh" > "$CAP_FIX"
+# Personal-vault journal left after a capped run: unreached, not a failure.
+PV_AFTER="$TMP/doctor-pv-after.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"FAIL","checkId":"sync.journal.__hq_personal_vault__","fix":{"autoFixable":true}}]}' > "$PV_AFTER"
+# Personal-vault journal --fix attempted and could not clear: a real FAIL.
+PV_TRIED_FIX="$TMP/fix-pv-tried.json"
+printf '%s\n' '{"exitCode":1,"applied":[],"refreshSync":[{"checkId":"sync.journal.__hq_personal_vault__","outcome":"pull-failed:5xx","postStatus":"FAIL"}],"unresolved":[{"checkId":"sync.journal.__hq_personal_vault__","status":"FAIL","reason":"repair-did-not-clear","nextStep":"x"}]}' > "$PV_TRIED_FIX"
+# Below the cap, but the fix JSON marks the journal not-attempted.
+PV_SKIPPED_FIX="$TMP/fix-pv-skipped.json"
+printf '%s\n' '{"exitCode":1,"applied":[],"refreshSync":[],"unresolved":[{"checkId":"sync.journal.__hq_personal_vault__","status":"FAIL","reason":"not-attempted","nextStep":"x"}]}' > "$PV_SKIPPED_FIX"
+# Capped run where co10's pull left no outcome: it is in applied only, so it
+# was attempted and still files; co11 onward were never reached.
+APPLIED_ONLY_FIX="$TMP/fix-applied-only.json"
+APPLIED_ONLY_AFTER="$TMP/doctor-applied-only-after.json"
+ao_refresh=""; ao_after=""
+for n in 01 02 03 04 05 06 07 08 09; do
+  ao_refresh="${ao_refresh:+$ao_refresh,}{\"checkId\":\"sync.journal.co$n\",\"outcome\":\"pull-succeeded\",\"postStatus\":\"OK\"}"
+done
+for n in 10 11 12; do
+  ao_after="${ao_after:+$ao_after,}{\"family\":\"sync\",\"status\":\"FAIL\",\"checkId\":\"sync.journal.co$n\",\"fix\":{\"autoFixable\":true}}"
+done
+printf '{"exitCode":1,"applied":[{"checkId":"sync.journal.co10","fixClass":"refresh-sync","pass":1,"postStatus":"FAIL"}],"refreshSync":[%s]}\n' "$ao_refresh" > "$APPLIED_ONLY_FIX"
+printf '{"results":[%s]}\n' "$ao_after" > "$APPLIED_ONLY_AFTER"
+# 8 journal pulls plus 2 manifest uploads use all 10 shared slots.
+MANIFEST_SLOTS_FIX="$TMP/fix-manifest-slots.json"
+ms_refresh=""
+for n in 01 02 03 04 05 06 07 08; do
+  ms_refresh="${ms_refresh:+$ms_refresh,}{\"checkId\":\"sync.journal.co$n\",\"outcome\":\"pull-succeeded\",\"postStatus\":\"OK\"}"
+done
+printf '{"exitCode":1,"applied":[{"checkId":"sync.manifest.company.cmp_a","fixClass":"refresh-manifest","pass":1,"postStatus":"OK"},{"checkId":"sync.manifest.company.cmp_b","fixClass":"refresh-manifest","pass":1,"postStatus":"OK"}],"refreshSync":[%s]}\n' "$ms_refresh" > "$MANIFEST_SLOTS_FIX"
+DOCTOR_STALE_RUNTIME="$TMP/doctor-stale-runtime.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"FAIL","checkId":"sync.journal.acme","fix":{"autoFixable":true}},{"family":"sync","status":"FAIL","checkId":"sync.runtime.device-limit","fix":{"autoFixable":false}}]}' > "$DOCTOR_STALE_RUNTIME"
+
+for eng in $ENGINES; do
+  label="$eng"; [ "$eng" = "-" ] && label="default"
+
+  R84A="$TMP/fb84-stale-cli-$label"; build_root "$R84A"
+  REM_STATE="$TMP/rem-fb84-stale-cli-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_VERSION="5.345.150"
+  run_remediate "$R84A" "$eng" "$DOCTOR_STALE_CLI"
+  unset HQ_STUB_VERSION
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "an hq-cli below the fix floor files no feedback row ($label)" \
+    || bad "an hq-cli below the fix floor files no feedback row ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  [ "$(cat "$R84A/workspace/.hq-client-health/cli-outdated.pending" 2>/dev/null)" = "5.345.150" ] \
+    && ok "an hq-cli below the fix floor still queues the update notice ($label)" \
+    || bad "an hq-cli below the fix floor still queues the update notice ($label)" "pending missing"
+  run_hook "$R84A"
+  grep -Fq -- "npm install -g @indigoai-us/hq-cli@latest" <<<"$HOOK_OUT" \
+    && ok "the stale-cli notice reaches the next session start ($label)" \
+    || bad "the stale-cli notice reaches the next session start ($label)" "out: $HOOK_OUT"
+
+  R84B="$TMP/fb84-co-manifest-warn-$label"; build_root "$R84B"
+  REM_STATE="$TMP/rem-fb84-co-manifest-warn-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$R84B" "$eng" "$DOCTOR_CO_MANIFEST_WARN"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "a WARN, not auto-fixable company manifest files nothing ($label)" \
+    || bad "a WARN, not auto-fixable company manifest files nothing ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  R84C="$TMP/fb84-co-manifest-fail-$label"; build_root "$R84C"
+  REM_STATE="$TMP/rem-fb84-co-manifest-fail-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$R84C" "$eng" "$DOCTOR_CO_MANIFEST_FAIL"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.manifest.company.cmp_x" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "a FAIL company manifest still files ($label)" \
+    || bad "a FAIL company manifest still files ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  R84D="$TMP/fb84-cap-$label"; build_root "$R84D"
+  REM_STATE="$TMP/rem-fb84-cap-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$CAP_AFTER"
+  run_remediate "$R84D" "$eng" "$CAP_BEFORE" "$CAP_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "journals past the 10-journal --fix cap are unreached and file nothing ($label)" \
+    || bad "journals past the 10-journal --fix cap are unreached and file nothing ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "unreached_company_journal_checks=15" "$R84D/workspace/.hq-client-health/repair-pass.log" 2>/dev/null \
+    && ok "the 15 journals past the cap are counted as unreached ($label)" \
+    || bad "the 15 journals past the cap are counted as unreached ($label)" "log: $(cat "$R84D/workspace/.hq-client-health/repair-pass.log" 2>/dev/null)"
+
+  R84E="$TMP/fb84-pv-cap-$label"; build_root "$R84E"
+  REM_STATE="$TMP/rem-fb84-pv-cap-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$PV_AFTER"
+  run_remediate "$R84E" "$eng" "$CAP_BEFORE" "$CAP_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "a personal-vault journal past the cap is unreached and files nothing ($label)" \
+    || bad "a personal-vault journal past the cap is unreached and files nothing ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  # hq-cli also says not-attempted for dirty-tree and pass-limit skips, which
+  # can repeat on every run, so below the cap it is not enough to hide a row.
+  R84F="$TMP/fb84-pv-skipped-$label"; build_root "$R84F"
+  REM_STATE="$TMP/rem-fb84-pv-skipped-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$R84F" "$eng" "$PV_AFTER" "$PV_SKIPPED_FIX" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "a not-attempted journal below the cap still files ($label)" \
+    || bad "a not-attempted journal below the cap still files ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  R84H="$TMP/fb84-applied-only-$label"; build_root "$R84H"
+  REM_STATE="$TMP/rem-fb84-applied-only-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$APPLIED_ONLY_AFTER"
+  run_remediate "$R84H" "$eng" "$CAP_BEFORE" "$APPLIED_ONLY_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.journal.co10" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ! grep -Fq "sync.journal.co11" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "a capped run still files a pull that is in applied but left no outcome ($label)" \
+    || bad "a capped run still files a pull that is in applied but left no outcome ($label)" "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+
+  R84I="$TMP/fb84-manifest-slots-$label"; build_root "$R84I"
+  REM_STATE="$TMP/rem-fb84-manifest-slots-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$CAP_AFTER"
+  run_remediate "$R84I" "$eng" "$CAP_BEFORE" "$MANIFEST_SLOTS_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "manifest uploads count toward the 10-slot cap ($label)" \
+    || bad "manifest uploads count toward the 10-slot cap ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  R84J="$TMP/fb84-stale-runtime-$label"; build_root "$R84J"
+  REM_STATE="$TMP/rem-fb84-stale-runtime-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_VERSION="5.345.150"
+  run_remediate "$R84J" "$eng" "$DOCTOR_STALE_RUNTIME"
+  unset HQ_STUB_VERSION
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fxq "likely-cause=stale-cli" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "a stale hq-cli with a non-journal sync FAIL still files, with likely-cause ($label)" \
+    || bad "a stale hq-cli with a non-journal sync FAIL still files, with likely-cause ($label)" "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+
+  R84G="$TMP/fb84-pv-tried-$label"; build_root "$R84G"
+  REM_STATE="$TMP/rem-fb84-pv-tried-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$R84G" "$eng" "$PV_AFTER" "$PV_TRIED_FIX" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.journal.__hq_personal_vault__" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "a personal-vault journal --fix tried and could not clear still files ($label)" \
+    || bad "a personal-vault journal --fix tried and could not clear still files ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+done
+
+echo "== feedback 19d0a45e: company manifests past the --fix cap are unreached =="
+# Made-up ids only. Stale manifests hq-cli marks auto-fixable, left WARN.
+MAN_UNREACHED_AFTER="$TMP/doctor-man-unreached-after.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_z","reasonCode":"stale-threshold","fix":{"autoFixable":true}},{"family":"sync","status":"WARN","checkId":"sync.manifest.personal","reasonCode":"stale-threshold","fix":{"autoFixable":true}}]}' > "$MAN_UNREACHED_AFTER"
+# 8 pulls plus uploads for cmp_a and cmp_b fill the cap; cmp_a stays stale.
+MAN_TRIED_AFTER="$TMP/doctor-man-tried-after.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_a","reasonCode":"stale-threshold","fix":{"autoFixable":true}}]}' > "$MAN_TRIED_AFTER"
+MAN_TRIED_FIX="$TMP/fix-man-tried.json"
+printf '{"exitCode":1,"applied":[{"checkId":"sync.manifest.company.cmp_a","fixClass":"refresh-manifest","pass":1,"postStatus":"WARN","target":"/home/someone/privpathmarker"},{"checkId":"sync.manifest.company.cmp_b","fixClass":"refresh-manifest","pass":1,"postStatus":"PASS"}],"refreshSync":[%s]}\n' "$ms_refresh" > "$MAN_TRIED_FIX"
+# Capped run, manifest not attempted, but FAIL.
+MAN_FAIL_AFTER="$TMP/doctor-man-fail-after.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"FAIL","checkId":"sync.manifest.company.cmp_z","reasonCode":"manifest-upload-rejected","fix":{"autoFixable":true}}]}' > "$MAN_FAIL_AFTER"
+# Capped run, manifest WARN with no fix object: --fix could not have repaired it.
+MAN_NOFIX_AFTER="$TMP/doctor-man-nofix-after.json"
+printf '%s\n' '{"results":[{"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_z","reasonCode":"manifest-upload-rejected"}]}' > "$MAN_NOFIX_AFTER"
+# Below the cap (one pull): an unattempted stale manifest still files.
+MAN_UNCAPPED_FIX="$TMP/fix-man-uncapped.json"
+printf '%s\n' '{"exitCode":1,"applied":[],"refreshSync":[{"checkId":"sync.journal.co01","outcome":"pull-succeeded","postStatus":"PASS"}]}' > "$MAN_UNCAPPED_FIX"
+for eng in $ENGINES; do
+  label="$eng"; [ "$eng" = "-" ] && label="default"
+
+  R19A="$TMP/fb19-man-unreached-$label"; build_root "$R19A"
+  REM_STATE="$TMP/rem-fb19-man-unreached-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_UNREACHED_AFTER"
+  run_remediate "$R19A" "$eng" "$CAP_BEFORE" "$CAP_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "stale manifests --fix did not reach in a capped run file nothing ($label)" \
+    || bad "stale manifests --fix did not reach in a capped run file nothing ($label)" "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+  ! grep -Fq "unreached_company_journal_checks" "$R19A/workspace/.hq-client-health/repair-pass.log" 2>/dev/null \
+    && ok "unreached manifests are not counted as company journals ($label)" \
+    || bad "unreached manifests are not counted as company journals ($label)" "log: $(cat "$R19A/workspace/.hq-client-health/repair-pass.log" 2>/dev/null)"
+
+  R19B="$TMP/fb19-man-tried-$label"; build_root "$R19B"
+  REM_STATE="$TMP/rem-fb19-man-tried-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_TRIED_AFTER"
+  run_remediate "$R19B" "$eng" "$CAP_BEFORE" "$MAN_TRIED_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  B19=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.manifest.company.cmp_a" <<<"$B19" \
+    && grep -Fq -- "--fix applied (check id, fix class, outcome): " <<<"$B19" \
+    && grep -Fq "sync.manifest.company.cmp_a refresh-manifest WARN" <<<"$B19" \
+    && grep -Fq "; 9 other checks" <<<"$B19" \
+    && ok "a manifest --fix attempted that stayed stale files, with the --fix summary ($label)" \
+    || bad "a manifest --fix attempted that stayed stale files, with the --fix summary ($label)" "body: $B19"
+  ! grep -Fq "privpathmarker" <<<"$B19" \
+    && ! grep -Fq "cmp_b" <<<"$B19" \
+    && ! grep -Fq "sync.journal.co01" <<<"$B19" \
+    && ok "the --fix summary names no target path and no check --fix cleared ($label)" \
+    || bad "the --fix summary names no target path and no check --fix cleared ($label)" "body: $B19"
+
+  R19C="$TMP/fb19-man-fail-$label"; build_root "$R19C"
+  REM_STATE="$TMP/rem-fb19-man-fail-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_FAIL_AFTER"
+  run_remediate "$R19C" "$eng" "$CAP_BEFORE" "$CAP_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && grep -Fq -- "--fix applied (check id, fix class, outcome): 10 other checks" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "a manifest FAIL in a capped run still files, with the --fix summary ($label)" \
+    || bad "a manifest FAIL in a capped run still files, with the --fix summary ($label)" "body: $(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null)"
+
+  R19D="$TMP/fb19-man-uncapped-$label"; build_root "$R19D"
+  REM_STATE="$TMP/rem-fb19-man-uncapped-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_UNREACHED_AFTER"
+  run_remediate "$R19D" "$eng" "$CAP_BEFORE" "$MAN_UNCAPPED_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  B19=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" <<<"$B19" \
+    && grep -Fq "sync.manifest.personal" <<<"$B19" \
+    && ok "below the cap an unattempted stale manifest still files ($label)" \
+    || bad "below the cap an unattempted stale manifest still files ($label)" "body: $B19"
+
+  R19F="$TMP/fb19-man-nofix-$label"; build_root "$R19F"
+  REM_STATE="$TMP/rem-fb19-man-nofix-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_NOFIX_AFTER"
+  run_remediate "$R19F" "$eng" "$CAP_BEFORE" "$CAP_FIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "a manifest WARN --fix could not repair still files in a capped run ($label)" \
+    || bad "a manifest WARN --fix could not repair still files in a capped run ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  R19E="$TMP/fb19-man-badfix-$label"; build_root "$R19E"
+  REM_STATE="$TMP/rem-fb19-man-badfix-$label"; mkdir -p "$REM_STATE"
+  BADFIX="$TMP/fix-bad-$label.json"; printf '%s\n' 'not json {' > "$BADFIX"
+  export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_UNREACHED_AFTER"
+  run_remediate "$R19E" "$eng" "$CAP_BEFORE" "$BADFIX" false
+  unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
+    && ok "malformed --fix output filters no manifest ($label)" \
+    || bad "malformed --fix output filters no manifest ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+done
 
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="

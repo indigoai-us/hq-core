@@ -528,7 +528,7 @@ The Codex desktop app runs chat commands in a workspace-write sandbox by default
 
 ## Bots & agents
 
-- **Local bots** run on your computer with your own Claude, Codex, or Grok login: `hq bot create <name>`, or desktop Settings → Bots.
+- **Local bots** run on your computer under the HQ Fleet Runtime with your own Claude, Codex, or Grok login. Use `hq bot create <name> --hq-fleet-runtime --provider <provider>`, or desktop Settings → Bots. Personal bots can use every company you can access and can later be promoted to cloud compute without a Claude subscription.
 - **Hosted agents** run on HQ infrastructure for a company: `/new-agent`, `hq agents provision`, or the console Bots page.
 - **External bots** run on your own hardware and enroll with `hq agent enroll <code>`. They require a paid plan and are unlimited on it.
 - **Chat-app connectors** let a person use HQ from Claude, ChatGPT, Claude Code, Codex, or Grok through the hosted HQ connector (console → Integrations → Connect an agent shows the URL).

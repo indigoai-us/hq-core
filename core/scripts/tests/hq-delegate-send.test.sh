@@ -9,6 +9,8 @@
 #      `hq files get` lines (each exactly once) and no others.
 #   2. --send on a verified manifest -> exactly ONE hq dm invocation using
 #      --prompt-file and --details-file; status -> sent; eventId recorded.
+#      An explicit hq dm refusal (nothing delivered) leaves status
+#      "verified" so a retry is safe; only an unknown failure stays "sending".
 #   3. Prompt and brief scanned: no secret-pattern match, no share-session
 #      URL shape.
 #   4. repo: null -> no git/checkout section, no branch reference.
@@ -175,12 +177,43 @@ DM_COUNT="$(grep -c '^dm ' "$INVOKE_LOG")"
 [ "$DM_COUNT" -eq 1 ] || fail "expected exactly one hq dm invocation, got $DM_COUNT"
 grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--prompt-file' \
   || fail "dm must use --prompt-file"
-grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--audience both' \
-  || fail "dm must send --audience both: the pickup DM is for the person and their agent, and hq dm defaults to agent-only"
+grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--audience human' \
+  || fail "dm must send --audience human: the pickup DM goes out from a person login, and people may only send human messages"
 grep '^dm alice@acme.test ' "$INVOKE_LOG" | grep -q -- '--details-file' \
   || fail "dm must use --details-file"
 jq -e '.status == "sent" and .dmEventId == "evt_stub123" and .sentAt != null' "$MANIFEST" >/dev/null \
   || fail "manifest must record sent status + eventId: $(jq -c '{status, dmEventId}' "$MANIFEST")"
+
+# --- 2b. explicit refusal is a clean failure, not an uncertain delivery ------
+# The stub replays the real CLI's sender-rule refusal: rejected before
+# delivery, so nothing was sent and a retry must be allowed.
+
+write_manifest verified "$REPO_JSON"
+REFUSE_BIN="$TMP/refuse-bin"
+mkdir -p "$REFUSE_BIN"
+cat > "$REFUSE_BIN/hq" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$HQ_STUB_LOG"
+echo "People can only send human messages. Agent messages are sent by agents and bots." >&2
+exit 1
+STUB
+chmod +x "$REFUSE_BIN/hq"
+: > "$INVOKE_LOG"
+set +e
+PATH="$REFUSE_BIN:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>"$TMP/refuse.err"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a refused DM must exit non-zero"
+jq -e '.status == "verified" and .dmEventId == null' "$MANIFEST" >/dev/null \
+  || fail "a refused DM was not sent: status must stay verified so a retry is safe, got $(jq -c '{status, dmEventId}' "$MANIFEST")"
+grep -q "refused" "$TMP/refuse.err" || fail "refusal must be reported as refused: $(cat "$TMP/refuse.err")"
+if grep -q "uncertain" "$TMP/refuse.err"; then fail "an explicit refusal must not be reported as uncertain"; fi
+[ ! -e "$MANIFEST.send-lock" ] || fail "refused send left the send lock behind"
+: > "$INVOKE_LOG"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --send >/dev/null 2>&1 \
+  || fail "retry after a refused DM must go through"
+[ "$(grep -c '^dm ' "$INVOKE_LOG")" -eq 1 ] || fail "retry after refusal: expected exactly one hq dm"
+jq -e '.status == "sent"' "$MANIFEST" >/dev/null || fail "retry after refusal must reach sent"
 
 # --- 5. --send before verification is refused --------------------------------
 

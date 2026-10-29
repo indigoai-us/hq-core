@@ -39,6 +39,7 @@ mkdir -p "$TMP/.claude" "$TMP/.hq" "$TMP/core/scripts" \
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
 mkdir -p "$TMP/.claude/hooks"
 cp "$HOOK" "$TMP/.claude/hooks/enforce-vault-write-access.sh"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
 cp "$ROOT/.claude/hooks/enforce-vault-write-access-flag.cjs" "$TMP/.claude/hooks/"
 HOOK="$TMP/.claude/hooks/enforce-vault-write-access.sh"
 CLI="$TMP/npm-global/lib/node_modules/@indigoai-us/hq-cli"
@@ -113,7 +114,7 @@ run() {
     '{tool_name: $t, tool_input: {($k): $v}}')
   printf '%s' "$payload" | env PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
     HQ_COMPANY_UID=cmp_test123 HQ_COMPANY_SLUG=indigo \
-    CLAUDE_PROJECT_DIR="$TMP" "$HOOK_BASH" "$HOOK" >/dev/null 2>&1 || rc=$?
+    CLAUDE_PROJECT_DIR="$TMP" "$HOOK_BASH" "$HOOK" >/dev/null 2>"$TMP/last-err" || rc=$?
   if [[ "$rc" -eq "$expect" ]]; then
     PASS=$((PASS+1))
   else
@@ -319,7 +320,25 @@ run_flag 2 true acme 'malformed manifest denied with flag on'
 run_flag 0 true delta 'registry outage falls back to default off' true
 rm -f "$TMP/.hq/vault-access.json"
 run 0 Edit file_path "$A/private/notes.md"          'missing manifest allowed for fresh install'
+runb 0 'i=1; echo $((i+1))' 'missing manifest allows proven arithmetic'
+runb 2 'echo $((unknown+1))' 'missing manifest still checks arithmetic'
 write_manifest
+
+# Decision-only arithmetic checks run before the companies/ fast path.
+arith_case() {
+  runb "$1" "$3" "arith-$2"
+  if [ "$2" = redirect-only-before-proof ] && grep -q 'unbound variable' "$TMP/last-err"; then
+    FAIL=$((FAIL+1))
+    echo 'FAIL: allowed redirection/arithmetic control must not exit through a nounset error' >&2
+  fi
+}
+. "$ROOT/core/scripts/tests/bash-arith-guard.cases.sh"
+. "$ROOT/core/scripts/tests/bash-arith-resolver.cases.sh"
+runb 2 'touch compan""ies/acme/private/notes.md' 'quote-split company prefix blocked'
+runb 2 'touch compan\ies/acme/private/notes.md' 'escaped company prefix blocked'
+mv "$TMP/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/arith-helper.saved"
+runb 2 'echo hello' 'missing arithmetic helper fails closed'
+mv "$TMP/arith-helper.saved" "$TMP/.claude/hooks/bash-arith-subst-guard-lib.sh"
 
 # --- Bypass escape hatch --------------------------------------------------
 printf '{"env":{"HQ_BYPASS_VAULT_WRITE_PROTECT":"1"}}' > "$TMP/.claude/settings.local.json"

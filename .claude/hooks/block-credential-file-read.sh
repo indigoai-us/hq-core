@@ -354,6 +354,421 @@ CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.s
 PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive"
 CG_SCREEN_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y"
 
+# Credential basenames and directory names a split word can rebuild
+# (cg_split_cred). CG_SPLIT_DIR_NAMES holds names that are credentials only
+# inside one directory, as <dir>:<name>. .env.* names are checked by
+# cg_split_env.
+CG_SPLIT_NAMES=(.npmrc .netrc _netrc .pypirc .yarnrc .yarnrc.yml .yarnrc.yaml
+  .git-credentials .env .envrc id_rsa id_dsa id_ecdsa id_ed25519 id_ecdsa_sk
+  id_ed25519_sk identity .ssh .aws .docker .gem .config gh)
+CG_SPLIT_DIR_NAMES=(.aws:credentials .aws:config .gem:credentials
+  .docker:config.json gh:hosts.yml gh:hosts.yaml)
+CG_SPLIT_ALLOWED=(.env.example .env.sample .env.template .env.schema .env.dist .pub)
+
+# cg_split_cred <raw command>: return 0 when a word that holds an unknown
+# variable, substitution or ANSI-C escape could expand to a credential name,
+# as in ~/.npm"$F"rc or .e"$F"nv. CRED_WORD_RE only sees credential words
+# written out whole, so a name split around a variable passed (an unset F
+# expands to nothing). cg_split_mark turns every $ reference and every
+# $'\x..' escape into a wildcard, quotes are then removed, brace expansions
+# ({a,b}) become wildcards, and every path segment (split on / = : , @, with
+# a leading short option such as -f removed) that mixes wildcards with at
+# least two literal characters is matched against the names above, backup
+# suffixes removed too.
+# Not split names: a segment that is only wildcards ("$F"), or has one
+# literal character ("$a-$b", "$f"s); a plain $stem.ext ("$f.yml") outside a
+# credential directory; and a directory-specific name ("$D"/config"$E")
+# whose directory is only a variable. In those the variable supplies the
+# whole credential word, the case CRED_WORD_RE leaves to the later checks.
+# When it returns 0 the full check also stops trusting values assigned
+# earlier in the command (expand_vars): (F=x); cat .np${F}mrc reads .npmrc.
+cg_split_cred() {
+  case "$1" in *'$'*) ;; *) return 1 ;; esac
+  local nc=0 r=1 d
+  shopt -q nocasematch && nc=1
+  shopt -s nocasematch
+  # Pass 1: the ${...} expansion is a wildcard (its value is unknown). Pass 2
+  # (CG_SPLIT_DEF=1): a ${VAR:-WORD} / ${VAR:=WORD} expands to its literal
+  # WORD when the variable is unset, so WORD is marked in place of the
+  # wildcard. An unset variable is the attacker's to choose, so either
+  # reading is possible; the union of the two passes covers both.
+  for d in 0 1; do
+    CG_SPLIT_DEF=$d
+    CG_SPLIT_DEPTH=0
+    CG_SPLIT_WORK=0
+    if ! cg_split_mark "$1"; then
+      r=0
+    else
+      cg_split_check && r=0
+    fi
+    [ "$r" -eq 0 ] && break
+    case "$1" in *'${'*) ;; *) break ;; esac
+  done
+  CG_SPLIT_DEF=0
+  [ "$nc" -eq 1 ] || shopt -u nocasematch
+  return $r
+}
+
+# cg_split_check: CG_SM is marked; return 0 when it names a credential. A
+# credential word revealed by decoding ($'\x6e') is matched directly; an
+# allowed .env template word is removed first so it is not a false hit.
+cg_split_check() {
+  local t a
+  cg_strip_q "$CG_SM"
+  t="$CG_SQ"
+  for a in "${CG_SPLIT_ALLOWED[@]}"; do t="${t//$a/}"; done
+  [[ "$t" =~ $CRED_WORD_RE ]] && return 0
+  cg_split_scan "$CG_SQ"
+}
+
+# cg_split_mark <raw text> -> CG_SM: every $ reference replaced by \001,
+# read on the raw text so a closing quote ends a variable name ("$A"pmrc is
+# \001pmrc). ${...} is matched to its closing brace across nesting. In
+# $'...' each backslash escape is a wildcard (not decoded here) and the
+# other characters stay; $"..." is its text; a lone $ stays.
+# Returns 1 (the caller fails closed) on an unterminated ${, or a ${...} or
+# $'...' longer than the scan limits.
+# Linear: field splitting on $, bounded scans, one join at the end.
+CG_SM=""
+CG_SPLIT_DEF=0
+CG_SPLIT_DEPTH=0
+CG_SPLIT_WORK=0
+CG_SPLIT_ANSI_RE="^(([^'\\\\]|\\\\.)*)'(.*)\$"
+CG_SPLIT_UUC_RE='\\(u[0-9A-Fa-f]{0,4}|U[0-9A-Fa-f]{0,8}|c.?)'
+# cg_ansi_decode <$'...' body> -> CG_AD: the real characters, so a credential
+# name hidden in ANSI-C escapes ($'\x2e\x65\x6e\x76' = .env) is seen. \u \U
+# \c are blanked to the sentinel first (bash 3.2 printf does not decode them
+# and a wildcard still matches when one sits inside a name); the rest (\xHH,
+# octal, \n \t \\ \' ...) decode the same on bash 3.2 and 5 with one printf.
+# A body over 1024 chars is never a basename; it collapses to one wildcard so
+# the pre-pass stays bounded.
+CG_AD=""
+cg_ansi_decode() {
+  local b="$1" sb sent=$'\001'
+  if [ ${#b} -gt 1024 ]; then CG_AD="$sent"; return; fi
+  while [[ "$b" =~ $CG_SPLIT_UUC_RE ]]; do b="${b/"${BASH_REMATCH[0]}"/$sent}"; done
+  sb="${b//%/%%}"
+  printf -v CG_AD "$sb" 2>/dev/null || CG_AD="$b"
+}
+
+# cg_split_default <${...} body> -> CG_DEF, CG_HASDEF=1 when the body is a
+# ${VAR:-WORD} / ${VAR-WORD} / ${VAR:=WORD} / ${VAR=WORD} form, whose WORD is
+# the literal value when VAR is unset. Other operators (:+ :? # % / ^ , and
+# substrings ${VAR:n:m}) have no unset-literal, so CG_HASDEF stays 0.
+CG_DEF=""
+CG_HASDEF=0
+cg_split_default() {
+  CG_HASDEF=0
+  if [[ "$1" =~ ^([A-Za-z_][A-Za-z0-9_]*|[-@*#?$!0-9])(:-|:=|-|=)(.*)$ ]]; then
+    CG_DEF="${BASH_REMATCH[3]}"
+    CG_HASDEF=1
+  fi
+}
+
+
+# cg_brace_end <text> [<offset>] -> BE: index of the } that closes the { at
+# position 0, honoring nesting and \{ \} \\ escapes, or -1 within the first
+# 512 characters. Backslash pairs are blanked to a same-length placeholder
+# first, so indices still line up with the input and an escaped brace is not
+# counted. Bounded so a long or unbalanced ${ cannot run the hook long.
+# Incremental: with an <offset>, only text[offset..511] is scanned and the
+# nesting depth carries over in BD from the previous call on the same text,
+# so the caller that joins one $ piece at a time scans each character once
+# (offset 0 starts at depth 0). The scan jumps from brace to brace, so its
+# cost is the number of braces, not the length of the text. Rescanning the
+# whole joined text one character at a time on every join made a 200-deep
+# ${A:-${B:-...}} nest take about 20 s on a CI runner.
+BE=-1
+BD=0
+cg_brace_end() {
+  local off="${2:-0}" t pre k
+  [ "$off" -gt 0 ] || BD=0
+  BE=-1
+  [ "$off" -lt 512 ] || return 0
+  t="${1:$off:$((512 - off))}"
+  t="${t//\\?/@@}"
+  k=$off
+  while :; do
+    pre="${t%%[\{\}]*}"
+    [ "${#pre}" -lt "${#t}" ] || return 0
+    k=$((k + ${#pre}))
+    case "${t:${#pre}:1}" in
+      '{') BD=$((BD + 1)) ;;
+      *) BD=$((BD - 1)); if [ "$BD" -eq 0 ]; then BE=$k; return 0; fi ;;
+    esac
+    t="${t:$((${#pre} + 1))}"
+    k=$((k + 1))
+  done
+}
+
+cg_split_mark() {
+  local old_ifs="$IFS" parts p i j n out acc name ok b sent=$'\001' be saved dmark off
+  # bash 3.2 duplicates a literal $'\001' inside array+=( ... ); a variable
+  # does not, so every sentinel below is "$sent".
+  IFS='$'
+  set -f
+  # shellcheck disable=SC2206
+  parts=($1x)
+  set +f
+  IFS="$old_ifs"
+  n=${#parts[@]}
+  parts[n - 1]="${parts[n - 1]%x}"
+  # Pieces are collected in an array and joined once: appending to one
+  # string is quadratic on a large heredoc with thousands of $ signs.
+  out=("${parts[0]}")
+  i=1
+  while [ $i -lt $n ]; do
+    p="${parts[$i]}"
+    i=$((i + 1))
+    case "$p" in
+      '{'*)
+        # ${...} parameter expansion. Find its matching } (cg_brace_end). A
+        # $ inside it (${F:-$G}) was split off, so when the } is not in this
+        # piece the next piece is joined and the search repeats. The join
+        # stops once the unclosed text holds a shell separator: then the { is
+        # quoted or inert (echo '${'; cat ~/.np"$F"mrc), the } found later
+        # belongs to another word, and swallowing it would hide a split name
+        # after it. A quote alone does not stop the join: a real default can
+        # hold one (${F:-m"$G"}rc). On the bail the $ is a lone wildcard and
+        # the piece is kept literal, so later pieces are still scanned (i is
+        # unchanged; j is a lookahead).
+        acc="$p"
+        j=$i
+        ok=0
+        off=0
+        while :; do
+          # Each brace scan is bounded; this budget bounds their number
+          # across the whole command, so a deeply nested ${A:-${B:-...}}
+          # cannot run the scan for seconds. The full check blocks brace
+          # nesting over 6 levels anyway, so giving up here changes no
+          # verdict; fail closed (return 1 -> the caller treats it as a hit).
+          CG_SPLIT_WORK=$((CG_SPLIT_WORK + 1))
+          [ "$CG_SPLIT_WORK" -gt 4000 ] && return 1
+          # Only the text joined since the last pass is scanned: the brace
+          # depth carries over (cg_brace_end offset), and the earlier text
+          # was already checked for a separator.
+          cg_brace_end "$acc" "$off"
+          [ "$BE" -ge 0 ] && { ok=1; break; }
+          case "${acc:$off}" in *[" "$'\t'$'\n'";|&<>()"]*) break ;; esac
+          [ $j -lt $n ] || break
+          [ ${#acc} -le 512 ] || break
+          off=${#acc}
+          acc="$acc\$${parts[$j]}"
+          j=$((j + 1))
+        done
+        if [ "$ok" = 1 ]; then
+          i=$j
+          be=$BE
+          dmark="$sent"
+          if [ "$CG_SPLIT_DEF" = 1 ]; then
+            # ${VAR:-WORD}: when VAR is unset the expansion is WORD, so mark
+            # WORD (its own $ refs become wildcards) in place of the wildcard.
+            cg_split_default "${acc:1:$((be - 1))}"
+            # Recurse into the default, but cap the depth: marking a default
+            # re-runs cg_split_mark, and a deeply nested ${A:-${B:-...}} would
+            # otherwise run the hook for seconds. Beyond the cap the default
+            # is a wildcard, the conservative reading (an anchored credential
+            # name still matches). The hook fails closed on a timeout anyway,
+            # so this only keeps a crafted nest from stalling the command.
+            if [ "$CG_HASDEF" = 1 ] && [ "$CG_SPLIT_DEPTH" -lt 24 ]; then
+              saved="$CG_SM"
+              CG_SPLIT_DEPTH=$((CG_SPLIT_DEPTH + 1))
+              if cg_split_mark "$CG_DEF"; then dmark="$CG_SM"; else dmark="$sent"; fi
+              CG_SPLIT_DEPTH=$((CG_SPLIT_DEPTH - 1))
+              CG_SM="$saved"
+            fi
+          fi
+          out+=("$dmark${acc:$((be + 1))}")
+        else
+          out+=("$sent$p")
+        fi
+        ;;
+      "'"*)
+        acc="${p#\'}"
+        # The body ends at the first ' not escaped with a backslash.
+        if [[ "$acc" =~ $CG_SPLIT_ANSI_RE ]]; then
+          b="${BASH_REMATCH[1]}"
+          acc="${BASH_REMATCH[3]}"
+          # Decode the escapes to real characters so a credential name spelled
+          # in ANSI-C ($'\x2e\x65\x6e\x76' = .env) is seen.
+          cg_ansi_decode "$b"
+          out+=("$CG_AD$acc")
+        else
+          out+=("$sent$acc")
+        fi
+        ;;
+      '"'*) out+=("$p") ;;
+      [A-Za-z_]*)
+        name="${p%%[!A-Za-z0-9_]*}"
+        out+=("$sent${p#"$name"}")
+        ;;
+      '') out+=("$sent") ;;
+      [0-9@*#?!-]*) out+=("$sent${p:1}") ;;
+      # $(...): the body is a command, not part of the word, so a space
+      # keeps it apart. COMPUTED_PATH sends the word itself to the full
+      # check.
+      '('*) out+=("$sent ${p:1}") ;;
+      *) out+=("\$$p") ;;
+    esac
+  done
+  IFS=""
+  CG_SM="${out[*]}"
+  IFS="$old_ifs"
+  return 0
+}
+
+# cg_split_env <glob>: the glob (wildcards from variables/substitutions) can
+# expand to a .env-class credential. The wildcards can stand for any text, so
+# each one is tried as empty and as the letters a .env name needs (the dot,
+# "env", a per-environment suffix), and is_env_name decides. This catches the
+# variable landing anywhere in the name: .e"$F"nv, x.e"$F"nv (-> *.env),
+# .e"$F"nv.local, prod."$E"nv and prod"$E"env (both -> prod.env). A template
+# name (.env.example) is not a credential, so is_env_name rejects it.
+# "$name".test.ts stays allowed: no filler makes *.test.ts a .env name.
+cg_split_env() {
+  local c f g="${1//\?/*}" prev=""
+  # Collapse runs of wildcards to one, so a single filler can stand for the
+  # whole unknown run (a split can emit adjacent wildcards). The pattern and
+  # replacement are unquoted: bash 3.2 keeps quotes in ${v//'x'/'y'} literal.
+  while [ "$g" != "$prev" ]; do prev="$g"; g="${g//\*\*/\*}"; done
+  for f in "" . e n v env rc local production development; do
+    c="${g//\*/$f}"
+    is_env_name "$c" && return 0
+  done
+  return 1
+}
+
+# cg_split_dir_is <segment> <dir>...: the segment, written out or split
+# around a variable, can be one of the directories. A segment that is only a
+# variable is not counted.
+cg_split_dir_is() {
+  local seg="$1" d
+  shift
+  case "$seg" in *[!$'\001']*) ;; *) return 1 ;; esac
+  for d in "$@"; do
+    # shellcheck disable=SC2053 # pattern match is intended.
+    [[ "$d" == ${seg//$'\001'/*} ]] && return 0
+  done
+  return 1
+}
+
+# cg_split_cred_dir <parent> <grandparent>: a directory whose every file is
+# a credential, or gh under .config.
+cg_split_cred_dir() {
+  cg_split_dir_is "$1" .ssh .aws .docker .gem && return 0
+  cg_split_dir_is "$1" gh && cg_split_dir_is "$2" .config
+}
+
+# cg_split_scan <marked text with quotes removed>
+CG_SPLIT_BRACE_RE='\{[^{}]*(,|\.\.)[^{}]*\}'
+cg_split_scan() {
+  local old_ifs="$IFS" w seg prev prev2 pat p n d lit g words=() segs=() pats=() dirs=()
+  IFS=$' \t;|&()<>\n'
+  set -f
+  # shellcheck disable=SC2206
+  words=($1)
+  set +f
+  IFS="$old_ifs"
+  for w in ${words[@]+"${words[@]}"}; do
+    case "$w" in *$'\001'*) ;; *) continue ;; esac
+    # Brace expansion picks one of its parts: .n{p,}"$F"mrc.
+    g=0
+    while [[ "$w" == *'{'*'}'* ]] && [[ "$w" =~ $CG_SPLIT_BRACE_RE ]]; do
+      [ $g -lt 32 ] || return 0
+      w="${w/"${BASH_REMATCH[0]}"/$'\001'}"
+      g=$((g + 1))
+    done
+    IFS='/=:,@'
+    set -f
+    # shellcheck disable=SC2206
+    segs=($w)
+    set +f
+    IFS="$old_ifs"
+    # prev, prev2: the parent and grandparent segments. Empty and .
+    # segments are skipped and .. goes back one (~/.config/gh/./x, gh//x,
+    # gh/a/../x).
+    dirs=()
+    prev=""
+    prev2=""
+    for seg in ${segs[@]+"${segs[@]}"}; do
+      case "$seg" in
+        ''|.) continue ;;
+        ..) [ ${#dirs[@]} -gt 0 ] && unset "dirs[$((${#dirs[@]} - 1))]" ;;
+        *)
+          case "$seg" in
+            *$'\001'*)
+              pat="${seg//$'\001'/*}"
+              case "$pat" in
+                *[!*?]*) cg_split_seg "$seg" "$pat" "$prev" "$prev2" && return 0 ;;
+                # Only a variable: any file in a credential directory.
+                *) cg_split_cred_dir "$prev" "$prev2" && return 0 ;;
+              esac
+              ;;
+            *)
+              # A written-out name under a split directory:
+              # .config/g"$F"/hosts.yml.
+              case "$prev" in
+                *$'\001'*)
+                  for n in "${CG_SPLIT_DIR_NAMES[@]}"; do
+                    # shellcheck disable=SC2053
+                    [[ "${n#*:}" == "$seg" ]] && cg_split_dir_is "$prev" "${n%%:*}" && return 0
+                  done
+                  ;;
+              esac
+              ;;
+          esac
+          dirs+=("$seg")
+          ;;
+      esac
+      prev=""
+      prev2=""
+      [ ${#dirs[@]} -gt 0 ] && prev="${dirs[$((${#dirs[@]} - 1))]}"
+      [ ${#dirs[@]} -gt 1 ] && prev2="${dirs[$((${#dirs[@]} - 2))]}"
+    done
+  done
+  return 1
+}
+
+# cg_split_seg <segment> <glob> <parent> <grandparent>: one segment that
+# mixes wildcards and literal text.
+cg_split_seg() {
+  local pat="$2" prev="$3" prev2="$4" p n d lit pats=("$2")
+  # An attached short option: -f.e"$F"nv.
+  [[ "$pat" =~ ^-[A-Za-z0-9](.+)$ ]] && pats+=("${BASH_REMATCH[1]}")
+  for p in "${pats[@]}"; do
+    lit="${p//[*?]/}"
+    [ ${#lit} -ge 2 ] || continue
+    if [[ "$p" =~ ^\*+\.[^.*?]+$ ]]; then
+      # $stem.ext: a split name only inside a credential directory.
+      cg_split_cred_dir "$prev" "$prev2" && return 0
+      continue
+    fi
+    strip_backup "$p"
+    set -- "$p"
+    if [ -n "$SB" ] && [ "$SB" != "$p" ]; then
+      set -- "$p" "$SB"
+      [ "$SB_SWAP" -eq 1 ] && [ "${SB#.}" != "$SB" ] && set -- "$@" "${SB#.}"
+    fi
+    for p in "$@"; do
+      cg_split_env "$p" && return 0
+      for n in "${CG_SPLIT_NAMES[@]}"; do
+        # shellcheck disable=SC2053 # pattern match is intended.
+        [[ "$n" == $p ]] && return 0
+      done
+      for n in "${CG_SPLIT_DIR_NAMES[@]}"; do
+        d="${n%%:*}"
+        n="${n#*:}"
+        # shellcheck disable=SC2053
+        [[ "$n" == $p ]] || continue
+        # The directory is this name's own, written out or split; a
+        # directory that is only a variable is not a split name.
+        cg_split_dir_is "$prev" "$d" && return 0
+      done
+    done
+  done
+  return 1
+}
+
 # cg_unescape <json string body> [key] -> CG_U (decoded; for values, trailing
 # newlines are then removed as command substitution of `jq -r` would; keys
 # are kept exact).
@@ -548,13 +963,18 @@ cg_fast_scan() {
   cg_parse "$INPUT"
 }
 
+CG_ARITH_READY=0
+if [ -f "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" ]; then
+  . "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" && CG_ARITH_READY=1
+fi
+
 # cg_fast_allow: return 0 when the call can be allowed without the full
 # check.
 cg_fast_allow() {
   [ "${HQ_CRED_GUARD_FASTPATH:-1}" != "0" ] || return 1
   # Every helper must be defined; a missing one would otherwise read as "no
   # match" and allow the call.
-  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
+  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan cg_split_cred cg_split_check cg_split_mark cg_ansi_decode cg_split_default cg_split_scan cg_split_env cg_split_dir_is cg_split_cred_dir cg_split_seg norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
   [ ${#INPUT} -le 16384 ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   command -v realpath >/dev/null 2>&1 || return 1
@@ -565,14 +985,21 @@ cg_fast_allow() {
   case "$CG_TOOL" in
     Bash)
       [ -n "$CG_CMD" ] || return 0
+      [ "$CG_ARITH_READY" = 1 ] || return 1
+      hq_arith_guard_check "$CG_CMD" || return 1
       # Same computed-path rule as the full check (COMPUTED_PATH): a $(...)
       # or backtick body can build a credential name from neutral text
       # (`cat "workspace/$(echo c)redlink"`), so it always gets the full
       # analysis. Without this the fast path allowed what the full check
       # blocks (scope-guard-hotfix-security.test.sh, 14 cases).
       case "$CG_CMD" in *'$('*|*'`'*) return 1 ;; esac
+      # A git show <ref>:<path> with a variable reads a tree object the name
+      # prefilter cannot see; the full check proves it (GS_COMPUTED).
+      case "$CG_CMD" in *show*:*'$'*) return 1 ;; esac
       cg_strip_q "$CG_CMD" || return 1
       local st="$CG_SQ"
+      # Same split-name rule as the full check (SPLIT_CRED).
+      cg_split_cred "$CG_CMD" && return 1
       # Same cwd rule as the full check.
       local in_cred=0
       if is_cred_dir "$cwd" && [ "$cwd" != "/" ] && [ "$cwd" != "$H" ]; then in_cred=1; fi
@@ -707,6 +1134,14 @@ fi
 # ---------------------------------------------------------------- Bash tool
 
 CMD="$VAL"
+[ "$CG_ARITH_READY" = 1 ] || block "The arithmetic guard helper is missing; refresh the hook installation."
+if ! hq_arith_guard_check "$CMD"; then
+  hq_arith_guard_message
+  if command -v jq >/dev/null 2>&1; then
+    jq -nc --arg m "BLOCKED: Bash arithmetic check. $HQ_ARITH_GUARD_REASON." '{decision:"block",reason:$m}' || true
+  fi
+  exit 2
+fi
 [ -n "$CMD" ] || exit 0
 # CRED_WORD_RE and PREFILTER_RE are defined above the fast path.
 
@@ -718,6 +1153,15 @@ STRIPPED="$CG_SQ"
 # credential word appears in the command. Analyze, never execute, the body.
 COMPUTED_PATH=0
 case "$CMD" in *'$('*|*'`'*) COMPUTED_PATH=1 ;; esac
+# git show <ref>:<path> with a variable names a tree entry, not a file the
+# name prefilter can match: `ls src | while read f; do git show "HEAD:src/$f"`
+# carries no credential word. Treat it as computed so the full check runs and
+# unknown variables are wildcards there.
+case "$CMD" in *show*:*'$'*) COMPUTED_PATH=1 ;; esac
+# A credential name split around a variable (~/.npm"$F"rc) names no
+# credential word, so it is caught here instead (cg_split_cred).
+SPLIT_CRED=0
+cg_split_cred "$CMD" && SPLIT_CRED=1
 
 # SAFE_TMP_VARS: names exempted as a fresh temp path. This is an allowlist; a
 # name qualifies only when every condition holds:
@@ -811,18 +1255,19 @@ if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$RE
   fi
   shopt -s nocasematch
 fi
-if [ "$COMPUTED_PATH" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
+if [ "$COMPUTED_PATH" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
   shopt -u nocasematch
   exit 0
 fi
-# CRED_ANY: a credential word remains after removing allowed names. Unknown
+# CRED_ANY: a credential word remains after removing allowed names, or a
+# word could expand to one (SPLIT_CRED). Unknown
 # variables and substitutions are treated as wildcards only when it is set.
 ALLOW_STRIPPED="$STRIPPED"
 for allowed in .env.example .env.sample .env.template .env.schema .env.dist .pub; do
   ALLOW_STRIPPED="${ALLOW_STRIPPED//$allowed/}"
 done
 CRED_ANY=0
-if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ] || [ "$COMPUTED_PATH" -eq 1 ]; then
+if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ] || [ "$COMPUTED_PATH" -eq 1 ] || [ "$SPLIT_CRED" -eq 1 ]; then
   CRED_ANY=1
 fi
 shopt -u nocasematch
@@ -832,7 +1277,9 @@ shopt -u nocasematch
 #   W f<flags> o- x<text>        word. flags: g glob, b brace, v variable,
 #                                s substitution (\001 in text), c the
 #                                substitution mentions a credential word,
-#                                q quoted
+#                                q quoted, u an unquoted expansion (variable,
+#                                $(...) or backtick outside double quotes, so
+#                                its value is word-split)
 #   O f- o<op> x-                ; ;; & && | || |& ( ) NL
 #   R f<flags> o<op> x<target>   redirect (< <> <& > >> >& >| &> &>> <<<)
 #   S f- o- x<inner>             $(...), `...`, <(...), >(...) inner script
@@ -916,12 +1363,14 @@ function sub_dollar_paren(j,  k, inner) {
   inner = substr(s, j + 2, k - j - 2)
   if (substr(inner, 1, 1) == "(") inner = substr(inner, 2, length(inner) - 2)
   emit_s(inner, "w")
+  if (!inq) fs_ = fs_ "u"
   return k + 1
 }
 function sub_backtick(j,  k) {
   k = find_bt(j + 1)
   if (!k) { err("unterminated backtick"); return n + 1 }
   emit_s(substr(s, j + 1, k - j - 1), "w")
+  if (!inq) fs_ = fs_ "u"
   return k + 1
 }
 # read_var(j): a[j] == "$"; appends the variable reference text; returns next index.
@@ -932,16 +1381,19 @@ function read_var(j,  k, c) {
     while (k <= n && a[k] != "}") k++
     if (k > n) { err("unterminated ${"); return n + 1 }
     w = w substr(s, j, k - j + 1); ws = 1; fs_ = fs_ "v"
+    if (!inq) fs_ = fs_ "u"
     return k + 1
   }
   if (c ~ /[A-Za-z_]/) {
     k = j + 1
     while (k <= n && a[k] ~ /[A-Za-z0-9_]/) k++
     w = w substr(s, j, k - j); ws = 1; fs_ = fs_ "v"
+    if (!inq) fs_ = fs_ "u"
     return k
   }
   if (c ~ /[0-9@*#?$!-]/) {
     w = w "$" c; ws = 1; fs_ = fs_ "v"
+    if (!inq) fs_ = fs_ "u"
     return j + 2
   }
   w = w "$"; ws = 1
@@ -988,7 +1440,7 @@ function heredocs(i,  h, ls, le, line, k, c, body) {
 { s = (NR > 1) ? s "\n" $0 : $0 }
 END {
   n = split(s, a, "")
-  w = ""; ws = 0; fs_ = ""; rop = ""; nhd = 0; failed = 0
+  w = ""; ws = 0; fs_ = ""; rop = ""; nhd = 0; failed = 0; inq = 0
   i = 1
   while (i <= n && !failed) {
     c = a[i]
@@ -1013,7 +1465,7 @@ END {
     }
     if (c == "\"") {
       ws = 1; fs_ = fs_ "q"; i++
-      closed = 0
+      closed = 0; inq = 1
       while (i <= n) {
         c = a[i]
         if (c == "\"") { closed = 1; i++; break }
@@ -1028,6 +1480,7 @@ END {
         if (c == "$") { i = read_var(i); continue }
         w = w c; i++
       }
+      inq = 0
       if (!closed && !failed) { err("unterminated quote") }
       continue
     }
@@ -1041,17 +1494,32 @@ END {
       d = a[i + 1]
       if (d == "(") { i = sub_dollar_paren(i); continue }
       if (d == "'") {
-        k = i + 2; t = ""
+        k = i + 2; t = ""; av = 0
         while (k <= n && a[k] != "'") {
           if (a[k] == "\\" && k + 1 <= n) {
             e = a[k + 1]
-            if (e == "n") t = t "\n"; else if (e == "t") t = t "\t"; else t = t e
+            if (e == "n") t = t "\n"; else if (e == "t") t = t "\t"
+            else if (e == "\\" || e == "'" || e == "\"" || e == "?") t = t e
+            else {
+              # \xHH, \uHHHH, \UHHHHHHHH, octal \nnn, \cX and the other
+              # escapes are not decoded: the character is unknown, so it
+              # reads as an unknown variable (${?}), a wildcard once
+              # expand_vars runs with CRED_ANY set. cg_split_cred sets it.
+              k += 2
+              if (e == "x") { m = 2 } else if (e == "u") { m = 4 } else if (e == "U") { m = 8 } else if (e == "c") { m = 1 } else { m = 0 }
+              if (e ~ /[0-7]/) { m = 2; while (m > 0 && a[k] ~ /[0-7]/) { k++; m-- } }
+              else if (e == "c") { if (k <= n && a[k] != "'") k++ }
+              else { while (m > 0 && a[k] ~ /[0-9A-Fa-f]/) { k++; m-- } }
+              t = t "${?}"; av = 1
+              continue
+            }
             k += 2; continue
           }
           t = t a[k]; k++
         }
         if (k > n) { err("unterminated quote"); break }
         w = w t; ws = 1; fs_ = fs_ "q"
+        if (av) fs_ = fs_ "v"
         i = k + 1; continue
       }
       if (d == "\"") { i++; continue }
@@ -1131,7 +1599,10 @@ expand_vars() {
   local t="$1" i m name
   t="${t//\$\{HOME\}/$H}"
   t="${t//\$HOME/$H}"
-  for ((i = 0; i < ${#VAR_NAMES[@]}; i++)); do
+  # A split credential name (SPLIT_CRED) does not trust earlier
+  # assignments: a subshell, unset, a pipeline or a skipped && branch can
+  # leave the variable empty when the read runs ((F=x); cat .np${F}mrc).
+  for ((i = 0; SPLIT_CRED == 0 && i < ${#VAR_NAMES[@]}; i++)); do
     name="${VAR_NAMES[$i]}"
     t="${t//\$\{$name\}/${VAR_VALS[$i]}}"
     t="${t//\$$name/${VAR_VALS[$i]}}"
@@ -1286,15 +1757,21 @@ SUBST_WRITES=" "
 # directory a substitution runs in.
 SUBST_CD=0
 prescan() {
-  local text="$1" depth="$2" toks t fl op tx first=1 name="" sub=""
+  local text="$1" depth="$2" toks t fl op tx first=1 name="" sub="" last_s="" asg=0
   [ "$depth" -le 6 ] || { SUBST_IMPURE=1; return; }
   toks=$(printf '%s' "$text" | LC_ALL=C awk "$AWK_PROG") || { SUBST_IMPURE=1; return; }
   while IFS=$'\t' read -r t fl op tx; do
     fl="${fl#f}"; op="${op#o}"; tx="${tx#x}"
     case "$t" in
       E) SUBST_IMPURE=1 ;;
-      S) cg_nl3 "$tx"; prescan "$CG_NL" $((depth + 1)) ;;
-      O) first=1; name="" ;;
+      S) last_s="$tx"; cg_nl3 "$tx"; prescan "$CG_NL" $((depth + 1)) ;;
+      O)
+        # A pipeline or background stage that is only an assignment sets
+        # nothing the next stage can see, so the listing it would name is
+        # not what the later stage reads.
+        case "$op" in '|'|'|&'|'&') [ "$asg" -eq 0 ] || SUBST_IMPURE=1 ;; esac
+        first=1; name=""; asg=0
+        ;;
       R)
         case "$op" in
           '>'|'>>'|'>|'|'&>'|'&>>'|'<>')
@@ -1311,6 +1788,17 @@ prescan() {
         ;;
       W)
         if [ "$first" -eq 1 ]; then
+          # An assignment prefix (F=$(ls dir)) runs nothing itself; its
+          # substitution is prescanned through its own S record.
+          # Only a plain `NAME=$(ls ...)` is skipped: a substitution nested in
+          # a parameter expansion (${x:-$(ln ...)}, flag v) emits no S record of
+          # its own, and any other command (date, cat) keeps the command impure.
+          if [[ "$tx" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            case "$fl" in
+              *v*) ;;
+              *s*) case "$last_s" in ls|ls\ *) asg=1; continue ;; esac ;;
+            esac
+          fi
           case "$fl" in *s*|*v*) SUBST_IMPURE=1; first=0; continue ;; esac
           case "$tx" in
             [A-Za-z_]*=*) continue ;;
@@ -1397,7 +1885,66 @@ eval_subst() {
       [ ${#w[@]} -eq 1 ] && [ "$CWD_UNCERTAIN" -eq 0 ] || return 1
       out="$cwd"
       ;;
+    bash|.claude/skills/deploy/scripts/resolve-deploy-api.sh|./.claude/skills/deploy/scripts/resolve-deploy-api.sh)
+      # The /deploy API resolver, pinned by hash, prints one https URL
+      # (same rule as the scope guard's scope_deploy_api_resolver_value).
+      [ ${#stages[@]} -eq 1 ] || return 1
+      local rv_rel=".claude/skills/deploy/scripts/resolve-deploy-api.sh" rv_s="${w[*]}" rv_sum rv_api="" rv_d rv_m
+      case "$rv_s" in "bash $rv_rel"|"$rv_rel"|"./$rv_rel"|"bash ./$rv_rel") ;; *) return 1 ;; esac
+      [ "$CWD_UNCERTAIN" -eq 0 ] || return 1
+      [ -f "$cwd/$rv_rel" ] && [ ! -L "$cwd/$rv_rel" ] || return 1
+      case "$STRIPPED" in *HQ_DEPLOY_API*|*manifest*) return 1 ;; esac
+      if command -v shasum >/dev/null 2>&1; then rv_sum="$(shasum -a 256 "$cwd/$rv_rel" 2>/dev/null)" || return 1
+      else rv_sum="$(sha256sum "$cwd/$rv_rel" 2>/dev/null)" || return 1; fi
+      [ "${rv_sum%% *}" = "0b622ae7efff3be76e8eb199f8327be662bef371a3612d356df505c5a696b492" ] || return 1
+      rv_api="${HQ_DEPLOY_API:-}"
+      if [ -z "$rv_api" ]; then
+        rv_d="$cwd"
+        while [ -n "$rv_d" ] && [ "$rv_d" != "/" ]; do
+          rv_m="$rv_d/companies/manifest.yaml"
+          if [ -f "$rv_m" ]; then
+            rv_api="$(awk -F'endpoint:[ \t]*' '/hq-deploy/{f=1} f&&/endpoint:/{gsub(/[ \t\r]+$/,"",$2); print $2; exit}' "$rv_m" 2>/dev/null || true)"
+            break
+          fi
+          rv_d="$(dirname "$rv_d")"
+        done
+      fi
+      rv_api="${rv_api:-https://api.hq.work}"
+      [[ "$rv_api" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]] || return 1
+      SUBST_OUT="$rv_api"
+      return 0
+      ;;
     git)
+      # `git [-C DIR] branch --show-current`: the branch name is read from
+      # the repository's HEAD file here (no git process, so no configured
+      # program can run). A detached HEAD prints nothing.
+      if [ ${#w[@]} -eq 3 ] && [ "${w[1]} ${w[2]}" = "branch --show-current" ] \
+        || { [ ${#w[@]} -eq 5 ] && [ "${w[1]}" = "-C" ] && [ "${w[3]} ${w[4]}" = "branch --show-current" ]; }; then
+        [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] || return 1
+        local gd="$cwd" gh_line
+        [ ${#w[@]} -eq 5 ] && { case "${w[2]}" in /*) gd="${w[2]}" ;; *) [ "$CWD_UNCERTAIN" -eq 0 ] || return 1; gd="$cwd/${w[2]}" ;; esac; }
+        [ ${#w[@]} -eq 3 ] && { [ "$CWD_UNCERTAIN" -eq 0 ] || return 1; }
+        while [ -n "$gd" ] && [ ! -e "$gd/.git" ]; do
+          [ "$gd" = "/" ] && return 1
+          gd="${gd%/*}"; [ -n "$gd" ] || gd="/"
+        done
+        if [ -f "$gd/.git" ]; then
+          gh_line="$(head -n 1 "$gd/.git" 2>/dev/null)" || return 1
+          case "$gh_line" in "gitdir: "/*) gd="${gh_line#gitdir: }" ;; "gitdir: "*) gd="$gd/${gh_line#gitdir: }" ;; *) return 1 ;; esac
+        else
+          gd="$gd/.git"
+        fi
+        [ -f "$gd/HEAD" ] || return 1
+        gh_line="$(head -n 1 "$gd/HEAD" 2>/dev/null)" || return 1
+        case "$gh_line" in
+          "ref: refs/heads/"*) out="${gh_line#ref: refs/heads/}" ;;
+          *) out="" ;;
+        esac
+        case "$out" in *[!A-Za-z0-9._/@+-]*|*..*|/*|.*|*/.*) return 1 ;; esac
+        [ -n "$out" ] || return 1
+        SUBST_OUT="$out"
+        return 0
+      fi
       [ "${w[*]}" = "git rev-parse --show-toplevel" ] && [ "$CWD_UNCERTAIN" -eq 0 ] || return 1
       [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] || return 1
       local d="$cwd"
@@ -1426,12 +1973,20 @@ eval_subst() {
     ls)
       [ "$SUBST_IMPURE" -eq 0 ] && [ "$SUBST_WRITES" = " " ] || return 1
       case "$cwd" in *'*'*|*'?'*|*'['*) return 1 ;; esac
-      local dirok=0 arg pat prefix m matches=() cntm=0
+      local dirok=0 arg pat prefix m matches=() cntm=0 lsdot=0 lsents=() ent
       for ((i = 1; i < ${#w[@]}; i++)); do
         arg="${w[$i]}"
         case "$arg" in
           -1) continue ;;
           -d|-1d|-d1) dirok=1; continue ;;
+          # Ordering and dot-entry flags keep the printed names the same set
+          # (-A adds dot entries, never `.` or `..`).
+          -[1trSA]*)
+            case "$arg" in *[!-1trSAd]*) return 1 ;; esac
+            case "$arg" in *d*) dirok=1 ;; esac
+            case "$arg" in *A*) lsdot=1 ;; esac
+            continue
+            ;;
           -*|'~'*|*'['*) return 1 ;;
         esac
         case "$arg" in /*) prefix="" ; pat="$arg" ;; *) [ "$CWD_UNCERTAIN" -eq 0 ] || return 1; prefix="$cwd/"; pat="$cwd/$arg" ;; esac
@@ -1446,6 +2001,23 @@ eval_subst() {
             ;;
           *) matches=("$pat") ;;
         esac
+        # One directory operand without -d: ls prints its entry names, bare.
+        if [ $dirok -eq 0 ] && [ ${#matches[@]} -eq 1 ] && [ ${#w[@]} -le 3 ] \
+          && [ -d "${matches[0]}" ] && [ ! -L "${matches[0]}" ]; then
+          [ $i -eq $((${#w[@]} - 1)) ] || return 1
+          lsents=()
+          shopt -s nullglob
+          [ $lsdot -eq 1 ] && shopt -s dotglob
+          lsents=("${matches[0]}"/*)
+          shopt -u nullglob dotglob
+          for ent in ${lsents[@]+"${lsents[@]}"}; do
+            ent="${ent##*/}"
+            cntm=$((cntm + 1)); [ $cntm -le 256 ] || return 1
+            out="$out$ent"$'\n'
+          done
+          [ $cntm -gt 0 ] || return 1
+          continue
+        fi
         for m in ${matches[@]+"${matches[@]}"}; do
           [ -e "$m" ] || [ -L "$m" ] || continue
           if [ -d "$m" ] && [ $dirok -eq 0 ]; then return 1; fi
@@ -1547,6 +2119,202 @@ subst_word() {
   SW+=("$cur$rest")
   [ "$multi" -eq 0 ] || SW+=("$q$rest")
   if [ "$SW_LEFT" -eq 1 ]; then SW=("$text"); fi
+}
+
+# git_show_tree_safe <operand> <cwd>: 0 when the operand is <ref>:<path> for
+# a read-only `git show`, the ref and the leading directories are literal, only
+# the file name is computed (loop variable, wildcard, substitution), and no
+# credential file is tracked at any path the operand could name in that ref.
+# git show can only read objects the ref's tree holds, so listing the tree
+# proves the computed part instead of guessing. Anything else returns 1 and
+# the caller keeps the fail-closed block.
+#
+# Fails closed (returns 1) when the proof could be run against a different
+# tree than the one git show reads (PR #1700 review):
+#   - the caller passes redirect=1 when the git command carries -C, -c,
+#     --git-dir, --work-tree or --namespace, or a GIT_* variable is set in the
+#     command or the environment, or the working directory is uncertain;
+#   - the path starts with ./ or has a . component (cwd-relative forms);
+#   - ls-tree fails or lists nothing.
+# <ref>:<path> is relative to the repository top level, so the listing uses
+# --full-tree and the matched names are joined to the top level, not the cwd.
+git_show_tree_safe() {
+  local op="$1" gcwd="$2" redirect="${3:-1}" ref path dir pat tf top listing
+  [ "$redirect" = 0 ] || return 1
+  [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] && [ -z "${GIT_NAMESPACE:-}" ] || return 1
+  case "$op" in *:*) ;; *) return 1 ;; esac
+  ref="${op%%:*}"
+  path="${op#*:}"
+  case "$ref" in ""|-*|*$'\001'*|*[!A-Za-z0-9._/@^~+-]*) return 1 ;; esac
+  case "$path" in
+    */*) dir="${path%/*}" ;;
+    *) dir="" ;;
+  esac
+  case "$dir" in *$'\001'*|*'*'*|*'?'*|*'['*|*..*|/*|.|./*|*/.|*/./*) return 1 ;; esac
+  case "$path" in *..*|/*|./*|.|*'{'*|*'}'*) return 1 ;; esac
+  pat="${path//$'\001'/*}"
+  [ -d "$gcwd" ] || return 1
+  top="$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] && [ -d "$top" ] || return 1
+  listing="$(git -C "$gcwd" ls-tree -r --full-tree --name-only "$ref" -- ${dir:+"$dir/"} 2>/dev/null)" || return 1
+  [ -n "$listing" ] || return 1
+  while IFS= read -r tf; do
+    # shellcheck disable=SC2254 # the glob in pat is the match.
+    case "$tf" in $pat) ;; *) continue ;; esac
+    norm_path "$top/$tf" "$top"
+    if is_cred_path "$NP"; then return 1; fi
+  done <<< "$listing"
+  return 0
+}
+
+# Loop variables bound by `for NAME in <list>` where every list word is
+# unquoted (a literal word, a bare $var or a bare $(...)): bash word-splits
+# the list, so each value holds no IFS character and an unquoted $NAME in an
+# operand cannot split into a second operand. A binding over a quoted word, a
+# glob, a brace or a tilde (a value may hold whitespace) marks the name
+# tainted for the whole command. note_for_bindings scans every simple command
+# of the script before analysis so a later tainting binding still counts; a
+# use is trusted only when a trusted binding (SPLIT_VAR_G, the index of its
+# simple command) comes before the simple command that reads the variable.
+# The arrays are made local per analyze_cmd level: a $(...) inherits the
+# bindings that precede it in the same shell (index -1); a script run by
+# another shell (bash -c, a heredoc script) inherits none; taints are always
+# inherited.
+SPLIT_VAR_NAMES=()
+SPLIT_VAR_OK=()
+SPLIT_VAR_G=()
+SPLIT_TRUST=1
+SPLIT_INHERIT_G=0
+split_var_mark() { # <name> <ok 0|1> <group>
+  local i
+  for ((i = 0; i < ${#SPLIT_VAR_NAMES[@]}; i++)); do
+    if [ "${SPLIT_VAR_NAMES[$i]}" = "$1" ]; then
+      [ "$2" = 1 ] || SPLIT_VAR_OK[$i]=0
+      return
+    fi
+  done
+  SPLIT_VAR_NAMES+=("$1")
+  SPLIT_VAR_OK+=("$2")
+  SPLIT_VAR_G+=("$3")
+}
+# note_for_bindings: T/F/X token arrays of analyze_cmd, one simple command
+# [start, end) with its index. Called for every simple command of a level.
+note_for_bindings() { # <start> <end> <group>
+  local a="$1" b="$2" g="$3" i name=""
+  # Leading assignments and prefixes do not precede `for`; the keyword is the
+  # first word or nothing.
+  [ "${T[$a]:-}" = W ] || return 0
+  case "${X[$a]}" in
+    for|select) ;;
+    in) SPLIT_TRUST=0; return 0 ;;
+    *) return 0 ;;
+  esac
+  [ $((a + 1)) -lt "$b" ] || { SPLIT_TRUST=0; return 0; }
+  name="${X[$((a + 1))]}"
+  if ! [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [ -n "${F[$((a + 1))]:-}" ]; then
+    SPLIT_TRUST=0; return 0
+  fi
+  if [ $((a + 2)) -ge "$b" ] || [ "${X[$((a + 2))]}" != in ] || [ -n "${F[$((a + 2))]:-}" ]; then
+    split_var_mark "$name" 0 "$g"; return 0
+  fi
+  local ok=1
+  for ((i = a + 3; i < b; i++)); do
+    case "${T[$i]}" in S) continue ;; W) ;; *) ok=0; break ;; esac
+    case "${F[$i]}" in *q*|*g*|*b*) ok=0; break ;; esac
+    case "${X[$i]}" in "~"*|*'{'*|*'}'*|*'['*|*'*'*|*'?'*) ok=0; break ;; esac
+  done
+  split_var_mark "$name" "$ok" "$g"
+}
+# gs_split_free <raw-word> <flags>: 0 when every $ reference in the raw word
+# is a bare $NAME or ${NAME} of a loop variable split-bound earlier in this
+# shell level (or inherited from the enclosing one), the word holds no
+# substitution, glob or brace, and nothing in the command can rebind a
+# variable or IFS behind the analysis (read, eval, mapfile, IFS=...).
+GS_HAZARD_RE='(^|[^[:alnum:]_])(read|readarray|mapfile|getopts|eval|source|let|IFS)([^[:alnum:]_]|$)|printf[[:space:]]+-v|(^|[;&|[:space:]])\.[[:space:]]'
+gs_split_free() {
+  local raw="$1" flags="$2" rest name
+  [ "$SPLIT_TRUST" = 1 ] || return 1
+  case "$flags" in *s*|*g*|*b*) return 1 ;; esac
+  case "$raw" in *'{'*|*'}'*|*'['*|*'*'*|*'?'*|*'~'*) return 1 ;; esac
+  [[ "$CMD" =~ $GS_HAZARD_RE ]] && return 1
+  rest="$raw"
+  while :; do
+    case "$rest" in *'$'*) ;; *) break ;; esac
+    rest="${rest#*\$}"
+    case "$rest" in
+      '{'*)
+        name="${rest%%\}*}"; name="${name#\{}"
+        rest="${rest#*\}}"
+        ;;
+      *)
+        [[ "$rest" =~ ^([A-Za-z_][A-Za-z0-9_]*) ]] || return 1
+        name="${BASH_REMATCH[1]}"
+        rest="${rest#"$name"}"
+        ;;
+    esac
+    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+    # An assignment anywhere in the command (any level) rebinds the name.
+    [[ "$CMD" =~ (^|[^[:alnum:]_])"$name"= ]] && return 1
+    local i found=0
+    for ((i = 0; i < ${#SPLIT_VAR_NAMES[@]}; i++)); do
+      if [ "${SPLIT_VAR_NAMES[$i]}" = "$name" ]; then
+        [ "${SPLIT_VAR_OK[$i]}" = 1 ] || return 1
+        [ "${SPLIT_VAR_G[$i]}" -lt "$SPLIT_CUR_G" ] || return 1
+        found=1; break
+      fi
+    done
+    [ "$found" = 1 ] || return 1
+  done
+  return 0
+}
+
+# gs_cmd_readonly: 0 when nothing in the whole command can move a ref, HEAD
+# or the object store between the hook's ls-tree and the git show it proves
+# (PR #1700 review: `git checkout x && ... git show HEAD:src/$f`). The command
+# is cut at ; & | ( ) { } ` $( and newlines; the first word of every piece,
+# after assignments and the keywords do then else elif if while until !, must
+# be on a read-only allowlist. Every git piece must name a read-only
+# subcommand right after `git` and carry no --output, -O or
+# --open-files-in-pager. No word may name a .git path, and no output
+# redirection may target anything but /dev/null or a file descriptor.
+# Anything unknown (a variable or quoted command word, a function definition,
+# xargs, env, sed, cp, ...) fails closed: the caller keeps the normal check.
+GS_RO_CMDS=" for in done fi esac read echo printf ls cat head tail wc sort uniq cut tr grep true false : test [ [[ ]] git "
+GS_RO_GIT=" show log ls-files ls-tree rev-parse diff cat-file grep status blame "
+GS_CMD_RO=""
+gs_cmd_readonly() {
+  if [ -n "$GS_CMD_RO" ]; then [ "$GS_CMD_RO" = 1 ]; return; fi
+  GS_CMD_RO=0
+  local t="$CMD" c seg w i first sub
+  [[ "$t" =~ \.git([^[:alnum:]_]|$) ]] && return 1
+  t="${t//2>&1/}"; t="${t//1>&2/}"; t="${t//>&2/}"
+  t="${t//2>\/dev\/null/}"; t="${t//>\/dev\/null/}"
+  case "$t" in *'>'*) return 1 ;; esac
+  t="${t//\$(/$'\n'}"
+  for c in ';' '&' '|' '(' ')' '`' '{' '}'; do t="${t//"$c"/$'\n'}"; done
+  while IFS= read -r seg; do
+    local -a ws=()
+    read -ra ws <<< "$seg"
+    first=""; i=0
+    while [ $i -lt ${#ws[@]} ]; do
+      w="${ws[$i]}"
+      case "$w" in
+        '"'|"'"|'""'|"''") i=$((i + 1)); continue ;;
+        do|then|else|elif|if|while|until|'!') i=$((i + 1)); continue ;;
+      esac
+      if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then i=$((i + 1)); continue; fi
+      first="$w"; break
+    done
+    [ -n "$first" ] || continue
+    case "$GS_RO_CMDS" in *" $first "*) ;; *) return 1 ;; esac
+    if [ "$first" = git ]; then
+      sub="${ws[$((i + 1))]:-}"
+      case "$GS_RO_GIT" in *" $sub "*) ;; *) return 1 ;; esac
+      case "$seg" in *--output*|*' -O'*|*--open-files-in-pager*) return 1 ;; esac
+    fi
+  done <<< "$t"
+  GS_CMD_RO=1
+  return 0
 }
 
 # check_word <text> <flags> <cwd>: an operand that the command reads.
@@ -2465,7 +3233,7 @@ analyze_simple() {
         break
       done
       [ $k -lt $e ] || return 0
-      local k2
+      local k2 gs_w
       case "${CW[$k]}" in
         status|rm|check-ignore|check-attr|ls-files)
           return 0 ;;
@@ -2492,6 +3260,65 @@ analyze_simple() {
           return 0
           ;;
       esac
+      if [ "${CW[$k]}" = show ]; then
+        # Read-only `git show <ref>:<path>` of tracked source: a computed file
+        # name is proven against the ref's tree, not blocked blindly. The
+        # proof runs in CUR_CWD, so anything that points git at another
+        # repository or work tree disables it (gs_redirect=1).
+        local gs_redirect=0 k3
+        for ((k3 = s; k3 < k; k3++)); do
+          case "${CW[$k3]}" in
+            -C|-c|--git-dir|--git-dir=*|--work-tree|--work-tree=*|--namespace|--namespace=*|--exec-path|--exec-path=*|GIT_*=*) gs_redirect=1 ;;
+          esac
+        done
+        case "$CMD" in *GIT_*) gs_redirect=1 ;; esac
+        [ "${CWD_UNCERTAIN:-0}" -eq 0 ] || gs_redirect=1
+        # An earlier step of the command could repoint the ref (checkout,
+        # branch -f, a write under .git): the ls-tree proof would hold for a
+        # tree git show no longer reads.
+        gs_cmd_readonly || gs_redirect=1
+        # The operand must stay one word: a computed part that bash
+        # word-splits (unquoted $var or $(...), flag u) could carry a second
+        # <ref>:<path> the proof never sees, unless every such part is a bare
+        # loop variable bound over a word-split list (gs_split_free). A brace
+        # word (flag b) expands to several operands and skips the proof.
+        # A variable the analysis cannot resolve is unknown here even when
+        # the command names no credential word (expand_vars keeps it literal
+        # then): `git checkout x; ... git show "HEAD:src/$f"` must not pass as
+        # the literal text `$f`. A computed <ref>:<path> operand is allowed
+        # only through the tree proof; otherwise it blocks.
+        local gs_re='\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]' gs_m gs_guard gs_comp
+        for ((k2 = k + 1; k2 < e; k2++)); do
+          gs_w="${CW[$k2]}"
+          case "${CF[$k2]}" in *v*) expand_vars "$gs_w"; gs_w="$EV" ;; esac
+          gs_guard=0
+          while [[ "$gs_w" =~ $gs_re ]] && [ $gs_guard -lt 64 ]; do
+            gs_m="${BASH_REMATCH[0]}"; gs_w="${gs_w/"$gs_m"/$'\001'}"; gs_guard=$((gs_guard + 1))
+          done
+          gs_comp=0
+          case "$gs_w" in *:*$'\001'*) gs_comp=1 ;; esac
+          case "${CF[$k2]}" in
+            *b*) ;;
+            *u*)
+              if gs_split_free "${CW[$k2]}" "${CF[$k2]}"; then
+                case "$gs_w" in
+                  *:*$'\001'*) git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" && continue ;;
+                esac
+              fi
+              ;;
+            *)
+              case "$gs_w" in
+                *:*$'\001'*|*:*'*'*|*:*'?'*) git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" && continue ;;
+              esac
+              ;;
+          esac
+          if [ "$gs_comp" = 1 ]; then
+            block "git show of a computed <ref>:<path> the credential guard cannot prove against the tree git reads"
+          fi
+          check_operand "${CW[$k2]}" "${CF[$k2]}" "$CUR_CWD"
+        done
+        return 0
+      fi
       check_generic $((k + 1)) "$e" "$CUR_CWD"
       return 0
       ;;
@@ -2573,6 +3400,67 @@ analyze_simple() {
     check_generic "$a" "$e" "$CUR_CWD"
     return 0
   fi
+  # gh, hq and git message text (`--body "$(cat <<'EOF' ...)"`, `--title`,
+  # `-m`, `hq dm send <to> "$(cat note.md)"`), a gh repository (`-R "$R"`)
+  # and the pull request word of `gh pr checks|view|... "$(...)"` take the
+  # text itself, never a path. A value that is exactly one substitution is
+  # data; the substitution's own script was analyzed above as a command, so
+  # `$(cat ~/.npmrc)` is still blocked there (feedback 237d598f, e6ef0b06,
+  # a71b3d1c, 882a7f9c, d5df3977).
+  # Only these commands, where those options are known to be text: hq dm and
+  # hq feedback, gh pr|issue|release (and -R on any gh command), git
+  # commit|tag. Other hq commands keep the operand check (test "non-dm hq
+  # command keeps operand check").
+  local td_cmd=0 td_text=0
+  case "$cmd:${CW[$a]:-}" in
+    hq:dm|hq:feedback) td_cmd=1; td_text=1 ;;
+    gh:pr|gh:issue|gh:release) td_cmd=1; td_text=1 ;;
+    gh:*) td_cmd=1 ;;
+    git:commit|git:tag) td_cmd=1; td_text=1 ;;
+  esac
+  case "$td_cmd:$cmd" in
+    1:gh|1:hq|1:git)
+      local td_next=0 tw tk pos=0 sub1="${CW[$a]:-}" sub2="${CW[$((a + 1))]:-}"
+      for ((tk = a; tk < e; tk++)); do
+        tw="${CW[$tk]}"
+        # gh never opens the value of -R/--repo as a file: it is OWNER/REPO
+        # or a URL, so any value passes (`R=$(gh repo view ...); gh pr list
+        # -R "$R"`).
+        if [ $td_next -eq 2 ]; then td_next=0; continue; fi
+        if [ $td_next -eq 1 ]; then
+          td_next=0
+          case "${CF[$tk]}" in *s*) [ "$tw" = $'\001' ] && continue ;; esac
+        fi
+        case "$tw" in
+          -R|--repo)
+            [ "$cmd" = gh ] && td_next=2; check_generic "$tk" $((tk + 1)) "$CUR_CWD"; continue ;;
+          --repo=*) [ "$cmd" = gh ] && continue ;;
+          --body|--title|--message|--text|--prompt|--note|--summary|--details|--description|--subject|--comment|--reason)
+            [ "$td_text" -eq 1 ] && td_next=1; check_generic "$tk" $((tk + 1)) "$CUR_CWD"; continue ;;
+          -m|-b|-t)
+            if [ "$td_text" -eq 1 ]; then
+              case "$cmd" in git) [ "$tw" = -m ] && td_next=1 ;; gh) [ "$tw" != -m ] && td_next=1 ;; esac
+            fi
+            check_generic "$tk" $((tk + 1)) "$CUR_CWD"; continue ;;
+          --body=$'\001'|--title=$'\001'|--message=$'\001'|--text=$'\001'|--prompt=$'\001'|--note=$'\001') [ "$td_text" -eq 1 ] && continue ;;
+        esac
+        case "$tw" in -*) ;; *) pos=$((pos + 1)) ;; esac
+        if [ "$tw" = $'\001' ]; then
+          case "${CF[$tk]}" in *s*)
+            # hq dm send <recipient> <message>: the second word after send.
+            if [ "$cmd" = hq ] && [ "$sub1" = dm ] && [ "$sub2" = send ] && [ "$pos" -eq 4 ]; then continue; fi
+            # gh pr <verb> <pr>: the word right after the verb.
+            if [ "$cmd" = gh ] && [ "$sub1" = pr ] && [ "$tk" -eq $((a + 2)) ]; then
+              case "$sub2" in checks|view|status|merge|diff|ready|close|reopen|checkout) continue ;; esac
+            fi
+            ;;
+          esac
+        fi
+        check_generic "$tk" $((tk + 1)) "$CUR_CWD"
+      done
+      return 0
+      ;;
+  esac
   # `hq dm send --body "$(cat workspace/drafts/x.md)"`: the message text
   # option takes the text itself, never a path. A value that is exactly one
   # substitution is data; the substitution's own script is analyzed as its
@@ -2633,7 +3521,29 @@ analyze_cmd() {
     T+=("$t"); F+=("${fl#f}"); O+=("${op#o}"); X+=("${tx#x}")
   done <<< "$toks"
   local i n=${#T[@]}
+  # Loop bindings of this level. Inherit the caller's trusted bindings that
+  # precede the substitution (SPLIT_INHERIT_G) and every taint, then record
+  # this level's own bindings first, so a git show inside a substitution of
+  # the loop body sees them too.
+  local sv_i sv_n=() sv_ok=() sv_g=()
+  for ((sv_i = 0; sv_i < ${#SPLIT_VAR_NAMES[@]}; sv_i++)); do
+    if [ "${SPLIT_VAR_OK[$sv_i]}" != 1 ] || [ "${SPLIT_VAR_G[$sv_i]}" -lt "$SPLIT_INHERIT_G" ]; then
+      sv_n+=("${SPLIT_VAR_NAMES[$sv_i]}"); sv_ok+=("${SPLIT_VAR_OK[$sv_i]}"); sv_g+=(-1)
+    fi
+  done
+  local SPLIT_VAR_NAMES=(${sv_n[@]+"${sv_n[@]}"}) SPLIT_VAR_OK=(${sv_ok[@]+"${sv_ok[@]}"}) SPLIT_VAR_G=(${sv_g[@]+"${sv_g[@]}"})
+  local SPLIT_CUR_G=-1
+  SPLIT_INHERIT_G=0
+  local nb_s=0 nb_g=0
+  for ((i = 0; i <= n; i++)); do
+    if [ $i -eq $n ] || [ "${T[$i]}" = "O" ]; then
+      note_for_bindings "$nb_s" "$i" "$nb_g"
+      nb_s=$((i + 1)); nb_g=$((nb_g + 1))
+    fi
+  done
+  nb_g=0
   for ((i = 0; i < n; i++)); do
+    [ "${T[$i]}" != "O" ] || nb_g=$((nb_g + 1))
     case "${T[$i]}" in
       E)
         block "credential guard could not parse the command (${X[$i]})"
@@ -2642,7 +3552,9 @@ analyze_cmd() {
         cg_nl3 "${X[$i]}"
         local sub_text="$CG_NL"
         SUBQ_ALL+=("$sub_text")
+        SPLIT_INHERIT_G=$nb_g
         analyze_cmd "$sub_text" $((depth + 1)) "$CUR_CWD"
+        SPLIT_INHERIT_G=0
         case "${F[$i]}" in
           w|p) SUBQ+=("$sub_text"); SUBQK+=("${F[$i]}") ;;
         esac
@@ -2664,6 +3576,15 @@ analyze_cmd() {
     fi
   done
   local c nc=${#starts[@]}
+  # The first simple command of the top-level line, when it is followed by
+  # `;`, `&&`, `||`, a newline or nothing (not `|` or `&`, whose other side
+  # runs at the same time) and has no write redirection: its substitutions
+  # run before any other command. Only substitutions directly in that
+  # command count; a loop header (`for x in $(...)`) is not modelled.
+  # The command may hold only one substitution: bash runs several in one
+  # command left to right, so an earlier one (`B=$(ln -s ~/.npmrc d/zz)
+  # C=$(ls d | tail -1)`) could change what a later one lists (review of
+  # this change, CRITICAL 1).
   for ((c = 0; c < nc; c++)); do
     CW=(); CF=()
     local rt=() rf=() rx=()
@@ -2674,6 +3595,13 @@ analyze_cmd() {
           case "${F[$i]}" in
             *c*|*b*) subq_skip "$tx" ;;
             *s*)
+              # A whole-word process substitution <(...) is a pipe (/dev/fd/N),
+              # not a path; its inner script is analyzed as its own command.
+              if [ "$tx" = $'\001' ] && [ "${SUBQK[$SUBQ_I]:-}" = "p" ]; then
+                SUBQ_I=$((SUBQ_I + 1))
+                CW+=("/dev/fd/63"); CF+=("-")
+                continue
+              fi
               # A substitution the guard can compute is replaced by its output.
               subst_word "$tx"
               if [ "$SW_LEFT" -eq 0 ]; then
@@ -2734,6 +3662,7 @@ analyze_cmd() {
       esac
     done
     if [ ${#CW[@]} -gt 0 ]; then
+      SPLIT_CUR_G=$c
       analyze_simple 0 ${#CW[@]} "$depth"
     fi
     case "${seps[$c]}" in

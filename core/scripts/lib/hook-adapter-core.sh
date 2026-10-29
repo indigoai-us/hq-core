@@ -406,6 +406,10 @@ HQAD_EVENT_WATCHDOG_PIDS=()
 HQAD_EVENT_WATCHDOG_SESSIONS=()
 HQAD_EVENT_WATCHDOG_ACTIVE_FILE=""
 HQAD_EVENT_WATCHDOG_INVOCATION_ID=""
+HQAD_EVENT_WATCHDOG_JOURNAL_FILE=""
+HQAD_EVENT_WATCHDOG_CHILD_SCRIPT=""
+HQAD_EVENT_WATCHDOG_CHILD_EVENT=""
+HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS=""
 HQAD_PATH_AUGMENTED="${HQAD_PATH_AUGMENTED:-0}"
 
 hqad_event_watchdog_disabled() {
@@ -491,7 +495,10 @@ hqad_event_watchdog_start() {
     if [ -n "$session_hash" ]; then
       journal_file="$root/workspace/.hook-timeout-journal/$session_hash.tsv"
       mkdir -p "${journal_file%/*}" >/dev/null 2>&1 || journal_file=""
-      [ -z "$journal_file" ] || HQAD_EVENT_WATCHDOG_ACTIVE_FILE="$journal_file.$invocation.active"
+      if [ -n "$journal_file" ]; then
+        HQAD_EVENT_WATCHDOG_ACTIVE_FILE="$journal_file.$invocation.active"
+        HQAD_EVENT_WATCHDOG_JOURNAL_FILE="$journal_file"
+      fi
     fi
   fi
   for threshold in absolute relative; do
@@ -535,12 +542,30 @@ hqad_event_watchdog_child_start() {
   case "$HQAD_EVENT_WATCHDOG_INVOCATION_ID" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
   started_ms="$(hqad_event_watchdog_now_ms)"
   [[ "$started_ms" =~ ^[0-9]+$ ]] || return 0
+  HQAD_EVENT_WATCHDOG_CHILD_SCRIPT="$script"
+  HQAD_EVENT_WATCHDOG_CHILD_EVENT="$event"
+  HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS="$started_ms"
   printf '%s\t%s\t%s\n' "$script" "$event" "$started_ms" > "$HQAD_EVENT_WATCHDOG_ACTIVE_FILE" 2>/dev/null || true
 }
 
+# Record the finished adapter-dispatched hook in the same per-session timing
+# journal master-hook writes ("script<TAB>event<TAB>elapsed_ms<TAB>invocation").
+# The Codex and Grok adapters run registry hooks themselves and master-hook
+# skips its registry pass there, so without this row their time was missing
+# from the journal (feedback_5ec0fd09).
 hqad_event_watchdog_child_end() {
+  local ended_ms
   [ -n "$HQAD_EVENT_WATCHDOG_ACTIVE_FILE" ] || return 0
   : > "$HQAD_EVENT_WATCHDOG_ACTIVE_FILE" 2>/dev/null || true
+  if [ -n "$HQAD_EVENT_WATCHDOG_JOURNAL_FILE" ] && [ -n "$HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS" ]; then
+    ended_ms="$(hqad_event_watchdog_now_ms)"
+    if [[ "$ended_ms" =~ ^[0-9]+$ ]] && [ "$ended_ms" -ge "$HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS" ]; then
+      printf '%s\t%s\t%s\t%s\n' "$HQAD_EVENT_WATCHDOG_CHILD_SCRIPT" "$HQAD_EVENT_WATCHDOG_CHILD_EVENT" \
+        "$((ended_ms - HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS))" "$HQAD_EVENT_WATCHDOG_INVOCATION_ID" \
+        >> "$HQAD_EVENT_WATCHDOG_JOURNAL_FILE" 2>/dev/null || true
+    fi
+  fi
+  HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS=""
 }
 
 # shellcheck disable=SC2329 # Called from an EXIT trap installed by start.

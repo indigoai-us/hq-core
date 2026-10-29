@@ -87,7 +87,7 @@ chmod +x "$BIN/codex"
 
 cat >"$BIN/hq" <<'STUB'
 #!/usr/bin/env bash
-# secrets exec: hq secrets [--company S|--personal] exec --only K --script P -- <cmd>
+# secrets exec: hq secrets [--company S|--personal] exec --only K -- <cmd>
 if [ "${1:-}" = "secrets" ]; then
   shift
   only=""
@@ -97,7 +97,7 @@ if [ "${1:-}" = "secrets" ]; then
       --personal) shift ;;
       exec) shift ;;
       --only) only="${2:-}"; shift 2 ;;
-      --script) shift 2 ;;
+      --script) echo "hq-secrets-exec script=${2:-}" >>"${HQ_STUB_LOG:-/dev/null}"; shift 2 ;;
       --) shift; break ;;
       *) shift ;;
     esac
@@ -286,6 +286,10 @@ YAML
 bash "$RUN" --hq-root "$HQ" --job-id test-with-secret
 grep -q 'hq-secrets-exec only=SENTRY_API_TOKEN' "$HQ_STUB_LOG" || fail "expected hq secrets exec --only"
 pass "requirements.secrets injected via hq secrets exec --only"
+if grep -q 'hq-secrets-exec script=' "$HQ_STUB_LOG"; then
+  fail "hq secrets exec must not pass --script (hq-cli binds the command to the approved script)"
+fi
+pass "secrets exec runs without --script"
 
 # 6) Instance auth stays out of curl argv, proc cmdline, logs, and xtrace.
 cat >"$BIN/curl" <<'STUB'
@@ -375,5 +379,40 @@ run_auth_case() {
 run_auth_case ok success
 run_auth_case fail failure
 pass "instance token stays out of run curl argv, proc cmdline, logs, and xtrace; header file is private and cleaned"
+
+dialog_action() {
+  HQ_JOB_RUN_TEST_SOURCE="$CLASSIFY_SOURCE" bash -c \
+    'set -euo pipefail; source <(sed -n "/^claude_remote_dialog_action()/,/^}/p" "$HQ_JOB_RUN_TEST_SOURCE"); claude_remote_dialog_action "$1"' \
+    _ "$1"
+}
+
+got="$(dialog_action $'WARNING: Claude Code running in Bypass Permissions mode\n❯ No, exit\n  Yes, I accept')"
+[ "$got" = "down-enter" ] || fail "bypass warning with No selected should be down-enter, got: $got"
+pass "bypass warning with No, exit selected uses Down then Enter"
+
+got="$(dialog_action $'WARNING: Claude Code running in Bypass Permissions mode\n> No, exit\n  Yes, I accept')"
+[ "$got" = "down-enter" ] || fail "ascii-selected No, exit should be down-enter, got: $got"
+pass "ascii > No, exit also uses Down then Enter"
+
+got="$(dialog_action $'WARNING: Claude Code running in Bypass Permissions mode\n  No, exit\n❯ Yes, I accept')"
+[ "$got" = "enter" ] || fail "bypass warning with Yes selected should be enter, got: $got"
+pass "bypass warning with Yes, I accept selected uses Enter"
+
+got="$(dialog_action $'WARNING: Claude Code running in Bypass Permissions mode\nNo, exit\nYes, I accept')"
+[ "$got" = "down-enter" ] || fail "unmarked No+Yes bypass warning should default down-enter, got: $got"
+pass "unmarked bypass warning defaults to Down then Enter"
+
+got="$(dialog_action $'Do you want to proceed?\n1. Yes\n2. Yes, and don\'t ask again')"
+[ "$got" = "two" ] || fail "tool permission prompt should stay two, got: $got"
+pass "Do you want to proceed still sends 2"
+
+got="$(dialog_action $'ready for input')"
+[ "$got" = "none" ] || fail "plain pane should be none, got: $got"
+pass "plain pane is none"
+
+if ! grep -A80 '^run_claude_remote()' "$RUN" | grep -q 'claude_remote_dialog_action'; then
+  fail "run_claude_remote must use claude_remote_dialog_action for startup dialogs"
+fi
+pass "run_claude_remote routes startup dialogs through claude_remote_dialog_action"
 
 echo "ALL PASSED (hq-job-run)"

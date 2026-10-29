@@ -19,7 +19,9 @@
 # prints its path — inspectable, idempotent, sends nothing.
 # With --send: requires manifest status "verified" (the US-008 probe must
 # have passed), then delivers ONE `hq dm` with --prompt-file/--details-file
-# and advances status to "sent", recording the DM eventId.
+# and advances status to "sent", recording the DM eventId. An explicit hq dm
+# refusal returns status to "verified" (nothing was delivered); other
+# failures leave it "sending" for --reconcile.
 #
 # The caller (the /delegate skill) humanizes --headline / --note per
 # core/knowledge/public/hq-core/humanize-before-send.md (channel dm, light)
@@ -42,7 +44,7 @@ HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # shellcheck source=lib/delegate-brainstorm.sh
 . "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
 
-usage() { sed -n '3,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { echo "hq-delegate-send: $*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
@@ -301,13 +303,31 @@ NORMALIZED="$(jq -cS '.status="granted" | .recipientAccess="unconfirmed" | del(.
 
 [ -n "$HEADLINE" ] || HEADLINE="Project handoff: $PROJECT — open the brief, pull the files, and acknowledge receipt"
 
+DM_ERR="$(mktemp)" || die "could not create a temp file for hq dm output; no DM attempted"
 TMP_MANIFEST="$(mktemp "${MANIFEST}.tmp.XXXXXX")"
 if ! jq '.status = "sending"' "$MANIFEST" > "$TMP_MANIFEST" || ! mv "$TMP_MANIFEST" "$MANIFEST"; then
-  rm -f "$TMP_MANIFEST"
+  rm -f "$TMP_MANIFEST" "$DM_ERR"
   die "could not persist sending state; no DM attempted"
 fi
-DM_OUT="$(hq dm "$PRINCIPAL" "$HEADLINE" --audience both --prompt-file "$PROMPT" --details-file "$BRIEF")" \
-  || die "hq dm delivery outcome is uncertain; status is sending, inspect DM history before retrying"
+if ! DM_OUT="$(hq dm "$PRINCIPAL" "$HEADLINE" --audience human --prompt-file "$PROMPT" --details-file "$BRIEF" 2>"$DM_ERR")"; then
+  cat "$DM_ERR" >&2
+  # An explicit sender-rule refusal is rejected before delivery: nothing was
+  # sent, so return to "verified" and let a retry go through. Any other
+  # failure may have delivered, so it stays "sending" for reconciliation.
+  if grep -Eq 'People can only send human messages|is for agents and bots only' "$DM_ERR"; then
+    rm -f "$DM_ERR"
+    TMP_MANIFEST="$(mktemp "${MANIFEST}.tmp.XXXXXX")"
+    if ! jq '.status = "verified"' "$MANIFEST" > "$TMP_MANIFEST" || ! mv "$TMP_MANIFEST" "$MANIFEST"; then
+      rm -f "$TMP_MANIFEST"
+      die "hq dm refused the pickup DM (nothing sent) but status could not be restored; it reads sending"
+    fi
+    die "hq dm refused the pickup DM; nothing was sent and status is back to verified, so a retry is safe"
+  fi
+  rm -f "$DM_ERR"
+  die "hq dm delivery outcome is uncertain; status is sending, inspect DM history before retrying"
+fi
+cat "$DM_ERR" >&2
+rm -f "$DM_ERR"
 
 EVENT_ID="$(printf '%s' "$DM_OUT" | grep -oE 'eventId[: ]+[A-Za-z0-9_-]+' | head -1 | sed -E 's/eventId[: ]+//' || true)"
 [ -n "$EVENT_ID" ] || die "DM response has no receipt; status is sending, reconcile DM history before retrying"

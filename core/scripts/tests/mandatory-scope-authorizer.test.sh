@@ -42,6 +42,7 @@ install_fixture() {
     "$TMP/companies/_template" "$TMP/core/docs" "$TMP/personal" \
     "$TMP/workspace/sessions/sess-bound" "$TMP/home/.hq"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/hook-caller-lineage.sh" "$TMP/core/scripts/lib/"
@@ -73,6 +74,18 @@ run_hook() {
   : > "$TMP/err.txt"
   printf '%s' "$payload" | "${BASH_BIN:-bash}" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
   printf '%s' "$rc"
+}
+
+# Path blocks keep their Reason line. Arithmetic blocks carry their own
+# explanation and rewrite hint, without claiming a company/path violation.
+has_expected_block_reason() {
+  if grep -q '^BLOCKED: Bash arithmetic check\.' "$TMP/err.txt"; then
+    grep -Eq '^BLOCKED: Bash arithmetic check\. .+\.$' "$TMP/err.txt" \
+      && grep -q '^Rewrite: assign a literal number or an arithmetic result ' "$TMP/err.txt" \
+      && ! grep -Eq 'Cross-company|Path:' "$TMP/err.txt"
+  else
+    grep -Eq '^Reason: .+' "$TMP/err.txt"
+  fi
 }
 
 echo "[1] bound indigo blocks cross-company Read"
@@ -433,6 +446,7 @@ install_fixture "indigo"
 ROOT_ALIAS="$TMP/logical-root"
 ln -s "$TMP" "$ROOT_ALIAS"
 cp "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/hook-copy.sh"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/"
 payload="$(jq -cn --arg path "$ROOT_ALIAS/companies/otherco/settings/secret.yaml" --arg cwd "$ROOT_ALIAS" \
   '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
 rc=0
@@ -1462,6 +1476,9 @@ for probe_case in \
   'git push origin $C:refs/heads/release:0' \
   'git -C workspace/worktrees/a log origin/main...$b:0' \
   'gh pr view 1 -R indigoai-us/$r:0' \
+  'gh repo view indigoai-us/$r:0' \
+  'gh repo delete indigoai-us/$r --yes:0' \
+  'gh repo view companies/$r:2' \
   'for w in ../companies/otherco; do cat workspace/$w/settings/x; done:2' \
   'for d in companies/*; do cat $d/settings/x; done:2' \
   'for d in workspace/../companies/*; do cat $d/settings/x; done:2' \
@@ -3030,8 +3047,8 @@ scope_121_block() {
     '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
   rc="$(run_hook "$payload")"
   expect_exit 2 "$rc" "inline expansion blocks: $(printf '%s' "$command" | tr '\n' ' ')"
-  if [ "$rc" = 2 ] && ! grep -q '^Reason: ' "$TMP/err.txt"; then
-    echo "FAIL: inline expansion block has no Reason line: $command" >&2
+  if [ "$rc" = 2 ] && ! has_expected_block_reason; then
+    echo "FAIL: inline expansion block has no expected explanation: $command" >&2
     REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
   fi
 }
@@ -3208,8 +3225,8 @@ scope_122_block() {
     '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
   rc="$(run_hook "$payload")"
   expect_exit 2 "$rc" "unquoted substitution blocks: $(printf '%s' "$command" | tr '\n' ' ')"
-  if [ "$rc" = 2 ] && ! grep -q '^Reason: ' "$TMP/err.txt"; then
-    echo "FAIL: unquoted substitution block has no Reason line: $command" >&2
+  if [ "$rc" = 2 ] && ! has_expected_block_reason; then
+    echo "FAIL: unquoted substitution block has no expected explanation: $command" >&2
     REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
   fi
 }
@@ -4584,8 +4601,8 @@ mkdir -p "$TMP/core/skills/a" "$TMP/core/skills/b"
 touch "$TMP/core/skills/a/SKILL.md" "$TMP/core/skills/b/SKILL.md"
 # `$((tot/10))`: the `/` is division. The word is echo text, never a path.
 bash_case 0 bench-arith-echo-label 'tot=50; label=x; echo "$label: avg $((tot/10))"'
-bash_case 0 bench-arith-echo-alone 'echo "$((tot/10))"'
-bash_case 0 bench-arith-printf-arg 'printf "%s avg %s\n" "$label" "$((tot/10))"'
+bash_case 0 bench-arith-echo-alone 'tot=50; echo "$((tot/10))"'
+bash_case 0 bench-arith-printf-arg 'tot=50; printf "%s avg %s\n" "$label" "$((tot/10))"'
 bash_case 0 bench-arith-in-loop 'tot=0; for s in a b; do n=$(wc -l < core/skills/$s/SKILL.md); tot=$((tot+n)); done; echo "avg $((tot/2))"'
 bash_case 0 bench-arith-with-open-tree-text 'tot=50; echo "$label: $((tot/10)) over core/skills/$s/SKILL.md"'
 # An arithmetic result is an integer: `$((n))/x` is the literal path 0/x
@@ -4631,6 +4648,25 @@ bash_case 2 1585-ctl-gh-body-double-quoted-backticks "gh pr create -R indigoai-u
 bash_case 2 1585-ctl-literal-cross-company-skill 'cat .claude/skills/otherco-sk/SKILL.md'
 bash_case 2 1585-ctl-python-heredoc-cross-company-code-span $'python3 - <<\'EOF\'\ntext = open("`.claude/skills/otherco-sk/SKILL.md`").read()\nprint(text)\nEOF'
 bash_case 2 1585-ctl-unquoted-substitution-cross-company-skill 'echo `.claude/skills/otherco-sk/SKILL.md`'
+
+# Arithmetic regression inputs are inspected as JSON only.
+install_fixture "indigo"
+arith_case() {
+  bash_case "$1" "arith-$2" "$3"
+  if [ "$2" = redirect-only-before-proof ] && grep -q 'unbound variable' "$TMP/err.txt"; then
+    fail 'allowed redirection/arithmetic control must not exit through a nounset error'
+  fi
+}
+. "$ROOT/core/scripts/tests/bash-arith-guard.cases.sh"
+bash_case 2 arith-message 'echo $((unknown+1))'
+grep -q 'BLOCKED: Bash arithmetic check' "$TMP/err.txt" || fail 'missing arithmetic-specific block message'
+grep -q 'Rewrite: assign a literal number' "$TMP/err.txt" || fail 'missing arithmetic rewrite hint'
+if grep -Eq 'Cross-company|Path:' "$TMP/err.txt"; then
+  fail 'arithmetic refusal incorrectly reports a company path violation'
+fi
+mv "$TMP/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/arith-helper.saved"
+bash_case 2 arith-missing-helper 'echo hello'
+mv "$TMP/arith-helper.saved" "$TMP/.claude/hooks/bash-arith-subst-guard-lib.sh"
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

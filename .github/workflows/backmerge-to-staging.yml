@@ -7,8 +7,11 @@ name: Backmerge to staging
 # dependency on MIGRATION.md, a `## Release: TBD` marker, or release tags.
 #
 # Diff-based, not a full mirror: only the paths changed by the push are
-# touched, so un-promoted staging work on other files is never clobbered. If
-# applying the changes produces no net diff on staging, nothing is committed.
+# touched, so un-promoted staging work on other files is never clobbered. A
+# changed path is applied only when staging still holds the BEFORE content
+# (what staging had at the cut); paths staging changed after the cut are kept
+# and listed as skipped in the job summary (core/scripts/ci/backmerge-apply.sh,
+# feedback_907e56d6). If applying produces no net diff, nothing is committed.
 #
 # The push to staging main works because the hq-audit-bot App is an
 # always-bypass actor on staging's main_protect ruleset. The source checkout
@@ -85,17 +88,19 @@ jobs:
           # branch / unknown before, fall back to the tip commit vs its parent.
           if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "$ZERO" ] \
              || ! git -C source cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            RANGE="${AFTER}^ ${AFTER}"
+            BASE="$(git -C source rev-parse "${AFTER}^")"
           else
-            RANGE="${BEFORE} ${AFTER}"
+            BASE="${BEFORE}"
           fi
+          RANGE="${BASE} ${AFTER}"
+          echo "base=${BASE}" >> "$GITHUB_OUTPUT"
           echo "diff range: ${RANGE}"
           # --no-renames so renames surface as delete-old + add-new (simpler to
-          # replay). Capture status<TAB>path lines.
-          git -C source diff --no-renames --name-status ${RANGE} > /tmp/changes.tsv || true
+          # replay). -z keeps every path name unquoted (status NUL path NUL).
+          git -C source diff -z --no-renames --name-status "${BASE}" "${AFTER}" > /tmp/changes.z
           echo "----- changed files -----"
-          cat /tmp/changes.tsv || true
-          COUNT="$(wc -l < /tmp/changes.tsv | tr -d ' ')"
+          tr '\0' '\t' < /tmp/changes.z | sed 's/\t\([ACDMTUX]\)\t/\n\1\t/g'; echo
+          COUNT="$(( $(tr -cd '\0' < /tmp/changes.z | wc -c) / 2 ))"
           echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
           echo "after_short=${AFTER:0:8}" >> "$GITHUB_OUTPUT"
 
@@ -110,40 +115,16 @@ jobs:
           git config user.name  "hq-audit-bot[bot]"
           git config user.email "hq-audit-bot[bot]@users.noreply.github.com"
 
-      - name: Apply changed files to staging
+      - name: Apply changed files to staging (skip paths staging changed after the cut)
         if: steps.changes.outputs.count != '0'
+        env:
+          BASE: ${{ steps.changes.outputs.base }}
+          AFTER: ${{ github.event.after }}
         run: |
           set -euo pipefail
-          # Staging-local trees that never come from hq-core — skip defensively
-          # (hq-core shouldn't contain them, but never touch them just in case).
-          is_local() {
-            case "$1" in
-              companies/*|personal/*|repos/*|workspace/*|.obsidian/*|.git/*) return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-          while IFS=$'\t' read -r STATUS PATHNAME; do
-            [ -z "${STATUS:-}" ] && continue
-            if is_local "$PATHNAME"; then
-              echo "skip (staging-local): $PATHNAME"
-              continue
-            fi
-            case "$STATUS" in
-              D)
-                if [ -e "target/$PATHNAME" ]; then
-                  rm -f "target/$PATHNAME"
-                  echo "deleted: $PATHNAME"
-                fi
-                ;;
-              *)
-                if [ -f "source/$PATHNAME" ]; then
-                  mkdir -p "$(dirname "target/$PATHNAME")"
-                  cp "source/$PATHNAME" "target/$PATHNAME"
-                  echo "applied: $PATHNAME"
-                fi
-                ;;
-            esac
-          done < /tmp/changes.tsv
+          BACKMERGE_SUMMARY_FILE="$GITHUB_STEP_SUMMARY" \
+            bash source/core/scripts/ci/backmerge-apply.sh \
+              source target "$BASE" "$AFTER" /tmp/changes.z
 
       - name: Commit + push to staging main (only if changed)
         if: steps.changes.outputs.count != '0'

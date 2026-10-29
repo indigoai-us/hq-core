@@ -15,6 +15,7 @@ ln -s "$TMP/companies/otherco" "$TMP/workspace/link"
 ln -s "$TMP/companies/otherco" "$TMP/workspace/parent"
 AUTHORIZER_SOURCE="${AUTHORIZER_SOURCE:-$ROOT/.claude/hooks/mandatory-scope-authorizer.sh}"
 cp "$AUTHORIZER_SOURCE" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
 cp "$ROOT/core/scripts/lib/session-authz.sh" "$ROOT/core/scripts/lib/session-scope-capability.sh" \
   "$ROOT/core/scripts/lib/session-id.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/"

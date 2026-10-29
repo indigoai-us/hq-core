@@ -53,6 +53,178 @@ TOOL_NAME="$(extract tool_name)"
 [ "$TOOL_NAME" = "Bash" ] || exit 0
 
 CMD="$(extract tool_input.command)"
+
+# Command-level package-source overrides (review of PR 1674). A reviewed name
+# or pin only means the package from the default registry, so anything in the
+# same command that can redirect an install voids the trusted-scope and
+# allow-list shortcuts in check_segment:
+#   - package-manager registry / config-file / CA / TLS / proxy env vars
+#     (npm_config_* is also read by pnpm and yarn 1; YARN_* is yarn berry;
+#     BUN_CONFIG_* is bun; COREPACK_*REGISTRY*), anywhere in the command;
+#   - general env vars that change where npm looks for config or how it
+#     trusts the network (HOME, XDG_CONFIG_HOME, *_PROXY, NODE_EXTRA_CA_CERTS,
+#     NODE_TLS_REJECT_UNAUTHORIZED, SSL_CERT_*) only when exported or declared
+#     in the command; as an install-segment prefix they are caught in
+#     check_segment (GENERAL_ENV_RE), so `HOME=/tmp/h ls; npm i ...` passes;
+#   - writes to .npmrc / etc/npmrc / .yarnrc / .yarnrc.yml / bunfig.toml
+#     (redirect, tee, dd of=, sed -i, curl -o, wget -O, and cp/mv/ln/install/rsync when the rc
+#     file is the destination or an rc-named source lands in a directory);
+#   - `<pm> config set|edit` and `npm|pnpm set`;
+#   - a standalone `HOME=...;` style statement before the install;
+#   - indirect env names: `export $x=`, `declare -x "a_$(..)"=`.
+# Env loaded via source / . / eval / set -a / env $(...) is not inspected
+# (it would block nvm, venv and cargo setup); see the PR's known limits.
+# The scan is on the raw text and case-insensitive, so it fails closed: text
+# that only looks like an override blocks a shortcut install, and only when an
+# install is present (commands without one are unaffected).
+CMD_SOURCE_OVERRIDE=0
+GENERAL_ENV_RE='https?_proxy|all_proxy|node_extra_ca_certs|node_tls_reject_unauthorized|ssl_cert_file|ssl_cert_dir|home|xdg_config_home'
+cmd_source_override_scan() {
+  # Fork-free: nocasematch makes the [[ =~ ]] and case tests below
+  # case-insensitive instead of lowercasing through tr.
+  local lc="$1" nocase_restore=0
+  shopt -q nocasematch || { nocase_restore=1; shopt -s nocasematch; }
+  local env_re='(npm_config_[a-z0-9_]*(registry|userconfig|globalconfig|cafile|strict_ssl|strict-ssl)[a-z0-9_]*|npm_config_ca|npm_config_@[^[:space:]=]*registry|npm_config_(https_|http_)?proxy|corepack_[a-z0-9_]*registr[a-z0-9_]*|yarn_[a-z0-9_]*(registry|ca_file_path|cafile|strict_ssl|rc_filename|scopes)[a-z0-9_]*|bun_config_registry|bun_config_[a-z0-9_]*registr[a-z0-9_]*|bun_install_[a-z0-9_]*registr[a-z0-9_]*)[[:space:]]*:?='
+  # /npmrc covers a prefix's etc/npmrc. A glob char in an rc-looking target
+  # (.npmr?, .npm*rc, .yarnrc*, .npm{rc,x}) fails closed.
+  local rc_re='(\.npmrc|/npmrc|\.yarnrc|\.yarnrc\.yml|bunfig\.toml|(\.[ny[]|/n|bunf)[^[:space:];&|/]*[][?*{])'
+  local write_re="(>[|]?[[:space:]]*[^[:space:];&|]*${rc_re}|(^|[^a-z0-9_])tee[[:space:]][^;&|]*${rc_re}|sed[[:space:]]+(-[a-z]*[[:space:]]+)*-i[^;&|]*${rc_re}|(curl|wget)[[:space:]][^;&|]*(-o|--output|--output-document)(=|[[:space:]]*)[^[:space:];&|]*${rc_re}|of=[^[:space:]]*${rc_re})"
+  local cfg_re='(^|[^a-z0-9_])(npm|pnpm|yarn|bun)([[:space:]]+[^;&|[:space:]]+)*[[:space:]]+(config|c)[[:space:]]+([^;&|[:space:]]+[[:space:]]+)*(set|edit)([^a-z0-9_-]|$)'
+  local set_re='(^|[^a-z0-9_])(npm|pnpm)[[:space:]]+set[[:space:]]'
+  # `export $x=...` / `declare -x "$x"=...` names the variable indirectly.
+  local indirect_re='(^|[^a-z0-9_])(export|declare|typeset|readonly|local)([[:space:]]+-[a-z]+)*[[:space:]]+([^;&|]*[[:space:]])?["]?[a-z0-9_]*\$(\([^)]*\)|[^=[:space:]])*='
+  # A standalone `HOME=/tmp/evil;` statement changes an (already exported)
+  # variable for every later command; `HOME=/tmp/h ls;` only prefixes ls.
+  local standalone_re="(^|[;&|({]|then|do|else)[[:space:]]*(${GENERAL_ENV_RE})=[^[:space:];&|]*[[:space:]]*([;&|)}]|\$)"
+  local gen_export_re="(^|[^a-z0-9_])(export|declare|typeset|readonly)([[:space:]]+-[a-z]+)*[[:space:]]+([^;&|]*[[:space:]])?[\"]?(${GENERAL_ENV_RE})[[:space:]]*="
+  # A dequoted copy catches ~/.npm''rc and npm_config_regi''stry.
+  local dq
+  # $'...' is decoded to its text first, so ~/$'.npmrc' reads as ~/.npmrc.
+  dq="${lc//\$\'/\'}"
+  dq="${dq//\"/}"; dq="${dq//\'/}"; dq="${dq//\\/}"
+  local text
+  for text in "$lc" "$dq"; do
+    if [[ "$text" =~ $env_re ]] || [[ "$text" =~ $write_re ]] \
+      || [[ "$text" =~ $cfg_re ]] || [[ "$text" =~ $set_re ]] \
+      || [[ "$text" =~ $indirect_re ]] || [[ "$text" =~ $gen_export_re ]] \
+      || [[ "$text" =~ $standalone_re ]]; then
+      CMD_SOURCE_OVERRIDE=1
+    fi
+  done
+  [ "$CMD_SOURCE_OVERRIDE" = 1 ] || copy_dest_scan "$dq" "$rc_re"
+  [ "$nocase_restore" = 0 ] || shopt -u nocasematch
+}
+
+# cp / mv / ln / install / rsync write an rc file when it is the destination
+# (the -t / --target-directory operand, else the last operand; `ln <src>`
+# alone links into the current directory), or when an rc-named source
+# (.npmrc, npmrc, .yarnrc, .yarnrc.yml, bunfig.toml) is copied into a
+# directory-looking destination (~, ., $home, anything ending in /, or -t).
+# `cp ~/.npmrc /tmp/backup` reads the rc file and is not a write.
+copy_dest_scan() {
+  local text="$1" rc_re="$2" unit
+  local nl=$'\n'
+  # Once per command, no line-by-line read loop: skip unless a copy tool
+  # appears, then walk the units with parameter expansion.
+  local copy_re='(^|[^a-z0-9_])(cp|mv|ln|install|rsync|gcp|gmv|ditto)[[:space:]]'
+  [[ "$text" =~ $copy_re ]] || return 0
+  text="${text//;/$nl}"; text="${text//&/$nl}"; text="${text//|/$nl}"
+  text+="$nl"
+  while [ -n "$text" ]; do
+    unit="${text%%"$nl"*}"
+    text="${text#*"$nl"}"
+    local -a words=()
+    read -r -a words <<< "$unit"
+    [ "${#words[@]}" -gt 0 ] || continue
+    local k=0
+    while [ "$k" -lt "${#words[@]}" ]; do
+      case "${words[$k]}" in
+        sudo|doas|command|exec|nohup|env|time|-*|*=*) k=$((k + 1)) ;;
+        *) break ;;
+      esac
+    done
+    [ "$k" -lt "${#words[@]}" ] || continue
+    local tool="${words[$k]##*/}"
+    case "$tool" in cp|mv|ln|install|rsync|gcp|gmv|ditto) ;; *) continue ;; esac
+    local -a ops=()
+    local tdir="" want_t=0 w
+    for w in "${words[@]:$((k + 1))}"; do
+      if [ "$want_t" = 1 ]; then tdir="$w"; want_t=0; continue; fi
+      case "$w" in
+        -t|--target-directory) want_t=1 ;;
+        --target-directory=*) tdir="${w#*=}" ;;
+        -t?*) tdir="${w#-t}" ;;
+        -*) ;;
+        *) ops+=("$w") ;;
+      esac
+    done
+    local n="${#ops[@]}" dest="" dirlike=0
+    if [ -n "$tdir" ]; then
+      dest="$tdir"; dirlike=1
+    elif [ "$n" -ge 2 ]; then
+      dest="${ops[$((n - 1))]}"; unset "ops[$((n - 1))]"
+    elif [ "$n" -eq 1 ] && [ "$tool" = ln ]; then
+      dest="."; dirlike=1
+    else
+      continue
+    fi
+    local dbase="${dest%/}"; dbase="${dbase##*/}"
+    case "$dbase" in
+      .npmrc|npmrc|.yarnrc|.yarnrc.yml|bunfig.toml) CMD_SOURCE_OVERRIDE=1; return 0 ;;
+    esac
+    if [[ "$dbase" == *[][?*\{]* ]] && [[ "$dbase" =~ $rc_re ]]; then
+      CMD_SOURCE_OVERRIDE=1; return 0
+    fi
+    case "$dest" in
+      \~|\~/|.|./|'$home'|'${home}'|'$home/'|'${home}/'|*/) dirlike=1 ;;
+    esac
+    [ "$dirlike" = 1 ] || continue
+    local src base
+    for src in ${ops[@]+"${ops[@]}"}; do
+      src="${src%/}"; base="${src##*/}"
+      case "$base" in
+        .npmrc|npmrc|.yarnrc|.yarnrc.yml|bunfig.toml) CMD_SOURCE_OVERRIDE=1; return 0 ;;
+      esac
+      if [[ "$base" == *[][?*\{]* ]] && [[ "$base" =~ $rc_re ]]; then
+        CMD_SOURCE_OVERRIDE=1; return 0
+      fi
+    done
+  done
+  return 0
+}
+case "$CMD" in
+  *[Nn][Pp][Mm]*|*[Yy][Aa][Rr][Nn]*|*[Bb][Uu][Nn]*) cmd_source_override_scan "$CMD" ;;
+esac
+
+# Is this install flag a package-source override? npm (nopt) accepts any
+# unambiguous prefix of a long option and a single leading dash, so
+# --reg=, --regis, -registry and --userc count. Case-folded to fail closed.
+is_source_override_flag() {
+  local name="$1" hit=1 nocase_restore=0 target min bare
+  local glob_targets=" registry userconfig globalconfig cafile strict-ssl proxy https-proxy"
+  case "$name" in
+    --*) name="${name#--}" ;;
+    -?*) name="${name#-}" ;;
+    *) return 1 ;;
+  esac
+  name="${name%%=*}"
+  # Fork-free case folding: compare under nocasematch.
+  shopt -q nocasematch || { nocase_restore=1; shopt -s nocasematch; }
+  [[ "$name" == no-* ]] && name="${name#???}"
+  if [[ "$name" == *[][?*\{]* ]]; then
+    bare="${name%%[][?*\{]*}"
+    [[ -n "$bare" && "$glob_targets" == *" $bare"* ]] && hit=0
+  fi
+  [[ "$name" == config.*registry* || "$name" == @*:registry || "$name" == ca ]] && hit=0
+  for target in registry:2 userconfig:5 globalconfig:7 cafile:3 strict-ssl:8 proxy:4 https-proxy:5; do
+    min="${target##*:}"; target="${target%%:*}"
+    if [ "${#name}" -ge "$min" ] && [[ "$target" == "$name"* ]]; then
+      hit=0
+    fi
+  done
+  [ "$nocase_restore" = 0 ] || shopt -u nocasematch
+  return "$hit"
+}
 [ -z "$CMD" ] && exit 0
 
 # Honor explicit bypass — audit it.
@@ -666,7 +838,16 @@ check_segment() {
   # until the 300 s harness timeout; feedback_f692e290: orphaned copies kept
   # spinning a core each) ends the strip instead of looping forever.
   local seg_before
-  while [[ "$seg" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]] ]]; do
+  local orig_seg="$seg"
+  if [[ "$seg" =~ ^env[[:space:]] ]]; then
+    local env_sub_re='^(.*)(\$\([^()]*\)|`[^`]*`)(.*)$' env_sub_pass=0
+    while [ "$env_sub_pass" -lt 16 ] && [[ "$seg" =~ $env_sub_re ]]; do
+      seg="${BASH_REMATCH[1]} ${BASH_REMATCH[3]}"
+      env_sub_pass=$((env_sub_pass + 1))
+    done
+  fi
+  local seg_assign_re='^([A-Za-z_][A-Za-z0-9_]*|[Nn][Pp][Mm]_[Cc][Oo][Nn][Ff][Ii][Gg]_@[^[:space:]=]*)=[^[:space:]]*[[:space:]]'
+  while [[ "$seg" =~ $seg_assign_re ]]; do
     seg_before="$seg"
     seg="${seg#*[[:space:]]}"
     seg="${seg#"${seg%%[![:space:]]*}"}"
@@ -791,6 +972,14 @@ check_segment() {
       ;;
   esac
 
+  # `yarn global add <pkg>` is a global install: inspect it as `yarn add -g`.
+  if [[ "$seg" =~ ^yarn[[:space:]] ]]; then
+    local yg_re='^(yarn([[:space:]]+[^[:space:]]+)*)[[:space:]]+global[[:space:]]+add([[:space:]]+(.*)|$)'
+    if [[ "$seg" =~ $yg_re ]]; then
+      seg="${BASH_REMATCH[1]} add -g ${BASH_REMATCH[4]:-}"
+    fi
+  fi
+
   # Global options before the subcommand (`npm --prefix /tmp i x`): move
   # them after it so the matcher below sees `<pm> <subcmd>`.
   if [[ "$seg" =~ ^(npm|yarn|bun|pnpm)[[:space:]]+- ]]; then
@@ -846,6 +1035,34 @@ check_segment() {
     # allow-list check) sees the same package-only argument list.
     strip_redirection_tokens "$rest"
     rest="$STRIP_REDIRECTION_RESULT"
+    # A flag that changes where the package manager fetches from, or which
+    # config it reads, voids both shortcuts below (trusted scope and the
+    # pinned allowlist): a reviewed name or pin only means the package from
+    # the default registry. Checked before strip_flag_values drops the
+    # space-separated forms.
+    # Env vars, config writes and `config set` elsewhere in the command
+    # (CMD_SOURCE_OVERRIDE) count too.
+    SOURCE_OVERRIDE="${CMD_SOURCE_OVERRIDE:-0}"
+    # HOME / XDG_CONFIG_HOME / proxy / CA assignments that prefix this
+    # install, directly or through env / sudo / other launchers.
+    local -a pre_words=()
+    read -r -a pre_words <<< "$orig_seg"
+    local pre_w pre_gen_re="^[\"']?(${GENERAL_ENV_RE})=" pre_restore=0
+    shopt -q nocasematch || { pre_restore=1; shopt -s nocasematch; }
+    for pre_w in ${pre_words[@]+"${pre_words[@]}"}; do
+      case "${pre_w##*/}" in npm|pnpm|yarn|bun) break ;; esac
+      case "$pre_w" in
+        *=*) [[ "$pre_w" =~ $pre_gen_re ]] && SOURCE_OVERRIDE=1 ;;
+      esac
+    done
+    [ "$pre_restore" = 0 ] || shopt -u nocasematch
+    local -a so_words=()
+    read -r -a so_words <<< "$rest"
+    for tok in ${so_words[@]+"${so_words[@]}"}; do
+      case "$tok" in
+        -*) is_source_override_flag "$tok" && SOURCE_OVERRIDE=1 ;;
+      esac
+    done
     # Collapse value-taking flags (`--prefix /path`, `--registry <url>`, …) so a
     # space-separated value is never mistaken for a positional package name.
     strip_flag_values "$rest"
@@ -901,12 +1118,12 @@ check_segment() {
         ;;
     esac
   done
-  if [ "$saw_pkg" = "1" ] && [ "$all_trusted" = "1" ]; then
+  if [ "$saw_pkg" = "1" ] && [ "$all_trusted" = "1" ] && [ "${SOURCE_OVERRIDE:-0}" = "0" ]; then
     return 0
   fi
 
   # Sanctioned HQ CLI deps: global install, every pkg pinned + allow-listed.
-  if allowed_global_install "$rest"; then
+  if [ "${SOURCE_OVERRIDE:-0}" = "0" ] && allowed_global_install "$rest"; then
     return 0
   fi
 

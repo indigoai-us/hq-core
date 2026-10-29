@@ -526,6 +526,116 @@ then
   segment_install_block=1
 fi
 
+# PR 1674 and its review: the candidate blocks installs that override the
+# package source even for first-party or allow-listed packages, and inspects
+# `yarn global add`. Overrides are registry / config-file / CA / TLS / proxy
+# flags (including npm's unambiguous prefixes such as --reg=, case variants
+# and globbed names), package-manager env vars anywhere in the command,
+# HOME / XDG_CONFIG_HOME / proxy / CA env vars only when exported or prefixed
+# to the install segment, writes to .npmrc / etc/npmrc / .yarnrc / .yarnrc.yml
+# / bunfig.toml (cp/mv/ln/install/rsync only when the rc file is the
+# destination; also curl -o / wget -O), `<pm> config set|edit`, indirect
+# export/declare, and
+# a standalone HOME=...; style statement before the install. The
+# pinned baseline allowed them. Accept only base 0 -> candidate 2 with the
+# supply-chain message when an independent parse finds an install segment
+# (`<pm> install|i|add <pkg>` or `yarn global add <pkg>`) and either override
+# evidence in the command or a `yarn global add` segment. Never the reverse.
+source_override_block=0
+if [ "$target_kind" = unsafe ] && [ "$base_rc" -eq 0 ] && [ "$candidate_rc" -eq 2 ] \
+  && grep -Fq 'BLOCKED — supply-chain guard' "$record/candidate/stderr" \
+  && python3 - "$record/input" <<'PY'
+import json
+import re
+import sys
+
+try:
+    command = json.loads(open(sys.argv[1], encoding="utf-8").read())["tool_input"]["command"]
+except (KeyError, TypeError, ValueError):
+    sys.exit(1)
+INSTALL = re.compile(r"(^|\s)(npm|pnpm|yarn|bun)(\s+-\S+(\s+[^-\s]\S*)?)*?\s+(install|i|add)\s+(.*\s)?[^-\s]")
+YARN_GLOBAL = re.compile(r"(^|\s)yarn(\s+\S+)*?\s+global\s+add\s+(.*\s)?[^-\s]")
+FLAG = re.compile(r"(^|\s)--?(no-)?(reg|regi|regis|regist|registr|registry|userc|userco|usercon|userconf|userconfi|userconfig|globalc|globalco|globalcon|globalconf|globalconfi|globalconfig|caf|cafi|cafile|ca|strict-s|strict-ss|strict-ssl|re|prox|proxy|https|https-|https-p|https-pr|https-pro|https-prox|https-proxy|config\.\S*registry\S*|@\S*:registry)(=|\s|$)"
+                  r"|(^|\s)--?(no-)?r\w*[\[\]?*{]", re.I)
+# Package-manager env vars count anywhere in the command.
+ENV = re.compile(r"(npm_config_\w*(registry|userconfig|globalconfig|cafile|strict_ssl)\w*|npm_config_ca|npm_config_@\S*registry|npm_config_(https_|http_)?proxy|corepack_\w*registr\w*|yarn_\w*(registry|ca_file_path|cafile|strict_ssl|rc_filename|scopes)\w*|bun_config_\w*registr\w*|bun_install_\w*registr\w*)\s*:?=", re.I)
+# General env vars count only when exported/declared, or as a prefix of the
+# install segment (checked per segment below).
+GENERAL = r"(https?_proxy|all_proxy|node_extra_ca_certs|node_tls_reject_unauthorized|ssl_cert_file|ssl_cert_dir|home|xdg_config_home)"
+GEN_EXPORT = re.compile(r"(^|[^\w])(export|declare|typeset|readonly)(\s+-[a-z]+)*\s+([^;&|]*\s)?\"?" + GENERAL + r"\s*=", re.I)
+GEN_PREFIX = re.compile(r"^[\"']?" + GENERAL + "=", re.I)
+RC = r"(\.npmrc|/npmrc|\.yarnrc|\.yarnrc\.yml|bunfig\.toml|(\.[ny\[]|/n|bunf)[^\s;&|/]*[\[\]?*{])"
+RCFILE = re.compile(r"(>\|?\s*\S*|(^|\W)tee\s[^;&|]*|sed\s[^;&|]*-i[^;&|]*|of=\S*|(curl|wget)\s[^;&|]*(-o|--output|--output-document)(=|\s*)\S*)" + RC, re.I)
+CONFIG_SET = re.compile(r"(^|\W)(npm|pnpm|yarn|bun)(\s+\S+)*?\s+(config|c)\s+(\S+\s+)*?(set|edit)([^\w-]|$)|(^|\W)(npm|pnpm)\s+set\s", re.I)
+INDIRECT = re.compile(r"(^|\W)(export|declare|typeset|readonly|local)(\s+-[a-z]+)*\s+([^;&|]*\s)?\"?\w*\$(\([^)]*\)|[^=\s])*=", re.I)
+STANDALONE = re.compile(r"(^|[;&|({]|then|do|else)\s*" + GENERAL + r"=[^\s;&|]*\s*([;&|)}]|$)", re.I)
+RC_NAMES = {".npmrc", "npmrc", ".yarnrc", ".yarnrc.yml", "bunfig.toml"}
+
+
+def rc_base(path):
+    base = path.rstrip("/").rsplit("/", 1)[-1].lower()
+    return base in RC_NAMES or (re.search(r"[\[\]?*{]", base) is not None and re.search(RC, base, re.I) is not None)
+
+
+def copy_writes_rc(seg):
+    words = seg.split()
+    k = 0
+    while k < len(words) and (words[k] in ("sudo", "doas", "command", "exec", "nohup", "env", "time")
+                              or words[k].startswith("-") or "=" in words[k]):
+        k += 1
+    if k >= len(words) or words[k].rsplit("/", 1)[-1] not in ("cp", "mv", "ln", "install", "rsync", "gcp", "gmv", "ditto"):
+        return False
+    tool = words[k].rsplit("/", 1)[-1]
+    ops, tdir, want_t = [], None, False
+    for w in words[k + 1:]:
+        if want_t:
+            tdir, want_t = w, False
+        elif w in ("-t", "--target-directory"):
+            want_t = True
+        elif w.startswith("--target-directory="):
+            tdir = w.split("=", 1)[1]
+        elif w.startswith("-t") and len(w) > 2:
+            tdir = w[2:]
+        elif not w.startswith("-"):
+            ops.append(w)
+    dirlike = False
+    if tdir is not None:
+        dest, dirlike = tdir, True
+    elif len(ops) >= 2:
+        dest = ops.pop()
+    elif len(ops) == 1 and tool == "ln":
+        dest, dirlike = ".", True
+    else:
+        return False
+    if rc_base(dest):
+        return True
+    if dest.lower() in ("~", "~/", ".", "./", "$home", "${home}", "$home/", "${home}/") or dest.endswith("/"):
+        dirlike = True
+    return dirlike and any(rc_base(src) for src in ops)
+
+
+dequoted = re.sub(r"[\"'\\]", "", command.replace("$'", "'"))
+segments = [seg.strip() for seg in re.split(r"&&|\|\||[;|&\n]", command)]
+yarn_global = any(YARN_GLOBAL.search(seg) for seg in segments)
+install = yarn_global or any(INSTALL.search(seg) for seg in segments)
+evidence = any(rx.search(text) for text in (command, dequoted)
+               for rx in (FLAG, ENV, RCFILE, CONFIG_SET, INDIRECT, GEN_EXPORT, STANDALONE))
+for seg in re.split(r"&&|\|\||[;|&\n]", dequoted.lower()):
+    if copy_writes_rc(seg.strip()):
+        evidence = True
+for seg in segments:
+    if INSTALL.search(seg):
+        for word in seg.split():
+            if word.rsplit("/", 1)[-1] in ("npm", "pnpm", "yarn", "bun"):
+                break
+            if GEN_PREFIX.search(word):
+                evidence = True
+sys.exit(0 if install and (evidence or yarn_global) else 1)
+PY
+then
+  source_override_block=1
+fi
+
 # US-008: the candidate exempts a single-line hq-pr-create.sh invocation (via
 # bash, sh, or direct execution) the same way it exempts `gh pr create`, so PR
 # body text is not parsed as install commands. The pinned baseline predates the
@@ -569,6 +679,8 @@ elif [ "$launcher_wrapper_block" -eq 1 ]; then
   :
 elif [ "$segment_install_block" -eq 1 ]; then
   :
+elif [ "$source_override_block" -eq 1 ]; then
+  :
 elif [ "$base_rc" -ne "$candidate_rc" ]; then
   if [ "$target_kind" != unsafe ] || [ "$invalid_release_age" -ne 1 ] \
     || [ "$base_rc" -ne 0 ] || [ "$candidate_rc" -ne 2 ]; then
@@ -584,7 +696,8 @@ fi
 
 for field in stdout stderr exit; do
   if { [ "$intentional_release_age_block" -eq 1 ] || [ "$pr_create_wrapper" -eq 1 ] \
-      || [ "$launcher_wrapper_block" -eq 1 ] || [ "$segment_install_block" -eq 1 ]; } \
+      || [ "$launcher_wrapper_block" -eq 1 ] || [ "$segment_install_block" -eq 1 ] \
+      || [ "$source_override_block" -eq 1 ]; } \
     && { [ "$field" = stderr ] || [ "$field" = exit ]; }; then
     continue
   fi

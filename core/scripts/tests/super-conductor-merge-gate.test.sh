@@ -152,6 +152,20 @@ node "$DQ" drop --file "$Q" --id "$did" --note gone --by desk >/dev/null
 out="$(gate sid-lane "gh pr merge 11 -R x/y --match-head-commit $SHA")"; rc=$?
 check "a dropped row does not allow the merge (rc $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
 
+bid="$(node "$DQ" add --file "$Q" --source conductor --ref "merge-batch x/y 20:${SHA:0:12} 21:$SHA" --question 'Merge batch x/y 20 21?' --option Merge --option Hold --priority critical --no-standing)"
+node "$DQ" claim --file "$Q" --id "$bid" --desk desk >/dev/null
+node "$DQ" answer --file "$Q" --id "$bid" --answer Merge --desk desk >/dev/null
+out="$(gate sid-lane "gh pr merge 20 -R x/y --match-head-commit $SHA")"; rc=$?
+check "a merge-batch row is the go for a listed pr:sha pair (rc $rc, got: $out)" "$([[ $rc -eq 0 ]]; echo $?)"
+out="$(gate sid-lane "gh pr merge 21 -R x/y --match-head-commit $SHA")"; rc=$?
+check "a merge-batch row covers each listed pair (rc $rc, got: $out)" "$([[ $rc -eq 0 ]]; echo $?)"
+out="$(gate sid-lane "gh pr merge 22 -R x/y --match-head-commit $SHA")"; rc=$?
+check "a merge-batch row does not cover an unlisted PR (rc $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "gh pr merge 20 -R x/y --match-head-commit fedcba9876543210fedcba9876543210fedcba98")"; rc=$?
+check "a merge-batch row does not cover another head (rc $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(gate sid-lane "gh pr merge 20 -R x/z --match-head-commit $SHA")"; rc=$?
+check "a merge-batch row does not cover another repo (rc $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
+
 out="$(gate sid-lane "gh api -X PUT repos/x/y/pulls/7/merge")"; rc=$?
 check "gh api pulls/<n>/merge is refused in a gated session (rc $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
 out="$(gate sid-lane "g'h' pr merge 12 -R x/y --match-head-commit $SHA")"; rc=$?

@@ -58,7 +58,10 @@ trigger: prose only
 This must never be injected by the trigger hook.
 EOF
 
-call() { printf '%s' "$1" | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_POLICY_TOOL_EVENTS=legacy bash "$HOOK" 2>/dev/null || true; }
+# The fixture keys on `deploy`, a generic word that the tool-event subject
+# filter (feedback_9eda6433) keeps off tool calls; this test is about the
+# frontmatter path, so the filter is off here.
+call() { printf '%s' "$1" | HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" HQ_POLICY_TOOL_EVENTS=legacy HQ_POLICY_TOOL_STOP_WORDS= bash "$HOOK" 2>/dev/null || true; }
 
 DEPLOY_PRE='{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"vercel deploy --prod"},"session_id":"sess-1"}'
 

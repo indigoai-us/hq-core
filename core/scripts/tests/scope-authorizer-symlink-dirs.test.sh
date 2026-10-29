@@ -24,6 +24,7 @@ install_fixture() {
     "$TMP/core/scripts/lib" "$TMP/companies/otherco/skills/s" \
     "$TMP/workspace/sessions/sess-unbound" "$TMP/personal"
   cp "$hook_source" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP/core/scripts/lib/"

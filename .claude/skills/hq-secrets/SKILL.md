@@ -73,6 +73,7 @@ Use `hq run` instead of `hq secrets exec` when your repo has a `.env.schema`. Us
 | `source <(hq secrets env --only KEY1,KEY2)` | Export secrets into the current shell (refuses to run on a TTY) |
 | `hq secrets generate-link <PATH>` | Generate a one-time URL for a human to submit a secret value |
 | `hq secrets generate-link <PATH> --expires 2d` | Custom expiry (default 24h, max 7d) |
+| `hq secrets generate-link <PATH> --format markdown` | Print the link as one Markdown inline link on stdout (expiry note on stderr). Newer CLIs only; check `--help` first |
 | `hq secrets cache clear` | Clear the local encrypted secrets cache |
 | `hq secrets acl <PATH>` | Show the ACL for a secret: creator, grantees, permissions, open/restricted status |
 | `hq secrets share <PATH> --with <email-or-group> --permission <read\|write\|admin>` | Grant access to a person or group |
@@ -250,10 +251,19 @@ To onboard a new hire, add them to the group — they inherit all group-level se
 6. **Use `generate-link` for human-supplied credentials.** `hq run` does NOT replace `hq secrets generate-link` — they serve different purposes. When a workflow needs a secret that the agent should not see (vendor API keys, personal tokens, third-party credentials), generate a one-time submission link and give it to the human:
 
    ```bash
-   hq secrets generate-link VENDOR_API_KEY --expires 1h
+   if hq secrets generate-link --help 2>/dev/null | grep -q -- '--format'; then
+     hq secrets generate-link VENDOR_API_KEY --expires 1h --format markdown
+   else
+     hq secrets generate-link VENDOR_API_KEY --expires 1h
+   fi
    ```
 
-   The human opens the URL, enters the value, and it goes straight to SSM without the agent ever seeing it. **Surface that URL only as a Markdown inline link** — `[Submit VENDOR_API_KEY — expires in 1h ›](https://hq.{co}.com/secrets-input/<token>)` — never as bare visible text, and never with the token in the visible label. It is a single-use capability; the same render + persistence rules as share-session URLs apply (`core/policies/hq-secure-link-render-as-markdown.md` and `core/policies/hq-share-session-urls-are-capabilities.md`).
+   The human opens the URL, enters the value, and it goes straight to SSM without the agent ever seeing it. The command only creates a submission link; it never prints a secret value.
+
+   - **CLI with `--format markdown`** (hq-cli releases after v5.345.170, which carry hq-cli #2201): stdout is exactly one Markdown inline link, `[Submit VENDOR_API_KEY (expires …) ›](https://…)`, and the expiry note goes to stderr. Relay that stdout line verbatim as the only rendering of the link. Do not also print the bare URL, and do not put the token in the visible label.
+   - **Older CLI** (no `--format` in `--help`): the command prints the plain URL. Wrap it yourself as a Markdown inline link, `[Submit VENDOR_API_KEY (expires in 1h) ›](https://hq.{co}.com/secrets-input/<token>)`, never as bare visible text and never with the token in the visible label.
+
+   In a terminal for a human, newer CLIs already print an OSC-8 clickable link by default. Use `--json` when a script needs the fields. It is a single-use capability; the same render + persistence rules as share-session URLs apply (`core/policies/hq-secure-link-render-as-markdown.md` and `core/policies/hq-share-session-urls-are-capabilities.md`).
 
 7. **Use `list` to discover available secrets.** Before running `exec`, check what secrets exist for the company.
 
@@ -302,10 +312,15 @@ hq secrets exec --only STAGING_API_KEY -- npm test
 ### Ask a teammate to provide a credential
 
 ```bash
-hq secrets generate-link STRIPE_SECRET_KEY --expires 4h
+if hq secrets generate-link --help 2>/dev/null | grep -q -- '--format'; then
+  hq secrets generate-link STRIPE_SECRET_KEY --expires 4h --format markdown
+else
+  hq secrets generate-link STRIPE_SECRET_KEY --expires 4h
+fi
 ```
 
-Surface the resulting URL **only as a Markdown inline link** —
+With `--format markdown`, relay the single stdout line verbatim. On an older CLI,
+surface the plain URL **only as a Markdown inline link** —
 `[Submit STRIPE_SECRET_KEY — expires in 4h ›](https://hq.{co}.com/secrets-input/<token>)` —
 never as bare visible text, label free of the token. Single-use capability;
 governed by `core/policies/hq-secure-link-render-as-markdown.md`.

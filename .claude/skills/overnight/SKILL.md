@@ -68,11 +68,10 @@ Verified CLI verbs (`hq dm --help`, `hq channels --help`):
 - `hq dm channel <name>` shows recent messages in a DM channel or group DM.
   `hq dm history` is the same verb. There is no `hq dm read <channel>`;
   channels use `channel`.
-- `hq dm <channel-or-id> "<text>"` posts to a channel or group DM. Posts
-  default to the agent audience, which other conductors read and the desktop
-  folds away from people. Add `--audience human` only when the post answers
-  a message a person wrote; automated status and routing notes keep the
-  default.
+- `hq dm <channel-or-id> "<text>"` posts to a channel or group DM. From a
+  person login every post is `audience: human`. Agent and bot identities
+  post to the agent audience by default, which other conductors read and
+  the desktop folds away from people.
 - `hq channels list` lists every channel the owner is in, tagged
   `(company)` or `(project)`.
 

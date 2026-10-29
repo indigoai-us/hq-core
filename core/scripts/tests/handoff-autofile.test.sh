@@ -25,16 +25,18 @@ cat > "$TMP_ROOT/bin/hq" <<STUB
 #!/bin/sh
 if [ "\$1" = "feedback" ] && [ "\$2" = "bug" ]; then
   shift 2
-  title=""; body=""; nologs=0
+  title=""; body=""; nologs=0; reporter=""
   while [ \$# -gt 0 ]; do
     case "\$1" in
       --title) title="\$2"; shift 2 ;;
       --body-file) body="\$2"; shift 2 ;;
       --no-logs) nologs=1; shift ;;
+      --reporter) reporter="\$2"; shift 2 ;;
       *) shift ;;
     esac
   done
-  echo "CALL title=\$title nologs=\$nologs" >> "$calls"
+  echo "CALL title=\$title nologs=\$nologs reporter=\$reporter" >> "$calls"
+  echo "FIRST=\$(head -n 1 "\$body")" >> "$calls"
   cat "\$body" >> "$calls"
   # "valid" ends in "id": the parser must still pick the real id token.
   echo "Thanks! Your valid feedback was submitted. id: fb_test123"
@@ -107,7 +109,9 @@ write_thread "$two_items"
 out="$(run)"
 [ "$out" = "filed: fb_test123" ] || fail "file: got '$out'"
 [ "$(call_count)" = "1" ] || fail "file: expected one call"
-grep -q '^CALL title=high thing nologs=1$' "$calls" || fail "file: title not highest severity, or log tails not suppressed"
+grep -q '^CALL title=\[observation\] high thing nologs=1 reporter=agent$' "$calls" || fail "file: title not highest severity with [observation] prefix, log tails not suppressed, or reporter not agent"
+grep -qx 'FIRST=src=handoff impact=inferred' "$calls" || fail "file: first body line is not the src/impact tag"
+sed -n '4p' "$calls" | grep -qx 'Auto-filed by /handoff: hq-core deficiencies from one session.' || fail "file: Auto-filed line is not the second body line"
 for s in '- lever: navigation' '- lever: no-ops' '- severity: high' '- evidence: e2' '- proposed fix: f1' '## system_info' '"hq_version":"9.8.7"'; do
   grep -qF -- "$s" "$calls" || fail "file: body missing '$s'"
 done
@@ -128,7 +132,7 @@ write_thread '{"system_info":{},"deficiencies":[
 : > "$calls"
 out="$(run)"
 [ "$out" = "filed: fb_test123" ] || fail "partial: got '$out'"
-grep -q '^CALL title=new thing nologs=1$' "$calls" || fail "partial: title should be the only fresh item"
+grep -q '^CALL title=\[observation\] new thing nologs=1 reporter=agent$' "$calls" || fail "partial: title should be the only fresh item"
 if grep -q 'high thing' "$calls"; then fail "partial: deduped item re-filed"; fi
 pass "recently filed items are omitted"
 
@@ -141,5 +145,28 @@ out="$(run)"
 [ "$out" = "filed: fb_test123" ] || fail "expiry: got '$out'"
 grep -q 'high thing' "$calls" || fail "expiry: expired item not re-filed"
 pass "items older than 7 days are filed again"
+
+# 9. High severity with a blocked command in the evidence: impact=degraded,
+# no [observation] prefix, still filed by an agent reporter.
+rm -rf "$root/workspace/handoff-autofile"
+write_thread '{"system_info":{},"deficiencies":[
+  {"lever":"no-ops","kind":"hq-core","severity":"high","summary":"guard broke push","evidence":"PreToolUse hook blocked command git push","proposed_fix":"f9"},
+  {"lever":"navigation","kind":"hq-core","severity":"low","summary":"minor","evidence":"e","proposed_fix":"f"}]}'
+: > "$calls"
+out="$(run)"
+[ "$out" = "filed: fb_test123" ] || fail "degraded: got '$out'"
+grep -q '^CALL title=guard broke push nologs=1 reporter=agent$' "$calls" || fail "degraded: title should have no [observation] prefix"
+grep -qx 'FIRST=src=handoff impact=degraded' "$calls" || fail "degraded: first body line should be impact=degraded"
+pass "high-severity blocked command files as impact=degraded without prefix"
+
+# 10. Failed write at medium severity stays inferred (only high degrades).
+rm -rf "$root/workspace/handoff-autofile"
+write_thread '{"system_info":{},"deficiencies":[
+  {"lever":"no-ops","kind":"hq-core","severity":"medium","summary":"write hiccup","evidence":"failed to write thread file","proposed_fix":"f"}]}'
+: > "$calls"
+out="$(run)"
+grep -qx 'FIRST=src=handoff impact=inferred' "$calls" || fail "medium failed write: should stay inferred"
+grep -q '^CALL title=\[observation\] write hiccup ' "$calls" || fail "medium failed write: prefix missing"
+pass "non-high failed write stays an observation"
 
 echo "handoff-autofile: all tests passed"

@@ -72,7 +72,7 @@ function runnerFixture(t, {provider = 'claude', providerSecret} = {}) {
   const calls = [];
   const api = async (op, body) => { calls.push({op, ...body}); if (op === 'secret') return {value: 'SENTINEL_SECRET'}; return delivery(); };
   const launches = [];
-  const r = new CompanyRunner(c, api, {systemctl: () => {}, execute: async (_cmd, args, o) => { launches.push({args, o}); return {code: 0, text: args[0] === '-c' ? 'pre output' : '{"disposition":"reply"}'}; }});
+  const r = new CompanyRunner(c, api, {systemctl: () => {}, execute: async (_cmd, args, o) => { launches.push({args, o}); return {code: 0, text: args[0] === '-c' ? 'pre output' : '{"disposition":"reply","outcome":"complete"}'}; }});
   r.signin = {...signin, claudeAccessToken: opts => signin.claudeAccessToken({...opts, refresh: () => false})};
   t.after(() => r.close());
   const writeCred = expiresAt => fs.writeFileSync(cred, JSON.stringify({claudeAiOauth: {accessToken: FAKE_ACCESS, refreshToken: FAKE_REFRESH, expiresAt}}), {mode: 0o600});

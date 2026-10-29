@@ -143,7 +143,8 @@ bash core/scripts/hq-session.sh set company_slug "{co}"
 bash core/scripts/hq-session.sh set mode "Resume"
 session_id="$(bash core/scripts/hq-session.sh current)"
 session_key="${session_id//[^A-Za-z0-9._-]/_}"
-if [ -f ".claude/state/session-title-${session_key}.manual" ]; then
+# List the state dir and match the marker name; do not expand the path from a variable.
+if ls .claude/state 2>/dev/null | grep -qxF "session-title-${session_key}.manual"; then
   printf '%s\n' 'Manual session title found; leave it unchanged.'
 else
   printf '%s\n' 'No manual session title; successor title may be updated.'

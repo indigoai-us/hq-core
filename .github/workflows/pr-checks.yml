@@ -142,6 +142,8 @@ jobs:
         run: bash core/scripts/tests/msys2-environment-guards.test.sh
       - name: PR review checkout stays cached, scoped and cleaned up
         run: bash core/scripts/tests/review-checkout.test.sh
+      - name: Backmerge keeps staging changes made after the release cut
+        run: bash core/scripts/tests/backmerge-apply.test.sh
       - name: Run denylist scan
         run: bash .leak-scan/scan.sh denylist --warn
 
@@ -723,6 +725,8 @@ jobs:
           node --test core/scripts/tests/company-jobs-acceptance.test.mjs
           node --test core/scripts/tests/company-signin.test.mjs
           node --test core/scripts/tests/company-service-restart.test.mjs
+      - name: Job session outcome envelope for every provider
+        run: bash core/scripts/tests/hq-agent-session-reply-contract.test.sh
       - name: Deferred watcher restart with real systemd
         run: sudo --preserve-env=GITHUB_ACTIONS env PATH="$PATH" bash core/scripts/tests/company-service-restart-systemd.test.sh
       - name: Existing job account shell and groups are refused when wrong
@@ -788,6 +792,12 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Hook timeout warning reports measured time; adapter hooks in the timing journal
+        run: bash core/scripts/tests/hook-timing-honest-warning.test.sh
+      - name: Policy reminders on tool events carry only rules about the action
+        run: bash core/scripts/tests/inject-policy-tool-relevance.test.sh
+      - name: Policy reminders on tool events need a subject match, not generic words
+        run: bash core/scripts/tests/inject-policy-tool-subject-match.test.sh
       - name: Hook timeout attribution tags and compact sequence
         run: HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
       - name: SessionStart slow work is detached and deadline-bound
@@ -850,7 +860,6 @@ jobs:
           bash core/scripts/tests/resolve-hq-root.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
           bash core/scripts/tests/master-hook-hook-engine-bridge.test.sh
-          bash .claude/hooks/tests/inject-policy-fact-helper-engine-bridge.test.sh
           bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
@@ -1242,6 +1251,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/scope-guard-hotfix-ledger.test.sh
+      - name: Scope and credential guard family B shapes under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/scope-guard-family-b.test.sh
       - name: Credential-file read guard under stock macOS Bash
         run: /bin/bash core/scripts/tests/credential-read-guard.test.sh
       - name: Handoff finalizer git add error classification under stock macOS Bash
@@ -2073,10 +2086,18 @@ jobs:
       id: t_journal_session_isolation__ledger
       if: "${{ !cancelled() && steps.t_journal_session_isolation__file_uri.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-guard-hotfix-ledger.test.sh
+    - name: "[journal-session-isolation] Scope and credential guard family B shapes (feedback_7f9b7ad5)"
+      id: t_journal_session_isolation__family_b
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__ledger.outcome == 'success' }}"
+      run: bash core/scripts/tests/scope-guard-family-b.test.sh
     - name: "[journal-session-isolation] SCOPE-1112 tenant-boundary regression cases"
       id: t_journal_session_isolation__17
       if: "${{ !cancelled() && steps.t_journal_session_isolation__ledger.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-1112-regressions.test.sh all
+    - name: "[journal-session-isolation] Scope guard cwd, symlink and program-name trust cases"
+      id: t_journal_session_isolation__cwdtrust
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__17.outcome == 'success' }}"
+      run: bash core/scripts/tests/scope-cwd-symlink-trust.test.sh
     - name: "[journal-session-isolation] Resumework skill commands stay within allowed paths"
       id: t_journal_session_isolation__18
       if: "${{ !cancelled() && steps.t_journal_session_isolation__17.outcome == 'success' }}"
@@ -3474,7 +3495,7 @@ jobs:
       run: |
         set -euo pipefail
         brief_test_home="$(mktemp -d)"
-        for suite in test_brief_helpers test_brief_additions test_local_sessions test_person_brief; do
+        for suite in test_brief_helpers test_brief_additions test_local_sessions test_person_brief test_brief_company test_brief_page test_brief_signals; do
           env HOME="$brief_test_home" XDG_CONFIG_HOME="$brief_test_home" XDG_CACHE_HOME="$brief_test_home" CLAUDE_CONFIG_DIR="$brief_test_home" CODEX_HOME="$brief_test_home" python3 -I ".claude/skills/daily-brief/scripts/$suite.py"
         done
     - name: Per-check results

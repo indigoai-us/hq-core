@@ -277,7 +277,7 @@
     },
     {
       "name": "daily-brief",
-      "description": "Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus meeting signals, fleet and connected integrations when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule.",
+      "description": "Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus synced signals, meeting signals and fleet when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule.",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -285,7 +285,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/daily-brief/SKILL.md",
-      "hash": "sha256:b31e5a1d05d231e716157991270bab6ebb6651845ddd183eb0875156f0ed4333",
+      "hash": "sha256:fd358acc855bf40e9fae324fb671103ba927e387245d52374f737e49bd22ab30",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -438,7 +438,7 @@
       "skillUid": null,
       "group": "share",
       "source": ".claude/skills/dm/SKILL.md",
-      "hash": "sha256:9b3f366781a6581397ffd257f23c77bfd68d87f9b81b6f8b0b1c8b92cb6f598c",
+      "hash": "sha256:d67de3f7e5285af4a7180c51d9f9994fd339957f95a67cf7f96de7482a22c564",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -863,7 +863,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/hq-secrets/SKILL.md",
-      "hash": "sha256:0be5442d4c0330a34dbece792942bbd4308991abc6ff03598aab5ad56f2eeeeb",
+      "hash": "sha256:44045b096b1f155b7d3e9f6d20f33de8cb705c12f94d995a8839d9352c41bcba",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1320,7 +1320,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/overnight/SKILL.md",
-      "hash": "sha256:79f82863a12444cebc890618ad85454c8cb9a3a09d46a3c1fbc1e60dd652a205",
+      "hash": "sha256:0ddb3dcf0f3e50d21d08f3db4b3656f238d215d82f953d25c8637c8e9ddcd665",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1524,7 +1524,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/resumework/SKILL.md",
-      "hash": "sha256:34e7b676aade733baffaa6f882e3ac6f4a1b230eec236d35fb50e5f31a726c5c",
+      "hash": "sha256:dcdbdb1c9240387d95c6ceb32c1c0c315548d1f847a146ffdf7d49bac306c4a7",
       "duplicates": {
         "exact": [],
         "drifted": [],

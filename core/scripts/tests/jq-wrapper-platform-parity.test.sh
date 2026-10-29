@@ -6,6 +6,21 @@ ASSET_ROOT="${TEST_ASSET_ROOT:-$ROOT}/core/scripts"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin"
+# BSD sed (macOS) has no -b; the MSYS wrapper path calls `sed -b`. Install a
+# shim that drops -b only when the host sed rejects it.
+install_sed_shim() {
+  local dir="$1" real_sed
+  real_sed="$(command -v sed)"
+  if printf '' | "$real_sed" -b p >/dev/null 2>&1; then return 0; fi
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'args=()\n'
+    printf 'for a in "$@"; do [[ "$a" == -b ]] || args+=("$a"); done\n'
+    printf 'exec %q "${args[@]}"\n' "$real_sed"
+  } > "$dir/sed"
+  chmod +x "$dir/sed"
+}
+install_sed_shim "$TMP/bin"
 cat > "$TMP/bin/jq" <<'JQ'
 #!/usr/bin/env bash
 binary=no
@@ -55,6 +70,7 @@ real_yq="$(command -v yq || true)"
 [[ -n "$real_yq" && -x "$real_yq" ]] \
   || { echo "FAIL: yq missing; install pinned mikefarah/yq v4.45.1 before running this test" >&2; exit 1; }
 mkdir -p "$TMP/jobs-bin"
+install_sed_shim "$TMP/jobs-bin"
 cat > "$TMP/jobs-bin/jq" <<'JQ_CRLF'
 #!/usr/bin/env bash
 set -euo pipefail
