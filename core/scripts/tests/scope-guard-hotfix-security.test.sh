@@ -44,6 +44,7 @@ install_fixture() {
     "$TMP/repos/private/cleanlogic-theme/snippets" "$TMP/repos/private/a" "$TMP/repos/private/b" \
     "$TMP/home/.hq" "$TMP/home/.claude/projects/x" "$TMP/.claude/state" "$TMP/.claude/skills/deploy/scripts"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/hook-caller-lineage.sh" "$TMP/core/scripts/lib/"
@@ -53,6 +54,7 @@ install_fixture() {
   cp "$ROOT/.codex/hooks/codex-explicit-path-flag.cjs" "$TMP/.codex/hooks/"
   cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/"
   cp "$ROOT/.claude/hooks/block-credential-file-read.sh" "$TMP/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
   chmod +x "$TMP/.claude/hooks/mandatory-scope-authorizer.sh"
 
   printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: otherco\n' \

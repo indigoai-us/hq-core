@@ -130,6 +130,7 @@ make_root() {
   # blocks every matching call when such a guard script is missing.
   local guard="block-credential-file-read.sh"
   [ ! -f "$ROOT/.claude/hooks/$guard" ] || cp "$ROOT/.claude/hooks/$guard" "$root/.claude/hooks/$guard"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$root/.claude/hooks/"
   cp "$CODEX_CONFIG_SRC" "$root/.codex/config.toml"
   cp "$GROK_BRIDGE_SRC" "$root/.grok/hooks/hq-grok-user-bridge.json"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"
@@ -277,7 +278,7 @@ write_timeout_breadcrumb() {
     --arg hook_path "$hook_path" \
     --arg hook_event "$hook_event" \
     --arg threshold "$threshold" \
-    '{hook_path: $hook_path, hook_event: $hook_event, threshold: $threshold, elapsed_ms: 120000, declared_timeout_ms: 300000}' \
+    '{hook_path: $hook_path, hook_event: $hook_event, threshold: $threshold, elapsed_ms: 120000, declared_timeout_ms: 300000, written_at: (now | floor)}' \
     > "$breadcrumb_dir/${threshold}-fixture.json"
 }
 
@@ -1056,8 +1057,9 @@ jq -e --arg hook_path "$master_hook_path" '
   and (.hookSpecificOutput.additionalContext as $context
   | ($context | contains($hook_path))
   and ($context | contains("This hook is taking too long; investigate why."))
-  and ($context | contains("about to be killed by the harness"))
-  and ($context | index("taking too long") < index("about to be killed"))
+  and ($context | contains("This hook is slow; investigate why."))
+  and ($context | test("kill"; "i") | not)
+  and ($context | index("taking too long") < index("This hook is slow"))
   and ($context | endswith("existing child context")))
 ' "$R7/injected.out" >/dev/null || fail "next master fire did not prepend the breadcrumb to additionalContext"
 grep -Fq '"hookEventName":"PreToolUse"' "$R7/injected.out" \
@@ -1076,7 +1078,7 @@ disabled_session_hash="$(sha256_fields master-session)"
 disabled_breadcrumb_dir="$R7/workspace/.hook-timeout-breadcrumbs/$disabled_session_hash"
 mkdir -p "$disabled_breadcrumb_dir"
 jq -cn --arg hook_path "$master_hook_path" '
-  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000}
+  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000, written_at: (now | floor)}
 ' > "$disabled_breadcrumb_dir/absolute-disabled.json"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
   HQ_DISABLED_HOOKS='another-hook, hook-timeout-sentry' \
@@ -1108,7 +1110,7 @@ fi
 rm -f "$disabled_breadcrumb_dir"/*.json "$disabled_breadcrumb_dir"/*.json.consuming.*
 reused_record="$disabled_breadcrumb_dir/reused-owner.json"
 jq -cn --arg hook_path "$master_hook_path" '
-  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000}
+  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000, written_at: (now | floor)}
 ' > "$reused_record.consuming.$reused_pid.1$reused_start"
 has_recoverable_breadcrumb "$disabled_breadcrumb_dir" \
   || fail "a claim whose PID was reused reads as held by a live owner"
@@ -1126,7 +1128,7 @@ compgen -G "$disabled_breadcrumb_dir/*.json*" >/dev/null \
 
 # A claim whose owner is still the same live process stays with that owner.
 jq -cn --arg hook_path "$master_hook_path" '
-  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000}
+  {hook_path: $hook_path, hook_event: "PreToolUse", threshold: "absolute", elapsed_ms: 1000, declared_timeout_ms: 4000, written_at: (now | floor)}
 ' > "$reused_record.consuming.$reused_pid.$reused_start"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
   HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=1 HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
@@ -1149,7 +1151,7 @@ session_start_hash="$(sha256_fields "$session_start_id")"
 session_start_dir="$R7/workspace/.hook-timeout-breadcrumbs/$session_start_hash"
 mkdir -p "$session_start_dir"
 jq -cn --arg hook_path "$session_start_path" '
-  {hook_path: $hook_path, hook_event: "SessionStart", threshold: "absolute", elapsed_ms: 120000, declared_timeout_ms: 300000}
+  {hook_path: $hook_path, hook_event: "SessionStart", threshold: "absolute", elapsed_ms: 120000, declared_timeout_ms: 300000, written_at: (now | floor)}
 ' > "$session_start_dir/absolute-no-json.json"
 PATH="$R7/bin:$PATH" HQ_TEST_HQ_ARGS="$R7/hq.args" HQ_TEST_HQ_STDIN="$R7/hq.stdin" \
   bash "$R7/.claude/hooks/master-hook.sh" SessionStart >"$R7/no-json-warning.out" 2>"$R7/no-json-warning.err" \

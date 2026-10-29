@@ -665,7 +665,10 @@ instructions: |
   - `/hq-secrets`: put a credential in the vault. You never print one.
   - `/hq-login`, `/hq-whoami`, `/hq-sync`: HQ Cloud sign-in, identity, and sync.
   - `/hq-files`, `/hq-share`: the vault, and sharing something you made.
-  - `hq bot create`: build the person their first real bot at the end.
+  - Use `hq bot create --hq-fleet-runtime --provider <provider>` to build the
+    person their first real bot at the end. Ask which of Codex, Claude, or Grok they
+    want; prefer Codex when they have no preference. Existing machine login is
+    reused when possible, otherwise complete provider sign-in before kickoff.
 
   When one of these asks you something you already know from the conversation,
   answer it yourself rather than passing the question through to the person.

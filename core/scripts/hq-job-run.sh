@@ -914,6 +914,38 @@ if [ "$SECRET_COUNT" != "null" ] && [ "${SECRET_COUNT:-0}" -gt 0 ] 2>/dev/null; 
   done
 fi
 
+# Map a captured Claude TTY pane to a keystroke action.
+# Claude 2.1.280's bypass-permissions warning ignores a numbered "2" and
+# confirms the pre-selected "No, exit" on Enter (feedback_b100788a).
+claude_remote_dialog_action() {
+  local pane="$1"
+  if printf '%s\n' "$pane" | grep -q 'Yes, I accept'; then
+    if printf '%s\n' "$pane" | grep -Eq '❯ No, exit|> No, exit|\* No, exit'; then
+      printf '%s\n' 'down-enter'
+      return 0
+    fi
+    if printf '%s\n' "$pane" | grep -Eq '❯ Yes, I accept|> Yes, I accept|\* Yes, I accept'; then
+      printf '%s\n' 'enter'
+      return 0
+    fi
+    if printf '%s\n' "$pane" | grep -q 'No, exit'; then
+      printf '%s\n' 'down-enter'
+      return 0
+    fi
+    printf '%s\n' 'enter'
+    return 0
+  fi
+  if printf '%s\n' "$pane" | grep -q 'Try the new fullscreen renderer'; then
+    printf '%s\n' 'two'
+    return 0
+  fi
+  if printf '%s\n' "$pane" | grep -q 'Do you want to proceed'; then
+    printf '%s\n' 'two'
+    return 0
+  fi
+  printf '%s\n' 'none'
+}
+
 # Claude remote surface: TTY + --remote-control so the run appears in Desktop.
 # Auto-dismisses known startup dialogs; copies pane output into LOG_FILE.
 # Launcher is a temp script (not nested shell quoting) to keep prompts/safe.
@@ -967,20 +999,26 @@ Then stop."
     i=$((i + 2))
     pane="$(tmux capture-pane -t "$sess" -p -S -120 2>/dev/null || true)"
     # Startup / tool-permission dialogs (remote TTY can still prompt)
-    if printf '%s\n' "$pane" | grep -q 'Yes, I accept'; then
-      tmux send-keys -t "$sess" "2" Enter
-      continue
-    fi
-    if printf '%s\n' "$pane" | grep -q 'Try the new fullscreen renderer'; then
-      tmux send-keys -t "$sess" "2" Enter
-      continue
-    fi
-    if printf '%s\n' "$pane" | grep -q 'Do you want to proceed'; then
-      # "2" = Yes, and don't ask again for similar commands
-      tmux send-keys -t "$sess" "2" Enter
-      echo "auto-accepted tool permission prompt" >>"$LOG_FILE"
-      continue
-    fi
+    case "$(claude_remote_dialog_action "$pane")" in
+      down-enter)
+        tmux send-keys -t "$sess" Down
+        tmux send-keys -t "$sess" Enter
+        echo "auto-accepted bypass-permissions warning (down-enter)" >>"$LOG_FILE"
+        continue
+        ;;
+      enter)
+        tmux send-keys -t "$sess" Enter
+        echo "auto-accepted bypass-permissions warning (enter)" >>"$LOG_FILE"
+        continue
+        ;;
+      two)
+        tmux send-keys -t "$sess" "2" Enter
+        if printf '%s\n' "$pane" | grep -q 'Do you want to proceed'; then
+          echo "auto-accepted tool permission prompt" >>"$LOG_FILE"
+        fi
+        continue
+        ;;
+    esac
     if [ -f "$done_file" ]; then
       echo "remote done sentinel present" >>"$LOG_FILE"
       sleep 2
@@ -1081,7 +1119,11 @@ run_agent() {
     else
       secrets_cmd+=(--personal)
     fi
-    secrets_cmd+=(exec --only "$only_csv" --script "${BASH_SOURCE[0]}" --)
+    # No --script: it named this runner, which does nothing for unlocked secrets,
+    # and hq-cli binds the command after -- to the approved script. Locked
+    # secrets are refused here by design; jobs that need them need a
+    # vault-checked grant (feedback_0e6abcb8).
+    secrets_cmd+=(exec --only "$only_csv" --)
     (
       cd "$RUN_CWD"
       if [ "${#wrap_cmd[@]}" -gt 0 ]; then

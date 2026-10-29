@@ -342,9 +342,45 @@ def test_enrich_meetings_filters_window_and_fills_details():
     d = out[2]
     assert d['participants'] is None and d['attended'] is False and d['duration_min'] is None
     assert sweep.enrich_meetings(None, None, [], lo, hi) == []
+    assert [m['whose'] for m in out] == ['mine', 'team', 'team']
     # catch-up: a wider lower bound keeps the older meeting
     out = sweep.enrich_meetings(meetings, signals, ['Sam Rivera'], T('2026-10-08T00:00:00Z'), hi)
     assert out[0]['id'] == 'old' and out[0]['attended'] is True
+
+
+def test_meetings_split_mine_from_team():
+    me = ['Sam Rivera']
+    # The person's own recorder took it: theirs, even with no names anywhere.
+    assert sweep.attended({'title': 'Weekly pipeline', 'participants': None, 'recorded_by_me': True}, [], me)
+    assert not sweep.attended({'title': 'Weekly pipeline', 'participants': None, 'recorded_by_me': False}, [], me)
+    lo, hi = T('2026-10-10T00:00:00Z'), T('2026-10-11T00:00:00Z')
+    rows = [{'id': '1', 'title': 'Weekly pipeline', 'start': '2026-10-10T09:00:00Z', 'recorded_by_me': True},
+            {'id': '2', 'title': 'Robin Hale and Jordan Lee', 'start': '2026-10-10T10:00:00Z', 'recorded_by_me': False},
+            {'id': '3', 'title': 'Sam / Robin intro', 'start': '2026-10-10T11:00:00Z', 'recorded_by_me': False},
+            {'id': '4', 'title': 'Last week, mine', 'start': '2026-10-03T11:00:00Z', 'recorded_by_me': True}]
+    mine, team = sweep.split_meetings(rows, me, (lo, hi))
+    assert [m['id'] for m in mine] == ['1', '3'] and [m['id'] for m in team] == ['2']
+    findings, samples = {}, []
+    label, detail = sweep.summarize('meetings', rows, 'acme', findings, samples, (lo, hi), me)
+    assert findings['meetings'] == 2 and findings['meetings_team'] == 1, findings
+    assert label == 'Found 2 of your meetings' and detail == '1 team meetings, counted only'
+    # A meeting stored twice counts once; a catch-up meetings window reaches back further than PRs.
+    twice = rows + [dict(rows[0], id='1b')]
+    assert [m['id'] for m in sweep.split_meetings(twice, me, (lo, hi))[0]] == ['1', '3']
+    f2 = {}
+    sweep.summarize('meetings', rows, 'acme', f2, [], (lo, hi), me, (T('2026-10-01T00:00:00Z'), hi))
+    assert f2['meetings'] == 3, f2
+    # Teammates' meetings are never sampled into the loader's cards.
+    assert [s['title'] for s in samples] == ['Weekly pipeline', 'Sam / Robin intro']
+    # Loader signal counts come from the person's meetings, plus any meeting with an item they own.
+    sig = [{'meeting': 'Weekly pipeline', 'recorded_by_me': True, 'counts': {'decision': 2}},
+           {'meeting': 'Robin Hale and Jordan Lee', 'recorded_by_me': False, 'counts': {'decision': 5, 'action_item': 4},
+            'action_items': [{'text': 'x', 'mine': False}], 'detail': {'participants': ['Robin Hale']}},
+           {'meeting': 'Jordan Lee sync', 'recorded_by_me': False, 'counts': {'action_item': 1},
+            'action_items': [{'text': 'Sam sends the deck', 'mine': True}]}]
+    findings = {}
+    sweep.summarize('meeting_signals', sig, 'acme', findings, [], (lo, hi), me)
+    assert findings['signals']['decision'] == 2 and findings['signals']['action_item'] == 1, findings
 
 
 def test_infer_owner_matches_decided_and_agreed():

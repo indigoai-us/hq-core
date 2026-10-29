@@ -99,10 +99,23 @@ TITLE="$(jq -r '
   (map(. + {rank: ({"high": 0, "medium": 1, "low": 2}[.severity // "low"] // 3)})
    | sort_by(.rank) | .[0].summary) // "HQ handoff deficiencies"' <<<"$FRESH")"
 
+# Source and impact tags (owner decision D4): an agent-filed row with no
+# person-reported effect is an observation. It is degraded only when a
+# high-severity deficiency's evidence names a blocked command or a failed
+# write; then the title keeps no [observation] prefix.
+IMPACT="$(jq -r '
+  if any(.[]; (.severity // "") == "high"
+      and ((.evidence // "") | test("\\bblocked\\b|\\bdenied\\b|fail(ed|s)? to write|failed write|write (failed|was blocked|was denied)|could not write|cannot write|unable to write"; "i")))
+  then "degraded" else "inferred" end' <<<"$FRESH")"
+if [ "$IMPACT" = "inferred" ]; then
+  TITLE="[observation] $TITLE"
+fi
+
 BODY="$(mktemp "${TMPDIR:-/tmp}/handoff-autofile-body.XXXXXX")"
 OUT="$(mktemp "${TMPDIR:-/tmp}/handoff-autofile-out.XXXXXX")"
 trap 'rm -f "$BODY" "$OUT"' EXIT
-jq -r --slurpfile t "$THREAD" '
+jq -r --slurpfile t "$THREAD" --arg impact "$IMPACT" '
+  "src=handoff impact=\($impact)",
   "Auto-filed by /handoff: hq-core deficiencies from one session.\n",
   (to_entries[] | .value as $d |
     "## \(.key + 1). \($d.summary // "")\n",
@@ -125,7 +138,7 @@ fi
 
 # --no-logs: the report carries only the deficiency sections and system_info;
 # never attach this machine's ~/.hq log tails.
-if ! hq feedback bug --title "$TITLE" --body-file "$BODY" --no-logs >"$OUT" 2>&1; then
+if ! hq feedback bug --reporter agent --title "$TITLE" --body-file "$BODY" --no-logs >"$OUT" 2>&1; then
   echo "failed: hq feedback bug exited non-zero"
   exit 0
 fi

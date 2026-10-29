@@ -18,6 +18,7 @@ mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/.codex/hooks" \
   "$C/indigo/settings" "$C/otherco/settings" "$C/kiwi/settings" "$C/_template" \
   "$TMP/workspace/sessions/sess-bound" "$TMP/home/.hq" "$TMP/core/docs"
 cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
 for f in session-authz.sh session-scope-capability.sh hook-caller-lineage.sh session-id.sh; do
   cp "$ROOT/core/scripts/lib/$f" "$TMP/core/scripts/lib/"
 done

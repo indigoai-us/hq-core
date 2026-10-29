@@ -15,6 +15,12 @@
 #   [c] output never exceeds the configured ceiling, for plain stdout and for
 #       the PostToolUse JSON envelope.
 set -euo pipefail
+# These fixtures use common verbs (deploy, run, release) as neutral vehicle
+# words for the cap and ceiling mechanics. The tool-event subject filter
+# (feedback_9eda6433) would treat them as generic words and keep them off the
+# tool call, so it is switched off here; inject-policy-tool-subject-match.test.sh
+# covers the filter itself.
+export HQ_POLICY_TOOL_STOP_WORDS=
 
 # This file tests the byte ceiling and full-text fallback on their own, with
 # fixtures that match many policies at once. The per-event relevance cap would
@@ -76,14 +82,21 @@ prompt() { # <root> <sid> <prompt> [env...]
   shift 3
   jq -cn --arg sid "$sid" --arg prompt "$text" \
     '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:"/tmp",prompt:$prompt}' \
-    | env PATH="$TMP/bin:$PATH" FAKE_FACT_LIB="$FACT_LIB" HQ_ROOT="$root" CLAUDE_PROJECT_DIR="$root" "$@" bash "$HOOK" 2>/dev/null
+    | env PATH="$TMP/bin:$PATH" FAKE_FACT_LIB="$FACT_LIB" HQ_ROOT="$root" CLAUDE_PROJECT_DIR="$root" \
+      "$@" bash "$HOOK" 2>/dev/null
 }
+# HQ_POLICY_TOOL_BASELINE=1: the fixture uses `when: always` HARD rules as the
+# low-ranked bulk that the ceiling must cut and drain. Since feedback_9eda6433
+# such rules are not shown on tool events by default (see
+# inject-policy-tool-relevance.test.sh); this test pins the ceiling and drain
+# mechanics, so it keeps them in the tool-event reminder.
 post() { # <root> <sid> <command> <tool-output> [env...]
   local root="$1" sid="$2" command="$3" response="$4"
   shift 4
   jq -cn --arg sid "$sid" --arg command "$command" --arg response "$response" \
     '{session_id:$sid,hook_event_name:"PostToolUse",tool_name:"Bash",cwd:"/tmp",tool_input:{command:$command},tool_response:{stdout:$response,stderr:""}}' \
-    | env PATH="$TMP/bin:$PATH" FAKE_FACT_LIB="$FACT_LIB" HQ_ROOT="$root" CLAUDE_PROJECT_DIR="$root" "$@" bash "$HOOK" 2>/dev/null
+    | env PATH="$TMP/bin:$PATH" FAKE_FACT_LIB="$FACT_LIB" HQ_ROOT="$root" CLAUDE_PROJECT_DIR="$root" \
+      HQ_POLICY_TOOL_BASELINE=1 "$@" bash "$HOOK" 2>/dev/null
 }
 context() { jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true; }
 # Reminder text for a Bash PostToolUse. Passive PreToolUse stdout is not model
@@ -112,6 +125,26 @@ seed() {
     policy "$root" "soft-$i" deploy soft "Soft deploy note $i."
   done
 }
+
+echo "[0] default routing: the ceiling holds, the direct rules drain, the always bulk is not repeated"
+R0="$(new_root default-routing)"
+seed "$R0"
+d_all=""
+for i in 1 2 3 4; do
+  o="$(post "$R0" s0 'hq deploy prod' ok HQ_POLICY_TOOL_BASELINE=0 HQ_POLICY_OUTPUT_CEILING_BYTES=3000 | context)"
+  n="$(bytes_of "$o")"
+  [ "$n" -le 3000 ] && ok "default event $i within the 3000-byte ceiling ($n bytes)" || bad "default event $i is $n bytes"
+  d_all="$d_all"$'\n'"$(printf '%s\n' "$o" | sed -n 's/^> Policy `\([^`]*\)`.*/\1/p')"
+done
+for slug in zz-deploy-direct yy-release-rule; do
+  printf '%s\n' "$d_all" | grep -x "$slug" >/dev/null && ok "default routing delivers $slug" || bad "default routing never delivered $slug"
+done
+# Owner decision on #1688: an unconditional rule prints on its first tool-event
+# match in a session, and is never listed again on a later tool event.
+for i in 1 2 3 4 5 6; do
+  n="$(printf '%s\n' "$d_all" | grep -cx "aaa-generic-$i" || true)"
+  [ "$n" -le 1 ] && ok "default routing lists aaa-generic-$i at most once ($n)" || bad "aaa-generic-$i listed $n times"
+done
 
 echo "[a] the most relevant HARD rule keeps its full text"
 RA="$(new_root keep-top)"

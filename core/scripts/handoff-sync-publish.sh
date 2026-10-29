@@ -92,14 +92,62 @@ run_with_timeout() {
   return "$rc"
 }
 
+# continuity_paths: print the absolute paths the continuity push must carry:
+# the pointer and the one thread file it references. A thread_path that is
+# not a plain file under workspace/threads/ is ignored (same containment rule
+# as hq-cloud computeContinuityPointerPaths).
+continuity_paths() {
+  local pointer="$HQ_ROOT/workspace/threads/handoff.json"
+  [[ -f "$pointer" ]] || return 0
+  printf '%s\n' "$pointer"
+  local tp
+  tp="$(sed -n 's/.*"thread_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$pointer" | head -n1)"
+  case "$tp" in
+    workspace/threads/*) ;;
+    *) return 0 ;;
+  esac
+  case "/$tp/" in
+    */../*|*/./*) return 0 ;;
+  esac
+  if [[ -f "$HQ_ROOT/$tp" ]]; then printf '%s\n' "$HQ_ROOT/$tp"; fi
+  return 0
+}
+
 run_publish() {
   # `hq sync push --personal` is the canonical publish path for the session
-  # continuity pointer (the vault scope that carves out handoff.json + the
-  # referenced thread file). A `--lock-timeout 0` keeps the push from queueing
+  # continuity pointer. A `--lock-timeout 0` keeps the push from queueing
   # behind a long-running sync pass; the operator can rerun later.
+  #
+  # Push only the pointer and its thread file. A bare `--personal` push walks
+  # the whole personal scope, including thousands of workspace/.session-logs
+  # files, and never reaches the pointer inside the timebox. The stale vault
+  # copy then gets pulled back over the fresh local pointer.
+  local paths=()
+  local p
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && paths+=("$p")
+  done < <(continuity_paths)
+  if [[ ${#paths[@]} -eq 0 ]]; then
+    echo "handoff-sync-publish: no continuity pointer to publish" >>"$LOG"
+    return 0
+  fi
+
+  local rc=0
   run_with_timeout "$TIMEOUT" \
     hq sync push --personal --hq-root "$HQ_ROOT" --lock-timeout 0 \
-      --message "handoff continuity pointer"
+      --message "handoff continuity pointer" "${paths[@]}" || rc=$?
+  # CLIs without targeted personal pushes (or with the
+  # cli.personal-targeted-push-paths flag off) refuse `--personal` with
+  # explicit paths. Only then fall back to the full personal push.
+  if [[ "$rc" -ne 0 && "$rc" -ne 124 ]] \
+    && tail -n 20 "$LOG" 2>/dev/null | grep -q 'cannot be combined with explicit \[paths\]'; then
+    echo "handoff-sync-publish: targeted push refused by this CLI; falling back to full personal push" >>"$LOG"
+    rc=0
+    run_with_timeout "$TIMEOUT" \
+      hq sync push --personal --hq-root "$HQ_ROOT" --lock-timeout 0 \
+        --message "handoff continuity pointer" || rc=$?
+  fi
+  return "$rc"
 }
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true

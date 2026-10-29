@@ -26,7 +26,7 @@ if(process.argv[2]==='child'){
   for(const p of [c.stateDir,c.unitDir]){fs.mkdirSync(p,{mode:0o700});fs.chownSync(p,uid,uid);}
   fs.writeFileSync(c.configPath,JSON.stringify(c),{mode:0o644});
   fs.writeFileSync(c.cloudModule,"export const loadMachineCreds=()=>({entityType:'company-outpost',entityUid:'out_machine',region:'test',clientId:'test'}); export const getValidMachineTokens=async()=>({idToken:'fake-test-token'});",{mode:0o644});
-  fs.writeFileSync(path.join(dir,'probe.mjs'),`import fs from 'node:fs';fs.writeFileSync('${c.stateDir}/uid',String(process.getuid()));console.log(JSON.stringify({disposition:'reply'}));`,{mode:0o644});
+  fs.writeFileSync(path.join(dir,'probe.mjs'),`import fs from 'node:fs';fs.writeFileSync('${c.stateDir}/uid',String(process.getuid()));console.log(JSON.stringify({disposition:'reply',outcome:'complete'}));`,{mode:0o644});
   fs.writeFileSync(path.join(dir,'core/scripts/hq-agent-session.sh'),`#!/bin/bash\nexec /usr/local/bin/node ${dir}/probe.mjs\n`,{mode:0o755});
   const result=spawnSync('runuser',['-u','hq-jobs','--',process.execPath,fileURLToPath(import.meta.url),'child'],{encoding:'utf8',timeout:15000});
   assert.equal(result.status,0,result.stderr);const receipt=JSON.parse(result.stdout.trim());assert.equal(receipt.outcome,'succeeded');

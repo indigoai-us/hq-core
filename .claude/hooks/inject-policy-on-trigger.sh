@@ -305,6 +305,49 @@ TURN_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.turn.txt"
 # rule comes back after HQ_POLICY_SEEN_TTL_SECONDS, or at once when a
 # different trigger matches it.
 SEEN_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.seen.tsv"
+# Full-text ledger for `inject: always` HARD rows (feedback_9eda6433). The
+# turn ledger resets on every prompt, so such a rule used to print its whole
+# body once per turn. Once its full text has been delivered in this session,
+# later turns name it in the "Already shown this session" footer only.
+FULL_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.full.txt"
+# Deferred SessionStart-only rules (feedback_9eda6433): ids of SessionStart-only
+# rules that matched a tool event with no subject word, so they were not shown
+# there. The next UserPromptSubmit or SessionStart delivers each one that has
+# not been delivered yet, whatever the prompt says. One id per line.
+DEFERRED_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.deferred.tsv"
+DEFERRED_NEW=""
+# Cap on the deferred queue (owner decision on PR 1693: "Cap the queue, then
+# merge"). At most this many non-HARD rules are queued per session in total;
+# HARD and gate rules are always queued and do not use the budget. When a tool event defers more soft rules than
+# the remaining budget, the higher-ranked ones are queued and the rest are
+# dropped, not carried over: they stay in policies.tsv like any narrowed row
+# and come back only when a prompt itself matches them. Ids that used the
+# budget are listed in DEFERRED_SOFT_FILE. HQ_POLICY_TOOL_DEFERRED_CAP
+# overrides the cap (0 queues no soft rules). The precompact purge does not
+# reset the budget: it is per session, not per compaction window.
+DEFERRED_SOFT_FILE="$DEDUPE_DIR/${SESSION_ID:-default}.deferred-soft.txt"
+DEFERRED_CAP="${HQ_POLICY_TOOL_DEFERRED_CAP:-5}"
+case "$DEFERRED_CAP" in ''|*[!0-9]*) DEFERRED_CAP=5 ;; esac
+# Tool events carry only rules about the action itself (feedback_9eda6433).
+# A rule that reaches a tool event only through SessionStart, or whose
+# `when:` is unconditional while it also listens on SessionStart or
+# UserPromptSubmit, is introduced on those events and is not repeated on
+# each tool call. HQ_POLICY_TOOL_BASELINE=1 restores the old behavior.
+TOOL_BASELINE="${HQ_POLICY_TOOL_BASELINE:-0}"
+case "$TOOL_BASELINE" in 1) ;; *) TOOL_BASELINE=0 ;; esac
+# Generic words (feedback_9eda6433). On a tool event a rule is shown only when
+# its trigger matched the tool call on a SUBJECT: a `when:` identifier present
+# in the command or tool input (a command word, path, file, repo or company
+# name) that is not in this list. A match on these words alone says what kind
+# of action it is, not what it acts on, so it is not shown on the tool call:
+# a HARD row is still handed to enforcement (policies.tsv) and the rule is
+# delivered on the next prompt or SessionStart instead. The default list is
+# tested by inject-policy-tool-subject-match.test.sh.
+TOOL_STOP_WORDS_DEFAULT="deploy merge release pr prs commit commits push pull test tests testing session sessions policy policies status view done check checks run runs update create add list show open close edit write read set get link report reply fix plan review verify build install publish ship smoke e2e ci rollout migrate migration monitor version tag flag gate route dispatch branch task tasks work change changes code file files repo repos doc docs new start stop help error issue bug feature rule rules agent agents worker workers lane lanes company thread main hq always never"
+# HQ_POLICY_TOOL_STOP_WORDS replaces the list (set it empty to treat every
+# identifier as a subject; fixture tests that use these words as neutral
+# vehicles do that). It is part of the evaluation cache key.
+TOOL_STOP_WORDS="${HQ_POLICY_TOOL_STOP_WORDS-$TOOL_STOP_WORDS_DEFAULT}"
 SEEN_TTL="${HQ_POLICY_SEEN_TTL_SECONDS:-1800}"
 case "$SEEN_TTL" in ''|*[!0-9]*) SEEN_TTL=1800 ;; esac
 FACTS_TMP_DIR=""
@@ -325,6 +368,7 @@ if [ "$EVENT" = "UserPromptSubmit" ]; then
 fi
 touch "$DEDUPE_FILE" 2>/dev/null || true
 touch "$TURN_FILE" 2>/dev/null || true
+touch "$FULL_FILE" 2>/dev/null || true
 
 # Accumulate
 # "slug<TAB>scope<TAB>abs_path<TAB>enforcement<TAB>rule<TAB>kind<TAB>inject<TAB>whenstate"
@@ -508,7 +552,7 @@ record_match_rows() {
 # fallback) nothing is recorded, so the set stays eligible for the next event.
 record_emitted_match_rows() {
   local rows="$1" output="$2" row slug scope path enf rule kind injv ws spec stale exempt rel tkey score
-  local delivered="" seen="" row_index=0 size rule_size now
+  local delivered="" seen="" full_always="" row_index=0 size rule_size now
   case "$output" in
     *$'\n> Policy `'*) ;;
     *) return 0 ;;
@@ -559,9 +603,17 @@ record_emitted_match_rows() {
           ;;
       esac
     fi
+    if [ "$injv" = "always" ] && [ "$enf" = "hard" ]; then
+      case "$output" in
+        *$'\n> Policy `'"$slug"'` (HARD — binding rule from `'*|*$'\n> Policy `'"$slug"'` (HARD — Rule section from `'*)
+          full_always+="$slug"$'\n'
+          ;;
+      esac
+    fi
     delivered+="$row"$'\n'
   done <<< "$rows"
   [ -z "$delivered" ] || record_match_rows "$delivered"
+  [ -z "$full_always" ] || record_slugs "$FULL_FILE" "$full_always"
   if [ -n "$seen" ]; then
     now="$(date +%s)"
     seen="$(printf '%s' "$seen" | awk -F '\t' -v now="$now" 'NF { print $1 "\t" now "\t" $2 }')"
@@ -1114,6 +1166,16 @@ pending_has() { case "$MATCHES" in *"$1"$'\t'*) return 0 ;; *) return 1 ;; esac;
 # full (kind `shown` from the evaluator). Never emitted as lines; named in the
 # "Already shown this session" footer. Newline-separated slugs.
 SHOWN_AGAIN_SLUGS=""
+# Rows handed to receipt-backed enforcement without being shown: `enforce-*`
+# rows from the evaluator (a tool-event row narrowed out of the reminder, or a
+# HARD `always` rule whose full text was already delivered) and `shown`
+# `always` rows. Six-field enforcement TSV lines, newline-terminated.
+ENFORCE_ONLY_MATCHES=""
+add_enforce_only() { # <slug> <scope> <path> <enf> <rule> <kind>
+  [ -n "$1" ] || return 0
+  case $'\n'"$ENFORCE_ONLY_MATCHES" in *$'\n'"$1"$'\t'*) return 0 ;; esac
+  ENFORCE_ONLY_MATCHES+="$1"$'\t'"$2"$'\t'"$3"$'\t'"${4:-unset}"$'\t'"${5//$'\t'/ }"$'\t'"$6"$'\n'
+}
 add_match() {
   # add_match <slug> <scope> <abs_path> <enforcement> <rule> [reactive|baseline|shown] [once|always] [ok|malformed] [specificity] [staleness] [exempt 0|1] [specific|direct|generic] [trigger-key] [score]
   # Back-compat: add_match <slug> <rule> → scope=core path= enf=unset
@@ -1135,6 +1197,22 @@ add_match() {
   case "$spec" in ''|*[!0-9]*) spec=0 ;; esac
   case "$stale" in ''|*[!0-9]*) stale=0 ;; esac
   case "$score" in ''|*[!0-9]*) score=0 ;; esac
+  case "$kind" in
+    enforce-baseline) add_enforce_only "$slug" "$scope" "$path" "$enf" "$rule" baseline; return 0 ;;
+    # First tool-event match of a narrowed row: shown like any row, and also
+    # handed to enforcement directly, so a cap that drops it from the
+    # reminder cannot drop it from the enforcement set.
+    first-baseline) add_enforce_only "$slug" "$scope" "$path" "$enf" "$rule" baseline; kind=baseline ;;
+    first-*) add_enforce_only "$slug" "$scope" "$path" "$enf" "$rule" reactive; kind=reactive ;;
+    enforce-*) add_enforce_only "$slug" "$scope" "$path" "$enf" "$rule" reactive; return 0 ;;
+    # A SessionStart-only row with no subject match on a tool event: handed
+    # to enforcement and queued for the next prompt or SessionStart.
+    defer-*)
+      add_enforce_only "$slug" "$scope" "$path" "$enf" "$rule" "${kind#defer-}"
+      case $'\n'"$DEFERRED_NEW" in *$'\n'"$slug"$'\t'*) ;; *) DEFERRED_NEW+="$slug"$'\t'"$enf"$'\t'"$score"$'\n' ;; esac
+      return 0 ;;
+    shown) [ "$injv" != "always" ] || add_enforce_only "$slug" "$scope" "$path" "$enf" "$rule" reactive ;;
+  esac
   if [ "$kind" = "shown" ]; then
     [ -n "$slug" ] || return 0
     case "$enf" in hard) ;; *) return 0 ;; esac
@@ -1606,7 +1684,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       scope_key="${scope_hash%% *}"
       CACHE_DIR="$HQ_ROOT/workspace/orchestrator/hook-state/policy-trigger-cache"
       if [ -n "$scope_key" ]; then
-        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v8" "$CACHE_DIR/eval-v10" "$STATS_DIR" 2>/dev/null || true
+        mkdir -p "$CACHE_DIR" "$CACHE_DIR/eval-v8" "$CACHE_DIR/eval-v12" "$STATS_DIR" 2>/dev/null || true
       fi
       if [ -n "$scope_key" ] && [ -d "$CACHE_DIR" ]; then
         CACHE_FILE="$CACHE_DIR/${scope_key}.cache"
@@ -1731,6 +1809,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         append_policy_ledger "$DEDUPE_FILE"
         printf '\034'
         append_policy_ledger "$TURN_FILE"
+        printf '\034tool_baseline=%s\034stop=%s\034' "$TOOL_BASELINE" "$TOOL_STOP_WORDS"
+        append_policy_ledger "$FULL_FILE"
+        printf '\034'
+        append_policy_ledger "$DEFERRED_FILE"
+        printf '\034'
+        append_policy_ledger "$SEEN_FILE"
         printf '\n'
       } | policy_hash 2>/dev/null || true
     )"
@@ -1743,6 +1827,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # records at v1, but namespace evaluation results by evaluator semantics
       # so old verdicts cannot survive case-insensitive trigger matching.
       # v8/v9 rows carry two more fields: relevance class and trigger key.
+      # v12: tool-event rows matched only on generic words (TOOL_STOP_WORDS)
+      # are enforcement-only.
       # v10 rows carry the relevance score as a 14th field and `shown`
       # rows (matched again after a full delivery) for the footer; the
       # command head words are part of the input key.
@@ -1751,14 +1837,14 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       if [ "$EVENT" = "SessionStart" ]; then
         EVAL_CACHE_DIR="$CACHE_DIR/eval-v8"
       else
-        EVAL_CACHE_DIR="$CACHE_DIR/eval-v10"
+        EVAL_CACHE_DIR="$CACHE_DIR/eval-v12"
       fi
       if [ -d "$EVAL_CACHE_DIR" ]; then
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
         if [ "$EVENT" = "SessionStart" ]; then
           EVAL_CACHE_HEADER="hq-policy-eval-v8${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_input_key}"
         else
-          EVAL_CACHE_HEADER="hq-policy-eval-v10${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+          EVAL_CACHE_HEADER="hq-policy-eval-v12${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         fi
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
@@ -1797,6 +1883,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
           -v OUTFACTS="$OUTPUT_FACTS_INLINE" -v OUTFACTS_FILE="$OUTPUT_FACTS_FILE" \
           -v ALREADY_FILE="$DEDUPE_FILE" -v ALREADY_TURN_FILE="$TURN_FILE" \
+          -v ALREADY_FULL_FILE="$FULL_FILE" -v TOOL_BASELINE="$TOOL_BASELINE" \
+          -v TOOL_STOP_WORDS="$TOOL_STOP_WORDS" -v DEFERRED_FILE="$DEFERRED_FILE" \
+          -v EVER_SEEN_FILE="$SEEN_FILE" \
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
           -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" -v TODAY="$STALE_TODAY" \
@@ -1886,7 +1975,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         C=out; cpos=1
         return (cOr()==1 && substr(C,cpos) ~ /^[ ]*$/)
       }
-      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule,evset,chan,rel,tkey,shown) {
+      function finalize(   onpad,ev_on,ai_on,ss_on,matched,r,sc,en,kind,ij,degraded,ws,cache_rule,evset,chan,rel,tkey,shown,toolskip,nosubj,forced) {
         if (whenx=="") return
         if (id=="") id=base(fname)
         # An omitted `on:` defaults to the tool event. The `_omitted_` marker
@@ -1923,6 +2012,24 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # the per-session dedup ledger, so each fires at most once per session.
         ss_on = (index(onpad," SessionStart ")>0)
         if (!ev_on && !ss_on && !(ai_on && INTENT_MODE)) return
+        # Tool events do not REPEAT rules unrelated to the action
+        # (feedback_9eda6433). A SessionStart-only rule (baseline or
+        # conditional), or an unconditional rule that also listens on
+        # SessionStart or UserPromptSubmit, prints on a tool event the first
+        # time it matches in a session, like any other row. Once it has been
+        # delivered (seen set, or full-text ledger), a later tool-event match
+        # is handed to receipt-backed enforcement as an `enforce-*` row only:
+        # not shown, not recorded. A rule that listens only on tool events
+        # keeps matching there, whatever its trigger.
+        toolskip=0
+        if ((EVENT=="PreToolUse" || EVENT=="PostToolUse") && TOOL_BASELINE!="1") {
+          if (!ev_on && !(ai_on && INTENT_MODE)) toolskip=1
+          else if (ev_on && (ss_on || index(onpad," UserPromptSubmit ")>0) && unconditional(whenx)) toolskip=1
+          # Only the repeats are narrowed. The first time such a rule matches
+          # in a session it prints on the tool event, so a subagent, headless
+          # or overnight run with no later prompt still sees it.
+          if (toolskip && !(id in everseen) && !(id in fullalready)) toolskip=2
+        }
         # `inject: always` (default `once`) picks which ledger governs dedup:
         # the per-turn ledger (re-injects each user turn) vs the per-session
         # ledger (fires at most once for the whole session).
@@ -1931,7 +2038,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # full earlier) is still evaluated: when it matches the action again
         # it is reported as a `shown` row for the footer, never as a line.
         shown=0
-        if (ij=="always") { if (id in turnalready) return }        # per-turn dedup ledger
+        if (ij=="always") {                                          # per-turn dedup ledger
+          if (id in turnalready) return
+          # Full text at most once per session: a HARD `always` rule already
+          # delivered in full is a footer slug on later turns.
+          if (enf=="hard" && (id in fullalready)) shown=1
+        }
         else if (id in already) { if (enf=="hard") shown=1; else return }   # per-session dedup ledger
         if (id in emitted) return                                  # de-dup within this run
         if (statx=="retired") return                               # retired policies never inject (policy-retire.sh)
@@ -1955,12 +2067,39 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # enforcement: hard policy degrades to the once-per-session baseline
         # (deprioritized behind real reactive matches, deduped by the session
         # ledger) instead of re-firing forever, and a malformed soft/unset
-        # policy does not inject at all. Both are reported by
+        # policy does not inject at all. On a tool event the fallback row is
+        # enforcement-only (feedback_9eda6433): it did not match the call. Both are reported by
         # core/scripts/lint-policy-triggers.sh and blocked at authoring time by
         # validate-policy-frontmatter.sh.
         if (!matched && degraded && enf=="hard") { matched=1 }
+        # A SessionStart-only rule deferred from a tool event is delivered on
+        # this prompt or SessionStart even when this event does not match it.
+        forced=0
+        if (!matched && !degraded && ss_on && (id in deferred) && (EVENT=="UserPromptSubmit" || EVENT=="SessionStart")) { matched=1; chan="ev"; spec=0; forced=1 }
         if (matched) {
-          emitted[id]=1
+          # Subject match on tool events (feedback_9eda6433). A row is shown
+          # on PreToolUse/PostToolUse only when its trigger matched the tool
+          # call itself on a subject word (see TOOL_STOP_WORDS): not through
+          # an unparseable trigger, and not on generic words alone. An
+          # assistant-intent match counts only on a file name or path the
+          # assistant named for this call (an identifier with "." or "/").
+          # Any other match is enforcement-only here (`enforce-*`, never
+          # recorded as delivered), so the rule reaches the next prompt or
+          # SessionStart instead. A rule with no such later path (it listens
+          # on tool events only) keeps matching here as before, except an
+          # unparseable trigger, which is never shown on a tool call.
+          nosubj=0
+          if (TOOLEV && (degraded || ss_on || index(onpad," UserPromptSubmit ")>0)) {
+            if (degraded) nosubj=1
+            else if (chan=="ai") { if (!path_key(trigger_key(whenx,chan))) nosubj=1 }
+            else if (!subject_key(trigger_key(whenx,chan))) nosubj=1
+          }
+          # A narrowed tool-event row only feeds enforcement; it must not
+          # suppress a displayable copy of the same id from another tree.
+          # A row narrowed for want of a subject word does: it is the
+          # higher-precedence copy, and a lower copy shown in its place would
+          # also replace its enforcement level in policies.tsv.
+          if (toolskip!=1) emitted[id]=1
           sc=scopeof(fname)
           en=(enf=="" ? "unset" : enf)
           ws=(degraded ? "malformed" : "ok")
@@ -1968,8 +2107,16 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
           # if they also carry SessionStart. Conditional SessionStart-only
           # policies are reactive as well: they matched facts from this event.
           # Only the unconditional SessionStart backfill is baseline.
-          kind=((degraded || (ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx))) ? "baseline" : "reactive")
-          if (shown) { if (degraded || chan!="ev" || spec==0) return; kind="shown" }
+          kind=((degraded || forced || (ss_on && !ev_on && !(ai_on && INTENT_MODE) && unconditional(whenx))) ? "baseline" : "reactive")
+          if (shown) {
+            # A HARD `always` rule shown in full earlier this session is
+            # still re-asserted to enforcement every turn, as before; only its
+            # text is not repeated.
+            if (degraded || chan!="ev" || spec==0 || nosubj) { if (ij!="always") return; kind="enforce-" kind }
+            else kind="shown"
+          } else if (nosubj && ss_on && !ev_on && !degraded) kind="defer-" kind
+          else if (toolskip==1 || nosubj) kind="enforce-" kind
+          else if (toolskip==2) kind="first-" kind
           # Relevance to the actual trigger. A row is `direct` only when
           # identifiers in its `when:` are present in the action facts (the
           # command or tool input). Unconditional and negation-only triggers,
@@ -1999,6 +2146,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         for (i=1; i<=n; i++) {
           k=keys[i]; if (k=="") continue
           if (k ~ /[.\/]/) w=3
+          else if (TOOLEV && (k in stopw)) w=0
           else if (k=="secret" || k=="apikey" || k=="shared_branch" || k=="completed") w=2
           else if (k in headw) w=2
           else if (tokdf[k]<=RARE_MAX) w=2
@@ -2011,6 +2159,18 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         if (base==0 && spec>=2) base=1
         if (base>0 && (sc=="company" || sc ~ /^worker:/)) base++
         return base
+      }
+      # subject_key(keys): 1 when any matched identifier in a "+"-joined
+      # trigger key is a subject word, i.e. not in TOOL_STOP_WORDS.
+      function subject_key(keys,   n,a,i) {
+        n=split(keys,a,"+")
+        for (i=1; i<=n; i++) if (a[i]!="" && !(a[i] in stopw)) return 1
+        return 0
+      }
+      function path_key(keys,   n,a,i) {
+        n=split(keys,a,"+")
+        for (i=1; i<=n; i++) if (a[i] ~ /[.\/]/) return 1
+        return 0
       }
       function count_tokens(expr,   s,tok,tok_lc,seen) {
         s=expr; delete seen
@@ -2158,6 +2318,25 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         close(ALREADY_FILE)
         while ((getline turnline < ALREADY_TURN_FILE) > 0) if(turnline!="") turnalready[turnline]=1
         close(ALREADY_TURN_FILE)
+        if (ALREADY_FULL_FILE!="") {
+          while ((getline fullline < ALREADY_FULL_FILE) > 0) if(fullline!="") fullalready[fullline]=1
+          close(ALREADY_FULL_FILE)
+        }
+        # Every slug the seen set recorded as DELIVERED this session (a summary
+        # line), whatever its trigger key or age: a narrowed tool-event row
+        # already delivered once is a repeat. Rows the generic cap parked
+        # unseen carry a fourth `parked` field and do not count.
+        if (EVER_SEEN_FILE!="") {
+          while ((getline seenline < EVER_SEEN_FILE) > 0) { delete sf; split(seenline, sf, "\t"); if (sf[1]!="" && sf[4]!="parked") everseen[sf[1]]=1 }
+          close(EVER_SEEN_FILE)
+        }
+        n=split(TOOL_STOP_WORDS,swa,/[ ,]+/)
+        for(i=1;i<=n;i++) if(swa[i]!="") stopw[tolower(swa[i])]=1
+        TOOLEV=((EVENT=="PreToolUse" || EVENT=="PostToolUse") && TOOL_BASELINE!="1")
+        if ((EVENT=="UserPromptSubmit" || EVENT=="SessionStart") && DEFERRED_FILE!="") {
+          while ((getline dline < DEFERRED_FILE) > 0) if (dline!="") deferred[dline]=1
+          close(DEFERRED_FILE)
+        }
         TODAY_D=civil(TODAY)
         EVREPOS_LC=" " tolower(EVREPOS) " "
         n=split(HEADWORDS,hw,/[ ,]+/)
@@ -2735,7 +2914,7 @@ if [ "$RELEVANCE_CAP" -gt 0 ] && [ "$EVENT" != "SessionStart" ] && [ -n "$MATCHE
   if [ -n "$relevance_parked" ]; then
     # Same row shape as the summary-only seen entries: slug, epoch, trigger key.
     relevance_now="$(date +%s)"
-    relevance_parked="$(printf '%s' "$relevance_parked" | awk -F '\t' -v now="$relevance_now" 'NF { print $1 "\t" now "\t" $2 }')"
+    relevance_parked="$(printf '%s' "$relevance_parked" | awk -F '\t' -v now="$relevance_now" 'NF { print $1 "\t" now "\t" $2 "\tparked" }')"
     record_slugs "$SEEN_FILE" "$relevance_parked"$'\n'
   fi
   MATCHES="$RELEVANCE_KEPT"
@@ -2795,11 +2974,65 @@ if [ -n "$WITHHELD_MATCHES" ]; then
   done <<< "$WITHHELD_MATCHES"
 fi
 
+# Queue SessionStart-only rules a tool event deferred (see DEFERRED_FILE),
+# subject to DEFERRED_CAP: HARD (and gate) rows first, then soft rows by score (highest
+# first, ties by id); soft rows past the session budget are dropped.
+if [ -n "${SESSION_ID:-}" ] && [ -n "$DEFERRED_NEW" ] && [ "${HQ_POLICY_EMIT:-}" != "tsv" ]; then
+  mkdir -p "$DEDUPE_DIR" 2>/dev/null || true
+  deferred_have=""
+  [ -r "$DEFERRED_FILE" ] && deferred_have="$(cat "$DEFERRED_FILE" 2>/dev/null || true)"
+  deferred_soft_have=""
+  [ -r "$DEFERRED_SOFT_FILE" ] && deferred_soft_have="$(cat "$DEFERRED_SOFT_FILE" 2>/dev/null || true)"
+  deferred_soft_used=0
+  while IFS= read -r deferred_slug; do
+    [ -n "$deferred_slug" ] && deferred_soft_used=$((deferred_soft_used + 1))
+  done <<< "$deferred_soft_have"
+  deferred_add=""
+  deferred_soft_add=""
+  while IFS=$'\t' read -r deferred_slug deferred_enf deferred_score; do
+    [ -n "$deferred_slug" ] || continue
+    case $'\n'"$deferred_have"$'\n' in *$'\n'"$deferred_slug"$'\n'*) continue ;; esac
+    if [ "$deferred_enf" != "hard" ] && [ "$deferred_enf" != "gate" ]; then
+      # A soft id that already used the budget does not use it again.
+      case $'\n'"$deferred_soft_have"$'\n' in
+        *$'\n'"$deferred_slug"$'\n'*) ;;
+        *)
+          [ "$deferred_soft_used" -lt "$DEFERRED_CAP" ] || continue
+          deferred_soft_used=$((deferred_soft_used + 1))
+          deferred_soft_add+="$deferred_slug"$'\n'
+          ;;
+      esac
+    fi
+    deferred_add+="$deferred_slug"$'\n'
+    deferred_have+=$'\n'"$deferred_slug"
+  done < <(printf '%s' "$DEFERRED_NEW" | awk -F '\t' 'NF { print (($2 == "hard" || $2 == "gate") ? 0 : 1) "\t" ($3 + 0) "\t" $0 }' \
+             | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2nr -k3,3 | cut -f3-)
+  [ -z "$deferred_add" ] || printf '%s' "$deferred_add" >> "$DEFERRED_FILE" 2>/dev/null || true
+  [ -z "$deferred_soft_add" ] || printf '%s' "$deferred_soft_add" >> "$DEFERRED_SOFT_FILE" 2>/dev/null || true
+fi
+
+# A prompt or SessionStart that force-matched deferred rules consumes them:
+# drop every id this event matched, so an `inject: always` rule is not
+# re-delivered on every later prompt.
+if [ -n "${SESSION_ID:-}" ] && [ -s "$DEFERRED_FILE" ] && [ "${HQ_POLICY_EMIT:-}" != "tsv" ]; then
+  case "$EVENT" in
+    UserPromptSubmit|SessionStart)
+      deferred_keep=""
+      while IFS= read -r deferred_slug; do
+        [ -n "$deferred_slug" ] || continue
+        pending_has "$deferred_slug" && continue
+        deferred_keep+="$deferred_slug"$'\n'
+      done < "$DEFERRED_FILE"
+      printf '%s' "$deferred_keep" > "$DEFERRED_FILE" 2>/dev/null || true
+      ;;
+  esac
+fi
+
 # Persist the final machine-readable match set for receipt-backed enforcement.
 # Prompt prose remains advisory; this TSV is the deterministic hand-off from
 # policy selection to the PreToolUse delivery gate.
 if [ -n "${SESSION_ID:-}" ] \
-   && { [ -n "$MATCHES" ] || [ "$EVENT" = "UserPromptSubmit" ]; } \
+   && { [ -n "$MATCHES" ] || [ -n "$ENFORCE_ONLY_MATCHES" ] || [ "$EVENT" = "UserPromptSubmit" ]; } \
    && [ "${HQ_POLICY_EMIT:-}" != "tsv" ]; then
   ENFORCEMENT_DIR="$HQ_ROOT/workspace/orchestrator/policy-enforcement"
   ENFORCEMENT_MATCHES="$ENFORCEMENT_DIR/${SESSION_ID}.policies.tsv"
@@ -2843,6 +3076,7 @@ if [ -n "${SESSION_ID:-}" ] \
         [ -n "$slug" ] || continue
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$scope" "$path" "$enf" "$rule" "$kind"
       done
+      printf '%s' "$ENFORCE_ONLY_MATCHES"
     } | awk -F '\t' '!seen[$1]++' > "$ENFORCEMENT_TMP"
     mv "$ENFORCEMENT_TMP" "$ENFORCEMENT_MATCHES"
     cleanup_enforcement_lock

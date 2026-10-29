@@ -5,7 +5,7 @@ when: browser || browse || website || webpage || scrape || smoke || (google && d
 on: [UserPromptSubmit, AssistantIntent]
 enforcement: hard
 tier: 1
-version: 4
+version: 5
 created: 2026-03-24
 updated: 2026-09-18
 source: user-correction
@@ -26,12 +26,18 @@ agent-browser is the canonical, sanctioned browser tool for HQ.
 
 **If agent-browser is not installed, install it WITHOUT asking for approval.**
 Check with `command -v agent-browser`; if it is missing, install it with
-`npm install -g agent-browser` (then run `agent-browser install` once to fetch
+`npm install -g agent-browser@0.39.2`, the exact version pinned in
+`core/scripts/install-deps.allow` (then run `agent-browser install` once to fetch
 the Chrome-for-Testing binary) and continue — do **not** pause to ask the user
 whether to install it. This standing auto-install authorization is intentional (product
 direction): the first browser task on a fresh machine must not stall on an
 install-confirmation prompt. (The install itself is the only pre-authorized
 step; the browse work then proceeds under the normal tool-permission flow.)
+
+The supply-chain guard (`block-unsafe-package-install`) allows only that pinned
+global install. An unpinned `npm install -g agent-browser` or `@latest` is
+blocked; use the pinned command above. To move to a newer version, change the
+pin in `install-deps.allow` and this policy in one reviewed PR.
 
 Usage notes:
 - Headed mode via `AGENT_BROWSER_HEADED=1` (or `--headed`) so the user can see

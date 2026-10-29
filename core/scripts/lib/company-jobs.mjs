@@ -41,6 +41,36 @@ export function jobEnvironment(c, secrets = {}) {
   for (const [name, value] of Object.entries(secrets)) env[name] = value;
   return env;
 }
+// Appended to every company job prompt. hq-agent-session parses this envelope
+// for channel "job" whatever the provider (session-reply-contract.sh).
+export const JOB_OUTCOME_INSTRUCTION = [
+  'Scheduled job outcome (required): end your final answer with exactly one JSON object on its own line:',
+  '{"action":"reply","text":"<what you did>","outcome":"complete"} when every requested step ran and its effect happened;',
+  '{"action":"reply","text":"<what happened>","outcome":"blocked","reason":"<short reason>"} when a step could not run (missing file, login, secret, tool or permission);',
+  '{"action":"reply","text":"<what happened>","outcome":"needs_input","reason":"<short reason>"} when you need a person to decide or supply something.',
+  'Report "complete" only for work that actually ran. A run without "complete" is recorded as failed.',
+].join('\n');
+export const JOB_REASON_MAX = 500;
+function boundReason(text, secrets = []) {
+  if (typeof text !== 'string') return '';
+  let out = text;
+  for (const value of secrets) if (typeof value === 'string' && value.length >= 4) out = out.split(value).join('[REDACTED]');
+  out = out.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  return out.length > JOB_REASON_MAX ? out.slice(0, JOB_REASON_MAX - 1) + '…' : out;
+}
+// Decide a run's outcome from the hq-agent-session response of a process that
+// exited 0. Only an explicit outcome "complete" is success.
+export function classifySessionResponse(response, secrets = []) {
+  if (!response || typeof response !== 'object' || response.disposition !== 'reply') {
+    return {outcome:'failed', errorCode:'session_not_successful', reason:boundReason(typeof response?.text === 'string' ? response.text : '', secrets)};
+  }
+  const outcome = response.outcome;
+  if (outcome === 'complete') return {outcome:'succeeded'};
+  const why = typeof response.outcomeReason === 'string' && response.outcomeReason.trim() ? response.outcomeReason : response.text;
+  if (outcome === 'blocked' || outcome === 'failed') return {outcome:'failed', errorCode:'session_blocked', reason:boundReason(why, secrets)};
+  if (outcome === 'needs_input') return {outcome:'failed', errorCode:'session_needs_input', reason:boundReason(why, secrets)};
+  return {outcome:'failed', errorCode:'session_outcome_missing', reason:boundReason(response.text, secrets)};
+}
 export function resolveJobAccount(c = {}) {
   const user = c.jobUser ?? 'hq-jobs';
   if (Number.isInteger(c.jobUid)) {
@@ -637,6 +667,7 @@ export class CompanyRunner {
     if(Number.isFinite(receipt.exitCode))body.exitCode=receipt.exitCode;
     if(typeof receipt.coalesced==='boolean')body.coalesced=receipt.coalesced;
     if(typeof receipt.errorCode==='string')body.errorCode=receipt.errorCode;
+    if(typeof receipt.reason==='string'&&receipt.reason)body.reason=receipt.reason;
     try{await this.api('jobs',body);return true;}
     catch(error){this.warn(JSON.stringify({service:'company-jobs',event:'report_post_failed',jobId:receipt.jobId,runId:receipt.runId,outcome:receipt.outcome,code:error instanceof Refusal?error.code:'report_error',status:error?.status??null}));return false;}
   }
@@ -803,10 +834,20 @@ export class CompanyRunner {
         if(!pre.text.trim()){receipt.outcome='skipped-precondition';return receipt;}
         request.messageText+='\n\nPrecondition output:\n'+pre.text;
       }
+      request.messageText+='\n\n'+JOB_OUTCOME_INSTRUCTION;
       request.messageText+='\n\nExecution fingerprint:\n'+JSON.stringify(fingerprint);
       const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...(signin?{env:{...env,...signin.env},secretNames:[...Object.keys(granted),...Object.keys(signin.env)],redactions:[...values,...Object.values(signin.env)]}:{})}));
       receipt.exitCode=result.code;receipt.outcome=result.code===0?'succeeded':result.code===124?'timeout':'failed';
-      if(result.code===0){let response;try{response=JSON.parse(result.text);}catch{throw new Refusal('invalid_session_response');}requireThat(response.disposition==='reply' && !['failed','blocked'].includes(response.outcome),'session_not_successful');}
+      if(result.code===0){
+        let response;try{response=JSON.parse(result.text);}catch{throw new Refusal('invalid_session_response');}
+        // Exit 0 only says the session process ended cleanly. A run counts as
+        // succeeded only when the agent reports outcome "complete"; anything
+        // else (no outcome, blocked, needs_input) is recorded with its reason.
+        const verdict=classifySessionResponse(response,[...values,...(signin?Object.values(signin.env):[])]);
+        receipt.outcome=verdict.outcome;
+        if(verdict.errorCode)receipt.errorCode=verdict.errorCode;
+        if(verdict.reason)receipt.reason=verdict.reason;
+      }
     }catch(e){receipt.outcome=['secret_denied','provider_not_signed_in','provider_token_expiring','provider_credential_unsafe'].includes(e.code)?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
     finally{
       if(homes)removeRunHome(homes.parent,homes.runHome,account);

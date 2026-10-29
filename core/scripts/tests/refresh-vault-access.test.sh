@@ -96,6 +96,7 @@ mkdir -p "$TMP/hqroot/.hq" "$TMP/hqroot/core/scripts" "$TMP/hqroot/.claude/hooks
   "$TMP/hqroot/companies/acme"
 cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/hqroot/core/scripts/hook-lib.sh"
 cp "$ROOT/.claude/hooks/enforce-vault-write-access.sh" "$TMP/hqroot/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/hqroot/.claude/hooks/"
 cp "$ROOT/.claude/hooks/enforce-vault-write-access-flag.cjs" "$TMP/hqroot/.claude/hooks/"
 printf '%s\n' '{"name":"@indigoai-us/hq-cli","bin":{"hq":"bin/hq"}}' > "$CLI/package.json"
 printf '%s\n' '{"type":"module","exports":{".":{"import":"./index.js"}}}' \

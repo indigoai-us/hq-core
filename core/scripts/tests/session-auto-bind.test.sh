@@ -19,6 +19,7 @@ mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/bin" \
   "$TMP/.grok/hooks"
 
 cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$TMP/.claude/hooks/" 2>/dev/null || true
 cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"

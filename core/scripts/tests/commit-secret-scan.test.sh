@@ -163,6 +163,56 @@ grep -qx -- '--repo' "$T/argv-mid" && o=yes || o=no
 ok "pr-check sends no --repo to a CLI without --allowlist-rev" no "$o"
 grep -qx -- '--repo' "$T/argv-old" && o=yes || o=no
 ok "pr-check sends no --repo to an older CLI" no "$o"
+# A CLI that advertises --range gets one call: --repo <top> --range
+# <base_sha>..HEAD, with no snapshot file list. Its exit code passes through
+# (0, 1, 2); any other non-zero code fails closed as 2.
+cat >"$T/range-hq" <<RANGE
+#!/usr/bin/env bash
+[ "\$1 \$2" = "scan secrets" ] || exit 2
+shift 2
+if [ "\${1:-}" = "--help" ]; then
+  echo "usage: hq scan secrets [--staged] [--repo <dir> [--range <base>[..<head>]] [--allowlist-rev <rev>] [--snapshot-root <dir>]] [files...]"
+  exit 0
+fi
+printf '%s\n' "\$@" >"$T/argv-range"
+exit "\$(cat "$T/range-rc")"
+RANGE
+chmod +x "$T/range-hq"
+git -C "$pr" checkout -q added-then-deleted
+for want in 0 1 2; do
+  echo "$want" >"$T/range-rc"; rm -f "$T/argv-range"
+  (cd "$pr" && HQ_SECRET_SCAN_BIN="$T/range-hq" bash "$S" pr-check base >/dev/null 2>&1)
+  ok "pr-check passes the --range scan's exit $want through" "$want" $?
+done
+echo 127 >"$T/range-rc"
+(cd "$pr" && HQ_SECRET_SCAN_BIN="$T/range-hq" bash "$S" pr-check base >/dev/null 2>&1)
+ok "pr-check fails closed (2) when the --range scan exits 127" 2 $?
+ok "pr-check calls --range <base_sha>..HEAD with --repo <top>" \
+  "--repo|$top|--range|$(git -C "$pr" rev-parse base)..HEAD|" "$(tr '\n' '|' <"$T/argv-range")"
+# An older CLI without --range still gets the snapshot scan.
+rm -f "$T/argv-new"
+(cd "$pr" && HQ_SECRET_SCAN_BIN="$T/argv-hq-new" bash "$S" pr-check base >/dev/null 2>&1)
+grep -qx -- '--snapshot-root' "$T/argv-new" 2>/dev/null && s=yes || s=no
+ok "pr-check keeps the snapshot scan for a CLI without --range" yes "$s"
+grep -qx -- '--range' "$T/argv-new" 2>/dev/null && s=yes || s=no
+ok "pr-check sends no --range to a CLI without it" no "$s"
+# A help text that only mentions --range in prose (no "--range <...>" option)
+# does not switch to the range scan.
+cat >"$T/prose-hq" <<PROSE
+#!/usr/bin/env bash
+[ "\$1 \$2" = "scan secrets" ] || exit 2
+shift 2
+if [ "\${1:-}" = "--help" ]; then
+  echo "usage: hq scan secrets [--staged] [--repo <dir> [--allowlist-rev <rev>] [--snapshot-root <dir>]] [files...]"
+  echo "  --repo <dir>  With --range: the repo to scan"
+  exit 0
+fi
+printf '%s\n' "\$@" >"$T/argv-prose"
+PROSE
+chmod +x "$T/prose-hq"
+(cd "$pr" && HQ_SECRET_SCAN_BIN="$T/prose-hq" bash "$S" pr-check base >/dev/null 2>&1)
+grep -qx -- '--range' "$T/argv-prose" 2>/dev/null && s=yes || s=no
+ok "pr-check needs a --range <...> option, not a prose mention" no "$s"
 
 # --- generated hook scripts quote the HQ path (it contains a space and a quote)
 grep "dispatch pre-commit" "$HOME/.hq/git-hooks/pre-commit" | grep -qF "'$T/my hq'\\''s root'" && q=yes || q=no

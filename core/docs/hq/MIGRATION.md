@@ -2,6 +2,18 @@
 
 Newest release first.
 
+## Release: v16.0.42-beta.28
+
+- No action needed. When `hq dm` explicitly refuses the `/delegate` pickup DM
+  (for example the sender-rule refusal "People can only send human
+  messages"), `core/scripts/hq-delegate-send.sh` now returns the manifest to
+  `verified` and reports that nothing was sent, so running the send again is
+  safe. Before, every non-zero `hq dm` exit was reported as an uncertain
+  delivery and left the manifest at `sending`, which blocked a retry until
+  someone reconciled DM history by hand. Other failures still leave
+  `sending` for `--reconcile`. Regression test:
+  `core/scripts/tests/hq-delegate-send.test.sh` (case 2b).
+
 ## Release: v16.0.41-beta.12
 
 - No action needed. `/handoff` and `/handoff-and-archive` no longer refuse to

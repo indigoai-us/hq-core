@@ -22,7 +22,7 @@
 #                        Everything changed is backed up first.
 #   disable [--dry-run]  put back exactly what `enable` changed
 #   gate                 the pre-commit check itself (used by the dispatcher)
-#   pr-check [BASE]      scan the files a branch changed since BASE
+#   pr-check [BASE]      scan what the branch added since BASE
 #                        (default: origin/HEAD, else origin/main); used by
 #                        /review before a pull request
 #   hook <name> [args]   dispatcher entry point (called by the hook stubs)
@@ -183,6 +183,27 @@ pr_check() {
   fi
   git rev-parse --verify -q "$base" >/dev/null || die "base '$base' not found; pass one: pr-check <base>"
   hq_available || die "the hq CLI with \`hq scan secrets\` ($MIN_HQ or later) is required"
+  # A CLI with --range (hq-cli 5.345.171+) scans only what the branch's
+  # commits added (each commit, merges included, plus the net diff from the
+  # merge-base), with rules and allowlists from the base's .gitleaks.toml. Its
+  # exit code is passed through: 0 clean, 1 possible secret, 2 bad ref or scan
+  # error. Any other non-zero code is reported as 2, so a scan that did not
+  # finish never counts as a pass. Older CLIs use the snapshot scan below.
+  # Only committed changes are scanned; uncommitted edits are not part of the PR.
+  case "$(hq_cmd scan secrets --help 2>&1)" in
+    *"--range <"*)
+      local rbase rtop rrc
+      rbase="$(git rev-parse --verify -q "$base^{commit}")" || die "base '$base' is not a commit"
+      rtop="$(git rev-parse --show-toplevel)"
+      hq_cmd scan secrets --repo "$rtop" --range "$rbase..HEAD"
+      rrc=$?
+      case "$rrc" in
+        0) echo "HQ secret scan: commits since $base, no secrets found." ; return 0 ;;
+        1) return 1 ;;
+        *) echo "HQ secret scan: the scan could not run (exit $rrc); treating it as a failure." >&2; return 2 ;;
+      esac
+      ;;
+  esac
   local top files=() hist n_commits=0 c f
   top="$(git rev-parse --show-toplevel)"
   # The branch's final contents.

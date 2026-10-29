@@ -11,6 +11,8 @@
 //   - the queue must hold an answered or relayed row whose ref is
 //     "merge <owner/repo> <pr> <sha>" (sha prefixes of 7+ match) and whose
 //     answer is a go (Merge, Go, Yes, Approve, Ship), not a hold;
+//     A row whose ref is "merge-batch <owner/repo> <pr:sha> <pr:sha> ..." is
+//     the go for each listed pr:sha pair;
 //   - `gh api .../pulls/<n>/merge` is refused (use gh pr merge).
 // Sessions on no link, or on a link with no decision queue, are not gated.
 //
@@ -134,11 +136,18 @@ const shaMatch = (a, b) => /^[0-9a-f]{7,40}$/.test(a) && /^[0-9a-f]{7,40}$/.test
 export function covered(rows, m) {
   return fold(rows).some((r) => {
     if (!['answered', 'relayed'].includes(r.status)) return false;
-    const ref = /^merge\s+(\S+)\s+#?(\d+)\s+([0-9a-fA-F]{7,40})$/.exec(String(r.ref || '').trim());
-    if (!ref) return false;
+    const text = String(r.ref || '').trim();
     const answer = String(r.answer || '');
-    return ref[1].toLowerCase() === m.repo && ref[2] === m.pr && shaMatch(ref[3].toLowerCase(), m.sha)
-      && GO.test(answer) && !NOGO.test(answer);
+    if (!GO.test(answer) || NOGO.test(answer)) return false;
+    const ref = /^merge\s+(\S+)\s+#?(\d+)\s+([0-9a-fA-F]{7,40})$/.exec(text);
+    if (ref) return ref[1].toLowerCase() === m.repo && ref[2] === m.pr && shaMatch(ref[3].toLowerCase(), m.sha);
+    // Batch go: "merge-batch <owner/repo> <pr:sha> <pr:sha> ..."
+    const batch = /^merge-batch\s+(\S+)\s+(.+)$/.exec(text);
+    if (!batch || batch[1].toLowerCase() !== m.repo) return false;
+    return batch[2].trim().split(/\s+/).some((pair) => {
+      const pr = /^#?(\d+):([0-9a-fA-F]{7,40})$/.exec(pair);
+      return !!pr && pr[1] === m.pr && shaMatch(pr[2].toLowerCase(), m.sha);
+    });
   });
 }
 

@@ -29,6 +29,12 @@
 #   [7] under the output ceiling every listed or cut HARD rule is parked and
 #       comes back in full after the window, never twice.
 set -euo pipefail
+# These fixtures use common verbs (deploy, run, release) as neutral vehicle
+# words for the cap and ceiling mechanics. The tool-event subject filter
+# (feedback_9eda6433) would treat them as generic words and keep them off the
+# tool call, so it is switched off here; inject-policy-tool-subject-match.test.sh
+# covers the filter itself.
+export HQ_POLICY_TOOL_STOP_WORDS=
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 HOOK="${HQ_TEST_INJECT_POLICY_HOOK:-$ROOT/.claude/hooks/inject-policy-on-trigger.sh}"

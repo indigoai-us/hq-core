@@ -14,7 +14,7 @@ Install the CLI globally (the upstream-recommended method), then fetch the
 Chrome-for-Testing binary on first use:
 
 ```bash
-npm install -g agent-browser
+npm install -g agent-browser@0.39.2   # exact pin from core/scripts/install-deps.allow
 agent-browser install   # one-time: downloads Chrome for Testing
 ```
 
@@ -95,7 +95,7 @@ Google Workspace docs need an interactive `--headed` sign-in the first time,
 then `state save` for later `state load`. There is no silent pickup of the
 host Chrome Google login.
 
-If agent-browser is missing, install it (`npm install -g agent-browser &&
+If agent-browser is missing, install it (`npm install -g agent-browser@0.39.2 &&
 agent-browser install`) rather than falling back to coordinate clicks in
 Claude-in-Chrome.
 

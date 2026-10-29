@@ -11,7 +11,7 @@ SHIMS=$TMP/shims
 COUNT_FILE=$TMP/count
 ORIGINAL_PATH=$PATH
 mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/core/scripts/lib" "$FIXTURE/core/scripts" "$FIXTURE/companies/indigo/settings" "$FIXTURE/companies/otherco/settings" "$FIXTURE/companies/_template" "$FIXTURE/personal" "$FIXTURE/workspace/sessions/sess-bound" "$FIXTURE/workspace/sessions/sess-unbound" "$FIXTURE/workspace"
-for path in .claude/hooks/mandatory-scope-authorizer.sh core/scripts/lib/session-authz.sh core/scripts/lib/session-scope-capability.sh core/scripts/lib/session-id.sh core/scripts/hook-lib.sh; do mkdir -p "$FIXTURE/$(dirname "$path")"; cp "$ROOT/$path" "$FIXTURE/$path"; done
+for path in .claude/hooks/bash-arith-subst-guard-lib.sh .claude/hooks/mandatory-scope-authorizer.sh core/scripts/lib/session-authz.sh core/scripts/lib/session-scope-capability.sh core/scripts/lib/session-id.sh core/scripts/hook-lib.sh; do mkdir -p "$FIXTURE/$(dirname "$path")"; cp "$ROOT/$path" "$FIXTURE/$path"; done
 printf 'companies:\n  indigo:\n  otherco:\n' > "$FIXTURE/companies/manifest.yaml"
 touch "$FIXTURE/companies/indigo/settings/.keep" "$FIXTURE/companies/otherco/settings/.keep" "$FIXTURE/personal/note.md" "$FIXTURE/workspace/note.md"
 printf '{"session_id":"sess-bound","company_slug":"indigo"}\n' > "$FIXTURE/workspace/sessions/sess-bound/scope-capability.json"
@@ -33,7 +33,7 @@ run_hook() {
   : > "$COUNT_FILE"
   payload=$(jq -cn --arg cwd "$FIXTURE" --arg tool "$tool" --arg sid "$sid" --arg path "$file" --arg command "$command" '{tool_name:$tool,session_id:$sid,cwd:$cwd,tool_input:{file_path:$path,command:$command}}')
   rc=0
-  printf '%s' "$payload" | env HQ_HOOK_TOOL_NAME="$tool" HQ_HOOK_SESSION_ID="$sid" HQ_HOOK_CWD="$FIXTURE" HQ_HOOK_AGENT_ID="" HQ_HOOK_AGENT_TYPE="" HQ_TEST_COUNT_FILE="$COUNT_FILE" CLAUDE_PROJECT_DIR="$FIXTURE" PATH="$SHIMS:$ORIGINAL_PATH" /bin/bash "$FIXTURE/.claude/hooks/mandatory-scope-authorizer.sh" > "$TMP/$label.out" 2> "$TMP/$label.err" || rc=$?
+  printf '%s' "$payload" | env HQ_HOOK_TOOL_NAME="$tool" HQ_HOOK_SESSION_ID="$sid" HQ_HOOK_CWD="$FIXTURE" HQ_HOOK_AGENT_ID="" HQ_HOOK_AGENT_TYPE="" HQ_TEST_COUNT_FILE="$COUNT_FILE" CLAUDE_PROJECT_DIR="$FIXTURE" PATH="$SHIMS:$ORIGINAL_PATH" "${HOOK_BASH:-/bin/bash}" "$FIXTURE/.claude/hooks/mandatory-scope-authorizer.sh" > "$TMP/$label.out" 2> "$TMP/$label.err" || rc=$?
   printf '%s\n' "$rc" > "$TMP/$label.rc"
 }
 assert_budget() {
@@ -67,7 +67,7 @@ run_hook Write sess-unbound "$FIXTURE/companies/indigo/settings/secret.yaml" '' 
 assert_deny deny-unbound-write "$EXPECT_UNBOUND_WRITE_HASH"
 MASTER=$TMP/master-root
 mkdir -p "$MASTER/.claude/hooks" "$MASTER/core/scripts/lib" "$MASTER/core/scripts" "$MASTER/companies/indigo/settings" "$MASTER/workspace" "$MASTER/personal"
-for path in .claude/hooks/master-hook.sh .claude/hooks/hook-timeout-probe.sh .claude/hooks/hook-timeout-watchdog.sh .claude/hooks/hook-gate.sh .claude/hooks/mandatory-scope-authorizer.sh core/scripts/resolve-hq-root.sh core/scripts/hook-lib.sh core/scripts/lib/hook-adapter-core.sh core/scripts/lib/session-authz.sh core/scripts/lib/session-scope-capability.sh core/scripts/lib/session-id.sh; do mkdir -p "$MASTER/$(dirname "$path")"; cp "$ROOT/$path" "$MASTER/$path"; done
+for path in .claude/hooks/bash-arith-subst-guard-lib.sh .claude/hooks/master-hook.sh .claude/hooks/hook-timeout-probe.sh .claude/hooks/hook-timeout-watchdog.sh .claude/hooks/hook-gate.sh .claude/hooks/mandatory-scope-authorizer.sh core/scripts/resolve-hq-root.sh core/scripts/hook-lib.sh core/scripts/lib/hook-adapter-core.sh core/scripts/lib/session-authz.sh core/scripts/lib/session-scope-capability.sh core/scripts/lib/session-id.sh; do mkdir -p "$MASTER/$(dirname "$path")"; cp "$ROOT/$path" "$MASTER/$path"; done
 cat > "$MASTER/.claude/hooks/hook-registry.json" <<'JSON'
 {"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"id":"mandatory-scope-authorizer","script":".claude/hooks/mandatory-scope-authorizer.sh","timeout":30,"gated":true,"runner":"source"}]}]}}
 JSON

@@ -89,6 +89,10 @@ commands with relative path operands, spell the target from the HQ root (for
 example `ls companies/<company>/projects/<project>/backend`); use `git -C
 <directory>` for Git commands. Do not rely on the tool `workdir` to scope a hook.
 
+The scope hook cannot resolve shell variables (`$VAR`), command substitution
+(`$(...)`), backticks, or globs inside path operands, so it blocks them. Write
+literal absolute paths in Bash commands instead of `cd "$W"` or `git -C "$R"`.
+
 ## Communication
 
 Default to quiet, plain-language status. Surface only completion, blockers,

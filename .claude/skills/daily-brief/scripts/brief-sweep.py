@@ -45,9 +45,9 @@ Rules baked in:
 - No secrets are read or printed. gh runs with the user's own login.
 - Previous runs are read only, through workspace/brief/index.jsonl.
 """
-import argparse, json, os, re, subprocess, sys, tempfile, datetime as dt
+import argparse, copy, json, os, re, subprocess, sys, tempfile, time, datetime as dt
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 def run(cmd, timeout=90):
     env = {k: v for k, v in os.environ.items() if k not in ('GH_TOKEN', 'GITHUB_TOKEN')}
@@ -64,13 +64,18 @@ def jrun(cmd, timeout=90):
     return json.loads(out[i:])
 
 SOURCES = {}
+# wall seconds per source, written to brief-data.json `timings`
+TIMINGS = {}
 NEEDS_COMPANY = 'needs a company'
 # Company briefs cannot filter `hq dm inbox` until messages carry a slug field.
 INBOX_NO_COMPANY_TAG = 'inbox has no company tag'
 # Slug fields the inbox would have to expose. `companyUid` is an opaque id, not one of these.
 COMPANY_TAG_KEYS = ('company', 'companySlug', 'company_slug')
 # Sources that read one company's data; a brief with no company skips them.
-COMPANY_SOURCES = ('meetings', 'meeting_signals', 'fleet', 'integrations')
+COMPANY_SOURCES = ('meetings', 'synced_signals', 'meeting_signals', 'fleet', 'integrations')
+# Sweep steps that read nothing another step produced, so they run at once.
+# synced_signals is local file reads only, so it starts with them.
+INDEPENDENT_SOURCES = ('sessions', 'meetings', 'synced_signals', 'dms', 'fleet', 'prs')
 # sessions[].company for the person's own rows when the brief has no company.
 PERSONAL_TAG = 'personal'
 
@@ -107,8 +112,8 @@ def count_of(v):
 
 # Plain names for failure notes. Exception text never reaches brief data; it
 # goes to stderr.
-SOURCE_LABELS = {'signals_alltime': 'signals', 'main_health': 'main-branch builds', 'prs': 'pull requests',
-                 'dms': 'DMs', 'fleet': 'agents', 'brief_history': 'brief history', 'welcome': 'welcome history'}
+SOURCE_LABELS = {'main_health': 'main-branch builds', 'prs': 'pull requests',
+                 'dms': 'DMs', 'fleet': 'agents', 'synced_signals': 'synced signals', 'brief_history': 'brief history', 'welcome': 'welcome history'}
 
 
 def plain_note(name):
@@ -125,6 +130,7 @@ def failure(name, exc):
 def source(name):
     def deco(fn):
         def wrapped(*a, **k):
+            t0 = time.monotonic()
             try:
                 v = fn(*a, **k)
                 SOURCES[name] = {'ok': True, 'state': 'ok', 'count': count_of(v)}
@@ -136,6 +142,9 @@ def source(name):
                 SOURCES[name] = {'ok': False, 'state': 'failed', 'note': note, 'error': note}
                 print(f'[sweep] {name} failed: {e}', file=sys.stderr)
                 return None
+            finally:
+                # wall seconds per source, so a slow brief shows where the time went
+                TIMINGS[name] = round(time.monotonic() - t0, 1)
         return wrapped
     return deco
 
@@ -217,8 +226,11 @@ def meetings(company, since):
     for m in rows:
         start = m.get('startTime') or m.get('start') or m.get('date') or ''
         if start[:10] >= since:
+            # recordedByCaller: the person's own recorder took this call, so it is theirs
+            # even when the participant list is missing.
             keep.append({'id': m.get('id') or m.get('meetingId'), 'title': m.get('title'), 'start': start,
-                         'status': m.get('status'), 'participants': m.get('participants') or m.get('participantCount')})
+                         'status': m.get('status'), 'participants': m.get('participants') or m.get('participantCount'),
+                         'recorded_by_me': bool(m.get('recordedByCaller'))})
     return keep
 
 
@@ -257,8 +269,10 @@ def meeting_detail_fields(detail):
 
 
 def attended(meeting, signals, me_names):
-    """True when the person is in the participants, named in the title, or owns
-    one of the meeting's decisions or action items."""
+    """True when the person's own recorder took the meeting, they are in the
+    participants, named in the title, or own one of its decisions or action items."""
+    if meeting.get('recorded_by_me'):
+        return True
     for n in _names(meeting.get('participants')):
         if is_mine(n, me_names):
             return True
@@ -315,7 +329,7 @@ def in_window(start, lo, hi):
 
 def enrich_meetings(rows, signals, me_names, lo, hi):
     """meetings[] for brief-data.json: participants, end and duration_min from the
-    `hq meetings get` details the signals step already fetched, `attended`, only
+    meeting signal rows (`detail` when a row carries one), `attended`, only
     meetings whose start is inside [lo, hi] (the session window, or the catch-up
     gap), deduped by title+start."""
     by_id = {s.get('meeting_id'): s for s in signals or [] if isinstance(s, dict) and s.get('meeting_id')}
@@ -337,14 +351,59 @@ def enrich_meetings(rows, signals, me_names, lo, hi):
     for row in out:
         sigs = [by_id[i] for i in [row.get('id')] + row.get('duplicate_ids', []) if i in by_id]
         row['attended'] = attended(row, sigs, me_names)
+        row['whose'] = 'mine' if row['attended'] else 'team'
+    return out
+
+
+def split_meetings(rows, me_names, window=None):
+    """(mine, team) for the loader: meetings inside `window` (start, end) when
+    given, split by `attended` on what the list already knows (own recorder,
+    names in the title, participant names when present)."""
+    mine, team = [], []
+    # Folded like meetings[] (the recorder sometimes stores one call twice), so the loader
+    # never counts more of your meetings than the brief does.
+    for m in dedupe_meetings(rows or []):
+        if window and not in_window(m.get('start'), *window):
+            continue
+        (mine if attended(m, [], me_names) else team).append(m)
+    return mine, team
+
+
+def rollup_meetings(rows, signals, me_names):
+    """(date, mine) per meeting for the per-day rollup. `meetings` in `days` is the
+    person's own meetings (the week arc and the app read it as "your meetings");
+    teammates' meetings are counted apart as `team_meetings`. Deduped like
+    meetings[], so one call stored twice counts once."""
+    by_id = {s.get('meeting_id'): s for s in signals or [] if isinstance(s, dict) and s.get('meeting_id')}
+    out = []
+    for m in dedupe_meetings(rows or []):
+        start = m.get('start') or ''
+        if not start:
+            continue
+        sigs = [by_id[i] for i in [m.get('id')] + m.get('duplicate_ids', []) if i in by_id]
+        row = dict(m)
+        det = (sigs[0].get('detail') or {}) if sigs else {}
+        if det.get('participants'):
+            row['participants'] = det['participants']
+        out.append((start[:10], attended(row, sigs, me_names)))
+    return out
+
+
+def signal_rows_mine(rows, me_names):
+    """Signal rows from the person's meetings, plus any row with an item they own."""
+    out = []
+    for s in rows or []:
+        if not isinstance(s, dict):
+            continue
+        det = s.get('detail') or {}
+        m = {'title': s.get('meeting'), 'participants': det.get('participants'),
+             'recorded_by_me': s.get('recorded_by_me')}
+        if attended(m, [s], me_names):
+            out.append(s)
     return out
 
 # ---------- meeting signal text (pure helpers tested in test_brief_helpers.py) ----------
-SIGNAL_TEXT_TYPES = ('decision', 'action_item')
-SIGNALS_PER_TYPE = 5
 SIGNAL_TEXT_CHARS = 240
-BODY_FETCH_TIMEOUT_S = 8
-BODY_BUDGET_S = 20          # per meeting, all bodies together
 
 
 def _frontmatter(md):
@@ -412,68 +471,74 @@ def signal_entry_text(entry, fetch, me_names=()):
     return r if r['text'] else None
 
 
-def _fetch_body(url):
-    import urllib.request
-    with urllib.request.urlopen(url, timeout=BODY_FETCH_TIMEOUT_S) as resp:
-        return resp.read(64 * 1024).decode('utf-8', 'replace')
+# Synced signals for this run (set by synced_signals, read by meeting_signals).
+SYNCED = {}
+
+
+def hq_identity(timeout=5):
+    """(email, personUid) from `hq whoami --json`, or None when the CLI is
+    missing, signed out, or the output is unusable."""
+    try:
+        out = subprocess.run(['hq', 'whoami', '--json'], capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        d = json.loads(out.stdout)
+    except ValueError:
+        m = re.search(r'Logged in as (\S+@\S+) \(([^)]+)\)', out.stdout or '')
+        return (m.group(1), m.group(2)) if m else None
+    if not isinstance(d, dict) or d.get('authenticated') is False:
+        return None
+    email = d.get('email') if isinstance(d.get('email'), str) and '@' in d.get('email') else None
+    uid = d.get('personUid') if isinstance(d.get('personUid'), str) and d.get('personUid') else None
+    return (email, uid) if email or uid else None
+
+
+def resolve_identity(flag_email=None, whoami=None):
+    """(email, uid, source). The HQ login wins; --email, then git config
+    user.email, only when `hq whoami` is unavailable."""
+    who = (whoami or hq_identity)()
+    if who:
+        return who[0], who[1], 'hq-whoami'
+    if flag_email:
+        return flag_email, None, 'flag'
+    try:
+        email = subprocess.run(['git', 'config', 'user.email'], capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except Exception:
+        email = None
+    return email, None, 'git'
+
+
+@source('synced_signals')
+def synced_signals(hq_root, company, now, hours=24, email=None, uid=None, identity_source=None):
+    """The last `hours` of signals the hot-channel sync already wrote to the
+    company vault, read through `signals/_index/`. No integration or network
+    call: the brief cites what was synced and says when the sync is behind."""
+    if not company:
+        raise SourceSkipped(NEEDS_COMPANY)
+    bs = _sibling('brief_signals')
+    res = bs.collect(os.path.join(hq_root, 'companies', company), now, hours, email, uid, identity_source)
+    SYNCED.clear()
+    SYNCED.update(res)
+    return res
 
 
 @source('meeting_signals')
 def meeting_signals(company, mtgs, on_progress=None, me_names=()):
-    # One `hq meetings get` per meeting takes seconds each; fetch in parallel and
-    # report each completion so the app's counters keep moving during this step.
-    # Up to 5 decisions and 5 action items per meeting carry their text (from the
-    # signal summary, never the transcript); presigned URLs are never stored.
-    todo = [m for m in mtgs or [] if m.get('id')]
+    """Decisions and action items per meeting, built from synced meeting signals
+    (no per-meeting `hq meetings get`). Up to 5 of each per meeting; every item
+    keeps the source_ref it was extracted from."""
+    if not SYNCED:
+        # synced_signals failed: say so instead of reporting zero meeting signals
+        raise RuntimeError('synced signals were not read')
+    bs = _sibling('brief_signals')
+    rows = bs.meeting_rows(SYNCED.get('lines') or [], mtgs, lambda o: is_mine(o, me_names))
+    if on_progress:
+        on_progress(len(rows), len(rows), rows)
+    return rows
 
-    def texts(sig):
-        import time
-        deadline = time.monotonic() + BODY_BUDGET_S
-        out = {t: [] for t in SIGNAL_TEXT_TYPES}
-        jobs = [(t, e) for t in SIGNAL_TEXT_TYPES for e in (sig.get(t) or sig.get(t + 's') or [])[:SIGNALS_PER_TYPE]]
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            futs = [(t, ex.submit(signal_entry_text, e, _fetch_body, me_names)) for t, e in jobs]
-            for t, f in futs:
-                try:
-                    r = f.result(timeout=max(0.1, deadline - time.monotonic()))
-                except Exception:
-                    continue
-                if r:
-                    out[t].append(r)
-        return out
-
-    def one(m):
-        try:
-            d = jrun(['hq', 'meetings', 'get', m['id'], '--company', company, '--json'], timeout=60)
-        except Exception as e:
-            return {'meeting': m['title'], **failure('meeting', e)}
-        sig = d.get('signals') or {}
-        t = texts(sig)
-        return {'meeting': m['title'], 'meeting_id': m['id'], 'start': m['start'],
-                'counts': {k: len(v) for k, v in sig.items() if isinstance(v, list)},
-                'decisions': t['decision'], 'action_items': t['action_item'],
-                # participants, end and duration for meetings[] (no second `get`)
-                'detail': meeting_detail_fields(d)}
-
-    out = [None] * len(todo)
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(one, m): i for i, m in enumerate(todo)}
-        for n, f in enumerate(as_completed(futs), 1):
-            out[futs[f]] = f.result()
-            if on_progress:
-                on_progress(n, len(todo), [x for x in out if x])
-    return out
-
-@source('signals_alltime')
-def signals(company):
-    out = {}
-    for t in ['decision', 'action_item', 'risk', 'commitment', 'key_point']:
-        try:
-            d = jrun(['hq', 'signals', 'list', '--entity', company, '--type', t, '--limit', '25', '--format', 'json'])
-            out[t] = d.get('entries', d) if isinstance(d, dict) else d
-        except Exception as e:
-            out[t] = failure(t.replace('_', ' ') + ' signals', e)
-    return out
 
 DM_LIMIT = 40
 # A DM that asks the person for something. The writer confirms every flag by
@@ -551,23 +616,32 @@ def inbox_lacks_company_tag(rows):
     return bool(items) and not any(has_company_tag(m) for m in items)
 
 
-def scope_dms(rows, company):
+def scope_dms(rows, company, senders=None):
     """dms[] rows that belong in this brief.
 
     A company brief keeps only that company's messages, so another company's
     text never becomes a preview. A personal brief keeps only personal messages.
+    A message with no company field is attributed by its sender when `senders`
+    ({sender id: slug}, see brief_company.sender_map) names exactly one company;
+    an explicit field on the message, even a blank or `personal` one, wins.
+    Each row records `company_basis`: `tag`, `sender` or null.
     """
     out = []
     for message in rows or []:
         if not isinstance(message, dict):
             continue
         slug = message_company(message)
+        basis = 'tag' if has_company_tag(message) else None
+        if basis is None and senders:
+            slug, basis = _sibling('brief_company').dm_company(message, senders)
         if company:
             if slug != company:
                 continue
         elif slug is not None:
             continue
-        out.append(dm_row(message))
+        row = dm_row(message)
+        row['company_basis'] = basis
+        out.append(row)
     return out
 
 
@@ -607,11 +681,23 @@ def dms(company):
     `inbox has no company tag` instead of an empty success. A personal brief
     still keeps messages with no company. An empty page stays an empty result.
     """
-    payload = jrun(['hq', 'dm', 'inbox', '--limit', str(DM_LIMIT), '--json'])
+    if _INBOX_CACHE is None:
+        payload = jrun(['hq', 'dm', 'inbox', '--limit', str(DM_LIMIT), '--json'])
+    else:
+        if 'payload' not in _INBOX_CACHE:
+            _INBOX_CACHE['payload'] = jrun(['hq', 'dm', 'inbox', '--limit', str(DM_LIMIT), '--json'])
+        payload = _INBOX_CACHE['payload']
     rows = inbox_rows(payload)
-    if company and inbox_lacks_company_tag(rows):
+    if company and inbox_lacks_company_tag(rows) and DM_SENDERS is None:
         raise SourceSkipped(INBOX_NO_COMPANY_TAG)
-    return scope_dms(rows, company)
+    return scope_dms(rows, company, DM_SENDERS)
+
+
+# One inbox read per person run (person_sweep sets it to {}); None: no caching.
+_INBOX_CACHE = None
+# {sender id: company slug} for senders in exactly one included company, set by
+# person_sweep; None when sender attribution is off (see brief_company.py).
+DM_SENDERS = None
 
 
 # ---------- fleet (pure helpers tested in test_brief_helpers.py) ----------
@@ -801,7 +887,61 @@ def prs(org, since):
     Read-only gh search, across every owner unless `org` is set. `author` is the login; `review_requested` marks the
     PRs that came from the review-request search (gh search has no reviewRequests
     field, so the search itself is the evidence). Open rows are then enriched
-    with reviewDecision and reviewers through a bounded `gh pr view`."""
+    with reviewDecision and reviewers through a bounded `gh pr view`.
+    A person brief runs one search per section; the result is cached per (org, since)
+    so sections that search every owner share one search."""
+    if _PR_CACHE is None:
+        return _prs_search(org, since)
+    key = (org, since)
+    if key not in _PR_CACHE:
+        _PR_CACHE[key] = _prs_search(org, since)
+    return copy.deepcopy(_PR_CACHE[key])
+
+
+# Set to {} by person_sweep for the length of one person run; None: no caching.
+_PR_CACHE = None
+_REPO_MAP = {}
+
+
+def repo_map_for(hq_root, owners, companies=()):
+    """brief_company.company_repo_map for the locked `companies`, read once per process.
+    A failure returns None: PRs are then scoped by explicit owners only, as before."""
+    key = (hq_root, tuple(sorted(companies or ())))
+    if key not in _REPO_MAP:
+        try:
+            _REPO_MAP[key] = _sibling('brief_company').company_repo_map(hq_root, owners, companies=list(key[1]),
+                                                                       run_json=lambda cmd: jrun(cmd, timeout=10))
+        except Exception as e:
+            print(f'[sweep] repo map failed: {e}', file=sys.stderr)
+            _REPO_MAP[key] = None
+    return _REPO_MAP[key]
+
+
+def locked_companies(a, person_section):
+    """The companies whose repos the PR map may read: the person run's included set, the
+    one --company, or the session lock on a --personal brief (none when unreadable)."""
+    if person_section and LOCKED is not None:
+        return list(LOCKED)
+    if a.company:
+        return [a.company]
+    try:
+        return read_session_lock(a.hq_root)
+    except Exception:
+        return []
+
+
+# The person run's included companies (set by person_sweep); None outside a person run.
+LOCKED = None
+
+
+def company_has_repos(repo_map, company):
+    """True when the repo map ties any repo or owner to `company`."""
+    if not (repo_map and company):
+        return False
+    return any(company == v for table in (repo_map.get('full') or {}, repo_map.get('owner') or {}) for v in table.values())
+
+
+def _prs_search(org, since):
     owner = ['--owner', org] if org else []
     mine = jrun(['gh', 'search', 'prs', '--author', '@me', *owner, '--updated', f'>={since}',
                  '--limit', '1000', '--json', PR_FIELDS])
@@ -1108,8 +1248,9 @@ def _now():
 
 class Status:
     """Merges live progress into the run's status.json so the app can animate it."""
-    def __init__(self, path, company, window=None):
-        self.path, self.company, self.window = path, company, window
+    def __init__(self, path, company, window=None, me_names=(), meetings_window=None):
+        self.path, self.company, self.window, self.me_names = path, company, window, me_names
+        self.meetings_window = meetings_window
 
     def _write(self, fn):
         if not self.path:
@@ -1159,16 +1300,21 @@ class Status:
                 act.update({'at': _now(), 'label': label, 'state': 'skipped', 'detail': reason})
                 return
             ok = src.get('ok', False)
-            label, detail = summarize(key, value, self.company, s['findings'], s['samples'], self.window)
+            label, detail = summarize(key, value, self.company, s['findings'], s['samples'], self.window, self.me_names,
+                                      self.meetings_window)
             act.update({'at': _now(), 'label': label if ok else act.get('label', key),
                         'state': 'done' if ok else 'failed',
                         'detail': detail if ok else (src.get('note') or plain_note(key))[:80]})
         self._write(f)
 
-def summarize(key, v, company, findings, samples, window=None):
+def summarize(key, v, company, findings, samples, window=None, me_names=(), meetings_window=None):
     """Plain label + findings counts + company-only samples for one source.
-    `window` is (start, end) datetimes; PR counts use it so the loader shows the
-    same numbers as brief-data.json's prs_summary and the brief."""
+    `window` is (start, end) datetimes; PR and meeting counts use it so the loader
+    shows the same numbers as brief-data.json and the brief. Meetings and their
+    signals count the person's own meetings; teammates' meetings are counted
+    apart (`meetings_team`) and never sampled. `meetings_window` is the meetings
+    window when it differs (a catch-up brief reaches back further for meetings
+    than for PRs)."""
     if v is None:
         return key, ''
     if key == 'sessions':
@@ -1180,13 +1326,23 @@ def summarize(key, v, company, findings, samples, window=None):
         bits.append(f'{len(v) - len(mine) - len(runs)} elsewhere, counted only')
         return f'Read {len(mine)} work sessions', ', '.join(bits)
     if key == 'meetings':
-        findings['meetings'] = len(v)
-        for m in v[-2:]:
+        mine, team = split_meetings(v, me_names, meetings_window or window)
+        findings['meetings'] = len(mine)
+        findings['meetings_team'] = len(team)
+        for m in mine[-2:]:
             samples.append({'kind': 'meeting', 'title': (m.get('title') or 'Meeting')[:70], 'company': company, 'at': m.get('start')})
-        return f'Found {len(v)} meetings', ''
+        return f'Found {len(mine)} of your meetings', f'{len(team)} team meetings, counted only' if team else ''
+    if key == 'synced_signals':
+        lines = v.get('lines') or []
+        by_type = Counter(x.get('type') for x in lines)
+        findings['synced_signals'] = {'total': len(lines), 'behind': bool(v.get('lag'))}
+        detail = ', '.join(f"{c} {(t or 'other').replace('_', ' ')}s" for t, c in by_type.most_common(3))
+        if v.get('lag'):
+            detail = ', '.join(x for x in (detail, 'sync is behind') if x)
+        return f'Read {len(lines)} synced signals', detail
     if key == 'meeting_signals':
         tot = Counter()
-        for m in v:
+        for m in signal_rows_mine(v, me_names):
             tot.update(m.get('counts') or {})
         sig = findings.setdefault('signals', {})
         for t in ('decision', 'action_item', 'risk', 'commitment', 'key_point'):
@@ -1956,6 +2112,9 @@ def tag_items(section, company):
     for key in ('sessions', 'meetings', 'meeting_signals', 'dms', 'prs', 'releases'):
         if isinstance(section.get(key), list):
             section[key] = rows(section[key], key)
+    synced = section.get('synced_signals')
+    if isinstance(synced, dict) and isinstance(synced.get('lines'), list):
+        synced['lines'] = rows(synced['lines'], 'synced_signals.lines')
     for meeting in section.get('meeting_signals') or []:
         for key in ('decisions', 'action_items'):
             if isinstance(meeting.get(key), list):
@@ -1994,6 +2153,32 @@ def person_sweep(a):
                              for slug in members if slug not in locked]}
     for key, error in errors.items():
         data['sources'][key] = {'state': 'failed', 'ok': False, 'error': error}
+    # One PR search and one inbox read shared by every section of this run.
+    global DM_SENDERS, _PR_CACHE, _INBOX_CACHE
+    _PR_CACHE, _INBOX_CACHE = {}, {}
+    # DM sender attribution: rosters of the included companies only. Any failure here
+    # (the helper missing, a roster unread) leaves attribution off, the earlier behavior.
+    global LOCKED
+    LOCKED = list(included)
+    DM_SENDERS = None
+    member_names = {}  # {company slug: {person id or email: member name}}, for display names
+    if included:
+        skipped = {'state': 'skipped', 'ok': False,
+                   'skipped_reason': 'Could not read a company member list, so DMs are not sorted by sender.'}
+        try:
+            bc = _sibling('brief_company')
+            rosters, roster_error = bc.read_rosters(included, lambda cmd: jrun(cmd, timeout=bc.ROSTER_TIMEOUT_S),
+                                                    names_out=member_names)
+            if roster_error:
+                data['sources']['dm_attribution'] = skipped
+            else:
+                DM_SENDERS = bc.sender_map(rosters)
+                data['sources']['dm_attribution'] = {'state': 'ok', 'ok': True, 'basis': 'sender',
+                                                     'count': len(DM_SENDERS)}
+        except Exception as e:
+            print(f'[sweep] DM attribution failed: {e}', file=sys.stderr)
+            DM_SENDERS, member_names = None, {}
+            data['sources']['dm_attribution'] = skipped
     brief_dir = os.path.join(a.hq_root, 'workspace', 'brief')
     run_id = os.path.basename(os.path.dirname(os.path.abspath(a.out)))
     runs = ready_runs(os.path.join(brief_dir, 'index.jsonl'), run_id)
@@ -2007,7 +2192,7 @@ def person_sweep(a):
             args = ['--company', slug] if slug else ['--personal']
             args += ['--hq-root', a.hq_root, '--out', out, '--days', str(a.days),
                      '--hours', str(a.hours), '--today', a.today]
-            for flag, value in [('--now', a.now), ('--org', a.org if not slug else None), ('--repos', a.repos if not slug else None)]:
+            for flag, value in [('--now', a.now), ('--email', a.email), ('--org', a.org if not slug else None), ('--repos', a.repos if not slug else None)]:
                 if value:
                     args += [flag, value]
             for name in a.me or []:
@@ -2050,6 +2235,23 @@ def person_sweep(a):
                     step='Collected personal work' if slug is None else 'Finished company ' + slug,
                     companies={co: {'sources': part['sources']} for co, part in data['companies'].items()},
                     not_included=data['not_included'], sources=data['sources']))
+    _PR_CACHE = _INBOX_CACHE = DM_SENDERS = LOCKED = None
+    # Display first names for DM senders and PR authors: member lists, GitHub profile
+    # names for logins (bounded), then the handle itself.
+    try:
+        bc = _sibling('brief_company')
+        parts = [data.get('personal') or {}] + list(data['companies'].values())
+        logins = {p.get('author') for part in parts for p in part.get('prs') or []
+                  if isinstance(p, dict) and p.get('author') and not p.get('authored_by_me')}
+        github = bc.github_names(logins, lambda cmd: jrun(cmd, timeout=10))
+        # Each section is named from its own company's member list only; the personal
+        # section from GitHub profile names and email shapes only.
+        for slug, part in [(None, data.get('personal') or {})] + list(data['companies'].items()):
+            names = member_names.get(slug, {}) if slug else {}
+            full_names = sorted({n for n in names.values() if ' ' in n})
+            bc.resolve_names(part, names, full_names, github)
+    except Exception as e:
+        print(f'[sweep] display names failed: {e}', file=sys.stderr)
     data['welcome'] = None
     if a.welcome or not runs or not members:
         try:
@@ -2093,12 +2295,14 @@ def main(argv=None, person_section=False):
     ap.add_argument('--status', default=None, help='status.json to update live with activity, findings and samples')
     ap.add_argument('--me', action='append', default=None,
                     help='name(s) that mean the user in meeting signals (default: git user.name)')
+    ap.add_argument('--email', default=None,
+                    help="the person's email; used for synced signals only when hq whoami is unavailable (then git user.email)")
     a = ap.parse_args(argv)
     if not 1 <= a.days <= 14:
         ap.error('--days must be between 1 and 14')
     if not a.company and not a.personal:
         return person_sweep(a)
-    SOURCES.clear()
+    SOURCES.clear(); TIMINGS.clear()
     if a.company:
         try:
             locked = read_session_lock(a.hq_root)
@@ -2119,6 +2323,8 @@ def main(argv=None, person_section=False):
             me_names = [n] if n else []
         except Exception:
             me_names = []
+    email, uid, identity_source = resolve_identity(a.email)
+    SYNCED.clear()
     today = dt.date.fromisoformat(a.today)
     days = [(today - dt.timedelta(days=i)).isoformat() for i in range(a.days, 0, -1)]
     now = dt.datetime.fromisoformat(a.now.replace('Z', '+00:00')) if a.now else dt.datetime.now(dt.timezone.utc)
@@ -2134,7 +2340,7 @@ def main(argv=None, person_section=False):
     if a.catch_up:
         day0 = dt.datetime.combine(dt.date.fromisoformat(days[0]), dt.time.min).astimezone()
         meetings_from = min(sess_from, day0.astimezone(dt.timezone.utc))
-    st = Status(a.status, a.company, (sess_from, now))
+    st = Status(a.status, a.company, (sess_from, now), me_names, (meetings_from, now))
     run_id = os.path.basename(os.path.dirname(os.path.abspath(a.out)))
     data = {
         'generated_at': dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds'),
@@ -2147,6 +2353,7 @@ def main(argv=None, person_section=False):
     steps = [
         ('sessions', 'Reading your work sessions', lambda: sessions(a.hq_root, sess_from, now, a.company)),
         ('meetings', 'Finding your meetings', lambda: meetings(a.company, since)),
+        ('synced_signals', 'Reading synced signals', lambda: synced_signals(a.hq_root, a.company, now, a.hours, email, uid, identity_source)),
         ('meeting_signals', 'Pulling decisions and action items from meetings', lambda: meeting_signals(a.company, data.get('meetings'), on_meeting, me_names)),
         ('dms', 'Checking your DMs', lambda: dms(a.company)),
         ('fleet', 'Checking your agents', lambda: fleet(a.company)),
@@ -2169,34 +2376,57 @@ def main(argv=None, person_section=False):
         lo = 0.25 + 0.45 * sig_i / len(steps)
         p = lo + (0.45 / len(steps)) * n / max(total, 1)
         st.tick(f'{n} of {total} meetings read', p,
-                lambda fd: summarize('meeting_signals', done, a.company, fd, [], (sess_from, now)))
+                lambda fd: summarize('meeting_signals', done, a.company, fd, [], (sess_from, now), me_names))
 
-    for i, (key, label, fn) in enumerate(steps):
-        st.start(label, 0.25 + 0.45 * i / len(steps))
-        if person_section and a.company and key == 'prs' and not org:
-            skip_source('prs')
-            SOURCES['prs']['skipped_reason'] = 'company has no GitHub owner mapping'
-            data[key] = None
-        else:
-            data[key] = fn()
-        if key == 'prs' and data['prs'] is not None:
-            if person_section and a.company:
-                data['prs'] = [p for p in data['prs'] if (p.get('repo_full') or '').split('/')[0].lower() == org.lower()]
-            data['prs'], data['prs_other'] = scope_prs(data['prs'], a.company, owners)
-            SOURCES.get('prs', {}).update(count=len(data['prs']), other=data['prs_other'])
-        if person_section:
-            tag_items(data, a.company)
-        st.finish(key, data[key], SOURCES.get(key, {}), 0.25 + 0.45 * (i + 1) / len(steps))
-    # Every meeting fetched feeds the per-day rollup; meetings[] itself keeps only
+    # Which company each PR belongs to: the manifest's repos and their remotes.
+    repo_map = repo_map_for(a.hq_root, owners, locked_companies(a, person_section))
+    # Sources that need nothing from another source start together; the loop below
+    # still walks the steps in order (live status, PR routing, the dependent steps
+    # meeting_signals and main_health), taking each prefetched result as it comes.
+    skip_prs = bool(person_section and a.company and not org and not company_has_repos(repo_map, a.company))
+    pool = ThreadPoolExecutor(max_workers=len(INDEPENDENT_SOURCES))
+    early = {k: pool.submit(fn) for k, _, fn in steps
+             if k in INDEPENDENT_SOURCES and not (k == 'prs' and skip_prs)}
+    try:
+        for i, (key, label, fn) in enumerate(steps):
+            st.start(label, 0.25 + 0.45 * i / len(steps))
+            if key == 'prs' and skip_prs:
+                skip_source('prs')
+                SOURCES['prs']['skipped_reason'] = 'company has no GitHub owner mapping'
+                data[key] = None
+            else:
+                data[key] = early[key].result() if key in early else fn()
+            if key == 'prs' and data['prs'] is not None:
+                if person_section and a.company:
+                    # Only rows the repo map ties to this company (or unmapped rows under its own org).
+                    data['prs'], data['prs_other'] = _sibling('brief_company').route_prs(data['prs'], a.company, repo_map, org)
+                else:
+                    data['prs'], data['prs_other'] = scope_prs(data['prs'], a.company, owners)
+                    if repo_map:
+                        data['prs'], routed = _sibling('brief_company').route_prs(data['prs'], a.company, repo_map, org)
+                        data['prs_other'] += routed
+                SOURCES.get('prs', {}).update(count=len(data['prs']), other=data['prs_other'])
+            if person_section:
+                tag_items(data, a.company)
+            st.finish(key, data[key], SOURCES.get(key, {}), 0.25 + 0.45 * (i + 1) / len(steps))
+    finally:
+        pool.shutdown(wait=True)
+    # Every meeting fetched feeds the per-day rollup, split into the person's own and
+    # teammates'; meetings[] itself keeps only
     # the ones inside the window, with participants, duration and `attended`.
     all_meetings = data['meetings']
     if all_meetings is not None:
         data['meetings'] = enrich_meetings(all_meetings, data.get('meeting_signals'), me_names, meetings_from, now)
         SOURCES.setdefault('meetings', {})['in_window'] = len(data['meetings'])
+    if isinstance(data.get('synced_signals'), dict):
+        # Meetings in the window but no synced meeting signals yet: say so in one line.
+        data['synced_signals']['meetings_without_signals'] = _sibling('brief_signals').meetings_without_signals(
+            data['synced_signals'].get('lines'), data.get('meetings'))
     if data.get('dms') is not None and 'dms' in SOURCES:
         SOURCES['dms'].update(dm_truncation(data['dms'], DM_LIMIT, sess_from))
     # per-day rollup the generator uses for density and the week arc
-    roll = defaultdict(lambda: {'sessions': 0, 'other_sessions': 0, 'meetings': 0, 'merged': 0, 'opened': 0})
+    roll = defaultdict(lambda: {'sessions': 0, 'other_sessions': 0, 'meetings': 0, 'team_meetings': 0,
+                                'merged': 0, 'opened': 0})
     for s in data['sessions'] or []:
         # The week arc counts the user's own sessions; agent and lane runs are the
         # bot's heartbeats and would swamp the bars.
@@ -2204,8 +2434,8 @@ def main(argv=None, person_section=False):
             continue
         key = {'other': 'other_sessions', 'unknown': 'unknown_sessions'}.get(s['company'], 'sessions')
         roll[s['date']][key] = roll[s['date']].get(key, 0) + 1
-    for m in all_meetings or []:
-        roll[m['start'][:10]]['meetings'] += 1
+    for day, mine in rollup_meetings(all_meetings, data.get('meeting_signals'), me_names):
+        roll[day]['meetings' if mine else 'team_meetings'] += 1
     for p in data['prs'] or []:
         if not p.get('authored_by_me', True):
             continue
@@ -2262,6 +2492,7 @@ def main(argv=None, person_section=False):
     else:
         data['welcome'] = None
     data['sources'] = SOURCES
+    data['timings'] = dict(TIMINGS)
     with open(a.out, 'w') as f:
         json.dump(data, f, indent=1, default=str)
     print(json.dumps({'out': a.out, 'sources': SOURCES, 'days': data['days']}, indent=1))

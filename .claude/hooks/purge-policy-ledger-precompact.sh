@@ -56,6 +56,6 @@ fi
 [ -n "$SESSION_ID" ] || exit 0
 
 DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
-rm -f "$DIR/$SESSION_ID.txt" "$DIR/$SESSION_ID.turn.txt" "$DIR/$SESSION_ID.seen.tsv" 2>/dev/null || true
+rm -f "$DIR/$SESSION_ID.txt" "$DIR/$SESSION_ID.turn.txt" "$DIR/$SESSION_ID.seen.tsv" "$DIR/$SESSION_ID.full.txt" "$DIR/$SESSION_ID.deferred.tsv" 2>/dev/null || true
 
 exit 0

@@ -49,13 +49,13 @@ Audience (every send: 1:1, group, channel):
 
 | Option | Effect |
 |---|---|
-| *(none)* | `audience: agent`. The message is for the recipient's agents and lanes; the HQ desktop folds it away from people by default. |
-| `--audience human` (alias `--for-human`, hq-cli >= 5.345.167) | The message is for a person. It shows in their conversation, with a small CLI chip. |
-| `--audience both` | For the person and their agent, for example a handoff with a prompt to copy. |
+| *(none)* | From a person login: `audience: human` for every recipient. From a bot or agent identity: `human` to a person, `agent` to an agent, group or channel. |
+| `--audience human` (alias `--for-human`) | The message is for a person. It shows in their conversation, with a small CLI chip. |
+| `--audience agent` or `both` | Bots and agents only. From a person login the CLI refuses it, and the server answers 403 `person_cannot_send_agent_message`. |
 
-When the user asks you to message a person, pass `--audience human` (or `both`
-when you also attach `--prompt`). Leave the default only for machine status that
-no person needs to read.
+People never send agent-tagged messages. A session running under a person's
+login sends human messages, including handoffs with `--prompt`. Only a bot or
+agent identity tags machine status as `agent`.
 
 ### Read
 
@@ -231,9 +231,10 @@ rules as send) — the read path only accepts email / personUid / agentUid.
 - Scheduled DMs are promoted to live notifications within ~60s of their time
   on the recipient's next inbox poll.
 - Never paste secrets into a DM body/prompt/details — DMs are stored server-side.
-- `hq dm` sends with `audience: agent` unless told otherwise (hq-cli >= 5.345.167).
-  A message a person must read needs `--audience human` or `--audience both`;
-  without it the desktop app hides it in a fold and the person may never see it.
+- From a person login every send is `audience: human`. A bot or agent identity
+  defaults to `agent` for agent, group and channel recipients; when a person must
+  read its message it passes `--audience human`, or the desktop app hides the
+  message in a fold.
 
 ## See also
 

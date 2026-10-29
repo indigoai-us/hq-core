@@ -157,13 +157,13 @@ if [ "${1:-}" = "--remediate" ]; then
              "never-synced", "invalid-last-sync", "stale-threshold",
              "manifest-unavailable", "manifest-state-unavailable",
              "no-manifest-scopes", "never-uploaded", "invalid-upload-time",
-             "unresolved-company-uid"] as $allowed
+             "unresolved-company-uid", "manifest-upload-rejected"] as $allowed
           |
           (.results // [])[]
           | select(.family == "sync" and (.status == "FAIL" or .status == "WARN"))
           | . as $row
           | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.fix.autoFixable != false)
-          | select(($row.checkId != "sync.manifest.personal" and $row.checkId != "sync.update.core") or $row.status == "FAIL" or $row.fix.autoFixable != false)
+          | select(($row.checkId != "sync.manifest.personal" and $row.checkId != "sync.update.core" and (($row.checkId // "") | startswith("sync.manifest.company.") | not)) or $row.status == "FAIL" or $row.fix.autoFixable != false)
           | select(((($row.checkId // "") as $rid | ["sync.runtime.realtime-lag", "sync.runtime.device-limit", "sync.runtime.conflicts"] | any(.[]; . == $rid)) | not) or $row.status == "FAIL" or ($row.fix | if type == "object" then .autoFixable else null end) != false)
           | ($row.checkId // "") as $candidate_id
           | (if ($candidate_id | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
@@ -187,7 +187,7 @@ if [ "${1:-}" = "--remediate" ]; then
               "never-synced", "invalid-last-sync", "stale-threshold",
               "manifest-unavailable", "manifest-state-unavailable",
               "no-manifest-scopes", "never-uploaded", "invalid-upload-time",
-              "unresolved-company-uid"
+              "unresolved-company-uid", "manifest-upload-rejected"
             ]);
             for (const r of rows) {
               if (!r || r.family !== "sync") continue;
@@ -196,6 +196,7 @@ if [ "${1:-}" = "--remediate" ]; then
                 && (r.checkId.startsWith("sync.journal.")
                   || r.checkId === "sync.manifest.personal"
                   || r.checkId === "sync.update.core"
+                  || r.checkId.startsWith("sync.manifest.company.")
                   || r.checkId === "sync.runtime.realtime-lag"
                   || r.checkId === "sync.runtime.device-limit"
                   || r.checkId === "sync.runtime.conflicts")
@@ -296,6 +297,176 @@ if [ "${1:-}" = "--remediate" ]; then
       return 0
     }
 
+    # Checks the --fix run never reached. One "<checkId>" per line for each
+    # sync.journal.*, sync.manifest.company.* or sync.manifest.personal
+    # finding that --fix did not attempt in a run that used all
+    # MAX_REFRESH_SYNC_PLANS_PER_RUN (10) network slots. hq-cli shares those
+    # slots between journal pulls and manifest uploads, so both count. Such a
+    # row is waiting for a later run, not failing (feedback 84d7a862).
+    # Manifest uploads use the same slots, so a stale manifest past the cap
+    # is unreached too (feedback 19d0a45e), but only while it is WARN: the
+    # third argument lists the post-fix WARN ids that are auto-fixable, and a
+    # manifest that is FAIL, not auto-fixable, or missing from that list
+    # still files.
+    # "Attempted" is any refresh-sync or refresh-manifest entry in applied,
+    # any entry in refreshSync (a pull
+    # that left no outcome is in applied only) or any row the fix JSON marks
+    # repair-did-not-clear. "not-attempted" alone is not enough: hq-cli also
+    # uses it for dirty-tree and pass-limit skips, which can repeat forever.
+    # Exit 1 when the document has no refreshSync array.
+    HQ_REFRESH_SYNC_CAP=10
+    fix_unreached_ids() {
+      local document="$1" findings="$2" warn_ids="${3:-}"
+      [ -n "$document" ] || return 1
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        printf '%s\n' "$document" | "$HQ_LIB_JQ" -e \
+          'type == "object" and (.refreshSync | type == "array")' >/dev/null 2>&1 || return 1
+        printf '%s\n' "$findings" | "$HQ_LIB_JQ" -R -r --argjson cap "$HQ_REFRESH_SYNC_CAP" \
+          --argjson doc "$document" --arg warn "$warn_ids" '
+          def ids(f): [f | select(type == "object") | .checkId | select(type == "string")];
+          ($doc.applied | if type == "array" then . else [] end) as $applied
+          | ($doc.unresolved | if type == "array" then . else [] end) as $unresolved
+          | (ids($doc.refreshSync[])
+             + ids($applied[] | select(type == "object"
+                 and (.fixClass == "refresh-sync" or .fixClass == "refresh-manifest")))
+             + ids($unresolved[] | select(type == "object" and .reason == "repair-did-not-clear"))) as $tried
+          | ((ids($doc.refreshSync[]) + ids($applied[] | select(type == "object"
+               and (.fixClass == "refresh-sync" or .fixClass == "refresh-manifest")))
+             | unique | length) >= $cap) as $capped
+          | select($capped)
+          | (split(":")[0]) as $id
+          | select($id | test("^sync\\.(journal\\.[A-Za-z0-9._-]{1,160}|manifest\\.company\\.[A-Za-z0-9._-]{1,160}|manifest\\.personal)$"))
+          | select(($tried | index($id)) == null)
+          | select(($id | startswith("sync.manifest.") | not)
+              or (($warn | split("\n") | index($id)) != null))
+          | $id' 2>/dev/null || return 1
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        printf '%s\n' "$findings" | HQ_FIX_DOC="$document" HQ_WARN_IDS="$warn_ids" "$HQ_LIB_NODE" -e '
+          let input = "";
+          process.stdin.on("data", chunk => input += chunk).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(process.env.HQ_FIX_DOC || ""); } catch { process.exit(1); }
+            if (!doc || typeof doc !== "object" || !Array.isArray(doc.refreshSync)) process.exit(1);
+            const arr = v => Array.isArray(v) ? v : [];
+            const ids = list => list
+              .filter(i => i && typeof i === "object" && typeof i.checkId === "string")
+              .map(i => i.checkId);
+            const applied = arr(doc.applied);
+            const tried = new Set([
+              ...ids(doc.refreshSync),
+              ...ids(applied.filter(i => i && (i.fixClass === "refresh-sync" || i.fixClass === "refresh-manifest"))),
+              ...ids(arr(doc.unresolved).filter(i => i && i.reason === "repair-did-not-clear"))
+            ]);
+            const slots = new Set([
+              ...ids(doc.refreshSync),
+              ...ids(applied.filter(i => i && (i.fixClass === "refresh-sync" || i.fixClass === "refresh-manifest")))
+            ]);
+            if (slots.size < Number(process.argv[1])) return;
+            const warn = new Set((process.env.HQ_WARN_IDS || "").split("\n"));
+            for (const line of input.split("\n")) {
+              const id = line.split(":")[0];
+              if (!/^sync\.(journal\.[A-Za-z0-9._-]{1,160}|manifest\.company\.[A-Za-z0-9._-]{1,160}|manifest\.personal)$/.test(id)) continue;
+              if (tried.has(id)) continue;
+              if (id.startsWith("sync.manifest.") && !warn.has(id)) continue;
+              process.stdout.write(id + "\n");
+            }
+          });' "$HQ_REFRESH_SYNC_CAP" 2>/dev/null || return 1
+        return 0
+      fi
+      return 1
+    }
+
+    # One line naming what --fix applied, so a report shows "not reached"
+    # apart from "attempted and still failing" (feedback 19d0a45e). Only
+    # sanitised sync check ids (from applied, plus refreshSync entries), a
+    # fixed fix-class word and a fixed outcome
+    # word leave the machine: refresh-sync uses its pull outcome class, other
+    # classes the re-check status. No paths, targets or messages. At most 20
+    # entries, deduped; empty when the document is missing or malformed.
+    # Only checks still in the report (second argument, one id per line) are
+    # named. Checks --fix cleared are counted, not named, so a report never
+    # lists a company it would not otherwise mention.
+    fix_applied_summary() {
+      local document="$1" keep="${2:-}"
+      [ -n "$document" ] || return 0
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        printf '%s\n' "$document" | "$HQ_LIB_JQ" -r --arg keep "$keep" '
+          def cls: {"pull-succeeded":"succeeded","pull-timeout":"timeout",
+            "pull-handed-off":"handed-off","pull-failed:lock-busy":"lock-busy",
+            "pull-failed:4xx":"4xx","pull-failed:5xx":"5xx",
+            "pull-failed:network":"network","pull-failed:other":"other"}[.] // "unknown";
+          select(type == "object" and (.applied | type == "array"))
+          | ((.refreshSync | if type == "array" then . else [] end)
+             | map(select(type == "object" and (.checkId | type == "string")) | {key: .checkId, value: (.outcome | cls)})
+             | from_entries) as $pull
+          | [.applied[]
+             | select(type == "object" and (.checkId | type == "string")
+                 and (.checkId | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
+                 and (.fixClass | type == "string") and (.fixClass | test("^[a-z][a-z-]{0,39}$")))
+             | "\(.checkId) \(.fixClass) \(if .fixClass == "refresh-sync"
+                 then ($pull[.checkId] // "no-outcome")
+                 elif (.postStatus == "PASS" or .postStatus == "WARN" or .postStatus == "FAIL" or .postStatus == "SKIP")
+                 then .postStatus else "no-recheck" end)"]
+          + [$pull | to_entries[] | select(.key | test("^sync\\.[A-Za-z0-9._-]{1,160}$"))
+             | "\(.key) refresh-sync \(.value)"]
+          | unique
+          | ($keep | split("\n") | map(select(length > 0))) as $k
+          | map(select((split(" ")[0]) as $id | $k | index($id))) as $named
+          | ([.[] | split(" ")[0]] | unique | map(select(. as $id | $k | index($id) | not)) | length) as $other
+          | ($named | length) as $n
+          | ([($named[0:20] | join("; "))]
+             + (if $n > 20 then ["+\($n - 20) more"] else [] end)
+             + (if $other > 0 then ["\($other) other checks"] else [] end)
+             | map(select(length > 0)) | join("; "))
+          | select(length > 0)' 2>/dev/null || true
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        printf '%s\n' "$document" | HQ_KEEP_IDS="$keep" "$HQ_LIB_NODE" -e '
+          let input = "";
+          process.stdin.on("data", c => input += c).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(input); } catch { return; }
+            if (!doc || typeof doc !== "object" || !Array.isArray(doc.applied)) return;
+            const classes = {
+              "pull-succeeded": "succeeded", "pull-timeout": "timeout",
+              "pull-handed-off": "handed-off", "pull-failed:lock-busy": "lock-busy",
+              "pull-failed:4xx": "4xx", "pull-failed:5xx": "5xx",
+              "pull-failed:network": "network", "pull-failed:other": "other"
+            };
+            const pull = {};
+            for (const i of Array.isArray(doc.refreshSync) ? doc.refreshSync : []) {
+              if (!i || typeof i !== "object" || typeof i.checkId !== "string") continue;
+              pull[i.checkId] = Object.prototype.hasOwnProperty.call(classes, i.outcome) ? classes[i.outcome] : "unknown";
+            }
+            const out = new Set();
+            for (const a of doc.applied) {
+              if (!a || typeof a !== "object" || typeof a.checkId !== "string" || typeof a.fixClass !== "string") continue;
+              if (!/^sync\.[A-Za-z0-9._-]{1,160}$/.test(a.checkId) || !/^[a-z][a-z-]{0,39}$/.test(a.fixClass)) continue;
+              let o;
+              if (a.fixClass === "refresh-sync") o = Object.prototype.hasOwnProperty.call(pull, a.checkId) ? pull[a.checkId] : "no-outcome";
+              else o = ["PASS", "WARN", "FAIL", "SKIP"].includes(a.postStatus) ? a.postStatus : "no-recheck";
+              out.add(a.checkId + " " + a.fixClass + " " + o);
+            }
+            for (const [id, o] of Object.entries(pull)) {
+              if (/^sync\.[A-Za-z0-9._-]{1,160}$/.test(id)) out.add(id + " refresh-sync " + o);
+            }
+            const keep = new Set((process.env.HQ_KEEP_IDS || "").split("\n").filter(Boolean));
+            const list = [...out].sort();
+            const named = list.filter(e => keep.has(e.split(" ")[0]));
+            const other = new Set(list.map(e => e.split(" ")[0]).filter(id => !keep.has(id))).size;
+            const parts = [];
+            if (named.length) parts.push(named.slice(0, 20).join("; "));
+            if (named.length > 20) parts.push("+" + (named.length - 20) + " more");
+            if (other > 0) parts.push(other + " other checks");
+            if (parts.length) process.stdout.write(parts.join("; ") + "\n");
+          });' 2>/dev/null || true
+      fi
+      return 0
+    }
+
     # 0 when the installed hq-cli is older than the release that made --fix
     # skip unresolvable companies and refresh up to 10 journals per run
     # (5.345.159). Most stale-journal and manifest reports come from those
@@ -317,7 +488,7 @@ if [ "${1:-}" = "--remediate" ]; then
       }'
     }
 
-    doctor_degraded() {
+    doctor_document() {
       # Newer CLI versions resolve the opt-in hq-flags gate. Older versions
       # reject the private option, so fall back to ordinary JSON output. Both
       # invocations are bounded and raw JSON stays in this process.
@@ -331,7 +502,42 @@ if [ "${1:-}" = "--remediate" ]; then
       # Exit 1 (with no findings) when doctor itself did not run cleanly, so
       # callers can tell "no findings" from "could not check".
       [ "$rc" -eq 0 ] && [ -n "$document" ] || return 1
+      printf '%s\n' "$document"
+    }
+
+    doctor_degraded() {
+      local document
+      document=$(doctor_document) || return 1
       printf '%s\n' "$document" | sync_findings
+    }
+
+    # stdin: an `hq doctor --json` document. stdout: the checkId of every sync
+    # row whose status is exactly WARN and whose fix.autoFixable is true (a
+    # row --fix could have repaired had it reached it). Used only to keep a manifest FAIL
+    # filing when the run hit the --fix cap; prints nothing on bad input.
+    sync_warn_ids() {
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        "$HQ_LIB_JQ" -r '(.results // [])[] | select(type == "object")
+          | select(.family == "sync" and .status == "WARN" and (.checkId | type == "string"))
+          | select((.fix | type == "object") and .fix.autoFixable == true)
+          | .checkId' 2>/dev/null || true
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        "$HQ_LIB_NODE" -e '
+          let d = "";
+          process.stdin.on("data", c => d += c).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(d); } catch { return; }
+            for (const r of (doc && Array.isArray(doc.results)) ? doc.results : []) {
+              if (r && r.family === "sync" && r.status === "WARN" && typeof r.checkId === "string"
+                && r.fix && typeof r.fix === "object" && r.fix.autoFixable === true)
+                process.stdout.write(r.checkId + "\n");
+            }
+          });' 2>/dev/null || true
+        return 0
+      fi
+      cat >/dev/null 2>&1 || true
     }
 
     # The set of check IDs last reported from this install, as one line:
@@ -382,8 +588,15 @@ if [ "${1:-}" = "--remediate" ]; then
         > "$FIX_RESULT_FILE" 2>/dev/null ) || true
     FIX_RESULT=$(cat "$FIX_RESULT_FILE" 2>/dev/null || true)
     rm -f "$FIX_RESULT_FILE" 2>/dev/null || true
-    REMAINING=$(doctor_degraded)
+    REMAINING_DOC=$(doctor_document)
     REMAINING_RC=$?
+    REMAINING=""
+    REMAINING_WARN_IDS=""
+    if [ "$REMAINING_RC" -eq 0 ]; then
+      REMAINING=$(printf '%s\n' "$REMAINING_DOC" | sync_findings)
+      REMAINING_WARN_IDS=$(printf '%s\n' "$REMAINING_DOC" | sync_warn_ids)
+    fi
+    REMAINING_DOC=""
     HQ_CLI_VERSION_SEEN=$(cd "$HQ_ROOT" 2>/dev/null && bounded 15 hq --version 2>/dev/null \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     # An outdated hq-cli cannot repair these checks itself. Tell the user once
@@ -442,6 +655,31 @@ EOF_FINDINGS
         REMAINING="${FILTERED_REMAINING%$'\n'}"
       fi
     fi
+    # Journals and auto-fixable WARN manifests past the --fix refresh cap are not
+    # failures yet. This needs no flag: the fix JSON itself says they were not
+    # reached. Attempted journals that stayed FAIL or WARN still file.
+    if [ -n "$REMAINING" ] && CAPPED_UNREACHED_IDS=$(fix_unreached_ids "$FIX_RESULT" "$REMAINING" "$REMAINING_WARN_IDS") \
+        && [ -n "$CAPPED_UNREACHED_IDS" ]; then
+      FILTERED_REMAINING=""
+      while IFS= read -r finding; do
+        [ -n "$finding" ] || continue
+        finding_id="${finding%%:*}"
+        case $'\n'"$CAPPED_UNREACHED_IDS"$'\n' in
+          *$'\n'"$finding_id"$'\n'*)
+            case "$finding_id" in
+              sync.journal.personal|sync.journal.__hq_personal_vault__|sync.manifest.*) ;;
+              *) UNREACHED_COMPANY_JOURNAL_COUNT=$((UNREACHED_COMPANY_JOURNAL_COUNT + 1)) ;;
+            esac
+            continue
+            ;;
+        esac
+        FILTERED_REMAINING="${FILTERED_REMAINING}${finding}"$'\n'
+      done <<EOF_CAPPED
+$REMAINING
+EOF_CAPPED
+      REMAINING="${FILTERED_REMAINING%$'\n'}"
+    fi
+
     if [ "$UNREACHED_COMPANY_JOURNAL_COUNT" -gt 0 ]; then
       printf '%s\tunreached_company_journal_checks=%s\n' "$(date +%s)" \
         "$UNREACHED_COMPANY_JOURNAL_COUNT" >> "$STATE_DIR/repair-pass.log" 2>/dev/null || true
@@ -454,6 +692,15 @@ EOF_FINDINGS
       fi
     fi
     [ -n "$REMAINING" ] || exit 0
+    # An hq-cli below the fix floor cannot clear journal or manifest checks;
+    # only an update can. When those are all that is left, the local update
+    # notice (cli-outdated.pending) is the whole response: a feedback row
+    # would only record user configuration (feedback 84d7a862, 32 of 44
+    # linked rows). Any other sync row still files, with likely-cause noted.
+    if cli_older_than_fix_floor "$HQ_CLI_VERSION_SEEN" \
+        && ! printf '%s\n' "$REMAINING" | grep -vqE '^(sync\.(journal|manifest)\.|$)'; then
+      exit 0
+    fi
 
     # Only sanitised IDs leave the machine. Cap both rows and ID length so a
     # large install still produces a small report; raw messages stay local.
@@ -531,21 +778,29 @@ EOF_FINDINGS
         printf -- '- %s\n' "$line"
       fi
     done)
+    FIX_APPLIED_LINE=$(fix_applied_summary "$FIX_RESULT" \
+      "$(printf '%s\n' "$CHECK_IDS" | sed 's/:.*//')" | head -n 1 \
+      | tr -dc 'A-Za-z0-9._: ;+-' | cut -c 1-4096)
     CLI_NOTE=""
     if cli_older_than_fix_floor "$HQ_CLI_VERSION_SEEN"; then
-      CLI_NOTE="hq-cli $HQ_CLI_VERSION_SEEN is older than $HQ_CLI_FIX_FLOOR. Updating hq-cli fixes most of these checks."
+      CLI_NOTE="hq-cli $HQ_CLI_VERSION_SEEN is older than $HQ_CLI_FIX_FLOOR. Updating hq-cli fixes most of these checks.
+likely-cause=stale-cli"
     fi
     # Automatic reports must opt out explicitly: the feedback CLI otherwise
     # collects and uploads the same log bundle for every report.
     if ( cd "$HQ_ROOT" 2>/dev/null && bounded 60 hq feedback bug \
-          --title "Client health: sync checks unresolved after hq doctor --fix" \
+          --reporter agent \
+          --title "[observation] Client health: sync checks unresolved after hq doctor --fix" \
           --no-logs --body-file - >/dev/null 2>&1 <<EOF
+src=client-health impact=inferred
 Automated report from the check-client-health SessionStart hook.
 
 After the safe repair pass, $CHECK_COUNT sync checks still report FAIL or WARN.
 Check IDs or opted-in checkId: reasonCode pairs (up to 50 shown), with the
 --fix pull outcome for sync journals when known:
 $CHECK_LIST
+
+--fix applied (check id, fix class, outcome): ${FIX_APPLIED_LINE:-none}
 ${CLI_NOTE:+
 $CLI_NOTE
 }

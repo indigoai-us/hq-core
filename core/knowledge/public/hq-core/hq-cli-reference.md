@@ -274,8 +274,8 @@ rule, never the value.
 | `hq bot continuity-import` | Import verified private bot context before cloud activation (promotion coordinator) |
 | `hq bot jobs` | Show, schedule, or remove a bot's recurring jobs (the schedule runs in the cloud, not on this computer) |
 | `hq bot promote` | Move this local bot to cloud compute, preserving its identity and private context |
-| `hq bot create` | Provision a local bot identity, scaffold its worker folder, install its launchd agent, and start it |
-| `hq bot companies` | Show or change which companies a company bot is a member of (you invite or remove it; a personal bot has no list of its own) |
+| `hq bot create` | Provision a local bot identity and start it. For the local HQ Fleet Runtime use `--hq-fleet-runtime --provider claude\|codex\|grok`; interactive creation prompts when the provider is omitted, while non-interactive Fleet creation requires it |
+| `hq bot companies` | Show or change which companies a company bot is a member of. A personal bot automatically receives every active company the owner can access |
 | `hq bot workers` | List the workers (templates) a bot can be created from (hq bot create &lt;name&gt; --worker &lt;id&gt;) |
 | `hq bot list` | List local bots with runtime, online state, and pid |
 | `hq bot adopt` | Bring a bot you already own back to this computer: new machine credentials, its saved settings, worker folder, and startup agent |

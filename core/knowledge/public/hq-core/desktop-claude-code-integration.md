@@ -78,18 +78,23 @@ deep link itself. No caller-supplied folder, prompt or URL is passed through.
 A local bot is a long-running agent on the user's machine that uses the
 user's own coding-tool login. The desktop's New bot flow and Settings → Bots
 call the `hq` CLI (`hq bot … --json`); the CLI owns the bot's identity,
-credentials, launchd agent and process
+credentials, HQ Fleet profile and process
 (`apps/sync/src-tauri/src/commands/bots.rs`).
 
-- Runtimes: `--runtime claude|codex|grok`.
+- New personal and setup bots use `--hq-fleet-runtime --provider
+  claude|codex|grok`. The app completes provider authorization before startup;
+  Codex reuses the existing machine login when available.
 - Kinds: personal (acts as the owner, stays on this machine) or company
-  (`--kind company --company <slug>`, its own identity, scoped to its
-  companies).
+  (`--legacy-runtime --runtime <provider> --kind company --company <slug>`,
+  its own identity, scoped to its companies).
 - Other create flags the app passes: `--display-name`, `--worker`,
   `--intro`, `--kickoff`, `--memory synced|local`, `--model`,
   `--no-auto-approve`.
 - Lifecycle: `list`, `list --remote`, `start`, `stop`, `rm`, `set --model
   --effort`, `adopt`, `restore [--all]`, `promote <name> --company <cmp_uid>`.
+- Personal Fleet profiles include every active company the owner can access.
+  Their first intro and optional kickoff use the same first-start path as other
+  local bots.
 - When a bot's coding-tool sign-in expires, the bot's conversation shows a
   banner with one button that re-runs the vendor sign-in and restarts the
   paused bots.

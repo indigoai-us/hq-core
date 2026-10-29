@@ -38,8 +38,8 @@ check "allow-listed pin (qmd) with --prefix <path>" \
   "npm install -g --prefix /tmp/pfx @tobilu/qmd@2.5.3" 0
 check "-C alias carrying a path value" \
   "npm install -g -C /tmp/pfx @indigoai-us/hq-cli@5.109.8" 0
-check "--registry <url> before a first-party pkg" \
-  "npm install -g --registry https://r.example.com @indigoai-us/hq-cli@5.109.8" 0
+check "--registry <url> override BLOCKS even for a first-party pkg" \
+  "npm install -g --registry https://r.example.com @indigoai-us/hq-cli@5.109.8" 2
 check "pnpm add -g --dir <path> first-party" \
   "pnpm add -g --dir /tmp/pfx @indigoai-us/hq-cli@5.109.8" 0
 

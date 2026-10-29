@@ -933,9 +933,19 @@ main() {
       SESSION_TEXT="${prov_out:-}"
       fi
     fi
+  elif [ "${channel:-}" = "job" ] && session_reply_contract_apply "${prov_out:-}" \
+    && [ "${SESSION_DISPOSITION:-}" = "reply" ]; then
+    # Scheduled jobs ask every provider for the outcome envelope (company-jobs.mjs
+    # JOB_OUTCOME_INSTRUCTION). When it parses, SESSION_OUTCOME reaches the
+    # runner, which records success only for outcome "complete". When it does
+    # not parse, the raw output ships as before and the runner records the run
+    # as failed with session_outcome_missing.
+    :
   else
     SESSION_DISPOSITION="reply"
     SESSION_TEXT="${prov_out:-}"
+    SESSION_OUTCOME=""
+    SESSION_OUTCOME_REASON=""
   fi
   SESSION_EXIT_CODE=0
   SESSION_EMITTED=1

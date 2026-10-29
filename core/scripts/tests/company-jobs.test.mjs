@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { CompanyRunner, Ledger, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS } from '../lib/company-jobs.mjs';
+import { CompanyRunner, Ledger, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION } from '../lib/company-jobs.mjs';
 const require = createRequire(import.meta.url);
 test('sign-in reclaim fences old owners and preserves execution admission after a crash', t=>{
  const f=fixture(t),d=f.delivery(),old=f.r.ledger.claim(d,100,1);
@@ -43,7 +43,7 @@ function fixture(t){
  const delivery=(runId='run1',firedAt='2026-01-02T01:00:00Z')=>({companyUid:c.companyUid,agentUid:c.machineUid,jobId:j.jobId,acceptedRevision:j.acceptedRevision,contentDigest:j.contentDigest,prompt:j.prompt,context:j.context,script:j.script,target:j.target,runId,firedAt});
  const calls=[];let executed=0,active=true;
  const api=async(op,body)=>{calls.push({op,...body});if(op==='secret')return {value:'SENTINEL_SECRET'};if(body.action==='reconcile')return {jobs:active?[j]:[],pending:[],recoverable:[]};return delivery();};
- const units=[];const r=new CompanyRunner(c,api,{systemctl:args=>units.push(args),execute:async()=>{executed++;return {code:0,text:'{"disposition":"reply"}'};}});t.after(()=>r.close());
+ const units=[];const r=new CompanyRunner(c,api,{systemctl:args=>units.push(args),execute:async()=>{executed++;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};}});t.after(()=>r.close());
  return {dir,c,j,r,delivery,calls,units,executed:()=>executed,disable:()=>{active=false;}};
 }
 test('twice daily accepted job installs two timezone timers; disable removes only owned units',async t=>{
@@ -72,7 +72,7 @@ test('distinct manual runs at same instant do not collapse',async t=>{const f=fi
 for(const key of ['companyUid','machineUid','outpostId','instanceId','attemptId'])test(`rejects wrong ${key}`,async t=>{const f=fixture(t);const d=f.delivery();if(key==='companyUid')d[key]='cmp_foreign';else d.target={...d.target,[key]:'foreign'};await assert.rejects(()=>f.r.runDelivery(f.j,d));assert.equal(f.executed(),0);});
 test('modified accepted content never executes',async t=>{const f=fixture(t);await assert.rejects(()=>f.r.runDelivery(f.j,{...f.delivery(),prompt:'tampered'}));assert.equal(f.executed(),0);});
 test('unaccepted proposal and disabled definition cannot arm',t=>{const f=fixture(t);assert.throws(()=>acceptedJob(f.c,{...f.j,status:'paused'}));assert.throws(()=>acceptedJob(f.c,{...f.j,contentDigest:'bad'}));});
-test('runtime secrets company scope, rotation, no persisted values and denial',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);let value='ROTATED_ONE',seen=[];f.r.api=async(op,b)=>{assert.equal(op,'secret');assert.equal(b.secretName,'API_KEY');return {value};};f.r.execute=async(cmd,args,o)=>{seen.push(o.env.API_KEY);assert.equal(o.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(o.env.HQ_MACHINE_TOKEN_STATE_DIR,undefined);assert.equal(o.env.HQ_MACHINE_AUTH_REQUIRED,undefined);assert.equal(JSON.stringify(o.env).includes(f.c.stateDir),false);return {code:0,text:'{"disposition":"reply"}'};};await f.r.runDelivery(f.j,f.delivery());value='ROTATED_TWO';await f.r.runDelivery(f.j,f.delivery('run2','2026-01-03T01:00:00Z'));assert.deepEqual(seen,['ROTATED_ONE','ROTATED_TWO']);f.r.api=async()=>{throw new Error('private backend error');};const result=await f.r.runDelivery(f.j,f.delivery('run3','2026-01-04T01:00:00Z'));assert.equal(result.outcome,'blocked');assert.equal(result.blockedSecret,'API_KEY');assert.equal(seen.length,2);for(const file of fs.readdirSync(f.c.stateDir)){assert(!fs.readFileSync(path.join(f.c.stateDir,file)).includes(Buffer.from('ROTATED_')));}});
+test('runtime secrets company scope, rotation, no persisted values and denial',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);let value='ROTATED_ONE',seen=[];f.r.api=async(op,b)=>{assert.equal(op,'secret');assert.equal(b.secretName,'API_KEY');return {value};};f.r.execute=async(cmd,args,o)=>{seen.push(o.env.API_KEY);assert.equal(o.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(o.env.HQ_MACHINE_TOKEN_STATE_DIR,undefined);assert.equal(o.env.HQ_MACHINE_AUTH_REQUIRED,undefined);assert.equal(JSON.stringify(o.env).includes(f.c.stateDir),false);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};await f.r.runDelivery(f.j,f.delivery());value='ROTATED_TWO';await f.r.runDelivery(f.j,f.delivery('run2','2026-01-03T01:00:00Z'));assert.deepEqual(seen,['ROTATED_ONE','ROTATED_TWO']);f.r.api=async()=>{throw new Error('private backend error');};const result=await f.r.runDelivery(f.j,f.delivery('run3','2026-01-04T01:00:00Z'));assert.equal(result.outcome,'blocked');assert.equal(result.blockedSecret,'API_KEY');assert.equal(seen.length,2);for(const file of fs.readdirSync(f.c.stateDir)){assert(!fs.readFileSync(path.join(f.c.stateDir,file)).includes(Buffer.from('ROTATED_')));}});
 test('claims reclaim abandoned admission with TTL, completed receipts persist',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,199),null);assert(f.r.ledger.claim(d,100,200));});
 test('expired live owner does not overlap; interrupted execution is uncertain, not retried',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert.throws(()=>f.r.ledger.claim(d,100,200),/owner_alive/);f.r.ledger.executing(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,200).uncertain,true);});
 test('complete fingerprint emitted on failure',async t=>{const f=fixture(t);f.r.execute=async()=>({code:124,text:''});const r=await f.r.runDelivery(f.j,f.delivery());for(const k of ['jobId','revision','runId','scheduledAt','startedAt','endedAt','executionPrincipal','machine','outcome','outputLocation'])assert(r[k],k);assert.equal(r.outcome,'timeout');assert.match(fs.readFileSync(r.outputLocation,'utf8'),/executionFingerprint/);});
@@ -101,7 +101,7 @@ test('unknown orphan units are removed and a dead user bus is not treated as rem
 test('invalid timeout and reserved secret env rejected',()=>{for(const timeoutSeconds of [0,-1,14401,'600'])assert.throws(()=>options({context:{companyJob:{timeoutSeconds}}}));assert.throws(()=>options({context:{companyJob:{secrets:['NODE_OPTIONS']}}}));});
 test('API failure preserves timers and cannot execute cached content',async t=>{const f=fixture(t);await f.r.reconcile();const before=fs.readdirSync(f.c.unitDir);f.r.api=async()=>{throw new Error('offline');};await assert.rejects(()=>f.r.reconcile());assert.deepEqual(fs.readdirSync(f.c.unitDir),before);});
 test('human auth is not inherited into the company process',t=>{const f=fixture(t);process.env.HQ_ACCESS_TOKEN='poison';const env=machineEnvironment(f.c);assert.equal(env.HQ_ACCESS_TOKEN,undefined);assert.equal(env.HQ_MACHINE_AUTH_REQUIRED,'1');delete process.env.HQ_ACCESS_TOKEN;});
-test('configured API provider key is resolved through company broker for each run',async t=>{const f=fixture(t);f.c.providerSecret='CODEX_API_KEY';let key;f.r.execute=async(_c,_a,o)=>{key=o.env.CODEX_API_KEY;return {code:0,text:'{"disposition":"reply"}'};};assert.equal((await f.r.runDelivery(f.j,f.delivery())).outcome,'succeeded');assert.equal(key,'SENTINEL_SECRET');assert(f.calls.some(c=>c.op==='secret'&&c.secretName==='CODEX_API_KEY'));f.r.api=async()=>{throw Error('denied');};assert.equal((await f.r.runDelivery(f.j,f.delivery('second','2026-01-03T01:00:00Z'))).outcome,'blocked');});
+test('configured API provider key is resolved through company broker for each run',async t=>{const f=fixture(t);f.c.providerSecret='CODEX_API_KEY';let key;f.r.execute=async(_c,_a,o)=>{key=o.env.CODEX_API_KEY;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};assert.equal((await f.r.runDelivery(f.j,f.delivery())).outcome,'succeeded');assert.equal(key,'SENTINEL_SECRET');assert(f.calls.some(c=>c.op==='secret'&&c.secretName==='CODEX_API_KEY'));f.r.api=async()=>{throw Error('denied');};assert.equal((await f.r.runDelivery(f.j,f.delivery('second','2026-01-03T01:00:00Z'))).outcome,'blocked');});
 test('timer enable failure is surfaced',async t=>{const f=fixture(t);f.r.systemctl=()=>{throw new Error('no user manager');};await assert.rejects(()=>f.r.reconcile(),/user manager/);assert.equal(f.executed(),0);});
 test('SEC01 log symlink cannot overwrite sentinel',async t=>{const f=fixture(t);const sentinel=path.join(f.dir,'sentinel');fs.writeFileSync(sentinel,'preserve');fs.symlinkSync(sentinel,path.join(f.c.stateDir,crypto.createHash('sha256').update('run1').digest('hex')+'.log'));await assert.rejects(()=>f.r.runDelivery(f.j,f.delivery()));assert.equal(fs.readFileSync(sentinel,'utf8'),'preserve');assert.equal(f.executed(),0);});
 test('SEC01 state and SQLite symlinks are rejected',t=>{const f=fixture(t);const other=path.join(f.dir,'other');fs.mkdirSync(other,{mode:0o700});const link=path.join(f.dir,'link');fs.symlinkSync(other,link);assert.throws(()=>new Ledger(link),/symlink/);const sentinel=path.join(f.dir,'sentinel');fs.writeFileSync(sentinel,'preserve');fs.symlinkSync(sentinel,path.join(other,'runs.sqlite'));assert.throws(()=>new Ledger(other),/unsafe_ledger/);assert.equal(fs.readFileSync(sentinel,'utf8'),'preserve');});
@@ -120,7 +120,7 @@ test('FINAL02 repeated recovery crashes preserve execution admission and never r
 });
 test('FINAL03 successful session JSON stays valid with redacted stderr diagnostics',async t=>{
  const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
- let captured;f.r.execute=async(_command,_args,o)=>captured=await bounded(process.execPath,['-e',`process.stdout.write(JSON.stringify({disposition:'reply',text:'complete'}));process.stderr.write('recoverable hook diagnostic SENTINEL_');setTimeout(()=>process.stderr.write('SECRET'),20);`],{...o,scope:undefined,enterScope:false,enterService:false,systemctl:undefined});
+ let captured;f.r.execute=async(_command,_args,o)=>captured=await bounded(process.execPath,['-e',`process.stdout.write(JSON.stringify({disposition:'reply',text:'complete',outcome:'complete'}));process.stderr.write('recoverable hook diagnostic SENTINEL_');setTimeout(()=>process.stderr.write('SECRET'),20);`],{...o,scope:undefined,enterScope:false,enterService:false,systemctl:undefined});
  const result=await f.r.runDelivery(f.j,f.delivery());assert.equal(result.outcome,'succeeded');
  assert.equal(captured.stderr,'recoverable hook diagnostic [REDACTED]');assert.equal(JSON.parse(captured.text).disposition,'reply');
  const log=fs.readFileSync(result.outputLocation,'utf8');assert.match(log,/\[REDACTED\]/);assert(!log.includes('SENTINEL_SECRET'));
@@ -132,7 +132,7 @@ test('job launch passes only allowlisted secrets and refuses to run as the runne
   f.c.jobUid=other;f.c.jobGid=other;f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
   let seen,secretCalls=0;
   f.r.api=async(op,b)=>{assert.equal(op,'secret');assert.deepEqual(b,{secretName:'API_KEY'});secretCalls++;return {value:'SENTINEL_SECRET'};};
-  f.r.execute=async(_c,_a,o)=>{seen=o;return {code:0,text:'{"disposition":"reply"}'};};
+  f.r.execute=async(_c,_a,o)=>{seen=o;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
   const ok=await f.r.runDelivery(f.j,f.delivery());
   assert.equal(ok.outcome,'succeeded');assert.equal(seen.uid,other);assert.equal(seen.gid,other);
   assert.equal(seen.env.API_KEY,'SENTINEL_SECRET');
@@ -147,7 +147,7 @@ test('job launch passes only allowlisted secrets and refuses to run as the runne
 test('optional broker scope adds the job and run only when enabled',async t=>{
   const f=fixture(t);f.c.brokerSecretScope=true;f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
   f.r.api=async(_op,b)=>{assert.deepEqual(b,{secretName:'API_KEY',jobId:f.j.jobId,runId:'run1'});return {value:'SENTINEL_SECRET'};};
-  f.r.execute=async()=>({code:0,text:'{"disposition":"reply"}'});
+  f.r.execute=async()=>({code:0,text:'{"disposition":"reply","outcome":"complete"}'});
   assert.equal((await f.r.runDelivery(f.j,f.delivery())).outcome,'succeeded');
 });
 test('a refused privilege drop never starts a process that can read credentials or the ledger',{timeout:20000},async()=>{
@@ -273,7 +273,7 @@ test('two company jobs never execute at the same time',async t=>{
   let entered=0;
   let release;
   const gate=new Promise(resolve=>{release=resolve;});
-  f.r.execute=async()=>{entered+=1;await gate;return {code:0,text:'{"disposition":"reply"}'};};
+  f.r.execute=async()=>{entered+=1;await gate;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
   const first=f.r.runDelivery(f.j,f.delivery('run-lock-1','2026-01-02T01:00:00Z'));
   for(let i=0;i<50&&entered<1;i++)await new Promise(resolve=>setTimeout(resolve,10));
   assert.equal(entered,1);
@@ -286,7 +286,7 @@ test('two company jobs never execute at the same time',async t=>{
 });
 test('losing the run lock is recorded and not swallowed',async t=>{
   const f=fixture(t);
-  f.r.execute=async()=>{f.r.ledger.db.prepare('UPDATE run_lock SET token=?').run('stolen');return {code:0,text:'{"disposition":"reply"}'};};
+  f.r.execute=async()=>{f.r.ledger.db.prepare('UPDATE run_lock SET token=?').run('stolen');return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
   await assert.rejects(()=>f.r.runDelivery(f.j,f.delivery()),/run_lock_lost/);
   const receipt=JSON.parse(f.r.ledger.db.prepare('SELECT receipt FROM runs').get().receipt);
   assert.equal(receipt.lockRelease,'lost');
@@ -300,7 +300,7 @@ test('a later run cannot read the previous run transcript',async t=>{
   f.r.execute=async(_command,_args,options)=>{
     homes.push(options.env.HOME);
     fs.writeFileSync(path.join(options.env.HOME,'transcript'),'SENTINEL_SECRET');
-    return {code:0,text:'{"disposition":"reply"}'};
+    return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};
   };
   await f.r.runDelivery(f.j,f.delivery('run-home-1','2026-01-02T01:00:00Z'));
   assert.equal(fs.existsSync(homes[0]),false);
@@ -406,7 +406,7 @@ test('cleanup removes a run-home symlink entry and leaves its outside target',as
   f.r.execute=async(_command,_args,options)=>{
     home=options.env.HOME;
     fs.symlinkSync(sentinel,path.join(home,'planted'));
-    return {code:0,text:'{"disposition":"reply"}'};
+    return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};
   };
   const result=await f.r.runDelivery(f.j,f.delivery('run-clean','2026-01-02T01:00:00Z'));
   assert.equal(result.outcome,'succeeded');
@@ -440,7 +440,7 @@ test('an active job-run unit blocks lock reclaim and the service stops with the 
   assert.equal(jobRunUnitsActive(()=>({status:0,stdout:''})),false);
   assert.equal(jobRunUnitsActive(()=>({status:0,stdout:'hq-company-job-run-abc.service loaded active running\n'})),true);
   let seen;
-  f.r.execute=async(_c,_a,o)=>{seen=o;return {code:0,text:'{"disposition":"reply"}'};};
+  f.r.execute=async(_c,_a,o)=>{seen=o;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
   assert.equal((await f.r.runDelivery(f.j,f.delivery('run-svc','2026-01-06T01:00:00Z'))).outcome,'succeeded');
   assert.equal(seen.enterService,true);
   assert.equal(seen.unit,'hq-company-job-run-run-svc.service');
@@ -464,7 +464,7 @@ test('lock wait does not shrink the job budget and a busy lock stays recoverable
   const orig=f.r.ledger.acquireRunLock.bind(f.r.ledger);
   f.r.ledger.acquireRunLock=opts=>{attempts+=1;if(attempts===1){now+=4000;return null;}return orig(opts);};
   let seen;
-  f.r.execute=async(_c,_a,o)=>{seen=o.timeout;return {code:0,text:'{"disposition":"reply"}'};};
+  f.r.execute=async(_c,_a,o)=>{seen=o.timeout;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
   const ran=await f.r.runDelivery(f.j,f.delivery('run-budget','2026-01-02T01:00:00Z'));
   assert.equal(ran.outcome,'succeeded');
   assert.equal(seen,10000);
@@ -714,3 +714,10 @@ test('successful run posts a report in the server contract shape',async t=>{cons
 test('secret_denied run reports outcome blocked with its error code',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);const sent=[];f.r.api=async(op,b)=>{if(op==='secret')throw new Error('denied');sent.push({op,...b});return {ok:true};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_B));assert.equal(receipt.outcome,'blocked');assert.equal(f.executed(),0);assert.equal(sent.length,1);const {op,...body}=sent[0];assert.equal(op,'jobs');assert(serverAcceptsReport(body));assert.equal(body.outcome,'blocked');assert.equal(body.errorCode,'secret_denied');assert.equal(body.scheduledAt,'2026-01-02T01:00:00Z');});
 test('failed and timed-out runs post reports with outcome and error code',async t=>{const f=fixture(t);let code=1;f.r.execute=async()=>({code,text:''});assert.equal((await f.r.runDelivery(f.j,f.delivery(RUN_A))).outcome,'failed');code=124;assert.equal((await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'))).outcome,'timeout');const reports=f.calls.filter(c=>c.action==='report');assert.deepEqual(reports.map(r=>[r.outcome,r.exitCode]),[['failed',1],['timeout',124]]);for(const r of reports){const {op,...b}=r;assert(serverAcceptsReport(b));}});
 test('report failure is logged and does not change the receipt',async t=>{const f=fixture(t);const warnings=[];f.r.warn=l=>warnings.push(l);f.r.api=async(op,b)=>{if(b.action==='report')throw new Error('offline');return {};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'succeeded');assert.equal(warnings.length,1);const w=JSON.parse(warnings[0]);assert.equal(w.event,'report_post_failed');assert.equal(w.runId,RUN_A);assert.equal(w.outcome,'succeeded');const stored=JSON.parse(fs.readFileSync(fs.readdirSync(f.c.stateDir).filter(n=>n.endsWith('.json')).map(n=>path.join(f.c.stateDir,n))[0],'utf8'));assert.equal(stored.outcome,'succeeded');});
+// liveops-09 / feedback 40a4ead4: an exit-0 session that did no work was recorded as succeeded.
+test('exit 0 without an outcome is failed with session_outcome_missing and a bounded reason',async t=>{const f=fixture(t);const text='The alert script did not run. hq sync pull failed with "No valid HQ session and interactive login is disabled. Run `hq login` first." '+'x'.repeat(900);f.r.execute=async()=>({code:0,text:JSON.stringify({contractVersion:1,disposition:'reply',text})});const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'failed');assert.equal(receipt.errorCode,'session_outcome_missing');assert.equal(receipt.exitCode,0);assert(receipt.reason.startsWith('The alert script did not run.'));assert(receipt.reason.length<=500);const [report]=f.calls.filter(c=>c.action==='report');const {op,...body}=report;assert(serverAcceptsReport(body));assert.equal(body.outcome,'failed');assert.equal(body.errorCode,'session_outcome_missing');assert.equal(body.reason,receipt.reason);});
+test('blocked and needs_input outcomes are failed runs carrying the agent reason',async t=>{const f=fixture(t);let resp={disposition:'reply',text:'Could not run',outcome:'blocked',outcomeReason:'No valid HQ session on the Outpost'};f.r.execute=async()=>({code:0,text:JSON.stringify(resp)});const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.deepEqual([a.outcome,a.errorCode,a.reason],['failed','session_blocked','No valid HQ session on the Outpost']);resp={disposition:'reply',text:'Which channel?',outcome:'needs_input',outcomeReason:'channel not named'};const b=await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'));assert.deepEqual([b.outcome,b.errorCode,b.reason],['failed','session_needs_input','channel not named']);});
+test('only outcome complete is succeeded and it carries no reason',async t=>{const f=fixture(t);f.r.execute=async()=>({code:0,text:JSON.stringify({disposition:'reply',text:'Posted to #alerts',outcome:'complete'})});const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'succeeded');assert.equal(receipt.errorCode,undefined);assert.equal(receipt.reason,undefined);const [report]=f.calls.filter(c=>c.action==='report');assert.equal('reason' in report,false);});
+test('no_reply disposition is failed and the reason never carries a granted secret',()=>{assert.deepEqual(classifySessionResponse({disposition:'no_reply'}),{outcome:'failed',errorCode:'session_not_successful',reason:''});const v=classifySessionResponse({disposition:'reply',text:'token SENTINEL_SECRET leaked\nline'},['SENTINEL_SECRET']);assert.equal(v.reason,'token [REDACTED] leaked line');});
+test('job prompt asks the agent for the outcome envelope',async t=>{const f=fixture(t);let input;f.r.execute=async(_c,_a,o)=>{input=JSON.parse(o.input);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};await f.r.runDelivery(f.j,f.delivery(RUN_A));assert(input.messageText.includes(JOB_OUTCOME_INSTRUCTION));assert(input.messageText.indexOf(JOB_OUTCOME_INSTRUCTION)<input.messageText.indexOf('Execution fingerprint:'));});
+test('run reason redacts the box sign-in token as well as granted secrets',async t=>{const f=fixture(t);f.r.providerSignIn=async()=>({env:{CLAUDE_CODE_OAUTH_TOKEN:'SIGNIN_TOKEN_VALUE'}});f.r.execute=async()=>({code:0,text:JSON.stringify({disposition:'reply',text:'saw SIGNIN_TOKEN_VALUE and SENTINEL_SECRET',outcome:'blocked',outcomeReason:'saw SIGNIN_TOKEN_VALUE'})});f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);const r=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(r.outcome,'failed');assert.equal(r.reason,'saw [REDACTED]');});

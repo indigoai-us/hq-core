@@ -263,7 +263,7 @@ else
 fi
 [ "$(bridge_calls)" = "1" ] && ok "one bridge call" || bad "$(bridge_calls) bridge calls"
 [ "$(grep -c '^bridge-plan ' "$CALLS")" = "1" ] \
-  && grep -qxF "bridge-plan --min-version 0.2.0 --schema 1" "$CALLS" \
+  && grep -qxF "bridge-plan --min-version 0.3.1 --schema 1" "$CALLS" \
   && ok "one bridge-plan call with the min version and schema" \
   || bad "bridge-plan calls: $(grep '^bridge-plan' "$CALLS")"
 # Trace names the bridge.
@@ -323,6 +323,34 @@ run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
 [ ! -e "$CALLS" ] && [ "$(ran_count "$FIX" port)" = "1" ] \
   && ok "no snapshot file at all: stub never started, bash hook ran" \
   || bad "no snapshot: calls=$(cat "$CALLS" 2>/dev/null) ran=$(ran_count "$FIX" port)"
+
+echo "[f2] port flags present but off: pre-gate stops before any process"
+# The CLI snapshot lists every registered flag, false ones included.
+for body in \
+  '{"flags":{"hook-engine-port-fixture-port":false,"hq-anywhere-runtime":true}}' \
+  '{"flags":{"hook-engine-port-a":false,"hook-engine-port-fixture-port":"off","other":"on"}}' \
+  '{"flags": {"hook-engine-port-fixture-port" : false, "x": true}}' \
+  '{"flags":{"note":"hook-engine-port-fixture-port","x":true}}'; do
+  reset_logs
+  printf '%s\n' "$body" > "$CACHE/hq/flags/snapshot-cmp_123456.json"
+  printf '%s\t%s\n' "$HOOK_ID" on > "$PLAN"
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+  [ ! -e "$CALLS" ] && [ "$(ran_count "$FIX" port)" = "1" ] && out_has "bash-hook:$HOOK_ID:PreToolUse" \
+    && ok "off port flags ($body): stub never started, bash hook ran" \
+    || bad "off port flags ($body): calls=$(cat "$CALLS" 2>/dev/null) ran=$(ran_count "$FIX" port)"
+done
+for body in \
+  '{"flags":{"hook-engine-port-a":false,"hook-engine-port-fixture-port":true}}' \
+  '{"flags":{"hook-engine-port-fixture-port":"shadow"}}' \
+  '{"flags": {"hook-engine-port-fixture-port" : true}}'; do
+  reset_logs
+  printf '%s\n' "$body" > "$CACHE/hq/flags/snapshot-cmp_123456.json"
+  printf '%s\t%s\n' "$HOOK_ID" on > "$PLAN"
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+  [ "$(grep -c '^bridge-plan ' "$CALLS" 2>/dev/null)" = "1" ] && out_has "bridged:$HOOK_ID:on" \
+    && ok "enabled port flag ($body): plan asked, engine answered" \
+    || bad "enabled port flag ($body): calls=$(cat "$CALLS" 2>/dev/null) out=$(head -c 200 "$TMP/out")"
+done
 
 echo "[g] pointer file discovery"
 reset_logs

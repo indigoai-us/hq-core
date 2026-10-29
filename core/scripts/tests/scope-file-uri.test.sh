@@ -12,6 +12,7 @@ mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/core/scripts/lib" \
   "$FIXTURE/workspace/sessions/uri-fixture" "$FIXTURE/workspace/output" \
   "$FIXTURE/companies/indigo/settings" "$FIXTURE/companies/otherco/settings"
 cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$FIXTURE/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$FIXTURE/.claude/hooks/"
 cp "$ROOT/core/scripts/hook-lib.sh" "$FIXTURE/core/scripts/"
 for lib in session-authz session-scope-capability session-id hook-caller-lineage; do
   cp "$ROOT/core/scripts/lib/$lib.sh" "$FIXTURE/core/scripts/lib/"

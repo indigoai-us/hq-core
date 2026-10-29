@@ -78,8 +78,10 @@ set -uo pipefail
 # the hq-cli `hq-hook` binary runs through that binary when the per-hook flag
 # hook-engine-port-<id> is `shadow` or `on`. The engine must satisfy this
 # minimum version and bridge schema; `hq-hook bridge-plan` prints no plan
-# otherwise and master-hook keeps running the bash hook.
-HQ_HOOK_ENGINE_MIN_VERSION="0.2.0"
+# otherwise and master-hook keeps running the bash hook. 0.3.1 is the first
+# engine that pins each hook port to the bash script it was checked against
+# (hq-cli #2166), so an older engine never answers for a changed hook.
+HQ_HOOK_ENGINE_MIN_VERSION="0.3.1"
 HQ_HOOK_BRIDGE_SCHEMA="1"
 # Seconds the one-per-event `hq-hook bridge-plan` call may take before it is
 # killed and treated as an empty plan (a healthy engine answers in under 50 ms).
@@ -1077,6 +1079,19 @@ consume_timeout_breadcrumbs() {
   [ -n "$session_hash" ] || return 0
   breadcrumb_dir="$REPO_ROOT/workspace/.hook-timeout-breadcrumbs/$session_hash"
   [ -d "$breadcrumb_dir" ] || return 0
+  # Reuse the start timestamp instead of forking date on the hot path.
+  local breadcrumb_now breadcrumb_max_age
+  if [[ "${MASTER_STARTED_MS:-}" =~ ^[0-9]{13,}$ ]]; then
+    breadcrumb_now=$((MASTER_STARTED_MS / 1000))
+  else
+    breadcrumb_now="$(date +%s 2>/dev/null || printf '0')"
+  fi
+  [[ "$breadcrumb_now" =~ ^[0-9]+$ ]] || breadcrumb_now=0
+  # A genuine harness kill is only reported on the next delivering event,
+  # which can follow a long idle gap, so the default keeps a day of records
+  # and the text states their age. Older or undated records are dropped.
+  breadcrumb_max_age="${HQ_HOOK_TIMEOUT_BREADCRUMB_MAX_AGE_SECONDS:-86400}"
+  [[ "$breadcrumb_max_age" =~ ^[0-9]+$ ]] || breadcrumb_max_age=86400
 
   # A master process can be killed between atomic claim and final emission.
   # Recover only claims whose owner is no longer alive; a concurrent live
@@ -1102,23 +1117,39 @@ consume_timeout_breadcrumbs() {
     # 260-character Windows MAX_PATH limit, which the native jq.exe cannot
     # open, and an unreadable claim would be deleted as invalid below. The
     # stderr redirect comes first so a failed input redirect stays silent too.
-    text="$(jq -r '
+    text="$(jq -r --argjson now "$breadcrumb_now" --argjson max_age "$breadcrumb_max_age" '
       if (.hook_path | type) == "string"
         and (.hook_event | type) == "string"
         and (.threshold | type) == "string"
         and (.elapsed_ms | type) == "number"
         and (.declared_timeout_ms | type) == "number"
+        and (.written_at | type) == "number"
+        and ($now - .written_at) <= $max_age
       then
-        if .threshold == "absolute" then
-          "<hq-hook-timeout-warning>\nHook " + .hook_path + " ran for "
-          + ((.elapsed_ms / 1000) | floor | tostring) + "s during " + .hook_event
-          + ". This hook is taking too long; investigate why.\n</hq-hook-timeout-warning>"
-        elif .threshold == "relative" then
-          "<hq-hook-timeout-escalation>\nHook " + .hook_path + " ran for "
-          + ((.elapsed_ms / 1000) | floor | tostring) + "s of its "
-          + ((.declared_timeout_ms / 1000) | floor | tostring) + "s timeout during "
-          + .hook_event + ". It is about to be killed by the harness and its output will be discarded. Investigate why.\n</hq-hook-timeout-escalation>"
-        else empty end
+        # Measured elapsed time against the timeout budget only
+        # (feedback_5ec0fd09). The watchdog fires before the timeout and has
+        # no proof the harness stopped the hook, so the text never says it was
+        # or is about to be killed. The record can be read on a later event,
+        # so the text says how long ago it was recorded. A record without
+        # written_at, or older than max_age, is from an earlier run and is
+        # dropped instead of reported as current.
+        ((.elapsed_ms / 1000) | floor | tostring) as $ran
+        | ((.declared_timeout_ms / 1000) | floor | tostring) as $budget
+        | ([($now - .written_at), 0] | max | floor | tostring) as $age
+        | (if .declared_timeout_source == "default"
+           then "of an assumed " + $budget + "s timeout budget (no configured timeout was found for it)"
+           else "of its configured " + $budget + "s timeout budget" end) as $of
+        | if .threshold == "absolute" then
+            "<hq-hook-timeout-warning>\nHook " + .hook_path + " had run for "
+            + $ran + "s " + $of + " during " + .hook_event
+            + " (measured; recorded " + $age + "s ago)."
+            + " This hook is taking too long; investigate why.\n</hq-hook-timeout-warning>"
+          elif .threshold == "relative" then
+            "<hq-hook-timeout-escalation>\nHook " + .hook_path + " had run for "
+            + $ran + "s " + $of + " during " + .hook_event
+            + " (measured; recorded " + $age + "s ago)."
+            + " This hook is slow; investigate why.\n</hq-hook-timeout-escalation>"
+          else empty end
       else empty end
     ' 2>/dev/null < "$claim" || true)"
     if [ -z "$text" ]; then
@@ -1505,13 +1536,41 @@ collect_output() { # <rc> <stdout> <source-path>
 #   2. binary: HQ_HOOK_ENGINE_BIN when executable, else the path on the first
 #      line of ~/.hq/bin/hq-hook/current (pointer file written by hq-cli);
 #   3. pre-gate: some ${XDG_CACHE_HOME:-~/.cache}/hq/flags/snapshot-*.json
-#      must mention a hook-engine-port- flag;
+#      must hold a hook-engine-port- flag set to true, "on" or "shadow";
 #   4. `hq-hook bridge-plan` prints "<hook-id><TAB><shadow|on>" lines; a
 #      non-zero exit or empty plan disables the bridge for this event.
 HOOK_ENGINE_BRIDGE_BIN=""
 HOOK_ENGINE_BRIDGE_PLAN=""
 HOOK_ENGINE_BRIDGE_RESOLVED=0
 HOOK_ENGINE_BRIDGE_MODE=""
+# Pre-gate test for one snapshot line: some "hook-engine-port-<id>" key holds a
+# value the engine reads as enabled (true, "on" or "shadow"). The CLI snapshot
+# lists every registered flag, false ones included, so matching the key alone
+# would start the engine on every event for a company whose ports are all off.
+master_hook_engine_port_enabled() { # <line>
+  local rest="$1" id="" after=""
+  while :; do
+    case "$rest" in
+      *'"hook-engine-port-'*) rest="${rest#*\"hook-engine-port-}" ;;
+      *) return 1 ;;
+    esac
+    id="${rest%%\"*}"
+    [ "$id" != "$rest" ] || return 1
+    case "$id" in
+      ''|*[!a-z0-9-]*) continue ;;
+    esac
+    after="${rest#"$id"\"}"
+    after="${after#"${after%%[![:space:]]*}"}"
+    case "$after" in
+      :*) after="${after#:}" ;;
+      *) continue ;;
+    esac
+    after="${after#"${after%%[![:space:]]*}"}"
+    case "$after" in
+      true*|'"on"'*|'"shadow"'*) return 0 ;;
+    esac
+  done
+}
 master_hook_engine_bridge_plan() {
   local home="${HOME:-}" bin="" pointer="" snapshot="" line="" found=0 plan="" plan_rc=0 saved_input=""
   HOOK_ENGINE_BRIDGE_RESOLVED=1
@@ -1537,7 +1596,9 @@ master_hook_engine_bridge_plan() {
     [ -f "$snapshot" ] || continue
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
-        *hook-engine-port-*) found=1; break ;;
+        *hook-engine-port-*)
+          if master_hook_engine_port_enabled "$line"; then found=1; break; fi
+          ;;
       esac
     done < "$snapshot"
     [ "$found" -eq 0 ] || break
@@ -1769,15 +1830,27 @@ master_declared_timeout_ms() {
   fi
 }
 
+# Same warning point as master_relative_warn_seconds in hook-timeout-watchdog.sh:
+# 80% of the timeout by default (24 s of 30 s), or timeout minus an explicit
+# HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS (feedback_5ec0fd09).
 master_watchdog_timeout_ms() {
-  local declared_ms declared_seconds lead_seconds absolute_seconds relative_seconds selected
+  local declared_ms declared_seconds lead_seconds percent absolute_seconds relative_seconds selected
   declared_ms="$(master_declared_timeout_ms)"
   declared_seconds=$((declared_ms / 1000))
-  lead_seconds="${HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS:-20}"
-  [[ "$lead_seconds" =~ ^[0-9]+$ ]] || lead_seconds=20
+  lead_seconds="${HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS:-}"
   absolute_seconds="${HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS:-120}"
   [[ "$absolute_seconds" =~ ^[0-9]+$ ]] || absolute_seconds=120
-  relative_seconds=$((declared_seconds - lead_seconds))
+  if [[ "$lead_seconds" =~ ^[0-9]+$ ]]; then
+    relative_seconds=$((declared_seconds - lead_seconds))
+  else
+    percent="${HQ_HOOK_TIMEOUT_MASTER_WARN_PERCENT:-80}"
+    if ! [[ "$percent" =~ ^[0-9]+$ ]] || [ "$percent" -lt 1 ] || [ "$percent" -gt 100 ]; then
+      percent=80
+    fi
+    relative_seconds=$(((declared_seconds * percent + 99) / 100))
+    [ "$declared_seconds" -le 1 ] || [ "$relative_seconds" -lt "$declared_seconds" ] \
+      || relative_seconds=$((declared_seconds - 1))
+  fi
   [ "$relative_seconds" -ge 0 ] || relative_seconds=0
   selected="$absolute_seconds"
   [ "$relative_seconds" -lt "$selected" ] && selected="$relative_seconds"
