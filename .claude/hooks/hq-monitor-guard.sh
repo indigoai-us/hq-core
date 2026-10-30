@@ -15,19 +15,22 @@ parsed_fields="$(printf '%s' "$payload" | jq -jr '
     (.tool_input.run_in_background // .toolInput.run_in_background // false
       | if . == true or . == "true" then "1" else "0" end),
     "\u001f",
-    (.tool_input.command // .toolInput.command // "" | tostring),
-    "\u001f",
     (.session_id // .sessionId // .tool_input.session_id // .toolInput.session_id // "" | tostring),
+    "\u001f",
+    (.tool_input.command // .toolInput.command // "" | tostring),
     "\u001f"
   else
     "0\u001f\u001f\u001f"
   end
 ' 2>/dev/null || true)"
-run_background="${parsed_fields%%$'\x1f'*}"
+# The command is the last field, and only the short leading fields are cut
+# with a pattern. ${parsed_fields%%$'\x1f'*} on a 96 KB command took seconds
+# on bash 5: it tries the pattern at every position of the long text.
 parsed_tail="${parsed_fields#*$'\x1f'}"
-command_text="${parsed_tail%%$'\x1f'*}"
-parsed_tail="${parsed_tail#*$'\x1f'}"
-session_id="${parsed_tail%$'\x1f'}"
+run_background="${parsed_fields:0:${#parsed_fields} - ${#parsed_tail} - 1}"
+command_text="${parsed_tail#*$'\x1f'}"
+session_id="${parsed_tail:0:${#parsed_tail} - ${#command_text} - 1}"
+command_text="${command_text%$'\x1f'}"
 [ -n "$command_text" ] || exit 0
 
 heredoc_body_is_executable() {
@@ -39,6 +42,8 @@ find_heredoc_redirection() {
   local line="$1" quote="" escaped=0 i char previous rest op_width delimiter_match
   HEREDOC_DELIMITER=""
   HEREDOC_STRIP_TABS=0
+  # Every heredoc opener contains <<. Skip the character scan without one.
+  [[ "$line" == *'<<'* ]] || return 1
   for ((i = 0; i < ${#line}; i++)); do
     char="${line:i:1}"
     if [ "$escaped" -eq 1 ]; then
@@ -92,20 +97,25 @@ find_heredoc_redirection() {
   return 1
 }
 
+# Collects the kept lines in FLAT_LINES. The command used to be normalized
+# with ${text//$'\r\n'/$'\n'} and joined with ${flat//$'\n'/ }, which grow
+# quadratically with the length on bash 3.2 (a 96 KB command ran for minutes).
+# Dropping the CRs that end each line gives the same text, so CRLF delimiter
+# lines still close their heredoc.
 strip_heredoc_bodies() {
   local text="$1" line="" delimiter="" pending=0 strip_tabs=0 strip_body=1 body_line=""
-  # Normalize before parsing so CRLF delimiter lines close their heredoc.
-  text="${text//$'\r\n'/$'\n'}"
+  FLAT_LINES=()
   while IFS= read -r line || [ -n "$line" ]; do
+    while [[ "$line" == *$'\r' ]]; do line="${line%$'\r'}"; done
     if [ "$pending" -eq 1 ]; then
       body_line="$line"
       if [ "$strip_tabs" -eq 1 ]; then body_line="${body_line#"${body_line%%[!$'\t']*}"}"; fi
       if [ "$body_line" = "$delimiter" ]; then pending=0; delimiter=""; strip_tabs=0
-      elif [ "$strip_body" -eq 0 ]; then printf '%s\n' "$line"
+      elif [ "$strip_body" -eq 0 ]; then FLAT_LINES[${#FLAT_LINES[@]}]="$line"
       fi
       continue
     fi
-    printf '%s\n' "$line"
+    FLAT_LINES[${#FLAT_LINES[@]}]="$line"
     if find_heredoc_redirection "$line"; then
       delimiter="$HEREDOC_DELIMITER"
       strip_tabs="$HEREDOC_STRIP_TABS"
@@ -115,27 +125,52 @@ strip_heredoc_bodies() {
     fi
   done <<< "$text"
 }
-flat="$(strip_heredoc_bodies "$command_text")"
-flat="${flat//$'\r\n'/$'\n'}"
-flat="${flat//$'\n'/ }"
+strip_heredoc_bodies "$command_text"
+# Command substitution used to drop the trailing empty lines.
+while ((${#FLAT_LINES[@]} > 0)) && [ -z "${FLAT_LINES[${#FLAT_LINES[@]} - 1]}" ]; do
+  unset "FLAT_LINES[${#FLAT_LINES[@]} - 1]"
+done
+flat=""
+if ((${#FLAT_LINES[@]} > 0)); then
+  flat_ifs="$IFS"
+  IFS=' '
+  flat="${FLAT_LINES[*]}"
+  IFS="$flat_ifs"
+fi
 
 single_hq_monitor_command() {
-  local text="$1" stripped="" quote="" escaped=0 char i
-  for ((i = 0; i < ${#text}; i++)); do
-    char="${text:i:1}"
-    if [ "$escaped" -eq 1 ]; then
-      [ -z "$quote" ] && stripped+="$char"
-      escaped=0
-    elif [ -n "$quote" ]; then
-      if [ "$quote" != "'" ] && [ "$char" = "\\" ]; then escaped=1
-      elif [ "$char" = "$quote" ]; then quote=""; fi
-    elif [ "$char" = "\\" ]; then
-      escaped=1
-    elif [ "$char" = "'" ] || [ "$char" = '"' ] || [ "$char" = $'\140' ]; then
-      quote="$char"
-    else
-      stripped+="$char"
+  local text="$1" stripped="" quote="" escaped=0 char chunk offset i decided=0
+  # ${text:i:1} costs time proportional to i, so a per-character loop over a
+  # 100 KB command ran for most of a minute. Walk 256-character chunks
+  # instead, and stop at the first unquoted ; & or |, which rules the
+  # exemption out.
+  for ((offset = 0; offset < ${#text}; offset += 256)); do
+    # The prefix match below reads at most the first three words. Once
+    # `stripped` holds three whitespace-terminated words, more text cannot
+    # change that match, so a command that does not start with hq monitor
+    # stops here instead of walking the rest.
+    if [ "$decided" -eq 0 ] && [[ "$stripped" =~ ^[[:space:]]*([^[:space:]]+[[:space:]]+){3} ]]; then
+      [[ "$stripped" =~ ^[[:space:]]*(command[[:space:]]+)?([^[:space:]]*/)?hq[[:space:]]+monitor([[:space:]]|$) ]] || return 1
+      decided=1
     fi
+    chunk="${text:offset:256}"
+    for ((i = 0; i < ${#chunk}; i++)); do
+      char="${chunk:i:1}"
+      if [ "$escaped" -eq 1 ]; then
+        [ -z "$quote" ] && stripped+="$char"
+        escaped=0
+      elif [ -n "$quote" ]; then
+        if [ "$quote" != "'" ] && [ "$char" = "\\" ]; then escaped=1
+        elif [ "$char" = "$quote" ]; then quote=""; fi
+      elif [ "$char" = "\\" ]; then
+        escaped=1
+      elif [ "$char" = "'" ] || [ "$char" = '"' ] || [ "$char" = $'\140' ]; then
+        quote="$char"
+      else
+        case "$char" in ';'|'&'|'|') return 1 ;; esac
+        stripped+="$char"
+      fi
+    done
   done
   [[ "$stripped" =~ ^[[:space:]]*(command[[:space:]]+)?([^[:space:]]*/)?hq[[:space:]]+monitor([[:space:]]|$) ]] || return 1
   [[ "$stripped" != *";"* && "$stripped" != *"&"* && "$stripped" != *"|"* ]]

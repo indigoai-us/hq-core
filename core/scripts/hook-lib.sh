@@ -373,13 +373,17 @@ hq_shell_simple_commands() {
       for (j in argv) delete argv[j]
       argc = 0
     }
-    { source = source $0 "\n" }
-    END {
-      # Parse the complete payload, not one physical input line at a time.
-      # A quoted `bash -c` program and a heredoc can span newlines; resetting
-      # quote state at each line silently discarded the command before it.
-      text = source
-      n = length(text); quote = ""; escaped = 0; word = ""; rword = ""; argc = 0
+    BEGIN { quote = ""; escaped = 0; word = ""; rword = ""; argc = 0 }
+    {
+      # Parse the payload as one stream: quote, escape, and word state carry
+      # over from one input line to the next, because a quoted `bash -c`
+      # program and a heredoc can span newlines; resetting quote state at
+      # each line silently discarded the command before it. Each line is
+      # parsed as it is read, with its newline restored. Joining all lines
+      # into one string first copied the string once per line, which grew
+      # with the square of the command length.
+      text = $0 "\n"
+      n = length(text)
       for (i = 1; i <= n; i++) {
         c = substr(text, i, 1)
         if (escaped) { word = word c; rword = rword c; escaped = 0; continue }
@@ -389,9 +393,16 @@ hq_shell_simple_commands() {
           continue
         }
         if (quote == "\"") {
+          # Inside double quotes a backslash escapes only $ ` " \ and newline,
+          # as in Bash. Any other backslash stays in the word, so
+          # "C:\Program Files\Git\cmd\git.exe" keeps its path separators.
           rword = rword c
           if (c == "\"") quote = ""
-          else if (c == "\\") escaped = 1
+          else if (c == "\\") {
+            nc = substr(text, i + 1, 1)
+            if (nc == "$" || nc == "`" || nc == "\"" || nc == "\\" || nc == "\n") escaped = 1
+            else word = word c
+          }
           else word = word c
           continue
         }
@@ -423,9 +434,45 @@ hq_shell_simple_commands() {
 # Print the executable of a simple command after leading environment
 # assignments and the common `env` / `command` wrappers.
 hq_shell_command_executable() {
-  local record="$1" token
+  hq_shell_record_executable "$1" || return 1
+  printf '%s' "$HQ_SHELL_EXECUTABLE"
+}
+
+# hq_shell_record_words <US-delimited argv>
+# Split one hq_shell_simple_commands record into the HQ_SHELL_WORDS array.
+# This matches `IFS=$'\037' read -r -a` for a record (records hold no newline)
+# without a here-string, which Bash 3.2 backs with a temporary file: about
+# 0.2 ms per call, or seconds across a 10,000-line command. Globbing is off
+# while the record is split, so a word such as `*` stays literal.
+hq_shell_record_words() {
+  local IFS=$'\037' hq_words_noglob=0
+  case "$-" in *f*) hq_words_noglob=1 ;; esac
+  set -f
+  # shellcheck disable=SC2206  # split on US with globbing off, as above
+  HQ_SHELL_WORDS=($1)
+  [ "$hq_words_noglob" -eq 1 ] || set +f
+}
+
+# hq_shell_record_executable <US-delimited argv>
+# Same lookup as hq_shell_command_executable, but stores the result in
+# HQ_SHELL_EXECUTABLE (empty when there is none) instead of printing it.
+# Guards that classify every record of a long command call this form so the
+# lookup costs no command-substitution subshell per record.
+hq_shell_record_executable() {
+  local token
   local -a argv
-  IFS=$'\037' read -r -a argv <<< "$record"
+  HQ_SHELL_EXECUTABLE=""
+  [ -n "$1" ] || return 1
+  # Fast path: when the first word is not an assignment or a prefix word
+  # (env, command, builtin, exec, sudo), it is the executable. This skips the
+  # split and the loop below for almost every record.
+  token="${1%%$'\037'*}"
+  case "$token" in
+    *=*|env|command|builtin|exec|sudo) ;;
+    *) HQ_SHELL_EXECUTABLE="$token"; return 0 ;;
+  esac
+  hq_shell_record_words "$1"
+  argv=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
   local i=0
   while [ "$i" -lt "${#argv[@]}" ]; do
     token="${argv[$i]}"
@@ -449,7 +496,7 @@ hq_shell_command_executable() {
         ;;
       command|builtin|exec|sudo)
         i=$((i + 1)); continue ;;
-      *) printf '%s' "$token"; return 0 ;;
+      *) HQ_SHELL_EXECUTABLE="$token"; return 0 ;;
     esac
   done
   return 1
@@ -463,26 +510,42 @@ hq_shell_command_executable() {
 #   reaches it as `cd <HQ>\r` and `init`, which match nothing, while bash runs
 #   the original LF command. A CR that is not followed by LF is left alone, so
 #   jq.exe's output round-trips exactly. master-hook.sh does the same collapse
-#   on the HQ_HOOK_COMMAND it exports. Builtins only; bash 3.2 safe.
+#   on the HQ_HOOK_COMMAND it exports. Bash 3.2 safe.
 #   ${var//$'\r\n'/$'\n'} gives the same result but grows quadratically with
-#   the number of pairs (5,000 CRLF lines took over a minute on bash 3.2), so
-#   split into lines, drop one CR from each line end, and rejoin. The x keeps
-#   the real tail apart from the LF the here-string adds, so a trailing CR is
-#   never taken for half of a CRLF.
+#   the length (5,000 CRLF lines took over a minute on bash 3.2, and a 64 KB
+#   command 24 s), so split into lines, drop one CR from each line end, and
+#   rejoin. The x keeps the real tail apart from the LF the here-string adds,
+#   so a trailing CR is never taken for half of a CRLF.
+#   On Windows (Git Bash, MSYS, Cygwin) mapfile and read take the here-string
+#   one byte per read() call, which is slow there. The substitution costs
+#   about 0.06 s for 64 KB on bash 5, so Windows uses it up to 64 KB and one
+#   awk process above that; neither reads the text through a builtin.
 hq_crlf_to_lf() {
-  local hq_crlf_name hq_crlf_line hq_crlf_out hq_crlf_n
+  local hq_crlf_name hq_crlf_value hq_crlf_line hq_crlf_out hq_crlf_n
   local -a hq_crlf_parts
   for hq_crlf_name in "$@"; do
-    [[ "${!hq_crlf_name}" == *$'\r\n'* ]] || continue
+    hq_crlf_value="${!hq_crlf_name}"
+    [[ "$hq_crlf_value" == *$'\r\n'* ]] || continue
+    case "${OSTYPE:-}" in
+      msys* | cygwin*)
+        if ((${#hq_crlf_value} <= 65536)); then
+          printf -v "$hq_crlf_name" '%s' "${hq_crlf_value//$'\r\n'/$'\n'}"
+        else
+          hq_crlf_out="$(LC_ALL=C awk '{ sub(/\r$/, ""); print }' <<< "${hq_crlf_value}x")"
+          printf -v "$hq_crlf_name" '%s' "${hq_crlf_out%x}"
+        fi
+        continue
+        ;;
+    esac
     hq_crlf_parts=()
     if ((BASH_VERSINFO[0] >= 4)); then
-      mapfile -t hq_crlf_parts <<< "${!hq_crlf_name}x"
+      mapfile -t hq_crlf_parts <<< "${hq_crlf_value}x"
     else
       hq_crlf_n=0
       while IFS= read -r hq_crlf_line; do
         hq_crlf_parts[hq_crlf_n]="$hq_crlf_line"
         hq_crlf_n=$((hq_crlf_n + 1))
-      done <<< "${!hq_crlf_name}x"
+      done <<< "${hq_crlf_value}x"
     fi
     printf -v hq_crlf_out '%s\n' "${hq_crlf_parts[@]%$'\r'}"
     printf -v "$hq_crlf_name" '%s' "${hq_crlf_out%x$'\n'}"

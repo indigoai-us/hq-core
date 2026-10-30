@@ -11,7 +11,11 @@
 #
 # The hook resolves its allow file (core/scripts/install-deps.allow) from the HQ
 # root two levels up from the hook dir, so this suite exercises the REAL
-# allow-list (@indigoai-us/hq-cli@*, @tobilu/qmd@2.5.3).
+# allow-list (@indigoai-us/hq-cli@*, @tobilu/qmd@2.5.3, @xai-official/grok@*).
+#
+# The grok cases below pin that a pinned global install of
+# @xai-official/grok is allowed and that unpinned, dist-tag and non-global
+# forms are still blocked.
 set -u
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/block-unsafe-package-install.sh"
@@ -54,6 +58,20 @@ check "mixed first-party + untrusted with --prefix still BLOCKS" \
   "npm install -g --prefix /tmp/pfx @indigoai-us/hq-cli@5.109.8 left-pad" 2
 check "bare untrusted global (no flag) still BLOCKS" \
   "npm install -g left-pad" 2
+
+# --- allow-list entry: @xai-official/grok@* (Grok Build CLI)
+check "grok pinned global install allowed" \
+  "npm install -g @xai-official/grok@1.0.52" 0
+check "grok pinned global install via npm i -g allowed" \
+  "npm i -g @xai-official/grok@1.0.52" 0
+check "grok pinned global install via pnpm add -g allowed" \
+  "pnpm add -g @xai-official/grok@1.0.52" 0
+check "grok unpinned global install still BLOCKS" \
+  "npm install -g @xai-official/grok" 2
+check "grok @latest dist-tag global install still BLOCKS" \
+  "npm install -g @xai-official/grok@latest" 2
+check "grok pinned NON-global install still BLOCKS" \
+  "npm install @xai-official/grok@1.0.52" 2
 
 # --- baselines unaffected by the change
 check "npm ci is lockfile-strict, allowed" "npm ci" 0

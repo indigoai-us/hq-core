@@ -59,25 +59,57 @@ if [[ "${HQ_HOOK_COMMAND+set}" == set ]]; then
   TOOL_CWD="${HQ_HOOK_CWD:-}"
 else
   # master-hook leaves HQ_HOOK_COMMAND unset for commands over its env cap,
-  # and the adapters never set it. Read command and cwd in one NUL-framed
-  # `jq -j` call: `jq -r` inside $(...) would leave jq.exe's CR on the last
-  # line once the substitution strips the trailing LF. CRLF is collapsed
-  # after hook-lib.sh is sourced below.
+  # and the adapters never set it. Read cwd and command in one `jq -j` call
+  # inside one command substitution. `read` from a pipe takes one byte per
+  # read() call, and on Git Bash each call is slow enough that a 10,000-line
+  # command spent seconds here. Each field ends in a US byte, so the trailing
+  # LF of the command survives the substitution (`jq -r` would leave jq.exe's
+  # CR behind). The cwd goes first, with any US bytes removed, so only the
+  # first US splits the fields. CRLF is collapsed after hook-lib.sh is
+  # sourced below.
   CMD_FROM_PAYLOAD=1
+  PAYLOAD_FIELDS="$(jq -j '(if (.cwd | type) == "string" then (.cwd | gsub("\u001f"; "")) else "" end), "\u001f", (.tool_input.command // ""), "\u001f"' 2>/dev/null)"
   PAYLOAD_CWD=""
-  exec 3< <(jq -j '(.tool_input.command // ""), "\u0000", (if (.cwd | type) == "string" then .cwd else "" end), "\u0000"' 2>/dev/null)
-  IFS= read -r -d '' CMD <&3 || true
-  IFS= read -r -d '' PAYLOAD_CWD <&3 || true
-  exec 3<&-
+  CMD=""
+  if [[ "$PAYLOAD_FIELDS" == *$'\037'* ]]; then
+    CMD="${PAYLOAD_FIELDS#*$'\037'}"
+    PAYLOAD_CWD="${PAYLOAD_FIELDS:0:${#PAYLOAD_FIELDS} - ${#CMD} - 1}"
+    CMD="${CMD%$'\037'}"
+  fi
+  PAYLOAD_FIELDS=""
   TOOL_CWD="${HQ_HOOK_CWD:-$PAYLOAD_CWD}"
 fi
 [[ -z "$CMD" ]] && exit 0
 
 if [[ "${HQ_ALLOW_HQ_ROOT_GIT:-}" == "1" ]]; then exit 0; fi
-case "$CMD" in
-  *git*|*gh*|*hq-pr-create.sh*) ;;
-  *) exit 0 ;;
-esac
+
+GIT_MUTATION_WORDS='push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck'
+
+# Cheap prefilter. Quotes and backslashes can split a command name without
+# changing what runs (g''it, "g"it, g\it), so a command with no literal "git"
+# is matched again with those characters removed. One tr fork is used because
+# ${CMD//...} is quadratic on bash 3.2 for long commands. A command name hidden
+# behind $VAR, ${VAR}, $(...), or backticks leaves no "git" text at all, so a
+# command with an expansion and a git mutation word also goes to the parser.
+CMD_GIT_QUOTE_SPLIT=0
+cmd_may_mutate_git() {
+  case "$CMD" in *git*|*gh*|*hq-pr-create.sh*) return 0 ;; esac
+  case "$CMD" in
+    *[\'\"\\]*)
+      case "$(printf '%s' "$CMD" | tr -d '\047\042\134')" in
+        *git*) CMD_GIT_QUOTE_SPLIT=1; return 0 ;;
+        *gh*|*hq-pr-create.sh*) return 0 ;;
+      esac
+      ;;
+  esac
+  case "$CMD" in
+    *'$'*|*'`'*)
+      [[ "$CMD" =~ (^|[^A-Za-z0-9_-])($GIT_MUTATION_WORDS)([^A-Za-z0-9_-]|$) ]] && return 0
+      ;;
+  esac
+  return 1
+}
+cmd_may_mutate_git || exit 0
 # This exact standalone read-only form needs no root lookup or git process.
 # Keep the expression narrow so every compound or quoted form reaches the
 # existing classifier.
@@ -92,7 +124,7 @@ HOOK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CMD="$(hq_shell_strip_standalone_data_heredoc "$CMD")"
 
 STRICT_GIT_GUARD=0
-if [[ "$CMD" == *git* ]]; then
+if [[ "$CMD" == *git* || "$CMD_GIT_QUOTE_SPLIT" -eq 1 ]]; then
   if [[ -z "${HQ_CLI_BIN:-}" ]]; then
     HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)"
     export HQ_CLI_BIN
@@ -125,24 +157,32 @@ norm() {
 }
 HQ_ROOT="$(norm "$PROJECT_DIR")"
 
-GIT_RE_MUTATION='^(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)$'
+GIT_RE_MUTATION="^($GIT_MUTATION_WORDS)\$"
 GIT_RE_READONLY='^(status|log|diff|show|shortlog|whatchanged|rev-parse|rev-list|describe|blame|annotate|cat-file|ls-files|ls-remote|ls-tree|for-each-ref|symbolic-ref|name-rev|var|version|help|count-objects|verify-pack|grep|archive|bisect|branch|tag|stash|remote|notes|config|worktree|submodule|check-ignore)$'
 
+# git_subcommand <record> <executable>: set GIT_SUBCOMMAND to the first
+# non-option word after the executable word of a US-delimited record, or
+# return 1. It sets a variable instead of printing so the per-record classifier
+# below starts no subshell. Matching the executable word itself, not the
+# literal "git", covers /usr/bin/git, git.exe, and an unresolved $VAR.
+GIT_SUBCOMMAND=""
 git_subcommand() {
-  local arr; read -r -a arr <<<"$1"
-  local i seen_git=0
+  local executable="$2" i t
+  local -a arr
+  hq_shell_record_words "$1"
+  arr=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  GIT_SUBCOMMAND=""
   for ((i=0; i<${#arr[@]}; i++)); do
-    local t="${arr[i]}"
-    if [[ $seen_git -eq 0 ]]; then
-      [[ "$t" == "git" ]] && seen_git=1
-      continue
-    fi
+    [[ "${arr[i]}" == "$executable" ]] && break
+  done
+  for ((i=i+1; i<${#arr[@]}; i++)); do
+    t="${arr[i]}"
     case "$t" in
       -C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix) ((i++)); continue ;;
       --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|-c=*) continue ;;
       -p|--paginate|--no-pager|--no-replace-objects|--bare|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) continue ;;
       -*) continue ;;
-      *) echo "$t"; return 0 ;;
+      *) GIT_SUBCOMMAND="$t"; return 0 ;;
     esac
   done
   return 1
@@ -152,9 +192,125 @@ git_subcommand() {
 # already-parsed argv for the three explicit shell source forms and eval; it
 # never evaluates a payload and does not parse shell syntax a second time.
 RESOLVED_RECORDS=()
+RESOLVED_TEXTS=()
 RESOLVED_COMMAND=""
+EXPANDED_PAYLOAD_TEXT=""
 UNCLASSIFIED_GIT_WRAPPER=0
 SSH_REMOTE_PAYLOAD=""
+
+# Shell variables assigned anywhere in the command, in order, as parallel
+# arrays (bash 3.2 has no associative arrays). A name assigned two different
+# values cannot be resolved statically. GIT_ENV_PATHS holds every GIT_DIR and
+# GIT_WORK_TREE value: once set or exported they redirect later git commands
+# without any -C or cd, so each one is checked against the HQ repo.
+ASSIGN_NAMES=()
+ASSIGN_VALUES=()
+GIT_ENV_PATHS=()
+
+add_assignment() {
+  [[ "$1" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || return 0
+  ASSIGN_NAMES+=("${BASH_REMATCH[1]}")
+  ASSIGN_VALUES+=("${BASH_REMATCH[2]}")
+  case "${BASH_REMATCH[1]}" in
+    GIT_DIR|GIT_WORK_TREE) GIT_ENV_PATHS+=("${BASH_REMATCH[2]}") ;;
+  esac
+}
+
+# Record NAME=value words of one record: leading assignments (including those
+# after env), and the arguments of export, declare, typeset, readonly, local.
+record_assignments() {
+  local record="$1" executable i n scan_args=0
+  local -a words
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  n=${#words[@]}
+  for ((i=0; i<n; i++)); do
+    if [[ -n "$executable" && "${words[i]}" == "$executable" ]]; then
+      case "$executable" in export|declare|typeset|readonly|local) scan_args=1 ;; esac
+      break
+    fi
+    add_assignment "${words[i]}"
+  done
+  if [[ "$scan_args" -eq 1 ]]; then
+    for ((i=i+1; i<n; i++)); do add_assignment "${words[i]}"; done
+  fi
+  return 0
+}
+
+# lookup_assignment <name>: set ASSIGN_VALUE to the one value the command
+# assigns to <name>. HOME falls back to the environment; no other inherited
+# variable is trusted, because the hook's environment is not the tool's.
+ASSIGN_VALUE=""
+lookup_assignment() {
+  local name="$1" i found=0 value=""
+  for ((i=0; i<${#ASSIGN_NAMES[@]}; i++)); do
+    [[ "${ASSIGN_NAMES[i]}" == "$name" ]] || continue
+    if [[ "$found" -eq 0 ]]; then
+      value="${ASSIGN_VALUES[i]}"; found=1
+    elif [[ "${ASSIGN_VALUES[i]}" != "$value" ]]; then
+      return 1
+    fi
+  done
+  if [[ "$found" -eq 0 ]]; then
+    [[ "$name" == HOME && -n "${HOME:-}" ]] || return 1
+    value="$HOME"
+  fi
+  ASSIGN_VALUE="$value"
+}
+
+# resolve_shell_word <word>: set RESOLVED_WORD to <word> with each $NAME and
+# ${NAME} replaced by its one assigned value. Return 1 for a name with no
+# assignment or two values, for ${NAME<op>...}, special parameters ($1, $@),
+# command substitution, backticks, or more than 32 replacements.
+RESOLVE_RE_BRACED='^([^$]*)[$][{]([A-Za-z_][A-Za-z0-9_]*)[}](.*)$'
+RESOLVE_RE_BARE='^([^$]*)[$]([A-Za-z_][A-Za-z0-9_]*)(.*)$'
+RESOLVED_WORD=""
+resolve_shell_word() {
+  local word="$1" rounds=0 before name after
+  RESOLVED_WORD=""
+  while [[ "$word" == *'$'* || "$word" == *'`'* ]]; do
+    rounds=$((rounds + 1))
+    [[ "$rounds" -le 32 ]] || return 1
+    case "$word" in *'`'*|*'$('*) return 1 ;; esac
+    if [[ "$word" =~ $RESOLVE_RE_BRACED ]] || [[ "$word" =~ $RESOLVE_RE_BARE ]]; then
+      before="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"; after="${BASH_REMATCH[3]}"
+      lookup_assignment "$name" || return 1
+      word="$before$ASSIGN_VALUE$after"
+    else
+      return 1
+    fi
+  done
+  RESOLVED_WORD="$word"
+}
+
+# Replace the executable word of a record with the whitespace-split words of
+# its resolved value (G="git -C /x" runs `git -C /x`). Sets REWRITTEN_RECORD.
+REWRITTEN_RECORD=""
+rewrite_record_executable() {
+  local executable="$2" value="$3" i done_exe=0 part
+  local -a words
+  hq_shell_record_words "$1"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  REWRITTEN_RECORD=""
+  for ((i=0; i<${#words[@]}; i++)); do
+    if [[ "$done_exe" -eq 0 && "${words[i]}" == "$executable" ]]; then
+      done_exe=1
+      while :; do
+        value="${value#"${value%%[![:space:]]*}"}"
+        [[ -n "$value" ]] || break
+        part="${value%%[[:space:]]*}"
+        value="${value#"$part"}"
+        [[ -n "$REWRITTEN_RECORD" ]] && REWRITTEN_RECORD+=$'\037'
+        REWRITTEN_RECORD+="$part"
+      done
+      continue
+    fi
+    [[ -n "$REWRITTEN_RECORD" ]] && REWRITTEN_RECORD+=$'\037'
+    REWRITTEN_RECORD+="${words[i]}"
+  done
+}
 
 # ssh forwards every argument after the destination as a remote command. Return
 # that payload without evaluating it so the strict parser can classify nested
@@ -162,8 +318,10 @@ SSH_REMOTE_PAYLOAD=""
 ssh_remote_payload() {
   local record="$1" executable token i j payload=""
   local -a words
-  IFS=$'\037' read -r -a words <<<"$record"
-  executable="$(hq_shell_command_executable "$record" || true)"
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
   [[ -n "$executable" ]] || return 1
   for ((i=0; i<${#words[@]}; i++)); do
     [[ "${words[i]}" == "$executable" ]] && break
@@ -196,47 +354,87 @@ ssh_remote_payload() {
   return 0
 }
 
+# split_lines <text>: store the non-empty lines of <text> in SPLIT_LINES.
+# The record loops used to read records with `while read ... < <(...)`. Bash
+# reads a pipe one byte per read() call, and on Git Bash those calls made a
+# 10,000-line command take over 20 s. Splitting on IFS gives the same
+# non-empty lines in-process. Globbing is off so a `*` word stays literal.
+split_lines() {
+  local IFS=$'\n' split_noglob=0
+  case "$-" in *f*) split_noglob=1 ;; esac
+  set -f
+  # shellcheck disable=SC2206  # split on LF with globbing off, as above
+  SPLIT_LINES=($1)
+  [ "$split_noglob" -eq 1 ] || set +f
+}
+
+# join_lines <item>...: store the items joined by LF in JOINED_LINES.
+join_lines() {
+  local IFS=$'\n'
+  JOINED_LINES="$*"
+}
+
 collect_resolved_records() {
   local source="$1" depth="$2" record executable executable_base text index token payload expanded i
-  local -a words
+  local -a words records
   if [[ "$depth" -ge 8 ]]; then
-    [[ "$source" == *git* ]] && UNCLASSIFIED_GIT_WRAPPER=1
+    case "$source" in *git*|*'$'*|*'`'*) UNCLASSIFIED_GIT_WRAPPER=1 ;; esac
     return 0
   fi
-  while IFS= read -r record; do
+  # Copy the split records into a local array: the recursive calls below
+  # overwrite SPLIT_LINES.
+  split_lines "$(hq_shell_simple_commands "$source")"
+  records=(${SPLIT_LINES[@]+"${SPLIT_LINES[@]}"})
+  for record in ${records[@]+"${records[@]}"}; do
     [[ -n "$record" ]] || continue
-    executable="$(hq_shell_command_executable "$record" || true)"
+    [[ "$record" == *=* ]] && record_assignments "$record"
+    hq_shell_record_executable "$record" || true
+    executable="$HQ_SHELL_EXECUTABLE"
+    # A command name spelled through a variable ($G, ${G}, ${X}t) runs the
+    # assigned value. Substitute it when the command assigns exactly one
+    # value; an unresolved name is classified in the main loop below.
+    if [[ "$executable" == *'$'* ]] && resolve_shell_word "$executable"; then
+      rewrite_record_executable "$record" "$executable" "$RESOLVED_WORD"
+      record="$REWRITTEN_RECORD"
+      [[ -n "$record" ]] || continue
+      hq_shell_record_executable "$record" || true
+      executable="$HQ_SHELL_EXECUTABLE"
+    fi
     executable_base="${executable##*/}"
     executable_base="${executable_base##*\\}"
     expanded=0
+    # eval and the -c forms of bash, sh, and zsh run their payload in the
+    # same cwd, so the payload is classified as if it were typed directly.
+    # This runs with the strict flag off too: on main, `bash -c 'git push'`
+    # at the HQ root was allowed unless the flag was on.
     case "$executable_base" in
       bash|bash.exe|sh|sh.exe|zsh|zsh.exe|eval)
-        if [[ "$STRICT_GIT_GUARD" -eq 1 ]]; then
-          IFS=$'\037' read -r -a words <<<"$record"
-          index=-1
-          for ((i=0; i<${#words[@]}; i++)); do
-            if [[ "${words[i]}" == "$executable" ]]; then index=$i; break; fi
-          done
-          if [[ "$index" -ge 0 ]]; then
-            payload=""
-            if [[ "$executable" == "eval" ]]; then
-              for ((i=index+1; i<${#words[@]}; i++)); do
-                [[ -n "$payload" ]] && payload+=" "
-                payload+="${words[i]}"
-              done
-            else
-              for ((i=index+1; i<${#words[@]}; i++)); do
-                token="${words[i]}"
-                if [[ "$token" == -* && "$token" != --* && "$token" == *c* ]]; then
-                  if [[ "$((i+1))" -lt "${#words[@]}" ]]; then payload="${words[i+1]}"; fi
-                  break
-                fi
-              done
-            fi
-            if [[ -n "$payload" ]]; then
-              collect_resolved_records "$payload" "$((depth+1))"
-              expanded=1
-            fi
+        hq_shell_record_words "$record"
+        words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+        index=-1
+        for ((i=0; i<${#words[@]}; i++)); do
+          if [[ "${words[i]}" == "$executable" ]]; then index=$i; break; fi
+        done
+        if [[ "$index" -ge 0 ]]; then
+          payload=""
+          if [[ "$executable" == "eval" ]]; then
+            for ((i=index+1; i<${#words[@]}; i++)); do
+              [[ -n "$payload" ]] && payload+=" "
+              payload+="${words[i]}"
+            done
+          else
+            for ((i=index+1; i<${#words[@]}; i++)); do
+              token="${words[i]}"
+              if [[ "$token" == -* && "$token" != --* && "$token" == *c* ]]; then
+                if [[ "$((i+1))" -lt "${#words[@]}" ]]; then payload="${words[i+1]}"; fi
+                break
+              fi
+            done
+          fi
+          if [[ -n "$payload" ]]; then
+            EXPANDED_PAYLOAD_TEXT+="$payload"$'\n'
+            collect_resolved_records "$payload" "$((depth+1))"
+            expanded=1
           fi
         fi
         ;;
@@ -249,17 +447,18 @@ collect_resolved_records() {
     esac
     if [[ "$expanded" -eq 0 ]]; then
       RESOLVED_RECORDS+=("$record")
-      text="${record//$'\037'/ }"
-      RESOLVED_COMMAND+="$text"$'\n'
+      RESOLVED_TEXTS+=("${record//$'\037'/ }")
     fi
-  done < <(hq_shell_simple_commands "$source")
+  done
 }
 
 simple_command_has_escape_assignment() {
   local record="$1" executable token i
   local -a words
-  IFS=$'\037' read -r -a words <<<"$record"
-  executable="$(hq_shell_command_executable "$record" || true)"
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
   for ((i=0; i<${#words[@]}; i++)); do
     token="${words[i]}"
     [[ "$token" == "$executable" ]] && return 1
@@ -306,8 +505,10 @@ gh_positional_repo_anchor() {
   local record="$1" executable executable_base token subcommand
   local command_index=-1 endpoint="" method="" i
   local -a words
-  IFS=$'\037' read -r -a words <<<"$record"
-  executable="$(hq_shell_command_executable "$record" || true)"
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
   executable_base="${executable##*/}"
   executable_base="${executable_base##*\\}"
   [[ "$executable_base" == gh ]] || return 1
@@ -372,37 +573,95 @@ gh_positional_repo_anchor() {
   [[ "$endpoint" =~ ^/?repos/[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*([/?#]|$) ]]
 }
 
-# Print the directory a git record runs in when it carries global -C options
-# (applied in order, as git does); return 1 when it has none. Only options
-# before the subcommand count, so `git commit -C HEAD` is not an anchor.
-git_record_c_anchor() {
-  local record="$1" executable token i found=0 target=""
+# join_git_path <base> <path>: <path> as git reads it after `-C <base>`.
+join_git_path() {
+  case "$2" in
+    /*|\~*|[A-Za-z]:[/\\]*) JOINED_GIT_PATH="$2" ;;
+    *) if [[ -n "$1" ]]; then JOINED_GIT_PATH="$1/$2"; else JOINED_GIT_PATH="$2"; fi ;;
+  esac
+}
+
+# git_record_anchor <record>: find which repository and work tree a git record
+# operates on. Only options before the subcommand count, so
+# `git commit -C HEAD` is not an anchor. Sets:
+#   GIT_REC_ANCHOR  the repository anchor: the git dir when GIT_DIR= or
+#                   --git-dir names one, else the -C directory (-C options
+#                   apply in order, as git does), else empty;
+#   GIT_REC_EXTRA   a further path the command touches (the work tree from
+#                   GIT_WORK_TREE= or --work-tree, or the -C directory when a
+#                   git dir is named), checked like the anchor;
+#   GIT_REC_IMPLICIT_TREE  1 when the work tree is the shell cwd. A git dir
+#                   without a work tree uses the cwd as its work tree, so
+#                   `GIT_DIR=<other>/.git git checkout -- .` at the HQ root
+#                   still writes HQ files and stays under the cwd checks.
+# A relative git dir or work tree is relative to the -C directory.
+GIT_REC_ANCHOR=""
+GIT_REC_EXTRA=""
+GIT_REC_IMPLICIT_TREE=1
+JOINED_GIT_PATH=""
+git_record_anchor() {
+  local record="$1" executable token i n c_target="" git_dir="" work_tree=""
   local -a words
-  IFS=$'\037' read -r -a words <<<"$record"
-  executable="$(hq_shell_command_executable "$record" || true)"
-  [[ -n "$executable" ]] || return 1
-  for ((i=0; i<${#words[@]}; i++)); do
-    [[ "${words[i]}" == "$executable" ]] && break
+  GIT_REC_ANCHOR=""; GIT_REC_EXTRA=""; GIT_REC_IMPLICIT_TREE=1
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
+  [[ -n "$executable" ]] || return 0
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  n=${#words[@]}
+  for ((i=0; i<n; i++)); do
+    token="${words[i]}"
+    [[ "$token" == "$executable" ]] && break
+    case "$token" in
+      GIT_DIR=*) git_dir="${token#GIT_DIR=}" ;;
+      GIT_WORK_TREE=*) work_tree="${token#GIT_WORK_TREE=}" ;;
+    esac
   done
-  for ((i=i+1; i<${#words[@]}; i++)); do
+  for ((i=i+1; i<n; i++)); do
     token="${words[i]}"
     case "$token" in
       -C)
-        ((i++)); [[ "$i" -lt "${#words[@]}" ]] || return 1
-        token="${words[i]}"
-        found=1
-        case "$token" in
-          /*|\~*|[A-Za-z]:[/\\]*) target="$token" ;;
-          *) if [[ -n "$target" ]]; then target="$target/$token"; else target="$token"; fi ;;
-        esac
+        ((i++)); [[ "$i" -lt "$n" ]] || break
+        join_git_path "$c_target" "${words[i]}"
+        c_target="$JOINED_GIT_PATH"
         ;;
-      -c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix) ((i++)) ;;
+      --git-dir)
+        ((i++)); [[ "$i" -lt "$n" ]] || break
+        git_dir="${words[i]}"
+        ;;
+      --git-dir=*) git_dir="${token#--git-dir=}" ;;
+      --work-tree)
+        ((i++)); [[ "$i" -lt "$n" ]] || break
+        work_tree="${words[i]}"
+        ;;
+      --work-tree=*) work_tree="${token#--work-tree=}" ;;
+      -c|--namespace|--exec-path|--super-prefix) ((i++)) ;;
       -*) ;;
       *) break ;;
     esac
   done
-  [[ "$found" -eq 1 ]] || return 1
-  printf '%s\n' "$target"
+  if [[ -n "$git_dir" ]]; then
+    join_git_path "$c_target" "$git_dir"
+    GIT_REC_ANCHOR="$JOINED_GIT_PATH"
+    if [[ -n "$work_tree" ]]; then
+      join_git_path "$c_target" "$work_tree"
+      GIT_REC_EXTRA="$JOINED_GIT_PATH"
+      GIT_REC_IMPLICIT_TREE=0
+    elif [[ -n "$c_target" ]]; then
+      GIT_REC_EXTRA="$c_target"
+      GIT_REC_IMPLICIT_TREE=0
+    fi
+  elif [[ -n "$c_target" ]]; then
+    GIT_REC_ANCHOR="$c_target"
+    GIT_REC_IMPLICIT_TREE=0
+    if [[ -n "$work_tree" ]]; then
+      join_git_path "$c_target" "$work_tree"
+      GIT_REC_EXTRA="$JOINED_GIT_PATH"
+    fi
+  elif [[ -n "$work_tree" ]]; then
+    GIT_REC_EXTRA="$work_tree"
+  fi
+  return 0
 }
 
 # True when a gh record carries -R/--repo as its own argv word with a value:
@@ -412,8 +671,10 @@ git_record_c_anchor() {
 gh_record_has_repo_flag() {
   local record="$1" executable token i command_index=-1
   local -a words
-  IFS=$'\037' read -r -a words <<<"$record"
-  executable="$(hq_shell_command_executable "$record" || true)"
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
   [[ -n "$executable" ]] || return 1
   for ((i=0; i<${#words[@]}; i++)); do
     if [[ "${words[i]}" == "$executable" ]]; then
@@ -443,8 +704,12 @@ WRAPPER_GH_RECORD=""
 hq_pr_create_wrapper_record() {
   local record="$1" executable executable_base i
   local -a words
-  IFS=$'\037' read -r -a words <<<"$record"
-  executable="$(hq_shell_command_executable "$record" || true)"
+  # Every match below names hq-pr-create.sh, so skip the split otherwise.
+  [[ "$record" == *hq-pr-create.sh* ]] || return 1
+  hq_shell_record_words "$record"
+  words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+  hq_shell_record_executable "$record" || true
+  executable="$HQ_SHELL_EXECUTABLE"
   [[ -n "$executable" ]] || return 1
   for ((i=0; i<${#words[@]}; i++)); do
     [[ "${words[i]}" == "$executable" ]] && break
@@ -465,26 +730,57 @@ hq_pr_create_wrapper_record() {
   return 0
 }
 
-ANCHOR_SCAN_COMMAND="$CMD"
 collect_resolved_records "$CMD" 0
+# RESOLVED_COMMAND is every resolved record, words joined by spaces, one per
+# line. It is built once here: appending to it per record copied the whole
+# string each time, which grew with the square of the command length. The
+# substitution runs per record because ${x//a/b} on one long string is also
+# quadratic on Bash 3.2.
+if [[ "${#RESOLVED_TEXTS[@]}" -gt 0 ]]; then
+  join_lines "${RESOLVED_TEXTS[@]}"
+  RESOLVED_COMMAND="$JOINED_LINES"$'\n'
+fi
+# The cd scan reads the command text plus every eval / sh -c payload, so a
+# `cd` inside `bash -c '...'` anchors the git command next to it.
+ANCHOR_SCAN_COMMAND="$CMD"
+if [[ -n "$EXPANDED_PAYLOAD_TEXT" ]]; then
+  ANCHOR_SCAN_COMMAND+=$'\n'"$EXPANDED_PAYLOAD_TEXT"
+fi
 if [[ "$STRICT_GIT_GUARD" -eq 1 ]]; then ANCHOR_SCAN_COMMAND="$RESOLVED_COMMAND"; fi
 # Classify executable words, not arbitrary command text. A git phrase inside a
 # summary, JSON payload, echo, or grep pattern is an argument, never a git
-# operation.
-while IFS= read -r shell_record; do
+# operation. A record can hold an LF from a quoted word, so the records are
+# joined and split again, as the earlier printf-and-read loop did.
+join_lines ${RESOLVED_RECORDS[@]+"${RESOLVED_RECORDS[@]}"}
+split_lines "$JOINED_LINES"
+for shell_record in ${SPLIT_LINES[@]+"${SPLIT_LINES[@]}"}; do
   [ -n "$shell_record" ] || continue
-  shell_exe="$(hq_shell_command_executable "$shell_record" || true)"
+  hq_shell_record_executable "$shell_record" || true
+  shell_exe="$HQ_SHELL_EXECUTABLE"
   shell_text="${shell_record//$'\037'/ }"
-  case "$shell_exe" in
-    git)
-      shell_sub="$(git_subcommand "$shell_text" || true)"
+  # Match the command's base name, so /usr/bin/git, git.exe, and a Windows
+  # ...\Git\cmd\git.exe path are git too. A name still holding $ or a
+  # backtick could not be resolved; it is treated as git only when the word
+  # after it is a git mutation subcommand (`$GIT_BIN commit`).
+  shell_exe_base="${shell_exe##*/}"
+  shell_exe_base="${shell_exe_base##*\\}"
+  case "$shell_exe_base" in
+    [Gg][Ii][Tt]|[Gg][Ii][Tt].[Ee][Xx][Ee]) shell_kind=git ;;
+    [Gg][Hh]|[Gg][Hh].[Ee][Xx][Ee]) shell_kind=gh ;;
+    *'$'*|*'`'*) shell_kind=unresolved ;;
+    *) shell_kind=other ;;
+  esac
+  case "$shell_kind" in
+    git|unresolved)
+      git_subcommand "$shell_record" "$shell_exe" || true
+      shell_sub="$GIT_SUBCOMMAND"
       [ -n "$shell_sub" ] || continue
       shell_mutation=0
-      if echo "$shell_sub" | grep -Eq "$GIT_RE_MUTATION"; then
+      if [[ "$shell_sub" =~ $GIT_RE_MUTATION ]]; then
         shell_mutation=1
-      elif echo "$shell_sub" | grep -Eq "$GIT_RE_READONLY"; then
-        is_dual_mutation "$shell_sub" "$shell_text" && shell_mutation=1
-      else
+      elif [[ "$shell_sub" =~ $GIT_RE_READONLY ]]; then
+        is_dual_mutation "$shell_sub" "git ${shell_text#*"$shell_exe"}" && shell_mutation=1
+      elif [[ "$shell_kind" == git ]]; then
         shell_mutation=1
       fi
       if [[ "$STRICT_GIT_GUARD" -eq 1 && "$shell_mutation" -eq 1 ]] \
@@ -520,9 +816,31 @@ while IFS= read -r shell_record; do
       fi
       ;;
   esac
-done < <(printf '%s\n' "${RESOLVED_RECORDS[@]}")
+done
 
-if [[ "$STRICT_GIT_GUARD" -eq 1 && "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
+# A command substitution in command position, `$(echo git) commit` or
+# `\`which git\` push`, splits into records the classifier above cannot join
+# back together. Match the text instead: a $(...) or backtick word at the start
+# of a command, then options, then a git mutation subcommand. The match becomes
+# an unanchored git record, so it is judged by the cd and cwd checks.
+case "$CMD$EXPANDED_PAYLOAD_TEXT" in
+  *'$('*|*'`'*)
+    SUBST_TEXT="$CMD"$'\n'"$EXPANDED_PAYLOAD_TEXT"
+    SUBST_LEAD='(^|[;&|({!'$'\n'']|then|do|else)[[:space:]]*'
+    SUBST_WORD='([$][(][^()]*[)]|`[^`]*`)'
+    SUBST_OPTS='([[:space:]]+(-[Cc][[:space:]]+[^[:space:];&|]+|-[^[:space:];&|]*))*'
+    SUBST_RE="$SUBST_LEAD$SUBST_WORD${SUBST_OPTS}[[:space:]]+($GIT_MUTATION_WORDS)([[:space:];&|)]|\$)"
+    if [[ "$SUBST_TEXT" =~ $SUBST_RE ]]; then
+      if [ "$GIT_IS_MUTATION" -eq 0 ]; then
+        GIT_IS_MUTATION=1; GIT_CMD="${BASH_REMATCH[0]}"; SUB="${BASH_REMATCH[5]}"
+      fi
+      GIT_MUTATION_COUNT=$((GIT_MUTATION_COUNT + 1))
+      GIT_MUTATION_RECORDS+=("git"$'\037'"${BASH_REMATCH[5]}")
+    fi
+    ;;
+esac
+
+if [[ "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
   GIT_IS_MUTATION=1
   GIT_CMD="git push"
   SUB="push"
@@ -537,18 +855,19 @@ ANCHOR_KIND=""
 
 # Each git mutation is judged on its own anchor. A `-C` on one git command does
 # not apply to the next one: in `git -C <repo> commit && git push` the push runs
-# in the shell cwd. GIT_C_ANCHORS holds the -C target of every git mutation that
-# has one; GIT_UNANCHORED is set when any git mutation has none, and those are
-# judged through the cd / cwd checks below.
+# in the shell cwd. GIT_C_ANCHORS holds the anchor (git dir or -C target) of
+# every git mutation that has one, and GIT_EXTRA_PATHS the work trees they
+# name. GIT_UNANCHORED is set when any git mutation has no anchor or uses the
+# shell cwd as its work tree; those are judged through the cd / cwd checks.
 GIT_C_ANCHORS=()
+GIT_EXTRA_PATHS=()
 GIT_UNANCHORED=0
 if [[ $GIT_IS_MUTATION -eq 1 ]]; then
   for git_mutation_record in "${GIT_MUTATION_RECORDS[@]}"; do
-    if git_c_target="$(git_record_c_anchor "$git_mutation_record")"; then
-      GIT_C_ANCHORS+=("$git_c_target")
-    else
-      GIT_UNANCHORED=1
-    fi
+    git_record_anchor "$git_mutation_record"
+    [[ -n "$GIT_REC_ANCHOR" ]] && GIT_C_ANCHORS+=("$GIT_REC_ANCHOR")
+    [[ -n "$GIT_REC_EXTRA" ]] && GIT_EXTRA_PATHS+=("$GIT_REC_EXTRA")
+    [[ "$GIT_REC_IMPLICIT_TREE" -eq 1 ]] && GIT_UNANCHORED=1
   done
 fi
 
@@ -614,7 +933,14 @@ if [[ -z "$ANCHOR_PATH" ]]; then
       [[ -z "$CDP" ]] && continue
       ANCHOR_PATH="$CDP"
       ANCHOR_KIND="cd &&"
-      [[ "$(norm "$CDP")" == "$HQ_ROOT" ]] && break
+      # `cd "$D"` is compared through D's assigned value. One that cannot be
+      # resolved is kept as the anchor; check_anchor_not_hq_root blocks it.
+      cd_compare="$CDP"
+      if [[ "$CDP" == *'$'* || "$CDP" == *'`'* ]]; then
+        resolve_shell_word "$CDP" || break
+        cd_compare="$RESOLVED_WORD"
+      fi
+      [[ "$(norm "$cd_compare")" == "$HQ_ROOT" ]] && break
     done <<<"$CD_PATHS"
   fi
 fi
@@ -657,7 +983,7 @@ MSG
   exit 2
 }
 
-if [[ "$STRICT_GIT_GUARD" -eq 1 && "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
+if [[ "$UNCLASSIFIED_GIT_WRAPPER" -eq 1 ]]; then
   block "A nested shell/eval payload containing git exceeded the strict parser depth limit."
 fi
 
@@ -799,19 +1125,32 @@ hq_root_git_dir() {
 # /tmp and the other is C:/Users/.../Temp, or when a drive path was prefixed
 # onto HQ_ROOT because it did not match "/*". Git prints one spelling for
 # both -C invocations, so that comparison still matches.
+#
+# A path holding $NAME is compared through the name's one assigned value; one
+# that cannot be resolved blocks. A relative path is checked from the cwd the
+# harness reported, or from the HQ root when it reported none.
 check_anchor_not_hq_root() {
-  local kind="$1" path="$2" resolved target_git hq_git grok_worktrees
-  if hq_path_is_absolute "$path" || [[ "$path" == \~* ]]; then
-    resolved="$path"
+  local kind="$1" path="$2" literal="$2"
+  if [[ "$path" == *'$'* || "$path" == *'`'* ]]; then
+    resolve_shell_word "$path" \
+      || block "Anchor ($kind -> $path) uses a shell expansion the guard cannot resolve. Use a literal path."
+    literal="$RESOLVED_WORD"
+  fi
+  if hq_path_is_absolute "$literal" || [[ "$literal" == \~* ]]; then
+    check_git_dir_not_hq_root "$kind" "$path" "$literal"
   elif [[ -n "$TOOL_CWD" ]] && hq_path_is_absolute "$TOOL_CWD"; then
     # A relative -C (for example `git -C .`) runs against the shell cwd the
     # harness reported, not the HQ root (feedback_a6e3a675). A worktree below
     # HQ has its own git dir, so it no longer reads as an HQ-root mutation.
-    resolved="$TOOL_CWD/$path"
+    check_git_dir_not_hq_root "$kind" "$path" "$TOOL_CWD/$literal"
   else
-    resolved="$HQ_ROOT/$path"
+    check_git_dir_not_hq_root "$kind" "$path" "$HQ_ROOT/$literal"
   fi
-  resolved="$(norm "$resolved")"
+}
+
+check_git_dir_not_hq_root() {
+  local kind="$1" path="$2" resolved target_git grok_worktrees
+  resolved="$(norm "$3")"
   target_git="$(git -C "$resolved" rev-parse --absolute-git-dir 2>/dev/null || true)"
   [[ -n "$target_git" ]] || return 0
   hq_root_git_dir
@@ -835,6 +1174,16 @@ check_anchor_not_hq_root() {
 for git_c_target in "${GIT_C_ANCHORS[@]+"${GIT_C_ANCHORS[@]}"}"; do
   check_anchor_not_hq_root "git -C" "$git_c_target"
 done
+for git_extra_path in "${GIT_EXTRA_PATHS[@]+"${GIT_EXTRA_PATHS[@]}"}"; do
+  check_anchor_not_hq_root "git work tree" "$git_extra_path"
+done
+# GIT_DIR / GIT_WORK_TREE assigned or exported anywhere in the command redirect
+# every later git command, whatever its -C or cwd.
+if [[ $GIT_IS_MUTATION -eq 1 ]]; then
+  for git_env_path in "${GIT_ENV_PATHS[@]+"${GIT_ENV_PATHS[@]}"}"; do
+    check_anchor_not_hq_root "GIT_DIR/GIT_WORK_TREE" "$git_env_path"
+  done
+fi
 
 # `gh repo create` names its target in its own args (owner/name, or name under
 # the authenticated account) and accepts neither `git -C` nor `-R` — requiring

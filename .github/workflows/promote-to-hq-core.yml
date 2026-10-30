@@ -8,10 +8,16 @@ name: Promote to hq-core
 #
 #   1. version empty, pr_type=release (mode=auto) — patch train on ONE
 #      standing PR on a fixed branch (promote/auto-main). Version: hq-core
-#      main hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5). Arms GitHub
-#      auto-merge (squash); the gate below merges once every check passes and
-#      the required approval is given. Automation never labels the PR; a
-#      human can apply `hold-release` to hold a release.
+#      main hqVersion + 1 patch (e.g. 15.0.4 -> 15.0.5).
+#
+#      Stable releases (X.Y.Z, auto or manual) open on hold: the workflow
+#      applies `hold-release` on every open or update and never arms
+#      auto-merge. Nothing merges or tags until the owner gives an explicit go
+#      by removing `hold-release` on the current head
+#      (core/scripts/release-pr-auto-merge.sh). The open-PR guard refuses to
+#      update a held PR, so a new stable head is cut only after a go, and
+#      that new head is held again. Prerelease (-alpha/-beta/-rc) and fix
+#      PRs still get auto-merge armed unless a person holds them.
 #
 #   2. version set (mode=manual) — explicit release/v<ver> or fix/<slug> PR
 #      with an operator-supplied version.
@@ -205,6 +211,16 @@ jobs:
             fi
           fi
 
+          # Stable releases are created already held: hold-release goes on at
+          # `gh pr create`, so a failure before release-pr-auto-merge.sh apply
+          # cannot leave an unheld stable PR for the hourly recheck to merge.
+          # Same rule as release-pr-auto-merge.sh is-stable; the test pins both.
+          STABLE="false"
+          if [ "$PR_TYPE" = "release" ] && printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            STABLE="true"
+            LABELS="${LABELS},hold-release"
+          fi
+
           {
             echo "mode=${MODE}"
             echo "pr_type=${PR_TYPE}"
@@ -214,6 +230,7 @@ jobs:
             echo "title=${TITLE}"
             echo "labels=${LABELS}"
             echo "commit_msg=${COMMIT_MSG}"
+            echo "stable=${STABLE}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout staging (source)
@@ -387,6 +404,7 @@ jobs:
           INPUT_VERSION: ${{ steps.params.outputs.version }}
           INPUT_TYPE: ${{ steps.params.outputs.pr_type }}
           INPUT_MODE: ${{ steps.params.outputs.mode }}
+          INPUT_STABLE: ${{ steps.params.outputs.stable }}
           INPUT_EXTRA: ${{ inputs.extra_summary }}
           STAGING_SHA: ${{ steps.staging.outputs.sha }}
           STAGING_SHORT: ${{ steps.staging.outputs.short }}
@@ -408,11 +426,23 @@ jobs:
               echo "- ${DIFF_FILES} file(s) changed in this promotion"
             } > "$BODY_FILE"
           fi
+          if [ "$INPUT_STABLE" = "true" ]; then
+            {
+              echo
+              echo "> [!IMPORTANT]"
+              echo "> **On hold: owner go required.** This is a stable release. It opens with the \`hold-release\` label and auto-merge is not armed. Do not merge this PR or tag \`v${INPUT_VERSION}\` until the owner gives an explicit go on the current head. The go is given by removing \`hold-release\`. Each new push re-applies \`hold-release\`, so a go covers only the head it was given on."
+              if [ "$INPUT_MODE" = "auto" ]; then
+                echo "> After the go, the hourly release-gate recheck merges this PR once every check on that head passes (run \`recheck-hq-core-release-gate.yml\` with workflow_dispatch to merge sooner)."
+              else
+                echo "> After the go, a person merges this PR by hand: the release gate and its hourly recheck cover only \`promote/auto-main\`, not \`release/v*\` branches."
+              fi
+              echo
+            } >> "$BODY_FILE"
+          fi
           if [ "$INPUT_MODE" = "auto" ]; then
             {
               echo "- 🤖 Release PR built by a \`promote-to-hq-core\` dispatch. Staging merges do not update it; a new dispatch refuses to replace an approved head unless \`force=true\`, and never touches a held PR."
-              echo "- ✅ The release workflow waits for every check and status on the exact hq-core PR head, then merges only that checked SHA."
-              echo "- 🛑 **Hold a release:** \`gh pr edit <N> --add-label hold-release\` (or apply the \`hold-release\` label in the UI). The gate disables auto-merge and will not merge while the label is present. Automation never adds this label. If a check fails, re-run it; the scheduled recheck reads the current results and merges once every check passes."
+              echo "- ✅ The release gate waits for every check and status on the exact hq-core PR head, and merges only that checked SHA, only when \`hold-release\` is absent."
             } >> "$BODY_FILE"
           fi
           if [ -n "${INPUT_EXTRA}" ]; then
@@ -469,9 +499,6 @@ jobs:
           cd target
           git commit -m "$COMMIT_MSG"
 
-      # Auto-merge stays armed across this update on purpose: release PRs are
-      # always ready to merge. Only a manual hold-release disarms it, and that
-      # must happen before the push so a held PR cannot merge on the new head.
       # Refuse before touching an open PR that is held, or approved without
       # force=true. Runs before any push in both modes.
       - name: Guard open release PR (hold-release / approved)
@@ -483,21 +510,21 @@ jobs:
           INPUT_FORCE: ${{ inputs.force }}
         run: bash staging/core/scripts/promote-release-pr-guard.sh "$TARGET_REPO" "$BRANCH" "${INPUT_FORCE:-false}"
 
-      - name: Disarm auto-merge on a held standing PR before updating it
-        if: steps.params.outputs.mode == 'auto' && steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
+      # Stable releases are re-held (hold-release applied, auto-merge disarmed)
+      # before the push, so an earlier owner go never carries to a new head.
+      # Prerelease and fix PRs are only disarmed when a person already held them.
+      - name: Hold or disarm an existing PR before updating it
+        if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ steps.params.outputs.branch }}
+          PR_TYPE: ${{ steps.params.outputs.pr_type }}
+          VERSION: ${{ steps.params.outputs.version }}
         run: |
           set -euo pipefail
           EXISTING="$(gh pr list --repo "$TARGET_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           [ -n "$EXISTING" ] || exit 0
-          HELD_AND_ARMED="$(gh pr view "$EXISTING" --repo "$TARGET_REPO" --json labels,autoMergeRequest \
-            --jq '(any(.labels[]?.name; . == "hold-release")) and (.autoMergeRequest != null)')"
-          if [ "$HELD_AND_ARMED" = 'true' ]; then
-            gh pr merge "$EXISTING" --repo "$TARGET_REPO" --disable-auto
-            echo "::notice::PR #${EXISTING} has hold-release; disarmed auto-merge before updating its head."
-          fi
+          bash staging/core/scripts/release-pr-auto-merge.sh prepare "$TARGET_REPO" "$EXISTING" "$PR_TYPE" "$VERSION"
 
       - name: Push branch to hq-core
         if: steps.nochanges.outputs.skip != 'true' && steps.realchanges.outputs.skip != 'true' && steps.params.outputs.dry_run != 'true'
@@ -524,6 +551,8 @@ jobs:
           BRANCH: ${{ steps.params.outputs.branch }}
           TITLE: ${{ steps.params.outputs.title }}
           LABELS: ${{ steps.params.outputs.labels }}
+          PR_TYPE: ${{ steps.params.outputs.pr_type }}
+          VERSION: ${{ steps.params.outputs.version }}
           BODY_FILE: ${{ steps.body.outputs.file }}
         run: |
           set -euo pipefail
@@ -563,24 +592,16 @@ jobs:
             echo "::error::PR #${NUM} still reports head ${SEEN_SHA} after pushing ${PR_HEAD_SHA}."
             exit 1
           fi
-          # Release PRs are always ready to merge: arm GitHub auto-merge on
-          # every open or update. Only a manually applied hold-release skips it.
-          if gh pr view "$NUM" --repo "$TARGET_REPO" --json labels \
-               --jq 'any(.labels[]?.name; . == "hold-release")' | grep -qx true; then
-            echo "::notice::PR #${NUM} has hold-release; not arming auto-merge."
-          else
-            if gh pr merge "$NUM" --repo "$TARGET_REPO" --auto --squash --match-head-commit "$PR_HEAD_SHA"; then
-              echo "::notice::Armed auto-merge (squash) on PR #${NUM} at ${PR_HEAD_SHA}."
-            else
-              echo "::warning::Could not arm auto-merge on PR #${NUM}; the release gate below still merges it once every check passes."
-            fi
-          fi
+          # Stable releases: hold-release applied, auto-merge never armed.
+          # Prerelease and fix PRs: auto-merge armed unless already held.
+          bash ../staging/core/scripts/release-pr-auto-merge.sh apply "$TARGET_REPO" "$NUM" "$PR_TYPE" "$VERSION" "$PR_HEAD_SHA"
           echo "number=${NUM}" >> "$GITHUB_OUTPUT"
           echo "head_sha=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
-      # Gate the exact target PR head. GitHub auto-merge (armed above) waits only
-      # for required branch-protection contexts; this gate also merges once
-      # every check, required or not, has passed.
+      # Gate the exact target PR head. Auto mode is always a stable release, so
+      # the PR carries hold-release here and the gate exits without merging.
+      # After the owner removes hold-release, the hourly recheck merges once
+      # every check on that head has passed.
       - name: Gate every check and merge auto-mode release PR
         if: >-
           steps.params.outputs.mode == 'auto' &&

@@ -74,8 +74,9 @@ session_skill_dispatch() {
     *) return 0 ;;
   esac
 
-  # Extract skill token: /name or /name rest...
-  name="$(printf '%s' "$trimmed" | sed -E 's|^/([A-Za-z0-9_./-]+).*|\1|')"
+  # Extract skill token: /name, /company:name, or /name rest...
+  # Colon is part of namespaced skill ids (landersrx:landing-page-creator).
+  name="$(printf '%s' "$trimmed" | sed -E 's|^/([A-Za-z0-9_.:/-]+).*|\1|')"
   # Reject empty or path-like traversal
   case "$name" in
     ''|*..*|*/*) return 0 ;;

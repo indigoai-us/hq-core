@@ -2,8 +2,9 @@ name: Nag stale release PRs
 
 # Runs every 6 hours. For every open release PR (title `release: v<ver>`) on
 # hq-core that has been open longer than the threshold (default 12h), posts a
-# mocking nudge to #hq-liveops. After US-012 auto-merge-on-green, this mainly
-# backstops held (hold-release) or stuck PRs rather than the normal path.
+# mocking nudge to #hq-liveops. Stable releases open held (hold-release) and
+# wait for an owner go; prerelease and fix PRs auto-merge on green. This nags
+# both held releases waiting on a go and stuck PRs.
 #
 # hq-core only. Promoted into hq-core verbatim; the job guard keeps it inert
 # on staging.

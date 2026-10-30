@@ -4,7 +4,7 @@
 # resolve. Pins that contract explicitly.
 #
 # Why this exists: session_skill_dispatch extracts the skill token with
-#   sed -E 's|^/([A-Za-z0-9_./-]+).*|\1|'
+#   sed -E 's|^/([A-Za-z0-9_.:/-]+).*|\1|'
 # sed applies the expression to EVERY line. On a multi-line message it rewrites
 # line 1 and passes the remaining lines through untouched, so the extracted
 # "name" is the whole blob rather than the skill token — the catalog lookup
@@ -94,6 +94,32 @@ pass "multi-line /slash never dispatches the skill (platform-independent)"
 session_skill_dispatch "$RUN_DIR" "   /learn with leading spaces"
 [ "$SESSION_SKILL_DISPATCHED" = "1" ] || fail "leading-whitespace single line did not dispatch"
 pass "leading whitespace tolerated on a single line"
+
+# ── 5. colon-namespaced skill ids dispatch ──────────────────────────────────
+NS_DIR="$TMP/skills/landing-page-creator"
+mkdir -p "$NS_DIR"
+printf -- '---\nname: landersrx:landing-page-creator\ndescription: landing pages\n---\n\nNS body.\n' \
+  > "$NS_DIR/SKILL.md"
+export SESSION_SKILL_CATALOG_TSV="landersrx:landing-page-creator	$NS_DIR/SKILL.md	company
+learn	$SKILL_DIR/SKILL.md	core"
+: > "$RUN_DIR/system.txt"
+session_skill_dispatch "$RUN_DIR" "/landersrx:landing-page-creator draft a page"
+[ "$SESSION_SKILL_NAME" = "landersrx:landing-page-creator" ] \
+  || fail "colon name='$SESSION_SKILL_NAME' want 'landersrx:landing-page-creator'"
+[ "$SESSION_SKILL_DISPATCHED" = "1" ] \
+  || fail "colon-namespaced skill did not dispatch (clarify=$SESSION_SKILL_CLARIFY)"
+grep -q 'NS body' "$RUN_DIR/system.txt" || fail "colon-namespaced skill body missing"
+pass "colon-namespaced /company:skill dispatches"
+
+# ── 6. colon still does not steal a shorter prefix catalog name ─────────────
+: > "$RUN_DIR/system.txt"
+export SESSION_SKILL_CATALOG_TSV="landersrx	$SKILL_DIR/SKILL.md	company"
+session_skill_dispatch "$RUN_DIR" "/landersrx:landing-page-creator"
+[ "$SESSION_SKILL_NAME" = "landersrx:landing-page-creator" ] \
+  || fail "prefix-steal name='$SESSION_SKILL_NAME'"
+[ "$SESSION_SKILL_DISPATCHED" != "1" ] \
+  || fail "colon token must not dispatch a catalog entry named only the prefix"
+pass "colon token does not match a prefix catalog name"
 
 echo
 echo "PASS: hq-agent-session-skill-dispatch-multiline.test.sh"

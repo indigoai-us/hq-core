@@ -30,4 +30,12 @@ grep -F "$RESTORE" "$ENSURE" >/dev/null \
 grep -E 'pnpm add -g (\$\{HQ_CLI_PKG\}|@indigoai-us/hq-cli)@latest --config.minimumReleaseAge=1440' "$CHECKUP" >/dev/null \
   || fail "hq-checkup must document the pnpm age-gated restore"
 
+# feedback e49ce279: a stale pnpm copy behind a ~/.local/bin wrapper shadowed the
+# auto-updated npm copy; heal must diagnose the two installs and update the one
+# `command -v hq` resolves to.
+grep -F 'Stale shadowing CLI install' "$HEAL" >/dev/null \
+  || fail "hq-heal SKILL.md must diagnose a stale shadowing hq install"
+grep -F 'update the install that `command -v hq` resolves to' "$HEAL" >/dev/null \
+  || fail "hq-heal SKILL.md must target the install command -v hq resolves to"
+
 echo "PASS: hq-heal CLI restore uses pnpm + minimumReleaseAge=1440"

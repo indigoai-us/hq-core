@@ -531,12 +531,25 @@ matches_tool() {
 # Same result as ${TOOL_COMMAND//$'\r\n'/$'\n'}, which grows quadratically
 # with the number of pairs (5,000 CRLF lines took over a minute on bash 3.2).
 # Split into lines, drop one CR from each line end, rejoin. The x keeps the
-# real tail apart from the LF the here-string adds. Matches hq_crlf_to_lf in
-# core/scripts/hook-lib.sh. Builtins only.
+# real tail apart from the LF the here-string adds. On Windows, where mapfile
+# and read take a here-string one byte per read() call, use the substitution
+# up to 64 KB and one awk process above that. Matches hq_crlf_to_lf in
+# core/scripts/hook-lib.sh.
 master_command_crlf_to_lf() {
   local line out n=0
   local -a parts
   [[ "$TOOL_COMMAND" == *$'\r\n'* ]] || return 0
+  case "${OSTYPE:-}" in
+    msys* | cygwin*)
+      if ((${#TOOL_COMMAND} <= 65536)); then
+        TOOL_COMMAND="${TOOL_COMMAND//$'\r\n'/$'\n'}"
+      else
+        out="$(LC_ALL=C awk '{ sub(/\r$/, ""); print }' <<< "${TOOL_COMMAND}x")"
+        TOOL_COMMAND="${out%x}"
+      fi
+      return 0
+      ;;
+  esac
   if ((BASH_VERSINFO[0] >= 4)); then
     mapfile -t parts <<< "${TOOL_COMMAND}x"
   else
@@ -1136,7 +1149,7 @@ consume_timeout_breadcrumbs() {
         ((.elapsed_ms / 1000) | floor | tostring) as $ran
         | ((.declared_timeout_ms / 1000) | floor | tostring) as $budget
         | ([($now - .written_at), 0] | max | floor | tostring) as $age
-        | (if .declared_timeout_source == "default"
+        | (if (.declared_timeout_source // "default") == "default"
            then "of an assumed " + $budget + "s timeout budget (no configured timeout was found for it)"
            else "of its configured " + $budget + "s timeout budget" end) as $of
         | if .threshold == "absolute" then
@@ -1389,6 +1402,43 @@ if [ -n "$child_timeout_cmd" ] && [ ! -d "$child_completion_dir" ]; then
   mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
 fi
 child_sequence=0
+# Last-resort bound for a safety guard when neither coreutils timeout nor perl
+# exists. `set -m` puts the guard in its own process group so the watcher can
+# signal the guard and every child it started. A guard stopped this way exits
+# 143 or 137, which the registry loop treats as a timeout.
+master_run_bash_bounded() { # <seconds> <kill-after-seconds> <argv...>
+  local t="$1" kill_after="$2" pid watcher rc=0 start="$SECONDS"
+  shift 2
+  set -m
+  "$@" <&0 &
+  pid=$!
+  (
+    sleep "$t"
+    kill -TERM -- "-$pid" 2>/dev/null || exit 0
+    i=0
+    while [ "$i" -lt "$((kill_after * 10))" ]; do
+      kill -0 -- "-$pid" 2>/dev/null || exit 0
+      sleep 0.1
+      i=$((i + 1))
+    done
+    kill -KILL -- "-$pid" 2>/dev/null
+  ) </dev/null >/dev/null 2>&1 &
+  watcher=$!
+  set +m
+  wait "$pid" || rc=$?
+  # The group leader can die on SIGTERM while the rest of its group ignores it.
+  # The source runner's `bash -c` wrapper does exactly that when the sourced
+  # guard traps TERM. After a timeout, let the watcher finish its SIGKILL step
+  # instead of stopping it, or the guard keeps the output pipe open.
+  if [ "$rc" -ge 128 ] && [ "$((SECONDS - start))" -ge "$t" ]; then
+    wait "$watcher" 2>/dev/null || true
+  else
+    kill -TERM -- "-$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+  fi
+  return "$rc"
+}
+
 # Set by the hq-hook bridge so the active-child breadcrumb names the hook
 # script that is being bridged, not the engine binary that runs it.
 run_child_journal_path=""
@@ -1417,16 +1467,32 @@ run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker
   # exited 0 as a failure that fails the whole batch. Locals are declared BEFORE
   # the pipeline because every simple command resets PIPESTATUS.
   local cmd=()
+  # Safety guards set child_kill_after so a guard that ignores SIGTERM is sent
+  # SIGKILL. GNU timeout signals its whole process group, so the guard's own
+  # children (jq, git, node) go with it.
+  local timeout_bin=(timeout)
+  [ -z "${child_kill_after:-}" ] || timeout_bin=(timeout -k "$child_kill_after")
   case "$child_timeout_cmd" in
     timeout)
-      if [ "$mode" = "source" ] && [ -n "$completion_marker" ]; then
-        cmd=(timeout "$t" bash -c 'marker="$1"; child="$2"; shift 2; ( . "$child" "$@" ); rc=$?; : > "$marker"; exit "$rc"' "$path" "$completion_marker" "$path")
+      if [ -n "${child_kill_after:-}" ]; then
+        # Safety guard. timeout only sends SIGKILL while its direct child is
+        # alive, so the wrapper must outlive SIGTERM: otherwise a guard that
+        # ignores TERM keeps running (and holds the output pipe) after the
+        # wrapper exits. A trap handler, unlike `trap ''`, is not inherited, so
+        # the guard still gets the default TERM action.
+        # Source-mode guards are sourced in a subshell of the wrapper so the
+        # wrapper adds no extra Bash exec over the unbounded source runner.
+        local wrap_args=("${runner[@]}")
+        [ "$mode" != "source" ] || wrap_args=("$path")
+        cmd=("${timeout_bin[@]}" "$t" bash -c 'marker="$1"; mode="$2"; shift 2; stopped=0; trap "stopped=1" TERM; if [ "$mode" = source ]; then child="$1"; shift; ( trap - TERM; . "$child" "$@" ) <&0 & else "$@" <&0 & fi; c=$!; while :; do wait "$c"; rc=$?; kill -0 "$c" 2>/dev/null || break; done; [ "$stopped" = 1 ] || [ -z "$marker" ] || : > "$marker"; exit "$rc"' "$path" "$completion_marker" "$mode" "${wrap_args[@]}")
+      elif [ "$mode" = "source" ] && [ -n "$completion_marker" ]; then
+        cmd=("${timeout_bin[@]}" "$t" bash -c 'marker="$1"; child="$2"; shift 2; ( . "$child" "$@" ); rc=$?; : > "$marker"; exit "$rc"' "$path" "$completion_marker" "$path")
       elif [ "$mode" = "source" ]; then
-        cmd=(timeout "$t" bash -c 'child="$1"; shift; ( . "$child" "$@" )' "$path" "$path")
+        cmd=("${timeout_bin[@]}" "$t" bash -c 'child="$1"; shift; ( . "$child" "$@" )' "$path" "$path")
       elif [ -n "$completion_marker" ]; then
-        cmd=(timeout "$t" bash -c 'marker="$1"; shift; "$@"; rc=$?; : > "$marker"; exit "$rc"' -- "$completion_marker" "${runner[@]}")
+        cmd=("${timeout_bin[@]}" "$t" bash -c 'marker="$1"; shift; "$@"; rc=$?; : > "$marker"; exit "$rc"' -- "$completion_marker" "${runner[@]}")
       else
-        cmd=(timeout "$t" "${runner[@]}")
+        cmd=("${timeout_bin[@]}" "$t" "${runner[@]}")
       fi
       ;;
     # Indirect-object exec never routes a one-element LIST through /bin/sh.
@@ -1437,7 +1503,11 @@ run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker
       cmd=(perl -e "$child_timeout_perl_program" "$t" "$completion_marker" "${runner[@]}")
       ;;
     *)
-      cmd=("${runner[@]}")
+      if [ -n "${child_kill_after:-}" ]; then
+        cmd=(master_run_bash_bounded "$t" "$child_kill_after" "${runner[@]}")
+      else
+        cmd=("${runner[@]}")
+      fi
       ;;
   esac
   local rc=0
@@ -1505,6 +1575,64 @@ trace_ran() { # <id> <rc> <start-epochrealtime>
     ms="$(( (${EPOCHREALTIME/./} - ${start/./}) / 1000 ))ms"
   fi
   printf 'master-hook: run %s rc=%s %s\n' "$id" "$rc" "$ms" >&2
+}
+
+# Safety guards (registry "safety": true) run under a wall-clock cap below
+# Claude Code's hook limit. When one times out or is killed, master-hook blocks
+# instead of letting the tool call through unchecked. HQ_SAFETY_GUARD_TIMEOUT
+# may lower the cap (tests use 1-2 s); it cannot raise it above 25 s.
+MASTER_SAFETY_GUARD_TIMEOUT_MAX=25
+# Several safety guards run one after another, so the per-guard cap alone can
+# add up past the host's 300 s hook limit, and a host-killed master-hook does
+# not block. Safety guards share one budget measured from master-hook start;
+# once it is spent, the remaining safety guards block without running.
+# HQ_SAFETY_GUARD_TOTAL_BUDGET may lower it (tests); it cannot raise it.
+MASTER_SAFETY_TOTAL_BUDGET_MAX=240
+master_safety_guard_timeout() { # <registry-timeout> <elapsed-seconds>
+  local cap="${HQ_SAFETY_GUARD_TIMEOUT:-$MASTER_SAFETY_GUARD_TIMEOUT_MAX}" requested="$1"
+  local budget="${HQ_SAFETY_GUARD_TOTAL_BUDGET:-$MASTER_SAFETY_TOTAL_BUDGET_MAX}" elapsed="${2:-0}" remaining
+  case "$cap" in ''|*[!0-9]*|0) cap="$MASTER_SAFETY_GUARD_TIMEOUT_MAX" ;; esac
+  [ "$cap" -le "$MASTER_SAFETY_GUARD_TIMEOUT_MAX" ] || cap="$MASTER_SAFETY_GUARD_TIMEOUT_MAX"
+  case "$budget" in ''|*[!0-9]*|0) budget="$MASTER_SAFETY_TOTAL_BUDGET_MAX" ;; esac
+  [ "$budget" -le "$MASTER_SAFETY_TOTAL_BUDGET_MAX" ] || budget="$MASTER_SAFETY_TOTAL_BUDGET_MAX"
+  case "$elapsed" in ''|*[!0-9]*) elapsed=0 ;; esac
+  remaining=$((budget - elapsed))
+  # 0 tells the caller the budget is spent.
+  if [ "$remaining" -lt 1 ]; then
+    printf '0'
+    return 0
+  fi
+  [ "$cap" -le "$remaining" ] || cap="$remaining"
+  case "$requested" in ''|*[!0-9]*|0) requested="$cap" ;; esac
+  [ "$requested" -le "$cap" ] || requested="$cap"
+  printf '%s' "$requested"
+}
+
+master_report_safety_budget_spent() { # <hook-id>
+  local hook_name="$1"
+  case "$hook_name" in
+    ''|*[!A-Za-z0-9._-]*) hook_name="registered hook" ;;
+  esac
+  printf 'guard timed out, blocked: the safety-guard time budget was spent before %s could run, so this tool call was not checked.\n' \
+    "$hook_name" >&2 || true
+}
+
+# 124: coreutils timeout. 142: perl alarm with no completion marker.
+# 129/130/137/143: the guard was stopped by HUP, INT, KILL or TERM.
+master_safety_rc_is_timeout() { # <rc>
+  case "$1" in
+    124|129|130|137|142|143) return 0 ;;
+  esac
+  return 1
+}
+
+master_report_safety_timeout() { # <hook-id> <seconds>
+  local hook_name="$1"
+  case "$hook_name" in
+    ''|*[!A-Za-z0-9._-]*) hook_name="registered hook" ;;
+  esac
+  printf 'guard timed out, blocked: %s did not finish within %ss, so this tool call was not checked.\n' \
+    "$hook_name" "$2" >&2 || true
 }
 
 collect_output() { # <rc> <stdout> <source-path>
@@ -2183,7 +2311,9 @@ registry_rows() {
         (.prefilter.re // ""), (.prefilter.env // ""), (.prefilter.file // ""),
         (if .prefilter.policy_vocab == true then "1" else "" end),
         ((.args // []) | join(" ")), (.runner // "exec"),
-        (if .fail_closed == true then "1" else "0" end)] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+        (if .fail_closed == true then "1" else "0" end),
+        (if .safety == true then "1" else "0" end),
+        ((.prefilter.re_all // []) | join("\u001e"))] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
   master_debug_phase_finish config_load
   printf '%s\n' "$rows"
   if mkdir -p "${cache%/*}" 2>/dev/null; then
@@ -2195,8 +2325,11 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
   # Unit separator (0x1f) framing: tab is IFS whitespace, so consecutive empty
   # fields would collapse and shift later columns (a hook's args would land in
   # the prefilter slot and silently skip it).
-  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed; do
+  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed rsafety rpf_re_all; do
     [ -n "$rid" ] || continue
+    # A CR from a CRLF jq row would otherwise become a one-character re_all
+    # regex and skip hooks that have no prefilter.
+    rpf_re_all="${rpf_re_all%$'\r'}"
     if [ "$rgated" = "1" ]; then
       # An unknown profile name is treated as strict inside the gate, so it
       # can only add guards, never skip them.
@@ -2207,7 +2340,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       prefilter_match_rc=0
       hqad_registry_prefilter_match \
         "$EVENT" "$REPO_ROOT" "$ACTIVE_COMPANY" "$PAYLOAD_CWD" "$SESSION_ID" "$PREFILTER_TEXT" \
-        "$rpf_re" "$rpf_env" "$rpf_file" "$rpf_vocab" "$rid" || prefilter_match_rc=$?
+        "$rpf_re" "$rpf_env" "$rpf_file" "$rpf_vocab" "$rid" "$rpf_re_all" || prefilter_match_rc=$?
       [ -z "$rpf_vocab" ] || master_debug_phase_finish policy_load
       if [ "$prefilter_match_rc" -ne 0 ]; then
         case "$HQAD_PREFILTER_REASON" in
@@ -2250,6 +2383,20 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     prepare_child_completion_marker
     master_debug_phase_start external_command
     master_record_dispatch_startup
+    child_timeout="$rtimeout"
+    child_kill_after=""
+    if [ "$rsafety" = "1" ]; then
+      child_timeout="$(master_safety_guard_timeout "$rtimeout" "$((SECONDS - MASTER_ENTRY_SECONDS))")"
+      child_kill_after=2
+    fi
+    if [ "$rsafety" = "1" ] && [ "$child_timeout" = "0" ]; then
+      master_debug_phase_finish external_command
+      master_report_safety_budget_spent "$rid"
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (safety-budget-spent) rc=2\n' "$rid" >&2
+      child_kill_after=""
+      collect_output 2 "" "$REPO_ROOT/$rscript"
+      continue
+    fi
     master_hook_engine_bridge_mode "$rid"
     if [ -n "$HOOK_ENGINE_BRIDGE_MODE" ]; then
       # Same run_child path as the bash hook: per-child timeout, completion
@@ -2259,8 +2406,8 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s (%s)\n' "$rid" "$HOOK_ENGINE_BRIDGE_MODE" >&2
       run_child_journal_path="$REPO_ROOT/$rscript"
       # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-      out="$(run_child "$rtimeout" exec "$HOOK_ENGINE_BRIDGE_BIN" "$child_completion_marker" \
-        bridge "$rid" --mode "$HOOK_ENGINE_BRIDGE_MODE" --event "$EVENT" --timeout "$rtimeout" \
+      out="$(run_child "$child_timeout" exec "$HOOK_ENGINE_BRIDGE_BIN" "$child_completion_marker" \
+        bridge "$rid" --mode "$HOOK_ENGINE_BRIDGE_MODE" --event "$EVENT" --timeout "$child_timeout" \
         --script "$REPO_ROOT/$rscript" -- $rargs)" || rc=$?
       run_child_journal_path=""
       # Only 0 (allow or context) and 2 (block) are verdicts. Anything else
@@ -2277,28 +2424,33 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
           rc=0
           prepare_child_completion_marker
           # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-          out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+          out="$(run_child "$child_timeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
           ;;
       esac
     else
       # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-      out="$(run_child "$rtimeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
+      out="$(run_child "$child_timeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
     fi
+    child_kill_after=""
     master_debug_phase_finish external_command
     master_now_ms >/dev/null
     child_ended_ms="$MASTER_NOW_MS"
-    record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$rtimeout"
+    record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$child_timeout"
     # A PreToolUse guard marked fail_closed gives no verdict when it times out
     # (124/142, or 137 when killed) or crashes. Without this, that "no verdict"
     # is a non-2 exit and Claude Code runs the tool call.
     if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
       case "$rc" in
-        124|137|142) printf 'BLOCKED: %s timed out after %ss; failing closed.\n' "$rid" "$rtimeout" >&2 ;;
+        124|137|142) printf 'BLOCKED: %s timed out after %ss; failing closed.\n' "$rid" "$child_timeout" >&2 ;;
         *) printf 'BLOCKED: %s exited %s without a verdict; failing closed.\n' "$rid" "$rc" >&2 ;;
       esac
       rc=2
     fi
     [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
+    if [ "$rsafety" = "1" ] && master_safety_rc_is_timeout "$rc"; then
+      master_report_safety_timeout "$rid" "$child_timeout"
+      rc=2
+    fi
     master_debug_phase_start parse
     collect_output "$rc" "$out" "$REPO_ROOT/$rscript"
     master_debug_phase_finish parse

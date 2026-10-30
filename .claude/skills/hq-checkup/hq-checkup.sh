@@ -147,15 +147,51 @@ if [ -n "$CLI_VER" ]; then
 fi
 
 # ===================== The HQ app ============================================
-if [ "$(uname -s)" = "Darwin" ]; then
-  APP_UP=0; DAEMON_UP=0
-  pgrep -f 'hq-sync-menubar' >/dev/null 2>&1 && APP_UP=1
-  pgrep -f 'hq-sync-runner'  >/dev/null 2>&1 && DAEMON_UP=1
+# Desktop ships as HQ.app or HQ Sync.app, in /Applications or ~/Applications.
+# HQ_CHECKUP_UNAME / HQ_CHECKUP_APPLICATIONS / HQ_CHECKUP_USER_APPLICATIONS
+# are test overrides; production leaves them unset.
+hq_app_bundle() {
+  local sys_apps="${HQ_CHECKUP_APPLICATIONS:-/Applications}"
+  local user_apps="${HQ_CHECKUP_USER_APPLICATIONS:-${HOME}/Applications}"
+  local dir name
+  for dir in "$sys_apps" "$user_apps"; do
+    [ -n "$dir" ] || continue
+    for name in "HQ.app" "HQ Sync.app"; do
+      if [ -d "${dir}/${name}" ]; then
+        printf '%s\n' "${dir}/${name}"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
 
-  if [ "$APP_UP" -eq 0 ] && [ -d "/Applications/HQ.app" ]; then
-    if [ "$FIX" -eq 1 ] && open -a HQ >/dev/null 2>&1; then
-      sleep 3
-      pgrep -f 'hq-sync-menubar' >/dev/null 2>&1 && APP_UP=1
+start_hq_app() {
+  local bundle="$1"
+  # Drop Claude session env so the menubar does not inherit agent tokens.
+  env -u CLAUDE_CODE_SESSION_ID -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT \
+    open "$bundle" >/dev/null 2>&1
+}
+
+hq_pgrep() {
+  if [ -n "${HQ_CHECKUP_PGREP:-}" ]; then
+    "$HQ_CHECKUP_PGREP" "$@"
+  else
+    pgrep "$@"
+  fi
+}
+
+if [ "${HQ_CHECKUP_UNAME:-$(uname -s)}" = "Darwin" ]; then
+  APP_UP=0; DAEMON_UP=0
+  hq_pgrep -f 'hq-sync-menubar' >/dev/null 2>&1 && APP_UP=1
+  hq_pgrep -f 'hq-sync-runner'  >/dev/null 2>&1 && DAEMON_UP=1
+  HQ_APP_BUNDLE=""
+  HQ_APP_BUNDLE="$(hq_app_bundle)" || HQ_APP_BUNDLE=""
+
+  if [ "$APP_UP" -eq 0 ] && [ -n "$HQ_APP_BUNDLE" ]; then
+    if [ "$FIX" -eq 1 ] && start_hq_app "$HQ_APP_BUNDLE"; then
+      sleep "${HQ_CHECKUP_START_WAIT:-3}"
+      hq_pgrep -f 'hq-sync-menubar' >/dev/null 2>&1 && APP_UP=1
       if [ "$APP_UP" -eq 1 ]; then
         say FIXED "Started the HQ app — it wasn't running, so nothing was saving" ""
       else

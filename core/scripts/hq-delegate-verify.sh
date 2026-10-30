@@ -240,6 +240,11 @@ if [ "$REF_COUNT" -gt 0 ]; then
     # exactly the referenced files that sort early in a large parent listing).
     if listing_has_exact_key "$LISTING" "$kpath"; then
       echo "  pass  $REL"
+    elif DIR_LISTING="$(browse_parent "$REL/")" \
+         && [[ "$DIR_LISTING" == *"$kpath/"* ]]; then
+      # Directory reference without a trailing slash: reachable when any file
+      # exists under that prefix.
+      echo "  pass  $REL (folder)"
     else
       echo "  FAIL  $REL — granted prefix is reachable but this referenced file is NOT in the vault (likely cause: it was never pushed — hq sync push $kpath --company $COMPANY and re-run)"
       FAILED=1

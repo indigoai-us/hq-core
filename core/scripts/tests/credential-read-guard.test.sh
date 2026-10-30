@@ -28,6 +28,10 @@
 #        realpath
 #   [14] credential names split around a variable (~/.npm"$F"rc) and
 #        ordinary "$F" reads that still pass
+#   [15] read-only git show <ref>:<path> with a computed name in a loop,
+#        proved against the tree git reads (PR 1700)
+#   [16] git show, cat-file and archive paths filled in by xargs, find -exec
+#        or parallel; ordinary xargs and find shapes that still pass
 # Sections run in the order 1-6, 9, 10, 7, 8, because [8] exports env vars.
 set -uo pipefail
 
@@ -1195,6 +1199,39 @@ bash_case 0 "git show ref:src/\$f with 2>/dev/null and wc passes" \
   'for f in $(ls src); do git show HEAD:src/$f 2>/dev/null | wc -l; done' "$MREPO"
 bash_case 0 "while-read git show \"ref:src/\$f\" with no ref change passes" \
   'ls src | while read f; do git show "HEAD:src/$f"; done' "$MREPO"
+
+echo "[16] git object paths filled in by xargs, find -exec or parallel"
+# The tool supplies the <ref>:<path> operand, so the guard cannot see which
+# file git prints. Each shape below printed a tracked cfg/.env on main.
+bash_case 2 "xargs -I{} git show HEAD:cfg/{}" "ls -A cfg | xargs -I{} git show HEAD:cfg/{}"
+bash_case 2 "xargs -I% git show HEAD:cfg/%" "ls -A cfg | xargs -I% git show HEAD:cfg/%"
+bash_case 2 "xargs -I {} (separate) git show" "ls -A cfg | xargs -I {} git show HEAD:cfg/{}"
+bash_case 2 "xargs -i git show" "ls -A cfg | xargs -i git show HEAD:cfg/{}"
+bash_case 2 "xargs --replace=@ git show" "ls -A cfg | xargs --replace=@ git show HEAD:cfg/@"
+bash_case 2 "xargs -n1 -I{} sh -c 'git show ...{}'" "ls -A cfg | xargs -n1 -I{} sh -c 'git show HEAD:cfg/{}'"
+bash_case 2 "find -exec git show HEAD:{}" 'find cfg -type f -exec git show HEAD:{} \;'
+bash_case 2 "find -exec git -C . show HEAD:{} +" 'find cfg -type f -exec git -C . show HEAD:{} +'
+bash_case 2 "printf .env | xargs -I{} git show" "printf '%s\n' .env | xargs -I{} git show HEAD:cfg/{}"
+bash_case 2 "xargs git show < list.txt" "xargs git show < list.txt"
+bash_case 2 "cat list.txt | xargs git show" "cat list.txt | xargs git show"
+bash_case 2 "parallel git show HEAD:cfg/{}" "ls -A cfg | parallel git show HEAD:cfg/{}"
+bash_case 2 "xargs -I{} git cat-file -p HEAD:cfg/{}" "ls -A cfg | xargs -I{} git cat-file -p HEAD:cfg/{}"
+bash_case 2 "xargs -I{} git archive HEAD cfg/{}" "ls -A cfg | xargs -I{} git archive HEAD cfg/{}"
+bash_case 2 "xargs -I{} git show non-credential dir (computed, fail closed)" "ls src | xargs -I{} git show HEAD:src/{}"
+# Controls: ordinary xargs and find shapes, and a fixed git show path.
+bash_case 0 "control: xargs -I{} cat src/{}" "ls src | xargs -I{} cat src/{}"
+bash_case 0 "control: git ls-files | xargs wc -l" "git ls-files | xargs wc -l"
+bash_case 0 "control: find | xargs grep" "find src -name '*.ts' | xargs grep foo"
+bash_case 0 "control: xargs -I{} with a fixed git show path" "ls src | xargs -I{} git show HEAD:README.md"
+bash_case 0 "control: find -exec wc -l {}" 'find src -type f -exec wc -l {} \;'
+bash_case 0 "control: git show HEAD:src/a.ts" "git show HEAD:src/a.ts"
+# [16b] combined: the PR 1700 loop proof must not admit an xargs-fed git show.
+bash_case 2 "xargs-fed git show inside a for loop (cfg)" \
+  'for d in cfg; do ls -A $d | xargs -I{} git show HEAD:$d/{}; done' "$GREPO"
+bash_case 2 "xargs-fed git show inside a for loop (src, fail closed)" \
+  'for f in $(ls src); do echo $f | xargs -I{} git show HEAD:src/{}; done' "$GREPO"
+bash_case 2 "find -exec git show inside a while loop" \
+  'while read d; do find $d -type f -exec git show HEAD:{} \;; done < dirs.txt' "$GREPO"
 
 echo "[7] profile matrix via hook-gate"
 for p in minimal standard strict; do

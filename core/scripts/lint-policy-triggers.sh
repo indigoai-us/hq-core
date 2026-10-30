@@ -146,7 +146,7 @@ if [ "$USAGE" = "1" ]; then
   # Injector matches: each per-session once-ledger lists every slug it emitted.
   : > "$TMPROOT/matched"
   if [ -d "$TSTATE" ]; then
-    find "$TSTATE" -maxdepth 1 -type f -name '*.txt' ! -name '*.turn.txt' ! -name '*.full.txt' -print0 \
+    find "$TSTATE" -maxdepth 1 -type f -name '*.txt' ! -name '*.turn.txt' ! -name '*.full.txt' ! -name '*.deferred-soft.txt' -print0 \
       | xargs -0 cat > "$TMPROOT/matched" \
       || die "failed to read injector ledgers under $TSTATE"
   fi
@@ -196,6 +196,10 @@ if ! xargs -0 awk -v stop="$STOP" '
     }
     function reset() { d=0; w=""; o=""; enf=""; bytes=0; stopped=0; pseen=0; pblock=0; psec=0; pcount=0; perr="" }
     FNR==1 { flush(); reset(); fn=FILENAME }
+    # CRLF policies (Windows editors, some sync clients): drop the line-end CR
+    # so `---`, `when:` and `on:` still match. Without this every CRLF policy
+    # read as having no frontmatter (feedback 6a1e5a7b).
+    { sub(/\r$/, "") }
     /^---[ \t]*$/ && d < 2 { d++; next }
     d==1 {
       line=$0

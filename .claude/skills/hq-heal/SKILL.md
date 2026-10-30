@@ -91,6 +91,7 @@ Then the targeted parallel checks:
 - `cat .claude/settings.json | grep -E '"(PreToolUse|PostToolUse|SessionStart|Stop|PreCompact)"' | head` — confirm hook chain is intact
 - `echo "HQ_HOOK_PROFILE=$HQ_HOOK_PROFILE  HQ_DISABLED_HOOKS=$HQ_DISABLED_HOOKS"`
 - Grep `ERR` for the hook script name; if found, `ls -la .claude/hooks/<name>.sh` and read its first 40 lines
+- **Stale shadowing CLI install** (feedback e49ce279): if `ERR` says `unknown command 'lanes'`, `needs hq-cli >= X (found Y)`, or `hq CLI is missing from PATH`, run `command -v hq`, `ls -l "$(command -v hq)"` and `HQ_NO_UPDATE_CHECK=1 hq --version`. A wrapper such as `~/.local/bin/hq` that execs `$HOME/Library/pnpm/hq` means two installs exist (pnpm and npm-global, or a stale `~/.local` copy next to the auto-updated one). List them: `pnpm ls -g @indigoai-us/hq-cli 2>/dev/null`, `npm ls -g @indigoai-us/hq-cli --depth=0 2>/dev/null`, `ls "$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq" 2>/dev/null`. The copy that `command -v hq` resolves to is the one the hooks run; `hq doctor`'s self-update only refreshes the npm copy, so updating a different install leaves the floor check failing.
 
 Fix proposals:
 1. If `hq doctor` flagged a mechanical wiring defect (a lost executable bit, a hook missing from some gate profiles, an unregistered on-disk hook), propose `hq doctor --fix` — it applies only the allowlisted safe repairs behind a backup, a diff preview, and a dirty-tree refusal, then re-checks
@@ -105,6 +106,7 @@ Fix proposals:
    ```
 
    Then confirm `command -v hq` and `HQ_NO_UPDATE_CHECK=1 hq --version`. If pnpm is missing, install pnpm first. An explicit version pin (`npm install -g @indigoai-us/hq-cli@<x.y.z>`) is the only npm fallback; `@latest` is never the restore command.
+7. **Stale shadowing install** (the diagnostic above found two copies): update the install that `command -v hq` resolves to. A pnpm wrapper takes the pnpm restore command from item 6; an npm-global or toolchain copy takes the explicit version pin. Do not update the other copy and re-run the check, and do not delete the wrapper unless the user confirms; record both paths and versions in the heal report.
 
 #### `sandbox-network`
 

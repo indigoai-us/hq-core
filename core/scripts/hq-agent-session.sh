@@ -836,8 +836,11 @@ main() {
     fail 4 error "hq-agent-session: unsupported provider: $provider"
   fi
 
-  # Resume rejected → fresh session same turn + resumeFallback true
-  if [ "$prov_rc" -ne 0 ] && [ -n "${resume_id:-}" ] && [ "${HQ_AGENT_SESSION_RENDER_ONLY:-0}" != "1" ]; then
+  # Resume rejected → fresh session same turn + resumeFallback true.
+  # A refusal (HQ_PROVIDER_REFUSED_RC) means the provider never started, so the
+  # resume record is kept and the turn fails below.
+  if [ "$prov_rc" -ne 0 ] && [ "$prov_rc" -ne "${HQ_PROVIDER_REFUSED_RC:-78}" ] \
+    && [ -n "${resume_id:-}" ] && [ "${HQ_AGENT_SESSION_RENDER_ONLY:-0}" != "1" ]; then
     echo "hq-agent-session: resume rejected (exit $prov_rc); falling back to fresh session" >&2
     SESSION_RESUME_FALLBACK=1
     export HQ_AGENT_SESSION_RESUME_ID=""
