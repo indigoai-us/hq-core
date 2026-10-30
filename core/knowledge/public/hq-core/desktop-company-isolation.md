@@ -69,9 +69,10 @@ In `vault_explorer.rs`: directory listing and `read_vault_note`.
 - The gate covers desktop file reads. It does not restrict what a coding tool
   or a local bot reads on disk; those are governed by the HQ hooks and
   policies in the tool's own session and by the bot's kind.
-- Company bots (`hq bot create --kind company --company <slug>`) act as
-  themselves and only reach their companies' files. Personal bots act as the
-  owner and reach everything the owner can.
+- Company bots (`hq bot create --hq-fleet-runtime --provider <provider> --kind
+  company --company <slug>`) act as themselves and only reach their one
+  selected company's files. Personal bots act as the owner and reach every
+  company the owner can access.
 
 ## Company home channels
 

@@ -429,6 +429,61 @@ scope_comsub_body_escapes() {
   return 1
 }
 
+# True when some line outside a heredoc body is a shell pipeline
+# continuation (`| cmd`). Markdown table rows live inside the body and
+# are data (feedback_aed51c80). Any `|` line after the terminator,
+# including `| bash | cat` and a table row pasted after EOF, is a real
+# pipeline continuation and must keep the body in the scan.
+# Delimiter parsing here is not bash (quoted-prefix `<<"E"OF`, two
+# heredocs on one line). Those cases fail closed. This helper may only
+# ever make the check stricter than bash, never looser.
+scope_has_shell_pipe_continuation() {
+  local raw="${1:-}" line in_body=0 delimiter="" strip_tabs=0 terminator tail
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$in_body" -eq 1 ]; then
+      terminator="$line"
+      if [ "$strip_tabs" -eq 1 ]; then
+        while [[ "$terminator" == $'\t'* ]]; do terminator="${terminator#$'\t'}"; done
+      fi
+      if [ "$terminator" = "$delimiter" ]; then
+        in_body=0
+        delimiter=""
+        strip_tabs=0
+      fi
+      continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*\| ]]; then
+      return 0
+    fi
+    case "$line" in *'<<'*) ;; *) continue ;; esac
+    case "$line" in *'<<'*'<<'*) continue ;; esac
+    tail="${line#*<<}"
+    strip_tabs=0
+    case "$tail" in
+      -*) strip_tabs=1; tail="${tail#-}" ;;
+    esac
+    while [[ "$tail" == [[:space:]]* ]]; do tail="${tail:1}"; done
+    case "$tail" in
+      \'*)
+        tail="${tail#\'}"
+        delimiter="${tail%%\'*}"
+        ;;
+      \"*)
+        tail="${tail#\"}"
+        delimiter="${tail%%\"*}"
+        ;;
+      *)
+        delimiter="${tail%%[!A-Za-z0-9._-]*}"
+        ;;
+    esac
+    case "$delimiter" in
+      ""|*[!A-Za-z0-9._-]*) delimiter=""; strip_tabs=0; continue ;;
+    esac
+    in_body=1
+  done <<< "$raw"
+  return 1
+}
+
 scope_strip_inert_heredoc_bodies() {
   local raw="${1:-}" output="" line delimiter="" strip_tabs=0 in_body=0 delimiter_quoted=0
   local sub_body=0 held=""
@@ -436,8 +491,7 @@ scope_strip_inert_heredoc_bodies() {
   local writer_dests="" dest dest_rest exec_re
   case "$raw" in *'<<'*) ;; *) printf '%s' "$raw"; return 0 ;; esac
   # A continuation pipe on its own line must not hide the preceding body.
-  local pipe_line_re=$'\n''[[:space:]]*\|'
-  if [[ "$raw" =~ $pipe_line_re ]]; then printf '%s' "$raw"; return 0; fi
+  if scope_has_shell_pipe_continuation "$raw"; then printf '%s' "$raw"; return 0; fi
 
   body_sub_prefix='$'
   body_sub_prefix+='(cat <<'
@@ -1208,7 +1262,7 @@ scope_shell_variable_values() {
     return 0
   fi
   # The use is not a plain word list after the assignment (a redirect, a
-  # heredoc, quotes: `CO=indigo; cat > companies/$CO/x <<'EOF'`). Accept the
+  # heredoc, quotes: `CO=example-co; cat > companies/$CO/x <<'EOF'`). Accept the
   # value only under the stricter run-order rules of
   # scope_assignment_literal_value, and only as one plain word, so the caller
   # checks the substituted path exactly as if it had been typed (a value
@@ -1626,8 +1680,8 @@ scope_check_bash_candidate_inner() {
     *'{'*|*'}'*)
       # Expand a plain `{a,b}` brace (no nesting, quoting, or expansion
       # inside the candidate) and check every resulting word. Each word is
-      # authorized on its own, so `companies/indigo/{x,y}` passes for a
-      # session locked to indigo and `companies/{indigo,otherco}` does not.
+      # authorized on its own, so `companies/example-co/{x,y}` passes for a
+      # session locked to example-co and `companies/{example-co,otherco}` does not.
       if scope_expand_simple_brace "$candidate"; then
         for expanded in ${scope_brace_words[@]+"${scope_brace_words[@]}"}; do
           scope_check_bash_candidate_inner "$expanded" "$command_text" "$((depth + 1))" "" "$occurrence_prefix" "$occurrence_suffix"
@@ -2838,7 +2892,7 @@ BLOCKED: Cross-company scope violation
 Tool: $TOOL
 Path: $rel
 EOF
-    # A traversal such as companies/indigo/../../otherco names one company
+    # A traversal such as companies/example-co/../../otherco names one company
     # lexically and opens another. Label the company the path resolves to.
     case "$rel" in
       *..*)
@@ -6357,7 +6411,7 @@ scope_token_is_remote_url_with_substitutions() {
 # hash, not a link); a command that names HQ_DEPLOY_API, the manifest or a
 # directory change, or a relative script path from a cwd other than the HQ
 # root, leaves the value unknown.
-SCOPE_DEPLOY_API_SHA256="0b622ae7efff3be76e8eb199f8327be662bef371a3612d356df505c5a696b492"
+SCOPE_DEPLOY_API_SHA256="0b622ae7efff3be76e8eb199f8327be662bef371a3612d356df505c5a696b492" # gitleaks:allow
 scope_deploy_api_resolver_value() {
   local body="${1:-}" cmd="${2:-}" script rel re sum api="" d m cwd
   body="${body#"${body%%[![:space:]]*}"}"
@@ -11988,6 +12042,15 @@ case "$TOOL" in
   Bash)
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0
+    # jq.exe turns each LF in the payload command into CRLF. hook-lib.sh is
+    # sourced again below; loading it here only when a CRLF is present keeps
+    # the common path free of the extra source.
+    case "$cmd" in
+      *$'\r\n'*)
+        . "$HQ_ROOT/core/scripts/hook-lib.sh"
+        hq_crlf_to_lf cmd
+        ;;
+    esac
     scope_arith_raw="$cmd"
     # ANSI-C ($'\x63ompanies') and locale ($"companies") quoting spell the
     # same words; check the decoded spelling (feedback_ef130236).

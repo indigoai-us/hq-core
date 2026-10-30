@@ -28,8 +28,17 @@ BUILD_DIR="${1:?usage: deploy-summary.sh <build-dir> <app-name> [company-slug]}"
 APP_NAME="${2:?usage: deploy-summary.sh <build-dir> <app-name> [company-slug]}"
 CO_SLUG="${3:-}"
 
-# Resolve HQ root from this script's location: .claude/skills/project-summary/scripts/ -> 4 up.
-HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+# Resolve HQ root: explicit HQ_ROOT env var, then this script's location
+# (.claude/skills/project-summary/scripts/ -> 4 up) when it holds the deploy
+# scripts, else the git toplevel of the cwd (an installed copy outside the HQ
+# tree, e.g. under the user skills dir).
+if [ -z "${HQ_ROOT:-}" ]; then
+  HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+  if [ ! -d "$HQ_ROOT/.claude/skills/deploy/scripts" ]; then
+    GIT_TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$GIT_TOP" ] && [ -d "$GIT_TOP/.claude/skills/deploy/scripts" ] && HQ_ROOT="$GIT_TOP"
+  fi
+fi
 DEPLOY="$HQ_ROOT/.claude/skills/deploy/scripts"
 
 fail() { echo "ERR: $1"; exit 1; }

@@ -11,6 +11,12 @@
 # Session surface (hq-agent-session, separate from the fleet contract):
 #   session_provider_dispatch <provider> <runDir> <companyDir>
 #   Exit 4 for unsupported provider.
+#   Exit HQ_PROVIDER_REFUSED_RC (78) when the adapter refuses to start the
+#   provider (claude without the HQ guard hooks). The provider never ran, so
+#   the wrapper must not read it as a rejected resume.
+
+# shellcheck disable=SC2034 # Read by hq-agent-session.sh and provider-adapter-claude.sh.
+HQ_PROVIDER_REFUSED_RC=78
 
 # ---------------------------------------------------------------------------
 # Contract version — single source in provider-adapter-version.sh

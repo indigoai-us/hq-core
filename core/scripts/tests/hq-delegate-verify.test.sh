@@ -14,6 +14,8 @@
 #      names, repo+branch, and the DM headline; invokes no mutating
 #      command; leaves workspace/delegations/ untouched; exits 0.
 #   6. Probe from status 'building' refuses (grants must exist first).
+#  11. Folder reference without a trailing slash: populated passes,
+#      empty or name-prefix-only fails.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -84,6 +86,13 @@ case "$1 $2" in
         echo "----  ----  --------  ------"
         echo "companies/acme/knowledge/deep/sub/a.md  100  2026-09-11T00:00:00.000Z shared-with-you"; echo "companies/acme/knowledge/deep/sub/b.md  100  2026-09-11T00:00:00.000Z shared-with-you"
       fi
+      exit 0
+    fi
+    # Folder listing: one file under $HQ_STUB_FOLDER_LISTING (a prefix ending in /).
+    if [ "$pfx" = "${HQ_STUB_FOLDER_LISTING:-}" ]; then
+      echo "Path  Size  Modified  Access"
+      echo "----  ----  --------  ------"
+      echo "companies/acme/${pfx}a.md  100  2026-09-11T00:00:00.000Z shared-with-you"
       exit 0
     fi
     # Large listing with the target near the TOP: exercises the grep -q + pipefail
@@ -360,6 +369,44 @@ printf '%s' "$OUT" | grep >/dev/null "FAIL  projects/widget/research/" \
   || fail "empty folder failure must name the folder: $OUT"
 jq -e '.status == "granted"' "$M" >/dev/null || fail "empty-folder probe must not advance status"
 unset HQ_STUB_BROWSE_EMPTY
+
+# --- 11. folder reference WITHOUT a trailing slash (PR #1714): a populated
+#     folder passes as a folder; an empty one, or a name that is only a
+#     prefix of a real folder, still fails.
+write_manifest_nslash() { # status ref
+  write_manifest_folders "$1"
+  jq --arg r "$2" '.knowledge = [$r]' "$M" > "$M.tmp" && mv "$M.tmp" "$M"
+}
+write_manifest_nslash granted "companies/acme/projects/widget/research"
+export HQ_STUB_FOLDER_LISTING="projects/widget/research/"
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)" \
+  || fail "a populated folder reference without a trailing slash must pass: $OUT"
+printf '%s' "$OUT" | grep >/dev/null "pass  projects/widget/research (folder)" \
+  || fail "slashless folder reference must be reported as a folder pass: $OUT"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "slashless folder probe must advance to verified"
+unset HQ_STUB_FOLDER_LISTING
+
+write_manifest_nslash granted "companies/acme/projects/widget/research"
+export HQ_STUB_BROWSE_EMPTY="projects/widget/research/"
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "an empty slashless folder reference must fail the probe"
+printf '%s' "$OUT" | grep >/dev/null "FAIL  projects/widget/research" \
+  || fail "empty slashless folder failure must name the reference: $OUT"
+jq -e '.status == "granted"' "$M" >/dev/null || fail "empty slashless folder must not advance status"
+unset HQ_STUB_BROWSE_EMPTY
+
+# "researc" is only a string prefix of the real folder research/: not proof.
+write_manifest_nslash granted "companies/acme/projects/widget/researc"
+export HQ_STUB_FOLDER_LISTING="projects/widget/research/"
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a name that is only a prefix of a real folder must fail: $OUT"
+unset HQ_STUB_FOLDER_LISTING
 
 # --- 6. probe from 'building' refuses ----------------------------------------
 

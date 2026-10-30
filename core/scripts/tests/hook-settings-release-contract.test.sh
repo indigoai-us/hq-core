@@ -203,4 +203,9 @@ bash "$ROOT/core/scripts/tests/image-context-guard.test.sh" \
   || fail "image-context-guard regression failed"
 pass "image-context-guard byte cap and hook-warning regressions"
 
+echo "[7] block-raw-temp-home blocks raw temp HOME and with-temp-home.sh cleans up"
+bash "$ROOT/core/scripts/tests/block-raw-temp-home.test.sh" \
+  || fail "block-raw-temp-home regression failed"
+pass "raw temp HOME guard and wrapper regressions"
+
 echo "PASS: hook settings release contract"

@@ -154,6 +154,8 @@ cp -R "$SRC_ROOT/core/scripts/lib" "$FIXTURE/core/scripts/lib"
 cp "$SRC_ROOT/core/scripts/hq-session.sh" "$FIXTURE/core/scripts/" 2>/dev/null || true
 cp "$SRC_ROOT/.claude/hooks/master-hook.sh" "$FIXTURE/.claude/hooks/" 2>/dev/null || true
 cp "$SRC_ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIXTURE/.claude/hooks/"
+# The claude adapter refuses to start without the root guard hooks.
+cp "$SRC_ROOT/.claude/settings.json" "$FIXTURE/.claude/settings.json"
 printf '# Formats\n\n## slack\n\nSlack.\n' \
   > "$FIXTURE/core/knowledge/public/hq-core/channel-writing-formats.md"
 printf 'CHARTER\n' > "$FIXTURE/AGENTS.md"

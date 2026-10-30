@@ -323,8 +323,10 @@ mv apps/{name}/prd.json personal/projects/{name}/
 Delegate to the umbrella regenerator — same script the handoff pipeline uses.
 
 ```bash
-hq core rebuild-index all
+hq core rebuild-index all --company {company}
 ```
+
+Pass the active company's slug. The company-scoped classes (projects, company-knowledge, companies) rebuild only that company's INDEX.md files. In a company-bound session, a run with no `--company` rebuilds the session's bound companies, a company outside the bound set is refused, and `--all-companies` is refused. An unbound session must pass `--company <slug>` or `--all-companies`; a run with neither is refused before any write. To rebuild every company on purpose, run `--all-companies` from an unbound session.
 
 Covers all 9 INDEX classes: threads, orchestrator, companies, projects, company-knowledge, public-knowledge, workers, reports, social-drafts. Per-class scripts live at `core/scripts/rebuild-{class}-index.sh` — each is pure bash + jq (zero Claude context), writes its `Generated: {TS}` header per `core/knowledge/public/hq-core/index-md-spec.md`, and logs `wrote {path} (N entries)` to stderr. Umbrella emits JSON array of regenerated paths on stdout.
 

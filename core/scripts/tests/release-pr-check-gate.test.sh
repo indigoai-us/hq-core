@@ -161,15 +161,14 @@ if [[ -z "$GATE_TEST_CASE" ]]; then
   # hq-core linux-checks-2/-3 run past 10 minutes; a 600s wait timed out every promotion.
   gate_wait="$(sed -nE 's/.*release-pr-check-gate\.sh "\$TARGET_REPO" "\$PR_NUMBER" "\$PR_HEAD_SHA" ([0-9]+) [0-9]+.*/\1/p' "$PROMOTE_WORKFLOW")"
   [[ -n "$gate_wait" ]] && (( gate_wait >= 1800 )) || fail "promotion gate must wait at least 1800s for hq-core checks (got '${gate_wait}')"
-  grep -Fq 'gh pr merge "$NUM" --repo "$TARGET_REPO" --auto --squash --match-head-commit "$PR_HEAD_SHA"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must arm auto-merge on the release PR"
-  # The workflow disarms auto-merge only on a held PR (hq-core #366 lost it to
-  # an unconditional disarm before every update).
-  [[ "$(grep -Fc -- '--disable-auto' "$PROMOTE_WORKFLOW")" == 1 ]] || fail "promotion workflow must disarm auto-merge in exactly one place"
-  grep -Fq "(any(.labels[]?.name; . == \"hold-release\")) and (.autoMergeRequest != null)" "$PROMOTE_WORKFLOW" || fail "promotion workflow may disarm auto-merge only when hold-release is present"
+  # Arm/hold decisions live in release-pr-auto-merge.sh: stable releases open
+  # on hold and are never armed; prerelease and fix PRs are armed unless held
+  # (owner decision 2026-10-21; covered by release-pr-auto-merge.test.sh).
+  grep -Fq 'release-pr-auto-merge.sh apply "$TARGET_REPO" "$NUM" "$PR_TYPE" "$VERSION" "$PR_HEAD_SHA"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must route arming through release-pr-auto-merge.sh"
+  grep -Fq 'release-pr-auto-merge.sh prepare "$TARGET_REPO" "$EXISTING" "$PR_TYPE" "$VERSION"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must hold or disarm through release-pr-auto-merge.sh before updating"
+  if grep -Eq -- 'gh pr merge [^#]*--(auto|disable-auto)' "$PROMOTE_WORKFLOW"; then fail "promotion workflow must not arm or disarm auto-merge inline"; fi
   # Arm auto-merge on the commit this run pushed, not a possibly stale API read.
   grep -Fq 'PR_HEAD_SHA="$(git rev-parse "refs/heads/${BRANCH}")"' "$PROMOTE_WORKFLOW" || fail "promotion workflow must take the PR head from the pushed branch"
-  # Executed commands only; the PR body still tells humans how to add a hold.
-  if grep -Eq -- '^[[:space:]]*gh pr edit .*--add-label[[:space:]]+hold-release' "$PROMOTE_WORKFLOW" "$GATE"; then fail "automation must never add hold-release"; fi
   grep -Fq '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4' "$RECHECK_WORKFLOW" || fail "recheck workflow must check out the repository root"
   if grep -Fq 'path:' "$RECHECK_WORKFLOW"; then fail "recheck workflow checkout must remain at the repository root"; fi
   grep -Fq 'bash core/scripts/release-pr-check-gate.sh ' "$RECHECK_WORKFLOW" || fail "recheck workflow must invoke the gate from its root checkout"
@@ -255,5 +254,16 @@ if [[ -z "$GATE_TEST_CASE" ]]; then
       fail "$(basename "$wf") must not dispatch or chain into promote-to-hq-core"
     fi
   done
+  # Stable hold ported onto main's guard (PR #1515): the open-PR guard runs
+  # first, then release-pr-auto-merge.sh prepare re-holds a stable PR, then
+  # the push. No text may still claim automation never labels a release PR.
+  g_line="$(grep -n 'name: Guard open release PR' "$PROMOTE_WORKFLOW" | head -1 | cut -d: -f1)"
+  h_line="$(grep -n 'release-pr-auto-merge.sh prepare' "$PROMOTE_WORKFLOW" | head -1 | cut -d: -f1)"
+  p_line="$(grep -n 'name: Push branch to hq-core' "$PROMOTE_WORKFLOW" | head -1 | cut -d: -f1)"
+  [[ -n "$g_line" && -n "$h_line" && -n "$p_line" ]] && (( g_line < h_line && h_line < p_line )) \
+    || fail "guard, then stable re-hold, then push (got guard=$g_line hold=$h_line push=$p_line)"
+  if grep -Eiq 'automation never (labels|adds this label)' "$PROMOTE_WORKFLOW"; then
+    fail "promote workflow still says automation never labels; stable releases are labelled hold-release"
+  fi
   printf '%s\n' 'PASS: promotion runs on dispatch only and guards held/approved release PRs before any push'
 fi

@@ -34,8 +34,36 @@ logic lives in `.claude/skills/super-conductor/SKILL.md`.
 
 ## Step 2: Resolve the link and the company
 
-Run `hq lanes link list` and read `.link`. If it is `null`, stop and tell the
-owner to run `/super-conductor` first. Do not search link storage for a link.
+Run `hq lanes link list` and read `.link`. Do not search link storage for a
+link.
+
+A `/conduct` conductor has a lanes link only after `/conduct adopt` opens
+one (`.claude/skills/conduct/adopt.md`). When it has one, `hq lanes link list`
+returns it, and this skill runs as written: the children are `.children`, and
+Step 4 (b) sends with `hq lanes link send --link <link-id> --child <child>
+--session-id <session-id> --text "<ask>"`, the command `/conduct tell` uses.
+
+If `.link` is `null` and this session is a `/conduct` conductor (it started
+`/conduct` and adopted no session), run in conduct mode instead of stopping.
+Its children are the worker lanes it launched, not linked sessions, and it
+has no heartbeat:
+
+- Use `conduct-<this session's local_ id>` wherever this skill says `<link>`
+  (report path and `## DM triage` rows).
+- The child list for Step 4 (b) is this session's lanes from
+  `hq lanes list --json` plus its standing lanes from
+  `bash core/scripts/conduct-standing.sh list`. Match the ask against each
+  lane's title, worker, and company.
+- Route a work request to a running lane with
+  `hq lanes message <lane> --text "<ask, who asked, where>"`, and arm the
+  round watcher the way `.claude/skills/conduct/dispatch.md` Step 5b says.
+  There is no link, so `hq lanes link send` has nothing to send through. If
+  no lane can take it, queue it for the owner.
+- Step 7 uses the `ScheduleWakeup` loop as the session's own heartbeat.
+
+Stop and tell the owner to run `/super-conductor` or `/conduct` first only
+when the session is neither a `/super-conductor` with an open link nor a
+`/conduct` conductor.
 
 Resolve the company:
 
@@ -99,7 +127,7 @@ Classify every unread item from a teammate into exactly one bucket.
 | Bucket | Test | Action |
 |---|---|---|
 | (a) Information request | HQ can answer it from `qmd query -c <co> "<question>"`, company knowledge, policies, or the link's child reports | Answer in the same thread. Flat and factual, compact bullets, no secrets, no file dumps. Cite the knowledge source by name in the reply. |
-| (b) Work request owned by a child | The ask matches a conducted child's title or company in `.children` from `hq lanes link list` | Send the instruction to that child with `hq lanes link send --child <name> --text "<ask, who asked, where>"`. Reply once to the requester naming the session that owns it and that the owner reviews before anything merges, deploys, or publishes. |
+| (b) Work request owned by a child | The ask matches a conducted child's title or company in `.children` from `hq lanes link list`; in conduct mode with no link, a lane from the Step 2 child list | Send the instruction to that child with `hq lanes link send --child <name> --text "<ask, who asked, where>"`; in conduct mode with no link, use `hq lanes message <lane> --text "<ask, who asked, where>"` (Step 2). Reply once to the requester naming the session that owns it and that the owner reviews before anything merges, deploys, or publishes. |
 | (c) Owner-only | Access, grants, secrets, money, hiring, external sends, merges, deploys, publishes, deletes, anything irreversible, or anything about a different company | Do not act. If nobody has answered the thread, reply once that the owner sees it in the morning. Add it to `## Waiting on the owner`. |
 | (d) Bot or agent status post | Posted by a local bot, fleet agent, or scheduled job | Read it for signals (failures, blocked lanes, errors). No reply. Log a signal only if something is wrong. |
 
@@ -186,7 +214,11 @@ clamped to 30-3600). Write the new id with
 in the same step. On `/overnight
 off`, restart the heartbeat at `watch_interval.present` the same way.
 
-Only when no heartbeat can be started, fall back to:
+In conduct mode (Step 2, no link) there is no heartbeat to restart: use the
+`ScheduleWakeup` loop below from the start, with `delaySeconds: 1500` unless
+the owner gave another interval.
+
+Otherwise, only when no heartbeat can be started, fall back to:
 
 ```
 ScheduleWakeup
@@ -200,7 +232,7 @@ On each heartbeat wakeup: the conductor's sweep plus Steps 3 to 6. Mark
 `noop: true` on the fallback loop when the inbox and channels had nothing
 new and the queue did not change. The loop ends only with `/overnight off`.
 `/super-conductor off` also ends it, since the link closes and the heartbeat
-exits; if a wakeup finds no link, stop and say so.
+exits; if a wakeup in super-conductor mode finds no link, stop and say so.
 
 At the end of a wakeup that changed anything, say in one line what was
 answered, routed, and queued. Say nothing when it was a noop.

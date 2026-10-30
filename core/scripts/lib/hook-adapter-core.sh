@@ -328,10 +328,14 @@ hqad_prefilter_file_present() {
 # hqad_registry_prefilter_match sets HQAD_PREFILTER_REASON and returns 1 only
 # when a valid prefilter proves that a hook cannot match this event. Invalid
 # regex syntax reports a named error and keeps the guard in the dispatch set.
+# re_all is prefilter.re_all joined with RS (0x1e): the text also passes when
+# every regex in it matches. They run in order and stop at the first miss, so
+# a cheap first regex keeps a long word list off text that cannot match.
 hqad_registry_prefilter_match() {
   local event="$1" root="$2" active_company="$3" cwd="$4" session_id="$5" text="$6"
-  local re="$7" env_name="$8" file="$9" vocab="${10}" hook_id="${11}"
+  local re="$7" env_name="$8" file="$9" vocab="${10}" hook_id="${11}" re_all="${12:-}"
   local status nocasematch_was_on=0 invalid_prefilter=0 skip_reason=""
+  local part rest part_status
   HQAD_PREFILTER_REASON=""
   if [ -n "$env_name" ]; then
     if ! [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -354,15 +358,49 @@ hqad_registry_prefilter_match() {
         ;;
     esac
   fi
-  if [ -n "$re" ]; then
+  if [ -n "$re" ] || [ -n "$re_all" ]; then
     shopt -q nocasematch && nocasematch_was_on=1
     shopt -s nocasematch
-    if [[ "$text" =~ $re ]]; then
+    status=1
+    if [ -n "$re" ]; then
+      if [[ "$text" =~ $re ]]; then
+        status=0
+      else
+        # Preserve Bash's regex compile-failure status (2) for fail-closed input.
+        # shellcheck disable=SC2319
+        status=$?
+      fi
+    fi
+    if [ "$status" -eq 1 ] && [ -n "$re_all" ]; then
       status=0
-    else
-      # Preserve Bash's regex compile-failure status (2) for fail-closed input.
-      # shellcheck disable=SC2319
-      status=$?
+      rest="$re_all"$'\x1e'
+      while [ -n "$rest" ]; do
+        part="${rest%%$'\x1e'*}"
+        rest="${rest#*$'\x1e'}"
+        if [ "$status" -eq 0 ]; then
+          if [[ "$text" =~ $part ]]; then
+            part_status=0
+          else
+            # shellcheck disable=SC2319
+            part_status=$?
+          fi
+        else
+          # After a miss, only compile the rest so a malformed regex still
+          # fails closed.
+          if [[ "" =~ $part ]]; then
+            part_status=0
+          else
+            # shellcheck disable=SC2319
+            part_status=$?
+          fi
+          [ "$part_status" -eq 2 ] || continue
+        fi
+        if [ "$part_status" -eq 2 ]; then
+          status=2
+          break
+        fi
+        [ "$part_status" -eq 0 ] || status=1
+      done
     fi
     if [ "$nocasematch_was_on" -eq 0 ]; then shopt -u nocasematch; fi
     if [ "$status" -eq 1 ]; then
@@ -799,7 +837,7 @@ hqad_fallback_records() {
   local event="$1" tool="$2" ids="" id script
   [ "$event" = "PreToolUse" ] || return 0
   case "$tool" in
-    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download policy-enforcement-gate" ;;
+    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download block-raw-temp-home policy-enforcement-gate" ;;
     Read) ids="mandatory-scope-authorizer warn-cross-company-settings image-context-guard policy-enforcement-gate" ;;
     view_image|ViewImage) ids="image-context-guard policy-enforcement-gate" ;;
     Grep) ids="mandatory-scope-authorizer block-hq-grep policy-enforcement-gate" ;;
@@ -824,7 +862,7 @@ hqad_iter_registry() {
     return 0
   fi
   local fields="" payload_cwd="" session_id="" prefilter_text="" active_company=""
-  local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab
+  local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab pf_re_all
   if ! fields="$(hqad_prefilter_payload_fields "$event" "$payload")"; then
     [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hook-adapter: prefilter payload parse failed event=%s bytes=%s\n' "$event" "${#payload}" >&2
     printf "ERROR: hqad: malformed payload for %s registry prefilters; using critical fallback guards.\n" "$event" >&2
@@ -861,11 +899,13 @@ hqad_iter_registry() {
         or (($pf.env // "") | type) != "string"
         or (($pf.file // "") | type) != "string"
         or (($pf.policy_vocab != null) and (($pf.policy_vocab | type) != "boolean"))
+        or (($pf.re_all // []) | type) != "array"
+        or ([($pf.re_all // [])[]] | any(type != "string" or . == "" or contains("\u0000") or contains("\n") or contains("\u001f") or contains("\u001e")))
         or (($args | type) != "array")
         or ([$matcher, $hook.id, $hook.script, ($pf.re // ""), ($pf.env // ""), ($pf.file // "")] | any(contains("\u0000") or contains("\n") or contains("\u001f")))
         or ([$args[]?] | any(type != "string" or contains("\u0000") or contains("\n") or contains("\u001f")))
       then error("registry record is malformed")
-      else "hqad-reg " + ([$matcher, $hook.id, $hook.script, (if $hook.gated == false then "0" else "1" end), (($args) | join(" ")), ($pf.re // ""), ($pf.env // ""), ($pf.file // ""), (if $pf.policy_vocab == true then "1" else "" end)] | @sh)
+      else "hqad-reg " + ([$matcher, $hook.id, $hook.script, (if $hook.gated == false then "0" else "1" end), (($args) | join(" ")), ($pf.re // ""), ($pf.env // ""), ($pf.file // ""), (if $pf.policy_vocab == true then "1" else "" end), (($pf.re_all // []) | join("\u001e"))] | @sh)
       end
   ' "$registry" 2>/dev/null)" || {
     printf "ERROR: hqad: malformed hook-registry.json event '%s'; using critical fallback guards.\n" "$event" >&2
@@ -881,13 +921,13 @@ hqad_iter_registry() {
       *) continue ;;
     esac
     eval "set -- $decoded" 2>/dev/null || continue
-    [ "$#" -eq 9 ] || {
+    [ "$#" -eq 10 ] || {
       printf "ERROR: hqad: malformed registry frame for event '%s'; using critical fallback guards.\n" "$event" >&2
       hqad_fallback_records "$event" "$tool"
       return 0
     }
     matcher="$1"; id="$2"; script="$HQ_ROOT/$3"; gated="$4"; args="$5"
-    pf_re="$6"; pf_env="$7"; pf_file="$8"; pf_vocab="$9"
+    pf_re="$6"; pf_env="$7"; pf_file="$8"; pf_vocab="$9"; pf_re_all="${10}"
     if [ -n "${HQ_HOOK_TRACE:-}" ]; then
       printf 'hook-adapter: prefilter %s re=%s env=%s file=%s policy_vocab=%s\n' \
         "$id" "$([ -n "$pf_re" ] && printf yes || printf no)" \
@@ -897,7 +937,7 @@ hqad_iter_registry() {
     fi
     hqad_matcher_matches "$matcher" "$tool" "$event" || continue
     [ -f "$script" ] || continue
-    if ! hqad_registry_prefilter_match "$event" "$HQ_ROOT" "$active_company" "$payload_cwd" "$session_id" "$prefilter_text" "$pf_re" "$pf_env" "$pf_file" "$pf_vocab" "$id"; then
+    if ! hqad_registry_prefilter_match "$event" "$HQ_ROOT" "$active_company" "$payload_cwd" "$session_id" "$prefilter_text" "$pf_re" "$pf_env" "$pf_file" "$pf_vocab" "$id" "$pf_re_all"; then
       case "$HQAD_PREFILTER_REASON" in
         prefilter|policy-vocab)
           [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hook-adapter: skip %s (%s)\n' "$id" "$HQAD_PREFILTER_REASON" >&2

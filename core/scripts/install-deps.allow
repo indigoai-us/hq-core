@@ -22,6 +22,9 @@
 @tobilu/qmd@2.5.3
 @indigoai-us/hq-cli@*
 @anthropic-ai/claude-code@*
+# Grok Build CLI (xAI). Pinned global installs only; bare / dist-tag
+# installs stay blocked like every other entry.
+@xai-official/grok@*
 indigo-cli@*
 # agent-browser: the sanctioned browser CLI (core/policies/hq-prefer-agent-browser.md).
 # Exact pin; bump it in a reviewed PR.

@@ -12,7 +12,7 @@ mkdir -p "$KNOWLEDGE/docs"
 printf '# Team Guide\n' > "$KNOWLEDGE/guide.md"
 printf '# Runbook\n' > "$KNOWLEDGE/docs/runbook.md"
 
-HQ_ROOT="$TMP/hq" bash "$SCRIPT" >/dev/null
+HQ_ROOT="$TMP/hq" bash "$SCRIPT" --company acme >/dev/null
 INDEX="$KNOWLEDGE/INDEX.md"
 
 if ! grep -Fq '| `docs/` | 1 item(s) |' "$INDEX"; then

@@ -169,4 +169,20 @@ check_bad_principals empty-item 'principals: [agent,,bot]' 'empty item'
 check_bad_principals duplicate-key $'principals: [agent]\nprincipals: [bot]' 'more than once'
 echo 'PASS: linter validates principals values and syntax'
 
+# feedback_6a1e5a7b: 160 CRLF policies that each had when: and on: were all
+# reported as MISSING because the line-end CR kept `---`/`when:`/`on:` from
+# matching. A CRLF policy must lint the same as its LF twin.
+CRLF_POLICIES="$TMP/crlf-policies"
+mkdir -p "$CRLF_POLICIES"
+printf -- '---\r\nid: crlf-policy\r\nwhen: deploy\r\non: [PreToolUse]\r\nenforcement: soft\r\nprincipals: [agent]\r\n---\r\n\r\n## Rule\r\n\r\nCRLF policy body.\r\n' \
+  > "$CRLF_POLICIES/crlf-policy.md"
+crlf_stdout="$TMP/crlf.stdout"
+crlf_rc=0
+HQ_ROOT="$TMP" bash "$LINT" "$CRLF_POLICIES" > "$crlf_stdout" 2>&1 || crlf_rc=$?
+[ "$crlf_rc" -eq 0 ] || fail "CRLF policy with when:/on: must lint clean (rc $crlf_rc): $(cat "$crlf_stdout")"
+! grep -Fq 'MISSING   ' "$crlf_stdout" || fail "CRLF policy reported as missing a trigger: $(cat "$crlf_stdout")"
+grep -Fq 'policies scanned: 1 | malformed when: 0 | missing trigger: 0' "$crlf_stdout" \
+  || fail "unexpected CRLF scan summary: $(cat "$crlf_stdout")"
+echo 'PASS: linter reads CRLF policy frontmatter'
+
 echo 'PASS: lint-policy-triggers streams an ARG_MAX-scale corpus and fails closed'

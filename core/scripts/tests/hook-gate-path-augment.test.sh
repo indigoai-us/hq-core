@@ -182,6 +182,19 @@ grep -qxF "$TC7/node/bin/node" "$TMP/probe.out" \
   || fail "node not resolved from toolchain node/bin (got: $(cat "$TMP/probe.out"))"
 pass "installer toolchain dirs discovered ahead of ~/.local/bin"
 
+# ---------------------------------------------------------------------------
+echo "[8] ~/.npm-global/bin is discovered and wins over a stale ~/.local/bin hq"
+# feedback_e49ce279: ~/.local/bin/hq wrapped a stale pnpm copy while the current
+# hq lived in npm's user prefix, which the augment never probed.
+H8="$TMP/home-npm-global"
+make_tools "$H8/.npm-global/bin"
+make_tools "$H8/.local/bin"
+set +e; run_gate "$H8"; set -e
+grep -q PROBE_HOOK_RAN "$TMP/err" || fail "probe hook did not run for npm-global fixture (stderr: $(cat "$TMP/err"))"
+grep -qxF "$H8/.npm-global/bin/hq" "$TMP/probe.out" \
+  || fail "hq not resolved from ~/.npm-global/bin (got: $(cat "$TMP/probe.out"))"
+pass "~/.npm-global/bin discovered ahead of ~/.local/bin"
+
 echo "ALL PASS: hook-gate-path-augment"
 
 . "$GATE" --lib
@@ -190,3 +203,8 @@ HQ_HOOK_PROFILE=minimal HQ_DISABLED_HOOKS= hq_hook_profile_allows policy-enforce
 HQ_HOOK_PROFILE=minimal HQ_DISABLED_HOOKS= hq_hook_profile_allows inject-policy-on-trigger \
   || fail "minimal profile must enable the injector that supplies gate policy rows"
 pass "minimal profile enables both policy enforcement and policy injection"
+# feedback_87abfe55: `hq doctor` reported block-on-active-run missing from the
+# minimal allowlist (present in standard and strict), so it silently no-oped.
+HQ_HOOK_PROFILE=minimal HQ_DISABLED_HOOKS= hq_hook_profile_allows block-on-active-run \
+  || fail "minimal profile must keep block-on-active-run (a safety guard) enabled"
+pass "minimal profile enables block-on-active-run"

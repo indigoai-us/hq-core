@@ -393,7 +393,7 @@ strict_run() {
   printf '%s' "$payload" \
     | env PATH="$TMP/us071-bin:$PATH" HQ_CLI_BIN="$STRICT_CLI/bin/hq" \
         HQ_FLAGS_API_URL=https://flags.invalid HQ_COMPANY_UID=cmp_test123 \
-        HQ_COMPANY_SLUG=indigo HQ_TEST_GIT_GUARD_FLAG="$flag" \
+        HQ_COMPANY_SLUG=example-co HQ_TEST_GIT_GUARD_FLAG="$flag" \
         HQ_TEST_GIT_GUARD_FLAG_ERROR="$error" \
         HQ_TEST_GIT_GUARD_FLAG_MARKER="$TMP/us071-flag-lookups" \
         CLAUDE_PROJECT_DIR="$TMP" \
@@ -451,14 +451,16 @@ strict_expect 'flag-on ssh quoted checkpoint prose remains allowed' 0 "$TMP" \
   "ssh deploy@example.invalid \"hq core checkpoint --summary 'git push is only prose'\"" true
 strict_expect 'flag-on too-deep wrapper fails closed' 2 "$TMP" "$DEEP_GIT_COMMAND" true
 
-strict_expect 'flag-off wrapper keeps main behavior' 0 "$TMP" \
+# bash -c / eval payloads are classified with the flag off too (H1 hook
+# hardening): `bash -c 'git push'` at the HQ root was a bypass on main.
+strict_expect 'flag-off bash -c wrapper is blocked' 2 "$TMP" \
   "bash -c 'git push origin main'" false
 strict_expect 'flag-off misplaced marker keeps main behavior' 0 "$TMP" \
   'echo HQ_ALLOW_HQ_ROOT_GIT=1; git push origin main' false
 strict_expect 'flag-off leading assignment keeps main behavior' 0 "$TMP" \
   'HQ_ALLOW_HQ_ROOT_GIT=1 git push origin main' false
 strict_expect 'flag-off bare mutation keeps blocking' 2 "$TMP" 'git push origin main' false
-strict_expect 'flag lookup failure keeps main behavior' 0 "$TMP" \
+strict_expect 'flag lookup failure still blocks a bash -c wrapper' 2 "$TMP" \
   "bash -c 'git push origin main'" true true
 if grep -Fx 'HQ root git-guard flag lookup failed (Error); using the default-off behavior.' \
     "$TMP/us071-stderr" >/dev/null \

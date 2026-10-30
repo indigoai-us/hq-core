@@ -11,7 +11,7 @@ export const hash = value => createHash('sha256').update(value).digest('hex');
 const candidates = ['synthetic-neutral-zzzz', 'git', 'hq', 'npm', 'core/skills/', 'qmd', 'companies/example/settings/',
   'merge', 'view_image', '.claude/plans/', 'agent-browser screenshot', 'companies/', 'core', 'deploy', 'env',
   'gh pr create', 'git commit', 'policies/', 'prd.json', 'repos/private/example/', 'Bearer synthetic', 'skills/',
-  'sleep', 'timeout', 'workspace/threads/'];
+  'sleep', 'timeout', 'workspace/threads/', 'mktemp', '${G:-gi}t commit'];
 function matches(re, value) {
   // Preserve regex quotes across Windows CreateProcess/MSYS argument parsing.
   // Environment values reach Bash intact, as registry values do at runtime.
@@ -27,6 +27,26 @@ function witness(re, wanted) {
   if (!witnesses.has(key)) {
     const value = candidates.find(text => matches(re, JSON.stringify({command: text, file_path: text})) === wanted);
     if (value === undefined) throw new Error(`No ${wanted ? 'matching' : 'non-matching'} synthetic witness for regex hash ${hash(re)}; extend candidates`);
+    witnesses.set(key, value);
+  }
+  return witnesses.get(key);
+}
+// prefilter.re_all passes when every regex in it matches. Its matching witness
+// misses prefilter.re, so the case exercises the re_all path alone, and a
+// non-matching witness for either rule must miss both.
+const allMatch = (list, text) => list.length > 0 && list.every(re => matches(re, text));
+function regexWitness(pf, rule, wanted) {
+  const list = pf.re_all || [];
+  const key = `${rule}:${wanted}:${pf.re || ''}:${list.join('\u001e')}`;
+  if (!witnesses.has(key)) {
+    const value = candidates.find(text => {
+      const json = JSON.stringify({command: text, file_path: text});
+      const re = pf.re ? matches(pf.re, json) : false;
+      const all = allMatch(list, json);
+      if (!wanted) return !re && !all;
+      return rule === 'prefilter.re_all' ? all && !re : (pf.re ? re : all);
+    });
+    if (value === undefined) throw new Error(`No ${wanted ? 'matching' : 'non-matching'} synthetic witness for ${rule} hash ${hash(key)}; extend candidates`);
     witnesses.set(key, value);
   }
   return witnesses.get(key);
@@ -52,10 +72,10 @@ export function generate() {
     for (const [groupIndex, group] of groups.entries()) for (const [hookIndex, hook] of group.hooks.entries()) {
       const entry = `${event}/${groupIndex}/${hookIndex}`;
       const pf = hook.prefilter || {};
-      for (const key of Object.keys(pf)) if (!['re','env','file','policy_vocab'].includes(key)) throw new Error(`Unsupported prefilter ${key}`);
+      for (const key of Object.keys(pf)) if (!['re','re_all','env','file','policy_vocab'].includes(key)) throw new Error(`Unsupported prefilter ${key}`);
       const rules = ['entry', ...Object.keys(pf).map(key => `prefilter.${key}`)];
       for (const rule of rules) for (const matching of [true, false]) for (const runtime of ['claude', 'codex']) {
-        let input = pf.re ? witness(pf.re, true) : pf.policy_vocab ? policy.when : candidates[0];
+        let input = pf.re_all ? regexWitness(pf, rule, true) : pf.re ? witness(pf.re, true) : pf.policy_vocab ? policy.when : candidates[0];
         let dispatchEvent = event;
         let tool = group.matcher && group.matcher !== '*' ? group.matcher.split(/[|,]/)[0] : 'Bash';
         const env = {};
@@ -72,7 +92,7 @@ export function generate() {
           if (rule === 'entry') {
             if (['PreToolUse','PostToolUse'].includes(event) && group.matcher && group.matcher !== '*') tool = 'SyntheticNonMatchingTool';
             else dispatchEvent = 'SyntheticUnregisteredEvent';
-          } else if (rule === 'prefilter.re') input = witness(pf.re, false);
+          } else if (rule === 'prefilter.re' || rule === 'prefilter.re_all') input = pf.re_all ? regexWitness(pf, rule, false) : witness(pf.re, false);
           else if (rule === 'prefilter.env') env[pf.env] = '';
           else if (rule === 'prefilter.file') delete files[pfFile];
           else if (rule === 'prefilter.policy_vocab') input = candidates[0];

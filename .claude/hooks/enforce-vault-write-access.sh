@@ -116,6 +116,8 @@ fi
 if [ "$TOOL" = Bash ]; then
   CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
   [[ -z "$CMD" ]] && exit 0
+  # jq.exe turns each LF in the payload command into CRLF (see hq_crlf_to_lf).
+  hq_crlf_to_lf CMD
   if [ ! -f "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" ]; then
     printf '%s\n' 'BLOCKED: Bash arithmetic check. The arithmetic guard helper is missing; refresh the hook installation.' >&2
     exit 2

@@ -351,7 +351,7 @@ norm_path() {
 CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh/hosts|\.env|credentials'
 # Also wake for home references and recursive readers: `grep -r token ~`
 # reaches credential files without naming one.
-PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive"
+PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive|(xargs|parallel|-exec|-ok).*git.*(show|cat-file|archive)"
 CG_SCREEN_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y"
 
 # Credential basenames and directory names a split word can rebuild
@@ -1896,7 +1896,7 @@ eval_subst() {
       case "$STRIPPED" in *HQ_DEPLOY_API*|*manifest*) return 1 ;; esac
       if command -v shasum >/dev/null 2>&1; then rv_sum="$(shasum -a 256 "$cwd/$rv_rel" 2>/dev/null)" || return 1
       else rv_sum="$(sha256sum "$cwd/$rv_rel" 2>/dev/null)" || return 1; fi
-      [ "${rv_sum%% *}" = "0b622ae7efff3be76e8eb199f8327be662bef371a3612d356df505c5a696b492" ] || return 1
+      [ "${rv_sum%% *}" = "0b622ae7efff3be76e8eb199f8327be662bef371a3612d356df505c5a696b492" ] || return 1 # gitleaks:allow
       rv_api="${HQ_DEPLOY_API:-}"
       if [ -z "$rv_api" ]; then
         rv_d="$cwd"
@@ -2582,6 +2582,22 @@ code_check() {
   [[ "$t" =~ $CODE_CRED_RE ]] && hit=0
   [ "$nc" -eq 1 ] || shopt -u nocasematch
   [ $hit -eq 0 ] && block "$2 code that names a credential file"
+  return 0
+}
+
+# fed_git_read <start> <end> <placeholder> <appends> <tool>: the command
+# that xargs, find -exec or parallel runs is a git object reader (git show,
+# cat-file, archive) whose <ref>:<path> operand the tool fills in, either
+# through the placeholder or by appending input lines. The path is computed,
+# so it is refused whatever it resolves to.
+fed_git_read() {
+  local s="$1" e="$2" ph="$3" app="$4" tool="$5" j t="" sep=""
+  for ((j = s; j < e; j++)); do t="$t$sep${CW[$j]}"; sep=" "; done
+  [[ "$t" =~ (^|[[:space:]/\'\"])git([[:space:]]|$) ]] || return 0
+  [[ "$t" =~ (^|[[:space:]])(show|cat-file|archive)([[:space:]]|$) ]] || return 0
+  if [ "$app" -eq 1 ] || { [ -n "$ph" ] && [[ "$t" == *"$ph"* ]]; }; then
+    block "$tool filling in the path of a git show, cat-file or archive (a computed path)"
+  fi
   return 0
 }
 
@@ -3362,25 +3378,39 @@ analyze_simple() {
       ;;
     xargs)
       k=$a
+      local xph=""
       while [ $k -lt $e ]; do
         w="${CW[$k]}"
         case "$w" in
           -a|--arg-file) [ $((k + 1)) -lt $e ] && check_word "${CW[$((k + 1))]}" "${CF[$((k + 1))]}" "$CUR_CWD"; k=$((k + 2)); continue ;;
           --arg-file=*) check_word "${w#*=}" "${CF[$k]}" "$CUR_CWD"; k=$((k + 1)); continue ;;
-          -I|-L|-n|-P|-s|-d|-E) k=$((k + 2)); continue ;;
+          -I|-J) [ $((k + 1)) -lt $e ] && xph="${CW[$((k + 1))]}"; k=$((k + 2)); continue ;;
+          -I?*|-J?*) xph="${w:2}"; k=$((k + 1)); continue ;;
+          -i|--replace) xph="{}"; k=$((k + 1)); continue ;;
+          -i?*) xph="${w:2}"; k=$((k + 1)); continue ;;
+          --replace=*) xph="${w#*=}"; k=$((k + 1)); continue ;;
+          -L|-n|-P|-s|-d|-E) k=$((k + 2)); continue ;;
           -*) k=$((k + 1)); continue ;;
         esac
         break
       done
+      # With -I the input fills the placeholder; without it, input lines are
+      # appended as operands.
+      if [ -n "$xph" ]; then fed_git_read "$k" "$e" "$xph" 0 xargs; else fed_git_read "$k" "$e" "" 1 xargs; fi
       if [ $k -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$k]##*/}"; ! is_safe_cmd "$LCW"; }; then
         block "xargs feeding a command in a command line that names a credential file"
       fi
       return 0
       ;;
+    parallel)
+      # GNU parallel fills {} (and its variants) or appends each input.
+      fed_git_read "$a" "$e" "" 1 parallel
+      ;;
     find)
       for ((k = a; k < e; k++)); do
         case "${CW[$k]}" in
           -exec|-execdir|-ok|-okdir)
+            fed_git_read $((k + 1)) "$e" "{}" 0 "find -exec"
             if [ $((k + 1)) -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$((k + 1))]##*/}"; ! is_safe_cmd "$LCW"; }; then
               block "find -exec in a command line that names a credential file"
             fi

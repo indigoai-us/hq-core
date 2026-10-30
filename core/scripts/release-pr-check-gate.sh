@@ -40,9 +40,9 @@ if has_hold_label "$pr_info"; then
   echo "::notice::hold-release is present on hq-core PR #$PR_NUMBER; the release gate will not merge it."
   exit 0
 fi
-# Leave GitHub auto-merge armed. The promote workflow arms it on every release
-# PR so the PR is always ready to merge; this gate is a second merge path that
-# also waits for non-required checks. Only a manual hold-release disarms it.
+# No hold-release: merge once every check passes. Stable releases always carry
+# hold-release until the owner gives a go (release-pr-auto-merge.sh), so this
+# path merges a stable release only after that go, on the head it was given on.
 
 check_pages_file=''
 status_pages_file=''
@@ -85,10 +85,11 @@ while :; do
   failed="$(jq -r '.failed | join("\n")' <<< "$report")"
   retryable="$(jq -r '.retryable | join("\n")' <<< "$report")"
   if [[ -n "$failed" ]]; then
-    # Never label the PR here. Release PRs stay ready to merge: a failing check
-    # only refuses this merge attempt. The scheduled recheck does not re-run
-    # checks; once a failed check is re-run and passes, the next recheck merges
-    # the PR. hold-release is a manual, human-applied hold only.
+    # Never label the PR here. A failing check only refuses this merge
+    # attempt. The scheduled recheck does not re-run checks; once a failed
+    # check is re-run and passes, the next recheck merges the PR if it is not
+    # held. hold-release is applied by people, and by release-pr-auto-merge.sh
+    # on every stable release; this gate never adds it.
     latest_info="$(gh pr view "$PR_NUMBER" --repo "$TARGET_REPO" --json headRefOid,autoMergeRequest,labels)"
     latest_sha="$(jq -r '.headRefOid // empty' <<< "$latest_info")"
     if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then

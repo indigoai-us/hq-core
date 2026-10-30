@@ -136,6 +136,8 @@ jobs:
         run: bash core/scripts/tests/install-shellcheck.test.sh
       - name: Release promotion checks gate regression test
         run: bash core/scripts/tests/release-pr-check-gate.test.sh
+      - name: Stable release PRs open on hold, never auto-merge
+        run: bash core/scripts/tests/release-pr-auto-merge.test.sh
       - name: US-016 Tart VM harness stub regression test
         run: bash core/scripts/tests/anywhere-vm-test.test.sh
       - name: MSYS2 environment guards match UCRT64 and CLANG64
@@ -348,6 +350,8 @@ jobs:
             .claude/skills/deploy/scripts/tests/deploy-api-request-msys-upload-path.test.sh \
             core/scripts/lint-shell-portability.sh \
             core/scripts/hq-job-run.sh \
+            core/scripts/release-pr-auto-merge.sh \
+            core/scripts/tests/release-pr-auto-merge.test.sh \
             core/scripts/hq-job-notify.sh \
             core/scripts/outpost-jobs-reconcile.sh \
             core/scripts/handoff-finalize.sh \
@@ -445,6 +449,16 @@ jobs:
         run: bash core/scripts/tests/master-hook-repogit-command-roundtrip.test.sh
       - name: Bash guards collapse simulated jq.exe CRLF in the stdin fallback
         run: bash core/scripts/tests/hook-stdin-crlf-fallback.test.sh
+      - name: Git-mutation guard blocks GIT_DIR, eval, sh -c, $VAR, and quote-split spellings
+        run: bash core/scripts/tests/block-hq-root-git-mutation-spellings.test.sh
+      - name: Master-hook prefilter routes quote-split git spellings to the git-mutation guard
+        run: bash core/scripts/tests/master-hook-git-spellings-prefilter.test.sh
+      - name: Guards that read raw stdin strip jq.exe CRLF through hq_crlf_to_lf
+        run: bash core/scripts/tests/hook-stdin-crlf-guards.test.sh
+      - name: hq_crlf_to_lf avoids per-byte reads on Windows
+        run: bash core/scripts/tests/hook-crlf-windows-no-byte-reads.test.sh
+      - name: Hook adapter settings walk expands HQ_ROOT without eval
+        run: bash core/scripts/tests/hook-adapter-settings-root-no-eval.test.sh
       - name: Registry prefilter sees git at the start of a line
         run: bash core/scripts/tests/prefilter-line-start-git.test.sh
       - name: Codex hook adapter routes mandatory scope authorizer
@@ -850,6 +864,10 @@ jobs:
           node --test core/scripts/hook-corpus/corpus.test.mjs
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Timed-out safety guards block; slow non-safety hooks stay non-blocking
+        run: timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Git-mutation guard blocks a 10,000-line HQ-root commit well under the safety cap
+        run: timeout 600s bash core/scripts/tests/block-hq-root-git-mutation-long-command.test.sh
       - name: Hook benchmarks dispatch through every supported runtime
         run: bash core/scripts/tests/bench-hooks-runtime.test.sh
       - name: Hook corpus benchmark same-session replay
@@ -1139,6 +1157,8 @@ jobs:
         run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
       - name: hq monitor guard PATH-shim process budget
         run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
+      - name: hq monitor guard stays fast on a 96 KB command
+        run: timeout 600s bash .claude/hooks/tests/hq-monitor-guard-large-command.test.sh
       - name: SessionStart monitor and updater subprocess budget
         run: bash core/scripts/tests/sessionstart-monitor-update-budget.test.sh
       - name: policy/core write guards PATH-shim process budget
@@ -1151,10 +1171,24 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Timed-out safety guards block on Git Bash
+        run: timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Git-mutation guard blocks a 10,000-line HQ-root commit on Git Bash
+        run: timeout 600s bash core/scripts/tests/block-hq-root-git-mutation-long-command.test.sh
       - name: Repo git command roundtrip, including the 40 KB Windows env cap
         run: bash core/scripts/tests/master-hook-repogit-command-roundtrip.test.sh
       - name: Bash guards collapse jq.exe CRLF in the stdin fallback
         run: bash core/scripts/tests/hook-stdin-crlf-fallback.test.sh
+      - name: Git-mutation guard spelling bypasses stay blocked on Git Bash
+        run: timeout 900s bash core/scripts/tests/block-hq-root-git-mutation-spellings.test.sh
+      - name: Master-hook prefilter routes quote-split git spellings to the git-mutation guard on Git Bash
+        run: timeout 900s bash core/scripts/tests/master-hook-git-spellings-prefilter.test.sh
+      - name: Guards that read raw stdin strip jq.exe CRLF on Git Bash
+        run: bash core/scripts/tests/hook-stdin-crlf-guards.test.sh
+      - name: hq_crlf_to_lf avoids per-byte reads on Git Bash
+        run: bash core/scripts/tests/hook-crlf-windows-no-byte-reads.test.sh
+      - name: Hook adapter settings walk expands HQ_ROOT without eval on Git Bash
+        run: bash core/scripts/tests/hook-adapter-settings-root-no-eval.test.sh
       - name: Main's master hook no longer exports the 40 KB command
         run: |
           set -euo pipefail
@@ -1297,6 +1331,10 @@ jobs:
         env:
           HQ_CLI_REQUIRED_IN_CI: '1'
         run: bash core/scripts/ci/run-shell-smoke-timeout-tests.sh
+      - name: Timed-out safety guards block under Homebrew Bash and stock /bin/bash 3.2
+        run: bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Git-mutation guard blocks a 10,000-line HQ-root commit under Homebrew Bash and /bin/bash 3.2
+        run: bash core/scripts/tests/block-hq-root-git-mutation-long-command.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1305,6 +1343,18 @@ jobs:
         run: POLICY_TEST_BASH=/bin/bash bash core/scripts/tests/block-policy-writes-bash.test.sh
       - name: Bash guards collapse simulated jq.exe CRLF in the stdin fallback (Bash 3.2)
         run: PATH="/bin:$PATH" /bin/bash core/scripts/tests/hook-stdin-crlf-fallback.test.sh
+      - name: Git-mutation guard spelling bypasses stay blocked under Homebrew Bash and /bin/bash 3.2
+        run: bash core/scripts/tests/block-hq-root-git-mutation-spellings.test.sh
+      - name: Master-hook prefilter routes quote-split git spellings under Homebrew Bash and /bin/bash 3.2
+        run: bash core/scripts/tests/master-hook-git-spellings-prefilter.test.sh
+      - name: Guards that read raw stdin strip jq.exe CRLF (Bash 3.2)
+        run: PATH="/bin:$PATH" /bin/bash core/scripts/tests/hook-stdin-crlf-guards.test.sh
+      - name: hq_crlf_to_lf Windows branch stays correct under Homebrew Bash and /bin/bash 3.2
+        run: bash core/scripts/tests/hook-crlf-windows-no-byte-reads.test.sh
+      - name: Hook adapter settings walk expands HQ_ROOT without eval (Bash 3.2)
+        run: bash core/scripts/tests/hook-adapter-settings-root-no-eval.test.sh
+      - name: hq monitor guard stays fast on a 96 KB command under Homebrew Bash and /bin/bash 3.2
+        run: bash .claude/hooks/tests/hq-monitor-guard-large-command.test.sh
       - name: active-run guard blocks cross-session edits (BSD date, Bash 3.2)
         run: /bin/bash core/scripts/tests/block-on-active-run.test.sh
       - name: Conduct link messages reach only the root session under stock macOS Bash
@@ -1382,6 +1432,8 @@ jobs:
         run: bash core/scripts/tests/hq-monitor-hooks.test.sh
       - name: hq monitor guard PATH-shim process budget
         run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
+      - name: hq monitor guard stays fast on a 96 KB command
+        run: timeout 600s bash .claude/hooks/tests/hq-monitor-guard-large-command.test.sh
       - name: Codex preflight pull path emits the policy + Grok rules pointer
         run: bash core/scripts/tests/codex-preflight-policies.test.sh
       - name: Codex output-style bridge
@@ -2259,6 +2311,10 @@ jobs:
       id: t_hq_agent_session_harness__8
       if: "${{ !cancelled() && steps.t_hq_agent_session_harness__7.outcome == 'success' }}"
       run: bash core/scripts/tests/hq-agent-session-authz.test.sh
+    - name: "[hq-agent-session-harness] Agent turns load the HQ root guard hooks (credential + scope)"
+      id: t_hq_agent_session_harness__9
+      if: "${{ !cancelled() && steps.t_hq_agent_session_harness__8.outcome == 'success' }}"
+      run: bash core/scripts/tests/hq-agent-session-guard-parity.test.sh
     - name: "[session-title-manual-backoff] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -2699,6 +2755,10 @@ jobs:
       id: t_skill_script_refs__70
       if: "${{ !cancelled() && steps.t_skill_script_refs__69.outcome == 'success' }}"
       run: bash core/scripts/tests/deploy-skill-agent-identity-doc.test.sh
+    - name: "[skill-script-refs] /overnight conduct mode routes through a path /conduct has"
+      id: t_skill_script_refs__74
+      if: "${{ !cancelled() && steps.t_skill_script_refs__70.outcome == 'success' }}"
+      run: bash core/scripts/tests/overnight-conduct-mode.test.sh
     - name: "[skill-command-script] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -3172,6 +3232,10 @@ jobs:
       id: t_hook_health_prevention__5
       if: "${{ !cancelled() && steps.t_hook_health_prevention__4.outcome == 'success' }}"
       run: bash core/scripts/tests/hook-settings-release-contract.test.sh
+    - name: "[hook-health-prevention] Raw temp HOME guard"
+      id: t_hook_health_prevention__5b
+      if: "${{ !cancelled() && steps.t_hook_health_prevention__5.outcome == 'success' }}"
+      run: bash core/scripts/tests/block-raw-temp-home.test.sh
     - name: "[hook-health-prevention] Adapter prefilter and watchdog contract"
       id: t_hook_health_prevention__6
       if: "${{ !cancelled() && steps.t_hook_health_prevention__5.outcome == 'success' }}"

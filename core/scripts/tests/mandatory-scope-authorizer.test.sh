@@ -2239,6 +2239,47 @@ scope_112_case 34ab4b26 2 'for s in a b; do true && . workspace/tmp/x.sh; cat wo
 scope_112_case 34ab4b26 2 'for s in a b; do if true; then . workspace/tmp/x.sh; fi; cat workspace/orchestrator/$s.json; done'
 scope_112_case 34ab4b26 2 'for s in a b; do command . workspace/tmp/x.sh; cat workspace/orchestrator/$s.json; done'
 
+echo "[119] feedback_aed51c80: markdown table pipes in a data heredoc are not shell pipelines"
+install_fixture "indigo"
+mkdir -p "$TMP/workspace"
+scope_112_case aed51c80 0 "cat > workspace/owner-role-map.md <<'EOF'
+| Role | Source |
+| --- | --- |
+| Owner | companies/otherco/settings/x.md |
+EOF"
+scope_112_case aed51c80 0 "cat > workspace/owner-role-map.md <<EOF
+| Role | Source |
+| --- | --- |
+| Owner | companies/otherco/settings/x.md |
+EOF"
+scope_112_case aed51c80 2 "cat > companies/otherco/settings/x.md <<'EOF'
+| Role | Source |
+EOF"
+scope_112_case aed51c80 2 "cat <<'EOF'
+cat companies/otherco/settings/x.md
+EOF
+| bash"
+scope_112_case aed51c80 2 "cat <<'EOF'
+cat companies/otherco/settings/x.md
+EOF
+| bash | cat"
+scope_112_case aed51c80 2 "cat <<'EOF'
+cat companies/otherco/settings/x.md
+EOF
+| sh | tee x"
+scope_112_case aed51c80 2 "cat <<'EOF'
+cat companies/otherco/settings/x.md
+EOF
+|bash|cat"
+scope_112_case aed51c80 2 "cat <<'EOF'
+cat companies/otherco/settings/x.md
+EOF
+| Role | Source |"
+scope_112_case aed51c80 2 "cat > workspace/owner-role-map.md <<EOF
+| Role | Source |
+| Owner | \$(cat companies/otherco/settings/x.md) |
+EOF"
+
 echo "[120] sweep-2 shell shapes: \$PWD in file:// URLs and --opt= values, plain multi-assignment statements, \$(cat \"\$T\") message values, git commit -m \"\$(cat FILE)\", nested for loops"
 install_fixture "indigo"
 mkdir -p "$TMP/companies/indigo/projects/site/out" "$TMP/companies/indigo/data/src" \

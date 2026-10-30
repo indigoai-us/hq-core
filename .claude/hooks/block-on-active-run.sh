@@ -86,6 +86,12 @@ case "$TOOL_NAME" in
     ;;
   Bash)
     cmd=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+    # jq.exe turns each LF in the payload command into CRLF (see hq_crlf_to_lf).
+    if declare -F hq_crlf_to_lf >/dev/null; then
+      hq_crlf_to_lf cmd
+    else
+      cmd="${cmd//$'\r\n'/$'\n'}"
+    fi
     # Inspect actual simple-command executables, not quoted argument text.
     # This keeps grep patterns and checkpoint summaries from impersonating a
     # destructive operation while retaining all real write classifications.

@@ -370,6 +370,33 @@ chmod +x "$TMP/bin/npm"
 export PATH="$TMP/bin:$PATH"
 export NPM_MARKER
 
+# ---- scan: a hung size probe cannot suppress the bounded inventory ----
+REAL_DU="$(command -v du)"
+mkdir -p "$TMP/scan-bin" "$HOME/Downloads"
+cat > "$TMP/scan-bin/du" <<EOF
+#!/bin/bash
+case "\${2:-}" in
+  "$HOME/.cache") sleep 5 ;;
+esac
+exec "$REAL_DU" "\$@"
+EOF
+chmod +x "$TMP/scan-bin/du"
+scan="$(PATH="$TMP/scan-bin:$PATH" HQ_FREE_DISK_SCAN_TIMEOUT_SECS=1 run scan)"
+case "$scan" in
+  *"largest reclaimable areas (bounded scan):"*) ;;
+  *) fail "scan omitted the largest-area table: $scan" ;;
+esac
+case "$scan" in
+  *"timeout"*"$HOME/.cache"*) ;;
+  *) fail "scan omitted the timed-out area while keeping partial results: $scan" ;;
+esac
+case "$scan" in
+  *"ok"*"$HQ/workspace/worktrees"*) ;;
+  *) fail "scan lost completed area results when another probe timed out: $scan" ;;
+esac
+[ "$(printf '%s\n' "$scan" | grep -Ec '  (ok|timeout|missing|error|unavailable)[[:space:]]+')" -le 8 ] \
+  || fail "scan emitted more than the bounded eight area rows: $scan"
+
 # ---- dry run deletes nothing ----
 dry=$(run prune-backed-up 6)
 [ ! -f "$NPM_MARKER" ] || fail "dry-run prune invoked npm"

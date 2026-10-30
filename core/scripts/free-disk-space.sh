@@ -343,10 +343,128 @@ remove_linked_worktree() {
 }
 
 cmd_scan() {
+  local budget="${HQ_FREE_DISK_SCAN_TIMEOUT_SECS:-5}" tmp="" i=0 ticks=0 alive=0
+  local path="" pid="" size="" out=""
+  local -a paths pids
+
+  case "$budget" in ''|*[!0-9]*) budget=5 ;; esac
+  [ "$budget" -ge 1 ] 2>/dev/null || budget=5
+  # This diagnostic runs when the disk is already in trouble. Keep its
+  # wall-clock cost bounded even if an override is accidentally too large.
+  [ "$budget" -le 10 ] 2>/dev/null || budget=10
+
   df -h / | tail -1
-  du -sh "$WT_ROOT" "$HOME/Library/Caches" "$HOME/.cache" "$HOME/.npm" \
-    "$HOME/Library/Developer" "$HOME/Library/Application Support/Claude" \
-    "$HOME/Downloads" "$HOME/.Trash" 2>/dev/null | sort -hr
+  echo "largest reclaimable areas (bounded scan):"
+  printf '%10s  %-9s  %s\n' "SIZE" "STATUS" "PATH"
+
+  paths=(
+    "$WT_ROOT"
+    "$HOME/Library/Caches"
+    "$HOME/.cache"
+    "$HOME/.npm"
+    "$HOME/Library/Developer"
+    "$HOME/Library/Application Support/Claude"
+    "$HOME/Downloads"
+    "$HOME/.Trash"
+  )
+
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/hq-disk-scan.XXXXXX" 2>/dev/null)" || tmp=""
+  if [ -z "$tmp" ]; then
+    for path in "${paths[@]}"; do
+      printf '%10s  %-9s  %s\n' "unknown" "unavailable" "$path"
+    done
+    return 0
+  fi
+
+  # Probe the fixed allowlist concurrently. One slow or unreadable tree must
+  # not suppress results from the others, and the table stays at eight rows.
+  for path in "${paths[@]}"; do
+    out="$tmp/$i.out"
+    if [ ! -e "$path" ]; then
+      printf '0\tmissing\t%s\n' "$path" >"$tmp/$i.result"
+      pids[$i]=""
+      i=$((i + 1))
+      continue
+    fi
+    (
+      if du -sk "$path" >"$out" 2>/dev/null; then
+        : >"$tmp/$i.done"
+      else
+        : >"$tmp/$i.failed"
+      fi
+    ) &
+    pids[$i]=$!
+    i=$((i + 1))
+  done
+
+  ticks=$((budget * 10))
+  while [ "$ticks" -gt 0 ]; do
+    alive=0
+    i=0
+    for path in "${paths[@]}"; do
+      pid="${pids[$i]:-}"
+      if [ -n "$pid" ] && [ ! -f "$tmp/$i.done" ] && [ ! -f "$tmp/$i.failed" ] && kill -0 "$pid" 2>/dev/null; then
+        alive=1
+        break
+      fi
+      i=$((i + 1))
+    done
+    [ "$alive" -eq 1 ] || break
+    sleep 0.1
+    ticks=$((ticks - 1))
+  done
+
+  i=0
+  for path in "${paths[@]}"; do
+    pid="${pids[$i]:-}"
+    if [ -n "$pid" ] && [ ! -f "$tmp/$i.done" ] && [ ! -f "$tmp/$i.failed" ] && kill -0 "$pid" 2>/dev/null; then
+      : >"$tmp/$i.timeout"
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+    i=$((i + 1))
+  done
+  sleep 0.1
+  i=0
+  for path in "${paths[@]}"; do
+    pid="${pids[$i]:-}"
+    if [ -n "$pid" ]; then
+      if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
+      wait "$pid" 2>/dev/null || true
+    fi
+    i=$((i + 1))
+  done
+
+  i=0
+  for path in "${paths[@]}"; do
+    if [ -f "$tmp/$i.result" ]; then
+      :
+    elif [ -f "$tmp/$i.done" ]; then
+      size="$(awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }' "$tmp/$i.out" 2>/dev/null)"
+      if [ -n "$size" ]; then
+        printf '%s\tok\t%s\n' "$size" "$path" >"$tmp/$i.result"
+      else
+        printf '0\terror\t%s\n' "$path" >"$tmp/$i.result"
+      fi
+    elif [ -f "$tmp/$i.timeout" ]; then
+      printf '0\ttimeout\t%s\n' "$path" >"$tmp/$i.result"
+    else
+      printf '0\terror\t%s\n' "$path" >"$tmp/$i.result"
+    fi
+    cat "$tmp/$i.result" >>"$tmp/results"
+    i=$((i + 1))
+  done
+
+  sort -k1,1nr "$tmp/results" | awk -F '\t' '
+    function human(kb) {
+      if (kb >= 1048576) return sprintf("%.1f GB", kb / 1048576)
+      if (kb >= 1024) return sprintf("%.1f MB", kb / 1024)
+      return sprintf("%d KB", kb)
+    }
+    {
+      shown = ($2 == "ok" ? human($1) : ($2 == "missing" ? "0 KB" : "unknown"))
+      printf "%10s  %-9s  %s\n", shown, $2, $3
+    }'
+  rm -rf -- "$tmp"
 }
 
 cmd_worktrees_status() {

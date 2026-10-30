@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "2f562b586784605deae042fcadfd66996f03a0df73b23595823c38c99ec73f57",
+  "registry_sha256": "9a06c5885fd043bb828d08ae909e31f831b12662e0decf17f9fb95f6411aa07c",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -794,6 +794,12 @@
       "trigger_sha256": "665e6b1b55ce08edb5bc2afe628620fb8a05ac9f7f4b8b7ea14bc9788ffd374c",
       "when": "git",
       "on": "[AssistantIntent, PreToolUse]"
+    },
+    {
+      "path": "core/policies/hq-temp-home-use-wrapper.md",
+      "trigger_sha256": "dd3330068797cc0556f2d70e5e3200c8d08c9582ac9aab7fdf2c468edde338b0",
+      "when": "mktemp || (temp && home)",
+      "on": "[PreToolUse]"
     },
     {
       "path": "core/policies/hq-toolsearch-load-deferred-schemas.md",
@@ -1742,7 +1748,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -1782,7 +1789,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -1823,7 +1831,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -1863,7 +1872,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2252,7 +2262,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2292,7 +2303,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2333,7 +2345,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2373,7 +2386,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2580,7 +2594,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2620,7 +2635,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2661,7 +2677,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -2701,7 +2718,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -3952,7 +3970,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -3992,7 +4011,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4033,7 +4053,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4073,7 +4094,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4117,7 +4139,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4160,7 +4183,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4204,7 +4228,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4247,7 +4272,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4291,7 +4317,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4334,7 +4361,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4378,7 +4406,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4421,7 +4450,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4465,7 +4495,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4508,7 +4539,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4552,7 +4584,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4595,7 +4628,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4639,7 +4673,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4682,7 +4717,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4726,7 +4762,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -4769,7 +4806,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(hq|npx|secrets|bash|sh|eval)([^A-Za-z0-9_]|$)|--reveal"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5501,7 +5539,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5544,7 +5583,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5588,7 +5628,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5631,7 +5672,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5675,7 +5717,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5718,7 +5761,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5762,7 +5806,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5805,7 +5850,8 @@
                   "prefilter": {
                     "re": "printenv|(^|[^A-Za-z0-9_])(env|set)([^A-Za-z0-9_]|$)|export[[:space:]]+-p|declare[[:space:]]+-x|/proc/self/environ|/proc/[0-9]+/environ|docker inspect|docker exec|\\.env"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5849,7 +5895,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5892,7 +5939,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5936,7 +5984,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -5979,7 +6028,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6023,7 +6073,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6066,7 +6117,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6110,7 +6162,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6153,7 +6206,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template|(^|[^A-Za-z0-9_])(rm|rmdir|mv|cp|tee|dd|rsync|ln|sed|awk|truncate|install|touch|mkdir|chmod|chown|git|tar|find|xargs|perl|python[0-9]*|node|bash|sh|zsh|eval|source)([^A-Za-z0-9_]|$)|>"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6197,7 +6251,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6240,7 +6295,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6284,7 +6340,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6327,7 +6384,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6371,7 +6429,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6414,7 +6473,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6458,7 +6518,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6501,7 +6562,8 @@
                   "prefilter": {
                     "re": "polic|HQ_ALLOW_POLICY_WRITE|(^|[^A-Za-z0-9_])(tar|find|git|cp|mv|rsync|xargs)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6545,7 +6607,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6590,7 +6653,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6636,7 +6700,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6681,7 +6746,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6727,7 +6793,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6772,7 +6839,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6818,7 +6886,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6861,7 +6930,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6903,9 +6973,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6946,9 +7021,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -6990,9 +7070,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7033,9 +7118,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7077,9 +7167,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7120,9 +7215,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7164,9 +7264,14 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7207,9 +7312,208 @@
                   "timeout": 30,
                   "gated": false,
                   "prefilter": {
-                    "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh"
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-hq-root-git-mutation",
+      "entry": "PreToolUse/5/10",
+      "rule": "prefilter.re_all",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-root-git-mutation",
+                  "script": ".claude/hooks/block-hq-root-git-mutation.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
+                  },
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "${G:-gi}t commit",
+          "file_path": "${G:-gi}t commit"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-hq-root-git-mutation",
+      "entry": "PreToolUse/5/10",
+      "rule": "prefilter.re_all",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-root-git-mutation",
+                  "script": ".claude/hooks/block-hq-root-git-mutation.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
+                  },
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "${G:-gi}t commit",
+          "file_path": "${G:-gi}t commit"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-hq-root-git-mutation",
+      "entry": "PreToolUse/5/10",
+      "rule": "prefilter.re_all",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-root-git-mutation",
+                  "script": ".claude/hooks/block-hq-root-git-mutation.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
+                  },
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-hq-root-git-mutation",
+      "entry": "PreToolUse/5/10",
+      "rule": "prefilter.re_all",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-root-git-mutation",
+                  "script": ".claude/hooks/block-hq-root-git-mutation.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "(^|[^A-Za-z0-9_-])[\"'\\\\]*g[\"'\\\\]*(i[\"'\\\\]*t|h)[\"'\\\\]*([^A-Za-z0-9_-]|$)|hq-pr-create\\.sh",
+                    "re_all": [
+                      "[$`]",
+                      "(^|[^A-Za-z0-9_-])(push|pull|fetch|clone|commit|merge|rebase|cherry-pick|revert|am|apply|format-patch|reset|restore|rm|mv|add|stage|checkout|switch|clean|gc|prune|repack|reflog|update-ref|update-index|filter-repo|filter-branch|fast-import|replace|fsck)([^A-Za-z0-9_-]|$)"
+                    ]
+                  },
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7253,7 +7557,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7296,7 +7601,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7340,7 +7646,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7383,7 +7690,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7427,7 +7735,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7470,7 +7779,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7514,7 +7824,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -7557,7 +7868,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_-])(git|gh)([^A-Za-z0-9_-]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -8617,8 +8929,356 @@
       }
     },
     {
-      "hook_id": "block-on-active-run",
+      "hook_id": "block-raw-temp-home",
       "entry": "PreToolUse/5/15",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "mktemp",
+          "file_path": "mktemp"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "mktemp",
+          "file_path": "mktemp"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "mktemp",
+          "file_path": "mktemp"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "mktemp",
+          "file_path": "mktemp"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "mktemp",
+          "file_path": "mktemp"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "mktemp",
+          "file_path": "mktemp"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-raw-temp-home",
+      "entry": "PreToolUse/5/15",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-raw-temp-home",
+                  "script": ".claude/hooks/block-raw-temp-home.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "mktemp"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-on-active-run",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -8663,7 +9323,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -8709,7 +9369,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -8754,7 +9414,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -8800,7 +9460,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": true,
@@ -8845,7 +9505,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": true,
@@ -8891,7 +9551,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": false,
@@ -8934,7 +9594,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/15",
+      "entry": "PreToolUse/5/16",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": false,
@@ -8978,7 +9638,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9023,7 +9683,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9069,7 +9729,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9114,7 +9774,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9160,7 +9820,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.policy_vocab",
       "runtime": "claude",
       "matching": true,
@@ -9205,7 +9865,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.policy_vocab",
       "runtime": "codex",
       "matching": true,
@@ -9251,7 +9911,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.policy_vocab",
       "runtime": "claude",
       "matching": false,
@@ -9295,7 +9955,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.policy_vocab",
       "runtime": "codex",
       "matching": false,
@@ -9340,7 +10000,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9359,7 +10019,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9383,7 +10044,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9402,7 +10063,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9427,7 +10089,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9446,7 +10108,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9470,7 +10133,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9489,7 +10152,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9514,7 +10178,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -9533,7 +10197,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9557,7 +10222,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -9576,7 +10241,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9601,7 +10267,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -9620,7 +10286,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9644,7 +10311,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -9663,7 +10330,8 @@
                   "prefilter": {
                     "re": "(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun|npx|bunx|pip[0-9]*|uv|poetry|pipx|gem|cargo|go|brew|apt|apt-get|curl|wget)([^A-Za-z0-9_]|$)"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -9688,7 +10356,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9730,7 +10398,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9773,7 +10441,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9815,7 +10483,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9858,7 +10526,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -9900,7 +10568,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -9943,7 +10611,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -9985,7 +10653,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -10044,7 +10712,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10084,7 +10753,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10125,7 +10795,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10165,7 +10836,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10209,7 +10881,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10252,7 +10925,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10296,7 +10970,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10339,7 +11014,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10383,7 +11059,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10426,7 +11103,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10470,7 +11148,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10513,7 +11192,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10557,7 +11237,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10600,7 +11281,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10644,7 +11326,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10687,7 +11370,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10731,7 +11415,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10774,7 +11459,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10818,7 +11504,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10861,7 +11548,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10905,7 +11593,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10948,7 +11637,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -10992,7 +11682,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11035,7 +11726,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11079,7 +11771,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11122,7 +11815,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11166,7 +11860,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11209,7 +11904,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11253,7 +11949,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11296,7 +11993,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11340,7 +12038,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11383,7 +12082,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11427,7 +12127,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11470,7 +12171,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11514,7 +12216,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11557,7 +12260,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11949,7 +12653,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -11994,7 +12699,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -12040,7 +12746,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -12085,7 +12792,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -12131,7 +12839,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -12176,7 +12885,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -12222,7 +12932,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -12265,7 +12976,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14058,7 +14770,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14098,7 +14811,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14139,7 +14853,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14179,7 +14894,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14223,7 +14939,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14266,7 +14983,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14310,7 +15028,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14353,7 +15072,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14397,7 +15117,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14440,7 +15161,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14484,7 +15206,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14527,7 +15250,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14571,7 +15295,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14614,7 +15339,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14658,7 +15384,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14701,7 +15428,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14745,7 +15473,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14788,7 +15517,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14832,7 +15562,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14875,7 +15606,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|AGENTS\\.md|Learned Rules|user-correction|back-pressure-failure"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14919,7 +15651,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -14962,7 +15695,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15006,7 +15740,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15049,7 +15784,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15093,7 +15829,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15136,7 +15873,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15180,7 +15918,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15223,7 +15962,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15267,7 +16007,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15310,7 +16051,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15354,7 +16096,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15397,7 +16140,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15441,7 +16185,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15484,7 +16229,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15528,7 +16274,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15571,7 +16318,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -15963,7 +16711,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16008,7 +16757,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16054,7 +16804,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16099,7 +16850,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16145,7 +16897,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16190,7 +16943,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16236,7 +16990,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -16279,7 +17034,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18072,7 +18828,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18112,7 +18869,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18153,7 +18911,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18193,7 +18952,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18237,7 +18997,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18280,7 +19041,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18324,7 +19086,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18367,7 +19130,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18411,7 +19175,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18454,7 +19219,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18498,7 +19264,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18541,7 +19308,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18585,7 +19353,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18628,7 +19397,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18672,7 +19442,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18715,7 +19486,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18759,7 +19531,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18802,7 +19575,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18846,7 +19620,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18889,7 +19664,8 @@
                   "prefilter": {
                     "re": "core|\\.claude|\\.agents|\\.codex|\\.obsidian|AGENTS\\.md|_template"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18933,7 +19709,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -18976,7 +19753,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19020,7 +19798,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19063,7 +19842,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19107,7 +19887,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19150,7 +19931,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19194,7 +19976,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19237,7 +20020,8 @@
                   "prefilter": {
                     "re": "[cC][oO][mM][pP][aA][nN][iI][eE][sS]|\\.[gG][iI][tT]"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19281,7 +20065,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19326,7 +20111,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19372,7 +20158,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19417,7 +20204,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19463,7 +20251,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19508,7 +20297,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19554,7 +20344,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -19597,7 +20388,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20682,7 +21474,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20722,7 +21515,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20763,7 +21557,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20803,7 +21598,8 @@
                   "script": ".claude/hooks/mandatory-scope-authorizer.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20847,7 +21643,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20890,7 +21687,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20934,7 +21732,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -20977,7 +21776,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21021,7 +21821,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21064,7 +21865,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21108,7 +21910,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21151,7 +21954,8 @@
                   "prefilter": {
                     "re": "sk-[a-zA-Z0-9._-]{20,}|ghp_|gho_|github_pat_|AKIA[0-9A-Z]{16}|xox[bpsa]-|Bearer |BEGIN [A-Z ]*PRIVATE KEY|glpat-"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21195,7 +21999,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21240,7 +22045,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21286,7 +22092,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21331,7 +22138,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21377,7 +22185,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21422,7 +22231,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21468,7 +22278,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
@@ -21511,7 +22322,8 @@
                   "prefilter": {
                     "file": ".hq/vault-access.json"
                   },
-                  "runner": "source"
+                  "runner": "source",
+                  "safety": true
                 }
               ]
             }
