@@ -60,7 +60,7 @@ session_timing_now_ms() {
     ''|*[!0-9]*) ;;
     *) printf '%s' "$ms"; return 0 ;;
   esac
-  ms="$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null)" || ms=""
+  ms="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null)" || ms=""
   case "$ms" in
     ''|*[!0-9]*) ;;
     *) printf '%s' "$ms"; return 0 ;;

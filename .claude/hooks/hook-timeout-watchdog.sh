@@ -106,7 +106,7 @@ timing_precision_value() {
     return
   fi
   if command -v perl >/dev/null 2>&1; then
-    candidate="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    candidate="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
     if [[ "$candidate" =~ ^[0-9]+$ ]]; then
       printf 'ms'
       return
@@ -134,7 +134,7 @@ now_ms() {
     return 0
   fi
   if command -v perl >/dev/null 2>&1; then
-    now="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
     if [[ "$now" =~ ^[0-9]+$ ]]; then
       printf '%s' "$now"
       return 0

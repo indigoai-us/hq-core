@@ -50,6 +50,7 @@ cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIX/.claude/hooks/"
 cp "$GATE" "$FIX/.claude/hooks/hook-gate.sh"
 cp "$PROBE" "$FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ADAPTER_CORE" "$FIX/core/scripts/lib/hook-adapter-core.sh"
+cp "$ROOT/core/scripts/lib/perl-child-locale.sh" "$FIX/core/scripts/lib/perl-child-locale.sh"
 chmod +x "$FIX/.claude/hooks/master-hook.sh" "$FIX/.claude/hooks/hook-gate.sh"
 
 cat > "$FIX/.claude/hooks/guard.sh" <<'SH'

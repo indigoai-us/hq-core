@@ -82,7 +82,7 @@ fi
 # PreToolUse event may contain a relative company write that a string search
 # cannot recognize, so fail closed for the whole event rather than guessing.
 if ! command -v perl >/dev/null 2>&1 \
-  || ! perl -MJSON::PP -MIO::Socket::UNIX -e 1 >/dev/null 2>&1; then
+  || ! LC_ALL=C perl -MJSON::PP -MIO::Socket::UNIX -e 1 >/dev/null 2>&1; then
   [ "${HQ_HQD_SHIM_REPORT_UNREACHABLE:-0}" != 1 ] || exit 75
   if [ -z "$event" ]; then
     # Codex invokes one shim command for all events without passing the event
@@ -121,7 +121,7 @@ fi
 
 # shellcheck disable=SC2016 # the perl program is single-quoted on purpose
 out=$(printf '%s' "$payload" | HQD_SHIM_EVENT="$event" HQD_SHIM_RUNTIME="$runtime" \
-  HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" perl -e '
+  HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" LC_ALL=C perl -e '
 use strict; use warnings;
 use JSON::PP (); use IO::Socket::UNIX (); use Time::HiRes ();
 my $json = JSON::PP->new->canonical;

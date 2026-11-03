@@ -162,7 +162,12 @@ run_hq_with_timeout() {
 
   perl_bin="$(command -v perl 2>/dev/null || true)"
   if [ -n "$perl_bin" ]; then
-    "$perl_bin" -e '
+    # hq_perl_spawn restores the caller's locale before exec; without the lib it
+    # is plain `LC_ALL=C perl`, so the call is still bounded.
+    # shellcheck source=../../core/scripts/lib/perl-child-locale.sh
+    . "${BASH_SOURCE[0]%/*}/../../core/scripts/lib/perl-child-locale.sh" 2>/dev/null \
+      || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+    HQ_PERL_BIN="$perl_bin" hq_perl_spawn '
       use POSIX ();
       use Time::HiRes qw(time sleep);
 

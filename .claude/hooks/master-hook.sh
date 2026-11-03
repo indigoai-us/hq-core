@@ -121,7 +121,7 @@ master_now_ms() {
     return 0
   fi
   if command -v perl >/dev/null 2>&1; then
-    now="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
     if [[ "$now" =~ ^[0-9]+$ ]]; then
       MASTER_NOW_MS="$now"
       printf '%s' "$MASTER_NOW_MS"
@@ -147,7 +147,7 @@ master_timing_precision() {
     return
   fi
   if command -v perl >/dev/null 2>&1; then
-    candidate="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    candidate="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
     if [[ "$candidate" =~ ^[0-9]+$ ]]; then
       printf 'ms'
       return
@@ -1542,7 +1542,14 @@ run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker
     # word-splits, exec fails, and perl exits 0, so every argless registry
     # hook no-ops on macOS HQ roots like "SE HQ Pilot".
     perl)
-      cmd=(perl -e "$child_timeout_perl_program" "$t" "$completion_marker" "${runner[@]}")
+      # hq_perl_spawn runs perl under LC_ALL=C and restores the caller's locale
+      # before it execs the hook, so the hook does not inherit LC_ALL=C. The lib
+      # is found next to this script (not under REPO_ROOT, which can resolve
+      # elsewhere); a partial copy without it still bounds the hook.
+      # shellcheck source=../../core/scripts/lib/perl-child-locale.sh
+      . "$SCRIPT_DIR/../../core/scripts/lib/perl-child-locale.sh" 2>/dev/null \
+        || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+      cmd=(hq_perl_spawn "$child_timeout_perl_program" "$t" "$completion_marker" "${runner[@]}")
       ;;
     *)
       if [ -n "${child_kill_after:-}" ]; then

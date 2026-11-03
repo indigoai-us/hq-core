@@ -27,7 +27,11 @@ run_bounded() {
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout --signal=TERM --kill-after=1s "${seconds}s" "$@"
   elif command -v perl >/dev/null 2>&1; then
-    perl -e '
+    # hq_perl_spawn restores the caller's locale before exec.
+    # shellcheck source=../../core/scripts/lib/perl-child-locale.sh
+    . "${BASH_SOURCE[0]%/*}/../../core/scripts/lib/perl-child-locale.sh" 2>/dev/null \
+      || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+    hq_perl_spawn '
       use POSIX qw(setpgid);
       my ($seconds, @command) = @ARGV;
       my $pid = fork();

@@ -295,7 +295,7 @@ raw_temp_home_fallback() {
 
 if command -v perl >/dev/null 2>&1; then
   rc=0
-  HQ_RTH_CMD="$CMD" perl -e "$RAW_TEMP_HOME_PL" 2>/dev/null || rc=$?
+  HQ_RTH_CMD="$CMD" LC_ALL=C perl -e "$RAW_TEMP_HOME_PL" 2>/dev/null || rc=$?
   [ "$rc" -eq 3 ] || exit 0
 else
   raw_temp_home_fallback "$CMD" || exit 0

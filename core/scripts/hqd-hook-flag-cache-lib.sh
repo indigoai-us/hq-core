@@ -49,8 +49,14 @@ hq_flag_reader_run() {
   case "$reader_budget_ms" in ''|*[!0-9]*) reader_budget_ms=5000 ;; esac
   [ "$reader_budget_ms" -gt 0 ] || reader_budget_ms=5000
   if command -v perl >/dev/null 2>&1; then
+    # perl runs under LC_ALL=C (C.utf8 panics Apple's perl); the program puts the
+    # caller's LC_ALL back before it execs the reader. This file ships alone in
+    # the plugin and Codex pack, so it carries its own copy of the restore code in
+    # core/scripts/lib/perl-child-locale.sh (kept in sync by
+    # perl-child-locale.test.sh).
     # shellcheck disable=SC2016 # perl program is single-quoted on purpose
-    perl -e '
+    HQ_PERL_LC_ALL="${LC_ALL-}" HQ_PERL_LC_ALL_SET="${LC_ALL+1}" LC_ALL=C perl -e '
+      if ($ENV{HQ_PERL_LC_ALL_SET}) { $ENV{LC_ALL} = $ENV{HQ_PERL_LC_ALL}; } else { delete $ENV{LC_ALL}; } delete @ENV{qw(HQ_PERL_LC_ALL HQ_PERL_LC_ALL_SET)};
       my $ms = shift @ARGV;
       my $pid = fork();
       die "fork\n" unless defined $pid;

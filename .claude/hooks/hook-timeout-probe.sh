@@ -103,7 +103,7 @@ hook_timeout_now_ms() {
     return 0
   fi
   if command -v perl >/dev/null 2>&1; then
-    now="$(perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
     if [[ "$now" =~ ^[0-9]+$ ]]; then
       printf '%s' "$now"
       return 0
@@ -131,7 +131,7 @@ hook_timeout_monotonic_ms() {
     fi
   fi
   if command -v perl >/dev/null 2>&1; then
-    now="$(perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.0f", clock_gettime(CLOCK_MONOTONIC) * 1000' 2>/dev/null || true)"
+    now="$(LC_ALL=C perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%.0f", clock_gettime(CLOCK_MONOTONIC) * 1000' 2>/dev/null || true)"
     if [[ "$now" =~ ^[0-9]+$ ]]; then
       printf '%s' "$now"
       return 0
@@ -708,7 +708,11 @@ hook_timeout_run_bounded() {
   if hook_timeout_has_gnu_timeout; then
     timeout -k 1s "${seconds}s" "$@"
   elif command -v perl >/dev/null 2>&1; then
-    perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
+    # hq_perl_spawn restores the caller's locale before exec.
+    # shellcheck source=../../core/scripts/lib/perl-child-locale.sh
+    . "${BASH_SOURCE[0]%/*}/../../core/scripts/lib/perl-child-locale.sh" 2>/dev/null \
+      || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+    hq_perl_spawn 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
   else
     return 127
   fi

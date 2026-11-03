@@ -1013,6 +1013,56 @@ cg_zglob() {
 
 # cg_fast_allow: return 0 when the call can be allowed without the full
 # check.
+# cg_gsub <text>: 0 when zsh glob_subst can be on for a word or the
+# command: $~name or ${~name}; the option name in any case with quotes,
+# backslashes and underscores removed (zsh ignores case and underscores);
+# setopt, unsetopt, emulate or options[...] anywhere (an option name can be
+# built at run time: o=globsu; setopt ${o}bst); or set/zsh -o with a quoted
+# or computed option name.
+CG_GSUB_RE='\$\{?~|(^|[^A-Za-z0-9_])(setopt|unsetopt|emulate|options\[)|(^|[^A-Za-z0-9_])(set|zsh)[[:space:]][^;&|]*[-+]o[[:space:]]*[^;&|[:space:]]*[$`]'
+cg_gsub() {
+  [[ "$1" =~ $CG_GSUB_RE ]] && return 0
+  local n
+  n=$(printf '%s' "$1" | tr -d "_\\\\'\"" | tr '[:upper:]' '[:lower:]')
+  case "$n" in *globsubst*) return 0 ;; esac
+  return 1
+}
+# CG_GITCFG_RE: git configuration that can name a command or an alias given
+# on the command line or through the environment.
+CG_GITCFG_RE='[Ee][Xx][Tt]::|[Pp][Rr][Oo][Tt][Oo][Cc][Oo][Ll]|[Aa][Ll][Ii][Aa][Ss]\.|GIT_CONFIG|GIT_SSH|ASKPASS|PROXY|VISUAL|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|--config-env|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ss][Ss][Hh][Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]'
+# git_cmd_key <config key>: 0 when git runs the key's value as a command or
+# a git command line (alias.*, core.pager, *.textconv, credential.*, ...).
+git_cmd_key() {
+  local key
+  key=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$key" in
+    alias.*|pager.*|credential.*|gpg.*|core.pager|core.editor|core.sshcommand|core.fsmonitor|core.askpass|core.hookspath|core.gitproxy|sequence.editor|diff.external|interactive.difffilter|*.textconv|*.program|*command*|*.cmd|*.driver|*.clean|*.smudge|*.process|*.helper|*.editor|*.receivepack|*.uploadpack|*.packobjectshook|*.proxy) return 0 ;;
+  esac
+  return 1
+}
+# gc_quote <text> <flags> -> GQ: the word written so that analyze_cmd reads
+# it back as one word with the same text. Glob, brace and variable parts
+# that the flags mark stay live; every other character is escaped.
+GQ=""
+gc_quote() {
+  local LC_ALL=C t="$1" f="$2" i c p="" out=""
+  for ((i = 0; i < ${#t}; i++)); do
+    c="${t:i:1}"
+    case "$c" in
+      [A-Za-z0-9/._,:@%+=-]) out="$out$c" ;;
+      '*'|'?'|'['|']') case "$f" in *g*) out="$out$c" ;; *) out="$out\\$c" ;; esac ;;
+      '{'|'}') case "$f" in *[bvu]*) out="$out$c" ;; *) out="$out\\$c" ;; esac ;;
+      '$') case "$f" in *[vu]*) out="$out$c" ;; *) out="$out\\$c" ;; esac ;;
+      '~') case "$p" in ''|=|:) out="$out$c" ;; *) out="$out\\$c" ;; esac ;;
+      $'\001') out="$out$c" ;;
+      $'\n') out="$out\"$c\"" ;;
+      *) out="$out\\$c" ;;
+    esac
+    p="$c"
+  done
+  [ -n "$out" ] || out="''"
+  GQ="$out"
+}
 cg_fast_allow() {
   [ "${HQ_CRED_GUARD_FASTPATH:-1}" != "0" ] || return 1
   # Every helper must be defined; a missing one would otherwise read as "no
@@ -1045,6 +1095,19 @@ cg_fast_allow() {
       # A git show <ref>:<path> with a variable reads a tree object the name
       # prefilter cannot see; the full check proves it (GS_COMPUTED).
       case "$CG_CMD" in *show*:*'$'*) return 1 ;; esac
+      # zsh glob_subst and $~ (CG_GSUB in the full check), and git config
+      # that names a command (git -c alias.x='!cat f' x) get the full check.
+      cg_gsub "$CG_CMD" && return 1
+      # Matched without case, as in the full check (nocasematch is on there),
+      # so core.gitproxy and http.proxy keys are not missed.
+      local fa_nc=0
+      shopt -q nocasematch && fa_nc=1
+      shopt -s nocasematch
+      if [[ "$CG_CMD" =~ git|GIT ]] && [[ "$CG_CMD" =~ $CG_GITCFG_RE ]]; then
+        [ "$fa_nc" -eq 1 ] || shopt -u nocasematch
+        return 1
+      fi
+      [ "$fa_nc" -eq 1 ] || shopt -u nocasematch
       cg_strip_q "$CG_CMD" || return 1
       local st="$CG_SQ"
       # Same split-name rule as the full check (SPLIT_CRED).
@@ -1245,6 +1308,17 @@ _cg_ov_re='(^|[;&|({!`'$'\n'']|then|do|else|builtin|command)[[:space:]]*\\?(eval
 CG_ZSH_EXT=0
 _cg_ov_re='extendedglob|extended_glob|EXTENDED_GLOB|EXTENDEDGLOB|setopt|emulate'
 [[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_ZSH_EXT=1
+# zsh glob_subst: `$~name`, `${~name}`, `setopt globsubst` (any spelling,
+# also set -o; see cg_gsub) and `emulate` (ksh and sh modes set it) make
+# zsh glob the value of a variable, so a quoted or escaped ^ or # anywhere
+# in the command can reach a reader as a glob (p='i#d_rsa'; cat $~p). The
+# guard does not track which value reaches which word: a ^ or # anywhere
+# in such a command blocks.
+if cg_gsub "$CMD"; then
+  case "$CMD" in
+    *'^'*|*'#'*) block "a zsh glob_subst or \$~ expansion in a command with a ^ or # the credential guard cannot evaluate" ;;
+  esac
+fi
 _cg_ov_re='(^|[^A-Za-z0-9_])(BASH_ENV|ENV|BASH_FUNC[A-Za-z0-9_%]*)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])(BASH_ALIASES|BASH_CMDS|aliases|commands|functions)\['
 [[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_CMD_OVERRIDE=1
 _cg_ov_re='(^|[^A-Za-z0-9_])(PATH|path)(\+?=|\[)|(^|[^A-Za-z0-9_])(read|mapfile|readarray|printf|for|select|getopts|declare|typeset|local|export|readonly|unset|eval|let)([[:space:]][^;&|]*)?[^A-Za-z0-9_$](PATH|path)([^A-Za-z0-9_]|$)'
@@ -1355,7 +1429,12 @@ if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$RE
   fi
   shopt -s nocasematch
 fi
-if [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
+# git configuration that names a command (CG_GITCFG_RE) always gets the
+# full analysis: the body can read a file with no credential word in the
+# command (git -c alias.x='!cat id^x' x).
+GITCFG=0
+if [[ "$CMD" =~ git|GIT ]] && [[ "$CMD" =~ $CG_GITCFG_RE ]]; then GITCFG=1; fi
+if [ "$GITCFG" -eq 0 ] && [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
   shopt -u nocasematch
   exit 0
 fi
@@ -2996,15 +3075,52 @@ fed_git_read() {
   return 0
 }
 
+# CG_URL_MULTI_RE: a command line with more than one command, a subshell,
+# a substitution or a redirect, or an option that changes the directory.
+CG_URL_MULTI_RE=$'[;&|()<>`\n]|[$][(]|(^|[[:space:]])(-C|--git-dir|--work-tree|--prefix)([=[:space:]]|$)'
+
+# fed_cmd <start> <end> <depth>: the command that xargs, find -exec or
+# parallel runs gets the same analysis as a command line (xargs sh -c
+# 'cat f', xargs git -c alias.x='!cat f' x). The input the tool adds is not
+# known; the words given are analysed. CW and CF are restored afterwards.
+fed_cmd() {
+  local s="$1" e="$2" d="$3" j t="" sep=""
+  [ "$s" -lt "$e" ] || return 0
+  for ((j = s; j < e; j++)); do gc_quote "${CW[$j]}" "${CF[$j]}"; t="$t$sep$GQ"; sep=" "; done
+  local fc_cw=("${CW[@]}") fc_cf=("${CF[@]}")
+  analyze_cmd "$t" $((d + 1)) "$CUR_CWD"
+  CW=("${fc_cw[@]}"); CF=("${fc_cf[@]}")
+  return 0
+}
+
 # check_operand <word> <flags> <cwd>: an operand of a command that is not on
 # the safe list.
 check_operand() {
   local w="$1" f="$2" cwd="$3" rp nc=0 skip=0
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
+  # A URL operand is not a file, but only a URL with a host and no ..
+  # segment, and no zsh glob mark: a folder named a: makes a://../i#d_rsa
+  # a path that zsh expands (git diff --no-index /dev/null a://../i#d_rsa).
   case "$w" in
     file://*) w="${w:7}" ;;
-    [a-z]*://*) skip=1 ;;
+    [a-z]*://[!/]*)
+      case "$f" in
+        *z*) ;;
+        *)
+          case "$w" in
+            *'/..'|*'/../'*|*'/.'|*'/./'*) ;;
+            http://*|https://*|ssh://*|git://*|ftp://*|ftps://*|git+ssh://*|git+https://*|git+http://*|ssh+git://*|ws://*|wss://*)
+              # A folder named like the scheme (https:) makes the word a path.
+              # The folder can also be made earlier in the same command line
+              # (ln -s .. https: && ...) or sit in another directory (git -C),
+              # so the word stays a URL only in a single simple command that
+              # changes no directory.
+              [ -e "$cwd/${w%%:*}:" ] || [ -e "${w%%:*}:" ] || [[ "$STRIPPED" =~ $CG_URL_MULTI_RE ]] || skip=1 ;;
+          esac
+          ;;
+      esac
+      ;;
   esac
   [ "$nc" -eq 1 ] || shopt -u nocasematch
   [ $skip -eq 0 ] || return 0
@@ -3677,14 +3793,110 @@ analyze_simple() {
       return 0
       ;;
     git)
+      # git runs some configuration values as commands: an alias that starts
+      # with ! is a shell command (git -c alias.x='!cat f' x), any other
+      # alias is a git command line, and pager, editor, sshCommand,
+      # textconv, credential helper, filter and similar keys name a program.
+      # Such a value given with -c, in a GIT_CONFIG_VALUE_<n> or
+      # GIT_CONFIG_PARAMETERS variable, or set with git config is analysed
+      # as a command, with the arguments after the subcommand appended.
+      # --config-env takes the value from a variable the guard cannot read.
+      local gc_v=() gc_key gc_val k6 gc_args="" gc_cfg=0
+      # Configuration from GIT_CONFIG_PARAMETERS or GIT_CONFIG_COUNT/KEY/VALUE
+      # (also exported earlier) is quoted in git's own format: blocked.
+      # GIT_EXTERNAL_DIFF, GIT_PAGER, GIT_EDITOR, GIT_SSH_COMMAND and the like
+      # name a command: their values (before git or assigned earlier in the
+      # command) are analysed as commands.
+      # Matched on STRIPPED (quotes and backslashes removed), so a word
+      # split with quotes (pro''tocol, e\xt::) is matched as the shell joins it.
+      case "$STRIPPED" in
+        *GIT_CONFIG_PARAMETERS*|*GIT_CONFIG_COUNT*|*GIT_CONFIG_KEY_*|*GIT_CONFIG_VALUE_*)
+          block "git configuration from GIT_CONFIG_* variables the credential guard cannot check" ;;
+      esac
+      # The ext:: transport runs its URL as a command, and the URL can come
+      # from a url.<base>.insteadOf key: block ext:: and turning it on.
+      local gc_nc=0
+      shopt -q nocasematch && gc_nc=1
+      shopt -s nocasematch
+      case "$STRIPPED" in
+        *ext::*|*protocol*allow*|*GIT_ALLOW_PROTOCOL*ext*|*GIT_ALLOW_PROTOCOL=*'$'*|*GIT_ALLOW_PROTOCOL=*'`'*)
+          [ "$gc_nc" -eq 1 ] || shopt -u nocasematch
+          block "git ext:: transport, which runs a command the credential guard cannot check" ;;
+      esac
+      [ "$gc_nc" -eq 1 ] || shopt -u nocasematch
+      for ((k6 = s; k6 < e; k6++)); do
+        case "${CW[$k6]}" in
+          GIT_EXTERNAL_DIFF=*|GIT_PAGER=*|GIT_EDITOR=*|GIT_SEQUENCE_EDITOR=*|GIT_SSH_COMMAND=*|GIT_SSH=*|GIT_ASKPASS=*|GIT_PROXY_COMMAND=*|PAGER=*|EDITOR=*|VISUAL=*|SSH_ASKPASS=*)
+            gc_v+=("!${CW[$k6]#*=}") ;;
+        esac
+      done
+      for ((k6 = 0; k6 < ${#VAR_NAMES[@]}; k6++)); do
+        case "${VAR_NAMES[$k6]}" in
+          GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|GIT_PROXY_COMMAND|PAGER|EDITOR|VISUAL|SSH_ASKPASS)
+            gc_v+=("!${VAR_VALS[$k6]}") ;;
+        esac
+      done
       k=$a
       while [ $k -lt $e ]; do
         case "${CW[$k]}" in
-          -C|-c|--git-dir|--work-tree|--namespace) k=$((k + 2)); continue ;;
-          -*) k=$((k + 1)); continue ;;
+          -c)
+            if [ $((k + 1)) -lt $e ]; then
+              gc_key="${CW[$((k + 1))]%%=*}"; gc_val="${CW[$((k + 1))]#*=}"
+              # A computed key (protocol.$e.allow) can name any setting.
+              case "$gc_key" in
+                *'$'*|*'`'*) block "git -c with a computed key the credential guard cannot check" ;;
+              esac
+              if git_cmd_key "$gc_key"; then
+                [ "$gc_key" = "${CW[$((k + 1))]}" ] || gc_v+=("$gc_val")
+              fi
+            fi
+            k=$((k + 2)); continue ;;
+          --config-env|--config-env=*)
+            if [ "${CW[$k]}" = --config-env ]; then gc_key="${CW[$((k + 1))]:-}"; k=$((k + 2)); else gc_key="${CW[$k]#--config-env=}"; k=$((k + 1)); fi
+            case "${gc_key%%=*}" in *'$'*|*'`'*) block "git -c with a computed key the credential guard cannot check" ;; esac
+            git_cmd_key "${gc_key%%=*}" && block "git --config-env sets a command or alias from a variable the credential guard cannot read"
+            continue ;;
+          -C|--git-dir|--work-tree|--namespace|--attr-source|--super-prefix) k=$((k + 2)); continue ;;
+          --*=*|-p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--exec-path|--html-path|--man-path|--info-path|--version|-v|--help|-h)
+            k=$((k + 1)); continue ;;
+          # An option that takes a separate value would hide the -c after it
+          # (git --attr-source HEAD -c alias.x='!cat f' x).
+          -*) block "a git option the credential guard does not know, before the git subcommand" ;;
         esac
         break
       done
+      if [ $k -lt $e ] && [ "${CW[$k]}" = config ]; then
+        # git config [set] [--global|--file f ...] KEY VALUE
+        local gc_w=() k7
+        for ((k7 = k + 1; k7 < e; k7++)); do
+          case "${CW[$k7]}" in
+            -f|--file|--blob|--type|--default|--comment|--value) k7=$((k7 + 1)) ;;
+            -*) ;;
+            *) gc_w+=("${CW[$k7]}") ;;
+          esac
+        done
+        case "${gc_w[0]:-}" in set|--add|add) gc_w=("${gc_w[@]:1}") ;; esac
+        if [ ${#gc_w[@]} -ge 2 ] && git_cmd_key "${gc_w[0]}"; then
+          gc_v+=("${gc_w[1]}")
+        fi
+        gc_cfg=1
+      fi
+      if [ ${#gc_v[@]} -gt 0 ]; then
+        # Each argument is quoted, so a word stays one word (git passes it to
+        # the alias as one argument: git -c alias.x='!sh -c' x 'cat f').
+        for ((k6 = k + 1; gc_cfg == 0 && k6 < e; k6++)); do gc_quote "${CW[$k6]}" "${CF[$k6]}"; gc_args="$gc_args $GQ"; done
+        local gc_cw=("${CW[@]}") gc_cf=("${CF[@]}") gc_b
+        for gc_b in "${gc_v[@]}"; do
+          case "$gc_b" in
+            '!'*) analyze_cmd "${gc_b#!}$gc_args" $((depth + 1)) "$CUR_CWD" ;;
+            *)
+              [ -n "$gc_b" ] && analyze_cmd "$gc_b$gc_args" $((depth + 1)) "$CUR_CWD"
+              [ -n "$gc_b" ] && analyze_cmd "git $gc_b$gc_args" $((depth + 1)) "$CUR_CWD"
+              ;;
+          esac
+        done
+        CW=("${gc_cw[@]}"); CF=("${gc_cf[@]}")
+      fi
       [ $k -lt $e ] || return 0
       local k2 gs_w
       case "${CW[$k]}" in
@@ -3851,11 +4063,26 @@ analyze_simple() {
       if [ $k -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$k]##*/}"; ! { cg_trusted_word "${CW[$k]}" && is_safe_cmd "$LCW"; }; }; then
         block "xargs feeding a command in a command line that names a credential file"
       fi
+      fed_cmd "$k" "$e" "$depth"
       return 0
       ;;
     parallel)
       # GNU parallel fills {} (and its variants) or appends each input.
       fed_git_read "$a" "$e" "" 1 parallel
+      # The command runs from the first word after the options up to :::.
+      local pk=$a pe
+      while [ $pk -lt $e ]; do
+        case "${CW[$pk]}" in
+          -j|-P|-S|-N|-n|-L|-l|-d|-C|-a|-I|-E|-X|--jobs|--sshlogin|--colsep|--delimiter|--arg-file|--joblog|--results|--res|--tmpdir|--timeout|--delay|--retries|--memfree|--load|--nice|--halt|--tagstring|--tag-string|--workdir|--wd|--basefile|--env|--header|--rpl|--max-args|--max-lines|--max-replace-args|--sshloginfile|--slf|--transferfile|--tf|--return|--trc|--eta-file|--cat-file|--block|--recstart|--recend|--termseq|--seqreplace|--plus-replace)
+            pk=$((pk + 2)); continue ;;
+          -*) pk=$((pk + 1)); continue ;;
+        esac
+        break
+      done
+      for ((pe = pk; pe < e; pe++)); do
+        case "${CW[$pe]}" in :::|::::|:::+|::::+) break ;; esac
+      done
+      fed_cmd "$pk" "$pe" "$depth"
       ;;
     find)
       for ((k = a; k < e; k++)); do
@@ -3865,6 +4092,11 @@ analyze_simple() {
             if [ $((k + 1)) -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$((k + 1))]##*/}"; ! { cg_trusted_word "${CW[$((k + 1))]}" && is_safe_cmd "$LCW"; }; }; then
               block "find -exec in a command line that names a credential file"
             fi
+            local fe
+            for ((fe = k + 1; fe < e; fe++)); do
+              case "${CW[$fe]}" in ';'|'+') break ;; esac
+            done
+            fed_cmd $((k + 1)) "$fe" "$depth"
             ;;
         esac
       done

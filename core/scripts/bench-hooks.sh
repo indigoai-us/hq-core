@@ -28,6 +28,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib/bench-runtime.sh"
+. "$SCRIPT_DIR/lib/perl-child-locale.sh" 2>/dev/null \
+  || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
 
 ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 RUNTIME="claude"
@@ -72,7 +74,7 @@ for dep in jq perl; do
   command -v "$dep" >/dev/null 2>&1 || { echo "bench-hooks: missing dependency: $dep" >&2; exit 2; }
 done
 
-now_ms() { perl -MTime::HiRes=time -e 'printf("%d\n", time()*1000)'; }
+now_ms() { LC_ALL=C perl -MTime::HiRes=time -e 'printf("%d\n", time()*1000)'; }
 
 platform="$(uname -s 2>/dev/null || echo unknown)"
 case "$platform" in
@@ -181,7 +183,7 @@ for ev in "${ev_list[@]}"; do
       t0="$(now_ms)"
       if [ "$RUNTIME" = "claude" ]; then
         # Enforce the same per-hook timeout the harness applies (perl alarm is portable).
-        ( printf '%s' "$payload" | perl -e 'alarm shift; exec "bash", "-c", shift' "$tmo" "$cmd" ) >/dev/null 2>&1
+        ( printf '%s' "$payload" | hq_perl_spawn 'alarm shift; exec "bash", "-c", shift' "$tmo" "$cmd" ) >/dev/null 2>&1
       else
         runtime_root="$ROOT"
         [ "$RUNTIME" != "hq-agent" ] || runtime_root="$AGENT_ROOT"

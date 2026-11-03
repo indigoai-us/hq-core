@@ -91,7 +91,7 @@ while IFS= read -r -d '' entry; do
     *) continue ;;
   esac
   [ -f "$hq_root/$file" ] && [ ! -L "$hq_root/$file" ] || continue
-  if ! perl -pi -e 's/\r$//' "$hq_root/$file"; then
+  if ! LC_ALL=C perl -pi -e 's/\r$//' "$hq_root/$file"; then
     echo "normalize-eol-lf: could not rewrite $file" >&2
     exit 3
   fi

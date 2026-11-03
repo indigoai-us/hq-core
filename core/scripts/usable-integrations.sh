@@ -114,7 +114,11 @@ run_with_deadline() { # <seconds> <cmd...>
   elif command -v gtimeout >/dev/null 2>&1; then
     gtimeout "$secs" "$@"
   elif command -v perl >/dev/null 2>&1; then
-    perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
+    # hq_perl_spawn restores the caller's locale before exec.
+    # shellcheck source=lib/perl-child-locale.sh
+    . "${BASH_SOURCE[0]%/*}/lib/perl-child-locale.sh" 2>/dev/null \
+      || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+    hq_perl_spawn 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
   else
     "$@"
   fi
