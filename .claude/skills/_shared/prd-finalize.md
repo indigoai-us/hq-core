@@ -19,7 +19,7 @@ This marks the brainstorm as consumed. The file is preserved for reference.
 Read `companies/manifest.yaml` to find `metadata.company` → `board_path`.
 
 If `board_path` exists, read `companies/{co}/board.json` and upsert a project entry:
-- **Match**: find existing entry by `prd_path === "companies/{co}/projects/{name}/prd.json"` or title similarity
+- **Match**: find the entry created in /prd Step 3.7 (by `id`), or by `prd_path === "companies/{co}/projects/{name}/prd.json"`, or title similarity
 - **If found**: update `status` to `prd_created`, set `prd_path`, update `updated_at`
 - **If not found**: append new entry:
   ```json
@@ -41,44 +41,31 @@ If `board_path` exists, read `companies/{co}/board.json` and upsert a project en
 
 **Verify:** After upserting the board entry, re-read board.json and confirm the new project ID exists. If the write failed silently (file parse error, missing board, manifest lookup miss), log the error and retry once. Silent failure leaves projects invisible in the HQ app — the orphan scanner catches them with an "Unregistered" badge, but proper registration is required.
 
-## Step 5.7: Register the canonical project in Work Mesh (/prd only)
+## Step 5.7: Sync the PRD onto the Work Mesh project (/prd only)
 
 /deep-plan skips this step.
 
-Local `board.json` does not establish the server project. Registration is one script call. Do not GET, PUT, or POST the Work Mesh project by hand.
+/prd registered the project in Work Mesh in its Step 3.7, before the
+interview. This step pushes the finished stories onto that same project and
+confirms the registration. Registration is always-on for cloud-backed
+companies; there is no flag and no prompt. Do not GET, PUT, or POST the Work
+Mesh project by hand.
 
-After Step 5.6, read the Board entry matched by
-`prd_path === "companies/{co}/projects/{name}/prd.json"` and use its `id` as
-`{board-project-id}` for this offer check:
+First read the Board entry's `id` as `{board-project-id}` and check it:
 
 ```bash
 bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
 ```
 
-When the helper prints `offer`, ask once with `AskUserQuestion` and exactly
-these choices: `Create the Work Mesh project now` and `Not now`. The prompt is
-available only when the company is cloud-backed, registration is missing, and
-the default-off `workmesh.offer-project-create-on-brainstorm` hq-flags key is
-on. On acceptance, record it before running the registration command below:
-
-```bash
-bash core/scripts/work-mesh-project-registration-offer.sh --accept {co} {board-project-id}
-```
-
-On `Not now`, record the deferral with `--defer` and skip registration for
-this invocation. A persisted `deferred` result skips registration for this
-invocation. When the helper reports `deferred`, stop here and do not run
-`register-project.sh`. It suppresses both the prompt and registration. An
-`accepted` result retries registration without another prompt. Do not prompt again for an
-accepted or deferred Board entry. For `off`, `local`, `registered`, or
-`missing`, do not show a prompt and preserve the existing registration flow
-below (including its existing failure handling).
+`local` means the company is not cloud-backed; skip the sync. `deferred` means
+the user declined registration for this entry earlier; skip the sync unless the
+user asks for it in this session. Otherwise run:
 
 ```bash
 bash core/scripts/register-project.sh {co} {name}
 ```
 
-The script runs `hq mesh project ensure`, writes `threadId` and `channelId` onto the company `board.json` entry, re-reads that entry, and prints one line: `registered {co}/{name} thread=<threadId> channel=<channelId>`. That line is the verify line. If the script exits non-zero, or stdout is not that line, registration is incomplete. Say "registration incomplete" in the Step 9 report and do not continue as if the project is on the Board. Do not create a replacement project.
+The script runs `hq mesh project ensure` with the stories file, writes `threadId` and `channelId` onto the company `board.json` entry, re-reads that entry, and prints one line: `registered {co}/{name} thread=<threadId> channel=<channelId>`. That line is the verify line. If the script exits non-zero, or stdout is not that line, registration is incomplete. Say "registration incomplete" in the Step 9 report and do not continue as if the project is on the Board. Do not create a replacement project.
 
 ## Step 6: Register with Orchestrator
 

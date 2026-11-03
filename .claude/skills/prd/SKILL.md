@@ -165,6 +165,36 @@ The autocapture PostToolUse hook appends `## Auto-capture` lines for any Agent /
 
 **Skip if:** journal helper unavailable (fail-soft).
 
+## Step 3.7: Board Entry + Work Mesh Registration (at start, not at the end)
+
+The project exists on the Board and in Work Mesh before the interview starts,
+so teammates and the HQ app see it while the PRD is still being written.
+Always-on for cloud-backed companies; no flag, no prompt. Skip for personal/HQ
+projects with no company board.
+
+1. Read `companies/{co}/board.json`. Match an existing entry by
+   `brainstorm_path === "companies/{co}/projects/{slug}/brainstorm.md"`, by
+   the brainstorm's `source_idea_id`, or by title. If found, set `status` to
+   `"prd_in_progress"` and `updated_at`; reuse its `id` as `{board-project-id}`.
+   If not found, append a new entry with the next `{prefix}-proj-{NNN}` id,
+   `title` = project name, `description` = one sentence from Step 1,
+   `status: "prd_in_progress"`, `scope: "company"`, `prd_path: null`, and
+   timestamps. Write `board.json`, re-read it, confirm the entry exists.
+2. Check and register:
+   ```bash
+   bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
+   ```
+   On `register`:
+   ```bash
+   bash core/scripts/register-project.sh --board {co} {board-project-id}
+   ```
+   Verify the one output line `registered {co}/{board-project-id} thread=<id> channel=<id>`.
+   On any other output or a non-zero exit, say "registration incomplete" once
+   and continue; Step 5.7 retries. `registered` and `local` need nothing.
+   `deferred` means the user declined registration for this entry earlier; do
+   not register it unless the user asks in this session.
+   `missing` means the Board write failed; fix it and re-run the check.
+
 ## Step 4: Discovery Interview
 
 Run the grilling engine (`.claude/skills/grilling/SKILL.md`) with:
@@ -352,7 +382,7 @@ Follow `.claude/skills/_shared/prd-finalize.md` in order, as caller `/prd`. One 
 
 - Step 5.5: Update Brainstorm (if exists) — set the brainstorm frontmatter to status promoted with promoted_to.
 - Step 5.6: Sync to Company Board — upsert the project entry in the company board.json.
-- Step 5.7: Register the canonical project in Work Mesh — run the registration offer check, then register-project.sh; report "registration incomplete" on failure.
+- Step 5.7: Sync the PRD stories onto the Work Mesh project registered in Step 3.7 (register-project.sh); report "registration incomplete" on failure.
 - Step 6: Register with Orchestrator — add the project to workspace/orchestrator/state.json.
 - Step 7: Optional Beads Setup — run bd init when the bd CLI is on PATH; otherwise skip.
 - Step 7.5: Capture Learning (Auto-Learn) — register the project through /learn, reindex qmd, regenerate the projects INDEX.md.

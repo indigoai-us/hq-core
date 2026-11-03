@@ -134,6 +134,15 @@ fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFS_JS="$HERE/super-conductor-prefs.mjs"
+# One locked company: read the owner settings through its overlay
+# (personal/settings/super-conductor.<slug>.yaml), so two conductors bound to
+# different companies can keep different preferences. A multi-company set and
+# no --company use the base file.
+prefs_args=()
+if [[ -n "$companies" && "$companies" != *,* ]]; then
+  prefs_args=(--company "$companies")
+fi
+prefs() { node "$PREFS_JS" ${prefs_args[@]+"${prefs_args[@]}"} "$@"; }
 fixed_interval="$interval"
 mode="fixed"
 
@@ -158,7 +167,7 @@ resolve_interval() {
   fi
   local out err secs m
   err="$(mktemp)"
-  out="$(node "$PREFS_JS" interval 2>"$err" || true)"
+  out="$(prefs interval 2>"$err" || true)"
   read -r secs m <<<"$out"
   if [[ "$secs" =~ ^[0-9]+$ && -n "$m" ]]; then
     interval="$(clamp "$secs")"
@@ -186,7 +195,7 @@ current_channels() {
   fi
   local c=""
   if command -v node >/dev/null 2>&1 && [[ -f "$PREFS_JS" ]]; then
-    c="$(node "$PREFS_JS" channels 2>/dev/null || true)"
+    c="$(prefs channels 2>/dev/null || true)"
   fi
   if [[ -n "$c" ]]; then
     printf '%s (from settings)' "$c"
@@ -355,7 +364,7 @@ if [[ -n "$watch_state" && "$once" -eq 0 ]]; then
   crit_args=()
   watch_interval="${SC_MESSAGE_WATCH_INTERVAL:-30}"
   if command -v node >/dev/null 2>&1 && [[ -f "$PREFS_JS" ]]; then
-    crit_line="$(node "$PREFS_JS" critical 2>/dev/null || true)"
+    crit_line="$(prefs critical 2>/dev/null || true)"
     # cut, not `read`: an empty team field must not shift max_delay left.
     crit_channels="$(printf '%s' "$crit_line" | cut -f1)"
     crit_team="$(printf '%s' "$crit_line" | cut -f2)"

@@ -64,6 +64,19 @@ customization goes there, not into this skill.
   only ("interval 5m", "just tonight") goes to the save file instead. When it
   is unclear which one the owner meant, ask through `/decision-queue` ("Save
   as default" or "Just this run").
+- Per-company settings. When this session's locked company set is one
+  company (`hq-session.sh get company_slugs` prints one slug), read and write
+  the settings with that slug: `node core/scripts/super-conductor-prefs.mjs
+  --company <slug> get|add|set ...`. `get` then merges
+  `personal/settings/super-conductor.<company>.yaml` over the base file (a
+  map key one level deep, a list or scalar whole; keys the overlay does not
+  mention keep the base value), and `add` and `set` write the overlay only,
+  so a preference for one company never changes another conductor's. The
+  first `add` to a list the overlay lacks copies the base list in first. A
+  preference the owner states for every company goes to the base file
+  (`prefs.mjs` without `--company`). The heartbeat and the message watcher
+  pass `--company` on their own when the set is one company; a multi-company
+  conductor uses the base file. See "Several conductors".
 
 Keys this release knows (all optional):
 
@@ -82,6 +95,48 @@ Keys this release knows (all optional):
 | `slack_watch` | `command` and `interval` for the Slack message wake (Step 7, "Message wake") |
 | `slack_workspace_companies` | each Slack workspace's company slug; the message wake polls only workspaces of the session's locked companies |
 | `company`, `github_org`, `teammates` | teammate tracking (Step 6) |
+
+## Several conductors (one conductor per company set)
+
+One `/super-conductor` runs per locked company set, never two for the same
+set. An owner who works for two companies on one machine runs two: one
+session bound to each company (`hq-session.sh set company_slug <slug>` before
+`/super-conductor`), each with its own link, save file, heartbeat, and
+decision queue. The heartbeat's `--company` carries the set (Step 2b), and
+every channel feed, Slack workspace, session adoption, and open-ask wake is
+already filtered by it. Two things are per owner, not per company, and are
+split like this:
+
+- **HQ DMs.** The DM inbox is one per person, so every conductor's watcher
+  sees every DM. The watcher routes each DM by the sender's company
+  membership (`core/scripts/lib/super-conductor-dm-route.mjs`): a DM from a
+  person who is a member of this conductor's companies only is handled here,
+  and its ledger row carries that company; a DM from a person in several
+  running conductors' sets, or in none of them (a stranger, an agent, a
+  personal contact), is handled by the **primary** conductor only; a DM from
+  a person only in another conductor's set is never recorded, named, or
+  answered here. With one conductor running, every DM is its own. The
+  primary is the save file with `primary: true` (set it with `node
+  core/scripts/super-conductor-state.mjs set <save file> primary true`;
+  with none marked, the conductor whose heartbeat started first). Mark the
+  conductor the owner wants to hold shared and unknown senders; mark only
+  one. Each watcher publishes its companies' member ids into its save file
+  (`dm_route`, refreshed from `hq members list` every 15 minutes) and reads
+  the other live save files in `workspace/reports/conduct/`; a save file not
+  updated for two hours is a stopped conductor. The `hq_dms` sweep applies
+  the same rule through `super-conductor-dm-route.mjs filter-dms` (Step 6).
+- **Owner settings.** One base file, plus one overlay per company (see
+  "Owner preferences"). A preference for one company goes through
+  `super-conductor-prefs.mjs --company <slug> add|set`.
+
+A child session belongs to one link at a time. When a child's work moves to
+the other conductor's company (or the owner re-homes it), it runs
+`/conduct-join leave` in its own window first, then `/conduct-join <other
+link> <name>`; a child joined to both would report to both. Never adopt a
+session another live conductor lists under `children`; when `list_sessions`
+shows one, leave it and say so in one line. Cross-conductor questions (a DM
+that names both companies' work) go to the owner through this link's
+decision queue, never by relaying between conductors.
 
 ## Step 1: Parse the argument
 
@@ -218,7 +273,11 @@ at all.
    present>` in seconds instead. `--message-watch` starts the message wake
    (Step 7, "Message wake"); include it whenever `hq_dms` or `hq_channels` is
    selected, or `slack` is selected with `slack_watch` set, and always pass `--company` with this session's locked company
-   set (the heartbeat refuses `--message-watch` without it). The watcher keeps
+   set (the heartbeat refuses `--message-watch` without it). With a second
+   conductor on this machine, `--company` is also what splits the DM inbox
+   and the owner settings between them ("Several conductors"); with one
+   company in the set, the heartbeat reads the settings through that
+   company's overlay. The watcher keeps
    its own state file; never point it at the save file. Add `--channels <csv>` only for a per-run `channels` override. Without
    it the heartbeat reads the channels from the owner's settings on every
    wake, so a preference saved mid-run applies without a restart.
@@ -465,8 +524,16 @@ it. The watcher records no sweep evidence for a poll whose ledger write
 failed, so `verify` flags the target until this session reads it. On such a wakeup with `hq_dms` selected:
 
 ```bash
-hq dm inbox --limit 100 --json
+hq dm inbox --limit 100 --json \
+  | node core/scripts/lib/super-conductor-dm-route.mjs filter-dms --save <save file>
 ```
+
+The filter keeps only the DMs this conductor owns ("Several conductors"):
+each kept row carries `_company` (the sender's company in this set, or null)
+and `_route` (`mine`, `shared`, `unknown`, or `solo`). Use `_company` as the
+ledger row's `--company`. Never read, name, or answer a DM the filter
+dropped: it belongs to another conductor. With one conductor running the
+filter keeps everything.
 
 Never filter with `--unread`. The desktop app acknowledges incoming DMs within
 seconds, so `--unread` returns nothing even when the owner has unanswered
@@ -1088,6 +1155,14 @@ fields:
   `auto` or seconds, and `message_watch` names the watcher's own state file
   when the message wake is on;
 - `hq_dm_cursor`, `email_cursors` (per account), `x_cursor`;
+- `company`: this conductor's locked company set as a comma-separated
+  string (from `hq-session.sh get company_slugs`), written at start;
+- `primary`: `true` on the one conductor that handles DMs from senders in
+  several or no running conductors' companies ("Several conductors");
+  absent elsewhere;
+- `dm_route`: `{companies, members, at}`, written by the message watcher
+  (member ids of this conductor's companies, for DM routing); never
+  rewritten by hand;
 - `requests`: the ledger path (`<link>-requests.jsonl`), kept by the
   watcher and `super-conductor-requests.mjs`, never rewritten by hand;
 - `sweep`: per target (`sessions`, `hq_dms`, `slack:<workspace>`,

@@ -15,6 +15,7 @@
 #   id_rsa id_dsa id_ecdsa id_ed25519 *_sk (private keys, anywhere)
 #   .env .env.* .envrc *.env
 #     allowed: .env.example .env.sample .env.template .env.schema .env.dist,
+#     upstream-pin.env (non-secret pin file, exact basename),
 #     .env.<name>.example|sample|template, *.d.ts and *.md
 #   backup and editor copies of all of the above: name~ name.bak name.orig
 #   name.old name.swp name.swo name.save name.tmp name.N name.bak.* and the
@@ -77,6 +78,12 @@
 # Exit 2 + short plain stderr. The message names the path, never contents.
 
 set -o pipefail
+# bash 5.2+ turns on patsub_replacement: an unquoted & in the replacement of
+# ${v/pat/rep} stands for the matched text. The guard never wants that, and
+# with it the SAFE_TMP_VARS scan put the match back and looped until the hook
+# timeout on `a&&T=$(mktemp)&&...` (issue #1750). Older bash has no such
+# option, so the error is ignored.
+shopt -u patsub_replacement 2>/dev/null || true
 
 # Trailing newlines are trimmed with [[ $v == *$'\n' ]] and ${v%?}: the form
 # [ "${v%$'\n'}" != "$v" ] costs seconds per test on a 100 KB value in
@@ -152,6 +159,8 @@ is_env_name() {
   shopt -s nocasematch
   case "$b" in
     .env.example|.env.sample|.env.template|.env.schema|.env.dist|*.env.example|*.env.sample|*.env.template) r=1 ;;
+    # Known non-secret pin file (tag name, S3 key, sha256), matched by exact basename.
+    upstream-pin.env) r=1 ;;
     # Per-environment templates (.env.local.example), TypeScript declarations
     # (.env.d.ts) and docs (.env.md) hold no values.
     .env.*.example|.env.*.sample|.env.*.template|*.d.ts|*.md) r=1 ;;
@@ -217,6 +226,8 @@ is_cred_name_at() {
   if [ $r -ne 0 ]; then
     case "$p" in
       */.gem/credentials|*/.docker/config.json|*/.config/gh/hosts.yml|*/.config/gh/hosts.yaml|*/.aws/*) r=0 ;;
+      # hq secrets cache: every file in it is a secret value.
+      */.hq/secrets-cache/*) r=0 ;;
       */.ssh/*)
         case "$b" in
           *.pub|known_hosts|known_hosts.*|known_hosts2|config|authorized_keys|authorized_keys2) ;;
@@ -259,7 +270,7 @@ is_secret_dir() {
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
   case "$1" in
-    */.ssh|*/.aws|*/.docker|*/.gem|*/.config/gh) r=0 ;;
+    */.ssh|*/.aws|*/.docker|*/.gem|*/.config/gh|*/.hq/secrets-cache) r=0 ;;
   esac
   [ "$nc" -eq 1 ] || shopt -u nocasematch
   return $r
@@ -275,7 +286,7 @@ is_cred_dir() {
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
   case "$p" in
-    */.ssh|*/.ssh/*|*/.aws|*/.aws/*|*/.docker|*/.docker/*|*/.gem|*/.gem/*|*/.config|*/.config/gh|*/.config/gh/*) r=0 ;;
+    */.ssh|*/.ssh/*|*/.aws|*/.aws/*|*/.docker|*/.docker/*|*/.gem|*/.gem/*|*/.config|*/.config/gh|*/.config/gh/*|*/.hq|*/.hq/secrets-cache|*/.hq/secrets-cache/*) r=0 ;;
   esac
   [ "$nc" -eq 1 ] || shopt -u nocasematch
   return $r
@@ -348,7 +359,7 @@ norm_path() {
 #     and no component of it is a symlink, so realpath would return it
 #     unchanged.
 
-CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh/hosts|\.env|credentials'
+CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh/hosts|\.env|credentials|secrets-cache'
 # Also wake for home references and recursive readers: `grep -r token ~`
 # reaches credential files without naming one.
 PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive|(xargs|parallel|-exec|-ok).*git.*(show|cat-file|archive)"
@@ -968,6 +979,38 @@ if [ -f "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" ]; then
   . "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" && CG_ARITH_READY=1
 fi
 
+# cg_zglob <text>: 0 when the unquoted text has a zsh glob form: a ( ) group
+# inside a word, ^ or # after a path character, or a group with no spaces at
+# the start of a word that holds | or runs on into the word ((.n|x)pmrc). A quoted jq program such as
+# 'map(. // "-")' is data. Each quoted span ('..', "..", $'..') becomes one
+# placeholder character, so ~/.""(a|b) and $'.n'(p)mrc still count.
+CG_ZGLOB_RE='[^[:space:]$<>=(|&;]\([^)]|[/.~_][^[:space:]]*[#^]|<[0-9]*-[0-9]*>|(^|[[:space:]<>])\([^)[:space:]]*(\||\)[^[:space:];&|)<>])'
+# CG_ZMARK_RE: an unquoted ^ anywhere or a # inside a word. The tokenizer
+# marks such a word z and check_word blocks it as a read operand, so the
+# command needs the full check, but its variables stay what they are (a
+# git revision "$sha"^ is not a computed path).
+CG_ZMARK_RE='\^|[^[:space:]${#]#'
+# cg_zglob <text> [regex]: the regex (default CG_ZGLOB_RE) matches the text
+# with every quoted span replaced by one placeholder character.
+cg_zglob() {
+  local uq re="${2:-$CG_ZGLOB_RE}"
+  [[ "$1" =~ $re ]] || return 1
+  uq=$(printf '%s' "$1" | LC_ALL=C awk 'BEGIN { RS = "\001" } {
+    n = length($0); o = ""; q = ""
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (q == "") {
+        if (c == "\\") { o = o c substr($0, i + 1, 1); i++; continue }
+        if (c == "\047" || c == "\"") { q = c; o = o "q"; continue }
+        o = o c
+      } else if (q == "\"" && c == "\\") { i++ }
+      else if (c == q) { q = "" }
+    }
+    printf "%s", o
+  }') || return 0
+  [[ "$uq" =~ $re ]]
+}
+
 # cg_fast_allow: return 0 when the call can be allowed without the full
 # check.
 cg_fast_allow() {
@@ -993,6 +1036,12 @@ cg_fast_allow() {
       # analysis. Without this the fast path allowed what the full check
       # blocks (scope-guard-hotfix-security.test.sh, 14 cases).
       case "$CG_CMD" in *'$('*|*'`'*) return 1 ;; esac
+      # An extglob group gets the full check, as COMPUTED_PATH does there.
+      case "$CG_CMD" in *[?*+@!]'('*) return 1 ;; esac
+      # zsh glob forms get the full check, as COMPUTED_PATH does there; the
+      # fast path used to allow them on a home path or with cwd in HOME.
+      cg_zglob "$CG_CMD" && return 1
+      cg_zglob "$CG_CMD" "$CG_ZMARK_RE" && return 1
       # A git show <ref>:<path> with a variable reads a tree object the name
       # prefilter cannot see; the full check proves it (GS_COMPUTED).
       case "$CG_CMD" in *show*:*'$'*) return 1 ;; esac
@@ -1153,11 +1202,56 @@ STRIPPED="$CG_SQ"
 # credential word appears in the command. Analyze, never execute, the body.
 COMPUTED_PATH=0
 case "$CMD" in *'$('*|*'`'*) COMPUTED_PATH=1 ;; esac
+# An extglob group can name a credential file with no credential word in the
+# command (~/.!(x)pmrc), so it gets the full analysis too.
+case "$CMD" in *[?*+@!]'('*) COMPUTED_PATH=1 ;; esac
+# zsh globs (~/.(npmrc|x), ~/.npm^x, ~/.npmr#c, and the same forms on an
+# absolute home path or relative to a cwd in HOME) can name a credential file
+# with no credential word either (cg_zglob).
+cg_zglob "$CMD" && COMPUTED_PATH=1
+ZMARK=0
+cg_zglob "$CMD" "$CG_ZMARK_RE" && ZMARK=1
 # git show <ref>:<path> with a variable names a tree entry, not a file the
 # name prefilter can match: `ls src | while read f; do git show "HEAD:src/$f"`
 # carries no credential word. Treat it as computed so the full check runs and
 # unknown variables are wildcards there.
 case "$CMD" in *show*:*'$'*) COMPUTED_PATH=1 ;; esac
+# The command can change what a command name runs. is_safe_cmd uses these:
+#   CG_CMD_OVERRIDE=1  alias, hash or enable run as a command (zsh expands
+#                      aliases, bash with expand_aliases), BASH_ENV/ENV or
+#                      BASH_FUNC_ mentioned, or an assignment into the alias
+#                      and command tables (BASH_ALIASES[, BASH_CMDS[, zsh
+#                      aliases[, commands[, functions[): no name is trusted,
+#                      so `alias ls=cat; ls ~/.npmrc` blocks;
+#   CG_PATH_CHANGED=1  PATH or zsh path assigned (NAME=, NAME+=, NAME[,
+#                      read/printf -v/for/declare/export/... naming it), or a
+#                      copy, move, link or write into a bin directory: names
+#                      that are programs on PATH (ls, stat, ...) are not
+#                      trusted; builtins such as test, [ and echo still are.
+#                      Reading $PATH is not a change.
+# A function needs no flag: its body is analysed where it is defined, and an
+# argument it reads ("$@", $1) is an unknown value there.
+CG_CMD_OVERRIDE=0
+CG_PATH_CHANGED=0
+_cg_ov_re='(^|[;&|({!`'$'\n'']|then|do|else|builtin|command|eval)[[:space:]]*\\?(alias|hash|enable)([[:space:];&|)]|$)'
+[[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_CMD_OVERRIDE=1
+# eval and source/. run text the guard does not see as commands here; it
+# can define an alias or change PATH (`eval "$a ls=cat"`), so no name is
+# trusted after either.
+_cg_ov_re='(^|[;&|({!`'$'\n'']|then|do|else|builtin|command)[[:space:]]*\\?(eval|source|\.)([[:space:];&|)]|$)'
+[[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_CMD_OVERRIDE=1
+# CG_ZSH_EXT: zsh extended globbing is turned on in the command, so a `~`
+# inside a word is the exclusion operator (~/.npmrc~x names ~/.npmrc).
+CG_ZSH_EXT=0
+_cg_ov_re='extendedglob|extended_glob|EXTENDED_GLOB|EXTENDEDGLOB|setopt|emulate'
+[[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_ZSH_EXT=1
+_cg_ov_re='(^|[^A-Za-z0-9_])(BASH_ENV|ENV|BASH_FUNC[A-Za-z0-9_%]*)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])(BASH_ALIASES|BASH_CMDS|aliases|commands|functions)\['
+[[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_CMD_OVERRIDE=1
+_cg_ov_re='(^|[^A-Za-z0-9_])(PATH|path)(\+?=|\[)|(^|[^A-Za-z0-9_])(read|mapfile|readarray|printf|for|select|getopts|declare|typeset|local|export|readonly|unset|eval|let)([[:space:]][^;&|]*)?[^A-Za-z0-9_$](PATH|path)([^A-Za-z0-9_]|$)'
+[[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_PATH_CHANGED=1
+_cg_ov_re='(^|[^A-Za-z0-9_])(cp|mv|ln|install|tee|rsync|ditto|curl|wget)[[:space:]][^;&|]*bin|>[[:space:]]*[^[:space:];&|]*bin'
+[[ "$STRIPPED" =~ $_cg_ov_re ]] && CG_PATH_CHANGED=1
+unset _cg_ov_re
 # A credential name split around a variable (~/.npm"$F"rc) names no
 # credential word, so it is caught here instead (cg_split_cred).
 SPLIT_CRED=0
@@ -1193,13 +1287,19 @@ if [[ "$CMD" == *mktemp* ]]; then
     _tmp_n=0
     while [[ "$_tmp_scan" =~ $_tmp_assign_re ]]; do
       _tmp_n=$((_tmp_n + 1))
-      _tmp_scan="${_tmp_scan/"${BASH_REMATCH[0]}"/${BASH_REMATCH[1]} ${BASH_REMATCH[5]}}"
+      # Each pass removes one match; a cap keeps a scan that stops shrinking
+      # from spinning until the hook timeout (issue #1750).
+      [ "$_tmp_n" -le 256 ] || block "the credential guard could not finish its temp-variable scan (too many mktemp assignments)"
+      _tmp_scan="${_tmp_scan/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]} ${BASH_REMATCH[5]}"}"
     done
     [ "$_tmp_n" -eq 1 ] || continue
     _tmp_read_re="\\\$(\\{${_tmp_name}\\}|${_tmp_name}([^A-Za-z0-9_]|\$))"
+    _tmp_r=0
     while [[ "$_tmp_scan" =~ $_tmp_read_re ]]; do
+      _tmp_r=$((_tmp_r + 1))
+      [ "$_tmp_r" -le 4096 ] || block "the credential guard could not finish its temp-variable scan (too many reads)"
       _tmp_tail="${BASH_REMATCH[3]}"
-      _tmp_scan="${_tmp_scan/"${BASH_REMATCH[0]}"/ ${_tmp_tail}}"
+      _tmp_scan="${_tmp_scan/"${BASH_REMATCH[0]}"/" ${_tmp_tail}"}"
     done
     # Any remaining occurrence of the name, even inside another word such as
     # -vN or R=N, disqualifies it.
@@ -1255,7 +1355,7 @@ if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$RE
   fi
   shopt -s nocasematch
 fi
-if [ "$COMPUTED_PATH" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
+if [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
   shopt -u nocasematch
   exit 0
 fi
@@ -1263,7 +1363,7 @@ fi
 # word could expand to one (SPLIT_CRED). Unknown
 # variables and substitutions are treated as wildcards only when it is set.
 ALLOW_STRIPPED="$STRIPPED"
-for allowed in .env.example .env.sample .env.template .env.schema .env.dist .pub; do
+for allowed in .env.example .env.sample .env.template .env.schema .env.dist upstream-pin.env .pub; do
   ALLOW_STRIPPED="${ALLOW_STRIPPED//$allowed/}"
 done
 CRED_ANY=0
@@ -1290,7 +1390,7 @@ function enc(x) { gsub(/\n/, "\003", x); gsub(/\t/, " ", x); return x }
 function credword(x,  y) {
   y = tolower(x)
   gsub(/["'\\]/, "", y)
-  return (y ~ /npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh\/hosts|\.env|credentials/)
+  return (y ~ /npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh\/hosts|\.env|credentials|secrets-cache/)
 }
 function err(m) { print "E\tf-\to-\tx" m; failed = 1 }
 function emit_s(inner, kind) {
@@ -1311,20 +1411,55 @@ function flushw(  d) {
       print "R\tf" fs_ "\to" rop "\tx" enc(w)
     }
     rop = ""
+    # A redirect does not change whether the next word is an argument.
+    lastw = prelastw
   } else {
     print "W\tf" fs_ "\to-\tx" enc(w)
+    # The function and for keywords count in command position: first word,
+    # or after prefix keywords only ({ function f ( .. ); }, then for f (..)).
+    if (allkw && w == "function") fnat = nwords + 1
+    if (allkw && w ~ /^(for|foreach|select)$/) { forat = nwords + 1; forin = 0 }
+    if (forat && w == "in" && nwords > forat) forin = 1
+    if (allkw && !(w ~ /^(if|then|else|elif|do|while|until|time|!|\{|coproc)$/ || (w == "-p" && lastword == "time") || (w == "--" && lastword ~ /^(time|-p)$/))) allkw = 0
+    if (!allkw && (cmdword == "" || cmdword ~ /^(sudo|doas|env|nohup|command|builtin|exec|nice|timeout|gtimeout|stdbuf|caffeinate)$/) && w !~ /^-/ && w !~ /^[A-Za-z_][A-Za-z0-9_]*=/ && w !~ /^[0-9.]+[smhd]?$/) cmdword = w
+    lastw = 1; lastword = w
+    nwords++; if (nwords == 1) firstword = w
   }
   w = ""; ws = 0; fs_ = ""
+}
+# notgroup(): a ( at the start of a word opens a subshell or a grouping,
+# not a zsh glob group: after a keyword in command position (if (x), ! (x)),
+# after the name in `function NAME ( body )`, inside [[ ]], after a test
+# operator, and after `in` of case/for/select.
+function notgroup() {
+  # A keyword counts while every word before it in the command is a prefix
+  # keyword too (if ! (x), time -p (x), else ! (x)).
+  if (allkw && lastword ~ /^(if|then|else|elif|do|while|until|time|-p|--|!|\{|coproc)$/) return 1
+  if (nwords == 1 && lastword ~ /^(\[\[|function)$/) return 1
+  if (fnat && nwords == fnat + 1) return 1
+  if (firstword == "[[") return 1
+  if (lastword ~ /^(==|=|!=|=~)$/) return 1
+  if (lastword == "in" && firstword ~ /^(case|for|select)$/) return 1
+  return 0
+}
+# urlword(x): x is a network URL (http, https, ftp, ws, wss) with a host
+# and no .. anywhere, and the command word is a tool that fetches URLs
+# rather than reading local paths.
+function urlword(x) {
+  if (x !~ /^(https?|ftp|wss?):\/\/[A-Za-z0-9]/ || x ~ /\.\./) return 0
+  return (cmdword ~ /^(curl|wget|xh|http|https|open)$/)
 }
 function op(o) {
   flushw()
   if (rop != "") { err("redirect without target"); rop = "" }
   print "O\tf-\to" o "\tx-"
+  lastw = 0; nwords = 0; firstword = ""; allkw = 1; fnat = 0; forat = 0; forin = 0; cmdword = ""
 }
 function setredir(o) {
   if (ws && w ~ /^[0-9]+$/ && fs_ == "") { w = ""; ws = 0; fs_ = "" }
   flushw()
   if (rop != "") { err("redirect without target") }
+  prelastw = lastw
   rop = o
 }
 # find_close(j): j is the index after "(" ; returns index of matching ")".
@@ -1361,7 +1496,12 @@ function sub_dollar_paren(j,  k, inner) {
   k = find_close(j + 2)
   if (!k) { err("unterminated $("); return n + 1 }
   inner = substr(s, j + 2, k - j - 2)
-  if (substr(inner, 1, 1) == "(") inner = substr(inner, 2, length(inner) - 2)
+  if (substr(inner, 1, 1) == "(") {
+    inner = substr(inner, 2, length(inner) - 2)
+    # $(( )) is arithmetic: ^ is xor and # a base (16#ff), not zsh globs.
+    # With no nested substitution there is nothing for them to name.
+    if (inner !~ /[$`<>]\(|`/) gsub(/[\^#]/, "+", inner)
+  }
   emit_s(inner, "w")
   if (!inq) fs_ = fs_ "u"
   return k + 1
@@ -1440,7 +1580,7 @@ function heredocs(i,  h, ls, le, line, k, c, body) {
 { s = (NR > 1) ? s "\n" $0 : $0 }
 END {
   n = split(s, a, "")
-  w = ""; ws = 0; fs_ = ""; rop = ""; nhd = 0; failed = 0; inq = 0
+  w = ""; ws = 0; fs_ = ""; rop = ""; nhd = 0; failed = 0; inq = 0; allkw = 1; fnat = 0; forat = 0; forin = 0; cmdword = ""
   i = 1
   while (i <= n && !failed) {
     c = a[i]
@@ -1449,6 +1589,7 @@ END {
       flushw()
       if (rop != "") { err("redirect without target"); break }
       print "O\tf-\to" "NL" "\tx-"
+      lastw = 0; nwords = 0; firstword = ""; allkw = 1; fnat = 0; forat = 0; forin = 0; cmdword = ""
       if (nhd > 0) i = heredocs(i)
       i++; continue
     }
@@ -1532,6 +1673,12 @@ END {
       emit_s(substr(s, i + 2, k - i - 2), "p")
       i = k + 1; continue
     }
+    # zsh numeric glob <N-M> (<-> matches any number): one unknown part.
+    if (c == "<" && match(substr(s, i), /^<[0-9]*-[0-9]*>/)) {
+      emit_s("", "w")
+      fs_ = fs_ "g"
+      i += RLENGTH; continue
+    }
     if (c == "<") {
       if (a[i + 1] == "<" && a[i + 2] == "<") { setredir("<<<"); i += 3; continue }
       if (a[i + 1] == "<" && a[i + 2] == "-") { setredir("<<-"); i += 3; continue }
@@ -1561,6 +1708,58 @@ END {
       if (a[i + 1] == ";") { op(";;"); i += 2; continue }
       op(";"); i++; continue
     }
+    # A glob group inside a word is one unknown part, like a substitution:
+    # a read operand that holds one is never proved safe. That covers the
+    # extglob groups ?(..) *(..) +(..) @(..) !(..) (extglob on from a previous
+    # line or the user's shell) and zsh groups such as ~/.(npmrc|x) in a
+    # word that has a path character (/ . ~ _). `f()`, `a=(..)`, `a+=(..)`
+    # and code such as print(1) are not groups.
+    if (c == "(" && ws && a[i + 1] != ")" && substr(w, length(w), 1) != "=" \
+        && (substr(w, length(w), 1) ~ /[?*+@!]/ || w ~ /[\/.~_]/ || w == "")) {
+      k = find_close(i + 1)
+      if (!k) { err("unterminated glob group"); break }
+      g = substr(s, i + 1, k - i - 1)
+      if (substr(w, length(w), 1) ~ /[?*+@!]/) w = substr(w, 1, length(w) - 1)
+      emit_s("", "w")
+      if (credword(g)) fs_ = fs_ "c"
+      fs_ = fs_ "g"
+      i = k + 1; continue
+    }
+    # zsh extended glob: ^x negates the rest of the path segment and x#
+    # repeats the character before it. Either makes the word unknown (the
+    # user's zsh can have extendedglob on without a setopt in the command).
+    # A group at the start of a word in argument or redirect position
+    # (cat (.n|x)pmrc, cat < (.n)pmrc) is a zsh glob too: bash rejects the
+    # syntax, zsh expands it. A ( after a keyword or test operator still
+    # opens a subshell or a grouping.
+    # zsh short for loop, for NAME (LIST) BODY: the list is expanded and the
+    # body runs with NAME bound to each value. The guard does not model it,
+    # so it fails closed. for (( .. )) is arithmetic and is not this form.
+    if (c == "(" && rop == "" && forat && !forin && (nwords > forat || ws) && a[i + 1] != "(") {
+      err("zsh short for loop"); break
+    }
+    if (c == "(" && !ws && a[i + 1] != ")" && (rop != "" || (lastw && !notgroup()))) {
+      k = find_close(i + 1)
+      if (!k) { err("unterminated glob group"); break }
+      g = substr(s, i + 1, k - i - 1)
+      emit_s("", "w")
+      if (credword(g)) fs_ = fs_ "c"
+      fs_ = fs_ "g"
+      i = k + 1; continue
+    }
+    # zsh extended glob: an unquoted ^ (negation) anywhere in a word or a
+    # # (repetition) inside a word marks the word z. check_word blocks a z
+    # operand unless the command is git or an npm-family tool, whose
+    # operands are revisions (HEAD^, v1#2) and version ranges. A ^ right
+    # after @ (pkg@^1.2) and a URL given to a URL tool (curl
+    # https://h/a#frag) are not marked. Any other word with :// is a path
+    # when a folder like a: exists, so cat a://../i#d_rsa is marked.
+    if (c == "^" && !urlword(w) && substr(w, length(w), 1) != "@") {
+      fs_ = fs_ "z"; w = w c; ws = 1; i++; continue
+    }
+    if (c == "#" && ws && !urlword(w)) {
+      fs_ = fs_ "z"; w = w c; i++; continue
+    }
     if (c == "(" || c == ")") { op(c); i++; continue }
     if (c == "*" || c == "?" || c == "[") { fs_ = fs_ "g" }
     if (c == "{") { fs_ = fs_ "b" }
@@ -1574,6 +1773,11 @@ END {
 AWK
 
 # Variables assigned earlier in the same command (NAME=value, export NAME=value).
+# Aliases defined earlier in the same command (alias NAME=BODY): a later
+# command named NAME is analysed as BODY followed by its arguments.
+CG_ALIAS_N=()
+CG_ALIAS_B=()
+CG_ALIAS_SKIP=" "
 VAR_NAMES=()
 VAR_VALS=()
 
@@ -1649,17 +1853,43 @@ expand_braces() {
         work+=("$pre$alt$post")
       done
     elif [[ "$body" =~ ^(-?[0-9]+)\.\.(-?[0-9]+)$ ]]; then
-      local from="${BASH_REMATCH[1]}" to="${BASH_REMATCH[2]}" step=1 cnt=0
+      # Bash reads a range in base 10 and keeps a leading zero as padding
+      # ({08..10} -> 08 09 10). $((08)) is an octal error that used to abort
+      # the analysis and allow the call (issue #1749), so every value goes
+      # through 10#. More than 18 digits could overflow: refuse it.
+      local fs="${BASH_REMATCH[1]}" ts="${BASH_REMATCH[2]}" from to step=1 cnt=0 width=0 kp
+      if [ ${#fs} -gt 18 ] || [ ${#ts} -gt 18 ]; then
+        block "a numeric brace range too large for the credential guard to expand"
+      fi
+      from=$((10#${fs#-})); [ "${fs:0:1}" != "-" ] || from=$((0 - from))
+      to=$((10#${ts#-})); [ "${ts:0:1}" != "-" ] || to=$((0 - to))
+      if [[ "$fs" =~ ^-?0[0-9] ]] || [[ "$ts" =~ ^-?0[0-9] ]]; then
+        width=${#fs}; [ ${#ts} -le "$width" ] || width=${#ts}
+      fi
       [ "$from" -le "$to" ] || step=-1
       k=$from
       while [ $cnt -lt 64 ]; do
-        work+=("$pre$k$post"); cnt=$((cnt + 1))
+        if [ "$width" -gt 0 ]; then printf -v kp '%0*d' "$width" "$k"; else kp="$k"; fi
+        work+=("$pre$kp$post"); cnt=$((cnt + 1))
         [ "$k" -eq "$to" ] && break
         k=$((k + step))
       done
     elif [[ "$body" =~ ^([A-Za-z])\.\.([A-Za-z])$ ]]; then
-      # Letter ranges: approximate with a wildcard character.
-      work+=("$pre?$post")
+      # Letter ranges expand exactly, through every ASCII character between
+      # the ends as bash does ({Z..a} includes [ \ ] ^ _ `). A single `?`
+      # missed names such as ~/.np{m..m}rc.
+      local lt='ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz' lpre li lto lstep=1
+      lpre="${lt%%"${BASH_REMATCH[1]}"*}"; li=${#lpre}
+      lpre="${lt%%"${BASH_REMATCH[2]}"*}"; lto=${#lpre}
+      [ "$li" -le "$lto" ] || lstep=-1
+      while :; do
+        work+=("$pre${lt:$li:1}$post")
+        [ "$li" -ne "$lto" ] || break
+        li=$((li + lstep))
+      done
+    elif [[ "$body" =~ ^[^,]*\.\.[^,]*\.\.[^,]*$ ]]; then
+      # A range with a step ({1..9..2}, {a..z..3}) is not expanded.
+      block "a brace range with a step, which the credential guard does not expand"
     else
       work+=("$pre"$'\005'"$body"$'\006'"$post")
     fi
@@ -2225,6 +2455,54 @@ note_for_bindings() { # <start> <end> <group>
   done
   split_var_mark "$name" "$ok" "$g"
 }
+# zword_check <start> <end>: a word marked z (an unquoted zsh ^ or a # inside
+# a word) in any simple command is a zsh extended glob that can name a
+# credential file, whether the command reads it, prints it for xargs or
+# loops over it (echo id^x | xargs cat, for f in i#d_rsa; do cat $f; done).
+# git and npm-family operands are revisions and version ranges and get the
+# wildcard check in check_word; inside [[ ]] a pattern is not a file glob.
+# Every other command with a z word is blocked.
+zword_check() { # <start> <end>
+  local a="$1" b="$2" k w cmd="" hasz=0
+  for ((k = a; k < b; k++)); do
+    [ "${T[$k]}" = W ] || continue
+    case "${F[$k]}" in *z*) ;; *) continue ;; esac
+    # ^ inside $[ ] is arithmetic xor, not a glob.
+    w="${X[$k]}"
+    while [[ "$w" =~ ^(.*)\$\[[^]]*\](.*)$ ]]; do w="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    case "$w" in *'^'*|?*'#'*) hasz=1; break ;; esac
+  done
+  [ "$hasz" = 1 ] || return 0
+  for ((k = a; k < b; k++)); do
+    [ "${T[$k]}" = W ] || continue
+    w="${X[$k]}"
+    [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
+    case "$w" in
+      -*) continue ;;
+      '!'|'{'|'}'|then|do|else|elif|if|while|until|time|command|builtin|exec|nohup|nice|sudo|doas|env|timeout|gtimeout|stdbuf|caffeinate|coproc) continue ;;
+    esac
+    case "${F[$k]}" in *z*) cmd=""; break ;; esac
+    lc_word "${w##*/}"
+    cmd="$LCW"
+    # The [[ ]] exemption ends at ]]: words after it (zsh short
+    # if [[ c ]] { echo id^x }) are a command of their own.
+    if [ "$cmd" = '[[' ]; then
+      local k5
+      for ((k5 = k + 1; k5 < b; k5++)); do
+        if [ "${T[$k5]}" = W ] && [ "${X[$k5]}" = ']]' ]; then
+          zword_check $((k5 + 1)) "$b"
+          return 0
+        fi
+      done
+    fi
+    break
+  done
+  case "$cmd" in
+    git|npm|pnpm|yarn|npx|bun|'[[') return 0 ;;
+  esac
+  block "a zsh extended-glob ^ or # word the credential guard cannot evaluate"
+}
+
 # gs_split_free <raw-word> <flags>: 0 when every $ reference in the raw word
 # is a bare $NAME or ${NAME} of a loop variable split-bound earlier in this
 # shell level (or inherited from the enclosing one), the word holds no
@@ -2317,9 +2595,78 @@ gs_cmd_readonly() {
   return 0
 }
 
+# cg_zpat <word> -> CG_ZP: the word with each zsh ^ (to the end of its path
+# segment) and each x# (the character before # and the #) replaced by *.
+# After }, ) or ] the # repeats part of an expansion, group or bracket: the
+# whole path segment before it becomes * (${p:-i}#d_rsa -> *d_rsa).
+cg_zpat() {
+  local t="$1" o="" c i n=${#1} skip=0
+  for ((i = 0; i < n; i++)); do
+    c="${t:i:1}"
+    if [ $skip = 1 ]; then
+      [ "$c" = / ] || continue
+      skip=0
+    fi
+    case "$c" in
+      '^') o="$o*"; skip=1 ;;
+      '#')
+        local last="${o: -1}"
+        if [ "$last" = '}' ] || [ "$last" = ')' ] || [ "$last" = ']' ]; then
+          case "$o" in */*) o="${o%/*}/*" ;; *) o="*" ;; esac
+        else
+          o="${o%?}*"
+        fi
+        ;;
+      *) o="$o$c" ;;
+    esac
+  done
+  CG_ZP="$o"
+}
+
 # check_word <text> <flags> <cwd>: an operand that the command reads.
 check_word() {
   local text="$1" flags="$2" cwd="$3" cand pat m
+  case "$flags" in
+    *z*) [ "${CG_ZOK:-0}" = 1 ] || block "a read operand with a zsh extended-glob ^ or # the credential guard cannot evaluate" ;;
+  esac
+  local cg_zuse=0
+  if [ "${CG_ZOK:-0}" = 1 ]; then
+    case "$flags" in
+      *z*) cg_zuse=1 ;;
+      # An expansion next to any glob character (${p}*, ${p:-i}#d_rsa) can
+      # name any file once zsh expands it: same check as a z word.
+      *[vs]*)
+        case "$text" in
+          *'*'*|*'?'*|*'['*|*'^'*|*'#'*|*'~'*|*'('*) cg_zuse=1 ;;
+        esac
+        ;;
+    esac
+  fi
+  case "$cg_zuse" in
+    1)
+      # git and npm-family operands are mostly revisions and ranges, but zsh
+      # still expands them first: check the word as the wildcard pattern it
+      # can match (x^y -> x*, x#y -> *y), so git diff --no-index on
+      # .n^xpmrc or i#d_rsa blocks while HEAD^ (HEAD*) passes.
+      # A variable the command does not assign is a wildcard here (CRED_ANY),
+      # so "$p"^x fails closed as it does for cat.
+      cg_zpat "$text"
+      local CRED_ANY=1 CG_ZOK=0
+      check_word "$CG_ZP" "${flags//z/}g" "$cwd"
+      return 0
+      ;;
+  esac
+  # zsh extended glob ~ (exclusion): the user's zsh can have extendedglob
+  # on, so a ~ after a glob character always counts; any ~ inside a word
+  # counts when the command turns zsh extended globbing on itself.
+  case "$text" in
+    *[*?]*'~'*|*']'*'~'*) block "a read operand with a zsh extended-glob ~ (exclusion) the credential guard cannot evaluate" ;;
+  esac
+  if [ "${CG_ZSH_EXT:-0}" = 1 ]; then
+    case "$text" in
+      ?*'~'*) block "a read operand with a zsh extended-glob ~ (exclusion) the credential guard cannot evaluate" ;;
+    esac
+  fi
   case "$flags" in *v*) expand_vars "$text"; text="$EV" ;; esac
   local cands=()
   case "$flags" in
@@ -2358,7 +2705,7 @@ check_word() {
         # prove, not "pattern /*" (it still blocks, fail closed).
         case "$NP" in
           *[!/*?]*) check_pattern "$NP" 0 ;;
-          *) block "reading a path computed by a substitution or variable the credential guard cannot evaluate (operand: ${text})" ;;
+          *) block "reading a path computed by a substitution or variable the credential guard cannot evaluate (operand: ${text//$'\001'/<computed value>})" ;;
         esac
         # A wildcard cannot model unknown separators or parent segments.
         # Missing matches are not proof: output can name a deeper neutral
@@ -2521,6 +2868,16 @@ is_reader() {
 # Commands that never print or copy the contents of a file operand. Every
 # other command has each operand checked (deny by default).
 is_safe_cmd() {
+  # When the command can replace what a name runs (an alias, a PATH change,
+  # hash, enable), that name is not trusted as metadata-only.
+  [ "${CG_CMD_OVERRIDE:-0}" = 0 ] || return 1
+  if [ "${CG_PATH_CHANGED:-0}" = 1 ]; then
+    case "$1" in
+      ls|stat|chmod|chown|chgrp|touch|rm|rmdir|mkdir|unlink|wc|file|du|\
+      realpath|readlink|basename|dirname|tee|ln|ssh|ssh-add|sleep|which)
+        return 1 ;;
+    esac
+  fi
   case "$1" in
     ls|stat|test|'['|'[['|chmod|chown|chgrp|touch|rm|rmdir|mkdir|unlink|wc|\
     file|du|echo|printf|true|false|realpath|readlink|basename|dirname|tee|ln|\
@@ -2529,6 +2886,44 @@ is_safe_cmd() {
       return 0 ;;
   esac
   return 1
+}
+
+# cg_trusted_word <command word>: 1 when the word names a program by a path
+# outside the standard system directories (/tmp/x/ls, ./ls). That program
+# only shares the name of a safe command, so is_safe_cmd does not apply.
+# Only the root-owned system directories count.
+cg_trusted_word() {
+  case "$1" in
+    */*) ;;
+    *) return 0 ;;
+  esac
+  case "${1%/*}" in
+    # Root-owned only: Homebrew's /usr/local/bin and /opt/homebrew/bin are
+    # writable by the user.
+    /bin|/usr/bin|/sbin|/usr/sbin) return 0 ;;
+  esac
+  return 1
+}
+
+# cygpath_converts_only <start> <end>: 0 when this cygpath call can only print
+# converted path text. cygpath -f/--file reads a file and prints its lines, so
+# only the conversion options below qualify. A computed word could expand to
+# --file=<path>, so it must come after `--`, which ends option parsing. So can
+# an unquoted brace or glob word (cygpath {-f,} ~/.npmrc runs cygpath -f).
+# Anything else returns 1 and keeps the usual operand checks.
+cygpath_converts_only() {
+  local s="$1" e="$2" k w
+  for ((k = s; k < e; k++)); do
+    w="${CW[$k]}"
+    [ "$w" = "--" ] && return 0
+    case "${CF[$k]:-}" in *b*|*g*) return 1 ;; esac
+    case "$w" in
+      --) return 0 ;;
+      -[almpsuw]|-[almpsuw][almpsuw]|--absolute|--long-name|--mixed|--path|--short-name|--unix|--windows) ;;
+      -*|*\$*|*\`*|*$'\001'*|*[*?[]*) return 1 ;;
+    esac
+  done
+  return 0
 }
 
 is_interpreter() {
@@ -2568,7 +2963,7 @@ subst_code_check() {
 # credential file.
 code_check() {
   local t="$1" allowed nc=0 hit=1
-  for allowed in .env.example .env.sample .env.template .env.schema .env.dist; do
+  for allowed in .env.example .env.sample .env.template .env.schema .env.dist upstream-pin.env; do
     t="${t//$allowed/}"
   done
   # Per-environment templates (.env.local.example) hold no values.
@@ -2675,7 +3070,7 @@ is_key_tree() {
   local r=1 nc=0
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
-  case "$1" in */.ssh|*/.ssh/*|*/.aws|*/.aws/*) r=0 ;; esac
+  case "$1" in */.ssh|*/.ssh/*|*/.aws|*/.aws/*|*/.hq/secrets-cache|*/.hq/secrets-cache/*) r=0 ;; esac
   [ "$nc" -eq 1 ] || shopt -u nocasematch
   return $r
 }
@@ -2686,7 +3081,7 @@ is_cred_store() {
   local r=1 nc=0
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
-  case "$1" in */.ssh|*/.aws|*/.docker|*/.gem|*/.config|*/.config/gh) r=0 ;; esac
+  case "$1" in */.ssh|*/.aws|*/.docker|*/.gem|*/.config|*/.config/gh|*/.hq/secrets-cache) r=0 ;; esac
   [ "$nc" -eq 1 ] || shopt -u nocasematch
   return $r
 }
@@ -3153,7 +3548,22 @@ analyze_simple() {
         if [ "$b" = "timeout" ] || [ "$b" = "gtimeout" ]; then j=$((j + 1)); fi
         continue
         ;;
-      for|case|select|function|in)
+      function)
+        # `function f { body; }` on one line: the name is not a command and
+        # the body is (it used to be skipped with the keyword). The parser
+        # splits `()` off as operators, so only the name is skipped.
+        j=$((j + 2)); continue ;;
+      for|select)
+        # A glob in the list (for f in ~/.n*) names files that reach the
+        # body through the loop variable: check it as a read operand.
+        local k3 CG_ZOK=0
+        for ((k3 = j + 1; k3 < e; k3++)); do
+          case "${CF[$k3]}" in
+            *g*) check_word "${CW[$k3]}" "${CF[$k3]}" "$CUR_CWD" ;;
+          esac
+        done
+        return 0 ;;
+      case|in)
         return 0 ;;
       export|local|declare|readonly|typeset)
         local k2
@@ -3195,7 +3605,34 @@ analyze_simple() {
   local cmd
   lc_word "${cw0##*/}"
   cmd="$LCW"
+  # zsh short forms (while [[ c ]] { body }, if [[ c ]] { body }) put the
+  # body in the same simple command after ]]: analyze it as a command.
+  if [ "$cmd" = '[[' ]; then
+    local k4
+    for ((k4 = j + 1; k4 < e; k4++)); do
+      if [ "${CW[$k4]}" = ']]' ]; then
+        [ $((k4 + 1)) -ge "$e" ] || analyze_simple $((k4 + 1)) "$e" "$depth"
+        break
+      fi
+    done
+  fi
+  # Operands of git and npm-family tools are revisions and version ranges
+  # (HEAD^, pkg@^1), not zsh globs: check_word lets a z word through.
+  local CG_ZOK=0
+  case "$cmd" in git|npm|pnpm|yarn|npx|bun) CG_ZOK=1 ;; esac
   [ "$cmd" != "popd" ] || CWD_UNCERTAIN=1
+  # A name defined as an alias runs its body with these arguments appended.
+  # While a body is expanded its own name is not expanded again, as in bash.
+  local k2
+  for ((k = ${#CG_ALIAS_N[@]} - 1; k >= 0; k--)); do
+    [ "${CG_ALIAS_N[$k]}" = "${CW[$j]}" ] || continue
+    case "$CG_ALIAS_SKIP" in *" ${CG_ALIAS_N[$k]} "*) break ;; esac
+    joined="${CG_ALIAS_B[$k]}"
+    for ((k2 = a; k2 < e; k2++)); do joined="$joined ${CW[$k2]}"; done
+    local CG_ALIAS_SKIP="$CG_ALIAS_SKIP${CG_ALIAS_N[$k]} "
+    analyze_cmd "$joined" $((depth + 1)) "$CUR_CWD"
+    return 0
+  done
   case "$cmd" in
     cd|pushd)
       local target=""
@@ -3369,6 +3806,20 @@ analyze_simple() {
       [ -n "$in_kind" ] && code_check "$in_text" "$cmd"
       return 0
       ;;
+    alias)
+      # Each alias body runs as a command wherever its name is used later,
+      # so it gets the same analysis as eval text (alias cygpath='cat ~/.np*').
+      for ((k = a; k < e; k++)); do
+        w="${CW[$k]}"
+        case "$w" in
+          *=*)
+            CG_ALIAS_N+=("${w%%=*}"); CG_ALIAS_B+=("${w#*=}")
+            [ -n "${w#*=}" ] && analyze_cmd "${w#*=}" $((depth + 1)) "$CUR_CWD"
+            ;;
+        esac
+      done
+      return 0
+      ;;
     eval)
       local joined="" sep=""
       for ((k = a; k < e; k++)); do joined="$joined$sep${CW[$k]}"; sep=" "; done
@@ -3397,7 +3848,7 @@ analyze_simple() {
       # With -I the input fills the placeholder; without it, input lines are
       # appended as operands.
       if [ -n "$xph" ]; then fed_git_read "$k" "$e" "$xph" 0 xargs; else fed_git_read "$k" "$e" "" 1 xargs; fi
-      if [ $k -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$k]##*/}"; ! is_safe_cmd "$LCW"; }; then
+      if [ $k -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$k]##*/}"; ! { cg_trusted_word "${CW[$k]}" && is_safe_cmd "$LCW"; }; }; then
         block "xargs feeding a command in a command line that names a credential file"
       fi
       return 0
@@ -3411,7 +3862,7 @@ analyze_simple() {
         case "${CW[$k]}" in
           -exec|-execdir|-ok|-okdir)
             fed_git_read $((k + 1)) "$e" "{}" 0 "find -exec"
-            if [ $((k + 1)) -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$((k + 1))]##*/}"; ! is_safe_cmd "$LCW"; }; then
+            if [ $((k + 1)) -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$((k + 1))]##*/}"; ! { cg_trusted_word "${CW[$((k + 1))]}" && is_safe_cmd "$LCW"; }; }; then
               block "find -exec in a command line that names a credential file"
             fi
             ;;
@@ -3420,7 +3871,50 @@ analyze_simple() {
       return 0
       ;;
   esac
-  is_safe_cmd "$cmd" && return 0
+  # An archiver copies every file under a directory operand, so a directory
+  # that holds credentials (HOME, ~/.config, ~/.hq, ...) may not be one.
+  case "$cmd" in
+    tar|gtar|bsdtar|zip|7z|7za|7zz|cpio|pax|ditto|jar|rar|zstd|xz|gzip|bzip2)
+      for ((k = a; k < e; k++)); do
+        case "${CW[$k]}" in -*) continue ;; esac
+        resolve_dir "${CW[$k]}" "${CF[$k]}" "$CUR_CWD"
+        if [ -n "$NP" ] && is_cred_dir "$NP"; then
+          block "archiving a directory that holds credentials ($(show_path "$NP"))"
+        fi
+      done
+      ;;
+  esac
+  cg_trusted_word "$cw0" && is_safe_cmd "$cmd" && return 0
+  # cygpath gets the same trust rules as is_safe_cmd: an alias, eval or
+  # source, a PATH change, or a cygpath named by a path outside the system
+  # directories can run something else under that name.
+  if [ "$cmd" = cygpath ] && cygpath_converts_only "$a" "$e"; then
+    if [ "${CG_CMD_OVERRIDE:-0}" = 0 ] && [ "${CG_PATH_CHANGED:-0}" = 0 ] && cg_trusted_word "$cw0"; then
+      return 0
+    fi
+  fi
+  # After a PATH change (only), a system cygpath may still be the one that
+  # runs, as in the setup skill's `export PATH="$(cygpath -u -- "$X")/..."`.
+  # Each operand must not name a credential; an operand that is only an
+  # unknown value with no credential word passes. After an alias, eval or
+  # source, or for ./cygpath, the name is not trusted at all and the usual
+  # unknown-command checks below run.
+  if [ "$cmd" = cygpath ] && [ "${CG_CMD_OVERRIDE:-0}" = 0 ] && [ "${CG_PATH_CHANGED:-0}" = 1 ] \
+    && cg_trusted_word "$cw0" && cygpath_converts_only "$a" "$e"; then
+    for ((k = a; k < e; k++)); do
+      w="${CW[$k]}"
+      case "$w" in --|-*) continue ;; esac
+      case "${CF[$k]}" in
+        *c*) ;;
+        *v*|*s*)
+          expand_vars "$w"
+          case "$EV" in *$'\001'*) [[ "$EV" =~ $CRED_WORD_RE ]] || continue ;; esac
+          ;;
+      esac
+      check_word "$w" "${CF[$k]}" "$CUR_CWD"
+    done
+    return 0
+  fi
   if is_interpreter "$cmd"; then
     joined=""; sep=""
     for ((k = a; k < e; k++)); do joined="$joined$sep${CW[$k]}"; sep=" "; done
@@ -3473,6 +3967,10 @@ analyze_simple() {
             fi
             check_generic "$tk" $((tk + 1)) "$CUR_CWD"; continue ;;
           --body=$'\001'|--title=$'\001'|--message=$'\001'|--text=$'\001'|--prompt=$'\001'|--note=$'\001') [ "$td_text" -eq 1 ] && continue ;;
+          # gh options whose value is a name, a filter or a query, never a
+          # file gh opens (`gh run list --workflow "$(gh run view ...)"`).
+          --workflow|--branch|--jq|-q|--json|--template|--limit|-L|--state|--search|--label|--assignee|--author|--base|--head|--milestone|--event|--status|--user|--commit|--job|--attempt|--ref|--name|--created)
+            [ "$cmd" = gh ] && td_next=1; check_generic "$tk" $((tk + 1)) "$CUR_CWD"; continue ;;
         esac
         case "$tw" in -*) ;; *) pos=$((pos + 1)) ;; esac
         if [ "$tw" = $'\001' ]; then
@@ -3568,6 +4066,7 @@ analyze_cmd() {
   for ((i = 0; i <= n; i++)); do
     if [ $i -eq $n ] || [ "${T[$i]}" = "O" ]; then
       note_for_bindings "$nb_s" "$i" "$nb_g"
+      zword_check "$nb_s" "$i"
       nb_s=$((i + 1)); nb_g=$((nb_g + 1))
     fi
   done
@@ -3706,6 +4205,13 @@ analyze_cmd() {
 }
 
 PRESCAN_DONE=0
-case "$CMD" in *'$('*|*'`'*) prescan "$CMD" 0; PRESCAN_DONE=1 ;; esac
-analyze_cmd "$CMD" 0 "$PAYLOAD_CWD"
+# A bash expansion error (for example an arithmetic error) abandons the whole
+# top-level command it happens in and the script carries on. The flag is set
+# in the same command as the analysis, so an abandoned analysis is seen here
+# and blocks instead of falling through to exit 0 (issue #1749).
+CG_ANALYZED=0
+case "$CMD" in *'$('*|*'`'*) prescan "$CMD" 0; PRESCAN_DONE=1 ;; *) PRESCAN_DONE=2 ;; esac
+[ "$PRESCAN_DONE" != 0 ] || block "the credential guard could not finish analysing this command"
+analyze_cmd "$CMD" 0 "$PAYLOAD_CWD"; CG_ANALYZED=1
+[ "$CG_ANALYZED" = 1 ] || block "the credential guard could not finish analysing this command"
 exit 0

@@ -6,7 +6,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SOURCE_ROOT="${HQ_TEST_SOURCE_ROOT:-$ROOT}"
+# Resolve the temp dir physically. The adapters find HQ_ROOT with `pwd -P`, so
+# on macOS (where TMPDIR sits under the /var -> /private/var symlink) the
+# watchdog's --hook-path is the /private path. Fixture trigger lines must use
+# the same spelling or the watchdog never matches them.
 TMP="$(mktemp -d)"
+TMP="$(cd "$TMP" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 
 FAIL=0
@@ -228,6 +233,12 @@ run_slow_hook_report_case() {
     if [ "$bin" = "hq" ]; then
       cat > "$TMP/bin/$bin" <<'HQ'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then
+  # The fixture seeds the CLI version cache, so the watchdog must not probe.
+  : > "${HQ_TEST_VERSION_PROBE_MARKER:?}"
+  printf 'hq 5.229.1\n'
+  exit 0
+fi
 report_file="$(mktemp "${HQ_TEST_EVENT_JSON_LOG:?}.report.XXXXXX")"
 cat > "$report_file"
 if jq -e '
@@ -256,6 +267,17 @@ HQ
   cat > "$root/.claude/hooks/detect-secrets.sh" <<'SLOW'
 #!/usr/bin/env bash
 cat >/dev/null
+# Seed the CLI version cache the watchdog reads for this dispatch
+# (<invocation>.debug.tsv.cli-version). The invocation id is only known once
+# the adapter has written this child's breadcrumb (<session>.tsv.<id>.active),
+# so seed here, before the trigger. Without it the watchdog probes
+# `hq --version` under a 2 s bound, which depends on the machine.
+for active in "${HQ_TEST_JOURNAL_DIR:?}"/*.tsv.*.active; do
+  [ -e "$active" ] || continue
+  invocation="${active%.active}"
+  invocation="${invocation##*.tsv.}"
+  printf '5.229.1\n' > "$HQ_TEST_JOURNAL_DIR/$invocation.debug.tsv.cli-version"
+done
 if [ "${HQ_TEST_EXPECTED_REPORTS:?}" -eq 1 ]; then
   printf 'hook-gate\t%s\trelative\n' "${HQ_TEST_HOOK_PATH:?}" > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE:?}"
 else
@@ -277,6 +299,7 @@ SLOW
   : > "$event_log"
   : > "$TMP/acks.log"
   : > "$TMP/watchdog.trigger"
+  rm -f "$TMP/hq-version-probed"
   local adapter status=0
   if [ "$provider" = "codex" ]; then
     adapter="$root/.codex/hooks/hq-codex-hook-adapter.sh"
@@ -290,11 +313,15 @@ SLOW
     HQ_TEST_EXPECTED_REPORTS="$expected_reports" \
     HQ_TEST_EVENT_JSON_LOG="$event_log" \
     HQ_TEST_HQ_ACK="$TMP/acks.log" \
+    HQ_TEST_JOURNAL_DIR="$root/workspace/.hook-timeout-journal" \
+    HQ_TEST_VERSION_PROBE_MARKER="$TMP/hq-version-probed" \
     HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$TMP/watchdog.trigger" \
     HQ_HOOK_TIMEOUT_SENTRY=1 \
     HQ_GROK_POLICY_DEBOUNCE_SECS=0 \
     BASH_ENV=/dev/null bash "$adapter" >"$TMP/$provider-slow.out" 2>"$TMP/$provider-slow.err" || status=$?
   [ "$status" -eq 0 ] || fail "$provider slow-hook adapter exited $status"
+  [ ! -e "$TMP/hq-version-probed" ] \
+    || fail "$provider watchdog probed hq --version instead of reading the seeded CLI version cache"
   # The watchdog reporters and other HQ calls may overlap. Acknowledgements
   # count only complete timeout events; collect those complete payloads after
   # adapter exit instead of appending concurrently to one JSONL file.

@@ -34,6 +34,7 @@ case "$command_name" in
     is_known_fact "$fact" || { printf 'gate fact error: unknown fact: %s\n' "$fact" >&2; exit 2; }
     note=""
     source="helper"
+    proof_confirmed_at=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --note)
@@ -59,13 +60,15 @@ case "$command_name" in
         fi
         source="askuserquestion"
         note="$(jq -r '.answer' "$proof")"
+        # The fact is as old as the approval, not as old as this command.
+        proof_confirmed_at="$(jq -r '.confirmed_at' "$proof")"
         ;;
       *) source="helper" ;;
     esac
     command -v jq >/dev/null 2>&1 || { printf '%s\n' 'gate fact error: jq is required' >&2; exit 2; }
     umask 077
     mkdir -p "$state_dir" || { printf '%s\n' 'gate fact error: cannot create session state directory' >&2; exit 2; }
-    timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    timestamp="${proof_confirmed_at:-$(date -u '+%Y-%m-%dT%H:%M:%SZ')}"
     tmp="$(mktemp "$state_dir/.fact.XXXXXX")" || { printf '%s\n' 'gate fact error: cannot create temporary record' >&2; exit 2; }
     if ! jq -n --arg fact "$fact" --arg confirmed_at "$timestamp" --arg note "$note" --arg source "$source" '{fact:$fact, confirmed_at:$confirmed_at, note:$note, source:$source}' > "$tmp"; then
       rm -f "$tmp"

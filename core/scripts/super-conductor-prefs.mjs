@@ -37,6 +37,20 @@
 //       (for example watch_interval.present).
 //
 // The file defaults to $SC_PREFS_FILE, else <HQ root>/personal/settings/super-conductor.yaml.
+//
+// Per-company overlay (--company <slug>, before the command): when several
+// conductors run, each bound to one company, a preference can differ per
+// company. `--company indigo` reads personal/settings/super-conductor.indigo.yaml
+// (the base file's name with .<slug> before .yaml) over the base file: a
+// map key in the overlay is merged into the base map one level deep, a list
+// or scalar replaces it, and anything the overlay does not mention keeps the
+// base value. `add` and `set` with --company write to the overlay only, so a
+// company-specific preference never changes the base file; the first `add` to
+// a list the overlay does not have yet copies the base list in first, so the
+// resolved list is the base list plus the new values (and from then on that
+// company's list is its own). `get` reports
+// `_company` and `_overlay`. Pass --company only when the session's locked
+// company set is one company; a multi-company conductor uses the base file.
 // Exit: 0 ok, 2 bad arguments, 3 refused write or unreadable file.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,10 +60,20 @@ import { replaceFile } from './lib/super-conductor-lock.mjs';
 const ROOT = process.env.HQ_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 let file = process.env.SC_PREFS_FILE || path.join(ROOT, 'personal/settings/super-conductor.yaml');
 const argv = process.argv.slice(2);
-if (argv[0] === '--file') {
-  file = argv[1] || '';
+let company = '';
+while (argv[0] === '--file' || argv[0] === '--company') {
+  if (argv[0] === '--file') file = argv[1] || '';
+  else company = String(argv[1] || '').trim();
   argv.splice(0, 2);
 }
+if (company && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(company)) {
+  process.stderr.write(`super-conductor-prefs: --company: invalid company slug '${company}'\n`);
+  process.exit(2);
+}
+// The base file is always read; writes go to the overlay when --company is set.
+const baseFile = file;
+export const overlayPath = (base, slug) => (slug ? base.replace(/(\.ya?ml)?$/i, (ext) => `.${slug}${ext || '.yaml'}`) : '');
+if (company) file = overlayPath(baseFile, company);
 const [cmd, ...args] = argv;
 
 // Keys the core skill knows. Anything else in the file is an owner extension:
@@ -176,21 +200,28 @@ function parse(text) {
   return data && !Array.isArray(data) ? data : {};
 }
 
-function readText() {
-  try { return fs.readFileSync(file, 'utf8'); } catch (e) {
+function readText(which = file) {
+  try { return fs.readFileSync(which, 'utf8'); } catch (e) {
     if (e.code === 'ENOENT') return '';
-    die(`cannot read ${file}: ${e.message}`, 3);
+    die(`cannot read ${which}: ${e.message}`, 3);
   }
 }
 
-function resolved() {
-  const data = parse(readText());
-  const out = structuredClone(DEFAULTS);
-  for (const [k, v] of Object.entries(data)) {
+// Overlay `top` on `base`: maps merge one level deep, lists and scalars replace.
+export function overlay(base, top) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(top)) {
     const d = out[k];
     out[k] = d && typeof d === 'object' && !Array.isArray(d) && v && typeof v === 'object' && !Array.isArray(v)
       ? { ...d, ...v } : v;
   }
+  return out;
+}
+
+function resolved() {
+  const base = parse(readText(baseFile));
+  const data = company ? overlay(base, parse(readText(file))) : base;
+  const out = overlay(structuredClone(DEFAULTS), data);
   // A free-text channel_cadence (an owner note) keeps the default lists and is
   // carried as _channel_cadence_note.
   if (!out.channel_cadence || typeof out.channel_cadence !== 'object' || Array.isArray(out.channel_cadence)) {
@@ -214,7 +245,8 @@ function resolved() {
   // A YAML list or a comma-separated string; one lowercased slug or id each.
   out.hq_channels_exclude = excludeList(out.hq_channels_exclude);
   out._extension_keys = Object.keys(data).filter((k) => !KNOWN.has(k)).sort();
-  out._file = file;
+  out._file = baseFile;
+  if (company) { out._company = company; out._overlay = file; }
   return out;
 }
 
@@ -275,10 +307,17 @@ function writeChecked(beforeText, afterText, changedKey) {
 function cmdAdd(key, values) {
   if (!KEY_RE.test(`${key}:`)) die(`bad key '${key}'`, 2);
   const text = readText();
-  const current = parse(text)[key];
+  let current = parse(text)[key];
+  // Overlay without this list yet: start from the base list, so "also check
+  // email for this company" keeps the base channels.
+  let seeded = [];
+  if (company && current == null) {
+    const base = parse(readText(baseFile))[key];
+    if (Array.isArray(base)) { seeded = base; current = []; }
+  }
   if (current != null && !Array.isArray(current)) die(`refused: '${key}' is not a list; use set`, 3);
   const have = current || [];
-  const added = values.filter((v) => !have.map(String).includes(String(v)));
+  const added = [...seeded, ...values].filter((v, i, arr) => !have.map(String).includes(String(v)) && arr.findIndex((x) => String(x) === String(v)) === i);
   if (!added.length) {
     process.stdout.write(`${JSON.stringify({ key, added: [], value: have })}\n`);
     return;
@@ -471,5 +510,5 @@ switch (cmd) {
     cmdSet(args[0], args[1]);
     break;
   default:
-    die(`usage: get | channels | interval | cadence | critical | exclude | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
+    die(`usage: [--file <yaml>] [--company <slug>] get | channels | interval | cadence | critical | exclude | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
 }

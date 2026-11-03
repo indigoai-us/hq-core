@@ -112,7 +112,7 @@ out="$(run "$leak_sid" "$FX" "git -C repos/private/other log")"   # parse hit, w
 cache_dir="$FX/workspace/orchestrator/hook-state/policy-trigger-cache"
 cf="$(find "$cache_dir" -maxdepth 1 -name '*.cache' -print -quit)"
 [ -n "$cf" ] || fail "parse cache was not written"
-head -n 1 "$cf" | grep -Fq 'hq-policy-cache-v7' || fail "parse cache header was not bumped to v7"
+head -n 1 "$cf" | grep -Fq 'hq-policy-cache-v8' || fail "parse cache header was not bumped to v8"
 out="$(run "$leak_sid" "$FX" "git -C repos/private/vyg log")"     # same session, cached parse
 has 'CACHE VYG rule' "$out" || fail "cached other-repo verdict leaked into vyg: $out"
 

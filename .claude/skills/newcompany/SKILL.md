@@ -285,7 +285,7 @@ Ask which surfaces should default to the pack (multi-select; pre-select deploy):
   artifacts use the pack.
 
 One policy file per pack-binding decision, company-scoped, standard policy frontmatter
-(`scope: company`, `enforcement: hard`, `when: deploy || design`).
+(`scope: company`, `enforcement: hard`, `when: deploy || design`, `on: [PreToolUse, UserPromptSubmit, AssistantIntent]`). The write hook requires `on:`; omitting it blocks the first policy write.
 
 Skip → no packs; deploy artifacts fall back to HQ Midnight Editorial.
 

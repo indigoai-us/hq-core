@@ -11,6 +11,7 @@ set -uo pipefail
 SRC="${C179B_SOURCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)}"
 STOP_SRC="$SRC/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
 REMINDER_SRC="$SRC/core/scripts/lib/lanes-senior-monitor.sh"
+RESOLVER_SRC="$SRC/core/scripts/lib/resolve-hq-bin.sh"
 WRAP_SS="$SRC/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
 WRAP_UPS="$SRC/core/hooks/UserPromptSubmit/45-lanes-senior-monitor.sh"
 MASTER_SRC="$SRC/.claude/hooks/master-hook.sh"
@@ -64,6 +65,7 @@ cp "$PROBE_SRC" "$FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ADAPTER_CORE_SRC" "$FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$GATE_SRC" "$FIX/.claude/hooks/hook-gate.sh"
 cp "$STOP_SRC" "$FIX/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
+mkdir -p "$FIX/core/scripts/lib"
 
 jq -n '{hooks:{Stop:[{matcher:"",hooks:[{id:"lanes-senior-monitor-stop-gate",script:".claude/hooks/lanes-senior-monitor-stop-gate.sh",timeout:30,gated:true}]}]}}' \
   > "$FIX/.claude/hooks/hook-registry.json"
@@ -201,11 +203,39 @@ PAYLOAD_PASS='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_activ
 PAYLOAD_ACTIVE='{"session_id":"senior-1","hook_event_name":"Stop","stop_hook_active":true}'
 PATH_WITH_HQ="$BIN:$NODE_ONLY_DIR:/usr/local/bin:/usr/bin:/bin"
 PATH_WITHOUT_HQ="$TMP/no-hq:$NODE_ONLY_DIR:/usr/bin:/bin"
-# "Missing hq" means missing everywhere the gate looks: PATH, HQ_CLI_BIN and
+# "Missing hq" means missing everywhere the gate looks: PATH and
 # the install-location fallback (feedback_26faa03c). Keep the machine's own hq
 # out of the fallback so the missing-hq cases stay deterministic.
-export HQ_CLI_FALLBACK_DIRS="$TMP/no-hq"
-unset HQ_CLI_BIN
+#
+# The resolver's install-directory list is fixed in code (no env override), so
+# each fixture gets a copy of the resolver with that one line rewritten to
+# test directories. The removed HQ_CLI_BIN / HQ_CLI_FALLBACK_DIRS overrides are
+# exported here so every case below also proves they are ignored.
+export HQ_CLI_BIN="$BIN/hq" HQ_CLI_FALLBACK_DIRS="$BIN"
+install_resolver() {
+  local root="$1" dirs="$2"
+  mkdir -p "$root/core/scripts/lib"
+  awk -v d="$dirs" '/# HQ_BIN_DEFAULT_DIRS$/ { print "  dirs=\"" d "\" # HQ_BIN_DEFAULT_DIRS"; next } { print }' \
+    "$RESOLVER_SRC" > "$root/core/scripts/lib/resolve-hq-bin.sh"
+  grep -qF "dirs=\"$dirs\" # HQ_BIN_DEFAULT_DIRS" "$root/core/scripts/lib/resolve-hq-bin.sh" \
+    || { echo "install_resolver: could not rewrite the dir list" >&2; exit 1; }
+}
+# Build a gate fixture whose resolver searches DIRS.
+make_gate_fixture() {
+  local root="$1" dirs="$2"
+  rm -rf "$root"; mkdir -p "$root"; cp -R "$FIX/." "$root/"
+  install_resolver "$root" "$dirs"
+}
+# Build a reminder fixture (SessionStart wrapper + shim) whose resolver searches DIRS.
+make_reminder_fixture() {
+  local root="$1" dirs="$2"
+  make_gate_fixture "$root" "$dirs"
+  mkdir -p "$root/core/hooks/SessionStart"
+  cp "$REMINDER_SRC" "$root/core/scripts/lib/lanes-senior-monitor.sh"
+  cp "$WRAP_SS" "$root/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
+}
+install_resolver "$FIX" "$TMP/no-hq"
+chmod go-w "$BIN" "$BIN/hq"
 PERL_ONLY_DIR="$TMP/perl-only-bin"
 mkdir -p "$PERL_ONLY_DIR"
 for program in awk bash cat date env grep head jq mktemp perl rm sleep tr; do
@@ -234,13 +264,13 @@ else
 fi
 
 run_master() {
-  local payload="$1" path_env="$2" home_override="${3-$TMP/test-home}"; local errf outf
+  local payload="$1" path_env="$2" home_override="${3-$TMP/test-home}" root="${4:-$FIX}"; local errf outf
   errf="$(mktemp "$TMP/master-err.XXXXXX")"
   outf="$(mktemp "$TMP/master-out.XXXXXX")"
   MRC=0
   printf '%s' "$payload" | env -u HQ_HARNESS -u HQ_WORK_MESH_HARNESS -u HQ_CHECKPOINT_RUNTIME \
-    HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" HQ_ALLOW_HQ_WORKTREE=1 \
-    HOME="$home_override" HQ_HOOK_TIMEOUT_SENTRY=0 PATH="$path_env" bash "$FIX/.claude/hooks/master-hook.sh" Stop \
+    HQ_ROOT="$root" CLAUDE_PROJECT_DIR="$root" HQ_ALLOW_HQ_WORKTREE=1 \
+    HOME="$home_override" HQ_HOOK_TIMEOUT_SENTRY=0 PATH="$path_env" bash "$root/.claude/hooks/master-hook.sh" Stop \
     > "$outf" 2> "$errf" || MRC=$?
   MOUT="$(cat "$outf")"
   MERR="$(cat "$errf")"
@@ -294,18 +324,60 @@ assert_contains "$MOUT" '"decision":"block"' "missing hq block JSON"
 
 # feedback_26faa03c: hq absent from the hook's PATH but installed where the
 # session finds it is not "missing".
+gate_blocked() { case "$MERR$MOUT" in *'hq CLI is missing'*|*'"decision":"block"'*) return 0 ;; esac; return 1; }
+make_gate_fixture "$TMP/gate-safe" "relbin:$TMP/no-hq:$BIN"
 reset_stub pass
-HQ_CLI_FALLBACK_DIRS="$BIN" run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
-case "$MERR$MOUT" in
-  *'hq CLI is missing'*|*'"decision":"block"'*) fail "hq in an install location was reported missing: $MERR $MOUT" ;;
-  *) pass "hq found in an install location outside PATH" ;;
-esac
+run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" "" "$TMP/gate-safe"
+gate_blocked && fail "hq in an install location was reported missing: $MERR $MOUT" \
+  || pass "hq found in an install location outside PATH"
+
+# Critical 1 (adversarial review): env cannot name the binary or the search list.
+# HQ_CLI_BIN and HQ_CLI_FALLBACK_DIRS point at a working hq, yet the gate whose
+# fixed list holds no hq still reports hq missing.
 reset_stub pass
-HQ_CLI_BIN="$BIN/hq" run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
-case "$MERR$MOUT" in
-  *'hq CLI is missing'*|*'"decision":"block"'*) fail "HQ_CLI_BIN was ignored: $MERR $MOUT" ;;
-  *) pass "an executable HQ_CLI_BIN is used when PATH lacks hq" ;;
-esac
+HQ_CLI_BIN="$BIN/hq" HQ_CLI_FALLBACK_DIRS="$BIN" run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" ""
+gate_blocked && pass "Stop gate ignores HQ_CLI_BIN and HQ_CLI_FALLBACK_DIRS" \
+  || fail "Stop gate ran an hq named by env: $MERR $MOUT"
+[ "$(stub_call_count)" = "0" ] && pass "env-named hq was never executed" || fail "env-named hq was executed"
+for var in HQ_CLI_BIN HQ_CLI_FALLBACK_DIRS HQ_ROOT; do
+  grep -v '^[[:space:]]*#' "$RESOLVER_SRC" | grep -q "$var" \
+    && fail "resolver code reads $var" || pass "resolver code does not read $var"
+done
+
+# Critical 2 (adversarial review): unsafe directories and binaries are skipped.
+GW_DIR="$TMP/ow-dir-bin"; OW_DIR="$TMP/ow-bin"; LINK_DIR="$TMP/link-bin"; GW_TARGET="$TMP/ow-target"
+mkdir -p "$GW_DIR" "$OW_DIR" "$LINK_DIR" "$GW_TARGET"
+cp "$BIN/hq" "$GW_DIR/hq"; cp "$BIN/hq" "$OW_DIR/hq"; cp "$BIN/hq" "$GW_TARGET/hq"
+ln -sf "$GW_TARGET/hq" "$LINK_DIR/hq"
+chmod 777 "$GW_DIR"; chmod 755 "$GW_DIR/hq"
+chmod 755 "$OW_DIR"; chmod 757 "$OW_DIR/hq"
+chmod 755 "$LINK_DIR" "$GW_TARGET"; chmod 757 "$GW_TARGET/hq"
+for unsafe in "$GW_DIR" "$OW_DIR" "$LINK_DIR"; do
+  make_gate_fixture "$TMP/gate-unsafe" "$unsafe"
+  reset_stub pass
+  run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" "" "$TMP/gate-unsafe"
+  gate_blocked && pass "Stop gate skips unsafe hq in $(basename "$unsafe")" \
+    || fail "Stop gate ran unsafe hq in $(basename "$unsafe"): $MERR $MOUT"
+done
+# Homebrew's bin (/opt/homebrew/bin, Intel /usr/local/bin) is owner:admin 775.
+# A group-writable directory owned by the current user is trusted, so the
+# fallback still finds a Homebrew hq (adversarial review r2).
+HB_DIR="$TMP/homebrew-bin"; mkdir -p "$HB_DIR"; cp "$BIN/hq" "$HB_DIR/hq"
+chmod 775 "$HB_DIR"; chmod 775 "$HB_DIR/hq"
+make_gate_fixture "$TMP/gate-homebrew" "$HB_DIR"
+reset_stub pass
+run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" "" "$TMP/gate-homebrew"
+gate_blocked && fail "Stop gate rejected a user-owned 775 Homebrew-style bin: $MERR $MOUT" \
+  || pass "Stop gate uses hq from a user-owned group-writable (Homebrew) bin"
+[ "$(stub_call_count)" -ge 1 ] && pass "Homebrew-style hq ran monitor-check" || fail "Homebrew-style hq was not called"
+UNSAFE_LIB="$TMP/unsafe-lib"; install_resolver "$UNSAFE_LIB" "$GW_DIR:$OW_DIR:$LINK_DIR:$BIN"
+RESOLVED="$(env -u HQ_CLI_BIN -u HQ_CLI_FALLBACK_DIRS PATH="/usr/bin:/bin" bash -c \
+  '. "$1"; resolve_hq_bin; printf "%s|%s" "$HQ_BIN" "$PATH"' _ "$UNSAFE_LIB/core/scripts/lib/resolve-hq-bin.sh")"
+[ "${RESOLVED%%|*}" = "$BIN/hq" ] && pass "resolver falls through unsafe dirs to the safe one" \
+  || fail "resolver picked ${RESOLVED%%|*}"
+# The fallback dir is appended, so tools already on PATH keep precedence.
+[ "${RESOLVED#*|}" = "/usr/bin:/bin:$BIN" ] && pass "fallback dir is appended to PATH, not prepended" \
+  || fail "PATH after fallback is ${RESOLVED#*|}"
 
 reset_stub blocked
 run_master "$PAYLOAD_ACTIVE" "$PATH_WITH_HQ"
@@ -427,6 +499,7 @@ mkdir -p "$MUTANT_FIX"
 cp -R "$FIX/." "$MUTANT_FIX/"
 mkdir -p "$MUTANT_FIX/core/scripts/lib" "$MUTANT_FIX/core/hooks/SessionStart"
 cp "$REMINDER_SRC" "$MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+install_resolver "$MUTANT_FIX" "$TMP/no-hq"
 cp "$WRAP_SS" "$MUTANT_FIX/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
 sed -i '/# MONITOR_TIMEOUT_MUST_STAY_QUIET/{n;s/exit 0/: # mutant removes the quiet timeout return/;}' \
   "$MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
@@ -460,6 +533,7 @@ cp -R "$FIX/." "$REMINDER_TIMEOUT_MUTANT_FIX/"
 mkdir -p "$REMINDER_TIMEOUT_MUTANT_FIX/core/hooks/UserPromptSubmit"
 cp "$WRAP_UPS" "$REMINDER_TIMEOUT_MUTANT_FIX/core/hooks/UserPromptSubmit/45-lanes-senior-monitor.sh"
 cp "$REMINDER_SRC" "$REMINDER_TIMEOUT_MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+install_resolver "$REMINDER_TIMEOUT_MUTANT_FIX" "$TMP/no-hq"
 sed -i '/# REMINDER_TIMEOUT_MUST_STAY_QUIET/{n;s/exit 0/: # mutant removes the quiet reminder timeout return/;}' \
   "$REMINDER_TIMEOUT_MUTANT_FIX/core/scripts/lib/lanes-senior-monitor.sh"
 rm -rf "$TMP/reminder-timeout-mutant-cache"
@@ -529,14 +603,81 @@ assert_contains "$RERR" 'monitor-check cache' "monitor cache write failure stder
 
 rm -rf "$TMP/cache"
 reset_stub no-lanes
+make_reminder_fixture "$TMP/rem-none" "$TMP/no-hq"
 RRC=0
 ROUT="$(printf '%s' '{"session_id":"senior-1","hook_event_name":"SessionStart","engine":"claude"}' | \
   env HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" XDG_CACHE_HOME="$TMP/cache" PATH="$PATH_WITHOUT_HQ" \
-  bash "$WRAP_SS" SessionStart 2>"$TMP/reminder-missing-err")" || RRC=$?
+  HQ_CLI_BIN="$BIN/hq" HQ_CLI_FALLBACK_DIRS="$BIN" \
+  bash "$TMP/rem-none/core/hooks/SessionStart/45-lanes-senior-monitor.sh" SessionStart 2>"$TMP/reminder-missing-err")" || RRC=$?
 RERR="$(cat "$TMP/reminder-missing-err")"
 [ "$RRC" -ne 0 ] && pass "missing hq reminder is non-zero" || fail "missing hq reminder passed"
 assert_empty "$ROUT" "missing hq reminder output"
 assert_contains "$RERR" 'hq CLI is missing' "missing hq reminder stderr"
+[ "$(stub_call_count)" = "0" ] && pass "reminder ignores HQ_CLI_BIN and HQ_CLI_FALLBACK_DIRS" \
+  || fail "reminder executed an env-named hq"
+
+# feedback_26faa03c: the reminder shim uses the same lookup as the Stop gate,
+# so hq outside PATH but in an install location is not "missing".
+make_reminder_fixture "$TMP/rem-safe" "relbin:$TMP/no-hq:$BIN"
+rm -rf "$TMP/cache"
+reset_stub no-lanes
+RRC=0
+ROUT="$(printf '%s' '{"session_id":"senior-1","hook_event_name":"SessionStart","engine":"claude"}' | \
+  env HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" XDG_CACHE_HOME="$TMP/cache" PATH="$PATH_WITHOUT_HQ" \
+  bash "$TMP/rem-safe/core/hooks/SessionStart/45-lanes-senior-monitor.sh" SessionStart 2>"$TMP/reminder-fallback-err")" || RRC=$?
+RERR="$(cat "$TMP/reminder-fallback-err")"
+[ "$RRC" = "0" ] && pass "reminder uses hq from an install location" || fail "reminder fallback rc=$RRC stderr=$RERR"
+assert_empty "$RERR" "reminder fallback stderr"
+[ "$(stub_call_count)" -ge 1 ] && pass "reminder fallback ran monitor-check" || fail "reminder fallback did not call hq"
+
+rm -rf "$TMP/cache"
+reset_stub no-lanes
+make_reminder_fixture "$TMP/rem-gw" "$GW_DIR"
+RRC=0
+ROUT="$(printf '%s' '{"session_id":"senior-1","hook_event_name":"SessionStart","engine":"claude"}' | \
+  env HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" XDG_CACHE_HOME="$TMP/cache" PATH="$PATH_WITHOUT_HQ" \
+  bash "$TMP/rem-gw/core/hooks/SessionStart/45-lanes-senior-monitor.sh" SessionStart 2>"$TMP/reminder-gw-err")" || RRC=$?
+RERR="$(cat "$TMP/reminder-gw-err")"
+[ "$RRC" -ne 0 ] && pass "reminder skips hq in an other-writable dir" || fail "reminder ran hq from an other-writable dir"
+assert_contains "$RERR" 'hq CLI is missing' "reminder unsafe-dir stderr"
+[ "$(stub_call_count)" = "0" ] && pass "reminder did not execute the unsafe hq" || fail "reminder executed the unsafe hq"
+
+# Real hq installs are `#!/usr/bin/env node` scripts. The resolver appends the
+# fallback directory to PATH so the interpreter installed beside hq is found.
+FALLBACK_ENVNODE="$TMP/fallback-envnode"
+mkdir -p "$FALLBACK_ENVNODE"
+printf '%s\n' '#!/bin/bash' 'exec /bin/bash "$@"' > "$FALLBACK_ENVNODE/hq-fallback-interp"
+printf '%s\n' '#!/usr/bin/env hq-fallback-interp' "exec \"$BIN/hq\" \"\$@\"" > "$FALLBACK_ENVNODE/hq"
+chmod 755 "$FALLBACK_ENVNODE" "$FALLBACK_ENVNODE/hq-fallback-interp" "$FALLBACK_ENVNODE/hq"
+make_reminder_fixture "$TMP/rem-envnode" "$FALLBACK_ENVNODE"
+env PATH="$PATH_WITHOUT_HQ" bash -c 'command -v hq-fallback-interp >/dev/null 2>&1' \
+  && fail "fallback fixture PATH exposes the hq interpreter" || pass "fallback fixture PATH lacks the hq interpreter"
+rm -rf "$TMP/cache"
+reset_stub no-lanes
+RRC=0
+ROUT="$(printf '%s' '{"session_id":"senior-1","hook_event_name":"SessionStart","engine":"claude"}' | \
+  env HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" XDG_CACHE_HOME="$TMP/cache" PATH="$PATH_WITHOUT_HQ" \
+  bash "$TMP/rem-envnode/core/hooks/SessionStart/45-lanes-senior-monitor.sh" SessionStart 2>"$TMP/reminder-envnode-err")" || RRC=$?
+RERR="$(cat "$TMP/reminder-envnode-err")"
+[ "$RRC" = "0" ] && pass "reminder runs an env-shebang hq from an install location" || fail "reminder env-shebang rc=$RRC stderr=$RERR"
+[ "$(stub_call_count)" -ge 1 ] && pass "reminder env-shebang hq ran monitor-check" || fail "reminder env-shebang hq did not call hq"
+
+reset_stub pass
+run_master "$PAYLOAD_PASS" "$PATH_WITHOUT_HQ" "" "$TMP/rem-envnode"
+case "$MERR$MOUT" in
+  *'hq CLI is missing'*|*'"decision":"block"'*) fail "Stop gate could not run an env-shebang hq: $MERR $MOUT" ;;
+  *) pass "Stop gate runs an env-shebang hq from an install location" ;;
+esac
+
+# One lookup: both shims source the shared resolver and define no copy.
+for shim in "$STOP_SRC" "$REMINDER_SRC"; do
+  contains "$(cat "$shim")" 'resolve-hq-bin.sh' && pass "$(basename "$shim") sources resolve-hq-bin.sh" \
+    || fail "$(basename "$shim") does not source resolve-hq-bin.sh"
+  grep -q '^resolve_hq_bin() {' "$shim" && fail "$(basename "$shim") defines its own resolve_hq_bin" \
+    || pass "$(basename "$shim") has no private resolver"
+done
+contains "$(cat "$RESOLVER_SRC")" '/usr/bin:/bin" # HQ_BIN_DEFAULT_DIRS' && pass "default fallback list includes /usr/bin and /bin" \
+  || fail "default fallback list lacks /usr/bin or /bin"
 
 rm -rf "$TMP/cache"
 reset_stub error
@@ -556,6 +697,7 @@ cp "$ADAPTER_CORE_SRC" "$SIBLING_FIX/core/scripts/lib/hook-adapter-core.sh"
 cp "$GATE_SRC" "$SIBLING_FIX/.claude/hooks/hook-gate.sh"
 cp "$FIX/.claude/hooks/hook-registry.json" "$SIBLING_FIX/.claude/hooks/hook-registry.json"
 cp "$REMINDER_SRC" "$SIBLING_FIX/core/scripts/lib/lanes-senior-monitor.sh"
+install_resolver "$SIBLING_FIX" "$TMP/no-hq"
 cp "$WRAP_SS" "$SIBLING_FIX/core/hooks/SessionStart/45-lanes-senior-monitor.sh"
 # An unrelated lane record keeps the store non-empty, so the shim passes the
 # NO_LANE_STORE fast exit and the session-scoped guard mutated in [2c] runs.
@@ -609,6 +751,7 @@ cp "$SRC/.codex/hooks/hq-codex-hook-adapter.sh" "$ADAPT/.codex/hooks/"
 cp "$SRC/.grok/hooks/hq-grok-hook-adapter.sh" "$ADAPT/.grok/hooks/"
 cp "$GATE_SRC" "$ADAPT/.claude/hooks/hook-gate.sh"
 cp "$STOP_SRC" "$ADAPT/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
+install_resolver "$ADAPT" "$TMP/no-hq"
 cp "$SRC/core/scripts/hook-lib.sh" "$ADAPT/core/scripts/hook-lib.sh"
 cp "$SRC/core/scripts/lib/hook-adapter-core.sh" "$ADAPT/core/scripts/lib/hook-adapter-core.sh"
 mkdir -p "$ADAPT/workspace/lanes/lanes"

@@ -21,6 +21,8 @@ Specs: `core/knowledge/public/hq-core/source-yaml-spec.md`,
    bash core/scripts/ontology-source-worklist.sh --company {co} --channel {channel} --limit 20
    ```
    Each line is either `{file, audience_key, audience}` or `{file, skip}`.
+   Items come newest first by the item's own date (meeting start), so a large
+   backlog drains from the most recent end.
    - `skip: no-audience` — log it in the report and move on. Never process an
      item as `company` because its audience was missing.
    - For meetings, the audience comes from the attendee list on the file or,
@@ -37,6 +39,8 @@ Specs: `core/knowledge/public/hq-core/source-yaml-spec.md`,
    quotes longer than one sentence.
 6. **Mark done** only after the item's candidates are written:
    `bash core/scripts/ontology-source-worklist.sh --company {co} --channel {channel} --mark-done <file>`.
+   To reprocess an item later, clear it with `--redo <file>` (repeatable); the
+   next run lists it again.
 7. **Report** in one line: items processed, skipped (with reasons), candidates
    written. Suggest running `garden` next, or run it when invoked with `--garden`.
 

@@ -7,8 +7,8 @@
 # (feedback 40a7cdf9). The refuse cases live in bash-arith-guard.cases.sh.
 #
 # Sourced by the credential-read and vault-write suites. The scope suite does
-# not source this file: mandatory-scope-authorizer.sh has its own, older rule
-# that refuses a command name held in a substitution-assigned variable.
+# not source this file; scope-guard-family-b.test.sh section 7a holds the
+# scope guard's own allow and refuse rows for the same shape.
 arith_case 0 resolved-var-command-v "PY=\$(command -v python3); \$PY -c 'print(1)'"
 arith_case 0 resolved-var-quoted-jq 'BIN="$(command -v jq)"; "$BIN" --version'
 arith_case 0 resolved-var-which 'G=$(which git); $G status'

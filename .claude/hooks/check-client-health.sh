@@ -12,7 +12,22 @@
 #      script) corroborates with `hq doctor --json` (the sync family, US-015
 #      hq-cli), runs `hq doctor --fix --yes` for auto-fixable findings,
 #      re-verifies, then files the existing `hq feedback bug` summary for any
-#      remaining findings.
+#      remaining DEFECT.
+#
+# What counts as a defect (the only thing that is filed):
+#   - a sync check that is still FAIL after the repair pass, and
+#   - whose check class was not already reported from this install in the last
+#     14 days (ledger: workspace/.hq-client-health/bugs/reported-checks, one
+#     "<check class> <epoch>" line per class).
+# Everything else is an observation. A WARN (stale journal, stale manifest,
+# update or version notice, runtime warning) is a state the install is
+# already telling its user about, and `hq doctor` raises every sync check as
+# WARN today, so none of them reaches the feedback queue. Observations go to
+# workspace/.hq-client-health/observations.log (epoch, tab, check id; last 200
+# lines) and, for stale journals, to the client-health heartbeat that hq-cli
+# sends on its own. A check class is a check name with the company part
+# removed (sync.journal.<slug> is sync.journal.company), so --fix rotating
+# through companies does not look like a new failure.
 #
 # Cautions paid for in blood:
 #   - The cooldown window is claimed ATOMICALLY and the stamp is written BEFORE
@@ -162,7 +177,7 @@ if [ "${1:-}" = "--remediate" ]; then
           (.results // [])[]
           | select(.family == "sync" and (.status == "FAIL" or .status == "WARN"))
           | . as $row
-          | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.fix.autoFixable != false)
+          | select((($row.checkId // "") | startswith("sync.journal.") | not) or $row.status == "FAIL" or $row.fix.autoFixable != false)
           | select(($row.checkId != "sync.manifest.personal" and $row.checkId != "sync.update.core" and (($row.checkId // "") | startswith("sync.manifest.company.") | not)) or $row.status == "FAIL" or $row.fix.autoFixable != false)
           | select(((($row.checkId // "") as $rid | ["sync.runtime.realtime-lag", "sync.runtime.device-limit", "sync.runtime.conflicts"] | any(.[]; . == $rid)) | not) or $row.status == "FAIL" or ($row.fix | if type == "object" then .autoFixable else null end) != false)
           | ($row.checkId // "") as $candidate_id
@@ -500,15 +515,33 @@ if [ "${1:-}" = "--remediate" ]; then
         rc=$?
       fi
       # Exit 1 (with no findings) when doctor itself did not run cleanly, so
-      # callers can tell "no findings" from "could not check".
+      # callers can tell "no findings" from "could not check". Output that is
+      # not a doctor document (a banner, a truncated write, no JSON engine to
+      # read it) is "could not check" too: reading it as "no findings" would
+      # clear the reported-checks record and refile every class.
       [ "$rc" -eq 0 ] && [ -n "$document" ] || return 1
+      doctor_document_valid "$document" || return 1
       printf '%s\n' "$document"
     }
 
-    doctor_degraded() {
-      local document
-      document=$(doctor_document) || return 1
-      printf '%s\n' "$document" | sync_findings
+    # 0 when the text is a JSON object with a results array.
+    doctor_document_valid() {
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        printf '%s\n' "$1" | "$HQ_LIB_JQ" -e 'type == "object" and (.results | type) == "array"' >/dev/null 2>&1
+        return $?
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        printf '%s\n' "$1" | "$HQ_LIB_NODE" -e '
+          let d = "";
+          process.stdin.on("data", c => d += c).on("end", () => {
+            try {
+              const doc = JSON.parse(d);
+              process.exit(doc && typeof doc === "object" && Array.isArray(doc.results) ? 0 : 1);
+            } catch { process.exit(1); }
+          });' >/dev/null 2>&1
+        return $?
+      fi
+      return 1
     }
 
     # stdin: an `hq doctor --json` document. stdout: the checkId of every sync
@@ -540,17 +573,105 @@ if [ "${1:-}" = "--remediate" ]; then
       cat >/dev/null 2>&1 || true
     }
 
-    # The set of check IDs last reported from this install, as one line:
-    # "<fingerprint> <epoch of the successful send>". The same set is not
-    # filed again until a clean doctor run shows no findings, the set changes,
-    # or 14 days pass since that send (feedback 9b4a5016: machines filed the
-    # same report every day). The expiry matters because the clean run that
-    # clears the record only happens inside remediation, and remediation only
-    # runs when a session sees a foreground signal. A user who fixes sync by
-    # hand never gets that run, so without an expiry the same set returning
-    # later would never be reported again.
-    REPORTED_SET="$STATE_DIR/bugs/reported-set"
-    REPORTED_SET_TTL_SECONDS=1209600   # 14 days
+    # stdin: an `hq doctor --json` document. stdout: the checkId of every sync
+    # row whose status is exactly FAIL, named the way sync_findings names it
+    # (an id outside the allowed shape is "unknown"), so a FAIL row can be
+    # matched to its line in the findings list. Only these rows are defects;
+    # every other finding is an observation. Prints nothing on bad input. All
+    # unrecognised ids share the class "unknown", so a second, different odd-id
+    # FAIL inside the window is not filed separately.
+    sync_fail_ids() {
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        "$HQ_LIB_JQ" -r '(.results // [])[] | select(type == "object")
+          | select(.family == "sync" and .status == "FAIL")
+          | (.checkId | if type == "string" and test("^sync\\.[A-Za-z0-9._-]{1,160}$") then . else "unknown" end)' \
+          2>/dev/null || true
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        "$HQ_LIB_NODE" -e '
+          let d = "";
+          process.stdin.on("data", c => d += c).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(d); } catch { return; }
+            for (const r of (doc && Array.isArray(doc.results)) ? doc.results : []) {
+              if (!r || r.family !== "sync" || r.status !== "FAIL") continue;
+              process.stdout.write((typeof r.checkId === "string" && /^sync\.[A-Za-z0-9._-]{1,160}$/.test(r.checkId)
+                ? r.checkId : "unknown") + "\n");
+            }
+          });' 2>/dev/null || true
+        return 0
+      fi
+      cat >/dev/null 2>&1 || true
+    }
+
+    # stdin: an `hq doctor --json` document. stdout: the checkId of every sync
+    # row that is FAIL or WARN, with none of sync_findings' filters (named the
+    # same way). A reported class counts as cleared only when it is absent from
+    # this list, so a class that drops to a WARN the filters hide keeps its
+    # record and a later FAIL inside the window stays suppressed.
+    sync_all_ids() {
+      if [ -n "${HQ_LIB_JQ:-}" ]; then
+        "$HQ_LIB_JQ" -r '(.results // [])[] | select(type == "object")
+          | select(.family == "sync" and (.status == "FAIL" or .status == "WARN"))
+          | (.checkId | if type == "string" and test("^sync\\.[A-Za-z0-9._-]{1,160}$") then . else "unknown" end)' \
+          2>/dev/null || true
+        return 0
+      fi
+      if [ -n "${HQ_LIB_NODE:-}" ]; then
+        "$HQ_LIB_NODE" -e '
+          let d = "";
+          process.stdin.on("data", c => d += c).on("end", () => {
+            let doc;
+            try { doc = JSON.parse(d); } catch { return; }
+            for (const r of (doc && Array.isArray(doc.results)) ? doc.results : []) {
+              if (!r || r.family !== "sync" || (r.status !== "FAIL" && r.status !== "WARN")) continue;
+              process.stdout.write((typeof r.checkId === "string" && /^sync\.[A-Za-z0-9._-]{1,160}$/.test(r.checkId)
+                ? r.checkId : "unknown") + "\n");
+            }
+          });' 2>/dev/null || true
+        return 0
+      fi
+      cat >/dev/null 2>&1 || true
+    }
+
+    # The check class of one finding ("<checkId>" or "<checkId>: <reason>"):
+    # the check name with the company part removed. Sets CHECK_CLASS. Personal
+    # journals keep their own ids, company journals share one class, and company
+    # manifests share one class, so --fix rotating through companies does not
+    # look like a new failure.
+    check_class_of() {
+      local id="${1%%:*}"
+      case "$id" in
+        sync.journal.personal|sync.journal.__hq_personal_vault__) CHECK_CLASS="$id" ;;
+        sync.journal.*) CHECK_CLASS="sync.journal.company" ;;
+        sync.manifest.company.*) CHECK_CLASS="sync.manifest.company" ;;
+        sync.manifest.unresolved.*) CHECK_CLASS="sync.manifest.unresolved" ;;
+        *) CHECK_CLASS="$id" ;;
+      esac
+    }
+
+    # stdin: findings, one per line. stdout: their sorted, deduplicated classes.
+    classes_of() {
+      local line
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        check_class_of "$line"
+        printf '%s\n' "$CHECK_CLASS"
+      done | sort -u
+    }
+
+    # The check classes already reported from this install, one line each:
+    # "<check class> <epoch of the successful send>". A class is not filed again
+    # until its record is 14 days old, or until a doctor run that completed
+    # shows the class gone (a later recurrence is a new report). The expiry
+    # matters because the clearing run only happens inside remediation, and
+    # remediation only runs when a session sees a foreground signal. A user who
+    # fixes sync by hand never gets that run, so without an expiry the same
+    # class returning later would never be reported again.
+    LEDGER="$STATE_DIR/bugs/reported-checks"
+    LEDGER_TTL_SECONDS=1209600   # 14 days
+    rm -f "$STATE_DIR/bugs/reported-set" 2>/dev/null   # whole-set record of older hooks
     # HQ_TEST_FORCE_HEALTH_NOW is a fixture seam only (same shape as
     # HQ_TEST_FORCE_HEALTH_DEADLINE): it moves this run's clock so the 14-day
     # expiry is provable without waiting.
@@ -560,13 +681,106 @@ if [ "${1:-}" = "--remediate" ]; then
       *) NOW="$HQ_TEST_FORCE_HEALTH_NOW" ;;
     esac
 
+    # One bounded attempt per install, not one attempt per company/check.
+    BUG_LOCK="$STATE_DIR/bugs/summary.lock"
+    ATTEMPT_STAMP="$STATE_DIR/bugs/report-attempt.stamp"
+    claim_bug_lock() {
+      local lock_mtime
+      if [ -f "$BUG_LOCK" ]; then
+        lock_mtime=$(stat -c %Y "$BUG_LOCK" 2>/dev/null || stat -f %m "$BUG_LOCK" 2>/dev/null || echo "$NOW")
+        [ "$((NOW - lock_mtime))" -gt 3600 ] && rm -f "$BUG_LOCK" 2>/dev/null
+      fi
+      ( set -C; : > "$BUG_LOCK" ) 2>/dev/null
+    }
+
+    # stdin: classes. stdout: the ones with no live record. A line counts only
+    # as exactly "<class> <digits>" with an epoch that is not in the future and
+    # is under 14 days old; anything else is treated as no record, so a corrupt
+    # ledger files a report instead of hiding one.
+    ledger_fresh_classes() {
+      HQ_LEDGER_FILE="$LEDGER" awk -v now="$NOW" -v ttl="$LEDGER_TTL_SECONDS" '
+        BEGIN {
+          ledger = ENVIRON["HQ_LEDGER_FILE"]
+          while ((getline line < ledger) > 0) {
+            if (split(line, f, " ") == 2 && f[2] ~ /^[0-9]+$/ && length(f[2]) <= 12 && (f[2] + 0) <= (now + 0) && ((now + 0) - (f[2] + 0)) < (ttl + 0)) seen[f[1]] = 1
+          }
+          close(ledger)
+        }
+        NF && !($1 in seen) && !($1 in out) { out[$1] = 1; print $1 }'
+    }
+
+    # ledger_rewrite <classes just filed> <classes still present>: stdout is
+    # the new ledger. Keeps valid records of classes still present, drops
+    # cleared ones, and stamps the filed classes with this run's clock.
+    ledger_rewrite() {
+      HQ_LEDGER_FILE="$LEDGER" HQ_LEDGER_FILED="$1" HQ_LEDGER_PRESENT="$2" awk -v now="$NOW" '
+        BEGIN {
+          ledger = ENVIRON["HQ_LEDGER_FILE"]
+          n = split(ENVIRON["HQ_LEDGER_FILED"], a, "\n")
+          for (i = 1; i <= n; i++) if (a[i] != "") { F[a[i]] = 1; order[++cnt] = a[i] }
+          n = split(ENVIRON["HQ_LEDGER_PRESENT"], b, "\n")
+          for (i = 1; i <= n; i++) if (b[i] != "") P[b[i]] = 1
+          while ((getline line < ledger) > 0) {
+            if (split(line, f, " ") == 2 && f[2] ~ /^[0-9]+$/ && length(f[2]) <= 12 && (f[1] in P) && !(f[1] in F)) print f[1] " " f[2]
+          }
+          for (i = 1; i <= cnt; i++) print order[i] " " now
+        }'
+    }
+
+    # Drop the records of classes a completed doctor run no longer shows.
+    # Best effort: a non-empty prune is skipped when a report is being filed
+    # right now; an empty one (nothing is present) removes the file without the
+    # lock, which at worst drops a record a concurrent filer is about to rewrite.
+    ledger_prune() {
+      local tmp
+      [ -f "$LEDGER" ] || return 0
+      if [ -z "$1" ]; then
+        rm -f "$LEDGER" 2>/dev/null
+        return 0
+      fi
+      claim_bug_lock || return 0
+      tmp="$LEDGER.$$"
+      if ( ledger_rewrite "" "$1" > "$tmp" ) 2>/dev/null && mv -f "$tmp" "$LEDGER" 2>/dev/null; then
+        :
+      else
+        rm -f "$tmp" 2>/dev/null
+      fi
+      rm -f "$BUG_LOCK" 2>/dev/null
+    }
+
+    # Append observations (stdin: findings) to the local health report and keep
+    # the last 200 lines. Only sanitised check ids are written; never messages.
+    record_observations() {
+      local log="$STATE_DIR/observations.log" line tmp
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf '%s\t%s\n' "$NOW" "$line" >> "$log" 2>/dev/null || return 0
+      done
+      tmp="$log.$$"
+      if tail -n 200 "$log" > "$tmp" 2>/dev/null && mv -f "$tmp" "$log" 2>/dev/null; then
+        :
+      else
+        rm -f "$tmp" 2>/dev/null
+      fi
+    }
+
     # Corroborate: the foreground signal alone is not enough to act on.
-    FINDINGS=$(doctor_degraded)
+    FIRST_DOC=$(doctor_document)
     DOCTOR_RC=$?
+    FINDINGS=""
+    if [ "$DOCTOR_RC" -eq 0 ]; then
+      FINDINGS=$(printf '%s\n' "$FIRST_DOC" | sync_findings)
+    fi
     if [ -z "$FINDINGS" ]; then
-      [ "$DOCTOR_RC" -eq 0 ] && rm -f "$REPORTED_SET" 2>/dev/null
+      # A completed run with nothing to act on clears the records of classes it
+      # no longer shows at all (FAIL or WARN, unfiltered). A run that could not
+      # be read clears nothing.
+      if [ "$DOCTOR_RC" -eq 0 ]; then
+        ledger_prune "$(printf '%s\n' "$FIRST_DOC" | sync_all_ids | classes_of)"
+      fi
       exit 0
     fi
+    FIRST_DOC=""
 
     # Attempt the allowlisted safe repairs, then re-verify. Only findings that
     # SURVIVE the fix pass are report-worthy — a fixed issue files no bug.
@@ -592,11 +806,22 @@ if [ "${1:-}" = "--remediate" ]; then
     REMAINING_RC=$?
     REMAINING=""
     REMAINING_WARN_IDS=""
+    REMAINING_FAIL_IDS=""
+    PRESENT_CLASSES=""
     if [ "$REMAINING_RC" -eq 0 ]; then
       REMAINING=$(printf '%s\n' "$REMAINING_DOC" | sync_findings)
       REMAINING_WARN_IDS=$(printf '%s\n' "$REMAINING_DOC" | sync_warn_ids)
+      REMAINING_FAIL_IDS=$(printf '%s\n' "$REMAINING_DOC" | sync_fail_ids)
+      PRESENT_CLASSES=$(printf '%s\n' "$REMAINING_DOC" | sync_all_ids | classes_of)
     fi
     REMAINING_DOC=""
+    # PRESENT_CLASSES: every check class the completed post-fix run still shows,
+    # FAIL or WARN, before any filter. A reported class missing from here has
+    # cleared; its record goes, so a later recurrence is a new report. A doctor
+    # that did not run clears nothing.
+    if [ "$REMAINING_RC" -eq 0 ]; then
+      ledger_prune "$PRESENT_CLASSES"
+    fi
     HQ_CLI_VERSION_SEEN=$(cd "$HQ_ROOT" 2>/dev/null && bounded 15 hq --version 2>/dev/null \
       | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     # An outdated hq-cli cannot repair these checks itself. Tell the user once
@@ -610,12 +835,6 @@ if [ "${1:-}" = "--remediate" ]; then
       else
         rm -f "$PENDING_TMP" 2>/dev/null
       fi
-    fi
-    # The repair pass cleared everything: a later recurrence is a new report.
-    # Checked before the unreached-journal filter, which hides rows that
-    # are still failing.
-    if [ "$REMAINING_RC" -eq 0 ] && [ -z "$REMAINING" ]; then
-      rm -f "$REPORTED_SET" 2>/dev/null
     fi
     UNREACHED_COMPANY_JOURNAL_COUNT=0
     if [ "$UNREACHED_FILTER_ENABLED" = true ]; then
@@ -657,7 +876,7 @@ EOF_FINDINGS
     fi
     # Journals and auto-fixable WARN manifests past the --fix refresh cap are not
     # failures yet. This needs no flag: the fix JSON itself says they were not
-    # reached. Attempted journals that stayed FAIL or WARN still file.
+    # reached. Attempted journals that stayed FAIL still file (a WARN never does).
     if [ -n "$REMAINING" ] && CAPPED_UNREACHED_IDS=$(fix_unreached_ids "$FIX_RESULT" "$REMAINING" "$REMAINING_WARN_IDS") \
         && [ -n "$CAPPED_UNREACHED_IDS" ]; then
       FILTERED_REMAINING=""
@@ -691,6 +910,31 @@ EOF_CAPPED
         rm -f "$PENDING_TMP" 2>/dev/null
       fi
     fi
+    # Defect gate. Only a check that is still FAIL after the repair pass is
+    # filed. A WARN is something the install already shows its user (stale
+    # journal, stale manifest, update or version notice, runtime warning): it
+    # goes to the local observations log and nowhere else, whatever its check
+    # class. A finding with no FAIL row in the post-fix document is an
+    # observation, so an id the FAIL list does not name can never be filed by
+    # accident.
+    if [ -n "$REMAINING" ]; then
+      DEFECT_FINDINGS=""
+      OBSERVED_FINDINGS=""
+      while IFS= read -r finding; do
+        [ -n "$finding" ] || continue
+        finding_id="${finding%%:*}"
+        case $'\n'"$REMAINING_FAIL_IDS"$'\n' in
+          *$'\n'"$finding_id"$'\n'*) DEFECT_FINDINGS="${DEFECT_FINDINGS}${finding}"$'\n' ;;
+          *) OBSERVED_FINDINGS="${OBSERVED_FINDINGS}${finding}"$'\n' ;;
+        esac
+      done <<EOF_GATE
+$REMAINING
+EOF_GATE
+      REMAINING="${DEFECT_FINDINGS%$'\n'}"
+      if [ -n "$OBSERVED_FINDINGS" ]; then
+        printf '%s\n' "$OBSERVED_FINDINGS" | sanitize_check_ids | record_observations
+      fi
+    fi
     [ -n "$REMAINING" ] || exit 0
     # An hq-cli below the fix floor cannot clear journal or manifest checks;
     # only an update can. When those are all that is left, the local update
@@ -705,51 +949,34 @@ EOF_CAPPED
     # Only sanitised IDs leave the machine. Cap both rows and ID length so a
     # large install still produces a small report; raw messages stay local.
     CHECK_IDS=$(printf '%s\n' "$REMAINING" | sanitize_check_ids)
-    # Fingerprint the KINDS of failing checks, not each company: per-company
-    # rows come and go as --fix rotates through journals, so per-company ids
-    # would give a new fingerprint (and a new report) on most days. Personal
-    # journals keep their own ids. The result is sorted and deduped, so doctor
-    # output order does not matter.
-    CHECK_SET=$(printf '%s\n' "$CHECK_IDS" | sed -E \
-        -e 's/^sync\.journal\.(personal|__hq_personal_vault__)(:|$)/sync.journal-personal.\1\2/' \
-        -e 's/^sync\.journal\.[^:]*/sync.journal.company/' \
-        -e 's/^sync\.journal-personal\./sync.journal./' \
-        -e 's/^(sync\.manifest\.(company|unresolved))\.[^:]*/\1/' \
-      | sort -u | cksum | tr -d ' \t')
 
     # One bounded attempt per install, not one attempt per company/check.
     # Reserve it BEFORE sending: a timeout may mean the report was accepted
     # but the response was lost. Retrying could duplicate the report.
-    BUG_LOCK="$STATE_DIR/bugs/summary.lock"
-    ATTEMPT_STAMP="$STATE_DIR/bugs/report-attempt.stamp"
-    if [ -f "$BUG_LOCK" ]; then
-      LOCK_MTIME=$(stat -c %Y "$BUG_LOCK" 2>/dev/null || stat -f %m "$BUG_LOCK" 2>/dev/null || echo "$NOW")
-      [ "$((NOW - LOCK_MTIME))" -gt 3600 ] && rm -f "$BUG_LOCK" 2>/dev/null
-    fi
-    if ! ( set -C; : > "$BUG_LOCK" ) 2>/dev/null; then
+    if ! claim_bug_lock; then
       exit 0
     fi
-    # The same set was already reported from this install in the last 14
-    # days and has not cleared since: one open report is enough. Read under
-    # the lock so a concurrent run's record is seen. Only an exact
-    # "<fingerprint> <epoch>" line with an epoch that is not in the future
-    # suppresses; anything else is treated as no record, so a corrupt ledger
-    # files a report instead of hiding one. A dedup hit exits here without
-    # writing, so it never extends the window.
-    LEDGER=""
-    [ -f "$REPORTED_SET" ] && LEDGER=$(head -c 256 "$REPORTED_SET" 2>/dev/null)
-    LEDGER_TS="${LEDGER#* }"
-    if [ -n "$CHECK_SET" ] && [ "$LEDGER" = "$CHECK_SET $LEDGER_TS" ]; then
-      case "$LEDGER_TS" in
-        ""|*[!0-9]*) ;;
-        *)
-          if [ "${#LEDGER_TS}" -le 12 ] && [ "$LEDGER_TS" -le "$NOW" ] \
-              && [ "$((NOW - LEDGER_TS))" -lt "$REPORTED_SET_TTL_SECONDS" ]; then
-            rm -f "$BUG_LOCK" 2>/dev/null
-            exit 0
-          fi
-          ;;
+    # Keep only the check classes with no live record: a class already reported
+    # from this install in the last 14 days (and not cleared since) is one open
+    # report already. Read under the lock so a concurrent run's record is seen.
+    # A dedup hit exits here without writing, so it never extends the window.
+    # A class absent from the ledger is a new failure class and files even when
+    # other classes were reported a day ago.
+    CLASSES_TO_FILE=$(printf '%s\n' "$CHECK_IDS" | classes_of | ledger_fresh_classes)
+    FRESH_IDS=""
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      check_class_of "$line"
+      case $'\n'"$CLASSES_TO_FILE"$'\n' in
+        *$'\n'"$CHECK_CLASS"$'\n'*) FRESH_IDS="${FRESH_IDS}${line}"$'\n' ;;
       esac
+    done <<EOF_FRESH
+$CHECK_IDS
+EOF_FRESH
+    CHECK_IDS="${FRESH_IDS%$'\n'}"
+    if [ -z "$CHECK_IDS" ]; then
+      rm -f "$BUG_LOCK" 2>/dev/null
+      exit 0
     fi
     if [ -f "$ATTEMPT_STAMP" ]; then
       STAMP_MTIME=$(stat -c %Y "$ATTEMPT_STAMP" 2>/dev/null || stat -f %m "$ATTEMPT_STAMP" 2>/dev/null || echo "$NOW")
@@ -765,8 +992,9 @@ EOF_CAPPED
     # The removed direct-Sentry CLI route is no longer available. Keep sending
     # the same sanitized summary through the feedback report path below.
     CHECK_COUNT=$(printf '%s\n' "$CHECK_IDS" | wc -l | tr -d ' ')
-    # Annotate each journal row with how its --fix pull ended. The fingerprint
-    # above is computed from CHECK_IDS alone, so outcomes never change dedup.
+    # Annotate each journal row with how its --fix pull ended. Dedup is by
+    # check class (the ledger above) and uses CHECK_IDS alone, so outcomes never
+    # change it.
     OUTCOME_CLASSES=$(refresh_sync_outcome_classes "$FIX_RESULT")
     CHECK_LIST=$(printf '%s\n' "$CHECK_IDS" | head -50 | while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -795,7 +1023,7 @@ likely-cause=stale-cli"
 src=client-health impact=inferred
 Automated report from the check-client-health SessionStart hook.
 
-After the safe repair pass, $CHECK_COUNT sync checks still report FAIL or WARN.
+After the safe repair pass, $CHECK_COUNT sync checks still report FAIL.
 Check IDs or opted-in checkId: reasonCode pairs (up to 50 shown), with the
 --fix pull outcome for sync journals when known:
 $CHECK_LIST
@@ -806,19 +1034,21 @@ $CLI_NOTE
 }
 Doctor messages and log bundles are not attached. Reproduce locally with
 \`hq doctor --json\`. Component versions are attached by the feedback pipeline.
-Automatic reporting is limited to one attempt per HQ install every 24 hours,
-and the same set of checks is reported at most once every 14 days until it
-clears or changes.
+Only checks that still report FAIL after the repair pass are filed. Warnings
+and version notices are not filed. Automatic reporting is
+limited to one attempt per HQ install every 24 hours, and each check class is
+reported at most once every 14 days until it clears.
 EOF
     ); then
       ( : > "$STATE_DIR/bugs/summary.stamp" ) 2>/dev/null || true
-      # Only a filed report suppresses the set, and only a filed report sets
-      # the timestamp. A failed send leaves the ledger as it was and may retry
+      # Only a filed report records its classes, and only a filed report sets
+      # their timestamp. A failed send leaves the ledger as it was and may retry
       # after the 24h cooldown, as before. Written via rename so a reader
-      # never sees a half-written line.
-      LEDGER_TMP="$REPORTED_SET.$$"
-      if ( printf '%s %s\n' "$CHECK_SET" "$NOW" > "$LEDGER_TMP" ) 2>/dev/null \
-          && mv -f "$LEDGER_TMP" "$REPORTED_SET" 2>/dev/null; then
+      # never sees a half-written line. Records of classes the doctor no longer
+      # shows are dropped in the same write.
+      LEDGER_TMP="$LEDGER.$$"
+      if ( ledger_rewrite "$CLASSES_TO_FILE" "$PRESENT_CLASSES" > "$LEDGER_TMP" ) 2>/dev/null \
+          && mv -f "$LEDGER_TMP" "$LEDGER" 2>/dev/null; then
         :
       else
         rm -f "$LEDGER_TMP" 2>/dev/null
@@ -1089,8 +1319,9 @@ cat <<EOF
 <hq-client-health>
 Detected a possible local health issue ($SIGNAL). Background remediation is
 running: hq doctor will corroborate and apply safe fixes (hq doctor --fix).
-Unresolved checks go to Sentry when the company flag is on, or to the existing
-feedback report path on older installs and while the flag is off.
+Only checks that still fail after the fix are reported, once per check class
+every 14 days. Warnings are written to the local observations log
+(workspace/.hq-client-health/observations.log) and are not filed.
 No action needed in this session.
 </hq-client-health>
 EOF

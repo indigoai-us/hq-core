@@ -30,6 +30,9 @@
 #   [l] the plan is exported to hooks as HQ_HOOK_BRIDGE_PLAN/HQ_HOOK_BRIDGE_BIN
 #       (the policy injector's bridged helper, US-008); a helper-only plan
 #       bridges no hook; a plan inherited from a parent event is cleared
+#   [m] on Windows the bridge call alone carries MSYS2_ENV_CONV_EXCL with PWD
+#       and HQ_ROOT: not the plan call, other hooks or the bash fallback, an
+#       existing value is kept, and other platforms never get it
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -85,6 +88,7 @@ make_fixture() { # <root>
 payload="$(cat)"
 here="$(cd "$(dirname "$0")" && pwd)"
 printf 'port stdin=%s args=%s\n' "${#payload}" "$*" >> "$here/ran.log"
+printf 'port=%s\n' "${MSYS2_ENV_CONV_EXCL-<unset>}" >> "$here/excl.log"
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"bash-hook:fixture-port:%s"}}\n' "$*"
 exit 0
 HOOK
@@ -93,6 +97,7 @@ HOOK
 cat >/dev/null
 here="$(cd "$(dirname "$0")" && pwd)"
 printf 'plain args=%s\n' "$*" >> "$here/ran.log"
+printf 'plain=%s\n' "${MSYS2_ENV_CONV_EXCL-<unset>}" >> "$here/excl.log"
 # The plan master-hook exports to hooks, tabs and newlines made visible.
 plan="${HQ_HOOK_BRIDGE_PLAN-<unset>}"
 plan="${plan//$'\t'/|}"
@@ -139,6 +144,7 @@ set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 cmd="${1:-}"
 [ $# -eq 0 ] || shift
+printf '%s=%s\n' "$cmd" "${MSYS2_ENV_CONV_EXCL-<unset>}" >> "$here/excl.log"
 case "$cmd" in
   bridge-plan)
     printf 'bridge-plan %s\n' "$*" >> "$here/calls.log"
@@ -567,6 +573,73 @@ run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" HQ_HOOK_BRIDGE_BIN="$STUB" HQ_HOOK_BRIDGE_
 [ "$(env_line)" = "env bin=<unset> plan=<unset>" ] && [ ! -e "$CALLS" ] \
   && ok "no port flag: inherited plan cleared, engine never started" || bad "no port flag: env $(env_line)"
 rm -f "$FIX/.claude/hooks/env.log"
+reset_logs
+
+echo "[m] Windows: only the bridge call carries MSYS2_ENV_CONV_EXCL"
+# OSTYPE comes from the environment here because bash keeps an imported value,
+# which is how this runs on macOS and Linux.
+EXCL_LOG="$ENGINE/excl.log"
+HOOK_EXCL_LOG="$FIX/.claude/hooks/excl.log"
+excl_seen() { # <log> <name>: the value recorded for name, or <none>
+  local line
+  line="$(grep "^$2=" "$1" 2>/dev/null | tail -1)"
+  printf '%s' "${line:-<none>}"
+}
+expect_excl() { # <label> <log> <name> <value>
+  if [ "$(excl_seen "$2" "$3")" = "$3=$4" ]; then
+    ok "$1: $3 started with $4"
+  else
+    bad "$1: $3 expected $4, saw $(excl_seen "$2" "$3")"
+  fi
+}
+reset_excl() { reset_logs; rm -f "$EXCL_LOG" "$HOOK_EXCL_LOG"; snapshot_with_port; printf '%s\t%s\n' "$HOOK_ID" on > "$PLAN"; }
+# The stub's caller is bash on every platform here, so it sees the value as set.
+for ostype in msys cygwin; do
+  reset_excl
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE="$ostype"
+  [ "$RC" = "0" ] && out_has "bridged:$HOOK_ID:on" && ok "$ostype: engine output returned" || bad "$ostype: rc=$RC out=$(head -c 300 "$TMP/out")"
+  expect_excl "$ostype" "$EXCL_LOG" bridge 'PWD;HQ_ROOT'
+  expect_excl "$ostype" "$EXCL_LOG" bridge-plan '<unset>'
+  expect_excl "$ostype, hook after the bridge" "$HOOK_EXCL_LOG" plain '<unset>'
+done
+# A value the operator set is kept, after PWD and HQ_ROOT, and is what the rest sees.
+reset_excl
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys MSYS2_ENV_CONV_EXCL='FOO;BAR'
+expect_excl "existing value" "$EXCL_LOG" bridge 'PWD;HQ_ROOT;FOO;BAR'
+expect_excl "existing value" "$EXCL_LOG" bridge-plan 'FOO;BAR'
+expect_excl "existing value, hook after the bridge" "$HOOK_EXCL_LOG" plain 'FOO;BAR'
+# An empty value counts as no value: no trailing separator.
+reset_excl
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys MSYS2_ENV_CONV_EXCL=
+expect_excl "empty value" "$EXCL_LOG" bridge 'PWD;HQ_ROOT'
+# The bash fallback after no verdict runs without it. 75 is the port declining.
+for fault in 1 70 75 127; do
+  reset_excl
+  printf '%s\n' "$fault" > "$ENGINE/bridge-rc"
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys
+  expect_excl "engine exit $fault" "$EXCL_LOG" bridge 'PWD;HQ_ROOT'
+  expect_excl "engine exit $fault, bash fallback" "$HOOK_EXCL_LOG" port '<unset>'
+  [ "$(ran_count "$FIX" port)" = "1" ] && ok "engine exit $fault: bash fallback ran once" || bad "engine exit $fault: fallback ran $(ran_count "$FIX" port)"
+done
+# A block verdict still comes back through the helper.
+reset_excl
+printf '2\n' > "$ENGINE/bridge-rc"
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys
+[ "$RC" = "2" ] && [ "$(ran_count "$FIX" port)" = "0" ] && ok "msys: engine exit 2 is a block verdict" || bad "msys engine exit 2: rc=$RC ran=$(ran_count "$FIX" port)"
+# Other platforms: nothing is added or changed, on the real OSTYPE and on named ones.
+for ostype in "" darwin25 linux-gnu; do
+  reset_excl
+  if [ -n "$ostype" ]; then
+    run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE="$ostype"
+  else
+    run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+  fi
+  expect_excl "OSTYPE=${ostype:-native}" "$EXCL_LOG" bridge '<unset>'
+done
+reset_excl
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=linux-gnu MSYS2_ENV_CONV_EXCL=FOO
+expect_excl "OSTYPE=linux-gnu with a value" "$EXCL_LOG" bridge FOO
+rm -f "$EXCL_LOG" "$HOOK_EXCL_LOG"
 reset_logs
 
 if [ "$fail" -eq 0 ]; then

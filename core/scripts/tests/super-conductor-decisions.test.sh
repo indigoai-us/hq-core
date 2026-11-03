@@ -13,7 +13,8 @@
 #     waits the grace period, and a relayed row never gets one;
 #   - next --count claims up to n distinct rows in one call, skips another desk's
 #     fresh claim, re-returns this desk's own claims, and keeps critical rows alone;
-#   - count reports per status.
+#   - count reports per status;
+#   - a 1500-char question and a 120-char label are stored with nothing lost.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 DQ="$ROOT/core/scripts/super-conductor-decisions.mjs"
@@ -37,6 +38,27 @@ node "$DQ" add --file "$Q" --source conductor --ref five-opt --question q --opti
 check "five options are refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
 node "$DQ" add --file "$Q" --source carrier --ref x --question q --option a --option b >/dev/null 2>&1; rc=$?
 check "an unknown source is refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+# Long text round-trips: the owner's card must show the whole ask.
+LQ="$tmp/cl-long-decisions.jsonl"
+longq="$(node -e 'process.stdout.write("Should LiveOps ship the fix? "+"detail ".repeat(210)+"END-OF-QUESTION")')"
+longl="$(node -e 'process.stdout.write("Approve and after it deploys run the smoke suite then "+"x".repeat(60)+" END-OF-LABEL")')"
+lid="$(node "$DQ" add --file "$LQ" --source conductor --ref long-1 --question "$longq" --option "$longl::extra context" --option 'Hold' --at 2026-10-20T01:00:00Z 2>"$tmp/long.err")"; rc=$?
+check "a long question and label are accepted (rc $rc, got: $lid)" "$([[ $rc -eq 0 && "${#longq}" -ge 1500 && "${#longl}" -ge 120 ]]; echo $?)"
+grep -q 'option label is over 60 characters' "$tmp/long.err"; check "add warns when a label is cut" $?
+node -e '
+const fs = require("fs"); const [f, q, l] = process.argv.slice(1);
+const row = JSON.parse(fs.readFileSync(f, "utf8").trim().split("\n")[0]);
+const o = row.options[0];
+if (row.question !== q) { console.error("question changed", row.question.length, q.length); process.exit(1); }
+if (o.label.length > 60) { console.error("label over 60"); process.exit(1); }
+if (!o.description.startsWith(l) || !o.description.endsWith("extra context")) { console.error("label text lost", o.description); process.exit(1); }
+if ("label_cut" in o) { console.error("internal flag stored"); process.exit(1); }
+' "$LQ" "$longq" "$longl"; check "a 1500-char question and 120-char label round-trip with nothing lost" $?
+node "$DQ" add --file "$LQ" --source conductor --ref same-cut --question q --option "$longl one" --option "$longl two" >/dev/null 2>&1; rc=$?
+check "two labels equal after the cut are refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+node "$DQ" add --file "$LQ" --source conductor --ref short-1 --question q --option 'Short::d' --option b 2>"$tmp/short.err" >/dev/null
+[[ ! -s "$tmp/short.err" ]]; check "a short label gives no warning" $?
+
 out="$(node "$DQ" count --file "$Q")"
 check "refused adds write nothing (got: $out)" "$([[ "$out" == '{"open":1}' ]]; echo $?)"
 

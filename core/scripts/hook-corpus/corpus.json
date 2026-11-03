@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "9a06c5885fd043bb828d08ae909e31f831b12662e0decf17f9fb95f6411aa07c",
+  "registry_sha256": "a5042af094352c8aed5f645c77690852a0a2b60b3a9d04b447bdb82744cff5bf",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -784,6 +784,12 @@
       "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {
+      "path": "core/policies/hq-surface-generated-deliverables-immediately.md",
+      "trigger_sha256": "1c85584f92a6ca6d8e3ae8981b03f24dda88c9ed75acd46ec17db3a37c972392",
+      "when": "senduserfile || ffmpeg || (generated && (video || image))",
+      "on": "[PostToolUse, UserPromptSubmit, AssistantIntent]"
+    },
+    {
       "path": "core/policies/hq-sync-codex-validation-and-conflict-resolution.md",
       "trigger_sha256": "c4951376e76baf6fc7012689afc682e7e85599ef361adc8908aaefd517bb16f3",
       "when": "sync",
@@ -1439,7 +1445,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -1478,7 +1487,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -1518,7 +1530,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -1551,7 +1566,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -9656,7 +9674,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9701,7 +9723,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9747,7 +9773,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9792,7 +9822,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9838,7 +9872,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9883,7 +9921,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9929,7 +9971,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -9973,7 +10019,11 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate",
+                    "surface-company-infra-policy"
+                  ]
                 }
               ]
             }
@@ -10374,7 +10424,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10416,7 +10469,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10459,7 +10515,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10501,7 +10560,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10544,7 +10606,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10586,7 +10651,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10629,7 +10697,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -10671,7 +10742,10 @@
                   "gated": false,
                   "prefilter": {
                     "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-                  }
+                  },
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -23043,6 +23117,176 @@
       }
     },
     {
+      "hook_id": "spawn-company-handoff",
+      "entry": "PreToolUse/13/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "pre"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "PreToolUse/13/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "pre"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "mcp__ccd_session__start_session",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "PreToolUse/13/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "pre"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "PreToolUse/13/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "mcp__ccd_session__start_session|start_session",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "pre"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
       "hook_id": "policy-enforcement-gate",
       "entry": "PostToolUse/0/0",
       "rule": "entry",
@@ -23059,7 +23303,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -23101,7 +23348,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -23144,7 +23394,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -23177,7 +23430,10 @@
                   "id": "policy-enforcement-gate",
                   "script": ".claude/hooks/policy-enforcement-gate.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -26110,7 +26366,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26158,7 +26417,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26207,7 +26469,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26255,7 +26520,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26304,7 +26572,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26352,7 +26623,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26401,7 +26675,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -26448,7 +26725,10 @@
                   "gated": false,
                   "prefilter": {
                     "policy_vocab": true
-                  }
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ]
                 }
               ]
             }
@@ -34189,7 +34469,10 @@
                   "id": "migrate-policy-triggers",
                   "script": ".claude/hooks/migrate-policy-triggers-if-changed.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -34223,7 +34506,10 @@
                   "id": "migrate-policy-triggers",
                   "script": ".claude/hooks/migrate-policy-triggers-if-changed.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -34258,7 +34544,10 @@
                   "id": "migrate-policy-triggers",
                   "script": ".claude/hooks/migrate-policy-triggers-if-changed.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -34291,7 +34580,10 @@
                   "id": "migrate-policy-triggers",
                   "script": ".claude/hooks/migrate-policy-triggers-if-changed.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -34325,7 +34617,10 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "migrate-policy-triggers"
+                  ]
                 }
               ]
             }
@@ -34359,7 +34654,10 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "migrate-policy-triggers"
+                  ]
                 }
               ]
             }
@@ -34394,7 +34692,10 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "migrate-policy-triggers"
+                  ]
                 }
               ]
             }
@@ -34427,7 +34728,10 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "migrate-policy-triggers"
+                  ]
                 }
               ]
             }
@@ -36949,7 +37253,10 @@
                   "id": "route-deep-plan-to-skill",
                   "script": ".claude/hooks/route-deep-plan-to-skill.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -36983,7 +37290,10 @@
                   "id": "route-deep-plan-to-skill",
                   "script": ".claude/hooks/route-deep-plan-to-skill.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37018,7 +37328,10 @@
                   "id": "route-deep-plan-to-skill",
                   "script": ".claude/hooks/route-deep-plan-to-skill.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37051,7 +37364,10 @@
                   "id": "route-deep-plan-to-skill",
                   "script": ".claude/hooks/route-deep-plan-to-skill.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37085,7 +37401,11 @@
                   "id": "auto-session-project",
                   "script": ".claude/hooks/auto-session-project.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger",
+                    "spawn-company-handoff"
+                  ]
                 }
               ]
             }
@@ -37119,7 +37439,11 @@
                   "id": "auto-session-project",
                   "script": ".claude/hooks/auto-session-project.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger",
+                    "spawn-company-handoff"
+                  ]
                 }
               ]
             }
@@ -37154,7 +37478,11 @@
                   "id": "auto-session-project",
                   "script": ".claude/hooks/auto-session-project.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger",
+                    "spawn-company-handoff"
+                  ]
                 }
               ]
             }
@@ -37187,7 +37515,11 @@
                   "id": "auto-session-project",
                   "script": ".claude/hooks/auto-session-project.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger",
+                    "spawn-company-handoff"
+                  ]
                 }
               ]
             }
@@ -37221,7 +37553,10 @@
                   "id": "natural-language-router",
                   "script": ".claude/hooks/natural-language-router.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37255,7 +37590,10 @@
                   "id": "natural-language-router",
                   "script": ".claude/hooks/natural-language-router.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37290,7 +37628,10 @@
                   "id": "natural-language-router",
                   "script": ".claude/hooks/natural-language-router.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37323,7 +37664,10 @@
                   "id": "natural-language-router",
                   "script": ".claude/hooks/natural-language-router.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "inject-policy-on-trigger"
+                  ]
                 }
               ]
             }
@@ -37633,7 +37977,12 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "auto-session-project",
+                    "natural-language-router",
+                    "route-deep-plan-to-skill"
+                  ]
                 }
               ]
             }
@@ -37667,7 +38016,12 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "auto-session-project",
+                    "natural-language-router",
+                    "route-deep-plan-to-skill"
+                  ]
                 }
               ]
             }
@@ -37702,7 +38056,12 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "auto-session-project",
+                    "natural-language-router",
+                    "route-deep-plan-to-skill"
+                  ]
                 }
               ]
             }
@@ -37735,7 +38094,12 @@
                   "id": "inject-policy-on-trigger",
                   "script": ".claude/hooks/inject-policy-on-trigger.sh",
                   "timeout": 60,
-                  "gated": false
+                  "gated": false,
+                  "after": [
+                    "auto-session-project",
+                    "natural-language-router",
+                    "route-deep-plan-to-skill"
+                  ]
                 }
               ]
             }
@@ -37749,6 +38113,352 @@
         "cwd": "$FIXTURE",
         "hook_event_name": "SyntheticUnregisteredEvent",
         "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "hq-spawn-intent:"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "hq-spawn-intent:",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "hq-spawn-intent:"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": true,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "hq-spawn-intent:",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": false,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz"
+      }
+    },
+    {
+      "hook_id": "spawn-company-handoff",
+      "entry": "UserPromptSubmit/0/9",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": false,
+      "event": "UserPromptSubmit",
+      "registry": {
+        "hooks": {
+          "UserPromptSubmit": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "spawn-company-handoff",
+                  "script": "core/scripts/spawn-company-handoff.sh",
+                  "timeout": 10,
+                  "gated": false,
+                  "args": [
+                    "prompt"
+                  ],
+                  "prefilter": {
+                    "re": "hq-spawn-intent:"
+                  },
+                  "after": [
+                    "auto-session-project"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "prompt": "synthetic-neutral-zzzz",
         "turn_id": "synthetic-turn"
       }
     },

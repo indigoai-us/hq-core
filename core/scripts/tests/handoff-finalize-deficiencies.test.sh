@@ -72,4 +72,32 @@ missing_rc=0
 [[ "$missing_rc" == 3 ]] || fail "missing deficiencies file should exit 3, got $missing_rc"
 pass "missing deficiencies file is a hard error"
 
+empty_err="$repo/workspace/threads/.handoff-tmp/empty-deficiencies.err"
+empty_rc=0
+empty_out="$(cd "$repo" && HQ_ROOT="$repo" HOME="$repo/home" HQ_HANDOFF_HOST=desktop \
+  PATH="$TMP_ROOT/bin:/usr/bin:/bin:$(dirname "$(command -v jq)")" \
+  bash core/scripts/handoff-finalize.sh --title "Handoff: empty deficiencies" \
+  --summary "synthetic" --message "synthetic" --files-touched-json '[]' \
+  --learnings-json '[]' --tags-json '["handoff"]' --deficiencies-json "" \
+  --slug "empty-deficiencies" --next-command "" 2>"$empty_err")" || empty_rc=$?
+[[ "$empty_rc" == 0 ]] || fail "empty --deficiencies-json should exit 0, got $empty_rc"
+grep -q 'deficiencies will be empty' "$empty_err" || fail "empty --deficiencies-json should warn: $(cat "$empty_err")"
+empty_thread="$repo/$(jq -r '.thread_path' <<<"$empty_out")"
+[[ "$(jq '.deficiencies | length' "$empty_thread")" == 0 ]] || fail "empty flag should store [] deficiencies"
+pass "empty --deficiencies-json warns and stores []"
+
+steps_out="$(cd "$repo" && HQ_ROOT="$repo" HOME="$repo/home" HQ_HANDOFF_HOST=desktop \
+  PATH="$TMP_ROOT/bin:/usr/bin:/bin:$(dirname "$(command -v jq)")" \
+  bash core/scripts/handoff-finalize.sh --title "Handoff: next step keys" \
+  --summary "synthetic" --message "synthetic" --files-touched-json '[]' \
+  --learnings-json '[]' --tags-json '["handoff"]' \
+  --next-steps-json '[{"step":"short","text":"long detail"},{"content":"from content"},{"text":"from text"}]' \
+  --slug "next-step-keys" --next-command "" 2>/dev/null)" || fail "finalize with object next steps failed"
+steps_thread="$repo/$(jq -r '.thread_path' <<<"$steps_out")"
+[[ "$(jq -r '.next_steps[0].text' "$steps_thread")" == "long detail" ]] || fail "finalize dropped text on a step that has step: $(jq -c .next_steps "$steps_thread")"
+[[ "$(jq -r '.next_steps[1].step' "$steps_thread")" == "from content" ]] || fail "finalize did not map content onto step: $(jq -c .next_steps "$steps_thread")"
+[[ "$(jq -r '.next_steps[2].step' "$steps_thread")" == "from text" ]] || fail "finalize did not map text onto step: $(jq -c .next_steps "$steps_thread")"
+[[ "$(jq -r '.next_steps[1] | has("content")' "$steps_thread")" == false ]] || fail "finalize kept the mapped content key"
+pass "finalize maps content/text onto step and keeps extra fields on steps that have step"
+
 echo "PASS: handoff-finalize-deficiencies"

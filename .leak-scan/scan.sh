@@ -164,12 +164,38 @@ read_frontmatter_value() {
   ' "$f"
 }
 
+# leak_list_file <repo path> <env var>: print the file to read a private list
+# from. Public hq-core does not carry the private lists (they named private
+# companies in plain text or as hashes next to their salt), so CI passes them
+# as secrets: the env var holds the file's full contents. Staging keeps the
+# files and needs no secret. Neither source present: exit 2 (fail closed), so a
+# missing secret never turns the gate green.
+LEAK_LIST_TMPS=()
+leak_list_file() {
+  local repo_path="$1" var="$2" content tmp
+  content="${!var:-}"
+  if [[ -n "$content" ]]; then
+    tmp="$(mktemp)"
+    LEAK_LIST_TMPS+=("$tmp")
+    printf '%s\n' "$content" > "$tmp"
+    printf '%s' "$tmp"
+    return 0
+  fi
+  if [[ -f "$repo_path" ]]; then
+    printf '%s' "$repo_path"
+    return 0
+  fi
+  echo "::error::$repo_path missing and $var not set (public hq-core reads this list from the $var secret)" >&2
+  return 2
+}
+leak_list_cleanup() { [[ ${#LEAK_LIST_TMPS[@]} -eq 0 ]] || rm -f "${LEAK_LIST_TMPS[@]}"; }
+
 case "$mode" in
   denylist)
-    deny_file=".leak-scan/denylist.yaml"
-    if [[ ! -f "$deny_file" ]]; then
-      echo "::error::$deny_file missing" >&2; exit 2
-    fi
+    deny_file="$(leak_list_file .leak-scan/denylist.yaml LEAK_SCAN_DENYLIST_YAML)" || exit 2
+    # Command substitution ran the helper in a subshell; track the temp file here.
+    [[ "$deny_file" == .leak-scan/denylist.yaml ]] || LEAK_LIST_TMPS+=("$deny_file")
+    trap leak_list_cleanup EXIT
 
     patterns=()
     for section in companies persons domains products operational; do
@@ -187,7 +213,7 @@ case "$mode" in
     for f in "${files[@]}"; do
       [[ -z "$f" ]] && continue
       [[ ! -f "$f" ]] && continue
-      [[ "$f" == "$deny_file" ]] && continue
+      [[ "$f" == "$deny_file" || "$f" == .leak-scan/denylist.yaml ]] && continue
       [[ "$f" == "CONTRIBUTING.md" ]] && continue
 
       for pat in "${patterns[@]}"; do

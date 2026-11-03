@@ -77,6 +77,63 @@ Mode affects Steps 2-4 (premise challenge depth, question framing, research scop
 
 **If input is empty:** go straight to Step 3 (full interview).
 
+## Step 1.5: Board Entry + Work Mesh Registration (at start, not at the end)
+
+The project exists on the Board and in Work Mesh from the moment the
+brainstorm starts, so teammates and the HQ app see it while the work is still
+in progress. Do this before any research or interview question. Skip only
+when the company is unknown (empty input): run it as soon as Step 3 resolves
+`{co}` and a working title.
+
+Read `companies/{co}/board.json`.
+
+**If started from existing board idea** (`source_idea_id` set): find that
+entry; set `status` to `"exploring"` if it is still `"idea"`; update
+`updated_at`. Reuse its `id` as `{board-project-id}`.
+
+**If fresh brainstorm**: generate the next ID (collect all `id` values from
+`projects`, extract numeric suffixes from `{prefix}-proj-{NNN}`, next =
+`{prefix}-proj-{max_N + 1}` zero-padded to 3 digits) and append:
+  ```json
+  {
+    "id": "{prefix}-proj-{NNN}",
+    "title": "{concise working title}",
+    "description": "{user's description}",
+    "status": "exploring",
+    "scope": "company",
+    "app": null,
+    "initiative_id": null,
+    "objective_id": null,
+    "prd_path": null,
+    "brainstorm_path": null,
+    "created_at": "{ISO8601}",
+    "updated_at": "{ISO8601}"
+  }
+  ```
+
+Write `board.json`, re-read it, and confirm the entry exists.
+
+Then register the entry in Work Mesh. This is always-on for cloud-backed
+companies; there is no flag and no prompt.
+
+```bash
+bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
+```
+
+- `register` → run the registration and verify its one output line:
+  ```bash
+  bash core/scripts/register-project.sh --board {co} {board-project-id}
+  ```
+  The verify line is `registered {co}/{board-project-id} thread=<id> channel=<id>`.
+  If the script exits non-zero or prints anything else, say "registration
+  incomplete" once, keep going with the brainstorm, and retry the same command
+  in Step 6. Do not create a replacement project.
+- `registered` → nothing to do.
+- `local` → the company is not cloud-backed; nothing to do.
+- `deferred` → the user declined registration for this entry earlier; do not
+  register it. Register only if the user asks for it in this session.
+- `missing` → the Board write above failed; fix it and re-run the check.
+
 ## Step 2: HQ Research (before any questions)
 
 Do not ask questions yet. Build context from HQ first.
@@ -376,60 +433,21 @@ Q-success: {answer}
 
 ## Step 6: Board Integration
 
-Read `companies/{co}/board.json`.
+The Board entry and Work Mesh registration were created in Step 1.5. Here,
+mark the brainstorm as written.
 
-**If started from existing board idea** (`source_idea_id` set):
-- Find that entry by ID
-- Update `status` --> `"brainstormed"`
-- Add `brainstorm_path: "companies/{co}/projects/{slug}/brainstorm.md"`
-- Update `updated_at`
-
-**If fresh brainstorm** (no existing board idea):
-- Generate next ID: collect all `id` values from `projects` array, extract numeric suffixes from `{prefix}-proj-{NNN}` pattern, next = `{prefix}-proj-{max_N + 1}` zero-padded to 3 digits
-- Append new entry:
-  ```json
-  {
-    "id": "{prefix}-proj-{NNN}",
-    "title": "{concise title}",
-    "description": "{user's description}",
-    "status": "brainstormed",
-    "scope": "company",
-    "app": null,
-    "initiative_id": null,
-    "objective_id": null,
-    "prd_path": null,
-    "brainstorm_path": "companies/{co}/projects/{slug}/brainstorm.md",
-    "created_at": "{ISO8601}",
-    "updated_at": "{ISO8601}"
-  }
-  ```
+Read `companies/{co}/board.json`, find the entry by `{board-project-id}`, and set:
+- `status` --> `"brainstormed"`
+- `brainstorm_path: "companies/{co}/projects/{slug}/brainstorm.md"`
+- `title` --> the final title if it changed during the interview
+- `updated_at`
 
 Write updated `board.json`.
 
-### Offer Work Mesh registration for a cloud-backed project
-
-After the Board entry is written, check whether the entry has a Work Mesh
-registration:
-
-```bash
-bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}
-```
-
-If it prints `offer`, ask once with `AskUserQuestion` and these options:
-`Create the Work Mesh project now` and `Not now`. This offer is controlled by
-the default-off `workmesh.offer-project-create-on-brainstorm` hq-flags key.
-On acceptance, record the choice and register the existing Board entry:
-
-```bash
-bash core/scripts/work-mesh-project-registration-offer.sh --accept {co} {board-project-id}
-bash core/scripts/register-project.sh --brainstorm {co} {board-project-id}
-```
-
-Verify registration from the script's `registered {co}/{board-project-id}`
-line. On `Not now`, call `--defer` for that entry; do not register it, and do
-not ask again for that entry. `accepted`, `deferred`, `registered`, `local`,
-`off`, or `missing` means no prompt is needed. If an accepted registration
-previously failed, retry it without asking again.
+If Step 1.5 ended with "registration incomplete", or Step 1.5 was skipped
+because the company was unknown at the time, run the registration check and
+`register-project.sh --board` now exactly as in Step 1.5. A registration that
+still fails is reported as "registration incomplete" in Step 7.
 
 ## Step 6.4: Open Session Journal
 
@@ -540,7 +558,7 @@ The plan phase is the only part of this skill that writes prd.json. It reuses th
 
 1. **Interview.** Run the grilling engine with `question_set: .claude/skills/_shared/questions/prd.md`, `mode: one-at-a-time`, and `known_facts` loaded from the Phase B answers: every `Q-id: answer` line in brainstorm.md whose id exists in the PRD question set, plus answers the PRD set's `prefill:` hints take from brainstorm.md (Context, Recommendation, rejected approaches). Do not re-ask loaded ids as confirmations.
 2. **Generate.** Write `{project_dir}/prd.json` and `{project_dir}/README.md` following `/prd` Step 5 (`.claude/skills/prd/SKILL.md`), including `metadata.interview` from the engine count object. Every item in the brainstorm's **Removal plan** becomes its own story (or acceptance criteria on the story that replaces it), with the removal check as its acceptance test. Carry the **External verification** pass condition into the PRD's acceptance criteria. Run `bash core/scripts/prd-interview-check.sh {project_dir}/prd.json` and show any warning.
-3. **Finalize.** Follow `.claude/skills/_shared/prd-finalize.md` in order as caller `/prd`. Step 5.5 sets brainstorm.md frontmatter to `status: promoted` with `promoted_to: {project_dir}/prd.json`. Step 5.6 sets the board entry to `prd_created`. Step 5.7 runs Work Mesh registration, which is where policy `hq-work-mesh-prd-genesis` fires; do not skip it.
+3. **Finalize.** Follow `.claude/skills/_shared/prd-finalize.md` in order as caller `/prd`. Step 5.5 sets brainstorm.md frontmatter to `status: promoted` with `promoted_to: {project_dir}/prd.json`. Step 5.6 sets the board entry to `prd_created`. Step 5.7 syncs the stories onto the Work Mesh project that Step 1.5 already registered (policy `hq-work-mesh-prd-genesis`); do not skip it.
 4. **Deploy once.** Run the project summary deploy that policy `auto-deploy-project-summary-on-brainstorm-prd` requires for a finished PRD (`project-summary {co}/{slug}`). This one deploy covers the brainstorm and the PRD, because Step 6.6 was deferred. Report only this link.
 5. **Confirm.** Print the `/prd` Step 9 summary and stop. Do not start execution.
 

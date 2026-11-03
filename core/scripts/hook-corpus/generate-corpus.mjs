@@ -11,7 +11,7 @@ export const hash = value => createHash('sha256').update(value).digest('hex');
 const candidates = ['synthetic-neutral-zzzz', 'git', 'hq', 'npm', 'core/skills/', 'qmd', 'companies/example/settings/',
   'merge', 'view_image', '.claude/plans/', 'agent-browser screenshot', 'companies/', 'core', 'deploy', 'env',
   'gh pr create', 'git commit', 'policies/', 'prd.json', 'repos/private/example/', 'Bearer synthetic', 'skills/',
-  'sleep', 'timeout', 'workspace/threads/', 'mktemp', '${G:-gi}t commit'];
+  'sleep', 'timeout', 'workspace/threads/', 'hq-spawn-intent:', 'mktemp', '${G:-gi}t commit'];
 function matches(re, value) {
   // Preserve regex quotes across Windows CreateProcess/MSYS argument parsing.
   // Environment values reach Bash intact, as registry values do at runtime.

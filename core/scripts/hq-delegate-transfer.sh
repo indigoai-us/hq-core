@@ -196,7 +196,8 @@ if command -v hq >/dev/null 2>&1; then
   # ownership and the delegator's open stories to the recipient. Confirmed only
   # when the server answers with the recipient as owner; an older CLI or server
   # (unknown command, 404) leaves ownership "unconfirmed" and the run continues.
-  # PROJECT_VIEW_NOT_FOUND means the project was never registered on the board:
+  # PROJECT_VIEW_NOT_FOUND or PROJECT_THREAD_NOT_FOUND (any stage, PRD or
+  # brainstorm) means the project was never registered on the board:
   # there is nothing to reassign, so that is "not-registered", not "unconfirmed".
   # The mesh directory matches uids, not emails. A recipient resolved by
   # hq-delegate-resolve.sh is often known only by email, so look up the
@@ -218,7 +219,7 @@ if command -v hq >/dev/null 2>&1; then
   if printf '%s' "$REASSIGN_OUT" | jq -e --arg to "$TO_UID" \
       '(.ok != false) and ((.ownerUid // "") != "") and ((.ownerUid == $to) or ($to | test("@")))' >/dev/null 2>&1; then
     MESH_OWNERSHIP="confirmed"
-  elif printf '%s\n%s' "$REASSIGN_OUT" "$REASSIGN_ERR_TEXT" | grep -q 'PROJECT_VIEW_NOT_FOUND'; then
+  elif printf '%s\n%s' "$REASSIGN_OUT" "$REASSIGN_ERR_TEXT" | grep -Eq 'PROJECT_(VIEW|THREAD)_NOT_FOUND'; then
     MESH_OWNERSHIP="not-registered"
     echo "hq-delegate-transfer: project $MESH_PROJECT has no Work Mesh board; local ownership is authoritative; nothing to reassign. To track it on the board, register it with \`hq mesh project register\` (see \`hq mesh project --help\`)" >&2
   else

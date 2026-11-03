@@ -50,7 +50,7 @@ When a run finishes, ready or failed, append one line to `workspace/brief/index.
 Write `status.json` before each step, and again after every source, so the app's progress bar stays truthful and keeps moving. Also keep a rolling `activity` list in `status.json`, newest last, capped at 12 entries. The app shows it under the sunrise so the user can see the run is alive:
 
 ```json
-"activity":[{"at":"…","label":"Read 42 work sessions","state":"done","detail":"Oct 4–9"},{"at":"…","label":"Checking GitHub PRs","state":"running"}]
+"activity":[{"at":"…","label":"Read 42 of 50 sessions","state":"done","detail":"only counted: 6 agent runs, 2 outside this brief"},{"at":"…","label":"Checking GitHub PRs","state":"running"}]
 ```
 
 As each source lands, also update `findings` and `samples` in `status.json`. The app animates these as live counters and preview cards:

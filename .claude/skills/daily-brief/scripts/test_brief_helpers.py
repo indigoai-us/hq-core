@@ -39,11 +39,35 @@ def test_sessions_count_only_you_in_company():
             + [{'company': 'unknown', 'kind': 'agent'}] * 5 + [{'company': 'acme'}])  # missing kind = you
     findings, samples = {}, []
     label, detail = sweep.summarize('sessions', rows, 'acme', findings, samples)
-    assert label == 'Read 4 work sessions', label
-    assert detail == '3 agent runs, 9 elsewhere, counted only', detail
+    assert label == 'Read 4 of 16 sessions', label
+    assert detail == 'only counted: 3 agent runs, 9 outside this brief', detail
     assert findings['sessions'] == 4 and samples == []
     label, detail = sweep.summarize('sessions', [{'company': 'other', 'kind': 'you'}], 'acme', {}, [])
-    assert label == 'Read 0 work sessions' and detail == '1 elsewhere, counted only'
+    assert (label, detail) == ('Read 0 of 1 session', 'it was outside this brief, so only counted'), (label, detail)
+
+
+def test_sessions_line_numbers_add_up():
+    # 7 agent runs and no human sessions: the Desktop done-test case
+    rows = [{'company': 'acme', 'kind': 'agent'}] * 5 + [{'company': 'acme', 'kind': 'lane'}] * 2
+    findings = {}
+    label, detail = sweep.summarize('sessions', rows, 'acme', findings, [])
+    assert (label, detail) == ('Read 0 of 7 sessions', 'all 7 were agent runs, so only counted'), (label, detail)
+    assert findings['sessions'] == 0
+    # a mix of the person's own sessions and agent runs
+    rows = [{'company': 'acme', 'kind': 'you'}] * 2 + [{'company': 'acme', 'kind': 'agent'}]
+    assert sweep.summarize('sessions', rows, 'acme', {}, []) == ('Read 2 of 3 sessions', 'only counted: 1 agent run')
+    # every session is the person's own; an empty kind counts as the person's, like the week arc
+    rows = [{'company': 'acme', 'kind': 'you'}] * 2 + [{'company': 'acme', 'kind': None}]
+    assert sweep.summarize('sessions', rows, 'acme', {}, []) == ('Read 3 of 3 sessions', '')
+    # personal brief: the person's rows carry the personal tag, company rows are outside
+    rows = [{'company': 'personal', 'kind': 'you'}, {'company': 'other', 'kind': 'you'}] * 2
+    assert sweep.summarize('sessions', rows, None, {}, []) == ('Read 2 of 4 sessions', 'only counted: 2 outside this brief')
+    # one agent run alone
+    assert sweep.sessions_line(1, 0, 1) == ('Read 0 of 1 session', 'it was an agent run, so only counted')
+    # no sessions at all
+    findings = {}
+    assert sweep.summarize('sessions', [], 'acme', findings, []) == ('Found no work sessions', '')
+    assert findings['sessions'] == 0
 
 
 def test_pr_summary_uses_window():

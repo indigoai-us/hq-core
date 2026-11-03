@@ -514,11 +514,33 @@ resolve_vault_token() {
   esac
 }
 
+# SEG_IN_QUOTE is "yes" while checking a segment that begins inside an open
+# quote of the original command. Segment splitting on ;|& is not quote-aware,
+# so python3 -c 'x=1; re.sub("<style.*?</style>", ...)' yields a segment that
+# starts inside the -c string, and its </style> reads as a redirect onto ","
+# or "))" (feedback_e9ee6aa4). Only in such segments, a token that has no
+# letter or digit, or that holds a "<", is code text and not a path. Segments
+# that start outside quotes are checked as before.
+SEG_IN_QUOTE="no"
+
+# looks_like_vault_token <token> — 1 only for code fragments in a quoted segment.
+looks_like_vault_token() {
+  [[ "$SEG_IN_QUOTE" == "yes" ]] || return 0
+  local t
+  t="$(strip_token_quotes "$1")"
+  case "$t" in
+    *\<*) return 1 ;;
+    *[A-Za-z0-9]*) return 0 ;;
+  esac
+  return 1
+}
+
 # token_denied <token> — 0 when the token resolves to a vault path the caller
 # may not write. Sets DENY_* on denial.
 token_denied() {
   local tok abs
   tok="$(strip_token_quotes "$1")"
+  looks_like_vault_token "$tok" || return 1
   abs="$(resolve_vault_token "$tok")"
   [[ -n "$abs" ]] || return 1
   abs="$(hq_canonical_path "$abs")"
@@ -840,8 +862,62 @@ check_segment() {
   return 0
 }
 
-SEGMENTS=$(printf '%s' "$CMD" | sed -E 's/(&&|\|\||[;|&])/\n/g')
+# Same split as before (&&, ||, ;, |, & and newlines), with each segment
+# prefixed by Q or U. Q means the segment starts inside a '...' or "..." that
+# was opened as the argument of a -c or -e word on the same line (python3 -c,
+# bash -c, perl -e). Separators still split inside quotes, as the old sed split
+# did. Quote state carries across lines as in bash, but only a quote opened on the
+# current line can mark a segment Q, and quote tracking stops at an unquoted # comment,
+# and $'...' is read with backslash escapes, so an apostrophe in a comment,
+# heredoc line or $'...' string cannot mark later segments Q. A Q segment in
+# which that quote closes and any shell text follows is U again, so a redirect
+# after the closing quote is checked in full.
+# The skip applies only to one-line commands with no heredoc, command
+# substitution or ${...}: those can nest quotes or hide them from bash, which
+# puts the tracker out of step with the shell.
+Q_ALLOWED="yes"
+case "$CMD" in
+  *$'\n'*|*'<<'*|*'$('*|*'`'*|*'${'*) Q_ALLOWED="no" ;;
+esac
+SEGMENTS=$(printf '%s\n' "$CMD" | LC_ALL=C awk '
+{
+  line = $0; n = length(line); pad = "    " line
+  seg = ""; qc = 0; cmt = 0; start = "U"; cl = -1
+  for (i = 1; i <= n; i++) {
+    c = substr(line, i, 1)
+    if (c == ";" || c == "|" || c == "&") {
+      d = substr(line, i + 1, 1)
+      if ((c == "&" && d == "&") || (c == "|" && d == "|")) i++
+      emit(start, seg, cl); seg = ""; cl = -1; start = (q != "" && qc ? "Q" : "U"); continue
+    }
+    seg = seg c
+    if (cmt) continue
+    if (q == "\047") { if (c == "\047") { q = ""; if (cl < 0) cl = length(seg) }; continue }
+    if (c == "\\" && i < n) {
+      d = substr(line, i + 1, 1)
+      if (d != ";" && d != "|" && d != "&") { seg = seg d; i++ }
+      continue
+    }
+    if (q == "$") { if (c == "\047") q = ""; continue }
+    if (q == "\"") { if (c == "\"") { q = ""; if (cl < 0) cl = length(seg) }; continue }
+    w = substr(pad, i, 4)
+    if (c == "#" && (substr(w, 4, 1) == " " || substr(w, 4, 1) == "\t")) { cmt = 1; continue }
+    if (c == "$" && substr(line, i + 1, 1) == "\047") { q = "$"; qc = 0; seg = seg "\047"; i++; continue }
+    if (c == "\047" || c == "\"") {
+      q = c
+      qc = ((w == " -c " || w == " -e " || w == "\t-c " || w == "\t-e ") ? 1 : 0)
+    }
+  }
+  emit(start, seg, cl)
+}
+function emit(st, sg, at) {
+  if (st == "Q" && at >= 0 && substr(sg, at + 1) ~ /[^ \t]/) st = "U"
+  print st sg
+}')
 while IFS= read -r SEGMENT; do
+  SEG_IN_QUOTE="no"
+  [[ "${SEGMENT:0:1}" == "Q" && "$Q_ALLOWED" == "yes" ]] && SEG_IN_QUOTE="yes"
+  SEGMENT="${SEGMENT:1}"
   update_cwd_ctx "$SEGMENT"
   if ! check_segment "$SEGMENT"; then
     block_message "Command: $CMD"

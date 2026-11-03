@@ -296,12 +296,12 @@ cat > "$DOCTOR_REASON_CODES" <<JSON
   "results": [
     { "family": "sync", "status": "WARN", "checkId": "sync.journal.personal", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": false },
       "target": "$LEAK_PATH", "message": "private path $LEAK_PATH and private prose" },
-    { "family": "sync", "status": "WARN", "checkId": "sync.journal.opted-company", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": true },
+    { "family": "sync", "status": "FAIL", "checkId": "sync.journal.opted-company", "reasonCode": "stale-threshold", "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": true },
       "message": "private company prose must stay local" },
     { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.personal", "reasonCode": "stale-threshold",
       "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": false },
       "message": "private manifest prose $LEAK_PATH" },
-    { "family": "sync", "status": "WARN", "checkId": "sync.journal.other-company", "reasonCode": "never-synced", "fix": { "autoFixable": true },
+    { "family": "sync", "status": "FAIL", "checkId": "sync.journal.other-company", "reasonCode": "never-synced", "fix": { "autoFixable": true },
       "message": "private company prose must stay local" },
     { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.upload", "reasonCode": "manifest-upload-rejected",
       "clientHealthReasonCodesEnabled": true, "fix": { "autoFixable": true },
@@ -512,7 +512,7 @@ run_remediate() {
   local -a extra=()
   [ "$engine" = "-" ] || extra+=("HQ_HOOK_ENGINE=$engine")
   set +e
-  env "${extra[@]}" \
+  env ${extra[@]+"${extra[@]}"} \
     PATH="$STUB_BIN:$PATH" \
     HQ_STUB_LOG="$STUB_LOG" \
     HQ_STUB_STATE="$REM_STATE" \
@@ -549,13 +549,12 @@ if [ -z "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ] || [ "${HQ_TEST_CLIENT_HEALTH_ONLY:-
     REM_STATE="$TMP/rem-update-fix-field-absent-warn-$label"
     mkdir -p "$REM_STATE"
     run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_UPDATE_FIX_FIELD_ABSENT"
-    [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-      && ok "sync.update.core WARN with absent autoFixable is reported ($label)" \
-      || bad "sync.update.core WARN with absent autoFixable is reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
-    UPDATE_WARN_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
-    grep -Fq -- "sync.update.core" <<<"$UPDATE_WARN_BODY" \
-      && ok "sync.update.core WARN with absent autoFixable reaches report body ($label)" \
-      || bad "sync.update.core WARN with absent autoFixable reaches report body ($label)" "check id missing"
+    [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+      && ok "sync.update.core WARN with absent autoFixable is an observation, not a report ($label)" \
+      || bad "sync.update.core WARN with absent autoFixable is an observation, not a report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+    grep -Fq -- "sync.update.core" "$TEST_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null \
+      && ok "sync.update.core WARN with absent autoFixable stays in the local observations log ($label)" \
+      || bad "sync.update.core WARN with absent autoFixable stays in the local observations log ($label)" "check id missing"
   done
 fi
 
@@ -567,14 +566,247 @@ if [ -z "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ] || [ "${HQ_TEST_CLIENT_HEALTH_ONLY:-
     REM_STATE="$TMP/rem-manifest-no-fix-object-$label"
     mkdir -p "$REM_STATE"
     run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_MANIFEST_FIX_ABSENT"
-    [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-      && ok "sync.manifest.personal with no fix object is reported ($label)" \
-      || bad "sync.manifest.personal with no fix object is reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
-    MANIFEST_BODY=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
-    grep -Fq -- "sync.manifest.personal" <<<"$MANIFEST_BODY" \
-      && ok "sync.manifest.personal with no fix object reaches report body ($label)" \
-      || bad "sync.manifest.personal with no fix object reaches report body ($label)" "check id missing"
+    [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+      && ok "sync.manifest.personal WARN with no fix object is an observation, not a report ($label)" \
+      || bad "sync.manifest.personal WARN with no fix object is an observation, not a report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+    grep -Fq -- "sync.manifest.personal" "$TEST_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null \
+      && ok "sync.manifest.personal WARN with no fix object stays in the local observations log ($label)" \
+      || bad "sync.manifest.personal WARN with no fix object stays in the local observations log ($label)" "check id missing"
   done
+fi
+
+if [ -z "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ] || [ "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" = "defects-only" ]; then
+echo "== defects only: a FAIL that survives --fix is filed once per check class per 14 days; WARN is not =="
+# Made-up ids only. Each case runs under every available JSON engine.
+FIX_D36_NONE="$TMP/fix-d36-none.json"
+printf '%s\n' '{"exitCode":1,"applied":[],"refreshSync":[]}' > "$FIX_D36_NONE"
+DOCTOR_WARN_ONLY="$TMP/doctor-d36-warn-only.json"
+cat > "$DOCTOR_WARN_ONLY" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.journal.acme","reasonCode":"stale-threshold","fix":{"autoFixable":true}},
+  {"family":"sync","status":"WARN","checkId":"sync.manifest.personal","reasonCode":"stale-threshold","fix":{"autoFixable":true}},
+  {"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_x","reasonCode":"stale-threshold","fix":{"autoFixable":true}},
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.receiver-permission","fix":{"autoFixable":false}},
+  {"family":"sync","status":"WARN","checkId":"sync.runtime.runner-restarts"}
+]}
+JSON
+DOCTOR_VERSION_WARN="$TMP/doctor-d36-version-warn.json"
+cat > "$DOCTOR_VERSION_WARN" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.update.core","reasonCode":"core-update-available","fix":{"autoFixable":true}},
+  {"family":"sync","status":"WARN","checkId":"sync.versions.core","fix":{"autoFixable":true}}
+]}
+JSON
+DOCTOR_FAIL_WITH_WARN="$TMP/doctor-d36-fail-with-warn.json"
+cat > "$DOCTOR_FAIL_WITH_WARN" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.manifest.company.cmp_x","reasonCode":"manifest-upload-rejected","fix":{"autoFixable":true}},
+  {"family":"sync","status":"WARN","checkId":"sync.journal.acme","fix":{"autoFixable":true}},
+  {"family":"sync","status":"WARN","checkId":"sync.update.core","fix":{"autoFixable":true}}
+]}
+JSON
+DOCTOR_FAIL_MANIFEST_ONLY="$TMP/doctor-d36-fail-manifest-only.json"
+cat > "$DOCTOR_FAIL_MANIFEST_ONLY" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.manifest.company.cmp_other","fix":{"autoFixable":true}}
+]}
+JSON
+DOCTOR_FAIL_MANIFEST_PLUS_RUNTIME="$TMP/doctor-d36-fail-manifest-plus-runtime.json"
+cat > "$DOCTOR_FAIL_MANIFEST_PLUS_RUNTIME" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.manifest.company.cmp_x","fix":{"autoFixable":true}},
+  {"family":"sync","status":"FAIL","checkId":"sync.runtime.receiver-permission","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_FAIL_ODD_ID="$TMP/doctor-d36-fail-odd-id.json"
+cat > "$DOCTOR_FAIL_ODD_ID" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.odd id with spaces","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_FAIL_JOURNAL_ONLY="$TMP/doctor-d36-fail-journal-only.json"
+cat > "$DOCTOR_FAIL_JOURNAL_ONLY" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.acme","fix":{"autoFixable":true}}
+]}
+JSON
+DOCTOR_FAIL_JOURNAL_UNFIXABLE="$TMP/doctor-d36-fail-journal-unfixable.json"
+cat > "$DOCTOR_FAIL_JOURNAL_UNFIXABLE" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.journal.acme","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_WARN_JOURNAL_UNFIXABLE="$TMP/doctor-d36-warn-journal-unfixable.json"
+cat > "$DOCTOR_WARN_JOURNAL_UNFIXABLE" <<'JSON'
+{"results":[
+  {"family":"sync","status":"WARN","checkId":"sync.journal.acme","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_NOT_JSON="$TMP/doctor-d36-not-json.txt"
+printf 'hq: a newer version is available\n' > "$DOCTOR_NOT_JSON"
+D36_DAY=86400
+d36_ledger() { printf '%s/workspace/.hq-client-health/bugs/reported-checks' "$1"; }
+d36_obs() { printf '%s/workspace/.hq-client-health/observations.log' "$1"; }
+d36_age_stamp() { touch -t "$ANCIENT" "$1/workspace/.hq-client-health/bugs/report-attempt.stamp"; }
+
+for eng in $ENGINES; do
+  label="$eng"; [ "$eng" = "-" ] && label="default"
+
+  # 1. WARN does not file. Every check here is a WARN the doctor raises today.
+  RD1="$TMP/d36-warn-only-$label"; build_root "$RD1"
+  REM_STATE="$TMP/rem-d36-warn-only-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$RD1" "$eng" "$DOCTOR_WARN_ONLY" "$FIX_D36_NONE" false
+  [ "$REM_RC" = 0 ] && [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "WARN rows file no feedback report ($label)" \
+    || bad "WARN rows file no feedback report ($label)" "rc=$REM_RC filed $(count_lines "$REM_STATE/bugs-filed")"
+  [ "$(count_lines "$(d36_obs "$RD1")")" = 5 ] \
+    && grep -Fq "sync.runtime.receiver-permission" "$(d36_obs "$RD1")" \
+    && ok "WARN rows are kept in the local observations log ($label)" \
+    || bad "WARN rows are kept in the local observations log ($label)" "log: $(cat "$(d36_obs "$RD1")" 2>/dev/null)"
+  [ ! -e "$(d36_ledger "$RD1")" ] && [ ! -e "$RD1/workspace/.hq-client-health/bugs/report-attempt.stamp" ] \
+    && ok "WARN rows reserve no report attempt and write no reported-checks record ($label)" \
+    || bad "WARN rows reserve no report attempt and write no reported-checks record ($label)" "ledger or attempt stamp exists"
+
+  # 2. A stale-version notice does not file.
+  RD2="$TMP/d36-version-warn-$label"; build_root "$RD2"
+  REM_STATE="$TMP/rem-d36-version-warn-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$RD2" "$eng" "$DOCTOR_VERSION_WARN" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && grep -Fq "sync.versions.core" "$(d36_obs "$RD2")" \
+    && grep -Fq "sync.update.core" "$(d36_obs "$RD2")" \
+    && ok "update and version notices file nothing and stay in the observations log ($label)" \
+    || bad "update and version notices file nothing and stay in the observations log ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  RD2B="$TMP/d36-stale-cli-fail-$label"; build_root "$RD2B"
+  REM_STATE="$TMP/rem-d36-stale-cli-fail-$label"; mkdir -p "$REM_STATE"
+  export HQ_STUB_VERSION="5.345.150"
+  run_remediate "$RD2B" "$eng" "$DOCTOR_FAIL_JOURNAL_ONLY" "$FIX_D36_NONE" false
+  unset HQ_STUB_VERSION
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && [ "$(cat "$RD2B/workspace/.hq-client-health/cli-outdated.pending" 2>/dev/null)" = "5.345.150" ] \
+    && ok "a journal FAIL on an hq-cli below the fix floor files nothing and queues the update notice ($label)" \
+    || bad "a journal FAIL on an hq-cli below the fix floor files nothing and queues the update notice ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  # 3. A FAIL that survives --fix files once, alone, without the WARN rows beside it.
+  RD3="$TMP/d36-persistent-fail-$label"; build_root "$RD3"
+  REM_STATE="$TMP/rem-d36-persistent-fail-$label"; mkdir -p "$REM_STATE"
+  T0=$(date +%s)
+  HQ_TEST_FORCE_HEALTH_NOW="$T0" run_remediate "$RD3" "$eng" "$DOCTOR_FAIL_WITH_WARN" "$FIX_D36_NONE" false
+  D3_BODY=$(cat "$REM_STATE/bug-body-last.txt" 2>/dev/null || true)
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && grep -Fq -- "sync.manifest.company.cmp_x" <<<"$D3_BODY" \
+    && ! grep -Fq -- "sync.journal.acme" <<<"$D3_BODY" \
+    && ! grep -Fq -- "sync.update.core" <<<"$D3_BODY" \
+    && grep -Fq -- "sync checks still report FAIL." <<<"$D3_BODY" \
+    && ok "a FAIL that survives --fix files one report that names only the FAIL ($label)" \
+    || bad "a FAIL that survives --fix files one report that names only the FAIL ($label)" "filed $(count_lines "$REM_STATE/bugs-filed") body: $D3_BODY"
+  [ "$(cat "$(d36_ledger "$RD3")" 2>/dev/null)" = "sync.manifest.company $T0" ] \
+    && ok "the filed class is recorded with the send time ($label)" \
+    || bad "the filed class is recorded with the send time ($label)" "ledger: [$(cat "$(d36_ledger "$RD3")" 2>/dev/null)]"
+  grep -Fq "sync.journal.acme" "$(d36_obs "$RD3")" && grep -Fq "sync.update.core" "$(d36_obs "$RD3")" \
+    && ok "the WARN rows beside the FAIL go to the observations log ($label)" \
+    || bad "the WARN rows beside the FAIL go to the observations log ($label)" "log: $(cat "$(d36_obs "$RD3")" 2>/dev/null)"
+
+  # 4. The same FAIL class inside the window does not file again, even when the
+  #    other findings changed, the 24h attempt limit has passed and a different
+  #    company now carries the failure. After 14 days it files again.
+  d36_age_stamp "$RD3"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 10 * D36_DAY))" run_remediate "$RD3" "$eng" "$DOCTOR_FAIL_MANIFEST_ONLY" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && [ "$(cat "$(d36_ledger "$RD3")" 2>/dev/null)" = "sync.manifest.company $T0" ] \
+    && ok "the same FAIL class within 14 days is not filed again and keeps its first timestamp ($label)" \
+    || bad "the same FAIL class within 14 days is not filed again and keeps its first timestamp ($label)" "filed $(count_lines "$REM_STATE/bugs-filed") ledger: [$(cat "$(d36_ledger "$RD3")" 2>/dev/null)]"
+  d36_age_stamp "$RD3"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 15 * D36_DAY))" run_remediate "$RD3" "$eng" "$DOCTOR_FAIL_MANIFEST_ONLY" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+    && [ "$(cat "$(d36_ledger "$RD3")" 2>/dev/null)" = "sync.manifest.company $((T0 + 15 * D36_DAY))" ] \
+    && ok "the same FAIL class files again once its 14-day record has expired ($label)" \
+    || bad "the same FAIL class files again once its 14-day record has expired ($label)" "filed $(count_lines "$REM_STATE/bugs-filed") ledger: [$(cat "$(d36_ledger "$RD3")" 2>/dev/null)]"
+
+  # 5. A new FAIL class files even while another class is inside its window,
+  #    and the report names only the new class.
+  RD5="$TMP/d36-new-class-$label"; build_root "$RD5"
+  REM_STATE="$TMP/rem-d36-new-class-$label"; mkdir -p "$REM_STATE"
+  T0=$(date +%s)
+  HQ_TEST_FORCE_HEALTH_NOW="$T0" run_remediate "$RD5" "$eng" "$DOCTOR_FAIL_MANIFEST_ONLY" "$FIX_D36_NONE" false
+  d36_age_stamp "$RD5"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 2 * D36_DAY))" run_remediate "$RD5" "$eng" "$DOCTOR_FAIL_MANIFEST_PLUS_RUNTIME" "$FIX_D36_NONE" false
+  D5_BODY=$(cat "$REM_STATE/bug-body-last.txt" 2>/dev/null || true)
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
+    && grep -Fq -- "sync.runtime.receiver-permission" <<<"$D5_BODY" \
+    && ! grep -Fq -- "sync.manifest.company" <<<"$D5_BODY" \
+    && ok "a new FAIL class files a report that names only the new class ($label)" \
+    || bad "a new FAIL class files a report that names only the new class ($label)" "filed $(count_lines "$REM_STATE/bugs-filed") body: $D5_BODY"
+  [ "$(count_lines "$(d36_ledger "$RD5")")" = 2 ] \
+    && grep -Fxq "sync.manifest.company $T0" "$(d36_ledger "$RD5")" \
+    && grep -Fxq "sync.runtime.receiver-permission $((T0 + 2 * D36_DAY))" "$(d36_ledger "$RD5")" \
+    && ok "each class keeps its own send time in the ledger ($label)" \
+    || bad "each class keeps its own send time in the ledger ($label)" "ledger: [$(cat "$(d36_ledger "$RD5")" 2>/dev/null)]"
+
+  # 6. A FAIL class that cleared and came back is a new report, and a doctor
+  #    that did not run clears nothing (the latter is covered in sections 26 and 27).
+  d36_age_stamp "$RD5"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 3 * D36_DAY))" run_remediate "$RD5" "$eng" "$DOCTOR_FAIL_MANIFEST_ONLY" "$FIX_D36_NONE" false
+  grep -Fxq "sync.manifest.company $T0" "$(d36_ledger "$RD5")" \
+    && ! grep -Fq "sync.runtime.receiver-permission" "$(d36_ledger "$RD5")" \
+    && ok "a class the completed doctor run no longer shows loses its record ($label)" \
+    || bad "a class the completed doctor run no longer shows loses its record ($label)" "ledger: [$(cat "$(d36_ledger "$RD5")" 2>/dev/null)]"
+  d36_age_stamp "$RD5"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 4 * D36_DAY))" run_remediate "$RD5" "$eng" "$DOCTOR_FAIL_MANIFEST_PLUS_RUNTIME" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 3 ] \
+    && ok "a FAIL class that cleared and returned is reported again ($label)" \
+    || bad "a FAIL class that cleared and returned is reported again ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  # 7. A FAIL whose id is outside the allowed shape is still a defect: it files
+  #    as "unknown" instead of being treated as an observation.
+  RD7="$TMP/d36-odd-id-$label"; build_root "$RD7"
+  REM_STATE="$TMP/rem-d36-odd-id-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$RD7" "$eng" "$DOCTOR_FAIL_ODD_ID" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] && grep -Fq -- "- unknown" "$REM_STATE/bug-body-last.txt" \
+    && ok "a FAIL with an unrecognised id files as unknown ($label)" \
+    || bad "a FAIL with an unrecognised id files as unknown ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  # 8. A journal FAIL that --fix cannot repair is still a defect. (The jq engine
+  #    used to drop every non-fixable journal row whatever its status.)
+  RD9="$TMP/d36-journal-unfixable-$label"; build_root "$RD9"
+  REM_STATE="$TMP/rem-d36-journal-unfixable-$label"; mkdir -p "$REM_STATE"
+  run_remediate "$RD9" "$eng" "$DOCTOR_FAIL_JOURNAL_UNFIXABLE" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] && grep -Fq -- "sync.journal.acme" "$REM_STATE/bug-body-last.txt" \
+    && ok "a journal FAIL that --fix cannot repair is filed ($label)" \
+    || bad "a journal FAIL that --fix cannot repair is filed ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  # 9. A class that drops to a WARN the findings filters hide is still present:
+  #    its record stays, so the FAIL returning inside 14 days is not filed again.
+  RD10="$TMP/d36-warn-keeps-record-$label"; build_root "$RD10"
+  REM_STATE="$TMP/rem-d36-warn-keeps-record-$label"; mkdir -p "$REM_STATE"
+  T0=$(date +%s)
+  HQ_TEST_FORCE_HEALTH_NOW="$T0" run_remediate "$RD10" "$eng" "$DOCTOR_FAIL_JOURNAL_ONLY" "$FIX_D36_NONE" false
+  d36_age_stamp "$RD10"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 2 * D36_DAY))" run_remediate "$RD10" "$eng" "$DOCTOR_WARN_JOURNAL_UNFIXABLE" "$FIX_D36_NONE" false
+  [ "$(cat "$(d36_ledger "$RD10")" 2>/dev/null)" = "sync.journal.company $T0" ] \
+    && ok "a class that drops to a hidden WARN keeps its record ($label)" \
+    || bad "a class that drops to a hidden WARN keeps its record ($label)" "ledger: [$(cat "$(d36_ledger "$RD10")" 2>/dev/null)]"
+  d36_age_stamp "$RD10"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 3 * D36_DAY))" run_remediate "$RD10" "$eng" "$DOCTOR_FAIL_JOURNAL_ONLY" "$FIX_D36_NONE" false
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
+    && ok "the FAIL returning inside 14 days is not filed again ($label)" \
+    || bad "the FAIL returning inside 14 days is not filed again ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+
+  # 10. Doctor output that is not a doctor document clears nothing.
+  d36_age_stamp "$RD10"
+  HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 4 * D36_DAY))" run_remediate "$RD10" "$eng" "$DOCTOR_NOT_JSON" "$FIX_D36_NONE" false
+  [ "$(cat "$(d36_ledger "$RD10")" 2>/dev/null)" = "sync.journal.company $T0" ] \
+    && ok "doctor output that is not a document leaves the reported-checks record alone ($label)" \
+    || bad "doctor output that is not a document leaves the reported-checks record alone ($label)" "ledger: [$(cat "$(d36_ledger "$RD10")" 2>/dev/null)]"
+done
+
+# The observations log keeps its newest 200 lines.
+RD8="$TMP/d36-obs-cap"; build_root "$RD8"
+REM_STATE="$TMP/rem-d36-obs-cap"; mkdir -p "$REM_STATE" "$RD8/workspace/.hq-client-health"
+i=0; while [ "$i" -lt 250 ]; do printf '999999999\tsync.journal.old%s\n' "$i"; i=$((i + 1)); done > "$(d36_obs "$RD8")"
+run_remediate "$RD8" "-" "$DOCTOR_WARN_ONLY" "$FIX_D36_NONE" false
+[ "$(count_lines "$(d36_obs "$RD8")")" = 200 ] && tail -n 1 "$(d36_obs "$RD8")" | grep -Fq "sync.runtime" \
+  && ok "the observations log keeps the newest 200 lines" \
+  || bad "the observations log keeps the newest 200 lines" "lines $(count_lines "$(d36_obs "$RD8")")"
 fi
 
 if [ -n "${HQ_TEST_CLIENT_HEALTH_ONLY:-}" ]; then
@@ -696,20 +928,20 @@ for eng in $ENGINES; do
   REM_STATE="$TMP/rem-update-repairable-warn-$label"
   mkdir -p "$REM_STATE"
   run_remediate "$REPAIRABLE_ROOT" "$eng" "$DOCTOR_UPDATE_REPAIRABLE_WARN"
-  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && ok "repairable sync.update.core WARN remains reportable ($label)" \
-    || bad "repairable sync.update.core WARN remains reportable ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
-  grep -Fq "sync.update.core" "$REM_STATE/bug-bodies.txt" \
-    && ok "repairable sync.update.core WARN reaches the report body ($label)" \
-    || bad "repairable sync.update.core WARN reaches the report body ($label)" "check id missing"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "repairable sync.update.core WARN is an observation, not a report ($label)" \
+    || bad "repairable sync.update.core WARN is an observation, not a report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "sync.update.core" "$REPAIRABLE_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && ok "repairable sync.update.core WARN stays in the local observations log ($label)" \
+    || bad "repairable sync.update.core WARN stays in the local observations log ($label)" "check id missing"
 done
 echo "== 7b2. manual-only sync.runtime WARN rows are not defect reports =="
 # hq-cli's sync.runtime.* checks are WARN-only, read the last 60 minutes of
 # sync logs, and are marked fix.autoFixable:false because `hq doctor --fix`
 # cannot clear them. realtime-lag, device-limit and conflicts are manual-only
-# and must not be filed as "unresolved after --fix". receiver-permission (cloud
-# refused this account) and runner-restarts (crash loop) are real failures and
-# are still filed, as are FAIL rows, rows without a fix field, and fixable rows.
+# and must not be filed as "unresolved after --fix". Every sync.runtime WARN,
+# receiver-permission and runner-restarts included, is an observation that stays
+# in the local observations log; only a FAIL row is filed, whatever its fix field.
 DOCTOR_RUNTIME_WARN="$TMP/doctor-runtime-warn.json"
 cat > "$DOCTOR_RUNTIME_WARN" <<'JSON'
 {"results":[
@@ -723,6 +955,13 @@ cat > "$DOCTOR_RUNTIME_WARN_REAL" <<'JSON'
 {"results":[
   {"family":"sync","status":"WARN","checkId":"sync.runtime.receiver-permission","fix":{"autoFixable":false}},
   {"family":"sync","status":"WARN","checkId":"sync.runtime.runner-restarts","fix":{"autoFixable":false}}
+]}
+JSON
+DOCTOR_RUNTIME_FAIL_REAL="$TMP/doctor-runtime-fail-real.json"
+cat > "$DOCTOR_RUNTIME_FAIL_REAL" <<'JSON'
+{"results":[
+  {"family":"sync","status":"FAIL","checkId":"sync.runtime.receiver-permission","fix":{"autoFixable":false}},
+  {"family":"sync","status":"FAIL","checkId":"sync.runtime.runner-restarts","fix":{"autoFixable":false}}
 ]}
 JSON
 DOCTOR_RUNTIME_WARN_PLUS_JOURNAL="$TMP/doctor-runtime-warn-plus-journal.json"
@@ -770,9 +1009,25 @@ for eng in $ENGINES; do
   REM_STATE="$TMP/rem-runtime-warn-real-$label"
   mkdir -p "$REM_STATE"
   run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_REAL"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "receiver-permission and runner-restarts WARN rows are observations, not reports ($label)" \
+    || bad "receiver-permission and runner-restarts WARN rows are observations, not reports ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  if grep -Fq "sync.runtime.receiver-permission" "$TEST_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && grep -Fq "sync.runtime.runner-restarts" "$TEST_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null; then
+    ok "receiver-permission and runner-restarts WARN rows stay in the local observations log ($label)"
+  else
+    bad "receiver-permission and runner-restarts WARN rows stay in the local observations log ($label)" \
+      "log: $(cat "$TEST_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null)"
+  fi
+
+  TEST_ROOT="$TMP/runtime-fail-real-$label"
+  build_root "$TEST_ROOT"
+  REM_STATE="$TMP/rem-runtime-fail-real-$label"
+  mkdir -p "$REM_STATE"
+  run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_FAIL_REAL"
   [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && ok "receiver-permission and runner-restarts WARN rows are still reported ($label)" \
-    || bad "receiver-permission and runner-restarts WARN rows are still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+    && ok "receiver-permission and runner-restarts FAIL rows are reported ($label)" \
+    || bad "receiver-permission and runner-restarts FAIL rows are reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
   if grep -Fq "sync.runtime.receiver-permission" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
     && grep -Fq "sync.runtime.runner-restarts" "$REM_STATE/bug-bodies.txt" 2>/dev/null; then
     ok "report carries receiver-permission and runner-restarts ids ($label)"
@@ -802,12 +1057,12 @@ for eng in $ENGINES; do
   REM_STATE="$TMP/rem-runtime-warn-no-fix-$label"
   mkdir -p "$REM_STATE"
   run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_NO_FIX"
-  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && ok "sync.runtime WARN with no fix field is still reported ($label)" \
-    || bad "sync.runtime WARN with no fix field is still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
-  grep -Fq "sync.runtime.realtime-lag" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
-    && ok "sync.runtime WARN with no fix field reaches the report body ($label)" \
-    || bad "sync.runtime WARN with no fix field reaches the report body ($label)" "check id missing"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "sync.runtime WARN with no fix field is an observation, not a report ($label)" \
+    || bad "sync.runtime WARN with no fix field is an observation, not a report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  grep -Fq "sync.runtime.realtime-lag" "$TEST_ROOT/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && ok "sync.runtime WARN with no fix field stays in the local observations log ($label)" \
+    || bad "sync.runtime WARN with no fix field stays in the local observations log ($label)" "check id missing"
 
   TEST_ROOT="$TMP/runtime-fail-$label"
   build_root "$TEST_ROOT"
@@ -826,9 +1081,9 @@ for eng in $ENGINES; do
   REM_STATE="$TMP/rem-runtime-warn-fixable-$label"
   mkdir -p "$REM_STATE"
   run_remediate "$TEST_ROOT" "$eng" "$DOCTOR_RUNTIME_WARN_FIXABLE"
-  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && ok "fixable sync.runtime WARN is still reported ($label)" \
-    || bad "fixable sync.runtime WARN is still reported ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && ok "fixable sync.runtime WARN is an observation, not a report ($label)" \
+    || bad "fixable sync.runtime WARN is an observation, not a report ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
 done
 
 echo "== 7c. opted-in diagnostics carry only checkId: reasonCode pairs =="
@@ -1413,7 +1668,7 @@ MANY="$TMP/many.json"
 printf '{"results":[' > "$MANY"
 for ((i=1; i<=45; i++)); do
   [ "$i" = 1 ] || printf ',' >> "$MANY"
-  printf '{"family":"sync","status":"WARN","checkId":"sync.journal.company%s","fix":{"autoFixable":true}}' "$i" >> "$MANY"
+  printf '{"family":"sync","status":"FAIL","checkId":"sync.journal.company%s","fix":{"autoFixable":true}}' "$i" >> "$MANY"
 done
 printf ']}' >> "$MANY"
 R18="$TMP/many-companies"
@@ -1582,20 +1837,25 @@ R27_CHANGED="$TMP/same-set-changed.json"
 cat > "$R27_CHANGED" <<'JSON'
 { "results": [
   { "family": "sync", "status": "FAIL", "checkId": "sync.journal.stale", "fix": { "autoFixable": true } },
-  { "family": "sync", "status": "WARN", "checkId": "sync.manifest.personal", "fix": { "autoFixable": true } }
+  { "family": "sync", "status": "FAIL", "checkId": "sync.manifest.personal", "fix": { "autoFixable": true } }
 ] }
 JSON
 touch -t "$ANCIENT" "$R27_STAMP"
 run_remediate "$R27" "-" "$R27_CHANGED"
 [ "$(count_lines "$REM_STATE/bugs-filed")" = 2 ] \
-  && ok "a changed set files a new report" \
-  || bad "a changed set files a new report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  && ok "a new failing check class files a new report" \
+  || bad "a new failing check class files a new report" "filed $(count_lines "$REM_STATE/bugs-filed")"
+# Only the new class is in that report: the journal class was reported before.
+[ "$(grep -c 'sync.manifest.personal' "$REM_STATE/bug-body-last.txt")" -ge 1 ] \
+  && ! grep -Fq 'sync.journal.' "$REM_STATE/bug-body-last.txt" \
+  && ok "the new-class report names only the new class" \
+  || bad "the new-class report names only the new class" "body: $(cat "$REM_STATE/bug-body-last.txt" 2>/dev/null)"
 # A clean doctor run clears the record, so a recurrence is reported again.
 touch -t "$ANCIENT" "$R27_STAMP"
 run_remediate "$R27" "-" "$DOCTOR_HEALTHY"
-[ ! -f "$R27/workspace/.hq-client-health/bugs/reported-set" ] \
-  && ok "a clean doctor run clears the reported set" \
-  || bad "a clean doctor run clears the reported set" "record kept"
+[ ! -f "$R27/workspace/.hq-client-health/bugs/reported-checks" ] \
+  && ok "a clean doctor run clears the reported checks" \
+  || bad "a clean doctor run clears the reported checks" "record kept"
 run_remediate "$R27" "-" "$R27_CHANGED"
 [ "$(count_lines "$REM_STATE/bugs-filed")" = 3 ] \
   && ok "a recurrence after a clean run is reported again" \
@@ -1609,23 +1869,32 @@ run_remediate "$R28" "-"
 R28_EMPTY="$TMP/doctor-empty.json"
 : > "$R28_EMPTY"
 run_remediate "$R28" "-" "$R28_EMPTY"
-[ -s "$R28/workspace/.hq-client-health/bugs/reported-set" ] \
-  && ok "an empty doctor document keeps the reported set" \
-  || bad "an empty doctor document keeps the reported set" "record cleared"
+[ -s "$R28/workspace/.hq-client-health/bugs/reported-checks" ] \
+  && ok "an empty doctor document keeps the reported checks" \
+  || bad "an empty doctor document keeps the reported checks" "record cleared"
 touch -t "$ANCIENT" "$R28/workspace/.hq-client-health/bugs/report-attempt.stamp"
 run_remediate "$R28" "-"
 [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
   && ok "the same set stays filed once after a doctor outage" \
   || bad "the same set stays filed once after a doctor outage" "filed $(count_lines "$REM_STATE/bugs-filed")"
 
-echo "== 27. a reported set is suppressed for at most 14 days (PR 1464 review) =="
+echo "== 27. a reported check class is suppressed for at most 14 days (PR 1464 review) =="
 # Remediation only runs when a session sees a cheap foreground signal. A user
 # who repairs sync by hand never triggers the clean doctor run that clears the
 # record, so the record must expire on its own. The hook's clock is moved with
-# HQ_TEST_FORCE_HEALTH_NOW (epoch seconds); the ledger line is
-# "<fingerprint> <epoch of the last successful send>".
+# HQ_TEST_FORCE_HEALTH_NOW (epoch seconds); the ledger holds one line per check
+# class, "<check class> <epoch of the last successful send>". These cases use a
+# document with a single failing class, so the ledger is one line.
 DAY=86400
-ledger_of() { printf '%s/workspace/.hq-client-health/bugs/reported-set' "$1"; }
+DOCTOR_ONE_FAIL="$TMP/doctor-one-fail.json"
+cat > "$DOCTOR_ONE_FAIL" <<'JSON'
+{ "results": [
+  { "family": "sync", "status": "FAIL", "checkId": "sync.journal.stale", "fix": { "autoFixable": true } }
+] }
+JSON
+SAVED_DOCTOR_27="$DOCTOR_DEGRADED"
+DOCTOR_DEGRADED="$DOCTOR_ONE_FAIL"
+ledger_of() { printf '%s/workspace/.hq-client-health/bugs/reported-checks' "$1"; }
 ledger_set() { cut -d' ' -f1 "$1" 2>/dev/null; }
 ledger_ts() { cut -d' ' -f2 "$1" 2>/dev/null; }
 age_attempt_stamp() { touch -t "$ANCIENT" "$1/workspace/.hq-client-health/bugs/report-attempt.stamp"; }
@@ -1749,9 +2018,9 @@ HQ_TEST_FORCE_HEALTH_NOW="$((T0 + 17 * DAY))" run_remediate "$R32" "-"
   && ok "outage: the set is reported once doctor is back and 14 days have passed" \
   || bad "outage: the set is reported once doctor is back and 14 days have passed" "filed $(count_lines "$REM_STATE/bugs-filed")"
 
-# 27e. A corrupt ledger never suppresses: garbage, a fingerprint with no
-# timestamp, a timestamp in the future, and extra lines all file a report and
-# are replaced by a valid record.
+# 27e. A corrupt ledger never suppresses: garbage, a class with no timestamp,
+# and a timestamp in the future all file a report and are replaced by a valid
+# record.
 R33="$TMP/expiry-corrupt"
 build_root "$R33"
 REM_STATE="$TMP/expiry-corrupt-state"
@@ -1761,12 +2030,11 @@ run_remediate "$R33" "-"
 S33="$(ledger_set "$L33")"
 NOW33=$(date +%s)
 CORRUPT_FILED=1
-for variant in garbage set-only future extra-line; do
+for variant in garbage class-only future; do
   case "$variant" in
     garbage)    printf 'not a ledger\n' > "$L33" ;;
-    set-only)   printf '%s\n' "$S33" > "$L33" ;;
+    class-only) printf '%s\n' "$S33" > "$L33" ;;
     future)     printf '%s %s\n' "$S33" "$((NOW33 + 30 * DAY))" > "$L33" ;;
-    extra-line) printf '%s %s\nextra\n' "$S33" "$NOW33" > "$L33" ;;
   esac
   age_attempt_stamp "$R33"
   run_remediate "$R33" "-"
@@ -1778,6 +2046,14 @@ for variant in garbage set-only future extra-line; do
     && ok "corrupt ledger ($variant) is replaced by a valid record" \
     || bad "corrupt ledger ($variant) is replaced by a valid record" "ledger [$(cat "$L33" 2>/dev/null)]"
 done
+# A junk line beside a valid record is ignored; the valid record still holds.
+printf '%s %s\nextra\n' "$S33" "$NOW33" > "$L33"
+age_attempt_stamp "$R33"
+run_remediate "$R33" "-"
+[ "$(count_lines "$REM_STATE/bugs-filed")" = "$CORRUPT_FILED" ] \
+  && ok "a junk line beside a valid record does not break the record" \
+  || bad "a junk line beside a valid record does not break the record" "filed $(count_lines "$REM_STATE/bugs-filed")"
+DOCTOR_DEGRADED="$SAVED_DOCTOR_27"
 
 echo "== --fix pull outcomes and outdated hq-cli in the report (feedback cd56a501) =="
 FIX_OUTCOMES="$TMP/fix-outcomes.json"
@@ -2006,7 +2282,7 @@ MAN_UNREACHED_AFTER="$TMP/doctor-man-unreached-after.json"
 printf '%s\n' '{"results":[{"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_z","reasonCode":"stale-threshold","fix":{"autoFixable":true}},{"family":"sync","status":"WARN","checkId":"sync.manifest.personal","reasonCode":"stale-threshold","fix":{"autoFixable":true}}]}' > "$MAN_UNREACHED_AFTER"
 # 8 pulls plus uploads for cmp_a and cmp_b fill the cap; cmp_a stays stale.
 MAN_TRIED_AFTER="$TMP/doctor-man-tried-after.json"
-printf '%s\n' '{"results":[{"family":"sync","status":"WARN","checkId":"sync.manifest.company.cmp_a","reasonCode":"stale-threshold","fix":{"autoFixable":true}}]}' > "$MAN_TRIED_AFTER"
+printf '%s\n' '{"results":[{"family":"sync","status":"FAIL","checkId":"sync.manifest.company.cmp_a","reasonCode":"stale-threshold","fix":{"autoFixable":true}}]}' > "$MAN_TRIED_AFTER"
 MAN_TRIED_FIX="$TMP/fix-man-tried.json"
 printf '{"exitCode":1,"applied":[{"checkId":"sync.manifest.company.cmp_a","fixClass":"refresh-manifest","pass":1,"postStatus":"WARN","target":"/home/someone/privpathmarker"},{"checkId":"sync.manifest.company.cmp_b","fixClass":"refresh-manifest","pass":1,"postStatus":"PASS"}],"refreshSync":[%s]}\n' "$ms_refresh" > "$MAN_TRIED_FIX"
 # Capped run, manifest not attempted, but FAIL.
@@ -2069,21 +2345,21 @@ for eng in $ENGINES; do
   run_remediate "$R19D" "$eng" "$CAP_BEFORE" "$MAN_UNCAPPED_FIX" false
   unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
   B19=$(cat "$REM_STATE/bug-bodies.txt" 2>/dev/null || true)
-  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && grep -Fq "sync.manifest.company.cmp_z" <<<"$B19" \
-    && grep -Fq "sync.manifest.personal" <<<"$B19" \
-    && ok "below the cap an unattempted stale manifest still files ($label)" \
-    || bad "below the cap an unattempted stale manifest still files ($label)" "body: $B19"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" "$R19D/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && grep -Fq "sync.manifest.personal" "$R19D/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && ok "below the cap a stale manifest WARN is an observation, not a report ($label)" \
+    || bad "below the cap a stale manifest WARN is an observation, not a report ($label)" "body: $B19"
 
   R19F="$TMP/fb19-man-nofix-$label"; build_root "$R19F"
   REM_STATE="$TMP/rem-fb19-man-nofix-$label"; mkdir -p "$REM_STATE"
   export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_NOFIX_AFTER"
   run_remediate "$R19F" "$eng" "$CAP_BEFORE" "$CAP_FIX" false
   unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
-  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && grep -Fq "sync.manifest.company.cmp_z" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
-    && ok "a manifest WARN --fix could not repair still files in a capped run ($label)" \
-    || bad "a manifest WARN --fix could not repair still files in a capped run ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" "$R19F/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && ok "a manifest WARN --fix could not repair is an observation in a capped run ($label)" \
+    || bad "a manifest WARN --fix could not repair is an observation in a capped run ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
 
   R19E="$TMP/fb19-man-badfix-$label"; build_root "$R19E"
   REM_STATE="$TMP/rem-fb19-man-badfix-$label"; mkdir -p "$REM_STATE"
@@ -2091,11 +2367,12 @@ for eng in $ENGINES; do
   export HQ_STUB_DOCTOR_JSON_AFTER_FIX="$MAN_UNREACHED_AFTER"
   run_remediate "$R19E" "$eng" "$CAP_BEFORE" "$BADFIX" false
   unset HQ_STUB_DOCTOR_JSON_AFTER_FIX
-  [ "$(count_lines "$REM_STATE/bugs-filed")" = 1 ] \
-    && grep -Fq "sync.manifest.company.cmp_z" "$REM_STATE/bug-bodies.txt" 2>/dev/null \
-    && ok "malformed --fix output filters no manifest ($label)" \
-    || bad "malformed --fix output filters no manifest ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
+  [ "$(count_lines "$REM_STATE/bugs-filed")" = 0 ] \
+    && grep -Fq "sync.manifest.company.cmp_z" "$R19E/workspace/.hq-client-health/observations.log" 2>/dev/null \
+    && ok "malformed --fix output still treats a manifest WARN as an observation ($label)" \
+    || bad "malformed --fix output still treats a manifest WARN as an observation ($label)" "filed $(count_lines "$REM_STATE/bugs-filed")"
 done
+
 
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="

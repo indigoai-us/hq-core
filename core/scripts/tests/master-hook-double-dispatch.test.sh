@@ -179,6 +179,46 @@ n="$(count_event Stop "$SS_SID")"
 }
 pass "identical non-tool event outside the window dispatches again"
 
+# 4a. Stale-lock takeover must treat a lock caught mid-write as fresh. A
+# concurrent twin creates the lock file before it writes the timestamp, so a
+# rename can capture an empty file. The mv shim reproduces that interleaving
+# exactly: it empties the stale lock just before the rename (the twin's new,
+# unwritten claim) and then records the twin's allow verdict. The dispatch
+# must follow the twin instead of claiming a second time.
+TAKE_SID="takeover-empty-lock-sid"
+TAKE="$(jq -nc --arg s "$TAKE_SID" '{session_id:$s,hook_event_name:"Stop"}')"
+( cd "$FIX" && printf '%s' "$TAKE" | env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_CLI_BIN="$TMP/fake-cli/bin/hq" HQ_FLAGS_API_URL=https://flags.test HQ_COMPANY_UID=cmp_123456 HQ_TEST_FLAG=true \
+  bash "$FIX/.claude/hooks/master-hook.sh" Stop >/dev/null 2>&1 )
+[ "$(count_event Stop "$TAKE_SID")" = "1" ] || fail "takeover seed Stop did not dispatch once"
+TAKE_LOCK="$(find "$FIX/workspace/sessions/$TAKE_SID/dispatch-locks" -maxdepth 1 -type f -name 'Stop-*' ! -name '*.rc' -print)"
+[ -n "$TAKE_LOCK" ] || fail "takeover seed left no Stop lock"
+printf '1\n' > "$TAKE_LOCK"
+REAL_MV="$(command -v mv)"
+mkdir -p "$TMP/takeover-bin"
+cat > "$TMP/takeover-bin/mv" <<'MV'
+#!/usr/bin/env bash
+case "${2:-}" in
+  "$HQ_TEST_TAKE_LOCK".stale.*)
+    if [ ! -e "$HQ_TEST_TAKE_LOCK.shimmed" ]; then
+      : > "$HQ_TEST_TAKE_LOCK.shimmed"
+      : > "$1"
+      "$HQ_TEST_REAL_MV" "$@"; rc=$?
+      printf '0 0\n' > "$HQ_TEST_TAKE_LOCK.rc.next"
+      ( sleep 0.3; "$HQ_TEST_REAL_MV" "$HQ_TEST_TAKE_LOCK.rc.next" "$HQ_TEST_TAKE_LOCK.rc" ) &
+      exit "$rc"
+    fi ;;
+esac
+exec "$HQ_TEST_REAL_MV" "$@"
+MV
+chmod +x "$TMP/takeover-bin/mv"
+( cd "$FIX" && printf '%s' "$TAKE" | env HQ_HOOK_TIMEOUT_SENTRY=0 HQ_CLI_BIN="$TMP/fake-cli/bin/hq" HQ_FLAGS_API_URL=https://flags.test HQ_COMPANY_UID=cmp_123456 HQ_TEST_FLAG=true \
+  PATH="$TMP/takeover-bin:$PATH" HQ_TEST_REAL_MV="$REAL_MV" HQ_TEST_TAKE_LOCK="$TAKE_LOCK" HQ_HOOK_DEDUPE_WAIT=5 \
+  bash "$FIX/.claude/hooks/master-hook.sh" Stop >/dev/null 2>&1 )
+[ -e "$TAKE_LOCK.shimmed" ] || fail "takeover case never reached the stale-lock rename"
+n="$(count_event Stop "$TAKE_SID")"
+[ "$n" = "1" ] || fail "dispatch claimed a lock caught mid-write: $n Stop entries, want 1"
+pass "stale-lock takeover treats an empty captured lock as fresh"
+
 # 5. HQ_HOOK_DEDUPE=0 restores raw double dispatch (proves the guard is what dedupes).
 RAW="$(printf '%s' "$CL_PRE" | jq -c '.tool_use_id = "toolu_raw"')"
 dispatch_pair PreToolUse "$RAW" HQ_HOOK_DEDUPE=0

@@ -27,6 +27,9 @@ JS
 # Keep settings.json too because it still carries the per-event master commands.
 # Hooks the fixture does not stub are skipped by the missing-script guard.
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
+# SessionStart sources these two. A missing file makes `.` exit the adapter
+# under macOS /bin/bash 3.2, so the suite failed locally on macOS without them.
+cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$ROOT/core/scripts/lib/session-auto-bind.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/.claude/settings.json" "$TMP/.claude/settings.json"
 cp "$ROOT/.claude/hooks/hook-registry.json" "$TMP/.claude/hooks/hook-registry.json"
 cat > "$TMP/core/policies/prefilter-fixture.md" <<'POLICY'
@@ -700,5 +703,79 @@ if err="$(run_adapter "$payload_patch_template" 2>&1 >/dev/null)"; then
   exit 1
 fi
 assert_contains "$err" "Edits to companies/_template/ are denied"
+
+# ----- launch failure on a blocking PreToolUse guard fails closed -----
+# A guard that cannot be executed exits 126. Codex treats any exit other than 2
+# as a non-blocking error, so the adapter must map it to 2 (as the Windows
+# launcher does). HQ_CODEX_LAUNCH_FAIL_OPEN=1 restores the old pass-through.
+chmod 000 "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+set +e
+err="$(run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
+set -e
+if [ "$rc" -ne 2 ]; then
+  chmod +x "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+  echo "Expected an unlaunchable PreToolUse guard to exit 2, got $rc" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+fi
+assert_contains "$err" "guard 'block-hq-root-git-mutation' could not be launched (exit 126)"
+assert_contains "$err" "HQ_CODEX_LAUNCH_FAIL_OPEN=1"
+
+set +e
+err="$(HQ_CODEX_LAUNCH_FAIL_OPEN=1 run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
+set -e
+chmod 755 "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+if [ "$rc" -ne 126 ]; then
+  echo "Expected HQ_CODEX_LAUNCH_FAIL_OPEN=1 to pass the launch error (126) through, got $rc" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+fi
+run_adapter "$payload_bash_safe" >/dev/null
+
+# Only launch failures are mapped. With hook-lib present, a guard that runs
+# and exits 127 by itself keeps its status, and a master-hook whose child ends
+# in a missing command keeps its status too. An unreadable master-hook.sh is a
+# launch failure and blocks.
+cp "$ROOT/core/scripts/hook-lib.sh" "$TMP/core/scripts/hook-lib.sh"
+cp "$TMP/.claude/hooks/block-hq-root-git-mutation.sh" "$TMP/root-git.bak"
+printf '#!/bin/bash\ncat >/dev/null\nexit 127\n' > "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+chmod 755 "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+set +e
+err="$(run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
+set -e
+cp "$TMP/root-git.bak" "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+chmod 755 "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
+if [ "$rc" -ne 127 ]; then
+  echo "Expected a guard that exits 127 by itself to keep status 127, got $rc" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+fi
+
+printf '#!/bin/bash\ncat >/dev/null\nhq-no-such-command-xyz\n' > "$TMP/.claude/hooks/master-hook.sh"
+chmod 755 "$TMP/.claude/hooks/master-hook.sh"
+set +e
+err="$(run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
+set -e
+if [ "$rc" -ne 127 ]; then
+  rm -f "$TMP/.claude/hooks/master-hook.sh"
+  echo "Expected master-hook ending in a missing command to keep status 127, got $rc" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+fi
+chmod 000 "$TMP/.claude/hooks/master-hook.sh"
+set +e
+err="$(run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
+set -e
+if [ -r "$TMP/.claude/hooks/master-hook.sh" ]; then
+  : # running as root: the file stays readable, so there is no launch failure to map
+elif [ "$rc" -ne 2 ]; then
+  rm -f "$TMP/.claude/hooks/master-hook.sh"
+  echo "Expected an unreadable master-hook.sh to block with 2, got $rc" >&2
+  printf '%s\n' "$err" >&2
+  exit 1
+else
+  assert_contains "$err" "guard 'master-hook' could not be launched"
+fi
+rm -f "$TMP/.claude/hooks/master-hook.sh" "$TMP/core/scripts/hook-lib.sh" "$TMP/root-git.bak"
 
 echo "codex hook adapter tests passed"

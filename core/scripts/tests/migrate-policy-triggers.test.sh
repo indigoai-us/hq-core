@@ -245,7 +245,19 @@ cat > "$INCOMPLETE_BIN/grep" <<EOF
 sleep 1
 exec "$SYSTEM_GREP" "\$@"
 EOF
-chmod +x "$INCOMPLETE_BIN/grep"
+# The native migrator (hq-cli >= 5.345.193) runs no grep; its first external
+# process is the non-blocking `flock -n 9` on the migration lock, taken before
+# any policy is touched. Delay that the same way so the pass is still in
+# flight when it is terminated. Without a system flock the shim reports the
+# lock as taken, which is what flock -n does on an uncontended lock.
+SYSTEM_FLOCK="$(command -v flock || true)"
+cat > "$INCOMPLETE_BIN/flock" <<EOF
+#!/usr/bin/env bash
+sleep 1
+if [ -n "$SYSTEM_FLOCK" ]; then exec "$SYSTEM_FLOCK" "\$@"; fi
+exit 0
+EOF
+chmod +x "$INCOMPLETE_BIN/grep" "$INCOMPLETE_BIN/flock"
 PATH="$INCOMPLETE_BIN:$PATH" HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$INCOMPLETE_STATE" \
   bash "$MIGRATOR" "$INCOMPLETE_DIR" >"$TMP/incomplete.out" 2>"$TMP/incomplete.err" &
@@ -343,13 +355,20 @@ fi
 exit "\$rc"
 EOF
 chmod +x "$LOCK_BIN/hq"
-cat > "$LOCK_BIN/grep" <<EOF
+# The native migrator (hq-cli >= 5.345.193) takes the migration lock with
+# `flock -n 9` on an inherited descriptor and runs no grep. Hold the first
+# process right after its flock succeeds: the lock lives on the shared open
+# file description, so it stays held until this shim exits. A flock that fails
+# (the second, contended process) returns at once with its real status.
+[ -n "$SYSTEM_FLOCK" ] || fail "the concurrent-lock case needs flock(1) on PATH (util-linux)"
+cat > "$LOCK_BIN/flock" <<EOF
 #!/usr/bin/env bash
+"$SYSTEM_FLOCK" "\$@" || exit \$?
 touch "$LOCK_MARKER"
 while [ ! -e "$LOCK_RELEASE" ]; do sleep 0.05; done
-exec "$SYSTEM_GREP" "\$@"
+exit 0
 EOF
-chmod +x "$LOCK_BIN/grep"
+chmod +x "$LOCK_BIN/flock"
 PATH="$LOCK_BIN:$PATH" HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
   HQ_MIGRATE_POLICY_TRIGGERS_STATE_DIR="$LOCK_STATE" \
   bash "$MIGRATOR" "$LOCK_DIR" >"$TMP/lock-first.out" 2>"$TMP/lock-first.err" &

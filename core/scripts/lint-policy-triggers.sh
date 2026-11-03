@@ -173,7 +173,7 @@ fi
 STOP='^#+[ \t]*(rationale|rationale and context|background|change history|changelog|history|examples?|references?|related|see also|sources?|provenance|evidence)[ \t]*$'
 
 FACTS_TSV="$TMPROOT/policy-facts.tsv"
-if ! xargs -0 awk -v stop="$STOP" '
+if ! xargs -0 awk -v stop="$STOP" -v bom="$(printf '\357\273\277')" '
     function perror(msg) { if (perr == "") perr = msg }
     function pitem(v, ctx) {
       gsub(/^[ \t]+|[ \t]+$/, "", v)
@@ -195,6 +195,7 @@ if ! xargs -0 awk -v stop="$STOP" '
       if (fn != "") printf "%s\t%s\t%s\t%s\t%s\t%s\n", fn, w, o, tolower(enf), bytes+0, perr
     }
     function reset() { d=0; w=""; o=""; enf=""; bytes=0; stopped=0; pseen=0; pblock=0; psec=0; pcount=0; perr="" }
+    { sub(/\r$/, ""); if (FNR==1) sub("^" bom, "") }
     FNR==1 { flush(); reset(); fn=FILENAME }
     # CRLF policies (Windows editors, some sync clients): drop the line-end CR
     # so `---`, `when:` and `on:` still match. Without this every CRLF policy

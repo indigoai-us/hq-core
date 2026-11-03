@@ -76,6 +76,12 @@ HOOK
   local expected actual
   expected="$(printf '%s\n' regex-prefilter env-prefilter file-prefilter policy-vocab unfiltered)"
   actual="$(cat "$TMP/$mode.hooks")"
+  if [ "${HQ_HOOK_PARALLEL:-0}" = "1" ]; then
+    # Independent siblings start in any order in parallel dispatch; each must
+    # still run exactly once.
+    expected="$(sort <<<"$expected")"
+    actual="$(sort <<<"$actual")"
+  fi
   if [ "$actual" = "$expected" ]; then pass "$mode: every registry hook ran exactly once"; else fail "$mode: registry hook run list was incomplete or reordered"; fi
 
   local warning_count stderr_lines

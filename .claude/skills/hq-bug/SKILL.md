@@ -48,7 +48,7 @@ fi
 umask 077
 BODY_PATH=$(mktemp -t hq-feedback-body.XXXXXX) || { echo "mktemp failed" >&2; exit 1; }
 if command -v cygpath >/dev/null 2>&1; then
-  BODY_PATH=$(cygpath -m "$BODY_PATH") || { echo "cygpath failed" >&2; exit 1; }
+  BODY_PATH=$(cygpath -m -- "$BODY_PATH") || { echo "cygpath failed" >&2; exit 1; }
 fi
 printf 'SUBMIT_PATH=%s\nBODY_PATH=%s\n' "$SUBMIT_PATH" "$BODY_PATH"
 ```

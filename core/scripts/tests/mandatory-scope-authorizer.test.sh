@@ -1033,6 +1033,28 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 0 "$rc" "quoted --text content is data, not a path operand"
 
+echo "[75b] quoted positional hq dm message is data, not a path operand"
+for command in \
+  'hq dm send alice@example.com "Budget is $5,000, see companies/otherco/projects/x/prd.json"' \
+  "hq dm send alice@example.com 'Budget is \$5,000 see companies/otherco/projects/x/prd.json'" \
+  'hq dm alice@example.com "see companies/otherco/projects/x/prd.json"' \
+  'hq dm send alice@example.com "see companies/otherco/projects/x/prd.json" --audience human'; do
+  install_fixture "indigo"
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 0 "$rc" "quoted positional dm message allowed: $command"
+done
+for command in \
+  'hq dm send alice@example.com "ok"; cat companies/otherco/settings/.keep' \
+  'hq dm send alice@example.com "ok" && cat companies/otherco/settings/.keep'; do
+  install_fixture "indigo"
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "path read chained after dm still blocked: $command"
+done
+
 echo "[76] same quoted company string is blocked when cat opens it"
 install_fixture "indigo"
 command='cat "companies/indigo/projects/$p/prd.json"'
@@ -1466,6 +1488,10 @@ echo "[108] shell-variable operands that are not company paths are allowed; ambi
 # variable in an operand that is a git ref, a gh repo slug, a mktemp dir, or a
 # loop over literal workspace entries. Each allowed shape is paired with a
 # near miss that must stay blocked.
+# `git push origin $C:refs/heads/release` is expected to block since the
+# scope-loop-bypass hardening: under zsh `$C:r...` is the :r modifier, and a
+# narrower rule reopened the round-7 `$p:hx` bypass. Workaround:
+# `${C}:refs/heads/release` or a literal ref.
 install_fixture "indigo"
 mkdir -p "$TMP/workspace/worktrees/a" "$TMP/workspace/worktrees/b"
 for probe_case in \
@@ -1473,7 +1499,7 @@ for probe_case in \
   'for d in workspace/worktrees/*; do cat $d/manifest.json; done:0' \
   'D=$(mktemp -d); ls $D/*.dmg:0' \
   'D=$(mktemp -d -t hqbuild); cp core/docs/readme.md $D/r.md:0' \
-  'git push origin $C:refs/heads/release:0' \
+  'git push origin $C:refs/heads/release:2' \
   'git -C workspace/worktrees/a log origin/main...$b:0' \
   'gh pr view 1 -R indigoai-us/$r:0' \
   'gh repo view indigoai-us/$r:0' \
@@ -1981,7 +2007,10 @@ scope_112_case 2b0a75a8 2 'sed -n "$(grep -rn s workspace/tmp | cut -d: -f1),\$p
 # D. git range and loop variables inside a substitution in echo text.
 scope_112_case 996a8953 0 'echo "n: $(git -C repos/private/app log --oneline origin/main..HEAD | wc -l)"'
 scope_112_case 996a8953 0 'echo "ahead: $(git -C repos/private/app rev-list --count origin/main..HEAD)"'
-scope_112_case 996a8953 0 'S=repos/private/app; for c in a b; do echo "$c $(git -C $S show $c:core/core.yaml | grep hqVersion)"; done'
+# Expected block since the scope-loop-bypass hardening: `$c:c...` is the zsh
+# :c modifier; the narrower rule reopened the round-7 `$p:hx` bypass.
+# Workaround: `${c}:core/core.yaml`.
+scope_112_case 996a8953 2 'S=repos/private/app; for c in a b; do echo "$c $(git -C $S show $c:core/core.yaml | grep hqVersion)"; done'
 scope_112_case 996a8953 0 'D=workspace/tmp; for on in a b; do echo "x $(bash $D/x.sh $on)"; done'
 scope_112_case 996a8953 2 'echo "v: $(git -C repos/private/app show origin/main:companies/otherco/settings/x)"'
 scope_112_case 996a8953 2 'for c in a b; do echo "$c $(cat companies/otherco/settings/$c)"; done'
@@ -4689,6 +4718,37 @@ bash_case 2 1585-ctl-gh-body-double-quoted-backticks "gh pr create -R indigoai-u
 bash_case 2 1585-ctl-literal-cross-company-skill 'cat .claude/skills/otherco-sk/SKILL.md'
 bash_case 2 1585-ctl-python-heredoc-cross-company-code-span $'python3 - <<\'EOF\'\ntext = open("`.claude/skills/otherco-sk/SKILL.md`").read()\nprint(text)\nEOF'
 bash_case 2 1585-ctl-unquoted-substitution-cross-company-skill 'echo `.claude/skills/otherco-sk/SKILL.md`'
+
+echo "[mkdir-heredoc] mkdir -p <dir> && cat > <file> <<'EOF' is a data writer; the body is not scanned"
+install_fixture "indigo"
+# A ~14KB markdown report with tables and parentheses. Before the carve-out
+# the `&&` made the writer non-inert and the body was scanned byte by byte,
+# which exceeded the hook's 25s budget and blocked the write.
+mkdir_body=""
+for i in $(seq 1 120); do
+  mkdir_body+="## Section $i"$'\n'"| col a | col b | col c |"$'\n'"|---|---|---|"$'\n'"| value $i | prose with \$HOME-ish text and (parens) | done |"$'\n'$'\n'
+done
+mkdir_prose=$'## Report\nSee companies/otherco/settings/secret.yaml for prose.\n'
+mkdir_start=$SECONDS
+bash_case 0 mkdir-heredoc-large-report "mkdir -p personal/x && cat > personal/x/report.md <<'EOF'"$'\n'"$mkdir_body"$'\n'"EOF"
+mkdir_elapsed=$((SECONDS - mkdir_start))
+if [ "$mkdir_elapsed" -gt 10 ]; then
+  echo "FAIL: mkdir-heredoc-large-report took ${mkdir_elapsed}s; the body must be stripped, not scanned" >&2
+  REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+fi
+bash_case 0 mkdir-heredoc-prose-names-other-company "mkdir -p personal/x && cat > personal/x/r.md <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+bash_case 0 mkdir-heredoc-bound-company-target "mkdir -p companies/indigo/reports && cat > companies/indigo/reports/r.md <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+bash_case 0 mkdir-heredoc-tee-target "mkdir -p personal/x && tee personal/x/r.md > /dev/null <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+# The header line stays in the scan: mkdir and the redirect target are operands.
+bash_case 2 mkdir-heredoc-ctl-mkdir-other-company "mkdir -p companies/otherco/x && cat > companies/otherco/x/r.md <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+bash_case 2 mkdir-heredoc-ctl-target-other-company "mkdir -p personal/x && cat > companies/otherco/x/r.md <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+# Only literal mkdir words qualify; an expansion keeps the body scanned.
+bash_case 2 mkdir-heredoc-ctl-mkdir-expansion "mkdir -p \"\$D\" && cat > personal/x/r.md <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+# A `;` list, a second list operator after the heredoc, or a later run of the
+# written file keeps the body scanned.
+bash_case 2 mkdir-heredoc-ctl-semicolon "mkdir -p personal/x; cat > personal/x/r.md <<'EOF'"$'\n'"$mkdir_prose"$'\n'"EOF"
+bash_case 2 mkdir-heredoc-ctl-run-on-header "mkdir -p personal/x && cat > personal/x/r.sh <<'EOF' && bash personal/x/r.sh"$'\n'"cat companies/otherco/settings/secret.yaml"$'\n'"EOF"
+bash_case 2 mkdir-heredoc-ctl-run-later "mkdir -p personal/x && cat > personal/x/r.sh <<'EOF'"$'\n'"cat companies/otherco/settings/secret.yaml"$'\n'"EOF"$'\n'"bash personal/x/r.sh"
 
 # Arithmetic regression inputs are inspected as JSON only.
 install_fixture "indigo"
