@@ -300,7 +300,7 @@ stash_tree_objects() {
 # other byte kept) and prints its id.
 commit_with_parents() {
   local c="$1"; shift
-  g cat-file commit "$c" | perl -e '
+  g cat-file commit "$c" | LC_ALL=C perl -e '
     binmode STDIN; binmode STDOUT; local $/; my $b = <STDIN>;
     my $cut = index($b, "\n\n");
     my ($h, $m) = $cut < 0 ? ($b, "") : (substr($b, 0, $cut + 1), substr($b, $cut + 1));
@@ -948,7 +948,7 @@ prune() {
   mkdir -p "$tmp/obj"
   { printf '%s\n' "$base"; cat "$tmp/kept"; } \
     | g cat-file --batch \
-    | perl -e '
+    | LC_ALL=C perl -e '
         use strict; use warnings; use Digest::SHA;
         my ($dir, $algo, $rootmsg, $mapf, $pathsf) = @ARGV;
         binmode STDIN;
@@ -1156,7 +1156,7 @@ large() {
   if [[ -s "$tmp/big" ]]; then
     g log --all --raw -z --root --no-renames --no-abbrev --no-color \
         --diff-merges=first-parent --format='C %ct' \
-      | perl -e "$PERL_JS"'
+      | LC_ALL=C perl -e "$PERL_JS"'
           my $bigf = shift; my %big; my %sp; my $t = 0; my $want = "";
           open(my $b, "<", $bigf) or die; while (<$b>) { my ($s) = split / /; $big{$s} = 1 }
           local $/ = "\0"; binmode STDIN;
@@ -1196,7 +1196,7 @@ large() {
 
   # 3. Current files: tracked + untracked (not ignored). Placeholders excluded.
   (cd "$ROOT" && git ls-files -z --cached --others --exclude-standard) \
-    | (cd "$ROOT" && perl -e "$PERL_JS"'
+    | (cd "$ROOT" && LC_ALL=C perl -e "$PERL_JS"'
         my ($min, $now) = @ARGV; my %done; local $/ = "\0";
         while (defined(my $p = <STDIN>)) {
           chomp $p; next if $done{$p}++ || $p =~ /\.hqcloud\z/;
@@ -1297,7 +1297,7 @@ strip_large() {
   # "<sha> <pointer-file>" lines in $tmp/ptrs.
   mkdir -p "$tmp/ptr"
   jq -r '.blobs[] | "\(.sha) \(.pointer_text | @base64)"' "$manifest" \
-    | perl -MMIME::Base64 -e '
+    | LC_ALL=C perl -MMIME::Base64 -e '
         my ($presentf, $dir) = @ARGV; my %size;
         open(my $p, "<", $presentf) or die; while (<$p>) { my ($s, $n) = split / /; $size{$s} = $n }
         my %done;
@@ -1400,7 +1400,7 @@ strip_large() {
   # print `M dir/file` before `D dir` when a symlink is replaced by a
   # directory, and fast-import would then drop the new files. Paths are
   # distinct within one commit, so deletes-first gives the same tree.
-  perl -e '
+  LC_ALL=C perl -e '
     my ($mapf, $countf) = @ARGV; my %m; my %hit; my (@d, @mm);
     open(my $mf, "<", $mapf) or die; while (<$mf>) { chomp; my ($a, $b) = split / /; $m{$a} = $b }
     binmode STDIN; binmode STDOUT;

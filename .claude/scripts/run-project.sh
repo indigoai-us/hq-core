@@ -428,6 +428,12 @@ NC='\033[0m'
 # shellcheck source=../../core/scripts/lib/detect-codex.sh
 __RP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; source "${__RP_DIR}/../../core/scripts/lib/detect-codex.sh"; unset __RP_DIR
 
+# shellcheck source=../../core/scripts/lib/perl-child-locale.sh
+__RP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${__RP_DIR}/../../core/scripts/lib/perl-child-locale.sh" 2>/dev/null \
+  || hq_perl_spawn_argv() { HQ_PERL_SPAWN_ARGV=(env LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "${1-}"); }
+unset __RP_DIR
+
 # =============================================================================
 # Capture raw args for --tmux passthrough (before parsing consumes them)
 # =============================================================================
@@ -1639,7 +1645,8 @@ RULES:
       cmd=(gtimeout "${TIMEOUT}m" "${cmd[@]}")
     else
       # perl-based timeout fallback for macOS
-      cmd=(perl -e "alarm(${TIMEOUT}*60); exec {\$ARGV[0]} @ARGV" "${cmd[@]}")
+      hq_perl_spawn_argv "alarm(${TIMEOUT}*60); exec {\$ARGV[0]} @ARGV"
+      cmd=("${HQ_PERL_SPAWN_ARGV[@]}" "${cmd[@]}")
     fi
   fi
 
@@ -3299,7 +3306,8 @@ RULES:
     elif command -v gtimeout &>/dev/null; then
       cmd=(gtimeout "${TIMEOUT}m" "${cmd[@]}")
     else
-      cmd=(perl -e "alarm(${TIMEOUT}*60); exec {\$ARGV[0]} @ARGV" "${cmd[@]}")
+      hq_perl_spawn_argv "alarm(${TIMEOUT}*60); exec {\$ARGV[0]} @ARGV"
+      cmd=("${HQ_PERL_SPAWN_ARGV[@]}" "${cmd[@]}")
     fi
   fi
 

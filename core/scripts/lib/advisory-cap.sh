@@ -147,7 +147,12 @@ hq_run_capped() {
   esac
   case "$runner" in
     perl)
-      perl -e "$HQ_ADVISORY_CAP_PERL" "$t" "$grace" "$@" > "$buf" || rc=$?
+      # hq_perl_spawn pins perl to LC_ALL=C and restores the caller's locale
+      # before it execs the hook; a partial copy without the lib still pins.
+      # shellcheck source=perl-child-locale.sh
+      . "$(dirname "${BASH_SOURCE[0]}")/perl-child-locale.sh" 2>/dev/null \
+        || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+      hq_perl_spawn "$HQ_ADVISORY_CAP_PERL" "$t" "$grace" "$@" > "$buf" || rc=$?
       ;;
     timeout)
       # GNU timeout signals its whole process group but sends KILL only while

@@ -872,6 +872,12 @@ jobs:
         run: bash core/scripts/tests/check-hq-update-attempt-stamp.test.sh
       - name: check-hq-update caches unchanged CLI probes
         run: bash core/scripts/tests/check-hq-update-cli-probe-cache.test.sh
+      - name: Every shipped perl call runs under LC_ALL=C (C.utf8 cannot panic Apple perl)
+        run: bash core/scripts/tests/perl-locale-guard.test.sh
+      - name: hqd hook shim keeps working under LC_ALL=C.utf8
+        run: sh core/scripts/tests/hqd-hook-shim-locale.test.sh
+      - name: Perl timeout wrappers hand the caller's locale to the child they start
+        run: bash core/scripts/tests/perl-child-locale.test.sh
       - name: Native hook registration and rollback (US-015)
         run: bash core/scripts/tests/restore-hook-engine.test.sh
       - name: Codex and Grok adapters dispatch engine exec entries to master-hook.sh (US-015)

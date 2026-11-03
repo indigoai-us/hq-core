@@ -110,7 +110,7 @@ mkdir -p "$(dirname "$OUT")"
 
 TMP="$(mktemp -d -t bench-hook-corpus.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
-now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
+now_ms() { LC_ALL=C perl -MTime::HiRes=time -e 'printf "%d\n", time*1000'; }
 
 run_event() { # $1 event, $2 payload json, $3 outfile -> prints secs
   local event="$1" output="$3" error="$3.stderr" s e root="$HQ_ROOT" rc=0 runtime_home="${HOME:-/tmp}"
@@ -130,7 +130,7 @@ run_event() { # $1 event, $2 payload json, $3 outfile -> prints secs
   fi
   e=$(now_ms)
   printf '%s\n' "$rc" > "$output.rc"
-  perl -e 'printf "%.3f\n", ($ARGV[1]-$ARGV[0])/1000' "$s" "$e"
+  LC_ALL=C perl -e 'printf "%.3f\n", ($ARGV[1]-$ARGV[0])/1000' "$s" "$e"
 }
 
 if [ "$MODE" = "replay" ]; then

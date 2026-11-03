@@ -28,8 +28,13 @@ case "$limit" in ''|*[!0-9]*) limit=10 ;; esac
 threads="$root/workspace/threads"
 [ -d "$threads" ] || exit 0
 
+# hq_perl_spawn restores the caller's locale before exec.
+# shellcheck source=lib/perl-child-locale.sh
+. "${BASH_SOURCE[0]%/*}/lib/perl-child-locale.sh" 2>/dev/null \
+  || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+
 {
-  perl -e 'alarm shift @ARGV; exec @ARGV or exit 127' "$limit" \
+  hq_perl_spawn 'alarm shift @ARGV; exec @ARGV or exit 127' "$limit" \
     find "$threads" -maxdepth 1 -type f -name 'T-*-auto-*.json' -mmin "-$minutes" -print \
     | LC_ALL=C sort -r | head -1
 } 2>/dev/null

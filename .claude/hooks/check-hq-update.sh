@@ -89,7 +89,7 @@ update_hook_now_ms() {
     padded="${fraction}000"
     printf '%s\n' "$((10#$seconds * 1000 + 10#${padded:0:3}))"
   elif command -v perl >/dev/null 2>&1 \
-    && perl_ms="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000' 2>/dev/null)" \
+    && perl_ms="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000' 2>/dev/null)" \
     && [ -n "$perl_ms" ]; then
     printf '%s\n' "$perl_ms"
   else
@@ -235,7 +235,12 @@ bounded_gh_command() {
     case "$os_name" in
       MINGW*|MSYS*|CYGWIN*) return 125 ;;
     esac
-    perl -e 'alarm shift; exec { $ARGV[0] } @ARGV' "$seconds" "$@"
+    # hq_perl_spawn restores the caller's locale before exec (the gh child must
+    # not inherit the LC_ALL=C that keeps perl from panicking on C.utf8).
+    # shellcheck source=../../core/scripts/lib/perl-child-locale.sh
+    . "${BASH_SOURCE[0]%/*}/../../core/scripts/lib/perl-child-locale.sh" 2>/dev/null \
+      || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+    hq_perl_spawn 'alarm shift; exec { $ARGV[0] } @ARGV' "$seconds" "$@"
     return $?
   fi
   return 125

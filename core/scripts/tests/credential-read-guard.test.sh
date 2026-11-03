@@ -42,6 +42,9 @@
 #        HOME, including ANSI-C quoted parts
 #   [22] round 6: function bodies inside a block, the zsh short for loop,
 #        ^ and # words reaching a reader indirectly, :// paths
+#   [23] round 7: :// operands of git, zsh glob_subst and $~, git
+#        configuration that runs a command (alias, pager, ...), commands
+#        that xargs, find -exec and parallel run
 # Sections run in the order 1-6, 9, 10, 7, 8, because [8] exports env vars.
 set -uo pipefail
 
@@ -1097,6 +1100,123 @@ if command -v zsh >/dev/null 2>&1; then
   real_shell "zsh in (.n)pmrc names .npmrc" ".npmrc " zsh -f -c "cd '$FH' && print -l (.n)pmrc"
 fi
 real_shell "bash function NAME ( body ) runs the body" "ran " bash -c 'function f ( echo ran ); f'
+# [23] round 7 (#1767 desk shapes). (a) git and npm-family operands with ://
+# kept the old URL exemption; (b) zsh $~ and glob_subst glob a quoted ^ or #
+# value; (c) git runs alias and other config values as commands.
+bash_case 2 "git :// operand with a # glob (folder a: exists)" 'git diff --no-index /dev/null a://../i#d_rsa' "$FH/one"
+bash_case 2 "git :// operand with a # glob and extendedglob" 'setopt extendedglob; git diff --no-index /dev/null a://../i#d_rsa' "$FH/one"
+bash_case 2 "git :// operand with a ^ glob" 'git show a://../id^x' "$FH/one"
+bash_case 2 "git :// operand with .. and no glob" 'git diff --no-index /dev/null a://../.ssh/id_rsa' "$FH/one"
+bash_case 2 "npm :// operand with a # glob" 'npm pack a://../i#d_rsa' "$FH/one"
+bash_case 2 "\$~ on a quoted ^ value" "p='id^x'; cat \$~p" "$FH/one"
+bash_case 2 "\${~} on a quoted # value" 'p="i#d_rsa"; cat ${~p}' "$FH/one"
+bash_case 2 "\$~ value piped to xargs cat" "p='i#d_rsa'; echo \$~p | xargs cat" "$FH/one"
+bash_case 2 "setopt globsubst, quoted # value" "setopt globsubst; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "setopt GLOB_SUBST, quoted ^ value" "setopt GLOB_SUBST; p='id^x'; cat \$p" "$FH/one"
+bash_case 2 "set -o globsubst, quoted ^ value" "set -o globsubst; p='id^x'; cat \$p" "$FH/one"
+bash_case 2 "setopt glob_subst, value piped to xargs" "setopt glob_subst; p='i#d_rsa'; echo \$p | xargs cat" "$FH/one"
+bash_case 2 "emulate ksh sets globsubst" "emulate ksh; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "git -c alias with ! runs cat" "git -c alias.x='!cat ~/.npmrc' x"
+bash_case 2 "git -c alias, quoted key and value" "git -c 'alias.x=!cat ~/.ssh/id_rsa' x"
+bash_case 2 "git -c alias, escaped blank" 'git -c alias.x=!cat\ ~/.npmrc x'
+bash_case 2 "git -c alias through sh -c" "git -c alias.x='!sh -c \"cat ~/.npmrc\"' x"
+bash_case 2 "git -c alias gets the arguments" "git -c alias.x='!cat' x ~/.npmrc"
+bash_case 2 "git -c alias with a ^ word" "git -c alias.x='!cat id^x' x" "$FH/one"
+bash_case 2 "git -c ALIAS key in upper case" "git -c ALIAS.x='!cat ~/.npmrc' x"
+bash_case 2 "git -c alias to a git command line" "git -c alias.x='diff --no-index /dev/null ~/.npmrc' x"
+bash_case 2 "git -c core.pager runs cat" "git -c core.pager='cat ~/.npmrc' log"
+bash_case 2 "git -c diff textconv runs cat" "git -c diff.x.textconv='cat ~/.npmrc' diff"
+bash_case 2 "GIT_CONFIG_VALUE alias" "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!cat ~/.npmrc' git x"
+bash_case 2 "git --config-env alias from a variable" 'git --config-env=alias.x=V x'
+bash_case 2 "git config sets an alias that reads" "git config alias.x '!cat ~/.npmrc'"
+bash_case 0 "control: git -c alias that echoes" "git -c alias.x='!echo hi' x"
+bash_case 0 "control: git -c alias to status" 'git -c alias.st=status st'
+bash_case 0 "control: git -c user.name commit" 'git -c user.name=x commit -m y'
+bash_case 0 "control: git -c core.pager=less log" 'git -c core.pager=less log'
+bash_case 0 "control: git -c color.ui log" 'git -c color.ui=always log'
+bash_case 0 "control: git config user.name" 'git config user.name foo'
+bash_case 0 "control: git clone https URL" 'git clone https://github.com/example/repo.git'
+bash_case 0 "control: git remote add https URL" 'git remote add up https://github.com/example/repo.git'
+bash_case 0 "control: npm i URL" 'npm i https://example.com/pkg.tgz'
+bash_case 0 "control: quoted # without glob_subst" "p='x#y'; echo \$p"
+bash_case 0 "control: \$~ with no ^ or #" "p='*.md'; ls \$~p"
+if command -v zsh >/dev/null 2>&1; then
+  real_shell "zsh \$~p globs a quoted # value" "id_rsa " zsh -f -c "cd '$FH/one' && setopt extendedglob && p='i#d_rsa' && print -l -- \$~p"
+  real_shell "zsh globsubst globs a quoted # value" "id_rsa " zsh -f -c "cd '$FH/one' && setopt extendedglob globsubst && p='i#d_rsa' && print -l -- \$p"
+  real_shell "zsh a://../i#d_rsa names a file" "a://../id_rsa " zsh -f -c "cd '$FH/one' && setopt extendedglob && print -l -- a://../i#d_rsa"
+fi
+if command -v git >/dev/null 2>&1; then
+  real_shell "git -c alias with ! runs a shell command" "ran " env -i HOME="$FH" PATH="$PATH" git -c alias.x='!echo ran' x
+fi
+# Review follow-ups (#1770 review C1-C3): other glob_subst spellings and a
+# computed option name; a one-segment :// path and an unknown scheme; git
+# configuration and commands from the environment.
+bash_case 2 "setopt g_l_o_b_s_u_b_s_t" "setopt extendedglob; setopt g_l_o_b_s_u_b_s_t; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "setopt glob\\_subst" "setopt glob\\_subst; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "set -o with quotes inside the option name" "set -o g\"\"lobsubst; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "setopt with a computed option name" "o=globsu; setopt \${o}bst; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "unsetopt noglobsubst" "unsetopt noglobsubst; p='i#d_rsa'; cat \$p" "$FH/one"
+bash_case 2 "zsh -o globsubst -c" "zsh -o globsubst -c \"p='i#d_rsa'; cat \\\$p\"" "$FH/one"
+bash_case 2 "git :// operand with one segment" 'git diff --no-index /dev/null a://id_rsa' "$FH/one"
+bash_case 2 "git :// operand with a . segment" 'git diff --no-index /dev/null a://./id_rsa' "$FH/one"
+bash_case 2 "git :// operand, upper-case scheme" 'git diff --no-index /dev/null A://id_rsa' "$FH/one"
+bash_case 2 "npm :// operand with one segment" 'npm pack a://id_rsa' "$FH/one"
+mkdir -p "$FH/one/https:"
+bash_case 2 "git https:// operand with a folder https:" 'git diff --no-index /dev/null https://../id_rsa' "$FH/one"
+bash_case 2 "GIT_CONFIG_PARAMETERS alias" "GIT_CONFIG_PARAMETERS=\"'alias.x=!cat ~/.npmrc'\" git x"
+bash_case 2 "exported GIT_CONFIG_COUNT alias" "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0='!cat ~/.npmrc'; git x"
+bash_case 2 "GIT_EXTERNAL_DIFF runs cat" "GIT_EXTERNAL_DIFF='cat ~/.np*rc' git diff"
+bash_case 2 "exported GIT_EXTERNAL_DIFF runs cat" "export GIT_EXTERNAL_DIFF='cat ~/.npmrc'; git diff"
+bash_case 2 "env GIT_SSH_COMMAND runs cat" "env GIT_SSH_COMMAND='cat ~/.npmrc' git fetch"
+bash_case 2 "git -c core.alternateRefsCommand" "git -c core.alternateRefsCommand='cat ~/.npmrc' fetch"
+bash_case 0 "control: git clone https URL (r7 review)" 'git clone https://github.com/example/repo.git'
+bash_case 0 "control: git -c core.pager='less -R' log" "git -c core.pager='less -R' log"
+bash_case 0 "control: git log --grep '#12'" "git log --grep '#12'"
+bash_case 0 "control: npm i git+https URL" 'npm i git+https://github.com/example/repo.git'
+bash_case 0 "control: GIT_PAGER=cat git log" 'GIT_PAGER=cat git log'
+if command -v zsh >/dev/null 2>&1; then
+  real_shell "zsh setopt g_l_o_b_s_u_b_s_t turns on globsubst" "id_rsa " zsh -f -c "cd '$FH/one' && setopt extendedglob g_l_o_b_s_u_b_s_t && p='i#d_rsa' && print -l -- \$p"
+fi
+bash_case 2 "git ext:: URL from an insteadOf key" "git -c protocol.ext.allow=always -c 'url.ext::sh -c cat% ~/.np*rc% >&2 #.insteadOf=x' clone x d"
+bash_case 2 "GIT_ALLOW_PROTOCOL=ext with an insteadOf key" "GIT_ALLOW_PROTOCOL=ext git -c 'url.ext::sh -c cat% ~/.npmrc #.insteadOf=x' clone x d"
+bash_case 2 "git -c protocol.allow=always" "git -c protocol.allow=always clone x d"
+bash_case 0 "control: GIT_ALLOW_PROTOCOL=https git fetch" 'GIT_ALLOW_PROTOCOL=https git fetch'
+bash_case 2 "git ext:: named through a variable" 'e=ext; git -c protocol.$e.allow=always -c "url.$e::sh -c cat% ~/.np*rc #.insteadOf=x" ls-remote x'
+bash_case 2 "git -c computed key" 'k=alias.x; git -c "$k=!cat ~/.npmrc" x'
+bash_case 2 "git -c PROTOCOL.ALLOW upper case" 'git -c PROTOCOL.ALLOW=always clone x d'
+bash_case 2 "GIT_ALLOW_PROTOCOL from a variable" 'e=ext; GIT_ALLOW_PROTOCOL=$e git ls-remote x'
+bash_case 2 "git ext:: split with quotes" "git -c pro''tocol.ext.allow=always -c \"url.e\"xt'::sh -c cat% ~/.np*rc% >&2 #.insteadOf=x' ls-remote x"
+bash_case 2 "GIT_ALLOW_PROTOCOL split with quotes" "GIT_ALLOW_PROTOCOL=e''xt git -c \"url.e\"xt'::sh -c cat% ~/.np*rc% >&2 #.insteadOf=x' ls-remote x"
+bash_case 2 "git ext:: split with backslashes" 'git -c pro\tocol.ext.allow=always -c url.e\xt::sh\ -c\ cat%\ ~/.np*rc%\ \>\&2\ \#.insteadOf=x ls-remote x'
+bash_case 2 "GIT_CONFIG split with quotes" "GIT_CONFIG_PARA''METERS=\"'alias.x=!cat ~/.npmrc'\" git x"
+# round 7 re-review R4: a git option with a separate value before -c, alias
+# arguments that keep their quoting, a scheme folder made in the same command
+# line or reached with -C, commands run by xargs, find -exec and parallel,
+# and git configuration keys matched without case on the fast path.
+bash_case 2 "git --attr-source <tree> hides -c" "git --attr-source HEAD -c alias.x='!cat ~/.n?mrc' x"
+bash_case 2 "git unknown option before the subcommand" "git --frobnicate HEAD -c alias.x='!cat ~/.n?mrc' x"
+bash_case 2 "alias !sh -c with a quoted script argument" "git -c alias.x='!sh -c' x 'cat ~/.n\"\"pmrc'"
+bash_case 2 "alias !sh -c with a glob script argument" "git -c alias.x='!sh -c' x 'cat ~/.n?mrc'"
+bash_case 2 "alias !sh with -c in the arguments" "git -c alias.x='!sh' x -c 'cat ~/.n\"\"pmrc'"
+bash_case 2 "scheme folder linked in the same command line" 'ln -s .. https: && git diff --no-index /dev/null https://.npmrc'
+bash_case 2 "scheme folder made with a nested link" 'mkdir -p https: && ln -s ../.. https:/h && git diff --no-index /dev/null https://h/.npmrc'
+bash_case 2 "scheme folder in the git -C directory" 'git -C ../w diff --no-index /dev/null https://.npmrc'
+bash_case 2 "xargs runs git -c alias" "echo x | xargs git -c alias.x='!cat ~/.n?mrc'"
+bash_case 2 "xargs runs sh -c" "echo x | xargs sh -c 'cat ~/.n?mrc'"
+bash_case 2 "xargs runs env GIT_PAGER" "echo x | xargs env GIT_PAGER='cat ~/.n?mrc' git log"
+bash_case 2 "find -exec runs git -c alias" "find . -name a -exec git -c alias.x='!cat ~/.n?mrc' x \\;"
+bash_case 2 "parallel runs git -c alias" "parallel -j2 git -c alias.x='!cat ~/.n?mrc' x ::: a"
+mkdir -p "$PROJ/src" && printf 'x\n' > "$PROJ/src/a.txt"
+bash_case 2 "lower-case gitproxy key on the fast path" "git -c core.gitproxy='cat i#d_rsa' fetch src/a.txt"
+bash_case 2 "lower-case askpass key on the fast path" "git -c core.askpass='cat id^x' fetch src/a.txt"
+bash_case 2 "lower-case http.proxy key on the fast path" "git -c http.proxy='cat id^x' fetch src/a.txt"
+bash_case 0 "control: git --no-pager log" 'git --no-pager log -1'
+bash_case 0 "control: git -c alias with git arguments" "git -c alias.lg='log --oneline' lg -5"
+bash_case 0 "control: find -exec grep" "find . -name '*.txt' -exec grep -l foo {} \\;"
+bash_case 0 "control: xargs -I echo" 'echo a b | xargs -I{} echo item {}'
+bash_case 0 "control: xargs basename" 'ls | xargs -n1 basename'
+bash_case 0 "control: parallel gzip" 'parallel -j4 gzip ::: a.txt b.txt'
+bash_case 0 "control: https URL in a single git fetch" 'git fetch https://github.com/example/repo main'
 # review round 11: blanks at the edge of the output split the outer word
 printf ' .env\n' > "$PROJ/lead.txt"
 printf '.env \n' > "$PROJ/trail.txt"

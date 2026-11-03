@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Shared payload and entrypoint helpers for the two HP-5 benchmark views.
 
+# shellcheck source=perl-child-locale.sh
+. "${BASH_SOURCE[0]%/*}/perl-child-locale.sh" 2>/dev/null \
+  || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+
 bench_runtime_valid() {
   case "${1:-}" in claude|codex|grok|hq-agent) return 0 ;; *) return 1 ;; esac
 }
@@ -98,24 +102,24 @@ bench_runtime_dispatch() {
   local response run_dir rc=0
   case "$runtime" in
     claude)
-      printf '%s' "$payload" | perl -e 'alarm shift; exec @ARGV' "$timeout" \
+      printf '%s' "$payload" | hq_perl_spawn 'alarm shift; exec @ARGV' "$timeout" \
         env BASH_ENV=/dev/null CLAUDE_PROJECT_DIR="$root" HQ_ROOT="$root" \
         bash "$root/.claude/hooks/master-hook.sh" "$event" > "$out" 2> "$err" || rc=$?
       ;;
     codex)
-      printf '%s' "$payload" | perl -e 'alarm shift; exec @ARGV' "$timeout" \
+      printf '%s' "$payload" | hq_perl_spawn 'alarm shift; exec @ARGV' "$timeout" \
         env BASH_ENV=/dev/null CLAUDE_PROJECT_DIR="$root" HQ_ROOT="$root" \
         bash "$root/.codex/hooks/hq-codex-hook-adapter.sh" > "$out" 2> "$err" || rc=$?
       ;;
     grok)
-      printf '%s' "$payload" | perl -e 'alarm shift; exec @ARGV' "$timeout" \
+      printf '%s' "$payload" | hq_perl_spawn 'alarm shift; exec @ARGV' "$timeout" \
         env BASH_ENV=/dev/null CLAUDE_PROJECT_DIR="$root" HQ_ROOT="$root" \
         GROK_WORKSPACE_ROOT="$root" GROK_HOOK_EVENT="$event" \
         bash "$root/.grok/hooks/hq-grok-hook-adapter.sh" > "$out" 2> "$err" || rc=$?
       ;;
     hq-agent)
       response="${out}.response.json"
-      printf '%s' "$payload" | perl -e 'alarm shift; exec @ARGV' "$timeout" \
+      printf '%s' "$payload" | hq_perl_spawn 'alarm shift; exec @ARGV' "$timeout" \
         env BASH_ENV=/dev/null CLAUDE_PROJECT_DIR="$root" HQ_ROOT="$root" \
         HQ_AGENT_WORKDIR="$root" HQ_AGENT_SESSION_SKIP_PROVIDER=1 HOME="$home" \
         bash "$root/core/scripts/hq-agent-session.sh" > "$response" 2> "$err" || rc=$?

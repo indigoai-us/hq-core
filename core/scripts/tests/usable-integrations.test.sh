@@ -40,6 +40,8 @@ mkdir -p "$ROOT/core/scripts" "$ROOT/companies/acme/projects" "$ROOT/companies/b
   "$ROOT/repos/private/beta-app" "$ROOT/workspace/sessions" "$TMP/bin" "$TMP/elsewhere"
 ln -s "$TMP/elsewhere" "$ROOT/companies/linked"
 cp "$SCRIPT" "$ROOT/core/scripts/usable-integrations.sh"
+mkdir -p "$ROOT/core/scripts/lib"
+cp "$REPO/core/scripts/lib/perl-child-locale.sh" "$ROOT/core/scripts/lib/perl-child-locale.sh"
 CACHE="$ROOT/.hq/usable-integrations"
 
 # Fake hq: records calls, answers per HQ_FAKE_MODE / HQ_FAKE_DEFAULT.

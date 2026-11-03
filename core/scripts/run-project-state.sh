@@ -60,7 +60,7 @@ acquire_lock() {
     flock -w 30 9 || die "timed out waiting for $LOCK_FILE"
   else
     command -v perl >/dev/null 2>&1 || die "flock or perl is required"
-    perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or die "fd 9: $!\n";
+    LC_ALL=C perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or die "fd 9: $!\n";
       $SIG{ALRM} = sub { exit 3 }; alarm 30; flock($f, LOCK_EX) or die "flock: $!\n";' \
       || die "timed out waiting for $LOCK_FILE"
   fi

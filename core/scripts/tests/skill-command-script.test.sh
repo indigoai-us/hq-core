@@ -47,6 +47,7 @@ mkdir -p "$TMP_ROOT/core/scripts" "$CORE_SKILLS" "$PERSONAL_SKILLS" \
 cp "$HQ_SRC/core/scripts/hook-lib.sh" "$TMP_ROOT/core/scripts/hook-lib.sh"
 mkdir -p "$TMP_ROOT/core/scripts/lib" "$TMP_ROOT/.codex/hooks"
 cp "$HQ_SRC/core/scripts/lib/session-scope-capability.sh" "$TMP_ROOT/core/scripts/lib/"
+cp "$HQ_SRC/core/scripts/lib/perl-child-locale.sh" "$TMP_ROOT/core/scripts/lib/"
 printf '%s\n' 'process.stdout.write("true")' > "$TMP_ROOT/.codex/hooks/codex-explicit-path-flag.cjs"
 
 make_skill() { # <dir> <body>

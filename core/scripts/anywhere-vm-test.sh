@@ -189,7 +189,11 @@ run_bounded() {
   local seconds="$1"
   shift
   # alarm(2) survives exec, so this also works on stock macOS without GNU timeout.
-  perl -e 'my $n=shift; $SIG{ALRM}=sub { exit 124 }; alarm $n; exec @ARGV or die "exec failed\n"' "$seconds" "$@"
+  # hq_perl_spawn restores the caller's locale before exec.
+  # shellcheck source=lib/perl-child-locale.sh
+  . "${BASH_SOURCE[0]%/*}/lib/perl-child-locale.sh" 2>/dev/null \
+    || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+  hq_perl_spawn 'my $n=shift; $SIG{ALRM}=sub { exit 124 }; alarm $n; exec @ARGV or die "exec failed\n"' "$seconds" "$@"
 }
 
 redact_output() {

@@ -36,7 +36,8 @@ for (const test of suite.cases) {
       writeFileSync(dest, content);
     };
     for (const path of ['.claude/hooks/master-hook.sh', '.claude/hooks/hook-timeout-probe.sh',
-      '.claude/hooks/hook-gate.sh', 'core/scripts/resolve-hq-root.sh', 'core/scripts/lib/hook-adapter-core.sh']) {
+      '.claude/hooks/hook-gate.sh', 'core/scripts/resolve-hq-root.sh', 'core/scripts/lib/hook-adapter-core.sh',
+      'core/scripts/lib/perl-child-locale.sh']) {
       mkdirSync(dirname(join(root, path)), { recursive: true });
       copyFileSync(join(source, path), join(root, path));
     }

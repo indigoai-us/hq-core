@@ -50,6 +50,7 @@ cp "$MASTER" "$FIX/.claude/hooks/master-hook.sh"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$FIX/.claude/hooks/hook-gate.sh"
 cp "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$FIX/core/scripts/lib/hook-adapter-core.sh"
+cp "$ROOT/core/scripts/lib/perl-child-locale.sh" "$FIX/core/scripts/lib/perl-child-locale.sh"
 chmod +x "$FIX/.claude/hooks/master-hook.sh" "$FIX/.claude/hooks/hook-gate.sh"
 
 # A hook whose own Bash is not the slow process: it starts a long child,

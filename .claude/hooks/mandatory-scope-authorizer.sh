@@ -5631,7 +5631,7 @@ scope_tool_location_bounded() {
   [ "$limit" -gt 3 ] && limit=3
   command -v perl >/dev/null 2>&1 || return 1
   out="$(mktemp "${TMPDIR:-/tmp}/hq-scope-tool.XXXXXX" 2>/dev/null)" || return 1
-  (cd "$dir" 2>/dev/null && perl -e '
+  (cd "$dir" 2>/dev/null && LC_ALL=C perl -e '
     my $s = shift;
     my $pid = fork;
     defined $pid or exit 125;

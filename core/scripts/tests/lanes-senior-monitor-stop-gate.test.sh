@@ -63,6 +63,7 @@ printf '%s\n' '{"lane_id":"fixture-lane","state":"running","senior":{"kind":"ses
 cp "$MASTER_SRC" "$FIX/.claude/hooks/master-hook.sh"
 cp "$PROBE_SRC" "$FIX/.claude/hooks/hook-timeout-probe.sh"
 cp "$ADAPTER_CORE_SRC" "$FIX/core/scripts/lib/hook-adapter-core.sh"
+cp "$(dirname "$ADAPTER_CORE_SRC")/perl-child-locale.sh" "$FIX/core/scripts/lib/perl-child-locale.sh"
 cp "$GATE_SRC" "$FIX/.claude/hooks/hook-gate.sh"
 cp "$STOP_SRC" "$FIX/.claude/hooks/lanes-senior-monitor-stop-gate.sh"
 mkdir -p "$FIX/core/scripts/lib"

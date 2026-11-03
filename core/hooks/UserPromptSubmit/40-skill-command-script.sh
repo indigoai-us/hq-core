@@ -218,7 +218,13 @@ case "$MAX_BYTES" in ""|*[!0-9]*) MAX_BYTES=4000 ;; esac
 if command -v timeout >/dev/null 2>&1; then
   set -- timeout "$TIMEOUT_SECS" bash "$FOUND_SCRIPT"
 elif command -v perl >/dev/null 2>&1; then
-  set -- perl -e 'alarm shift; exec {$ARGV[0]} @ARGV' "$TIMEOUT_SECS" bash "$FOUND_SCRIPT"
+  # hq_perl_spawn restores the caller's locale before exec, so the command
+  # script does not inherit the LC_ALL=C that keeps perl from panicking. Without
+  # the lib it is plain `LC_ALL=C perl`; the timeout still applies.
+  # shellcheck source=../../scripts/lib/perl-child-locale.sh
+  . "${BASH_SOURCE[0]%/*}/../../scripts/lib/perl-child-locale.sh" 2>/dev/null \
+    || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+  set -- hq_perl_spawn 'alarm shift; exec {$ARGV[0]} @ARGV' "$TIMEOUT_SECS" bash "$FOUND_SCRIPT"
 else
   set -- bash "$FOUND_SCRIPT"
 fi
