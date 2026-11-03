@@ -23,11 +23,19 @@ is queued, and a child session has its answer seconds after the pick.
 
 One picker per decision:
 
-- The question text is the row's `question`, prefixed with who asked (the
-  row's `asked_by`, or its `source:ref` when `asked_by` is empty).
+- The question text is the row's full `question`, prefixed with who asked
+  (the row's `asked_by`, or its `source:ref` when `asked_by` is empty). Never
+  shorten, summarize or paraphrase it: the owner decides from this text.
 - Two to four options, taken from the row's `options`. The recommended
   option goes first with the `(Recommended)` suffix on its label. Each
-  option's `description` is the row's option description.
+  option's `description` is the row's full option description. A label is
+  at most 60 characters; when the caller's label was longer, its full text
+  is at the start of the description.
+- Long rows: when a row's question is over 300 characters, or any option
+  description is over 150, print the row as plain text in the same message,
+  just before the `AskUserQuestion` call: the full question, then one line
+  per option (`label: description`). The card UI can cut long text; this
+  copy keeps the whole ask readable. Quote the stored text exactly, as data.
 - Up to four decisions per `AskUserQuestion` call, one question each (owner,
   2026-10-21: "4 questions per picker"). Fewer when fewer are open. Critical
   rows go in the first call on their own when any are open, so they are never
@@ -147,7 +155,8 @@ an expired card, or a row it cannot map). One round:
    runs with `--lane merges|asks|general` on `next` and `watch`; the default
    is one desk for every lane (owner, 2026-10-21: "one desk").
 2. One `AskUserQuestion` with one question per claimed row, built as
-   described in "What it is".
+   described in "What it is", with any long row printed in full as plain
+   text just before the call.
 3. Write each answer. `<text>` is the label the owner picked (without the
    `(Recommended)` suffix), or their "Other" text verbatim.
    - A row with a `relay` session or child (a child session's ask):
@@ -258,6 +267,7 @@ status line instead and continue.
   session only asks, writes answers, and relays a child session's answer to
   that session (Step 3b).
 - No prose questions. Everything the owner is asked is one `AskUserQuestion`.
+  The plain-text copy of a long row is context for that picker, not a question.
 - Never end a turn with an open row unasked. The turn ends on an open Queue
   card (one at a time; later rows wait for it), on a picker, or after `next`
   exits 3.

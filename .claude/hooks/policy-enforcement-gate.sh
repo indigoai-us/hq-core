@@ -152,6 +152,31 @@ policy_required_values() {
     }' | jq -Rsc 'split("\n")|map(select(length>0))'
 }
 
+# Print "<id>\037<forbid>\037<require>" for each listed policy row whose file
+# declares a delivery-forbid-regex or delivery-require-regex, in list order.
+# Each value is the first line starting with the key, with the key and the
+# blanks after it removed: what `sed -n 's/^key:[[:space:]]*//p' | head -n1`
+# gave per row. Each distinct file is read once.
+policy_delivery_regexes() {
+  local id path
+  while IFS=$'\t' read -r id _ path _; do
+    [ -n "$path" ] && [ -f "$path" ] && printf '%s\037%s\n' "$id" "$path"
+  done < "$POLICIES" | awk -F '\037' '
+    {
+      id = $1; path = substr($0, length(id) + 2)
+      if (!(path in seen)) {
+        f = ""; r = ""; hf = 0; hr = 0
+        while ((getline line < path) > 0) {
+          if (!hf && index(line, "delivery-forbid-regex:") == 1) { hf = 1; f = line; sub(/^delivery-forbid-regex:[[:space:]]*/, "", f) }
+          if (!hr && index(line, "delivery-require-regex:") == 1) { hr = 1; r = line; sub(/^delivery-require-regex:[[:space:]]*/, "", r) }
+        }
+        close(path)
+        seen[path] = 1; F[path] = f; R[path] = r
+      }
+      if (F[path] != "" || R[path] != "") printf "%s\037%s\037%s\n", id, F[path], R[path]
+    }'
+}
+
 gate_policy_data() {
   node - "$1" <<'NODE'
 const fs = require("fs");
@@ -620,10 +645,10 @@ case "$EVENT" in
     fi
 
     if [ -s "$POLICIES" ]; then
-      while IFS=$'\t' read -r id scope path enf excerpt kind; do
-        [ -n "$path" ] && [ -f "$path" ] || continue
-        forbid="$(sed -n 's/^delivery-forbid-regex:[[:space:]]*//p' "$path" | head -n1)"
-        require="$(sed -n 's/^delivery-require-regex:[[:space:]]*//p' "$path" | head -n1)"
+      # One awk reads every listed policy file once; only rows that declare a
+      # delivery regex come back, in list order. Forking sed and head per row
+      # cost 14-21 s per outbound call on Git Bash with ~220 rows (#1744).
+      while IFS=$'\037' read -r id forbid require; do
         if [ -z "$BODY" ] && { [ -n "$forbid" ] || [ -n "$require" ]; }; then
           json_block "POLICY ENFORCEMENT BLOCK: deterministic delivery gate $id cannot inspect this outbound body. Supply content in a structured tool field or literal MESSAGE/BODY/TEXT shell assignment."
           exit 2
@@ -652,7 +677,7 @@ case "$EVENT" in
           json_block "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate $id (required pattern missing)."
           exit 2
         fi
-      done < "$POLICIES"
+      done < <(policy_delivery_regexes)
     fi
     ;;
 esac

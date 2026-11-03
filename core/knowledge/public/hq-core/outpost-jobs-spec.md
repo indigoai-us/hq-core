@@ -411,6 +411,36 @@ the job process environment and drops to `hq-jobs` at exec. The job account
 never receives the credentials path. Denial produces a blocked receipt before
 any provider execution.
 
+### HQ sign-in inside the job
+
+Steps inside a job may call `hq` (`hq whoami`, `hq secrets exec`, `hq sync`,
+`hq integrations ...`) as the Outpost's own machine identity. The runner never
+hands the job the machine credentials. Before any job code runs it mints the
+Outpost's tokens through the same bounded machine-token call it uses for the
+company API, writes a delegated session file
+`/run/hq-company-jobs-sessions/<run id>/machine-session.json` (tokens and
+identity bindings only; root 0711 root, per-run directory root:hq-jobs 0710,
+file root:hq-jobs 0640, so the job can read it but can neither write it nor
+swap its directory between refreshes) and sets `HQ_MACHINE_SESSION_FILE`,
+`HQ_MACHINE_TOKEN_STATE_DIR=<run home>/.hq/machine-tokens`,
+`HQ_MACHINE_AUTH_REQUIRED=1` and `HQ_REQUIRE_MACHINE_IDENTITY=1` for both the
+precondition script and the session unit. The hq CLI (hq-cloud
+`HQ_MACHINE_SESSION_FILE`) treats that file as the Outpost identity with the
+Outpost's existing grants, re-reads it on every call, never caches it and can
+never mint from it. While the job runs the runner rewrites the file every 10
+minutes with tokens valid for at least 25 minutes, so a job longer than the
+one-hour token lifetime stays signed in; a failed refresh is logged to the run
+output as `machineSession: refresh_failed` without token text and the job keeps
+its current tokens until they expire. Token strings are redacted from captured
+output. The per-run session directory is removed with the run, and stale ones
+are swept by run-unit liveness when the runner starts. A mint failure before
+launch produces a blocked receipt with `machine_session_unavailable` and no job
+code runs. Accepted job content is unchanged: every saved job gets the sign-in
+on its next run. On a box whose `hq` predates the session-file contract, an
+`hq` call inside a job fails fast with the required-machine error naming the
+missing credentials instead of attempting a person sign-in; such calls did not
+work before either.
+
 ### Box Claude sign-in (no provider secret)
 
 When the configuration has no `providerSecret` and the provider is `claude`,

@@ -1,6 +1,7 @@
 {
   "$schema": "hq-hook-registry@1",
-  "description": "Gated hooks dispatched in-process by .claude/hooks/master-hook.sh. Same event/matcher semantics as settings.json hooks. prefilter.re is a POSIX ERE tested against the JSON text of tool_input (or the prompt for UserPromptSubmit); the hook only runs when it matches (must be a superset of the hook's own trigger). prefilter.re_all is a list of POSIX EREs; the hook also runs when every one of them matches, tried in order so a cheap first regex skips the rest. prefilter.env requires a non-empty env var; prefilter.file requires a path under the HQ root to exist ({session_id} expands to the event's session id; * is a shell glob; an unresolvable placeholder runs the hook). prefilter.policy_vocab=true skips the policy injector when the tool text contains none of the tokens any tool-event policy requires (compiled by master-hook from the policy dirs). safety=true marks a PreToolUse safety guard: master-hook caps its wall-clock time at min(timeout, 25s), kills its process group on expiry, and blocks the tool call (exit 2, guard timed out, blocked) instead of failing open.",
+  "description": "Gated hooks dispatched in-process by .claude/hooks/master-hook.sh. Same event/matcher semantics as settings.json hooks. prefilter.re is a POSIX ERE tested against the JSON text of tool_input (or the prompt for UserPromptSubmit); the hook only runs when it matches (must be a superset of the hook's own trigger). prefilter.re_all is a list of POSIX EREs; the hook also runs when every one of them matches, tried in order so a cheap first regex skips the rest. prefilter.env requires a non-empty env var; prefilter.file requires a path under the HQ root to exist ({session_id} expands to the event's session id; * is a shell glob; an unresolvable placeholder runs the hook). prefilter.policy_vocab=true skips the policy injector when the tool text contains none of the tokens any tool-event policy requires (compiled by master-hook from the policy dirs). safety=true marks a PreToolUse safety guard: master-hook caps its wall-clock time at min(timeout, 25s), kills its process group on expiry, and blocks the tool call (exit 2, guard timed out, blocked) instead of failing open. after is a list of sibling hook ids for the same event: when HQ_HOOK_PARALLEL=1 runs children concurrently, a hook waits for every listed sibling that comes before it in dispatch order, so hooks that share state keep their sequential order. directory_hook_after maps an event to {directory hook basename: [names]} with the same meaning; every directory hook also waits for all registry hooks of its event. Output is always merged in dispatch order.",
+  "directory_hook_after": {},
   "hooks": {
     "PreToolUse": [
       {
@@ -30,7 +31,10 @@
             "id": "policy-enforcement-gate",
             "script": ".claude/hooks/policy-enforcement-gate.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "after": [
+              "inject-policy-on-trigger"
+            ]
           }
         ]
       },
@@ -319,7 +323,11 @@
             "gated": true,
             "prefilter": {
               "policy_vocab": true
-            }
+            },
+            "after": [
+              "policy-enforcement-gate",
+              "surface-company-infra-policy"
+            ]
           },
           {
             "id": "block-unsafe-package-install",
@@ -339,7 +347,10 @@
             "gated": true,
             "prefilter": {
               "re": "sst|deploy|cdk|serverless|sls|terraform|aws|secrets"
-            }
+            },
+            "after": [
+              "inject-policy-on-trigger"
+            ]
           }
         ]
       },
@@ -760,6 +771,20 @@
             }
           }
         ]
+      },
+      {
+        "matcher": "mcp__ccd_session__start_session|start_session",
+        "hooks": [
+          {
+            "id": "spawn-company-handoff",
+            "script": "core/scripts/spawn-company-handoff.sh",
+            "timeout": 10,
+            "gated": true,
+            "args": [
+              "pre"
+            ]
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -770,7 +795,10 @@
             "id": "policy-enforcement-gate",
             "script": ".claude/hooks/policy-enforcement-gate.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "after": [
+              "inject-policy-on-trigger"
+            ]
           }
         ]
       },
@@ -866,7 +894,10 @@
             "gated": true,
             "prefilter": {
               "policy_vocab": true
-            }
+            },
+            "after": [
+              "policy-enforcement-gate"
+            ]
           },
           {
             "id": "reindex",
@@ -1219,13 +1250,19 @@
             "id": "migrate-policy-triggers",
             "script": ".claude/hooks/migrate-policy-triggers-if-changed.sh",
             "timeout": 60,
-            "gated": true
+            "gated": true,
+            "after": [
+              "inject-policy-on-trigger"
+            ]
           },
           {
             "id": "inject-policy-on-trigger",
             "script": ".claude/hooks/inject-policy-on-trigger.sh",
             "timeout": 60,
-            "gated": true
+            "gated": true,
+            "after": [
+              "migrate-policy-triggers"
+            ]
           },
           {
             "id": "desktop-memory-leak-check",
@@ -1361,19 +1398,29 @@
             "id": "route-deep-plan-to-skill",
             "script": ".claude/hooks/route-deep-plan-to-skill.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "after": [
+              "inject-policy-on-trigger"
+            ]
           },
           {
             "id": "auto-session-project",
             "script": ".claude/hooks/auto-session-project.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "after": [
+              "inject-policy-on-trigger",
+              "spawn-company-handoff"
+            ]
           },
           {
             "id": "natural-language-router",
             "script": ".claude/hooks/natural-language-router.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "after": [
+              "inject-policy-on-trigger"
+            ]
           },
           {
             "id": "intent-hint",
@@ -1392,7 +1439,27 @@
             "id": "inject-policy-on-trigger",
             "script": ".claude/hooks/inject-policy-on-trigger.sh",
             "timeout": 60,
-            "gated": true
+            "gated": true,
+            "after": [
+              "auto-session-project",
+              "natural-language-router",
+              "route-deep-plan-to-skill"
+            ]
+          },
+          {
+            "id": "spawn-company-handoff",
+            "script": "core/scripts/spawn-company-handoff.sh",
+            "timeout": 10,
+            "gated": true,
+            "args": [
+              "prompt"
+            ],
+            "prefilter": {
+              "re": "hq-spawn-intent:"
+            },
+            "after": [
+              "auto-session-project"
+            ]
           }
         ]
       },

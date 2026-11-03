@@ -234,6 +234,115 @@ printf 'echo file:///etc\n' >> "$TMP/.claude/skills/deploy/scripts/resolve-deplo
 scope_case 2 deploy-api-modified-script 'API=$(bash .claude/skills/deploy/scripts/resolve-deploy-api.sh); curl -s "$API/api/apps"'
 cred_case 2 deploy-api-modified-script 'API=$(bash .claude/skills/deploy/scripts/resolve-deploy-api.sh); curl -s "$API/api/apps"'
 
+# Words that are not paths: a program path held in a
+# variable set from command -v, and text after a directory change the guard
+# cannot follow. Every deny row below blocked before this section and must
+# keep blocking; every allow row blocked before it.
+echo "[7a] scope guard: a command name held in a command -v / which / type -P variable"
+scope_case 0 resolver-var-command-v 'PY=$(command -v python3); $PY -c "print(1)"'
+scope_case 0 resolver-var-quoted-use 'BIN="$(command -v jq)"; "$BIN" --version'
+scope_case 0 resolver-var-which 'G=$(which git); $G status'
+scope_case 0 resolver-var-type-p 'G=$(type -P git); "$G" status'
+scope_case 0 resolver-var-backtick 'G=`command -v git`; $G status'
+scope_case 0 resolver-var-braces 'G=$(command -v git); ${G} status'
+scope_case 0 resolver-var-script-operand 'PY=$(command -v python3); $PY workspace/a.md'
+scope_case 0 resolver-var-in-if 'if PY=$(command -v python3); then $PY -V; fi'
+scope_case 2 resolver-var-as-argument 'PY=$(command -v python3); cat "$PY"'
+scope_case 2 resolver-var-as-redirect-target 'PY=$(command -v python3); echo x > "$PY"'
+scope_case 2 resolver-var-then-other-company-operand 'PY=$(command -v python3); $PY companies/otherco/settings/.keep'
+scope_case 2 resolver-var-reassigned-to-substitution 'PY=$(command -v python3); PY=$(cat workspace/a.md); $PY x'
+scope_case 2 resolver-var-reassigned-to-literal 'PY=$(command -v python3); PY=companies/otherco/run.sh; $PY'
+scope_case 2 resolver-var-reassigned-first 'PY=companies/otherco/run.sh; PY=$(command -v python3); $PY'
+scope_case 2 resolver-var-read-later 'PY=$(command -v python3); read PY; $PY'
+scope_case 2 resolver-var-loop-variable 'PY=$(command -v python3); for PY in $(cat workspace/a.md); do $PY; done'
+scope_case 2 resolver-var-shell-name 'B=$(command -v bash); $B -c "cat companies/otherco/settings/.keep"'
+scope_case 2 resolver-var-path-shadow 'PATH=/tmp:$PATH; PY=$(command -v python3); $PY -V'
+scope_case 2 resolver-var-builtin-cd 'PY=$(command -v cd); $PY workspace/logs2; cat oc/settings/.keep'
+scope_case 2 resolver-var-builtin-pushd 'PY=$(command -v pushd); $PY workspace/logs2; cat oc/settings/.keep'
+scope_case 2 resolver-var-builtin-cd-then-relative 'PY=$(command -v cd); $PY /tmp; cat x/y'
+scope_case 2 resolver-var-builtin-enable 'PY=$(command -v enable); $PY -f /tmp/x.so y'
+scope_case 2 resolver-var-builtin-exec 'PY=$(command -v exec); $PY cat x'
+scope_case 2 substitution-var-command-name 'D=$(cat workspace/a.md); $D'
+scope_case 2 resolver-name-and-substitution-name 'PY=$(command -v python3); D=$(cat workspace/a.md); $D'
+
+echo "[7b] scope guard: text that is not a path after a directory change the guard cannot follow"
+font_url='https://fonts.googleapis.com/css2?family=Work+Sans:wght=300..700'
+scope_case 0 url-dotdot-after-cd-variable "cd \"\$D\" && curl -s '$font_url'"
+scope_case 0 url-dotdot-after-cd-variable-unquoted "cd \$D && curl -sL $font_url"
+scope_case 0 url-dotdot-after-cd-missing-home-dir "cd ~/Work && curl -s '$font_url' -o /tmp/f.css"
+scope_case 0 url-dotdot-path-after-cd-variable "cd \"\$D\" && curl -s https://example.com/a/../b"
+scope_case 0 commit-message-slash-after-cd-variable "cd \"\$R\" && git commit -m 'fix: handle a/b paths; max \$100/day'"
+scope_case 0 commit-message-double-quoted-after-cd-variable "cd \"\$R\" && git commit -m \"fix: a/b paths, max \\\$100\""
+scope_case 0 commit-message-option-equals-after-cd-variable "cd \"\$R\" && git commit --message='fix a/b'"
+scope_case 0 commit-two-messages-after-cd-variable "cd \"\$R\" && git commit -m 'a/b' -m 'c/d'"
+scope_case 0 pr-title-body-after-cd-variable "cd \"\$R\" && gh pr create --title 'a/b fix' --body 'see src/x.ts'"
+scope_case 0 sed-subst-after-cd-variable "cd \"\$R\" && sed -i 's/a\\/b/c/' x.md"
+scope_case 0 sed-subst-pipe-delimiter-after-cd-variable "cd \"\$R\" && sed -n 's|a/b|c/d|p' x.md"
+scope_case 0 sed-i-empty-suffix-after-cd-variable "cd \"\$R\" && sed -i '' 's/a/b/g' x.md"
+scope_case 0 sed-two-scripts-after-cd-variable "cd \"\$R\" && sed -n -e 's/a/b/p' -e 's/c/d/p' x.md"
+scope_case 0 sed-n-e-cluster-after-cd-variable "cd \"\$R\" && sed -ne 's/a/b/p' x.md"
+scope_case 0 url-dotdot-with-flag-cluster-after-cd-variable "cd \"\$R\" && curl -fsSL '$font_url'"
+scope_case 0 sed-extended-after-cd-variable "cd \"\$R\" && sed -E 's/(a|b)\\/c/d/' x.md"
+scope_case 0 git-show-spec-after-cd-variable "cd \"\$R\" && git show HEAD:docs/a.md"
+scope_case 0 git-show-remote-ref-after-cd-variable "cd \"\$R\" && git show origin/main:docs/a.md | head"
+scope_case 0 git-show-option-after-cd-variable "cd \"\$R\" && git show --stat HEAD~1:docs/a.md"
+scope_case 0 git-cat-file-spec-after-cd-variable "cd \"\$R\" && git cat-file -p HEAD:docs/a.md"
+scope_case 2 relative-path-after-cd-variable "cd \"\$R\" && cat docs/a.md"
+scope_case 2 dotdot-path-after-cd-variable "cd \"\$R\" && cat ../x.md"
+scope_case 2 url-then-output-path-after-cd-variable "cd \"\$R\" && curl -s $font_url -o out/x.css"
+scope_case 2 url-then-dotdot-output-after-cd-variable "cd \"\$R\" && curl -s $font_url -o ../x.css"
+scope_case 2 file-url-after-cd-variable "cd \"\$R\" && curl -s file:///etc/passwd -o ../x"
+scope_case 2 url-with-substitution-after-cd-variable "cd \"\$R\" && curl -s https://example.com/../\$(cat workspace/a.md)"
+scope_case 2 cdpath-url-then-dotdot-output "CDPATH=companies cd otherco && curl -s $font_url -o ../x"
+scope_case 2 commit-message-then-file-after-cd-variable "cd \"\$R\" && git commit -m 'x' docs/a.md"
+scope_case 2 commit-message-substitution-after-cd-variable "cd \"\$R\" && git commit -m \"\$(cat docs/a.md)\""
+scope_case 2 message-option-of-other-program-after-cd-variable "cd \"\$R\" && cp -m 'a/b' x"
+scope_case 2 pr-body-file-after-cd-variable "cd \"\$R\" && gh pr create --title 't' --body-file docs/x.md"
+scope_case 2 sed-script-then-file-after-cd-variable "cd \"\$R\" && sed 's/a/b/' docs/x.md"
+scope_case 2 sed-script-file-after-cd-variable "cd \"\$R\" && sed -f s/a/b/ x.md"
+scope_case 2 sed-write-flag-after-cd-variable "cd \"\$R\" && sed 's/a/b/w ../out.txt' x.md"
+scope_case 2 sed-read-command-after-cd-variable "cd \"\$R\" && sed '1r ../../companies/otherco/settings/.keep' x.md"
+scope_case 2 sed-double-quoted-variable-flags-after-cd-variable "cd \"\$R\" && sed \"s/a/b/\$F\" x.md"
+scope_case 2 git-show-dotdot-spec-after-cd-variable "cd \"\$R\" && git show HEAD:../x"
+scope_case 2 git-show-dot-spec-after-cd-variable "cd \"\$R\" && git show HEAD:./x/y"
+scope_case 2 git-show-then-relative-path-after-cd-variable "cd \"\$R\" && git show HEAD:docs/a.md && cat docs/b.md"
+scope_case 2 url-as-path-after-cd-variable "cd \"\$R\" && cat http://../../otherco/settings/.keep"
+scope_case 2 url-as-path-after-mkdir-and-cd-variable "cd \"\$R\" && mkdir -p 'http:' && cat http://../../otherco/settings/.keep"
+scope_case 2 url-as-path-after-followed-cd "cd workspace && cat https://../../../../../etc/hosts"
+scope_case 2 url-as-redirect-after-followed-cd "cd workspace && echo hi > http://../../../../Users/x/out"
+scope_case 2 url-as-rm-operand-after-followed-cd "cd workspace && rm http://../../../../Users/x/out"
+scope_case 2 url-after-substitution-in-fetch-line "cd \"\$R\" && curl -s \$(cat http://../x)"
+scope_case 2 url-as-curl-output-file "cd \"\$R\" && curl -s -o http://../../x https://example.com/a"
+scope_case 2 url-as-curl-output-in-flag-cluster "cd \"\$R\" && curl -sSLo http://../../x https://example.com/a"
+scope_case 2 url-as-curl-output-with-create-dirs "cd \"\$R\" && curl --create-dirs -so http://../../otherco/x https://example.com/a"
+scope_case 2 url-as-curl-upload-in-flag-cluster "cd \"\$R\" && curl -sT http://../../x https://example.com/a"
+scope_case 2 url-as-wget-output-in-flag-cluster "cd \"\$R\" && wget -qo http://../../x https://example.com/a"
+scope_case 2 url-as-curl-unlisted-file-option "cd \"\$R\" && curl --stderr http://../../x https://example.com/a"
+scope_case 2 url-as-redirect-target-after-curl "cd \"\$R\" && mkdir -p 'http:' && curl -s https://example.com/a > http://../../x"
+scope_case 2 url-as-append-target-after-curl "cd \"\$R\" && curl -s https://example.com/a >> http://../../x"
+scope_case 2 url-as-input-redirect-after-curl "cd \"\$R\" && curl -s -d @- https://example.com/a < http://../../x"
+scope_case 2 sed-e-script-then-file-after-cd-variable "cd \"\$R\" && sed -e 's/a/b/' 's/settings/key/p'"
+scope_case 2 url-as-wget-output-file "cd \"\$R\" && wget -O http://../../x https://example.com/a"
+scope_case 2 sed-extra-exec-command-after-cd-variable "cd \"\$R\" && sed 's/a/b/;e cat settings/.keep #/p' x"
+scope_case 2 sed-extra-write-command-after-cd-variable "cd \"\$R\" && sed 's/a/b/;w settings/g' x.md"
+scope_case 2 sed-extra-write-pipe-delimiter-after-cd-variable "cd \"\$R\" && sed 's|a|b|;w out/x|' x.md"
+scope_case 2 sed-extra-read-command-after-cd-variable "cd \"\$R\" && sed 's/a/b/;r settings/p' x.md"
+scope_case 2 sed-second-quoted-word-is-a-file-after-cd-variable "cd \"\$R\" && sed 's/a/b/' 's/settings/key/p'"
+scope_case 2 git-diff-text-option-after-cd-variable "cd \"\$R\" && git diff --no-index --text 'settings/key' /dev/null"
+scope_case 2 git-diff-summary-option-after-cd-variable "cd \"\$R\" && git diff --no-index --summary 'settings/key' /dev/null"
+scope_case 2 git-checkout-m-option-after-cd-variable "cd \"\$R\" && git checkout -m 'settings/key'"
+scope_case 2 git-show-m-option-after-cd-variable "cd \"\$R\" && git show -m 'HEAD:settings/key'"
+scope_case 2 git-log-summary-option-after-cd-variable "cd \"\$R\" && git log -p --summary 'settings/key'"
+scope_case 2 git-show-output-option-after-cd-variable "cd \"\$R\" && git show --output=settings/p HEAD:settings/key"
+scope_case 2 git-show-git-dir-option-after-cd-variable "cd \"\$R\" && git --git-dir=settings/.git show HEAD:docs/a.md"
+scope_case 2 git-show-work-tree-option-after-cd-variable "cd \"\$R\" && git --work-tree=settings show HEAD:docs/a.md"
+scope_case 2 git-show-git-env-after-cd-variable "cd \"\$R\" && GIT_WORK_TREE=settings git show HEAD:docs/a.md"
+scope_case 2 git-show-ext-diff-after-cd-variable "cd \"\$R\" && git show --ext-diff HEAD:docs/a.md"
+scope_case 2 git-cat-file-path-option-after-cd-variable "cd \"\$R\" && git cat-file --path=out/x --filters HEAD:docs/a.md"
+scope_case 2 git-show-other-company-spec "git show HEAD:companies/otherco/settings/.keep"
+scope_case 2 git-show-other-company-spec-after-cd-variable "cd \"\$R\" && git show HEAD:companies/otherco/settings/.keep"
+scope_case 2 git-show-other-company-path-after-spec "cd \"\$R\" && git show HEAD:a/b -- companies/otherco/settings/.keep"
+
 echo
 if [ "$FAILURES" -ne 0 ]; then
   echo "FAIL: $FAILURES of $CASES family B cases failed" >&2

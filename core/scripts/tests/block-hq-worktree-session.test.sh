@@ -222,6 +222,20 @@ strip_desktop_environment_note() {
   printf '%s\n' "$1" | awk 'skip { skip--; next } /^When starting an HQ session[ ,]/ { skip=2; next } NF { if (blank) print ""; print; blank=0; next } { blank=1 }'
 }
 
+# Owner-facing lead line is new candidate output. Strip it (and the blank
+# line after it) so base/candidate parity still holds.
+strip_owner_notice() {
+  printf '%s\n' "$1" | awk '
+    NR==1 && $0 ~ /^This chat was opened inside HQ/ { skip=1; next }
+    skip && NF==0 { skip=0; next }
+    { print }
+  '
+}
+
+normalize_block_text() {
+  strip_desktop_environment_note "$(strip_owner_notice "$1")"
+}
+
 # Regression: a base that already prints the note must normalize to the same
 # text as a base without it, so the parity checks below hold on either base.
 note_free=$'Blocked.\n\nSource-repo worktrees are unaffected.'
@@ -239,11 +253,11 @@ HOOK="$BASE_HOOK"
 TEST_SESSION_ID=c153-multi-worktree
 run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'base denies cwd in the last of several HQ worktrees'
 base_multi_worktree_stdout="$LAST_STDOUT"
-base_multi_worktree_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
+base_multi_worktree_stderr="$(normalize_block_text "$LAST_STDERR")"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-multi-worktree \
   run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'candidate denies cwd in the last of several HQ worktrees'
-candidate_multi_worktree_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
+candidate_multi_worktree_stderr="$(normalize_block_text "$LAST_STDERR")"
 [ "$LAST_STDOUT" = "$base_multi_worktree_stdout" ] \
   && [ "$candidate_multi_worktree_stderr" = "$base_multi_worktree_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate both deny the multi-worktree session'; } \
@@ -261,12 +275,12 @@ TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'base denies relative path with CDPATH'
 base_cdpath_stdout="$LAST_STDOUT"
-base_cdpath_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
+base_cdpath_stderr="$(normalize_block_text "$LAST_STDERR")"
 HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'candidate denies relative path with CDPATH'
-candidate_cdpath_stderr="$(strip_desktop_environment_note "$LAST_STDERR")"
+candidate_cdpath_stderr="$(normalize_block_text "$LAST_STDERR")"
 [ "$LAST_STDOUT" = "$base_cdpath_stdout" ] \
   && [ "$candidate_cdpath_stderr" = "$base_cdpath_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate keep relative path output clean with CDPATH'; } \
@@ -308,6 +322,19 @@ run 0 "$HQWT" "$HQWT" SessionStart 'SessionStart never blocks startup'
 if [[ "$LAST_STDOUT" != *"<hq-worktree-block>"* || "$LAST_STDOUT" != *"$HQ"* ]]; then
   FAIL=$((FAIL + 1))
   echo "FAIL [SessionStart banner]: missing marker or canonical path in stdout" >&2
+else
+  PASS=$((PASS + 1))
+fi
+if [[ "$LAST_STDOUT" != *"This chat was opened inside HQ's locked system folder"* ]]; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL [SessionStart owner line]: missing plain-language owner notice" >&2
+else
+  PASS=$((PASS + 1))
+fi
+run 2 "$HQWT" "$HQWT" UserPromptSubmit 'UserPromptSubmit leads with the owner notice'
+if [[ "$LAST_STDERR" != *"This chat was opened inside HQ's locked system folder"* ]]; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL [UserPromptSubmit owner line]: missing plain-language owner notice" >&2
 else
   PASS=$((PASS + 1))
 fi

@@ -1,14 +1,79 @@
 #!/usr/bin/env bash
+# Report whether a local Board project needs a Work Mesh registration.
+# Registration is always-on for cloud-backed companies: /brainstorm and /prd
+# call this right after the Board entry is written, then run
+# register-project.sh when it prints `register`. There is no flag and no
+# prompt. The filename is kept so existing allowed-tools lists keep working.
 set -euo pipefail
 
 ROOT="${HQ_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-FLAG_READER="$ROOT/.claude/hooks/work-mesh-project-registration-offer-flag.cjs"
 
 die() { echo "$*" >&2; exit 1; }
 
+# The named company's own record decides its uid: companies/<co>/.company-uid,
+# then the manifest cloud_uid. HQ_COMPANY_UID alone is used only when no uid is
+# recorded and the active company is the named company: a session or agent
+# runtime may export it for a different company, and using it then would
+# register company B's project in company A's Work Mesh.
 resolve_cloud_uid() {
-  local company="$1" manifest="$ROOT/companies/manifest.yaml"
-  [ -f "$manifest" ] || return 0
+  local company="$1" manifest="$ROOT/companies/manifest.yaml" file uid=""
+  file="$ROOT/companies/$company/.company-uid"
+  if [ -f "$file" ]; then
+    uid="$(tr -d '[:space:]' < "$file")"
+  elif [ -f "$manifest" ]; then
+    uid="$(manifest_uid "$company" "$manifest")"
+  fi
+  if [ -z "$uid" ]; then
+    # No recorded uid: accept HQ_COMPANY_UID only for the active company.
+    active_company_env_uid "$company"
+    return 0
+  fi
+  if [ -n "${HQ_COMPANY_UID:-}" ] && [ "$HQ_COMPANY_UID" != "$uid" ]; then
+    echo "work-mesh-project-registration-offer: HQ_COMPANY_UID does not match $company's recorded uid; using $company's uid" >&2
+  fi
+  printf '%s\n' "$uid"
+}
+
+# --- active-company HQ_COMPANY_UID check (shared shape with
+# work-mesh-project-registration-offer.sh) ---
+active_company_slug() {
+  local slug="${HQ_COMPANY_SLUG:-}"
+  if [ -z "$slug" ] && [ -f "$ROOT/core/scripts/hq-session.sh" ]; then
+    slug="$(env HQ_ROOT="$ROOT" HQ_HQ_SESSION_NO_CLI=1 \
+      bash "$ROOT/core/scripts/hq-session.sh" get company_slug 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  printf '%s\n' "$slug"
+}
+
+# Prints HQ_COMPANY_UID only when it is well formed, the active company is the
+# named company, and no other company records that uid. Prints nothing
+# otherwise.
+active_company_env_uid() {
+  local company="$1" env_uid="${HQ_COMPANY_UID:-}" active
+  [[ "$env_uid" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] || return 0
+  active="$(active_company_slug)"
+  [ -n "$active" ] && [ "$active" = "$company" ] || return 0
+  if uid_recorded_elsewhere "$company" "$env_uid"; then
+    return 0
+  fi
+  printf '%s\n' "$env_uid"
+}
+
+uid_recorded_elsewhere() {
+  local company="$1" uid="$2" f manifest="$ROOT/companies/manifest.yaml"
+  for f in "$ROOT"/companies/*/.company-uid; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$(dirname "$f")")" = "$company" ] && continue
+    [ "$(tr -d '[:space:]' < "$f")" = "$uid" ] && return 0
+  done
+  [ -f "$manifest" ] || return 1
+  tr -d '\r' < "$manifest" | awk -v uid="$uid" '
+    $1 == "cloud_uid:" { v=$2; gsub(/["\047]/, "", v); if (v == uid) found=1 }
+    END { exit !found }'
+}
+
+manifest_uid() {
+  local company="$1" manifest="$2"
   awk -v company="$company" '
     /^companies:[[:space:]]*$/ { in_companies=1; next }
     in_companies && /^[^[:space:]]/ { in_companies=0 }
@@ -27,51 +92,32 @@ valid_names() {
 
 board_path() { printf '%s\n' "$ROOT/companies/$1/board.json"; }
 
-update_prompt_state() {
-  local company="$1" project="$2" state="$3" board tmp
-  board="$(board_path "$company")"
-  [ -f "$board" ] || die "no company board for $company"
-  jq -e --arg id "$project" 'any(.projects[]?; .id == $id or .mesh_project_id == $id)' "$board" >/dev/null \
-    || die "no local Board project $project for $company"
-  tmp="$(mktemp)"
-  jq --arg id "$project" --arg state "$state" '
-    .projects |= map(if .id == $id or .mesh_project_id == $id then . + {mesh_registration_prompt_state:$state} else . end)
-  ' "$board" > "$tmp"
-  mv "$tmp" "$board"
-}
-
-check_offer() {
-  local company="$1" project="$2" uid board row_state enabled
+# Prints exactly one word:
+#   local      - company is not cloud-backed; nothing to register
+#   missing    - no local Board entry with this id
+#   registered - Board entry already carries threadId and channelId
+#   deferred   - the user declined registration for this entry under the
+#                earlier prompt flow; do not register it automatically
+#   register   - cloud-backed, entry present, not yet registered
+check_registration() {
+  local company="$1" project="$2" uid board
   valid_names "$company" "$project" || die "invalid company or project id"
-  uid="$(resolve_cloud_uid "$company")"
+  uid="$(resolve_cloud_uid "$company" | tr -d '\r')"
   [ -n "$uid" ] || { printf 'local\n'; return 0; }
   [[ "$uid" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] || { printf 'local\n'; return 0; }
   board="$(board_path "$company")"
   [ -f "$board" ] || { printf 'missing\n'; return 0; }
-  row_state="$(jq -r --arg id "$project" '
+  jq -r --arg id "$project" '
     [.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first |
     if . == null then "missing"
     elif (.threadId // "") != "" and (.channelId // "") != "" then "registered"
-    else (.mesh_registration_prompt_state // "offer") end
-  ' "$board" 2>/dev/null || printf 'missing')"
-  case "$row_state" in
-    accepted|deferred|registered|missing) printf '%s\n' "$row_state"; return 0 ;;
-  esac
-
-  [ -f "$FLAG_READER" ] && command -v node >/dev/null 2>&1 || { printf 'off\n'; return 0; }
-  enabled="$(HQ_COMPANY_UID="$uid" HQ_COMPANY_SLUG="$company" \
-    HQ_CLI_BIN="$(command -v hq 2>/dev/null || true)" node "$FLAG_READER" 2>/dev/null || printf 'false')"
-  [ "$enabled" = "true" ] && printf 'offer\n' || printf 'off\n'
+    elif (.mesh_registration_prompt_state // "") == "deferred" then "deferred"
+    else "register" end
+  ' "$board" 2>/dev/null || printf 'missing\n'
 }
 
 if [ "${1:-}" = "--check" ] && [ "$#" -eq 3 ]; then
-  check_offer "$2" "$3"
-elif [ "${1:-}" = "--accept" ] && [ "$#" -eq 3 ]; then
-  valid_names "$2" "$3" || die "invalid company or project id"
-  update_prompt_state "$2" "$3" accepted
-elif [ "${1:-}" = "--defer" ] && [ "$#" -eq 3 ]; then
-  valid_names "$2" "$3" || die "invalid company or project id"
-  update_prompt_state "$2" "$3" deferred
+  check_registration "$2" "$3"
 else
-  die "usage: work-mesh-project-registration-offer.sh --check <company> <project-id> | --accept <company> <project-id> | --defer <company> <project-id>"
+  die "usage: work-mesh-project-registration-offer.sh --check <company> <project-id>"
 fi

@@ -129,7 +129,7 @@ export PATH="$HOME/Library/Application Support/Indigo HQ/toolchain/node/bin:$HOM
 # reports MISSING even when the managed toolchain is installed.
 if [ -n "${LOCALAPPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
   for d in node npm-prefix npm-global/bin; do
-    [ -d "$(cygpath -u "$LOCALAPPDATA")/IndigoHQ/toolchain/$d" ] && export PATH="$(cygpath -u "$LOCALAPPDATA")/IndigoHQ/toolchain/$d:$PATH"
+    [ -d "$(cygpath -u -- "$LOCALAPPDATA")/IndigoHQ/toolchain/$d" ] && export PATH="$(cygpath -u -- "$LOCALAPPDATA")/IndigoHQ/toolchain/$d:$PATH"
   done
 fi
 for t in node npm qmd hq git yq jq; do printf '%-5s %s\n' "$t" "$(command -v $t || echo MISSING)"; done

@@ -172,6 +172,9 @@ if [ "${1:-}" = "--version" ]; then
 fi
 cat >> "${HQ_TEST_EVENT_FILE:?}"
 printf '\n---EVENT---\n' >> "${HQ_TEST_EVENT_FILE:?}"
+if [ -n "${HQ_TEST_PARSE_AT_REPORT:-}" ] && [ ! -e "$HQ_TEST_PARSE_AT_REPORT" ]; then
+  cat "${HQ_TEST_PARSE_LOG:?}" > "$HQ_TEST_PARSE_AT_REPORT" 2>/dev/null || : > "$HQ_TEST_PARSE_AT_REPORT"
+fi
 if [ -n "${HQ_TEST_ORDER_AT_REPORT:-}" ] \
   && [ ! -e "$HQ_TEST_ORDER_AT_REPORT" ] \
   && [ -f "${HQ_TEST_ORDER:-}" ]; then
@@ -281,6 +284,12 @@ COARSE_PERL
 prepare_master_phase_fixture() {
   local root="$1" with_children="${2:-yes}"
   mkdir -p "$root/core/hooks/SessionStart"
+  # These fixtures depend on the second child starting after the first one
+  # ends. Declare that, so HQ_HOOK_PARALLEL=1 keeps the same order.
+  "$SYSTEM_JQ" '.directory_hook_after.SessionStart = {
+      "20-later.sh": ["10-slow-json.sh"], "20-second-slow.sh": ["10-first-delayed.sh"]}' \
+    "$root/.claude/hooks/hook-registry.json" > "$root/.claude/hooks/hook-registry.json.tmp" \
+    && mv "$root/.claude/hooks/hook-registry.json.tmp" "$root/.claude/hooks/hook-registry.json"
   cat > "$root/bin/jq" <<'JQ'
 #!/usr/bin/env bash
 if [ "${HQ_TEST_REQUIRE_EARLY_PHASE:-0}" = 1 ] \
@@ -307,6 +316,13 @@ if [ "${HQ_TEST_DELAY_PRECHILD:-0}" = 1 ] \
 fi
 if [ "${1:-}" = "-e" ] && [ "${2:-}" = 'type == "object"' ]; then
   input="$(cat)"
+  # Parse log: which child outputs master has started to parse, in order.
+  if [ -n "${HQ_TEST_PARSE_LOG:-}" ]; then
+    case "$input" in
+      *C179_PHASE_DELAY*) printf 'slow-json\n' >> "$HQ_TEST_PARSE_LOG" ;;
+      *'later child output'*) printf 'later\n' >> "$HQ_TEST_PARSE_LOG" ;;
+    esac
+  fi
   case "$input" in
     *C179_PHASE_DELAY*)
       printf 'triggered\n' > "${HQ_TEST_JQ_DELAYED:?}"
@@ -344,7 +360,10 @@ CHILD
   cat > "$root/core/hooks/SessionStart/20-later.sh" <<'CHILD'
 #!/usr/bin/env bash
 cat >/dev/null
-if [ "${HQ_HOOK_TIMEOUT_SENTRY:-1}" != "0" ]; then
+# Sequential dispatch parses child 1 before child 2 starts, so child 2 waits
+# for the parse-phase report. Parallel dispatch parses after every child has
+# finished, so there is no between-children parse to wait for.
+if [ "${HQ_HOOK_TIMEOUT_SENTRY:-1}" != "0" ] && [ "${HQ_HOOK_PARALLEL:-0}" != "1" ]; then
   for _ in {1..500}; do
     [ -e "${HQ_TEST_RELEASE_FILE:?}" ] && break
     sleep 0.02
@@ -352,7 +371,8 @@ if [ "${HQ_HOOK_TIMEOUT_SENTRY:-1}" != "0" ]; then
   [ -e "$HQ_TEST_RELEASE_FILE" ] || exit 91
 fi
 printf 'second\n' >> "${HQ_TEST_ORDER:?}"
-printf 'later child output'
+# JSON so master's parse of it goes through the jq shim and is logged.
+printf '%s' '{"hookSpecificOutput":{"additionalContext":"later child output"}}'
 CHILD
   chmod +x "$root/core/hooks/SessionStart/10-slow-json.sh" "$root/core/hooks/SessionStart/20-later.sh"
 }
@@ -363,6 +383,7 @@ run_master_phase_case() {
   fixture_bin="$(fixture_path "$root/bin")"
   mkdir -p "$root/home"
   : > "$root/order"
+  rm -f "$root/parse-log" "$root/parse-at-report"
   expected_payload="{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$session_id\"}"
   payload="$expected_payload"$'\n\n'
   set +e
@@ -389,6 +410,8 @@ run_master_phase_case() {
     "HQ_TEST_ORDER=$root/order" \
     "HQ_TEST_CAPTURED_INPUT=$root/captured-input" \
     "HQ_TEST_ORDER_AT_REPORT=$root/order-at-report" \
+    "HQ_TEST_PARSE_LOG=$root/parse-log" \
+    "HQ_TEST_PARSE_AT_REPORT=$root/parse-at-report" \
     "HQ_TEST_FIRST_CHILD_STARTED=$root/first-child-started" \
     "HQ_TEST_SECOND_CHILD_STARTED=$root/second-child-started" \
     "HQ_TEST_REPORT_TIMESTAMP=$root/report-timestamp" \
@@ -1260,8 +1283,18 @@ test_real_master_parse_phase() {
   run_master_phase_case "$root_control" 0 control
   cmp -s "$root_enabled/out" "$root_control/out" || fail "watchdog changed composed master output"
   cmp -s "$root_enabled/err" "$root_control/err" || fail "watchdog changed master stderr"
-  [ "$(cat "$root_enabled/order-at-report" 2>/dev/null || true)" = 'first' ] \
-    || { cat "$root_enabled/event.jsonl" >&2 2>/dev/null || true; cat "$root_enabled/order" >&2 2>/dev/null || true; cat "$root_enabled/jq-delayed" >&2 2>/dev/null || true; cat "$root_enabled/watchdog.trigger" >&2 2>/dev/null || true; cat "$root_enabled/watchdog.status" >&2 2>/dev/null || true; fail "watchdog did not report while master was between children in parse"; }
+  # Both modes: the report lands while master is parsing the first child's
+  # output and before it has parsed the second child's output.
+  [ "$(cat "$root_enabled/parse-at-report" 2>/dev/null || true)" = 'slow-json' ] \
+    || fail "watchdog report was not taken between the two children's parses (parse log at report: $(tr '\n' ' ' < "$root_enabled/parse-at-report" 2>/dev/null))"
+  [ "$(cat "$root_enabled/parse-log" 2>/dev/null || true)" = $'slow-json\nlater' ] \
+    || fail "master did not parse both children in dispatch order"
+  # Sequential: the second child has not even run yet at report time.
+  # Parallel: both children have run; parse order is checked above.
+  expected_order_at_report='first'
+  [ "${HQ_HOOK_PARALLEL:-0}" != "1" ] || expected_order_at_report=$'first\nsecond'
+  [ "$(sort "$root_enabled/order-at-report" 2>/dev/null || true)" = "$expected_order_at_report" ] \
+    || { cat "$root_enabled/event.jsonl" >&2 2>/dev/null || true; cat "$root_enabled/order" >&2 2>/dev/null || true; cat "$root_enabled/jq-delayed" >&2 2>/dev/null || true; cat "$root_enabled/watchdog.trigger" >&2 2>/dev/null || true; cat "$root_enabled/watchdog.status" >&2 2>/dev/null || true; fail "watchdog did not report during the master parse phase"; }
   jq -e '
     .type == "hook_timeout_warning"
     and .metadata.slow_child == "master-hook.sh"

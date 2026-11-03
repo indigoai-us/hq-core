@@ -65,12 +65,15 @@ function runnerFixture(t, {provider = 'claude', providerSecret} = {}) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'company-signin-run-')));
   t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
   const cred = path.join(dir, 'auth.json');
-  const c = {companyUid: 'cmp_test', companySlug: 'test', machineUid: 'out_test', outpostId: 'outpost_cmp_test', instanceId: 'i-test', attemptId: 'attempt1', hqRoot: dir, stateDir: path.join(dir, 'state'), unitDir: path.join(dir, 'units'), configPath: path.join(dir, 'config.json'), machineCredsFile: '/not-read', provider, providerAuthFile: cred, ...(providerSecret ? {providerSecret} : {})};
+  const c = {companyUid: 'cmp_test', companySlug: 'test', machineUid: 'out_test', outpostId: 'outpost_cmp_test', instanceId: 'i-test', attemptId: 'attempt1', hqRoot: dir, stateDir: path.join(dir, 'state'), unitDir: path.join(dir, 'units'), configPath: path.join(dir, 'config.json'), machineCredsFile: '/not-read', provider, providerAuthFile: cred, sessionRuntimeDir: path.join(dir, 'sessions'), ...(providerSecret ? {providerSecret} : {})};
   const j = {ownerKind: 'company-outpost', companyUid: c.companyUid, agentUid: c.outpostId, jobId: 'job_abc', acceptedRevision: 'revision1', status: 'active', prompt: 'do work', script: 'echo pre', target: {machineUid: c.machineUid, outpostId: c.outpostId, instanceId: c.instanceId, attemptId: c.attemptId}, acceptedAt: '2026-01-01T00:00:00Z', schedule: {kind: 'recurring', cron: 'cron(0 9,17 * * ? *)', timezone: 'America/Los_Angeles'}};
   j.contentDigest = contentDigest(j);
   const delivery = (runId = 'run1') => ({companyUid: c.companyUid, agentUid: c.machineUid, jobId: j.jobId, acceptedRevision: j.acceptedRevision, contentDigest: j.contentDigest, prompt: j.prompt, context: j.context, script: j.script, target: j.target, runId, firedAt: '2026-01-02T01:00:00Z'});
   const calls = [];
   const api = async (op, body) => { calls.push({op, ...body}); if (op === 'secret') return {value: 'SENTINEL_SECRET'}; return delivery(); };
+  // Every run now signs the job in as the Outpost first; supply a synthetic machine session source.
+  api.machineTokens = async () => ({idToken: 'SYNTHETIC-ID-TOKEN', accessToken: 'SYNTHETIC-ACCESS-TOKEN', refreshToken: 'SYNTHETIC-REFRESH-TOKEN', expiresAt: Date.now() + 3600000, tokenType: 'Bearer'});
+  api.machineIdentity = () => ({username: 'out-test@outposts.example.test', clientId: 'client1', region: 'us-east-1', entityType: 'company-outpost', entityUid: c.machineUid, secret: 'SYNTHETIC-MACHINE-SECRET'});
   const launches = [];
   const r = new CompanyRunner(c, api, {systemctl: () => {}, execute: async (_cmd, args, o) => { launches.push({args, o}); return {code: 0, text: args[0] === '-c' ? 'pre output' : '{"disposition":"reply","outcome":"complete"}'}; }});
   r.signin = {...signin, claudeAccessToken: opts => signin.claudeAccessToken({...opts, refresh: () => false})};

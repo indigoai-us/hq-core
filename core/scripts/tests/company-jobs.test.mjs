@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { CompanyRunner, Ledger, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION } from '../lib/company-jobs.mjs';
+import { CompanyRunner, Ledger, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION, jobEnvironment, machineSessionEnvironment, machineSessionDocument, MACHINE_SESSION_FILE, sessionRuntimeDirectory, prepareSessionRoot, prepareSessionDir, writeMachineSessionFile, sweepStaleSessionDirs } from '../lib/company-jobs.mjs';
 const require = createRequire(import.meta.url);
 test('sign-in reclaim fences old owners and preserves execution admission after a crash', t=>{
  const f=fixture(t),d=f.delivery(),old=f.r.ledger.claim(d,100,1);
@@ -37,14 +37,17 @@ for (const code of ['provider_not_signed_in','provider_token_expiring','provider
 }
 function fixture(t){
  const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'company-jobs-')));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
- const c={companyUid:'cmp_test',companySlug:'test',machineUid:'out_test',outpostId:'outpost_cmp_test',instanceId:'i-test',attemptId:'attempt1',hqRoot:dir,stateDir:path.join(dir,'state'),unitDir:path.join(dir,'units'),configPath:path.join(dir,'config.json'),machineCredsFile:'/not-read',provider:'codex'};
+ const c={companyUid:'cmp_test',companySlug:'test',machineUid:'out_test',outpostId:'outpost_cmp_test',instanceId:'i-test',attemptId:'attempt1',hqRoot:dir,stateDir:path.join(dir,'state'),unitDir:path.join(dir,'units'),configPath:path.join(dir,'config.json'),machineCredsFile:'/not-read',provider:'codex',sessionRuntimeDir:path.join(dir,'sessions')};
  const j={ownerKind:'company-outpost',companyUid:c.companyUid,agentUid:c.outpostId,jobId:'job_abc',acceptedRevision:'revision1',status:'active',prompt:'do work',target:{machineUid:c.machineUid,outpostId:c.outpostId,instanceId:c.instanceId,attemptId:c.attemptId},acceptedAt:'2026-01-01T00:00:00Z',schedule:{kind:'recurring',cron:'cron(0 9,17 * * ? *)',timezone:'America/Los_Angeles'}};
  j.contentDigest=contentDigest(j);
  const delivery=(runId='run1',firedAt='2026-01-02T01:00:00Z')=>({companyUid:c.companyUid,agentUid:c.machineUid,jobId:j.jobId,acceptedRevision:j.acceptedRevision,contentDigest:j.contentDigest,prompt:j.prompt,context:j.context,script:j.script,target:j.target,runId,firedAt});
  const calls=[];let executed=0,active=true;
  const api=async(op,body)=>{calls.push({op,...body});if(op==='secret')return {value:'SENTINEL_SECRET'};if(body.action==='reconcile')return {jobs:active?[j]:[],pending:[],recoverable:[]};return delivery();};
+ const mints=[];
+ api.machineTokens=async()=>{const n=mints.length+1;const tokens={idToken:['SYNTHETIC','ID',String(n),crypto.randomUUID()].join('-'),accessToken:['SYNTHETIC','ACCESS',String(n),crypto.randomUUID()].join('-'),refreshToken:'',expiresAt:Date.now()+3600000,tokenType:'Bearer'};mints.push(tokens);return tokens;};
+ api.machineIdentity=()=>({username:'out-test@outposts.example.test',clientId:'client1',region:'us-east-1',entityType:'company-outpost',entityUid:c.machineUid,secret:'MUST_NEVER_LEAVE_RUNNER'});
  const units=[];const r=new CompanyRunner(c,api,{systemctl:args=>units.push(args),execute:async()=>{executed++;return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};}});t.after(()=>r.close());
- return {dir,c,j,r,delivery,calls,units,executed:()=>executed,disable:()=>{active=false;}};
+ return {dir,c,j,r,delivery,calls,units,mints,executed:()=>executed,disable:()=>{active=false;}};
 }
 test('twice daily accepted job installs two timezone timers; disable removes only owned units',async t=>{
  const f=fixture(t);await f.r.reconcile();const files=fs.readdirSync(f.c.unitDir);assert.equal(files.filter(s=>s.endsWith('.timer')).length,2);
@@ -72,7 +75,7 @@ test('distinct manual runs at same instant do not collapse',async t=>{const f=fi
 for(const key of ['companyUid','machineUid','outpostId','instanceId','attemptId'])test(`rejects wrong ${key}`,async t=>{const f=fixture(t);const d=f.delivery();if(key==='companyUid')d[key]='cmp_foreign';else d.target={...d.target,[key]:'foreign'};await assert.rejects(()=>f.r.runDelivery(f.j,d));assert.equal(f.executed(),0);});
 test('modified accepted content never executes',async t=>{const f=fixture(t);await assert.rejects(()=>f.r.runDelivery(f.j,{...f.delivery(),prompt:'tampered'}));assert.equal(f.executed(),0);});
 test('unaccepted proposal and disabled definition cannot arm',t=>{const f=fixture(t);assert.throws(()=>acceptedJob(f.c,{...f.j,status:'paused'}));assert.throws(()=>acceptedJob(f.c,{...f.j,contentDigest:'bad'}));});
-test('runtime secrets company scope, rotation, no persisted values and denial',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);let value='ROTATED_ONE',seen=[];f.r.api=async(op,b)=>{assert.equal(op,'secret');assert.equal(b.secretName,'API_KEY');return {value};};f.r.execute=async(cmd,args,o)=>{seen.push(o.env.API_KEY);assert.equal(o.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(o.env.HQ_MACHINE_TOKEN_STATE_DIR,undefined);assert.equal(o.env.HQ_MACHINE_AUTH_REQUIRED,undefined);assert.equal(JSON.stringify(o.env).includes(f.c.stateDir),false);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};await f.r.runDelivery(f.j,f.delivery());value='ROTATED_TWO';await f.r.runDelivery(f.j,f.delivery('run2','2026-01-03T01:00:00Z'));assert.deepEqual(seen,['ROTATED_ONE','ROTATED_TWO']);f.r.api=async()=>{throw new Error('private backend error');};const result=await f.r.runDelivery(f.j,f.delivery('run3','2026-01-04T01:00:00Z'));assert.equal(result.outcome,'blocked');assert.equal(result.blockedSecret,'API_KEY');assert.equal(seen.length,2);for(const file of fs.readdirSync(f.c.stateDir)){assert(!fs.readFileSync(path.join(f.c.stateDir,file)).includes(Buffer.from('ROTATED_')));}});
+test('runtime secrets company scope, rotation, no persisted values and denial',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);let value='ROTATED_ONE',seen=[];f.r.api=async(op,b)=>{assert.equal(op,'secret');assert.equal(b.secretName,'API_KEY');return {value};};f.r.execute=async(cmd,args,o)=>{seen.push(o.env.API_KEY);assert.equal(o.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(o.env.HQ_MACHINE_TOKEN_STATE_DIR.startsWith(o.env.HOME+path.sep),true);assert.equal(o.env.HQ_MACHINE_AUTH_REQUIRED,'1');assert.equal(JSON.stringify(o.env).includes(f.c.stateDir),false);assert.equal(JSON.stringify(o.env).includes(f.c.machineCredsFile),false);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};await f.r.runDelivery(f.j,f.delivery());value='ROTATED_TWO';await f.r.runDelivery(f.j,f.delivery('run2','2026-01-03T01:00:00Z'));assert.deepEqual(seen,['ROTATED_ONE','ROTATED_TWO']);f.r.api=async()=>{throw new Error('private backend error');};const result=await f.r.runDelivery(f.j,f.delivery('run3','2026-01-04T01:00:00Z'));assert.equal(result.outcome,'blocked');assert.equal(result.blockedSecret,'API_KEY');assert.equal(seen.length,2);for(const file of fs.readdirSync(f.c.stateDir)){assert(!fs.readFileSync(path.join(f.c.stateDir,file)).includes(Buffer.from('ROTATED_')));}});
 test('claims reclaim abandoned admission with TTL, completed receipts persist',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,199),null);assert(f.r.ledger.claim(d,100,200));});
 test('expired live owner does not overlap; interrupted execution is uncertain, not retried',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert.throws(()=>f.r.ledger.claim(d,100,200),/owner_alive/);f.r.ledger.executing(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,200).uncertain,true);});
 test('complete fingerprint emitted on failure',async t=>{const f=fixture(t);f.r.execute=async()=>({code:124,text:''});const r=await f.r.runDelivery(f.j,f.delivery());for(const k of ['jobId','revision','runId','scheduledAt','startedAt','endedAt','executionPrincipal','machine','outcome','outputLocation'])assert(r[k],k);assert.equal(r.outcome,'timeout');assert.match(fs.readFileSync(r.outputLocation,'utf8'),/executionFingerprint/);});
@@ -126,7 +129,7 @@ test('FINAL03 successful session JSON stays valid with redacted stderr diagnosti
  const log=fs.readFileSync(result.outputLocation,'utf8');assert.match(log,/\[REDACTED\]/);assert(!log.includes('SENTINEL_SECRET'));
 });
 test('SEC04/05 reconcile supervises jobs separately and reports launch errors',async t=>{const f=fixture(t);f.j.context={companyJob:{timeoutSeconds:14400}};f.j.contentDigest=contentDigest(f.j);await f.r.reconcile();assert.equal(f.executed(),0);assert(f.units.some(a=>a.join(' ')==='start --no-block hq-company-job-job_abc.service'));const unit=fs.readFileSync(path.join(f.c.unitDir,'hq-company-job-job_abc.service'),'utf8');const callSeconds=(MACHINE_TOKEN_BUDGET_MS+COMPANY_API_BUDGET_MS)/1000;
-assert.match(unit,new RegExp(`TimeoutStartSec=${14400*2+3*callSeconds+30}`));assert.match(unit,/User=root/);assert.match(unit,/Environment=HQ_RUNNER_UNIT=%n/);assert.match(unit,/KillMode=control-group/);assert.doesNotMatch(unit,/NoNewPrivileges/);assert.equal(serviceTimeoutSeconds(14400,0),14400*2+3*callSeconds+30);assert.equal(serviceTimeoutSeconds(600,3),600*2+6*callSeconds+30);f.r.systemctl=args=>{if(args[0]==='start')throw new Error('launch failed');};await assert.rejects(()=>f.r.reconcile(),/launch failed/);});
+assert.match(unit,new RegExp(`TimeoutStartSec=${14400*2+4*callSeconds+30}`));assert.match(unit,/User=root/);assert.match(unit,/Environment=HQ_RUNNER_UNIT=%n/);assert.match(unit,/KillMode=control-group/);assert.doesNotMatch(unit,/NoNewPrivileges/);assert.equal(serviceTimeoutSeconds(14400,0),14400*2+3*callSeconds+30);assert.equal(serviceTimeoutSeconds(600,3),600*2+6*callSeconds+30);f.r.systemctl=args=>{if(args[0]==='start')throw new Error('launch failed');};await assert.rejects(()=>f.r.reconcile(),/launch failed/);});
 test('job launch passes only allowlisted secrets and refuses to run as the runner',async t=>{
   const f=fixture(t);const other=process.getuid()===65534?65533:65534;
   f.c.jobUid=other;f.c.jobGid=other;f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
@@ -136,8 +139,8 @@ test('job launch passes only allowlisted secrets and refuses to run as the runne
   const ok=await f.r.runDelivery(f.j,f.delivery());
   assert.equal(ok.outcome,'succeeded');assert.equal(seen.uid,other);assert.equal(seen.gid,other);
   assert.equal(seen.env.API_KEY,'SENTINEL_SECRET');
-  assert.equal(seen.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(seen.env.HQ_MACHINE_TOKEN_STATE_DIR,undefined);
-  assert.equal(seen.env.HQ_MACHINE_AUTH_REQUIRED,undefined);assert.equal(JSON.stringify(seen.env).includes(f.c.stateDir),false);
+  assert.equal(seen.env.HQ_MACHINE_CREDS_FILE,undefined);assert.equal(seen.env.HQ_MACHINE_TOKEN_STATE_DIR.startsWith(seen.env.HOME+path.sep),true);
+  assert.equal(seen.env.HQ_MACHINE_AUTH_REQUIRED,'1');assert.equal(JSON.stringify(seen.env).includes(f.c.stateDir),false);assert.equal(JSON.stringify(seen.env).includes(f.c.machineCredsFile),false);
   f.c.jobUid=process.getuid();f.c.jobGid=process.getgid();let called=false;
   f.r.api=async()=>{throw new Error('secret fetch must not run when the job is not isolated');};
   f.r.execute=async()=>{called=true;return {code:0,text:'{}'};};
@@ -230,6 +233,7 @@ test('job termination does not poll the process table',()=>{
   assert.match(source,/--property=Type=exec/);
   assert.match(source,/secretSourcesReady\(unit\)/);
   assert.match(source,/sweepStaleSecretDirs\(secretRuntimeDirectory\(c\)\)/);
+  assert.match(source,/sweepStaleSessionDirs\(prepareSessionRoot\(sessionRuntimeDirectory\(c\)\)\)/);
   assert.equal(source.includes('dropServiceEnvironment'),false);
 });
 test('a transient service binds the job to the runner cgroup',()=>{
@@ -721,3 +725,129 @@ test('only outcome complete is succeeded and it carries no reason',async t=>{con
 test('no_reply disposition is failed and the reason never carries a granted secret',()=>{assert.deepEqual(classifySessionResponse({disposition:'no_reply'}),{outcome:'failed',errorCode:'session_not_successful',reason:''});const v=classifySessionResponse({disposition:'reply',text:'token SENTINEL_SECRET leaked\nline'},['SENTINEL_SECRET']);assert.equal(v.reason,'token [REDACTED] leaked line');});
 test('job prompt asks the agent for the outcome envelope',async t=>{const f=fixture(t);let input;f.r.execute=async(_c,_a,o)=>{input=JSON.parse(o.input);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};await f.r.runDelivery(f.j,f.delivery(RUN_A));assert(input.messageText.includes(JOB_OUTCOME_INSTRUCTION));assert(input.messageText.indexOf(JOB_OUTCOME_INSTRUCTION)<input.messageText.indexOf('Execution fingerprint:'));});
 test('run reason redacts the box sign-in token as well as granted secrets',async t=>{const f=fixture(t);f.r.providerSignIn=async()=>({env:{CLAUDE_CODE_OAUTH_TOKEN:'SIGNIN_TOKEN_VALUE'}});f.r.execute=async()=>({code:0,text:JSON.stringify({disposition:'reply',text:'saw SIGNIN_TOKEN_VALUE and SENTINEL_SECRET',outcome:'blocked',outcomeReason:'saw SIGNIN_TOKEN_VALUE'})});f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);const r=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(r.outcome,'failed');assert.equal(r.reason,'saw [REDACTED]');});
+
+test('a job signs in as the Outpost through a delegated session file the runner keeps fresh and removes',async t=>{
+  const f=fixture(t);f.c.machineSessionRefreshMs=20;
+  // The root runner units run under UMask=0077; the session file and its directories must still be group-readable.
+  const umask=process.umask(0o077);t.after(()=>process.umask(umask));
+  let seen,first,later;
+  f.r.execute=async(cmd,args,o)=>{
+    seen=o;
+    const file=o.env.HQ_MACHINE_SESSION_FILE;
+    assert.equal(file,path.join(f.c.sessionRuntimeDir,'run1',MACHINE_SESSION_FILE));
+    assert.equal(fs.statSync(file).mode&0o777,0o640);
+    assert.equal(fs.statSync(path.dirname(file)).mode&0o777,0o710);
+    assert.equal(fs.statSync(f.c.sessionRuntimeDir).mode&0o777,0o711);
+    first=JSON.parse(fs.readFileSync(file,'utf8'));
+    // The runner rewrites the file with fresh tokens while the job is still running.
+    const until=Date.now()+2000;
+    while(f.mints.length<2&&Date.now()<until)await new Promise(r=>setTimeout(r,10));
+    const deadline=Date.now()+2000;
+    do{later=JSON.parse(fs.readFileSync(file,'utf8'));if(later.idToken!==first.idToken)break;await new Promise(r=>setTimeout(r,10));}while(Date.now()<deadline);
+    return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};
+  };
+  const result=await f.r.runDelivery(f.j,f.delivery());
+  assert.equal(result.outcome,'succeeded');
+  assert.deepEqual({...first,idToken:undefined,accessToken:undefined,issuedAt:undefined,expiresAt:undefined},{version:1,entityType:'company-outpost',entityUid:'out_test',username:'out-test@outposts.example.test',clientId:'client1',region:'us-east-1',idToken:undefined,accessToken:undefined,issuedAt:undefined,expiresAt:undefined});
+  assert.equal(first.idToken,f.mints[0].idToken);assert.equal(first.accessToken,f.mints[0].accessToken);
+  assert.equal(JSON.stringify(first).includes('MUST_NEVER_LEAVE_RUNNER'),false);
+  assert.ok(f.mints.length>=2,'session refreshed while the job ran');
+  assert.equal(later.idToken,f.mints[f.mints.length-1].idToken);
+  // Contract the hq CLI reads: required machine mode, per-run token state, no credentials file.
+  assert.equal(seen.env.HQ_MACHINE_AUTH_REQUIRED,'1');assert.equal(seen.env.HQ_REQUIRE_MACHINE_IDENTITY,'1');
+  assert.equal(seen.env.HQ_MACHINE_TOKEN_STATE_DIR,path.join(seen.env.HOME,'.hq/machine-tokens'));
+  assert.equal(seen.env.HQ_MACHINE_CREDS_FILE,undefined);
+  for(const tokens of f.mints)for(const value of [tokens.idToken,tokens.accessToken]){assert.ok(seen.redactions.includes(value),'token redacted from captured output');assert.equal(JSON.stringify(seen.env).includes(value),false);}
+  // The per-run session directory left with the run; nothing persisted holds a token.
+  assert.equal(fs.existsSync(seen.env.HQ_MACHINE_SESSION_FILE),false);assert.equal(fs.existsSync(path.dirname(seen.env.HQ_MACHINE_SESSION_FILE)),false);assert.equal(fs.existsSync(seen.env.HOME),false);
+  for(const file of fs.readdirSync(f.c.stateDir)){const bytes=fs.readFileSync(path.join(f.c.stateDir,file));assert.equal(bytes.includes(Buffer.from('SYNTHETIC-ID')),false,file);assert.equal(bytes.includes(Buffer.from('SYNTHETIC-ACCESS')),false,file);}
+  // A later run starts from a fresh mint; the file is never shared across runs.
+  const count=f.mints.length;
+  f.r.execute=async(cmd,args,o)=>{const doc=JSON.parse(fs.readFileSync(o.env.HQ_MACHINE_SESSION_FILE,'utf8'));assert.equal(doc.idToken,f.mints[count].idToken);assert.notEqual(o.env.HOME,seen.env.HOME);return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
+  assert.equal((await f.r.runDelivery(f.j,f.delivery('run2','2026-01-03T01:00:00Z'))).outcome,'succeeded');
+});
+test('the precondition script runs with the same HQ sign-in as the session',async t=>{
+  const f=fixture(t);f.j.script='echo ready';f.j.contentDigest=contentDigest(f.j);
+  const launches=[];
+  f.r.execute=async(cmd,args,o)=>{launches.push({cmd,args,env:o.env,unit:o.unit});return {code:0,text:args[1]==='echo ready'?'ready\n':'{"disposition":"reply","outcome":"complete"}'};};
+  assert.equal((await f.r.runDelivery(f.j,f.delivery())).outcome,'succeeded');
+  assert.equal(launches.length,2);assert.match(launches[0].unit,/-pre\.service$/);
+  assert.equal(launches[0].env.HQ_MACHINE_SESSION_FILE,launches[1].env.HQ_MACHINE_SESSION_FILE);
+  assert.equal(launches[0].env.HQ_MACHINE_AUTH_REQUIRED,'1');assert.equal(f.mints.length,1);
+});
+test('a job whose machine session cannot be issued is blocked before any job code runs',async t=>{
+  const f=fixture(t);
+  f.r.machineTokens=async()=>{throw new Error('cognito unreachable');};
+  const blocked=await f.r.runDelivery(f.j,f.delivery());
+  assert.equal(blocked.outcome,'blocked');assert.equal(blocked.errorCode,'machine_session_unavailable');assert.equal(f.executed(),0);
+  assert.match(fs.readFileSync(blocked.outputLocation,'utf8'),/machine_session_unavailable/);
+  assert.equal(fs.readFileSync(blocked.outputLocation,'utf8').includes('cognito unreachable'),false);
+  const r=new CompanyRunner(f.c,async(op,body)=>body.action==='reconcile'?{jobs:[f.j],pending:[],recoverable:[]}:f.delivery('run-nosource','2026-01-03T01:00:00Z'),{systemctl:()=>{},execute:async()=>{throw new Error('must not run');}});t.after(()=>r.close());
+  // A runner wired without a token source is a programming error, reported as failed, and still runs no job code.
+  const missing=await r.runDelivery(f.j,f.delivery('run-nosource','2026-01-03T01:00:00Z'));
+  assert.equal(missing.outcome,'failed');assert.equal(missing.errorCode,'machine_session_source_required');
+});
+test('a failed refresh is logged without token text and the job keeps running',async t=>{
+  const f=fixture(t);f.c.machineSessionRefreshMs=10;
+  const mint=f.r.machineTokens;let calls=0;
+  f.r.machineTokens=async()=>{calls++;if(calls>1)throw new Error('cognito unreachable');return mint();};
+  f.r.execute=async()=>{const until=Date.now()+1500;while(calls<2&&Date.now()<until)await new Promise(r=>setTimeout(r,10));await new Promise(r=>setTimeout(r,30));return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
+  const result=await f.r.runDelivery(f.j,f.delivery());
+  assert.equal(result.outcome,'succeeded');
+  const log=fs.readFileSync(result.outputLocation,'utf8');
+  assert.match(log,/"machineSession":"refresh_failed"/);assert.equal(log.includes('cognito unreachable'),false);assert.equal(log.includes('SYNTHETIC-ID'),false);
+});
+test('the machine session document carries identity bindings and tokens only; existing job env is unchanged',()=>{
+  const identity={username:'out-test@outposts.example.test',clientId:'client1',region:'us-east-1',entityType:'company-outpost',entityUid:'out_test',secret:'MUST_NEVER_LEAVE_RUNNER',hostKeyPath:'/etc/hq/key.pem'};
+  const tokens={idToken:'ID-TOKEN',accessToken:'ACCESS-TOKEN',refreshToken:'REFRESH-TOKEN',expiresAt:'2026-01-02T02:00:00Z'};
+  const document=machineSessionDocument(identity,tokens,5);
+  assert.deepEqual(Object.keys(document).sort(),['accessToken','clientId','entityType','entityUid','expiresAt','idToken','issuedAt','region','username','version']);
+  assert.equal(document.expiresAt,Date.parse('2026-01-02T02:00:00Z'));assert.equal(document.issuedAt,5);
+  assert.equal(JSON.stringify(document).includes('MUST_NEVER_LEAVE_RUNNER'),false);assert.equal(JSON.stringify(document).includes('REFRESH-TOKEN'),false);
+  assert.throws(()=>machineSessionDocument({...identity,entityType:'agent',entityUid:'agt_x'},tokens),/machine_session_identity/);
+  assert.throws(()=>machineSessionDocument(identity,{...tokens,idToken:''}),/machine_session_tokens/);
+  assert.throws(()=>machineSessionDocument(identity,{...tokens,expiresAt:'soon'}),/machine_session_tokens/);
+  assert.deepEqual(machineSessionEnvironment('/run/hq-company-jobs-sessions/run1','/var/lib/hq-company-jobs/runs/run1'),{HQ_MACHINE_SESSION_FILE:'/run/hq-company-jobs-sessions/run1/machine-session.json',HQ_MACHINE_TOKEN_STATE_DIR:'/var/lib/hq-company-jobs/runs/run1/.hq/machine-tokens',HQ_MACHINE_AUTH_REQUIRED:'1',HQ_REQUIRE_MACHINE_IDENTITY:'1'});
+  assert.equal(sessionRuntimeDirectory({}),'/run/hq-company-jobs-sessions');
+  assert.throws(()=>sessionRuntimeDirectory({sessionRuntimeDir:'/var/lib/x',stateDir:'/var/lib/x'}),/session_runtime_persistent/);
+  assert.deepEqual(Object.keys(jobEnvironment({hqRoot:'/opt/hq',companyUid:'cmp_test',outpostId:'outpost_cmp_test',attemptId:'a1'},{API_KEY:'v'})).sort(),['API_KEY','HOME','HQ_AGENT_WORKDIR','HQ_COMPANY_OUTPOST_ATTEMPT','HQ_COMPANY_OUTPOST_ID','HQ_COMPANY_UID','HQ_ROOT','LANG','PATH']);
+});
+
+test('a session directory swapped for a symlink is refused on refresh and the outside target stays untouched',async t=>{
+  const f=fixture(t);f.c.machineSessionRefreshMs=10;
+  const outside=path.join(f.dir,'outside');fs.mkdirSync(outside,{mode:0o700});
+  f.r.execute=async(cmd,args,o)=>{
+    const dir=path.dirname(o.env.HQ_MACHINE_SESSION_FILE);
+    fs.rmSync(dir,{recursive:true,force:true});fs.symlinkSync(outside,dir);
+    const until=Date.now()+1500;while(f.mints.length<2&&Date.now()<until)await new Promise(r=>setTimeout(r,10));
+    await new Promise(r=>setTimeout(r,40));
+    return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};
+  };
+  const result=await f.r.runDelivery(f.j,f.delivery());
+  assert.equal(result.outcome,'succeeded');
+  assert.deepEqual(fs.readdirSync(outside),[]);
+  assert.match(fs.readFileSync(result.outputLocation,'utf8'),/"machineSession":"refresh_failed","code":"session_runtime_symlink"/);
+  assert.deepEqual(fs.readdirSync(f.c.sessionRuntimeDir),[]);
+});
+test('tokens minted after launch are redacted from the session output even with a box sign-in token in play',async t=>{
+  const f=fixture(t);f.c.provider='claude';f.c.machineSessionRefreshMs=10;
+  f.r.signin={usesBoxSignIn:()=>true,TOKEN_ENV:'CLAUDE_CODE_OAUTH_TOKEN',credentialFile:()=>path.join(f.dir,'unused'),claudeAccessToken:()=>['SYNTHETIC','OAUTH',crypto.randomUUID()].join('-')};
+  let seen;
+  f.r.execute=async(cmd,args,o)=>{seen=o;const until=Date.now()+1500;while(f.mints.length<2&&Date.now()<until)await new Promise(r=>setTimeout(r,10));await new Promise(r=>setTimeout(r,20));return {code:0,text:'{"disposition":"reply","outcome":"complete"}'};};
+  assert.equal((await f.r.runDelivery(f.j,f.delivery())).outcome,'succeeded');
+  assert.ok(f.mints.length>=2);
+  for(const tokens of f.mints)assert.ok(seen.redactions.includes(tokens.idToken),'late token in the live redaction list');
+  assert.ok(seen.redactions.includes(seen.env.CLAUDE_CODE_OAUTH_TOKEN));
+});
+test('stale session directories are swept by run unit liveness and a symlinked root is refused',t=>{
+  const f=fixture(t);const root=prepareSessionRoot(path.join(f.dir,'sessions-sweep'));
+  prepareSessionDir(root,'dead',null);prepareSessionDir(root,'alive',null);
+  writeMachineSessionFile(path.join(root,'dead'),{version:1},null);
+  assert.deepEqual(sweepStaleSessionDirs(root,unit=>unit.startsWith('hq-company-job-run-alive')),['dead']);
+  assert.deepEqual(fs.readdirSync(root),['alive']);
+  const link=path.join(f.dir,'sessions-link');fs.symlinkSync(root,link);
+  assert.throws(()=>sweepStaleSessionDirs(link),/session_runtime_symlink/);
+  assert.throws(()=>prepareSessionRoot(path.join(link,'child')),/session_runtime_symlink/);
+  assert.throws(()=>prepareSessionDir(root,'alive',null),/session_dir_exists/);
+  assert.throws(()=>writeMachineSessionFile(link,{version:1},null),/session_runtime_symlink/);
+});

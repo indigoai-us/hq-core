@@ -248,9 +248,12 @@
       ],
       "expected": {
         "exit": 0,
-        "text": "first\nsecond\n",
         "json": {
-          "ok": true
+          "ok": true,
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": "first\nsecond\n"
+          }
         }
       }
     },

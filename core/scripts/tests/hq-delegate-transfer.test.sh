@@ -75,6 +75,7 @@ if [ "${1:-} ${2:-} ${3:-}" = "mesh project reassign" ]; then
     old) echo "error: unknown command 'reassign'" >&2; exit 1 ;;
     404) echo '{"ok":false,"unavailable":true}'; exit 0 ;;
     notfound) echo '404 PROJECT_VIEW_NOT_FOUND: Project view not found' >&2; exit 1 ;;
+    threadnotfound) echo '404 PROJECT_THREAD_NOT_FOUND: Project thread not found' >&2; exit 1 ;;
   esac
 fi
 exit 0
@@ -201,6 +202,13 @@ grep -q 'nothing to reassign' "$TMP/transfer.err" \
   || fail "PROJECT_VIEW_NOT_FOUND must say there is nothing to reassign"
 grep -q 'hq mesh project register' "$TMP/transfer.err" \
   || fail "PROJECT_VIEW_NOT_FOUND must point at board registration"
+
+make_fixture "$FIX"
+write_manifest "$M" transfer
+MESH_REASSIGN_MODE=threadnotfound PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
+  || fail "transfer must exit 0 on PROJECT_THREAD_NOT_FOUND"
+jq -e '.workMeshOwnership == "not-registered"' "$M" >/dev/null \
+  || fail "PROJECT_THREAD_NOT_FOUND must mark workMeshOwnership not-registered (got $(jq -r .workMeshOwnership "$M"))"
 
 make_fixture "$FIX"
 write_manifest "$M" transfer

@@ -598,8 +598,14 @@ hqad_event_watchdog_child_end() {
   if [ -n "$HQAD_EVENT_WATCHDOG_JOURNAL_FILE" ] && [ -n "$HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS" ]; then
     ended_ms="$(hqad_event_watchdog_now_ms)"
     if [[ "$ended_ms" =~ ^[0-9]+$ ]] && [ "$ended_ms" -ge "$HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS" ]; then
-      printf '%s\t%s\t%s\t%s\n' "$HQAD_EVENT_WATCHDOG_CHILD_SCRIPT" "$HQAD_EVENT_WATCHDOG_CHILD_EVENT" \
+      # Fields 5-7: exit code, timed_out flag, 1-minute load average.
+      local rc="${HQAD_CHILD_RC:-}" timed_out="${HQAD_CHILD_TIMED_OUT:-0}" load1="-"
+      case "$rc" in ''|*[!0-9]*) rc="-" ;; esac
+      case "$timed_out" in 1) ;; *) timed_out=0 ;; esac
+      ! command -v hq_load1 >/dev/null 2>&1 || { hq_load1; load1="$HQ_LOAD1_CACHE"; }
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$HQAD_EVENT_WATCHDOG_CHILD_SCRIPT" "$HQAD_EVENT_WATCHDOG_CHILD_EVENT" \
         "$((ended_ms - HQAD_EVENT_WATCHDOG_CHILD_STARTED_MS))" "$HQAD_EVENT_WATCHDOG_INVOCATION_ID" \
+        "$rc" "$timed_out" "$load1" \
         >> "$HQAD_EVENT_WATCHDOG_JOURNAL_FILE" 2>/dev/null || true
     fi
   fi
@@ -655,9 +661,77 @@ hqad_launch_registered_hook() {
   fi
   hqad_event_watchdog_start "$root" "$event" "$payload" "${HQAD_EVENT_SESSION_ID:-}"
   hqad_event_watchdog_child_start "$script" "$event"
-  hq_launch_shell_path "$root" "$script" "$payload" "$@" || status=$?
+  HQAD_CHILD_TIMED_OUT=0
+  HQAD_CHILD_RC=""
+  local cap=""
+  if [ "${HQAD_HOOK_MODE:-}" = "advisory" ]; then
+    hqad_advisory_cap_seconds "$root" "$event" "$hook_id"
+    cap="$HQAD_CAP_SECONDS"
+  fi
+  if [ -n "$cap" ] && [ -f "$script" ] && [ -r "$script" ]; then
+    # Advisory registry hook on an adapter path: hard wall-clock cap at the
+    # registry timeout. On expiry the hook's process group is killed and the
+    # hook fails open with no output. Guards (any other mode) never get here.
+    if [ -x "$script" ]; then
+      hq_run_capped "$cap" "$script" "$@" < <(printf '%s' "$payload") || status=$?
+    else
+      hq_run_capped "$cap" bash "$script" "$@" < <(printf '%s' "$payload") || status=$?
+    fi
+    HQAD_CHILD_RC="$HQ_RUN_CAPPED_RC"
+    HQAD_CHILD_TIMED_OUT="$HQ_RUN_CAPPED_TIMED_OUT"
+    # Read by adapters after this sourced function returns.
+    # shellcheck disable=SC2034
+    HQ_HOOK_LAST_STATUS="$status"
+    # shellcheck disable=SC2034
+    HQ_HOOK_LAST_CAUSE=""
+    if [ "$HQAD_CHILD_TIMED_OUT" = "1" ] && [ -n "${HQ_HOOK_TRACE:-}" ]; then
+      printf 'hook-adapter: cap %s after %ss; failing open\n' "$hook_id" "$cap" >&2
+    fi
+  else
+    hq_launch_shell_path "$root" "$script" "$payload" "$@" || status=$?
+    HQAD_CHILD_RC="$status"
+  fi
   hqad_event_watchdog_child_end
   return "$status"
+}
+
+# hqad_advisory_cap_seconds <root> <event> <hook-id>
+# Sets HQAD_CAP_SECONDS to the registry timeout to cap an advisory hook with,
+# or to empty when the cap is off or the shared library is missing. Runs in
+# the caller's shell so the library and the timeout table stay loaded: one
+# jq read per event per process. Hooks without a registry timeout get 30 s.
+HQAD_CAP_TIMEOUTS_EVENT=""
+HQAD_CAP_TIMEOUTS=""
+HQAD_CAP_SECONDS=""
+hqad_advisory_cap_seconds() {
+  local root="$1" event="$2" id="$3" line t=""
+  HQAD_CAP_SECONDS=""
+  if ! command -v hq_run_capped >/dev/null 2>&1; then
+    [ -f "$root/core/scripts/lib/advisory-cap.sh" ] || return 0
+    . "$root/core/scripts/lib/advisory-cap.sh" 2>/dev/null || return 0
+  fi
+  hq_advisory_cap_enabled || return 0
+  if [ "$HQAD_CAP_TIMEOUTS_EVENT" != "$event" ]; then
+    HQAD_CAP_TIMEOUTS_EVENT="$event"
+    HQAD_CAP_TIMEOUTS="$(jq -r --arg ev "$event" '
+      (.hooks[$ev] // [])[]? | objects
+      | (.hooks // [])[]? | objects
+      | select((.id | type) == "string")
+      | "\(.id)\t\(if (.timeout | type) == "number" then (.timeout | floor) else "" end)\t\(if .safety == true or .fail_closed == true then 1 else 0 end)"
+    ' < "$root/.claude/hooks/hook-registry.json" 2>/dev/null || true)"
+  fi
+  local guard=0
+  while IFS=$'\t' read -r line t guard; do
+    [ "$line" = "$id" ] && break
+    t=""
+    guard=0
+  done <<HQAD_CAP_ROWS
+$HQAD_CAP_TIMEOUTS
+HQAD_CAP_ROWS
+  # A safety or fail_closed registry hook is a guard on every event: never cap.
+  [ "$guard" = "1" ] && return 0
+  case "$t" in ''|*[!0-9]*|0*) t=30 ;; esac
+  HQAD_CAP_SECONDS="$t"
 }
 
 # Parse the same prefilter input text as master-hook: object tool_input JSON

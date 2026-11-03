@@ -29,22 +29,21 @@ if [ "${1:-}" = --version ] || [ "${1:-}" = core ]; then exec "$REAL_NODE" "$REA
 if [ "$1" = dm ] && [ "$2" = channel ]; then echo "${CHANNEL_JSON:-[]}"; fi
 exit 0
 S
-# Stub node: `roster` prints $ROSTER (name<TAB>uid rows); `send` records the
-# JSON payload and answers with a fresh event id.
-cat > "$SANDBOX/bin/node" <<'S'
-#!/usr/bin/env bash
-cat >/dev/null
-case "$2" in
-  roster) printf '%s' "${ROSTER:-}" ;;
-  send) printf '%s\n' "$4" >> "$SENT"; n="$(wc -l < "$SENT" | tr -d ' ')"; printf 'evt-%s' "$n" ;;
-esac
-S
-chmod +x "$SANDBOX/bin/hq" "$SANDBOX/bin/node"
-export PATH="$SANDBOX/bin:$PATH" HOME="$SANDBOX/home" HQ_ROOT="$SANDBOX/root" SENT="$SANDBOX/sent"
+chmod +x "$SANDBOX/bin/hq"
+# The native dm-bind (hq-cli >= 5.345.193) reads the roster (name<TAB>uid rows)
+# and posts through the notify API with the human session, so serve that API
+# locally. The fake records each posted JSON payload in $SENT and answers with
+# a fresh event id.
+ROSTER_FILE="$SANDBOX/roster" SENT="$SANDBOX/sent"
+# shellcheck source=lib/fake-notify-api.sh
+. "$ROOT/core/scripts/tests/lib/fake-notify-api.sh"
+trap 'kill "${FAKE_NOTIFY_API_PID:-}" 2>/dev/null || true; rm -rf "$SANDBOX"' EXIT
+fake_notify_api_start "$REAL_NODE" "$SANDBOX/home" "$ROSTER_FILE" "$SENT"
+export PATH="$SANDBOX/bin:$PATH" HOME="$SANDBOX/home" HQ_ROOT="$SANDBOX/root" SENT
 BIND="$SANDBOX/root/core/scripts/hq-dm-bind.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-export ROSTER=$'Ada Lovelace\tprs_ada\nGrace Hopper\tprs_grace\ngeorge\tagt_george\n'
+printf 'Ada Lovelace\tprs_ada\nGrace Hopper\tprs_grace\ngeorge\tagt_george\n' > "$ROSTER_FILE"
 rm -f "$SENT"; bash "$BIND" post --title "T" --line "one" >/dev/null
 [ "$(jq -r '.body' "$SENT" | head -1)" = '@Ada Lovelace @Grace Hopper' ] || fail "default post must name every human member without quotes, and no bot: $(jq -r .body "$SENT" | head -1)"
 [ "$(jq -c '[.mentions[]|[.participantUid,.participantType]]' "$SENT")" = '[["prs_ada","human"],["prs_grace","human"]]' ] || fail "mentions must be structured with the right types: $(jq -c .mentions "$SENT")"
@@ -90,6 +89,7 @@ grep -q -- '--to' "$SANDBOX/err" || fail "--no-mention rejection must point at -
 echo "PASS: --no-mention is rejected"
 
 rm -f "$SENT" "$SANDBOX/root/workspace/sessions/sess-test/dm-bind.roster"; rc=0
-ROSTER="" bash "$BIND" post --title "T" >/dev/null 2>&1 || rc=$?
+: > "$ROSTER_FILE"
+bash "$BIND" post --title "T" >/dev/null 2>&1 || rc=$?
 [ "$rc" = 2 ] && [ ! -e "$SENT" ] || fail "unreadable roster must refuse without posting (rc=$rc)"
 echo "PASS: unreadable roster refuses instead of posting unmentioned"

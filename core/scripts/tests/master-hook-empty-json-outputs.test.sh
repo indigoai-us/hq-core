@@ -148,5 +148,8 @@ grep -q 'BLOCKED: direct edits inside repos/ are not allowed' "$TMP/live.err" \
   || fail "shipped blocker stderr missing: $(cat "$TMP/live.err")"
 pass "shipped repos/ blocker via master-hook still exits 2"
 
+# Also run the PreToolUse valid-JSON regression (feedback_35954efc).
+bash "$ROOT/core/scripts/tests/master-hook-pretooluse-valid-json.test.sh"
+
 echo "ALL PASS: master-hook-empty-json-outputs"
 exit 0

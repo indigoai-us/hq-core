@@ -150,5 +150,45 @@ else
   fail "skip list drift" "script=[$script_leaves] master-hook=[$hook_leaves]"
 fi
 
+# 12. The legacy Codex hook layer is on the retired list, and shipped .codex
+#     files are not.
+listed="$(sed -n "/^RETIRED='/,/^'/p" "$SCRIPT" | awk '{print $1}' | sort -u)"
+missing=""
+for rel in .codex/hooks.json .codex/hooks/hook-gate.sh \
+  .codex/hooks/auto-capture-registry.sh .codex/hooks/auto-checkpoint-trigger.sh \
+  .codex/hooks/auto-continue-session.sh .codex/hooks/auto-handoff-trigger.sh \
+  .codex/hooks/block-env-dump.sh .codex/hooks/block-hq-glob.sh \
+  .codex/hooks/block-hq-grep.sh .codex/hooks/block-inline-story-impl.sh \
+  .codex/hooks/block-op-leak.sh .codex/hooks/block-secret-cache-read.sh \
+  .codex/hooks/check-update.sh .codex/hooks/context-meter.sh \
+  .codex/hooks/detect-secrets.sh .codex/hooks/observe-patterns.sh \
+  .codex/hooks/package-scope-gate.sh .codex/hooks/protect-core.sh \
+  .codex/hooks/scan-output-secrets.sh .codex/hooks/screenshot-resize-trigger.sh \
+  .codex/hooks/sweetheart-encouragement.sh .codex/hooks/warn-cross-company-settings.sh; do
+  printf '%s\n' "$listed" | grep -xF "$rel" >/dev/null || missing="$missing $rel"
+done
+[ -z "$missing" ] && ok "legacy .codex hook files are on the retired list" || fail "legacy .codex list" "missing:$missing"
+shipped_listed=""
+for rel in $(git -C "$ROOT" ls-files .codex 2>/dev/null); do
+  printf '%s\n' "$listed" | grep -xF "$rel" >/dev/null && shipped_listed="$shipped_listed $rel"
+done
+[ -z "$shipped_listed" ] && ok "no shipped .codex file is on the retired list" || fail "shipped .codex listed" "$shipped_listed"
+
+# 13. A locally edited legacy Codex file is kept and named; shipped .codex
+#     files are left byte-identical.
+T13="$TMP/codex"; mkdir -p "$T13/core" "$T13/.codex/hooks"
+printf '#!/bin/bash\n# local legacy gate\nexit 0\n' > "$T13/.codex/hooks/hook-gate.sh"
+cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$T13/.codex/hooks/hq-codex-hook-adapter.sh"
+cp "$ROOT/.codex/hooks/deny-core-edits.sh" "$T13/.codex/hooks/deny-core-edits.sh"
+out="$(bash "$SCRIPT" "$T13" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [ -f "$T13/.codex/hooks/hook-gate.sh" ] && ok "edited legacy Codex gate kept" || fail "edited codex gate" "rc=$rc"
+case "$out" in
+  *"kept .codex/hooks/hook-gate.sh (local edits"*) ok "edited legacy Codex gate is named" ;;
+  *) fail "edited codex report" "$out" ;;
+esac
+cmp -s "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$T13/.codex/hooks/hq-codex-hook-adapter.sh" \
+  && cmp -s "$ROOT/.codex/hooks/deny-core-edits.sh" "$T13/.codex/hooks/deny-core-edits.sh" \
+  && ok "shipped .codex hooks untouched" || fail "shipped codex" "changed or removed"
+
 echo "remove-retired-core-hooks: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

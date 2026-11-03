@@ -8,6 +8,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# The active-company check reads HQ_COMPANY_SLUG; keep the caller's out.
+unset HQ_COMPANY_SLUG
 
 mkdir -p "$TMP/bin" "$TMP/home" "$TMP/hq/companies/acme/projects/alpha" \
   "$TMP/hq/companies/acme/projects/done-one" \
@@ -56,8 +58,50 @@ export PATH="$TMP/bin:$PATH"
 export HOME="$TMP/home"
 export HQ_ROOT="$TMP/hq"
 export HQ_COMPANY_UID="cmp_acme"
+printf 'cmp_acme\n' > "$TMP/hq/companies/acme/.company-uid"
 export HQ_FAKE_LOG="$TMP/hq-calls.log"
 : > "$HQ_FAKE_LOG"
+
+# Tenant isolation: an HQ_COMPANY_UID exported for another company must not
+# redirect this company's registration (PR #1706 review).
+: > "$HQ_FAKE_LOG"
+mkdir -p "$TMP/hq/companies/acme/projects/iso"
+printf '%s\n' '{"name":"Iso","userStories":[{"id":"US-001","status":"queued"}]}' > "$TMP/hq/companies/acme/projects/iso/prd.json"
+if HQ_COMPANY_UID="cmp_othercompany" bash "$SCRIPT" acme iso >/dev/null 2>&1; then
+  fail "register-project must refuse when HQ_COMPANY_UID names a different company"
+fi
+[ ! -s "$HQ_FAKE_LOG" ] || fail "mismatched HQ_COMPANY_UID still reached hq mesh: $(cat "$HQ_FAKE_LOG")"
+mkdir -p "$TMP/hq/companies/nouid-co/projects/p1"
+printf '%s\n' '{"name":"P1","userStories":[{"id":"US-001","status":"queued"}]}' > "$TMP/hq/companies/nouid-co/projects/p1/prd.json"
+if HQ_COMPANY_UID="cmp_acme" bash "$SCRIPT" nouid-co p1 >/dev/null 2>&1; then
+  fail "register-project must not fall back to HQ_COMPANY_UID for a company with no recorded uid"
+fi
+[ ! -s "$HQ_FAKE_LOG" ] || fail "a company with no recorded uid still reached hq mesh: $(cat "$HQ_FAKE_LOG")"
+# No recorded uid: HQ_COMPANY_UID is accepted when the active company is the
+# named company and no other company records that uid (PR #1706 follow-up).
+: > "$HQ_FAKE_LOG"
+nouid_out="$(HQ_COMPANY_SLUG=nouid-co HQ_COMPANY_UID=cmp_nouidco bash "$SCRIPT" nouid-co p1)" \
+  || fail "a company with no recorded uid must register with HQ_COMPANY_UID when it is the active company"
+grep -q '^mesh project ensure p1 --company nouid-co ' "$HQ_FAKE_LOG" \
+  || fail "active-company env uid registration did not call hq mesh project ensure: $(cat "$HQ_FAKE_LOG")"
+case "$nouid_out" in "registered nouid-co/p1 "*) ;; *) fail "unexpected output: $nouid_out" ;; esac
+echo "PASS: register-project accepts HQ_COMPANY_UID for the active company when no uid is recorded"
+: > "$HQ_FAKE_LOG"
+rm -f "$TMP/hq/companies/nouid-co/board.json"
+if HQ_COMPANY_SLUG=acme HQ_COMPANY_UID=cmp_nouidco bash "$SCRIPT" nouid-co p1 >/dev/null 2>&1; then
+  fail "register-project must refuse HQ_COMPANY_UID when another company is active"
+fi
+if HQ_COMPANY_SLUG=nouid-co HQ_COMPANY_UID=cmp_acme bash "$SCRIPT" nouid-co p1 >/dev/null 2>&1; then
+  fail "register-project must refuse an HQ_COMPANY_UID that another company records"
+fi
+if HQ_COMPANY_SLUG=nouid-co HQ_COMPANY_UID=cmp_manifest_fixture bash "$SCRIPT" nouid-co p1 >/dev/null 2>&1; then
+  fail "register-project must refuse an HQ_COMPANY_UID that the manifest records for another company"
+fi
+[ ! -s "$HQ_FAKE_LOG" ] || fail "a refused env uid still reached hq mesh: $(cat "$HQ_FAKE_LOG")"
+echo "PASS: register-project refuses an env uid from another company when no uid is recorded"
+rm -rf "$TMP/hq/companies/nouid-co"
+rm -rf "$TMP/hq/companies/acme/projects/iso"
+echo "PASS: register-project ignores an HQ_COMPANY_UID that does not match the named company"
 
 cat > "$TMP/hq/companies/acme/projects/alpha/prd.json" <<'JSON'
 {"name":"Alpha","userStories":[{"id":"US-001","title":"Open","status":"queued"}]}

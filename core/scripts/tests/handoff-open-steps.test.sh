@@ -81,13 +81,33 @@ rc=0; printf 'T-bulk#5\nT-bulk#99\n' | HQ_ROOT="$FX" bash "$S" close --ids-file 
 grep -q '1 of 2' "$FX/o" || fail "partial summary: $(cat "$FX/o")"
 rc=0; HQ_ROOT="$FX" bash "$S" close --ids-file "$FX/nope.txt" >/dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || fail "unreadable ids-file rc $rc"
 
-echo "[5] handoff-finalize normalization jq (same expression) assigns ids and open status"
+echo "[4e] list maps content/text keys to step so descriptions are not null (feedback_8dea994f)"
+mk T-content-keys brickcraft '[{"id":"T-content-keys#1","content":"from content","status":"open"},{"id":"T-content-keys#2","text":"from text","status":"open"}]'
+out="$(HQ_ROOT="$FX" bash "$S" list --company brickcraft)"
+grep -q 'T-content-keys#1  from content' <<<"$out" || fail "content key missing: $out"
+grep -q 'T-content-keys#2  from text' <<<"$out" || fail "text key missing: $out"
+
+echo "[4f] close keeps text/content on other steps that already have step"
+mk T-keep-text brickcraft '[{"id":"T-keep-text#1","step":"short","text":"long detail","status":"open"},{"id":"T-keep-text#2","content":"from content","status":"open"},{"id":"T-keep-text#3","step":"s3","content":"c3","status":"open"}]'
+HQ_ROOT="$FX" bash "$S" close T-keep-text#2 >/dev/null || fail "close T-keep-text#2 rc"
+kt="$FX/workspace/threads/T-keep-text.json"
+[ "$(jq -r '.next_steps[0].text' "$kt")" = "long detail" ] || fail "close dropped text on a step with step: $(jq -c .next_steps "$kt")"
+[ "$(jq -r '.next_steps[2].content' "$kt")" = "c3" ] || fail "close dropped content on a step with step: $(jq -c .next_steps "$kt")"
+[ "$(jq -r '.next_steps[1].step' "$kt")" = "from content" ] || fail "content-only step not mapped on close: $(jq -c .next_steps "$kt")"
+
+echo "[5] handoff-finalize normalization jq assigns ids/open status and maps content onto step"
 norm="$(jq -c --arg tid T-X '
   to_entries | map(.key as $k |
     (if (.value|type) == "string" then {step: .value} else .value end)
     | .id = (.id // ($tid + "#" + (($k + 1)|tostring)))
     | .status = (.status // "open")
-  ) | map(del(.key))' <<<'["a",{"step":"b"},{"id":"keep#7","step":"c","status":"done"}]')"
-[ "$norm" = '[{"step":"a","id":"T-X#1","status":"open"},{"step":"b","id":"T-X#2","status":"open"},{"id":"keep#7","step":"c","status":"done"}]' ] || fail "normalization: $norm"
+  ) | map(del(.key))' <<<'["a",{"step":"b"},{"id":"keep#7","step":"c","status":"done"},{"content":"from content"},{"step":"d","text":"kept"}]' \
+  | jq -c 'map(if .step == null then
+    (if .["text"] != null then .step = .["text"] | del(.["text"])
+     elif .["content"] != null then .step = .["content"] | del(.["content"])
+     else .step = "" end)
+  else . end)')"
+[ "$norm" = '[{"step":"a","id":"T-X#1","status":"open"},{"step":"b","id":"T-X#2","status":"open"},{"id":"keep#7","step":"c","status":"done"},{"id":"T-X#4","status":"open","step":"from content"},{"step":"d","text":"kept","id":"T-X#5","status":"open"}]' ] || fail "normalization: $norm"
 grep -q 'NEXT_STEPS_NORMALIZED_JSON' "$ROOT/core/scripts/handoff-finalize.sh" || fail "handoff-finalize must use the normalized steps"
+grep -F '.["content"]' "$ROOT/core/scripts/handoff-finalize.sh" >/dev/null || fail "handoff-finalize must map content/text onto step"
 echo "handoff-open-steps: ok"

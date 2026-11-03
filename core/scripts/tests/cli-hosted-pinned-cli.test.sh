@@ -18,10 +18,10 @@ fail() {
 pass() { printf 'PASS: %s\n' "$1"; }
 
 ACTUAL_CORE_FLOOR="$(awk -F '[:\"]' '$1 == "requiresHqCli" { gsub(/[[:space:]]/, "", $3); print $3 }' "$ROOT/core/core.yaml")"
-if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.67" ]; then
-  pass 'core CLI floor includes the HQ lanes command contract'
+if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.193" ]; then
+  pass 'core CLI floor includes the delegated machine session file (company Outpost job sign-in)'
 else
-  fail "core CLI floor is >=5.345.67 because hq lanes session-start records Codex session defaults: got $ACTUAL_CORE_FLOOR"
+  fail "core CLI floor is >=5.345.193 because company Outpost jobs need hq to read HQ_MACHINE_SESSION_FILE (hq-cloud 6.18.108): got $ACTUAL_CORE_FLOOR"
 fi
 POLICY_MIN_CLI="$(awk '
   /^  - path: core\/scripts\/read-policy-frontmatter\.sh$/ { found=1; next }

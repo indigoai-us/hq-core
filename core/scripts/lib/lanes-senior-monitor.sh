@@ -74,10 +74,17 @@ case "$ENGINE" in
     ;;
 esac
 
-HQ_BIN="$(command -v hq 2>/dev/null || true)"
+# Same hq lookup as the Stop gate (feedback_26faa03c): PATH, then
+# fixed owner-checked install dirs. See resolve-hq-bin.sh.
+HQ_BIN=""
+if [ -f "$LIB_DIR/resolve-hq-bin.sh" ] && . "$LIB_DIR/resolve-hq-bin.sh" 2>/dev/null; then
+  resolve_hq_bin || true
+else
+  HQ_BIN="$(command -v hq 2>/dev/null || true)"
+fi
 if [ -z "$HQ_BIN" ]; then
   # MISSING_HQ_MUST_STAY_STDERR_ONLY
-  printf 'ERROR: lanes-senior-monitor reminder shim: hq CLI is missing from PATH.\n' >&2
+  printf 'ERROR: lanes-senior-monitor reminder shim: hq CLI is missing from PATH and the usual install locations.\n' >&2
   exit 1
 fi
 

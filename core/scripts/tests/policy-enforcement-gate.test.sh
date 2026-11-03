@@ -438,4 +438,55 @@ CALLS=0
 [ "$CALLS" -le 2 ] || fail "PreToolUse started $CALLS sed/tr processes for a 305-row policy list"
 pass "collects policy requirements from a long list without per-policy processes"
 
+# Outbound delivery scan on a long list (#1744). Rows are checked in list
+# order, the first delivery-*-regex line of each file wins, rows without a
+# readable file are skipped, and the scan starts no sed or head per row.
+OUT_SID="long-session-outbound"
+OUT_TSV="$FIX/workspace/orchestrator/policy-enforcement/$OUT_SID.policies.tsv"
+grep -v -e '^needs-' -e '^also-skill' "$LONG_TSV" > "$OUT_TSV"
+printf -- '---\nid: first-forbid\ndelivery-forbid-regex: \t SECRET_A\ndelivery-forbid-regex: NEVER_USED\n---\n' > "$FIX/policies/long/first-forbid.md"
+printf -- '---\nid: needs-tag\ndelivery-require-regex: ^TAG\n---\nbody text delivery-forbid-regex: not-at-line-start\n' > "$FIX/policies/long/needs-tag.md"
+printf -- '---\nid: second-forbid\ndelivery-forbid-regex: SECRET_B\n---\n' > "$FIX/policies/long/second-forbid.md"
+printf -- '---\nid: empty-key\ndelivery-forbid-regex:\n---\n' > "$FIX/policies/long/empty-key.md"
+{
+  printf 'empty-key\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/empty-key.md"
+  printf 'first-forbid\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/first-forbid.md"
+  printf 'needs-tag\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/needs-tag.md"
+  printf 'second-forbid\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/second-forbid.md"
+  printf 'first-forbid-again\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/first-forbid.md"
+} >> "$OUT_TSV"
+out_send() { jq -nc --arg sid "$OUT_SID" --arg m "$1" '{session_id:$sid,tool_name:"SendMessage",tool_input:{message:$m}}'; }
+out_expect() { # <message> <rc> <reason-or-empty>
+  local out rc=0
+  out="$(out_send "$1" | CLAUDE_PROJECT_DIR="$FIX" bash "$FIX/.claude/hooks/policy-enforcement-gate.sh" PreToolUse)" || rc=$?
+  [ "$rc" -eq "$2" ] || fail "outbound '$1' exit $rc, expected $2: $out"
+  if [ -n "$3" ]; then
+    printf '%s' "$out" | jq -e --arg r "$3" '.reason == $r' >/dev/null || fail "outbound '$1' reason: $out"
+  else
+    [ -z "$out" ] || fail "outbound '$1' printed output: $out"
+  fi
+}
+out_expect "TAG hello" 0 ""
+out_expect "TAG has SECRET_A" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate first-forbid (forbidden pattern)."
+out_expect "TAG says NEVER_USED" 0 ""
+out_expect "no tag here" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate needs-tag (required pattern missing)."
+out_expect "TAG with SECRET_B" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate second-forbid (forbidden pattern)."
+out_expect "SECRET_B without tag" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate needs-tag (required pattern missing)."
+out_expect "" 2 "POLICY ENFORCEMENT BLOCK: deterministic delivery gate first-forbid cannot inspect this outbound body. Supply content in a structured tool field or literal MESSAGE/BODY/TEXT shell assignment."
+rm -f "$SHIM/calls"
+for tool in head grep; do
+  real="$(command -v "$tool")"
+  printf '#!/bin/sh\necho %s >> "%s/calls"\nexec "%s" "$@"\n' "$tool" "$SHIM" "$real" > "$SHIM/$tool"
+  chmod +x "$SHIM/$tool"
+done
+out_send "TAG hello" | PATH="$SHIM:$PATH" CLAUDE_PROJECT_DIR="$FIX" \
+  bash "$FIX/.claude/hooks/policy-enforcement-gate.sh" PreToolUse >/dev/null \
+  || fail "outbound send blocked under the process counter"
+CALLS=0
+[ ! -f "$SHIM/calls" ] || CALLS="$(wc -l < "$SHIM/calls" | tr -d ' ')"
+# One sed in tool_is_outbound plus two grep checks per regex-bearing row
+# (3 rows with 4 regexes here): at most 1 + 8.
+[ "$CALLS" -le 9 ] || fail "outbound scan started $CALLS sed/head/grep/tr processes for a 307-row policy list"
+pass "scans outbound content against a long list in list order without per-policy processes"
+
 echo "PASS (policy enforcement gate)"

@@ -51,7 +51,7 @@ setup_tree() {
   cat >"$TMPROOT/bin/bash" <<'EOF'
 #!/bin/bash
 if [ "${1:-}" = "${DERIVE_SCRIPT:-}" ] && [ -n "${DERIVE_CALL_LOG:-}" ]; then
-  printf '%s\n' "${*:2}" >> "$DERIVE_CALL_LOG"
+  exec "$REAL_BASH" "$HQ_ROOT/core/scripts/derive-trigger-facts.sh" "${@:2}"
 fi
 exec "$REAL_BASH" "$@"
 EOF
@@ -126,7 +126,7 @@ assert_cache_written() {
   count="$({ find "$(cache_dir)" -type f -name '*.cache' 2>/dev/null || true; } | wc -l | tr -d ' ')"
   [ "$count" -gt 0 ] || fail "expected parsed-policy cache file in $(cache_dir)"
   cache_file="$(find "$(cache_dir)" -type f -name '*.cache' -print -quit)"
-  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v7' \
+  head -n 1 "$cache_file" | grep -Fq 'hq-policy-cache-v8' \
     || fail "cache file is missing its complete-version header"
 }
 
@@ -134,7 +134,7 @@ assert_evaluation_cache_written() {
   local eval_file
   eval_file="$(find "$(cache_dir)" -type f -name '*.eval' -print -quit)"
   [ -n "$eval_file" ] || fail "expected per-session evaluation cache file"
-  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v12' \
+  head -n 1 "$eval_file" | grep -Fq 'hq-policy-eval-v13' \
     || fail "evaluation cache file is missing its complete-version header"
 }
 
@@ -266,7 +266,7 @@ cur_file="$(find "$(cache_dir)/eval-v12" -type f -name '*.eval' -print -quit)"
 [ -n "$cur_file" ] || fail "expected a v9 evaluation cache before stale-cache test"
 mkdir -p "$(cache_dir)/eval-v2"
 v2_file="$(cache_dir)/eval-v2/$(basename "$cur_file")"
-sed '1s/hq-policy-eval-v12/hq-policy-eval-v2/' "$cur_file" > "$v2_file"
+sed '1s/hq-policy-eval-v13/hq-policy-eval-v2/' "$cur_file" > "$v2_file"
 printf 'legacy-permissive\tcore\t%s\tsoft\tOLD_PARSER_CACHE_MARKER\treactive\tonce\tok\t2\n' \
   "$ROOT/core/policies/legacy-permissive.md" >> "$v2_file"
 rm -rf "$(cache_dir)/eval-v12"
@@ -311,7 +311,7 @@ case_cur="$(find "$(cache_dir)/eval-v12" -type f -name '*.eval' -print -quit)"
 [ -n "$case_cur" ] || fail "expected v9 evaluation entry for case-folded facts"
 mkdir -p "$(cache_dir)/eval-v3"
 case_v3="$(cache_dir)/eval-v3/$(basename "$case_cur")"
-sed -n '1p' "$case_cur" | sed 's/hq-policy-eval-v12/hq-policy-eval-v3/' > "$case_v3"
+sed -n '1p' "$case_cur" | sed 's/hq-policy-eval-v13/hq-policy-eval-v3/' > "$case_v3"
 rm -rf "$(cache_dir)/eval-v12"
 : > "$CASE_FOLD_DEDUPE"
 : > "$CASE_FOLD_TURN"

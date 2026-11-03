@@ -86,10 +86,10 @@ subscription.
 
 ## Outposts
 
-An outpost is an add-on with its own flat monthly price.
+An outpost is an add-on with a flat monthly price for each size.
 
-Existing $80 Outposts move to the Outpost price for their size at the usage
-switch on December 19, 2026: $100 small, $200 medium, $400 large, $800 xlarge.
+New Outposts are billed by size, starting at $100: $100 small, $200 medium,
+$400 large, $800 xlarge. Existing $80 Outposts keep $80.
 
 ## Trials
 
@@ -110,7 +110,7 @@ portal, which HQ opens for the company's owner.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-10-24T19:53:40.002Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-11-01T05:06:20.232Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
 ### Usage card (new signups from 2026-10-16, card version 2026-10-16)
 
@@ -164,7 +164,7 @@ _Generated from pricing.json (statement generated 2026-10-24T19:53:40.002Z). Do 
 
 ### Add-ons
 
-- Outpost: $80 per month.
+- Outpost: $100 per month.
 - Meeting hours: $1 per hour, 0 hours included.
 
 ### Legacy Workforce price

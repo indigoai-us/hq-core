@@ -65,7 +65,9 @@
 # --deficiencies-json <path> takes a file holding the Step 2 environment
 # deficiencies array (lever, kind, severity, summary, evidence, proposed_fix).
 # Items whose evidence is missing or blank are dropped before storage. A
-# missing file is a hard error (exit 3). The thread also gets one system_info
+# missing file is a hard error (exit 3). An empty path warns and stores an
+# empty array instead of looking like the flag was omitted.
+# The thread also gets one system_info
 # block (hq_version, hq_cli_version, host, os, hooks_enforced) with no paths,
 # emails, or tokens.
 #
@@ -122,6 +124,7 @@ FILES_TOUCHED_JSON="[]"
 FILES_TOUCHED_JSON_FILE=""
 LEARNINGS_JSON="[]"
 DEFICIENCIES_JSON_FILE=""
+DEFICIENCIES_JSON_GIVEN=0
 TAGS_JSON='["handoff"]'
 SLUG="handoff"
 NEXT_COMMAND="__auto__"
@@ -137,7 +140,7 @@ while [[ $# -gt 0 ]]; do
     --files-touched-json) FILES_TOUCHED_JSON="$2"; shift 2 ;;
     --files-touched-json-file) FILES_TOUCHED_JSON_FILE="$2"; shift 2 ;;
     --learnings-json) LEARNINGS_JSON="$2"; shift 2 ;;
-    --deficiencies-json) DEFICIENCIES_JSON_FILE="$2"; shift 2 ;;
+    --deficiencies-json) DEFICIENCIES_JSON_GIVEN=1; DEFICIENCIES_JSON_FILE="$2"; shift 2 ;;
     --tags-json) TAGS_JSON="$2"; shift 2 ;;
     --slug) SLUG="$2"; shift 2 ;;
     --next-command) NEXT_COMMAND="$2"; shift 2 ;;
@@ -601,6 +604,9 @@ fi
 
 # -------- environment deficiencies + system_info --------
 DEFICIENCIES_JSON="[]"
+if [[ "$DEFICIENCIES_JSON_GIVEN" -eq 1 && -z "$DEFICIENCIES_JSON_FILE" ]]; then
+  echo "handoff-finalize: --deficiencies-json value is empty, expected a file path — deficiencies will be empty" >&2
+fi
 if [[ -n "$DEFICIENCIES_JSON_FILE" ]]; then
   if [[ ! -f "$DEFICIENCIES_JSON_FILE" ]]; then
     echo "handoff-finalize: deficiencies file not found: $DEFICIENCIES_JSON_FILE" >&2
@@ -648,13 +654,21 @@ mkdir -p workspace/threads
 # forward through three consecutive handoffs and never started. Ids are
 # `<thread_id>#<n>`; status starts "open" and is closed by
 # core/scripts/handoff-open-steps.sh close. Strings and {step:...} objects are
-# both accepted; already-normalized objects keep their fields.
+# both accepted; already-normalized objects keep their fields. Objects that
+# used content or text instead of step are rewritten to step so list/close
+# do not print null. An object that already has step keeps its text and
+# content fields.
 NEXT_STEPS_NORMALIZED_JSON="$(jq -c --arg tid "$THREAD_ID" '
   to_entries | map(.key as $k |
     (if (.value|type) == "string" then {step: .value} else .value end)
     | .id = (.id // ($tid + "#" + (($k + 1)|tostring)))
     | .status = (.status // "open")
   ) | map(del(.key))' <<<"$NEXT_STEPS_JSON" 2>/dev/null || printf '%s' "$NEXT_STEPS_JSON")"
+NEXT_STEPS_NORMALIZED_JSON="$(printf '%s' "$NEXT_STEPS_NORMALIZED_JSON" | jq -c 'map(if .step == null then
+    (if .["text"] != null then .step = .["text"] | del(.["text"])
+     elif .["content"] != null then .step = .["content"] | del(.["content"])
+     else .step = "" end)
+  else . end)' 2>/dev/null || printf '%s' "$NEXT_STEPS_NORMALIZED_JSON")"
 
 jq -n \
   --arg thread_id "$THREAD_ID" \

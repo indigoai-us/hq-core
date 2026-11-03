@@ -14,7 +14,9 @@
 #        optional
 #
 # Output (one JSON line on stdout):
-#   {"injected":N,"rewritten":N,"image":"card|generated|existing|none","changed":bool}
+#   {"injected":N,"rewritten":N,"videoAdded":N,
+#    "image":"card|generated|existing|none","video":"api|existing|none",
+#    "changed":bool}
 #
 # Notes:
 #   - Only ever rewrites .html files; binary/asset files are left alone.
@@ -26,6 +28,17 @@
 #     myapp.indigo-hq.com -> api.indigo-hq.com). Only when the base URL is empty
 #     does it fall back to a plain 1200x630 placeholder PNG (_hq-og.png), built
 #     with Node built-ins (zlib) -- no external deps, no network.
+#   - og:video names a short muted clip that iMessage plays in place of the
+#     image (other apps ignore it and keep og:image). A build file named
+#     og*/opengraph*/social*/preview*/share*.mp4 wins; otherwise, with a base
+#     URL, it is hq-deploy's <api-base>/api/public/apps/<slug>/preview.mp4.
+#     That URL serves a recording of the page once one exists for a public
+#     app, and answers 404 otherwise, so iMessage shows og:image instead.
+#     Gated apps never get a video: preview bots are sent to the access page,
+#     which never sees these tags.
+#   - Pages that already carry their own og:title keep all their tags; only
+#     the og:video block is added when they have no og:video of their own
+#     (counted as videoAdded).
 #   - twitter:card is summary_large_image whenever an image is present.
 #   - Runs in well under a second; safe to call on every static deploy.
 
@@ -36,7 +49,7 @@ BASE_URL="${2:-}"
 APP_NAME="${3:-}"
 CARD_API="${4:-}"
 
-emit_noop() { printf '{"injected":0,"rewritten":0,"image":"none","changed":false}\n'; exit 0; }
+emit_noop() { printf '{"injected":0,"rewritten":0,"image":"none","video":"none","changed":false}\n'; exit 0; }
 
 if [ -z "$OUT_DIR" ] || [ ! -d "$OUT_DIR" ]; then emit_noop; fi
 if ! command -v node >/dev/null 2>&1; then emit_noop; fi
@@ -73,6 +86,7 @@ function walk(dir, acc) {
 const allFiles = walk(outDir, []);
 const htmlFiles = allFiles.filter(f => /\.html?$/i.test(f));
 const hasOgTitle = (h) => /property\s*=\s*["']og:title["']/i.test(h);
+const hasOgVideo = (h) => /property\s*=\s*["']og:video(?::url|:secure_url)?["']/i.test(h);
 
 // Older versions pointed og:image / twitter:image at the card as card.png.
 // hq-deploy now serves the card as card.jpg (card.png is a legacy alias), so
@@ -82,6 +96,8 @@ const LEGACY_CARD_RE = /(\/api\/public\/apps\/[^/"'\s]+\/card)\.png(?=["'?#\s])/
 const rewriteLegacyCard = (h) => h.replace(IMAGE_META_RE, (tag) => tag.replace(LEGACY_CARD_RE, '$1.jpg'));
 
 const targets = [];
+// Author-tagged pages with no og:video of their own: only the video block is added.
+const videoOnly = [];
 let rewritten = 0;
 for (const file of htmlFiles) {
   let html;
@@ -92,17 +108,25 @@ for (const file of htmlFiles) {
       try { fs.writeFileSync(file, fixed); rewritten++; }
       catch (e) { process.stderr.write(`og-inject: rewrite failed for ${file}: ${e.message}\n`); }
     }
+    if (!hasOgVideo(fixed)) videoOnly.push({ file, html: fixed });
     continue;
   }
   targets.push({ file, html });
 }
-if (targets.length === 0) done({ injected: 0, rewritten, image: 'none', changed: rewritten > 0 });
+// Without a base URL there is no absolute video URL, so author-tagged pages
+// have nothing to gain.
+if (targets.length === 0 && (videoOnly.length === 0 || !baseUrl)) {
+  done({ injected: 0, rewritten, videoAdded: 0, image: 'none', video: 'none', changed: rewritten > 0 });
+}
 
 const IMG_NAME = '_hq-og.png';
 // hq-deploy renders a wallpaper share card per app at
 // <api-base>/api/public/apps/<slug>/card.jpg (JPEG). The API base is the one
 // the caller deployed through; without it, use api.<rest of the app host>.
+// The same API serves the app's link-preview clip at .../preview.mp4: a
+// recording of the page once a public app has one, else 404.
 let cardUrl = null;
+let apiVideoUrl = null;
 try {
   if (baseUrl) {
     const labels = new URL(baseUrl).hostname.split('.');
@@ -113,9 +137,10 @@ try {
         if (u && u.protocol === 'https:') apiBase = u.origin;
       } catch { /* malformed $4: keep the derived base */ }
       cardUrl = `${apiBase}/api/public/apps/${labels[0]}/card.jpg`;
+      apiVideoUrl = `${apiBase}/api/public/apps/${labels[0]}/preview.mp4`;
     }
   }
-} catch { cardUrl = null; }
+} catch { cardUrl = null; apiVideoUrl = null; }
 let imageRel = null;
 let imageStatus = 'none';
 
@@ -186,6 +211,32 @@ const absUrl = (rel) => {
 };
 const imgAbs = imageStatus === 'card' ? cardUrl : absUrl(imageRel);
 
+const videoCandidate = allFiles.find(f =>
+  /(?:^|[/\\])(og|opengraph|social|preview|share)[^/\\]*\.mp4$/i.test(f));
+let videoAbs = null;
+let videoStatus = 'none';
+if (videoCandidate && baseUrl) {
+  videoAbs = absUrl(path.relative(outDir, videoCandidate).split(path.sep).join('/'));
+  videoStatus = 'existing';
+} else if (apiVideoUrl) {
+  videoAbs = apiVideoUrl;
+  videoStatus = 'api';
+}
+
+const videoTags = videoAbs ? [
+  `<meta property="og:video" content="${htmlEscape(videoAbs)}">`,
+  `<meta property="og:video:secure_url" content="${htmlEscape(videoAbs)}">`,
+  `<meta property="og:video:type" content="video/mp4">`,
+  `<meta property="og:video:width" content="1200">`,
+  `<meta property="og:video:height" content="630">`,
+] : [];
+
+const insertBlock = (html, block) => {
+  if (/<head[^>]*>/i.test(html)) return html.replace(/(<head[^>]*>)/i, `$1${block}`);
+  if (/<html[^>]*>/i.test(html)) return html.replace(/(<html[^>]*>)/i, `$1\n<head>${block}</head>`);
+  return `<head>${block}</head>\n` + html;
+};
+
 let injected = 0;
 for (const { file, html } of targets) {
   let title = appName;
@@ -219,6 +270,7 @@ for (const { file, html } of targets) {
     tags.push(`<meta property="og:image:width" content="1200">`);
     tags.push(`<meta property="og:image:height" content="630">`);
   }
+  if (videoAbs) tags.push(...videoTags);
   tags.push(`<meta name="twitter:card" content="${imgAbs ? 'summary_large_image' : 'summary'}">`);
   tags.push(`<meta name="twitter:title" content="${htmlEscape(title)}">`);
   if (desc) tags.push(`<meta name="twitter:description" content="${htmlEscape(desc)}">`);
@@ -226,17 +278,23 @@ for (const { file, html } of targets) {
 
   const block = '\n  <!-- hq-deploy: social preview tags -->\n  ' + tags.join('\n  ') + '\n';
 
-  let out;
-  if (/<head[^>]*>/i.test(html)) {
-    out = html.replace(/(<head[^>]*>)/i, `$1${block}`);
-  } else if (/<html[^>]*>/i.test(html)) {
-    out = html.replace(/(<html[^>]*>)/i, `$1\n<head>${block}</head>`);
-  } else {
-    out = `<head>${block}</head>\n` + html;
-  }
-
-  try { fs.writeFileSync(file, out); injected++; } catch {}
+  try { fs.writeFileSync(file, insertBlock(html, block)); injected++; } catch {}
 }
 
-done({ injected, rewritten, image: imageStatus, changed: injected > 0 || rewritten > 0 || imageStatus === 'generated' });
+let videoAdded = 0;
+if (videoAbs) {
+  for (const { file, html } of videoOnly) {
+    const block = '\n  <!-- hq-deploy: link-preview video -->\n  ' + videoTags.join('\n  ') + '\n';
+    try { fs.writeFileSync(file, insertBlock(html, block)); videoAdded++; } catch {}
+  }
+}
+
+done({
+  injected,
+  rewritten,
+  videoAdded,
+  image: injected > 0 ? imageStatus : 'none',
+  video: injected > 0 || videoAdded > 0 ? videoStatus : 'none',
+  changed: injected > 0 || rewritten > 0 || videoAdded > 0 || imageStatus === 'generated',
+});
 NODE

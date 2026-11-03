@@ -354,7 +354,10 @@ has recenttoken AssistantIntent "$(printf '{"transcript_path":"%s"}' "$PARTIAL_T
 # SESSION-IDENTITY fact resolved on EVERY event, including AssistantIntent, with
 # the SAME precedence as inject-policy-on-trigger.sh DIRS.
 CO_ROOT="$TMP/hqroot"
-mkdir -p "$CO_ROOT/workspace/sessions"
+mkdir -p "$CO_ROOT/workspace/sessions" "$CO_ROOT/core/scripts/lib"
+# The native handler (hq-cli >= 5.345.193) reads its support libraries from
+# HQ_ROOT, as an installed HQ has them, so the hermetic root carries them too.
+cp "${SRC%/*}/lib/trigger-fact-text.awk" "${SRC%/*}/lib/transcript-tail.sh" "$CO_ROOT/core/scripts/lib/"
 
 mk_meta() { # mk_meta <sid> <literal-body>
   mkdir -p "$CO_ROOT/workspace/sessions/$1"

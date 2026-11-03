@@ -54,7 +54,12 @@ normalize_thread() { # <file> -> ensure every step has id/status (in memory)
   jq -c '((.thread_id // "") | tostring) as $tid0 | .next_steps = ((.next_steps // []) | to_entries | map(.key as $k |
       (if (.value|type)=="string" then {step:.value} else .value end)
       | .id = (.id // ((if $tid0 != "" then $tid0 else (input_filename|split("/")|last|sub("\\.json$";"")) end) + "#" + (($k+1)|tostring)))
-      | .status = (.status // "open")) | map(del(.key)))' "$1"
+      | .status = (.status // "open")) | map(del(.key)))' "$1" \
+    | jq -c '.next_steps |= map(if .step == null then
+        (if .["text"] != null then .step = .["text"] | del(.["text"])
+         elif .["content"] != null then .step = .["content"] | del(.["content"])
+         else .step = "" end)
+      else . end)'
 }
 
 case "$CMD" in
