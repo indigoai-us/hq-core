@@ -82,6 +82,21 @@
 // channel message ids, capped separately so channel traffic never evicts inbox
 // ids), the feed cursor, and each channel's last human message time.
 //
+// DM routing (several conductors on one machine): with --save, the inbox is
+// routed by sender membership (lib/super-conductor-dm-route.mjs). This watcher
+// publishes its companies' member ids into the save file (`dm_route`,
+// refreshed every 15 minutes from `hq members list`) and reads the other live
+// conductors' save files next to it. A DM from a person only in this
+// conductor's companies is taken here; one from a person in several running
+// conductors' sets, or in none, goes to the primary conductor (`primary: true`
+// in its save file, else the earliest-started heartbeat); one from a person
+// only in another conductor's set is dropped unread. Its ledger row carries
+// the resolved company. Without --save, or when no other conductor is live,
+// every DM is taken here.
+//
+// Owner preferences are read with --company <slug> when the set is one company,
+// so personal/settings/super-conductor.<slug>.yaml applies (prefs.mjs).
+//
 // Env: HQ_BIN (default hq), SC_WATCH_ERROR_STREAK (default 5): consecutive
 // polls with a failure (inbox, feed, or a channel read) before one
 // MESSAGE-WATCH-ERROR line. The inbox and the channel feed are read
@@ -95,6 +110,7 @@ import { replaceFile } from './lib/super-conductor-lock.mjs';
 import { prepareWindowsCommand } from './lib/windows-cmd-spawn.mjs';
 import { isMain, makeScope, manifestUids, parseCompanies, rowExcluded, rowInScope } from './lib/super-conductor-scope.mjs';
 import { addRequest, guessKind } from './super-conductor-requests.mjs';
+import { listConductors, makeRouteContext, refreshMembers, routeDm } from './lib/super-conductor-dm-route.mjs';
 
 const HQ_BIN = process.env.HQ_BIN || 'hq';
 const ERROR_STREAK = Number(process.env.SC_WATCH_ERROR_STREAK || 5);
@@ -104,6 +120,8 @@ const SEEN_CAP = 500;
 const SLACK_OVERLAP_S = 300;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.HQ_ROOT || path.resolve(HERE, '../..');
+// Extra prefs.mjs arguments: --company <slug> when the locked set is one company.
+let prefsArgs = [];
 
 function die(msg) {
   process.stderr.write(`super-conductor-message-watch: ${msg}\n`);
@@ -238,7 +256,9 @@ function touch(set, id) {
 // person-to-person channels through. `crit.exclude` drops listed channels.
 const textOf = (m) => m.text || m.body || m.message || m.preview || '';
 
-export async function poll(state, owner, call = hq, onDms = () => {}, scope = { slugs: new Set(), uids: new Set() }, sink = () => {}, crit = { critical: [], team: [], exclude: [] }) {
+// `route(ev)` (dm-route.mjs routeDm) decides whether a DM belongs to this
+// conductor and which company it resolves to; without it every DM is taken.
+export async function poll(state, owner, call = hq, onDms = () => {}, scope = { slugs: new Set(), uids: new Set() }, sink = () => {}, crit = { critical: [], team: [], exclude: [] }, route = null) {
   const baseline = !state.initialized;
   // Critical items are named here, printed at once by the caller, and never
   // held in `pending`.
@@ -275,10 +295,13 @@ export async function poll(state, owner, call = hq, onDms = () => {}, scope = { 
     const known = seen.inbox.has(ev.eventId);
     touch(seen.inbox, ev.eventId);
     if (known || inboxBaseline || isOwner(ev, owner)) continue;
+    // Another conductor's DM: seen (so it never replays here), never named.
+    const r = route ? route(ev) : { owned: true };
+    if (!r.owned) continue;
     const who = ev.fromDisplayName || ev.fromEmail || 'a teammate';
     const isCrit = criticalDm(ev.fromDisplayName || ev.fromEmail, crit.critical, crit.team);
     (isCrit ? state.critical_pending : items).push(`DM from ${who}`);
-    sink({ source: 'hq_dm', ref: ev.eventId, from: who, text: textOf(ev), at: ev.createdAt, seen_at: new Date().toISOString(), priority: isCrit ? 'critical' : undefined });
+    sink({ source: 'hq_dm', ref: ev.eventId, from: who, text: textOf(ev), at: ev.createdAt, company: r.company, seen_at: new Date().toISOString(), priority: isCrit ? 'critical' : undefined });
   }
   if (items.length) {
     finishPoll(state, seen);
@@ -394,7 +417,7 @@ function runText(file, args) {
 // present or away, from the owner's work-day schedule. Unreadable settings
 // count as present, the cheaper mistake to make for a wake.
 async function cadenceMode() {
-  const out = await runText(process.execPath, [path.join(HERE, 'super-conductor-prefs.mjs'), 'interval']);
+  const out = await runText(process.execPath, [path.join(HERE, 'super-conductor-prefs.mjs'), ...prefsArgs, 'interval']);
   return /\baway\b/.test(out) ? 'away' : 'present';
 }
 
@@ -433,7 +456,7 @@ export function slackConfig(prefs, scope = { slugs: new Set() }) {
 
 function readPrefs() {
   return new Promise((resolve) => {
-    execFile(process.execPath, [path.join(HERE, 'super-conductor-prefs.mjs'), 'get'], { cwd: ROOT, timeout: 10_000 }, (err, stdout) => {
+    execFile(process.execPath, [path.join(HERE, 'super-conductor-prefs.mjs'), ...prefsArgs, 'get'], { cwd: ROOT, timeout: 10_000 }, (err, stdout) => {
       if (err) { resolve({}); return; }
       try { resolve(JSON.parse(stdout)); } catch { resolve({}); }
     });
@@ -528,6 +551,7 @@ async function resolveOwner(o, state) {
 async function main() {
   const o = parseArgs(process.argv.slice(2));
   const scope = makeScope(ROOT, o.companies);
+  if (o.companies.length === 1) prefsArgs = ['--company', o.companies[0]];
   if (scope.unmapped.length) {
     process.stderr.write(`super-conductor-message-watch: no cloud_uid in companies/manifest.yaml for ${scope.unmapped.join(', ')}; their channels are skipped\n`);
   }
@@ -557,7 +581,7 @@ async function main() {
   let wsCompanies = {};
   const sink = (r) => {
     if (!o.ledger) return;
-    const company = r.companyUid ? slugByUid[r.companyUid] : r.workspace ? wsCompanies[r.workspace] : undefined;
+    const company = r.company || (r.companyUid ? slugByUid[r.companyUid] : r.workspace ? wsCompanies[r.workspace] : undefined);
     try {
       addRequest(o.ledger, { ...r, kind: guessKind(r.text), company });
     } catch (e) {
@@ -605,6 +629,24 @@ async function main() {
     const shown = out.slice(0, 6).join('; ') + (out.length > 6 ? `; +${out.length - 6} more` : '');
     say(`SUPER-CONDUCTOR MESSAGE ${stamp()} | ${out.length} new: ${shown} | ${o.hint}.`);
   };
+  // DM routing across conductors (see the header). Membership is refreshed
+  // every 15 minutes; a failed refresh is reported once and the last published
+  // roster (or none, which routes every DM to the primary) stays in force.
+  let routeGapReported = false;
+  const routeFor = async () => {
+    if (!o.save) return null;
+    try {
+      await refreshMembers(o.save, o.companies);
+      routeGapReported = false;
+    } catch (e) {
+      if (!routeGapReported) {
+        routeGapReported = true;
+        say(`SUPER-CONDUCTOR MESSAGE-WATCH-DEGRADED ${stamp()} | DM routing roster not refreshed (${String(e.message).slice(0, 120)}) | DMs from this company set may go to the primary conductor until hq members list works.`);
+      }
+    }
+    const ctx = makeRouteContext(o.save, listConductors(path.dirname(o.save)));
+    return (ev) => routeDm(ev, ctx);
+  };
   const parentAlive = () => {
     if (!o.parentPid) return true;
     try { process.kill(o.parentPid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
@@ -629,7 +671,8 @@ async function main() {
     const inboxBaseline = state.inbox_initialized === undefined ? !state.initialized : !state.inbox_initialized;
     const channelBaseline = !state.initialized;
     try {
-      const items = await poll(state, owner, hq, (dms) => flush(dms), scope, sink, { critical: o.critical, team: o.team, exclude });
+      const route = await routeFor();
+      const items = await poll(state, owner, hq, (dms) => flush(dms), scope, sink, { critical: o.critical, team: o.team, exclude }, route);
       if (!inboxBaseline && state.inbox_initialized && !(state.poll_errors || []).some((e) => /^hq dm inbox/.test(e))) record('hq_dms', stamp());
       if (!channelBaseline && state.cursor && !state.channel_error) record('hq_channels', stamp());
       failures = state.poll_errors || [];

@@ -124,6 +124,91 @@ outC="$(bash "$w" --company acme --channel slack-dm5)"
 check "CRLF resolved_participants parses to clean ids (no stray \\r)" \
   "$(printf '%s\n' "$outC" | jq -r 'select(.file|endswith("dmC.md")) | .audience | sort | join(",")')" "crlf@x.com,prs_01CRLF"
 
+# --- Newest-first ordering: unprocessed items are listed by the meeting's own
+#     date (scheduled_start_time, then meeting_start, when, created_at, date),
+#     newest first, before --limit applies. Filenames are ids, so glob order
+#     says nothing about recency. ---
+mkdir -p "$t/companies/acme/sources/meetings-order"
+O="$t/companies/acme/sources/meetings-order"
+printf 'channel: meetings-order\nkind: meeting\narrives: cloud\naudience_rule: attendees\nprocessor: ontology/process-source\nrun: local\nschedule: on-close\n' > "$O/source.yaml"
+# 25 items; item i gets day (i*7 mod 25)+1 in October, so name order and date order disagree.
+i=1
+while [ "$i" -le 25 ]; do
+  d=$(( (i * 7) % 25 + 1 ))
+  printf -- '---\nid: o%02d\nscheduled_start_time: "2026-10-%02dT10:00:00Z"\ningested_at: "2026-11-01T00:00:00Z"\nattendees: [a@example.test]\n---\nbody\n' "$i" "$d" > "$O/o$(printf '%02d' "$i").md"
+  i=$((i+1))
+done
+want_order=""
+d=25
+while [ "$d" -ge 6 ]; do
+  i=1
+  while [ "$i" -le 25 ]; do
+    [ $(( (i * 7) % 25 + 1 )) -eq "$d" ] && want_order="$want_order o$(printf '%02d' "$i").md"
+    i=$((i+1))
+  done
+  d=$((d-1))
+done
+outO="$(bash "$w" --company acme --channel meetings-order --limit 20)"
+check "limit 20 over 25 items lists 20" "$(printf '%s\n' "$outO" | wc -l | tr -d ' ')" 20
+check "the 20 newest by scheduled_start_time are listed newest first" \
+  "$(printf '%s\n' "$outO" | jq -r '.file' | sed 's#.*/##' | tr '\n' ' ' | sed 's/ $//')" "${want_order# }"
+newest="${want_order# }"; newest="${newest%% *}"
+bash "$w" --company acme --channel meetings-order --mark-done "$O/$newest"
+check "mark-done drops the newest item from the next run" \
+  "$(bash "$w" --company acme --channel meetings-order --limit 20 | jq -r '.file' | grep -c "/$newest$" || true)" 0
+bash "$w" --company acme --channel meetings-order --redo "sources/meetings-order/$newest"
+check "--redo exits 0 for an item in the channel" "$?" 0
+check "--redo removes the item from .processed" "$(grep -c "^$newest	" "$O/.processed" || true)" 0
+check "--redo lists the item again, first by date" \
+  "$(bash "$w" --company acme --channel meetings-order --limit 20 | head -1 | jq -r '.file' | sed 's#.*/##')" "$newest"
+# --redo also clears a .skipped entry
+printf -- '---\nid: onone\nscheduled_start_time: "2026-12-01T10:00:00Z"\n---\nbody\n' > "$O/onone.md"
+bash "$w" --company acme --channel meetings-order --limit 1 >/dev/null
+check "no-audience item recorded in .skipped" "$(grep -c '^onone.md	no-audience	' "$O/.skipped" || true)" 1
+bash "$w" --company acme --channel meetings-order --redo "$O/onone.md"
+check "--redo removes the item from .skipped" "$(grep -c '^onone.md	' "$O/.skipped" || true)" 0
+check "--redo of a skipped item lists it again" \
+  "$(bash "$w" --company acme --channel meetings-order --limit 1 | jq -r '.file' | sed 's#.*/##')" "onone.md"
+# --redo refuses paths outside the channel directory and leaves the ledgers alone
+bash "$w" --company acme --channel meetings-order --mark-done "$O/$newest"
+cp "$O/.processed" "$t/processed.before"
+bash "$w" --company acme --channel meetings-order --redo "$t/companies/acme/sources/slack-dm/dm1.md" >/dev/null 2>&1
+check "--redo refuses an item in another channel" "$?" 2
+bash "$w" --company acme --channel meetings-order --redo "../slack-dm/dm1.md" >/dev/null 2>&1
+check "--redo refuses a traversal path" "$?" 2
+bash "$w" --company acme --channel meetings-order --redo "sources/meetings-order/../meetings-order/$newest" >/dev/null 2>&1
+check "--redo refuses a path with a .. segment" "$?" 2
+bash "$w" --company acme --channel meetings-order --redo "missing.md" >/dev/null 2>&1
+check "--redo refuses an item that does not exist" "$?" 2
+check "refused --redo leaves .processed unchanged" "$(cmp -s "$O/.processed" "$t/processed.before"; echo $?)" 0
+
+# --- Date keys, offsets and mtime fallback ---
+mkdir -p "$t/companies/acme/sources/meetings-keys"
+K="$t/companies/acme/sources/meetings-keys"
+printf 'channel: meetings-keys\nkind: meeting\narrives: cloud\naudience_rule: attendees\nprocessor: ontology/process-source\nrun: local\nschedule: on-close\n' > "$K/source.yaml"
+# scheduled_start_time wins over a later created_at (a mirror refresh rewrites ingest stamps)
+printf -- '---\nid: k1\nscheduled_start_time: 2026-03-01T10:00:00Z\ncreated_at: 2026-11-01T10:00:00Z\nattendees: [a@example.test]\n---\nb\n' > "$K/k1.md"
+printf -- '---\nid: k2\ncreated_at: "2026-04-01T10:00:00.000Z"\nattendees: [a@example.test]\n---\nb\n' > "$K/k2.md"
+printf -- '---\nid: k3\nmeeting_start: 2026-05-01T10:00:00Z\nattendees: [a@example.test]\n---\nb\n' > "$K/k3.md"
+printf -- '---\nid: k4\ndate: 2026-02-01\nattendees: [a@example.test]\n---\nb\n' > "$K/k4.md"
+# offsets: k5 is 2026-06-01T20:00Z, k6 is 2026-06-01T22:00Z
+printf -- '---\nid: k5\nscheduled_start_time: "2026-06-02T01:00:00+05:00"\nattendees: [a@example.test]\n---\nb\n' > "$K/k5.md"
+printf -- '---\nid: k6\nscheduled_start_time: "2026-06-01T22:00:00Z"\nattendees: [a@example.test]\n---\nb\n' > "$K/k6.md"
+# no date in frontmatter: fall back to file mtime
+printf -- '---\nid: k0old\nattendees: [a@example.test]\n---\nb\n' > "$K/a-nodate-old.md"; touch -t 202001011200 "$K/a-nodate-old.md"
+printf -- '---\nid: k0new\nattendees: [a@example.test]\n---\nb\n' > "$K/z-nodate-new.md"; touch -t 203001011200 "$K/z-nodate-new.md"
+printf 'no frontmatter at all\n' > "$K/m-nofm.md"; touch -t 202501011200 "$K/m-nofm.md"
+outK="$(bash "$w" --company acme --channel meetings-keys)"
+check "date keys, offsets and mtime fallback order newest first" \
+  "$(printf '%s\n' "$outK" | jq -r '.file' | sed 's#.*/##' | tr '\n' ' ' | sed 's/ $//')" \
+  "z-nodate-new.md k6.md k5.md k3.md k2.md k1.md k4.md m-nofm.md a-nodate-old.md"
+# equal dates break ties by filename
+printf -- '---\nid: t2\nscheduled_start_time: 2026-07-01T10:00:00Z\nattendees: [a@example.test]\n---\nb\n' > "$K/tie-b.md"
+printf -- '---\nid: t1\nscheduled_start_time: 2026-07-01T10:00:00Z\nattendees: [a@example.test]\n---\nb\n' > "$K/tie-a.md"
+check "equal dates order by filename" \
+  "$(bash "$w" --company acme --channel meetings-keys --limit 3 | jq -r '.file' | sed 's#.*/##' | tr '\n' ' ' | sed 's/ $//')" \
+  "z-nodate-new.md tie-a.md tie-b.md"
+
 sed -i.bak 's/run: local/run: cloud/' "$M/source.yaml"
 bash "$w" --company acme --channel meetings >/dev/null 2>&1; check "run: cloud refuses locally" "$?" 4
 bash "$w" --company acme --channel meetings --force >/dev/null 2>&1; check "--force overrides" "$?" 0

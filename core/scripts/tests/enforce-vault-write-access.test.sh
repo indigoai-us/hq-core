@@ -284,6 +284,31 @@ runc 0 "$A" "cp /tmp/a.md reports/a.md"             'bash cp relative to cwd int
 runc 0 "$A" "cat private/a.md"                      'bash read relative to cwd allowed'
 runc 0 "$TMP" "cp /tmp/a.md notes.md"               'bash relative cp at HQ root ignored'
 runc 0 "$A" "echo \"a>private/x\""                  'bash quoted > is not a redirect'
+# feedback_e9ee6aa4: ; inside python -c splits the command; HTML regex is not a vault path
+runc 0 "$A" "python3 -c 'import re,sys; print(re.sub(\"<style.*?</style>\", \"\", sys.stdin.read()))'" \
+                                                    'python regex after semicolon is not a vault path'
+runc 0 "$A" "curl -s https://example.com | python3 -c 'import re,sys; print(re.sub(\"<style.*?</style>\", \"\", sys.stdin.read()))'" \
+                                                    'curl piped to python regex cwd company allowed'
+# Review on #1768: the regex skip must not open real paths with odd characters.
+runb 2 "echo x > companies/acme/private/a,b.md"          'comma path in denied company dir blocks'
+runb 2 "tee companies/acme/private/x*.md < /tmp/a"       'glob path in denied company dir blocks'
+runb 2 "echo x > \"companies/acme/private/a;b.md\""      'quoted semicolon path in denied company dir blocks'
+runb 2 "touch companies/acme/private/a?b.md"             'question-mark path in denied company dir blocks'
+runc 2 "$A" "echo x > private/notes(1).md"          'paren name in read-only company dir blocks'
+runc 2 "$A" "echo x > private/a+b.md"               'plus name in read-only company dir blocks'
+runc 2 "$A" "echo x > private/@x.md"                'at name in read-only company dir blocks'
+runc 2 "$A" "python3 -c 'x=1'; echo x > private/a,b.md" 'comma redirect after python -c blocks'
+runb 2 "bash -c 'true; echo x > companies/acme/private/a,b.md'" 'write inside quoted -c after semicolon blocks'
+# Second review on #1768: quote tracking must not drift, and a closed -c quote ends the skip.
+runb 2 $'true # it\'s\necho x > \'companies/acme/private/a<b.md\'' 'apostrophe in comment does not skip next line'
+runc 2 "$A/private" $'true # it\'s\necho x > _'       'apostrophe in comment then bare name in denied cwd blocks'
+runb 2 "echo \$'it\\'s'; echo x > 'companies/acme/private/a<b.md'" 'ansi-c quote does not skip later segment'
+runb 2 $'cat <<EOF\nit\'s\nEOF\necho x > \'companies/acme/private/a<b.md\'' 'apostrophe in heredoc does not skip later line'
+runc 2 "$A/private" $'echo \'\npython3 -c \'a; echo x > _' 'quote spanning lines closed by -c quote still blocks'
+runb 2 $'echo \'\npython3 -c \'a; echo x > \'companies/acme/private/a<b.md\'' 'quote spanning lines then lt name still blocks'
+runc 2 "$A/private" $'cat <<E\nit\'s\nE\necho \'\npython3 -c \'a; echo x > _' 'heredoc apostrophe then spanning quote still blocks'
+runc 2 "$A/private" "echo \"\$(echo '\" -c 'a; echo x > _)\"" 'command substitution in double quotes still blocks'
+runc 2 "$A/private" "echo \"\`echo '\" -c 'a; echo x > _\`\"" 'backtick substitution in double quotes still blocks'
 runb 0 "cd /tmp && cp a.md companies/acme/private/a.md" 'bash cd elsewhere then relative companies/ ignored'
 runb 0 "cp $A/private/a.md \"/tmp/a b.md\""         'bash cp FROM read-only to quoted path allowed'
 # Review on #1506: ../ climbs, grouped/glued -t, >| and long commands.

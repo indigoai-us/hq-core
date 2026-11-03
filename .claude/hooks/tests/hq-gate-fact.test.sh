@@ -35,8 +35,29 @@ printf '%s' "$(jq -nc --arg sid "$HQ_SESSION_ID" '{session_id:$sid,prompt:"Confi
   | HQ_ROOT="$FIXTURE" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$FIXTURE/.claude/hooks/policy-enforcement-gate.sh" UserPromptSubmit >/dev/null
 printf '%s' "$(jq -nc --arg sid "$HQ_SESSION_ID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"gate-fact:sending_account_confirmed",question:"Confirm the selected sending account?"}]},tool_response:{answers:[{answer:"Confirmed"}]}}')" \
   | HQ_ROOT="$FIXTURE" CLAUDE_PROJECT_DIR="$FIXTURE" bash "$FIXTURE/.claude/hooks/policy-enforcement-gate.sh" PostToolUse >/dev/null
-"$CLI" confirm sending_account_confirmed --note 'ignored caller note'
 FACT_DIR="$FIXTURE/workspace/orchestrator/hook-state/gate-facts/$HQ_SESSION_ID"
+# The hook writes the fact itself from the host-delivered answer and consumes
+# the proof, so confirm has nothing left to mint a second fact from.
+[ "$(jq -r '.note' "$FACT_DIR/sending_account_confirmed.json")" = 'Confirmed' ] || fail 'hook records the answer as the fact note'
+[ ! -e "$FACT_DIR/proofs/sending_account_confirmed.json" ] || fail 'hook consumes the proof once the fact is written'
+if "$CLI" confirm sending_account_confirmed --note 'second mint' 2>"$TMP/second.err"; then fail 'confirm cannot mint a second fact from a used approval'
+else rc=$?; [ "$rc" -eq 2 ] || fail 'confirm cannot mint a second fact from a used approval'; fi
+pass 'one approval yields one fact'
+# confirm still works from a proof on disk and keeps the proof's timestamp.
+rm -f "$FACT_DIR/sending_account_confirmed.json"
+mkdir -p "$FACT_DIR/proofs"
+jq -nc --arg sid "$HQ_SESSION_ID" '{fact:"sending_account_confirmed",session_id:$sid,source:"askuserquestion",answer:"Confirmed",confirmed_at:"2000-01-01T00:00:00Z"}' \
+  > "$FACT_DIR/proofs/sending_account_confirmed.json"
+"$CLI" confirm sending_account_confirmed --note 'ignored caller note'
+[ "$(jq -r '.confirmed_at' "$FACT_DIR/sending_account_confirmed.json")" = '2000-01-01T00:00:00Z' ] || fail 'confirm carries the proof timestamp into the fact'
+if "$CLI" check sending_account_confirmed --within 30 2>/dev/null; then fail 'a fact confirmed from an old proof is stale'
+else rc=$?; [ "$rc" -eq 1 ] || fail 'a fact confirmed from an old proof is stale'; fi
+pass 'confirm keeps the proof timestamp so an old approval stays stale'
+[ ! -e "$FACT_DIR/proofs/sending_account_confirmed.json" ] || fail 'confirm consumes the proof'
+# Restore a fresh fact for the checks below.
+jq -nc --arg sid "$HQ_SESSION_ID" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '{fact:"sending_account_confirmed",session_id:$sid,source:"askuserquestion",answer:"Confirmed",confirmed_at:$at}' \
+  > "$FACT_DIR/proofs/sending_account_confirmed.json"
+"$CLI" confirm sending_account_confirmed --note 'ignored caller note'
 [ "$(jq -r '.fact' "$FACT_DIR/sending_account_confirmed.json")" = sending_account_confirmed ] || fail 'record stores fact'
 [ "$(jq -r '.confirmed_at | type' "$FACT_DIR/sending_account_confirmed.json")" = string ] || fail 'record stores timestamp'
 [ "$(jq -r '.note' "$FACT_DIR/sending_account_confirmed.json")" = 'Confirmed' ] || fail 'record stores proof answer as note'

@@ -887,6 +887,7 @@ spawn_ms=""
 slow_child=""
 slow_child_ms=""
 slow_phase=""
+active_children=""
 if [ -n "$session_hash" ]; then
   mkdir -p "$root/workspace/.hook-timeout-journal" >/dev/null 2>&1 || true
   spawn_ms="$(hook_timeout_spawn_ms \
@@ -898,11 +899,24 @@ if [ "$source_kind" = master-dispatch ] \
   && [[ "$invocation_id" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
   journal_file="$root/workspace/.hook-timeout-journal/$session_hash.tsv"
   active_child_file="$journal_file.$invocation_id.active"
-  if [ -r "$active_child_file" ]; then
+  # Parallel dispatch writes one breadcrumb per running child
+  # (<active>.<index>). Name the longest-running one and list them all.
+  active_child_files=()
+  for active_child_candidate in "$active_child_file" "$active_child_file".*; do
+    [ ! -r "$active_child_candidate" ] || active_child_files+=("$active_child_candidate")
+  done
+  if [ "${#active_child_files[@]}" -gt 0 ]; then
     active_child_record="$(awk -F '\t' '
-      NF == 3 && $3 ~ /^[0-9]+$/ { printf "%s\t%s", $1, $3 }
-    ' "$active_child_file" 2>/dev/null || true)"
-    IFS=$'\t' read -r active_child_script active_child_started_ms <<< "$active_child_record" || true
+      NF == 3 && $3 ~ /^[0-9]+$/ {
+        n++
+        names = names (n > 1 ? "," : "") $1
+        if (best == "" || $3 + 0 < best + 0) { best = $3; name = $1 }
+      }
+      END { if (n) printf "%s\t%s\t%s", name, best, names }
+    ' "${active_child_files[@]}" 2>/dev/null || true)"
+    IFS=$'\t' read -r active_child_script active_child_started_ms active_children <<< "$active_child_record" || true
+    case "${active_children:-}" in *,*) ;; *) active_children="" ;; esac
+    { [ "${#active_children}" -le 4096 ] && [[ "${active_children:-}" =~ ^[A-Za-z0-9._,-]+$ ]]; } || active_children=""
     if [[ "${active_child_script:-}" =~ ^[A-Za-z0-9._-]{1,128}$ ]] \
       && is_nonnegative_integer "${active_child_started_ms:-}"; then
       active_child_now_ms="$(now_ms)"
@@ -1018,6 +1032,7 @@ event_json="$(jq -cn \
   --arg slow_child "$slow_child" \
   --arg slow_child_ms "$slow_child_ms" \
   --arg slow_phase "$slow_phase" \
+  --arg active_children "$active_children" \
   --argjson hook_sequence "$hook_sequence" \
   --arg bash_env_set "$bash_env_set" \
   --arg shell "$shell_info" \
@@ -1061,6 +1076,7 @@ event_json="$(jq -cn \
       }
       + (if ($spawn_ms | test("^[0-9]+$")) then {spawn_ms: ($spawn_ms | tonumber)} else {} end)
       + (if ($slow_phase | length) > 0 then {slow_phase: $slow_phase} else {} end)
+      + (if ($active_children | length) > 0 then {active_children: ($active_children | split(","))} else {} end)
       + (if ($slow_child | length) > 0 and ($slow_child_ms | test("^[0-9]+$"))
          then {slow_child: $slow_child, slow_child_ms: ($slow_child_ms | tonumber)} else {} end))
     }

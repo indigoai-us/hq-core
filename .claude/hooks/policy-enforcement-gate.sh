@@ -152,6 +152,31 @@ policy_required_values() {
     }' | jq -Rsc 'split("\n")|map(select(length>0))'
 }
 
+# Print "<id>\037<forbid>\037<require>" for each listed policy row whose file
+# declares a delivery-forbid-regex or delivery-require-regex, in list order.
+# Each value is the first line starting with the key, with the key and the
+# blanks after it removed: what `sed -n 's/^key:[[:space:]]*//p' | head -n1`
+# gave per row. Each distinct file is read once.
+policy_delivery_regexes() {
+  local id path
+  while IFS=$'\t' read -r id _ path _; do
+    [ -n "$path" ] && [ -f "$path" ] && printf '%s\037%s\n' "$id" "$path"
+  done < "$POLICIES" | awk -F '\037' '
+    {
+      id = $1; path = substr($0, length(id) + 2)
+      if (!(path in seen)) {
+        f = ""; r = ""; hf = 0; hr = 0
+        while ((getline line < path) > 0) {
+          if (!hf && index(line, "delivery-forbid-regex:") == 1) { hf = 1; f = line; sub(/^delivery-forbid-regex:[[:space:]]*/, "", f) }
+          if (!hr && index(line, "delivery-require-regex:") == 1) { hr = 1; r = line; sub(/^delivery-require-regex:[[:space:]]*/, "", r) }
+        }
+        close(path)
+        seen[path] = 1; F[path] = f; R[path] = r
+      }
+      if (F[path] != "" || R[path] != "") printf "%s\037%s\037%s\n", id, F[path], R[path]
+    }'
+}
+
 gate_policy_data() {
   node - "$1" <<'NODE'
 const fs = require("fs");
@@ -184,6 +209,90 @@ if (freshness !== undefined && !/^\d+$/.test(freshness)) { console.log(JSON.stri
 if (!new Set(["allowed", "denied"]).has(override)) { console.log(JSON.stringify({valid:false,error:"gate override is invalid"})); process.exit(0); }
 process.stdout.write(JSON.stringify({valid:true,tools,bash,requires,freshness:freshness || "",override}));
 NODE
+}
+
+# Prompt-named skills whose SKILL.md exists. A phrase such as "use HQ skill
+# to rename" names no installed skill; requiring "hq" would leave a receipt
+# that can never be satisfied. The case pattern stays outside $(...) so bash
+# 3.2 does not treat its ")" as the end of the substitution.
+prompt_named_skills() {
+  local prompt="$1" prompt_skill
+  printf '%s\n' "$prompt" | awk '
+    {
+      line=tolower($0)
+      if (line ~ /(^|[^a-z])(broadcast|post an? update to slack|slack broadcast)([^a-z]|$)/) print "work-broadcast"
+      if (match(line, /(use|run|load|read)[[:space:]]+(the[[:space:]]+)?[a-z0-9_-]+[[:space:]]+skill/)) {
+        s=substr(line,RSTART,RLENGTH); sub(/^(use|run|load|read)[[:space:]]+(the[[:space:]]+)?/,"",s); sub(/[[:space:]]+skill.*/,"",s); print s
+      }
+    }
+  ' | awk 'NF && !seen[$0]++' | while IFS= read -r prompt_skill; do
+    case "$prompt_skill" in ''|.|..|*/*) continue ;; esac
+    [ -f "$ROOT/.claude/skills/$prompt_skill/SKILL.md" ] || continue
+    printf '%s\n' "$prompt_skill"
+  done
+}
+
+# AskUserQuestion and Codex request_user_input. Array answers stay aligned
+# with questions. An object answer is read only under its own question's key,
+# chosen by tool: the question id for request_user_input, the question text for
+# AskUserQuestion (which ignores any id). Never the header, which the model
+# chooses. A question whose own key is missing, or shared with another
+# question's key, yields no row.
+gate_answer_rows() {
+  printf '%s' "$INPUT" | jq -r --arg tool "${TOOL:-}" '
+    def first_text($xs):
+      if ($xs|type) != "array" then ""
+      else
+        [ $xs[]
+          | if type == "string" then .
+            elif type == "object" then (.answer // .label // "")
+            else "" end
+          | select(type == "string" and length > 0)
+        ][0] // ""
+      end;
+    def gate_answer($raw):
+      if $raw == null then ""
+      elif ($raw|type) == "string" then $raw
+      elif ($raw|type) == "object" then
+        if ($raw.answers|type) == "array" then first_text($raw.answers)
+        elif ($raw.answer|type) == "string" then $raw.answer
+        elif ($raw.label|type) == "string" then $raw.label
+        else "" end
+      elif ($raw|type) == "array" then first_text($raw)
+      else "" end;
+    def answer_key($tool):
+      if $tool == "request_user_input"
+      then (.id // .question_id // .questionId // "" | tostring)
+      else (.question // "" | tostring) end;
+    def gate_row($header; $answer):
+      select(
+        ($header | test("^gate-fact:(sending_account_confirmed|recipients_confirmed|draft_approved)$") and ($answer|type) == "string" and ($answer|test("^(confirmed|yes|approved)$";"i"))) or
+        ($header | test("^gate-override:[A-Za-z0-9][A-Za-z0-9._-]*$") and ($answer|type) == "string" and ($answer|test("^(override once|allow once)$";"i")))
+      )
+      | (if $header | startswith("gate-fact:") then "fact" else "override" end)
+        + "\t" + ($header | sub("^gate-(fact|override):";""))
+        + "\t" + $answer;
+    (.tool_input.questions // []) as $questions
+    | (.tool_response.answers // .tool_response.responses // []) as $answers
+    | if ($answers|type) == "object" then
+        [ $questions[] | answer_key($tool) ] as $keys
+        | [ range(0; ($questions|length)) as $i
+            | $keys[$i] as $key
+            | select(($key|length) > 0
+                and ([ $keys[] | select(. == $key) ] | length) == 1
+                and ($answers | has($key)))
+            | ($questions[$i].header // "") as $header
+            | gate_answer($answers[$key]) as $answer
+            | gate_row($header; $answer)
+          ] | .[]
+      else
+        [ range(0; ([($questions|length), ($answers|length)] | min)) as $i
+          | ($questions[$i].header // "") as $header
+          | ($answers[$i].answer // $answers[$i].label // $answers[$i] // "") as $answer
+          | gate_row($header; $answer)
+        ] | .[]
+      end
+  ' 2>/dev/null || true
 }
 
 enforce_gate_policies() {
@@ -339,24 +448,9 @@ command_is_outbound() {
 case "$EVENT" in
   UserPromptSubmit)
     PROMPT="$(extract_prompt)"
-    REQUIRED_SKILLS="$(printf '%s\n' "$PROMPT" | awk '
-      {
-        line=tolower($0)
-        if (line ~ /(^|[^a-z])(broadcast|post an? update to slack|slack broadcast)([^a-z]|$)/) print "work-broadcast"
-        if (match(line, /(use|run|load|read)[[:space:]]+(the[[:space:]]+)?[a-z0-9_-]+[[:space:]]+skill/)) {
-          s=substr(line,RSTART,RLENGTH); sub(/^(use|run|load|read)[[:space:]]+(the[[:space:]]+)?/,"",s); sub(/[[:space:]]+skill.*/,"",s); print s
-        }
-      }
-    ' | awk 'NF && !seen[$0]++' | while IFS= read -r prompt_skill; do
-      # A receipt is earned only by reading .claude/skills/<name>/SKILL.md (see
-      # PostToolUse below). A prompt phrase such as "use HQ skill to rename"
-      # names no installed skill; requiring "hq" would leave a receipt that can
-      # never be satisfied and block every later outbound action in the
-      # session. Require only prompt-named skills whose SKILL.md exists.
-      case "$prompt_skill" in ''|.|..|*/*) continue ;; esac
-      [ -f "$ROOT/.claude/skills/$prompt_skill/SKILL.md" ] || continue
-      printf '%s\n' "$prompt_skill"
-    done | jq -Rsc 'split("\n") | map(select(length>0))')"
+    # A receipt is earned only by reading .claude/skills/<name>/SKILL.md (see
+    # PostToolUse below). Require only prompt-named skills whose SKILL.md exists.
+    REQUIRED_SKILLS="$(prompt_named_skills "$PROMPT" | jq -Rsc 'split("\n") | map(select(length>0))')"
     [ -n "$REQUIRED_SKILLS" ] || REQUIRED_SKILLS='[]'
 
     POLICY_SKILLS='[]'
@@ -475,16 +569,8 @@ case "$EVENT" in
           .tool_response.success? == false or ((.tool_response.exit_code? // 0) != 0))
       then "false" else "true" end')"
     [ "$SUCCESS" = "true" ] || exit 0
-    if [ "$TOOL" = "AskUserQuestion" ]; then
-      PROOF_ROWS="$(printf '%s' "$INPUT" | jq -r '
-        (.tool_input.questions // []) as $questions |
-        (.tool_response.answers // .tool_response.responses // []) as $answers |
-        [range(0; ([($questions|length),($answers|length)]|min)) as $i |
-          ($questions[$i].header // "") as $header |
-          ($answers[$i].answer // $answers[$i].label // $answers[$i] // "") as $answer |
-          select(($header | test("^gate-fact:(sending_account_confirmed|recipients_confirmed|draft_approved)$") and ($answer|type)=="string" and ($answer|test("^(confirmed|yes|approved)$";"i"))) or
-                 ($header | test("^gate-override:[A-Za-z0-9][A-Za-z0-9._-]*$") and ($answer|type)=="string" and ($answer|test("^(override once|allow once)$";"i")))) |
-          (if $header | startswith("gate-fact:") then "fact" else "override" end) + "\t" + ($header | sub("^gate-(fact|override):";"")) + "\t" + $answer] | .[]' 2>/dev/null || true)"
+    if [ "$TOOL" = "AskUserQuestion" ] || [ "$TOOL" = "request_user_input" ]; then
+      PROOF_ROWS="$(gate_answer_rows)"
       if [ -n "$PROOF_ROWS" ]; then
         HOOK_STATE_DIR="$(. "$ROOT/core/scripts/hook-lib.sh" && hq_hook_state_dir "$ROOT")"
         umask 077
@@ -500,12 +586,34 @@ case "$EVENT" in
           PROOF_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           if [ "$proof_kind" = fact ]; then
             jq -nc --arg fact "$name" --arg sid "$SID" --arg answer "$answer" --arg confirmed_at "$PROOF_TIME" \
-              '{fact:$fact,session_id:$sid,source:"askuserquestion",answer:$answer,confirmed_at:$confirmed_at}' > "$PROOF_TMP"
+              '{fact:$fact,session_id:$sid,source:"askuserquestion",answer:$answer,confirmed_at:$confirmed_at}' > "$PROOF_TMP" \
+              || { rm -f "$PROOF_TMP"; continue; }
           else
             jq -nc --arg policy_id "$name" --arg sid "$SID" --arg answer "$answer" --arg confirmed_at "$PROOF_TIME" \
-              '{policy_id:$policy_id,session_id:$sid,source:"askuserquestion",answer:$answer,confirmed_at:$confirmed_at}' > "$PROOF_TMP"
+              '{policy_id:$policy_id,session_id:$sid,source:"askuserquestion",answer:$answer,confirmed_at:$confirmed_at}' > "$PROOF_TMP" \
+              || { rm -f "$PROOF_TMP"; continue; }
           fi
-          chmod 600 "$PROOF_TMP" && mv -f "$PROOF_TMP" "$PROOF_DIR/$name.json" || rm -f "$PROOF_TMP"
+          chmod 600 "$PROOF_TMP" && mv -f "$PROOF_TMP" "$PROOF_DIR/$name.json" || { rm -f "$PROOF_TMP"; continue; }
+          # The gate reads gate-facts/$SID/$fact.json. The proof is a user answer
+          # the host delivered in tool_response, so write the fact here and skip
+          # the hq-gate-fact.sh confirm step. Delete the proof once the fact is
+          # written: one approval yields one fact, and a later confirm cannot
+          # mint a fresh fact from it after this one goes stale. If the fact
+          # cannot be written the proof stays for confirm.
+          if [ "$proof_kind" = fact ]; then
+            FACT_DIR="$HOOK_STATE_DIR/gate-facts/$SID"
+            FACT_TMP="$(mktemp "$FACT_DIR/.fact.XXXXXX" 2>/dev/null)" || continue
+            if jq -nc --arg fact "$name" --arg confirmed_at "$PROOF_TIME" --arg note "$answer" --arg source "askuserquestion" \
+              '{fact:$fact,confirmed_at:$confirmed_at,note:$note,source:$source}' > "$FACT_TMP"; then
+              if chmod 600 "$FACT_TMP" && mv -f "$FACT_TMP" "$FACT_DIR/$name.json"; then
+                rm -f "$PROOF_DIR/$name.json"
+              else
+                rm -f "$FACT_TMP"
+              fi
+            else
+              rm -f "$FACT_TMP"
+            fi
+          fi
         done <<< "$PROOF_ROWS"
       fi
       exit 0
@@ -620,10 +728,10 @@ case "$EVENT" in
     fi
 
     if [ -s "$POLICIES" ]; then
-      while IFS=$'\t' read -r id scope path enf excerpt kind; do
-        [ -n "$path" ] && [ -f "$path" ] || continue
-        forbid="$(sed -n 's/^delivery-forbid-regex:[[:space:]]*//p' "$path" | head -n1)"
-        require="$(sed -n 's/^delivery-require-regex:[[:space:]]*//p' "$path" | head -n1)"
+      # One awk reads every listed policy file once; only rows that declare a
+      # delivery regex come back, in list order. Forking sed and head per row
+      # cost 14-21 s per outbound call on Git Bash with ~220 rows (#1744).
+      while IFS=$'\037' read -r id forbid require; do
         if [ -z "$BODY" ] && { [ -n "$forbid" ] || [ -n "$require" ]; }; then
           json_block "POLICY ENFORCEMENT BLOCK: deterministic delivery gate $id cannot inspect this outbound body. Supply content in a structured tool field or literal MESSAGE/BODY/TEXT shell assignment."
           exit 2
@@ -652,7 +760,7 @@ case "$EVENT" in
           json_block "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate $id (required pattern missing)."
           exit 2
         fi
-      done < "$POLICIES"
+      done < <(policy_delivery_regexes)
     fi
     ;;
 esac

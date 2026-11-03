@@ -374,10 +374,10 @@ analyze_with_jq() {
     *) echo ALLOW; return ;;
   esac
 
-  printf '%s' "$text" | awk '
+  printf '%s' "$text" | awk -v bom="$(printf '\357\273\277')" '
     # normalize line endings (CRLF / stray CR) before structural checks —
     # mirrors the node engine and the python original'"'"'s \s* tolerance
-    { line=$0; sub(/\r$/, "", line); L[NR]=line }
+    { line=$0; sub(/\r$/, "", line); if (NR==1) sub("^" bom, "", line); L[NR]=line }
     END{
       i=1
       while (i<=NR && L[i] ~ /^[ \t]*$/) i++

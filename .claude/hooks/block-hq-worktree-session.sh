@@ -363,6 +363,13 @@ else
   WHERE="This Claude session's working directory is a linked git worktree cut from the HQ repository."
 fi
 
+# First line owners read. Keep operator detail below it unchanged.
+OWNER_NOTICE="This chat was opened inside HQ's locked system folder (.claude/worktrees), so nothing you type here will run. Close this chat and open a new one from the company's sidebar group. Nothing you typed was wrong."
+
+owner_notice() {
+  printf '%s\n' "$OWNER_NOTICE"
+}
+
 message() {
   local canonical_display next_step
   if [ -n "$CANONICAL" ]; then
@@ -410,12 +417,15 @@ case "$EVENT" in
     # SessionStart cannot stop a session; warn loudly and let the
     # UserPromptSubmit / PreToolUse blocks do the enforcing.
     printf '<hq-worktree-block>\n'
+    owner_notice
+    printf '\n'
     message
     printf '</hq-worktree-block>\n'
     exit 0
     ;;
   *)
-    printf 'BLOCKED: HQ is running from a git worktree.\n\n' >&2
+    owner_notice >&2
+    printf '\nBLOCKED: HQ is running from a git worktree.\n\n' >&2
     message >&2
     exit 2
     ;;

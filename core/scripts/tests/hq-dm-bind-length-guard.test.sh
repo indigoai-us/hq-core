@@ -28,21 +28,20 @@ if [ "${1:-}" = --version ] || [ "${1:-}" = core ]; then exec "$REAL_NODE" "$REA
 if [ "$1" = dm ] && [ "$2" = channel ]; then echo "${CHANNEL_JSON:-[]}"; fi
 exit 0
 S
-# Stub node: roster + send. send records the payload and returns an event id.
-cat > "$SANDBOX/bin/node" <<'S'
-#!/usr/bin/env bash
-cat >/dev/null
-case "$2" in
-  roster) printf '%s' "${ROSTER:-}" ;;
-  send) printf '%s\n' "$4" >> "$SENT"; n="$(wc -l < "$SENT" | tr -d ' ')"; printf 'evt-%s' "$n" ;;
-esac
-S
-chmod +x "$SANDBOX/bin/hq" "$SANDBOX/bin/node" "$SANDBOX/root/core/scripts/hq-session.sh"
-export PATH="$SANDBOX/bin:$PATH" HOME="$SANDBOX/home" HQ_ROOT="$SANDBOX/root" SENT="$SANDBOX/sent"
+chmod +x "$SANDBOX/bin/hq" "$SANDBOX/root/core/scripts/hq-session.sh"
+# The native dm-bind (hq-cli >= 5.345.193) reads the roster and posts through
+# the notify API with the human session, so serve that API locally. The fake
+# records each posted payload in $SENT and answers with an event id.
+ROSTER_FILE="$SANDBOX/roster" SENT="$SANDBOX/sent"
+# shellcheck source=lib/fake-notify-api.sh
+. "$ROOT/core/scripts/tests/lib/fake-notify-api.sh"
+trap 'kill "${FAKE_NOTIFY_API_PID:-}" 2>/dev/null || true; rm -rf "$SANDBOX"' EXIT
+fake_notify_api_start "$REAL_NODE" "$SANDBOX/home" "$ROSTER_FILE" "$SENT"
+export PATH="$SANDBOX/bin:$PATH" HOME="$SANDBOX/home" HQ_ROOT="$SANDBOX/root" SENT
 BIND="$SANDBOX/root/core/scripts/hq-dm-bind.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-export ROSTER=$'Ada Lovelace\tprs_ada\nGrace Hopper\tprs_grace\n'
+printf 'Ada Lovelace\tprs_ada\nGrace Hopper\tprs_grace\n' > "$ROSTER_FILE"
 
 # --- PASS: a post within budget sends normally ---
 rm -f "$SENT"
@@ -139,6 +138,7 @@ echo "PASS: --allow-long lets an over-budget post through"
 
 # --- PASS: unreadable roster still fails closed (existing behaviour not broken) ---
 rm -f "$SENT" "$SANDBOX/root/workspace/sessions/sess-test/dm-bind.roster"; rc=0
-ROSTER="" bash "$BIND" post --title "T" >/dev/null 2>&1 || rc=$?
+: > "$ROSTER_FILE"
+bash "$BIND" post --title "T" >/dev/null 2>&1 || rc=$?
 [ "$rc" = 2 ] && [ ! -e "$SENT" ] || fail "unreadable roster must refuse without posting (rc=$rc)"
 echo "PASS: unreadable roster still refuses (mention guard not broken by length guard)"

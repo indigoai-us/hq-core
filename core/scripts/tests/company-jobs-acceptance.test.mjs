@@ -18,7 +18,7 @@ const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 function seal(j) { j.contentDigest = hash(canonical({prompt:j.prompt, script:j.script, context:j.context, schedule:j.schedule})); return j; }
 function harness(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'us005-acceptance-')));
-  const config = {companyUid:'cmp_acceptance',companySlug:'indigo',machineUid:'out_machine1',outpostId:'outpost_cmp_acceptance',instanceId:'i-acceptance',attemptId:'attempt1',hqRoot:dir,stateDir:path.join(dir,'state'),unitDir:path.join(dir,'units'),configPath:path.join(dir,'config.json'),machineCredsFile:path.join(dir,'machine.json'),cloudModule:path.join(dir,'cloud.mjs'),apiUrl:'https://test.invalid',provider:'codex'};
+  const config = {companyUid:'cmp_acceptance',companySlug:'indigo',machineUid:'out_machine1',outpostId:'outpost_cmp_acceptance',instanceId:'i-acceptance',attemptId:'attempt1',hqRoot:dir,stateDir:path.join(dir,'state'),unitDir:path.join(dir,'units'),configPath:path.join(dir,'config.json'),machineCredsFile:path.join(dir,'machine.json'),cloudModule:path.join(dir,'cloud.mjs'),apiUrl:'https://test.invalid',provider:'codex',sessionRuntimeDir:path.join(dir,'sessions')};
   const job = seal({ownerKind:'company-outpost',companyUid:config.companyUid,agentUid:config.outpostId,jobId:'job_Acceptance',acceptedRevision:revision,status:'active',prompt:'Write the harmless acceptance marker.',registeredBy:'prs_registering',registeredAt:'2026-01-01T00:00:00Z',latestEditor:'prs_editor',sessionFingerprint:'registration-session',latestEditorSessionFingerprint:'editor-session',acceptedAt:'2026-01-01T00:00:00Z',schedule:{kind:'recurring',cron:'cron(0 9,17 * * ? *)',timezone:'America/Los_Angeles'},target:{outpostId:config.outpostId,instanceId:config.instanceId,machineUid:config.machineUid,attemptId:config.attemptId}});
   let now = Date.parse('2026-01-01T17:00:05Z');
   const transport = [], system = [], executions = [];
@@ -29,6 +29,8 @@ function harness(t) {
   }
   response=delivery();
   const api=async(operation,body)=>{transport.push({operation,...body});assert.equal(operation,'jobs','unexpected transport operation');return structuredClone(body.action==='reconcile'?discovery:response);};
+  api.machineTokens=async()=>({idToken:['SYNTHETIC','ID',crypto.randomUUID()].join('-'),accessToken:['SYNTHETIC','ACCESS',crypto.randomUUID()].join('-'),refreshToken:'',expiresAt:now+3600000,tokenType:'Bearer'});
+  api.machineIdentity=()=>({username:'out-machine1@outposts.example.test',clientId:'client1',region:'us-east-1',entityType:'company-outpost',entityUid:config.machineUid});
   const execute=async(command,args,options)=>{executions.push({command,args,options});return {code:0,text:JSON.stringify({disposition:'reply',outcome:'complete'})};};
   let runner=new CompanyRunner(config,api,{clock:()=>now,systemctl:args=>system.push(args),execute});
   t.after(()=>{runner.close();fs.rmSync(dir,{recursive:true,force:true});});

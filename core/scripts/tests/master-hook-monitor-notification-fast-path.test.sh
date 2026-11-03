@@ -151,8 +151,19 @@ grep -Fq 'skip 70-work-mesh-ground.sh (monitor-expiry-notification)' "$TMP/err" 
 
 : > "$MARKER"
 run_prompt '[Monitor timed out — re-arm if needed.] Then check why the deploy stopped.' monitor-expiry-action
-[ "$(cat "$MARKER")" = $'rewrite\nroute-deep-plan-to-skill\nauto-session-project\nnatural-language-router\ntitle\ninject\ncli\ndesktop\nturn-start\ncore-skill\nmonitor\nground\npersonal-skill\nsync' ] \
-  || fail "actionable prompt failed to preserve normal dispatch: $(cat "$MARKER")"
+expected_registry=$'rewrite\nroute-deep-plan-to-skill\nauto-session-project\nnatural-language-router\ntitle\ninject'
+expected_directory=$'cli\ndesktop\nturn-start\ncore-skill\nmonitor\nground\npersonal-skill\nsync'
+if [ "${HQ_HOOK_PARALLEL:-0}" = "1" ]; then
+  # Parallel dispatch keeps no start order among independent siblings, but
+  # every registry hook still finishes before any directory hook starts and
+  # each hook runs exactly once.
+  [ "$(head -n 6 "$MARKER" | sort)" = "$(sort <<<"$expected_registry")" ] \
+    && [ "$(tail -n +7 "$MARKER" | sort)" = "$(sort <<<"$expected_directory")" ] \
+    || fail "actionable prompt failed to preserve normal dispatch: $(cat "$MARKER")"
+else
+  [ "$(cat "$MARKER")" = "$expected_registry"$'\n'"$expected_directory" ] \
+    || fail "actionable prompt failed to preserve normal dispatch: $(cat "$MARKER")"
+fi
 printf 'PASS: bare Monitor notification skipped policy injection and irrelevant enrichers; actionable prompt dispatched normally\n'
 
 # The always-on directory dispatcher must keep the same fast path when the

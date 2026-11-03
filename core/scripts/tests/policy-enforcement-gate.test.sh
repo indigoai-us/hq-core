@@ -438,4 +438,315 @@ CALLS=0
 [ "$CALLS" -le 2 ] || fail "PreToolUse started $CALLS sed/tr processes for a 305-row policy list"
 pass "collects policy requirements from a long list without per-policy processes"
 
+# Saved-draft send. draft_approved comes only from a host-delivered user
+# answer (AskUserQuestion or Codex request_user_input) to a gate-fact question.
+# No prompt text approves a send, whatever it says.
+install_draft_gate() {
+  local sid="$1" fresh="${2:-}" pol fresh_line=""
+  [ -z "$fresh" ] || fresh_line="  freshness: $fresh"
+  pol="$FIX/policies/draft-gate-$sid.md"
+  cat > "$pol" <<EOF
+---
+id: draft-gate-$sid
+enforcement: gate
+gate:
+  tools: [mcp__gmail__send_draft, mcp__mail__post_draft]
+  requires: [draft_approved]
+$fresh_line
+---
+## Rule
+Deliver a saved draft only after draft_approved.
+EOF
+  printf 'draft-gate-%s\tcore\t%s\tgate\tDeliver a saved draft only after draft_approved.\tgate\n' "$sid" "$pol" \
+    > "$FIX/workspace/orchestrator/policy-enforcement/$sid.policies.tsv"
+}
+draft_prompt() {
+  local sid="$1" prompt="$2" payload
+  payload="$(jq -nc --arg sid "$sid" --arg prompt "$prompt" '{session_id:$sid,prompt:$prompt}')"
+  run_hook UserPromptSubmit "$payload" >/dev/null || fail "draft-gate prompt declaration failed for $sid"
+}
+draft_call() {
+  jq -nc --arg sid "$1" --arg tool "$2" '{session_id:$sid,tool_name:$tool,tool_input:{message:"hello"}}'
+}
+
+DRAFT_ONLY_SID="draft-only-send"
+install_draft_gate "$DRAFT_ONLY_SID"
+draft_prompt "$DRAFT_ONLY_SID" "Save a draft only. Do not send."
+set +e
+BLOCK="$(run_hook PreToolUse "$(draft_call "$DRAFT_ONLY_SID" mcp__gmail__send_draft)")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "draft-only prompt allowed gmail send_draft (rc=$RC): $BLOCK"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("draft_approved")' >/dev/null \
+  || fail "draft-only block did not name draft_approved: $BLOCK"
+pass "draft-only does not allow gmail send_draft"
+run_hook PreToolUse "$(draft_call "$DRAFT_ONLY_SID" mcp__gmail__create_draft)" >/dev/null \
+  || fail "draft-only prompt blocked gmail create_draft"
+pass "draft-only does not block gmail create_draft"
+
+SLACK_SID="unrelated-slack-send"
+install_draft_gate "$SLACK_SID"
+draft_prompt "$SLACK_SID" "Send a Slack message about the roadmap."
+set +e
+BLOCK="$(run_hook PreToolUse "$(draft_call "$SLACK_SID" mcp__gmail__send_draft)")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "unrelated send prompt allowed gmail send_draft (rc=$RC): $BLOCK"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("draft_approved")' >/dev/null \
+  || fail "unrelated send block did not name draft_approved: $BLOCK"
+pass "unrelated send does not allow gmail send_draft"
+
+# Prompt text never approves a send. Each of these once matched the
+# "send it" / "send the draft" phrase check and skipped the freshness gate.
+i=0
+while IFS= read -r prompt; do
+  [ -n "$prompt" ] || continue
+  i=$((i + 1))
+  PSID="prompt-not-approval-$i"
+  install_draft_gate "$PSID"
+  draft_prompt "$PSID" "$prompt"
+  for tool in mcp__gmail__send_draft mcp__mail__post_draft; do
+    set +e
+    BLOCK="$(run_hook PreToolUse "$(draft_call "$PSID" "$tool")")"; RC=$?
+    set -e
+    [ "$RC" -eq 2 ] || fail "prompt '$prompt' allowed $tool (rc=$RC): $BLOCK"
+    printf '%s' "$BLOCK" | jq -e '.reason | contains("draft_approved")' >/dev/null \
+      || fail "prompt '$prompt' block did not name draft_approved: $BLOCK"
+  done
+  [ ! -e "$FIX/workspace/orchestrator/hook-state/gate-facts/$PSID/draft_approved.json" ] \
+    || fail "prompt '$prompt' wrote draft_approved"
+  pass "prompt does not approve a saved-draft send: $prompt"
+done <<'PROMPTS'
+Write a reply to Bob and send it
+Should I send it?
+Show me the draft before you send it
+Don’t send it yet
+Never send it without asking me
+send it later
+I reviewed the saved draft. Send it.
+Send the draft.
+Go ahead and send the draft
+PROMPTS
+
+CODEX_SID="codex-draft-approved"
+install_draft_gate "$CODEX_SID"
+draft_prompt "$CODEX_SID" "Reviewing the draft."
+set +e
+BLOCK="$(run_hook PreToolUse "$(draft_call "$CODEX_SID" mcp__gmail__send_draft)")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a non-approval prompt allowed gmail send_draft before the gate answer (rc=$RC)"
+CODEX_ANSWER="$(jq -nc --arg sid "$CODEX_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{id:"draft-send",header:"gate-fact:draft_approved",question:"Approve sending the saved draft?"}]},tool_response:{answers:{"draft-send":{answers:["approved"]}}}}')"
+run_hook PostToolUse "$CODEX_ANSWER" >/dev/null || fail "request_user_input approval was rejected"
+CODEX_FACT="$FIX/workspace/orchestrator/hook-state/gate-facts/$CODEX_SID/draft_approved.json"
+[ -f "$CODEX_FACT" ] || fail "request_user_input approval did not write draft_approved"
+[ "$(jq -r '.fact' "$CODEX_FACT")" = draft_approved ] || fail "request_user_input fact field mismatch: $(cat "$CODEX_FACT")"
+[ "$(jq -r '.source' "$CODEX_FACT")" = askuserquestion ] || fail "request_user_input source mismatch: $(cat "$CODEX_FACT")"
+[ "$(jq -r '.note' "$CODEX_FACT")" = approved ] || fail "request_user_input note mismatch: $(cat "$CODEX_FACT")"
+run_hook PreToolUse "$(draft_call "$CODEX_SID" mcp__gmail__send_draft)" >/dev/null \
+  || fail "request_user_input approval did not allow gmail send_draft"
+pass "request_user_input approval records draft_approved and allows gmail send_draft"
+
+REFUSAL_SID="codex-draft-refused"
+install_draft_gate "$REFUSAL_SID"
+draft_prompt "$REFUSAL_SID" "Reviewing the draft."
+REFUSAL_ANSWER="$(jq -nc --arg sid "$REFUSAL_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{id:"draft-send",header:"gate-fact:draft_approved",question:"Approve sending the saved draft?"}]},tool_response:{answers:{"draft-send":{answers:["do not send"]}}}}')"
+run_hook PostToolUse "$REFUSAL_ANSWER" >/dev/null || fail "request_user_input refusal was rejected"
+REFUSAL_FACT="$FIX/workspace/orchestrator/hook-state/gate-facts/$REFUSAL_SID/draft_approved.json"
+[ ! -e "$REFUSAL_FACT" ] || fail "request_user_input refusal wrote draft_approved"
+set +e
+BLOCK="$(run_hook PreToolUse "$(draft_call "$REFUSAL_SID" mcp__gmail__send_draft)")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "request_user_input refusal allowed gmail send_draft (rc=$RC): $BLOCK"
+pass "request_user_input refusal does not record draft_approved"
+
+PROMOTE_SID="askuser-draft-promote"
+install_draft_gate "$PROMOTE_SID"
+draft_prompt "$PROMOTE_SID" "Reviewing the draft."
+PROMOTE_ANSWER="$(jq -nc --arg sid "$PROMOTE_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"gate-fact:draft_approved",question:"Approve sending the saved draft?"}]},tool_response:{answers:[{answer:"Approved"}]}}')"
+run_hook PostToolUse "$PROMOTE_ANSWER" >/dev/null || fail "AskUserQuestion approval was rejected"
+PROMOTE_FACT="$FIX/workspace/orchestrator/hook-state/gate-facts/$PROMOTE_SID/draft_approved.json"
+PROMOTE_PROOF="$FIX/workspace/orchestrator/hook-state/gate-facts/$PROMOTE_SID/proofs/draft_approved.json"
+[ -f "$PROMOTE_FACT" ] || fail "AskUserQuestion approval did not write draft_approved without hq-gate-fact.sh"
+[ ! -e "$PROMOTE_PROOF" ] || fail "AskUserQuestion approval left the proof behind after writing the fact"
+[ "$(jq -r '.fact' "$PROMOTE_FACT")" = draft_approved ] || fail "promoted fact field mismatch: $(cat "$PROMOTE_FACT")"
+[ "$(jq -r '.source' "$PROMOTE_FACT")" = askuserquestion ] || fail "promoted source mismatch: $(cat "$PROMOTE_FACT")"
+[ "$(jq -r '.note' "$PROMOTE_FACT")" = Approved ] || fail "promoted note mismatch: $(cat "$PROMOTE_FACT")"
+[ "$(jq -r '.confirmed_at | type' "$PROMOTE_FACT")" = string ] || fail "promoted fact has no timestamp"
+run_hook PreToolUse "$(draft_call "$PROMOTE_SID" mcp__gmail__send_draft)" >/dev/null \
+  || fail "promoted draft_approved did not allow gmail send_draft"
+pass "AskUserQuestion approval writes draft_approved without hq-gate-fact.sh"
+
+OBJ_SID="askuser-draft-object-answer"
+install_draft_gate "$OBJ_SID"
+draft_prompt "$OBJ_SID" "Reviewing the draft."
+OBJ_ANSWER="$(jq -nc --arg sid "$OBJ_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"gate-fact:draft_approved",question:"Approve sending the saved draft?"}]},tool_response:{answers:{"Approve sending the saved draft?":"Approved"}}}')"
+run_hook PostToolUse "$OBJ_ANSWER" >/dev/null || fail "AskUserQuestion object answer was rejected"
+[ -f "$FIX/workspace/orchestrator/hook-state/gate-facts/$OBJ_SID/draft_approved.json" ] \
+  || fail "AskUserQuestion object answer keyed by question text did not write draft_approved"
+run_hook PreToolUse "$(draft_call "$OBJ_SID" mcp__gmail__send_draft)" >/dev/null \
+  || fail "object-shaped AskUserQuestion approval did not allow gmail send_draft"
+pass "AskUserQuestion answer keyed by question text records draft_approved"
+
+NOHDR_SID="askuser-other-header"
+install_draft_gate "$NOHDR_SID"
+draft_prompt "$NOHDR_SID" "Reviewing the draft."
+NOHDR_ANSWER="$(jq -nc --arg sid "$NOHDR_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"Next step",question:"Approve sending the saved draft?"}]},tool_response:{answers:{"Approve sending the saved draft?":"Approved"}}}')"
+run_hook PostToolUse "$NOHDR_ANSWER" >/dev/null || fail "AskUserQuestion non-gate answer was rejected"
+[ ! -e "$FIX/workspace/orchestrator/hook-state/gate-facts/$NOHDR_SID/draft_approved.json" ] \
+  || fail "an answer to a non-gate question wrote draft_approved"
+pass "an answer to a non-gate question does not record draft_approved"
+
+# Each question reads only its own answer key: the question id for Codex
+# request_user_input, the question text for Claude AskUserQuestion. A second
+# question whose key equals the first question's header must not lend its answer.
+assert_no_draft_fact() {
+  local sid="$1" label="$2" rc
+  [ ! -e "$FIX/workspace/orchestrator/hook-state/gate-facts/$sid/draft_approved.json" ] \
+    || fail "$label minted draft_approved"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$(draft_call "$sid" mcp__gmail__send_draft)")"; rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "$label allowed gmail send_draft (rc=$rc)"
+}
+
+COLID_SID="codex-colliding-id"
+install_draft_gate "$COLID_SID"
+draft_prompt "$COLID_SID" "Reviewing the draft."
+COLID_ANSWER="$(jq -nc --arg sid "$COLID_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{id:"send",header:"gate-fact:draft_approved",question:"Send it?"},{id:"gate-fact:draft_approved",header:"Pick",question:"Tabs or spaces?"}]},tool_response:{answers:{"send":{answers:["Do not send"]},"gate-fact:draft_approved":{answers:["yes"]}}}}')"
+run_hook PostToolUse "$COLID_ANSWER" >/dev/null || fail "colliding-id answer was rejected"
+assert_no_draft_fact "$COLID_SID" "declined question next to a colliding question id"
+pass "a declined question does not read another question's id-keyed answer"
+
+COLTXT_SID="claude-colliding-question-text"
+install_draft_gate "$COLTXT_SID"
+draft_prompt "$COLTXT_SID" "Reviewing the draft."
+COLTXT_ANSWER="$(jq -nc --arg sid "$COLTXT_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"gate-fact:draft_approved",question:"Send it?"},{header:"Pick",question:"gate-fact:draft_approved"}]},tool_response:{answers:{"Send it?":"Do not send","gate-fact:draft_approved":"yes"}}}')"
+run_hook PostToolUse "$COLTXT_ANSWER" >/dev/null || fail "colliding-question-text answer was rejected"
+assert_no_draft_fact "$COLTXT_SID" "declined question next to colliding question text"
+pass "a declined question does not read another question's text-keyed answer"
+
+HDRKEY_SID="answer-keyed-by-header"
+install_draft_gate "$HDRKEY_SID"
+draft_prompt "$HDRKEY_SID" "Reviewing the draft."
+HDRKEY_ANSWER="$(jq -nc --arg sid "$HDRKEY_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"gate-fact:draft_approved",question:"Send it?"}]},tool_response:{answers:{"gate-fact:draft_approved":"yes"}}}')"
+run_hook PostToolUse "$HDRKEY_ANSWER" >/dev/null || fail "header-keyed answer was rejected"
+assert_no_draft_fact "$HDRKEY_SID" "an answer keyed only by the header"
+pass "an answer keyed by the header is not a question's answer"
+
+AMBIG_SID="ambiguous-answer-key"
+install_draft_gate "$AMBIG_SID"
+draft_prompt "$AMBIG_SID" "Reviewing the draft."
+AMBIG_ANSWER="$(jq -nc --arg sid "$AMBIG_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{id:"draft",header:"gate-fact:draft_approved",question:"Send it?"},{id:"draft",header:"Pick",question:"Tabs or spaces?"}]},tool_response:{answers:{"draft":{answers:["yes"]}}}}')"
+run_hook PostToolUse "$AMBIG_ANSWER" >/dev/null || fail "ambiguous-key answer was rejected"
+assert_no_draft_fact "$AMBIG_SID" "two questions sharing one answer key"
+pass "two questions sharing an answer key mint nothing"
+
+# The answer key depends on the tool. Claude AskUserQuestion keys answers by
+# question text and ignores any id; Codex request_user_input keys them by id
+# and ignores question text. A declined question must not read an answer that
+# another question's id (Claude) or text (Codex) points at.
+CLAUDEID_SID="claude-id-collides-with-text"
+install_draft_gate "$CLAUDEID_SID"
+draft_prompt "$CLAUDEID_SID" "Reviewing the draft."
+CLAUDEID_ANSWER="$(jq -nc --arg sid "$CLAUDEID_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{id:"Lunch today?",header:"gate-fact:draft_approved",question:"Send the draft to Bob?"},{id:"zz",header:"Pick",question:"Lunch today?"}]},tool_response:{answers:{"Send the draft to Bob?":"Do not send","Lunch today?":"yes"}}}')"
+run_hook PostToolUse "$CLAUDEID_ANSWER" >/dev/null || fail "AskUserQuestion id-collision answer was rejected"
+assert_no_draft_fact "$CLAUDEID_SID" "AskUserQuestion declined question whose id equals another question's text"
+pass "AskUserQuestion ignores question ids when choosing an answer key"
+
+CODEXTXT_SID="codex-text-collides-with-id"
+install_draft_gate "$CODEXTXT_SID"
+draft_prompt "$CODEXTXT_SID" "Reviewing the draft."
+CODEXTXT_ANSWER="$(jq -nc --arg sid "$CODEXTXT_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{id:"send",header:"gate-fact:draft_approved",question:"lunch"},{id:"lunch",header:"Pick",question:"Tabs or spaces?"}]},tool_response:{answers:{"send":{answers:["Do not send"]},"lunch":{answers:["yes"]}}}}')"
+run_hook PostToolUse "$CODEXTXT_ANSWER" >/dev/null || fail "request_user_input text-collision answer was rejected"
+assert_no_draft_fact "$CODEXTXT_SID" "request_user_input declined question whose text equals another question's id"
+pass "request_user_input ignores question text when choosing an answer key"
+
+CODEXTXT2_SID="codex-text-keyed-answer"
+install_draft_gate "$CODEXTXT2_SID"
+draft_prompt "$CODEXTXT2_SID" "Reviewing the draft."
+CODEXTXT2_ANSWER="$(jq -nc --arg sid "$CODEXTXT2_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{id:"send",header:"gate-fact:draft_approved",question:"Send it?"}]},tool_response:{answers:{"Send it?":{answers:["yes"]}}}}')"
+run_hook PostToolUse "$CODEXTXT2_ANSWER" >/dev/null || fail "request_user_input text-keyed answer was rejected"
+assert_no_draft_fact "$CODEXTXT2_SID" "request_user_input answer keyed by question text"
+pass "request_user_input answer keyed by question text is not its answer"
+
+CODEXNOID_SID="codex-no-id-text-keyed"
+install_draft_gate "$CODEXNOID_SID"
+draft_prompt "$CODEXNOID_SID" "Reviewing the draft."
+CODEXNOID_ANSWER="$(jq -nc --arg sid "$CODEXNOID_SID" '{session_id:$sid,tool_name:"request_user_input",tool_input:{questions:[{header:"gate-fact:draft_approved",question:"Send it?"}]},tool_response:{answers:{"Send it?":{answers:["yes"]}}}}')"
+run_hook PostToolUse "$CODEXNOID_ANSWER" >/dev/null || fail "request_user_input answer without an id was rejected"
+assert_no_draft_fact "$CODEXNOID_SID" "request_user_input question without an id read by its text"
+pass "request_user_input question without an id has no answer key"
+
+# One approval yields one fact. After the fact goes stale, hq-gate-fact.sh
+# confirm must not mint a fresh one from the same approval.
+cp -p "$ROOT/core/scripts/hq-gate-fact.sh" "$FIX/core/scripts/hq-gate-fact.sh"
+ONCE_SID="one-approval-one-fact"
+install_draft_gate "$ONCE_SID" 30
+draft_prompt "$ONCE_SID" "Reviewing the draft."
+ONCE_ANSWER="$(jq -nc --arg sid "$ONCE_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{header:"gate-fact:draft_approved",question:"Approve sending the saved draft?"}]},tool_response:{answers:{"Approve sending the saved draft?":"Approved"}}}')"
+run_hook PostToolUse "$ONCE_ANSWER" >/dev/null || fail "approval was rejected"
+run_hook PreToolUse "$(draft_call "$ONCE_SID" mcp__gmail__send_draft)" >/dev/null \
+  || fail "a fresh approval did not allow gmail send_draft"
+ONCE_FACT="$FIX/workspace/orchestrator/hook-state/gate-facts/$ONCE_SID/draft_approved.json"
+jq '.confirmed_at = "2000-01-01T00:00:00Z"' "$ONCE_FACT" > "$ONCE_FACT.tmp" && mv "$ONCE_FACT.tmp" "$ONCE_FACT"
+set +e
+BLOCK="$(run_hook PreToolUse "$(draft_call "$ONCE_SID" mcp__gmail__send_draft)")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a stale approval allowed gmail send_draft (rc=$RC)"
+set +e
+HQ_ROOT="$FIX" CLAUDE_PROJECT_DIR="$FIX" HQ_SESSION_ID="$ONCE_SID" bash "$FIX/core/scripts/hq-gate-fact.sh" confirm draft_approved >/dev/null 2>&1
+BLOCK="$(run_hook PreToolUse "$(draft_call "$ONCE_SID" mcp__gmail__send_draft)")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "hq-gate-fact.sh confirm re-minted draft_approved from a used approval (rc=$RC)"
+pass "one approval does not yield a second, fresh draft_approved"
+
+# Outbound delivery scan on a long list (#1744). Rows are checked in list
+# order, the first delivery-*-regex line of each file wins, rows without a
+# readable file are skipped, and the scan starts no sed or head per row.
+OUT_SID="long-session-outbound"
+OUT_TSV="$FIX/workspace/orchestrator/policy-enforcement/$OUT_SID.policies.tsv"
+grep -v -e '^needs-' -e '^also-skill' "$LONG_TSV" > "$OUT_TSV"
+printf -- '---\nid: first-forbid\ndelivery-forbid-regex: \t SECRET_A\ndelivery-forbid-regex: NEVER_USED\n---\n' > "$FIX/policies/long/first-forbid.md"
+printf -- '---\nid: needs-tag\ndelivery-require-regex: ^TAG\n---\nbody text delivery-forbid-regex: not-at-line-start\n' > "$FIX/policies/long/needs-tag.md"
+printf -- '---\nid: second-forbid\ndelivery-forbid-regex: SECRET_B\n---\n' > "$FIX/policies/long/second-forbid.md"
+printf -- '---\nid: empty-key\ndelivery-forbid-regex:\n---\n' > "$FIX/policies/long/empty-key.md"
+{
+  printf 'empty-key\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/empty-key.md"
+  printf 'first-forbid\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/first-forbid.md"
+  printf 'needs-tag\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/needs-tag.md"
+  printf 'second-forbid\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/second-forbid.md"
+  printf 'first-forbid-again\tcore\t%s\tsoft\tx\n' "$FIX/policies/long/first-forbid.md"
+} >> "$OUT_TSV"
+out_send() { jq -nc --arg sid "$OUT_SID" --arg m "$1" '{session_id:$sid,tool_name:"SendMessage",tool_input:{message:$m}}'; }
+out_expect() { # <message> <rc> <reason-or-empty>
+  local out rc=0
+  out="$(out_send "$1" | CLAUDE_PROJECT_DIR="$FIX" bash "$FIX/.claude/hooks/policy-enforcement-gate.sh" PreToolUse)" || rc=$?
+  [ "$rc" -eq "$2" ] || fail "outbound '$1' exit $rc, expected $2: $out"
+  if [ -n "$3" ]; then
+    printf '%s' "$out" | jq -e --arg r "$3" '.reason == $r' >/dev/null || fail "outbound '$1' reason: $out"
+  else
+    [ -z "$out" ] || fail "outbound '$1' printed output: $out"
+  fi
+}
+out_expect "TAG hello" 0 ""
+out_expect "TAG has SECRET_A" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate first-forbid (forbidden pattern)."
+out_expect "TAG says NEVER_USED" 0 ""
+out_expect "no tag here" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate needs-tag (required pattern missing)."
+out_expect "TAG with SECRET_B" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate second-forbid (forbidden pattern)."
+out_expect "SECRET_B without tag" 2 "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate needs-tag (required pattern missing)."
+out_expect "" 2 "POLICY ENFORCEMENT BLOCK: deterministic delivery gate first-forbid cannot inspect this outbound body. Supply content in a structured tool field or literal MESSAGE/BODY/TEXT shell assignment."
+rm -f "$SHIM/calls"
+for tool in head grep; do
+  real="$(command -v "$tool")"
+  printf '#!/bin/sh\necho %s >> "%s/calls"\nexec "%s" "$@"\n' "$tool" "$SHIM" "$real" > "$SHIM/$tool"
+  chmod +x "$SHIM/$tool"
+done
+out_send "TAG hello" | PATH="$SHIM:$PATH" CLAUDE_PROJECT_DIR="$FIX" \
+  bash "$FIX/.claude/hooks/policy-enforcement-gate.sh" PreToolUse >/dev/null \
+  || fail "outbound send blocked under the process counter"
+CALLS=0
+[ ! -f "$SHIM/calls" ] || CALLS="$(wc -l < "$SHIM/calls" | tr -d ' ')"
+# One sed in tool_is_outbound plus two grep checks per regex-bearing row
+# (3 rows with 4 regexes here): at most 1 + 8.
+[ "$CALLS" -le 9 ] || fail "outbound scan started $CALLS sed/head/grep/tr processes for a 307-row policy list"
+pass "scans outbound content against a long list in list order without per-policy processes"
+
 echo "PASS (policy enforcement gate)"

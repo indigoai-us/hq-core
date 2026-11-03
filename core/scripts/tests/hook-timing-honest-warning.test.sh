@@ -179,7 +179,12 @@ fi
 printf '%s\n' "$journal_out" | awk -F '\t' '$1 == "fast-guard.sh"' | grep -q . \
   && ok "every adapter-run hook gets its own row" || bad "second hook has no row"
 fields="$(printf '%s' "$slow_row" | awk -F '\t' '{print NF}')"
-[ "$fields" = 4 ] && ok "rows use the master journal shape (script, event, ms, invocation)" || bad "row has $fields fields: $slow_row"
+[ "$fields" = 7 ] && ok "rows use the master journal shape (script, event, ms, invocation, rc, timed_out, load1)" || bad "row has $fields fields: $slow_row"
+slow_tail="$(printf '%s' "$slow_row" | awk -F '\t' '{print $6 "\t" $7}')"
+case "$slow_tail" in
+  0$'\t'-|0$'\t'[0-9]*) ok "rows carry a timed_out flag and load average" ;;
+  *) bad "timed_out/load1 fields malformed: $slow_row" ;;
+esac
 
 printf '\n%s passed, %s failed\n' "$passes" "$failures"
 [ "$failures" -eq 0 ]

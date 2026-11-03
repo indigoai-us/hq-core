@@ -30,9 +30,19 @@ if [[ ! -f "$file" ]]; then
 fi
 
 prompt_file=".leak-scan/rubric-prompt.md"
-deny_file=".leak-scan/denylist.yaml"
 [[ -f "$prompt_file" ]] || { echo "::error::$prompt_file missing" >&2; exit 2; }
-[[ -f "$deny_file" ]]  || { echo "::error::$deny_file missing"  >&2; exit 2; }
+# Public hq-core has no .leak-scan/denylist.yaml; CI passes its contents in
+# LEAK_SCAN_DENYLIST_YAML (same secret scan.sh reads). Staging keeps the file.
+# Neither present: exit 2 (fail closed).
+if [[ -n "${LEAK_SCAN_DENYLIST_YAML:-}" ]]; then
+  deny_file="$(mktemp)"
+  trap 'rm -f "$deny_file"' EXIT
+  printf '%s\n' "$LEAK_SCAN_DENYLIST_YAML" > "$deny_file"
+elif [[ -f .leak-scan/denylist.yaml ]]; then
+  deny_file=".leak-scan/denylist.yaml"
+else
+  echo "::error::.leak-scan/denylist.yaml missing and LEAK_SCAN_DENYLIST_YAML not set" >&2; exit 2
+fi
 
 # Skip-label respected by the workflow before invoking us, but double-check.
 if [[ "${SKIP_CODEX:-0}" == "1" ]]; then

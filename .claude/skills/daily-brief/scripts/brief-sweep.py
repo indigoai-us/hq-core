@@ -1307,6 +1307,32 @@ class Status:
                         'detail': detail if ok else (src.get('note') or plain_note(key))[:80]})
         self._write(f)
 
+def sessions_line(total, mine, runs):
+    """Activity label and detail for the sessions step. `mine` are the person's
+    own sessions, read into the brief; `runs` are agent and lane runs in scope;
+    the rest are outside the brief (another company or no company on a company
+    brief, any company on a personal one). Runs and the rest are counted only,
+    and the three numbers add up to `total`."""
+    if not total:
+        return 'Found no work sessions', ''
+    label = f"Read {mine} of {total} session{'' if total == 1 else 's'}"
+    other = total - mine - runs
+    if not runs and not other:
+        return label, ''
+    if not mine and not (runs and other):
+        if runs:
+            what = 'it was an agent run' if runs == 1 else f'all {runs} were agent runs'
+        else:
+            what = 'it was outside this brief' if other == 1 else f'all {other} were outside this brief'
+        return label, what + ', so only counted'
+    parts = []
+    if runs:
+        parts.append(f"{runs} agent run{'' if runs == 1 else 's'}")
+    if other:
+        parts.append(f'{other} outside this brief')
+    return label, 'only counted: ' + ', '.join(parts)
+
+
 def summarize(key, v, company, findings, samples, window=None, me_names=(), meetings_window=None):
     """Plain label + findings counts + company-only samples for one source.
     `window` is (start, end) datetimes; PR and meeting counts use it so the loader
@@ -1319,12 +1345,10 @@ def summarize(key, v, company, findings, samples, window=None, me_names=(), meet
         return key, ''
     if key == 'sessions':
         own = own_tag(company)
-        mine = [x for x in v if x.get('company') == own and x.get('kind', 'you') == 'you']
+        mine = [x for x in v if x.get('company') == own and (x.get('kind') or 'you') == 'you']
         runs = [x for x in v if x.get('company') == own and x.get('kind') in ('agent', 'lane')]
         findings['sessions'] = len(mine)
-        bits = [f'{len(runs)} agent runs'] if runs else []
-        bits.append(f'{len(v) - len(mine) - len(runs)} elsewhere, counted only')
-        return f'Read {len(mine)} work sessions', ', '.join(bits)
+        return sessions_line(len(v), len(mine), len(runs))
     if key == 'meetings':
         mine, team = split_meetings(v, me_names, meetings_window or window)
         findings['meetings'] = len(mine)

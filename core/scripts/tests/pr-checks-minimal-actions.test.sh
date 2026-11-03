@@ -24,7 +24,10 @@
 #     tag pushes.
 #   - codex-windows-hooks (real Codex on Windows) never runs on pull requests:
 #     its triggers are exactly workflow_dispatch, one nightly schedule and
-#     push for stable v* tags only, never v*-* pre-release tags.
+#     push for stable v* tags only, never v*-* pre-release tags; its job skips
+#     the schedule on hq-core (staging's nightly covers the same tree).
+#   - The nightly schedule reaches no pr-checks job on hq-core, where the
+#     promoted copy of this file also fires it.
 #   - HQ_*_RUNNER* variables appear only in the guarded staging runs-on form
 #     (staging repo, never a fork PR, hosted Linux fallback, or windows-latest
 #     for codex-windows-hooks). The macOS and Windows smoke jobs in pr-checks
@@ -172,6 +175,11 @@ EVENTS = {
     "push_tag": {"event_name": "push", "draft": None, "ref": "refs/tags/v16.0.31"},
     "push_tag_hq_core": {"event_name": "push", "draft": None, "ref": "refs/tags/v16.0.31",
                          "repo": "indigoai-us/hq-core"},
+    # The file is promoted to hq-core unchanged and the nightly fires there
+    # too. Staging's nightly covers the same tree, so on hq-core the schedule
+    # must reach nothing (owner decision 2026-11-02).
+    "schedule_hq_core": {"event_name": "schedule", "draft": None, "ref": "refs/heads/main",
+                         "repo": "indigoai-us/hq-core"},
 }
 KNOWN = {
     "github.event_name": lambda e: repr(e["event_name"]),
@@ -250,6 +258,8 @@ for name, job in jobs.items():
         failures.append(f"{name} must not run on a branch push")
     if reach["push_tag_hq_core"]:
         failures.append(f"{name} must not run on an hq-core tag push")
+    if reach["schedule_hq_core"]:
+        failures.append(f"{name} must not run on the hq-core copy of the nightly schedule")
     if reach["push_tag"] and name not in SMOKE | {"denylist-scan"}:
         failures.append(f"{name} must not run on release tags")
     if name in REQUIRED:
@@ -504,11 +514,16 @@ for tag, want in (("v1.2.3", True), ("v16.0.31", True),
 schedule = triggers.get("schedule") or []
 if len(schedule) != 1 or not re.fullmatch(r"\d+ \d+ \* \* \*", str(schedule[0].get("cron", ""))):
     failures.append(f"codex-windows-hooks must have exactly one nightly cron schedule; got {schedule}")
+# The promoted copy on hq-core fires the same schedule; staging's nightly
+# already covers the tree, so the job must skip the schedule there.
+job_if = str((workflow.get("jobs") or {}).get("real-codex", {}).get("if", "")).strip()
+if job_if != "${{ github.event_name != 'schedule' || github.repository == 'indigoai-us/hq-core-staging' }}":
+    failures.append(f"codex-windows-hooks real-codex must skip the schedule outside hq-core-staging; got if: {job_if!r}")
 if failures:
     for message in failures:
         print(f"FAIL: {message}", file=sys.stderr)
     raise SystemExit(1)
-print("PASS: codex-windows-hooks runs only on dispatch, nightly and stable v* tags")
+print("PASS: codex-windows-hooks runs only on dispatch, nightly (staging only) and stable v* tags")
 PY
 
 # --- resumework-benchmark is label-gated on pull requests -------------------

@@ -8,11 +8,21 @@ name: pr-checks
 # When each job runs (kept small to hold Actions cost down):
 #   - Ready (non-draft) pull requests and manual workflow_dispatch: every
 #     Linux job. The macOS and Windows smoke jobs also run on dispatch.
-#   - Nightly schedule: the required Linux checks (the jobs main_protect
-#     requires) and the GitHub-hosted macOS and Windows smoke jobs
-#     (shell-smoke-macos, shell-smoke-windows, codex-windows-hook-launcher).
-#     The smoke path gates fail open on the schedule, so they always run.
-#     The grouped linux-checks-N jobs never run on the schedule.
+#   - Nightly schedule, on hq-core-staging only: the required Linux checks
+#     (the jobs main_protect requires) and the GitHub-hosted macOS and Windows
+#     smoke jobs (shell-smoke-macos, shell-smoke-windows,
+#     codex-windows-hook-launcher). The smoke path gates fail open on the
+#     schedule, so they always run. The grouped linux-checks-N jobs never run
+#     on the schedule. This file is promoted to hq-core unchanged, and the
+#     schedule fires there too; every job that runs on the schedule carries a
+#     `github.repository == 'indigoai-us/hq-core-staging'` term on its
+#     schedule clause (the other jobs never ran on the schedule), so the
+#     hq-core copy of the nightly run skips every job
+#     (owner decision 2026-11-02: staging's nightly already covers the same
+#     tree, and hq-core's nightly had failed every night since Oct 28 while
+#     paying for a Windows and a macOS runner). The promotion PR's
+#     pull_request run on hq-core is unchanged: it is the release gate on the
+#     filtered tree, and main_protect there requires its checks.
 #   - Stable release tags (v*, not v*-*) pushed on hq-core-staging: the macOS and Windows smoke
 #     jobs, plus denylist-scan, which computes their path gates. A new tag has
 #     no before SHA, so the gates fail open. On hq-core a tag runs nothing.
@@ -46,7 +56,7 @@ jobs:
   # ─── Mechanical checks (no LLM) ─────────────────────────────────────
 
   denylist-scan:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging') }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging') }}
     name: denylist-scan
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     outputs:
@@ -146,11 +156,17 @@ jobs:
         run: bash core/scripts/tests/review-checkout.test.sh
       - name: Backmerge keeps staging changes made after the release cut
         run: bash core/scripts/tests/backmerge-apply.test.sh
+      - name: Private lists stay out of public hq-core (secret source, fail closed, promotion excludes)
+        run: bash .leak-scan/tests/private-lists.test.sh
       - name: Run denylist scan
+        # Public hq-core has no .leak-scan/denylist.yaml; the list comes from
+        # this secret there. Staging keeps the file and leaves the secret unset.
+        env:
+          LEAK_SCAN_DENYLIST_YAML: ${{ secrets.LEAK_SCAN_DENYLIST_YAML }}
         run: bash .leak-scan/scan.sh denylist --warn
 
   policy-rationale-scan:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: policy-rationale-scan
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -161,7 +177,7 @@ jobs:
         run: bash .leak-scan/scan.sh policy-rationale --warn
 
   users-path-tripwire:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: users-path-tripwire
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -172,7 +188,7 @@ jobs:
         run: bash .leak-scan/scan.sh users-path --warn
 
   provenance-stripped:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: provenance-stripped
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -183,7 +199,7 @@ jobs:
         run: bash .leak-scan/scan.sh provenance --warn
 
   vendor-public-ok:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: vendor-public-ok
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -194,7 +210,7 @@ jobs:
         run: bash .leak-scan/scan.sh vendor-public-ok --warn
 
   public-frontmatter-revalidate:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: public-frontmatter-revalidate
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -205,7 +221,7 @@ jobs:
         run: bash .leak-scan/scan.sh public-frontmatter --warn
 
   settings-local-not-ignored:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: settings-local-not-ignored
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -218,7 +234,7 @@ jobs:
         run: bash core/scripts/tests/gitignore-secret-paths.test.sh
 
   skill-command-refs:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     # DEV-1716: a core skill must not instruct a slash-command that isn't
     # resolvable on the install it is shown to. Engineering commands
     # (/run-project, /execute-task, ...) live in the separately-installed
@@ -235,7 +251,7 @@ jobs:
         run: bash core/scripts/lint-skill-command-refs.sh
 
   install-deps:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     # DEV-1727: HQ's install/setup surface must not install or dependency-check
     # a third-party CLI that HQ itself never calls. The /setup wizard used to
     # `which vercel` + offer `npm install -g vercel`, gating setup on a tool
@@ -420,7 +436,7 @@ jobs:
         run: bash core/scripts/tests/agent-runtime-contracts-e2e.test.sh
 
   git-mutation-guard:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     # DEV-1765: the HQ-root git-mutation guard must FIRE correctly under BOTH
     # harnesses. Under Codex the adapter used to resolve HQ_ROOT from the cwd's
     # git toplevel, which collapses into a nested repo (repos/*), missed the
@@ -615,7 +631,7 @@ jobs:
           fi
 
   auto-checkpoint-cmds:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     # Item 2: /brainstorm and /plan must auto-checkpoint at command end so users
     # do not have to manually /handoff before a fresh session. Structural guard.
     name: auto-checkpoint-cmds
@@ -641,7 +657,7 @@ jobs:
         run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
 
   dm-people-resolve:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     # feature-dm-skill-email-confirm: the /dm skill must CONFIRM a recipient's
     # email via `hq people resolve` (single-company, tenancy-safe) before
     # sending — never send to an unconfirmed name. Structural guard over the
@@ -654,7 +670,7 @@ jobs:
         run: bash core/scripts/tests/dm-people-resolve-integration.test.sh
 
   auto-acl-share-hooks:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: auto-acl-share-hooks
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -772,9 +788,13 @@ jobs:
         run: bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed PreToolUse guard blocks on timeout; redaction survives sibling exits
         run: bash core/scripts/tests/master-hook-fail-closed-timeout.test.sh
+      - name: Policy enforcement gate receipts, draft approval and send blocks
+        run: bash core/scripts/tests/policy-enforcement-gate.test.sh
+      - name: Policy enforcement gate UserPromptSubmit path parses and runs
+        run: bash core/scripts/tests/policy-enforcement-gate-bash32.test.sh
 
   core-write-protection:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     name: core-write-protection
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     steps:
@@ -866,6 +886,23 @@ jobs:
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
       - name: Timed-out safety guards block; slow non-safety hooks stay non-blocking
         run: timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Advisory hooks are hard-capped and fail open; guards are never capped
+        run: timeout 600s bash core/scripts/tests/advisory-hook-hard-cap.test.sh
+      - name: Master-hook parallel dispatch (HQ_HOOK_PARALLEL=1) matches sequential output and keeps blocks
+        run: timeout 600s bash core/scripts/tests/master-hook-parallel-dispatch.test.sh
+      - name: Master-hook parallel dispatch removes result files on SIGTERM and SIGINT
+        run: timeout 300s bash core/scripts/tests/master-hook-parallel-signal-cleanup.test.sh
+      - name: Advisory hook cap holds with HQ_HOOK_PARALLEL=1
+        run: HQ_HOOK_PARALLEL=1 timeout 600s bash core/scripts/tests/advisory-hook-hard-cap.test.sh
+      - name: Dispatcher order, budget, fail-open and watchdog tests with HQ_HOOK_PARALLEL=1
+        run: |
+          HQ_HOOK_PARALLEL=1 timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+          HQ_HOOK_PARALLEL=1 bash core/scripts/tests/master-hook-library-fail-open.test.sh
+          HQ_HOOK_PARALLEL=1 bash core/scripts/tests/master-hook-monitor-notification-fast-path.test.sh
+          HQ_HOOK_PARALLEL=1 bash core/scripts/tests/master-hook-dispatch-process-budget.test.sh
+          HQ_HOOK_PARALLEL=1 timeout 900s bash core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
+      - name: Golden dispatcher contract with HQ_HOOK_PARALLEL=1
+        run: HQ_HOOK_PARALLEL=1 bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh'
       - name: Git-mutation guard blocks a 10,000-line HQ-root commit well under the safety cap
         run: timeout 600s bash core/scripts/tests/block-hq-root-git-mutation-long-command.test.sh
       - name: Hook benchmarks dispatch through every supported runtime
@@ -882,6 +919,7 @@ jobs:
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
+          bash core/scripts/tests/master-hook-pretooluse-valid-json.test.sh
           bash core/scripts/tests/master-hook-stop-schema.test.sh
           bash core/scripts/tests/master-hook-library-fail-open.test.sh
           bash core/scripts/tests/hq-agent-session-hooks.test.sh
@@ -942,6 +980,8 @@ jobs:
           set -euo pipefail
           timeout 60s git -C "$GITHUB_WORKSPACE" fetch --no-tags --depth=1 origin "$HQ_HOOK_GUARD_BASE_SHA"
           timeout 120s bash core/scripts/tests/block-hq-worktree-session.test.sh
+      - name: start_session side sessions lock to the parent's company
+        run: timeout 120s bash core/scripts/tests/spawn-company-handoff.test.sh
       - name: hq_normpath stays fork-free and byte-identical to its awk contract
         run: bash core/scripts/tests/hook-lib-normpath.test.sh
       - name: enforce-vault-write-access blocks mutations without vault write permission
@@ -997,14 +1037,16 @@ jobs:
   shell-smoke-windows:
     name: shell-smoke-windows
     # GitHub-hosted Windows runs only on manual workflow_dispatch, the nightly
-    # schedule and staging release tags, never on pull requests, to keep
-    # Actions cost down. The path gate still applies; all three events pass an
-    # empty or missing base, so it fails open.
+    # schedule (on hq-core-staging only; the hq-core copy skips it) and staging
+    # release tags, never on pull requests, to keep Actions cost down. The path
+    # gate still applies; all three events pass an empty or missing base, so it
+    # fails open.
     needs: [denylist-scan]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging'))
           && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+          && (github.event_name != 'schedule' || github.repository == 'indigoai-us/hq-core-staging')
           && (needs['denylist-scan'].result != 'success'
               || needs['denylist-scan'].outputs.windows_shell_smoke == 'true') }}
     runs-on: windows-latest
@@ -1234,14 +1276,16 @@ jobs:
   shell-smoke-macos:
     name: shell-smoke-macos
     # GitHub-hosted macOS runs only on manual workflow_dispatch, the nightly
-    # schedule and staging release tags, never on pull requests, to keep
-    # Actions cost down. To get macOS checks on a PR, ask
+    # schedule (on hq-core-staging only; the hq-core copy skips it) and staging
+    # release tags, never on pull requests, to keep Actions cost down. To get
+    # macOS checks on a PR, ask
     # Corey's conductor ("run macOS checks on hq-core-staging #<n>"), or use
     # the local-run path once LOCAL-MAC-1 lands.
     needs: [denylist-scan]
     if: >-
       ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging'))
           && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+          && (github.event_name != 'schedule' || github.repository == 'indigoai-us/hq-core-staging')
           && needs['denylist-scan'].outputs.macos_shell_smoke == 'true' }}
     runs-on: macos-latest
     steps:
@@ -1313,6 +1357,8 @@ jobs:
         run: /bin/bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed guard timeout under stock macOS Bash
         run: /bin/bash core/scripts/tests/master-hook-fail-closed-timeout.test.sh
+      - name: Policy enforcement gate UserPromptSubmit under stock macOS Bash 3.2
+        run: /bin/bash core/scripts/tests/policy-enforcement-gate-bash32.test.sh
       - name: exec-bit index
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
       - name: hook-gate path augment
@@ -1333,6 +1379,8 @@ jobs:
         run: bash core/scripts/ci/run-shell-smoke-timeout-tests.sh
       - name: Timed-out safety guards block under Homebrew Bash and stock /bin/bash 3.2
         run: bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Advisory hooks are hard-capped under Homebrew Bash and stock /bin/bash 3.2
+        run: bash core/scripts/tests/advisory-hook-hard-cap.test.sh
       - name: Git-mutation guard blocks a 10,000-line HQ-root commit under Homebrew Bash and /bin/bash 3.2
         run: bash core/scripts/tests/block-hq-root-git-mutation-long-command.test.sh
       - name: check-hq-update bounds GitHub network calls
@@ -1405,7 +1453,7 @@ jobs:
         run: bash .claude/hooks/tests/inject-policy-on-trigger-emit.test.sh
 
   prefer-native-capabilities:
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     # hq-prefer-native-capabilities must inject at session start (always-on
     # baseline) and on canvas/share/secret prompts, stay untruncated in the
     # policy-reminder, and pass frontmatter validation (US-001).
@@ -1492,7 +1540,7 @@ jobs:
 
   collect-policy-changes:
     name: collect-policy-changes
-    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || github.event_name == 'schedule' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     outputs:
       files: ${{ steps.collect.outputs.files }}
@@ -1544,6 +1592,7 @@ jobs:
       - name: Run rubrics for changed policies
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LEAK_SCAN_DENYLIST_YAML: ${{ secrets.LEAK_SCAN_DENYLIST_YAML }}
           CODEX_MODEL: gpt-5
           POLICY_FILES: ${{ needs.collect-policy-changes.outputs.files }}
         run: |
@@ -1652,11 +1701,12 @@ jobs:
   # bash or launcher, and folder names with ")" and a space.
   #
   # GitHub-hosted Windows runs only on manual workflow_dispatch and the
-  # nightly schedule, never on pull requests, to keep Actions cost down. Both
+  # nightly schedule (on hq-core-staging only; the hq-core copy skips it),
+  # never on pull requests, to keep Actions cost down. Both
   # events always run the runtime test; the path filter below applies to any
   # other event.
   codex-windows-hook-launcher:
-    if: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging')) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
+    if: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'indigoai-us/hq-core-staging')) && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (github.event_name != 'schedule' || github.repository == 'indigoai-us/hq-core-staging') }}
     name: codex-windows-hook-launcher
     runs-on: windows-latest
     defaults:
@@ -2134,6 +2184,10 @@ jobs:
       id: t_journal_session_isolation__file_uri
       if: "${{ !cancelled() && steps.t_journal_session_isolation__16.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-file-uri.test.sh
+    - name: "[journal-session-isolation] Loop-variable and zsh-expansion paths stay in the bound company"
+      id: t_journal_session_isolation__loop_bypass
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__16.outcome == 'success' }}"
+      run: bash core/scripts/tests/scope-loop-bypass.test.sh
     - name: "[journal-session-isolation] Scope-guard hotfix ledger shapes (feedback cluster 2026-10-22)"
       id: t_journal_session_isolation__ledger
       if: "${{ !cancelled() && steps.t_journal_session_isolation__file_uri.outcome == 'success' }}"
@@ -2603,6 +2657,14 @@ jobs:
       id: t_skill_script_refs__33
       if: "${{ !cancelled() && steps.t_skill_script_refs__32.outcome == 'success' }}"
       run: bash core/scripts/tests/super-conductor-critical.test.sh
+    - name: "[skill-script-refs] /super-conductor DM routing between conductors"
+      id: t_skill_script_refs__33_dm_route
+      if: "${{ !cancelled() && steps.t_skill_script_refs__33.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-dm-route.test.sh
+    - name: "[skill-script-refs] /super-conductor per-company settings overlay"
+      id: t_skill_script_refs__33_prefs_company
+      if: "${{ !cancelled() && steps.t_skill_script_refs__33_dm_route.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-prefs-company.test.sh
     - name: "[skill-script-refs] /conduct worker selection (registry fields, definition load)"
       id: t_skill_script_refs__34
       if: "${{ !cancelled() && steps.t_skill_script_refs__20.outcome == 'success' }}"
@@ -2739,10 +2801,12 @@ jobs:
       id: t_skill_script_refs__66
       if: "${{ !cancelled() && steps.t_skill_script_refs__65.outcome == 'success' }}"
       run: bash core/scripts/tests/session-auto-bind-multicompany-sessionstart.test.sh
-    - name: "[skill-script-refs] Ontology source worklist retries transient ACL failures"
+    - name: "[skill-script-refs] Ontology source worklist: ACL retry, ledgers, newest-first order, --redo"
       id: t_skill_script_refs__67
       if: "${{ !cancelled() && steps.t_skill_script_refs__66.outcome == 'success' }}"
-      run: bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
+      run: |
+        bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
+        bash core/scripts/tests/ontology-source-worklist.test.sh
     - name: "[skill-script-refs] /resumework requires explicit confirmation for locked threads"
       id: t_skill_script_refs__68
       if: "${{ !cancelled() && steps.t_skill_script_refs__67.outcome == 'success' }}"
@@ -2939,9 +3003,13 @@ jobs:
       id: t_policy_trigger_migration__3
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__2.outcome == 'success' }}"
       run: bash core/scripts/tests/migrate-policy-triggers-skip-unchanged.test.sh
+    - name: "[policy-trigger-migration] Policy line ending regression test"
+      id: t_policy_trigger_migration__3b
+      if: "${{ !cancelled() && steps.t_policy_trigger_migration__3.outcome == 'success' }}"
+      run: bash core/scripts/tests/policy-line-endings.test.sh
     - name: "[policy-trigger-migration] Retired digest path has no frontmatter exemption"
       id: t_policy_trigger_migration__4
-      if: "${{ !cancelled() && steps.t_policy_trigger_migration__3.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_policy_trigger_migration__3b.outcome == 'success' }}"
       run: bash core/scripts/tests/validate-policy-frontmatter.test.sh
     - name: "[policy-trigger-migration] Background prompts skip policy injection and reminders name source paths"
       id: t_policy_trigger_migration__5
@@ -3103,6 +3171,15 @@ jobs:
       id: t_leak_scan_warn_mode__1
       if: "${{ !cancelled() }}"
       run: bash core/scripts/tests/leak-scan-warn-mode.test.sh
+    - name: "[surface-generated-deliverables] reset checkout"
+      if: "${{ !cancelled() }}"
+      run: |
+        git reset -q --hard
+        git clean -qffdx
+    - name: "[surface-generated-deliverables] Deliverables policy keeps one reason line and no provenance"
+      id: t_surface_generated_deliverables__1
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/hq-surface-generated-deliverables-policy-format.test.sh
     - name: "[hq-sync-post-pull-reindex] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -3121,6 +3198,15 @@ jobs:
       id: t_free_disk_space__1
       if: "${{ !cancelled() }}"
       run: bash core/scripts/tests/free-disk-space.test.sh
+    - name: "[worktree-sweep] reset checkout"
+      if: "${{ !cancelled() }}"
+      run: |
+        git reset -q --hard
+        git clean -qffdx
+    - name: "[worktree-sweep] worktree-sweep reports dirty and unpushed worktrees, read-only"
+      id: t_worktree_sweep__1
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/worktree-sweep.test.sh
     - name: "[hq-delegate] reset checkout"
       if: "${{ !cancelled() }}"
       run: |

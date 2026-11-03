@@ -41,6 +41,105 @@ export function jobEnvironment(c, secrets = {}) {
   for (const [name, value] of Object.entries(secrets)) env[name] = value;
   return env;
 }
+// HQ sign-in inside the job. The job never sees the machine credentials: the
+// runner mints the Outpost's tokens and hands the job a delegated session file
+// (tokens and identity bindings only) that the hq CLI accepts through
+// HQ_MACHINE_SESSION_FILE. The runner rewrites the file while the job runs so a
+// four-hour job outlives the one-hour tokens. Every path component the runner
+// writes through is root-owned: the file lives under the session runtime root
+// (default /run/hq-company-jobs-sessions, root 0711) in a per-run directory
+// (root:<job group> 0710) as a root:<job group> 0640 file, so the job account
+// can read it but can neither replace the directory with a symlink between
+// refreshes nor write the file. The per-run directory is removed with the run.
+export const MACHINE_SESSION_REFRESH_MS = 600000;
+export const MACHINE_SESSION_MIN_VALIDITY_SECONDS = 1500;
+export const MACHINE_SESSION_FILE = 'machine-session.json';
+export const MACHINE_SESSION_TOKEN_STATE = '.hq/machine-tokens';
+export function sessionRuntimeDirectory(c = {}) {
+  const dir = c.sessionRuntimeDir || '/run/hq-company-jobs-sessions';
+  requireThat(typeof dir === 'string' && path.isAbsolute(dir) && !/[\r\n]/.test(dir), 'invalid_session_runtime');
+  if (typeof c.stateDir === 'string' && path.resolve(dir) === path.resolve(c.stateDir)) throw new Refusal('session_runtime_persistent');
+  return dir;
+}
+export function machineSessionEnvironment(sessionDir, runHome) {
+  requireThat(typeof sessionDir === 'string' && path.isAbsolute(sessionDir) && typeof runHome === 'string' && path.isAbsolute(runHome), 'invalid_run_home');
+  return { HQ_MACHINE_SESSION_FILE: path.join(sessionDir, MACHINE_SESSION_FILE), HQ_MACHINE_TOKEN_STATE_DIR: path.join(runHome, MACHINE_SESSION_TOKEN_STATE),
+    HQ_MACHINE_AUTH_REQUIRED: '1', HQ_REQUIRE_MACHINE_IDENTITY: '1' };
+}
+// Root-owned chain, no symlinks, group-traversable only. Created once per runner process.
+export function prepareSessionRoot(dir) {
+  let current = path.parse(dir).root;
+  for (const part of dir.slice(current.length).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    const stat = lstatOrNull(current);
+    if (stat?.isSymbolicLink()) throw new Refusal('session_runtime_symlink');
+  }
+  fs.mkdirSync(dir, {recursive: true, mode: 0o711});
+  const stat = fs.lstatSync(dir);
+  requireThat(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o022) === 0, 'unsafe_session_runtime');
+  ownNoFollow(dir, 0o711, null);
+  return dir;
+}
+export function prepareSessionDir(root, runId, account) {
+  requireThat(safe(runId), 'invalid_run_home');
+  const dir = path.join(root, runId);
+  if (lstatOrNull(dir)) throw new Refusal('session_dir_exists');
+  fs.mkdirSync(dir, {mode: 0o710});
+  ownNoFollow(dir, 0o710, process.getuid() === 0 && account ? {uid: process.getuid(), gid: account.gid} : null);
+  return dir;
+}
+export function removeSessionDir(root, dir) {
+  const target = path.resolve(dir);
+  if (target !== path.join(path.resolve(root), path.basename(target))) throw new Refusal('invalid_session_dir');
+  const stat = lstatOrNull(target);
+  if (!stat) return;
+  // A link planted in the root-owned directory is removed as a link; its target is never entered.
+  if (stat.isSymbolicLink() || !stat.isDirectory()) { fs.unlinkSync(target); return; }
+  fs.rmSync(target, {recursive: true, force: true});
+}
+export function sweepStaleSessionDirs(root, unitAlive = runnerUnitAlive) {
+  const stat = lstatOrNull(root);
+  if (!stat) return [];
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Refusal('session_runtime_symlink');
+  const removed = [];
+  for (const name of fs.readdirSync(root)) {
+    if (!safe(name)) continue;
+    const child = lstatOrNull(path.join(root, name));
+    if (!child || child.isSymbolicLink() || !child.isDirectory()) continue;
+    let live;
+    try { live = unitAlive(`hq-company-job-run-${name}.service`) !== false || unitAlive(`hq-company-job-run-${name}-pre.service`) !== false; }
+    catch { live = true; }
+    if (live) continue;
+    removeSessionDir(root, path.join(root, name));
+    removed.push(name);
+  }
+  return removed;
+}
+// Only named fields are copied: an identity object that carries the machine secret never reaches the file.
+export function machineSessionDocument(identity, tokens, now = Date.now()) {
+  requireThat(identity?.entityType === 'company-outpost' && safe(identity.entityUid, /^out_[A-Za-z0-9]+$/), 'machine_session_identity');
+  for (const key of ['username', 'clientId', 'region']) requireThat(typeof identity[key] === 'string' && identity[key].length > 0 && !/[\0\r\n]/.test(identity[key]), 'machine_session_identity');
+  for (const key of ['idToken', 'accessToken']) requireThat(typeof tokens?.[key] === 'string' && tokens[key].length > 0 && !/[\s]/.test(tokens[key]), 'machine_session_tokens');
+  const expiresAt = typeof tokens.expiresAt === 'number' ? tokens.expiresAt : Date.parse(tokens.expiresAt);
+  requireThat(Number.isFinite(expiresAt), 'machine_session_tokens');
+  return { version: 1, entityType: 'company-outpost', entityUid: identity.entityUid, username: identity.username, clientId: identity.clientId, region: identity.region,
+    idToken: tokens.idToken, accessToken: tokens.accessToken, expiresAt, issuedAt: now };
+}
+export function writeMachineSessionFile(sessionDir, document, account) {
+  const stat = lstatOrNull(sessionDir);
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory() || stat.uid !== process.getuid()) throw new Refusal('session_runtime_symlink');
+  const file = path.join(sessionDir, MACHINE_SESSION_FILE);
+  const temp = `${file}.${crypto.randomUUID()}.tmp`;
+  const fd = fs.openSync(temp, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o640);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(document) + '\n');
+    if (process.getuid() === 0 && account) fs.fchownSync(fd, process.getuid(), account.gid);
+    // The runner units run under UMask=0077; the job group must still read the file.
+    fs.fchmodSync(fd, 0o640);
+  } finally { fs.closeSync(fd); }
+  fs.renameSync(temp, file);
+  return file;
+}
 // Appended to every company job prompt. hq-agent-session parses this envelope
 // for channel "job" whatever the provider (session-reply-contract.sh).
 export const JOB_OUTCOME_INSTRUCTION = [
@@ -131,7 +230,7 @@ export async function apiClient(c) {
   const cloud = await import(pathToFileURL(c.cloudModule).href);
   const creds = cloud.loadMachineCreds();
   requireThat(creds?.entityType === 'company-outpost' && creds.entityUid === c.machineUid, 'company_machine_required');
-  return async (operation, body = {}) => {
+  const api = async (operation, body = {}) => {
     const tokens = await refreshMachineTokens(cloud, creds);
     const response = await fetch(`${c.apiUrl.replace(/\/$/,'')}/outpost/company/${operation}`, {
       method:'POST', redirect:'error', signal:AbortSignal.timeout(15000),
@@ -141,6 +240,10 @@ export async function apiClient(c) {
     if (!response.ok) { const error = new Refusal(`company_api_${response.status}`); error.status = response.status; throw error; }
     return response.json();
   };
+  // Same identity, same cache, bounded like every other machine-token call. The job gets the tokens, never `creds`.
+  api.machineTokens = minValiditySeconds => withDeadline(cloud.getValidMachineTokens({region:creds.region, clientId:creds.clientId, userPoolDomain:''}, Number.isFinite(minValiditySeconds) ? {minValiditySeconds} : {}), MACHINE_TOKEN_BUDGET_MS, 'machine_token_timeout');
+  api.machineIdentity = () => ({username:creds.username, clientId:creds.clientId, region:creds.region, entityType:creds.entityType, entityUid:creds.entityUid});
+  return api;
 }
 export function acceptedJob(c, j) {
   requireThat(j?.ownerKind === 'company-outpost' && j.companyUid === c.companyUid && j.agentUid === `outpost_${c.companyUid}` && j.status === 'active' && !j.deleted, 'not_accepted');
@@ -654,7 +757,7 @@ function ensureUnitDirectory(dir) {
   privateDirectory(dir);
 }
 export class CompanyRunner {
-  constructor(config,api,{systemctl,execute,clock=Date.now,warn}={}){this.c=config;this.api=api;this.clock=clock;this.warn=warn??(line=>console.error(line));this.ledger=new Ledger(config.stateDir);this.systemctl=systemctl??(args=>{const r=spawnSync('systemctl',args,{encoding:'utf8',timeout:15000});if(r.status!==0){const error=new Refusal('systemctl_failed');error.detail=`${r.stderr??''}\n${r.stdout??''}`.trim();throw error;}});this.execute=execute??bounded;}
+  constructor(config,api,{systemctl,execute,clock=Date.now,warn,machineTokens,machineIdentity}={}){this.c=config;this.api=api;this.machineTokens=machineTokens??api?.machineTokens;this.machineIdentity=machineIdentity??api?.machineIdentity;this.clock=clock;this.warn=warn??(line=>console.error(line));this.ledger=new Ledger(config.stateDir);this.systemctl=systemctl??(args=>{const r=spawnSync('systemctl',args,{encoding:'utf8',timeout:15000});if(r.status!==0){const error=new Refusal('systemctl_failed');error.detail=`${r.stderr??''}\n${r.stdout??''}`.trim();throw error;}});this.execute=execute??bounded;}
   close(){this.ledger.close();}
   // Freshness signals feed `hq outposts status` and missed-run alerts. A failed post is
   // logged to stderr (journald) and never changes the run or reconcile result.
@@ -751,8 +854,33 @@ export class CompanyRunner {
     catch(e){if(e.status===409)return {outcome:'not_due_or_changed'};throw e;}
     return this.runDelivery(j,d);
   }
-  /** Budget slots for provider auth: one broker call, or a sign-in read plus a bounded CLI refresh. */
-  providerCallSlots(){return this.c.providerSecret?1:this.c.provider==='claude'?3:0;}
+  /** Budget slots for provider auth (one broker call, or a sign-in read plus a bounded CLI refresh) plus the job's machine session mint. */
+  providerCallSlots(){return (this.c.providerSecret?1:this.c.provider==='claude'?3:0)+1;}
+  sessionRoot(){return prepareSessionRoot(sessionRuntimeDirectory(this.c));}
+  /** Mint the Outpost's tokens into the per-run session directory and keep them fresh until stop(). Tokens only; the machine secret stays with the runner. */
+  async issueMachineSession(sessionDir,account,log,redactions=[]){
+    requireThat(typeof this.machineTokens==='function'&&typeof this.machineIdentity==='function','machine_session_source_required');
+    const identity=this.machineIdentity();
+    let stopped=false,refreshing=null,timer=null;
+    const issue=async()=>{
+      const tokens=await this.machineTokens(MACHINE_SESSION_MIN_VALIDITY_SECONDS);
+      if(stopped)return null;
+      const document=machineSessionDocument(identity,tokens,this.clock());
+      for(const value of [document.idToken,document.accessToken])if(!redactions.includes(value))redactions.push(value);
+      writeMachineSessionFile(sessionDir,document,account);
+      return document;
+    };
+    let document;
+    try{document=await issue();}
+    catch(e){const error=new Refusal('machine_session_unavailable');error.detail=e instanceof Refusal?e.code:'mint_failed';throw error;}
+    const every=Number(this.c.machineSessionRefreshMs)>0?Number(this.c.machineSessionRefreshMs):MACHINE_SESSION_REFRESH_MS;
+    // One refresh at a time, rescheduled after each attempt; a failure is logged without token text and the job keeps its current tokens.
+    const note=code=>{if(stopped)return;try{log('\n'+JSON.stringify({machineSession:'refresh_failed',code})+'\n');}catch{}};
+    const schedule=()=>{if(stopped)return;timer=setTimeout(()=>{timer=null;refreshing=issue().then(()=>{refreshing=null;},e=>{refreshing=null;note(e instanceof Refusal?e.code:'mint_failed');}).then(schedule,()=>{});},every);timer.unref?.();};
+    schedule();
+    // stop() does not wait for an in-flight mint: once stopped, issue() discards its result, and the run's budget is spent.
+    return {document,redactions,stop:()=>{stopped=true;if(timer)clearTimeout(timer);timer=null;}};
+  }
   /** Box sign-in token env for the session unit, or null when a broker provider secret is configured. */
   async providerSignIn(jobMs){
     const signin=this.signin??await import('./company-signin.mjs');
@@ -806,7 +934,7 @@ export class CompanyRunner {
     log(JSON.stringify({executionFingerprint:fingerprint})+'\n');
     const values=[], granted={};
     const account=Number.isInteger(this.c.jobUid)?resolveJobAccount(this.c):null;
-    let homes;
+    let homes,session=null,sessionDir=null;
     try{
       if(account)requireThat(account.uid!==process.getuid(),'job_not_isolated');
       if(key.uncertain){receipt.outcome='uncertain';receipt.errorCode='supervisor_lost_after_admission';return receipt;}
@@ -820,6 +948,10 @@ export class CompanyRunner {
         requireThat(typeof result.value==='string'&&result.value.length>0,'invalid_secret');granted[name]=result.value;values.push(result.value);
       }
       const env=jobEnvironment({...this.c,jobHome:homes.runHome},granted);
+      // HQ sign-in for the job: issued before any job code runs; both the precondition and the session unit get it.
+      sessionDir=prepareSessionDir(this.sessionRoot(),d.runId,account);
+      session=await this.issueMachineSession(sessionDir,account,log,values);
+      Object.assign(env,machineSessionEnvironment(sessionDir,homes.runHome));
       const jobMs=Math.max(1,timeout*1000-Math.max(0,this.clock()-budgetAnchor));
       const runnerUnit=process.env.HQ_RUNNER_UNIT||`hq-company-job-${j.jobId}.service`;
       // Box sign-in: resolved before any job code runs. Only the claude session unit receives the token.
@@ -836,7 +968,9 @@ export class CompanyRunner {
       }
       request.messageText+='\n\n'+JOB_OUTCOME_INSTRUCTION;
       request.messageText+='\n\nExecution fingerprint:\n'+JSON.stringify(fingerprint);
-      const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...(signin?{env:{...env,...signin.env},secretNames:[...Object.keys(granted),...Object.keys(signin.env)],redactions:[...values,...Object.values(signin.env)]}:{})}));
+      // One live redaction list for the session unit: tokens the runner mints after launch join it too.
+      if(signin)for(const value of Object.values(signin.env))if(!values.includes(value))values.push(value);
+      const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...(signin?{env:{...env,...signin.env},secretNames:[...Object.keys(granted),...Object.keys(signin.env)],redactions:values}:{})}));
       receipt.exitCode=result.code;receipt.outcome=result.code===0?'succeeded':result.code===124?'timeout':'failed';
       if(result.code===0){
         let response;try{response=JSON.parse(result.text);}catch{throw new Refusal('invalid_session_response');}
@@ -848,8 +982,10 @@ export class CompanyRunner {
         if(verdict.errorCode)receipt.errorCode=verdict.errorCode;
         if(verdict.reason)receipt.reason=verdict.reason;
       }
-    }catch(e){receipt.outcome=['secret_denied','provider_not_signed_in','provider_token_expiring','provider_credential_unsafe'].includes(e.code)?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
+    }catch(e){receipt.outcome=['secret_denied','provider_not_signed_in','provider_token_expiring','provider_credential_unsafe','machine_session_unavailable'].includes(e.code)?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
     finally{
+      if(session)session.stop();
+      if(sessionDir)removeSessionDir(this.sessionRoot(),sessionDir);
       if(homes)removeRunHome(homes.parent,homes.runHome,account);
       const released=release();
       if(!released)receipt.lockRelease='lost';
@@ -931,6 +1067,7 @@ export async function main(args){
   requireThat(account&&account.uid>0,'job_account_required');
   c.jobUid=account.uid;c.jobGid=account.gid;
   sweepStaleSecretDirs(secretRuntimeDirectory(c));
+  sweepStaleSessionDirs(prepareSessionRoot(sessionRuntimeDirectory(c)));
   const runner=new CompanyRunner(c,await apiClient(c));
   try{
     const result=action==='reconcile'?await runner.reconcile():await runner.run(jobId,revision,runId);

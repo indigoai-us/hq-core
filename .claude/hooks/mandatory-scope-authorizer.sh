@@ -99,7 +99,18 @@ scope_mask_literal_expansions() {
 # data for `gh pr create` or data written by `cat`/`tee` to an output redirect.
 # Interpreter heredocs and other command bodies stay visible and fail closed.
 scope_heredoc_output_writer() {
-  local header="${1:-}" output_redirect_re
+  local header="${1:-}" output_redirect_re mkdir_prefix_re
+  # `mkdir [-p] <dir> && cat > <file> <<'EOF'` is how a report lands in a new
+  # directory. The `&&` is a list operator, so the blanket compound-command
+  # refusal below treated the writer as not inert and scanned the whole body
+  # byte by byte, and a 12KB markdown body exceeded the hook time budget. The
+  # mkdir words are literal (no expansion, quote, or redirect) and the header
+  # line stays in the scan, so its operands are still authorized; only the
+  # body is data.
+  mkdir_prefix_re='^[[:space:]]*mkdir([[:space:]]+[A-Za-z0-9._/-]+)+[[:space:]]*&&[[:space:]]*'
+  if [[ "$header" =~ $mkdir_prefix_re ]]; then
+    header="${header#"${BASH_REMATCH[0]}"}"
+  fi
   # Do not classify compound commands or pipelines as pure data writers.
   case "$header" in *'|'*|*';'*|*'&'*) return 1 ;; esac
   [[ "$header" =~ ^[[:space:]]*(cat|tee)([[:space:]]|$) ]] || return 1
@@ -896,26 +907,54 @@ scope_shell_variable_values() {
     # The loop body before the use may be any commands (`echo "== $f"; cp
     # "workspace/reports/$f" ...`), as long as nothing in the whole command
     # can give the loop variable a value other than a list word: no second
-    # `for name`, no `name=`, and none of the builtins that bind names.
-    if ! [[ "$command_prefix" =~ $command_prefix_re ]]; then
-      local loop_count loop_bind_re
-      loop_count="$(printf '%s' "$command_text" | grep -oE "(^|[^A-Za-z0-9_])(for|select)[[:space:]]+${name}([[:space:]]|;|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
-      [ "$loop_count" = "1" ] || return 1
-      local loop_dq
-      loop_dq="$(scope_dequote_text "$command_text")"
-      scope_text_has_ansi_escape "$command_text" && return 1
-      scope_text_touches_ifs "$command_text" && return 1
-      loop_count="$(printf '%s' "$loop_dq" | grep -oE "(^|[^A-Za-z0-9_])(for|select)[[:space:]]+${name}([[:space:]]|;|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
-      [ "$loop_count" = "1" ] || return 1
-      loop_bind_re="(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?="
-      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
-      loop_bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|unset|let|export)([[:space:]]|$)'
-      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
-      loop_bind_re='printf[[:space:]]+-v|\$\{'"$name"':?='
-      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
-      loop_bind_re='(^|[;&|({]|'$'\n'')[[:space:]]*\.[[:space:]]'
-      [[ "$command_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
+    # `for name`, no `name=` or `name[i]=`, none of the builtins that bind
+    # names, and no command word built from an expansion. The checks run for
+    # every body, a one-command body included (`do read -r d<newline>cp ...`
+    # rebinds d before the use), and on the text with quotes and backslashes
+    # deleted, so a quoted or escaped builtin name (`"read" d`, `r\ead d`)
+    # is still seen.
+    local loop_count loop_bind_re loop_text
+    loop_text="${command_text//[\"\'\\]/}"
+    # ANSI-C quoting and IFS changes alter quoting and word splitting in ways
+    # the text checks below cannot follow, so the loop stays unresolved. The
+    # count and binding checks also run on the dequoted text.
+    scope_text_has_ansi_escape "$command_text" && return 1
+    scope_text_touches_ifs "$command_text" && return 1
+    local loop_dq
+    loop_dq="$(scope_dequote_text "$command_text")"
+    loop_count="$(printf '%s' "$loop_text" | grep -oE "(^|[^A-Za-z0-9_])(for|select)[[:space:]]+${name}([[:space:]]|;|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
+    [ "$loop_count" = "1" ] || return 1
+    loop_count="$(printf '%s' "$loop_dq" | grep -oE "(^|[^A-Za-z0-9_])(for|select)[[:space:]]+${name}([[:space:]]|;|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
+    [ "$loop_count" = "1" ] || return 1
+    loop_bind_re="(^|[^A-Za-z0-9_\$])${name}(\[[^]]*\])?\+?="
+    [[ "$loop_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
+    loop_bind_re='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|getopts|eval|source|declare|typeset|local|unset|let|export|readonly|wait|coproc|select)([[:space:]]|$)'
+    [[ "$loop_text" =~ $loop_bind_re || "$loop_dq" =~ $loop_bind_re ]] && return 1
+    # zsh history modifiers (`$d:h`, `$d:s/a/b/`, `${d:t}`) rewrite the value
+    # the shell substitutes, so the list word is no longer what is used.
+    loop_bind_re='\$\{?'"$name"':[htreaAclquQPsgxXFfwW&0-9]'
+    [[ "$loop_text" =~ $loop_bind_re ]] && return 1
+    # zsh builtins that store into a named parameter (`zformat -f d ...`,
+    # `zstyle -s ctx key d`, `strftime -s d ...`, `vared d`). The Bash tool
+    # can run under zsh, so their names taint the loop variable too.
+    loop_bind_re='(^|[^A-Za-z0-9_.-])(zformat|zstyle|strftime|zregexparse|zparseopts|vared|getln|sysread|print|zle|compadd|zmodload|zcompile|zgetattr|zstat|stat|zsystem|zsocket|ztcp|zselect|zpty|sched)([[:space:]]|$)'
+    [[ "$loop_text" =~ $loop_bind_re ]] && return 1
+    # Any builtin can be handed the variable's name as a plain word. The
+    # name may appear bare only once, in the `for NAME in` header.
+    local loop_body_text="$loop_text" loop_header_re="(^|[^A-Za-z0-9_])for[[:space:]]+${name}[[:space:]]+in[[:space:]]+[^;"$'\n'"]*"
+    if [[ "$loop_body_text" =~ $loop_header_re ]]; then
+      loop_body_text="${loop_body_text/"${BASH_REMATCH[0]}"/ }"
     fi
+    loop_count="$(printf '%s' "$loop_body_text" | grep -oE "(^|[[:space:];&|()])${name}([[:space:];&|()<>]|\$)" 2>/dev/null | wc -l | tr -d '[:space:]')"
+    [ "$loop_count" = "0" ] || return 1
+    # `${d:=x}`, `${d=x}`, zsh `${d::=x}`, and any zsh parameter flag such
+    # as `${(P)x::=v}` (indirect assignment) can rebind the variable.
+    loop_bind_re='printf([[:space:]]+-[A-Za-z]*)*[[:space:]]+-[A-Za-z]*v|\$\{'"$name"':{0,2}[=?]|::=|\$\{\('
+    [[ "$loop_text" =~ $loop_bind_re ]] && return 1
+    loop_bind_re='(^|[;&|({!]|'$'\n'')[[:space:]]*\.[[:space:]]'
+    [[ "$loop_text" =~ $loop_bind_re ]] && return 1
+    loop_bind_re='(^|[;&|{!`]|'$'\n''|(^|[^A-Za-z0-9_.])\(|(^|[^A-Za-z0-9_])(do|then|else|elif|if|while|until|time|command|builtin|exec|env|nohup)[[:space:]])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*\$'
+    [[ "$loop_text" =~ $loop_bind_re ]] && return 1
     [[ "$command_prefix" =~ (^|[[:space:]])${name}= ]] && return 1
     case "$command_prefix" in
       *"-v $name"*|*"read $name"*|*"declare $name"*|*"local $name"*|*"unset $name"*|*"eval"*|*"source "*) return 1 ;;
@@ -1028,6 +1067,9 @@ scope_shell_variable_values() {
     values=("${range_values[@]}")
     local glob_match glob_count=0 glob_cwd glob_abs
     for value in "${values[@]}"; do
+      # `**` and zsh `***` recurse (zsh `***` follows symlinked directories);
+      # compgen here does neither, so the set cannot be enumerated.
+      case "$value" in *'**'*) return 1 ;; esac
       # A loop word that globs an absolute directory outside HQ (`for d in
       # ~/.claude/scheduled-tasks/*/`, `/tmp/runs/*`) expands to the entries
       # it matches now. Each one is printed as an absolute path and checked
@@ -1290,7 +1332,12 @@ scope_candidate_is_inert_text() {
   data_option_re="(^|[[:space:]])(--text|--title|--body|--message|--comment)(=|[[:space:]])(\"[^\"]*$|'[^']*$)"
   command_head="${command_text#"${command_text%%[![:space:]]*}"}"
   case "$command_head" in
-    'hq dm '*) text_option_re="$data_option_re" ;;
+    'hq dm '*)
+      # The message may also be the positional after the recipient
+      # (`hq dm [send] <recipient> "msg"`) or after `--channel <name>`.
+      # It is text the CLI sends, never a path it opens.
+      text_option_re="$data_option_re|^[[:space:]]*hq[[:space:]]+dm[[:space:]]+(send[[:space:]]+)?((--channel|--thread)[[:space:]]+)?[^[:space:]\"'-][^[:space:]]*[[:space:]]+(\"[^\"]*$|'[^']*$)"
+      ;;
     'hq lanes message '*|'hq lanes link report '*) text_option_re="$data_option_re" ;;
     'hq mesh '* )
       if [[ "$command_head" =~ ^hq[[:space:]]+mesh[[:space:]]+[^[:space:]]+[[:space:]]+note([[:space:]]|$) ]]; then
@@ -2134,6 +2181,12 @@ scope_check_bash_glob_candidate() {
   esac
   case "$masked" in
     *'{'*|*'}'*) scope_block_rel "$candidate" "brace expansion cannot be checked safely" ;;
+  esac
+  # zsh `***` (and `**` before a non-slash) recurses through symlinked
+  # directories, which the bash enumeration below does not follow, so a
+  # match could land in another company unseen.
+  case "$masked" in
+    *'***'*|*'**'[!/]*) scope_block_rel "$candidate" "a recursive glob that can follow symlinks cannot be checked; spell the path or use find" ;;
   esac
 
   remaining="$masked"
@@ -4444,6 +4497,133 @@ scope_check_cwd_value() {
   return 0
 }
 
+# True when <script> is exactly one sed substitution
+# `s<d>pattern<d>replacement<d>flags`: a punctuation delimiter, one line, a
+# pattern and a replacement that end at the first unescaped delimiter each, and
+# nothing after the third delimiter but the flags g p i I m M and digits. A
+# `;w file`, `;r file` or `;e cmd` after the substitution leaves text that is
+# not a flag, so it is not accepted.
+scope_text_is_sed_subst() {
+  local s="${1:-}" d i=2 n field=0 ch
+  case "$s" in s?*) ;; *) return 1 ;; esac
+  case "$s" in *$'\n'*) return 1 ;; esac
+  d="${s:1:1}"
+  case "$d" in '/'|'|'|'#'|','|':'|'@'|'%'|'!') ;; *) return 1 ;; esac
+  n=${#s}
+  while [ "$i" -lt "$n" ] && [ "$field" -lt 2 ]; do
+    ch="${s:i:1}"
+    if [ "$ch" = "\\" ]; then
+      i=$((i + 2))
+      continue
+    fi
+    [ "$ch" != "$d" ] || field=$((field + 1))
+    i=$((i + 1))
+  done
+  [ "$field" -eq 2 ] || return 1
+  case "${s:i}" in *[!gpiImM0-9]*) return 1 ;; esac
+  return 0
+}
+
+# Words after a directory change the guard could not follow that are not path
+# operands. Each function reads <text> and leaves it, minus those words, in
+# scope_text_dropped. Every other word, the options in front of them and the
+# operands after them stay, so `sed s/a/b/ docs/x.md` and
+# `git commit -m x docs/x.md` still refuse docs/x.md.
+#
+# The quoted value of a message or text option, when it holds no command
+# substitution: -m and --message of git commit, tag, merge, revert, notes and
+# stash; --title, --body and --notes of gh; any of the listed options of hq.
+# The same option name means something else for other git commands
+# (`git diff --text FILE`, `git checkout -m FILE`), so those stay.
+scope_drop_text_values() {
+  local dtxt="${1:-}" dout="" dmatch dquote dopt dpre seg value_re dquoted git_re ok
+  dquoted='"([^"`$]|[$][^("`])*"'
+  git_re='^[[:space:]]*git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+(commit|tag|merge|revert|notes|stash)([[:space:]]|$)'
+  value_re='(^|[[:space:]])(-m|--message|--title|--body|--notes|--text|--note|--comment|--summary|--description|--subject|--reason|--details)(=|[[:space:]]+)('"'[^']*'|$dquoted"')'
+  while [[ "$dtxt" =~ $value_re ]]; do
+    dmatch="${BASH_REMATCH[0]}"; dopt="${BASH_REMATCH[2]}"; dquote="${BASH_REMATCH[4]}"
+    dpre="$dout${dtxt%%"$dmatch"*}"
+    seg="${dpre##*[;&|]}"; seg="${seg##*$'\n'}"; seg="${seg#"${seg%%[![:space:]]*}"}"
+    ok=0
+    case "$seg" in hq\ *) ok=1 ;; esac
+    case "$dopt" in
+      -m|--message) [[ "$seg" =~ $git_re ]] && ok=1 ;;
+      --title|--body|--notes) case "$seg" in gh\ *) ok=1 ;; esac ;;
+    esac
+    if [ "$ok" -eq 1 ]; then
+      dout="$dpre${dmatch%"$dquote"} "
+    else
+      dout="$dpre$dmatch"
+    fi
+    dtxt="${dtxt#*"$dmatch"}"
+  done
+  scope_text_dropped="$dout$dtxt"
+}
+
+# The quoted s/// script of sed: the first operand when no -e is given, or the
+# word after an -e (or a cluster ending in e, such as -ne). Never the file of
+# -f, a script that is not a single substitution, or a quoted operand that
+# follows a script (it is a file). Options may be any short option but -f; an
+# empty quoted word is the suffix of BSD `-i ''`. A dropped script stays as a
+# marker, and only `-e MARKER` lets a later -e word be a script too.
+scope_drop_sed_scripts() {
+  local dtxt="${1:-}" dout="" dmatch dquote dpre dquoted mark=SCOPE_SED_SCRIPT_DROPPED
+  local operand_re script_re quote_class="f\"'"
+  dquoted='"([^"`$]|[$][^("`])*"'
+  operand_re='(^|[^A-Za-z0-9_/.-])(sed([[:space:]]+(-[^-[:space:]'"$quote_class"'e]+|""|'"''"'))*[[:space:]]+)('"'[^']*'|$dquoted"')'
+  script_re='(^|[^A-Za-z0-9_/.-])(sed([[:space:]]+(-[^-[:space:]'"$quote_class"']+|""|'"''"'|-e[[:space:]]+'"$mark"'))*[[:space:]]+-[^-[:space:]'"$quote_class"']*e[[:space:]]+)('"'[^']*'|$dquoted"')'
+  while :; do
+    if [[ "$dtxt" =~ $script_re ]]; then
+      dquote="${BASH_REMATCH[5]}"
+    elif [[ "$dtxt" =~ $operand_re ]]; then
+      dquote="${BASH_REMATCH[5]}"
+    else
+      break
+    fi
+    dmatch="${BASH_REMATCH[0]}"
+    dpre="${dtxt%%"$dmatch"*}"
+    # A double-quoted script that expands a variable could grow a w or e flag.
+    if [[ "$dquote" != \"*'$'* ]] && scope_text_is_sed_subst "${dquote:1:${#dquote}-2}"; then
+      # Look again from the start: `sed -e 's/a/b/' -e 's/c/d/'` has more.
+      dtxt="$dpre${dmatch%"$dquote"}$mark ${dtxt#*"$dmatch"}"
+    else
+      dout="$dout$dpre$dmatch"
+      dtxt="${dtxt#*"$dmatch"}"
+    fi
+  done
+  dtxt="$dout$dtxt"
+  scope_text_dropped="${dtxt//$mark/ }"
+}
+
+# The REF:PATH spec of `git show` and `git cat-file`: an object in the
+# repository, not a file. Only with the plain display options below and none of
+# git's global options, so `-C`, `--git-dir`, `--work-tree`, `--output` and a
+# GIT_ variable in front keep their words in view. A PATH or REF with a `..` or
+# `.` component stays (`HEAD:./x` and `HEAD:../x` are relative to the working
+# directory). The repository is whichever one the unknown directory holds,
+# which is already true of `git show HEAD` and `git log -p` there.
+scope_drop_git_object_specs() {
+  local dtxt="${1:-}" dout="" dmatch spec dpre spec_re ref objpath
+  spec_re='(^|[;&|({][[:space:]]*)(git[[:space:]]+(show|cat-file)([[:space:]]+(-p|-s|-t|-e|--stat|--no-patch|--oneline|--name-only|--name-status|--no-color|--pretty=[A-Za-z]+|--format=[A-Za-z]+))*[[:space:]]+)(["'"'"']?)([A-Za-z0-9_.~^@{}/+-]*:[A-Za-z0-9_.@+/-]+)(["'"'"']?)([[:space:];&|]|$)'
+  while [[ "$dtxt" =~ $spec_re ]]; do
+    dmatch="${BASH_REMATCH[0]}"; spec="${BASH_REMATCH[7]}"
+    dpre="${dtxt%%"$dmatch"*}"
+    ref="${spec%%:*}"; objpath="${spec#*:}"
+    case "/$ref/:/$objpath/" in
+      *..*|*/./*) dout="$dout$dpre$dmatch" ;;
+      *) dout="$dout$dpre${BASH_REMATCH[1]}${BASH_REMATCH[2]} " ;;
+    esac
+    dtxt="${dtxt#*"$dmatch"}"
+  done
+  scope_text_dropped="$dout$dtxt"
+}
+
+scope_unfollowed_cd_drop_text() {
+  scope_drop_text_values "${1:-}"
+  scope_drop_sed_scripts "$scope_text_dropped"
+  scope_drop_git_object_specs "$scope_text_dropped"
+}
+
 # A directory change the guard did not follow (cd -, cd "$(...)", an
 # unresolved $VAR, ~-/~+, popd, CDPATH=) leaves the real cwd unknown. Any
 # later relative operand then fails closed: a word with a slash, . or .., or
@@ -4468,6 +4648,8 @@ scope_check_unfollowed_cd() {
     [[ "$cmd" =~ $re ]] || return 0
     after="${cmd#*CDPATH=}"
   fi
+  scope_unfollowed_cd_drop_text "$after"
+  after="$scope_text_dropped"
   local -a words=()
   read -r -a words <<< "${after//[\"\'<>;&|()]/ }"
   for w in ${words[@]+"${words[@]}"}; do
@@ -8526,17 +8708,52 @@ scope_cd_repo_root() {
   printf '%s' "${repo_root%/}"
 }
 
+# True when the text <prefix> before a word is a curl or wget command line made
+# only of flags that take no argument and earlier URLs, so the word is fetched,
+# not opened (`cat http://../x` opens ./http:/../x). Any other word in front,
+# an option that names a file (alone or inside a cluster such as -so), a
+# redirection, a substitution or a group makes this false.
+scope_prefix_makes_url_a_fetch() {
+  local seg="${1:-}" head w i=1
+  local -a pw=()
+  seg="${seg##*[;&|]}"
+  seg="${seg##*$'\n'}"
+  case "$seg" in *'$('*|*$'\140'*|*'('*|*'{'*|*'<'*|*'>'*) return 1 ;; esac
+  read -r -a pw <<< "${seg//[\"\']/ }"
+  [ "${#pw[@]}" -gt 0 ] || return 1
+  head="${pw[0]##*/}"
+  case "$head" in curl|wget) ;; *) return 1 ;; esac
+  while [ "$i" -lt "${#pw[@]}" ]; do
+    w="${pw[i]}"
+    i=$((i + 1))
+    case "$w" in
+      --silent|--show-error|--location|--fail|--insecure|--compressed|--head|--verbose|--globoff|--ipv4|--ipv6|--quiet|--no-check-certificate) ;;
+      [Hh][Tt][Tt][Pp]://*|[Hh][Tt][Tt][Pp][Ss]://*) ;;
+      -*[!sSLfkvgGNI46q]*|-) return 1 ;;
+      -*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 # After a leading cd, a relative token that contains .. is resolved from the
 # physical directory, not from the HQ root. Returns 0 when the token was
 # handled, 1 when it is not that shape.
 scope_cd_dotdot_checked() {
-  local raw="${1:-}" phys
+  local raw="${1:-}" prefix="${2:-}" phys
   case "$raw" in
     /*|~|~/*) return 1 ;;
     workspace/*|core/*|personal/*|repos/*|companies/*|.claude/*) return 1 ;;
     *..*) ;;
     *) return 1 ;;
   esac
+  # A literal http(s) URL handed to curl or wget is not a path: the `..` in
+  # a weight range `300..700` or `/a/../b` names no folder. Any other command may open
+  # the word as a file, and a URL a substitution could split stays checked.
+  if scope_prefix_makes_url_a_fetch "$prefix" && scope_word_is_literal_remote_url "$raw"; then
+    return 0
+  fi
   # The same-command walk already resolved this .. against the real checkout.
   # Returning here skips the static-cwd refusal, which would also fire for a
   # .. that stayed inside the checkout.
@@ -9726,7 +9943,7 @@ scope_check_bash_skill_path() {
   # read of whatever the link points at now. The same-command check already
   # refused any other repos/ use.
   scope_path_is_repo_link_mutation_dest "$raw" && return 0
-  scope_cd_dotdot_checked "$raw" && return 0
+  scope_cd_dotdot_checked "$raw" "$prefix" && return 0
   # A command substitution stays fail-closed. Its VALUE is the program's
   # stdout, which no static check can bound, and scanning the inner command
   # instead does not help: `"$(printf %s companies / otherco /settings/x)"`
@@ -9811,6 +10028,14 @@ scope_check_bash_skill_path() {
   expanded_raw="$(scope_resolve_known_path_expansions "$expanded_raw" "$command_text" "$prefix")"
   rel="$(scope_normalize_hq_relative "$expanded_raw")"
   raw_masked="$(scope_mask_literal_expansions "$expanded_raw")"
+  # A `..` segment after an expansion the resolver did not replace climbs
+  # from a value nobody checked (`for d in companies/x; do cp f $d/../y`).
+  # Lexical normalization would pop the expansion itself and leave a
+  # harmless-looking path, so the word is refused instead.
+  local dotdot_after_expansion_re='\$[^/]*(/[^/]*)*/\.\.(/|$)'
+  if [[ "$raw_masked" =~ $dotdot_after_expansion_re ]]; then
+    scope_block_rel "$raw" "a .. segment after a variable cannot be resolved; spell the path literally"
+  fi
   case "$raw_masked" in
     workspace/*|core/*|personal/*|repos/*)
       case "$raw_masked:$rel" in
@@ -10464,10 +10689,67 @@ scope_subst_value_taints() {
   scope_subst_word_uses_taint "$value"
 }
 
+# A name set only by `NAME=$(command -v prog)` (also which, type -P) holds the
+# path of a program on PATH. It stays marked, so every use as an argument or a
+# redirection target is still refused, but it may run as the command name:
+# `PY=$(command -v python3); $PY -c ...` (also the word after a wrapper such as
+# env, xargs or command, where the check treats it as the program name; the
+# value is only a program path). A name that is a shell builtin (`command -v
+# cd`) does not qualify. SCOPE_SUBST_RESOLVED lists such
+# names; SCOPE_SUBST_OTHER lists every name given a value any other way, and is
+# never cleared, so a second assignment, a read or a loop over the name ends the
+# allowance whichever pass sees it first. The arithmetic check that ran before
+# this one (bash-arith-subst-guard-lib.sh, #1724) has already required the
+# assignment to be unconditional, before the use, and free of PATH, function
+# and shell-reentry shadows, and has refused shell and evaluating program names.
+SCOPE_SUBST_RESOLVED=" "
+SCOPE_SUBST_OTHER=" "
+
 scope_subst_mark() {
-  local name="${1:-}"
+  local name="${1:-}" kind="${2:-}"
   [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 0
   case "$SCOPE_SUBST_TAINT" in *" $name "*) ;; *) SCOPE_SUBST_TAINT="$SCOPE_SUBST_TAINT$name " ;; esac
+  if [ "$kind" = resolved ]; then
+    SCOPE_SUBST_RESOLVED="$SCOPE_SUBST_RESOLVED$name "
+  else
+    SCOPE_SUBST_OTHER="$SCOPE_SUBST_OTHER$name "
+  fi
+}
+
+# True when assignment word <word> (NAME=VALUE, no += or subscript) sets NAME
+# to exactly one $(command -v prog), $(which prog), $(type -P prog) or its
+# backtick form, through the resolver shape the arithmetic check uses.
+scope_subst_assignment_is_resolver() {
+  local word="${1:-}" value _hq_ag_rname=""
+  [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
+  value="${word#*=}"
+  value="${value#\"}"
+  value="${value%\"}"
+  _hq_ag_resolved_value "$value" || return 1
+  _hq_ag_evaluating_name "$_hq_ag_rname" && return 1
+  # A shell builtin or keyword that prints its own name (`command -v cd`) runs
+  # in the shell, not as a program: `$PY dir; cat x/y` would change the working
+  # directory out of the guard's sight. Only a name that resolves to a program
+  # file on PATH counts.
+  [ "$(type -t -- "$_hq_ag_rname" 2>/dev/null)" = file ] || return 1
+  return 0
+}
+
+# True when <word> is exactly $NAME or ${NAME}, bare or in double quotes, and
+# NAME holds only a resolved program path (see SCOPE_SUBST_RESOLVED).
+scope_subst_word_is_resolved_name() {
+  local word="${1:-}" name
+  word="${word#\"}"
+  word="${word%\"}"
+  case "$word" in
+    '${'*'}') name="${word:2:${#word}-3}" ;;
+    '$'*) name="${word:1}" ;;
+    *) return 1 ;;
+  esac
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
+  case "$SCOPE_SUBST_RESOLVED" in *" $name "*) ;; *) return 1 ;; esac
+  case "$SCOPE_SUBST_OTHER" in *" $name "*) return 1 ;; esac
+  return 0
 }
 
 # The value of assignment word <k>. For NAME=(...) the lexer ends the word at
@@ -10506,6 +10788,11 @@ scope_subst_mark_assignment() {
   [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]] || return 0
   name="${word%%[=+[]*}"
   value="$(scope_subst_assignment_value "$k")"
+  if scope_subst_assignment_is_resolver "$word"; then
+    scope_subst_mark "$name" resolved
+    return 0
+  fi
+  case "$SCOPE_SUBST_OTHER" in *" $name "*) ;; *) SCOPE_SUBST_OTHER="$SCOPE_SUBST_OTHER$name " ;; esac
   scope_subst_value_taints "$value" || return 0
   # `s=$(grep -n START f | cut -d: -f1)`: a value that is exactly one
   # substitution whose pipeline prints only line numbers or counts
@@ -10752,7 +11039,7 @@ scope_subst_check_command() {
     # runs whatever the file holds. Only a body that prints no path, one the
     # guard maps, or a PATH lookup may name the program.
     if [ "$k" -eq "$i" ] && [ "${sw_redir[$k]}" -eq 0 ]; then
-      if scope_subst_word_uses_taint "$word"; then
+      if scope_subst_word_uses_taint "$word" && ! scope_subst_word_is_resolved_name "$word"; then
         scope_block_rel "\$$scope_subst_taint_hit" "the command name uses \$$scope_subst_taint_hit, which holds a command substitution's output the guard cannot check; run the inner command first and use the literal program path it printed"
       fi
       while IFS= read -r -d $'\036' body; do
@@ -12630,6 +12917,28 @@ case "$TOOL" in
         ;;
     esac
     scope_segments="$(hq_shell_simple_commands "$scope_scan_cmd")"
+    scope_zsh_code_qual_re='[^[:space:];&|<>($]\([^()[:space:]"'"'"']*(e[^A-Za-z0-9)[:space:]]|\+[A-Za-z_])[^()]*\)([[:space:];&|<>)]|$)'
+    # zsh applies a modifier whatever follows it (`$p:hx` is head(p) then
+    # `x`), so any modifier letter after `$NAME:` or `${NAME:` counts.
+    # zsh also rewrites a value through an unbraced subscript (`$p[1,10]`)
+    # and the `$~p` / `$^p` / `$=p` flags (and their braced forms), and any
+    # `${(flags)p}` group, which the resolver reads as plain text.
+    scope_zsh_modifier_re='\$\{?[A-Za-z_][A-Za-z0-9_]*:[htreaAclquQPsgxXFfwW&0-9]|\$[A-Za-z_][A-Za-z0-9_]*\[|\$\{?[~^=]|\$\{\('
+    # zsh glob qualifiers that run code (`*(e:REPLY=...:)`, `x(.e'...')`,
+    # `*(+fn)`) replace each match with any word, so nothing about the
+    # pattern bounds the result. Checked on the raw text: the tokenizer
+    # splits the qualifier group apart.
+    scope_qual_text="$scope_scan_cmd"
+    [ -n "$scope_interp_bodies" ] && scope_qual_text="$scope_interp_outside"
+    # A zsh `${(flags)name}` group (`(e)`, `(j:/:)`, `(L)`) rewrites the
+    # value; the tokenizer splits it at the parentheses, so the raw text is
+    # checked.
+    if [[ "$scope_qual_text" == *'${('* ]]; then
+      scope_block_rel '${(' "a zsh parameter flag group cannot be checked; spell the path literally"
+    fi
+    if [[ "$scope_qual_text" =~ $scope_zsh_code_qual_re ]]; then
+      scope_block_rel "${BASH_REMATCH[0]}" "a zsh glob qualifier that runs code (e or +) cannot be checked"
+    fi
     while IFS= read -r scope_record; do
       [ -n "$scope_record" ] || continue
       IFS=$'\037' read -r -a scope_tokens <<< "$scope_record"
@@ -12650,8 +12959,15 @@ case "$TOOL" in
               ;;
           esac
         fi
+        # zsh glob qualifiers that run code (`*(e:REPLY=...:)`, `*(+fn)`)
+        # replace each match with any word, so nothing about the pattern
+        # bounds the result.
         case "$scope_token" in
           companies/*|.claude*)
+            # The company scan above reads `$d:h` as `$d` plus literal text.
+            if [[ "$scope_token" =~ $scope_zsh_modifier_re ]]; then
+              scope_block_rel "$scope_token" "a zsh modifier on a variable cannot be checked; spell the path literally"
+            fi
             # companies/, companies//, companies/. name the companies/ folder.
             if [[ "$scope_token" =~ ^companies[/.]*$ ]] && scope_token_is_standalone_word "$scope_token" \
               && ! scope_token_is_search_pattern "$scope_token_index"; then
@@ -12661,6 +12977,13 @@ case "$TOOL" in
             continue
             ;;
         esac
+        # A zsh history modifier on a variable (`$p:h/x`, `$p:hx`,
+        # `companies/$d:s/a/b/`) rewrites the value the resolver proved, so
+        # the word is refused in every position, git operands and redirect
+        # targets included (`git show x > companies$p:hotherco/f`).
+        if [[ "$scope_token" =~ $scope_zsh_modifier_re ]]; then
+          scope_block_rel "$scope_token" "a zsh modifier on a variable cannot be checked; spell the path literally"
+        fi
         [ "$scope_head_untrusted" -eq 0 ] && scope_token_is_vcs_ref_operand "$scope_token_index" && continue
         [ "$scope_head_untrusted" -eq 0 ] && scope_token_is_gh_api_endpoint "$scope_token_index" && continue
         [ "$scope_head_untrusted" -eq 0 ] && scope_token_is_url_variable_operand "$scope_token_index" && continue

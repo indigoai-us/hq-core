@@ -1,12 +1,19 @@
 name: Recheck hq-core release gate
 
 # A bounded first wait can expire while external PR checks are still running.
-# Revisit the standing promotion PR every hour until it is held, merged,
+# Revisit the standing promotion PR every six hours until it is held, merged,
 # or its checks are ready. This workflow only reads/merges hq-core's standing
 # PR; it never updates its source branch.
+#
+# Every six hours, not hourly (owner decision 2026-11-02): the hourly cron ran
+# 24 times a day on both repos (the hq-core copy skips its job but still
+# starts a run), 266 runs in two weeks on hq-core alone, almost all of them
+# finding no open promotion PR. A release that needs the merge sooner than the
+# next slot runs this workflow with workflow_dispatch, which the promotion PR
+# body already says.
 on:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '7 */6 * * *'
   workflow_dispatch:
 
 permissions:

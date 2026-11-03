@@ -4,7 +4,9 @@
 # subdir URL resolution, hq-deploy card image when a base URL is set (from the
 # deploy API base when given, else api.<rest of the app host>, on hq.work,
 # indigo-hq.com and a custom base domain), placeholder PNG validity when it is
-# not, idempotency, and the in-place rewrite of a legacy card.png tag to card.jpg.
+# not, idempotency, the in-place rewrite of a legacy card.png tag to card.jpg,
+# and og:video (hq-deploy preview.mp4, a build-supplied og*.mp4, none without a
+# base URL, and a video-only block on author-tagged pages that have no og:video).
 set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OG="$SCRIPT_DIR/og-inject.sh"
@@ -45,7 +47,48 @@ have 'property="og:url" content="https://demo.hq.work/"' "$TMP/index.html" && pa
 have 'property="og:url" content="https://demo.hq.work/sub/about.html"' "$TMP/sub/about.html" && pass "subdir url" || fail "subdir og:url wrong"
 have 'content="Paragraph fallback description."' "$TMP/sub/about.html" && pass "paragraph fallback desc" || fail "fallback desc missing"
 
-[ "$(grep -c 'hq-deploy: social preview' "$TMP/owned.html")" = "0" ] && pass "author-owned page untouched" || fail "owned.html was modified"
+[ "$(grep -c 'hq-deploy: social preview' "$TMP/owned.html")" = "0" ] && pass "author-owned page keeps its own tags" || fail "owned.html got a second tag set"
+[ "$(echo "$RES" | jq -r '.videoAdded')" = "1" ] && pass "videoAdded=1 for the author-tagged page" || fail "expected videoAdded=1"
+have 'property="og:video" content="https://api.hq.work/api/public/apps/demo/preview.mp4"' "$TMP/owned.html" && pass "author-tagged page gets og:video" || fail "owned.html og:video missing"
+[ "$(grep -c 'property="og:title"' "$TMP/owned.html")" = "1" ] && have 'property="og:title" content="Author"' "$TMP/owned.html" && pass "author og:title kept, not duplicated" || fail "owned.html og:title changed"
+[ "$(grep -c 'og:image' "$TMP/owned.html")" = "0" ] && pass "no og:image added to the author-tagged page" || fail "og:image added to owned.html"
+
+# An author-tagged page with its own og:video is left alone; with no other
+# pages to tag, nothing else is written either.
+TMPA="$(mktemp -d)"; cat > "$TMPA/index.html" <<'H'
+<!doctype html><html><head><meta property="og:title" content="A"><meta property="og:video" content="https://cdn.example.com/a.mp4"></head><body></body></html>
+H
+cp "$TMPA/index.html" "$TMPA/before.html.txt"
+RESA="$("$OG" "$TMPA" "https://demo.hq.work" "A" "https://api.hq.work")"
+cmp -s "$TMPA/index.html" "$TMPA/before.html.txt" && pass "author og:video page untouched" || fail "author og:video page modified"
+[ "$(echo "$RESA" | jq -r '.videoAdded')" = "0" ] && [ "$(echo "$RESA" | jq -r '.changed')" = "false" ] && pass "nothing to do reports changed=false" || fail "expected no change: $RESA"
+rm -rf "$TMPA"
+
+# Without a base URL an author-tagged page is left alone (no absolute clip URL).
+TMPB="$(mktemp -d)"; cat > "$TMPB/index.html" <<'H'
+<!doctype html><html><head><meta property="og:title" content="B"></head><body></body></html>
+H
+RESB="$("$OG" "$TMPB" "" "B" "")"
+[ "$(grep -c 'og:video' "$TMPB/index.html")" = "0" ] && [ ! -e "$TMPB/_hq-og.png" ] && pass "no base url: author page untouched, no placeholder" || fail "author page changed without base url: $RESB"
+rm -rf "$TMPB"
+
+# og:video: hq-deploy's preview.mp4 next to the card image
+[ "$(echo "$RES" | jq -r '.video')" = "api" ] && pass "video uses hq-deploy preview.mp4" || fail "expected video=api"
+have 'property="og:video" content="https://api.hq.work/api/public/apps/demo/preview.mp4"' "$TMP/index.html" && pass "og:video is the hq-deploy clip" || fail "og:video wrong"
+have 'property="og:video:secure_url" content="https://api.hq.work/api/public/apps/demo/preview.mp4"' "$TMP/index.html" && pass "og:video:secure_url set" || fail "og:video:secure_url wrong"
+have 'property="og:video:type" content="video/mp4"' "$TMP/index.html" && pass "og:video:type mp4" || fail "og:video:type missing"
+have 'property="og:video:width" content="1200"' "$TMP/index.html" && have 'property="og:video:height" content="630"' "$TMP/index.html" && pass "og:video size" || fail "og:video size missing"
+have 'property="og:video" content="https://api.hq.work/api/public/apps/demo/preview.mp4"' "$TMP/sub/about.html" && pass "og:video on subpages" || fail "subpage og:video missing"
+
+# A build-supplied og*.mp4 wins over the hq-deploy clip
+TMPV="$(mktemp -d)"; cat > "$TMPV/index.html" <<'H'
+<!doctype html><html><head><title>Own clip</title></head><body></body></html>
+H
+printf 'fake' > "$TMPV/og-preview.mp4"
+RESV="$("$OG" "$TMPV" "https://demo.hq.work" "Own" "https://api.hq.work")"
+[ "$(echo "$RESV" | jq -r '.video')" = "existing" ] && pass "build clip preferred" || fail "expected video=existing: $RESV"
+have 'property="og:video" content="https://demo.hq.work/og-preview.mp4"' "$TMPV/index.html" && pass "og:video is the build clip" || fail "build og:video wrong"
+rm -rf "$TMPV"
 
 # No-base-url path: placeholder fallback, relative image
 TMP2="$(mktemp -d)"; cat > "$TMP2/index.html" <<'H'
@@ -54,6 +97,8 @@ H
 RES3="$("$OG" "$TMP2" "" "NoBase" "https://api.hq.work")"
 [ "$(echo "$RES3" | jq -r '.image')" = "generated" ] && pass "placeholder generated when no base url" || fail "expected image=generated without base url"
 have 'property="og:image" content="/_hq-og.png"' "$TMP2/index.html" && pass "relative image when no base url" || fail "relative image path wrong"
+[ "$(echo "$RES3" | jq -r '.video')" = "none" ] && pass "no video without base url" || fail "expected video=none without base url"
+[ "$(grep -c 'og:video' "$TMP2/index.html")" = "0" ] && pass "no og:video tag without base url" || fail "og:video written without base url"
 
 # Valid 1200x630 PNG
 python3 - "$TMP2/_hq-og.png" <<'PY' && pass "valid 1200x630 PNG" || fail "PNG invalid"
@@ -67,6 +112,8 @@ PY
 # Idempotency: a second run injects nothing new
 RES2="$("$OG" "$TMP" "https://demo.hq.work" "Report App" "https://api.hq.work")"
 [ "$(echo "$RES2" | jq -r '.injected')" = "0" ] && pass "idempotent (re-run injects 0)" || fail "second run re-injected"
+[ "$(grep -c 'property="og:video" ' "$TMP/index.html")" = "1" ] && pass "one og:video tag after re-run" || fail "og:video duplicated"
+[ "$(echo "$RES2" | jq -r '.videoAdded')" = "0" ] && [ "$(grep -c 'property="og:video" ' "$TMP/owned.html")" = "1" ] && pass "author-tagged page not re-tagged" || fail "owned.html og:video duplicated"
 
 rm -rf "$TMP2"
 

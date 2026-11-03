@@ -93,7 +93,8 @@ personal keys, unlimited connected apps, 10 GB of files and unlimited site
 deploys. A Workforce company can cover it for a teammate through
 `hq billing sponsor request`.
 
-Outposts on legacy plans are $80 a month each.
+New Outposts are billed by size, from $100 a month (small) to $800 (xlarge).
+Existing $80 Outposts keep $80 a month.
 
 ## Agents
 

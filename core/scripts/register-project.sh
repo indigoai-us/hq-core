@@ -10,12 +10,68 @@ die() {
   exit 1
 }
 
+# The named company's own record decides its uid (.company-uid, then the
+# manifest cloud_uid). HQ_COMPANY_UID is accepted only when it matches that
+# record: a session may export it for another company, and trusting it would
+# register this company's project in that company's Work Mesh.
+# A company with no recorded uid can still register with HQ_COMPANY_UID when
+# the active company (HQ_COMPANY_SLUG, else the session's bound company_slug)
+# is the named company and no other company records that uid.
 resolve_uid() {
-  local company="$1"
-  if [ -n "${HQ_COMPANY_UID:-}" ]; then
-    printf '%s\n' "$HQ_COMPANY_UID"
+  local company="$1" uid
+  uid="$(recorded_uid "$company")"
+  if [ -z "$uid" ]; then
+    uid="$(active_company_env_uid "$company")"
+    [ -n "$uid" ] || die "no company uid for $company (set companies/$company/.company-uid or manifest cloud_uid, or run with HQ_COMPANY_UID while $company is the active company)"
+    printf '%s\n' "$uid"
     return
   fi
+  if [ -n "${HQ_COMPANY_UID:-}" ] && [ "$HQ_COMPANY_UID" != "$uid" ]; then
+    die "HQ_COMPANY_UID does not match $company's recorded uid; refusing to register into another company's Work Mesh"
+  fi
+  printf '%s\n' "$uid"
+}
+
+# --- active-company HQ_COMPANY_UID check (shared shape with
+# work-mesh-project-registration-offer.sh) ---
+active_company_slug() {
+  local slug="${HQ_COMPANY_SLUG:-}"
+  if [ -z "$slug" ] && [ -f "$ROOT/core/scripts/hq-session.sh" ]; then
+    slug="$(env HQ_ROOT="$ROOT" HQ_HQ_SESSION_NO_CLI=1 \
+      bash "$ROOT/core/scripts/hq-session.sh" get company_slug 2>/dev/null | tr -d '[:space:]' || true)"
+  fi
+  printf '%s\n' "$slug"
+}
+
+# Prints HQ_COMPANY_UID only when it is well formed, the active company is the
+# named company, and no other company records that uid. Prints nothing
+# otherwise.
+active_company_env_uid() {
+  local company="$1" env_uid="${HQ_COMPANY_UID:-}" active
+  [[ "$env_uid" =~ ^cmp_[A-Za-z0-9]{3,128}$ ]] || return 0
+  active="$(active_company_slug)"
+  [ -n "$active" ] && [ "$active" = "$company" ] || return 0
+  if uid_recorded_elsewhere "$company" "$env_uid"; then
+    return 0
+  fi
+  printf '%s\n' "$env_uid"
+}
+
+uid_recorded_elsewhere() {
+  local company="$1" uid="$2" f manifest="$ROOT/companies/manifest.yaml"
+  for f in "$ROOT"/companies/*/.company-uid; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$(dirname "$f")")" = "$company" ] && continue
+    [ "$(tr -d '[:space:]' < "$f")" = "$uid" ] && return 0
+  done
+  [ -f "$manifest" ] || return 1
+  tr -d '\r' < "$manifest" | awk -v uid="$uid" '
+    $1 == "cloud_uid:" { v=$2; gsub(/["\047]/, "", v); if (v == uid) found=1 }
+    END { exit !found }'
+}
+
+recorded_uid() {
+  local company="$1"
   local file="$ROOT/companies/$company/.company-uid"
   if [ -f "$file" ]; then
     tr -d '[:space:]' < "$file"
@@ -37,7 +93,6 @@ resolve_uid() {
       return
     fi
   fi
-  die "no company uid for $company (set HQ_COMPANY_UID, companies/$company/.company-uid, or manifest cloud_uid)"
 }
 
 mesh_project_id_for_prd() {
@@ -142,12 +197,14 @@ register_one() {
   local mesh_project
   mesh_project="$(mesh_project_id_for_prd "$company" "$project")"
   [ -f "$prd" ] || die "registration incomplete: missing $prd"
+  local uid
+  uid="$(resolve_uid "$company")"
   if ! cli_has_project_ensure; then
     mark_pending "$company" "$project"
     die "hq-cli ${MIN_HQ_CLI} or newer is required; ${company}/${project} stays local until then"
   fi
   local ensure_json
-  if ! ensure_json="$(hq mesh project ensure "$mesh_project" --company "$company" --stories-file "$prd" --json)"; then
+  if ! ensure_json="$(HQ_COMPANY_UID="$uid" hq mesh project ensure "$mesh_project" --company "$company" --stories-file "$prd" --json)"; then
     echo "registration incomplete: hq mesh project ensure failed for $company/$project" >&2
     exit 1
   fi
@@ -213,14 +270,16 @@ register_one() {
 }
 
 register_brainstorm() {
-  local company="$1" project="$2" board title description ensure_json thread channel tmp
-  resolve_uid "$company" >/dev/null
+  local company="$1" project="$2" board title description ensure_json thread channel tmp uid
+  # Pin the child CLI to the named company's uid so an ambient or cached
+  # company context cannot send this Board entry to another company's mesh.
+  uid="$(resolve_uid "$company")"
   board="$(board_path "$company")"
   [ -f "$board" ] || die "registration incomplete: missing $board"
   title="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .title // empty' "$board" | tr -d '\r')"
   description="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .description // empty' "$board" | tr -d '\r')"
   [ -n "$title" ] || die "registration incomplete: missing local Board project $company/$project"
-  if ! ensure_json="$(hq mesh project set "$project" --company "$company" --name "$title" --description "$description" --create --json)"; then
+  if ! ensure_json="$(HQ_COMPANY_UID="$uid" hq mesh project set "$project" --company "$company" --name "$title" --description "$description" --create --json)"; then
     die "registration incomplete: hq mesh project set failed for $company/$project"
   fi
   thread="$(printf '%s' "$ensure_json" | jq -er '.registration.threadId // .threadId // empty' | tr -d '\r')" \
@@ -231,9 +290,8 @@ register_brainstorm() {
   tmp="$(mktemp)"
   jq --arg id "$project" --arg thread "$thread" --arg channel "$channel" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     .projects |= map(if .id == $id or .mesh_project_id == $id then . + {
-      threadId:$thread, channelId:$channel, mesh_project_id:$id,
-      mesh_registration_prompt_state:"accepted", updated_at:$now
-    } | del(.pending_registration) else . end)
+      threadId:$thread, channelId:$channel, mesh_project_id:$id, updated_at:$now
+    } | del(.pending_registration, .mesh_registration_prompt_state) else . end)
   ' "$board" > "$tmp"
   mv "$tmp" "$board"
   jq -e --arg id "$project" --arg thread "$thread" --arg channel "$channel" \
@@ -313,8 +371,10 @@ retry_pending() {
   done < <(jq -r '[.projects[]? | select(.pending_registration == true) | .id // empty] | .[]' "$board" 2>/dev/null | tr -d '\r' || true)
 }
 
-if [ "${1:-}" = "--brainstorm" ]; then
-  [ "$#" -eq 3 ] || die "usage: register-project.sh --brainstorm <company> <board-project-id>"
+if [ "${1:-}" = "--board" ] || [ "${1:-}" = "--brainstorm" ]; then
+  # --board registers a Board entry that has no prd.json yet (a brainstorm or
+  # PRD that just started). --brainstorm is the older spelling of the same mode.
+  [ "$#" -eq 3 ] || die "usage: register-project.sh --board <company> <board-project-id>"
   register_brainstorm "$2" "$3"
 elif [ "${1:-}" = "--audit" ]; then
   audit "${2:-}"
@@ -326,5 +386,5 @@ elif [ "${1:-}" = "--retry-pending" ]; then
 elif [ $# -eq 2 ]; then
   register_one "$1" "$2"
 else
-  die "usage: register-project.sh <company> <project> | --brainstorm <company> <board-project-id> | --audit <company> | --backfill <company> --only-active [--yes] | --retry-pending <company>"
+  die "usage: register-project.sh <company> <project> | --board <company> <board-project-id> | --audit <company> | --backfill <company> --only-active [--yes] | --retry-pending <company>"
 fi

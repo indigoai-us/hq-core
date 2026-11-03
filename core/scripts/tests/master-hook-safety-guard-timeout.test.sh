@@ -307,7 +307,8 @@ for bash_bin in "${BASHES[@]}"; do
     if [ "$runner" != "bash" ]; then
       jq -n '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[
           {id:"slow-advisory",script:".claude/hooks/slow-advisory.sh",timeout:2,gated:false,safety:false},
-          {id:"fast-allow",script:".claude/hooks/fast-allow.sh",timeout:30,gated:false,safety:true}]}]}}' \
+          {id:"fast-allow",script:".claude/hooks/fast-allow.sh",timeout:30,gated:false,safety:true,
+           after:["slow-advisory"]}]}]}}' \
         > "$FIX/.claude/hooks/hook-registry.json"
       rm -rf "$FIX/workspace/orchestrator/hook-state/registry-rows"
       HQ_SAFETY_GUARD_TOTAL_BUDGET=1 run_master "$bash_bin" "$runner"

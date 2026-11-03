@@ -213,7 +213,7 @@ jobs:
 
           # Stable releases are created already held: hold-release goes on at
           # `gh pr create`, so a failure before release-pr-auto-merge.sh apply
-          # cannot leave an unheld stable PR for the hourly recheck to merge.
+          # cannot leave an unheld stable PR for the six-hourly recheck to merge.
           # Same rule as release-pr-auto-merge.sh is-stable; the test pins both.
           STABLE="false"
           if [ "$PR_TYPE" = "release" ] && printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -273,7 +273,20 @@ jobs:
           rsync -a --delete \
             --exclude='.git/' \
             --exclude='.claude/settings.local.json' \
+            --exclude='.leak-scan/denylist.yaml' \
+            --exclude='.leak-scan/manifest-snapshot.yaml' \
             staging/ target/
+          # The private lists never ship: the denylist names private companies
+          # in plain text and the slug snapshot stores salted hashes next to
+          # the salt. An excluded path is also kept from --delete, so remove a
+          # copy an earlier promotion left in hq-core. hq-core CI reads the
+          # denylist from the LEAK_SCAN_DENYLIST_YAML secret; the slug scan
+          # that used the snapshot was retired in #1628.
+          rm -f target/.leak-scan/denylist.yaml target/.leak-scan/manifest-snapshot.yaml
+          if [ -e target/.leak-scan/denylist.yaml ] || [ -e target/.leak-scan/manifest-snapshot.yaml ]; then
+            echo "::error::private leak-scan list still present in the promotion tree" >&2
+            exit 1
+          fi
 
       - name: Detect promotable changes (auto mode)
         id: realchanges
@@ -432,9 +445,9 @@ jobs:
               echo "> [!IMPORTANT]"
               echo "> **On hold: owner go required.** This is a stable release. It opens with the \`hold-release\` label and auto-merge is not armed. Do not merge this PR or tag \`v${INPUT_VERSION}\` until the owner gives an explicit go on the current head. The go is given by removing \`hold-release\`. Each new push re-applies \`hold-release\`, so a go covers only the head it was given on."
               if [ "$INPUT_MODE" = "auto" ]; then
-                echo "> After the go, the hourly release-gate recheck merges this PR once every check on that head passes (run \`recheck-hq-core-release-gate.yml\` with workflow_dispatch to merge sooner)."
+                echo "> After the go, the release-gate recheck (every six hours) merges this PR once every check on that head passes (run \`recheck-hq-core-release-gate.yml\` with workflow_dispatch to merge sooner)."
               else
-                echo "> After the go, a person merges this PR by hand: the release gate and its hourly recheck cover only \`promote/auto-main\`, not \`release/v*\` branches."
+                echo "> After the go, a person merges this PR by hand: the release gate and its six-hourly recheck cover only \`promote/auto-main\`, not \`release/v*\` branches."
               fi
               echo
             } >> "$BODY_FILE"
@@ -600,7 +613,7 @@ jobs:
 
       # Gate the exact target PR head. Auto mode is always a stable release, so
       # the PR carries hold-release here and the gate exits without merging.
-      # After the owner removes hold-release, the hourly recheck merges once
+      # After the owner removes hold-release, the six-hourly recheck merges once
       # every check on that head has passed.
       - name: Gate every check and merge auto-mode release PR
         if: >-

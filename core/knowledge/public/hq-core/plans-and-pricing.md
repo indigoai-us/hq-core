@@ -122,7 +122,7 @@ created after the cutover use the usage card's box sizes above.
 | Hosted agent, Basic (t3.medium) | $100/mo | Default size. |
 | Hosted agent, Power (t3.large) | $250/mo | Listed in the console wizard. |
 | Hosted agent, Dev (t3.xlarge) | $500/mo | Listed in the console wizard. |
-| Outpost | $80/mo | |
+| Outpost | $100/mo (small) | New Outposts by size: $100 small, $200 medium, $400 large, $800 xlarge. Existing $80 Outposts keep $80. |
 | Meeting hours | $1/hour | Metered per minute from the first minute, no included hours, billed monthly in arrears on the Workforce subscription. |
 
 On legacy plans, hosted agents require Workforce (or Enterprise). Creating one on Starter is

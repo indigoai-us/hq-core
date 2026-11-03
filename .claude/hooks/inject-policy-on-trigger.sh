@@ -1053,7 +1053,7 @@ run_derive_trigger_facts_bridge() {
 }
 
 run_derive_trigger_facts() {
-  local event="$1" with_intent="${2:-0}" helper="" helper_status=0
+  local event="$1" with_intent="${2:-0}" helper="" helper_status=0 fact_root="$HQ_ROOT"
   resolve_policy_fact_helper
   helper="${POLICY_FACT_HELPER:-$HELPERS/derive-trigger-facts.sh}"
   resolve_policy_fact_bridge
@@ -1090,26 +1090,26 @@ run_derive_trigger_facts() {
   # reason; here the env carries it.
   if [ -n "$STDIN_FILE" ]; then
     if [ "$with_intent" = "1" ]; then
-      if HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent < "$STDIN_FILE"; then
+      if HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event" --with-assistant-intent < "$STDIN_FILE"; then
         :
       else
         helper_status=$?
       fi
     else
-      if HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" < "$STDIN_FILE"; then
+      if HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event" < "$STDIN_FILE"; then
         :
       else
         helper_status=$?
       fi
     fi
   elif [ "$with_intent" = "1" ]; then
-    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event" --with-assistant-intent; then
+    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event" --with-assistant-intent; then
       :
     else
       helper_status=$?
     fi
   else
-    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" bash "$helper" "$event"; then
+    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event"; then
       :
     else
       helper_status=$?
@@ -1692,8 +1692,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         # invalidate v2 records, which baked in PreToolUse. v4 adds the parsed
         # `principals:` field to each record, so v3 records (one field short)
         # are never decoded with the new layout. v6 records carry the summary
-        # rule line cut on a word boundary with an ellipsis.
-        CACHE_HEADER="hq-policy-cache-v7${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
+        # rule line cut on a word boundary with an ellipsis. v8 reparses CRLF/BOM
+        # files that older versions could cache as missing frontmatter.
+        CACHE_HEADER="hq-policy-cache-v8${CACHE_SEP}${HQ_POLICY_TOOL_EVENTS:-default}${CACHE_SEP}${POLICY_FINGERPRINT}"
         cache_header=""
         if [ -r "$CACHE_FILE" ]; then
           IFS= read -r cache_header < "$CACHE_FILE" || true
@@ -1842,9 +1843,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       if [ -d "$EVAL_CACHE_DIR" ]; then
         EVAL_CACHE_FILE="$EVAL_CACHE_DIR/${scope_key}.${eval_slot}.eval"
         if [ "$EVENT" = "SessionStart" ]; then
-          EVAL_CACHE_HEADER="hq-policy-eval-v8${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_input_key}"
+          EVAL_CACHE_HEADER="hq-policy-eval-v9${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_input_key}"
         else
-          EVAL_CACHE_HEADER="hq-policy-eval-v12${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
+          EVAL_CACHE_HEADER="hq-policy-eval-v13${CACHE_SEP}${POLICY_FINGERPRINT}${CACHE_SEP}${eval_session_key}${CACHE_SEP}${eval_input_key}"
         fi
         eval_cache_header=""
         if [ -r "$EVAL_CACHE_FILE" ]; then
@@ -2363,6 +2364,7 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         finalize()
         next
       }
+      { sub(/\r$/, ""); if (FNR==1) sub(/^\357\273\277/, "") }
       FNR==1 { if (seen) finalize(); reset_file(); seen=1 }
       { fname=FILENAME }
       /^---[ \t]*$/ { if (d<2) { d++; next } }
@@ -3275,8 +3277,10 @@ prepare_policy_bodies() {
         bytes=0
         rule_bytes=0
         if (path != "") {
-          depth=0; started=0; count=0; inrule=0; rcount=0
+          depth=0; started=0; count=0; inrule=0; rcount=0; line_number=0
           while ((getline line < path) > 0) {
+            sub(/\r$/, "", line)
+            if (++line_number == 1) sub(/^\357\273\277/, "", line)
             if (line ~ /^---[ \t]*$/ && depth < 2) { depth++; continue }
             if (depth >= 2) {
               if (!started && line ~ /^[ \t]*$/) continue
@@ -3358,7 +3362,8 @@ policy_body() {
   # archival heading. A file with no frontmatter (or an unreadable one) prints
   # nothing, and the caller falls back to the summary line — fail-open to prior
   # behaviour, never a dropped policy.
-  awk -v stop="$BODY_STOP" '
+  LC_ALL=C awk -v stop="$BODY_STOP" '
+    { sub(/\r$/, ""); if (FNR==1) sub(/^\357\273\277/, "") }
     /^---[ \t]*$/ && d < 2 { d++; next }
     d >= 2 {
       if (!started && $0 ~ /^[ \t]*$/) next

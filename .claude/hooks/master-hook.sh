@@ -46,9 +46,15 @@ export BASH_ENV=/dev/null
 #     when `tool_name` from stdin doesn't match. Other events ignore the
 #     matcher segment.
 #   - Output handling — segregates each hook's stdout by shape:
-#       * Plain-text outputs are concatenated and emitted verbatim.
 #       * JSON outputs (single top-level object, parseable by jq) are merged
-#         into a single object emitted at the end:
+#         into a single object emitted at the end.
+#       * PreToolUse stdout is one JSON object whenever any child returned
+#         JSON: hosts JSON.parse the whole stream and block the tool call on
+#         mixed output ("returned invalid JSON"). Plain-text siblings are
+#         folded into hookSpecificOutput.additionalContext; plain-only
+#         PreToolUse stays plain text. Other events still emit plain text
+#         first, then JSON, or plain-only when no JSON was produced.
+#       * JSON merge:
 #           - First hook returning {"decision":"block", ...} wins (preserves
 #             the "any hook can short-circuit" semantic from settings.json).
 #           - Otherwise the JSON outputs are shallow-merged in order; later
@@ -422,6 +428,11 @@ stop_master_timeout_watchdog() {
     fi
     [ -z "${timeout_journal_file:-}" ] \
       || debug_files+=("$timeout_journal_file.$MASTER_INVOCATION_ID.active")
+    if [ "${PAR:-0}" -eq 1 ] && [ -n "${timeout_journal_file:-}" ]; then
+      for par_active_file in "$timeout_journal_file.$MASTER_INVOCATION_ID.active".*; do
+        [ ! -e "$par_active_file" ] || debug_files+=("$par_active_file")
+      done
+    fi
     [ "${#debug_files[@]}" -eq 0 ] || rm -f "${debug_files[@]}" >/dev/null 2>&1 || true
   fi
 }
@@ -803,9 +814,13 @@ if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
         || ! mv "$dedupe_lock" "$dedupe_lock.stale.$$" 2>/dev/null; then
         master_dedupe_follow "$dedupe_lock"
       else
-        # The renamed file may be a fresh lock a concurrent dispatch just wrote.
+        # The renamed file may be a fresh lock a concurrent dispatch just
+        # created. The set -C create and the timestamp write are two steps, so
+        # an empty capture is a claim still being written: treat it as fresh,
+        # the same as the first read above, or both twins dispatch.
         dedupe_then="$(cat "$dedupe_lock.stale.$$" 2>/dev/null || true)"
-        if [[ "$dedupe_then" =~ ^[0-9]+$ ]] && [ $((dedupe_now - dedupe_then)) -lt "$dedupe_window" ]; then
+        [[ "$dedupe_then" =~ ^[0-9]+$ ]] || dedupe_then="$dedupe_now"
+        if [ $((dedupe_now - dedupe_then)) -lt "$dedupe_window" ]; then
           mv "$dedupe_lock.stale.$$" "$dedupe_lock" 2>/dev/null || true
           master_dedupe_follow "$dedupe_lock"
         else
@@ -889,7 +904,7 @@ else
 fi
 
 journal_hook_event() {
-  local hook_path="$1" elapsed_ms="$2" script
+  local hook_path="$1" elapsed_ms="$2" rc="${3:-}" timed_out="${4:-0}" load1="-" script
   [ -n "$timeout_journal_file" ] || return 0
   script="${hook_path##*/}"
   case "$script" in
@@ -901,7 +916,13 @@ journal_hook_event() {
   case "$elapsed_ms" in
     ''|*[!0-9]*) return 0 ;;
   esac
-  printf '%s\t%s\t%s\t%s\n' "$script" "$EVENT" "$elapsed_ms" "$MASTER_INVOCATION_ID" \
+  # Fields 5-7 (exit code, timed_out flag, 1-minute load average) are
+  # additive; readers that know only fields 1-4 keep working.
+  case "$rc" in ''|*[!0-9]*) rc="-" ;; esac
+  case "$timed_out" in 1) ;; *) timed_out=0 ;; esac
+  ! command -v hq_load1 >/dev/null 2>&1 || { hq_load1; load1="$HQ_LOAD1_CACHE"; }
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$script" "$EVENT" "$elapsed_ms" "$MASTER_INVOCATION_ID" \
+    "$rc" "$timed_out" "$load1" \
     >> "$timeout_journal_file" 2>/dev/null || true
 }
 
@@ -913,8 +934,10 @@ journal_active_child_start() {
   case "$MASTER_INVOCATION_ID" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
   started_ms="$(master_now_ms)"
   [[ "$started_ms" =~ ^[0-9]+$ ]] || return 0
+  # In parallel dispatch each child gets its own breadcrumb file
+  # (<active>.<index>) so the watchdog sees every child that is running.
   printf '%s\t%s\t%s\n' "$script" "$EVENT" "$started_ms" \
-    > "$active_child_file" 2>/dev/null || true
+    > "$active_child_file${par_active_suffix:-}" 2>/dev/null || true
 }
 
 journal_active_child_end() {
@@ -1359,6 +1382,17 @@ is_json_object() {
   printf '%s' "$1" | jq -e 'type == "object"' >/dev/null 2>&1
 }
 
+# Shared advisory-hook cap (HQ_HOOK_ADVISORY_CAP=0 turns it off). Advisory
+# registry children get a SIGKILL follow-up after their timeout and fail open
+# with no output. Without the library the cap stays off and children run as
+# before.
+master_advisory_cap_loaded=0
+if [ -f "$REPO_ROOT/core/scripts/lib/advisory-cap.sh" ] \
+  && . "$REPO_ROOT/core/scripts/lib/advisory-cap.sh" 2>/dev/null \
+  && command -v hq_advisory_cap_applies >/dev/null 2>&1; then
+  master_advisory_cap_loaded=1
+fi
+
 # Per-child timeout runner. Prefers coreutils timeout (Linux, Git Bash), then
 # perl alarm (macOS); otherwise runs unbounded under the master budget.
 child_timeout_cmd=""
@@ -1374,6 +1408,8 @@ fi
 # slowest descendant and a 30 s registry timeout could run for minutes. Run the
 # hook in its own process group and signal the whole group on timeout, or when
 # the harness stops master-hook. Exit 142 on timeout without writing the marker.
+# The grace loop reaps the hook as soon as it exits, so a hook that stops on
+# TERM does not hold the group probe open for the whole grace.
 # shellcheck disable=SC2016 # perl program intentionally uses single quotes.
 child_timeout_perl_program='
 my $t = shift; my $marker = shift;
@@ -1383,8 +1419,14 @@ if ($pid == 0) { setpgrp(0, 0); exec {$ARGV[0]} @ARGV; exit 127; }
 setpgrp($pid, $pid);
 my $stop = sub {
   kill "TERM", -$pid;
-  for (1 .. 10) { last unless kill 0, -$pid; select(undef, undef, undef, 0.05); }
-  kill "KILL", -$pid;
+  my $nohang = eval { require POSIX; POSIX::WNOHANG() } || 1;
+  my $gone = 0;
+  for (1 .. 10) {
+    waitpid($pid, $nohang);
+    unless (kill 0, -$pid) { $gone = 1; last; }
+    select(undef, undef, undef, 0.05);
+  }
+  kill "KILL", -$pid unless $gone;
 };
 $SIG{ALRM} = sub { $stop->(); waitpid($pid, 0); exit 142; };
 for my $sig (qw(TERM INT HUP)) {
@@ -1528,13 +1570,25 @@ record_child_execution() {
   completed_child_paths+=("$path")
   completed_child_elapsed_ms+=("$elapsed_ms")
   journal_active_child_end
-  journal_hook_event "$path" "$elapsed_ms"
   if [ -n "$completion_marker" ] && [ ! -f "$completion_marker" ]; then
     case "$rc" in
       124|142) timed_out=1 ;;
     esac
   fi
   [ -n "$completion_marker" ] || timed_out=0
+  # Journal view of the timeout: also counts runs with no completion marker,
+  # and 137 from `timeout -k` once the KILL follow-up fired after the cap.
+  master_child_timed_out=0
+  if [ -z "$completion_marker" ] || [ ! -f "$completion_marker" ]; then
+    case "$rc" in
+      124|142) master_child_timed_out=1 ;;
+      137)
+        [[ "$timeout_seconds" =~ ^[0-9]+$ ]] && [ "$elapsed_ms" -ge $((timeout_seconds * 1000)) ] \
+          && master_child_timed_out=1
+        ;;
+    esac
+  fi
+  journal_hook_event "$path" "$elapsed_ms" "$rc" "$master_child_timed_out"
   # Markers are removed in one rm at the end of the dispatch instead of one
   # rm process per child (two per child with the pre-run cleanup).
   [ -z "$completion_marker" ] || [ ! -e "$completion_marker" ] \
@@ -1698,6 +1752,24 @@ master_hook_engine_port_enabled() { # <line>
       true*|'"on"'*|'"shadow"'*) return 0 ;;
     esac
   done
+}
+# Starts the engine for one bridged hook. On Windows, MSYS rewrites POSIX paths
+# in the environment when an MSYS process starts a native program, so PWD and
+# HQ_ROOT would reach hq-hook.exe as C:/x whatever spelling the bash hook sees.
+# MSYS2_ENV_CONV_EXCL keeps those two names literal, and the port's byte output
+# then matches bash. Scope is this call only: the local ends with the function,
+# so the plan call and the bash fallback never carry it. An existing value is
+# kept. On macOS and Linux the variable is never set. An hq-hook that starts
+# bash itself must drop this addition first, or native programs under that bash
+# would get the literal POSIX spelling; hq-hook releases after 0.3.1 do this.
+master_hook_engine_bridge_run() {
+  case "${OSTYPE:-}" in
+    msys*|cygwin*)
+      local MSYS2_ENV_CONV_EXCL="PWD;HQ_ROOT${MSYS2_ENV_CONV_EXCL:+;$MSYS2_ENV_CONV_EXCL}"
+      export MSYS2_ENV_CONV_EXCL
+      ;;
+  esac
+  run_child "$@"
 }
 master_hook_engine_bridge_plan() {
   local home="${HOME:-}" bin="" pointer="" snapshot="" line="" found=0 plan="" plan_rc=0 saved_input=""
@@ -2064,6 +2136,20 @@ master_report_late_event() {
     if [ -n "${active_child_file:-}" ] && [ -r "$active_child_file" ]; then
       IFS=$'\t' read -r active_child_name active_child_event active_child_started_ms < "$active_child_file" || true
     fi
+    if [ "${PAR:-0}" -eq 1 ] && [ -n "${active_child_file:-}" ]; then
+      # Parallel dispatch: name the child that has been running longest.
+      for par_active_file in "$active_child_file".*; do
+        [ -r "$par_active_file" ] || continue
+        par_a_name=""; par_a_event=""; par_a_started=""
+        IFS=$'\t' read -r par_a_name par_a_event par_a_started < "$par_active_file" || true
+        [[ "$par_a_started" =~ ^[0-9]+$ ]] || continue
+        if ! [[ "${active_child_started_ms:-}" =~ ^[0-9]+$ ]] || [ "$par_a_started" -lt "$active_child_started_ms" ]; then
+          active_child_name="$par_a_name"
+          active_child_event="$par_a_event"
+          active_child_started_ms="$par_a_started"
+        fi
+      done
+    fi
     case "$active_child_name" in ''|*[!A-Za-z0-9._-]*) active_child_name="" ;; esac
     if [ -n "$active_child_name" ] && [ "$active_child_event" = "$EVENT" ] \
       && [[ "$active_child_started_ms" =~ ^[0-9]+$ ]]; then
@@ -2313,7 +2399,8 @@ registry_rows() {
         ((.args // []) | join(" ")), (.runner // "exec"),
         (if .fail_closed == true then "1" else "0" end),
         (if .safety == true then "1" else "0" end),
-        ((.prefilter.re_all // []) | join("\u001e"))] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+        ((.prefilter.re_all // []) | join("\u001e")),
+        ((.after // []) | join(" "))] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
   master_debug_phase_finish config_load
   printf '%s\n' "$rows"
   if mkdir -p "${cache%/*}" 2>/dev/null; then
@@ -2321,15 +2408,479 @@ registry_rows() {
   fi
 }
 
+master_report_missing_guard() { # <hook-id> <script>
+  # Bash is blocked too, so the repair runs in a terminal outside the
+  # session. The message names the exact restore commands.
+  printf 'BLOCKED: %s guard script %s is missing; failing closed.\n' "$1" "$2" >&2
+  printf 'Restore it from a terminal outside this session: git -C "%s" checkout -- "%s" (or re-run /update-hq).\n' "$REPO_ROOT" "$2" >&2
+  [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: block %s (missing-script, fail_closed)\n' "$1" >&2
+}
+
+# --- Parallel child dispatch (HQ_HOOK_PARALLEL=1, default off) ---------------
+# Unset or 0 leaves the sequential loops below unchanged. With 1, every matched
+# child is queued, started in the background once the children it must follow
+# have finished, and its stdout, stderr, exit code and timing go to files.
+# par_drain then replays each child in the original dispatch order through
+# record_child_execution and collect_output, so the merged output, the exit
+# code and block precedence match a sequential run.
+# Ordering comes from hook-registry.json: a registry hook's "after": [ids]
+# waits for earlier siblings with those ids; "directory_hook_after":
+# {event: {basename: [names]}} does the same for directory hooks. Every
+# directory hook also waits for all registry hooks of the event.
+# HQ_HOOK_PARALLEL_EVENTS (space or comma list) limits the events that run in
+# parallel; HQ_HOOK_PARALLEL_MAX caps concurrent children (default 8).
+# Needs bash 5.1 or later (wait -n with ids); older bash stays sequential.
+PAR=0
+if [ "${HQ_HOOK_PARALLEL:-0}" = "1" ] \
+  && { [ "${BASH_VERSINFO[0]:-0}" -gt 5 ] \
+    || { [ "${BASH_VERSINFO[0]:-0}" -eq 5 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 1 ]; }; }; then
+  PAR=1
+  if [ -n "${HQ_HOOK_PARALLEL_EVENTS:-}" ]; then
+    case " ${HQ_HOOK_PARALLEL_EVENTS//,/ } " in
+      *" $EVENT "*) ;;
+      *) PAR=0 ;;
+    esac
+  fi
+fi
+PAR_MAX="${HQ_HOOK_PARALLEL_MAX:-8}"
+case "$PAR_MAX" in ''|*[!0-9]*|0) PAR_MAX=8 ;; esac
+# A SIGKILL skips the cleanup traps below, so a killed parallel run leaves its
+# result files (hook stdout and stderr) behind. Every result file name and
+# temp dir carries the PID of the master-hook that made it, and each run
+# removes the ones that are stale. A file is stale only when both hold:
+#   - its owner PID does not exist here ("No such process"; EPERM and any
+#     other answer count as alive), and
+#   - it is older than PAR_STALE_MINUTES, far longer than a master-hook run
+#     can live (the host caps it at minutes).
+# The age bound is what makes this safe when runs share one workspace but not
+# one PID namespace (a container on a bind mount, WSL beside Git Bash, a
+# sandbox where kill -0 is denied): the sweeper cannot see the other run's
+# PID, but a live run's files are never older than that run. Names from
+# before the PID was added (<invocation>.par.<idx>.<ext>, hq-par.XXXXXX) are
+# removed by age alone. Only names in these forms, owned by this user, are
+# touched. The glob, -O and kill -0 are builtins, so a clean directory, or one
+# holding only files of live runs, costs no process; find runs only when a
+# candidate exists.
+PAR_STALE_MINUTES=60
+par_owner_gone() { # <pid>
+  local err
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$1" != "$$" ] || return 1
+  kill -0 "$1" 2>/dev/null && return 1
+  err="$(export LC_ALL=C; kill -0 "$1" 2>&1)"
+  case "$err" in *"No such process"*) return 0 ;; esac
+  return 1
+}
+par_remove_if_old() { # <find -type> <rm flags> <path...>: remove those older than the bound
+  local type="$1" flags="$2"
+  shift 2
+  [ "$#" -gt 0 ] || return 0
+  find "$@" -maxdepth 0 -type "$type" -mmin +"$PAR_STALE_MINUTES" -exec rm "$flags" {} + 2>/dev/null || true
+}
+par_sweep_stale_files() { # <dir>: <invocation>.par.<pid>.<idx>.<ext> or .par.<idx>.<ext>
+  local f rest first second stale=()
+  for f in "$1"/*.par.*; do
+    [ -f "$f" ] && [ -O "$f" ] || continue
+    rest="${f##*.par.}"
+    first="${rest%%.*}"
+    rest="${rest#*.}"
+    second="${rest%%.*}"
+    case "$first" in ''|*[!0-9]*) continue ;; esac
+    if [ "$rest" = "$second" ]; then
+      # <idx>.<ext>: the name from before the owner PID was added.
+      case "$second" in ''|*[!A-Za-z]*) continue ;; esac
+    else
+      case "$second" in ''|*[!0-9]*) continue ;; esac
+      par_owner_gone "$first" || continue
+    fi
+    stale+=("$f")
+  done
+  [ "${#stale[@]}" -eq 0 ] || par_remove_if_old f -f "${stale[@]}"
+}
+par_sweep_stale_tmpdirs() { # <dir>: hq-par.<pid>.<random> or hq-par.<random>
+  local d rest stale=()
+  for d in "$1"/hq-par.*; do
+    [ -d "$d" ] && [ -O "$d" ] || continue
+    rest="${d##*/hq-par.}"
+    case "$rest" in
+      *.*) par_owner_gone "${rest%%.*}" || continue ;;
+      *[!A-Za-z0-9]*|'') continue ;;
+    esac
+    stale+=("$d")
+  done
+  [ "${#stale[@]}" -eq 0 ] || par_remove_if_old d -rf "${stale[@]}"
+}
+# Swept in both modes, so files left by a killed parallel run do not stay
+# behind after the flag is turned off.
+if [ -n "$child_completion_dir" ] && [ -d "$child_completion_dir" ]; then
+  par_sweep_stale_files "$child_completion_dir"
+fi
+# Result files sit beside the completion markers
+# (<invocation>.par.<pid>.<idx>.*) and go out with the markers' single batched
+# rm; a temp dir is the fallback.
+par_pfx=""
+par_tmpdir=""
+if [ "$PAR" -eq 1 ]; then
+  case "$MASTER_INVOCATION_ID" in
+    ''|*[!A-Za-z0-9._-]*) ;;
+    *)
+      # The marker dir is only created when a timeout runner exists.
+      if [ -n "$child_completion_dir" ] && [ -d "$child_completion_dir" ] && [ -w "$child_completion_dir" ]; then
+        par_pfx="$child_completion_dir/$MASTER_INVOCATION_ID.par.$$."
+      fi
+      ;;
+  esac
+  if [ -z "$par_pfx" ]; then
+    par_sweep_stale_tmpdirs "${TMPDIR:-/tmp}"
+    par_tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/hq-par.$$.XXXXXX" 2>/dev/null)" || par_tmpdir=""
+    [ -z "$par_tmpdir" ] || par_pfx="$par_tmpdir/"
+  fi
+  [ -n "$par_pfx" ] || PAR=0
+fi
+# Parallel result files hold hook stdout and stderr. A TERM or INT mid-dispatch
+# would otherwise leave them behind, since the batched rm only runs at the end
+# of par_drain. Only installed when parallel dispatch is on, so the flag-off
+# path keeps its single watchdog EXIT trap.
+par_cleanup_files() {
+  local j jobs_live
+  # Only signal children that are still jobs of this shell. A child already
+  # collected by wait keeps par_state "started", and its PID may now belong to
+  # an unrelated process.
+  jobs_live=" $(jobs -p 2>/dev/null | tr '\n' ' ') "
+  for ((j = 0; j < ${par_n:-0}; j++)); do
+    [ "${par_state[$j]:-}" = started ] && [ -n "${par_pid[$j]:-}" ] || continue
+    case "$jobs_live" in
+      *" ${par_pid[$j]} "*) kill "${par_pid[$j]}" 2>/dev/null || true ;;
+    esac
+  done
+  # Fork rm only when something is left: a normal exit has already removed the
+  # files, and the dispatcher process budget counts rm runs (markers are batched).
+  if [ -n "$par_tmpdir" ]; then
+    [ ! -d "$par_tmpdir" ] || rm -rf "$par_tmpdir" 2>/dev/null || true
+  elif [ -n "$par_pfx" ] && compgen -G "$par_pfx*" >/dev/null 2>&1; then
+    rm -f "$par_pfx"* 2>/dev/null || true
+  fi
+}
+par_on_exit() {
+  par_cleanup_files
+  if master_timeout_watchdog_enabled; then stop_master_timeout_watchdog; fi
+}
+par_on_signal() { # <exit code>
+  trap - EXIT TERM INT
+  # Children started in parallel may still be writing: stop them, give them a
+  # moment to exit, then remove whatever they left.
+  par_cleanup_files
+  sleep 0.1 2>/dev/null || true
+  par_cleanup_files
+  if master_timeout_watchdog_enabled; then stop_master_timeout_watchdog; fi
+  exit "$1"
+}
+if [ "$PAR" -eq 1 ]; then
+  trap par_on_exit EXIT
+  trap 'par_on_signal 143' TERM
+  trap 'par_on_signal 130' INT
+fi
+par_n=0
+par_reg_last=-1
+par_cur=""
+par_active_suffix=""
+par_dir_after_rows=""
+par_state=(); par_kind=(); par_ids=(); par_path=(); par_rtimeout=(); par_timeout=()
+par_fc=(); par_safety=(); par_runner=(); par_args=(); par_deps=(); par_pid=(); par_marker=(); par_capped=(); par_reaped=()
+
+# Directory-hook ordering rows for this event ("<basename>\x1f<names>"), read
+# once per registry change like registry_rows.
+par_load_dir_after() {
+  local cache="$REPO_ROOT/workspace/orchestrator/hook-state/registry-rows/${EVENT}.dir-after.rows"
+  [ -f "$REGISTRY" ] || return 0
+  if [ -f "$cache" ] && [ "$cache" -nt "$REGISTRY" ] && [ "$cache" -nt "$SCRIPT_DIR/master-hook.sh" ]; then
+    par_dir_after_rows="$(<"$cache")"
+    return 0
+  fi
+  par_dir_after_rows="$(jq -r --arg ev "$EVENT" '
+    (.directory_hook_after[$ev] // {}) | to_entries[]
+    | [.key, ((.value // []) | join(" "))] | join("\u001f")' "$REGISTRY" 2>/dev/null)" || par_dir_after_rows=""
+  if mkdir -p "${cache%/*}" 2>/dev/null; then
+    printf '%s\n' "$par_dir_after_rows" > "$cache.tmp.$$" 2>/dev/null && mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || rm -f "$cache.tmp.$$" 2>/dev/null
+  fi
+}
+
+par_dir_after() { # <basename> -> PAR_AFTER
+  local row
+  PAR_AFTER=""
+  while IFS= read -r row; do
+    [ "${row%%$'\x1f'*}" = "$1" ] || continue
+    PAR_AFTER="${row#*$'\x1f'}"
+    return 0
+  done <<< "$par_dir_after_rows"
+}
+
+par_enqueue() { # <reg|dir> <id> <path> <timeout> <fail_closed> <safety> <runner> <args> <after-names>
+  local i="$par_n" name j deps=""
+  # Two copies of one hook (the same basename in core and personal, or one id
+  # under two matchers) share that hook's state files, so they keep their
+  # order. Seen on Stop: core and personal 50-after-turn-suggestions.sh.
+  local names=()
+  read -r -a names <<< "$9"
+  for name in "$2" ${names[@]+"${names[@]}"}; do
+    for ((j = 0; j < i; j++)); do
+      [ "${par_ids[$j]}" != "$name" ] || deps+="$j "
+    done
+  done
+  if [ "$1" = dir ]; then
+    for ((j = 0; j <= par_reg_last; j++)); do deps+="$j "; done
+  fi
+  par_kind[i]="$1"; par_ids[i]="$2"; par_path[i]="$3"; par_rtimeout[i]="$4"; par_timeout[i]="$4"
+  par_fc[i]="$5"; par_safety[i]="$6"; par_runner[i]="$7"; par_args[i]="$8"
+  par_deps[i]="$deps"; par_state[i]=queued; par_pid[i]=""; par_marker[i]=""; par_reaped[i]=0
+  [ "$1" != reg ] || par_reg_last="$i"
+  par_n=$((i + 1))
+}
+
+par_enqueue_synth() { # <path> [reporter args...]: a block decided without running the child
+  local i="$par_n"
+  par_n=$((i + 1))
+  par_kind[i]=synth; par_ids[i]=""; par_path[i]="$1"; par_state[i]=synth
+  par_deps[i]=""; par_pid[i]=""; par_marker[i]=""
+  shift
+  [ "$#" -eq 0 ] || "$@" 2>"$par_pfx$i.err"
+}
+
+par_job() { # <idx> <cmd...>: runs in a background subshell
+  local i="$1" rc=0 out s e
+  shift
+  par_active_suffix=".$i"
+  par_cur="$i"
+  master_now_ms >/dev/null; s="$MASTER_NOW_MS"
+  out="$("$@" 2>>"$par_pfx$i.err")" || rc=$?
+  master_now_ms >/dev/null; e="$MASTER_NOW_MS"
+  [ -z "$active_child_file" ] || : > "$active_child_file.$i" 2>/dev/null || true
+  printf '%s' "$out" > "$par_pfx$i.out"
+  # The rc file is written last: its presence means the child is done.
+  printf '%s %s %s\n' "$rc" "$s" "$e" > "$par_pfx$i.rc"
+}
+
+par_reg_exec() { # <path> <timeout> <runner> <args> <id>: registry child with bridge fallback
+  local path="$1" t="$2" run_mode="$3" args="$4" rid="$5" rc=0 out
+  if [ -n "$HOOK_ENGINE_BRIDGE_MODE" ]; then
+    [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s (%s)\n' "$rid" "$HOOK_ENGINE_BRIDGE_MODE" >&2
+    run_child_journal_path="$path"
+    # shellcheck disable=SC2086 # args are space-separated literals from the registry.
+    out="$(master_hook_engine_bridge_run "$t" exec "$HOOK_ENGINE_BRIDGE_BIN" "$child_completion_marker" \
+      bridge "$rid" --mode "$HOOK_ENGINE_BRIDGE_MODE" --event "$EVENT" --timeout "$t" \
+      --script "$path" -- $args)" || rc=$?
+    run_child_journal_path=""
+    case "$rc" in
+      0|2) printf '%s' "$out"; return "$rc" ;;
+    esac
+    [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s exited %s without a verdict; running bash\n' "$rid" "$rc" >&2
+    rc=0
+    if [ -n "$child_completion_marker" ]; then
+      child_completion_marker="$child_completion_marker.fb"
+      printf '%s' "$child_completion_marker" > "$par_pfx$par_cur.mk"
+    fi
+  fi
+  # shellcheck disable=SC2086 # args are space-separated literals from the registry.
+  out="$(run_child "$t" "$run_mode" "$path" "$child_completion_marker" $args)" || rc=$?
+  printf '%s' "$out"
+  return "$rc"
+}
+
+par_start() { # <idx>: start one queued child (main shell)
+  local i="$1" t="${par_rtimeout[$1]}"
+  master_record_dispatch_startup
+  child_kill_after=""
+  if [ "${par_kind[$i]}" = reg ] && [ "${par_safety[$i]}" = "1" ]; then
+    # The shared safety budget is measured when the guard actually starts, so
+    # a guard held back by ordering or the concurrency cap gets only what is
+    # left, and no safety guard can run past the budget.
+    t="$(master_safety_guard_timeout "$t" "$((SECONDS - MASTER_ENTRY_SECONDS))")"
+    if [ "$t" = "0" ]; then
+      {
+        master_report_safety_budget_spent "${par_ids[$i]}"
+        [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (safety-budget-spent) rc=2\n' "${par_ids[$i]}" >&2
+      } 2>"$par_pfx$i.err"
+      par_state[i]=synth
+      return 0
+    fi
+    child_kill_after=2
+  fi
+  # Same advisory-hook cap as the sequential loop.
+  par_capped[i]=0
+  if [ "${par_kind[$i]}" = reg ] && [ "$master_advisory_cap_loaded" = "1" ] \
+    && hq_advisory_cap_applies "$EVENT" "${par_ids[$i]}" "${par_safety[$i]:-0}" "${par_fc[$i]:-0}"; then
+    child_kill_after="$(hq_advisory_cap_kill_after)"
+    par_capped[i]=1
+  fi
+  par_timeout[i]="$t"
+  prepare_child_completion_marker
+  par_marker[i]="$child_completion_marker"
+  if [ "${par_kind[$i]}" = reg ]; then
+    master_hook_engine_bridge_mode "${par_ids[$i]}"
+    par_job "$i" par_reg_exec "${par_path[$i]}" "$t" "${par_runner[$i]}" "${par_args[$i]}" "${par_ids[$i]}" &
+  else
+    par_job "$i" run_child "$t" exec "${par_path[$i]}" "$child_completion_marker" "$EVENT" &
+  fi
+  par_pid[i]=$!
+  par_state[i]=started
+  child_kill_after=""
+}
+
+par_dep_done() { # <idx>
+  case "${par_state[$1]}" in
+    synth) return 0 ;;
+    queued) return 1 ;;
+  esac
+  [ ! -f "$par_pfx$1.rc" ] || return 0
+  # A job that died without its rc file is done once wait has reported it.
+  [ "${par_reaped[$1]:-0}" = 1 ]
+}
+
+par_schedule() {
+  local i j ready pending progressed running live=() reaped_pid wait_rc
+  while :; do
+    pending=0
+    progressed=0
+    running=0
+    live=()
+    for ((i = 0; i < par_n; i++)); do
+      [ "${par_state[$i]}" = started ] || continue
+      [ ! -f "$par_pfx$i.rc" ] || continue
+      [ "${par_reaped[$i]:-0}" != 1 ] || continue
+      running=$((running + 1))
+      live+=("${par_pid[$i]}")
+    done
+    for ((i = 0; i < par_n; i++)); do
+      [ "${par_state[$i]}" = queued ] || continue
+      pending=1
+      [ "$running" -lt "$PAR_MAX" ] || break
+      ready=1
+      for j in ${par_deps[$i]}; do
+        par_dep_done "$j" || { ready=0; break; }
+      done
+      [ "$ready" -eq 1 ] || continue
+      par_start "$i"
+      progressed=1
+      if [ "${par_state[$i]}" = started ]; then
+        running=$((running + 1))
+        live+=("${par_pid[$i]}")
+      fi
+    done
+    [ "$pending" -eq 1 ] || break
+    [ "$progressed" -eq 0 ] || continue
+    [ "${#live[@]}" -gt 0 ] || continue
+    reaped_pid=""
+    wait_rc=0
+    wait -n -p reaped_pid "${live[@]}" 2>/dev/null || wait_rc=$?
+    for ((i = 0; i < par_n; i++)); do
+      [ "${par_state[$i]}" = started ] || continue
+      if [ -n "$reaped_pid" ]; then
+        [ "${par_pid[$i]}" != "$reaped_pid" ] || par_reaped[i]=1
+      elif [ "$wait_rc" -eq 127 ]; then
+        # None of the listed PIDs is a job of this shell any more, so all were
+        # already collected. A kill -0 probe could match a reused PID and spin
+        # this loop forever.
+        par_reaped[i]=1
+      elif ! kill -0 "${par_pid[$i]}" 2>/dev/null; then
+        # wait reported no job (already collected): fall back to a probe.
+        par_reaped[i]=1
+      fi
+    done
+  done
+}
+
+par_drain() {
+  local i rc s e out err rest id marker
+  [ "$PAR" -eq 1 ] || return 0
+  master_debug_phase_start external_command
+  par_schedule
+  for ((i = 0; i < par_n; i++)); do
+    [ "${par_state[$i]}" != started ] || wait "${par_pid[$i]}" 2>/dev/null || true
+  done
+  master_debug_phase_finish external_command
+  master_debug_phase_start parse
+  for ((i = 0; i < par_n; i++)); do
+    if [ -s "$par_pfx$i.err" ]; then
+      err=""
+      IFS= read -r -d '' err < "$par_pfx$i.err" || true
+      printf '%s' "$err" >&2
+    fi
+    if [ "${par_state[$i]}" = synth ]; then
+      collect_output 2 "" "${par_path[$i]}"
+      continue
+    fi
+    id="${par_ids[$i]}"
+    rc=""; s=""; e=""; out=""
+    [ ! -f "$par_pfx$i.rc" ] || read -r rc s e rest < "$par_pfx$i.rc"
+    [ ! -f "$par_pfx$i.out" ] || IFS= read -r -d '' out < "$par_pfx$i.out" || true
+    marker="${par_marker[$i]}"
+    if [ -f "$par_pfx$i.mk" ]; then
+      IFS= read -r marker < "$par_pfx$i.mk" || true
+      # The bridge's own marker, if it wrote one, is removed with the rest.
+      [ ! -e "${par_marker[$i]}" ] || child_completion_markers_pending+=("${par_marker[$i]}")
+    fi
+    if ! [[ "$rc" =~ ^[0-9]+$ ]]; then
+      # The background job died before it wrote a result. A guard that left
+      # no verdict blocks: every PreToolUse child, and any registry child
+      # marked fail_closed or safety.
+      if [ "$EVENT" = "PreToolUse" ] \
+        || { [ "${par_kind[$i]}" = reg ] && { [ "${par_fc[$i]:-0}" = "1" ] || [ "${par_safety[$i]:-0}" = "1" ]; }; }; then
+        printf 'BLOCKED: %s left no result; failing closed.\n' "$id" >&2
+        rc=2
+      else
+        rc=1
+      fi
+      record_child_execution "${par_path[$i]}" "" "" "$rc" "$marker" "${par_timeout[$i]}"
+      collect_output "$rc" "$out" "${par_path[$i]}"
+      continue
+    fi
+    record_child_execution "${par_path[$i]}" "$s" "$e" "$rc" "$marker" "${par_timeout[$i]}"
+    if [ "${par_capped[$i]:-0}" = "1" ] && [ "${master_child_timed_out:-0}" = "1" ]; then
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: cap %s after %ss (rc=%s); failing open\n' "$id" "${par_timeout[$i]}" "$rc" >&2
+      rc=0
+      out=""
+    fi
+    if [ "${par_kind[$i]}" = reg ]; then
+      if [ "$EVENT" = "PreToolUse" ] && [ "${par_fc[$i]:-0}" = "1" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+        case "$rc" in
+          124|137|142) printf 'BLOCKED: %s timed out after %ss; failing closed.\n' "$id" "${par_timeout[$i]}" >&2 ;;
+          *) printf 'BLOCKED: %s exited %s without a verdict; failing closed.\n' "$id" "$rc" >&2 ;;
+        esac
+        rc=2
+      fi
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: run %s rc=%s %sms\n' "$id" "$rc" "$((e - s))" >&2
+      if [ "${par_safety[$i]}" = "1" ] && master_safety_rc_is_timeout "$rc"; then
+        master_report_safety_timeout "$id" "${par_timeout[$i]}"
+        rc=2
+      fi
+    else
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: run %s rc=%s %sms\n' "$id" "$rc" "$((e - s))" >&2
+    fi
+    collect_output "$rc" "$out" "${par_path[$i]}"
+  done
+  master_debug_phase_finish parse
+  if [ -n "$par_tmpdir" ]; then
+    rm -rf "$par_tmpdir" 2>/dev/null || true
+  else
+    for ((i = 0; i < par_n; i++)); do
+      for e in out err rc mk; do
+        [ ! -e "$par_pfx$i.$e" ] || child_completion_markers_pending+=("$par_pfx$i.$e")
+      done
+    done
+  fi
+}
+# --- end parallel child dispatch ----------------------------------------------
+
 if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_profile_allows >/dev/null 2>&1; then
   # Unit separator (0x1f) framing: tab is IFS whitespace, so consecutive empty
   # fields would collapse and shift later columns (a hook's args would land in
   # the prefilter slot and silently skip it).
-  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed rsafety rpf_re_all; do
+  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed rsafety rpf_re_all rafter; do
     [ -n "$rid" ] || continue
     # A CR from a CRLF jq row would otherwise become a one-character re_all
     # regex and skip hooks that have no prefilter.
     rpf_re_all="${rpf_re_all%$'\r'}"
+    rafter="${rafter%$'\r'}"
     if [ "$rgated" = "1" ]; then
       # An unknown profile name is treated as strict inside the gate, so it
       # can only add guards, never skip them.
@@ -2365,15 +2916,19 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       # A missing fail_closed PreToolUse guard is treated like a crashed one:
       # block, so deleting or renaming the guard script cannot switch it off.
       if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ]; then
-        # Bash is blocked too, so the repair runs in a terminal outside the
-        # session. The message names the exact restore commands.
-        printf 'BLOCKED: %s guard script %s is missing; failing closed.\n' "$rid" "$rscript" >&2
-        printf 'Restore it from a terminal outside this session: git -C "%s" checkout -- "%s" (or re-run /update-hq).\n' "$REPO_ROOT" "$rscript" >&2
-        [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: block %s (missing-script, fail_closed)\n' "$rid" >&2
+        if [ "$PAR" -eq 1 ]; then
+          par_enqueue_synth "$REPO_ROOT/$rscript" master_report_missing_guard "$rid" "$rscript"
+          continue
+        fi
+        master_report_missing_guard "$rid" "$rscript"
         collect_output 2 "" "$REPO_ROOT/$rscript"
         continue
       fi
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (missing-script)\n' "$rid" >&2
+      continue
+    fi
+    if [ "$PAR" -eq 1 ]; then
+      par_enqueue reg "$rid" "$REPO_ROOT/$rscript" "$rtimeout" "${rfail_closed:-0}" "$rsafety" "$rrunner" "$rargs" "$rafter"
       continue
     fi
     rc=0
@@ -2388,6 +2943,14 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     if [ "$rsafety" = "1" ]; then
       child_timeout="$(master_safety_guard_timeout "$rtimeout" "$((SECONDS - MASTER_ENTRY_SECONDS))")"
       child_kill_after=2
+    fi
+    child_advisory_capped=0
+    if [ "$master_advisory_cap_loaded" = "1" ] \
+      && hq_advisory_cap_applies "$EVENT" "$rid" "${rsafety:-0}" "${rfail_closed:-0}"; then
+      # Same TERM-surviving wrapper as safety guards, so a hook that ignores
+      # SIGTERM (or a stalled child of it) is killed at timeout plus grace.
+      child_kill_after="$(hq_advisory_cap_kill_after)"
+      child_advisory_capped=1
     fi
     if [ "$rsafety" = "1" ] && [ "$child_timeout" = "0" ]; then
       master_debug_phase_finish external_command
@@ -2406,7 +2969,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s (%s)\n' "$rid" "$HOOK_ENGINE_BRIDGE_MODE" >&2
       run_child_journal_path="$REPO_ROOT/$rscript"
       # shellcheck disable=SC2086 # args are space-separated literals from the registry.
-      out="$(run_child "$child_timeout" exec "$HOOK_ENGINE_BRIDGE_BIN" "$child_completion_marker" \
+      out="$(master_hook_engine_bridge_run "$child_timeout" exec "$HOOK_ENGINE_BRIDGE_BIN" "$child_completion_marker" \
         bridge "$rid" --mode "$HOOK_ENGINE_BRIDGE_MODE" --event "$EVENT" --timeout "$child_timeout" \
         --script "$REPO_ROOT/$rscript" -- $rargs)" || rc=$?
       run_child_journal_path=""
@@ -2436,6 +2999,14 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     master_now_ms >/dev/null
     child_ended_ms="$MASTER_NOW_MS"
     record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$child_timeout"
+    # A capped advisory child that ran out of time fails open: exit 0 and none
+    # of its partial output.
+    if [ "$child_advisory_capped" = "1" ] && [ "$master_child_timed_out" = "1" ]; then
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: cap %s after %ss (rc=%s); failing open\n' "$rid" "$child_timeout" "$rc" >&2
+      rc=0
+      out=""
+    fi
+    child_advisory_capped=0
     # A PreToolUse guard marked fail_closed gives no verdict when it times out
     # (124/142, or 137 when killed) or crashes. Without this, that "no verdict"
     # is a non-2 exit and Claude Code runs the tool call.
@@ -2516,6 +3087,7 @@ hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 # schema. Keep hqSessionBlockedBy for session-hooks.sh provenance readers.
 # (US-402 / agent-session blockedBy).
 
+[ "$PAR" -eq 0 ] || par_load_dir_after
 for hook in ${hooks[@]+"${hooks[@]}"}; do
   base="${hook##*/}"
   matcher="$(parse_matcher "$base" "$hook")"
@@ -2538,6 +3110,11 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
     fi
   fi
 
+  if [ "$PAR" -eq 1 ]; then
+    par_dir_after "$base"
+    par_enqueue dir "$base" "$hook" "${HQ_MASTER_CHILD_TIMEOUT:-120}" 0 0 exec "" "$PAR_AFTER"
+    continue
+  fi
   rc=0
   trace_start="${EPOCHREALTIME:-}"
   master_now_ms >/dev/null
@@ -2566,6 +3143,7 @@ done
 # Use the same ${arr[@]+"${arr[@]}"} guard as the hooks dispatch loop above;
 # otherwise a layered PreToolUse blocker that exits 2 with plain-text stderr
 # (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
+par_drain
 MASTER_OUTPUT_DEADLINE_MS=""
 output_write_started_ms=""
 MASTER_OUTPUT_ABORTED=0
@@ -2684,18 +3262,8 @@ if [ -n "$pending_timeout_warning" ]; then
 fi
 
 master_debug_phase_finish output_merge
-master_debug_phase_start output_stdout
-# A deny/block must not wait behind advisory text on a slow stdout pipe. When a
-# possible deny is present, preserve the decision's output budget by dropping
-# plain text for this invocation.
-if [ -n "$plain_buf" ] && [ "$has_blocking_json" -eq 0 ]; then
-  if master_output_needs_bound "$plain_buf"; then
-    master_output_run output_stdout cat < <(printf '%s' "$plain_buf") || true
-  else
-    printf '%s' "$plain_buf"
-  fi
-fi
-master_debug_phase_finish output_stdout
+# Defer stdout until JSON merge finishes. Printing plain text first, then JSON,
+# made PreToolUse stdout unparseable and blocked the tool call.
 
 master_debug_phase_start output_merge
 json_result=""
@@ -2804,7 +3372,10 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
           end)
       ' <<< "$json_input")"
       rc=$?
-      [ "$rc" -eq 0 ] || master_output_record_abandoned output_merge
+      if [ "$rc" -ne 0 ] || [ -z "$json_result" ]; then
+        master_output_record_abandoned output_merge
+        json_result="${json_outputs[0]}"
+      fi
     else
       json_result="$(printf '%s\n' ${json_outputs[@]+"${json_outputs[@]}"} | jq -sc '
         reduce .[] as $h ({};
@@ -2825,6 +3396,10 @@ elif [ ${#json_outputs[@]} -gt 1 ]; then
             else .
             end)
       ')"
+      rc=$?
+      if [ "$rc" -ne 0 ] || [ -z "$json_result" ]; then
+        json_result="${json_outputs[0]}"
+      fi
     fi
   fi
 fi
@@ -2851,7 +3426,35 @@ if [ "$EVENT" = "PostToolUse" ] && [ "$exit_code" -ne 0 ] && [ -n "$json_result"
   printf 'master-hook: PostToolUse exit %s changed to 0 so the redacted tool output is kept.\n' "$exit_code" >&2
   exit_code=0
 fi
+# PreToolUse hosts parse the whole stdout as JSON. Mixed plain-text plus a
+# JSON sibling is invalid and blocks the tool. Fold leftover plain into
+# additionalContext when JSON is present. Plain-only stays plain: policy
+# reminders, malformed JSON-looking child output, and the dispatcher
+# contract all require that. A deny still drops plain text so the decision
+# is not delayed on a slow pipe. Other events keep emitting plain first.
+if [ "$EVENT" = "PreToolUse" ] && [ -n "$plain_buf" ] && [ -n "$json_result" ] && [ "$has_blocking_json" -eq 0 ]; then
+  folded="$(printf '%s' "$json_result" | jq -c --arg event "$EVENT" --arg plain "$plain_buf" '
+    .hookSpecificOutput = ((.hookSpecificOutput // {}) + {hookEventName: ((.hookSpecificOutput.hookEventName // $event))})
+    | .hookSpecificOutput.additionalContext =
+        ([.hookSpecificOutput.additionalContext, $plain]
+         | map(select(type == "string" and length > 0))
+         | join("\n\n"))
+  ' 2>/dev/null)" || folded=""
+  [ -z "$folded" ] || json_result="$folded"
+  # Drop leftover plain even if fold failed; mixed stdout blocks the tool.
+  plain_buf=""
+fi
 master_debug_phase_start output_stdout
+# Plain text goes first. PreToolUse plain was folded into the JSON above (or
+# is plain-only); other events keep main's plain-then-JSON order, so a plain
+# hook's context is not dropped when a sibling hook returns JSON.
+if [ -n "$plain_buf" ] && [ "$has_blocking_json" -eq 0 ]; then
+  if master_output_needs_bound "$plain_buf"; then
+    master_output_run output_stdout cat < <(printf '%s' "$plain_buf") || true
+  else
+    printf '%s' "$plain_buf"
+  fi
+fi
 if [ -n "$json_result" ]; then
   if master_output_needs_bound "$json_result"; then
     if master_output_run output_stdout cat <<< "$json_result"; then

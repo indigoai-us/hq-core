@@ -72,6 +72,13 @@ const NEXT = {
 
 function die(msg) { process.stderr.write(`super-conductor-decisions: ${msg}\n`); process.exit(2); }
 
+// Stored text limits. The question and option descriptions are what the owner
+// reads on the decision card, so they are long enough to hold the whole ask;
+// wake lines shorten them with clip() at print time instead.
+export const QUESTION_MAX = 4000;
+export const OPTION_LABEL_MAX = 60;
+export const OPTION_DESC_MAX = 600;
+
 export const clean = (t, n = 400) => {
   const x = String(t == null ? '' : t).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
   return x.length > n ? `${x.slice(0, n - 1)}…` : x;
@@ -200,9 +207,21 @@ export function addDecision(file, o) {
   for (const k of ['source', 'ref', 'question']) if (!o[k]) throw new Error(`add needs ${k}`);
   if (!SOURCES.has(o.source)) throw new Error(`source must be one of ${[...SOURCES].join(', ')}`);
   const options = (o.options || []).map((x) => (typeof x === 'string' ? { label: x } : x))
-    .filter((x) => x && x.label).map((x) => ({ label: clean(x.label, 60), description: clean(x.description, 200) || undefined, recommended: !!x.recommended }));
+    .filter((x) => x && x.label).map((x) => {
+      // Picker labels must stay short, but the owner has to read the whole
+      // option. A label over the cap keeps its full text at the head of the
+      // description, so nothing the caller wrote is lost.
+      const full = clean(x.label, OPTION_DESC_MAX);
+      const label = clean(x.label, OPTION_LABEL_MAX);
+      const desc = clean(x.description, OPTION_DESC_MAX);
+      const description = label === full ? desc : clean(desc ? `${full} — ${desc}` : full, OPTION_DESC_MAX);
+      return { label, description: description || undefined, recommended: !!x.recommended, ...(label === full ? {} : { label_cut: true }) };
+    });
   if (options.length < 2 || options.length > 4) throw new Error('add needs two to four --option values');
   if (!options.some((x) => x.recommended)) options[0].recommended = true;
+  const cut = options.filter((x) => x.label_cut).map((x) => x.label);
+  if (new Set(options.map((x) => optionLabel(x.label))).size !== options.length) throw new Error(`two options have the same label after the ${OPTION_LABEL_MAX}-character cut; make the labels differ early and put detail in the description`);
+  for (const x of options) delete x.label_cut;
   const at = o.at || new Date().toISOString();
   const ref = clean(o.ref, 200);
   return withLockSync(file, () => {
@@ -210,7 +229,7 @@ export function addDecision(file, o) {
     if (dup) return { id: dup.id, dup: true };
     const row = {
       id: decisionId(o.source, ref, at), at, source: o.source, ref, status: 'open',
-      question: clean(o.question), options, priority: String(o.priority || '').trim().toLowerCase() === 'critical' ? 'critical' : 'normal',
+      question: clean(o.question, QUESTION_MAX), options, priority: String(o.priority || '').trim().toLowerCase() === 'critical' ? 'critical' : 'normal',
       lane: LANES.includes(o.lane) ? o.lane : undefined,
       company: clean(o.company, 60) || undefined,
       relay: (o.relay && (o.relay.session || o.relay.child)) ? { session: o.relay.session || undefined, child: o.relay.child || undefined, link: o.relay.link || undefined } : undefined,
@@ -223,9 +242,9 @@ export function addDecision(file, o) {
     const hit = o.standing === false ? null : matchStanding(o.standing || readStanding(), row);
     if (hit) {
       append(file, { id: row.id, at, status: 'answered', answer: hit.answer, by: 'standing', note: `standing ${hit.rule.id}` });
-      return { id: row.id, dup: false, standing: hit.rule.id, answer: hit.answer };
+      return { id: row.id, dup: false, standing: hit.rule.id, answer: hit.answer, cut };
     }
-    return { id: row.id, dup: false };
+    return { id: row.id, dup: false, cut };
   });
 }
 
@@ -270,7 +289,7 @@ export function setStatus(file, id, status, extra = {}, at = new Date().toISOStr
 // question text without the "<who> (<source>): " prefix triage adds; a row
 // dropped as a duplicate itself never anchors another match.
 export const DUP_WINDOW_MS = 24 * 3600 * 1000;
-export const normalizeQuestion = (t) => clean(t, 2000).replace(/^[^:()]{1,80}\s\([a-z_]+\):\s*/i, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+export const normalizeQuestion = (t) => clean(t, QUESTION_MAX).replace(/^[^:()]{1,80}\s\([a-z_]+\):\s*/i, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const normName = (t) => clean(t, 80).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 // A duplicate is the same words from the same person (or the same source
 // thread) in the same company. A different person asking the same generic
@@ -310,7 +329,9 @@ export function nextOpen(reqs) {
 export const LANES = ['merges', 'asks', 'general'];
 export function laneOf(r) {
   if (r.lane && LANES.includes(r.lane)) return r.lane;
-  const t = `${r.ref || ''} ${r.question || ''}`;
+  // Route on the head of the question; long background text can mention a
+  // deploy without the ask being one.
+  const t = `${r.ref || ''} ${clean(r.question, 400)}`;
   if (/\b(merge|merged|release|releases|deploy|redeploy|tag|rollout|roll out|cut v?\d|publish)\b/i.test(t)) return 'merges';
   if (r.source === 'ledger' || r.source === 'ask') return 'asks';
   return 'general';
@@ -410,6 +431,7 @@ function add(argv) {
     const standing = o['no-standing'] ? false : readStanding();
     r = addDecision(o.file, { ...o, options, standing, relay: { session: o['relay-session'], child: o['relay-child'], link: o['relay-link'] }, askedBy: o['asked-by'] });
   } catch (e) { die(e.message); }
+  for (const x of r.cut || []) process.stderr.write(`super-conductor-decisions: warning: option label is over ${OPTION_LABEL_MAX} characters, so the card shows it shortened; its full text is kept in the description. Put detail in --option 'label::description' instead: ${x}\n`);
   process.stdout.write(`${r.id}${r.standing ? ` answered by standing ${r.standing}: ${r.answer}` : ''}\n`);
   if (r.dup) process.exit(3);
 }

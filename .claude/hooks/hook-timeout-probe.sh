@@ -409,7 +409,7 @@ hook_timeout_sequence_json() {
   sequence="$(tail -n 40 "$journal_file" 2>/dev/null | jq -Rsc '
     split("\n")
     | map(select(length > 0) | split("\t")
-      | select((length == 3 or length == 4)
+      | select((length >= 3 and length <= 7)
         and (.[0] | test("^[A-Za-z0-9._-]{1,128}$"))
         and (.[1] | test("^[A-Za-z0-9._-]{1,48}$"))
         and (.[2] | test("^[0-9]{1,9}$"))

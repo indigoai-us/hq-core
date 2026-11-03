@@ -9,7 +9,8 @@ name: codex-windows-hooks
 # in the pr-checks codex-windows-hook-launcher job, so it is not repeated here.
 #
 # GitHub-hosted Windows never runs on pull requests, to keep Actions cost
-# down. This check runs on manual workflow_dispatch, nightly, and on stable
+# down. This check runs on manual workflow_dispatch, nightly (on
+# hq-core-staging only; the hq-core copy skips it), and on stable
 # release tags (v*, never v*-* pre-release tags), the same tag filter as
 # pr-checks. pr-checks-minimal-actions.test.sh pins these triggers. The fake
 # model needs no credentials or network.
@@ -32,6 +33,11 @@ concurrency:
 jobs:
   real-codex:
     name: codex-windows-hooks
+    # The nightly schedule runs on hq-core-staging only. This file is promoted
+    # to hq-core unchanged and the schedule fires there too; staging's nightly
+    # already covers the same tree, so the hq-core copy skips the job (owner
+    # decision 2026-11-02). Dispatch and staging release tags are unchanged.
+    if: ${{ github.event_name != 'schedule' || github.repository == 'indigoai-us/hq-core-staging' }}
     # A repository variable can move staging onto other Windows runners;
     # hq-core, fork PRs and an unset variable use windows-latest.
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_WINDOWS || '"windows-latest"') || 'windows-latest' }}

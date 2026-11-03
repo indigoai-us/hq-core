@@ -32,6 +32,16 @@
 #        proved against the tree git reads (PR 1700)
 #   [16] git show, cat-file and archive paths filled in by xargs, find -exec
 #        or parallel; ordinary xargs and find shapes that still pass
+#   [17] cygpath path conversion passes, cygpath -f still blocks, and the
+#        hq-bug and setup skill text passes the guard
+#   [18] zero-padded brace ranges, mktemp after && with no space, one-line
+#        function bodies, extglob groups, alias/PATH/path-named commands
+#   [19] cygpath trust rules, eval/source overrides, zsh glob forms, and
+#        the ~/.hq/secrets-cache store
+#   [20] zsh glob forms on an absolute home path and relative to a cwd in
+#        HOME, including ANSI-C quoted parts
+#   [22] round 6: function bodies inside a block, the zsh short for loop,
+#        ^ and # words reaching a reader indirectly, :// paths
 # Sections run in the order 1-6, 9, 10, 7, 8, because [8] exports env vars.
 set -uo pipefail
 
@@ -316,6 +326,10 @@ bash_case 2 "variable assigned from cat stays unknown" 'F=$(cat notes.txt); cat 
 bash_case 2 "assignment prefix before an impure command" 'F=$(ls notes.txt) eval "cat ~/.npmrc"'
 bash_case 0 "cat README" "cat README.md"
 bash_case 0 "cat .env.example" "cat .env.example"
+bash_case 0 "cat config/upstream-pin.env (non-secret pin file)" "cat config/upstream-pin.env"
+bash_case 2 "cat config/other-pin.env still blocked" "cat config/other-pin.env"
+bash_case 2 "cat config/xupstream-pin.env still blocked" "cat config/xupstream-pin.env"
+read_case 0 "Read config/upstream-pin.env" "$PROJ/config/upstream-pin.env"
 bash_case 0 "cat public key" "cat ~/.ssh/id_ed25519.pub"
 bash_case 0 "grep -c count only" "grep -c registry ~/.npmrc"
 bash_case 0 "grep -q quiet" "grep -q _authToken ~/.npmrc && echo set"
@@ -796,6 +810,293 @@ printf '{\n' > "$PROJ/open.txt"
 bash_case 2 "brace word with a computed close brace" 'cat ~/{$(cat close.txt),.npmrc}'
 bash_case 2 "brace word with a computed open brace" 'cat ~/{.npmrc,$(cat open.txt)}'
 bash_case 2 "brace word around a key path" 'cat {$(cat close.txt),~/.ssh/id_rsa}'
+
+# [18] Windows parity lane: five fail-open or hang shapes (issues #1749, #1750)
+# 1. a zero-padded numeric brace range is base 10, not an octal error
+bash_case 2 "zero-padded brace range before a credential file" 'cat {08..10}.txt ~/.npmrc'
+bash_case 2 "zero-padded brace range operand" 'cat {08..10} ~/.npmrc'
+bash_case 2 "negative zero-padded brace range" 'cat {-08..-10} ~/.npmrc'
+bash_case 2 "brace range too long to expand" 'cat {0..1234567890123456789012} ~/.npmrc'
+bash_case 0 "zero-padded brace range control" 'echo {08..10}'
+bash_case 0 "zero-padded brace range neutral read" 'cat notes{08..10}.txt'
+# 2. mktemp after && with no space: no loop under patsub_replacement
+for _sep in '&&' '||' ';' '|'; do
+  bash_case 0 "mktemp right after $_sep returns" "a${_sep}T=\$(mktemp)&& echo \"\$T\""
+  bash_case 2 "mktemp right after $_sep with a credential read" "a${_sep}T=\$(mktemp)&& cat \"\$T\" ~/.npmrc"
+done
+unset _sep
+# 3. a one-line `function name { ... }` body is analysed
+bash_case 2 "function keyword body reads a credential" 'function f { cat ~/.npmrc; }; f'
+bash_case 2 "function keyword body, not called" 'function f { cat ~/.npmrc; }'
+bash_case 2 "function keyword body with parens" 'function f() { cat ~/.npmrc; }; f'
+bash_case 0 "function keyword body control" 'function f { cat notes.txt; }; f'
+# 4. extglob groups are an unknown word part
+bash_case 2 "extglob negation names a credential" "shopt -s extglob"$'\n'"cat ~/.!(x)pmrc"
+bash_case 2 "extglob at-group names a credential" "shopt -s extglob"$'\n'"cat ~/@(.npmrc)"
+bash_case 2 "extglob plus-group names a credential" 'shopt -s extglob; cat ~/.+(n)pmrc'
+bash_case 2 "extglob without a shopt line" 'cat ~/.?(n)pmrc'
+bash_case 0 "extglob with a metadata-only command" "shopt -s extglob"$'\n'"ls ~/.!(x)pmrc"
+# 5. an alias, PATH change, or same-named program is not a safe command
+bash_case 2 "alias turns ls into cat" "alias ls=cat"$'\n'"ls ~/.npmrc"
+bash_case 2 "alias with expand_aliases" "shopt -s expand_aliases; alias ls=cat"$'\n'"ls ~/.npmrc"
+bash_case 2 "PATH prepend before ls" 'PATH=.:$PATH; ls ~/.npmrc'
+bash_case 2 "PATH prefix assignment on ls" 'PATH=.:$PATH ls ~/.npmrc'
+bash_case 2 "ls from a non-system directory" '/tmp/x/ls ~/.npmrc'
+bash_case 2 "ls from the working directory" './ls ~/.npmrc'
+bash_case 2 "xargs into a same-named ls" 'echo ~/.npmrc | xargs ./ls'
+bash_case 2 "stat function shadows the builtin name" 'stat() { cat "$@"; }; stat ~/.npmrc'
+bash_case 0 "system ls control" '/bin/ls ~/.npmrc'
+bash_case 0 "plain ls control" 'ls ~/.npmrc'
+bash_case 0 "test -f control" 'test -f ~/.npmrc && echo exists'
+bash_case 0 "PATH change keeps the test builtin trusted" 'export PATH=/opt/x:$PATH; test -f ~/.npmrc && echo exists'
+bash_case 2 "path+= then stat" 'PATH+=:/opt/x; stat ~/.npmrc'
+bash_case 0 "an unrelated function keeps ls trusted" 'f() { :; }; ls ~/.npmrc'
+bash_case 2 "function keyword named ls" 'function ls { cat "$@"; }; ls ~/.npmrc'
+# review: writable bin directories, letter and stepped ranges, false positives
+bash_case 2 "ls copied into /opt/homebrew/bin" 'cp /bin/cat /opt/homebrew/bin/ls; /opt/homebrew/bin/ls ~/.npmrc'
+bash_case 2 "xargs into /opt/homebrew/bin/ls" 'echo ~/.npmrc | xargs /opt/homebrew/bin/ls'
+bash_case 2 "stat linked into /usr/local/bin" 'ln -sf /bin/cat /usr/local/bin/stat; stat ~/.npmrc'
+bash_case 2 "ls written into a bin directory" 'cat /bin/cat > ~/bin/ls; ls ~/.npmrc'
+bash_case 2 "letter range names .npmrc" 'cat ~/.np{m..m}rc'
+bash_case 2 "letter range around m" 'cat ~/.np{l..n}rc'
+bash_case 2 "stepped letter range" 'cat ~/.npm{r..r..1}c'
+bash_case 2 "stepped numeric range" 'cat ~/.npmrc{1..3..2}'
+bash_case 0 "letter range neutral read" 'cat notes.tx{s..u}'
+bash_case 2 "read into PATH" 'read PATH <<< /tmp/x; ls ~/.npmrc'
+bash_case 2 "BASH_CMDS entry" 'BASH_CMDS[ls]=/bin/cat; ls ~/.npmrc'
+bash_case 2 "BASH_ALIASES entry" 'BASH_ALIASES[ls]=cat; ls ~/.npmrc'
+bash_case 2 "hash -p" 'hash -p /bin/cat ls; ls ~/.npmrc'
+bash_case 0 "reading PATH is not a change" 'echo $PATH; ls -l ~/.aws/credentials'
+bash_case 0 "the word path in a comment" 'ls -la ~/.ssh/id_rsa  # check path'
+bash_case 0 "grep for the word alias" 'stat ~/.npmrc; grep -r alias src'
+
+# [19] round 2 (pr-desk on #1753, hooks-audit prop-codex-guards Q4)
+# 1. cygpath gets the alias, PATH and trusted-path rules
+bash_case 2 "alias cygpath=cat" "shopt -s expand_aliases"$'\n'"alias cygpath=cat"$'\n'"cygpath -- ~/.npmrc"
+bash_case 2 "PATH prefix on cygpath" 'PATH=/tmp/pb:$PATH cygpath -- ~/.npmrc'
+bash_case 2 "PATH change before cygpath" 'PATH=/tmp/pb:$PATH; cygpath -- ~/.npmrc'
+bash_case 2 "cygpath from the working directory" './cygpath -- ~/.npmrc'
+bash_case 0 "plain cygpath conversion still passes" 'cygpath -u -- ~/.npmrc'
+# 2. an alias inside eval, and eval or source of unseen text
+bash_case 2 "alias inside single-quoted eval" "shopt -s expand_aliases"$'\n'"eval 'alias ls=cat'"$'\n'"ls ~/.npmrc"
+bash_case 2 "alias inside double-quoted eval" 'eval "alias ls=cat"; ls ~/.npmrc'
+bash_case 2 "eval alias of cygpath" "eval 'alias cygpath=cat'; cygpath -- ~/.npmrc"
+bash_case 2 "eval of a variable before ls" 'a=alias; eval "$a ls=cat"; ls ~/.npmrc'
+bash_case 2 "source before ls" 'source ./env.sh; ls ~/.npmrc'
+bash_case 2 "dot-source before stat" '. ./env.sh; stat ~/.npmrc'
+# 3. zsh glob forms
+bash_case 2 "zsh alternation group" 'cat ~/.(npmrc|x)'
+bash_case 2 "zsh negation" "setopt extendedglob"$'\n'"cat ~/.npm^x"
+bash_case 2 "zsh negation without setopt" 'cat ~/.npm^x'
+bash_case 2 "zsh repetition" 'setopt extendedglob; cat ~/.npmr#c'
+bash_case 2 "zsh exclusion" 'setopt extendedglob; cat ~/.npmrc~x'
+bash_case 2 "zsh group in a neutral directory" 'cat ~/.(npm|pyp)rc'
+bash_case 0 "function definition is not a group" 'f() { cat notes.txt; }; f'
+bash_case 0 "array assignment is not a group" 'a=(notes.txt); cat "${a[0]}"'
+bash_case 0 "git show HEAD~1 without zsh options" 'git show HEAD~1:README.md'
+# 4. the hq secrets cache
+mkdir -p "$FH/.hq/secrets-cache/indigo"
+printf '%s\n' "$CANARY" > "$FH/.hq/secrets-cache/indigo/API_KEY"
+read_case 2 "secrets cache value" "$FH/.hq/secrets-cache/indigo/API_KEY"
+bash_case 2 "cat of a secrets cache value" 'cat ~/.hq/secrets-cache/indigo/API_KEY'
+bash_case 2 "cat via \$HOME" 'cat $HOME/.hq/secrets-cache/x'
+bash_case 2 "recursive grep of the secrets cache" 'grep -r KEY ~/.hq/secrets-cache'
+bash_case 2 "secrets cache glob" 'cat ~/.hq/secrets-cache/*/*'
+bash_case 0 "listing the secrets cache" 'ls ~/.hq/secrets-cache'
+bash_case 0 "test -f on a secrets cache file" 'test -f ~/.hq/secrets-cache/indigo/API_KEY && echo exists'
+# review: archivers, alias bodies, ~ after a glob character
+bash_case 2 "tar of ~/.hq" 'tar c ~/.hq'
+bash_case 2 "zip -r of ~/.hq" 'zip -r /tmp/z ~/.hq'
+bash_case 2 "tar of HOME" 'tar czf /tmp/h.tgz ~'
+bash_case 2 "tar of ~/.config" 'tar c ~/.config'
+bash_case 0 "tar of a project folder" 'tar czf /tmp/p.tgz src'
+bash_case 2 "alias body reads a credential glob" "alias cygpath='cat ~/.np*'"$'\n'"cygpath -w x"
+bash_case 2 "alias body is a recursive reader" "alias cygpath='grep -r x'; cygpath -w ~"
+bash_case 2 "alias of cygpath with a neutral operand" "alias cygpath=cat; cygpath -w notes.txt ~/.npmrc"
+bash_case 2 "zsh exclusion after a glob" 'cat ~/.np*~x'
+bash_case 0 "git log HEAD~1" 'git log HEAD~1'
+bash_case 0 "self-referencing alias on a neutral file" "alias ls='ls -l'; ls notes.txt"
+bash_case 2 "alias of ls -l on a credential" "alias ll='ls -l'; ll ~/.npmrc"
+# review (coordinator): quoted text and gh option values are data
+rw_step1="$(awk '/^```bash$/{f=1;next} f&&/^```$/{exit} f' "$ROOT/.claude/skills/resumework/SKILL.md")"
+[ -n "$rw_step1" ] || bad "resumework first bash block not found in SKILL.md"
+bash_case 0 "resumework thread lookup block" "$rw_step1"
+bash_case 0 "quoted jq program with map(. // x)" 'jq -r '"'"'map(. // "-") | join(" | ")'"'"' f.json; cat "$X"'
+bash_case 0 "gh --workflow from a substitution" 'gh run list -R o/r --workflow "$(gh run view 1 -R o/r --json workflowName --jq .workflowName)"'
+bash_case 0 "gh --branch from a substitution" 'gh run list -R o/r --branch "$(git branch --show-current)"'
+bash_case 2 "gh --workflow substitution that reads a credential" 'gh run list -R o/r --workflow "$(cat ~/.npmrc)"'
+bash_case 2 "gh --input from a computed credential path" 'gh api x --input "$(echo ~/.npmrc)"'
+bash_case 2 "empty quotes before a zsh group" 'cat ~/.""(npmrc|x)'
+# [20] zsh glob forms on an absolute home path and relative to a cwd in HOME
+bash_case 2 "zsh group on the absolute home path" "cat $FH/.n(p)mrc"
+bash_case 2 "zsh negation on the absolute home path" "cat $FH/.np^x"
+bash_case 2 "quoted gap before a group on the absolute home path" "cat $FH/.n''(p)mrc"
+bash_case 2 "zsh repetition on the absolute home path" "cat $FH/.npmr#c"
+bash_case 2 "ANSI-C quote before a group on the absolute home path" "cat $FH/.n\$'p'(m)rc"
+bash_case 2 "zsh group via \$HOME" 'cat $HOME/.n(p)mrc'
+bash_case 2 "zsh group relative to HOME" 'cat .n(p)mrc' "$FH"
+bash_case 2 "zsh negation relative to HOME" 'cat .np^xmrc' "$FH"
+bash_case 2 "zsh repetition relative to HOME" 'cat .npmr#c' "$FH"
+bash_case 2 "zsh groups in an .aws path relative to HOME" 'cat .a(w)s/c(r)edentials' "$FH"
+bash_case 2 "ANSI-C quote then a group relative to HOME" "cat \$'.n'(p)mrc" "$FH"
+bash_case 2 "double-quoted part then a group relative to HOME" 'cat ".n"(p)mrc' "$FH"
+bash_case 0 "plain relative read in HOME" 'cat proj/README.md' "$FH"
+bash_case 0 "quoted jq program in HOME" "jq -r 'map(. // \"-\")' proj/README.md" "$FH"
+# review: a group at the start of a word, and git revisions
+bash_case 2 "zsh group at word start" 'cat (.n|x)pmrc' "$FH"
+bash_case 2 "zsh group at word start, no alternation" 'cat (.n)pmrc' "$FH"
+bash_case 2 "zsh groups at word starts in an .aws path" 'cat (.a)ws/(c)redentials' "$FH"
+bash_case 2 "zsh group as a redirect target" 'cat < (.n|x)pmrc' "$FH"
+bash_case 2 "zsh group at word start after &&" 'true&&cat (.n|x)pmrc' "$FH"
+bash_case 2 "zsh group as the whole word" 'cat (.npmrc|x)' "$FH"
+bash_case 0 "git diff HEAD^" 'git diff HEAD^ --stat'
+bash_case 0 "git show HEAD^:path" 'git show HEAD^:README.md'
+bash_case 0 "git log range to HEAD^" 'git log main..HEAD^'
+bash_case 2 "git log of an unassigned variable revision's parent (zsh can expand it)" 'git log -1 "$sha"^'
+bash_case 0 "git log of an assigned variable revision's parent" 'sha=abc123; git log -1 "$sha"^'
+bash_case 0 "a tag with #" 'npm run build -- --tag v1#2'
+bash_case 0 "URL fragment" 'curl https://example.invalid/a.html#frag'
+bash_case 0 "subshell with a pipe" '(cd /tmp && ls) | wc -l'
+bash_case 0 "if with a subshell" 'if (true); then ls; fi'
+bash_case 0 "case pattern group" 'case $x in (a|b) echo y;; esac'
+bash_case 0 "test grouping" '[[ ( -f x ) ]] && echo y'
+bash_case 2 "zsh group after an output redirect" 'cat>/dev/stdout (.n|x)pmrc' "$FH"
+bash_case 2 "zsh group after 2>/dev/null" 'cat 2>/dev/null (.n|x)pmrc' "$FH"
+bash_case 2 "zsh group after an input redirect" 'cat </dev/null (.n)pmrc' "$FH"
+bash_case 2 "zsh group after empty double quotes" 'cat ""(.n|x)pmrc' "$FH"
+bash_case 2 "zsh group after empty single quotes" "cat ''(.n)pmrc" "$FH"
+bash_case 0 "git log origin/main^..HEAD" 'git log origin/main^..HEAD'
+bash_case 0 "git diff origin/main^" 'git diff origin/main^ --stat'
+bash_case 0 "git show origin/feat^:path" 'git show origin/feat^:src/a.ts'
+bash_case 2 "caret in a file name under a folder (zsh ^ negation)" 'cat notes/v1^2.txt'
+bash_case 0 "npm caret range on a local package" 'npm i ./pkg@^1.2.3'
+# [21] round 4 (#1759 desk shapes): function bodies in ( ), keywords only in
+# command position, ^ and # anywhere in a word, zsh numeric ranges <N-M>.
+bash_case 2 "function NAME ( body ) reads a credential" 'function f ( cat ~/.npmrc ); f'
+bash_case 2 "function NAME (body) without blanks" 'function f (cat ~/.npmrc); f'
+bash_case 2 "function NAME ( body ) reading an .aws file" 'function f ( head -n 3 ~/.aws/credentials ); f'
+bash_case 2 "NAME() ( body ) still checked" 'f() (cat ~/.npmrc); f'
+bash_case 2 "keyword word 'in' as an argument" 'cat in (.n)pmrc' "$FH"
+bash_case 2 "keyword word '!' as an argument" 'cat ! (.n)pmrc' "$FH"
+bash_case 2 "keyword word 'do' as an argument" 'cat do (.n)pmrc' "$FH"
+bash_case 2 "keyword word '{' as an argument" 'cat { (.n)pmrc' "$FH"
+bash_case 2 "keyword word 'then' as an argument" 'cat then (.n)pmrc' "$FH"
+bash_case 2 "zsh # repetition with no . ~ _ before it" 'cat i#d_rsa' "$FH/.ssh"
+bash_case 2 "zsh # repetition under a folder" 'cat .ssh/i#d_rsa' "$FH"
+bash_case 2 "zsh ^ after letters only" 'cat id^x' "$FH/.ssh"
+bash_case 2 "zsh ^ at word start" 'cat ^x' "$FH/.ssh"
+bash_case 2 "zsh ^ in a neutral-looking word" 'cat prod^x' "$FH/.ssh"
+bash_case 2 "zsh ^ before a group" 'cat ^(x|y)' "$FH/.ssh"
+bash_case 2 "zsh ^ as a redirect target" 'cat < ^x' "$FH/.ssh"
+bash_case 2 "zsh numeric range <->" 'cat id_ed<->' "$FH/.ssh"
+bash_case 2 "zsh numeric range <1-99999>" 'cat id_ed<1-99999>' "$FH/.ssh"
+bash_case 0 "if ( ) subshell" 'if (true); then ls; fi'
+bash_case 0 "[[ ( ) ]] grouping" '[[ ( -f x ) ]] && echo y'
+bash_case 0 "case pattern ( )" 'case $x in (a|b) echo y;; esac'
+bash_case 0 "git diff HEAD^" 'git diff HEAD^ --stat'
+bash_case 0 "git log v1.2^..v1.3" 'git log v1.2^..v1.3'
+bash_case 0 "npm tag with #" 'npm run build -- --tag v1#2'
+bash_case 0 "URL fragment" 'curl https://example.invalid/a.html#frag'
+bash_case 0 "quoted ^ in a grep pattern" "grep '^x' README.md"
+# Review follow-ups: a keyword after other prefix keywords (if ! (x)), and
+# git/npm z operands are checked as the wildcard pattern zsh can expand.
+bash_case 2 "if ! ( body )" 'if ! (cat ~/.npmrc); then :; fi'
+bash_case 2 "while ! ( body )" 'while ! (cat ~/.npmrc); do break; done'
+bash_case 2 "else ! ( body )" 'if false; then :; else ! (cat ~/.npmrc); fi'
+bash_case 2 "time ! ( body )" 'time ! (cat ~/.npmrc)'
+bash_case 2 "time -p ( body )" 'time -p (cat ~/.npmrc)'
+bash_case 2 "if { ( body ) }" 'if { (cat ~/.npmrc) }; then :; fi'
+bash_case 2 "git diff --no-index on a ^ word" 'git diff --no-index /dev/null .n^xpmrc' "$FH"
+bash_case 2 "git diff --no-index on a # word" 'git diff --no-index /dev/null i#d_rsa' "$FH/.ssh"
+bash_case 2 "git hash-object on a ^ word" 'git hash-object -w ~/.n^xpmrc'
+bash_case 0 "git log of a variable revision's parent, with a path" 'git log HEAD^..HEAD -- src'
+bash_case 0 "pnpm caret range" 'pnpm add left-pad@^1'
+bash_case 2 "time -p -- ( body )" 'time -p -- (cat ~/.npmrc)'
+bash_case 2 "git z operand with an unset variable" 'git diff --no-index /dev/null ${p}^x' "$FH/.ssh"
+bash_case 2 "git z operand with a quoted unset variable" 'git diff --no-index /dev/null "$p"^x' "$FH/.ssh"
+bash_case 2 "git operand: # after a default expansion" 'git diff --no-index /dev/null ${p:-i}#d_rsa' "$FH/.ssh"
+mkdir -p "$FH/one" && printf 'FAKE PRIVATE KEY %s\n' "$CANARY" > "$FH/one/id_rsa"
+bash_case 2 "git operand: # after a default expansion, cwd outside a credential dir" 'git diff --no-index /dev/null ${p:-i}#d_rsa' "$FH/one"
+bash_case 2 "git operand: # after a default expansion under a folder" 'git diff --no-index /dev/null one/${p:-i}#d_rsa' "$FH"
+bash_case 2 "git operand: * after an unset variable, cwd outside a credential dir" 'git diff --no-index /dev/null ${p}*' "$FH/one"
+bash_case 2 "git operand: * after an unset variable" 'git diff --no-index /dev/null ${p}*' "$FH/.ssh"
+bash_case 2 "git operand: ? after an unset variable" 'git diff --no-index /dev/null "$p"?d_rsa' "$FH/.ssh"
+bash_case 0 "git log HEAD^..HEAD" 'git log HEAD^..HEAD'
+bash_case 0 "npm view a caret range" 'npm view pkg@^1.2'
+# [22] round 6 (#1762 desk shapes): function bodies inside a block, the zsh
+# short for loop, ^ and # words that reach a reader indirectly, and paths
+# that look like URLs.
+bash_case 2 "function NAME ( body ) inside { }" '{ function f ( cat ~/.npmrc ); }; f'
+bash_case 2 "function NAME ( body ) after then" 'if true; then function f ( cat ~/.npmrc ); fi; f'
+bash_case 2 "function NAME ( body ) after !" '! function f ( cat ~/.npmrc ); f'
+bash_case 2 "zsh short for loop" 'for f (~/.npmrc) cat $f'
+bash_case 2 "zsh short for loop with a brace body" 'for f (~/.npmrc) { cat $f }'
+bash_case 2 "zsh short for loop, no blank before (" 'for f(~/.npmrc) cat $f'
+bash_case 2 "zsh short for loop, two names" 'for a b (~/.npmrc x) cat $a'
+bash_case 2 "zsh short for loop inside { }" '{ for f (~/.npmrc) cat $f; }'
+bash_case 2 "zsh short select loop" 'select f (~/.npmrc) cat $f'
+bash_case 2 "^ word piped to xargs cat" 'echo id^x | xargs cat' "$FH/one"
+bash_case 2 "# word piped to xargs cat" 'echo i#d_rsa | xargs cat' "$FH/one"
+bash_case 2 "# word in a for list" 'for f in i#d_rsa; do cat $f; done' "$FH/one"
+bash_case 2 "^ word in a for list" 'for f in id^x; do cat $f; done' "$FH/one"
+bash_case 2 "^ word through printf to xargs" "printf '%s\n' id^x | xargs cat" "$FH/one"
+bash_case 2 "glob in a for list names a credential file" 'for f in ~/.n*; do cat $f; done'
+bash_case 2 "? glob in a for list names a credential file" 'for f in ~/.np?rc; do cat $f; done'
+mkdir -p "$FH/one/a:"
+bash_case 2 "path with :// and a # glob (folder a: exists)" 'cat a://../i#d_rsa' "$FH/one"
+bash_case 2 "path with :// and a ^ glob (folder a: exists)" 'cat a://../id^x' "$FH/one"
+bash_case 2 "https-looking path with .. and a # glob" 'cat https://../i#d_rsa' "$FH/one"
+bash_case 2 "URL-shaped # word outside a URL tool" 'echo https://h/i#d_rsa | xargs cat' "$FH/one"
+bash_case 2 "arithmetic around a substitution still checked" 'echo $(( $(cat id^x) ))' "$FH/one"
+# [22b] round 6 controls
+bash_case 0 "control: git status" 'git status'
+bash_case 0 "control: git diff HEAD^" 'git diff HEAD^'
+bash_case 0 "control: git log HEAD^..HEAD (r6)" 'git log HEAD^..HEAD'
+bash_case 0 "control: npm i ./pkg@^1.2.3 (r6)" 'npm i ./pkg@^1.2.3'
+bash_case 0 "control: commit message with # and ^ (double quotes)" 'git commit -m "fix #12 and ^ caret"'
+bash_case 0 "control: commit message with # and ^ (single quotes)" "git commit -m 'fix #12 and ^ caret'"
+bash_case 0 "control: unquoted commit message with #" 'git commit -m fix#12'
+bash_case 0 "control: curl https://example.com/x" 'curl https://example.com/x'
+bash_case 0 "control: curl URL with a fragment" 'curl https://example.com/a.html#frag'
+bash_case 0 "control: sudo git diff HEAD^" 'sudo git diff HEAD^'
+bash_case 0 "control: function NAME { body } inside if" 'if true; then function g { ls; }; fi; g'
+bash_case 0 "control: for (( )) arithmetic loop" 'for ((i=0;i<3;i++)); do echo $i; done'
+bash_case 0 "control: for list of plain words" 'for b in main dev; do git log -1 $b; done'
+bash_case 0 "control: for list glob of source files" 'for f in src/*.ts; do wc -l $f; done'
+bash_case 0 "control: for list from git ls-files" 'for f in $(git ls-files); do wc -l $f; done'
+bash_case 0 "control: [[ =~ ^regex ]]" '[[ $x =~ ^[0-9]+$ ]] && echo y'
+bash_case 0 "control: arithmetic xor" 'echo $((3^1))'
+# Review follow-ups: zsh short while/until/if with a [[ ]] condition runs the
+# brace body after ]]; a loop variable named `in`; URL tools after a wrapper.
+bash_case 2 "zsh short while [[ ]] { body }" 'while [[ 1 ]] { cat ~/.npmrc; break }'
+bash_case 2 "zsh short while [[ ]] { glob body }" 'while [[ 1 ]] { cat .npm(rc|x); break }' "$FH"
+bash_case 2 "zsh short until [[ ]] { body }" 'until [[ 0 ]] { cat ~/.npmrc; break }'
+bash_case 2 "zsh short if [[ ]] { body }" 'if [[ 1 ]] { cat ~/.ssh/id_rsa }'
+bash_case 2 "zsh short for loop with a variable named in" 'for in (~/.npmrc) cat $in'
+bash_case 0 "control: env curl URL with a fragment" 'env curl https://example.com/x#y'
+bash_case 0 "control: sudo curl URL with a fragment" 'sudo curl https://example.com/x#y'
+bash_case 0 "control: [[ -f ]] && echo" '[[ -f x ]] && echo y'
+bash_case 0 "control: if [[ -n ]]; then" 'if [[ -n $x ]]; then echo y; fi'
+# A ^ or # word after ]] in a zsh short form is not inside [[ ]].
+bash_case 2 "zsh short if [[ ]] { ^ word } to xargs" 'if [[ 1 ]] { echo id^x } | xargs cat' "$FH/one"
+bash_case 2 "zsh short while [[ ]] { # word } to xargs" 'while [[ 1 ]] { echo i#d_rsa; break } | xargs cat' "$FH/one"
+bash_case 2 "zsh short until [[ ]] { ^ word } to xargs" 'until [[ 0 ]] { echo id^x } | xargs cat' "$FH/one"
+bash_case 0 "control: [[ =~ ^re ]] then a plain command" '[[ $x =~ ^a ]] && echo y'
+# The shapes above are real: zsh expands them to the key, bash runs the
+# function body (zsh reads `f ( .. )` as a glob qualifier and errors).
+real_shell() {
+  local desc="$1" want="$2" got
+  shift 2
+  got=$("$@" 2>/dev/null | tr '\n' ' ')
+  if [ "$got" = "$want" ]; then ok "real shell: $desc"; else bad "real shell: $desc want '$want' got '$got'"; fi
+}
+if command -v zsh >/dev/null 2>&1; then
+  real_shell "zsh i#d_rsa names id_rsa" "id_rsa " zsh -f -c "cd '$FH/.ssh' && setopt extendedglob && print -l i#d_rsa"
+  real_shell "zsh ^x names id_rsa" "id_rsa " zsh -f -c "cd '$FH/.ssh' && setopt extendedglob && print -l ^x | grep -x id_rsa"
+  real_shell "zsh id_ed<-> names id_ed25519" "id_ed25519 " zsh -f -c "cd '$FH/.ssh' && print -l id_ed<->"
+  real_shell "zsh in (.n)pmrc names .npmrc" ".npmrc " zsh -f -c "cd '$FH' && print -l (.n)pmrc"
+fi
+real_shell "bash function NAME ( body ) runs the body" "ran " bash -c 'function f ( echo ran ); f'
 # review round 11: blanks at the edge of the output split the outer word
 printf ' .env\n' > "$PROJ/lead.txt"
 printf '.env \n' > "$PROJ/trail.txt"
@@ -1232,6 +1533,40 @@ bash_case 2 "xargs-fed git show inside a for loop (src, fail closed)" \
   'for f in $(ls src); do echo $f | xargs -I{} git show HEAD:src/{}; done' "$GREPO"
 bash_case 2 "find -exec git show inside a while loop" \
   'while read d; do find $d -type f -exec git show HEAD:{} \;; done < dirs.txt' "$GREPO"
+
+echo "[17] cygpath prints converted paths; cygpath -f prints file contents"
+bash_case 0 "cygpath -m -- computed temp path" 'B=$(mktemp -t x.XXXXXX); B=$(cygpath -m -- "$B")'
+bash_case 0 "cygpath -u -- computed variable" 'cygpath -u -- "$LOCALAPPDATA"'
+bash_case 0 "cygpath -w literal path" 'cygpath -w /tmp/report.txt'
+bash_case 2 "cygpath -f credential file" 'cygpath -f ~/.npmrc'
+bash_case 2 "cygpath -mf credential file" 'cygpath -mf ~/.npmrc'
+bash_case 2 "cygpath --file=credential file" 'cygpath --file=$HOME/.npmrc'
+bash_case 2 "cygpath computed word can be --file=" 'cygpath -m "$(printf -- --file=x)"'
+bash_case 2 "cygpath computed option before --" 'B=$(mktemp -t x.XXXXXX); cygpath "$B" -- /tmp/x'
+bash_case 2 "cat of cygpath output naming a credential" 'cat "$(cygpath -u -- ~/.npmrc)"'
+# Brace expansion turns a word that is not an option into -f before cygpath
+# runs: cygpath {-f,} ~/.npmrc is cygpath -f ~/.npmrc.
+bash_case 2 "cygpath brace word expands to -f with the path" 'cygpath {-f,~/.npmrc}'
+bash_case 2 "cygpath brace word expands to -f" 'cygpath {-f,} ~/.npmrc'
+bash_case 2 "cygpath nested brace word expands to -f" 'cygpath {{-f,},} ~/.npmrc'
+bash_case 2 "cygpath -m then brace word expands to -f" 'cygpath -m {-f,~/.npmrc}'
+bash_case 0 "cygpath brace word after -- is a path" 'cygpath -m -- {a,b}.txt'
+# The real skill text, so a skill edit cannot reintroduce the block (feedback
+# 7cfd18a5). Every run of /hq-bug Step 2 goes through this guard.
+hq_bug_step2="$(awk '/^### 2\. /{s=1} s&&/^```bash$/{f=1;next} f&&/^```$/{exit} f' "$ROOT/.claude/skills/hq-bug/SKILL.md")"
+[ -n "$hq_bug_step2" ] || bad "hq-bug Step 2 script not found in SKILL.md"
+bash_case 0 "hq-bug Step 2 script" "$hq_bug_step2"
+setup_toolchain="$(grep -m1 'cygpath -u' "$ROOT/.claude/skills/setup/SKILL.md")"
+[ -n "$setup_toolchain" ] || bad "setup toolchain line not found in SKILL.md"
+bash_case 0 "setup toolchain cygpath line" "$setup_toolchain"
+# An operand the guard cannot compute must be named in readable text, with no
+# control character, or the reader sees "(operand: )".
+bash_case 2 "unprovable operand message" 'B=$(mktemp -t x.XXXXXX); B=$(tac "$B")'
+if grep -q 'operand: <computed value>' "$TMP/err" && ! LC_ALL=C grep -q "$(printf '\001')" "$TMP/err"; then
+  ok "unprovable operand message is readable"
+else
+  bad "unprovable operand message: $(head -c 200 "$TMP/err" | head -n 1 | cat -v)"
+fi
 
 echo "[7] profile matrix via hook-gate"
 for p in minimal standard strict; do

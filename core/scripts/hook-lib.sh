@@ -936,6 +936,26 @@ hq_hook_launch_warning_text() {
 HQ_HOOK_LAST_STATUS=0
 HQ_HOOK_LAST_CAUSE=""
 
+# hq_hook_repair_path <root> <path>
+# The permission repair every hook launcher does before it runs a hook under
+# HQ_ROOT: reset NTFS ACLs when the file is unreadable (Windows only), then
+# chmod u+x when it is not executable (never on Windows, where chmod writes
+# DENY ACEs). Symlinks and paths outside HQ_ROOT are left alone. Forks nothing
+# when the file is already readable and executable.
+hq_hook_repair_path() {
+  local root="$1"
+  local path="$2"
+  [ -f "$path" ] || return 0
+  if [ ! -r "$path" ] && hq_path_within_root "$root" "$path"; then
+    hq_repair_windows_acl "$path" || true
+  fi
+  if [ ! -x "$path" ] && hq_path_within_root "$root" "$path" \
+    && [ "${HQ_LIB_WINSEP:-0}" != 1 ]; then
+    chmod u+x "$path" 2>/dev/null || true
+  fi
+  return 0
+}
+
 hq_launch_shell_path() {
   local root="$1"
   local path="$2"
@@ -955,15 +975,7 @@ hq_launch_shell_path() {
     return 127
   fi
 
-  if [ ! -r "$path" ] && hq_path_within_root "$root" "$path"; then
-    hq_repair_windows_acl "$path" || true
-  fi
-
-  # chmod on Git Bash writes NTFS DENY ACEs; skip it on Windows.
-  if [ ! -x "$path" ] && hq_path_within_root "$root" "$path" \
-    && [ "${HQ_LIB_WINSEP:-0}" != 1 ]; then
-    chmod u+x "$path" 2>/dev/null || true
-  fi
+  hq_hook_repair_path "$root" "$path"
 
   if [ -x "$path" ]; then
     printf '%s' "$payload" | "$path" "$@"

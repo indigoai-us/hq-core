@@ -2,6 +2,19 @@
 
 Newest release first.
 
+## Release: v16.0.44-beta.41
+
+- No action needed. `core/scripts/ontology-source-worklist.sh` now lists a
+  source's unprocessed items newest first by the item's own date before
+  `--limit` applies, so with a large backlog each signals run picks up the most
+  recent meetings instead of the first 20 filenames. The date is the first of
+  `scheduled_start_time`, `meeting_start`, `when`, `created_at`, `date` in the
+  item's frontmatter, then the file mtime; equal dates order by filename. A new
+  `--redo <item-file>` flag (repeatable) removes an item from `.processed` and
+  `.skipped` so the next run lists it again; it refuses paths outside the
+  channel directory. Regression test:
+  `core/scripts/tests/ontology-source-worklist.test.sh`.
+
 ## Release: v16.0.42-beta.28
 
 - No action needed. When `hq dm` explicitly refuses the `/delegate` pickup DM

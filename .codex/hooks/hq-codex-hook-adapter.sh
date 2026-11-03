@@ -237,6 +237,39 @@ emit_diag() {
   fi
 }
 
+# A blocking PreToolUse guard that cannot be launched must deny the tool call.
+# Codex treats any exit other than 2 as a non-blocking error, so passing the
+# launch error (126 or 127) through let the call run with no guard.
+# hq-codex-hook.cmd already maps this case to exit 2 on Windows.
+#
+# Only launch failures are mapped, not a guard that ran and exited 126 or 127
+# itself. A launch failure is: hq_launch_shell_path set HQ_HOOK_LAST_CAUSE; or
+# the status is 126/127 and the file is not readable (hq_launch_shell_path
+# adds u+x to an unreadable file and the exec then fails with no cause set);
+# or the status is 126/127 and hook-lib is absent, so the bare gate fallback
+# launched the file. Other events keep their exit status.
+# HQ_CODEX_LAUNCH_FAIL_OPEN=1 restores the old pass-through while a damaged
+# install is repaired.
+launch_fail_closed_status() {
+  local status="$1" label="$2" path="$3" launch_failed=0
+  if [ "${HOOK_EVENT:-}" = "PreToolUse" ] && [ "${HQ_CODEX_LAUNCH_FAIL_OPEN:-}" != "1" ]; then
+    case "$status" in
+      126|127)
+        if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] || [ ! -r "$path" ] \
+          || ! command -v hq_launch_shell_path >/dev/null 2>&1; then
+          launch_failed=1
+        fi
+        ;;
+    esac
+  fi
+  if [ "$launch_failed" -eq 1 ]; then
+    printf "HQ blocked this tool call: guard '%s' could not be launched (exit %s). Repair the install with 'hq rescue' or /update-hq. To let tool calls through until then, set HQ_CODEX_LAUNCH_FAIL_OPEN=1.\n" "$label" "$status" >&2
+    printf '2'
+    return 0
+  fi
+  printf '%s' "$status"
+}
+
 run_hook() {
   local hook_id="$1"
   local script="$2"
@@ -252,7 +285,8 @@ run_hook() {
   warning=""
 
   if command -v hqad_launch_registered_hook >/dev/null 2>&1; then
-    hqad_launch_registered_hook "$HQ_ROOT" "$HOOK_EVENT" "$payload" "$hook_id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
+    # HQAD_HOOK_MODE lets the launcher cap advisory hooks (never guards).
+    HQAD_HOOK_MODE="$mode" hqad_launch_registered_hook "$HQ_ROOT" "$HOOK_EVENT" "$payload" "$hook_id" "$script" ${extra[@]+"${extra[@]}"} >"$out" 2>"$err" || status=$?
     if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] && command -v hq_hook_launch_warning_text >/dev/null 2>&1; then
       warning="$(hq_hook_launch_warning_text \
         "$payload" \
@@ -293,7 +327,7 @@ run_hook() {
   elif [ -z "$warning" ]; then
     printf "Hook '%s' exited %s.\n" "$hook_id" "$status" >&2
   fi
-  exit "$status"
+  exit "$(launch_fail_closed_status "$status" "$hook_id" "$script")"
 }
 
 run_script() {
@@ -354,7 +388,7 @@ run_script() {
   elif [ -z "$warning" ]; then
     printf "Script '%s' exited %s.\n" "$label" "$status" >&2
   fi
-  exit "$status"
+  exit "$(launch_fail_closed_status "$status" "$label" "$script")"
 }
 
 # Run master-hook.sh (the company/personal/pack fan-out) for an event. Not
@@ -381,6 +415,9 @@ run_master_hook() {
   fi
   emit_diag
   [ -n "$err_text" ] && printf '%s\n' "$err_text" >&2
+  if [ ! -r "$script" ]; then
+    exit "$(HQ_HOOK_LAST_CAUSE="master-hook.sh is not readable" launch_fail_closed_status "$status" "master-hook" "$script")"
+  fi
   exit "$status"
 }
 
