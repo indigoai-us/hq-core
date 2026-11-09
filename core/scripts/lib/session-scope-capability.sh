@@ -58,8 +58,8 @@ session_scope_read() {
   local root="${1:-}" sid="${2:-}" aid="${3:-}" cap
   cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 0
   [ -f "$cap" ] || return 0
-  jq -r --arg sid "$sid" --arg aid "$aid" \
-    'select(.session_id == $sid and (.agent_id // "") == $aid) | .company_slug // empty' \
+  jq -sr --arg sid "$sid" --arg aid "$aid" \
+    'if length == 1 and (.[0] | type) == "object" then .[0] else error("capability must contain one object") end | select(.session_id == $sid and (.agent_id // "") == $aid) | .company_slug // empty' \
     "$cap" 2>/dev/null || true
 }
 
@@ -71,8 +71,11 @@ session_scope_read_companies() {
   local -a slugs
   cap="$(session_scope_capability_path "$root" "$sid" "$aid")" || return 0
   [ -f "$cap" ] || return 0
-  lock_info="$(jq -er --arg sid "$sid" --arg aid "$aid" '
-    select(.session_id == $sid and (.agent_id // "") == $aid)
+  lock_info="$(jq -ser --arg sid "$sid" --arg aid "$aid" '
+      # A capability file must contain exactly one complete object.
+      if length == 1 and (.[0] | type) == "object" then .[0]
+      else error("capability must contain one object") end
+      | select(.session_id == $sid and (.agent_id // "") == $aid)
     | if (.company_slug | type) != "string" or (.company_slug | test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$") | not) then error("invalid primary")
       elif has("company_slugs") then
         if (.company_slugs | type) == "array" and all(.company_slugs[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"))

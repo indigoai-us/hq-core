@@ -191,6 +191,16 @@ is_protected_write_target() {
   return 0
 }
 
+# Policy digests are retired: no generator ships and nothing reads a leftover
+# `_digest.md`, and validate-policy-frontmatter blocks editing it. Deleting that
+# one stale file with `rm` is the cleanup path, so it is not a policy write. Only
+# a non-directory whose resolved leaf is exactly `_digest.md` qualifies.
+is_retired_digest_target() {
+  local resolved
+  resolved="$(resolve_from_cwd "$1")" || return 1
+  [[ "${resolved##*/}" = _digest.md && ! -d "$resolved" ]]
+}
+
 record_argv() {
   local record="$1"
   IFS=$'\037' read -r -a ARGV <<< "$record"
@@ -293,7 +303,10 @@ record_write_op_targets_policy() {
         is_assignment "$tok" && continue
         case "$tok" in
           "$exe"|-*|--) continue ;;
-          *) is_protected_write_target "$tok" && return 0 ;;
+          *)
+            [[ "$exe" = rm ]] && is_retired_digest_target "$tok" && continue
+            is_protected_write_target "$tok" && return 0
+            ;;
         esac
       done
       ;;

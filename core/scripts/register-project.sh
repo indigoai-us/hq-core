@@ -282,11 +282,18 @@ register_brainstorm() {
   if ! ensure_json="$(HQ_COMPANY_UID="$uid" hq mesh project set "$project" --company "$company" --name "$title" --description "$description" --create --json)"; then
     die "registration incomplete: hq mesh project set failed for $company/$project"
   fi
-  thread="$(printf '%s' "$ensure_json" | jq -er '.registration.threadId // .threadId // empty' | tr -d '\r')" \
-    || die "registration incomplete: project set output missing threadId"
-  channel="$(printf '%s' "$ensure_json" | jq -er '.registration.channelId // .channelId // empty' | tr -d '\r')" \
-    || die "registration incomplete: project set output missing channelId"
-  [ -n "$thread" ] && [ -n "$channel" ] || die "registration incomplete: empty threadId or channelId"
+  thread="$(printf '%s' "$ensure_json" | jq -r '.registration.threadId // .threadId // empty' 2>/dev/null | tr -d '\r')" || thread=""
+  channel="$(printf '%s' "$ensure_json" | jq -r '.registration.channelId // .channelId // empty' 2>/dev/null | tr -d '\r')" || channel=""
+  # `project set` on an already-registered project can return no thread or
+  # channel. Fall back to the ids the local Board entry already records.
+  if [ -z "$thread" ]; then
+    thread="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .threadId // empty' "$board" | tr -d '\r')"
+  fi
+  if [ -z "$channel" ]; then
+    channel="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .channelId // empty' "$board" | tr -d '\r')"
+  fi
+  [ -n "$thread" ] || die "registration incomplete: project set output missing threadId"
+  [ -n "$channel" ] || die "registration incomplete: project set output missing channelId"
   tmp="$(mktemp)"
   jq --arg id "$project" --arg thread "$thread" --arg channel "$channel" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     .projects |= map(if .id == $id or .mesh_project_id == $id then . + {
@@ -298,6 +305,10 @@ register_brainstorm() {
     'any(.projects[]?; (.id == $id or .mesh_project_id == $id) and .threadId == $thread and .channelId == $channel)' \
     "$board" >/dev/null || die "registration incomplete: local Board registration did not verify"
   echo "registered $company/$project thread=$thread channel=$channel"
+  # Once the project has a prd.json, --board also syncs its stories.
+  if [ -f "$ROOT/companies/$company/projects/$project/prd.json" ]; then
+    register_one "$company" "$project"
+  fi
 }
 
 audit() {

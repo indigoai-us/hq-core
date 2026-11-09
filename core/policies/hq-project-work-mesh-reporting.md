@@ -54,6 +54,8 @@ If additionalContext instructs a Work Mesh clarification:
 
 - Claude Code: ask once via `AskUserQuestion` with the **exact stable options**,
   then `hq mesh context organize --session <sid> --decision <id> --option <id>`.
+  `AskUserQuestion` takes 2 to 4 options per question. With more than 4, ask in
+  pages of 3 options plus a "More options" entry; keep the option ids unchanged.
 - Codex: ask once via `request_user_input` with the same options, then organize.
 - Grok: run `hq mesh context organize` (no hook can put a question to you).
 

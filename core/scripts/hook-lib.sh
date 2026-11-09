@@ -669,10 +669,11 @@ hq_hook_stamp_now() {
 }
 
 # hq_path_is_absolute <path>
-#   exit 0 for Unix or Windows drive-letter absolutes.
+#   Unix roots are absolute everywhere; drive roots only on Windows.
 hq_path_is_absolute() {
   case "$1" in
-    /*|[a-zA-Z]:/*|[a-zA-Z]:\\*) return 0 ;;
+    /*) return 0 ;;
+    [a-zA-Z]:/*|[a-zA-Z]:\\*) [ "${HQ_LIB_WINSEP:-0}" = 1 ]; return $? ;;
   esac
   return 1
 }

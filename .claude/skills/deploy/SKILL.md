@@ -1,7 +1,7 @@
 ---
 name: deploy
 description: Deploy or share generated HQ artifacts through hq-deploy.
-allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/deploy-api-request.sh:*), Bash(.claude/skills/deploy/scripts/list-apps.sh:*), Bash(APPS_JSON=$(HQ_DEPLOY_JWT="$JWT" .claude/skills/deploy/scripts/list-apps.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Bash(.claude/skills/deploy/scripts/route-host.sh:*), Bash(ROUTE_RECORD_JSON=$(.claude/skills/deploy/scripts/route-host.sh:*), Bash(.claude/skills/deploy/scripts/deploy-record-step.sh:*), Bash(RECORD_JSON=$(.claude/skills/deploy/scripts/deploy-record-step.sh:*), Bash(.claude/skills/deploy/scripts/deploy-reuse-check.sh:*), Bash(REUSE_JSON=$(.claude/skills/deploy/scripts/deploy-reuse-check.sh:*), Bash(.claude/skills/deploy/scripts/site-events.sh:*), Bash(.claude/skills/deploy/scripts/comments-watch.sh:*), Bash(.claude/skills/deploy/scripts/deploy-record-backfill.sh:*), Bash(hq monitor:*), Edit, Write
+allowed-tools: Read, Grep, Bash(tar:*), Bash(curl:*), Bash(npm:*), Bash(npx:*), Bash(bun:*), Bash(pnpm:*), Bash(yarn:*), Bash(docker:*), Bash(git:*), Bash(ls:*), Bash(cat:*), Bash(aws:*), Bash(jq:*), Bash(op:*), Bash(source:*), Bash(pbcopy:*), Bash(chmod:*), Bash(node:*), Bash(lsof:*), Bash(mkdir:*), Bash(echo:*), Bash(wait:*), Bash(disown:*), Bash(test:*), Bash(touch:*), Bash(rm:*), Bash(paste:*), Bash(.claude/skills/deploy/scripts/identity-resolve.sh:*), Bash(.claude/skills/deploy/scripts/sensitivity-check.sh:*), Bash(.claude/skills/deploy/scripts/guardrails-check.sh:*), Bash(.claude/skills/deploy/scripts/deploy-api-request.sh:*), Bash(.claude/skills/deploy/scripts/list-apps.sh:*), Bash(APPS_JSON=$(HQ_DEPLOY_JWT="$JWT" .claude/skills/deploy/scripts/list-apps.sh:*), Bash(.claude/skills/deploy/scripts/og-inject.sh:*), Bash(.claude/skills/deploy/scripts/password-helper.sh:*), Bash(.claude/skills/deploy/scripts/route-host.sh:*), Bash(ROUTE_RECORD_JSON=$(.claude/skills/deploy/scripts/route-host.sh:*), Bash(.claude/skills/deploy/scripts/deploy-record-step.sh:*), Bash(RECORD_JSON=$(.claude/skills/deploy/scripts/deploy-record-step.sh:*), Bash(.claude/skills/deploy/scripts/shrink-check.sh:*), Bash(SHRINK_JSON=$(.claude/skills/deploy/scripts/shrink-check.sh:*), Bash(.claude/skills/deploy/scripts/deploy-reuse-check.sh:*), Bash(REUSE_JSON=$(.claude/skills/deploy/scripts/deploy-reuse-check.sh:*), Bash(.claude/skills/deploy/scripts/site-events.sh:*), Bash(.claude/skills/deploy/scripts/comments-watch.sh:*), Bash(.claude/skills/deploy/scripts/deploy-record-backfill.sh:*), Bash(hq monitor:*), Edit, Write
 ---
 
 # Deploy Engine
@@ -1090,6 +1090,45 @@ if [ "$DEPLOY_TYPE" = "static" ]; then
 fi
 ```
 
+#### Shrink guard (existing static app)
+
+Run this once, right before the static upload, whenever `APP_EXISTED=true` (a redeploy by app name, route mode, or kept pages). hq-deploy replaces the whole site on completion and nothing else checks that the new build is the newer, complete one. A complete older copy deployed later (feedback 09bf5e25: a 52 KB older page over the full live app) went live silently.
+
+Compare the artifact that will be uploaded (`$UPLOAD_DIR`: `$ROUTE_OUT` in route mode, `$KEEP_OUT` when pages are kept, else `$OUTPUT_DIR`) with what is live. Use the local snapshot from `route-host.sh` when this machine has one for the app (`HOST_SITE`, or the `site` of the matching `route-host.sh hosts` entry). With no snapshot, download the live `index.html` from `$APP_URL` and compare that file only. If neither is available, skip the guard and say nothing.
+
+```bash
+# CONFIRM_SHRINK counts only when this run set it (the --confirm-shrink flag or the operator's yes).
+# Drop any value inherited from the environment so a leaked variable cannot disable the guard.
+[ "${CONFIRM_SHRINK_PARSED:-}" = "true" ] || unset CONFIRM_SHRINK
+SHRINK_RC=0
+if [ "$DEPLOY_TYPE" = "static" ] && [ "$APP_EXISTED" = "true" ]; then
+  UPLOAD_DIR="${ROUTE_OUT:-${KEEP_OUT:-$OUTPUT_DIR}}"
+  SHRINK_ARGS=(--new-dir "$UPLOAD_DIR")
+  HAVE_LIVE=false
+  LIVE_SNAPSHOT=$(.claude/skills/deploy/scripts/route-host.sh hosts --org "${ORG_SLUG:--}" 2>/dev/null \
+    | jq -r --arg id "$APP_ID" '[.hosts[] | select(.appId == $id and .siteExists)][0].site // empty' 2>/dev/null)
+  if [ -n "${LIVE_SNAPSHOT:-}" ] && [ -d "$LIVE_SNAPSHOT" ]; then
+    SHRINK_ARGS+=(--live-dir "$LIVE_SNAPSHOT"); HAVE_LIVE=true
+  else
+    LIVE_INDEX_FILE=$(mktemp -t hq-deploy-live-index.XXXXXX)
+    LIVE_CT=$(curl -sfL --max-time 20 --max-redirs 3 --proto =https --max-filesize 20000000 \
+      -o "$LIVE_INDEX_FILE" -w '%{content_type}' "$APP_URL/index.html" 2>/dev/null) || LIVE_CT=""
+    case "$LIVE_CT" in
+      text/html*) SHRINK_ARGS+=(--live-index-file "$LIVE_INDEX_FILE"); HAVE_LIVE=true ;;
+      *) echo "Shrink guard skipped: could not fetch the live index.html as HTML." ;;   # non-HTML or failed fetch
+    esac
+  fi
+  [ "${CONFIRM_SHRINK:-}" = "true" ] && SHRINK_ARGS+=(--confirm-shrink)
+  if [ "$HAVE_LIVE" = "true" ]; then
+    SHRINK_JSON=$(.claude/skills/deploy/scripts/shrink-check.sh "${SHRINK_ARGS[@]}") || SHRINK_RC=$?
+  fi
+  rm -f "${LIVE_INDEX_FILE:-}"
+fi
+[ "$SHRINK_RC" = 3 ] && { echo "STOP: unconfirmed shrink. Do not upload."; exit 3; }
+```
+
+When `SHRINK_RC` is 3, stop before any upload. Tell the operator the `message` from `SHRINK_JSON` in plain words (it names the sizes), and ask once: "Replace the live site anyway" or "Cancel and check the folder". With a picker, a yes sets `CONFIRM_SHRINK=true` and the guard runs again. Without a picker (headless, fleet agents, auto-deploy), do not upload; report the warning and tell the operator to rerun with `--confirm-shrink` after checking they are deploying the current folder. A deploy invoked with `--confirm-shrink` sets `CONFIRM_SHRINK=true` and `CONFIRM_SHRINK_PARSED=true` up front; an operator yes sets both too. A `CONFIRM_SHRINK` that only exists in the environment is ignored. The upload snippet below must not run while `SHRINK_RC` is 3. A legitimate trim (big media removed on purpose) also trips the guard and needs a confirm.
+
 #### Static upload (presigned URL)
 
 The Guardrails script already produced `$TARBALL_PATH`, `$TARBALL_SIZE`, `$TARBALL_SHA256` — reuse them, do not re-tar:
@@ -1767,6 +1806,7 @@ Before telling the user the site works, open the deployed page in a browser (or 
 | `deploy-record-step.sh --app-json <file> --source <dir> --description <text> --type <type> [--access-mode <m>] [--company <slug>] [--deploy-id <id>] [--route </path/>] [--deploy-type static\|app]` | the app JSON re-read after upload, the folder that went live, the agent's one-paragraph description and content type | `{"ok":true,"record","home","resolution","copied","access_mode","words"}` or `{"ok":false,"stage":"args\|prepare\|home\|record","reason":...}` with exit 1. Runs `deploy-record-home.sh` then `deploy-record.sh`; never fails the deploy (C.4.5) |
 | `deploy-record-home.sh --subdomain <s> --source <dir> [--app-json <file>] [--access-mode <m>] [--company <slug>] [--project <slug>] [--copy yes\|no]` | where the record goes and whether to copy the source | `{"ok":true,"home","company","project","resolution","access_mode","copied","source","source_path",...}`; copies the source only for public and company deploys |
 | `deploy-record.sh --app-json <file> --source <dir> --home <dir> --description <text> --type <type> [--access-mode <m>] [--company <slug>] [--project <slug>] [--deploy-id <id>] [--source-path <path>] [--tag <tag>]...` | the app JSON, the source and the home | `{"ok":true,"record","subdomain","type","access_mode","words","truncated","tags"}`; page text only for public and company deploys |
+| `shrink-check.sh --new-dir <dir> (--live-dir <dir>\|--live-index-file <file>) [--confirm-shrink]` | the build about to upload + the local live snapshot, or a downloaded live index.html | `{"ok":true,"shrink":false}` or `{"ok":true,"shrink":true,"confirmed","reasons","message"}`; exit 3 when index.html or total size drops by more than half, or live files are missing, and `--confirm-shrink` was not given |
 | `site-events.sh enable\|list\|watch\|reply --app <id> (--org <slug>\|--personal) ...` | app id + scope; `watch` needs `--cursor-file` | `enable`: `{"ok":true,"appId","eventsEnabled"}`. `list`: the owner listing as returned. `reply`: `{"ok":true,"id","status","reply"}`. `watch`: one JSON line per `new` event plus `armed`, `poll_failing`, `poll_recovered`, `cursor_write_failed`, `heartbeat`; polls every 30 s or slower and runs until stopped. Failures: `{"ok":false,"reason":"bad_args\|login_required\|request_failed"}` with a non-zero exit |
 | `comments-watch.sh watch --app <id> (--org <slug>\|--personal) --cursor-file <path> [--label <name>] [--interval <sec>=300] [--once]` | app id + scope; the cursor file holds the comment ids already seen | One JSON line per new comment: `{"type":"comment","app","id","author":{"name","email"},"body","anchor","status","deployId","createdAt"}`, plus `armed` (with `seeded`, the backlog recorded on first run), `comments_disabled`, `poll_failing`, `poll_recovered`, `cursor_write_failed`, `heartbeat`. Polls every 30 s or slower and runs until stopped. Bad arguments: `{"ok":false,"reason":"bad_args"}`, exit 64 |
 
@@ -1780,6 +1820,7 @@ All scripts:
 
 ## Notes
 
+- Browser localStorage is per host. In-page edits saved on `{sub}.indigo-hq.com` do not appear on `{sub}.hq.work`, and the reverse. Give the user the URL the API returns and have them keep using that one.
 - Auth tokens are never displayed in output — script returns JWT in JSON, main agent uses it in `Authorization: Bearer` headers only.
 - The CLI at `repos/public/hq-deploy/cli/` remains for CI/CD pipelines (uses its own auth flow).
 - For Vercel-managed projects, skip entirely.

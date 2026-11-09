@@ -169,6 +169,38 @@ for ENGINE in jq node; do
     fail "$ENGINE: healed tree is a silent no-op" "$OUT2"
   fi
 
+  # settings.local.json disableArtifact:false is copied into settings.json
+  # because Claude does not honor a local override for this key.
+  A="$TMP/artifact-opt-out"
+  mkdir -p "$A/.claude" "$A/core/scripts"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$A/core/scripts/hook-lib.sh"
+  cp "$ROOT/.claude/settings.json" "$A/.claude/settings.json"
+  printf '%s\n' '{"disableArtifact": false}' > "$A/.claude/settings.local.json"
+  OUTA="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$A")"
+  if [[ "$OUTA" == *"applied disableArtifact override"* ]] \
+     && [ "$(jq -r '.disableArtifact' "$A/.claude/settings.json")" = "false" ] \
+     && [ "$(jq -r '.disableArtifact' "$A/.claude/settings.local.json")" = "false" ]; then
+    ok "$ENGINE: local disableArtifact false is copied into settings.json"
+  else
+    fail "$ENGINE: local disableArtifact false is copied into settings.json" "out=$OUTA base=$(jq -c '.disableArtifact' "$A/.claude/settings.json")"
+  fi
+  OUTA2="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$A")"
+  if [ -z "$OUTA2" ] && [ "$(jq -r '.disableArtifact' "$A/.claude/settings.json")" = "false" ]; then
+    ok "$ENGINE: artifact override is idempotent"
+  else
+    fail "$ENGINE: artifact override is idempotent" "out=$OUTA2"
+  fi
+  N="$TMP/artifact-no-local"
+  mkdir -p "$N/.claude" "$N/core/scripts"
+  cp "$ROOT/core/scripts/hook-lib.sh" "$N/core/scripts/hook-lib.sh"
+  cp "$ROOT/.claude/settings.json" "$N/.claude/settings.json"
+  OUTN="$(HQ_HOOK_ENGINE=$ENGINE bash "$SCRIPT" "$N")"
+  if [ -z "$OUTN" ] && [ "$(jq -r '.disableArtifact' "$N/.claude/settings.json")" = "true" ]; then
+    ok "$ENGINE: shipped disableArtifact true stays without a local override"
+  else
+    fail "$ENGINE: shipped disableArtifact true stays without a local override" "out=$OUTN val=$(jq -c '.disableArtifact' "$N/.claude/settings.json")"
+  fi
+
   # Missing settings.json is a silent no-op (caller still runs rescue).
   M="$TMP/missing"; mkdir -p "$M/.claude" "$M/core/scripts"
   cp "$ROOT/core/scripts/hook-lib.sh" "$M/core/scripts/hook-lib.sh"

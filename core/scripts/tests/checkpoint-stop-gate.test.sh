@@ -58,6 +58,9 @@ cp "$ROOT/.claude/settings.json" "$FIXTURE/.claude/settings.json"
 mkdir -p "$FIXTURE/.claude/hooks"
 cp "$ROOT/.claude/hooks/hook-registry.json" "$FIXTURE/.claude/hooks/hook-registry.json"
 cp "$HOOK" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh"
+cp "$ROOT/core/scripts/hq-hidden-run.sh" "$FIXTURE/core/scripts/hq-hidden-run.sh"
+cp "$ROOT/core/scripts/hq-detach.sh" "$FIXTURE/core/scripts/hq-detach.sh"
+chmod +x "$FIXTURE/core/scripts/hq-hidden-run.sh" "$FIXTURE/core/scripts/hq-detach.sh"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$FIXTURE/.claude/hooks/hook-gate.sh"
 cp "$ADAPTER" "$FIXTURE/.codex/hooks/hq-codex-hook-adapter.sh"
 [ ! -f "$REPROMPT_HOOK" ] || cp "$REPROMPT_HOOK" "$FIXTURE/.claude/hooks/inject-codex-checkpoint-reprompt.sh"
@@ -172,6 +175,8 @@ run_hook() {
     "HQ_SHIM_GATE_OUTPUT=$RUN_GATE_OUTPUT" \
     "HQ_SHIM_STDIN_CAPTURE=$RUN_STDIN_CAPTURE" \
     "HQ_CHECKPOINT_GATE_NO_CLI=$RUN_NO_CLI" \
+    "HOME=$TMP_ROOT/home" \
+    "HQ_TOOLCHAIN_DIR=$TMP_ROOT/home/no-toolchain" \
     "PATH=$RUN_PATH" \
     "$BASH_BIN" "$FIXTURE/.claude/hooks/checkpoint-stop-gate.sh" <<<"$payload" 2>"$stderr_path")"
   HOOK_STATUS=$?

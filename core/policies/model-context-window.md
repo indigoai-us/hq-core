@@ -11,7 +11,7 @@ created: 2026-05-12
 
 ## Rule
 
-The global default model in `.claude/settings.json` is the plain `opus` alias, and `CLAUDE_CODE_SUBAGENT_MODEL` is `opus` too. Claude Code resolves the alias to its newest Opus model, so new Opus releases apply without an edit. Do not pin a dated model ID such as `claude-opus-4-8` in the shipped settings: a dated pin freezes every install and every subagent on that model. The `opus[1m]` variant (1M context) is **opt-in per command**, not the default.
+The global default model in `.claude/settings.json` is the plain `opus` alias, and `CLAUDE_CODE_SUBAGENT_MODEL` is `opus` too. Claude Code resolves the alias to its newest Opus model, so new Opus releases apply without an edit. Do not pin a dated model ID such as `claude-opus-4-8` in the shipped settings: a dated pin freezes every install and every subagent on that model. The `opus[1m]` variant (1M context) is **opt-in per command**, not the default. This policy does not state a default context window size; it differs by model and Claude Code version, so check your model's context window instead of assuming a number.
 
 Commands that opt into `[1m]`:
 
@@ -28,9 +28,7 @@ How a command opts in (mechanism resolved by US-015):
 
 ## Rationale
 
-A 1M-context default delays autocompact: at the 60% threshold, the prefix is ~600K tokens, dominated by raw tool-results and stale system reminders. On long sessions this produced `cache_read` totals as high as 468M tokens (session 75aa571a, May 2026), which contributed to blowing the Max weekly token limit in ~48h on May 10–11, 2026.
-
-The 200K default compacts earlier and keeps the prefix size bounded. Commands that genuinely need long context can still request it; routine sessions no longer pay the 1M penalty.
+A larger window delays autocompact, so the cached prefix grows and cache reads add up on long sessions; the default stays plain `opus` and long context is requested only where a command needs it.
 
 ## See also
 

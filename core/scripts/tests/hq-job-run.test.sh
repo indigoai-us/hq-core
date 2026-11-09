@@ -61,13 +61,14 @@ export HOME="$HOME_DIR"
 export HQ_ROOT="$HQ"
 export PATH="$BIN:$PATH"
 # The welcome-env cases compare exact values, so the runner's own list is cleared.
-unset HQ_DISABLED_HOOKS HQ_WELCOME_BRIEF_HOOK
+unset HQ_DISABLED_HOOKS HQ_WELCOME_BRIEF_HOOK HQ_SYNC_UNATTENDED
 
 # Stub claude/codex that record invocations.
 cat >"$BIN/claude" <<'STUB'
 #!/usr/bin/env bash
 echo "claude-stub: $*" >>"${HQ_STUB_LOG:-/dev/null}"
 echo "welcome-env: hook=${HQ_WELCOME_BRIEF_HOOK:-} disabled=${HQ_DISABLED_HOOKS:-}" >>"${HQ_STUB_LOG:-/dev/null}"
+echo "sync-env: unattended=${HQ_SYNC_UNATTENDED:-}" >>"${HQ_STUB_LOG:-/dev/null}"
 echo "OK"
 exit 0
 STUB
@@ -170,6 +171,12 @@ pass "authed claude run writes log + meter"
 # is off in the agent's env, and an operator's own disabled list is preserved.
 grep -qx 'welcome-env: hook=0 disabled=welcome-brief-ready' "$HQ_STUB_LOG" \
   || fail "claude job env does not disable welcome-brief-ready: $(grep welcome-env "$HQ_STUB_LOG")"
+# feedback_65ee9e51: the agent's own `hq sync` calls must run as unattended.
+grep -qx 'sync-env: unattended=1' "$HQ_STUB_LOG" \
+  || fail "claude job env does not set HQ_SYNC_UNATTENDED=1: $(grep sync-env "$HQ_STUB_LOG")"
+# The remote (tmux) launcher sets it too: a running tmux server drops our env.
+grep -A40 '^run_claude_remote()' "$RUN" | grep -q "echo 'export HQ_SYNC_UNATTENDED=1'" \
+  || fail "remote launcher does not export HQ_SYNC_UNATTENDED=1"
 : >"$HQ_STUB_LOG"
 set +e
 HQ_DISABLED_HOOKS=operator-hook bash "$RUN" --hq-root "$HQ" --job-id test-daily-digest

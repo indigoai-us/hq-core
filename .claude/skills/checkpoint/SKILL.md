@@ -32,10 +32,13 @@ Save current work state as a thread to survive context loss.
 
 1. **Check for recent auto-checkpoint** (upgrade instead of duplicate)
    ```bash
-   # Newest auto-checkpoint from the last 5 minutes (top level of workspace/threads only, time-bounded)
-   bash core/scripts/checkpoint-recent-auto.sh "$PWD" 5
+   # Newest auto-checkpoint from this session in the last 5 minutes
+   # (top level of workspace/threads only, time-bounded). Pass the session
+   # id so another session's file is not upgraded.
+   sid="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${HQ_SESSION_ID:-${CODEX_SESSION_ID:-}}}}"
+   bash core/scripts/checkpoint-recent-auto.sh "$PWD" 5 "$sid"
    ```
-   If found: upgrade that file in-place (add full fields: `initial_commit`, `commits_made`, `remote_url`, `knowledge_repos`, `worker`, `next_steps`; change `type` to `"checkpoint"`; rename file to remove `-auto-`). Then continue from step 7 (INDEX updates).
+   If found: upgrade that file in-place (add full fields: `initial_commit`, `commits_made`, `remote_url`, `knowledge_repos`, `worker`, `next_steps`; change `type` to `"checkpoint"`; rename file to remove `-auto-`). Then continue from step 7 (INDEX updates). If nothing prints, write a new checkpoint — do not pick another auto-checkpoint by name.
 
 2. **Generate thread ID** if not provided
    - Format: `T-{YYYYMMDD}-{HHMMSS}-{slug}`

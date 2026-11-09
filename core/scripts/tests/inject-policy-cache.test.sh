@@ -364,4 +364,36 @@ grep -Fq ASSISTANT_INTENT_CACHE_MARKER "$TMPROOT/assistant-intent-changed.out" \
   || fail "changed AssistantIntent fact reused the previous no-match evaluation"
 ok "evaluation cache invalidates when AssistantIntent facts change"
 
+# Windows HQ_ROOT backslash: awk redirect filenames (feedback_8f4f6578).
+win_root='C:\Users\hqcold\hq'
+slash_root="${win_root//\\//}"
+[ "$slash_root" = 'C:/Users/hqcold/hq' ] \
+  || fail "bash slash-normalize of Windows HQ_ROOT: got $slash_root"
+grep -Fq 'HQ_ROOT="${HQ_ROOT//\\//}"' "$HOOK" \
+  || fail "hook does not slash-normalize HQ_ROOT before cache paths"
+grep -Fq 'CACHE_TMP="${CACHE_TMP//\\//}"' "$HOOK" \
+  || fail "hook does not slash-normalize CACHE_TMP before awk redirects"
+ok "hook slash-normalizes HQ_ROOT and CACHE_TMP"
+
+mangled="$PWD/C:UsershqcoldAppDataLocalTemphq-policy.tmp"
+rm -f "$mangled"
+win_tmp='C:\Users\hqcold\AppData\Local\Temp\hq-policy.tmp'
+LC_ALL=C awk -v CACHE_TMP="$win_tmp" 'BEGIN { print "x" >> CACHE_TMP }' \
+  2>"$TMPROOT/awk-win.err" || true
+if [ -f "$mangled" ]; then
+  rm -f "$mangled"
+  ok "awk strips backslash escapes in CACHE_TMP (mangled cwd file)"
+elif grep -Eiq 'escape sequence|fatal|cannot redirect' "$TMPROOT/awk-win.err"; then
+  ok "awk fails on a Windows-backslash CACHE_TMP redirect"
+else
+  fail "awk neither mangled nor rejected a backslash CACHE_TMP"
+fi
+
+awk_out="$TMPROOT/awk-posix.tmp"
+: > "$awk_out"
+LC_ALL=C awk -v CACHE_TMP="$awk_out" 'BEGIN { print "ok" >> CACHE_TMP }' \
+  || fail "awk redirect to a slash path failed"
+grep -qx ok "$awk_out" || fail "awk did not write the slash-path cache file"
+ok "awk redirect succeeds on a slash-separated cache path"
+
 echo "PASS ($pass checks) inject-policy-cache"

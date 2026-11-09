@@ -16,6 +16,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 SHIM="$HERE/hqd-hook-shim.sh"
 UNREACHABLE='HQ daemon unreachable: run hq daemon status'
+CONNECT_FAIL='HQ daemon unreachable: could not connect (daemon not running): run hq daemon status'
 
 PASS=0
 FAIL=0
@@ -106,13 +107,13 @@ else fail "hqd not set up: company read is not blocked" "rc=$RC out=$OUT err=$ER
 mkdir -p "$TMP/hqd-stale"
 perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => IO::Socket::UNIX::SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "listen: $!"' "$TMP/hqd-stale/hqd.sock"
 run_shim "$TMP/hqd-stale/hqd.sock" "$WRITE_OTHERCO" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "stale hqd socket without marker: company write still fails closed"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "stale hqd socket without marker: company write still fails closed"
 else fail "stale hqd socket without marker: company write still fails closed" "rc=$RC err=$ERR"; fi
 # The marker alone (daemon says hqd should run, socket gone): fail closed.
 mkdir -p "$TMP/hqd-marker"
 : >"$TMP/hqd-marker/hqd.enabled"
 run_shim "$TMP/hqd-marker/hqd.sock" "$WRITE_OTHERCO" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "enabled marker without socket: company write fails closed"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "enabled marker without socket: company write fails closed"
 else fail "enabled marker without socket: company write fails closed" "rc=$RC err=$ERR"; fi
 
 # Exercise the packaged Claude launcher without an explicit socket override.
@@ -160,11 +161,11 @@ else fail "routing mode reports unavailable Perl modules for direct fallback" "r
 
 printf 'true 0\n' >"$HOME/.hq/hq-anywhere-runtime.flag.cmp_123456"
 run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "stale enabled cache: first company write still reaches fail-closed shim"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "stale enabled cache: first company write still reaches fail-closed shim"
 else fail "stale enabled cache: first company write still enforces" "rc=$RC err=$ERR"; fi
 
 run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: Write to companies/ blocks with one unreachable line"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: Write to companies/ blocks with one unreachable line"
 else fail "absent socket: Write to companies/ blocks" "rc=$RC err=$ERR"; fi
 
 PRETTY_WRITE='{
@@ -175,7 +176,7 @@ PRETTY_WRITE='{
   "tool_input": {"file_path": "companies/otherco/x.md"}
 }'
 run_shim "$NOSOCK" "$PRETTY_WRITE" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "multiline JSON payload: company write still blocks"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "multiline JSON payload: company write still blocks"
 else fail "multiline JSON payload" "rc=$RC err=$ERR"; fi
 
 run_shim "$NOSOCK" "$WRITE_ABS"
@@ -184,12 +185,12 @@ else fail "absent socket: absolute companies/ path blocks" "rc=$RC err=$ERR"; fi
 
 RELATIVE_COMPANY_WRITE='{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp/HQ/companies/acme","tool_name":"Write","tool_input":{"file_path":"knowledge/file.md"}}'
 run_shim "$NOSOCK" "$RELATIVE_COMPANY_WRITE" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: relative file write from a company cwd blocks"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: relative file write from a company cwd blocks"
 else fail "relative company cwd write blocks" "rc=$RC err=$ERR"; fi
 
 RELATIVE_SHELL_WRITE='{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp/HQ","tool_name":"Bash","tool_input":{"command":"cd companies && touch acme/file"}}'
 run_shim "$NOSOCK" "$RELATIVE_SHELL_WRITE" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: shell writes after cd into a company block"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: shell writes after cd into a company block"
 else fail "relative shell company write blocks" "rc=$RC err=$ERR"; fi
 
 mkdir -p "$TMP/no-perl-path"
@@ -255,7 +256,7 @@ else fail "no Perl, Codex no-arg SessionStart passes" "rc=$RC out=$OUT err=$ERR"
 perl -MJSON::PP -e 'print JSON::PP->new->encode({session_id=>"large",hook_event_name=>"PreToolUse",cwd=>"/tmp/HQ",tool_name=>"Write",tool_input=>{file_path=>"companies/acme/large.md",content=>"x" x 140000}})' >"$TMP/large-company-write.json"
 HQ_HQD_SOCKET="$NOSOCK" sh "$SHIM" PreToolUse <"$TMP/large-company-write.json" >"$TMP/out" 2>"$TMP/err"
 RC=$?; OUT=$(cat "$TMP/out"); ERR=$(cat "$TMP/err")
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ -z "$OUT" ]; then pass "large company-write payload over 128 KiB blocks"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ] && [ -z "$OUT" ]; then pass "large company-write payload over 128 KiB blocks"
 else fail "large company-write payload over 128 KiB blocks" "rc=$RC out=${#OUT} err=$ERR"; fi
 
 run_shim "$NOSOCK" "$BASH_OTHERCO" PreToolUse
@@ -263,34 +264,156 @@ if [ "$RC" -eq 2 ]; then pass "absent socket: Bash naming companies/ blocks"
 else fail "absent socket: Bash naming companies/ blocks" "rc=$RC"; fi
 
 run_shim "$NOSOCK" "$EXEC_CMD_OTHERCO" PreToolUse
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: exec_command cmd writing companies/ blocks"
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: exec_command cmd writing companies/ blocks"
 else fail "absent socket: exec_command cmd writing companies/ blocks" "rc=$RC err=$ERR"; fi
 
 run_shim "$NOSOCK" "$WRITE_OTHER" PreToolUse
-if [ "$RC" -eq 0 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: non-company write allowed, still not silent"
+if [ "$RC" -eq 0 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: non-company write allowed, still not silent"
 else fail "absent socket: non-company write allowed" "rc=$RC err=$ERR"; fi
 
 run_shim "$NOSOCK" "$READ_OTHERCO" PreToolUse
-if [ "$RC" -eq 0 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: Read of companies/ allowed with the line"
+if [ "$RC" -eq 0 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: Read of companies/ allowed with the line"
 else fail "absent socket: Read allowed" "rc=$RC err=$ERR"; fi
 
 run_shim "$NOSOCK" "$START" SessionStart
-if [ "$RC" -eq 0 ] && [ "$ERR" = "$UNREACHABLE" ] && printf '%s' "$OUT" | grep -q 'bound to company: personal'; then
+if [ "$RC" -eq 0 ] && [ "$ERR" = "$CONNECT_FAIL" ] && printf '%s' "$OUT" | grep -q 'bound to company: personal'; then
   pass "absent socket: SessionStart binds personal"
 else fail "absent socket: SessionStart binds personal" "rc=$RC out=$OUT err=$ERR"; fi
 
 run_shim "$NOSOCK" "$PROMPT" UserPromptSubmit
-if [ "$RC" -eq 0 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "absent socket: UserPromptSubmit passes with the line"
+if [ "$RC" -eq 0 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: UserPromptSubmit passes with the line"
 else fail "absent socket: UserPromptSubmit" "rc=$RC err=$ERR"; fi
 
 SOCK="$TMP/stub.sock"
 start_stub "$SOCK" hang
+HQ_HQD_SHIM_TIMEOUT_MS=300; export HQ_HQD_SHIM_TIMEOUT_MS
 t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
 t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
 el=$((t1 - t0))
-if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ] && [ "$el" -lt 1500 ]; then pass "hung daemon: times out (${el}ms) and blocks the company write"
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q '^HQ daemon timed out after 300 ms (daemon busy)' && [ "$el" -lt 1500 ]; then pass "hung daemon: times out (${el}ms) and blocks the company write"
 else fail "hung daemon: times out and blocks" "rc=$RC err=$ERR elapsed=${el}ms"; fi
+stop_stub
+unset HQ_HQD_SHIM_TIMEOUT_MS
+
+# Busy daemon: answers after 1s. Under the old 500ms/no-retry shim this blocked
+# a company write; with the 3000ms default it must be allowed.
+start_slow_stub() {
+  _sock="$1"; _reply="$2"; _delay="$3"
+  rm -f "$_sock" "$TMP/conns"
+  STUB_REPLY="$_reply" STUB_DELAY="$_delay" STUB_CONNS="$TMP/conns" perl -e '
+use IO::Socket::UNIX; use Time::HiRes ();
+my $srv = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 5) or die "listen: $!";
+$SIG{CHLD} = "IGNORE";
+while (my $c = $srv->accept) {
+  open my $f, ">>", $ENV{STUB_CONNS}; print $f "x\n"; close $f;
+  next if fork;
+  my $line = <$c>;
+  Time::HiRes::sleep($ENV{STUB_DELAY});
+  print $c $ENV{STUB_REPLY}, "\n"; close $c; exit 0;
+}' "$_sock" &
+  STUB_PID=$!
+  _i=0
+  while [ ! -S "$_sock" ] && [ $_i -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+}
+SLOW_ALLOW='{"id":1,"ok":true,"result":{"decision":"allow","reasons":[],"additionalContext":""}}'
+start_slow_stub "$SOCK" "$SLOW_ALLOW" 1
+run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "daemon replying after 1s: company write is allowed (default 3000ms budget)"
+else fail "daemon replying after 1s: company write is allowed" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# The env override still works, and a slow daemon is retried once before the
+# shim fails closed: two connections, then the busy message.
+start_slow_stub "$SOCK" "$SLOW_ALLOW" 1
+HQ_HQD_SHIM_TIMEOUT_MS=300 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+CONNS=$(wc -l <"$TMP/conns" | tr -d ' ')
+if [ "$RC" -eq 2 ] && [ "$CONNS" -eq 2 ] && printf '%s' "$ERR" | grep -q 'timed out after 300 ms (daemon busy)'; then
+  pass "busy daemon past the budget: retried once, then fails closed with the busy message"
+else fail "busy daemon past the budget: retried once, then fails closed" "rc=$RC conns=$CONNS err=$ERR"; fi
+stop_stub
+
+# A retry that lands after the daemon recovers succeeds: the first connection
+# is answered after 1s (past the 300ms budget), later ones answer at once.
+rm -f "$SOCK"
+STUB_REPLY="$SLOW_ALLOW" perl -e '
+use IO::Socket::UNIX; use Time::HiRes ();
+my $srv = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 5) or die "listen: $!";
+my $n = 0;
+$SIG{CHLD} = "IGNORE";
+while (my $c = $srv->accept) {
+  $n++;
+  next if fork;
+  my $line = <$c>;
+  Time::HiRes::sleep(1) if $n == 1;
+  print $c $ENV{STUB_REPLY}, "\n"; close $c; exit 0;
+}' "$SOCK" &
+STUB_PID=$!
+_i=0
+while [ ! -S "$SOCK" ] && [ $_i -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+HQ_HQD_SHIM_TIMEOUT_MS=300 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "first attempt times out, retry reaches the recovered daemon: allowed"
+else fail "retry after timeout reaches the recovered daemon" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# No socket at all (marker present): still fails closed with the connect message.
+run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "no socket: company write still fails closed with the not-running message"
+else fail "no socket still fails closed" "rc=$RC err=$ERR"; fi
+
+# Zero spelled with extra digits must not disable the alarm (fail-open): a
+# daemon that accepts and never replies is still cut off and the write blocked.
+_zero10=$(printf '%010d' 0)
+for _z in 00 000 "$_zero10"; do
+  start_stub "$SOCK" hang
+  _t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+  HQ_HQD_SHIM_TIMEOUT_MS=$_z HQ_HQD_SHIM_RETRY_BACKOFF_MS=$_z run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+  _t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+  unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_RETRY_BACKOFF_MS
+  _el=$((_t1 - _t0))
+  if [ "$RC" -eq 2 ] && [ "$_el" -lt 8000 ] && printf '%s' "$ERR" | grep -q 'timed out after 3000 ms'; then
+    pass "timeout '$_z' normalizes to the 3000ms default and still blocks (${_el}ms)"
+  else fail "timeout '$_z' must not disable the alarm" "rc=$RC elapsed=${_el}ms err=$ERR"; fi
+  stop_stub
+done
+
+# A huge value is accepted without overflow and still works against a fast daemon.
+start_slow_stub "$SOCK" "$SLOW_ALLOW" 1
+_huge=$(printf '%023d' 0 | tr 0 9)
+HQ_HQD_SHIM_TIMEOUT_MS=$_huge run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "huge timeout value: capped, no overflow, daemon answer honored"
+else fail "huge timeout value" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# Perl that passes the module probe but then dies (exit 255): a PreToolUse on a
+# companies/ path must still fail closed; a non-company call is allowed.
+mkdir -p "$TMP/perl-dies"
+cat > "$TMP/perl-dies/perl" <<'PERL_DIES'
+#!/bin/sh
+case "$1" in -MJSON::PP) exit 0 ;; esac
+exit 255
+PERL_DIES
+chmod +x "$TMP/perl-dies/perl"
+printf '%s' "$WRITE_OTHERCO" | env PATH="$TMP/perl-dies:$PATH" HQ_HQD_SOCKET="$NOSOCK" sh "$SHIM" PreToolUse >"$TMP/out" 2>"$TMP/err"
+RC=$?; ERR=$(cat "$TMP/err")
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "perl exits 255: companies/ write fails closed"
+else fail "perl exits 255: companies/ write fails closed" "rc=$RC err=$ERR"; fi
+printf '%s' "$WRITE_OTHER" | env PATH="$TMP/perl-dies:$PATH" HQ_HQD_SOCKET="$NOSOCK" sh "$SHIM" PreToolUse >"$TMP/out" 2>"$TMP/err"
+RC=$?
+if [ "$RC" -eq 0 ]; then pass "perl exits 255: non-company call is not blocked"
+else fail "perl exits 255: non-company call" "rc=$RC"; fi
+
+# SessionEnd has a 3s hook budget: a hung daemon is not retried and is capped at 1s.
+start_stub "$SOCK" hang
+unset HQ_HQD_SHIM_TIMEOUT_MS
+SESSION_END='{"session_id":"s1","hook_event_name":"SessionEnd","cwd":"/tmp"}'
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+run_shim "$SOCK" "$SESSION_END" SessionEnd
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 0 ] && [ "$el" -ge 900 ] && [ "$el" -lt 2000 ] && printf "%s" "$ERR" | grep -q "after 1000 ms"; then pass "SessionEnd on a hung daemon: capped at 1s, exits 0 (${el}ms)"
+else fail "SessionEnd on a hung daemon stays inside its 3s hook budget" "rc=$RC elapsed=${el}ms err=$ERR"; fi
 stop_stub
 
 start_stub "$SOCK" '{"id":1,"ok":true,"result":{"decision":"block","reasons":["BLOCKED: Cross-company scope violation"],"additionalContext":""}}'

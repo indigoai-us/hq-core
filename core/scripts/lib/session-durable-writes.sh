@@ -115,7 +115,7 @@ _session_mtime_epoch() {
 #   provider-owned top-level <dir>/.session-logs telemetry tree.
 _session_find_newer() {
   local dir="${1:-}" start="${2:-}" mode="${3:-any}"
-  local path mt provider_logs
+  local provider_logs
   local -a prune_expr=(-name node_modules -o -name .git -o -name .pnpm)
   [ -d "$dir" ] || return 0
   case "$start" in ''|*[!0-9]*) start=0 ;; esac
@@ -139,16 +139,46 @@ _session_find_newer() {
       -o -type f -newermt "@$(( start - 1 ))" -print 2>/dev/null || true
     return 0
   fi
-  # Portable fallback (BSD/macOS): per-file mtime compare, same pruning.
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    mt="$(_session_mtime_epoch "$path" 2>/dev/null || echo 0)"
-    case "$mt" in ''|*[!0-9]*) continue ;; esac
-    if [ "$mt" -ge "$start" ]; then
-      printf '%s\n' "$path"
-    fi
-  done < <(find "$dir" \( "${prune_expr[@]}" \) -prune \
-    -o -type f -print 2>/dev/null || true)
+  # Portable fallback (BSD/macOS): find has no -newermt "@epoch", so compare
+  # against a reference file stamped at start-1 with -newer (strictly newer,
+  # the same boundary as the fast path). One find process for the whole walk;
+  # this used to spawn stat per file and timed out Slack turns on macOS.
+  # The reference file lives in a subshell with its own EXIT trap, so it is
+  # removed on every exit (including a killed find) without touching any trap
+  # the caller has set. Exit 3 means the reference could not be built (mktemp,
+  # date or touch failed); then fall back to the per-file stat compare so the
+  # result stays correct instead of silently reporting no residual writes.
+  local rc=0 path mt
+  (
+    ref="$(mktemp "${TMPDIR:-/tmp}/hq-find-ref.XXXXXX" 2>/dev/null)" || exit 3
+    trap 'rm -f "$ref"' EXIT
+    trap 'exit 143' HUP INT TERM
+    stamp="$(_session_epoch_to_touch_stamp "$(( start - 1 ))")" || exit 3
+    [ -n "$stamp" ] || exit 3
+    TZ=UTC touch -t "$stamp" "$ref" 2>/dev/null || exit 3
+    find "$dir" \( "${prune_expr[@]}" \) -prune \
+      -o -type f -newer "$ref" -print 2>/dev/null || true
+  ) || rc=$?
+  if [ "$rc" -eq 3 ]; then
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      mt="$(_session_mtime_epoch "$path" 2>/dev/null || echo 0)"
+      case "$mt" in ''|*[!0-9]*) continue ;; esac
+      if [ "$mt" -ge "$start" ]; then
+        printf '%s\n' "$path"
+      fi
+    done < <(find "$dir" \( "${prune_expr[@]}" \) -prune \
+      -o -type f -print 2>/dev/null || true)
+  fi
+  return 0
+}
+
+# _session_epoch_to_touch_stamp <epoch> -> YYYYMMDDhhmm.SS stamp for touch -t, in UTC
+_session_epoch_to_touch_stamp() {
+  local epoch="${1:-0}"
+  [ "$epoch" -ge 0 ] 2>/dev/null || epoch=0
+  TZ=UTC date -r "$epoch" +%Y%m%d%H%M.%S 2>/dev/null \
+    || TZ=UTC date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null
 }
 
 # _session_paths_to_json_array <root> <mode>

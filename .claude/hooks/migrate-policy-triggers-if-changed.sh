@@ -36,13 +36,20 @@ FORWARDER="$HQ_ROOT/core/scripts/migrate-policy-triggers.sh"
 STATE_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
 STAMP="$STATE_DIR/migrate-policy-triggers.stamp"
 
+hq_bin="$(command -v hq 2>/dev/null || true)"
+policy_dirs=("$HQ_ROOT/core/policies" "$HQ_ROOT/personal/policies")
+for _d in "$HQ_ROOT"/companies/*/policies "$HQ_ROOT"/companies/*/workers/*/policies \
+          "$HQ_ROOT"/personal/workers/*/policies; do
+  [ -d "$_d" ] && policy_dirs+=("$_d")
+done
 if [ "${HQ_MIGRATE_TRIGGERS_FORCE:-0}" != "1" ] && [ -f "$STAMP" ]; then
-  hq_bin="$(command -v hq 2>/dev/null || true)"
   if [ -z "$hq_bin" ] || [ ! "$hq_bin" -nt "$STAMP" ]; then
-    changed="$(find "$HQ_ROOT/core/policies" "$HQ_ROOT/personal/policies" \
-      "$HQ_ROOT"/companies/*/policies "$HQ_ROOT"/companies/*/workers/*/policies \
-      "$HQ_ROOT"/personal/workers/*/policies \
-      -newer "$STAMP" \( -type d -o -type f -name '*.md' \) -print 2>/dev/null | head -n 1 || true)"
+    # One find over the tree is the only check. A directory mtime cannot stand
+    # in for it: an in-place edit does not change its parent's mtime, and a new
+    # file in a subfolder changes only that subfolder's. The output is captured
+    # whole (no head) to avoid a second process on the no-change path.
+    changed="$(find "${policy_dirs[@]}" \
+      -newer "$STAMP" \( -type d -o -type f -name '*.md' \) -print 2>/dev/null || true)"
     [ -n "$changed" ] || exit 0
   fi
 fi

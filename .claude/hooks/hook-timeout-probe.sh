@@ -85,6 +85,76 @@ hook_timeout_owner_alive() {
   [ "$hook_timeout_start_token" = "$token" ]
 }
 
+# Millisecond clock source, chosen once per shell by hook_timeout_clock_init:
+# "date" (GNU date %N), "perl" (Time::HiRes) or "seconds". Empty means not
+# chosen yet, and every read probes as before. Bash 3.2 (the system Bash on
+# macOS) has no EPOCHREALTIME and BSD date prints a literal N for %N, so an
+# unchosen read started a `date` that could never succeed and then a `perl`.
+# With the debug-phase `date +%s` reads that was about ten processes per
+# dispatched child, half of every event's processes (feedback_25b10339,
+# feedback_33222c70). Never taken from the environment.
+HOOK_TIMEOUT_CLOCK=""
+# Epoch seconds without a process on Bash 3.2: one wall-clock reading and the
+# SECONDS value at that moment. Bash derives SECONDS from time(0), so the sum
+# follows the wall clock second for second.
+HOOK_TIMEOUT_EPOCH_BASE=""
+HOOK_TIMEOUT_EPOCH_BASE_SECONDS=""
+HOOK_TIMEOUT_EPOCH_SECONDS=""
+
+# hook_timeout_epoch_seconds: sets HOOK_TIMEOUT_EPOCH_SECONDS. Uses
+# EPOCHSECONDS when the shell has it; otherwise starts at most one `date +%s`
+# per shell (none after hook_timeout_clock_init ran in this shell). Call it in
+# the current shell, not inside $( ), or the base is lost with the subshell.
+hook_timeout_epoch_seconds() {
+  local base
+  if [[ "${EPOCHSECONDS:-}" =~ ^[0-9]{1,10}$ ]]; then
+    HOOK_TIMEOUT_EPOCH_SECONDS="$EPOCHSECONDS"
+    return 0
+  fi
+  if [ -z "$HOOK_TIMEOUT_EPOCH_BASE" ]; then
+    base="$(date +%s 2>/dev/null || true)"
+    [[ "$base" =~ ^[0-9]{1,10}$ ]] && [ "$base" -gt 0 ] || return 1
+    # Read SECONDS after the clock: a second boundary crossed in between
+    # leaves the derived value one second behind, never ahead.
+    HOOK_TIMEOUT_EPOCH_BASE="$base"
+    HOOK_TIMEOUT_EPOCH_BASE_SECONDS="$SECONDS"
+  fi
+  HOOK_TIMEOUT_EPOCH_SECONDS=$((HOOK_TIMEOUT_EPOCH_BASE + SECONDS - HOOK_TIMEOUT_EPOCH_BASE_SECONDS))
+}
+
+# hook_timeout_clock_init: choose the millisecond clock once for this shell
+# and seed the epoch-seconds base from the same reading. Costs at most one
+# `date` and one `perl` on Bash 3.2 and nothing when EPOCHREALTIME exists.
+hook_timeout_clock_init() {
+  local now=""
+  [ -z "$HOOK_TIMEOUT_CLOCK" ] || return 0
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    HOOK_TIMEOUT_CLOCK='realtime'
+    return 0
+  fi
+  now="$(date +%s%3N 2>/dev/null || true)"
+  if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
+    HOOK_TIMEOUT_CLOCK='date'
+  elif command -v perl >/dev/null 2>&1; then
+    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
+    if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
+      HOOK_TIMEOUT_CLOCK='perl'
+    else
+      now=""
+    fi
+  else
+    now=""
+  fi
+  if [ -n "$now" ]; then
+    if [ -z "$HOOK_TIMEOUT_EPOCH_BASE" ] && [ -z "${EPOCHSECONDS:-}" ]; then
+      HOOK_TIMEOUT_EPOCH_BASE=$((now / 1000))
+      HOOK_TIMEOUT_EPOCH_BASE_SECONDS="$SECONDS"
+    fi
+  else
+    HOOK_TIMEOUT_CLOCK='seconds'
+  fi
+}
+
 hook_timeout_now_ms() {
   local realtime seconds fraction now
   realtime="${EPOCHREALTIME:-}"
@@ -97,9 +167,18 @@ hook_timeout_now_ms() {
       return 0
     fi
   fi
-  now="$(date +%s%3N 2>/dev/null || true)"
-  if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
-    printf '%s' "$now"
+  case "$HOOK_TIMEOUT_CLOCK" in
+    perl|seconds) ;;
+    *)
+      now="$(date +%s%3N 2>/dev/null || true)"
+      if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
+        printf '%s' "$now"
+        return 0
+      fi
+      ;;
+  esac
+  if [ "$HOOK_TIMEOUT_CLOCK" = seconds ] && hook_timeout_epoch_seconds; then
+    printf '%s000' "$HOOK_TIMEOUT_EPOCH_SECONDS"
     return 0
   fi
   if command -v perl >/dev/null 2>&1; then
@@ -267,7 +346,9 @@ master_debug_phase_start() {
   else
     # The watchdog runs in a different shell, so SECONDS is not a shared clock.
     # Store an absolute, coarse timestamp that both processes can compare.
-    started_seconds="${EPOCHSECONDS:-$(date +%s 2>/dev/null || true)}"
+    # hook_timeout_epoch_seconds starts no process once its base is set.
+    started_seconds=""
+    ! hook_timeout_epoch_seconds || started_seconds="$HOOK_TIMEOUT_EPOCH_SECONDS"
     if [[ "$started_seconds" =~ ^[0-9]{1,10}$ ]] && [ "$started_seconds" -gt 0 ]; then
       started_ms="epoch-seconds:$started_seconds"
       MASTER_DEBUG_ACTIVE_CLOCK=epoch-seconds
@@ -302,7 +383,8 @@ master_debug_phase_finish() {
       fi
     elif [ "${MASTER_DEBUG_ACTIVE_CLOCK:-}" = epoch-seconds ] \
       && [[ "${MASTER_DEBUG_ACTIVE_STARTED_SECONDS:-}" =~ ^[0-9]{1,10}$ ]]; then
-      ended_seconds="${EPOCHSECONDS:-$(date +%s 2>/dev/null || true)}"
+      ended_seconds=""
+      ! hook_timeout_epoch_seconds || ended_seconds="$HOOK_TIMEOUT_EPOCH_SECONDS"
       if [[ "$ended_seconds" =~ ^[0-9]{1,10}$ ]] \
         && [ "$ended_seconds" -ge "$MASTER_DEBUG_ACTIVE_STARTED_SECONDS" ]; then
         elapsed_ms=$(((ended_seconds - MASTER_DEBUG_ACTIVE_STARTED_SECONDS) * 1000))

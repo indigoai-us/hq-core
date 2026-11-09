@@ -124,7 +124,11 @@ printf 'false\n'
 SH
 chmod +x "$TMP/fail-bin/node" "$TMP/false-bin/node"
 flag_cache="$HOME/.hq/hook-flag.multi-company-session-lock.indigo"
-cache_now="$(cut -d. -f1 /proc/uptime)"
+if [ -r /proc/uptime ]; then
+  cache_now="$(cut -d. -f1 /proc/uptime)"
+else
+  cache_now="$(date +%s)"
+fi
 printf 'true %s\n' "$((cache_now - 61))" >"$flag_cache"
 expect_default_on "$(PATH="$TMP/fail-bin:$PATH" call_multi_company_flag "$TMP" indigo)" "network failure after expired cache defaults on"
 printf 'malformed cache\n' >"$flag_cache"
@@ -190,30 +194,71 @@ mkdir -p "$TMP/workspace/sessions/sess-p-badslug"
 printf '{"session_id":"sess-p-badslug","company_slug":"../x"}\n' \
   >"$TMP/workspace/sessions/sess-p-badslug/scope-capability.json"
 expect_no_inherit "sess-c-badslug" "sess-p-badslug" "parent capability with an invalid company"
+# Probe native symlink support at runtime. Git Bash without the privilege
+# copies for default ln -s; those ordinary files must exercise inheritance too.
+mkdir -p "$TMP/link-probe-target"
+if MSYS=winsymlinks:nativestrict ln -s "$TMP/link-probe-target" "$TMP/link-probe" 2>/dev/null && [ -L "$TMP/link-probe" ]; then
+  scope_test_links=native
+  rm "$TMP/link-probe"
+else
+  scope_test_links=copy
+  rm -rf "$TMP/link-probe"
+fi
+test_link() {
+  if [ "$scope_test_links" = native ]; then
+    MSYS=winsymlinks:nativestrict ln -s "$1" "$2"
+    [ -L "$2" ] || fail "native symlink fixture was not a symlink"
+  else
+    env -u MSYS ln -s "$1" "$2"
+    [ ! -L "$2" ] || fail "copy fixture unexpectedly became a symlink"
+    [ -e "$2" ] || fail "copy fixture missing"
+  fi
+}
+echo "symlink fixtures: $scope_test_links (four paired assertions)"
 # A symlinked parent folder or capability could point anywhere.
 mkdir -p "$TMP/elsewhere/sess-p-dirlink"
 printf '{"session_id":"sess-p-dirlink","company_slug":"otherco"}\n' \
   >"$TMP/elsewhere/sess-p-dirlink/scope-capability.json"
-ln -s "$TMP/elsewhere/sess-p-dirlink" "$TMP/workspace/sessions/sess-p-dirlink"
-expect_no_inherit "sess-c-dirlink" "sess-p-dirlink" "symlinked parent folder"
+test_link "$TMP/elsewhere/sess-p-dirlink" "$TMP/workspace/sessions/sess-p-dirlink"
+if [ "$scope_test_links" = native ]; then
+  expect_no_inherit "sess-c-dirlink" "sess-p-dirlink" "symlinked parent folder"
+else
+  session_scope_inherit_parent_session "$TMP" "sess-c-dirlink" "" "sess-p-dirlink" || fail "copied parent folder: inheritance failed"
+  assert_eq "$(session_scope_read "$TMP" "sess-c-dirlink")" "otherco" "copied parent folder: inherited company"
+fi
 mkdir -p "$TMP/workspace/sessions/sess-p-caplink"
 printf '{"session_id":"sess-p-caplink","company_slug":"otherco"}\n' >"$TMP/elsewhere/cap.json"
-ln -s "$TMP/elsewhere/cap.json" "$TMP/workspace/sessions/sess-p-caplink/scope-capability.json"
-expect_no_inherit "sess-c-caplink" "sess-p-caplink" "symlinked parent capability"
+test_link "$TMP/elsewhere/cap.json" "$TMP/workspace/sessions/sess-p-caplink/scope-capability.json"
+if [ "$scope_test_links" = native ]; then
+  expect_no_inherit "sess-c-caplink" "sess-p-caplink" "symlinked parent capability"
+else
+  session_scope_inherit_parent_session "$TMP" "sess-c-caplink" "" "sess-p-caplink" || fail "copied parent capability: inheritance failed"
+  assert_eq "$(session_scope_read "$TMP" "sess-c-caplink")" "otherco" "copied parent capability: inherited company"
+fi
 for bad in '../sess-p-ok' 'a/b' '..' '.' ''; do
   expect_no_inherit "sess-c-path" "$bad" "parent id '$bad'"
 done
 # The child's own folder must not be a symlink either.
 mkdir -p "$TMP/elsewhere/child-target"
-ln -s "$TMP/elsewhere/child-target" "$TMP/workspace/sessions/sess-c-link"
-if session_scope_inherit_parent_session "$TMP" "sess-c-link" "" "sess-p-ok"; then
+test_link "$TMP/elsewhere/child-target" "$TMP/workspace/sessions/sess-c-link"
+if [ "$scope_test_links" = native ]; then
+  if session_scope_inherit_parent_session "$TMP" "sess-c-link" "" "sess-p-ok"; then
   fail "inherit wrote through a symlinked child folder"
+fi
+else
+  session_scope_inherit_parent_session "$TMP" "sess-c-link" "" "sess-p-ok" || fail "copied child folder: inheritance failed"
+  assert_eq "$(session_scope_read "$TMP" "sess-c-link")" "otherco" "copied child folder: inherited company"
 fi
 [ ! -e "$TMP/elsewhere/child-target/scope-capability.json" ] || fail "capability written through a child symlink"
 mkdir -p "$TMP/workspace/sessions/sess-c-agentlink"
-ln -s "$TMP/elsewhere/child-target" "$TMP/workspace/sessions/sess-c-agentlink/agents"
-if session_scope_inherit_parent_session "$TMP" "sess-c-agentlink" "agent-L" "sess-p-ok"; then
+test_link "$TMP/elsewhere/child-target" "$TMP/workspace/sessions/sess-c-agentlink/agents"
+if [ "$scope_test_links" = native ]; then
+  if session_scope_inherit_parent_session "$TMP" "sess-c-agentlink" "agent-L" "sess-p-ok"; then
   fail "inherit wrote through a symlinked agents folder"
+fi
+else
+  session_scope_inherit_parent_session "$TMP" "sess-c-agentlink" "agent-L" "sess-p-ok" || fail "copied agents folder: inheritance failed"
+  assert_eq "$(session_scope_read "$TMP" "sess-c-agentlink" "agent-L")" "otherco" "copied agents folder: inherited company"
 fi
 [ ! -e "$TMP/elsewhere/child-target/agent-L" ] || fail "agent tuple written through an agents symlink"
 # A real parent still passes on its lock set.

@@ -125,6 +125,25 @@ esac
 pass "records the worktree's branch and commit ($APP_SHA)"
 
 # ---------------------------------------------------------------------------
+echo "[3b] the nudge tells the model to record this session's id (feedback_ffd5a21d)"
+# /checkpoint upgrades only an auto-checkpoint whose session_id matches the
+# caller's, so the nudge must name the id. Clear the host's session env so the
+# payload fallback is what this case measures.
+out="$(unwrap_context "$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID -u HQ_SESSION_ID -u CODEX_SESSION_ID \
+  CLAUDE_PROJECT_DIR="$FR" bash "$FR/.claude/hooks/auto-checkpoint-trigger.sh" <<<"$(bash_payload s-sid-payload 'git commit -m sid' 0)")")"
+case "$out" in
+  *'session_id: "s-sid-payload",'*) ;;
+  *) fail "nudge does not carry the payload session_id: $out" ;;
+esac
+out="$(unwrap_context "$(env -u CLAUDE_SESSION_ID -u HQ_SESSION_ID -u CODEX_SESSION_ID CLAUDE_CODE_SESSION_ID=s-sid-env \
+  CLAUDE_PROJECT_DIR="$FR" bash "$FR/.claude/hooks/auto-checkpoint-trigger.sh" <<<"$(bash_payload s-sid-other 'git commit -m sid' 0)")")"
+case "$out" in
+  *'session_id: "s-sid-env",'*) ;;
+  *) fail "nudge does not prefer CLAUDE_CODE_SESSION_ID, as the checkpoint skill does: $out" ;;
+esac
+pass "nudge names session_id from the same source the checkpoint skill uses"
+
+# ---------------------------------------------------------------------------
 echo "[4] failed tool calls do not trigger journal reminders"
 # Prime the session with edits so a green run WOULD otherwise be a milestone.
 for _ in $(seq 1 3); do journal_hook "$(edit_payload s-fail)" >/dev/null; done

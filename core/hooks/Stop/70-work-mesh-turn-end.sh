@@ -6,6 +6,18 @@ set -uo pipefail
 case "${HQ_WORK_MESH_DISABLED:-}" in 1|true|TRUE|yes|YES|on|ON) exit 0 ;; esac
 case ",${HQ_DISABLED_HOOKS:-}," in *,work-mesh,*|*,work-mesh-live,*|*,\*,*) exit 0 ;; esac
 
+# The spool write is the whole body. Under the master hook it is queued so a
+# slow home directory cannot hold the turn. HQ_HOOK_ASYNC=0 keeps it inline.
+_HOOK_ASYNC_LIB=""
+_HOOK_FILE="${BASH_SOURCE[0]}"
+_HOOK_ROOT="${HQ_ROOT:-}"
+[ -n "$_HOOK_ROOT" ] || _HOOK_ROOT="$(cd "${_HOOK_FILE%/*}/../../.." 2>/dev/null && pwd)" || _HOOK_ROOT=""
+if [ -n "$_HOOK_ROOT" ] && [ -f "$_HOOK_ROOT/core/scripts/lib/hook-stop-async.sh" ]; then
+  # shellcheck source=core/scripts/lib/hook-stop-async.sh
+  . "$_HOOK_ROOT/core/scripts/lib/hook-stop-async.sh"
+  hook_stop_async_enter "$_HOOK_FILE" || true
+fi
+
 HOOK_FILE="${BASH_SOURCE[0]}"
 if [ -z "${HQ_ROOT:-}" ]; then
   HQ_ROOT="$(cd "${HOOK_FILE%/*}/../../.." 2>/dev/null && pwd)" || exit 0

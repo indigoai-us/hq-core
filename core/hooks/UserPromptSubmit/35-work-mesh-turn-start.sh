@@ -127,7 +127,18 @@ if [ "$SKIP_ASK" -eq 0 ] && [ -f "$STATE" ] && [ ! -f "$SURFACED" ] && command -
           : >"$SURFACED" 2>/dev/null || true
           ;;
         *)
-          CTX="WORK MESH CLARIFICATION (once): use AskUserQuestion with exactly these stable options from decision ${DECISION_ID}: ${OPTIONS_JSON}. After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself. ${CREATE_GUIDANCE}"
+          # AskUserQuestion accepts 2 to 4 options per question. Page longer lists.
+          OPTION_COUNT="$(jq -r '(.decision.options // []) | length' "$STATE" 2>/dev/null || printf '0')"
+          PAGING=""
+          STABLE_NOTE=""
+          case "$OPTION_COUNT" in
+            ''|*[!0-9]*) OPTION_COUNT=0 ;;
+          esac
+          if [ "$OPTION_COUNT" -gt 4 ]; then
+            STABLE_NOTE=" (paged as below)"
+            PAGING=" AskUserQuestion allows at most 4 options per question and this decision has ${OPTION_COUNT}, so do not pass them all in one call. Ask in pages: page through them in the order given: if 4 or fewer options remain, show them all with no 'More options'; otherwise show the next 3 plus a fourth option labelled 'More options' that opens the next page. Keep every optionId and label exactly as listed; never drop, merge or invent options."
+          fi
+          CTX="WORK MESH CLARIFICATION (once): use AskUserQuestion with exactly these stable options${STABLE_NOTE} from decision ${DECISION_ID}: ${OPTIONS_JSON}.${PAGING} After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself. ${CREATE_GUIDANCE}"
           : >"$SURFACED" 2>/dev/null || true
           ;;
       esac

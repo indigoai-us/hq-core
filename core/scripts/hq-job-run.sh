@@ -38,6 +38,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# feedback_65ee9e51: nobody watches a scheduled job, so any `hq sync` it starts
+# (the agent's own tool calls, remediation pulls) is unattended. hq-cloud then
+# holds deletes of files another member created instead of pushing them.
+export HQ_SYNC_UNATTENDED=1
 if [ "${1:-}" = "--company-machine" ]; then
   shift
   exec node "$SCRIPT_DIR/lib/company-jobs.mjs" run "$@"
@@ -980,6 +984,7 @@ Then stop."
     printf 'cd %q\n' "$RUN_CWD"
     # tmux starts the pane with the server's env, not this shell's.
     printf 'export HQ_WELCOME_BRIEF_HOOK=0 HQ_DISABLED_HOOKS=%q\n' "${HQ_DISABLED_HOOKS:-welcome-brief-ready}"
+    echo 'export HQ_SYNC_UNATTENDED=1'
     if [ -n "$JOB_SESSION_ID" ]; then
       printf 'export HQ_SESSION_ID=%q\n' "$JOB_SESSION_ID"
       printf 'claude --remote-control %q --session-id %q --permission-mode bypassPermissions --dangerously-skip-permissions %q\n' "$rc_name" "$JOB_SESSION_ID" "$remote_prompt"

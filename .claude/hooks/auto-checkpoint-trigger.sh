@@ -167,6 +167,23 @@ DIRTY_COUNT=$(printf '%s' "$GIT_PORCELAIN" | grep -c . || true)
 [ -n "$DIRTY_COUNT" ] || DIRTY_COUNT=0
 TIMESTAMP=$(date -u +"%Y%m%d-%H%M%S")
 
+# Session id the auto-checkpoint must record so /checkpoint upgrades only this
+# session's file (feedback_ffd5a21d). Same env chain the checkpoint skill passes
+# to checkpoint-recent-auto.sh, then the hook payload's session_id. Values
+# outside the helper's [A-Za-z0-9._-] set are dropped, as the helper does.
+CHECKPOINT_SID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${HQ_SESSION_ID:-${CODEX_SESSION_ID:-}}}}"
+if [ -z "$CHECKPOINT_SID" ]; then
+  CHECKPOINT_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+fi
+case "$CHECKPOINT_SID" in
+  ''|*[!A-Za-z0-9._-]*) CHECKPOINT_SID="" ;;
+esac
+if [ -n "$CHECKPOINT_SID" ]; then
+  SESSION_FIELD="session_id: \"${CHECKPOINT_SID}\","
+else
+  SESSION_FIELD="session_id (this session's id, the value /checkpoint passes to checkpoint-recent-auto.sh),"
+fi
+
 # Update debounce timestamp and clear the edit budget this nudge consumed.
 hq_hook_stamp_now "$DEBOUNCE_FILE"
 hq_hook_stamp_now "$TRIGGER_FILE"
@@ -182,6 +199,7 @@ Write a lightweight auto-checkpoint thread when you reach a natural pause:
 
 Include ONLY:
   thread_id, version: 1, type: "auto-checkpoint", created_at, updated_at,
+  ${SESSION_FIELD}
   workspace_root, cwd,
   git: { branch: "${GIT_BRANCH}", current_commit: "${GIT_SHA}", dirty: $([ "$DIRTY_COUNT" -gt 0 ] && echo "true" || echo "false") },
   conversation_summary (1 sentence), files_touched (from this session),

@@ -45,6 +45,9 @@
 #   [23] round 7: :// operands of git, zsh glob_subst and $~, git
 #        configuration that runs a command (alias, pager, ...), commands
 #        that xargs, find -exec and parallel run
+#   [24] git cat-file --batch fed by stdin, cat-file with a computed name,
+#        git aliases, object names read in a loop, and archive, grep on a
+#        revision and log -p over a path that holds a credential file
 # Sections run in the order 1-6, 9, 10, 7, 8, because [8] exports env vars.
 set -uo pipefail
 
@@ -1475,8 +1478,62 @@ bash_case 2 "git show ref:cfg/.env literal still blocks" \
   'git show HEAD:cfg/.env' "$GREPO"
 bash_case 2 "git show ref:\$f with no literal directory blocks when .env is tracked" \
   'for f in $(git ls-tree -r --name-only HEAD); do git show HEAD:$f; done' "$GREPO"
+bash_case 0 "git show :\$n:path merge-stage refs with a loop index" \
+  'for n in 1 2 3; do git show :$n:src/a.ts; done' "$GREPO"
+bash_case 0 "git show \":\$n:path\" quoted merge-stage ref with a loop index" \
+  'for n in 1 2 3; do git show ":$n:src/a.ts" | head -3; done' "$GREPO"
+bash_case 2 "git show :\$n:cfg/.env merge-stage ref of a credential file blocks" \
+  'for n in 1 2 3; do git show :$n:cfg/.env; done' "$GREPO"
+bash_case 2 "git show :\$n:cfg/\$f merge-stage ref with a computed name blocks" \
+  'for n in 1 2 3; do git show :$n:cfg/$f; done' "$GREPO"
+bash_case 2 "git show :\$n:path over a quoted (unsplit) list blocks" \
+  'for n in "$(echo x)"; do git show :$n:src/a.ts; done' "$GREPO"
+bash_case 2 "git add then git show :\$n:path blocks (index may change)" \
+  'git add -A; for n in 1 2 3; do git show :$n:src/a.ts; done' "$GREPO"
+# PR #1798 review: a loop word that starts with / turns :$n:path into git's
+# :/<text> commit-message search (:/!-<text> matches any commit), and git
+# show then prints a whole commit patch. Only literal stage digits 0-3 pass.
+bash_case 2 "git show :\$n:path with a /!- loop word blocks (commit search)" \
+  'for n in /!-zzz; do git show :$n:src/a.ts; done' "$GREPO"
+bash_case 2 "git show \":\$n:path\" quoted with a /!- loop word blocks" \
+  'for n in /!-zzz; do git show ":$n:src/a.ts"; done' "$GREPO"
+bash_case 2 "git show \":\$n:path\" over a substitution list blocks" \
+  'for n in $(echo /!-zzz); do git show ":$n:src/a.ts"; done' "$GREPO"
+bash_case 2 "git show :\$n:path with a plain / loop word blocks" \
+  'for n in /fixture; do git show :$n:src/a.ts; done' "$GREPO"
+bash_case 2 "git show :\$n:path with one / word among digits blocks" \
+  'for n in 1 /!-zzz; do git show :$n:src/a.ts; done' "$GREPO"
+bash_case 2 "git show \":\$n:path\" with n rebound in the loop body blocks" \
+  'for x in /!-zzz; do n=$x; git show ":$n:src/a.ts"; done' "$GREPO"
+bash_case 2 "git show \":\$n:path\" after a later / binding of n blocks" \
+  'for n in 1; do :; done; for n in /!-zzz; do :; done; git show ":$n:src/a.ts"' "$GREPO"
+bash_case 2 "git show \":\$1:path\" with a positional parameter blocks" \
+  'git show ":$1:src/a.ts"' "$GREPO"
+bash_case 0 "git show :\$n:path over stage digits 0-3 still passes" \
+  'for n in 0 1 2 3; do git show :$n:src/a.ts; done' "$GREPO"
 bash_case 2 "cat of a credential file in a loop still blocks" \
   'for f in .npmrc; do cat ~/$f; done' "$GREPO"
+
+# [15r8] Revision searches select commits, not the apparent trailing path.
+for fp in 0 1; do
+  export HQ_CRED_GUARD_FASTPATH="$fp"
+  bash_case 2 "r8 literal negative search ($fp)" 'git show :/!-absent:src/a.ts' "$GREPO"
+  bash_case 2 "r8 assigned search ($fp)" 'X=:/!-absent; git show "$X"' "$GREPO"
+  bash_case 2 "r8 assigned stage search ($fp)" 'n=/!-absent; git show ":$n:src/a.ts"' "$GREPO"
+  bash_case 2 "r8 literal search ($fp)" 'git show :/fixture' "$GREPO"
+  bash_case 2 "r8 quoted show subcommand ($fp)" 'git sh"ow" "$REV"' "$GREPO"
+  bash_case 2 "r8 quoted cat-file subcommand ($fp)" 'git cat-"file" -p "$REV"' "$GREPO"
+  bash_case 2 "r8 unknown show revision ($fp)" 'git show "$REV"' "$GREPO"
+  bash_case 2 "r8 unknown cat-file revision ($fp)" 'git cat-file -p "$REV"' "$GREPO"
+  bash_case 2 "r8 cat-file search ($fp)" 'git cat-file -p :/!-absent' "$GREPO"
+  bash_case 2 "r8 cat-file computed path ($fp)" 'git cat-file -p "HEAD:cfg/$F"' "$GREPO"
+  bash_case 2 "r8 log patch search ($fp)" 'git log -p :/!-absent' "$GREPO"
+  bash_case 2 "r8 grep search ($fp)" 'git grep -e fake :/!-absent' "$GREPO"
+  bash_case 2 "r8 computed ref ($fp)" 'git show "$REV:src/a.ts"' "$GREPO"
+  bash_case 0 "r8 ordinary cat-file ($fp)" 'git cat-file -p HEAD:src/a.ts' "$GREPO"
+  bash_case 0 "r8 assigned ordinary show ($fp)" 'REV=HEAD; git show "$REV:src/a.ts"' "$GREPO"
+done
+unset HQ_CRED_GUARD_FASTPATH
 
 echo "[15b] git show tree proof runs against the tree git reads (PR #1700 review)"
 # A second repository that tracks no cfg/ at all: proving against it must not
@@ -1687,6 +1744,345 @@ if grep -q 'operand: <computed value>' "$TMP/err" && ! LC_ALL=C grep -q "$(print
 else
   bad "unprovable operand message: $(head -c 200 "$TMP/err" | head -n 1 | cat -v)"
 fi
+echo "[24] git object readers fed by stdin, aliases, read loops and pathspecs"
+# Each deny shape printed the tracked fake cfg/.env of GREPO on main.
+git -C "$GREPO" config alias.x show
+# [17a] cat-file --batch and --batch-command read object names from stdin.
+bash_case 2 "cat-file --batch here-string" 'git cat-file --batch <<< "HEAD:cfg/$f"' "$GREPO"
+bash_case 2 "echo | cat-file --batch" "echo HEAD:cfg/.env | git cat-file --batch" "$GREPO"
+bash_case 2 "ls | sed | cat-file --batch" "ls -A cfg | sed 's|^|HEAD:cfg/|' | git cat-file --batch" "$GREPO"
+bash_case 2 "cat-file --batch < file" "git cat-file --batch < objs.txt" "$GREPO"
+bash_case 2 "cat-file --batch heredoc" $'git cat-file --batch <<EOF\nHEAD:cfg/settings.txt\nEOF' "$GREPO"
+bash_case 2 "rev-list | cat-file --batch" "git rev-list --objects --all | git cat-file --batch" "$GREPO"
+bash_case 2 "cat-file --batch-all-objects --batch" "git cat-file --batch-all-objects --batch" "$GREPO"
+bash_case 2 "cat-file --batch-command < file" "git cat-file --batch-command < cmds.txt" "$GREPO"
+bash_case 2 "cat-file --batch=FORMAT" "git cat-file --batch='%(objectname)' < objs.txt" "$GREPO"
+# [17b] cat-file with a computed object name, as git show (PR 1700).
+bash_case 2 "while-read cat-file -p HEAD:cfg/\$f" \
+  'ls -A cfg | while read f; do git cat-file -p "HEAD:cfg/$f"; done' "$GREPO"
+bash_case 2 "while-read cat-file blob HEAD:cfg/\$f" \
+  'ls -A cfg | while read f; do git cat-file blob "HEAD:cfg/$f"; done' "$GREPO"
+bash_case 2 "while-read cat-file -p HEAD:\$f < list" \
+  'while read f; do git cat-file -p "HEAD:$f"; done < list' "$GREPO"
+# [17c] aliases that expand to show, cat-file or archive.
+bash_case 2 "config alias x=show in a while-read loop" \
+  'ls -A cfg | while read f; do git x "HEAD:cfg/$f"; done' "$GREPO"
+bash_case 2 "-c alias.y='cat-file -p' in a while-read loop" \
+  "ls -A cfg | while read f; do git -c alias.y='cat-file -p' y \"HEAD:cfg/\$f\"; done" "$GREPO"
+bash_case 2 "-c alias.y=archive | tar" "git -c alias.y=archive y HEAD | tar -xO" "$GREPO"
+bash_case 2 "shell alias !git archive HEAD | tar" "git -c alias.z='!git archive HEAD' z | tar -xO" "$GREPO"
+bash_case 2 "shell alias !git show of an object name read from input" \
+  "while read -r ref; do git -c 'alias.z=!git show' z \"\$ref\"; done < list" "$GREPO"
+bash_case 2 "alias defined by git config in the same command" \
+  'git config alias.w archive && git w HEAD | tar -xO' "$GREPO"
+bash_case 2 "alias defined through GIT_CONFIG_KEY_0" \
+  'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.w GIT_CONFIG_VALUE_0=archive git w HEAD | tar -xO' "$GREPO"
+# [17d] a whole object name read from input.
+bash_case 2 "while-read git show \"\$ref\"" 'while read -r ref; do git show "$ref"; done < list' "$GREPO"
+bash_case 2 "while-read git cat-file -p \"\$ref\"" 'while read -r ref; do git cat-file -p "$ref"; done < list' "$GREPO"
+bash_case 2 "commit ids read in a loop (fail closed, as the for form)" \
+  'git log --format=%H | while read h; do git show "$h"; done' "$GREPO"
+# [17e] archive, grep on a revision, and patch output over a directory or tree
+# that holds a tracked credential file.
+bash_case 2 "archive HEAD cfg | tar" "git archive HEAD cfg | tar -xO" "$GREPO"
+bash_case 2 "archive HEAD | tar" "git archive HEAD | tar -xO" "$GREPO"
+bash_case 2 "archive -o out.tar HEAD" "git archive -o out.tar HEAD" "$GREPO"
+bash_case 2 "grep -h API_KEY HEAD" "git grep -h API_KEY HEAD" "$GREPO"
+bash_case 2 "grep API HEAD -- cfg" "git grep API HEAD -- cfg" "$GREPO"
+bash_case 2 "log -p HEAD -- cfg" "git log -p HEAD -- cfg" "$GREPO"
+bash_case 2 "log -p -- cfg" "git log -p -- cfg" "$GREPO"
+bash_case 2 "show HEAD -- cfg" "git show HEAD -- cfg" "$GREPO"
+bash_case 2 "-C cfg log -p -- ." "git -C cfg log -p -- ." "$GREPO"
+bash_case 2 "archive with --git-dir (cannot be listed)" "git --git-dir=.git archive HEAD src" "$GREPO"
+# [17f] spellings found by the independent review of this change.
+bash_case 2 "cat-file --batch-co (unique prefix of --batch-command)" "git cat-file --batch-co < objs.txt" "$GREPO"
+bash_case 2 "cat-file --batch held in an assigned variable" 'o=--batch; git cat-file "$o" < objs.txt' "$GREPO"
+bash_case 2 "cat-file option held in an unknown variable" 'git cat-file "$o" < objs.txt' "$GREPO"
+bash_case 2 "alias starting with -c before cat-file --batch" \
+  "git -c alias.lead='-c core.abbrev=7 cat-file --batch' lead < objs.txt" "$GREPO"
+bash_case 2 "GIT_CONFIG_VALUE_0 shell alias with no operand" \
+  "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.z GIT_CONFIG_VALUE_0='!git archive HEAD' git z" "$GREPO"
+bash_case 2 "--config-env NAME=VAR (separate word)" 'git --config-env alias.z=VAL z "HEAD:cfg/$f"' "$GREPO"
+bash_case 2 "alias defined with a quoted name" 'git config alias."w" archive && git w HEAD' "$GREPO"
+bash_case 2 "bare read sets REPLY" 'while read; do git show "$REPLY"; done < objs' "$GREPO"
+bash_case 2 "mapfile array walked by a for loop" 'mapfile -t a < objs; for x in "${a[@]}"; do git show "$x"; done' "$GREPO"
+bash_case 2 "log -p with :(glob) pathspec magic" "git log -p -- ':(glob)cfg/*'" "$GREPO"
+bash_case 2 "-C src log -p -- :/ (top of the repository)" "git -C src log -p -- :/" "$GREPO"
+bash_case 2 "/usr/bin/git with a config alias" '/usr/bin/git x "HEAD:cfg/$f"' "$GREPO"
+bash_case 2 "backslash-escaped git with a config alias" 'gi\t x "HEAD:cfg/$f"' "$GREPO"
+bash_case 2 "log -p --full-diff -- src (whole commits)" "git log -p --full-diff -- src" "$GREPO"
+# [17g] second independent review.
+bash_case 2 "archive -- HEAD (tree-ish after --)" "git archive -- HEAD" "$GREPO"
+bash_case 2 "alias arch=archive -- HEAD" "git -c alias.arch=archive arch -- HEAD" "$GREPO"
+bash_case 2 "archive --remote (cannot be listed)" "git archive --remote=. HEAD" "$GREPO"
+bash_case 2 "unknown subcommand with -c include.path" "git -c include.path=/nonexistent/x.gitconfig arch HEAD" "$GREPO"
+bash_case 2 "unknown subcommand with GIT_CONFIG_GLOBAL" "GIT_CONFIG_GLOBAL=/nonexistent/x.gitconfig git arch HEAD" "$GREPO"
+bash_case 2 "GIT_CONFIG_KEY_0 assembled from variables" \
+  "a=alias.; b=batch; GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=\$a\$b GIT_CONFIG_VALUE_0='cat-file --batch' git batch < objs" "$GREPO"
+bash_case 2 "while-read log -L range:cfg/\$f" 'ls -A cfg | while read f; do git log -L 1,20:"cfg/$f"; done' "$GREPO"
+bash_case 2 "log -L range:cfg/\$f (unquoted)" 'git log -L 1,20:cfg/$f' "$GREPO"
+bash_case 2 "grep on a revision with :(glob)cfg/*" "git grep foo HEAD -- ':(glob)cfg/*'" "$GREPO"
+DREPO="$TMP/dirtyrepo"
+mkdir -p "$DREPO/src" "$DREPO/cfg"
+git -C "$DREPO" init -q 2>/dev/null
+printf 'export const a = 1;\n' > "$DREPO/src/a.ts"
+printf 'API_KEY=fake-old\n' > "$DREPO/cfg/.env"
+git -C "$DREPO" add -A >/dev/null 2>&1
+git -C "$DREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m fixture >/dev/null 2>&1
+printf 'API_KEY=fake-new\n' > "$DREPO/cfg/.env"
+printf 'export const a = 2;\n' > "$DREPO/src/a.ts"
+bash_case 2 "diff -- cfg with a changed credential file" "git diff -- cfg" "$DREPO"
+bash_case 2 "diff . with a changed credential file" "git diff ." "$DREPO"
+bash_case 0 "control: diff -- src with a changed credential file elsewhere" "git diff -- src" "$DREPO"
+bash_case 0 "control: diff . with no change to a credential file" "git diff ." "$GREPO"
+bash_case 0 "control: diff -- cfg with no change" "git diff -- cfg" "$GREPO"
+bash_case 0 "control: grep on a revision with :(glob)src/*" "git grep foo HEAD -- ':(glob)src/*'" "$GREPO"
+bash_case 0 "control: log -L range:src/a.ts" "git log -L 1,2:src/a.ts" "$GREPO"
+bash_case 0 "control: log -p -- src/a.ts (a single file)" "git log -p -- src/a.ts" "$GREPO"
+# [17h] third independent review: !git shell aliases pass their operands to
+# git, and diff compares trees.
+bash_case 2 "!git alias: show of a literal credential (main refused it too)" \
+  "git -c 'alias.z=!git' z show HEAD:cfg/.env" "$GREPO"
+bash_case 2 "!git alias: cat-file --batch" "git -c 'alias.z=!git' z cat-file --batch < objs" "$GREPO"
+bash_case 2 "!git alias: log -p -- cfg" "git -c 'alias.z=!git' z log -p -- cfg" "$GREPO"
+bash_case 2 "!/usr/bin/git alias: archive HEAD" "git -c 'alias.z=!/usr/bin/git' z archive HEAD" "$GREPO"
+bash_case 2 "diff of the empty tree against HEAD -- cfg" \
+  "git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD -- cfg" "$GREPO"
+bash_case 0 "control: !git alias: show HEAD:src/a.ts" "git -c 'alias.z=!git' z show HEAD:src/a.ts" "$GREPO"
+bash_case 0 "control: !echo alias" "git -c 'alias.z=!echo hi' z" "$GREPO"
+bash_case 0 "control: unrelated -c with config alias x=show of src" "git -c color.ui=false x HEAD:src/a.ts" "$GREPO"
+bash_case 0 "control: diff of the empty tree against HEAD -- src" \
+  "git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD -- src" "$GREPO"
+bash_case 0 "control: cat-file --batch-all-objects --batch-check" "git cat-file --batch-all-objects --batch-check" "$GREPO"
+# #1810 (staging main): a git object revision that is a variable fails closed
+# (git cat-file -p "$REV" blocks there), so this is a block case after the merge.
+bash_case 2 "cat-file -p \"\$obj\" blocks (#1810: computed object revision)" 'git cat-file -p "$obj"' "$GREPO"
+# [17i] PR review: patch output with no pathspec covers every file, and more
+# git readers print file contents. GREPO's only commit adds cfg/.env.
+bash_case 2 "log -p with no pathspec" "git log -p" "$GREPO"
+bash_case 2 "show HEAD with no pathspec" "git show HEAD" "$GREPO"
+bash_case 2 "show with no arguments" "git show" "$GREPO"
+bash_case 2 "show \"\$1\" (any commit)" 'git show "$1"' "$GREPO"
+bash_case 2 "alias lp='log -p'" "git -c alias.lp='log -p' lp" "$GREPO"
+bash_case 2 "diff of the empty tree against HEAD, no pathspec" \
+  "git diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD" "$GREPO"
+bash_case 2 "format-patch --stdout -1" "git format-patch --stdout -1" "$GREPO"
+bash_case 2 "format-patch --stdout --root HEAD" "git format-patch --stdout --root HEAD" "$GREPO"
+bash_case 2 "diff-tree -p -r --root HEAD -- cfg" "git diff-tree -p -r --root HEAD -- cfg" "$GREPO"
+bash_case 2 "diff-tree -p --root HEAD" "git diff-tree -p --root HEAD" "$GREPO"
+bash_case 2 "diff-tree --stdin -p (any commit)" "git rev-list HEAD | git diff-tree --stdin -p --root" "$GREPO"
+bash_case 2 "bundle create - HEAD" "git bundle create - HEAD" "$GREPO"
+bash_case 2 "difftool -y -x cat" "git difftool -y -x cat 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD" "$GREPO"
+bash_case 2 "while-read log -p over every tracked file" 'git ls-files | while read f; do git log -p -- "$f"; done' "$GREPO"
+bash_case 0 "control: show --stat HEAD" "git show --stat HEAD" "$GREPO"
+bash_case 0 "control: diff-tree --root HEAD (no patch)" "git diff-tree --root HEAD" "$GREPO"
+bash_case 0 "control: bundle create to a file" "git bundle create out.bundle HEAD" "$GREPO"
+SREPO="$TMP/stashrepo"
+mkdir -p "$SREPO/cfg" "$SREPO/src"
+git -C "$SREPO" init -q 2>/dev/null
+printf 'API_KEY=fake-old\n' > "$SREPO/cfg/.env"
+printf 'export const a = 1;\n' > "$SREPO/src/a.ts"
+git -C "$SREPO" add -A >/dev/null 2>&1
+git -C "$SREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m fixture >/dev/null 2>&1
+printf 'API_KEY=fake-new\n' > "$SREPO/cfg/.env"
+git -C "$SREPO" -c user.email=t@example.invalid -c user.name=t stash -q >/dev/null 2>&1
+bash_case 2 "stash show -p of a stash that changes a credential file" "git stash show -p" "$SREPO"
+bash_case 0 "control: stash show (stat only)" "git stash show" "$SREPO"
+CREPO="$TMP/cleanrepo"
+mkdir -p "$CREPO/src"
+git -C "$CREPO" init -q 2>/dev/null
+printf 'export const a = 1;\n' > "$CREPO/src/a.ts"
+printf 'export const b = 1;\n' > "$CREPO/src/b.ts"
+git -C "$CREPO" add -A >/dev/null 2>&1
+git -C "$CREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m one >/dev/null 2>&1
+printf 'export const a = 2;\n' > "$CREPO/src/a.ts"
+git -C "$CREPO" -c user.email=t@example.invalid -c user.name=t commit -q -am two >/dev/null 2>&1
+bash_case 0 "control: clean repo log -p" "git log -p" "$CREPO"
+bash_case 0 "control: clean repo show HEAD" "git show HEAD" "$CREPO"
+bash_case 0 "control: clean repo for loop of log -p per file" \
+  'for f in src/a.ts src/b.ts; do git log -p -- "$f"; done' "$CREPO"
+bash_case 0 "control: clean repo while-read log -p per file" \
+  'git ls-files | while read f; do git log -p -- "$f"; done' "$CREPO"
+# #1810: git show of a variable revision fails closed even in a clean repository.
+bash_case 2 "clean repo show \"\$1\" blocks (#1810: computed object revision)" 'git show "$1"' "$CREPO"
+bash_case 0 "control: clean repo format-patch --stdout -1" "git format-patch --stdout -1" "$CREPO"
+bash_case 0 "control: clean repo diff-tree -p --root HEAD" "git diff-tree -p --root HEAD" "$CREPO"
+bash_case 0 "control: clean repo bundle create - HEAD" "git bundle create - HEAD" "$CREPO"
+bash_case 0 "control: clean repo difftool -y -x cat" "git difftool -y -x cat HEAD~1 HEAD" "$CREPO"
+# [17j] spot-check of [17i]: glued options, option values, subdirectories,
+# stash config on the command line, and stash commits.
+bash_case 2 "log -pU3 (glued short options)" "git log -pU3 -1" "$GREPO"
+bash_case 2 "diff-tree -pU3 --root HEAD" "git diff-tree -pU3 --root HEAD" "$GREPO"
+bash_case 2 "log -p --rotate-to <file> (option value, not a path)" "git log -p --rotate-to src/a.ts -1" "$GREPO"
+bash_case 2 "log -p --anchored <text>" "git log -p --anchored foo -1" "$GREPO"
+bash_case 2 "format-patch --cover-from-description <mode>" "git format-patch --stdout --cover-from-description subject -1" "$GREPO"
+bash_case 2 "diff -l 0 <tree> HEAD" "git diff -l 0 4b825dc642cb6eb9a060e54bf8d69288fbee4904 HEAD" "$GREPO"
+bash_case 2 "-C src log -p (from a subdirectory)" "git -C src log -p" "$GREPO"
+bash_case 2 "-C src bundle create - HEAD" "git -C src bundle create - HEAD" "$GREPO"
+bash_case 2 "show HEAD from a subdirectory" "git show HEAD" "$GREPO/src"
+bash_case 2 "stash show -pU3" "git stash show -pU3" "$SREPO"
+bash_case 2 "-c stash.showPatch=true stash show" "git -c stash.showPatch=true stash show" "$SREPO"
+bash_case 2 "show stash@{0} (a merge commit)" "git show 'stash@{0}'" "$SREPO"
+bash_case 0 "control: -C src log -p -- ." "git -C src log -p -- ." "$GREPO"
+bash_case 0 "control: log -p --relative=src" "git log -p --relative=src -1" "$GREPO"
+bash_case 0 "control: log -p --oneline src" "git log -p --oneline src" "$GREPO"
+bash_case 0 "control: log -Sfoo (no patch)" "git log -Sfoo" "$GREPO"
+bash_case 0 "control: -c stash.showPatch=true stash show --stat" "git -c stash.showPatch=true stash show --stat" "$SREPO"
+bash_case 0 "control: clean repo diff-tree --stdin -p" "git rev-list HEAD | git diff-tree --stdin -p" "$CREPO"
+bash_case 0 "control: clean repo log -pU3" "git log -pU3 -1" "$CREPO"
+# [17k] PR re-review: reflog, diff-index, diff-files and fast-export print
+# file contents, and xargs, find -exec or parallel feed the path of a patch
+# reader. RREPO's credential commit is reachable only from the reflog.
+bash_case 2 "reflog -p" "git reflog -p" "$GREPO"
+bash_case 2 "reflog show -p" "git reflog show -p" "$GREPO"
+bash_case 2 "reflog show --patch HEAD" "git reflog show --patch HEAD" "$GREPO"
+bash_case 2 "alias rl='reflog -p'" "git -c alias.rl='reflog -p' rl" "$GREPO"
+bash_case 2 "diff-index -p --root <empty tree>" "git diff-index -p --root 4b825dc642cb6eb9a060e54bf8d69288fbee4904" "$GREPO"
+bash_case 2 "diff-index -p <empty tree>" "git diff-index -p 4b825dc642cb6eb9a060e54bf8d69288fbee4904" "$GREPO"
+bash_case 2 "diff-index -p --cached <empty tree>" "git diff-index -p --cached 4b825dc642cb6eb9a060e54bf8d69288fbee4904" "$GREPO"
+bash_case 2 "diff-files -p with a changed credential file" "git diff-files -p" "$DREPO"
+bash_case 2 "fast-export --all" "git fast-export --all" "$GREPO"
+bash_case 2 "fast-export HEAD" "git fast-export HEAD" "$GREPO"
+bash_case 2 "xargs feeding log -p -- a directory" "echo cfg | xargs git log -p --" "$GREPO"
+bash_case 2 "find -exec log -p -- cfg (no placeholder)" 'find . -name a.ts -exec git log -p -- cfg \;' "$GREPO"
+bash_case 2 "find cfg -exec log -p -- {} +" 'find cfg -type f -exec git log -p -- {} +' "$GREPO"
+bash_case 2 "find . -exec log -p -- {} +" 'find . -type f -exec git log -p -- {} +' "$GREPO"
+bash_case 2 "ls-files | xargs log -p --" "git ls-files | xargs git log -p --" "$GREPO"
+bash_case 2 "ls-files | xargs -I{} log -p -- {}" "git ls-files | xargs -I{} git log -p -- {}" "$GREPO"
+bash_case 2 "ls-files | parallel log -p --" "git ls-files | parallel git log -p --" "$GREPO"
+bash_case 2 "xargs feeding the revision of git grep" "echo HEAD | xargs git grep -h API" "$GREPO"
+RREPO="$TMP/reflogrepo"
+mkdir -p "$RREPO/src" "$RREPO/cfg"
+git -C "$RREPO" init -q 2>/dev/null
+printf 'export const a = 1;\n' > "$RREPO/src/a.ts"
+git -C "$RREPO" add -A >/dev/null 2>&1
+git -C "$RREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m one >/dev/null 2>&1
+printf '%s=%s\n' API_KEY fake-reflog-only > "$RREPO/cfg/.env"
+git -C "$RREPO" add -A >/dev/null 2>&1
+git -C "$RREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m two >/dev/null 2>&1
+git -C "$RREPO" reset -q --hard HEAD~1 >/dev/null 2>&1
+bash_case 2 "reflog -p reaches a commit the history no longer holds" "git reflog -p" "$RREPO"
+bash_case 2 "log -g -p reaches a commit the history no longer holds" "git log -g -p" "$RREPO"
+bash_case 0 "control: reflog repo log -p (history holds no credential file)" "git log -p" "$RREPO"
+bash_case 0 "control: reflog" "git reflog" "$GREPO"
+bash_case 0 "control: reflog show" "git reflog show" "$GREPO"
+bash_case 0 "control: diff-index <empty tree> (no patch)" "git diff-index 4b825dc642cb6eb9a060e54bf8d69288fbee4904" "$GREPO"
+bash_case 0 "control: diff-index -p HEAD (credential file unchanged)" "git diff-index -p HEAD" "$GREPO"
+bash_case 0 "control: diff-index -p <empty tree> -- src" "git diff-index -p 4b825dc642cb6eb9a060e54bf8d69288fbee4904 -- src" "$GREPO"
+bash_case 0 "control: diff-files -p (credential file unchanged)" "git diff-files -p" "$GREPO"
+bash_case 0 "control: diff-files -p -- src" "git diff-files -p -- src" "$DREPO"
+bash_case 0 "control: fast-export --no-data --all" "git fast-export --no-data --all" "$GREPO"
+bash_case 0 "control: fast-export --anonymize --all" "git fast-export --anonymize --all" "$GREPO"
+bash_case 0 "control: fast-export HEAD -- src" "git fast-export HEAD -- src" "$GREPO"
+bash_case 0 "control: find src -exec log -p -- {} +" 'find src -type f -exec git log -p -- {} +' "$GREPO"
+bash_case 0 "control: ls-files src | xargs log --oneline --" "git ls-files src | xargs git log --oneline --" "$GREPO"
+bash_case 0 "control: find -exec grep -l {} +" "find src -name '*.ts' -exec grep -l foo {} +" "$GREPO"
+bash_case 0 "control: clean repo stash show -p with no stash" "git stash show -p" "$CREPO"
+bash_case 0 "control: clean repo stash show -p stash@{0} with no stash" "git stash show -p 'stash@{0}'" "$CREPO"
+bash_case 0 "control: clean repo reflog -p" "git reflog -p" "$CREPO"
+bash_case 0 "control: clean repo diff-index -p --root <empty tree>" "git diff-index -p --root 4b825dc642cb6eb9a060e54bf8d69288fbee4904" "$CREPO"
+bash_case 0 "control: clean repo fast-export --all" "git fast-export --all" "$CREPO"
+bash_case 0 "control: clean repo ls-files | xargs log -p --" "git ls-files | xargs git log -p --" "$CREPO"
+bash_case 0 "control: clean repo find . -exec log -p -- {} +" 'find . -type f -exec git log -p -- {} +' "$CREPO"
+# Controls: the same readers over paths that hold no credential file.
+bash_case 0 "control: show HEAD:src/a.ts" "git show HEAD:src/a.ts" "$GREPO"
+bash_case 0 "control: cat-file -p HEAD:src/a.ts" "git cat-file -p HEAD:src/a.ts" "$GREPO"
+bash_case 0 "control: cat-file --batch-check" "git cat-file --batch-check <<< HEAD:src/a.ts" "$GREPO"
+# #1810: the tree proof covers git show only; cat-file of a computed path blocks.
+bash_case 2 "while-read cat-file -p HEAD:src/\$f blocks (#1810: tree proof is show only)" \
+  'ls src | while read f; do git cat-file -p "HEAD:src/$f"; done' "$GREPO"
+bash_case 0 "control: while-read git show HEAD:src/\$f" \
+  'ls src | while read f; do git show "HEAD:src/$f"; done' "$GREPO"
+bash_case 0 "control: config alias x=show of src" "git x HEAD:src/a.ts" "$GREPO"
+bash_case 0 "control: git config alias.v 'cat-file -p'" "git config alias.v 'cat-file -p'" "$GREPO"
+bash_case 0 "control: shell alias !git status" "git -c alias.st='!git status' st" "$GREPO"
+bash_case 0 "control: log -p -- src" "git log -p -- src" "$GREPO"
+bash_case 0 "control: -C src log -p -- ." "git -C src log -p -- ." "$GREPO"
+bash_case 0 "control: log --oneline" "git log --oneline" "$GREPO"
+bash_case 0 "control: diff" "git diff" "$GREPO"
+bash_case 0 "control: grep foo" "git grep foo" "$GREPO"
+bash_case 0 "control: grep foo HEAD -- src" "git grep foo HEAD -- src" "$GREPO"
+bash_case 0 "control: archive HEAD src | tar" "git archive HEAD src | tar -xO" "$GREPO"
+bash_case 0 "control: grep -r API_KEY ." "grep -r API_KEY ." "$GREPO"
+
+# [24k] Commit 1 adds cfg/.env; commit 2 changes only src/a.ts. A count of 1
+# prints commit 2. No limit, or a count that still reaches commit 1, blocks.
+HREPO="$TMP/histrepo"
+mkdir -p "$HREPO/src" "$HREPO/cfg"
+git -C "$HREPO" init -q 2>/dev/null
+printf 'export const a = 1;\n' > "$HREPO/src/a.ts"
+printf 'API_%s=%s\n' KEY not-a-real-value > "$HREPO/cfg/.env"
+git -C "$HREPO" add -A >/dev/null 2>&1
+git -C "$HREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m one >/dev/null 2>&1
+printf 'export const a = 2;\n' > "$HREPO/src/a.ts"
+git -C "$HREPO" -c user.email=t@example.invalid -c user.name=t commit -q -am two >/dev/null 2>&1
+bash_case 0 "[24k] log -p -1" "git log -p -1" "$HREPO"
+bash_case 0 "[24k] log -p -n 1" "git log -p -n 1" "$HREPO"
+bash_case 0 "[24k] log -p -n1" "git log -p -n1" "$HREPO"
+bash_case 0 "[24k] log -p --max-count=1" "git log -p --max-count=1" "$HREPO"
+bash_case 0 "[24k] log -p --max-count 1" "git log -p --max-count 1" "$HREPO"
+bash_case 0 "[24k] log --stat -p -1" "git log --stat -p -1" "$HREPO"
+bash_case 0 "[24k] log -p -1 -- src" "git log -p -1 -- src" "$HREPO"
+bash_case 0 "[24k] log -p -1 HEAD" "git log -p -1 HEAD" "$HREPO"
+bash_case 2 "[24k] log -p" "git log -p" "$HREPO"
+bash_case 2 "[24k] log -p -2" "git log -p -2" "$HREPO"
+bash_case 2 "[24k] log -p -1 HEAD~1" "git log -p -1 HEAD~1" "$HREPO"
+bash_case 2 "[24k] log -p -1 --author=t" "git log -p -1 --author=t" "$HREPO"
+bash_case 2 "[24k] log -p -1 --no-merges" "git log -p -1 --no-merges" "$HREPO"
+bash_case 2 "[24k] log -p -1 --skip=1" "git log -p -1 --skip=1" "$HREPO"
+bash_case 2 "[24k] log -p -1 -- cfg" "git log -p -1 -- cfg" "$HREPO"
+bash_case 2 "[24k] log -p -1 -g" "git log -p -1 -g" "$HREPO"
+bash_case 2 "[24k] log -p -1 \"\$1\"" 'git log -p -1 "$1"' "$HREPO"
+bash_case 2 "[24k] log -p -1 --all" "git log -p -1 --all" "$HREPO"
+bash_case 2 "[24k] whatchanged -p -1 (skips merges: full listing)" "git whatchanged -p -1" "$HREPO"
+bash_case 2 "[24k] log -p -1 --pretty HEAD~1" "git log -p -1 --pretty HEAD~1" "$HREPO"
+bash_case 2 "[24k] log -p -n 1 --pretty HEAD~1" "git log -p -n 1 --pretty HEAD~1" "$HREPO"
+bash_case 2 "[24k] log -p --max-count=1 --pretty HEAD~1" "git log -p --max-count=1 --pretty HEAD~1" "$HREPO"
+bash_case 2 "[24k] log -p -1 --oneline --pretty HEAD~1" "git log -p -1 --oneline --pretty HEAD~1" "$HREPO"
+bash_case 2 "[24k] log -p -1 --pretty HEAD~1 -- ." "git log -p -1 --pretty HEAD~1 -- ." "$HREPO"
+bash_case 2 "[24k] log -p -1 :/one -- ." "git log -p -1 :/one -- ." "$HREPO"
+bash_case 2 "[24k] log -p -n 1 :/one -- ." "git log -p -n 1 :/one -- ." "$HREPO"
+bash_case 2 "[24k] log -p --max-count=1 :/one -- ." "git log -p --max-count=1 :/one -- ." "$HREPO"
+bash_case 2 "[24k] log -p -1 --oneline :/one -- ." "git log -p -1 --oneline :/one -- ." "$HREPO"
+bash_case 2 "[24k] log -pSnot -1" "git log -pSnot -1" "$HREPO"
+bash_case 2 "[24k] log -pGnot -1" "git log -pGnot -1" "$HREPO"
+bash_case 2 "[24k] log -pSnot -n 1" "git log -pSnot -n 1" "$HREPO"
+bash_case 2 "[24k] log -pSnot --max-count=1" "git log -pSnot --max-count=1" "$HREPO"
+bash_case 2 "[24k] log -pSnot --oneline -1" "git log -pSnot --oneline -1" "$HREPO"
+bash_case 2 "[24k] log -pSnot -1 -- ." "git log -pSnot -1 -- ." "$HREPO"
+bash_case 0 "[24k] log -p -1 --pretty=oneline" "git log -p -1 --pretty=oneline" "$HREPO"
+bash_case 0 "[24k] log -p -1 --format=%H" "git log -p -1 --format=%H" "$HREPO"
+bash_case 0 "[24k] log -pU3 -1" "git log -pU3 -1" "$HREPO"
+bash_case 0 "[24k] log -p -1 --oneline" "git log -p -1 --oneline" "$HREPO"
+
+# [24k] log.follow makes git log -- kept.txt follow the rename back to the
+# .env commit; rev-list does not follow.
+FREPO="$TMP/followrepo"
+mkdir -p "$FREPO"
+git -C "$FREPO" init -q 2>/dev/null
+printf 'API_%s=%s\n' KEY not-a-real-value > "$FREPO/.env"
+git -C "$FREPO" add -A >/dev/null 2>&1
+git -C "$FREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m A >/dev/null 2>&1
+git -C "$FREPO" mv .env kept.txt
+git -C "$FREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m B >/dev/null 2>&1
+git -C "$FREPO" rm -q kept.txt
+git -C "$FREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m C >/dev/null 2>&1
+printf 'x\n' > "$FREPO/other.txt"
+git -C "$FREPO" add -A >/dev/null 2>&1
+git -C "$FREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m D >/dev/null 2>&1
+git -C "$FREPO" config log.follow true
+bash_case 2 "[24k] log -p -3 -- kept.txt" "git log -p -3 -- kept.txt" "$FREPO"
+bash_case 2 "[24k] log -p -4 -- kept.txt" "git log -p -4 -- kept.txt" "$FREPO"
+bash_case 2 "[24k] log -p -n 3 -- kept.txt" "git log -p -n 3 -- kept.txt" "$FREPO"
+bash_case 2 "[24k] log -p --max-count=3 -- kept.txt" "git log -p --max-count=3 -- kept.txt" "$FREPO"
+bash_case 2 "[24k] log -p --follow -3 -- kept.txt" "git log -p --follow -3 -- kept.txt" "$FREPO"
+bash_case 0 "[24k] log -p -1 (log.follow, no path)" "git log -p -1" "$FREPO"
+bash_case 0 "[24k] log -p -n 1 (log.follow, no path)" "git log -p -n 1" "$FREPO"
+bash_case 0 "[24k] log -p --max-count=1 (log.follow, no path)" "git log -p --max-count=1" "$FREPO"
+bash_case 2 "[24k] log -p -1 -- src cfg" "git log -p -1 -- src cfg" "$HREPO"
+bash_case 2 "[24k] log -p -1 -- ." "git log -p -1 -- ." "$HREPO"
+bash_case 2 "[24k] -c color.ui=never log -p -1" "git -c color.ui=never log -p -1" "$HREPO"
+bash_case 2 "[24k] -c log.follow=true log -p -1" "git -c log.follow=true log -p -1" "$HREPO"
 
 echo "[7] profile matrix via hook-gate"
 for p in minimal standard strict; do

@@ -511,6 +511,34 @@ def resolve_identity(flag_email=None, whoami=None):
     return email, None, 'git'
 
 
+def member_person_uid(company, email, timeout=15):
+    """The person's `prs_` uid from `hq members --company <company> list --json`,
+    matched by email (case-insensitive). For a login whose `hq whoami` reports no
+    personUid. None when the lookup fails or finds no single match."""
+    if not company or not isinstance(email, str) or '@' not in email:
+        return None
+    try:
+        out = subprocess.run(['hq', 'members', '--company', company, 'list', '--json'],
+                             capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        print(f'brief-sweep: member lookup for person uid failed: {e}', file=sys.stderr)
+        return None
+    if out.returncode != 0:
+        print(f'brief-sweep: member lookup for person uid exited {out.returncode}', file=sys.stderr)
+        return None
+    try:
+        d = json.loads(out.stdout)
+    except ValueError:
+        print('brief-sweep: member lookup for person uid returned no JSON', file=sys.stderr)
+        return None
+    rows = d.get('members') if isinstance(d, dict) else d
+    mail = email.strip().lower()
+    uids = {r.get('person_id') for r in rows or [] if isinstance(r, dict)
+            and str(r.get('email') or '').strip().lower() == mail
+            and isinstance(r.get('person_id'), str) and r['person_id'].startswith('prs_')}
+    return uids.pop() if len(uids) == 1 else None
+
+
 @source('synced_signals')
 def synced_signals(hq_root, company, now, hours=24, email=None, uid=None, identity_source=None):
     """The last `hours` of signals the hot-channel sync already wrote to the
@@ -520,6 +548,8 @@ def synced_signals(hq_root, company, now, hours=24, email=None, uid=None, identi
         raise SourceSkipped(NEEDS_COMPANY)
     bs = _sibling('brief_signals')
     res = bs.collect(os.path.join(hq_root, 'companies', company), now, hours, email, uid, identity_source)
+    for line in res['lines']:
+        line['company'] = company
     SYNCED.clear()
     SYNCED.update(res)
     return res
@@ -2348,6 +2378,8 @@ def main(argv=None, person_section=False):
         except Exception:
             me_names = []
     email, uid, identity_source = resolve_identity(a.email)
+    if identity_source == 'hq-whoami' and email and not uid and a.company:
+        uid = member_person_uid(a.company, email)
     SYNCED.clear()
     today = dt.date.fromisoformat(a.today)
     days = [(today - dt.timedelta(days=i)).isoformat() for i in range(a.days, 0, -1)]

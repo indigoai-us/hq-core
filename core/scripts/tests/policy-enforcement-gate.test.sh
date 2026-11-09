@@ -25,6 +25,90 @@ run_hook() {
   return "$rc"
 }
 
+# Force jq answer-row CRLF on every platform, including macOS CI. The
+# first and middle rows must not carry the transport CR into persisted JSON.
+CRLF_SHIM="$TMP/crlf-bin"
+mkdir -p "$CRLF_SHIM"
+export HQ_TEST_REAL_JQ="$(command -v jq)"
+cat > "$CRLF_SHIM/jq" <<'CRLF_JQ'
+#!/usr/bin/env bash
+set -euo pipefail
+force_crlf=0
+for arg in "$@"; do
+  case "$arg" in
+    *'def gate_row('*|'.requiredSkills[]?'|'.briefs[]?'|'.requires[]') force_crlf=1 ;;
+  esac
+done
+if [ "$force_crlf" = 1 ]; then
+  "$HQ_TEST_REAL_JQ" "$@" | while IFS= read -r line; do
+    printf '%s\r\n' "${line%$'\r'}"
+  done
+else
+  exec "$HQ_TEST_REAL_JQ" "$@"
+fi
+CRLF_JQ
+chmod +x "$CRLF_SHIM/jq"
+CRLF_SID=crlf-answer-rows
+printf '%s\n' '{}' > "$FIX/workspace/orchestrator/policy-enforcement/$CRLF_SID.json"
+CRLF_INPUT="$(jq -nc --arg sid "$CRLF_SID" '{session_id:$sid,tool_name:"AskUserQuestion",tool_input:{questions:[{question:"Send it?",header:"gate-fact:sending_account_confirmed"},{question:"Recipients?",header:"gate-fact:recipients_confirmed"},{question:"Override?",header:"gate-override:p2"}]},tool_response:{answers:{"Send it?":"yes","Recipients?":"CONFIRMED","Override?":{label:"Allow once"}}}}')"
+PATH="$CRLF_SHIM:$PATH" run_hook PostToolUse "$CRLF_INPUT" >/dev/null || fail "CRLF answer rows failed"
+CRLF_STATE="$FIX/workspace/orchestrator/hook-state"
+jq -e '.note == "yes"' "$CRLF_STATE/gate-facts/$CRLF_SID/sending_account_confirmed.json" >/dev/null || fail "first answer retained CR"
+jq -e '.note == "CONFIRMED"' "$CRLF_STATE/gate-facts/$CRLF_SID/recipients_confirmed.json" >/dev/null || fail "middle answer retained CR"
+jq -e '.answer == "Allow once"' "$CRLF_STATE/gate-overrides/$CRLF_SID/p2.json" >/dev/null || fail "last answer retained CR"
+pass "CRLF answer rows preserve clean fact notes and override answers"
+
+# Exercise CRLF receipt names and each Windows absolute path spelling.
+receipt_case() {
+  local skill_path="$1" brief_path="$2" payload read_path
+  MSYS2_ARG_CONV_EXCL='*' jq -nc --arg brief "$brief_path" '{requiredSkills:["work-broadcast"],briefs:[$brief],receipts:{skills:[],briefs:[]}}' > "$FIX/workspace/orchestrator/policy-enforcement/crlf-receipts.json"
+  for read_path in "$skill_path" "$brief_path"; do
+    payload="$(MSYS2_ARG_CONV_EXCL='*' jq -nc --arg path "$read_path" '{session_id:"crlf-receipts",tool_name:"Read",tool_input:{file_path:$path},tool_response:{}}')"
+    PATH="$CRLF_SHIM:$PATH" run_hook PostToolUse "$payload" >/dev/null || fail "CRLF receipt read failed"
+  done
+  cat "$FIX/workspace/orchestrator/policy-enforcement/crlf-receipts.json" | MSYS2_ARG_CONV_EXCL='*' jq -e --arg brief "$brief_path" '.receipts.skills == ["work-broadcast"] and .receipts.briefs == [$brief]' >/dev/null || fail "CRLF receipt names or absolute paths did not resolve"
+}
+receipt_case "$FIX/.claude/skills/work-broadcast/SKILL.md" "$FIX/brief.md"
+if command -v cygpath >/dev/null 2>&1; then
+  receipt_case "$(cygpath -m "$FIX/.claude/skills/work-broadcast/SKILL.md")" "$(cygpath -m "$FIX/brief.md")"
+  receipt_case "$(cygpath -w "$FIX/.claude/skills/work-broadcast/SKILL.md")" "$(cygpath -w "$FIX/brief.md")"
+  receipt_case "$(cygpath -u "$FIX/.claude/skills/work-broadcast/SKILL.md")" "$(cygpath -u "$FIX/brief.md")"
+fi
+pass "CRLF receipt names and absolute read paths resolve"
+
+# Drive-shaped relative paths on Unix resolve against HQ, not cwd.
+case "${OSTYPE:-}" in msys*|cygwin*|win32*) ;; *)
+  mkdir -p "$FIX/C:" "$TMP/elsewhere/C:"
+  printf '# HQ brief\n' > "$FIX/C:/brief.md"
+  printf '# Wrong cwd brief\n' > "$TMP/elsewhere/C:/brief.md"
+  printf '%s\n' '{"requiredSkills":[],"briefs":["C:/brief.md"],"receipts":{"skills":[],"briefs":[]}}' > "$FIX/workspace/orchestrator/policy-enforcement/drive-relative.json"
+  payload="$(jq -nc --arg path "$FIX/C:/brief.md" '{session_id:"drive-relative",tool_name:"Read",tool_input:{file_path:$path},tool_response:{}}')"
+  (cd "$TMP/elsewhere"; run_hook PostToolUse "$payload") >/dev/null || fail 'drive-shaped relative read failed'
+  jq -e '.receipts.briefs == ["C:/brief.md"]' "$FIX/workspace/orchestrator/policy-enforcement/drive-relative.json" >/dev/null || fail 'drive-shaped path did not resolve against HQ root'
+  pass 'Unix drive-shaped path resolves against HQ root when cwd differs'
+;; esac
+
+# Cover Windows forms even without an installed cygpath. The converter models
+# only synthetic paths; classification and normalization remain production code.
+(
+  . "$ROOT/core/scripts/hook-lib.sh"
+  for form in 'C:/fixture/brief.md' 'c:/fixture/brief.md' 'C:\fixture\brief.md' 'c:\fixture\brief.md'; do
+    if HQ_LIB_WINSEP=0 hq_path_is_absolute "$form"; then fail 'drive path absolute on Unix'; fi
+    HQ_LIB_WINSEP=1 hq_path_is_absolute "$form" || fail 'drive path relative on Windows'
+  done
+  HQ_LIB_WINSEP=1 hq_path_is_absolute '/c/fixture/brief.md' || fail 'MSYS drive path relative'
+  PATH= builtin command -v cygpath >/dev/null && fail 'cygpath unexpectedly available'
+  cygpath() {
+    [ "$1" = -m ] || return 1
+    case "$2" in C:/fixture/brief.md|c:/fixture/brief.md|/c/fixture/brief.md|/C/fixture/brief.md) printf '%s\n' 'C:/fixture/brief.md' ;; *) return 1 ;; esac
+  }
+  for form in 'C:/fixture/brief.md' 'c:/fixture/brief.md' 'C:\fixture\brief.md' '/c/fixture/brief.md' '/C/fixture/brief.md'; do
+    actual="$(PATH= HQ_LIB_WINSEP=1 hq_canonical_path "$form")"
+    [ "$actual" = 'C:/fixture/brief.md' ] || fail 'stubbed Windows converter path mismatch'
+  done
+)
+pass 'Windows drive forms covered without installed cygpath'
+
 grep -Fq '[^[:alnum:]_]' "$HOOK" \
   || fail "outbound command matcher must use a portable word boundary"
 pass "outbound command matcher uses a portable word boundary"
@@ -313,7 +397,7 @@ GATE_FACT_DIR="$FIX/workspace/orchestrator/hook-state/gate-facts/$GATE_SID"
 mkdir -p "$GATE_FACT_DIR"
 jq -nc --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '{fact:"recipients_confirmed",confirmed_at:$at,note:"fixture",source:"helper"}' \
   > "$GATE_FACT_DIR/recipients_confirmed.json"
-run_hook PreToolUse "$GATE_SEND" >/dev/null || fail "fresh required fact did not pass the gate"
+PATH="$CRLF_SHIM:$PATH" run_hook PreToolUse "$GATE_SEND" >/dev/null || fail "fresh required fact did not pass the CRLF gate"
 jq -nc '{fact:"recipients_confirmed",confirmed_at:"2000-01-01T00:00:00Z",note:"fixture",source:"helper"}' \
   > "$GATE_FACT_DIR/recipients_confirmed.json"
 set +e

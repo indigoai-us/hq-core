@@ -13,6 +13,9 @@
 # Covers: scan.sh reads the denylist from its secret when the file is absent,
 # fails closed (exit 2) when neither is present, also under --warn, still reads
 # the file on staging, and the promotion workflow excludes and removes both files.
+# A missing list prints an ::error:: annotation under --warn too (it used to be
+# rewritten to a warning, so the failed check showed no error), and staging CI
+# checks that the file is in its tree.
 # Made-up names only.
 set -euo pipefail
 
@@ -70,6 +73,9 @@ ok
 # 5. --warn (how CI runs it) must not turn a missing list into a pass.
 change 'hello'
 [[ "$(LEAK_SCAN_DENYLIST_YAML='' scan denylist --warn)" == 2 ]] || fail "denylist --warn (how CI runs it) with no file and no secret should exit 2"
+grep -q '^::error::.leak-scan/denylist.yaml missing' "$work/out.txt" || fail "denylist --warn with no list printed no ::error:: annotation: $(cat "$work/out.txt")"
+grep -q 'hq-core-staging must carry .leak-scan/denylist.yaml' "$work/out.txt" || fail "missing-list error does not say staging must carry the file"
+if grep -q '::warning::.leak-scan/denylist.yaml missing' "$work/out.txt"; then fail "missing-list error was downgraded to a warning"; fi
 ok
 
 # 6. --warn with the secret still reports the hit (exit 0, warning printed).
@@ -102,6 +108,18 @@ rubric() { local rc=0; (cd "$repo" && SKIP_CODEX=1 bash .leak-scan/codex-rubric.
 [[ "$(LEAK_SCAN_DENYLIST_YAML='' rubric)" == 2 ]] || fail "rubric with no denylist file and no secret should exit 2"
 [[ "$(LEAK_SCAN_DENYLIST_YAML="$DENY" rubric)" == 0 ]] || fail "rubric did not accept the denylist secret: $(cat "$work/err.txt")"
 grep -q 'LEAK_SCAN_DENYLIST_YAML: \${{ secrets.LEAK_SCAN_DENYLIST_YAML }}' <(sed -n '/codex-pii-rubric:/,/codex-rubric.sh/p' "$pc") || fail "codex-pii-rubric job does not pass the denylist secret"
+ok
+
+# 11. Staging CI fails with a named error when its denylist file is gone.
+guard="$(sed -n '/name: Staging carries its denylist file/,/name: Run denylist scan/p' "$pc")"
+grep -q "if: github.repository == 'indigoai-us/hq-core-staging'" <<<"$guard" || fail "staging denylist guard is not scoped to hq-core-staging"
+grep -q '! -f .leak-scan/denylist.yaml' <<<"$guard" || fail "staging denylist guard does not test for the file"
+grep -q '::error file=.leak-scan/denylist.yaml::' <<<"$guard" || fail "staging denylist guard prints no error annotation"
+ok
+
+# 12. The backmerge never deletes or overwrites the staging-only lists.
+grep -q '\.leak-scan/denylist\.yaml|\.leak-scan/manifest-snapshot\.yaml) return 0' "$root/core/scripts/ci/backmerge-apply.sh" \
+  || fail "backmerge-apply.sh does not treat the private lists as staging-only"
 ok
 
 echo "PASS: private-lists ($pass cases)"

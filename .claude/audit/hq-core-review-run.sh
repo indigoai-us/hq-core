@@ -156,6 +156,20 @@ FETCHED="$(git -C "$STAGING" rev-parse --verify -q "$PR_REF^{commit}")" || fail 
   || fail "pull/$PR/head is ${FETCHED:0:12} but GitHub reported ${HEAD_SHA:0:12}; the PR moved during the run, run it again"
 git -C "$STAGING" worktree add -q --detach "$WORK/pr" "$HEAD_SHA" >/dev/null 2>&1 || fail "cannot add a worktree for the PR head"
 [ "$(git -C "$WORK/pr" rev-parse HEAD)" = "$HEAD_SHA" ] || fail "worktree is not at the PR head"
+# A shallow checkout can hold the PR head and the base tip without their merge
+# base, and the scanners need it to build the diff. Deepen the history when
+# git finds none, then report a missing merge base here instead of as a
+# scanner error.
+if ! git -C "$STAGING" merge-base "$HEAD_SHA" "refs/remotes/origin/$BASE" >/dev/null 2>&1; then
+  if [ "$(git -C "$STAGING" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+    echo "hq-core-review: shallow checkout has no merge base for pull/$PR and $BASE; fetching full history"
+    git -C "$STAGING" fetch -q --unshallow origin \
+      "+refs/heads/$BASE:refs/remotes/origin/$BASE" "+refs/pull/$PR/head:$PR_REF" >/dev/null 2>&1 \
+      || fail "cannot deepen the shallow checkout to find the merge base of pull/$PR and $BASE"
+  fi
+  git -C "$STAGING" merge-base "$HEAD_SHA" "refs/remotes/origin/$BASE" >/dev/null 2>&1 \
+    || fail "git merge-base found no common commit between pull/$PR (${HEAD_SHA:0:12}) and origin/$BASE; the diff cannot be built"
+fi
 
 # --- 3. merged config, from the base branch's .claude/audit -----------------
 # Without the base config, suppressions and repo policies the scan would run

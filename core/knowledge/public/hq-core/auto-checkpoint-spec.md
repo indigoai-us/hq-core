@@ -24,7 +24,7 @@ Rules that keep the trigger quiet and accurate:
 - **State is session-keyed**, under `workspace/orchestrator/hook-state/checkpoint-{last,edits}-<session>`. It is never keyed by `$PPID` and never stored in `/tmp` — tool and hook processes do not share a parent PID in every host, so a PID-keyed debounce silently never applies and every edit re-fires.
 - **Git metadata comes from the repository being worked in**, resolved from the payload's `cwd` (then the edited file's directory, then the hook's cwd) — not from HQ root. Work in an app worktree records that worktree's branch and commit.
 
-Also checkpoint after worker skill completion. Schema: `core/knowledge/public/hq-core/thread-schema.md`.
+Also checkpoint after worker skill completion. Schema: `core/knowledge/public/hq-core/thread-schema.md`. Auto-checkpoint JSON must include `session_id` of the writing session so `/checkpoint` does not upgrade another session's file.
 
 ## Context-Threshold Checkpoints
 

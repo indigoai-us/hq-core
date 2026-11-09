@@ -89,7 +89,8 @@ MIN_VERSION="${HQ_ENSURE_CLI_MIN_VERSION:-5.108.2}"
 # on the settings PATH) costs one small file read per prompt instead of a node
 # start-up (~1.2 s). Only successes are cached; every failure path still
 # re-probes so repairs are never delayed. 0 disables the cache.
-OK_TTL="${HQ_ENSURE_CLI_OK_TTL:-900}"
+# Once per day unless the binary mtime or MIN_VERSION in the cache key changes.
+OK_TTL="${HQ_ENSURE_CLI_OK_TTL:-86400}"
 OK_CACHE="$STAMP_DIR/usable.ok"
 
 have_jq() { command -v jq >/dev/null 2>&1; }

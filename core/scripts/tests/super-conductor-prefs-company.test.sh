@@ -92,7 +92,33 @@ out="$(bash "$HB" --interval auto --asks "$tmp/asks.json" --company co-a,co-b --
 grep -q 'channels: sessions,hq_dms,github (from settings) | cadence: present 1s' <<<"$out"; check "heartbeat with two companies reads the base file (got: $out)" $?
 unset SC_PREFS_FILE
 
-# 6. A bad slug is refused.
+# 6. replace: a company can narrow a base list in its overlay; base untouched.
+printf 'email_accounts:\n  - me@example.com\n  - work@example.com\n' >>"$tmp/p.yaml"
+cp "$tmp/p.yaml" "$tmp/orig2.yaml"
+prefs --company co-d replace email_accounts only@example.com >/dev/null; check "replace --company writes" $?
+cmp -s "$tmp/p.yaml" "$tmp/orig2.yaml"; check "replace --company leaves the base file unchanged" $?
+out="$(prefs --company co-d get)"
+node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); process.exit(JSON.stringify(j.email_accounts)==="[\"only@example.com\"]"?0:1)' <<<"$out"
+check "replace --company narrows the list to exactly the given values (got: $out)" $?
+printf 'email_accounts: a@example.com\nteam:\n  - Kim\n' >"$tmp/p.co-e.yaml"
+prefs --company co-e replace email_accounts x@example.com y@example.com x@example.com >/dev/null; check "replace over a scalar writes" $?
+out="$(prefs --company co-e get)"
+node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); process.exit(j.email_accounts.join()==="x@example.com,y@example.com"&&j.team.join()==="Kim"?0:1)' <<<"$out"
+check "replace turns a scalar into a deduplicated list and keeps other keys (got: $out)" $?
+prefs --company co-e replace team >/dev/null; check "replace with no values writes" $?
+out="$(prefs --company co-e get)"
+node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); process.exit(Array.isArray(j.team)&&j.team.length===0&&j.email_accounts.length===2?0:1)' <<<"$out"
+check "replace with no values leaves an empty list (got: $out)" $?
+prefs --company co-e replace watch_interval 5 >/dev/null 2>&1; [[ $? -eq 3 ]]; check "replace refuses a map key" $?
+
+# 6b. A single-string email_accounts or slack_workspaces in an overlay (what
+# `set` writes) resolves to a list; a comma-separated string splits.
+printf 'email_accounts: one@example.com\nslack_workspaces: ws-a, ws-b\n' >"$tmp/p.co-f.yaml"
+out="$(prefs --company co-f get)"
+node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); process.exit(JSON.stringify(j.email_accounts)==="[\"one@example.com\"]"&&JSON.stringify(j.slack_workspaces)==="[\"ws-a\",\"ws-b\"]"?0:1)' <<<"$out"
+check "string email_accounts and slack_workspaces resolve to lists" $?
+
+# 7. A bad slug is refused.
 prefs --company 'Bad Slug' get >/dev/null 2>&1; [[ $? -eq 2 ]]; check "an invalid --company slug exits 2" $?
 
 [[ "$fail" -eq 0 ]] || exit 1

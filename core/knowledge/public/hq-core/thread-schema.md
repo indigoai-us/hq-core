@@ -94,6 +94,7 @@ Auto-checkpoints are created automatically by PostToolUse hooks after git commit
   "thread_id": "T-20260123-143052-auto-mrr-commit",
   "version": 1,
   "type": "auto-checkpoint",
+  "session_id": "sess-example",
   "created_at": "2026-01-23T14:30:52.000Z",
   "updated_at": "2026-01-23T14:30:52.000Z",
 
@@ -128,6 +129,7 @@ Auto-checkpoints are created automatically by PostToolUse hooks after git commit
 | `thread_id` | string | Unique identifier |
 | `version` | number | Schema version (currently 1) |
 | `type` | enum | `"checkpoint"` (manual), `"auto-checkpoint"` (hook-triggered), `"handoff"` |
+| `session_id` | string | Session that wrote the thread. Required on auto-checkpoints so `/checkpoint` upgrades only that session's file. |
 | `created_at` | ISO8601 | Thread creation time |
 | `updated_at` | ISO8601 | Last update time |
 

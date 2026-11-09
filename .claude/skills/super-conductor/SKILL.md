@@ -57,6 +57,7 @@ customization goes there, not into this skill.
   same turn, then confirm in one line:
   - add to a list: `node core/scripts/super-conductor-prefs.mjs add <key> <value>...`
   - set one value: `node core/scripts/super-conductor-prefs.mjs set <key>[.<subkey>] <value>`
+  - make a list exactly these values ("only sweep X"): `node core/scripts/super-conductor-prefs.mjs replace <key> <value>...`
 
   The helper only extends: it adds items or sets one scalar and refuses any
   write that would change another key. Use only the helper: never rewrite
@@ -72,11 +73,16 @@ customization goes there, not into this skill.
   map key one level deep, a list or scalar whole; keys the overlay does not
   mention keep the base value), and `add` and `set` write the overlay only,
   so a preference for one company never changes another conductor's. The
-  first `add` to a list the overlay lacks copies the base list in first. A
+  first `add` to a list the overlay lacks copies the base list in first;
+  `replace` does not, so it narrows a base list for one company (for example
+  `--company <slug> replace email_accounts <one mailbox>`). A
   preference the owner states for every company goes to the base file
   (`prefs.mjs` without `--company`). The heartbeat and the message watcher
-  pass `--company` on their own when the set is one company; a multi-company
-  conductor uses the base file. See "Several conductors".
+  pass `--company` on their own when the set is one company, and
+  `super-conductor-sweep-check.mjs` (targets, due, verify, status-line)
+  reads the overlay named by the save file's `company` key or its own
+  `--company`; a multi-company conductor uses the base file. See "Several
+  conductors".
 
 Keys this release knows (all optional):
 
@@ -347,7 +353,7 @@ Compare each new working set against every other child's. Flag and resolve:
 | One session delegating or handing off a project another session is still running | Pause the runner, push everything, verify the branch head matches before handover. |
 | A request to stop or reap lanes | The conductor does not stop child-owned lanes. `hq lanes reap --json` reports stale local lanes by default. Read its JSON candidates first; use `hq lanes stop <lane-id>` only for a lane this session owns and with authorization. |
 | Shared machine state changed (hook settings, `settings.local.json`, global config) | Record it in the overnight log, tell every child, and ask the author not to change it again without a go. |
-| Any merge, deploy, publish, release, force-push, or delete | Hold. The session prepares and reports. Only the owner says go. |
+| Any merge, deploy, publish, release, force-push, or delete | Apply Step 5 standing authorization and Step 8 enforcement. Hold actions outside that authorization and every listed picker exception; never bypass a hook. |
 
 Send resolutions with `hq lanes link send --child <name>` (or `all`). Read
 `.queued` and `.children` from its JSON response. A
@@ -360,12 +366,20 @@ file on disk.
 
 ## Step 5: Standing rules every child receives
 
-- Report before any merge, deploy, publish, release, or edit to shared `core/`
-  or `.claude/` files; wait for a go.
+Read `core/settings/executive-standing-rules.md`, or its replacement
+`personal/settings/executive-standing-rules.md` in the HQ root when present.
+Every child receives that same selected file verbatim, including Executive
+lanes created by `hq lanes create --signal` when `--rules-file` is omitted.
+Apply its review, shipping and owner-ask rules alongside the operational
+rules below; an explicit lane brief can further limit authorized actions.
+
 - Never stop, reap, or signal a lane by matching process arguments.
 - Keep one company per session; refuse cross-company instructions.
 - Secrets never go in a report.
-- A decision for the owner ends the child's turn on it, as a picker or the
+- An Executive lane's owner decision follows Step 8's lane-question path:
+  call `hq lanes ask` and end with the `needs_decision` outcome block from
+  the standing rules. Do not open a second picker or send a DM for it.
+- For other children, a decision for the owner ends the child's turn on it, as a picker or the
   next-step box, with two or three options, recommended first. The
   conductor's open-ask wake finds it within a minute and asks it here; the
   answer comes back as a quoted `OWNER GO` on the link and as a direct
@@ -736,6 +750,16 @@ itself. A capacity refusal (`no_account_with_room`) keeps the row `new` with
 a note and is retried on the next wakeup; it never runs the work in this
 session. A lane's completion event closes the row (`done --result <lane>`).
 
+On every sweep, run `hq lanes list --json` and match lanes whose senior is
+`session:<this conductor>` within the locked company set. This includes
+lanes created by the Executive with `--senior session:<this conductor>`.
+Use the lane record and `hq lanes link status <link> --json` to match its
+registered child name. Read its reports with `hq lanes link read --link
+<link>` like any other child's, and list the report under that child's name.
+A lane is not an unknown child merely because the Executive created it.
+Keep the company boundary: reports from other or unresolved companies remain
+count-only until their company and senior can be verified.
+
 ## Step 7: Loop
 
 The heartbeat from Step 2b is the loop. It runs outside this conversation,
@@ -919,7 +943,14 @@ prose or ask "want me to walk these?" first.
   set `done` instead.
 - Lane questions: `hq lanes questions list --status pending --company <slug> --json`
   for each locked company; answer with `hq lanes questions answer <id>
-  --choice <n>` after the picker.
+  --choice <n>` after the picker. An Executive lane's pending question is
+  its `needs_decision` end state. Queue it by the stable lane question id
+  through the decision queue and ask exactly one picker, even if the same
+  question also arrives in a link report or an open-ask sweep. Preserve its
+  options and their choice numbers. On the owner's answer, recheck that the
+  question is pending, then run `hq lanes questions answer <id> --choice <n>`;
+  this re-wakes the lane. Record the answered question id so later sweeps do
+  not queue it again. Never send a teammate DM or a second picker for it.
 
 Before the first picker, set each item's ledger row to `waiting_owner`, so a
 compaction while the picker is open leaves the question on disk. After a
@@ -1049,7 +1080,14 @@ same.
   desk asks it. A go given earlier in prose ("merge all when green") is not a
   row: queue the card, and offer "Always do this" so the desk can turn the
   owner's words into a scoped, expiring rule. Releases and deploys get a row
-  the same way; the hook covers merges only.
+  the same way; the hook covers merges only. Step 5's clean-review and
+  green-check standing authorization avoids a new picker only when the
+  matching scoped standing answer already satisfies this gate. Reading the
+  rules file does not create a gate record: never forge an owner answer,
+  disable the hook, or treat a prose rule as machine approval. If the scoped
+  answer is missing, route the required approval through the decision queue.
+  Releases, flag flips, sync, auth, billing and production data always keep
+  their explicit owner picker; a general merge standing answer cannot cover them.
 - Critical cards interrupt (owner, 2026-10-21). A `priority: critical` row
   may be asked in this window: claim it first with `decisions.mjs claim
   --file <queue> --id <id> --desk conductor` (exit 3: a desk already has it

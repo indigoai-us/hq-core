@@ -89,6 +89,39 @@ for engine in node jq; do
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/colon.md" "$BAD_COLON")" "colon atom -> block"
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/at.md" "$BAD_AT")" "at-sign atom -> block"
   exp_engine 2 "$engine" "$(wp "$PROJ/core/policies/block.md" "$BAD_BLOCK")" "YAML block scalar -> block"
+  # Safety of the suggested fix: a "Fix:" line is printed only when it passes
+  # the canonical evaluator, and never for malformed atoms / operators in quotes.
+  mkpol() { printf -- '---\nid: hq-x\nwhen: %s\non: [PreToolUse]\nenforcement: soft\n---\nx\n' "$1"; }
+  hook_out() { wp "$PROJ/core/policies/p.md" "$(mkpol "$1")" | HQ_HOOK_ENGINE="$engine" bash "$HOOK" 2>&1 || true; }
+  for bad in 'git --force' 'a & b' 'a | b' '"a || b"' '"  "' "\"it's fine\"" "a && b'c d'" 'x ( y z )' '"(a) b"' '"!a b"'; do
+    out="$(hook_out "$bad")"
+    grep '^Fix: write' >/dev/null <<<"$out" && fail "$engine: no Fix line expected for '$bad' :: $out"
+    pass "$engine: no unsafe Fix for '$bad'"
+  done
+  out="$(hook_out 'a & b')"
+  printf '%s\n' "$out" | grep -F 'unsupported operator' >/dev/null || fail "$engine: single & must say unsupported operator"
+  # Property: every printed "Fix: write X" must itself pass eval-trigger --check.
+  for bad in 'merge || pull request' '(pr || "pull request")' 'git && "force push"' '"force"' "'a b' || c" 'root cause' 'a b c' '(a b) || c' '! a b'; do
+    fix="$(hook_out "$bad" | sed -n 's/^Fix: write //p' | head -n 1)"
+    [ -n "$fix" ] || fail "$engine: expected a Fix line for '$bad'"
+    verdict="$(printf 'fix\t%s\n' "$fix" | bash "$ROOT/core/scripts/eval-trigger.sh" --check | sed -n 's/^fix\t//p')"
+    [ "$verdict" = "ok" ] || fail "$engine: Fix '$fix' for '$bad' fails eval-trigger --check"
+    pass "$engine: Fix for '$bad' is valid ($fix)"
+  done
+  # Reporter shape (feedback ed48cf2b): the rejection must name the offending
+  # part and show the corrected form, not only list the grammar.
+  exp_engine_says() {
+    local engine="$1" payload="$2" want="$3" label="$4" output
+    output="$(printf '%s' "$payload" | HQ_HOOK_ENGINE="$engine" bash "$HOOK" 2>&1)" || true
+    printf '%s\n' "$output" | grep -F -- "$want" >/dev/null || fail "$engine: message must contain '$want' :: $label :: $output"
+    pass "$engine: $label"
+  }
+  BAD_MERGE_PR=$'---\nid: hq-x\nwhen: merge || pull request\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
+  BAD_QUOTED_PHRASE=$'---\nid: hq-x\nwhen: git && "force push"\non: [PreToolUse]\nenforcement: soft\n---\nx\n'
+  exp_engine_says "$engine" "$(wp "$PROJ/core/policies/merge-pr.md" "$BAD_MERGE_PR")" 'two words with no operator between them: "pull request"' "adjacent words -> message names the offending words"
+  exp_engine_says "$engine" "$(wp "$PROJ/core/policies/merge-pr.md" "$BAD_MERGE_PR")" 'Fix: write merge || (pull && request)' "adjacent words -> message shows the corrected form"
+  exp_engine_says "$engine" "$(wp "$PROJ/core/policies/quoted-phrase.md" "$BAD_QUOTED_PHRASE")" 'the quoted phrase "force push" is not a token' "quoted phrase -> message names the phrase"
+  exp_engine_says "$engine" "$(wp "$PROJ/core/policies/quoted-phrase.md" "$BAD_QUOTED_PHRASE")" 'Fix: write git && (force && push)' "quoted phrase -> message shows the corrected form"
 done
 
 echo "[2a] every duplicate when: entry is checked, including an empty one"
@@ -201,6 +234,23 @@ exp 0 "$(wp "$PROJ/core/scripts/foo.sh" "echo hi")"                       "non-p
 exp 0 "$(wp "$PROJ/.claude/audit/policies/repo-internal-codes.md" "$NOWHENON")" "audit redaction rule -> allow"
 exp 0 "$(wp "$PROJ/core/policies/README.md" "no frontmatter")"            "policies/README.md -> allow"
 exp 2 "$(wp "$PROJ/core/policies/_digest.md" "no frontmatter")"           "retired policies/_digest.md path -> block"
+# A leftover company digest names a generator that no longer ships. The block
+# must say digests are retired and to delete the file, on both engines, even
+# when the attempted content carries valid trigger frontmatter.
+for engine in node jq; do
+  for content in "no frontmatter" "$GOOD"; do
+    digest_out="$(wp "$PROJ/companies/acme/policies/_digest.md" "$content" | HQ_HOOK_ENGINE="$engine" bash "$HOOK" 2>&1)" && got=0 || got=$?
+    [ "$got" = "2" ] || fail "[$engine] company _digest.md write should block, got $got"
+    printf '%s\n' "$digest_out" | grep -F -- "policy digests are retired" >/dev/null \
+      || fail "[$engine] _digest.md block must say digests are retired: $digest_out"
+    printf '%s\n' "$digest_out" | grep -F -- "Delete the file" >/dev/null \
+      || fail "[$engine] _digest.md block must tell the user to delete the file: $digest_out"
+    if printf '%s\n' "$digest_out" | grep -F -- "missing required trigger frontmatter" >/dev/null; then
+      fail "[$engine] _digest.md block must not report missing trigger frontmatter"
+    fi
+  done
+  pass "[$engine] company _digest.md -> block with retired-digest guidance"
+done
 
 echo "[5] Edit / MultiEdit reflect the RESULTING content"
 POL="$PROJ/core/policies/live.md"; printf '%s' "$GOOD" > "$POL"

@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  deck-scaffold.html: DECK MODE skeleton for project-summary (brainstorm.md).
+  Copy, inline default.css (then the company pack tokens) into <style>, replace
+  every {{placeholder}} from brainstorm.md, delete any block the source cannot fill.
+  Component reference: templates/components.md. Writing rules: SKILL.md Step 5.
+-->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{title}}: brainstorm</title>
+<style>
+/* 1. paste templates/default.css here */
+/* 2. if a company pack exists, paste its design-tokens.css :root AFTER it */
+</style></head><body><div class="wrap">
+
+<!-- HERO: the recommendation is the headline. The framing line is the standfirst. -->
+<header class="hero">
+  <div class="kicker">{{co}} · brainstorm · {{date}}</div>
+  <h1>{{headline: the recommendation in one sentence, with one <em>emphasis</em>}}</h1>
+  <p class="lead">{{the > framing line, trimmed to two or three sentences}}</p>
+  <div class="hero-strip">
+    <span class="pill {{pass|warn|err}}">premise {{STRONG|QUESTIONABLE|WEAK}}</span>
+    <span class="pill">{{N}} options compared</span>
+    <span class="pill">{{recommended option name}}</span>
+    <span class="pill">effort {{S|M|L|XL}}</span>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="v">{{number from the brainstorm}}</div><div class="l">{{label}}</div></div>
+    <div class="kpi"><div class="v plain">{{3}}</div><div class="l">options</div></div>
+    <div class="kpi"><div class="v {{pass|warn|err}}">{{STRONG}}</div><div class="l">premise</div></div>
+  </div>
+</header>
+
+<!-- 01 RECOMMENDATION: the one callout. Preferred option, key condition, biggest risk. -->
+<section>
+  <div class="sec-head"><span class="secnum">01</span><h2>Recommendation</h2></div>
+  <div class="callout">
+    <h3>{{Option X: name}}</h3>
+    <p class="big">{{why, in one sentence}}</p>
+    <p><b>Key condition</b> {{…}}</p>
+    <p><b>Biggest risk</b> {{…}}</p>
+  </div>
+</section>
+
+<!-- 02 OPTIONS: one card per approach. Effort pill, two or three pros and cons,
+     the recommended card gets .rec. "How it works" goes behind details. -->
+<section>
+  <div class="sec-head"><span class="secnum">02</span><h2>{{N}} ways to do it</h2></div>
+  <p class="sub">{{one line on what separates them}}</p>
+  <div class="cards">
+    <div class="card rec">
+      <span class="corner tag accent">recommended</span>
+      <div class="icon"><!-- icon svg --></div>
+      <h3>{{Option A}} <span class="size">M</span></h3>
+      <p>{{when to choose this, one line}}</p>
+      <ul class="checks"><li class="pro">{{pro}}</li><li class="con">{{con}}</li></ul>
+      <details><summary>How it works</summary><div class="body">{{prose}}</div></details>
+    </div>
+    <!-- repeat .card -->
+  </div>
+</section>
+
+<!-- 03 THE SHAPE: diagram of the recommended approach OR the overlap/cruft map
+     (existing items as boxes, verdict colored: extend=accent, merge=pass, replace=warn, remove=err). -->
+<section>
+  <div class="sec-head"><span class="secnum">03</span><h2>{{What it builds on}}</h2></div>
+  <div class="diagram"><svg class="flow-h" viewBox="0 0 1000 300" role="img" aria-label="{{…}}"></svg><svg class="flow-v" viewBox="0 0 360 400"></svg></div>
+  <div class="legend"><span>extend</span><span class="pass">merge</span><span class="warn">replace</span><span class="err">remove</span></div>
+</section>
+
+<!-- 04 WHAT WE KNOW / DON'T: chips or short checks, two panels. Long bullets go behind details. -->
+<section>
+  <div class="sec-head"><span class="secnum">04</span><h2>Known and unknown</h2></div>
+  <div class="cols2">
+    <div class="panel pass"><h3>We know</h3><ul class="checks pass"><li>{{short bullet}}</li></ul></div>
+    <div class="panel err"><h3>We don't know</h3><ul class="checks err"><li>{{short bullet}}</li></ul></div>
+  </div>
+  <details class="more"><summary>Full context</summary><div class="body">{{## Context prose}}</div></details>
+</section>
+
+<!-- 05 NEXT STEPS: tasks with owners when the source names them. -->
+<section>
+  <div class="sec-head"><span class="secnum">05</span><h2>Next steps</h2></div>
+  <ul class="tasks"><li>{{step}}<span class="who">{{owner or "open"}}</span></li></ul>
+</section>
+
+<footer class="foot">
+  <span>generated from brainstorm.md · {{date}} · {{co}}/{{name}}</span>
+  <span>status {{status}}</span>
+</footer>
+</div></body></html>

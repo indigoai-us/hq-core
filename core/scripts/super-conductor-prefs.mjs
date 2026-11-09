@@ -32,6 +32,11 @@
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] add <key> <value>...
 //       Append values to a top-level list key (created when missing). Values
 //       already present are skipped.
+//   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] replace <key> <value>...
+//       Make a top-level list exactly these values (no values: an empty list).
+//       The one write that may shrink a list; with --company it writes the
+//       overlay only and does not copy the base list in, so a company can
+//       narrow a base list.
 //   node core/scripts/super-conductor-prefs.mjs [--file <yaml>] set <key>[.<subkey>] <value>
 //       Set one scalar, top level or one level under a map
 //       (for example watch_interval.present).
@@ -244,6 +249,11 @@ function resolved() {
   }
   // A YAML list or a comma-separated string; one lowercased slug or id each.
   out.hq_channels_exclude = excludeList(out.hq_channels_exclude);
+  // `set email_accounts <address>` stores one plain string; every reader expects
+  // a list. A comma-separated string splits the same way.
+  for (const k of ['email_accounts', 'slack_workspaces']) {
+    if (typeof out[k] === 'string') out[k] = out[k].split(',').map((x) => x.trim()).filter(Boolean);
+  }
   out._extension_keys = Object.keys(data).filter((k) => !KNOWN.has(k)).sort();
   out._file = baseFile;
   if (company) { out._company = company; out._overlay = file; }
@@ -344,6 +354,33 @@ function cmdAdd(key, values) {
   }
   const after = writeChecked(text, next, key);
   process.stdout.write(`${JSON.stringify({ key, added, value: after[key] })}\n`);
+}
+
+// Replace a top-level list with exactly `values` (deduplicated, in order).
+// With --company it writes the overlay only and never seeds from the base, so
+// a company can narrow a base list (for example email_accounts to one
+// mailbox). A scalar in the file is turned into the list; a map is refused.
+function cmdReplace(key, values) {
+  if (!KEY_RE.test(`${key}:`)) die(`bad key '${key}'`, 2);
+  const text = readText();
+  const isMap = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  // A map in this file, the base file, or the defaults stays a map.
+  if ([parse(text)[key], company ? parse(readText(baseFile))[key] : null, DEFAULTS[key]].some(isMap)) {
+    die(`refused: '${key}' is a map; use set ${key}.<subkey>`, 3);
+  }
+  const list = values.filter((v, i, arr) => arr.findIndex((x) => String(x) === String(v)) === i);
+  const block = list.length ? `${key}:\n${list.map((v) => `  - ${fmt(v)}\n`).join('')}` : `${key}: []\n`;
+  const lines = text.replace(/\n$/, '').split('\n');
+  const rng = text ? blockRange(lines, key) : null;
+  let next;
+  if (!rng) next = appendBlock(text, block);
+  else {
+    const [i, j] = rng;
+    lines.splice(i, j - i, ...block.replace(/\n$/, '').split('\n'));
+    next = `${lines.join('\n')}\n`;
+  }
+  const after = writeChecked(text, next, key);
+  process.stdout.write(`${JSON.stringify({ key, value: after[key] })}\n`);
 }
 
 function cmdSet(dotted, value) {
@@ -505,10 +542,14 @@ switch (cmd) {
     if (args.length < 2) die('usage: add <key> <value>...', 2);
     cmdAdd(args[0], args.slice(1));
     break;
+  case 'replace':
+    if (args.length < 1) die('usage: replace <key> <value>...', 2);
+    cmdReplace(args[0], args.slice(1));
+    break;
   case 'set':
     if (args.length !== 2) die('usage: set <key>[.<subkey>] <value>', 2);
     cmdSet(args[0], args[1]);
     break;
   default:
-    die(`usage: [--file <yaml>] [--company <slug>] get | channels | interval | cadence | critical | exclude | add <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
+    die(`usage: [--file <yaml>] [--company <slug>] get | channels | interval | cadence | critical | exclude | add <key> <value>... | replace <key> <value>... | set <key>[.<subkey>] <value>${cmd ? ` (unknown command '${cmd}')` : ''}`, 2);
 }

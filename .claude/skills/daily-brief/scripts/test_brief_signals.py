@@ -479,6 +479,119 @@ class Identity(unittest.TestCase):
         self.assertEqual(res['person_key'], PAT)
         self.assertEqual(res['identity_source'], 'hq-whoami')
 
+    def test_member_list_gives_person_uid_when_whoami_has_none(self):
+        members = {'company_uid': 'cmp_1', 'members': [
+            {'email': None, 'person_id': 'prs_NOBODY'},
+            {'email': 'PAT@example.com', 'person_id': 'prs_PAT', 'role': 'member'},
+            {'email': 'lee@example.com', 'person_id': 'prs_LEE'}]}
+        done = type('R', (), {'returncode': 0, 'stdout': json.dumps(members)})()
+        with patch.object(sweep.subprocess, 'run', return_value=done) as run:
+            self.assertEqual(sweep.member_person_uid('acme-test', EMAIL), 'prs_PAT')
+        self.assertEqual(run.call_args[0][0], ['hq', 'members', '--company', 'acme-test', 'list', '--json'])
+        failed = type('R', (), {'returncode': 1, 'stdout': ''})()
+        with patch.object(sweep.subprocess, 'run', return_value=failed), contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(sweep.member_person_uid('acme-test', EMAIL))
+        self.assertIsNone(sweep.member_person_uid(None, EMAIL))
+
+
+class GardenIndex(unittest.TestCase):
+    """The layout `hq signals run` writes through the ontology garden: index rows
+    {signal_id, type, audience_key, path}, `created_at` in the signal file, and
+    group folders with an `_audience.yaml` listing every principal."""
+    UID = 'prs_01TESTPERSONPAT'
+    AT = '2026-10-27T13:00:00Z'
+
+    def garden_signal(self, root, key, sid, typ, content, at=None):
+        path = f'signals/{typ}/{sid}.md' if key == 'company' else f'signals/@{key}/{typ}/{sid}.md'
+        write(root, path, '---\n' + '\n'.join([
+            f'signal_id: {sid}', f'type: {typ}', f'canonical_content: {json.dumps(content)}',
+            f'audience_key: {key}', f'source_ref: "meetings:{sid}.md"', f'created_at: {at or self.AT}']) + f'\n---\n{content}\n')
+        return {'signal_id': sid, 'type': typ, 'audience_key': key, 'path': path}
+
+    def build(self, root):
+        mine = bs.audience_key(['lee@example.com', 'Pat@Example.com', 'agt_X'])
+        others = bs.audience_key(['lee@example.com', 'sam@example.com'])
+        by_uid = bs.audience_key(['agt_Y', self.UID])
+        write(root, f'signals/@{mine}/_audience.yaml',
+              f'audience_key: {mine}\nprincipals: [agt_X, Pat@Example.com, lee@example.com]\n')
+        write(root, f'signals/@{others}/_audience.yaml',
+              f'audience_key: {others}\nprincipals: [lee@example.com, sam@example.com]\n')
+        write(root, f'signals/@{by_uid}/_audience.yaml',
+              f'principals:\n  - agt_Y\n  - {self.UID}\naudience_source: meeting\n')
+        rows = [
+            self.garden_signal(root, 'company', 'g-co', 'decision', 'Company-wide "quoted" call'),
+            self.garden_signal(root, mine, 'g-mine', 'action_item', 'Pat follows up'),
+            self.garden_signal(root, others, 'g-others', 'decision', 'Lee and Sam only'),
+            self.garden_signal(root, by_uid, 'g-uid', 'risk', 'Seen by uid'),
+            self.garden_signal(root, mine, 'g-old', 'decision', 'Too old', '2026-10-25T10:00:00Z'),
+        ]
+        index(root, '2026-10-27', rows)
+        return mine, others, by_uid
+
+    def test_new_shape_rows_and_group_audiences_are_read(self):
+        with tempfile.TemporaryDirectory() as root:
+            mine, others, by_uid = self.build(root)
+            res = bs.collect(root, NOW, 24, EMAIL, self.UID, 'hq-whoami')
+        ids = {x['signal_id']: x for x in res['lines']}
+        self.assertEqual(set(ids), {'g-co', 'g-mine', 'g-uid'})
+        self.assertNotIn('Lee and Sam only', json.dumps(res))
+        self.assertEqual(ids['g-co']['text'], 'Company-wide "quoted" call')
+        self.assertEqual(ids['g-mine']['written_at'], self.AT)
+        self.assertEqual(ids['g-mine']['source_ref'], 'meetings:g-mine.md')
+        self.assertEqual(res['group_keys'], sorted([mine, by_uid]))
+        self.assertNotIn(others, res['keys'] + res['group_keys'])
+
+    def test_group_folder_by_uid_needs_the_uid(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.build(root)
+            res = bs.collect(root, NOW, 24, EMAIL, None)
+        self.assertEqual({x['signal_id'] for x in res['lines']}, {'g-co', 'g-mine'})
+
+    def test_no_identity_reads_company_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.build(root)
+            res = bs.collect(root, NOW, 24, None, None)
+        self.assertEqual([x['signal_id'] for x in res['lines']], ['g-co'])
+        self.assertEqual(res['group_keys'], [])
+
+    def test_legacy_and_new_rows_share_one_index(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.build(root)
+            signal(root, 'signals/decision/l1.md', 'l1', 'decision', 'sources/slack/C1/1.raw.json', 'Legacy row', self.AT)
+            rows = json.loads((Path(root) / 'signals/_index/2026-10-27.json').read_text())
+            rows.append(row('l1', 'decision', 'sources/slack/C1/1.raw.json', 'signals/decision/l1.md', self.AT))
+            index(root, '2026-10-27', rows)
+            res = bs.collect(root, NOW, 24, EMAIL, self.UID)
+        self.assertEqual({x['signal_id'] for x in res['lines']}, {'g-co', 'g-mine', 'g-uid', 'l1'})
+
+    def test_traversal_paths_and_non_hex_folders_are_not_read(self):
+        with tempfile.TemporaryDirectory() as root:
+            mine, others, _ = self.build(root)
+            sneaky = self.garden_signal(root, others, 'g-sneak', 'decision', 'Sneaky')
+            sneaky['path'] = f'signals/@{mine}/../@{others}/decision/g-sneak.md'
+            write(root, 'signals/@not-a-key/_audience.yaml', f'principals: [{EMAIL}]\n')
+            odd = {'signal_id': 'g-odd', 'type': 'decision', 'path': 'signals/@not-a-key/decision/g-odd.md'}
+            write(root, odd['path'], f'---\nsignal_id: g-odd\nsource_ref: x\ncreated_at: {self.AT}\n---\nOdd\n')
+            index(root, '2026-10-27', [sneaky, odd])
+            res = bs.collect(root, NOW, 24, EMAIL, self.UID)
+        self.assertEqual(res['lines'], [])
+
+    def test_principals_parse_flow_and_block_lists(self):
+        self.assertEqual(bs._principals('principals: [a@example.com, prs_1]\n'), ['a@example.com', 'prs_1'])
+        self.assertEqual(bs._principals('principals:\n  - "a@example.com"\n  - prs_1\naudience_source: m\n'), ['a@example.com', 'prs_1'])
+        self.assertEqual(bs._principals('audience_key: k\n'), [])
+
+    def test_sweep_tags_lines_with_their_company(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.build(os.path.join(root, 'companies', 'acme-test'))
+            try:
+                res = sweep.synced_signals(root, 'acme-test', NOW, 24, EMAIL, self.UID, 'hq-whoami')
+            finally:
+                sweep.SOURCES.clear()
+                sweep.SYNCED.clear()
+        self.assertEqual({x['signal_id'] for x in res['lines']}, {'g-co', 'g-mine', 'g-uid'})
+        self.assertEqual({x['company'] for x in res['lines']}, {'acme-test'})
+
 
 if __name__ == '__main__':
     unittest.main()

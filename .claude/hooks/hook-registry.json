@@ -25,7 +25,8 @@
             "args": [
               "drain",
               "PreToolUse"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "policy-enforcement-gate",
@@ -34,7 +35,8 @@
             "gated": true,
             "after": [
               "inject-policy-on-trigger"
-            ]
+            ],
+            "runner": "source"
           }
         ]
       },
@@ -307,6 +309,16 @@
             "runner": "source"
           },
           {
+            "id": "block-hq-unbounded-search",
+            "script": ".claude/hooks/block-hq-unbounded-search.sh",
+            "timeout": 5,
+            "gated": true,
+            "prefilter": {
+              "re": "find|grep|bfs"
+            },
+            "runner": "source"
+          },
+          {
             "id": "block-on-active-run",
             "script": ".claude/hooks/block-on-active-run.sh",
             "timeout": 30,
@@ -327,7 +339,8 @@
             "after": [
               "policy-enforcement-gate",
               "surface-company-infra-policy"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "block-unsafe-package-install",
@@ -751,7 +764,8 @@
             "id": "merged-write-guard-shadow",
             "script": ".claude/hooks/merged-write-guard-shadow.sh",
             "timeout": 30,
-            "gated": true
+            "gated": true,
+            "runner": "source"
           }
         ]
       },
@@ -798,7 +812,8 @@
             "gated": true,
             "after": [
               "inject-policy-on-trigger"
-            ]
+            ],
+            "runner": "source"
           }
         ]
       },
@@ -897,7 +912,8 @@
             },
             "after": [
               "policy-enforcement-gate"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "reindex",
@@ -1262,7 +1278,8 @@
             "gated": true,
             "after": [
               "migrate-policy-triggers"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "desktop-memory-leak-check",
@@ -1386,7 +1403,8 @@
             "args": [
               "drain",
               "UserPromptSubmit"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "rewrite-resume-sentinel",
@@ -1433,7 +1451,10 @@
             "script": ".claude/hooks/session-title.sh",
             "timeout": 30,
             "gated": true,
-            "runner": "source"
+            "runner": "source",
+            "after": [
+              "natural-language-router"
+            ]
           },
           {
             "id": "inject-policy-on-trigger",
@@ -1444,7 +1465,8 @@
               "auto-session-project",
               "natural-language-router",
               "route-deep-plan-to-skill"
-            ]
+            ],
+            "runner": "source"
           },
           {
             "id": "spawn-company-handoff",

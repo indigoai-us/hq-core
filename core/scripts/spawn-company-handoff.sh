@@ -95,7 +95,9 @@ first_prompt() { # true when the transcript holds no user prompt before this one
   [ -f "$tp" ] && [ -r "$tp" ] || return 1
   n="$(grep -c '"type":"user"' "$tp" 2>/dev/null || true)"
   tr="$(grep '"type":"user"' "$tp" 2>/dev/null | grep -c '"tool_result"' || true)"
-  [ $(( ${n:-0} - ${tr:-0} )) -le 1 ]
+  [ $(( ${n:-0} - ${tr:-0} )) -le 1 ] || return 1
+  # Prior turns (resume/fork under a new session id) always include an assistant line.
+  ! grep -q '"type":"assistant"' "$tp" 2>/dev/null
 }
 
 known_company() { # exact real directory, not personal

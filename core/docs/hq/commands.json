@@ -81,7 +81,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/brainstorm/SKILL.md",
-      "hash": "sha256:5a801ddce40f6807c68cd3cf273c1e3f8d0677da3b59c7d4b0d07757117801b7",
+      "hash": "sha256:0392d1ca0332ac8024aa4f25bf2795a0c3e5fdbd99ad6b1c118b11387a485a17",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -132,7 +132,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/checkpoint/SKILL.md",
-      "hash": "sha256:ac76cbde8cc69c886544458297ca3c47380127a09214fe78ef50e9cd669e2acc",
+      "hash": "sha256:11dfe2fd72fe82610654e1d049496ea736128ca8a0ac6b497f1e8dea6341ebc8",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -285,7 +285,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/daily-brief/SKILL.md",
-      "hash": "sha256:ac57fa3f9b818f1e07222c246c637fc58d32c6c2af3b384da204d7dd10f20abd",
+      "hash": "sha256:aae7b6575350d22988152a9b3f39d523fd94b93ca1ca4898ee06b7740e9723de",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -319,7 +319,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/decision-queue/SKILL.md",
-      "hash": "sha256:c588049abd4f80e49f1e5cfa89df6ea731d53ad3388eecf96e338efaf6d355a7",
+      "hash": "sha256:ca5fb5dd44c1387ae2cf864dd11a8afaa21f4daa5c997779d1e9b3370c4680c2",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -370,7 +370,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/deploy/SKILL.md",
-      "hash": "sha256:3de6273153684f5cb6d355d7431e25ffe6a024615b1dbf2d0c7e5ae0ab0fd6fd",
+      "hash": "sha256:2c2d615edcba28e9f53ecbc70b284dcbc4111038f53847260f7e9084b40eca1a",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -557,7 +557,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/garden/SKILL.md",
-      "hash": "sha256:0ba94bc537fcc1647edc42ef6ad4e5302c6ae8fb4906ddf85c4163dd8d1c9e58",
+      "hash": "sha256:63903b80b67d070dc41e51f5bc4e9dcc641fe70759ab1e03b9c0e5cf0332e8a5",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -625,7 +625,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/handoff/SKILL.md",
-      "hash": "sha256:c5dd4fb98cb493c5c4ee49a87aaf7e4ade8bd517ea63978042f2b5c3ae26d247",
+      "hash": "sha256:bf19a652e59fefeb300ac4872b4c6dd75b8f00c0fcab3bcfa076728312f694d2",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -902,7 +902,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/hq-sync/SKILL.md",
-      "hash": "sha256:e35e5ccdcbe21550d514f97932bbcbb546f1b0083b8a9a86c5dac470d7f9d390",
+      "hash": "sha256:1a6f3ab2a0de9d9ee078d7a8036784b48739e967da0556b3573a6355fb3f1d58",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -953,7 +953,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/idea/SKILL.md",
-      "hash": "sha256:688529516b8650305542512db24cd9efcdafb4682366c5957ed36ae8bd76ef1e",
+      "hash": "sha256:feb9bd9a7decd57f9b2a5832aeac8273c584130af52d9fc39c5f60e45bbdce22",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1201,7 +1201,7 @@
       "skillUid": null,
       "group": "share",
       "source": ".claude/skills/newcompany/SKILL.md",
-      "hash": "sha256:2f664ca42014a8c5b93b413e6cb03b81b236768151835d7f4f20810ca9376c41",
+      "hash": "sha256:f0fd1e4c911ae25fa6f5c2de2f1354cddb57495c1bff887dc16625cf28bc79df",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1371,7 +1371,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/prd/SKILL.md",
-      "hash": "sha256:76523eb6f391803d2c98de0461609bd241c9c8684b7a7de4b71eeb87ca7ed1c3",
+      "hash": "sha256:df11f8dda29fe972eb079b8fc1bde45e61f1e1fe7e615de5235b18cae0662465",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1388,7 +1388,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/project-summary/SKILL.md",
-      "hash": "sha256:0752210b39f3e7658c7f515a47a3632e00af7533eb45f037797a06379b422cda",
+      "hash": "sha256:04463d5ece361b37a19a2b46512f6ae55de087d88623f303b2682d45e6a48b1d",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1668,6 +1668,23 @@
       }
     },
     {
+      "name": "settings-override",
+      "description": "Keep a Claude Code setting change across HQ updates by writing it to .claude/settings.local.json. Use when /update-hq reset a setting or a user wants one to stick.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/settings-override",
+      "skillUid": null,
+      "group": "sync",
+      "source": ".claude/skills/settings-override/SKILL.md",
+      "hash": "sha256:0f9125e82da7d0a4b81005ce0b1a29318dd0e091265789a48f50668ddb290ff7",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
       "name": "setup",
       "description": "Run the HQ Starter Kit setup wizard.",
       "scope": "core",
@@ -1779,7 +1796,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:d71315317be60c3814959649d0cdad3ac03163a7e72c60afb0228eabd13c19ac",
+      "hash": "sha256:478d3fac2a4bb1f6a5666082ef35d7400abfcf2821ffda11fdc80742cd04a116",
       "duplicates": {
         "exact": [],
         "drifted": [],

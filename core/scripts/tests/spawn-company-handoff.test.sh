@@ -136,6 +136,18 @@ first_prompt child-9 "$P9" >/dev/null
 rm -f "$TMP/transcripts/child-9.jsonl"
 pass "a tag on a later prompt is ignored"
 
+# 9b. A resumed/forked session under a new id carries a prior turn. Even when the
+# current prompt is not in the transcript yet (one user + one assistant line),
+# it is not a first prompt.
+new_session parent-9b; HS parent-9b set company_slug acme >/dev/null
+new_session child-9b globex device_default
+P9B="$(spawn parent-9b)"
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"earlier prompt"}}' \
+  '{"type":"assistant","message":{"role":"assistant","content":"ok"}}' > "$TMP/transcripts/child-9b.jsonl"
+first_prompt child-9b "$P9B" >/dev/null
+[ "$(slug child-9b)" = globex ] || fail "a resumed transcript with prior turns was treated as the first prompt"
+pass "a transcript holding a prior assistant turn is not a first prompt"
+
 # 10. When the host names a parent, it must be the intent's parent.
 new_session parent-10; HS parent-10 set company_slug acme >/dev/null
 new_session child-10 globex device_default

@@ -21,6 +21,7 @@
 set -euo pipefail
 
 bash "$(dirname "${BASH_SOURCE[0]}")/hq-session-write-identity.test.sh"
+bash "$(dirname "${BASH_SOURCE[0]}")/hq-session-outside-root.test.sh"
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hq-session.sh"
 LIB_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib"
@@ -31,7 +32,7 @@ trap 'rm -rf "$TMP"' EXIT
 # whole precedence list so the .current-fallback cases below exercise the
 # fallback rather than the ambient session.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID || true
+      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID HQ_FLEET_SESSION_ID || true
 # Pin the root resolution to the fixture's self-relative walk (the depth guard
 # below), independent of any injected root the ambient environment carries.
 unset HQ_ROOT CLAUDE_PROJECT_DIR || true

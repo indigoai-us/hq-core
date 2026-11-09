@@ -225,6 +225,9 @@ check_sweep() {
   command -v node >/dev/null 2>&1 && [[ -f "$SWEEP_JS" ]] || return 0
   local args=(verify --state "$state" --since "$prev_wake") line
   [[ -n "$channels" ]] && args+=(--channels "$channels")
+  # Same prefs as prefs(): one company reads its overlay, a multi-company set
+  # the base file. Without --company the save file's `company` key decides.
+  [[ -n "$companies" ]] && args+=(--company "$companies")
   if ! line="$(node "$SWEEP_JS" "${args[@]}" 2>&1)"; then
     # Same missing set, save file untouched since the last line, and inside
     # the repeat window: the conductor is mid-turn; do not bury it again.

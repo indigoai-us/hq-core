@@ -1,0 +1,3 @@
+interface:
+  display_name: "settings-override"
+  short_description: "Keep a setting change across HQ updates via settings.local.json."

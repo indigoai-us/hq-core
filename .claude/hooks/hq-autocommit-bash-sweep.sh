@@ -4,6 +4,14 @@
 # The hard cap bounds the scan and autosave fan-out to 20 changed paths per Stop.
 set -uo pipefail
 
+_SWEEP_SELF="$(cd "$(dirname "$0")" && pwd -P)/hq-autocommit-bash-sweep.sh"
+_SWEEP_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd -P)}"
+if [ -f "$_SWEEP_ROOT/core/scripts/lib/hook-stop-async.sh" ]; then
+  # shellcheck source=core/scripts/lib/hook-stop-async.sh
+  . "$_SWEEP_ROOT/core/scripts/lib/hook-stop-async.sh"
+  hook_stop_async_enter "$_SWEEP_SELF" || true
+fi
+
 INPUT="$(cat 2>/dev/null || echo '{}')"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 HQ_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd -P)}"

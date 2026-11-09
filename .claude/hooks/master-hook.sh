@@ -114,9 +114,23 @@ master_now_ms() {
       return 0
     fi
   fi
-  now="$(date +%s%3N 2>/dev/null || true)"
-  if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
-    MASTER_NOW_MS="$now"
+  # HOOK_TIMEOUT_CLOCK (hook-timeout-probe.sh, chosen once at startup) skips
+  # the `date +%s%3N` that BSD date can never answer, so a read on Bash 3.2
+  # starts one process instead of two (feedback_25b10339).
+  case "${HOOK_TIMEOUT_CLOCK:-}" in
+    perl|seconds) ;;
+    *)
+      now="$(date +%s%3N 2>/dev/null || true)"
+      if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
+        MASTER_NOW_MS="$now"
+        printf '%s' "$MASTER_NOW_MS"
+        return 0
+      fi
+      ;;
+  esac
+  if [ "${HOOK_TIMEOUT_CLOCK:-}" = seconds ] && command -v hook_timeout_epoch_seconds >/dev/null 2>&1 \
+    && hook_timeout_epoch_seconds; then
+    MASTER_NOW_MS="${HOOK_TIMEOUT_EPOCH_SECONDS}000"
     printf '%s' "$MASTER_NOW_MS"
     return 0
   fi
@@ -141,6 +155,10 @@ MASTER_DISPATCH_START_RECORDED=0
 master_timing_precision() {
   local candidate=""
   [ -n "${EPOCHREALTIME:-}" ] && { printf 'ms'; return; }
+  case "${HOOK_TIMEOUT_CLOCK:-}" in
+    realtime|date|perl) printf 'ms'; return ;;
+    seconds) printf 's'; return ;;
+  esac
   candidate="$(date +%s%3N 2>/dev/null || true)"
   if [[ "$candidate" =~ ^[0-9]+$ ]] && [ "${#candidate}" -gt 10 ]; then
     printf 'ms'
@@ -172,6 +190,13 @@ case "$0" in
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 . "$SCRIPT_DIR/hook-timeout-probe.sh"
+# One clock probe per dispatch. Every later read reuses the choice, and the
+# debug phase boundaries read epoch seconds without starting `date`.
+! command -v hook_timeout_clock_init >/dev/null 2>&1 || hook_timeout_clock_init
+if [ "${HQ_TURN_TIMING:-0}" = 1 ] && [ -z "$MASTER_ENTRY_REALTIME" ]; then
+  master_now_ms >/dev/null
+  MASTER_DISPATCH_STARTED_MS="$MASTER_NOW_MS"
+fi
 if [[ "$MASTER_ENTRY_REALTIME" =~ ^([0-9]{1,12})\.([0-9]+)$ ]]; then
   master_entry_seconds="${BASH_REMATCH[1]}"
   master_entry_fraction="${BASH_REMATCH[2]}000"
@@ -413,6 +438,7 @@ stop_master_timeout_watchdog() {
   done
   master_timeout_watchdog_pids=()
   master_timeout_watchdog_sessions=()
+  if declare -F turn_timing_finish >/dev/null; then turn_timing_finish; fi
   if { [ -n "${timeout_journal_file:-}" ] || [ -n "${MASTER_DEBUG_PHASE_FILE:-}" ]; } \
     && [ -n "${MASTER_INVOCATION_ID:-}" ]; then
     local -a debug_files=()
@@ -484,6 +510,8 @@ arm_master_timeout_watchdog() {
 if master_timeout_watchdog_enabled; then
   master_timeout_started_at="${EPOCHSECONDS:-$(date +%s 2>/dev/null || printf '0')}"
   arm_master_timeout_watchdog master-dispatch "$SCRIPT_DIR/master-hook.sh"
+fi
+if master_timeout_watchdog_enabled || [ "${HQ_TURN_TIMING:-0}" = 1 ]; then
   trap stop_master_timeout_watchdog EXIT
 fi
 
@@ -903,6 +931,12 @@ else
   unset HQ_HOOK_TIMEOUT_JOURNAL_FILE || true
 fi
 
+# Reuse wrapper measurements; the watchdog journal retains only 40 rows.
+if [ "${HQ_TURN_TIMING:-0}" = 1 ] && [ -f "$SCRIPT_DIR/turn-timing.sh" ]; then
+  . "$SCRIPT_DIR/turn-timing.sh"
+  turn_timing_init
+fi
+
 journal_hook_event() {
   local hook_path="$1" elapsed_ms="$2" rc="${3:-}" timed_out="${4:-0}" load1="-" script
   [ -n "$timeout_journal_file" ] || return 0
@@ -932,7 +966,11 @@ journal_active_child_start() {
   case "$script" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
   case "$EVENT" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
   case "$MASTER_INVOCATION_ID" in ''|*[!A-Za-z0-9._-]*) return 0 ;; esac
-  started_ms="$(master_now_ms)"
+  # The sequential loops read the child's start time just before run_child;
+  # reuse it instead of a third clock read per child. Parallel dispatch and
+  # the bridge fallback leave it empty and read the clock here.
+  started_ms="${master_child_started_ms:-}"
+  [[ "$started_ms" =~ ^[0-9]+$ ]] || started_ms="$(master_now_ms)"
   [[ "$started_ms" =~ ^[0-9]+$ ]] || return 0
   # In parallel dispatch each child gets its own breadcrumb file
   # (<active>.<index>) so the watchdog sees every child that is running.
@@ -1484,6 +1522,9 @@ master_run_bash_bounded() { # <seconds> <kill-after-seconds> <argv...>
 # Set by the hq-hook bridge so the active-child breadcrumb names the hook
 # script that is being bridged, not the engine binary that runs it.
 run_child_journal_path=""
+# Start time (ms) the sequential dispatch loops read for the current child;
+# journal_active_child_start reuses it. Empty outside a sequential child.
+master_child_started_ms=""
 run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker> [args...]
   local t="$1" mode="$2" path="$3" completion_marker="$4"; shift 4
   local runner=()
@@ -1576,6 +1617,7 @@ record_child_execution() {
   fi
   completed_child_paths+=("$path")
   completed_child_elapsed_ms+=("$elapsed_ms")
+  master_child_started_ms=""
   journal_active_child_end
   if [ -n "$completion_marker" ] && [ ! -f "$completion_marker" ]; then
     case "$rc" in
@@ -1596,6 +1638,9 @@ record_child_execution() {
     esac
   fi
   journal_hook_event "$path" "$elapsed_ms" "$rc" "$master_child_timed_out"
+  if declare -F turn_timing_row >/dev/null; then
+    turn_timing_row child "$path" "$started_ms" "$elapsed_ms"
+  fi
   # Markers are removed in one rm at the end of the dispatch instead of one
   # rm process per child (two per child with the pre-run cleanup).
   [ -z "$completion_marker" ] || [ ! -e "$completion_marker" ] \
@@ -2570,7 +2615,7 @@ par_cleanup_files() {
 }
 par_on_exit() {
   par_cleanup_files
-  if master_timeout_watchdog_enabled; then stop_master_timeout_watchdog; fi
+  stop_master_timeout_watchdog
 }
 par_on_signal() { # <exit code>
   trap - EXIT TERM INT
@@ -2579,7 +2624,7 @@ par_on_signal() { # <exit code>
   par_cleanup_files
   sleep 0.1 2>/dev/null || true
   par_cleanup_files
-  if master_timeout_watchdog_enabled; then stop_master_timeout_watchdog; fi
+  stop_master_timeout_watchdog
   exit "$1"
 }
 if [ "$PAR" -eq 1 ]; then
@@ -2942,6 +2987,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     trace_start="${EPOCHREALTIME:-}"
     master_now_ms >/dev/null
     child_started_ms="$MASTER_NOW_MS"
+    master_child_started_ms="$child_started_ms"
     prepare_child_completion_marker
     master_debug_phase_start external_command
     master_record_dispatch_startup
@@ -2992,6 +3038,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
         *)
           [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s exited %s without a verdict; running bash\n' "$rid" "$rc" >&2
           rc=0
+          master_child_started_ms=""
           prepare_child_completion_marker
           # shellcheck disable=SC2086 # args are space-separated literals from the registry.
           out="$(run_child "$child_timeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
@@ -3126,6 +3173,7 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   trace_start="${EPOCHREALTIME:-}"
   master_now_ms >/dev/null
   child_started_ms="$MASTER_NOW_MS"
+  master_child_started_ms="$child_started_ms"
   prepare_child_completion_marker
   master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
   # The single dispatcher watchdog armed at the top covers every child; the

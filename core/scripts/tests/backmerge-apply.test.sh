@@ -18,6 +18,10 @@
 #   7. The backmerge workflow calls the helper instead of copying blindly.
 #   8. A glob-like name (f[1].md) does not overwrite a staging edit to f1.md,
 #      and a non-ASCII name is applied, not dropped as quoted.
+#   9. An hq-core push that deletes the private leak-scan lists
+#      (.leak-scan/denylist.yaml, .leak-scan/manifest-snapshot.yaml) leaves
+#      staging's copies in place. A release once replayed that deletion and
+#      broke denylist-scan on every staging PR.
 # shellcheck disable=SC2015,SC2016 # pass/fail one-liners; literal $ in grep pattern
 set -euo pipefail
 
@@ -45,6 +49,9 @@ printf 'same v1\n' > "$TMP/src/core/b/same.md"
 printf 'glob v1\n' > "$TMP/src/core/b/f[1].md"
 printf 'f1 v1\n' > "$TMP/src/core/b/f1.md"
 printf 'accent v1\n' > "$TMP/src/core/b/$ACCENT"
+mkdir -p "$TMP/src/.leak-scan"
+printf 'version: 1\ncompanies:\n  zqfakeco: "{company}"\n' > "$TMP/src/.leak-scan/denylist.yaml"
+printf 'version: 1\n' > "$TMP/src/.leak-scan/manifest-snapshot.yaml"
 g add -A && g commit -qm before
 BEFORE="$(g rev-parse HEAD)"
 
@@ -52,6 +59,7 @@ BEFORE="$(g rev-parse HEAD)"
 # picks up one hq-core change on its own.
 mkdir -p "$TMP/tgt"
 cp -R "$TMP/src/core" "$TMP/tgt/core"
+cp -R "$TMP/src/.leak-scan" "$TMP/tgt/.leak-scan"
 mkdir -p "$TMP/tgt/companies/x"
 printf 'staging only\n' > "$TMP/tgt/companies/x/keep.md"
 printf 'diverged STAGING\n' > "$TMP/tgt/core/a/diverged.md"
@@ -69,6 +77,7 @@ rm "$TMP/src/core/b/gone.md" "$TMP/src/core/b/gone-diverged.md"
 printf 'same v2\n' > "$TMP/src/core/b/same.md"
 printf 'glob v2\n' > "$TMP/src/core/b/f[1].md"
 printf 'accent v2\n' > "$TMP/src/core/b/$ACCENT"
+rm "$TMP/src/.leak-scan/denylist.yaml" "$TMP/src/.leak-scan/manifest-snapshot.yaml"
 mkdir -p "$TMP/src/companies/x"
 printf 'from core\n' > "$TMP/src/companies/x/keep.md"
 g add -A && g commit -qm after
@@ -106,6 +115,15 @@ grep -qx 'already current: core/b/same.md' <<<"$OUT" && pass "already-current pa
 [ "$(cat "$TMP/tgt/core/b/f1.md")" = "f1 STAGING" ] && pass "glob-like name does not touch f1.md" || fail "glob-like name overwrote f1.md"
 [ "$(cat "$TMP/tgt/core/b/$ACCENT")" = "accent v2" ] && pass "non-ASCII name applied" || fail "non-ASCII name dropped"
 grep -q '::warning file=core/a/diverged.md::' <<<"$OUT" && pass "skipped path raises a workflow warning" || fail "no warning for skipped path"
+
+# 9. private leak-scan lists stay on staging when hq-core deletes them
+grep -qx 'D' < <(tr '\0' '\n' < "$TMP/changes.z" | grep -x -B1 '.leak-scan/denylist.yaml' | head -1) \
+  && pass "fixture deletes the denylist in hq-core" || fail "fixture does not delete the denylist"
+[ "$(git -C "$TMP/src" hash-object "$TMP/tgt/.leak-scan/denylist.yaml" 2>/dev/null)" = "$(g rev-parse "$BEFORE:.leak-scan/denylist.yaml")" ] \
+  && pass "staging denylist kept byte-exact" || fail "staging denylist deleted or changed"
+[ -f "$TMP/tgt/.leak-scan/manifest-snapshot.yaml" ] && pass "staging slug snapshot kept" || fail "staging slug snapshot deleted"
+grep -qx 'skip (staging-local): .leak-scan/denylist.yaml' <<<"$OUT" && pass "denylist deletion reported as staging-local" || fail "denylist deletion not skipped"
+if grep -q '^deleted: .leak-scan/' <<<"$OUT"; then fail "a private list was deleted"; else pass "no private list deleted"; fi
 
 # 6. summary file
 grep -q 'skipped: 2' "$TMP/summary.md" && grep -q 'core/a/diverged.md' "$TMP/summary.md" \

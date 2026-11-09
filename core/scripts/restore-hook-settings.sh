@@ -19,6 +19,9 @@
 #     hq-monitor-session-hook.sh wait (asyncRewake, timeout 86400)
 #     (other keys, including env.PATH, are preserved)
 #   - deletes the hooks key from settings.local.json (permissions/env stay)
+#   - copies a boolean disableArtifact from settings.local.json into
+#     settings.json (Claude does not honor a local override for this key;
+#     the settings-override skill still writes local.json)
 # Idempotent. python-free. Always exits 0 unless a rewrite could not be saved.
 #
 # Usage: restore-hook-settings.sh [HQ_ROOT]
@@ -218,6 +221,22 @@ if (JSON.stringify(d) === before) { process.stdout.write("unchanged"); process.e
 process.stdout.write(JSON.stringify(d, null, 2) + "\n");
 '
 
+NODE_ARTIFACT_PROG='
+const fs = require("fs");
+const [baseFile, localFile] = process.argv.slice(1);
+let base, local;
+try { base = JSON.parse(fs.readFileSync(baseFile, "utf8")); } catch (e) { process.exit(1); }
+try { local = JSON.parse(fs.readFileSync(localFile, "utf8")); } catch (e) { process.stdout.write("unchanged"); process.exit(0); }
+if (!base || typeof base !== "object" || Array.isArray(base)) process.exit(1);
+if (!local || typeof local !== "object" || Array.isArray(local)) { process.stdout.write("unchanged"); process.exit(0); }
+if (!Object.prototype.hasOwnProperty.call(local, "disableArtifact")) { process.stdout.write("unchanged"); process.exit(0); }
+const d = local.disableArtifact;
+if (d !== true && d !== false) { process.stdout.write("unchanged"); process.exit(0); }
+if (base.disableArtifact === d) { process.stdout.write("unchanged"); process.exit(0); }
+base.disableArtifact = d;
+process.stdout.write(JSON.stringify(base, null, 2) + "\n");
+'
+
 rewrite_base() {
   if [ -n "${HQ_LIB_JQ:-}" ] && [ "${HQ_HOOK_ENGINE:-}" != "node" ]; then
     "$HQ_LIB_JQ" -r --argjson events "$EVENTS" --arg engine "$ENGINE" --arg root "$ENGINE_ROOT" "$JQ_CANON"'
@@ -236,6 +255,23 @@ rewrite_local() {
     ' "$LOCAL" 2>/dev/null
   elif [ -n "${HQ_LIB_NODE:-}" ]; then
     "$HQ_LIB_NODE" -e "$NODE_PROG" "$LOCAL" local 2>/dev/null
+  fi
+}
+
+# Claude does not apply settings.local.json disableArtifact over the
+# shipped settings.json key. Copy a boolean from local so the documented
+# settings-override path survives /update-hq.
+rewrite_artifact() {
+  [ -f "$LOCAL" ] || { echo "unchanged"; return 0; }
+  if [ -n "${HQ_LIB_JQ:-}" ] && [ "${HQ_HOOK_ENGINE:-}" != "node" ]; then
+    "$HQ_LIB_JQ" -r --slurpfile local "$LOCAL" '
+      ($local[0] | if type == "object" and has("disableArtifact") then .disableArtifact else null end) as $d
+      | if ($d == true or $d == false) and .disableArtifact != $d
+        then .disableArtifact = $d
+        else "unchanged" end
+    ' "$BASE" 2>/dev/null
+  elif [ -n "${HQ_LIB_NODE:-}" ]; then
+    "$HQ_LIB_NODE" -e "$NODE_ARTIFACT_PROG" "$BASE" "$LOCAL" 2>/dev/null
   fi
 }
 
@@ -285,6 +321,19 @@ if [ -f "$LOCAL" ]; then
       echo "restore-hook-settings: could not write .claude/settings.local.json" >&2
       exit 1
     fi
+  fi
+fi
+
+ART_OUT="$(rewrite_artifact)"
+if [ -n "$ART_OUT" ] && [ "$ART_OUT" != "unchanged" ]; then
+  mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+  cp -p "$BASE" "$BACKUP_DIR/settings.json" 2>/dev/null || true
+  if write_atomic "$BASE" "$ART_OUT"; then
+    echo "applied disableArtifact override from .claude/settings.local.json"
+    CHANGED=1
+  else
+    echo "restore-hook-settings: could not write .claude/settings.json" >&2
+    exit 1
   fi
 fi
 

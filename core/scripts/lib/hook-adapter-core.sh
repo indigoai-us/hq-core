@@ -916,7 +916,7 @@ hqad_fallback_records() {
   local event="$1" tool="$2" ids="" id script
   [ "$event" = "PreToolUse" ] || return 0
   case "$tool" in
-    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download block-raw-temp-home policy-enforcement-gate" ;;
+    Bash) ids="mandatory-scope-authorizer detect-secrets block-env-dump block-core-writes-bash block-policy-writes-bash block-hq-root-git-mutation block-company-repo-creation block-unsafe-package-install block-qmd-model-download block-raw-temp-home block-hq-unbounded-search policy-enforcement-gate" ;;
     Read) ids="mandatory-scope-authorizer warn-cross-company-settings image-context-guard policy-enforcement-gate" ;;
     view_image|ViewImage) ids="image-context-guard policy-enforcement-gate" ;;
     Grep) ids="mandatory-scope-authorizer block-hq-grep policy-enforcement-gate" ;;

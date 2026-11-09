@@ -40,16 +40,58 @@ __cp_bail() { cat >/dev/null 2>&1 || true; exit 0; }
 
 [ "${HQ_CHECKPOINT_GATE_NO_CLI:-}" = "1" ] && __cp_bail
 
+# A desktop-app or launchd PATH can miss the HQ toolchain and ~/.local/bin,
+# where hq, claude and grok live. Append (never prepend) the install dirs.
+__cp_add_path() {
+  [ -n "$1" ] && [ -d "$1" ] || return 0
+  case ":$PATH:" in *":$1:"*) return 0 ;; esac
+  PATH="$PATH:$1"
+}
+__cp_h="${HOME:-/nonexistent}"
+__cp_tc="${HQ_TOOLCHAIN_DIR:-$__cp_h/Library/Application Support/Indigo HQ/toolchain}"
+for __cp_d in "$__cp_tc/node/bin" "$__cp_tc/npm-global/bin" "$__cp_h/.npm-global/bin" \
+  "$__cp_h/.local/bin" "$__cp_h/.claude/local"; do __cp_add_path "$__cp_d"; done
+if [ -n "${APPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
+  __cp_add_path "$(cygpath -u "$APPDATA" 2>/dev/null)/npm"
+fi
+export PATH
+
 command -v hq >/dev/null 2>&1 || __cp_bail
 
-# Dispatch directly instead of starting Node once for `hq core --help` and
-# again for the gate. A CLI too old to register this subcommand returns its
-# normal unknown-command diagnostic; discard only that known missing-command
-# case so the historical silent-allow behavior remains intact. Preserve all
+# The gate always runs: its checkpoint and reply block decisions do not
+# depend on a sibling backend. Only the maintenance sibling does. When nothing
+# chose a backend and neither claude nor grok resolves, tell the CLI
+# HQ_CHECKPOINT_BACKEND=none so the gate's background checkpoint records
+# without probing or spawning a backend (each probe is a process, and on
+# Windows each one could open a console). An operator or settings value is
+# left to the CLI.
+__cp_set=""
+for __cp_f in "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.local.json" "${CLAUDE_PROJECT_DIR:-.}/.claude/settings.json"; do
+  [ -f "$__cp_f" ] && __cp_set="$__cp_set$(<"$__cp_f")"
+done
+if [ -z "${HQ_CHECKPOINT_BACKEND:-}" ] && [[ "$__cp_set" != *HQ_CHECKPOINT_BACKEND* ]] \
+  && ! command -v claude >/dev/null 2>&1 \
+  && ! command -v grok >/dev/null 2>&1; then
+  export HQ_CHECKPOINT_BACKEND=none
+fi
+
+# Dispatch directly (no `hq core --help` probe). A CLI too old to register
+# this subcommand returns its normal unknown-command diagnostic; discard only
+# that known missing-command case so the historical silent-allow behavior remains intact. Preserve all
 # output and status for an installed gate. This hook is deadline-bound, so keep
-# CLI self-update outside its budget.
+# CLI self-update outside its budget: HQ_NO_UPDATE_CHECK is exported so it
+# reaches hq through the hidden launcher too.
+export HQ_NO_UPDATE_CHECK=1
 __cp_err="$(mktemp "${TMPDIR:-/tmp}/hq-checkpoint-stop-gate.XXXXXX")" || __cp_bail
-HQ_NO_UPDATE_CHECK=1 hq core checkpoint-stop-gate 2>"$__cp_err"
+__cp_hook_dir="${BASH_SOURCE[0]%/*}"
+[ "$__cp_hook_dir" != "${BASH_SOURCE[0]}" ] || __cp_hook_dir=.
+__cp_hidden="$__cp_hook_dir/../../core/scripts/hq-hidden-run.sh"
+# On Windows the launcher starts hq with no console; elsewhere it execs hq.
+if [ -f "$__cp_hidden" ]; then
+  bash "$__cp_hidden" --wait --direct-on-error -- hq core checkpoint-stop-gate 2>"$__cp_err"
+else
+  HQ_NO_UPDATE_CHECK=1 hq core checkpoint-stop-gate 2>"$__cp_err"
+fi
 __cp_rc=$?
 if [ "$__cp_rc" -ne 0 ]; then
   __cp_missing=0

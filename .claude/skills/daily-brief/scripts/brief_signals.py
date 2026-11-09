@@ -5,19 +5,25 @@ company vault instead of calling integrations live. Pure file reads: no
 subprocess, no network.
 
 Layout (written by `hq sources sync` and the local signals pass):
-- `signals/_index/{YYYY-MM-DD}.json`: array of {signal_id, type, source_ref,
-  key, written_at}; `key` is the vault-relative path of the signal file.
+- `signals/_index/{YYYY-MM-DD}.json`: array of rows in one of two shapes.
+  The hot-channel pass writes {signal_id, type, source_ref, key, written_at};
+  `hq signals run` (ontology garden) writes {signal_id, type, audience_key,
+  path} and puts `created_at` in the signal file's frontmatter. `key` or
+  `path` is the vault-relative path of the signal file.
 - Company signals: `signals/{type}/{id}.md` and the legacy
   `signals/slack-dm/{type}/{id}.md`.
-- Person signals: `signals/@{audienceKey}/{type}/{id}.md`.
+- Person and group signals: `signals/@{audienceKey}/{type}/{id}.md`; a group
+  folder holds `_audience.yaml` with its `principals` (emails and uids).
 - Cursors: `sources/_cursors/@{personKey}/{adapter}[.{connection}].json` with
   {cursor, updatedAt, lastEventKey}.
 - Run ledger: `sources/_runs/@{personKey}/{YYYY-MM-DD}.jsonl`.
 
-The brief belongs to the person: only the `company` key and the person's own
-keys are read: key(email), which hq-cli uses for runs and cursors, and
-key(personUid), which cloud-written signals use. A signal under any other
-`signals/@{key}/` folder is skipped even when the index lists it.
+The brief belongs to the person. It reads the `company` folders, the person's
+own keys (key(email), which hq-cli uses for runs and cursors, and
+key(personUid), which cloud-written signals use), and any group folder whose
+`_audience.yaml` principals include the person's uid or email (email compared
+case-insensitively). A signal under any other `signals/@{key}/` folder is
+skipped even when the index lists it.
 """
 import datetime as dt
 import hashlib
@@ -85,7 +91,13 @@ def _frontmatter(md):
     for line in md[3:end].splitlines():
         m = re.match(r'^([A-Za-z_][\w-]*):\s*(.*)$', line)
         if m and m.group(2).strip():
-            fm[m.group(1)] = m.group(2).strip().strip('"\'')
+            v = m.group(2).strip()
+            if len(v) >= 2 and v[0] == v[-1] == '"':
+                try:
+                    v = json.loads(v)
+                except ValueError:
+                    v = v[1:-1]
+            fm[m.group(1)] = v.strip('"\'') if isinstance(v, str) else str(v)
     body = md[end + 4:]
     return fm, body[body.find('\n') + 1:] if '\n' in body else ''
 
@@ -127,6 +139,64 @@ def own_key_allowed(key, own):
     if seg.startswith('@'):
         return seg[1:] in own
     return not seg.startswith('_')
+
+
+def _principals(text):
+    """`principals` from an `_audience.yaml`: a flow list (`[a, b]`, written by
+    the ontology garden) or a block list (`- a`, written by js-yaml)."""
+    out, block = [], False
+    for line in (text or '').splitlines():
+        m = re.match(r'^principals:\s*(.*)$', line)
+        if m:
+            v = m.group(1).strip()
+            if v.startswith('[') and v.endswith(']'):
+                out += [p.strip().strip('"\'') for p in v[1:-1].split(',')]
+                block = False
+            else:
+                block = not v
+            continue
+        if block:
+            item = re.match(r'^\s*-\s+(.*)$', line)
+            if item:
+                out.append(item.group(1).strip().strip('"\''))
+            elif line.strip() and not line.startswith((' ', '\t')):
+                block = False
+    return [p for p in out if p]
+
+
+def group_keys(vault, email=None, uid=None):
+    """Keys of the `signals/@{key}/` folders whose `_audience.yaml` principals
+    include the person: `uid` exactly, `email` case-insensitively."""
+    mail = email.strip().lower() if isinstance(email, str) and '@' in email else None
+    pid = uid.strip() if isinstance(uid, str) and uid.strip() else None
+    if not (mail or pid):
+        return set()
+    try:
+        segs = sorted(os.listdir(os.path.join(vault, 'signals')))
+    except OSError:
+        return set()
+    out = set()
+    for seg in segs:
+        if not seg.startswith('@') or not _KEY_RE.match(seg[1:]):
+            continue
+        path = safe_vault_path(vault, f'signals/{seg}/_audience.yaml', 'signals')
+        text = _read(path, 1024 * 1024) if path else None
+        if not text:
+            continue
+        for p in _principals(text):
+            if (pid and p == pid) or (mail and '@' in p and p.lower() == mail):
+                out.add(seg[1:])
+                break
+    return out
+
+
+def _row_key(r):
+    """The signal file path of an index row: `key` (hot-channel pass) or
+    `path` (ontology garden)."""
+    for f in ('key', 'path'):
+        if isinstance(r.get(f), str) and r[f]:
+            return r[f]
+    return None
 
 
 def _window_days(lo, hi):
@@ -201,7 +271,8 @@ def _line(vault, row):
     text = fm.get('canonical_content') or _body_line(body)
     out = {'signal_id': row.get('signal_id') or fm.get('signal_id'), 'type': row.get('type') or fm.get('type'),
            'text': re.sub(r'\s+', ' ', text or '').strip()[:LINE_CHARS], 'source_ref': ref or None,
-           'cite': cite(ref) if ref else None, 'written_at': row.get('written_at') or fm.get('written_at'),
+           'cite': cite(ref) if ref else None,
+           'written_at': row.get('written_at') or fm.get('written_at') or fm.get('created_at'),
            'key': row['key'], 'owner': fm.get('owner') or fm.get('assignee')}
     if ref:
         mtg = _meeting_of(vault, ref)
@@ -250,7 +321,7 @@ def _legacy_rows(vault, own, lo, hi):
             if not path:
                 continue
             fm, _ = _frontmatter(_read(path, 8 * 1024) or '')
-            at = _ts(fm.get('written_at'))
+            at = _ts(fm.get('written_at')) or _ts(fm.get('created_at'))
             if at is None:
                 try:
                     at = dt.datetime.fromtimestamp(os.path.getmtime(path), dt.timezone.utc)
@@ -264,9 +335,12 @@ def _legacy_rows(vault, own, lo, hi):
 
 
 def read_window(vault, now, hours=24, email=None, uid=None):
-    """Signals written in the last `hours` up to `now`, the person's own keys only.
-    Returns {lines, dropped_uncited, legacy_days, keys}."""
+    """Signals written in the last `hours` up to `now`, from the company folders,
+    the person's own keys, and the group folders whose audience includes the
+    person. Returns {lines, dropped_uncited, legacy_days, keys, group_keys}."""
     own = set(audience_keys(email, uid))
+    groups = group_keys(vault, email, uid) - own
+    allowed = own | groups
     hi = now.astimezone(dt.timezone.utc)
     lo = hi - dt.timedelta(hours=hours)
     rows, legacy_days, seen = [], [], set()
@@ -283,13 +357,15 @@ def read_window(vault, now, hours=24, email=None, uid=None):
         if not isinstance(data, list):
             print(f'brief_signals: ignoring {day}.json index, not a list', file=sys.stderr)
             data = []
-        rows += [r for r in data if isinstance(r, dict) and isinstance(r.get('key'), str)]
+        rows += [dict(r, key=_row_key(r)) for r in data if isinstance(r, dict) and _row_key(r)]
     if legacy_days:
-        rows += [r for r in _legacy_rows(vault, own, lo, hi) if r['written_at'][:10] in legacy_days]
+        rows += [r for r in _legacy_rows(vault, allowed, lo, hi) if r['written_at'][:10] in legacy_days]
     lines, dropped = [], 0
     for r in rows:
+        if not own_key_allowed(r['key'], allowed):
+            continue
         at = _ts(r.get('written_at'))
-        if at is None or not lo <= at <= hi or not own_key_allowed(r['key'], own):
+        if r.get('written_at') is not None and (at is None or not lo <= at <= hi):
             continue
         sid = r.get('signal_id')
         if sid is not None and not isinstance(sid, str):
@@ -297,17 +373,20 @@ def read_window(vault, now, hours=24, email=None, uid=None):
         sid = sid or r['key']
         if sid in seen:
             continue
-        seen.add(sid)
         line = _line(vault, r)
         if line is None:
             continue
+        at = _ts(line['written_at'])
+        if at is None or not lo <= at <= hi:
+            continue
+        seen.add(sid)
         if not line['source_ref']:
             dropped += 1
             continue
         lines.append(line)
     lines.sort(key=lambda x: x['written_at'] or '', reverse=True)
     return {'lines': lines, 'dropped_uncited': dropped, 'legacy_days': legacy_days,
-            'keys': sorted(own)}
+            'keys': sorted(own), 'group_keys': sorted(groups)}
 
 
 def last_ledger_run(vault, person_key):

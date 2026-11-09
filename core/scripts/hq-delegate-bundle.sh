@@ -128,6 +128,22 @@ else
   KNOWLEDGE_JSON="[]"
 fi
 
+# Pre-bundle check: warn (never fail) on company knowledge entries that are
+# missing locally or are offloaded placeholders, since hq-delegate-verify
+# fails the probe on them after grants are already applied.
+while IFS= read -r kpath; do
+  [ -n "$kpath" ] || continue
+  case "$kpath" in */) continue ;; esac
+  kfile="$HQ_ROOT/$kpath"
+  if [ ! -e "$kfile" ]; then
+    echo "hq-delegate-bundle: WARNING knowledge entry not found locally, so it was probably never uploaded: $kpath (hq sync push it or drop it from metadata.knowledge)" >&2
+  elif [ -f "$kfile" ] && [ "$(head -c 16 "$kfile" 2>/dev/null)" = "HQ-CLOUD-FILE v1" ]; then
+    echo "hq-delegate-bundle: WARNING knowledge entry is an offloaded placeholder, not file content: $kpath (restore it before delegating)" >&2
+  fi
+done <<KEOF
+$(printf '%s' "$KNOWLEDGE_JSON" | jq -r --arg co "$COMPANY" '.[] | select(startswith("companies/" + $co + "/"))')
+KEOF
+
 VAULT_READ_PREFIXES="$(printf '%s' "$KNOWLEDGE_JSON" | jq -r --arg co "$COMPANY" '
   [ .[]
     | select(startswith("companies/" + $co + "/"))

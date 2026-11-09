@@ -103,8 +103,10 @@ case "$1 $2" in
     # Mirror `hq files acl --json`: the CLI sends the ACL pattern unchanged and
     # the server echoes that prefix in the tree response. `foo/` stays `foo/`;
     # `foo/*` stays `foo/*`.
-    jq -cn --arg p "$pfx" --argjson rows "$rows" '
-      {prefix:$p,direct:$rows,inherited:[],children:[],
+    kids='[]'
+    [ "$pfx" = "projects/widget/*" ] && [ -n "${HQ_STUB_CHILDREN:-}" ] && kids="$HQ_STUB_CHILDREN"
+    jq -cn --arg p "$pfx" --argjson rows "$rows" --argjson kids "$kids" '
+      {prefix:$p,direct:$rows,inherited:[],children:$kids,
        directRow:(if ($rows|length)>0 then {creatorUid:"prs_FIXTURE",open:false,createdAt:"fixture",updatedAt:"fixture"} else null end),
        effectivePermission:null,identities:{},schemaVersion:1,companyUid:"cmp_acme",exists:(($rows|length)>0)}'
     exit 0 ;;
@@ -272,6 +274,42 @@ write_manifest "$M" building
 bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 \
   || fail "idempotent re-run over already-present resolved grants must still verify"
 jq -e '.status == "granted"' "$M" >/dev/null || fail "re-run must advance to granted"
+
+# --- 1b-3. transfer mode: more specific rules under the project get the grant -
+reset_acl_state
+write_manifest "$M" building
+: > "$INVOKE_LOG"
+HQ_STUB_CHILDREN='[{"sourcePrefix":"projects/widget/design/*","granteeType":"company-wide","permission":"read"},{"sourcePrefix":"projects/widget/research/*","granteeType":"company-wide","permission":"read"},{"sourcePrefix":"projects/widget/design/*","granteeType":"group","permission":"read"}]' \
+  bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "transfer with more specific rules exited non-zero"
+for sub in design research; do
+  grep -q "^files share projects/widget/$sub/\* --with alice@acme.test --permission write --company acme\$" "$INVOKE_LOG" \
+    || fail "transfer must grant write on more specific rule projects/widget/$sub/*"
+done
+[ "$(grep -c '^files share projects/widget/design/' "$INVOKE_LOG")" -eq 1 ] || fail "each more specific rule shared once"
+grep -qxF 'person prs_ALICE write' "$ACL_STATE/projects_widget_design_*" || fail "more specific rule ACL must hold the write grant"
+# A more specific rule whose folder name has a space stays one pattern. Split on
+# the space, "projects/widget/x secrets/*" would grant write on "secrets/*",
+# outside the project, and the read-back would confirm it.
+reset_acl_state
+write_manifest "$M" building
+: > "$INVOKE_LOG"
+HQ_STUB_CHILDREN='[{"sourcePrefix":"projects/widget/x secrets/*","granteeType":"company-wide","permission":"read"}]' \
+  bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "transfer with a spaced more specific rule exited non-zero"
+if grep '^files share .* --permission write ' "$INVOKE_LOG" | grep -v '^files share projects/widget/' >/dev/null; then
+  fail "a spaced more specific rule must never become a share outside the project"
+fi
+[ ! -e "$ACL_STATE/secrets_*" ] || fail "no grant may land on secrets/* outside the project"
+[ ! -e "$ACL_STATE/projects_widget_x" ] || fail "a spaced rule must not be split into projects/widget/x"
+grep -qxF 'person prs_ALICE write' "$ACL_STATE/projects_widget_x secrets_*" \
+  || fail "the spaced more specific rule must get the write grant as one pattern"
+# non-transfer modes leave more specific rules alone
+reset_acl_state
+write_manifest "$M" building
+TMP_M="$(mktemp)"; jq '.mode = "share"' "$M" > "$TMP_M" && mv "$TMP_M" "$M"
+: > "$INVOKE_LOG"
+HQ_STUB_CHILDREN='[{"sourcePrefix":"projects/widget/design/*","granteeType":"company-wide","permission":"read"}]' \
+  bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "non-transfer run exited non-zero"
+if grep -q '^files share projects/widget/design/' "$INVOKE_LOG"; then fail "only transfer mode may touch more specific rules"; fi
 
 # --- 1c. pending (unresolved) email stays email-keyed and verifies -----------
 
