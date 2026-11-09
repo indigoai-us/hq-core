@@ -50,7 +50,7 @@ COMPANY=$(jq -er '
     elif type == "array" and length == 1 then .[0]
     else error("thread must have exactly one company owner") end
   | if type != "string" then error("invalid company owner")
-    elif . == "" or test("^[a-z][a-z0-9_-]*$") then .
+    elif . == "" or test("^[a-z0-9][a-z0-9_-]*$") then .
     else error("invalid company owner") end
 ' "$FILE_PATH") || {
   echo "mirror-thread-to-company: refusing invalid or ambiguous ownership" >&2
@@ -63,7 +63,7 @@ THREAD_PATH_COMPANIES_JSON=$(jq -c --arg hq_root "$HQ_ROOT" '
     | (if type == "string" then . elif type == "object" and (.path | type) == "string" then .path else "" end)
     | (if startswith($hq_root + "/") then .[(($hq_root | length) + 1):] else . end)
     | sub("^\\./"; "")
-    | (try capture("^companies/(?<company>[a-z][a-z0-9_-]*)/").company catch null)
+    | (try capture("^companies/(?<company>[a-z0-9][a-z0-9_-]*)/").company catch null)
     | select(type == "string")
   ] | unique
 ' "$FILE_PATH" 2>/dev/null || printf '[]')

@@ -152,4 +152,64 @@ printf '{"rows":%s}' "$(cat "$tmp/rows.json")" >"$tmp/changes.json"
 got="$(HQ_ROOT="$tmp/root" node "$SCOPE" filter-channels --company co-a --exclude hq-dev <"$tmp/changes.json" | ids)"
 check "--exclude drops a channel from a changes object too (got: $got)" "$([[ "$got" == "" ]]; echo $?)"
 
+# 10. Per-company overlay: a conductor bound to one company sweeps that
+# company's accounts. The save file's `company` key (or --company) selects
+# prefs.<slug>.yaml; a multi-company set and no company read the base file.
+cat >"$tmp/co.yaml" <<'EOF'
+channels:
+  - hq_dms
+  - email
+email_accounts:
+  - me@example.com
+  - work@example.com
+channel_cadence:
+  constant: [sessions, hq_dms, email]
+EOF
+printf 'email_accounts: only@example.com\n' >"$tmp/co.co-v.yaml"
+export SC_PREFS_FILE="$tmp/co.yaml"
+cost="$tmp/co-state.json"
+echo '{"company":"co-v"}' >"$cost"
+got="$(node "$SC" targets --state "$cost" | tr '\n' ' ')"
+check "targets read the save file's company overlay (got: $got)" "$([[ "$got" == "sessions hq_dms email:only@example.com " ]]; echo $?)"
+got="$(node "$SC" targets | tr '\n' ' ')"
+check "targets without a company read the base (got: $got)" "$([[ "$got" == "sessions hq_dms email:me@example.com email:work@example.com " ]]; echo $?)"
+got="$(node "$SC" targets --company co-v | tr '\n' ' ')"
+check "targets --company reads the overlay (got: $got)" "$([[ "$got" == "sessions hq_dms email:only@example.com " ]]; echo $?)"
+got="$(node "$SC" targets --state "$cost" --company co-v,co-w | tr '\n' ' ')"
+check "a multi-company --company reads the base (got: $got)" "$([[ "$got" == "sessions hq_dms email:me@example.com email:work@example.com " ]]; echo $?)"
+got="$(node "$SC" due --state "$cost" | tr '\n' ' ')"
+check "due honors the overlay (got: $got)" "$([[ "$got" == "sessions hq_dms email:only@example.com " ]]; echo $?)"
+csince="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; sleep 1
+for t in sessions hq_dms email:only@example.com; do node "$SC" record --state "$cost" --target "$t" --cursor c; done
+set +e; out="$(node "$SC" verify --state "$cost" --since "$csince")"; rc=$?; set -e
+check "verify passes when the overlay's accounts were swept (rc $rc: $out)" "$([[ $rc -eq 0 ]]; echo $?)"
+grep -q 'me@example.com\|work@example.com' <<<"$out" && check "verify never names base-only accounts for the company (got: $out)" 1
+out="$(node "$SC" status-line --state "$cost" --since "$csince")"
+grep -q 'Read: sessions, hq_dms, email:only@example.com' <<<"$out"; check "status-line honors the overlay (got: $out)" $?
+set +e; node "$SC" verify --state "$cost" --since "$csince" --company '' >/dev/null; rc=$?; set -e
+check "--company '' forces the base file, whose accounts were not swept (rc $rc)" "$([[ $rc -eq 1 ]]; echo $?)"
+echo '{"company":"Bad Slug"}' >"$tmp/co-bad.json"
+got="$(node "$SC" targets --state "$tmp/co-bad.json" | tr '\n' ' ')"
+check "a company the prefs helper refuses reads the base, not a one-channel default (got: $got)" "$([[ "$got" == "sessions hq_dms email:me@example.com email:work@example.com " ]]; echo $?)"
+# A scalar list value (written by `set`) is one target, not one per character.
+printf 'email_accounts: a@example.com, b@example.com\n' >"$tmp/co.co-s.yaml"
+got="$(node "$SC" targets --company co-s | tr '\n' ' ')"
+check "a comma-separated scalar list expands per account (got: $got)" "$([[ "$got" == "sessions hq_dms email:a@example.com email:b@example.com " ]]; echo $?)"
+# Heartbeat: one --company is passed to verify, so the overlay is judged even
+# when the save file has no company key. Nothing swept: the second wake flags
+# the overlay's account and never the base-only ones.
+mkdir -p "$tmp/cohb"
+cat >"$tmp/cohb/hq" <<'EOF'
+#!/usr/bin/env bash
+n=$(( $(cat "$(dirname "$0")/n" 2>/dev/null || echo 0) + 1 )); echo $n >"$(dirname "$0")/n"
+if (( n < 3 )); then exit 3; fi
+echo '{"error":"link_not_found"}'; exit 1
+EOF
+chmod +x "$tmp/cohb/hq"
+echo '{"sweep":{}}' >"$tmp/cohb/state.json"
+out="$(SC_HEARTBEAT_MIN_INTERVAL=1 HQ_BIN="$tmp/cohb/hq" bash "$HB" --interval 1 --link cl-t --state "$tmp/cohb/state.json" --company co-v 2>/dev/null)"
+grep -q '^SUPER-CONDUCTOR SWEEP-INCOMPLETE .*NOT SWEPT:.*email:only@example.com' <<<"$out"; check "heartbeat --company judges the overlay's account (got: $out)" $?
+grep -q 'NOT SWEPT:.*\(me\|work\)@example.com' <<<"$out" && check "heartbeat --company never flags base-only accounts (got: $out)" 1
+unset SC_PREFS_FILE
+
 [[ "$fail" -eq 0 ]] && echo "super-conductor-sweep-check: all checks passed" || exit 1

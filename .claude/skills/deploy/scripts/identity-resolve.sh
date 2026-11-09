@@ -15,7 +15,9 @@
 #
 # JSON field extract: jq preferred, then node via core/scripts/hook-lib.sh
 # (hq_json_get). Do not reimplement a second JSON engine here.
-# expiresAt in the token file is epoch-MILLIS (e.g. 1777490340903), NOT ISO.
+# expiresAt is epoch-millis from the CLI's own writer, but the Keychain-fallback
+# file can carry an ISO string and older writers used epoch seconds or
+# expires_at; token_expiry_ms below normalises every shape to epoch-ms.
 # Bash access to ~/.hq/cognito-tokens.json is sanctioned: the harness
 # Read-tool deny rule is what forces this structured-access path.
 # Pass --force-refresh after an authenticated request returns 401 so a
@@ -136,6 +138,67 @@ token_field() {
   hq_json_get "$key" < "$file"
 }
 
+# Token expiry as epoch-ms, whatever shape the CLI wrote. Shapes seen:
+#   expiresAt: <epoch-ms number>            (CLI refresh/login writer)
+#   expiresAt: "<ISO-8601 string>"          (Keychain-fallback file, hq CLI 5.345+)
+#   expiresAt / expires_at: <epoch-seconds> (older or third-party writers)
+#   numeric strings, and the same fields nested under tokens/session.
+# Prints an integer epoch-ms, or nothing when no expiry can be parsed. Never
+# prints token values. jq first, then node (real date parse: no BSD/GNU
+# `date -d` differences, bash 3.2 safe).
+token_expiry_ms() {
+  local file=$1 out=""
+  if [ "$JQ_OK" -eq 1 ]; then
+    out=$(jq -r '
+      def ms:
+        if type == "number" then (if . < 100000000000 then . * 1000 else . end | floor)
+        elif type == "string" then
+          if test("^[0-9]+(\\.[0-9]+)?$") then (tonumber | ms)
+          else
+            (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})[T ](?<t>[0-9]{2}:[0-9]{2}:[0-9]{2})(?<f>\\.[0-9]+)?(?<z>Z|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c
+            | if $c == null then null else
+                (($c.d + "T" + $c.t + "Z") | fromdateiso8601) as $s
+                | (if $c.f then ((("0" + $c.f) | tonumber) * 1000 | floor) else 0 end) as $frac
+                | (if $c.z == "Z" then 0
+                   else ($c.z | capture("^(?<sg>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+                         | ((.h | tonumber) * 3600 + (.m | tonumber) * 60) * (if .sg == "-" then -1 else 1 end))
+                   end) as $off
+                | ($s - $off) * 1000 + $frac
+              end
+          end
+        else null end;
+      [ (.expiresAt, .expires_at, .expiry,
+         (.tokens | objects | .expiresAt, .expires_at),
+         (.session | objects | .expiresAt, .expires_at))
+        | select(. != null) | ms | select(. != null) ] | min // empty' "$file" 2>/dev/null) || out=""
+  elif [ "$NODE_OK" -eq 1 ]; then
+    out=$(node -e '
+      const fs = require("fs");
+      let d; try { d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(0); }
+      const ms = (v) => {
+        if (typeof v === "string" && /^[0-9]+(\.[0-9]+)?$/.test(v)) v = Number(v);
+        if (typeof v === "number" && Number.isFinite(v)) return Math.floor(v < 1e11 ? v * 1000 : v);
+        // Strict ISO-8601 only: date, time and an explicit zone. Zone-less,
+        // date-only and free text are refused (same policy as the jq branch).
+        if (typeof v === "string" && /^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$/.test(v)) {
+          const p = Date.parse(v.replace(" ", "T").replace(/([+-][0-9]{2})([0-9]{2})$/, "$1:$2"));
+          if (Number.isFinite(p)) return p;
+        }
+        return null;
+      };
+      const obj = (x) => (x && typeof x === "object" && !Array.isArray(x)) ? x : {};
+      const t = obj(d.tokens), s = obj(d.session);
+      let best = null;
+      for (const v of [d.expiresAt, d.expires_at, d.expiry, t.expiresAt, t.expires_at, s.expiresAt, s.expires_at]) {
+        const r = (v === undefined || v === null) ? null : ms(v);
+        if (r !== null && (best === null || r < best)) best = r;
+      }
+      if (best !== null) process.stdout.write(String(best));' "$file" 2>/dev/null) || out=""
+  fi
+  case "$out" in ''|*[!0-9]*) out="" ;; esac
+  printf '%s' "$out"
+}
+
 emit_person_ok() {
   local jwt=$1 id_token=$2 expires_at=$3 source=$4
   emit "{\"status\":\"ok\",\"jwt\":\"$jwt\",\"id_token\":\"$id_token\",\"identity\":\"person\",\"expires_at\":$expires_at,\"source\":\"$source\"}"
@@ -241,7 +304,7 @@ if [ "$MACHINE_IDENTITY_EXPECTED" -eq 1 ]; then
   try_machine_cache() {
     [ "$MINT_OK" -eq 1 ] && [ -f "$MACHINE_TOKEN_FILE" ] || return 1
     IDT=$(token_field "$MACHINE_TOKEN_FILE" "idToken")
-    EXP=$(token_field "$MACHINE_TOKEN_FILE" "expiresAt")
+    EXP=$(token_expiry_ms "$MACHINE_TOKEN_FILE")
     [ -n "$EXP" ] || EXP=0
     if [ -n "$IDT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
       emit_machine_ok "$IDT" "$EXP"
@@ -280,7 +343,7 @@ REJECTED_AT=""
 if [ -n "$TF" ]; then
   AT=$(token_field "$TF" "accessToken")
   IDT=$(token_field "$TF" "idToken")
-  EXP=$(token_field "$TF" "expiresAt")
+  EXP=$(token_expiry_ms "$TF")
   REJECTED_AT="$AT"
   [ -n "$EXP" ] || EXP=0
   if [ "$FORCE_REFRESH" -eq 0 ] && [ -n "$AT" ] \
@@ -301,7 +364,7 @@ if [ -n "$TF" ]; then
     if [ -f "$TOKEN_FILE" ]; then
       AT=$(token_field "$TOKEN_FILE" "accessToken")
       IDT=$(token_field "$TOKEN_FILE" "idToken")
-      EXP=$(token_field "$TOKEN_FILE" "expiresAt")
+      EXP=$(token_expiry_ms "$TOKEN_FILE")
       [ -n "$EXP" ] || EXP=0
       TOKEN_CHANGED=1
       if [ "$FORCE_REFRESH" -eq 1 ] && [ "$AT" = "$REJECTED_AT" ]; then
@@ -349,7 +412,7 @@ wait "$KILLER_PID" 2>/dev/null
 if [ -f "$TOKEN_FILE" ]; then
   AT=$(token_field "$TOKEN_FILE" "accessToken")
   IDT=$(token_field "$TOKEN_FILE" "idToken")
-  EXP=$(token_field "$TOKEN_FILE" "expiresAt")
+  EXP=$(token_expiry_ms "$TOKEN_FILE")
   [ -n "$EXP" ] || EXP=0
   if [ -n "$AT" ]; then
     emit_person_ok "$AT" "$IDT" "$EXP" "login"

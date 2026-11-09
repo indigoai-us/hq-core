@@ -341,6 +341,23 @@ rm -f "$HQ/workspace/hq-core-review/"*
 FAKE_HQ_AUDIT_DENYLIST_TERMS="" run "$PR_clean"
 [ -z "$(ls -A "$HQ/workspace/hq-core-review")" ] && ok "failed runs write no marker" || fail "failed runs write no marker" "marker present"
 
+echo "== shallow checkout =="
+# PR 1777: a depth-1 staging checkout held the PR head and the base tip but not
+# their merge base, so the diff could not be built and the run failed as a
+# generic term-scan error. Move main past the PR's base, clone at depth 1, and
+# fetch the PR head at depth 1 so the runner's own fetches add no history.
+git -C "$SEED" commit -q --allow-empty -m "main moves on 1"
+git -C "$SEED" commit -q --allow-empty -m "main moves on 2"
+git -C "$SEED" push -q origin main
+SHALLOW="$T/shallow"
+git clone -q --depth 1 "file://$ORIGIN" "$SHALLOW"
+git -C "$SHALLOW" fetch -q --depth 1 origin "+refs/pull/$PR_clean/head:refs/remotes/origin/pr-shallow"
+if git -C "$SHALLOW" merge-base "$(cut -f1 "$T/gh/$PR_clean")" origin/main >/dev/null 2>&1; then
+  fail "shallow fixture lacks a merge base" "fixture already has one"
+else ok "shallow fixture lacks a merge base"; fi
+OUT="$(bash "$RUNNER" "$PR_clean" --company acme --hq-root "$HQ" --staging-repo "$SHALLOW" 2>&1)"; RC=$?
+case "$RC:$OUT" in 0:*"fetching full history"*) ok "shallow checkout deepened and clean" ;; *) fail "shallow checkout deepened and clean" "rc=$RC $OUT" ;; esac
+
 echo "== usage =="
 run notanumber
 [ "$RC" = 64 ] && ok "bad PR number exit 64" || fail "bad PR number" "rc=$RC"

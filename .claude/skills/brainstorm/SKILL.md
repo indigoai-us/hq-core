@@ -1,7 +1,7 @@
 ---
 name: brainstorm
 description: Compare approaches to best-in-class prior art, merge existing work, verify cruft removal, and recommend the most durable design before PRD work.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/board-project-id.sh:*)
 ---
 
 # Brainstorm - Structured Exploration
@@ -91,9 +91,11 @@ Read `companies/{co}/board.json`.
 entry; set `status` to `"exploring"` if it is still `"idea"`; update
 `updated_at`. Reuse its `id` as `{board-project-id}`.
 
-**If fresh brainstorm**: generate the next ID (collect all `id` values from
-`projects`, extract numeric suffixes from `{prefix}-proj-{NNN}`, next =
-`{prefix}-proj-{max_N + 1}` zero-padded to 3 digits) and append:
+**If fresh brainstorm**: get the next ID from
+`bash core/scripts/board-project-id.sh next {co}` (the highest existing
+`{prefix}-proj-{NNN}` number + 1, zero-padded to 3 digits) and append the entry
+below. After writing, run `bash core/scripts/board-project-id.sh check {co}`;
+if it exits non-zero, fix the entry you wrote before continuing:
   ```json
   {
     "id": "{prefix}-proj-{NNN}",

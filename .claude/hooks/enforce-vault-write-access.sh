@@ -97,6 +97,37 @@ PROJECT_DIR="$(hq_canonical_path "$PROJECT_DIR")"
 
 SETTINGS_LOCAL="$PROJECT_DIR/.claude/settings.local.json"
 
+# Path comparisons against companies/ ignore case on every platform. Default
+# macOS (APFS) and Windows (NTFS) filesystems are case-insensitive, so
+# Companies/, COMPANIES/ and companies/Example-Co/ name the same files as
+# companies/example-co/; a case-sensitive match let those spellings skip the
+# vault check. On a case-sensitive filesystem the only cost is that a
+# differently cased sibling of companies/ is also checked (fail-closed).
+# block-company-git-metadata.sh lowercases for the same reason.
+# vault_under <path> <dir> — 0 when path is a strict descendant of dir.
+vault_under() {
+  local rc=1 restore=0
+  shopt -q nocasematch || { shopt -s nocasematch; restore=1; }
+  [[ "$1" == "$2"/?* ]] && rc=0
+  [[ "$restore" == 1 ]] && shopt -u nocasematch
+  return "$rc"
+}
+# vault_lower <string> — ASCII lowercase (bash 3.2 has no ${var,,}).
+vault_lower() {
+  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+VAULT_ROOT="$PROJECT_DIR/companies"
+# Symlink-resolved companies/ root, computed lazily by vault_real_root. A
+# symlink outside companies/ (or inside one company) can point into another
+# company's folder, so check_vault_path checks the real path as well.
+VAULT_ROOT_REAL=""
+vault_real_root() {
+  if [[ -z "$VAULT_ROOT_REAL" ]]; then
+    VAULT_ROOT_REAL="$(hq_canonical_path "$(hq_realpath_dir "$PROJECT_DIR")")/companies"
+  fi
+  printf '%s' "$VAULT_ROOT_REAL"
+}
+
 # Bypass: must be declared in .claude/settings.local.json env section.
 # NOTE: agents must ask the user before enabling this (see block message).
 is_bypass_authorized() {
@@ -148,13 +179,14 @@ effective_permission() {
       elif . == "write" then 2
       elif . == "read" then 1
       else 0 end;
-    (.companies[$slug] // null) as $c
+    ([(.companies // {}) | to_entries[] | select((.key | ascii_downcase) == $slug) | .value] | first // null) as $c
     | if $c == null then "unknown"
       elif (($c.role // "unknown") | IN("owner", "admin")) then "bypass"
       elif ((if ($c | has("enforced")) then $c.enforced else true end) | not) then "bypass"
       elif (($c.role // "unknown") != "member" and ($c.role // "unknown") != "guest") then "unknown"
       else (
         [ ($c.grants // [])[]
+          | (.path |= ascii_downcase)
           | . as $g
           | select(
               ($g.path == "*")
@@ -193,9 +225,10 @@ near_miss_grants() {
   local slug="$1" rel="$2"
   [[ "$MANIFEST_INVALID" == 1 ]] && return 0
   jq -r --arg slug "$slug" --arg rel "$rel" '
-    (.companies[$slug] // null) as $c
+    ([(.companies // {}) | to_entries[] | select((.key | ascii_downcase) == $slug) | .value] | first // null) as $c
     | if $c == null then empty else
         ($c.grants // [])[]
+        | (.path |= ascii_downcase)
         | . as $g
         | select(($g.path != "*")
             and ($g.path | endswith("/*") | not)
@@ -208,13 +241,26 @@ near_miss_grants() {
 
 # check_vault_path <absolute-path>
 # Returns 0 when the mutation is allowed (or not a vault path), 1 when denied.
+# Checks the path as written and its symlink-resolved real path (parent chain
+# resolved; a leaf that does not exist yet is kept). Either one denying blocks.
 check_vault_path() {
-  local abs="$1" rel slug crel perm
-  case "$abs" in
-    "$PROJECT_DIR"/companies/?*) ;;
-    *) return 0 ;;
-  esac
-  rel="${abs#"$PROJECT_DIR"/companies/}"
+  local abs="$1" real root
+  check_vault_path_one "$abs" "$VAULT_ROOT" || return 1
+  real="$(hq_canonical_path "$(hq_realpath_lenient "$abs")")"
+  root="$(vault_real_root)"
+  if [[ "$real" != "$abs" || "$root" != "$VAULT_ROOT" ]]; then
+    check_vault_path_one "$real" "$root" || return 1
+  fi
+  return 0
+}
+
+# check_vault_path_one <absolute-path> <companies-root>
+check_vault_path_one() {
+  local abs="$1" vroot="$2" rel slug crel perm
+  vault_under "$abs" "$vroot" || return 0
+  # Lowercase the company-relative path: slug keys, exemptions and grant
+  # patterns are compared case-insensitively (see vault_under).
+  rel="$(vault_lower "${abs:$((${#vroot} + 1))}")"
   case "$rel" in
     manifest.yaml|_template|_template/*) return 0 ;;
   esac
@@ -364,10 +410,7 @@ fi
 VAULT_QUOTE_RUN="[\"'\\\\]*"
 VAULT_PREFIX_RE="[cC]${VAULT_QUOTE_RUN}[oO]${VAULT_QUOTE_RUN}[mM]${VAULT_QUOTE_RUN}[pP]${VAULT_QUOTE_RUN}[aA]${VAULT_QUOTE_RUN}[nN]${VAULT_QUOTE_RUN}[iI]${VAULT_QUOTE_RUN}[eE]${VAULT_QUOTE_RUN}[sS]${VAULT_QUOTE_RUN}/"
 if ! [[ "$CMD" =~ $VAULT_PREFIX_RE ]]; then
-  case "$PAYLOAD_CWD" in
-    "$PROJECT_DIR"/companies/*) ;;
-    *) exit 0 ;;
-  esac
+  vault_under "$PAYLOAD_CWD" "$VAULT_ROOT" || exit 0
 fi
 
 WRITE_OPS='(^|[[:space:](/])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln|install)([[:space:]]|$)'
@@ -482,16 +525,32 @@ update_cwd_ctx() {
 # Prints the absolute live-root path when the token denotes a companies/ path
 # this hook should check; prints nothing otherwise.
 resolve_vault_token() {
-  local tok
+  local tok out="" restore=0
   tok="$(expand_home "$1")"
+  # Windows absolute forms (C:/x, C:\x) are absolute paths too.
+  if [[ "$tok" == [A-Za-z]:[/\\]* ]] && hq_path_is_absolute "$tok"; then
+    printf '%s' "$tok"
+    return 0
+  fi
+  shopt -q nocasematch || { shopt -s nocasematch; restore=1; }
+  out="$(resolve_vault_token_ci "$tok")"
+  [[ "$restore" == 1 ]] && shopt -u nocasematch
+  printf '%s' "$out"
+}
+
+# resolve_vault_token_ci <token> — body of resolve_vault_token; the caller
+# turns on nocasematch so every companies/ form below matches in any case.
+resolve_vault_token_ci() {
+  local tok="$1"
   case "$tok" in
-    "\$CLAUDE_PROJECT_DIR"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$CLAUDE_PROJECT_DIR/}" ;;
-    "\${CLAUDE_PROJECT_DIR}"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$\{CLAUDE_PROJECT_DIR\}/}" ;;
-    "\$HQ_ROOT"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$HQ_ROOT/}" ;;
-    "\${HQ_ROOT}"/companies/*) printf '%s' "$PROJECT_DIR/${tok#\$\{HQ_ROOT\}/}" ;;
+    "\$CLAUDE_PROJECT_DIR"/companies/*) printf '%s' "$PROJECT_DIR/${tok:20}" ;;
+    "\${CLAUDE_PROJECT_DIR}"/companies/*) printf '%s' "$PROJECT_DIR/${tok:22}" ;;
+    "\$HQ_ROOT"/companies/*) printf '%s' "$PROJECT_DIR/${tok:9}" ;;
+    "\${HQ_ROOT}"/companies/*) printf '%s' "$PROJECT_DIR/${tok:11}" ;;
     /*) printf '%s' "$tok" ;;
     \$*|-*|"") ;;
     companies/*|./companies/*)
+      # (case-insensitive: nocasematch is on here)
       if [[ "$REPO_CTX" == "no" ]]; then
         printf '%s' "${CWD_CTX:-$PROJECT_DIR}/${tok#./}"
       fi
@@ -539,7 +598,12 @@ looks_like_vault_token() {
 # may not write. Sets DENY_* on denial.
 token_denied() {
   local tok abs
-  tok="$(strip_token_quotes "$1")"
+  tok="$1"
+  # On Windows a backslash inside a quoted word is a path separator, and
+  # strip_token_quotes would delete it (companies\x -> companiesx).
+  # Treating every backslash as a separator only adds checks.
+  [[ "${HQ_LIB_WINSEP:-0}" == 1 ]] && tok="${tok//\\//}"
+  tok="$(strip_token_quotes "$tok")"
   looks_like_vault_token "$tok" || return 1
   abs="$(resolve_vault_token "$tok")"
   [[ -n "$abs" ]] || return 1
@@ -811,19 +875,19 @@ check_segment() {
   if [[ "${#segment}" -gt "$SEGMENT_PARSE_MAX" ]]; then
     local LC_ALL=C
     local -a toks=()
-    case "$CWD_CTX" in
-      "$PROJECT_DIR"/companies/*)
-        if [[ "$segment" == *\>* ]] || echo "$segment" | grep -Eq "$WRITE_OPS"; then
-          return 1
-        fi
-        ;;
-    esac
+    if vault_under "$CWD_CTX" "$VAULT_ROOT"; then
+      if [[ "$segment" == *\>* ]] || echo "$segment" | grep -Eq "$WRITE_OPS"; then
+        return 1
+      fi
+    fi
     read -r -a toks <<< "$segment"
     for tok in "${toks[@]+"${toks[@]}"}"; do
       tok="${tok##*>}"
+      # nocasematch, not vault_lower: no fork per token on long segments.
+      shopt -s nocasematch
       case "$tok" in
-        *companies/*|*../*|*\~*|*HOME*) ;;
-        *) continue ;;
+        *companies/*|*companies\\*|*../*|*..\\*|*\~*|*HOME*) shopt -u nocasematch ;;
+        *) shopt -u nocasematch; continue ;;
       esac
       if token_denied "$tok"; then
         return 1

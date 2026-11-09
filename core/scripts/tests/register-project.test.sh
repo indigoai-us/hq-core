@@ -50,6 +50,10 @@ if [ "${HQ_FAKE_FAIL:-}" = "1" ]; then
   echo "fake ensure failed" >&2
   exit 3
 fi
+if [ "${HQ_FAKE_SET_EMPTY:-}" = "1" ] && [ "$3" = "set" ]; then
+  printf '%s\n' '{"projectId":"alpha"}'
+  exit 0
+fi
 printf '%s\n' '{"projectId":"alpha","threadId":"thr_alpha","channelId":"chn_alpha","version":1,"stories":[{"id":"US-001"}]}'
 EOF
 chmod +x "$TMP/bin/hq" "$SCRIPT"
@@ -363,5 +367,26 @@ done
 [ ! -d "$CONTRACT_PENDING/register-forwarder/acme.lock" ] || fail "127 child lock was not released"
 run_start_contract register-absent "$TMP/register-project-absent.sh" "$TMP/register-absent.out" "$TMP/register-absent.err"
 [ ! -e "$CONTRACT_PENDING/register-absent/acme.log" ] || fail "absent helper unexpectedly launched child"
+
+# --board on an already-registered project: `project set` returns no threadId,
+# so the script must reuse the Board entry's ids and then sync prd.json stories.
+mkdir -p "$TMP/hq/companies/acme/projects/boarded"
+printf '%s\n' '{"name":"Boarded","userStories":[{"id":"US-001","status":"queued"}]}' \
+  > "$TMP/hq/companies/acme/projects/boarded/prd.json"
+cp "$TMP/hq/companies/acme/board.json" "$TMP/board-before-boarded.json" 2>/dev/null || true
+jq '.projects = ((.projects // []) + [{"id":"boarded","title":"Boarded","threadId":"thr_alpha","channelId":"chn_alpha"}])' \
+  "$TMP/board-before-boarded.json" > "$TMP/hq/companies/acme/board.json" 2>/dev/null \
+  || printf '%s\n' '{"projects":[{"id":"boarded","title":"Boarded","threadId":"thr_alpha","channelId":"chn_alpha"}]}' \
+    > "$TMP/hq/companies/acme/board.json"
+: > "$HQ_FAKE_LOG"
+boarded_out="$(env -u HQ_FAKE_NO_ENSURE HQ_COMPANY_UID=cmp_acme HQ_FAKE_SET_EMPTY=1 bash "$SCRIPT" --board acme boarded 2>&1)" \
+  || fail "--board failed when project set returned no threadId: $boarded_out"
+case "$boarded_out" in *"missing threadId"*) fail "--board still reported missing threadId: $boarded_out" ;; esac
+grep -q 'project set boarded' "$HQ_FAKE_LOG" || fail "--board did not call project set"
+grep -q 'project ensure .*--stories-file .*boarded/prd.json' "$HQ_FAKE_LOG" \
+  || fail "--board did not sync prd.json stories: $(cat "$HQ_FAKE_LOG")"
+jq -e 'any(.projects[]; .id == "boarded" and .threadId == "thr_alpha")' "$TMP/hq/companies/acme/board.json" >/dev/null \
+  || fail "--board lost the recorded threadId"
+echo "PASS: --board reuses the Board threadId and syncs stories"
 
 echo "ok"

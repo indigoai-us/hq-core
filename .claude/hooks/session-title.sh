@@ -398,6 +398,24 @@ if [ "$EVENT" = "UserPromptSubmit" ] && [ "$SESSION_MODE" = "full" ] && [ ! -f "
     NUDGE=1
     NUDGE_HINT="none resolved - derive company and subject from the user message"
     [ -n "$title" ] && NUDGE_HINT="$title"
+    # A company bound from the first message (company_source: prompt_mention,
+    # set by natural-language-router.sh) is a resolved company even when the
+    # computed title is a stub because no project or repo is known yet.
+    if [ -z "$title" ] && [[ "$HOOK_SESSION_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
+      && [ -f "$HQ_ROOT/workspace/sessions/$HOOK_SESSION_ID/meta.yaml" ]; then
+      bound_slug=""; bound_source=""
+      while IFS= read -r meta_line || [ -n "$meta_line" ]; do
+        case "$meta_line" in
+          company_slug:*) [ -n "$bound_slug" ] || { bound_slug="${meta_line#*:}"; bound_slug="${bound_slug//[[:space:]\"]/}"; } ;;
+          company_source:*) [ -n "$bound_source" ] || { bound_source="${meta_line#*:}"; bound_source="${bound_source//[[:space:]\"]/}"; } ;;
+        esac
+      done < "$HQ_ROOT/workspace/sessions/$HOOK_SESSION_ID/meta.yaml"
+      if [ "$bound_source" = "prompt_mention" ] && [[ "$bound_slug" =~ ^[A-Za-z0-9_-]+$ ]] \
+        && [ "$bound_slug" != "personal" ] && [ -d "$HQ_ROOT/companies/$bound_slug" ] \
+        && [ ! -L "$HQ_ROOT/companies/$bound_slug" ]; then
+        NUDGE_HINT="company $bound_slug (bound from the user's first message; no project or repo resolved yet)"
+      fi
+    fi
   fi
 fi
 

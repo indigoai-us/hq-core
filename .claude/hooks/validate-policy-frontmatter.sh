@@ -23,7 +23,9 @@
 #
 # Targets: */policies/*.md (core/, companies/*/, repos/*/*/.claude/, personal/).
 # Excludes: README.md and the .claude/audit/ redaction-rule store (those are not
-# trigger-injected policies). The retired `_digest.md` path has no exemption.
+# trigger-injected policies). The retired `_digest.md` path has no exemption:
+# a write to it is blocked with a message that says digests are retired and the
+# leftover file should be deleted (nothing reads it and no generator ships).
 #
 # Advisory-safe: FAILS OPEN (exit 0) on ambiguity about whether a write targets
 # a policy (non-policy paths, unparsable tool input, or no analyzer engine), so
@@ -166,6 +168,7 @@ if (!(low.endsWith(".md") && low.includes("/policies/"))) allow();
 const base = low.split("/").pop();
 if (base === "readme.md") allow();
 if (low.includes("/audit/")) allow();   // secret-redaction store, not a policy
+if (base === "_digest.md") { console.log("BLOCK|retired-digest"); process.exit(0); }
 
 const readCurrent = () => { try { return fs.readFileSync(p, "utf8"); } catch (e) { return ""; } };
 // literal replace-once; a function replacement so "$&"-style patterns in the
@@ -347,6 +350,7 @@ analyze_with_jq() {
   base="${low##*/}"
   case "$base" in readme.md) echo ALLOW; return ;; esac
   case "$low" in */audit/*) echo ALLOW; return ;; esac
+  case "$base" in _digest.md) echo "BLOCK|retired-digest"; return ;; esac
 
   kind="$(printf '%s' "$INPUT" | "$JQ" -r 'if (.tool_input.content? != null) then "write" elif ((.tool_input.edits? | type) == "array") then "multi" elif (.tool_input | has("new_string")) then "edit" else "none" end' 2>/dev/null || echo none)"
   case "$kind" in
@@ -590,6 +594,74 @@ EOF
     ;;
 esac
 
+# Name the offending part of a rejected when: expression and show the corrected
+# form (feedback ed48cf2b). Diagnosis only: the canonical evaluator still
+# decides what is valid; the grammar is not loosened here. A "Fix:" line is
+# printed only when the proposed expression passes eval-trigger.sh --check.
+diagnose_when() {
+  local out problem cand verdict
+  out="$(printf '%s\n' "$1" | awk '
+    function atom(t) { return t != "" && t != "&&" && t != "||" && t != "(" && t != ")" && t != "!" }
+    function flush() { if (cur != "") { T[++n] = cur; cur = "" } }
+    {
+      e = $0
+      # Quoted span: the same quote char must open and close it.
+      qs = 0
+      for (i = 1; i <= length(e); i++) {
+        c = substr(e, i, 1)
+        if (c == "\"" || c == "\047") {
+          r = index(substr(e, i + 1), c)
+          if (r > 0) { qs = i; qe = i + r; break }
+        }
+      }
+      if (qs > 0) {
+        q = substr(e, qs, qe - qs + 1); inner = substr(q, 2, length(q) - 2)
+        print "Problem: the quoted phrase " q " is not a token. Quotes are not part of the grammar."
+        if (inner ~ /^[ \t]*$/ || inner ~ /[&|()!"\047]/) exit
+        k = split(inner, W, /[ \t]+/); span = ""; words = 0
+        for (i = 1; i <= k; i++) if (W[i] != "") { words++; span = span (span == "" ? "" : " && ") W[i] }
+        if (words > 1) span = "(" span ")"
+        print "CAND" substr(e, 1, qs - 1) span substr(e, qe + 1)
+        exit
+      }
+      if (e ~ /["\047]/) { print "Problem: quotes are not part of the grammar; remove them."; exit }
+      for (i = 1; i <= length(e); i++) {
+        c = substr(e, i, 1); d = substr(e, i, 2)
+        if (d == "&&" || d == "||") { flush(); T[++n] = d; i++ }
+        else if (c == "(" || c == ")" || c == "!") { flush(); T[++n] = c }
+        else if (c == " " || c == "\t") flush()
+        else cur = cur c
+      }
+      flush()
+      for (i = 1; i <= n; i++) if (atom(T[i]) && T[i] ~ /[&|]/) {
+        print "Problem: unsupported operator in \"" T[i] "\". Use && for AND and || for OR."
+        exit
+      }
+      for (i = 1; i < n; i++) if (atom(T[i]) && atom(T[i + 1])) {
+        j = i; run = T[i]; fixed = T[i]
+        while (j < n && atom(T[j + 1])) { j++; run = run " " T[j]; fixed = fixed " && " T[j] }
+        print "Problem: two words with no operator between them: \"" run "\". A space is not an AND."
+        full = ""
+        for (m = 1; m <= n; m++) {
+          if (m == i) { full = full " (" fixed ")"; m = j } else full = full " " T[m]
+        }
+        sub(/^ /, "", full)
+        print "CAND" full
+        exit
+      }
+    }')"
+  problem="$(printf '%s\n' "$out" | sed -n '/^Problem:/p')"
+  cand="$(printf '%s\n' "$out" | sed -n 's/^CAND//p' | head -n 1)"
+  [ -n "$problem" ] && printf '%s\n' "$problem"
+  if [ -n "$cand" ] && [ -x "$EVAL_TRIGGER" ]; then
+    verdict="$(printf 'fix\t%s\n' "$cand" | bash "$EVAL_TRIGGER" --check 2>/dev/null | sed -n 's/^fix\t//p')"
+    if [ "$verdict" = "ok" ]; then
+      printf 'Fix: write %s\n' "$cand"
+    fi
+  fi
+  return 0
+}
+
 case "$RESULT" in
   BLOCK*)
     if override_enabled; then
@@ -597,6 +669,21 @@ case "$RESULT" in
     fi
     reason="${RESULT#BLOCK|}"
     case "$reason" in
+      retired-digest)
+        cat >&2 <<'MSG'
+BLOCKED: policy digests are retired, so `_digest.md` cannot be written or edited.
+
+Nothing reads `_digest.md` any more: session start and the trigger hook build
+the policy list from the policy files themselves, and the old generator
+(`build-policy-digest.sh`) no longer ships. A leftover `_digest.md` is stale,
+including entries for policies you have retired. Delete the file instead of
+editing it (for example `rm companies/<company>/policies/_digest.md`).
+
+(The HQ_ALLOW_POLICY_NO_TRIGGER override requires explicit human permission.
+An agent must never set, export, or write it on its own initiative.)
+MSG
+        exit 2
+        ;;
       lifecycle\|*)
         rest="${reason#lifecycle|}"
         cat >&2 <<MSG
@@ -664,6 +751,8 @@ MSG
 BLOCKED: policy file has a malformed when: trigger expression:
 
   when: ${when_expression}
+
+$(diagnose_when "$when_expression")
 
 The canonical trigger evaluator rejected it. A space is NOT an AND, and quoted
 phrases are NOT tokens. Use explicit boolean operators instead:

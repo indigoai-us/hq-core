@@ -49,4 +49,24 @@ printf '%s' "$section" | grep 'asking for both files' >/dev/null || fail 'resume
 
 printf '%s' "$section" | grep 'Name the report path' >/dev/null || fail 'brief does not define report path'
 printf '%s' "$section" | grep 'envelope path, report path, worktree' >/dev/null || fail 'run record omits report path'
+
+# 6. Regression (feedback_01e64023): the Agent tool's built-in subagent
+# instructions tell a child not to write report/summary .md files, so subagents
+# refused to write report.md and the report came only in the closing reply. No
+# hook refuses the path (workspace/ is open to an unbound subagent); the brief
+# prompt must say the parent requires report.md and that this overrides the
+# default.
+printf '%s' "$section" | grep -E 'requires this file' >/dev/null || fail 'prompt does not say the parent requires report.md'
+printf '%s' "$section" | grep -E 'overrides any default' >/dev/null || fail 'prompt does not override the default against writing report .md files'
+printf '%s' "$section" | grep -E 'only (file|path) outside' >/dev/null || fail 'prompt does not limit the override to the named paths'
+
+# 7. Regression: the Write tool itself can refuse a subagent's report.md
+# ("Subagents should return findings as text, not write report files"), and the
+# brief's override cannot lift a tool refusal. The prompt must route a refused
+# write to the closing reply without working around the tool, and the parent
+# must rebuild report.md from that reply without resuming the subagent.
+printf '%s' "$section" | grep -E 'If the Write tool itself refuses the report file' >/dev/null || fail 'prompt does not cover a Write tool refusal of the report'
+printf '%s' "$section" | grep -E 'do not retry it through Bash or under another name' >/dev/null || fail 'prompt does not forbid working around a refused report write'
+printf '%s' "$section" | grep -E 'put the report in that reply' >/dev/null || fail 'prompt does not route a refused report to the closing reply'
+printf '%s' "$section" | grep -E 'write `report\.md` yourself from that reply and do not resume the subagent' >/dev/null || fail 'parent does not rebuild report.md after a refused write'
 echo "conduct-subagent-handback-sidecar: ok (report.md sidecar with line cap, envelope size cap, sidecar log, parent reads report+envelope and never the harness .output transcript)"

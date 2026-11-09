@@ -31,9 +31,13 @@ SRC="$1" TGT="$2" BASE="$3" AFTER="$4" CHANGES="$5"
 TGT="$(cd "$TGT" && pwd)"
 
 # Trees that belong to staging alone and never come from hq-core.
+# The private leak-scan lists are staging-only too: the promotion excludes
+# them and removes any copy from hq-core, so an hq-core push that deletes
+# them must not delete the staging copy that denylist-scan reads.
 is_local() {
   case "$1" in
     companies/*|personal/*|repos/*|workspace/*|.obsidian/*|.git/*) return 0 ;;
+    .leak-scan/denylist.yaml|.leak-scan/manifest-snapshot.yaml) return 0 ;;
     *) return 1 ;;
   esac
 }

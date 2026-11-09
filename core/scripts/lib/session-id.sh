@@ -34,7 +34,21 @@
 #   4. CODEX_SESSION_ID        — Codex
 #   5. CODEX_THREAD_ID         — Codex, thread-scoped runs
 #   6. GROK_SESSION_ID         — Grok Build (Desktop / CLI)
-#   7. workspace/sessions/.current — no session env; last-writer-wins fallback
+#   7. HQ_FLEET_SESSION_ID     — HQ Fleet runtime (v2.67+) scheduled jobs, which
+#                                export only this variable. Ranked after the
+#                                agent-harness variables: when a job runs
+#                                Claude/Codex/Grok, that harness id is the one
+#                                the scope guard sees in its hook payload.
+#   8. workspace/sessions/.current — no session env; last-writer-wins fallback
+#
+# Cursor is deliberately absent. Its agent shells carry CURSOR_AGENT=1 (a flag,
+# not an id) and its terminals carry CURSOR_TRACE_ID, which every chat in the
+# same Cursor window shares, so two concurrent chats would resolve to one
+# session record — the cross-session write this file exists to prevent. Cursor
+# passes conversation_id only to hook scripts on stdin and exports no
+# conversation id to shell commands (cursor.com/docs/agent/hooks). A Cursor
+# session supplies its id through HQ_SESSION_ID or hq-session.sh --session-id;
+# hq-session.sh prints that hint when a Cursor write has no identity.
 #
 # The env precedence list matches .claude/skills/_shared/journal.sh so every
 # per-session artifact (journal, session meta, scope capability) keys off the
@@ -60,7 +74,8 @@ session_id_is_valid() {
 session_id_from_env() {
   local var val
   for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-             CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID; do
+             CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID \
+             HQ_FLEET_SESSION_ID; do
     val="${!var:-}"
     val="$(printf '%s' "$val" | tr -d '[:space:]')"
     if session_id_is_valid "$val"; then

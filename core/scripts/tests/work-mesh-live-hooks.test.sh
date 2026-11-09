@@ -207,6 +207,44 @@ else
   pass "ask injection once only"
 fi
 
+# long option list: AskUserQuestion allows 4 options per question, so the hook says to page
+reset_spool
+mkdir -p "$HOME_DIR/.hq/work-context/sessions"
+cat >"$HOME_DIR/.hq/work-context/sessions/sid-many.json" <<'JSON'
+{
+  "contractVersion": 1,
+  "sessionId": "sid-many",
+  "contextStatus": "needs_project",
+  "decision": {
+    "decisionId": "dec_many",
+    "askAfter": true,
+    "options": [
+      {"optionId": "o1", "label": "P1"}, {"optionId": "o2", "label": "P2"},
+      {"optionId": "o3", "label": "P3"}, {"optionId": "o4", "label": "P4"},
+      {"optionId": "o5", "label": "P5"}, {"optionId": "o6", "label": "P6"}
+    ]
+  },
+  "updatedAt": "2026-09-03T00:00:00Z"
+}
+JSON
+out4="$(run_hook_stdin "$TURN_START" '{"session_id":"sid-many","prompt":"please continue the implementation work"}' || true)"
+echo "$out4" | jq -e '.hookSpecificOutput.additionalContext|test("at most 4 options per question") and test("More options") and test("o6")' >/dev/null \
+  && pass "ask with more than 4 options tells the agent to page" \
+  || fail "ask with more than 4 options has no paging guidance: $out4"
+echo "$out4" | jq -e '.hookSpecificOutput.additionalContext|test("if 4 or fewer options remain, show them all with no .More options.") and test("exactly these stable options \\(paged as below\\)")' >/dev/null \
+  && pass "paged ask states the last-page rule and marks options as paged" \
+  || fail "paged ask lacks the last-page rule or the paged marker: $out4"
+# a 2-option decision must not carry the paging text
+rm -f "$HOME_DIR/.hq/work-context/sessions/sid-ask.ask-surfaced"
+out5="$(run_hook_stdin "$TURN_START" '{"session_id":"sid-ask","prompt":"please continue the implementation work"}' || true)"
+if echo "$out5" | jq -e '.hookSpecificOutput.additionalContext|test("at most 4 options")' >/dev/null 2>&1; then
+  fail "paging text added for a 2-option decision"
+elif echo "$out5" | jq -e '.hookSpecificOutput.additionalContext|test("paged as below")' >/dev/null 2>&1; then
+  fail "paged marker added for a 2-option decision"
+else
+  pass "no paging text for 4 or fewer options"
+fi
+
 # slash / short: still record turn, no ask
 reset_spool
 mkdir -p "$HOME_DIR/.hq/work-context/sessions"

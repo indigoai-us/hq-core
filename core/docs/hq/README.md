@@ -119,6 +119,8 @@ claude
 /personal-interview
 ```
 
+**Windows:** install with the HQ desktop app or `npx create-hq`. Both set up HQ's five linked paths (`AGENTS.md`, `.agents/skills`, `.codex/claude`, `.codex/output-style.md` and `companies/_template/.obsidian`) without symlink rights. The raw release tarball extracted with `tar.exe`, and a `git clone` without symlink support (including step 1 above), are not supported Windows install paths on their own: those five paths come out missing or as small text files, so Codex finds no `AGENTS.md`. After either one, run `hq rescue --hq-root <absolute path to your HQ folder>` to repair them.
+
 `/setup` asks your name, work, and goals, then creates a real directory for your first knowledge base. See [Knowledge directories](#knowledge-directories) below. Personal knowledge may use an embedded Git repo when it needs independent history. Company knowledge stays plain and syncs through its vault. `/personal-interview` builds your voice, preferences, and working style through a tiered interview.
 
 ## Core Concepts

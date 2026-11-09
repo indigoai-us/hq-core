@@ -4,13 +4,41 @@
 # 1. Block ALL Glob for prd.json / worker.yaml (use qmd search or Read)
 # 2. Block unscoped Glob from HQ root (causes 20s timeouts)
 
+# Replay jq diagnostics after the input pipeline completes. Keep NUL-separated
+# segments in an array so every byte, including trailing NULs/newlines, survives.
+_hq_glob_query() {
+  local mode=$1 input=$2 query=$3 part status index
+  local -a diagnostics=()
+  {
+    while IFS= read -r -d '' part; do
+      diagnostics[${#diagnostics[@]}]=$part
+    done < <(
+      if [ "$mode" = cat ]; then
+        cat 2>&1
+      elif [ "$mode" = printf ]; then
+        printf '%s' "$input" | jq -r "$query" 2>&1 >&3
+      else
+        echo "$input" | jq -r "$query" 2>&1 >&3
+      fi
+      status=$?
+      builtin printf '\0%d' "$status"
+    )
+    status=$part
+    for ((index=0; index+1<${#diagnostics[@]}; index++)); do
+      builtin printf '%s\0' "${diagnostics[index]}" >&2
+    done
+    builtin printf '%s' "${diagnostics[${#diagnostics[@]}-1]}" >&2
+    return "$status"
+  } 3>&1
+}
+
 INPUT=$(cat)
 # master-hook exports HQ_HOOK_TOOL_NAME for every child, even when it is empty.
 # Prefer it when present so non-Glob calls avoid a jq fork (notably on Windows).
 if [ "${HQ_HOOK_TOOL_NAME+set}" = "set" ]; then
   TOOL="$HQ_HOOK_TOOL_NAME"
 else
-  TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // .toolName // empty')
+  TOOL=$(_hq_glob_query printf "$INPUT" '.tool_name // .toolName // empty')
 fi
 
 # list_dir / ListDir is a shallow readdir — never subject to the recursive Glob guard.
@@ -32,7 +60,7 @@ if [ -n "${HQ_ROOT:-}" ] && [ -d "$HQ_ROOT" ]; then
 fi
 
 # Accept Claude + Grok field names (path / target_directory / file_path).
-PATH_PARAM=$(echo "$INPUT" | jq -r '
+PATH_PARAM=$(_hq_glob_query echo "$INPUT" '
   .tool_input.path
   // .tool_input.target_directory
   // .tool_input.file_path
@@ -40,14 +68,14 @@ PATH_PARAM=$(echo "$INPUT" | jq -r '
   // .toolInput.target_directory
   // empty
 ')
-PATTERN=$(echo "$INPUT" | jq -r '
+PATTERN=$(_hq_glob_query echo "$INPUT" '
   .tool_input.pattern // .tool_input.glob // .toolInput.pattern // empty
 ')
-CWD=$(echo "$INPUT" | jq -r '.cwd // empty')
+CWD=$(_hq_glob_query echo "$INPUT" '.cwd // empty')
 
 # Block prd.json and worker.yaml discovery — always use qmd or direct Read
 if echo "$PATTERN" | grep -qE 'prd\.json|worker\.yaml'; then
-  cat >&2 <<EOF
+  _hq_glob_query cat '' '' <<EOF
 BLOCKED: Never use Glob for prd.json or worker.yaml.
 
 For discovery:  qmd search "{name} prd.json" --json -n 5
@@ -58,7 +86,7 @@ EOF
 fi
 
 if [ -z "$PATH_PARAM" ] || [ "$PATH_PARAM" = "null" ]; then
-  cat >&2 <<EOF
+  _hq_glob_query cat '' '' <<EOF
 BLOCKED: Glob needs a path. Pass path scoped to a subdirectory (not HQ root).
   Glob pattern="<pattern>" path="core/"
   Glob pattern="<pattern>" path="workspace/"
@@ -77,7 +105,7 @@ fi
 
 # Block if searching HQ root exactly (recursive Glob only — not a single-dir list)
 if [ "$SEARCH_PATH" = "$HQ" ] || [ "$SEARCH_PATH" = "$HQ/" ]; then
-  cat >&2 <<EOF
+  _hq_glob_query cat '' '' <<EOF
 BLOCKED: Glob from HQ root causes timeouts (1.38M files via symlinked repos).
 
 Fix: Add path: scoped to a subdirectory:

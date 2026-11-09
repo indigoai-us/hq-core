@@ -2,6 +2,32 @@
 
 Newest release first.
 
+## Release: v16.0.46-beta.40
+
+- No action needed. `/project-summary` renders a visual, broadcast-style page
+  instead of a text rendering of the source file: hero with headline, standfirst
+  and KPI band, one decision or recommendation callout, an inline SVG diagram,
+  the plan as a storyboard strip of phases with stories behind a click, at most
+  one chart, and guardrails. The shipped theme
+  `.claude/skills/project-summary/templates/default.css` is now a full
+  component system; new `plan-scaffold.html`, `deck-scaffold.html` and
+  `components.md` templates document the blocks. Company design packs still
+  re-skin the page by overriding tokens. Existing summaries keep their URLs
+  and are refreshed on the next run.
+
+## Release: v16.0.46-beta.1
+
+- No action needed. `core/scripts/super-conductor-decisions.mjs add` gains
+  `--body`/`--body-file` (full ask text, printed by the new `show --id`),
+  `--subject <key>|auto` (one row per PR decision: exit 3 for an open subject,
+  exit 4 with the carried answer for a settled one), `--reopen <why>` and
+  `--relay-agent <id>`. All existing flags and exit codes are unchanged.
+- No action needed. Conductor asks are opt-in: `watch --for conductor --ask`
+  also prints DECISION and STALE-DECISION lines (`--no-ask`, the default,
+  keeps ANSWER lines only), and `claim --id <id> --desk conductor
+  --conductor-asks` lets the conductor claim and answer a normal row it asks
+  in its own window. Desk claims, lanes and standing rules work as before.
+
 ## Release: v16.0.44-beta.41
 
 - No action needed. `core/scripts/ontology-source-worklist.sh` now lists a

@@ -23,6 +23,8 @@ unset HQ_ACTIVE_COMPANY CLAUDE_PROJECT_DIR
 
 # ---- /handoff Step 1: knowledge commits ------------------------------------
 fixture="$TMP/hq"
+mkdir -p "$fixture/companies"
+printf 'companies:\n  alpha:\n    name: Alpha\n  beta:\n    name: Beta\n' > "$fixture/companies/manifest.yaml"
 for co in alpha beta; do
   repo="$fixture/companies/$co/knowledge"
   mkdir -p "$repo"

@@ -85,6 +85,7 @@ PROJECT="$(jq -r '.project.name // empty' "$MANIFEST" | tr -d '\r')"
 PRINCIPAL="$(jq -r '.to.principal // empty' "$MANIFEST" | tr -d '\r')"
 DISPLAY="$(jq -r '.to.displayName // .to.principal // empty' "$MANIFEST" | tr -d '\r')"
 STATUS="$(jq -r '.status // empty' "$MANIFEST" | tr -d '\r')"
+MODE="$(jq -r '.mode // empty' "$MANIFEST" | tr -d '\r')"
 [ -n "$COMPANY" ]   || die "manifest has no company"
 [ -n "$PROJECT" ]   || die "manifest has no project.name"
 [ -n "$PRINCIPAL" ] || die "manifest has no to.principal"
@@ -318,6 +319,42 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
     fi
   done
   [ "$landed" -eq 1 ] || die "grant outcome unconfirmed for $PRINCIPAL on $PFX; retain this manifest and resume"
+  # Full-transfer mode: a more specific rule under the project prefix (for
+  # example projects/<name>/design/*) outranks the root grant, so the recipient
+  # would keep the narrower permission there. Grant the same permission on every
+  # such rule and verify each one.
+  if [ "$MODE" = "transfer" ]; then
+    case "$PFX" in "projects/$PROJECT/"*)
+      CHILD_PATTERNS="$(printf '%s' "$AFTER" | jq -r --arg root "$ACL_PATTERN" '
+        [(.children // [])[] | .sourcePrefix | select(type == "string")
+         | select(startswith($root[:-1]) and endswith("/*") and . != $root)] | unique | .[]' | tr -d '\r')"
+      # One rule per line, read whole: a folder name with a space or a glob
+      # character must stay one pattern. Word-splitting it would grant on a
+      # path outside the project. fd 3 keeps the hq calls off the list.
+      while IFS= read -r CHILD <&3; do
+        [ -n "$CHILD" ] || continue
+        case "$CHILD" in "projects/$PROJECT/"*) ;; *) die "more specific rule $CHILD is outside projects/$PROJECT/" ;; esac
+        CHILD_RC=0
+        hq files share "$CHILD" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY" || CHILD_RC=$?
+        [ "$CHILD_RC" -eq 0 ] || echo "hq-delegate-grant: share reported an error on $CHILD; checking exact grant" >&2
+        child_landed=0
+        for delay in 0 1 2; do
+          [ "$delay" -eq 0 ] || sleep "$delay"
+          if CHILD_AFTER="$(read_acl "$CHILD")" && printf '%s' "$CHILD_AFTER" | jq -e \
+            --arg id "$EXPECTED_ID" --arg type "$EXPECTED_TYPE" --arg perm "$PERM" \
+            '.exists and any(.direct[]; .granteeType == $type and .granteeId == $id and .permission == $perm)' >/dev/null; then
+            child_landed=1
+            break
+          fi
+        done
+        [ "$child_landed" -eq 1 ] || die "grant outcome unconfirmed for $PRINCIPAL on more specific rule $CHILD; retain this manifest and resume"
+        echo "hq-delegate-grant: verified $PERM on more specific rule $CHILD for $PRINCIPAL"
+      done 3<<EOF_CHILDREN
+$CHILD_PATTERNS
+EOF_CHILDREN
+      ;;
+    esac
+  fi
   TMP_MANIFEST="$(mktemp)"
   jq --argjson i "$i" --arg now "$NOW" --arg id "$EXPECTED_ID" --arg type "$EXPECTED_TYPE" \
     --arg company "$EXPECTED_COMPANY" --argjson rc "$SHARE_RC" '

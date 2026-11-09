@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # hq-core: public
 # SessionStart: enqueue session_start + detached hq mesh context reconcile (US-010).
+# Network reconcile runs in the detached drainer. The foreground path uses
+# --offline and does not wait on the network.
 set -uo pipefail
 
 case "${HQ_WORK_MESH_DISABLED:-}" in 1|true|TRUE|yes|YES|on|ON) exit 0 ;; esac

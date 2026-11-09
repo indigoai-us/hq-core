@@ -218,6 +218,78 @@ printf '%s\n' "$FOUND_PORTABLE" | grep >/dev/null '.session-logs' \
   && fail "portable residual scan descended into provider session logs"
 pass "portable residual scan prunes provider session logs"
 
+# The portable (BSD/macOS) path must walk the tree with ONE find, not spawn a
+# stat per file (feedback_4307a789: per-file subprocess scan timed out Slack
+# turns on macOS). Count stat invocations through a PATH shim, and check the
+# mtime boundary: a file older than the start epoch is excluded, a file at or
+# after it is included.
+BSD_DIR="$TMP/bsdscan"
+mkdir -p "$BSD_DIR/ws"
+i=1
+while [ "$i" -le 40 ]; do
+  echo x > "$BSD_DIR/ws/new$i.txt"
+  i=$((i + 1))
+done
+echo x > "$BSD_DIR/ws/old.txt"
+touch -t 202001010000.00 "$BSD_DIR/ws/old.txt"
+# Boundary files at S-1 (excluded), S and S+1 (included), set in UTC.
+BSD_S="$(( $(date +%s) - 86400 ))"
+echo x > "$BSD_DIR/ws/edge_before.txt"
+echo x > "$BSD_DIR/ws/edge_at.txt"
+echo x > "$BSD_DIR/ws/edge_after.txt"
+TZ=UTC touch -t "$(_session_epoch_to_touch_stamp "$((BSD_S - 1))")" "$BSD_DIR/ws/edge_before.txt"
+TZ=UTC touch -t "$(_session_epoch_to_touch_stamp "$BSD_S")" "$BSD_DIR/ws/edge_at.txt"
+TZ=UTC touch -t "$(_session_epoch_to_touch_stamp "$((BSD_S + 1))")" "$BSD_DIR/ws/edge_after.txt"
+STAT_SHIM="$TMP/statshim"
+mkdir -p "$STAT_SHIM"
+REAL_STAT="$(command -v stat)"
+printf '#!/bin/sh\necho x >> "%s/stat.calls"\nexec "%s" "$@"\n' "$TMP" "$REAL_STAT" > "$STAT_SHIM/stat"
+chmod +x "$STAT_SHIM/stat"
+: > "$TMP/stat.calls"
+find() {
+  if [ "$*" = "$BSD_DIR/ws -maxdepth 0 -newermt @0" ]; then
+    return 1
+  fi
+  "$SYSTEM_FIND" "$@"
+}
+OLD_PATH="$PATH"
+PATH="$STAT_SHIM:$PATH"
+NOW_BSD="$(date +%s)"
+START_BSD=$((NOW_BSD - 60))
+FOUND_BSD="$(_session_find_newer "$BSD_DIR/ws" "$START_BSD" any)"
+PATH="$OLD_PATH"
+FOUND_EDGE="$(_session_find_newer "$BSD_DIR/ws" "$BSD_S" any)"
+FOUND_EDGE_IST="$(TZ=Asia/Kolkata _session_find_newer "$BSD_DIR/ws" "$BSD_S" any)"
+unset -f find
+for scan in "$FOUND_EDGE" "$FOUND_EDGE_IST"; do
+  printf '%s\n' "$scan" | grep >/dev/null 'edge_before.txt' && fail "portable scan included the S-1 boundary file"
+  printf '%s\n' "$scan" | grep >/dev/null 'edge_at.txt' || fail "portable scan excluded the S boundary file"
+  printf '%s\n' "$scan" | grep >/dev/null 'edge_after.txt' || fail "portable scan excluded the S+1 boundary file"
+done
+NEW_COUNT="$(printf '%s\n' "$FOUND_BSD" | grep -c 'new[0-9]*\.txt$' || true)"
+[ "$NEW_COUNT" -eq 40 ] || fail "portable scan did not return all 40 new files (got $NEW_COUNT)"
+printf '%s\n' "$FOUND_BSD" | grep >/dev/null 'old.txt' && fail "portable scan returned a file older than the start epoch"
+STAT_CALLS="$(wc -l < "$TMP/stat.calls" | tr -d ' ')"
+[ "$STAT_CALLS" -eq 0 ] || fail "portable scan spawned stat per file ($STAT_CALLS calls)"
+pass "portable residual scan uses one find (no per-file stat) and keeps the mtime boundary"
+
+# If the reference file cannot be created, the scan must fall back to the
+# per-file compare (still correct), not return empty, and leave no temp file.
+find() {
+  if [ "$*" = "$BSD_DIR/ws -maxdepth 0 -newermt @0" ]; then
+    return 1
+  fi
+  "$SYSTEM_FIND" "$@"
+}
+mktemp() { return 1; }
+FOUND_FALLBACK="$(_session_find_newer "$BSD_DIR/ws" "$BSD_S" any)"
+unset -f mktemp find
+printf '%s\n' "$FOUND_FALLBACK" | grep >/dev/null 'edge_at.txt' \
+  || fail "scan returned nothing when the reference file could not be created"
+printf '%s\n' "$FOUND_FALLBACK" | grep >/dev/null 'edge_before.txt' \
+  && fail "fallback scan included the S-1 boundary file"
+pass "portable residual scan falls back to per-file compare when mktemp fails"
+
 # ── Serialisation: one jq for the stream, and a hard cap ────────────────────
 #
 # Regression: Izzy discarded completed turns as "unexpected failure (exit 0)".

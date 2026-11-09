@@ -98,6 +98,11 @@ SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 HELPERS="${SCRIPT_DIR%/.claude/hooks}/core/scripts"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
+# awk treats \U \h \A \L \T as escapes in redirect filenames. A Windows HQ_ROOT
+# such as C:\Users\hqcold\hq made the policy-trigger cache write fatal and left
+# SessionStart with no policy reminder (feedback_8f4f6578). Git Bash accepts
+# forward slashes on the same path.
+HQ_ROOT="${HQ_ROOT//\\//}"
 
 # Use master-hook's shared profile/disabled-hook predicate so the scan and its
 # direct enforcement call are governed by the same gate registration state.
@@ -1879,6 +1884,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # hook. Under a UTF-8 locale BSD awk aborts the whole pass with
       # "towc: multibyte conversion failure" when a string op meets a split
       # code point, and then no policy loads.
+      # Redirect targets (>> CACHE_TMP, > CACHE_STATUS) still interpret
+      # backslashes after -v. Slash-normalize even if TMPDIR was Windows-shaped.
+      CACHE_TMP="${CACHE_TMP//\\//}"
+      CACHE_STATUS="${CACHE_STATUS//\\//}"
       LC_ALL=C awk -v EVENT="$EVENT" -v LEGACY_TOOL_EVENTS="${HQ_POLICY_TOOL_EVENTS:-}" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS_INLINE" -v AIFACTS="$INTENT_FACTS_INLINE" \
           -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
@@ -2364,6 +2373,12 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
         finalize()
         next
       }
+      # Frontmatter is closed and the first Rule summary is complete. Nothing
+      # below can change this record: hard bodies are read by the later emit
+      # pass. Do not tokenize archival prose on a cold cache miss. Keep the
+      # first record of the next file so its boundary finalizes this policy;
+      # END still finalizes the last policy when nextfile reaches EOF.
+      FNR>1 && d>=2 && rcap { nextfile }
       { sub(/\r$/, ""); if (FNR==1) sub(/^\357\273\277/, "") }
       FNR==1 { if (seen) finalize(); reset_file(); seen=1 }
       { fname=FILENAME }

@@ -45,6 +45,12 @@ hq_session_require_write_identity() {
       if [ -n "$explicit" ]; then id="$explicit"; else id="$(session_id_from_env)"; fi
       if ! session_id_is_valid "$id"; then
         echo 'hq-session: metadata write requires caller session identity; pass --session-id <id> from the scope hook or run from an identified harness. workspace/sessions/.current is read-only diagnostic fallback.' >&2
+        # Cursor marks agent shells with CURSOR_AGENT (and its terminals with
+        # CURSOR_TRACE_ID) but exports no conversation id, so no harness
+        # identity can exist there. Say so, and name the two ways to supply one.
+        if [ -n "${CURSOR_AGENT:-}${CURSOR_TRACE_ID:-}" ]; then
+          echo 'hq-session: Cursor does not export a session id to shell commands. Take a fresh id from uuidgen, keep that same id for this whole chat, and never use CURSOR_TRACE_ID (every chat in the window shares it). Begin each shell command in this chat with export HQ_SESSION_ID=<id>; or pass --session-id <id> on every set/add/remove call.' >&2
+        fi
         return 1
       fi
       ;;
@@ -85,7 +91,16 @@ if [ "${HQ_HQ_SESSION_NO_CLI:-}" != "1" ]; then
     case "$__hs_caps" in
       *hq-session*)
         case "$__hs_caps" in
-          *exact-company-directory-match-v1*) MSYS2_ARG_CONV_EXCL='*' exec hq core hq-session "$@" ;;
+          *exact-company-directory-match-v1*)
+            # The CLI walks up from the cwd to find the HQ root and fails
+            # ("Could not find your HQ installation") when this script is run
+            # from outside the tree. Hand it the root this script lives in
+            # unless the caller already named one.
+            if [ -z "${HQ_ROOT:-}" ] && [ -z "${CLAUDE_PROJECT_DIR:-}" ]; then
+              HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+              export HQ_ROOT
+            fi
+            MSYS2_ARG_CONV_EXCL='*' exec hq core hq-session "$@" ;;
         esac
         ;;
     esac
@@ -227,16 +242,28 @@ validate_company_slug() {
   fi
 }
 
+# Optional 5th argument: the company_source to stamp in the same rewrite
+# (empty leaves the existing line alone). Optional 6th: 1 drops the line, used
+# when a company is unbound. Stamping here keeps slug and source consistent
+# for every reader: no window where a new company carries the old source.
 write_company_lock_set() {
-  local meta="$1" set="$2" primary="$3" clear_project_task="${4:-0}" tmp
+  local meta="$1" set="$2" primary="$3" clear_project_task="${4:-0}" source="${5:-}" drop_source="${6:-0}" tmp
   tmp="$(mktemp)"
-  awk -v primary="$primary" -v slugs="$set" -v clear_project_task="$clear_project_task" '
-    BEGIN { has_primary=0; has_slugs=0 }
+  awk -v primary="$primary" -v slugs="$set" -v clear_project_task="$clear_project_task" -v source="$source" -v drop_source="$drop_source" '
+    BEGIN { has_primary=0; has_slugs=0; has_source=0 }
     $1 == "company_slug:" { if (!has_primary) print "company_slug: " primary; has_primary=1; next }
     $1 == "company_slugs:" { if (!has_slugs) print "company_slugs: " slugs; has_slugs=1; next }
+    $1 == "company_source:" {
+      if (drop_source == "1") next
+      if (source != "") { if (!has_source) print "company_source: " source; has_source=1; next }
+    }
     clear_project_task && ($1 == "project:" || $1 == "task:") { next }
     { print }
-    END { if (!has_primary) print "company_slug: " primary; if (!has_slugs) print "company_slugs: " slugs }
+    END {
+      if (!has_primary) print "company_slug: " primary
+      if (!has_slugs) print "company_slugs: " slugs
+      if (!has_source && source != "" && drop_source != "1") print "company_source: " source
+    }
   ' "$meta" >"$tmp"
   mv "$tmp" "$meta"
 }
@@ -250,7 +277,7 @@ company_lock_update_acquire() {
       continue
     fi
     tries=$((tries + 1))
-    [ "$tries" -lt 300 ] || { echo "hq-session: timed out waiting for company lock update" >&2; return 1; }
+    [ "$tries" -lt "${HQ_SESSION_LOCK_TRIES:-300}" ] || { echo "hq-session: timed out waiting for company lock update" >&2; return 1; }
     sleep 0.1
   done
   printf '%s\n' "$$" > "$lock/pid"
@@ -423,7 +450,7 @@ cmd_set() {
   local id meta
   id="$(current_id)"
   if [ -z "$id" ]; then
-    echo "hq-session: no current session — no session id in the environment (HQ_SESSION_ID, CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, CODEX_SESSION_ID, CODEX_THREAD_ID) and workspace/sessions/.current is missing or invalid. Is master-hook installed? Pass --session-id <id> to target a session explicitly." >&2
+    echo "hq-session: no current session — no session id in the environment (HQ_SESSION_ID, CLAUDE_CODE_SESSION_ID, CLAUDE_SESSION_ID, CODEX_SESSION_ID, CODEX_THREAD_ID, GROK_SESSION_ID, HQ_FLEET_SESSION_ID) and workspace/sessions/.current is missing or invalid. Is master-hook installed? Pass --session-id <id> to target a session explicitly." >&2
     exit 1
   fi
   meta="$SESSIONS_DIR/$id/meta.yaml"
@@ -440,6 +467,14 @@ cmd_set() {
   if [ "$key" = "company_slug" ]; then
     company_lock_update_acquire "$id" || exit 1
     company_lock_held=1
+    # A hook that decided to bind from the current source (for example the
+    # first-prompt bind, which needs device_default) re-checks it under the lock.
+    if [ -n "${HQ_SESSION_REQUIRE_SOURCE:-}" ] \
+      && [ "$(awk '$1=="company_source:"{print $2; exit}' "$meta" 2>/dev/null | tr -d '"')" != "$HQ_SESSION_REQUIRE_SOURCE" ]; then
+      company_lock_update_release "$id"
+      echo "hq-session: company_source changed; bind skipped" >&2
+      exit 3
+    fi
   fi
 
   # Capture the prior value so we only surface policies when it actually changes.
@@ -456,7 +491,13 @@ cmd_set() {
   if [ "$key" = company_slug ]; then
     # The combined writer updates company_slug and company_slugs in one
     # metadata rewrite while preserving the session update lock.
-    write_company_lock_set "$meta" "$value" "$value" "$clear_project_task"
+    # An explicit bind stamps company_source so later automatic logic can tell
+    # it from the SessionStart device default. HQ_SESSION_COMPANY_SOURCE lets a
+    # trusted hook name its own source (for example prompt_mention) atomically.
+    local bind_source="${HQ_SESSION_COMPANY_SOURCE:-explicit}" drop_source=0
+    case "$bind_source" in ''|[!a-z]*|*[!a-z_]*) bind_source=explicit ;; esac
+    if [ -z "$value" ]; then bind_source=""; drop_source=1; fi
+    write_company_lock_set "$meta" "$value" "$value" "$clear_project_task" "$bind_source" "$drop_source"
   else
     local tmp
     tmp="$(mktemp)"

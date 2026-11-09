@@ -236,6 +236,8 @@ skills:
     use: "Schedule recurring Claude/Codex agent jobs on the user's Outpost — structured checklist requirements, dm alert profile, status-aware list from hq-pro. Alias: "
   - name: "/search"
     use: "Search HQ content and indexed repos with qmd, falling back to grep."
+  - name: "/settings-override"
+    use: "Keep a Claude Code setting change across HQ updates by writing it to .claude/settings.local.json. Use when /update-hq reset a setting or a user wants one to sti"
   - name: "/setup"
     use: "Run the HQ Starter Kit setup wizard."
   - name: "/ship"

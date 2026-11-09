@@ -403,6 +403,74 @@ else
   echo "FAIL [gate disabled-hooks passthrough]: expected exit 0, got $rc" >&2
 fi
 
+# ── Case and spelling variants of companies/ (tenant-isolation bypass) ─────
+# On case-insensitive filesystems (default macOS APFS, Windows NTFS)
+# Companies/, COMPANIES/ and companies/Example-Co/ name the same files as
+# companies/example-co/. Each spelling must get the same vault check, as must
+# ./ and .. segments, repeated slashes, backslashes and drive letters.
+jq '.companies["example-co"] = {"role": "member", "enforced": true,
+      "grants": [{"path": "open/*", "permission": "write"},
+                 {"path": "locked/*", "permission": "read"}]}' \
+  "$TMP/.hq/vault-access.json" > "$TMP/.hq/vault-access.json.new"
+mv "$TMP/.hq/vault-access.json.new" "$TMP/.hq/vault-access.json"
+mkdir -p "$TMP/companies/example-co/locked" "$TMP/companies/example-co/open"
+for spelled in Companies COMPANIES cOmPaNiEs; do
+  run 2 Write file_path "$TMP/$spelled/example-co/locked/x.md" "write via $spelled/ blocked"
+  run 2 Edit file_path "$spelled/example-co/locked/x.md" "relative edit via $spelled/ blocked"
+  runb 2 "echo x > $spelled/example-co/locked/x.md" "bash redirect via $spelled/ blocked"
+  runb 2 "rm $TMP/$spelled/example-co/locked/x.md" "bash rm via absolute $spelled/ blocked"
+  runc 2 "$TMP/$spelled/example-co" "touch locked/x.md" "bash cwd inside $spelled/ blocked"
+done
+run 2 Write file_path "$TMP/companies/Example-Co/locked/x.md"    'write via mixed-case slug blocked'
+run 2 Write file_path "$TMP/companies/example-co/LOCKED/x.md"    'write via upper-case grant dir blocked'
+run 2 Write file_path "$TMP/COMPANIES/EXAMPLE-CO/LOCKED/x.md"    'write via all-upper path blocked'
+run 2 Write file_path "$TMP/./Companies//example-co/./locked/x.md" 'write via ./ and // segments blocked'
+run 2 Write file_path "$TMP/workspace/../Companies/example-co/locked/x.md" 'write via .. segment blocked'
+run 0 Write file_path "$TMP/Companies/example-co/open/x.md"      'write grant still allowed via Companies/'
+run 0 Write file_path "$TMP/COMPANIES/MANIFEST.yaml"              'manifest exemption case-insensitive'
+run 0 Write file_path "$TMP/Companies/_Template/x.md"             '_template exemption case-insensitive'
+runb 0 "cat $TMP/Companies/example-co/locked/x.md"                'bash read via Companies/ allowed'
+# Windows spellings: backslashes (forced on any platform with HQ_LIB_WINSEP=1).
+run_win() {
+  local expect="$1" value="$2" label="$3" rc=0 payload
+  payload=$(jq -n --arg v "$value" '{tool_name: "Write", tool_input: {file_path: $v}}')
+  printf '%s' "$payload" | env HQ_LIB_WINSEP=1 CLAUDE_PROJECT_DIR="$TMP" \
+    "$HOOK_BASH" "$HOOK" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq "$expect" ]]; then PASS=$((PASS+1)); else
+    FAIL=$((FAIL+1)); echo "FAIL [$label]: expected exit $expect, got $rc" >&2; fi
+}
+run_win 2 "${TMP}\\Companies\\example-co\\locked\\x.md" 'windows backslash path via Companies blocked'
+run_win 2 'Companies\example-co\locked\x.md'            'windows relative backslash path blocked'
+run_win 0 'Companies\example-co\open\x.md'              'windows relative backslash write grant allowed'
+write_manifest
+
+# Symlinks that point into another company's read-only folder.
+jq '.companies["example-co"] = {"role": "member", "enforced": true,
+      "grants": [{"path": "open/*", "permission": "write"},
+                 {"path": "locked/*", "permission": "read"}]}' \
+  "$TMP/.hq/vault-access.json" > "$TMP/.hq/vault-access.json.new"
+mv "$TMP/.hq/vault-access.json.new" "$TMP/.hq/vault-access.json"
+mkdir -p "$TMP/workspace" "$TMP/companies/wild"
+ln -s "$TMP/companies/example-co/locked" "$TMP/workspace/to-locked"
+ln -s "$TMP/companies/example-co/locked" "$TMP/companies/wild/to-locked"
+ln -s "$TMP/companies/example-co/open" "$TMP/workspace/to-open"
+# Git Bash without Windows symlink rights makes ln -s copy the target, so
+# there is no link to resolve; these cases need a real symlink.
+if [[ -L "$TMP/workspace/to-locked" ]]; then
+run 2 Write file_path "$TMP/workspace/to-locked/x.md"        'write through symlink outside companies/ blocked'
+run 2 Write file_path "$TMP/companies/wild/to-locked/x.md"   'write through symlink from a writable company blocked'
+# Companies/wild/to-locked only exists where the filesystem folds case.
+if [[ "$TMP/Companies" -ef "$TMP/companies" ]]; then
+  run 2 Write file_path "$TMP/Companies/wild/to-locked/x.md" 'write through symlink via Companies/ blocked'
+fi
+run 0 Write file_path "$TMP/workspace/to-open/x.md"          'write through symlink to write grant allowed'
+else
+  echo "NOTE: ln -s did not create a symlink here; symlink cases not run" >&2
+fi
+rm -rf "$TMP/workspace/to-locked" "$TMP/companies/wild/to-locked" "$TMP/workspace/to-open"
+rm -f "$TMP/workspace/to-locked" "$TMP/companies/wild/to-locked" "$TMP/workspace/to-open"
+write_manifest
+
 echo "PASS=$PASS FAIL=$FAIL (hook shell: $HOOK_BASH)"
 [[ "$FAIL" -eq 0 ]] || exit 1
 if [[ "$HOOK_BASH" == "bash" && -x /bin/bash && "$(uname -s)" == "Darwin" ]]; then

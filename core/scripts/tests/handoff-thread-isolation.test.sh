@@ -123,6 +123,34 @@ for tenant in "${tenants[@]:1}"; do
   fi
 done
 
+# 2b. Digit-first company slugs (feedback_65f4edea). The owner regex and the
+# files_touched capture used to require [a-z] as the first character.
+DIGIT="31-cornwallis-crescent"
+DIGIT_SESSION=digit-first-session
+mkdir -p "$ROOT/companies/$DIGIT" "$ROOT/workspace/sessions/$DIGIT_SESSION"
+printf 'slug: %s\ncloud: true\n' "$DIGIT" > "$ROOT/companies/$DIGIT/company.yaml"
+printf 'note\n' > "$ROOT/companies/$DIGIT/note.md"
+printf 'company_slug: %s\n' "$DIGIT" > "$ROOT/workspace/sessions/$DIGIT_SESSION/meta.yaml"
+export CODEX_THREAD_ID="$DIGIT_SESSION"
+export HQ_SESSION_ID="$DIGIT_SESSION"
+digit_tid=T-digit-first
+digit_path="$ROOT/workspace/threads/${digit_tid}.json"
+jq -n --arg company "$DIGIT" --arg tid "$digit_tid" --arg touched "companies/${DIGIT}/note.md" \
+  '{thread_id:$tid, created_at:"fixture", type:"handoff", files_touched:[$touched], metadata:{company:[$company]}}' \
+  > "$digit_path"
+digit_rc=0
+jq -n --arg file_path "$digit_path" '{tool_name:"Write", tool_input:{file_path:$file_path}}' | \
+  env PATH="$PATH" HOME="$HOME" HQ_ROOT="$HQ_ROOT" CODEX_THREAD_ID="$DIGIT_SESSION" HQ_SESSION_ID="$DIGIT_SESSION" \
+    bash "$ROOT/.claude/hooks/mirror-thread-to-company.sh" || digit_rc=$?
+if [[ "$digit_rc" -ne 0 ]]; then
+  fail "digit-first company slug was rejected (rc=$digit_rc)"
+fi
+if [[ ! -f "$ROOT/companies/$DIGIT/workspace/sessions/${digit_tid}.json" ]]; then
+  fail "digit-first company slug did not mirror"
+fi
+export CODEX_THREAD_ID="$SESSION"
+export HQ_SESSION_ID="$SESSION"
+
 # 3. Finalizer with 11 company paths must not stamp recipients from the changeset.
 : > "$ROOT/hq-calls.log"
 paths_json="$(printf '%s\n' "${tenants[@]}" | jq -R . | jq -s -c 'map("companies/" + . + "/note.md")')"

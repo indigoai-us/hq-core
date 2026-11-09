@@ -668,6 +668,7 @@ Wants=network-online.target
 Type=oneshot
 Environment=HQ_ROOT=${HQ_ROOT}
 Environment=$(systemd_quote "PATH=$service_path")
+Environment=HQ_SYNC_UNATTENDED=1
 ExecStart=${runner_abs} --hq-root ${HQ_ROOT} --job-id ${id}
 Nice=10
 

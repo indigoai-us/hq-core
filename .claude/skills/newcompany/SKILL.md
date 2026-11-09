@@ -1,7 +1,7 @@
 ---
 name: newcompany
 description: "Scaffold a new HQ company, optionally through to operational: knowledge, workers, brand, integrations, access rules, and invites."
-allowed-tools: Read, Write, Edit, Bash, AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, AskUserQuestion, Bash(bash core/scripts/board-project-id.sh:*)
 ---
 
 # /newcompany — Company Scaffolding → Operational Setup
@@ -196,7 +196,9 @@ From Phase 1, populate the folder so it isn't empty:
   `knowledge/<function>/overview.md` from the interview — each with standard frontmatter.
   Keep seeds short and clearly marked `status: draft` where synthesized.
 - **Projects:** for each stated priority, create a board idea via the `/idea` shape
-  (append to `companies/{slug}/board.json`, id `{prefix}-proj-{NNN}`, `status: idea`).
+  (append to `companies/{slug}/board.json`, `status: idea`, id from
+  `bash core/scripts/board-project-id.sh next {slug} --prefix {prefix}`; run
+  `bash core/scripts/board-project-id.sh check {slug}` after the last append).
   Offer to `/prd` the top one into a full PRD (skippable — that's a heavier flow).
 
 Skip → leave knowledge/projects empty (still valid).

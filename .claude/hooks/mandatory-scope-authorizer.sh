@@ -16,6 +16,34 @@ set -euo pipefail
 # scope_tool_location_bounded leaves this marker after a timeout.
 trap 'rmdir "${TMPDIR:-/tmp}/hq-scope-tool-slow.$$" 2>/dev/null || true' EXIT
 
+# The host kills a safety guard at 25 s and treats that as a block with no
+# explanation. A long inline command is checked token by token, so the guard
+# watches its own clock and, past the budget below, blocks with a message that
+# says what to do instead of timing out silently. HQ_SCOPE_CHECK_BUDGET_SECS
+# may lower it (tests); it cannot raise it above 18.
+SCOPE_START_SECONDS=$SECONDS
+SCOPE_CHECK_BUDGET_SECS="${HQ_SCOPE_CHECK_BUDGET_SECS:-18}"
+# Digits only and at most 9 of them, so the arithmetic below cannot overflow or
+# error; anything else falls back to the default.
+case "$SCOPE_CHECK_BUDGET_SECS" in ''|*[!0-9]*|??????????*) SCOPE_CHECK_BUDGET_SECS=18 ;; esac
+[ "$SCOPE_CHECK_BUDGET_SECS" -le 18 ] || SCOPE_CHECK_BUDGET_SECS=18
+
+scope_enforce_check_budget() {
+  [ $((SECONDS - SCOPE_START_SECONDS)) -ge "$SCOPE_CHECK_BUDGET_SECS" ] || return 0
+  cat >&2 <<MSG
+BLOCKED: Command too long for the scope guard to check in time
+Tool: ${TOOL:-Bash}
+This command has too many words for the scope guard to finish checking inside
+its ${SCOPE_CHECK_BUDGET_SECS}-second budget, so it failed closed instead of timing out.
+${SCOPE_SIZE_GATE_NOTE:-}
+Nothing in it was judged unsafe. Put the logic in a script file (write it with
+the Write tool, then run it with a short command such as bash path/to/script.sh),
+or split it into several shorter Bash calls.
+Session: ${SESSION_ID:-unknown}
+MSG
+  exit 2
+}
+
 INPUT=
 IFS= read -r -d '' INPUT || true
 INPUT="${INPUT%"${INPUT##*[!$'\n']}"}"
@@ -31,37 +59,79 @@ else
   TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
 fi
 
+# bash 3.2 (the stock macOS shell) runs ${var//[class]/} in time that grows
+# faster than the length of var: 8 KB took 4 s and 17 KB took 37 s. Dropping the
+# quote characters from a whole inline command used to cost most of the hook
+# budget before any check ran. Short text keeps the native expansion; long text
+# goes through one tr (C locale, so only those ASCII bytes are touched).
+# Result in SCOPE_DROPPED. $1 text, $2 "bs" to drop backslashes as well.
+scope_drop_quote_chars() {
+  SCOPE_DROPPED="${1:-}"
+  if [ "${#SCOPE_DROPPED}" -lt 1024 ]; then
+    if [ "${2:-}" = bs ]; then
+      SCOPE_DROPPED="${SCOPE_DROPPED//[\"\'\\]/}"
+    else
+      SCOPE_DROPPED="${SCOPE_DROPPED//[\"\']/}"
+    fi
+  else
+    if [ "${2:-}" = bs ]; then
+      SCOPE_DROPPED="$(printf '%sx' "$1" | LC_ALL=C tr -d "\"'\\\\")"
+    else
+      SCOPE_DROPPED="$(printf '%sx' "$1" | LC_ALL=C tr -d "\"'")"
+    fi
+    SCOPE_DROPPED="${SCOPE_DROPPED%x}"
+  fi
+}
+
 scope_mask_literal_expansions() {
-  local raw="${1:-}" out="" ch backtick
-  local in_single=0 escaped=0 i
-  backtick=$'\140'
+  # One pass over the text, jumping between the characters that change state
+  # (`\`, `'`, `$`) with parameter expansion instead of testing every
+  # character in a bash loop. The old per-character loop cost O(length) bash
+  # operations per call and the authorizer calls this for every candidate
+  # token, so a long inline command (hundreds of lines) grew quadratically and
+  # hit the hook timeout. Output is byte-identical to the per-character form.
+  local raw="${1:-}" out="" rest chunk ch next in_single=0
+  local backtick=$'\140' marker="__HQ_LITERAL_EXPANSION__"
+  local special_pat='[\\'"'"'$]' literal_pat='[$`*?[]'
+  rest="$raw"
 
-  for ((i = 0; i < ${#raw}; i++)); do
-    ch="${raw:i:1}"
-    if [ "$escaped" -eq 1 ]; then
-      case "$ch" in
-        '$'|"$backtick"|'*'|'?'|'[') out+="__HQ_LITERAL_EXPANSION__" ;;
-        *) out+="$ch" ;;
-      esac
-      escaped=0
-      continue
-    fi
-
+  while [ -n "$rest" ]; do
     if [ "$in_single" -eq 1 ]; then
-      if [ "$ch" = "'" ]; then
-        in_single=0
-        out+="$ch"
-      else
-        case "$ch" in
-          '$'|"$backtick"|'*'|'?'|'[') out+="__HQ_LITERAL_EXPANSION__" ;;
-          *) out+="$ch" ;;
-        esac
+      # Inside single quotes only the closing quote is structural; every
+      # expansion-looking character is literal.
+      chunk="${rest%%\'*}"
+      if [ "$chunk" = "$rest" ]; then
+        out+="${rest//$literal_pat/$marker}"
+        break
       fi
+      out+="${chunk//$literal_pat/$marker}'"
+      rest="${rest:$((${#chunk} + 1))}"
+      in_single=0
       continue
     fi
+
+    chunk="${rest%%$special_pat*}"
+    if [ "$chunk" = "$rest" ]; then
+      out+="$rest"
+      break
+    fi
+    out+="$chunk"
+    rest="${rest:${#chunk}}"
+    ch="${rest:0:1}"
+    rest="${rest:1}"
 
     case "$ch" in
-      \\) out+="$ch"; escaped=1 ;;
+      \\)
+        out+="$ch"
+        next="${rest:0:1}"
+        rest="${rest:1}"
+        if [ -n "$next" ]; then
+          case "$next" in
+            '$'|"$backtick"|'*'|'?'|'[') out+="$marker" ;;
+            *) out+="$next" ;;
+          esac
+        fi
+        ;;
       \') out+="$ch"; in_single=1 ;;
       '$')
         # A `$` that cannot begin a parameter, command, or arithmetic expansion
@@ -82,12 +152,11 @@ scope_mask_literal_expansions() {
         # hook with no background job dies with "unbound variable" instead of
         # rendering a verdict (caught by the spawn-budget suite, which skips the
         # process substitution that would otherwise have set `$!`).
-        case "${raw:$((i + 1)):1}" in
+        case "${rest:0:1}" in
           [A-Za-z0-9_@]|'*'|'#'|'?'|'$'|'!'|'-'|'{'|'('|'['|"'"|'"') out+="$ch" ;;
-          *) out+="__HQ_LITERAL_EXPANSION__" ;;
+          *) out+="$marker" ;;
         esac
         ;;
-      *) out+="$ch" ;;
     esac
   done
 
@@ -914,7 +983,7 @@ scope_shell_variable_values() {
     # deleted, so a quoted or escaped builtin name (`"read" d`, `r\ead d`)
     # is still seen.
     local loop_count loop_bind_re loop_text
-    loop_text="${command_text//[\"\'\\]/}"
+    scope_drop_quote_chars "$command_text" bs; loop_text="$SCOPE_DROPPED"
     # ANSI-C quoting and IFS changes alter quoting and word splitting in ways
     # the text checks below cannot follow, so the loop stays unresolved. The
     # count and binding checks also run on the dequoted text.
@@ -1382,32 +1451,51 @@ scope_candidate_is_inert_text() {
   return 0
 }
 
+# Quote state (0 none, 1 single, 2 double) at the end of the prefix the last
+# call walked. Candidates in one command arrive with ever longer prefixes of
+# the same text, so a call whose prefix extends this one walks only the new
+# part. The walk is a pure left-to-right function of the quote characters,
+# so resuming from the saved state gives the same answer as walking the
+# whole prefix.
+SCOPE_SQ_BASE=""
+SCOPE_SQ_BASE_STATE=0
+
 scope_candidate_is_single_quoted() {
-  local candidate="${1:-}" prefix="${2:-}" state=0 escaped=0 ch i
+  local candidate="${1:-}" prefix="${2:-}" state=0 quotes ch i rest base
   [ -n "$candidate" ] || return 1
-  for ((i = 0; i < ${#prefix}; i++)); do
-    ch="${prefix:i:1}"
-    if [ "$escaped" -eq 1 ]; then
-      escaped=0
-      continue
-    fi
+  base="${SCOPE_SQ_BASE:-}"
+  rest="$prefix"
+  if [ "${#prefix}" -ge "${#base}" ] && [ "${prefix:0:${#base}}" = "$base" ]; then
+    case "${SCOPE_SQ_BASE_STATE:-0}" in 0|1|2) state="${SCOPE_SQ_BASE_STATE:-0}" ;; *) state=0; base="" ;; esac
+    rest="${prefix:${#base}}"
+  fi
+  # Only quote characters change the state, so drop everything else and walk
+  # just the quotes. (The per-character form this replaces never tracked
+  # backslash escapes either: its `\\\\` case pattern cannot match one
+  # character.) bash 3.2 runs ${rest//[!\'\"]/} in time close to length x
+  # length, and this runs once per candidate path, so a few KB of inline
+  # program with many paths took longer than the hook budget. Long text goes
+  # through one tr instead (C locale: quote bytes never occur inside a
+  # multibyte character, so the result is the same).
+  if [ "${#rest}" -lt 1024 ]; then
+    quotes="${rest//[!\'\"]/}"
+  else
+    quotes="$(printf '%s' "$rest" | LC_ALL=C tr -cd "\"'")"
+  fi
+  for ((i = 0; i < ${#quotes}; i++)); do
+    ch="${quotes:i:1}"
     if [ "$state" -eq 1 ]; then
       [ "$ch" = "'" ] && state=0
-      continue
+    elif [ "$state" -eq 2 ]; then
+      [ "$ch" = '"' ] && state=0
+    elif [ "$ch" = "'" ]; then
+      state=1
+    else
+      state=2
     fi
-    if [ "$state" -eq 2 ]; then
-      case "$ch" in
-        \\\\) escaped=1 ;;
-        '"') state=0 ;;
-      esac
-      continue
-    fi
-    case "$ch" in
-      \\\\) escaped=1 ;;
-      \') state=1 ;;
-      '"') state=2 ;;
-    esac
   done
+  SCOPE_SQ_BASE="$prefix"
+  SCOPE_SQ_BASE_STATE="$state"
   [ "$state" -eq 1 ]
 }
 
@@ -2366,29 +2454,147 @@ scope_case_company_entry() {
 
 SCOPE_CASE_COMPANIES_PAT='[cC][oO][mM][pP][aA][nN][iI][eE][sS]'
 
+# Same result as ${text//"$lit"/"$rep"} for a non-empty literal <lit>: every
+# non-overlapping occurrence, left to right, is replaced. bash 3.2 (the stock
+# macOS /bin/bash) runs that global substitution in time close to length x
+# length: at each character that could start a match it retries every end
+# position up to the end of the text. A 40 KB payload that repeats the HQ
+# root or the word "companies" took 25 s, so the guard timed out before any
+# check ran. This walk jumps from one occurrence to the next with a prefix
+# removal and a substring, so it costs one short scan per occurrence.
+# Result in SCOPE_LIT_OUT.
+scope_literal_replace_all() {
+  local text="${1:-}" lit="${2:-}" rep="${3:-}" out="" pre
+  if [ -z "$lit" ]; then
+    SCOPE_LIT_OUT="$text"
+    return 0
+  fi
+  while [[ "$text" == *"$lit"* ]]; do
+    pre="${text%%"$lit"*}"
+    out="$out$pre$rep"
+    text="${text:$((${#pre} + ${#lit}))}"
+  done
+  SCOPE_LIT_OUT="$out$text"
+}
+
 # Rewrite <text> (a payload, a command, or a path) so that case variants of
 # the HQ root, of the companies segment, and of a company slug right after
 # companies/ use the on-disk spelling. A no-op unless the volume folds case.
 # Result in SCOPE_CASE_TEXT.
+# Switch this shell to the C locale and back. Assigning or unsetting LC_ALL
+# makes bash call setlocale at once, so string operations between the two
+# calls work on bytes. No process is spawned.
+SCOPE_LC_ALL_WAS_SET=""
+SCOPE_LC_ALL_SAVED=""
+scope_c_locale_enter() {
+  SCOPE_LC_ALL_WAS_SET="${LC_ALL+1}"
+  SCOPE_LC_ALL_SAVED="${LC_ALL-}"
+  LC_ALL=C
+}
+scope_c_locale_leave() {
+  if [ -n "$SCOPE_LC_ALL_WAS_SET" ]; then
+    LC_ALL="$SCOPE_LC_ALL_SAVED"
+  else
+    unset LC_ALL
+  fi
+}
+
 scope_case_fold_text() {
-  local text="${1:-}" stripped out="" pre seg
+  local text="${1:-}"
   SCOPE_CASE_TEXT="$text"
   scope_case_folds || return 0
+  # The fold runs in the C locale, whatever the caller's locale is.
+  # - Speed: under a UTF-8 locale bash 3.2 decodes the whole string again
+  #   for every ${text%%...}, ${text:n} and [[ == ]] below, so the walk over
+  #   a 54 KB heredoc that names companies/ a thousand times took 7 s (C
+  #   locale: about 2 s; see scope_case_fold_is_noop for the rest).
+  # - Same result: every step matches a literal, an ASCII letter in either
+  #   case, or a class of ASCII bytes. UTF-8 never puts an ASCII byte or a
+  #   lead byte inside another character, so a byte-wise walk finds the same
+  #   occurrences as a character-wise one.
+  # - Same in every shell: bash 3.2 under a UTF-8 locale on macOS reads
+  #   [a-z] by collation order, which takes in A-Y and accented letters.
+  #   scope_case_pattern then built `[O]` instead of `[oO]` for an uppercase
+  #   letter, so `Companies/OtherCo` and a lowercased HQ root were not
+  #   folded there. In the C locale (and in bash 5, which reads ranges as
+  #   ASCII) the classes are ASCII only.
+  scope_c_locale_enter
+  scope_case_fold_text_bytes "$text"
+  scope_c_locale_leave
+}
+
+# Succeeds only when scope_case_fold_text_bytes would return <text> unchanged;
+# any doubt (a scan that did not run cleanly) returns 1 and the full fold
+# runs. Called in the C locale, and each grep gets LC_ALL=C, so -i folds ASCII
+# letters only, which is what the [xX] patterns from scope_case_pattern match.
+#   - No long s or Kelvin sign.
+#   - Every case-insensitive match of the HQ root, and of "companies", is
+#     already the canonical spelling. grep -o reports the leftmost
+#     non-overlapping matches, the same ones scope_case_replace_all rewrites,
+#     so that rewrite would leave the text as it is.
+#   - Every slug after companies/ (grep -o finds the same leftmost, longest
+#     runs the walk takes) is its own on-disk entry.
+scope_case_fold_is_noop() {
+  local text="${1:-}" lit scan seg
+  case "$text" in *$'\xc5\xbf'*|*$'\xe2\x84\xaa'*) return 1 ;; esac
+  for lit in "$HQ_ROOT" companies; do
+    # Prints "<count of non-canonical matches> <rc of grep -o> <rc of grep -c>".
+    scan="$(printf '%s\n' "$text" | LC_ALL=C grep -a -o -i -F -e "$lit" \
+      | LC_ALL=C grep -a -c -v -x -F -e "$lit"; printf ' %s %s' "${PIPESTATUS[1]}" "${PIPESTATUS[2]}")" || true
+    scan="${scan//$'\n'/}"
+    case "$scan" in
+      "0 0 1"|"0 1 1") ;;
+      *) return 1 ;;
+    esac
+  done
+  scan="$(printf '%s\n' "$text" | LC_ALL=C grep -a -o -e 'companies/[A-Za-z0-9._-]*' \
+    | LC_ALL=C sort -u; printf 'rc=%s %s' "${PIPESTATUS[1]}" "${PIPESTATUS[2]}")" || true
+  case "${scan##*rc=}" in
+    "0 0"|"1 0") ;;
+    *) return 1 ;;
+  esac
+  scan="${scan%rc=*}"
+  while IFS= read -r seg; do
+    seg="${seg#companies/}"
+    [ -n "$seg" ] || continue
+    scope_case_company_entry "$seg"
+    [ "$SCOPE_CASE_ENTRY" = "$seg" ] || return 1
+  done <<< "$scan"
+  return 0
+}
+
+# The body of scope_case_fold_text, entered in the C locale.
+scope_case_fold_text_bytes() {
+  local text="${1:-}" stripped out="" pre seg
+  # A long payload (a data heredoc, a long python body) usually spells every
+  # path the canonical way, so the fold changes nothing. Even in the C
+  # locale, the walks below copy the rest of the text once per occurrence:
+  # about 2.5 s for a 54 KB heredoc that names companies/ a thousand times.
+  # Prove the no-op with three grep scans first.
+  if [ "${#text}" -ge 4096 ] && scope_case_fold_is_noop "$text"; then
+    SCOPE_CASE_TEXT="$text"
+    return 0
+  fi
   # Unicode case folding maps two non-ASCII letters onto ASCII ones: U+017F
   # (long s) folds to s and U+212A (Kelvin sign) to k, so `companie\u017f/x`
   # opens companies/x. Spell them as the ASCII letter first.
-  text="${text//$'\xc5\xbf'/s}"
-  text="${text//$'\xe2\x84\xaa'/k}"
+  # Every substitution below goes through scope_literal_replace_all, not
+  # ${text//lit/rep}: see that helper for why (bash 3.2 cost on long payloads).
+  scope_literal_replace_all "$text" $'\xc5\xbf' s
+  scope_literal_replace_all "$SCOPE_LIT_OUT" $'\xe2\x84\xaa' k
+  text="$SCOPE_LIT_OUT"
   if [ -z "${SCOPE_CASE_ROOT_PAT:-}" ]; then
     scope_case_pattern "$HQ_ROOT"
     SCOPE_CASE_ROOT_PAT="$SCOPE_CASE_PAT"
   fi
-  stripped="${text//"$HQ_ROOT"/}"
+  scope_literal_replace_all "$text" "$HQ_ROOT" ""
+  stripped="$SCOPE_LIT_OUT"
   if [[ "$stripped" == *$SCOPE_CASE_ROOT_PAT* ]]; then
     scope_case_replace_all "$text" "$HQ_ROOT" "$SCOPE_CASE_ROOT_PAT"
     text="$SCOPE_CASE_OUT"
   fi
-  stripped="${text//companies/}"
+  scope_literal_replace_all "$text" companies ""
+  stripped="$SCOPE_LIT_OUT"
   if [[ "$stripped" == *$SCOPE_CASE_COMPANIES_PAT* ]]; then
     scope_case_replace_all "$text" companies "$SCOPE_CASE_COMPANIES_PAT"
     text="$SCOPE_CASE_OUT"
@@ -2596,8 +2802,11 @@ scope_read_bound_scope() {
   [ -n "$sid" ] || return 0
   cap="$(session_scope_capability_path "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true)"
   if [ -n "$cap" ] && [ -f "$cap" ]; then
-    info="$(jq -er --arg sid "$sid" --arg aid "$aid" '
-      select(.session_id == $sid and (.agent_id // "") == $aid)
+    info="$(jq -ser --arg sid "$sid" --arg aid "$aid" '
+      # A capability file must contain exactly one complete object.
+      if length == 1 and (.[0] | type) == "object" then .[0]
+      else error("capability must contain one object") end
+      | select(.session_id == $sid and (.agent_id // "") == $aid)
       | if (.company_slug | type) != "string" or (.company_slug | test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$") | not) then error("invalid primary")
         elif has("company_slugs") then
           if (.company_slugs | type) == "array" and all(.company_slugs[]; type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"))
@@ -3392,7 +3601,7 @@ scope_token_is_standalone_word() {
   # Quotes and backslashes join a word (`"companies"/`, `compan''ies/`), so
   # they are deleted; operators and blanks separate words.
   padded=" ${scope_scan_cmd:-}"$'\n'
-  padded="${padded//[\"\'\\]/}"
+  scope_drop_quote_chars "$padded" bs; padded="$SCOPE_DROPPED"
   padded="${padded//[;|&<>$'\n'$'\t']/ } "
   [[ "$padded" == *" $tok "* ]]
 }
@@ -3763,6 +3972,10 @@ scope_positional_values() {
 # a bare program name with plain flags (`zstd -19`, `pigz`) is allowed; a
 # shell, a path, an expansion or an operator is refused, since that program
 # can read any file.
+# Cache of the quote-free command text (see the first lines of the function).
+SCOPE_TAR_PLAIN_READY=0
+SCOPE_TAR_PLAIN_SRC=""
+SCOPE_TAR_PLAIN=""
 scope_check_tar_program_options() {
   local i k t v name full opt rest letters prog n start=-1 base flags plain h=0
   local flag_re='^([ 	]+-{1,2}[A-Za-z0-9_.,=+-]*)*$'
@@ -3772,8 +3985,17 @@ scope_check_tar_program_options() {
   [ "$n" -gt 0 ] || return 0
   # The command text with quotes and backslashes removed, so TAR_OPT""IONS
   # reads as written.
+  # This runs once per simple command, and the three global substitutions it
+  # replaces cost close to length x length under bash 3.2, so drop the
+  # characters once per distinct text (scope_drop_quote_chars) and reuse it.
   plain="${SCOPE_TAR_TEXT:-${scope_scan_cmd:-}}"
-  plain="${plain//\'/}"; plain="${plain//\"/}"; plain="${plain//\\/}"
+  if [ "${SCOPE_TAR_PLAIN_READY:-0}" != 1 ] || [ "$plain" != "${SCOPE_TAR_PLAIN_SRC-}" ]; then
+    scope_drop_quote_chars "$plain" bs
+    SCOPE_TAR_PLAIN_SRC="$plain"
+    SCOPE_TAR_PLAIN="$SCOPE_DROPPED"
+    SCOPE_TAR_PLAIN_READY=1
+  fi
+  plain="${SCOPE_TAR_PLAIN-}"
   # GNU tar reads extra options from TAR_OPTIONS; refuse any mention, and
   # in a command that runs tar, refuse an assignment or export whose name
   # is built from an expansion (`${T}OPTIONS=`, `export $(...)`), since it
@@ -5422,7 +5644,7 @@ scope_setter_scan_awk='
 scope_command_may_set_var() {
   local name="${1:-}" text="${2:-}" plain b='(^|[^A-Za-z0-9_])' e='([^A-Za-z0-9_]|$)' re re2
   local scan_text="${2:-}" skiphd=0
-  plain="${text//[\"\'\\]/}"
+  scope_drop_quote_chars "$text" bs; plain="$SCOPE_DROPPED"
   case "$text" in *'(('*|*'$['*|*"\$'"*) return 0 ;; esac
   re="\\\$\\{[#!]?${name}:?="
   [[ "$plain" =~ $re ]] && return 0
@@ -5813,7 +6035,7 @@ scope_find_body_is_bounded() {
   case "$body" in find\ *) ;; *) return 1 ;; esac
   case "$body" in *'$'*|*$'\140'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'('*|*')'*|*'\'*) return 1 ;; esac
   # Quotes only group a pattern word; strip them so the word is checked bare.
-  body="${body//[\"\']/}"
+  scope_drop_quote_chars "$body"; body="$SCOPE_DROPPED"
   read -r -a parts <<< "$body"
   [ "${#parts[@]}" -ge 2 ] || return 1
   dir="${parts[1]}"
@@ -7129,7 +7351,7 @@ scope_check_prose_substitutions() {
     # strip above), nor `compan` cut short by a non-word character that a
     # later piece could complete. A longer word such as `company_slugs` or
     # `company-name` is an ordinary argument, not a tenant path.
-    stripped="${body//[\"\']/}"
+    scope_drop_quote_chars "$body"; stripped="$SCOPE_DROPPED"
     stripped="${stripped//companies\//}"
     case "$stripped" in
       *[Cc][Oo][Mm][Pp][Aa][Nn][Ii][Ee][Ss]*|*[Cc][Oo][Mm][Pp][Aa][Nn][!A-Za-z0-9_]*|*[Cc][Oo][Mm][Pp][Aa][Nn])
@@ -8072,7 +8294,7 @@ scope_word_is_literal_remote_url() {
 scope_ssh_hostname=""
 scope_ssh_option_ok() {
   local v="${1:-}" key val
-  v="${v//[\"\']/}"
+  scope_drop_quote_chars "$v"; v="$SCOPE_DROPPED"
   case "$v" in ''|*'$'*|*$'\140'*|*'\'*) return 1 ;; esac
   v="$(printf '%s' "$v" | tr '\t' ' ')"
   key="${v%%[= ]*}"
@@ -8178,11 +8400,11 @@ scope_remote_position() {
   done
   [ "$index" -gt "$head_index" ] || return 1
   head="$(scope_remote_word "$head_index")"
-  head="${head//[\"\'\\]/}"
+  scope_drop_quote_chars "$head" bs; head="$SCOPE_DROPPED"
   head="${head##*/}"
   word="$(scope_remote_word "$index")"
   prev="$(scope_remote_word "$((index - 1))")"
-  prev="${prev//[\"\'\\]/}"
+  scope_drop_quote_chars "$prev" bs; prev="$SCOPE_DROPPED"
   case "${word#[\"\']}" in -*) return 1 ;; esac
   case "$head" in
     curl|wget)
@@ -8414,7 +8636,7 @@ scope_owner_roots_file() {
 scope_block_if_names_owner_roots() {
   local text="${1:-}" kind="${2:-}" squashed roots resolved
   [ -n "$text" ] || return 0
-  squashed="${text//[\"\'\\]/}"
+  scope_drop_quote_chars "$text" bs; squashed="$SCOPE_DROPPED"
   case "$squashed" in
     *repo-symlink-roots*)
       scope_block_rel "repo-symlink-roots" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session"
@@ -8533,13 +8755,17 @@ scope_fs_folds_case() {
   [ "${SCOPE_FS_FOLDS_CASE:-0}" -eq 1 ]
 }
 
+# Callers run scope_fs_folds_case inside $(...), where the cached answer is
+# lost and `uname` would fork again for every token. Resolve it once here.
+scope_fs_folds_case || true
+
 # Fold only the repos/ and private|public segments, and only where the
 # filesystem does. The rest of the path, including .ENV, stays as typed so a
 # later sensitive-name check can fold it on its own.
-scope_canonicalize_repos_token() {
+scope_canonicalize_repos_token_v() {
   local token="${1:-}" prefix="" body dot="" low rest seg2 seg2low tail
-  [ -n "$token" ] || { printf '%s' ""; return 0; }
-  scope_fs_folds_case || { printf '%s' "$token"; return 0; }
+  [ -n "$token" ] || { SCOPE_RV=""; return 0; }
+  scope_fs_folds_case || { SCOPE_RV="$token"; return 0; }
   case "$token" in
     "$HQ_ROOT"/*)
       prefix="$HQ_ROOT/"
@@ -8551,25 +8777,33 @@ scope_canonicalize_repos_token() {
   case "$body" in
     ./*) dot="./"; body="${body#./}" ;;
   esac
-  low="$(printf '%s' "${body%%/*}" | tr '[:upper:]' '[:lower:]')"
-  [ "$low" = "repos" ] || { printf '%s' "$token"; return 0; }
+  # Case-insensitive match without a tr subprocess per token.
+  case "${body%%/*}" in
+    [Rr][Ee][Pp][Oo][Ss]) ;;
+    *) SCOPE_RV="$token"; return 0 ;;
+  esac
   if [ "$body" = "${body%%/*}" ]; then
-    printf '%s' "${prefix}${dot}repos"
+    SCOPE_RV="${prefix}${dot}repos"
     return 0
   fi
   rest="${body#*/}"
   seg2="${rest%%/*}"
-  seg2low="$(printf '%s' "$seg2" | tr '[:upper:]' '[:lower:]')"
-  case "$seg2low" in
-    private|public) ;;
-    *) printf '%s' "$token"; return 0 ;;
+  case "$seg2" in
+    [Pp][Rr][Ii][Vv][Aa][Tt][Ee]) seg2low=private ;;
+    [Pp][Uu][Bb][Ll][Ii][Cc]) seg2low=public ;;
+    *) SCOPE_RV="$token"; return 0 ;;
   esac
   if [ "$rest" = "$seg2" ]; then
-    printf '%s' "${prefix}${dot}repos/$seg2low"
+    SCOPE_RV="${prefix}${dot}repos/$seg2low"
     return 0
   fi
   tail="${rest#*/}"
-  printf '%s' "${prefix}${dot}repos/$seg2low/$tail"
+  SCOPE_RV="${prefix}${dot}repos/$seg2low/$tail"
+}
+
+scope_canonicalize_repos_token() {
+  scope_canonicalize_repos_token_v "${1:-}"
+  printf '%s' "$SCOPE_RV"
 }
 
 scope_link_path_is_sensitive() {
@@ -8606,7 +8840,7 @@ scope_path_inside() {
 # repos/(private|public)/<segment> for a path that is that link or a file under it.
 scope_repo_link_rel() {
   local raw="${1:-}" rel kind rest name
-  raw="$(scope_canonicalize_repos_token "$raw")"
+  scope_canonicalize_repos_token_v "$raw"; raw="$SCOPE_RV"
   case "$raw" in
     "$HQ_ROOT"/repos/*) rel="${raw#"$HQ_ROOT"/}" ;;
     repos/*) rel="$raw" ;;
@@ -8632,9 +8866,9 @@ scope_repo_link_rel() {
 }
 
 # Print the repos/ relative form of a token, or fail when it is not one.
-scope_repos_rel_of_token() {
+scope_repos_rel_of_token_v() {
   local token="${1:-}" kind rest name tail
-  token="$(scope_canonicalize_repos_token "$token")"
+  scope_canonicalize_repos_token_v "$token"; token="$SCOPE_RV"
   token="${token%/}"
   case "$token" in
     ./repos/*) token="${token#./}" ;;
@@ -8657,7 +8891,12 @@ scope_repos_rel_of_token() {
       token="repos/$kind/$name/$tail"
     fi
   fi
-  printf '%s' "$token"
+  SCOPE_RV="$token"
+}
+
+scope_repos_rel_of_token() {
+  scope_repos_rel_of_token_v "${1:-}" || return 1
+  printf '%s' "$SCOPE_RV"
 }
 
 scope_repos_rel_is_link_node() {
@@ -8801,39 +9040,43 @@ scope_cd_dotdot_checked() {
 # rechecks the target. Destinations are recorded so those tokens are not
 # judged by the old target.
 
-scope_expand_home_spell() {
+# The _v form leaves its result in SCOPE_RV so a hot caller can skip the
+# subshell that $(...) costs; the printing form below is unchanged for others.
+scope_expand_home_spell_v() {
   local token="${1:-}" home="${HOME:-}" prefix rest
+  SCOPE_RV="$token"
   case "$token" in
-    '~') printf '%s' "$home"; return 0 ;;
+    '~') SCOPE_RV="$home" ;;
     # The strip pattern has to be quoted. Unquoted, bash tilde-expands
     # ${token#~/} into ${token#$HOME/} and the literal ~/ form survives.
     '~/'*)
       rest="${token#"~/"}"
-      printf '%s' "${home%/}/$rest"
-      return 0
+      SCOPE_RV="${home%/}/$rest"
       ;;
-    '$HOME') printf '%s' "$home"; return 0 ;;
+    '$HOME') SCOPE_RV="$home" ;;
     '$HOME/'*)
       prefix='$HOME/'
-      printf '%s' "${home%/}/${token#"$prefix"}"
-      return 0
+      SCOPE_RV="${home%/}/${token#"$prefix"}"
       ;;
-    '${HOME}') printf '%s' "$home"; return 0 ;;
+    '${HOME}') SCOPE_RV="$home" ;;
     '${HOME}/'*)
       prefix='${HOME}/'
-      printf '%s' "${home%/}/${token#"$prefix"}"
-      return 0
+      SCOPE_RV="${home%/}/${token#"$prefix"}"
       ;;
   esac
-  printf '%s' "$token"
+}
+
+scope_expand_home_spell() {
+  scope_expand_home_spell_v "${1:-}"
+  printf '%s' "$SCOPE_RV"
 }
 
 # Collapse . and .. without following symlinks. Absolute in, absolute out.
-scope_lexical_normalize() {
+scope_lexical_normalize_v() {
   local input="${1:-}" resolved="/" pending segment
   case "$input" in
     /*) ;;
-    *) printf '%s' "$input"; return 0 ;;
+    *) SCOPE_RV="$input"; return 0 ;;
   esac
   pending="${input#/}"
   while [ -n "$pending" ]; do
@@ -8850,11 +9093,16 @@ scope_lexical_normalize() {
       *) resolved="${resolved%/}/$segment" ;;
     esac
   done
-  printf '%s' "$resolved"
+  SCOPE_RV="$resolved"
+}
+
+scope_lexical_normalize() {
+  scope_lexical_normalize_v "${1:-}"
+  printf '%s' "$SCOPE_RV"
 }
 
 scope_owner_roots_deny() {
-  scope_block_rel "${1:-repo-symlink-roots}" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session"
+  scope_block_rel "${1:-repo-symlink-roots}" "the repo symlink root list is owner-only; add a root by editing \$HOME/.hq/repo-symlink-roots in your own editor, not from the session. Commands that scan \$HOME/.hq are refused because it holds that list. To read the HQ Sync log, name its file: tail -n 200 ~/.hq/logs/hq-sync.log"
 }
 
 # Block a token that is the owner root list, its parent directory, a glob that
@@ -8863,15 +9111,18 @@ scope_owner_roots_deny() {
 scope_owner_roots_consider() {
   local token="${1:-}" base="${2:-}" head="${3:-}" roots parent expanded abs resolved matches match
   [ -n "$token" ] || return 0
-  roots="$(scope_owner_roots_file)"
+  case "${HOME:-}" in
+    /*) roots="${HOME%/}/.hq/repo-symlink-roots" ;;
+    *) roots="" ;;
+  esac
   [ -n "$roots" ] || return 0
   parent="${roots%/*}"
-  expanded="$(scope_expand_home_spell "$token")"
+  scope_expand_home_spell_v "$token"; expanded="$SCOPE_RV"
   case "$expanded" in
-    /*) abs="$(scope_lexical_normalize "$expanded")" ;;
+    /*) scope_lexical_normalize_v "$expanded"; abs="$SCOPE_RV" ;;
     *)
       [ -n "$base" ] || base="${SCOPE_WALK_LOGICAL:-${COMMAND_CWD:-$HQ_ROOT}}"
-      abs="$(scope_lexical_normalize "${base%/}/$expanded")"
+      scope_lexical_normalize_v "${base%/}/$expanded"; abs="$SCOPE_RV"
       ;;
   esac
   case "$abs" in
@@ -8999,55 +9250,61 @@ scope_walk_has_dotdot() {
 
 # Prints REPOS:<rel>, UNPARSED, or NO. Relative tokens join the walk's
 # logical directory, then .. is collapsed without following symlinks.
-scope_walk_token_class() {
+scope_walk_token_class_v() {
   local token="${1:-}" expanded joined relpath rel
-  [ -n "$token" ] || { printf 'NO'; return 0; }
+  [ -n "$token" ] || { SCOPE_CLASS=NO; return 0; }
   case "$token" in
-    -*) printf 'NO'; return 0 ;;
+    -*) SCOPE_CLASS=NO; return 0 ;;
   esac
   # $HOME and ~/ are known spellings. Expand them before the unresolved
   # variable check, or ln -sfn "$HOME" is refused as unparsed.
   case "$token" in
     '~'|'~/'*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*)
-      token="$(scope_expand_home_spell "$token")"
+      scope_expand_home_spell_v "$token"; token="$SCOPE_RV"
       ;;
     '$'*|'${'*)
       if expanded="$(scope_walk_lookup_assign "$token")"; then
         token="$expanded"
       else
-        printf 'UNPARSED'
+        SCOPE_CLASS=UNPARSED
         return 0
       fi
       ;;
   esac
   case "$token" in
     *'$'*|*'`'*|*'('*|*')'*|*';'*|*'&'*|*[|]*|*[*]*|*[?]*|*[[]*|*' '*|*'"'*)
-      printf 'UNPARSED'
+      SCOPE_CLASS=UNPARSED
       return 0
       ;;
   esac
-  expanded="$(scope_expand_home_spell "$token")"
+  scope_expand_home_spell_v "$token"; expanded="$SCOPE_RV"
   case "$expanded" in
     /*)
-      joined="$(scope_lexical_normalize "$expanded")"
+      scope_lexical_normalize_v "$expanded"; joined="$SCOPE_RV"
       ;;
     *)
       if [ "${SCOPE_WALK_CWD_KNOWN:-1}" -ne 1 ]; then
-        printf 'UNPARSED'
+        SCOPE_CLASS=UNPARSED
         return 0
       fi
-      joined="$(scope_lexical_normalize "${SCOPE_WALK_LOGICAL%/}/$expanded")"
+      scope_lexical_normalize_v "${SCOPE_WALK_LOGICAL%/}/$expanded"; joined="$SCOPE_RV"
       ;;
   esac
   case "$joined" in
     "$HQ_ROOT"/*) relpath="${joined#"$HQ_ROOT"/}" ;;
-    *) printf 'NO'; return 0 ;;
+    *) SCOPE_CLASS=NO; return 0 ;;
   esac
-  if rel="$(scope_repos_rel_of_token "$relpath")"; then
-    printf 'REPOS:%s' "$rel"
+  if scope_repos_rel_of_token_v "$relpath"; then
+    rel="$SCOPE_RV"
+    SCOPE_CLASS="REPOS:$rel"
   else
-    printf 'NO'
+    SCOPE_CLASS=NO
   fi
+}
+
+scope_walk_token_class() {
+  scope_walk_token_class_v "${1:-}"
+  printf '%s' "$SCOPE_CLASS"
 }
 
 scope_walk_inside_any() {
@@ -9286,7 +9543,7 @@ scope_walk_script_body() {
       FAIL|VAR:*) scope_walk_refuse "$needle" ;;
     esac
     path="${dest#LIT:}"
-    class="$(scope_walk_token_class "$path")"
+    scope_walk_token_class_v "$path"; class="$SCOPE_CLASS"
     case "$class" in
       UNPARSED) scope_walk_refuse "$needle" ;;
       REPOS:*)
@@ -9359,6 +9616,7 @@ scope_walk_parse() {
 }
 
 scope_walk_one() {
+  scope_enforce_check_budget
   local record="${1:-}" depth="${2:-0}"
   local -a argv words redirs
   local i n tok exe="" exe_at=0 dest="" last="" class="" rel="" body=""
@@ -9395,7 +9653,7 @@ scope_walk_one() {
       i=$((i + 1))
       continue
     fi
-    walk_head="${tok//[\"\'\\]/}"
+    scope_drop_quote_chars "$tok" bs; walk_head="$SCOPE_DROPPED"
     walk_head="${walk_head##*/}"
     break
   done
@@ -9548,7 +9806,7 @@ scope_walk_one() {
             --) i=$((i + 1)); continue ;;
             -*) i=$((i + 1)); continue ;;
           esac
-          class="$(scope_walk_token_class "$tok")"
+          scope_walk_token_class_v "$tok"; class="$SCOPE_CLASS"
           case "$class" in
             UNPARSED) scope_walk_refuse "$exe" ;;
           esac
@@ -9556,7 +9814,7 @@ scope_walk_one() {
           i=$((i + 1))
         done
         if [ -n "$last" ]; then
-          class="$(scope_walk_token_class "$last")"
+          scope_walk_token_class_v "$last"; class="$SCOPE_CLASS"
           case "$class" in
             REPOS:*) scope_walk_add_dest "${class#REPOS:}" ;;
           esac
@@ -9570,7 +9828,7 @@ scope_walk_one() {
         case "$tok" in
           -*) i=$((i + 1)); continue ;;
         esac
-        class="$(scope_walk_token_class "$tok")"
+        scope_walk_token_class_v "$tok"; class="$SCOPE_CLASS"
         case "$class" in
           UNPARSED) scope_walk_refuse "$exe" ;;
           REPOS:*) scope_walk_add_dest "${class#REPOS:}" ;;
@@ -9593,7 +9851,7 @@ scope_walk_one() {
             continue
             ;;
         esac
-        class="$(scope_walk_token_class "$tok")"
+        scope_walk_token_class_v "$tok"; class="$SCOPE_CLASS"
         case "$class" in
           REPOS:*)
             rel="${class#REPOS:}"
@@ -9636,7 +9894,7 @@ scope_walk_one() {
           i=$((i + 1))
         done
         if [ -n "$last" ]; then
-          class="$(scope_walk_token_class "$last")"
+          scope_walk_token_class_v "$last"; class="$SCOPE_CLASS"
           case "$class" in
             UNPARSED) scope_walk_refuse "$exe" ;;
             REPOS:*)
@@ -9735,7 +9993,7 @@ scope_walk_one() {
         case "$tok" in
           -*) i=$((i + 1)); continue ;;
         esac
-        class="$(scope_walk_token_class "$tok")"
+        scope_walk_token_class_v "$tok"; class="$SCOPE_CLASS"
         case "$class" in
           REPOS:*) scope_walk_note_use "${class#REPOS:}" ;;
         esac
@@ -9745,7 +10003,7 @@ scope_walk_one() {
   esac
   i=0
   while [ "$i" -lt "${#redirs[@]}" ]; do
-    class="$(scope_walk_token_class "${redirs[$i]}")"
+    scope_walk_token_class_v "${redirs[$i]}"; class="$SCOPE_CLASS"
     case "$class" in
       REPOS:*) scope_walk_note_use "${class#REPOS:}" ;;
     esac
@@ -9818,7 +10076,7 @@ scope_registered_repo_decision() {
   local raw="${1:-}" rel_lex="" link_rel="" repo_root="" final="" backtick
   backtick=$'\140'
   [ -n "$raw" ] || { printf '%s' fallthrough; return 0; }
-  raw="$(scope_canonicalize_repos_token "$raw")"
+  scope_canonicalize_repos_token_v "$raw"; raw="$SCOPE_RV"
   case "$raw" in
     "$HQ_ROOT"/*) rel_lex="${raw#"$HQ_ROOT"/}" ;;
     /*) printf '%s' fallthrough; return 0 ;;
@@ -9866,6 +10124,7 @@ scope_registered_repo_decision() {
 
 scope_check_bash_skill_path() {
   local raw="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
+  scope_enforce_check_budget
   local masked raw_masked backtick token rel resolved expansion_cwd expanded expanded_raw open_tree_candidate
   [ -n "$raw" ] || return 0
   # Shell assignment words can themselves carry paths. Check those values,
@@ -9876,7 +10135,7 @@ scope_check_bash_skill_path() {
       \"*\") expanded="${expanded:1:${#expanded}-2}" ;;
       \'*\') expanded="${expanded:1:${#expanded}-2}" ;;
     esac
-    expanded="$(scope_canonicalize_repos_token "$expanded")"
+    scope_canonicalize_repos_token_v "$expanded"; expanded="$SCOPE_RV"
     case "$expanded" in
       workspace/*|core/*|personal/*|repos/*|companies/*|/*|./*|../*|~/*)
         scope_check_bash_skill_path "$expanded" "$command_text" "$prefix" "$suffix"
@@ -9892,6 +10151,24 @@ scope_check_bash_skill_path() {
     # first occurrence alone would decide quoting and assignment order for
     # every one of them, so check each occurrence with its own context.
     if [[ "$suffix" == *"$raw"* ]]; then
+      # A repeated word reaches this function once per repetition, and each
+      # visit re-checks every occurrence: k copies cost k*k full checks, which
+      # is what made a long inline command (the same path on many lines) time
+      # out. The verdict for one word in one command text from one working
+      # directory does not change between visits, so a later visit is a no-op.
+      local occurrence_memo_key="${COMMAND_CWD:-}"$'\x01'"$command_text"
+      if [ "${SCOPE_OCC_MEMO_KEY-}" != "$occurrence_memo_key" ]; then
+        SCOPE_OCC_MEMO_KEY="$occurrence_memo_key"
+        SCOPE_OCC_MEMO_WORDS=$'\n'
+      fi
+      case "$raw" in
+        *$'\n'*) ;;
+        *)
+          if [[ "$SCOPE_OCC_MEMO_WORDS" == *$'\n'"$raw"$'\n'* ]]; then
+            return 0
+          fi
+          ;;
+      esac
       local occurrence_rest="$command_text" occurrence_offset=0 occurrence_pre
       while [[ "$occurrence_rest" == *"$raw"* ]]; do
         occurrence_pre="${occurrence_rest%%"$raw"*}"
@@ -9901,6 +10178,10 @@ scope_check_bash_skill_path() {
         occurrence_offset=$((occurrence_offset + ${#raw}))
         occurrence_rest="${command_text:$occurrence_offset}"
       done
+      case "$raw" in
+        *$'\n'*) ;;
+        *) SCOPE_OCC_MEMO_WORDS+="$raw"$'\n' ;;
+      esac
       return 0
     fi
   fi
@@ -9938,7 +10219,7 @@ scope_check_bash_skill_path() {
       esac
       ;;
   esac
-  raw="$(scope_canonicalize_repos_token "$raw")"
+  scope_canonicalize_repos_token_v "$raw"; raw="$SCOPE_RV"
   # A link being created or removed in this command is a repos/ path, not a
   # read of whatever the link points at now. The same-command check already
   # refused any other repos/ use.
@@ -10849,7 +11130,7 @@ scope_subst_check_command() {
       i=$((i + 1))
       continue
     fi
-    head="${word//[\"\'\\]/}"
+    scope_drop_quote_chars "$word" bs; head="$SCOPE_DROPPED"
     head="${head##*/}"
     case "$head" in
       do|then|else|elif|'!'|'{'|if|while|until|nohup|builtin|exec|command|time|stdbuf|caffeinate)
@@ -11447,8 +11728,8 @@ scope_inline_name_values() {
 # companies/ scan above already checks it.
 scope_inline_value_glues_company() {
   local before="${1:-}" value="${2:-}" after="${3:-}" b a s vs ve rest pre st en base=0
-  before="${before//[\"\']/}"
-  after="${after//[\"\']/}"
+  scope_drop_quote_chars "$before"; before="$SCOPE_DROPPED"
+  scope_drop_quote_chars "$after"; after="$SCOPE_DROPPED"
   b="${before:$(( ${#before} > 8 ? ${#before} - 8 : 0 ))}"
   a="${after:0:8}"
   s="$(printf '%s' "$b$value$a" | tr '[:upper:]' '[:lower:]')"
@@ -11871,7 +12152,7 @@ scope_inline_head_name() {
     *"\$'"*\\*) scope_block_rel "\$'...'" "the command name uses a \$'...' escape the guard cannot check; type the name plainly" ;;
   esac
   word="${word//\$\'/}"
-  word="${word//[\"\'\\]/}"
+  scope_drop_quote_chars "$word" bs; word="$SCOPE_DROPPED"
   scope_inline_head="${word##*/}"
 }
 
@@ -12359,6 +12640,9 @@ case "$TOOL" in
     . "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh"
     if ! hq_arith_guard_check "$scope_arith_raw"; then
       hq_arith_guard_message
+      if [ "${#scope_arith_raw}" -gt 16384 ]; then
+        printf '%s\n' 'This command is also very long (over 16 KiB). Put the logic in a script file (write it with the Write tool, then run it with a short command such as bash path/to/script.sh) or split it into several shorter Bash calls.' >&2
+      fi
       exit 2
     fi
     scope_compute_shadowed_names "$cmd"
@@ -12518,7 +12802,7 @@ case "$TOOL" in
       # command so the variable form is mapped like the literal one. Any
       # other computed target that mentions companies is refused.
       scope_cd_var_re='^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/[^$`\\]*)?$'
-      scope_cd_bare="${scope_cd_word//[\"\']/}"
+      scope_drop_quote_chars "$scope_cd_word"; scope_cd_bare="$SCOPE_DROPPED"
       if ! [[ "$scope_cd_bare" =~ $scope_cd_var_re ]]; then
         case "$scope_cd_word" in
           *'$'*|*$'\140'*|*\\*)
@@ -12559,7 +12843,7 @@ case "$TOOL" in
     # in such a pipeline, once quotes and backslashes are removed, is refused.
     scope_stdin_shell_re='\|[[:space:]]*(command[[:space:]]+|exec[[:space:]]+|env[[:space:]]+)?([^[:space:];&|]*/)?(bash|sh|zsh|dash|ksh|mksh)([[:space:]]+-[a-zA-Z]*s[a-zA-Z]*|[[:space:]]+-)?[[:space:]]*($|[;&|)]|'$'\n'')'
     if [[ "$cmd" =~ $scope_stdin_shell_re ]]; then
-      scope_stdin_text="${cmd//[\"\'\\]/}"
+      scope_drop_quote_chars "$cmd" bs; scope_stdin_text="$SCOPE_DROPPED"
       case "$scope_stdin_text" in
         *[Cc][Oo][Mm][Pp][Aa][Nn]*)
           scope_block_rel "| ${BASH_REMATCH[3]}" "text piped into a shell names companies; the guard cannot check a program built from text, so run the command directly with literal paths"
@@ -12593,6 +12877,17 @@ case "$TOOL" in
     case "$cmd" in *"$scope_line_continuation"*) scope_had_line_continuation=1 ;; esac
     scope_cmd="${cmd//"$scope_line_continuation"/}"
     scope_scan_cmd="$(scope_strip_inert_heredoc_bodies "$scope_cmd")"
+    # Past this many characters of command text (heredoc data already removed),
+    # checking every word cannot finish inside the hook budget on a typical
+    # machine. Say so now and point at the fix instead of running into the
+    # host timeout. HQ_SCOPE_MAX_SCAN_CHARS may change it (tests).
+    scope_max_scan_chars="${HQ_SCOPE_MAX_SCAN_CHARS:-6000}"
+    case "$scope_max_scan_chars" in ''|*[!0-9]*|??????????*) scope_max_scan_chars=6000 ;; esac
+    if [ "${#scope_scan_cmd}" -gt "$scope_max_scan_chars" ]; then
+      SCOPE_SIZE_GATE_NOTE="The command text is ${#scope_scan_cmd} characters long; the limit is ${scope_max_scan_chars}."
+      SCOPE_START_SECONDS=$((SECONDS - SCOPE_CHECK_BUDGET_SECS))
+      scope_enforce_check_budget
+    fi
     # Unquoted command substitutions in arguments (see scope_subst_scan). It
     # reads the command as typed, before line continuations are joined. Run
     # in a subshell under the C locale; exit 2 is a block, and any other
@@ -12671,7 +12966,7 @@ case "$TOOL" in
       scope_quoted_seg="${scope_quoted_seg%%/*}"
       case "$scope_quoted_seg" in
         *[\"\'\\]*)
-          scope_quoted_seg="${scope_quoted_seg//[\"\'\\]/}"
+          scope_drop_quote_chars "$scope_quoted_seg" bs; scope_quoted_seg="$SCOPE_DROPPED"
           if [ -n "$scope_quoted_seg" ] && [[ "$scope_quoted_seg" != *[!A-Za-z0-9._-]* ]] \
             && [ "$scope_quoted_seg" != . ] && [ "$scope_quoted_seg" != .. ] \
             && [ -d "$HQ_ROOT/companies/$scope_quoted_seg" ] \
@@ -12684,7 +12979,7 @@ case "$TOOL" in
       # the path the shell would build once the quotes are removed.
       case "$fragment" in
         *[\"\'\\]*)
-          scope_quoted_path="${fragment//[\"\'\\]/}"
+          scope_drop_quote_chars "$fragment" bs; scope_quoted_path="$SCOPE_DROPPED"
           case "$scope_quoted_path" in
             *'$'*|*$'\140'*|*[{}*?[]*) ;;
             */..*) scope_check_raw "$scope_quoted_path" ;;
@@ -12875,8 +13170,8 @@ case "$TOOL" in
     scope_interp_bodies="$(scope_interpreter_heredoc_bodies "$scope_scan_cmd")"
     # Backslashes go too: the tokenizer drops them, so a body word such as
     # r"\$(\w+)/" reaches the token loop as r$(w+)/ and must still match.
-    scope_interp_bodies_unquoted="${scope_interp_bodies//[\"\'\\]/}"
-    scope_interp_outside_unquoted="${scope_interp_outside//[\"\'\\]/}"
+    scope_drop_quote_chars "$scope_interp_bodies" bs; scope_interp_bodies_unquoted="$SCOPE_DROPPED"
+    scope_drop_quote_chars "$scope_interp_outside" bs; scope_interp_outside_unquoted="$SCOPE_DROPPED"
     # The normalized split (scope_norm_scan) masks `*`, `?`, `[` and `$`
     # inside single quotes, and a python body quotes its strings with the
     # same character (`['companies/x/policies/*.md']`), so a word from that
@@ -12884,9 +13179,9 @@ case "$TOOL" in
     # copy of the bodies so such a word is still recognised as body text
     # (feedback e2b0f0b4, single-quoted form).
     scope_interp_bodies_masked="$(scope_mask_literal_expansions "$scope_interp_bodies")"
-    scope_interp_bodies_masked_unquoted="${scope_interp_bodies_masked//[\"\'\\]/}"
+    scope_drop_quote_chars "$scope_interp_bodies_masked" bs; scope_interp_bodies_masked_unquoted="$SCOPE_DROPPED"
     scope_interp_outside_masked_unquoted="$(scope_mask_literal_expansions "$scope_interp_outside")"
-    scope_interp_outside_masked_unquoted="${scope_interp_outside_masked_unquoted//[\"\'\\]/}"
+    scope_drop_quote_chars "$scope_interp_outside_masked_unquoted" bs; scope_interp_outside_masked_unquoted="$SCOPE_DROPPED"
     # The `$` relaxation applies only when every interpreter body in the
     # command is a python/node body with no shell handoff. 2 means the only
     # hand-off names were node requires of file and text modules (fs, path,
@@ -12909,7 +13204,8 @@ case "$TOOL" in
     scope_norm_scan=""
     case "$scope_scan_cmd" in
       *[\"\'\\]*)
-        if [[ "${scope_scan_cmd//[\"\'\\]/}" == *companies* ]]; then
+        scope_drop_quote_chars "$scope_scan_cmd" bs
+        if [[ "$SCOPE_DROPPED" == *companies* ]]; then
           scope_norm_scan="$(scope_mask_literal_expansions "$scope_scan_cmd")"
           scope_check_normalized_split "$scope_norm_scan"
           scope_check_reparsed_text 0 "$scope_scan_cmd"

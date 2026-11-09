@@ -10,11 +10,21 @@
 //
 //   node core/scripts/super-conductor-decisions.mjs add --file <queue> \
 //       --source ledger|ask|conductor --ref <request id | session:ask_id | text> \
-//       --question <text> [--option <label>[::<description>]]... \
+//       --question <text> [--body <full text> | --body-file <path>] \
+//       [--subject <key> | --subject auto] [--reopen <why>] \
+//       [--option <label>[::<description>]]... \
 //       [--recommended <label>] [--company <slug>] [--priority critical|normal] \
-//       [--relay-session <local_id>] [--relay-child <link child name>] [--relay-link <link>]
+//       [--relay-session <local_id>] [--relay-child <link child name>] [--relay-link <link>] \
+//       [--relay-agent <subagent id>]
 //   Exit 0 and print the id; exit 3 and print the existing id when source+ref
 //   is already queued (the same question is never asked twice).
+//   `--body` is the full text of the ask or outbound draft (newlines kept, up
+//   to BODY_MAX); `show --id` prints it. `--subject` dedupes on the thing being
+//   decided: `pr:<repo>#<n>:<kind>` for a PR (`auto` derives it from the
+//   question and body). A second add for an open subject exits 3 with that id;
+//   for a subject already answered or relayed it exits 4 and prints
+//   `settled <id> → <answer>`. `--reopen <why>` queues it anyway, with the
+//   reason in the question, when the facts changed.
 //   node core/scripts/super-conductor-decisions.mjs next --file <queue> [--json] [--lane merges|asks|general] [--claim <desk>] [--count <n>]
 //   The oldest open decision, critical rows first; exit 3 when none is open.
 //   --lane serves one desk lane; --claim records that this desk is asking the
@@ -22,8 +32,11 @@
 //   --count <n> returns up to n distinct rows (a JSON array with --json), all
 //   claimed under one lock; critical rows come back on their own.
 //   node core/scripts/super-conductor-decisions.mjs claim --file <queue> --id <id> --desk <desk>
+//       [--conductor-asks]
 //   Claim one named open row (exit 3 when another desk holds it). The
-//   conductor claims only critical rows.
+//   conductor claims only critical rows, unless --conductor-asks: the
+//   conductor is asking that row in its own window (watch --for conductor
+//   --ask), and may then answer it with --desk conductor at any priority.
 //   node core/scripts/super-conductor-decisions.mjs answer --file <queue> --id <id> --answer <text> --desk <desk> [--relay-by desk]
 //   --desk is required and must hold the row's fresh claim.
 //   `--relay-by desk` says the desk delivers this answer itself (a row with a
@@ -42,15 +55,20 @@
 //   conductor relays it. `add --no-standing` skips the rules for one row.
 //   node core/scripts/super-conductor-decisions.mjs stale --file <queue> [--after <s>] [--json]
 //   Open rows waiting longer than --after seconds (default 300); exit 3 when none.
+//   node core/scripts/super-conductor-decisions.mjs show --file <queue> --id <id> [--json]
+//   The full row, body included, for building the picker.
 //   node core/scripts/super-conductor-decisions.mjs watch --file <queue> --for desk|conductor
-//       [--interval <s>] [--parent-pid <pid>] [--once] [--stale-after <s>]
+//       [--interval <s>] [--parent-pid <pid>] [--once] [--stale-after <s>] [--ask | --no-ask]
 //   The wake loop. `--for desk` prints one SUPER-CONDUCTOR DECISION line when
 //   an open decision appears (the desk session's monitor) and one
 //   SUPER-CONDUCTOR STALE-DECISION line per row still open after --stale-after
 //   seconds (default 300; the desk pushes a phone notification); `--for
 //   conductor` prints one SUPER-CONDUCTOR ANSWER line per newly answered
 //   decision the desk does not relay itself (the conductor relays it, then
-//   marks it relayed). Each line is printed once.
+//   marks it relayed). `--for conductor --ask` (conductor asks) also prints
+//   the DECISION and STALE-DECISION lines for open rows no desk holds, so the
+//   conductor opens the picker itself; `--no-ask` is the default. Each line
+//   is printed once.
 //
 // Transitions: open → answered | dropped; answered → relayed | dropped.
 // Text is clipped and kept on one line, "|" replaced, so a row can never pose
@@ -83,6 +101,34 @@ export const clean = (t, n = 400) => {
   const x = String(t == null ? '' : t).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\|/g, '/').replace(/\s+/g, ' ').trim();
   return x.length > n ? `${x.slice(0, n - 1)}…` : x;
 };
+
+// The full text of an ask or a draft. Control characters other than newline
+// and tab go, "|" stays (a body is never a wake-line field), newlines are
+// kept so a draft reads as written. Capped at BODY_MAX.
+export const BODY_MAX = 20_000;
+export const cleanBody = (t, n = BODY_MAX) => {
+  const x = String(t == null ? '' : t).replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, ' ').trim();
+  return x.length > n ? `${x.slice(0, n - 1)}…` : x;
+};
+
+// The subject of a decision: the thing being decided, not the message that
+// raised it. One open row per subject, and a settled subject carries its
+// answer over later messages (a new commit on a PR does not re-ask the merge).
+//   pr:<owner/repo or repo>#<n>:<kind>   kind ∈ merge|review|release|deploy|ask
+// Returns null when no PR is named; such rows dedupe on source+ref as before.
+export function subjectFor(text) {
+  const t = String(text || '');
+  const m = t.match(/\b([\w.-]+\/[\w.-]+)#(\d{1,6})\b/) || t.match(/\b([\w.-]+)#(\d{1,6})\b/) || t.match(/\b([\w]+-[\w-]+)\s+(?:PR\s*)?#(\d{1,6})\b/i) || t.match(/\b(?:PR|pull request)\s*#?(\d{1,6})\b/i) || t.match(/#(\d{2,6})\b/);
+  if (!m) return null;
+  const repo = m.length === 3 && !/^(pr|pull)$/i.test(m[1]) ? m[1] : '';
+  const n = m[m.length - 1];
+  const kind = /\b(merge|merged|land|landing|ship it)\b/i.test(t) ? 'merge'
+    : /\b(release|tag|publish|cut v?\d)\b/i.test(t) ? 'release'
+    : /\b(deploy|redeploy|rollout|roll out)\b/i.test(t) ? 'deploy'
+    : /\b(review|re-review|approve|changes requested)\b/i.test(t) ? 'review'
+    : 'ask';
+  return `pr:${repo ? `${repo}#` : '#'}${n}:${kind}`.toLowerCase();
+}
 
 export function readRows(file) {
   let text = '';
@@ -224,15 +270,30 @@ export function addDecision(file, o) {
   for (const x of options) delete x.label_cut;
   const at = o.at || new Date().toISOString();
   const ref = clean(o.ref, 200);
+  const subject = o.subject === 'auto' ? subjectFor(`${o.question} ${o.body || ''}`) : (clean(o.subject, 120) || null);
+  const reopen = clean(o.reopen, 300) || null;
   return withLockSync(file, () => {
-    const dup = fold(readRows(file)).find((r) => r.source === o.source && r.ref === ref && !['dropped'].includes(r.status));
+    const rows = fold(readRows(file));
+    const dup = rows.find((r) => r.source === o.source && r.ref === ref && !['dropped'].includes(r.status));
     if (dup) return { id: dup.id, dup: true };
+    if (subject) {
+      // One row per subject. An open one is the dup; a settled one carries its
+      // answer unless the caller says why the facts changed.
+      const same = rows.filter((r) => r.subject === subject && r.status !== 'dropped');
+      const open = same.find((r) => r.status === 'open');
+      if (open) return { id: open.id, dup: true, subject };
+      const settled = same.filter((r) => r.status === 'answered' || r.status === 'relayed').sort((a, b) => Date.parse(b.updated_at || b.at) - Date.parse(a.updated_at || a.at))[0];
+      if (settled && !reopen) return { id: settled.id, dup: false, settled: true, answer: settled.answer, subject };
+    }
     const row = {
       id: decisionId(o.source, ref, at), at, source: o.source, ref, status: 'open',
-      question: clean(o.question, QUESTION_MAX), options, priority: String(o.priority || '').trim().toLowerCase() === 'critical' ? 'critical' : 'normal',
+      question: clean(reopen ? `Reopened (${reopen}): ${o.question}` : o.question, QUESTION_MAX), options, priority: String(o.priority || '').trim().toLowerCase() === 'critical' ? 'critical' : 'normal',
+      body: cleanBody(o.body) || undefined,
+      subject: subject || undefined,
+      reopened: reopen || undefined,
       lane: LANES.includes(o.lane) ? o.lane : undefined,
       company: clean(o.company, 60) || undefined,
-      relay: (o.relay && (o.relay.session || o.relay.child)) ? { session: o.relay.session || undefined, child: o.relay.child || undefined, link: o.relay.link || undefined } : undefined,
+      relay: (o.relay && (o.relay.session || o.relay.child || o.relay.agent)) ? { session: o.relay.session || undefined, child: o.relay.child || undefined, link: o.relay.link || undefined, agent: clean(o.relay.agent, 80) || undefined } : undefined,
       asked_by: clean(o.askedBy, 80) || undefined,
       // Where the answer goes when there is no session to relay to: the
       // channel or DM the request came from (a ledger row's source and ref).
@@ -261,13 +322,14 @@ export function setStatus(file, id, status, extra = {}, at = new Date().toISOStr
     // (`next --claim` or `claim --id`): an answer with no desk, from a desk
     // that did not claim the row, or after the claim lapsed is refused. The
     // conductor is a desk only for critical rows (a critical card asked in
-    // its own window).
+    // its own window), or for a row it claimed with --conductor-asks (the
+    // conductor-asks path: it opened that row's picker in its own window).
     if (status === 'answered') {
       const nowMs = Date.parse(at) || Date.now();
       const desk = clean(extra.desk, 40);
       if (!desk) throw new Error(`answer needs --desk <desk name>: the desk whose picker the owner answered (claim the row first)`);
       if (cur.claimed_by !== desk || !freshClaim(cur, nowMs)) throw new Error(`${id} is not claimed by ${desk}${cur.claimed_by && freshClaim(cur, nowMs) ? ` (claimed by ${cur.claimed_by})` : ''}; claim it first with next --claim ${desk} or claim --id ${id} --desk ${desk}`);
-      if ((desk === 'conductor' || extra.by === 'conductor') && cur.priority !== 'critical') throw new Error('the conductor answers only critical rows; every other row is asked on the desk');
+      if ((desk === 'conductor' || extra.by === 'conductor') && cur.priority !== 'critical' && !(desk === 'conductor' && cur.claim_mode === 'asks')) throw new Error('the conductor answers only critical rows, or a row it claimed with claim --conductor-asks; every other row is asked on the desk');
     }
     const row = { id, at, status };
     if (extra.answer) row.answer = clean(extra.answer, 2000);
@@ -275,7 +337,7 @@ export function setStatus(file, id, status, extra = {}, at = new Date().toISOStr
     if (extra.result) row.result = clean(extra.result, 200);
     if (extra.by) row.by = clean(extra.by, 20);
     if (status === 'answered' && extra['relay-by'] === 'desk') {
-      if (!(cur.relay && (cur.relay.session || cur.relay.child))) throw new Error('--relay-by desk needs a relay session or child on the row');
+      if (!(cur.relay && (cur.relay.session || cur.relay.child || cur.relay.agent))) throw new Error('--relay-by desk needs a relay session, child or agent on the row');
       row.relay_by = 'desk';
     }
     append(file, row);
@@ -370,8 +432,8 @@ export function claimOpen(file, { lane, desk, now, count = 1 } = {}) {
     // dated in the future would hide the row from every other desk.
     const at = new Date(Math.min(nowMs, Date.now())).toISOString();
     return picked.map((r) => {
-      append(file, { id: r.id, at, claimed_by: clean(desk, 40), claimed_at: at });
-      return { ...r, claimed_by: clean(desk, 40), claimed_at: at };
+      append(file, { id: r.id, at, claimed_by: clean(desk, 40), claimed_at: at, claim_mode: 'desk' });
+      return { ...r, claimed_by: clean(desk, 40), claimed_at: at, claim_mode: 'desk' };
     });
   });
 }
@@ -379,18 +441,19 @@ export function claimOpen(file, { lane, desk, now, count = 1 } = {}) {
 // Claim one named open row for a desk. Throws when the row is not open, or the
 // conductor asks for a normal row; returns {claimed:false, by} when another
 // desk holds a fresh claim.
-export function claimId(file, id, desk) {
+export function claimId(file, id, desk, { conductorAsks = false } = {}) {
   const d = clean(desk, 40);
   if (!d) throw new Error('claim needs --desk <desk name>');
   return withLockSync(file, () => {
     const cur = fold(readRows(file)).find((r) => r.id === id);
     if (!cur) throw new Error(`no decision ${id}`);
     if (cur.status !== 'open') throw new Error(`${id} is ${cur.status}, not open`);
-    if (d === 'conductor' && cur.priority !== 'critical') throw new Error('the conductor claims only critical rows');
+    if (conductorAsks && d !== 'conductor') throw new Error('--conductor-asks is for --desk conductor');
+    if (d === 'conductor' && cur.priority !== 'critical' && !conductorAsks) throw new Error('the conductor claims only critical rows (or pass --conductor-asks when it asks the row in its own window)');
     const nowMs = Date.now();
     if (claimedByOther(cur, d, nowMs)) return { claimed: false, by: cur.claimed_by };
     const at = new Date(nowMs).toISOString();
-    append(file, { id, at, claimed_by: d, claimed_at: at });
+    append(file, { id, at, claimed_by: d, claimed_at: at, claim_mode: conductorAsks ? 'asks' : 'desk' });
     return { claimed: true };
   });
 }
@@ -402,7 +465,18 @@ export function select(reqs, o) {
 
 export function line(r) {
   const opts = r.options.map((x) => `${x.label}${x.recommended ? ' (Recommended)' : ''}`).join(' / ');
-  return `${r.id} | ${r.status} | ${r.priority} | ${laneOf(r)} | ${r.source}:${r.ref} | ${r.question} | ${opts}${r.answer ? ` | answer: ${r.answer}` : ''}`;
+  return `${r.id} | ${r.status} | ${r.priority} | ${laneOf(r)} | ${r.source}:${r.ref} | ${r.question} | ${opts}${r.answer ? ` | answer: ${r.answer}` : ''}${r.body ? ' | body: yes (show --id)' : ''}`;
+}
+
+// The relay target of a row, for wake lines and the picker: a child session,
+// a worker subagent, or the teammate on the channel the ask came from.
+export function relayTarget(r) {
+  if (r.relay && (r.relay.child || r.relay.session || r.relay.agent)) {
+    return `${r.relay.child || ''}${r.relay.session ? ` (${r.relay.session})` : ''}${r.relay.agent ? ` agent ${r.relay.agent}` : ''}`.trim();
+  }
+  if (r.reply_to) return `${clip(r.reply_to.from || r.asked_by || 'the sender', 40)} via ${r.reply_to.source}:${clip(r.reply_to.ref, 60)} (reply where it was asked)`;
+  if (r.asked_by) return `${clip(r.asked_by, 40)} via ${r.source}:${clip(r.ref, 60)} (reply where it was asked)`;
+  return 'no relay target';
 }
 
 function parse(argv, allowed, repeatable = []) {
@@ -412,7 +486,7 @@ function parse(argv, allowed, repeatable = []) {
     if (!a.startsWith('--')) die(`unexpected argument ${a}`);
     const k = a.slice(2);
     if (!allowed.includes(k)) die(`unexpected argument ${a}`);
-    if (['open', 'json', 'once', 'no-standing', 'free', 'critical', 'irreversible'].includes(k)) { o[k] = true; continue; }
+    if (['open', 'json', 'once', 'no-standing', 'free', 'critical', 'irreversible', 'ask', 'no-ask', 'conductor-asks'].includes(k)) { o[k] = true; continue; }
     if (argv[i + 1] === undefined) die(`${a} needs a value`);
     const v = argv[++i];
     if (repeatable.includes(k)) (o[k] ||= []).push(v); else o[k] = v;
@@ -421,19 +495,38 @@ function parse(argv, allowed, repeatable = []) {
 }
 
 function add(argv) {
-  const o = parse(argv, ['file', 'source', 'ref', 'question', 'option', 'recommended', 'company', 'priority', 'relay-session', 'relay-child', 'relay-link', 'asked-by', 'at', 'no-standing', 'lane'], ['option']);
+  const o = parse(argv, ['file', 'source', 'ref', 'question', 'body', 'body-file', 'subject', 'reopen', 'option', 'recommended', 'company', 'priority', 'relay-session', 'relay-child', 'relay-link', 'relay-agent', 'asked-by', 'at', 'no-standing', 'lane'], ['option']);
   if (!o.file) die('add needs --file');
   if (o.priority !== undefined && !['critical', 'normal'].includes(String(o.priority).trim().toLowerCase())) die('--priority must be critical or normal');
   if (o.lane && !LANES.includes(o.lane)) die(`--lane must be one of ${LANES.join(', ')}`);
+  if (o.body !== undefined && o['body-file'] !== undefined) die('add takes --body or --body-file, not both');
+  let body = o.body;
+  if (o['body-file'] !== undefined) { try { body = fs.readFileSync(o['body-file'], 'utf8'); } catch (e) { die(`cannot read --body-file: ${e.message}`); } }
   const options = (o.option || []).map((s) => { const [label, description] = s.split('::'); return { label, description, recommended: o.recommended ? label === o.recommended : false }; });
   let r;
   try {
     const standing = o['no-standing'] ? false : readStanding();
-    r = addDecision(o.file, { ...o, options, standing, relay: { session: o['relay-session'], child: o['relay-child'], link: o['relay-link'] }, askedBy: o['asked-by'] });
+    r = addDecision(o.file, { ...o, body, options, standing, relay: { session: o['relay-session'], child: o['relay-child'], link: o['relay-link'], agent: o['relay-agent'] }, askedBy: o['asked-by'] });
   } catch (e) { die(e.message); }
   for (const x of r.cut || []) process.stderr.write(`super-conductor-decisions: warning: option label is over ${OPTION_LABEL_MAX} characters, so the card shows it shortened; its full text is kept in the description. Put detail in --option 'label::description' instead: ${x}\n`);
+  if (r.settled) { process.stdout.write(`settled ${r.id} → ${r.answer} (subject ${r.subject}; add --reopen <why> to ask again)\n`); process.exit(4); }
   process.stdout.write(`${r.id}${r.standing ? ` answered by standing ${r.standing}: ${r.answer}` : ''}\n`);
   if (r.dup) process.exit(3);
+}
+
+// show --file <queue> --id <id> [--json]: the whole row, body included.
+function show(argv) {
+  const o = parse(argv, ['file', 'id', 'json']);
+  if (!o.file || !o.id) die('show needs --file and --id');
+  const r = fold(readRows(o.file)).find((x) => x.id === o.id);
+  if (!r) die(`no decision ${o.id}`);
+  if (o.json) { process.stdout.write(`${JSON.stringify(r)}\n`); return; }
+  const opts = r.options.map((x) => `  - ${x.label}${x.recommended ? ' (Recommended)' : ''}${x.description ? `: ${x.description}` : ''}`).join('\n');
+  process.stdout.write(`${r.id} | ${r.status} | ${r.priority} | ${r.source}:${r.ref}${r.subject ? ` | subject ${r.subject}` : ''}\n`
+    + `asked by: ${r.asked_by || r.source}\nrelay to: ${relayTarget(r)}\n`
+    + `question: ${r.question}\noptions:\n${opts}\n`
+    + (r.body ? `body:\n${r.body}\n` : '')
+    + (r.answer ? `answer: ${r.answer}\n` : ''));
 }
 
 // standing add --by desk --match <regex> --answer <label> --expires <Nd|ISO>
@@ -537,10 +630,10 @@ function next(argv) {
 }
 
 function claim(argv) {
-  const o = parse(argv, ['file', 'id', 'desk']);
+  const o = parse(argv, ['file', 'id', 'desk', 'conductor-asks']);
   if (!o.file || !o.id || !o.desk) die('claim needs --file, --id and --desk');
   let r;
-  try { r = claimId(o.file, o.id, o.desk); } catch (e) { die(e.message); }
+  try { r = claimId(o.file, o.id, o.desk, { conductorAsks: !!o['conductor-asks'] }); } catch (e) { die(e.message); }
   if (!r.claimed) { process.stdout.write(`${o.id} claimed by ${r.by}\n`); process.exit(3); }
   process.stdout.write(`${o.id} claimed by ${clean(o.desk, 40)}\n`);
 }
@@ -569,27 +662,42 @@ const clip = (t, n) => { const x = clean(t, n + 1); return x.length > n ? `${x.s
 export const RELAY_GRACE_MS = 120_000;
 export const STALE_AFTER_MS = 300_000;
 
+// What the asker does on a DECISION or STALE-DECISION line. Push
+// notifications carry counts only, never the question text.
+const ASK_HINT = {
+  desk: 'Send the owner one push notification (PushNotification) with the open count only (never the question text), then run /decision-desk now: up to four rows per picker, answer, repeat until next exits 3.',
+  conductor: 'Finish this wakeup\'s sweep and dispatch first, then ask it in this window: claim --id <id> --desk conductor --conductor-asks, show --id for the full body, one picker, answer --desk conductor, relay the pick in the same turn, end the turn.',
+};
+const STALE_HINT = {
+  desk: 'Send the owner one push notification (PushNotification) with the waiting count only (never the question text), then run Step 3.',
+  conductor: 'Send the owner one push notification (PushNotification) with the waiting count only (never the question text), then ask it in this window.',
+};
+
 export function wakeLines(reqs, forWhom, seen, opts = {}) {
   const out = [];
   const nowMs = opts.now ? Date.parse(opts.now) : Date.now();
-  if (forWhom === 'desk') {
-    reqs = reqs.filter((r) => inLane(r, opts.lane) && !claimedByOther(r, opts.desk, nowMs));
-    const open = reqs.filter((r) => r.status === 'open' && !seen.has(`open:${r.id}`));
+  const asks = forWhom === 'desk' || (forWhom === 'conductor' && opts.ask && !opts.noAsk);
+  if (asks) {
+    const mine = forWhom === 'desk'
+      ? reqs.filter((r) => inLane(r, opts.lane) && !claimedByOther(r, opts.desk, nowMs))
+      : reqs.filter((r) => !claimedByOther(r, 'conductor', nowMs));
+    const open = mine.filter((r) => r.status === 'open' && !seen.has(`open:${r.id}`));
     if (open.length) {
       const first = nextOpen(open);
       for (const r of open) seen.add(`open:${r.id}`);
-      out.push(`SUPER-CONDUCTOR DECISION ${stamp()} | ${open.length} open${open.some((r) => r.priority === 'critical' ) ? ', critical first' : ''}: ${clip(first.question, 160)} [${first.options.map((x) => clip(x.label, 30)).join(' / ')}] | id ${first.id} | Send the owner one push notification (PushNotification) with the open count only (never the question text), then run /decision-desk now: up to four rows per picker, answer, repeat until next exits 3.`);
+      out.push(`SUPER-CONDUCTOR DECISION ${stamp()} | ${open.length} open${open.some((r) => r.priority === 'critical' ) ? ', critical first' : ''}: ${clip(first.question, 160)} [${first.options.map((x) => clip(x.label, 30)).join(' / ')}]${first.body ? ' | body: yes' : ''} | id ${first.id} | ${ASK_HINT[forWhom]}`);
     }
-    // A row the owner has not seen for a while: once per row, the desk sends
+    // A row the owner has not seen for a while: once per row, the asker sends
     // a phone notification so the wait does not depend on the owner looking.
-    const late = staleOpen(reqs, opts.staleAfterMs ?? STALE_AFTER_MS, nowMs).filter((r) => !seen.has(`stale:${r.id}`));
+    const late = staleOpen(mine, opts.staleAfterMs ?? STALE_AFTER_MS, nowMs).filter((r) => !seen.has(`stale:${r.id}`));
     if (late.length) {
       const first = late[0];
       for (const r of late) seen.add(`stale:${r.id}`);
       const mins = Math.max(1, Math.round((nowMs - Date.parse(first.at)) / 60000));
-      out.push(`SUPER-CONDUCTOR STALE-DECISION ${stamp()} | ${late.length} waiting over ${mins}m${late.some((r) => r.priority === 'critical') ? ', critical' : ''}: ${clip(first.question, 160)} | id ${first.id} | Send the owner one push notification (PushNotification) with the waiting count only (never the question text), then run Step 3.`);
+      out.push(`SUPER-CONDUCTOR STALE-DECISION ${stamp()} | ${late.length} waiting over ${mins}m${late.some((r) => r.priority === 'critical') ? ', critical' : ''}: ${clip(first.question, 160)} | id ${first.id} | ${STALE_HINT[forWhom]}`);
     }
-  } else {
+  }
+  if (forWhom === 'conductor') {
     for (const r of reqs) {
       if (r.status !== 'answered' || seen.has(`answered:${r.id}`)) continue;
       // The desk relays its own answers; the conductor steps in only when the
@@ -598,10 +706,7 @@ export function wakeLines(reqs, forWhom, seen, opts = {}) {
       seen.add(`answered:${r.id}`);
       // A child session, or for a ledger row the teammate who asked, on the
       // channel or DM it came from (the ledger row carries source and ref).
-      const to = r.relay && (r.relay.child || r.relay.session)
-        ? `${r.relay.child || ''}${r.relay.session ? ` (${r.relay.session})` : ''}`.trim()
-        : r.reply_to ? `${clip(r.reply_to.from || r.asked_by || 'the sender', 40)} via ${r.reply_to.source}:${clip(r.reply_to.ref, 60)} (reply where it was asked)`
-        : r.asked_by ? `${clip(r.asked_by, 40)} via ${r.source}:${clip(r.ref, 60)} (reply where it was asked)` : 'no relay target';
+      const to = relayTarget(r);
       const who = r.by === 'standing' ? ` | answered by ${clip(r.note || 'standing rule', 60)}, never asked` : '';
       out.push(`SUPER-CONDUCTOR ANSWER ${stamp()} | ${clip(r.question, 120)} → ${clip(r.answer, 160)} | relay to ${to || 'no relay target'}${who} | id ${r.id} | Relay it as a quoted OWNER GO on the link and by direct message in this turn, then decisions.mjs relayed --id ${r.id}.`);
     }
@@ -610,11 +715,13 @@ export function wakeLines(reqs, forWhom, seen, opts = {}) {
 }
 
 async function watch(argv) {
-  const o = parse(argv, ['file', 'for', 'interval', 'parent-pid', 'once', 'stale-after', 'now', 'lane', 'desk']);
+  const o = parse(argv, ['file', 'for', 'interval', 'parent-pid', 'once', 'stale-after', 'now', 'lane', 'desk', 'ask', 'no-ask']);
+  if (o.ask && o['no-ask']) die('watch takes --ask or --no-ask, not both');
+  if (o.ask && o.for !== 'conductor') die('--ask is for --for conductor');
   if (o.lane && !LANES.includes(o.lane)) die(`--lane must be one of ${LANES.join(', ')}`);
   if (!o.file || !['desk', 'conductor'].includes(o.for)) die('watch needs --file and --for desk|conductor');
   const every = Math.max(1, Number(o.interval) || 5) * 1000;
-  const wakeOpts = { staleAfterMs: Math.max(1, Number(o['stale-after']) || STALE_AFTER_MS / 1000) * 1000, now: o.now, lane: o.lane, desk: o.desk || (o.lane ? `desk-${o.lane}` : undefined) };
+  const wakeOpts = { staleAfterMs: Math.max(1, Number(o['stale-after']) || STALE_AFTER_MS / 1000) * 1000, now: o.now, lane: o.lane, desk: o.desk || (o.lane ? `desk-${o.lane}` : undefined), ask: !!o.ask, noAsk: !!o['no-ask'] };
   const seenFile = `${o.file.replace(/\.jsonl$/, '')}-${o.for}${o.for === 'desk' && o.lane ? `-${o.lane}` : ''}-seen.json`;
   const seen = new Set((() => { try { return JSON.parse(fs.readFileSync(seenFile, 'utf8')); } catch { return []; } })());
   const parentAlive = () => {
@@ -645,11 +752,12 @@ function main() {
   else if (cmd === 'next') next(rest);
   else if (cmd === 'claim') claim(rest);
   else if (cmd === 'list') list(rest);
+  else if (cmd === 'show') show(rest);
   else if (cmd === 'count') count(rest);
   else if (cmd === 'stale') stale(rest);
   else if (cmd === 'standing') standing(rest);
   else if (cmd === 'watch') watch(rest);
-  else die('usage: add|answer|relayed|drop|next|claim|list|count|stale|watch --file <queue> ... | standing add|list|remove|disable ...');
+  else die('usage: add|answer|relayed|drop|next|claim|list|show|count|stale|watch --file <queue> ... | standing add|list|remove|disable ...');
 }
 
 if (isMain(import.meta.url)) main();

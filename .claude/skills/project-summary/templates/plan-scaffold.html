@@ -1,0 +1,127 @@
+<!doctype html>
+<!--
+  plan-scaffold.html: PLAN MODE skeleton for project-summary.
+  Copy, inline default.css (then the company pack tokens) into <style>, replace
+  every {{placeholder}} from prd.json, delete any block the PRD cannot fill.
+  Component reference: templates/components.md. Writing rules: SKILL.md Step 5.
+-->
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{name}}: plan</title>
+<style>
+/* 1. paste templates/default.css here */
+/* 2. if a company pack exists, paste its design-tokens.css :root AFTER it */
+</style></head><body><div class="wrap">
+
+<!-- HERO: the answer, not the intro. One headline, a standfirst of at most three
+     short sentences, then fact pills. No paragraph of background. -->
+<header class="hero">
+  <div class="kicker">{{co}} · plan · {{date}}</div>
+  <h1>{{headline: what is happening, in one sentence, with one <em>emphasis</em>}}</h1>
+  <p class="lead">{{standfirst: why, and what done looks like. Two or three sentences.}}</p>
+  <div class="hero-strip">
+    <span class="pill">{{fact pill, e.g. 21 stories}}</span>
+    <span class="pill">{{fact pill, e.g. 10 phases}}</span>
+    <span class="pill pass">{{status pill, e.g. decided 2026-11-05}}</span>
+  </div>
+  <!-- KPI band: three or four numbers that are IN the PRD. Never derived guesses. -->
+  <div class="kpis">
+    <div class="kpi"><div class="v">{{1,200}}</div><div class="l">{{users affected}}</div></div>
+    <div class="kpi"><div class="v">{{12}}</div><div class="l">stories</div></div>
+    <div class="kpi"><div class="v plain">{{Q3}}</div><div class="l">{{target}}</div></div>
+    <div class="kpi"><div class="v pass">{{100%}}</div><div class="l">{{coverage}}</div></div>
+  </div>
+</header>
+
+<!-- 01 DECISION: what the reader must know or decide now. The one callout on the page. -->
+<section>
+  <div class="sec-head"><span class="secnum">01</span><h2>{{What this decides}}</h2></div>
+  <p class="sub">{{one line}}</p>
+  <div class="callout">
+    <h3>{{Decision or biggest risk}}</h3>
+    <p class="big">{{the one sentence that matters}}</p>
+    <p>{{condition or consequence, one line}}</p>
+  </div>
+  <!-- Decisions already taken, from metadata.decisions, as cards (max 6; rest in details) -->
+  <div class="cards">
+    <div class="card"><div class="icon"><!-- icon svg --></div><h3>{{decision.question}}</h3><p>{{decision.answer}}</p></div>
+  </div>
+  <details class="more"><summary>All decisions</summary><div class="body"><ul class="checks"><li>…</li></ul></div></details>
+</section>
+
+<!-- 02 THE SHAPE: a flow or architecture diagram of the system the plan builds.
+     Inline SVG, classes only. Horizontal .flow-h and a stacked .flow-v for phones. -->
+<section>
+  <div class="sec-head"><span class="secnum">02</span><h2>{{How it works}}</h2></div>
+  <p class="sub">{{one line reading the diagram left to right}}</p>
+  <div class="diagram">
+    <svg class="flow-h" viewBox="0 0 1000 320" role="img" aria-label="{{what the diagram shows}}">
+      <text x="0" y="14" class="t-k">INPUT</text>
+      <rect class="s-box" x="0" y="26" width="180" height="70"/><text x="14" y="52" class="t-h">{{Input}}</text><text x="14" y="72" class="t-m">{{detail}}</text>
+      <text x="260" y="14" class="t-k">SYSTEM</text>
+      <rect class="s-box-acc" x="260" y="26" width="260" height="70"/><text x="274" y="52" class="t-h">{{Core component}}</text><text x="274" y="72" class="t-m">{{US-id · detail}}</text>
+      <text x="600" y="14" class="t-k">OUTPUTS</text>
+      <rect class="s-box-pass" x="600" y="26" width="200" height="40"/><text x="614" y="52" class="t-h">{{Output}}</text>
+      <path class="s-line" d="M180 61H260M520 61H600"/>
+    </svg>
+    <svg class="flow-v" viewBox="0 0 360 420" role="img" aria-label="{{same, stacked}}"><!-- stacked version --></svg>
+  </div>
+  <p class="concept-note">concept diagram, derived from the PRD, not final architecture</p>
+</section>
+
+<!-- 03 THE PLAN: storyboard strip, one card per phase. Stories live behind the
+     details toggle, never in a flat table on the page. -->
+<section>
+  <div class="sec-head"><span class="secnum">03</span><h2>{{The plan in N phases}}</h2></div>
+  <p class="sub">{{one line: how phases are ordered, what gates them}}</p>
+  <div class="board">
+    <div class="phase now">
+      <div class="ph-num">Phase 1 · {{gate word, e.g. pre-flight}}</div>
+      <h3>{{phase intent, 3 to 6 words}}</h3>
+      <p class="ph-intent">{{one sentence on what this phase proves or ships}}</p>
+      <div class="ph-count">{{3}} stories</div>
+      <details><summary>Stories</summary>
+        <ul class="stories">
+          <li><span class="id">US-001</span>{{title}}<span class="dep">after US-000</span></li>
+        </ul>
+      </details>
+    </div>
+    <!-- repeat .phase -->
+  </div>
+</section>
+
+<!-- 04 WHAT CUSTOMERS SEE (only when the PRD is user-facing). Screen mockups as
+     SVG wireframes in a .cards grid or .cols2, each labeled concept. -->
+<section>
+  <div class="sec-head"><span class="secnum">04</span><h2>{{What people will see}}</h2></div>
+  <div class="cols2">
+    <div class="panel"><h3>{{Screen}} <span class="tag">US-012</span></h3><svg class="mock" viewBox="0 0 640 360"><!-- wireframe --></svg><p class="concept-note">concept mockup, not final UI</p></div>
+  </div>
+</section>
+
+<!-- 05 ONE CHART, only if the PRD quantifies something comparable (counts per
+     phase, user segments, cost ranges). Bars with labels and units. Skip otherwise. -->
+<section>
+  <div class="sec-head"><span class="secnum">05</span><h2>{{Who is affected}}</h2></div>
+  <p class="sub">{{unit, period, source}}</p>
+  <div class="bars">
+    <div class="bar"><div class="lbl">{{segment}}</div><div class="track"><div class="fill" style="--w:65%"></div></div><div class="val">{{840}}<small>{{qualifier}}</small></div></div>
+  </div>
+  <div class="legend"><span>{{series}}</span><span class="faint">{{series}}</span></div>
+</section>
+
+<!-- 06 GUARDRAILS: what done looks like + non-goals, compact. Acceptance criteria
+     and notes go behind details. -->
+<section>
+  <div class="sec-head"><span class="secnum">06</span><h2>Done means</h2></div>
+  <div class="cols2">
+    <div class="panel pass"><h3>Success</h3><ul class="checks pass"><li>{{criterion}}</li></ul></div>
+    <div class="panel err"><h3>Not in scope</h3><ul class="checks err"><li>{{non-goal}}</li></ul></div>
+  </div>
+  <details class="more"><summary>Architecture notes, rollout, open questions</summary><div class="body">{{prose from metadata}}</div></details>
+</section>
+
+<footer class="foot">
+  <span>generated from prd.json · {{date}} · {{co}}/{{name}}</span>
+  <span>{{stories}} stories · {{phases}} phases</span>
+</footer>
+</div></body></html>

@@ -51,6 +51,7 @@ mkdir -p "$DEFAULT_ROOT/core/scripts/lib" "$DEFAULT_ROOT/core/policies" \
   "$DEFAULT_ROOT/companies/indigo/workers/company-worker/policies"
 cp "$LINT" "$DEFAULT_ROOT/core/scripts/lint-policy-triggers.sh"
 ln -s "$ROOT/core/scripts/eval-trigger.sh" "$DEFAULT_ROOT/core/scripts/eval-trigger.sh"
+ln -s "$ROOT/core/scripts/lib/policy-limits.sh" "$DEFAULT_ROOT/core/scripts/lib/policy-limits.sh"
 ln -s "$ROOT/core/scripts/lib/forwarder.sh" "$DEFAULT_ROOT/core/scripts/lib/forwarder.sh"
 ln -s "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$DEFAULT_ROOT/core/scripts/lib/hq-cli-floor.sh"
 printf -- '---\nid: default-root\nwhen: deploy\non: [PreToolUse]\nenforcement: soft\n---\n\n## Rule\n\nDefault root.\n' \
@@ -184,5 +185,88 @@ HQ_ROOT="$TMP" bash "$LINT" "$CRLF_POLICIES" > "$crlf_stdout" 2>&1 || crlf_rc=$?
 grep -Fq 'policies scanned: 1 | malformed when: 0 | missing trigger: 0' "$crlf_stdout" \
   || fail "unexpected CRLF scan summary: $(cat "$crlf_stdout")"
 echo 'PASS: linter reads CRLF policy frontmatter'
+
+# feedback_1c36af85: a hard policy under the 6144-byte authoring ceiling but over
+# the injector's 2048-byte per-policy limit is cut to a one-line summary. The
+# linter must report it and name the real limit.
+. "$ROOT/core/scripts/lib/policy-limits.sh"
+INJ_DEFAULT="$(sed -n 's/^HARD_MAX="\${HQ_POLICY_HARD_MAX_BYTES:-\([0-9]*\)}"$/\1/p' "$ROOT/.claude/hooks/inject-policy-on-trigger.sh")"
+[ "$INJ_DEFAULT" = "$HQ_POLICY_INJECT_MAX_DEFAULT" ] \
+  || fail "shared inject limit ($HQ_POLICY_INJECT_MAX_DEFAULT) drifted from the injector default ($INJ_DEFAULT)"
+
+SIZE_POLICIES="$TMP/size-policies"
+mkdir -p "$SIZE_POLICIES"
+printf -v rule_pad '%*s' 3000 ''
+rule_pad="${rule_pad// /r}"
+hard_head() { printf -- '---\nid: %s\nwhen: deploy\non: [PreToolUse]\nenforcement: hard\n---\n\n' "$1"; }
+# Rule section of 3000 bytes, body about 3000: over 2048, under 6144.
+{ hard_head big-rule; printf '## Rule\n\n%s\n' "$rule_pad"; } > "$SIZE_POLICIES/big-rule.md"
+# Short Rule section, long Scope section: injector shows the Rule section.
+{ hard_head short-rule; printf '## Rule\n\nShort rule.\n\n## Scope\n\n%s\n' "$rule_pad"; } > "$SIZE_POLICIES/short-rule.md"
+# Long body with no Rule section.
+{ hard_head no-rule; printf '%s\n' "$rule_pad"; } > "$SIZE_POLICIES/no-rule.md"
+# Small policy.
+{ hard_head small; printf '## Rule\n\nSmall.\n'; } > "$SIZE_POLICIES/small.md"
+# Soft policy of the same size is not injected verbatim, so it is not flagged.
+{ printf -- '---\nid: soft-big\nwhen: deploy\non: [PreToolUse]\nenforcement: soft\n---\n\n## Rule\n\n%s\n' "$rule_pad"; } > "$SIZE_POLICIES/soft-big.md"
+
+size_stdout="$TMP/size.stdout"
+size_rc=0
+HQ_ROOT="$TMP" bash "$LINT" --strict-inject "$SIZE_POLICIES" > "$size_stdout" 2> "$TMP/size.stderr" || size_rc=$?
+[ "$size_rc" -eq 1 ] || fail "--strict-inject must fail a hard rule over the injector limit (got $size_rc): $(cat "$size_stdout")"
+grep -q 'CUT .*big-rule.*2048' "$size_stdout" \
+  || fail "big-rule not reported with the injector limit: $(cat "$size_stdout")"
+grep -q 'CUT .*no-rule.*2048' "$size_stdout" \
+  || fail "no-rule not reported with the injector limit: $(cat "$size_stdout")"
+! grep -q 'CUT .*short-rule' "$size_stdout" || fail "short Rule section wrongly flagged"
+! grep -q 'CUT .*small' "$size_stdout" || fail "small policy wrongly flagged"
+! grep -q 'CUT .*soft-big' "$size_stdout" || fail "soft policy wrongly flagged"
+grep -q 'cut by injector (> 2048 bytes): 2' "$size_stdout" || fail "unexpected oversize count: $(cat "$size_stdout")"
+
+# Default and plain --strict runs still exit 0 (shipped policies still have CUT rules) but prints the warning.
+size_rc=0
+HQ_ROOT="$TMP" bash "$LINT" --strict "$SIZE_POLICIES" > "$size_stdout" 2>/dev/null || size_rc=$?
+[ "$size_rc" -eq 0 ] || fail "non-strict lint must stay exit 0 for oversize (got $size_rc)"
+grep -q 'CUT .*big-rule' "$size_stdout" || fail "non-strict run did not warn"
+
+# Raising the injector limit (as an operator would) makes the same corpus clean.
+size_rc=0
+HQ_POLICY_HARD_MAX_BYTES=4096 HQ_ROOT="$TMP" bash "$LINT" --strict-inject "$SIZE_POLICIES" > "$size_stdout" 2>/dev/null || size_rc=$?
+[ "$size_rc" -eq 0 ] || fail "HQ_POLICY_HARD_MAX_BYTES override not honoured: $(cat "$size_stdout")"
+echo 'PASS: linter flags hard rules the injector would cut to a summary'
+
+# Rule-section delivery is reported (not as CUT). Binding text above ## Rule is
+# a separate finding; --strict-inject fails on it.
+size_rc=0
+HQ_ROOT="$TMP" bash "$LINT" "$SIZE_POLICIES" > "$size_stdout" 2>/dev/null || size_rc=$?
+[ "$size_rc" -eq 0 ] || fail "RULE findings must not fail the default run (got $size_rc)"
+grep -q 'RULE .*short-rule' "$size_stdout" \
+  || fail "short-rule not reported as Rule-section delivery: $(cat "$size_stdout")"
+grep -q 'delivered as Rule section: 1' "$size_stdout" \
+  || fail "Rule-section count missing: $(cat "$size_stdout")"
+! grep -q 'RULE .*big-rule' "$size_stdout" || fail "summary-only big-rule wrongly listed as RULE"
+! grep -q 'RULE .*small' "$size_stdout" || fail "small policy wrongly listed as RULE"
+
+PREAMBLE_POLICIES="$TMP/preamble-policies"
+mkdir -p "$PREAMBLE_POLICIES"
+{ hard_head preamble-rule; printf 'Bars above the heading.\n\n## Rule\n\nThe rule.\n'; } \
+  > "$PREAMBLE_POLICIES/preamble-rule.md"
+{ hard_head rule-first; printf '## Rule\n\nThe rule.\n'; } \
+  > "$PREAMBLE_POLICIES/rule-first.md"
+preamble_stdout="$TMP/preamble.stdout"
+size_rc=0
+HQ_ROOT="$TMP" bash "$LINT" --strict-inject "$PREAMBLE_POLICIES" \
+  > "$preamble_stdout" 2>/dev/null || size_rc=$?
+[ "$size_rc" -eq 1 ] || fail "--strict-inject must fail ABOVE-RULE (got $size_rc): $(cat "$preamble_stdout")"
+grep -q 'ABOVE-RULE .*preamble-rule' "$preamble_stdout" \
+  || fail "preamble not flagged: $(cat "$preamble_stdout")"
+! grep -q 'ABOVE-RULE .*rule-first' "$preamble_stdout" || fail "rule-first wrongly flagged"
+grep -q 'binding above Rule: 1' "$preamble_stdout" \
+  || fail "above-Rule count missing: $(cat "$preamble_stdout")"
+size_rc=0
+HQ_ROOT="$TMP" bash "$LINT" --strict "$PREAMBLE_POLICIES" > "$preamble_stdout" 2>/dev/null || size_rc=$?
+[ "$size_rc" -eq 0 ] || fail "plain --strict must stay exit 0 for ABOVE-RULE (got $size_rc)"
+grep -q 'ABOVE-RULE .*preamble-rule' "$preamble_stdout" || fail "non-strict run did not warn ABOVE-RULE"
+echo 'PASS: linter reports Rule-section delivery and flags text above ## Rule'
 
 echo 'PASS: lint-policy-triggers streams an ARG_MAX-scale corpus and fails closed'

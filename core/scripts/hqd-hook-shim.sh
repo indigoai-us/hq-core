@@ -3,7 +3,8 @@
 #
 # Registered by `hq install --global` in place of master-hook.sh when the hq
 # daemon is installed. Reads one hook payload (Claude Code or Codex) on stdin,
-# forwards it to hqd over its Unix socket with a 500ms budget, and maps the
+# forwards it to hqd over its Unix socket with a 3000ms budget per attempt (one
+# retry after a short backoff on a timeout or failed connect), and maps the
 # answer onto the runtime hook contract:
 #   block   -> reasons on stderr, exit 2
 #   context -> {"hookSpecificOutput":{"hookEventName":..,"additionalContext":..}}
@@ -11,8 +12,11 @@
 # Ops: SessionStart -> session.open, PreToolUse -> policy.check,
 #      SessionEnd -> session.close, every other event -> session.get.
 #
-# Daemon unreachable (no socket, refused, or past the budget): print exactly
-# one stderr line "HQ daemon unreachable: run hq daemon status", then
+# Daemon cannot answer: print exactly one stderr line naming the cause, then
+#   timed out (busy)   "HQ daemon timed out after N ms (daemon busy) ..."
+#   connect failed     "HQ daemon unreachable: could not connect (daemon not running) ..."
+#   EOF / bad reply    "HQ daemon unreachable: connection closed or unreadable reply ..."
+# and
 #   PreToolUse writing a companies/ path -> exit 2 (never allow-by-default)
 #   SessionStart                         -> bind personal (context), exit 0
 #   anything else                        -> exit 0
@@ -20,11 +24,18 @@
 # Usage: sh hqd-hook-shim.sh [Event] [--runtime claude|codex]
 #   Event defaults to the payload's hook_event_name.
 # Env:   HQ_HQD_SOCKET (socket path), HQ_REGISTRY_DIR (parent of daemon/),
-#        HQ_HQD_SHIM_TIMEOUT_MS (default 500).
+#        HQ_HQD_SHIM_TIMEOUT_MS (per attempt, default 3000;
+#        SessionEnd, whose hook budget is 3s, is capped at 1000 with no retry),
+#        HQ_HQD_SHIM_RETRY_BACKOFF_MS (default 150).
+# Worst case added latency is 2 x budget + backoff = 6.15s by default, inside
+# the 300s PreToolUse hook budget registered by build-claude-plugin.sh and
+# build-codex-pack.sh.
 # POSIX sh; the JSON and socket work runs in perl (core JSON::PP and
 # IO::Socket::UNIX, present on macOS and mainstream Linux).
 
 UNREACHABLE='HQ daemon unreachable: run hq daemon status'
+CONNECT_FAIL='HQ daemon unreachable: could not connect (daemon not running): run hq daemon status'
+SESSION_FALLBACK='{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HQ session bound to company: personal (hqd unreachable; fail-closed default)"}}'
 
 event=''
 runtime="${HQ_HOOK_RUNTIME:-}"
@@ -46,8 +57,19 @@ elif [ -n "${HQ_REGISTRY_DIR:-}" ]; then
 else
   sock="${HOME:-}/.hq/daemon/hqd.sock"
 fi
-budget="${HQ_HQD_SHIM_TIMEOUT_MS:-500}"
-case "$budget" in ''|*[!0-9]*) budget=500 ;; esac
+# Normalize numerically: "0", "00", "000" must not reach perl as a true string
+# whose alarm(0) disables the timeout (a hung daemon would then outlast the
+# hook budget, which Claude Code treats as non-blocking). A value above 60000 ms
+# is capped, so two attempts always fit in the 300s hook budget.
+budget="${HQ_HQD_SHIM_TIMEOUT_MS:-3000}"
+case "$budget" in *[!0-9]*) budget=3000 ;; esac
+while :; do case "$budget" in 0?*) budget=${budget#0} ;; *) break ;; esac; done
+case "$budget" in ''|0) budget=3000 ;; esac
+[ "${#budget}" -le 5 ] && [ "$budget" -le 60000 ] || budget=60000
+backoff="${HQ_HQD_SHIM_RETRY_BACKOFF_MS:-150}"
+case "$backoff" in ''|*[!0-9]*) backoff=150 ;; esac
+while :; do case "$backoff" in 0?*) backoff=${backoff#0} ;; *) break ;; esac; done
+[ "${#backoff}" -le 4 ] && [ "$backoff" -le 5000 ] || backoff=5000
 
 payload=''
 while IFS= read -r payload_line || [ -n "$payload_line" ]; do
@@ -121,7 +143,7 @@ fi
 
 # shellcheck disable=SC2016 # the perl program is single-quoted on purpose
 out=$(printf '%s' "$payload" | HQD_SHIM_EVENT="$event" HQD_SHIM_RUNTIME="$runtime" \
-  HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" LC_ALL=C perl -e '
+  HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" HQD_SHIM_BACKOFF_MS="$backoff" LC_ALL=C perl -e '
 use strict; use warnings;
 use JSON::PP (); use IO::Socket::UNIX (); use Time::HiRes ();
 my $json = JSON::PP->new->canonical;
@@ -184,12 +206,15 @@ sub emit_context {
 }
 
 # Exit protocol back to sh: 0 done, 2 block (stderr already written),
-# 10 unreachable + company write, 11 unreachable + SessionStart, 12 unreachable.
+# 10/11/12 = could not connect, 20/21/22 = timed out, 30/31/32 = closed or
+# unreadable reply; within each group: +0 company write (fail closed),
+# +1 SessionStart, +2 anything else.
 sub unreachable {
+  my ($base) = @_;
   exit 75 if ($ENV{HQ_HQD_SHIM_REPORT_UNREACHABLE} // "") eq "1";
-  exit 10 if $event eq "PreToolUse" && company_write();
-  exit 11 if $event eq "SessionStart";
-  exit 12;
+  exit $base if $event eq "PreToolUse" && company_write();
+  exit $base + 1 if $event eq "SessionStart";
+  exit $base + 2;
 }
 
 my ($op, %args);
@@ -210,24 +235,43 @@ if ($event eq "SessionStart") {
   $args{sessionId} = $sid if length $sid;
 }
 
-my $line;
-my $ok = eval {
-  local $SIG{ALRM} = sub { die "timeout\n" };
-  Time::HiRes::alarm(($ENV{HQD_SHIM_BUDGET_MS} || 500) / 1000);
-  my $s = IO::Socket::UNIX->new(Type => IO::Socket::UNIX::SOCK_STREAM(), Peer => $ENV{HQD_SHIM_SOCKET})
-    or die "connect\n";
-  print {$s} $json->encode({ id => 1, op => $op, args => \%args }), "\n";
-  $line = <$s>;
+# SessionEnd has a 3s hook budget: one short attempt, no retry.
+my $budget_ms = 0 + ($ENV{HQD_SHIM_BUDGET_MS} // 0);
+$budget_ms = 3000 unless $budget_ms > 0;
+my $attempts = 2;
+if ($event eq "SessionEnd") { $budget_ms = 1000 if $budget_ms > 1000; $attempts = 1; }
+my $backoff_ms = 0 + ($ENV{HQD_SHIM_BACKOFF_MS} // 150);
+$backoff_ms = 150 if $backoff_ms < 0;
+my ($line, $fail);
+for my $try (1 .. $attempts) {
+  $line = undef; $fail = "";
+  my $ok = eval {
+    local $SIG{ALRM} = sub { die "timeout\n" };
+    Time::HiRes::alarm($budget_ms / 1000);
+    my $s = IO::Socket::UNIX->new(Type => IO::Socket::UNIX::SOCK_STREAM(), Peer => $ENV{HQD_SHIM_SOCKET})
+      or die "connect\n";
+    print {$s} $json->encode({ id => 1, op => $op, args => \%args }), "\n";
+    $line = <$s>;
+    Time::HiRes::alarm(0);
+    close $s;
+    defined $line or die "eof\n";
+    1;
+  };
   Time::HiRes::alarm(0);
-  close $s;
-  defined $line or die "eof\n";
-  1;
-};
-Time::HiRes::alarm(0);
-unreachable() unless $ok;
+  if ($ok) { $fail = ""; last; }
+  my $err = $@ // "";
+  $fail = $err =~ /^timeout/ ? "timeout" : $err =~ /^connect/ ? "connect" : "eof";
+  # Retry once, only for a timeout (daemon busy) or a failed connect (daemon
+  # restarting). An EOF is a daemon that already answered by closing.
+  last if $try >= $attempts || $fail eq "eof";
+  Time::HiRes::sleep($backoff_ms / 1000);
+}
+if ($fail eq "timeout") { print int($budget_ms); unreachable(20); }
+elsif ($fail eq "connect") { unreachable(10); }
+elsif ($fail) { unreachable(30); }
 
 my $r = eval { $json->decode($line) };
-unreachable() unless ref $r eq "HASH";
+unreachable(30) unless ref $r eq "HASH";
 
 if (!$r->{ok}) {
   my $msg = ref $r->{error} eq "HASH" ? ($r->{error}{message} // "error") : "error";
@@ -270,14 +314,31 @@ case "$rc" in
     exit 0 ;;
   2) exit 2 ;;
   75) exit 75 ;;
-  10)
-    printf '%s\n' "$UNREACHABLE" >&2
-    exit 2 ;;
-  11)
-    printf '%s\n' "$UNREACHABLE" >&2
-    printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HQ session bound to company: personal (hqd unreachable; fail-closed default)"}}'
+  10|11|12)
+    printf '%s\n' "$CONNECT_FAIL" >&2
+    [ "$rc" = 11 ] && printf '%s\n' "$SESSION_FALLBACK"
+    [ "$rc" = 10 ] && exit 2
+    exit 0 ;;
+  20|21|22)
+    printf 'HQ daemon timed out after %s ms (daemon busy); retry in a few seconds, see ~/.hq/daemon/logs/daemon.log if it persists (hq daemon status only checks the PID)\n' "${out:-$budget}" >&2
+    [ "$rc" = 21 ] && printf '%s\n' "$SESSION_FALLBACK"
+    [ "$rc" = 20 ] && exit 2
+    exit 0 ;;
+  30|31|32)
+    printf '%s\n' 'HQ daemon unreachable: connection closed or unreadable reply (daemon restarting?); retry, see ~/.hq/daemon/logs/daemon.log' >&2
+    [ "$rc" = 31 ] && printf '%s\n' "$SESSION_FALLBACK"
+    [ "$rc" = 30 ] && exit 2
     exit 0 ;;
   *)
+    # Perl died or exited with an unexpected code (255, a signal): the daemon
+    # was not consulted. Fail closed for a PreToolUse that may touch companies/,
+    # judged by string match since the parsed payload is gone.
     printf '%s\n' "$UNREACHABLE" >&2
+    if [ -z "$event" ]; then
+      case "$payload" in *'"PreToolUse"'*) event=PreToolUse ;; esac
+    fi
+    if [ "$event" = PreToolUse ]; then
+      case "$payload" in *companies*) exit 2 ;; esac
+    fi
     exit 0 ;;
 esac

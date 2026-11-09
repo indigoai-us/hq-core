@@ -576,3 +576,17 @@ Cloud-backed companies sync to a company vault; the rest of your HQ folder (minu
 
 **Company-level** (in `companies/{co}/knowledge/`):
 - Each company has a plain knowledge directory populated through use and synced through its company vault.
+
+## Executive lanes
+
+The Executive opens lanes under the super-conductor. Each lane ends with an
+outcome state: `done` describes what it delivered, `needs_decision` includes
+the information for one owner decision, and `partial` names the remaining
+steps. A lane calls `hq lanes ask` for a decision; the conductor routes it
+through the decision queue as one picker, and answering re-wakes the lane.
+
+Every child receives `core/settings/executive-standing-rules.md` verbatim.
+`personal/settings/executive-standing-rules.md` in the HQ root replaces that
+default when present; `hq lanes create --signal <signal-id> --rules-file <path>` selects
+an explicit rules file. The conductor reads Executive lane reports under
+their child names on its link.

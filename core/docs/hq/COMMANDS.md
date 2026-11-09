@@ -54,6 +54,7 @@ if none match, the first group whose keywords match a word in its description; o
 | `/promote` | core | Change an HQ company member role or guest path scope. |
 | `/registry` | core | Inspect or update a company resource registry around resource changes. |
 | `/resolve-conflicts` | core | Resolve HQ Sync conflicts by choosing local, cloud, or discard. |
+| `/settings-override` | core | Keep a Claude Code setting change across HQ updates by writing it to .claude/settings.local.json. Use when /update-hq reset a setting or a user wants one to stick. |
 | `/sync-registry` | core | Rebuild a company resource registry index. |
 | `/update-hq` | core | Upgrade HQ from the latest hq-core release. |
 

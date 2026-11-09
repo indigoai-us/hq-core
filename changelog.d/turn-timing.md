@@ -1,0 +1,1 @@
+Added opt-in local turn timing with `HQ_TURN_TIMING=1`. The dispatcher reuses wrapper measurements and records event boundaries in two bounded local files for `hq doctor timing`, without storing prompts or sending timing records to services.

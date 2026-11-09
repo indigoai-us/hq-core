@@ -334,4 +334,19 @@ jq -e '.checksums | length == 200' "$BIGMAN" >/dev/null \
 grep -q 'checksummed the first 200' "$TMP/big.err" \
   || fail "builder must say on stderr when the checksum list was capped: $(cat "$TMP/big.err")"
 
+# --- 9. missing / offloaded knowledge entries warn but still build -----------
+WARNPROJ="$FIX/companies/acme/projects/warnme"
+mkdir -p "$WARNPROJ"
+printf 'HQ-CLOUD-FILE v1\nsize: 9\n' > "$FIX/companies/acme/knowledge/insights/offloaded.md"
+cat > "$WARNPROJ/prd.json" <<'JSON'
+{"name":"warnme","description":"d","branchName":"feature/warnme","userStories":[],
+ "metadata":{"goal":"g","knowledge":["companies/acme/knowledge/insights/widget-notes.md","companies/acme/knowledge/insights/never-uploaded.md","companies/acme/knowledge/insights/offloaded.md"]}}
+JSON
+HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project warnme \
+  --to alice@acme.test --to-name "Alice" >/dev/null 2>"$TMP/warn.err" \
+  || fail "missing knowledge entries must warn, not fail: $(cat "$TMP/warn.err")"
+grep -q 'never-uploaded.md' "$TMP/warn.err" || fail "missing knowledge entry must be warned about: $(cat "$TMP/warn.err")"
+grep -q 'offloaded placeholder.*offloaded.md' "$TMP/warn.err" || fail "offloaded placeholder must be warned about: $(cat "$TMP/warn.err")"
+if grep -q 'WARNING.*widget-notes.md' "$TMP/warn.err"; then fail "present knowledge entry must not warn"; fi
+
 echo "hq-delegate-bundle: ok (schema valid; prefixes folder-form + bucket-relative; fail-closed on neither source and secret match; brainstorm stage builds from brainstorm.md with dossier + /plan brief; prd path unchanged; big folders build with dependency dirs skipped and a 200-entry cap; pattern lib superset of hook)"

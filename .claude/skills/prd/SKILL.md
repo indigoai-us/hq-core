@@ -1,7 +1,7 @@
 ---
 name: prd
 description: "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan."
-allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/board-project-id.sh:*)
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -176,10 +176,15 @@ projects with no company board.
    `brainstorm_path === "companies/{co}/projects/{slug}/brainstorm.md"`, by
    the brainstorm's `source_idea_id`, or by title. If found, set `status` to
    `"prd_in_progress"` and `updated_at`; reuse its `id` as `{board-project-id}`.
-   If not found, append a new entry with the next `{prefix}-proj-{NNN}` id,
-   `title` = project name, `description` = one sentence from Step 1,
+   If not found, append a new entry whose id is the output of
+   `bash core/scripts/board-project-id.sh next {co}` (the highest existing
+   number + 1, never the last entry + 1), with a non-empty `title` = project
+   name, `description` = one sentence from Step 1,
    `status: "prd_in_progress"`, `scope: "company"`, `prd_path: null`, and
-   timestamps. Write `board.json`, re-read it, confirm the entry exists.
+   timestamps. Write `board.json`, re-read it, confirm the entry exists, then run
+   `bash core/scripts/board-project-id.sh check {co}`. If it exits non-zero, fix
+   the entry you wrote (new id, or reuse the existing entry) before registering;
+   never register or leave a board with a duplicate id or an empty title.
 2. Check and register:
    ```bash
    bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-project-id}

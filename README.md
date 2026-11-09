@@ -43,6 +43,8 @@ That scaffolds your HQ and wires it into the agents you already use. Prefer the 
 npm install -g @indigoai-us/hq-cli
 ```
 
+**Windows:** install with the HQ desktop app or `npx create-hq`. Both set up HQ's five linked paths (`AGENTS.md`, `.agents/skills`, `.codex/claude`, `.codex/output-style.md` and `companies/_template/.obsidian`) without symlink rights. The raw release tarball extracted with `tar.exe`, and a `git clone` without symlink support, are not supported Windows install paths on their own: those five paths come out missing or as small text files, so Codex finds no `AGENTS.md`. After either one, run `hq rescue --hq-root <absolute path to your HQ folder>` to repair them.
+
 ## The 30-second version
 
 1. **Agent, day one** → asks "who owns billing in our codebase?" and has *no idea*.

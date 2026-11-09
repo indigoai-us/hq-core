@@ -33,6 +33,17 @@
 #              HQ_POLICY_HARD_RULE_MAX_BYTES (default 6144). Hard policies are
 #              quoted verbatim into the session, so this is recurring context
 #              cost.
+#   CUT        a hard policy whose body is over the
+#              injector's per-policy limit (HQ_POLICY_HARD_MAX_BYTES, default
+#              2048) and whose `## Rule` section does not fit that limit
+#              either. The injector shows such a policy only as a one-line
+#              summary, so the rule is cut even though the body is under 6144.
+#   RULE       a hard policy whose body is over that same injector limit, but
+#              whose `## Rule` section fits. The injector delivers the Rule
+#              section only. Informational: not an error.
+#   ABOVE-RULE a hard policy with non-blank body text before `## Rule`. That
+#              text is dropped when the injector falls back to the Rule
+#              section.
 #
 # Usage:
 #   bash core/scripts/lint-policy-triggers.sh [--quiet] [--strict] [dir ...]
@@ -40,6 +51,9 @@
 #   (no dirs)  scan the standard policy roots under HQ_ROOT
 #   --quiet    print only the summary counts
 #   --strict   also exit non-zero for LOOSE/OVERSIZE, not just MALFORMED/MISSING
+#   --strict-inject  also exit non-zero for CUT (summary-only delivery) and
+#              ABOVE-RULE (preamble lost on Rule fallback). RULE is a warning
+#              only. Without this flag CUT and ABOVE-RULE are warnings.
 #   --usage    instead of the trigger audit, list DEAD-OR-UNMATCHABLE policies:
 #              zero retrievals in the last HQ_POLICY_USAGE_DAYS (default 30)
 #              days in workspace/orchestrator/policy-retrieval-ledger.jsonl,
@@ -59,9 +73,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
 EVAL="$SCRIPT_DIR/eval-trigger.sh"
 
-HARD_RULE_MAX="${HQ_POLICY_HARD_RULE_MAX_BYTES:-6144}"
+# shellcheck source=lib/policy-limits.sh
+. "$SCRIPT_DIR/lib/policy-limits.sh"
+HARD_RULE_MAX="${HQ_POLICY_HARD_RULE_MAX_BYTES:-$HQ_POLICY_WRITE_MAX_DEFAULT}"
+# What the injector actually delivers per policy (HQ_POLICY_HARD_MAX_BYTES).
+INJECT_MAX="${HQ_POLICY_HARD_MAX_BYTES:-$HQ_POLICY_INJECT_MAX_DEFAULT}"
+case "$INJECT_MAX" in ''|*[!0-9]*) INJECT_MAX="$HQ_POLICY_INJECT_MAX_DEFAULT" ;; esac
 QUIET=0
 STRICT=0
+STRICT_INJECT=0
 USAGE=0
 DIRS=()
 
@@ -75,8 +95,9 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --quiet) QUIET=1 ;;
     --strict) STRICT=1 ;;
+    --strict-inject) STRICT_INJECT=1 ;;
     --usage) USAGE=1 ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
     -*) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
     *) DIRS+=("$1") ;;
   esac
@@ -173,7 +194,7 @@ fi
 STOP='^#+[ \t]*(rationale|rationale and context|background|change history|changelog|history|examples?|references?|related|see also|sources?|provenance|evidence)[ \t]*$'
 
 FACTS_TSV="$TMPROOT/policy-facts.tsv"
-if ! xargs -0 awk -v stop="$STOP" -v bom="$(printf '\357\273\277')" '
+if ! LC_ALL=C xargs -0 awk -v stop="$STOP" -v bom="$(printf '\357\273\277')" '
     function perror(msg) { if (perr == "") perr = msg }
     function pitem(v, ctx) {
       gsub(/^[ \t]+|[ \t]+$/, "", v)
@@ -192,9 +213,32 @@ if ! xargs -0 awk -v stop="$STOP" -v bom="$(printf '\357\273\277')" '
     }
     function flush() {
       if (pseen && pblock && pcount == 0 && perr == "") perror("empty list (omit the field to apply to everyone)")
-      if (fn != "") printf "%s\t%s\t%s\t%s\t%s\t%s\n", fn, w, o, tolower(enf), bytes+0, perr
+      if (fn != "") finish_body(); printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", fn, w, o, tolower(enf), bytes+0, ibytes+0, rbytes+0, above+0, perr
     }
-    function reset() { d=0; w=""; o=""; enf=""; bytes=0; stopped=0; pseen=0; pblock=0; psec=0; pcount=0; perr="" }
+    # Mirror the injector: policy_body (leading blanks skipped, trailing blanks
+    # trimmed, joined by newlines) and policy_rule_body (the `## Rule` section,
+    # absent when there is no such heading or it is the whole body).
+    function finish_body(   last, i, inrule, n, rl, saw_rule) {
+      ibytes = 0; rbytes = 0; above = 0
+      last = 0
+      for (i = 1; i <= nb; i++) if (B[i] ~ /[^ \t]/) last = i
+      for (i = 1; i <= last; i++) ibytes += length(B[i]) + (i > 1 ? 1 : 0)
+      saw_rule = 0
+      for (i = 1; i <= last; i++) {
+        if (B[i] ~ /^## Rule[ \t]*$/) { saw_rule = 1; break }
+        if (B[i] ~ /[^ \t]/) above = 1
+      }
+      if (!saw_rule) above = 0
+      inrule = 0; n = 0; rl = 0
+      for (i = 1; i <= nb; i++) {
+        if (B[i] ~ /^## Rule[ \t]*$/) inrule = 1; else if (B[i] ~ /^## /) inrule = 0
+        if (inrule) { R[++n] = B[i] }
+      }
+      if (n == 0 || n >= nb) return
+      for (i = 1; i <= n; i++) if (R[i] ~ /[^ \t]/) rl = i
+      for (i = 1; i <= rl; i++) rbytes += length(R[i]) + (i > 1 ? 1 : 0)
+    }
+    function reset() { nb=0; ibytes=0; rbytes=0; above=0; d=0; w=""; o=""; enf=""; bytes=0; stopped=0; pseen=0; pblock=0; psec=0; pcount=0; perr="" }
     { sub(/\r$/, ""); if (FNR==1) sub("^" bom, "") }
     FNR==1 { flush(); reset(); fn=FILENAME }
     # CRLF policies (Windows editors, some sync clients): drop the line-end CR
@@ -223,6 +267,7 @@ if ! xargs -0 awk -v stop="$STOP" -v bom="$(printf '\357\273\277')" '
       probe=tolower($0); sub(/^[ \t]+/,"",probe); sub(/[ \t]+$/,"",probe)
       if (stopped || probe ~ stop) { stopped=1; next }
       bytes += length($0) + 1
+      if (nb > 0 || $0 !~ /^[ \t]*$/) B[++nb] = $0
     }
     END { flush() }
   ' < "$FILES_NUL" > "$FACTS_TSV"; then
@@ -289,7 +334,7 @@ fi
 [ -s "$RECORDS" ] || die "policy facts were found but no policy records were produced"
 
 REACTIVE_EVENTS="PreToolUse PostToolUse UserPromptSubmit AssistantIntent"
-total=0; bad_principals=0; bad_when=0; loose=0; oversized=0; no_trigger=0
+cut=0; rule_only=0; above_rule=0; total=0; bad_principals=0; bad_when=0; loose=0; oversized=0; no_trigger=0
 say() { [ "$QUIET" = "1" ] || printf '%s\n' "$1"; }
 
 # Bash treats tab as IFS whitespace and collapses consecutive separators. Split
@@ -305,6 +350,12 @@ while IFS= read -r record; do
   enf="${rest%%$'\t'*}"
   rest="${rest#*$'\t'}"
   bytes="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  inj_bytes="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  rule_bytes="${rest%%$'\t'*}"
+  rest="${rest#*$'\t'}"
+  above="${rest%%$'\t'*}"
   rest="${rest#*$'\t'}"
   principals_error="${rest%%$'\t'*}"
   state="${rest#*$'\t'}"
@@ -357,15 +408,35 @@ while IFS= read -r record; do
     if [ "${bytes:-0}" -gt "$HARD_RULE_MAX" ]; then
       oversized=$((oversized + 1))
       say "OVERSIZE  $rel — ${bytes} bytes injected verbatim (limit $HARD_RULE_MAX)"
+    elif [ "${inj_bytes:-0}" -gt "$INJECT_MAX" ] \
+      && { [ "${rule_bytes:-0}" -eq 0 ] || [ "${rule_bytes:-0}" -gt "$INJECT_MAX" ]; }; then
+      # Under the authoring ceiling, but the injector delivers at most
+      # $INJECT_MAX bytes per policy and falls back to a one-line summary when
+      # neither the body nor its `## Rule` section fits (feedback_1c36af85).
+      cut=$((cut + 1))
+      if [ "${rule_bytes:-0}" -eq 0 ]; then
+        say "CUT       $rel — body is ${inj_bytes} bytes with no ## Rule section that fits; the injector's per-policy limit is $INJECT_MAX bytes, so only a one-line summary is shown"
+      else
+        say "CUT       $rel — ## Rule section is ${rule_bytes} bytes (body ${inj_bytes}); the injector's per-policy limit is $INJECT_MAX bytes, so only a one-line summary is shown"
+      fi
+    elif [ "${inj_bytes:-0}" -gt "$INJECT_MAX" ] \
+      && [ "${rule_bytes:-0}" -gt 0 ] && [ "${rule_bytes:-0}" -le "$INJECT_MAX" ]; then
+      rule_only=$((rule_only + 1))
+      say "RULE      $rel — body is ${inj_bytes} bytes; injector delivers the ## Rule section (${rule_bytes} bytes, limit $INJECT_MAX)"
+    fi
+    if [ "${above:-0}" = "1" ]; then
+      above_rule=$((above_rule + 1))
+      say "ABOVE-RULE $rel — text before ## Rule is dropped when the injector falls back to the Rule section"
     fi
   fi
 done < "$RECORDS"
 
 [ "$total" -gt 0 ] || die "policy records were produced but zero policies were scanned"
 
-printf 'policies scanned: %s | malformed when: %s | missing trigger: %s | loose hard trigger: %s | oversized hard body: %s | invalid principals: %s\n' \
-  "$total" "$bad_when" "$no_trigger" "$loose" "$oversized" "$bad_principals"
+printf 'policies scanned: %s | malformed when: %s | missing trigger: %s | loose hard trigger: %s | oversized hard body: %s | invalid principals: %s | cut by injector (> %s bytes): %s | delivered as Rule section: %s | binding above Rule: %s\n' \
+  "$total" "$bad_when" "$no_trigger" "$loose" "$oversized" "$bad_principals" "$INJECT_MAX" "$cut" "$rule_only" "$above_rule"
 
 if [ "$bad_when" -gt 0 ] || [ "$no_trigger" -gt 0 ] || [ "$bad_principals" -gt 0 ]; then exit 1; fi
 if [ "$STRICT" = "1" ] && { [ "$loose" -gt 0 ] || [ "$oversized" -gt 0 ]; }; then exit 1; fi
+if [ "$STRICT_INJECT" = "1" ] && { [ "$cut" -gt 0 ] || [ "$above_rule" -gt 0 ]; }; then exit 1; fi
 exit 0

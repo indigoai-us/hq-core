@@ -79,4 +79,34 @@ if grep -nE '^\s*find workspace' "$SKILL" | grep -v -- '-maxdepth' | grep -q .; 
 fi
 pass "checkpoint skill has no unbounded find over workspace"
 
+# 6. A named session must not upgrade another session's newer auto-checkpoint.
+printf '%s\n' '{"session_id":"sess-other","type":"auto-checkpoint"}' \
+  > "$fr/workspace/threads/T-z-auto-other.json"
+printf '%s\n' '{"session_id":"sess-mine","type":"auto-checkpoint"}' \
+  > "$fr/workspace/threads/T-a-auto-1.json"
+out="$(bash "$SCRIPT" "$fr" 5 sess-mine)"
+[ "$out" = "$fr/workspace/threads/T-a-auto-1.json" ] \
+  || fail "session filter returned other session file: $out"
+pass "session id skips a newer other-session auto-checkpoint"
+
+out="$(bash "$SCRIPT" "$fr" 5 sess-missing)"
+[ -z "$out" ] || fail "unknown session should print nothing, got: $out"
+pass "unknown session id prints nothing"
+
+out="$(HQ_CHECKPOINT_SESSION_ID=sess-mine bash "$SCRIPT" "$fr" 5)"
+[ "$out" = "$fr/workspace/threads/T-a-auto-1.json" ] \
+  || fail "HQ_CHECKPOINT_SESSION_ID was ignored: $out"
+pass "HQ_CHECKPOINT_SESSION_ID selects this session"
+
+# Files without session_id stay unselected when a session is named.
+printf '%s\n' '{"type":"auto-checkpoint"}' > "$fr/workspace/threads/T-y-auto-nosid.json"
+out="$(bash "$SCRIPT" "$fr" 5 sess-mine)"
+[ "$out" = "$fr/workspace/threads/T-a-auto-1.json" ] \
+  || fail "legacy file without session_id stole the match: $out"
+pass "legacy auto-checkpoint without session_id is not upgraded for a named session"
+
+grep -q 'checkpoint-recent-auto.sh "\$PWD" 5 "\$sid"' "$SKILL" \
+  || fail "skill does not pass session id to the helper"
+pass "checkpoint skill passes session id"
+
 echo "checkpoint-recent-auto: all tests passed"

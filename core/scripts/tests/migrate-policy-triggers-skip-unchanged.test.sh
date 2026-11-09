@@ -71,10 +71,48 @@ env -i PATH="$BIN:/usr/bin:/bin" HOME="$TMP" HQ_ROOT="$HQROOT" CLAUDE_PROJECT_DI
 [ "$(calls)" = "5" ] || fail "an argument form must always run, got $(calls)"
 grep -q -- '--dry-run' "$CALLS" || fail "arguments were not forwarded"
 
+# Same-day changes the top-level directory mtime does not show (#1821 review).
+# Each run below happens the same calendar day as the last successful one.
+mkdir -p "$HQROOT/core/policies/sub/deep" "$HQROOT/personal/workers/w1/policies"
+printf -- '---\nid: s1\nenforcement: hard\n---\n\n## Rule\nx\n' > "$HQROOT/core/policies/sub/deep/s1.md"
+run
+base="$(calls)"
+run
+[ "$(calls)" = "$base" ] || fail "unchanged nested tree should skip, got $(calls) after $base"
+
 sleep 1
+printf 'edited\n' >> "$HQROOT/core/policies/p1.md"   # in place: directory mtime unchanged
+run
+[ "$(calls)" = "$((base + 1))" ] || fail "an in-place edit of a top-level policy should re-run the same day, got $(calls)"
+
+sleep 1
+printf 'edited\n' >> "$HQROOT/core/policies/sub/deep/s1.md"
+run
+[ "$(calls)" = "$((base + 2))" ] || fail "an in-place edit in a subfolder should re-run the same day, got $(calls)"
+
+sleep 1
+printf -- '---\nid: s2\nenforcement: hard\n---\n\n## Rule\ny\n' > "$HQROOT/core/policies/sub/deep/s2.md"
+run
+[ "$(calls)" = "$((base + 3))" ] || fail "a new file in a subfolder should re-run the same day, got $(calls)"
+
+sleep 1
+rm "$HQROOT/core/policies/sub/deep/s2.md"
+run
+[ "$(calls)" = "$((base + 4))" ] || fail "a file deleted from a subfolder should re-run the same day, got $(calls)"
+
+sleep 1
+printf -- '---\nid: w1\nenforcement: hard\n---\n\n## Rule\nz\n' > "$HQROOT/personal/workers/w1/policies/w1.md"
+run
+[ "$(calls)" = "$((base + 5))" ] || fail "a new worker policy should re-run the same day, got $(calls)"
+
+run
+[ "$(calls)" = "$((base + 5))" ] || fail "the tree is unchanged again and should skip, got $(calls)"
+
+sleep 1
+before_hq="$(calls)"
 touch "$BIN/hq"   # a newer hq ships newer migration rules
 run
-[ "$(calls)" = "6" ] || fail "a newer hq binary should re-run, got $(calls)"
+[ "$(calls)" = "$((before_hq + 1))" ] || fail "a newer hq binary should re-run, got $(calls)"
 
 # A failing run must not record a stamp.
 rm -f "$STAMP"

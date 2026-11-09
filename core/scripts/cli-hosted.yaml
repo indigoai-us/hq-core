@@ -261,7 +261,7 @@ entries:
     kind: generated
     root: live
     interpreter: bash
-    min_cli: 5.78.0
+    min_cli: 5.345.188
     state: forwarded
     path_operands: none
     note: |
@@ -273,7 +273,7 @@ entries:
     kind: generated
     root: live
     interpreter: bash
-    min_cli: 5.78.0
+    min_cli: 5.345.188
     state: forwarded
     path_operands: none
     note: |
@@ -285,7 +285,7 @@ entries:
     kind: generated
     root: live
     interpreter: bash
-    min_cli: 5.78.0
+    min_cli: 5.345.188
     state: forwarded
     path_operands: none
     note: |
@@ -309,7 +309,7 @@ entries:
     kind: generated
     root: live
     interpreter: bash
-    min_cli: 5.78.0
+    min_cli: 5.345.188
     state: forwarded
     path_operands: none
     note: |

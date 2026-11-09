@@ -200,11 +200,19 @@ cmd_orient() {
   blockpid=$!
   local pin=(--company "$co" --session-id "$sid" --root "$ROOT")
   [ -n "$project" ] && pin+=(--project "$project")
-  if ! digest="$(HQ_COMPANY_BIND_POLICY_BYTES="${HQ_STARTWORK_POLICY_BYTES:-5120}" \
-    bash "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "${pin[@]}" 2>/dev/null)"; then
+  local binderr
+  binderr="$(mktemp "${TMPDIR:-/tmp}/startwork-bind-err.XXXXXX")" || binderr=/dev/null
+  if ! digest="$(HQ_ROOT="$ROOT" HQ_COMPANY_BIND_POLICY_BYTES="${HQ_STARTWORK_POLICY_BYTES:-5120}" \
+    bash "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "${pin[@]}" 2>"$binderr")"; then
     wait "$blockpid" 2>/dev/null; rm -f "$blockf"
-    echo "startwork-context: bind failed for '$co'" >&2; return 4
+    echo "startwork-context: bind failed for '$co' (root: $ROOT)" >&2
+    if [ "$binderr" != /dev/null ]; then
+      tail -n 5 "$binderr" | sed 's/^/startwork-context:   /' >&2
+      rm -f "$binderr"
+    fi
+    return 4
   fi
+  [ "$binderr" = /dev/null ] || rm -f "$binderr"
   # Read the record directly (a second hq-session process costs ~0.3 s).
   bound="$(sed -n 's/^company_slug:[[:space:]]*//p' "$ROOT/workspace/sessions/$sid/meta.yaml" 2>/dev/null | tail -1 | tr -d "\"' ")"
   if [ "$bound" != "$co" ]; then

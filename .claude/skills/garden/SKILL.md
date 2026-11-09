@@ -145,8 +145,9 @@ judgment is yours and the reviewers'.
 9. **Undo** with `python3 core/scripts/garden-policy-deep.py restore --backup <tarball>`.
 10. **Report.** Write `<run>/report.md`: before and after counts (hard and
     soft), each round's decision, backup path, and every removed file with
-    its verdict and reason. If the install keeps a generated `_digest.md` for
-    the folder, regenerate it. Give the user the counts, the backup paths,
+    its verdict and reason. Policy digests are retired, so if the folder still
+    has a `_digest.md`, delete it with `rm`; nothing reads it and no generator
+    ships. Give the user the counts, the backup paths,
     and the report link in plain words.
 
 The pass can repeat: after a first round, run it again on the keeps with a

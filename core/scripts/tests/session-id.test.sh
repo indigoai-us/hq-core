@@ -22,7 +22,7 @@ assert_eq() { [ "$1" = "$2" ] || fail "$3: expected '$2', got '$1'"; }
 
 # The test process may itself carry a session id; start from a clean slate.
 unset HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID || true
+      CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID HQ_FLEET_SESSION_ID || true
 
 # shellcheck source=../lib/session-id.sh
 . "$LIB"
@@ -48,7 +48,7 @@ assert_eq "$(session_id_resolve "$TMP")" "from-current" ".current fallback"
 
 echo "[4] every supported env var beats .current"
 for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-           CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID; do
+           CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID HQ_FLEET_SESSION_ID; do
   got="$(env "$var=from-$var" bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
   assert_eq "$got" "from-$var" "$var must beat .current"
 done
@@ -99,5 +99,87 @@ assert_eq "$(session_id_resolve "$TMP")" "" "malformed .current rejected"
 echo "[9] a missing root is not fatal"
 assert_eq "$(session_id_resolve "$TMP/nope")" "" "missing root resolves empty"
 assert_eq "$(session_id_resolve "")" "" "empty root resolves empty"
+
+echo "[10] HQ_FLEET_SESSION_ID (HQ Fleet runtime scheduled jobs) is a source"
+printf 'from-current\n' > "$TMP/workspace/sessions/.current"
+got="$(env HQ_FLEET_SESSION_ID=fleet-job-1 \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "fleet-job-1" "HQ_FLEET_SESSION_ID alone beats .current"
+got="$(env HQ_SESSION_ID=a CLAUDE_CODE_SESSION_ID=b GROK_SESSION_ID=g HQ_FLEET_SESSION_ID=fleet-job-1 \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "a" "explicit and runtime ids outrank the fleet id"
+got="$(env GROK_SESSION_ID=g HQ_FLEET_SESSION_ID=fleet-job-1 \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "g" "runtime ids outrank the fleet id"
+got="$(env HQ_FLEET_SESSION_ID=../escape \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "from-current" "malformed fleet id is rejected"
+got="$(env HQ_FLEET_SESSION_ID='  fleet-pad  ' \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "fleet-pad" "fleet id is trimmed"
+
+echo "[11] hq-session.sh binds a company with only HQ_FLEET_SESSION_ID set"
+SRC_SCRIPTS="$(cd "$(dirname "$LIB")/.." && pwd)"
+FR="$TMP/fleetroot"
+mkdir -p "$FR/core/scripts/lib" "$FR/.codex/hooks" "$FR/workspace/sessions" \
+         "$FR/companies/indigo" "$FR/home"
+cp "$SRC_SCRIPTS/hq-session.sh" "$FR/core/scripts/hq-session.sh"
+cp "$SRC_SCRIPTS/lib/session-scope-capability.sh" "$SRC_SCRIPTS/lib/session-id.sh" "$FR/core/scripts/lib/"
+cp "$SRC_SCRIPTS/hqd-hook-flag-cache-lib.sh" "$FR/core/scripts/"
+cp "$SRC_SCRIPTS/../../.codex/hooks/codex-explicit-path-flag.cjs" "$FR/.codex/hooks/"
+chmod +x "$FR/core/scripts/hq-session.sh"
+fleet_hs() {
+  env -u HQ_ROOT -u CLAUDE_PROJECT_DIR HOME="$FR/home" HQ_HQ_SESSION_NO_CLI=1 \
+      HQ_FLEET_SESSION_ID=fleet-job-1 "$FR/core/scripts/hq-session.sh" "$@"
+}
+fleet_hs set company_slug indigo >/dev/null 2>"$TMP/fleet.err" \
+  || fail "set company_slug failed with only HQ_FLEET_SESSION_ID: $(cat "$TMP/fleet.err")"
+assert_eq "$(fleet_hs get company_slug)" "indigo" "company bound to the fleet session"
+[ -d "$FR/workspace/sessions/fleet-job-1" ] || fail "session record not keyed by fleet id"
+
+echo "[12] Cursor: shared CURSOR_TRACE_ID is never an identity; the write error names the Cursor fix"
+# Cursor exports CURSOR_AGENT=1 and a per-window CURSOR_TRACE_ID that every chat
+# in the window shares, and no conversation id. Resolving either would bind two
+# concurrent chats to one session record.
+printf 'from-current\n' > "$TMP/workspace/sessions/.current"
+got="$(env -u CURSOR_AGENT -u CURSOR_TRACE_ID CURSOR_AGENT=1 CURSOR_TRACE_ID=trace-shared \
+        bash -c '. "$1"; session_id_from_env' _ "$LIB")"
+assert_eq "$got" "" "Cursor marker variables are not a session id"
+got="$(env CURSOR_AGENT=1 CURSOR_TRACE_ID=trace-shared \
+        bash -c '. "$1"; session_id_resolve "$2"' _ "$LIB" "$TMP")"
+assert_eq "$got" "from-current" "Cursor markers do not outrank .current"
+cursor_hs() {
+  env -u HQ_ROOT -u CLAUDE_PROJECT_DIR -u HQ_FLEET_SESSION_ID -u CURSOR_AGENT -u CURSOR_TRACE_ID \
+      HOME="$FR/home" HQ_HQ_SESSION_NO_CLI=1 "$@"
+}
+if cursor_hs CURSOR_AGENT=1 CURSOR_TRACE_ID=trace-shared \
+     "$FR/core/scripts/hq-session.sh" set company_slug indigo >/dev/null 2>"$TMP/cursor.err"; then
+  fail "Cursor write with no session id must fail"
+fi
+grep -q 'Cursor does not export a session id' "$TMP/cursor.err" \
+  || fail "Cursor write error lacks the Cursor hint: $(cat "$TMP/cursor.err")"
+grep -q 'export HQ_SESSION_ID=<id>' "$TMP/cursor.err" \
+  || fail "Cursor hint does not name HQ_SESSION_ID: $(cat "$TMP/cursor.err")"
+[ ! -e "$FR/workspace/sessions/trace-shared" ] || fail "CURSOR_TRACE_ID was used as a session id"
+if cursor_hs CURSOR_TRACE_ID=trace-shared \
+     "$FR/core/scripts/hq-session.sh" set company_slug indigo >/dev/null 2>"$TMP/cursor-term.err"; then
+  fail "Cursor terminal write with no session id must fail"
+fi
+grep -q 'Cursor does not export a session id' "$TMP/cursor-term.err" \
+  || fail "Cursor terminal write error lacks the Cursor hint"
+if cursor_hs "$FR/core/scripts/hq-session.sh" set company_slug indigo >/dev/null 2>"$TMP/plain.err"; then
+  fail "write with no session id must fail outside Cursor"
+fi
+if grep -q 'Cursor' "$TMP/plain.err"; then
+  fail "Cursor hint printed outside Cursor: $(cat "$TMP/plain.err")"
+fi
+cursor_hs CURSOR_AGENT=1 CURSOR_TRACE_ID=trace-shared HQ_SESSION_ID=cursor-chat-1 \
+    "$FR/core/scripts/hq-session.sh" set company_slug indigo >/dev/null 2>"$TMP/cursor-ok.err" \
+  || fail "Cursor write with HQ_SESSION_ID failed: $(cat "$TMP/cursor-ok.err")"
+[ -d "$FR/workspace/sessions/cursor-chat-1" ] || fail "Cursor session record not keyed by HQ_SESSION_ID"
+cursor_hs CURSOR_AGENT=1 "$FR/core/scripts/hq-session.sh" --session-id cursor-chat-2 \
+    set company_slug indigo >/dev/null 2>"$TMP/cursor-flag.err" \
+  || fail "Cursor write with --session-id failed: $(cat "$TMP/cursor-flag.err")"
+[ -d "$FR/workspace/sessions/cursor-chat-2" ] || fail "Cursor session record not keyed by --session-id"
 
 echo "PASS: session-id.test.sh"

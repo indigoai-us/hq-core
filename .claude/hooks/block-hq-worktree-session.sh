@@ -172,7 +172,9 @@ guard_now() {
 }
 GUARD_SESSION="$(payload_field session_id)"
 GUARD_CACHE=""
-GUARD_TTL="${HQ_WORKTREE_GUARD_TTL:-600}"
+# Allow verdicts are safe to keep for a day. A block is never cached.
+# Content change is the session root or cwd stored in the cache file.
+GUARD_TTL="${HQ_WORKTREE_GUARD_TTL:-86400}"
 EARLY_ROOT="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}"
 EARLY_CWD="$(payload_field cwd)"
 if [ -n "$GUARD_SESSION" ] && [ -n "$EARLY_ROOT" ] && [ "$GUARD_TTL" != "0" ]; then

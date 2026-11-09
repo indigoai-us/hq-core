@@ -362,8 +362,33 @@ norm_path() {
 CRED_WORD_RE='npmrc|netrc|pypirc|yarnrc|git-credentials|\.gem|\.docker|\.aws|\.ssh|id_(rsa|dsa|ecdsa|ed25519)|gh/hosts|\.env|credentials|secrets-cache'
 # Also wake for home references and recursive readers: `grep -r token ~`
 # reaches credential files without naming one.
-PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive|(xargs|parallel|-exec|-ok).*git.*(show|cat-file|archive)"
+PREFILTER_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y|(^|[^a-z])(cd|pushd)([^a-z]|$)|[*?[{]|~|home|(^|[^a-z])(rg|ag|ack|rsync|scp)([^a-z]|$)|(^|[[:space:]])-[A-Za-z]*r|--recursive|--archive|(xargs|parallel|-exec|-ok).*git.*(show|cat-file|archive)|cat-file|alias\\.|git[^;&|]*[[:space:]](archive|grep)([[:space:]]|$)|(^|[^a-z])read([^a-z]|$).*git|git[^;&|]*[[:space:]]-L|git[^;&|]*[[:space:]](show|diff|difftool|format-patch|diff-tree|diff-index|diff-files|fast-export|reflog|stash|bundle)([[:space:]]|$)|git[^;&|]*[[:space:]](log|whatchanged)[^;&|]*[[:space:]]-(p|u|U|c|-patch|-unified|-cc|-word-diff|-color-words)|git[^;&|]*[[:space:]](log|show|diff|whatchanged)([[:space:]]+-[^[:space:];&|]*)*[[:space:]]+([^-[:space:];&|:][^[:space:];&|:]*([[:space:];&|]|$)|:)"
 CG_SCREEN_RE="${CRED_WORD_RE}|identity|config\\.json|hosts\\.y"
+
+# Git subcommands the guard knows. git runs a built-in before an alias of the
+# same name, so only another word can be an alias (git x HEAD:cfg/$f with
+# alias.x=show); git_unknown_sub sends such a command to the full check, which
+# resolves the alias (git_alias_value).
+GIT_KNOWN_SUBS=" add am apply archive bisect blame branch cat-file check-attr check-ignore checkout cherry-pick clean clone commit config count-objects describe diff fetch for-each-ref format-patch fsck gc grep hash-object help init log ls-files ls-remote ls-tree merge merge-base mv name-rev notes pull push range-diff rebase reflog remote reset restore rev-list rev-parse revert rm shortlog show show-ref sparse-checkout stash status submodule switch symbolic-ref tag update-ref var version whatchanged worktree annotate bundle cherry checkout-index commit-tree credential diff-files diff-index diff-tree difftool fast-export lfs maintenance mergetool mktag mktree prune read-tree repack replace request-pull rerere show-branch subtree update-index verify-commit verify-tag write-tree "
+GIT_SUB_RE='(^|[^[:alnum:]_.-])git[[:space:]]+(.*)$'
+GIT_OPT_RE='^-[^[:space:]]*[[:space:]]+(.*)$'
+GIT_OPTARG_RE='^(-C|-c|--git-dir|--work-tree|--namespace|--config-env)[[:space:]]+[^[:space:]]+[[:space:]]+(.*)$'
+GIT_WORD_RE='^([^[:space:];&|)]+)'
+git_unknown_sub() { # <command>: 0 when a git word is followed by an unknown subcommand
+  local rest="$1" w
+  while [[ "$rest" =~ $GIT_SUB_RE ]]; do
+    rest="${BASH_REMATCH[2]}"
+    while :; do
+      if [[ "$rest" =~ $GIT_OPTARG_RE ]]; then rest="${BASH_REMATCH[2]}"
+      elif [[ "$rest" =~ $GIT_OPT_RE ]]; then rest="${BASH_REMATCH[1]}"
+      else break; fi
+    done
+    [[ "$rest" =~ $GIT_WORD_RE ]] || continue
+    w="${BASH_REMATCH[1]}"
+    case "$GIT_KNOWN_SUBS" in *" $w "*) ;; *) return 0 ;; esac
+  done
+  return 1
+}
 
 # Credential basenames and directory names a split word can rebuild
 # (cg_split_cred). CG_SPLIT_DIR_NAMES holds names that are credentials only
@@ -1067,7 +1092,7 @@ cg_fast_allow() {
   [ "${HQ_CRED_GUARD_FASTPATH:-1}" != "0" ] || return 1
   # Every helper must be defined; a missing one would otherwise read as "no
   # match" and allow the call.
-  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan cg_split_cred cg_split_check cg_split_mark cg_ansi_decode cg_split_default cg_split_scan cg_split_env cg_split_dir_is cg_split_cred_dir cg_split_seg norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
+  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan cg_split_cred cg_split_check cg_split_mark cg_ansi_decode cg_split_default cg_split_scan cg_split_env cg_split_dir_is cg_split_cred_dir cg_split_seg git_unknown_sub norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
   [ ${#INPUT} -le 16384 ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   command -v realpath >/dev/null 2>&1 || return 1
@@ -1092,9 +1117,10 @@ cg_fast_allow() {
       # fast path used to allow them on a home path or with cwd in HOME.
       cg_zglob "$CG_CMD" && return 1
       cg_zglob "$CG_CMD" "$CG_ZMARK_RE" && return 1
-      # A git show <ref>:<path> with a variable reads a tree object the name
-      # prefilter cannot see; the full check proves it (GS_COMPUTED).
-      case "$CG_CMD" in *show*:*'$'*) return 1 ;; esac
+      # Revision searches and variables can select paths absent from the
+      # command text. Strip quotes so sh"ow" cannot evade this prefilter.
+      cg_strip_q "$CG_CMD"
+      case "$CG_SQ" in *show*'$'*|*cat-file*'$'*|*:/*) return 1 ;; esac
       # zsh glob_subst and $~ (CG_GSUB in the full check), and git config
       # that names a command (git -c alias.x='!cat f' x) get the full check.
       cg_gsub "$CG_CMD" && return 1
@@ -1110,6 +1136,10 @@ cg_fast_allow() {
       [ "$fa_nc" -eq 1 ] || shopt -u nocasematch
       cg_strip_q "$CG_CMD" || return 1
       local st="$CG_SQ"
+      # A git subcommand the guard does not know may be an alias of show,
+      # cat-file, archive, grep or log; the full check resolves it. The
+      # unquoted text is used so gi\t and "git" count.
+      git_unknown_sub "$st" && return 1
       # Same split-name rule as the full check (SPLIT_CRED).
       cg_split_cred "$CG_CMD" && return 1
       # Same cwd rule as the full check.
@@ -1278,7 +1308,10 @@ cg_zglob "$CMD" "$CG_ZMARK_RE" && ZMARK=1
 # name prefilter can match: `ls src | while read f; do git show "HEAD:src/$f"`
 # carries no credential word. Treat it as computed so the full check runs and
 # unknown variables are wildcards there.
-case "$CMD" in *show*:*'$'*) COMPUTED_PATH=1 ;; esac
+case "$STRIPPED" in *show*'$'*|*cat-file*'$'*|*:/*) COMPUTED_PATH=1 ;; esac
+# An unknown git subcommand may be an alias of a git object reader.
+GIT_ALIAS_CAND=0
+git_unknown_sub "$STRIPPED" && GIT_ALIAS_CAND=1
 # The command can change what a command name runs. is_safe_cmd uses these:
 #   CG_CMD_OVERRIDE=1  alias, hash or enable run as a command (zsh expands
 #                      aliases, bash with expand_aliases), BASH_ENV/ENV or
@@ -1434,7 +1467,7 @@ fi
 # command (git -c alias.x='!cat id^x' x).
 GITCFG=0
 if [[ "$CMD" =~ git|GIT ]] && [[ "$CMD" =~ $CG_GITCFG_RE ]]; then GITCFG=1; fi
-if [ "$GITCFG" -eq 0 ] && [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
+if [ "$GITCFG" -eq 0 ] && [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$GIT_ALIAS_CAND" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
   shopt -u nocasematch
   exit 0
 fi
@@ -2430,6 +2463,29 @@ subst_word() {
   if [ "$SW_LEFT" -eq 1 ]; then SW=("$text"); fi
 }
 
+# git_show_stage_var <raw-word>: 0 when the raw git show operand is
+# :$NAME:<rest> (or :${NAME}:<rest>) and NAME is a `for` loop variable bound,
+# before this simple command, only over literal words 0-3 (SPLIT_VAR_STAGE),
+# and nothing in the command can rebind it (NAME=, NAME+=, read, eval,
+# printf -v, ...). Quoting of the operand does not matter: the value itself
+# is proven to be a merge-stage digit.
+git_show_stage_var() {
+  local raw="$1" name i
+  [ "$SPLIT_TRUST" = 1 ] || return 1
+  [[ "$raw" =~ ^:\$([A-Za-z_][A-Za-z0-9_]*): ]] || [[ "$raw" =~ ^:\$\{([A-Za-z_][A-Za-z0-9_]*)\}: ]] || return 1
+  name="${BASH_REMATCH[1]}"
+  [[ "$CMD" =~ $GS_HAZARD_RE ]] && return 1
+  [[ "$CMD" =~ (^|[^[:alnum:]_])"$name"(\[[^]]*\])?\+?= ]] && return 1
+  for ((i = 0; i < ${#SPLIT_VAR_NAMES[@]}; i++)); do
+    if [ "${SPLIT_VAR_NAMES[$i]}" = "$name" ]; then
+      [ "${SPLIT_VAR_OK[$i]}" = 1 ] && [ "${SPLIT_VAR_STAGE[$i]:-0}" = 1 ] || return 1
+      [ "${SPLIT_VAR_G[$i]}" -lt "$SPLIT_CUR_G" ] || return 1
+      return 0
+    fi
+  done
+  return 1
+}
+
 # git_show_tree_safe <operand> <cwd>: 0 when the operand is <ref>:<path> for
 # a read-only `git show`, the ref and the leading directories are literal, only
 # the file name is computed (loop variable, wildcard, substitution), and no
@@ -2448,10 +2504,37 @@ subst_word() {
 # <ref>:<path> is relative to the repository top level, so the listing uses
 # --full-tree and the matched names are joined to the top level, not the cwd.
 git_show_tree_safe() {
-  local op="$1" gcwd="$2" redirect="${3:-1}" ref path dir pat tf top listing
+  local op="$1" gcwd="$2" redirect="${3:-1}" raw="${4:-}" ref path dir pat tf top listing
   [ "$redirect" = 0 ] || return 1
   [ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] && [ -z "${GIT_NAMESPACE:-}" ] || return 1
   case "$op" in *:*) ;; *) return 1 ;; esac
+  # Merge-stage form :<n>:<path> with a computed index (`for n in 1 2 3; do
+  # git show :$n:path; done`). The index must be a loop variable whose every
+  # binding is a list of literal digits 0-3 (git_show_stage_var): any other
+  # value makes git read another revision form, and :/<text> or :/!-<text>
+  # selects a commit by its message and prints the whole commit (PR #1798
+  # review). git then reads the index entry for <path> at that stage. The
+  # path must be literal and is still proven against the index git show
+  # reads, with any entry named "<value>:<path>" (gs_cmd_readonly keeps git
+  # add and other index writers out of the command).
+  if [[ "$op" == :$'\001':* ]]; then
+    git_show_stage_var "$raw" || return 1
+    path="${op#:$'\001':}"
+    case "$path" in ""|*$'\001'*|*'*'*|*'?'*|*'['*|*'{'*|*'}'*|*..*|/*|./*|.|*/.|*/./*|:*) return 1 ;; esac
+    [ -d "$gcwd" ] || return 1
+    top="$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    [ -n "$top" ] && [ -d "$top" ] || return 1
+    norm_path "$top/$path" "$top"
+    if is_cred_path "$NP"; then return 1; fi
+    listing="$(git -C "$top" ls-files --full-name 2>/dev/null)" || return 1
+    while IFS= read -r tf; do
+      [ -n "$tf" ] || continue
+      case "$tf" in *":$path") ;; *) continue ;; esac
+      norm_path "$top/$tf" "$top"
+      if is_cred_path "$NP"; then return 1; fi
+    done <<< "$listing"
+    return 0
+  fi
   ref="${op%%:*}"
   path="${op#*:}"
   case "$ref" in ""|-*|*$'\001'*|*[!A-Za-z0-9._/@^~+-]*) return 1 ;; esac
@@ -2492,19 +2575,24 @@ git_show_tree_safe() {
 SPLIT_VAR_NAMES=()
 SPLIT_VAR_OK=()
 SPLIT_VAR_G=()
+# SPLIT_VAR_STAGE: 1 when every binding of the name is a `for` list of
+# literal merge-stage digits (0-3) only; see git_show_stage_var.
+SPLIT_VAR_STAGE=()
 SPLIT_TRUST=1
 SPLIT_INHERIT_G=0
-split_var_mark() { # <name> <ok 0|1> <group>
+split_var_mark() { # <name> <ok 0|1> <group> [stage 0|1]
   local i
   for ((i = 0; i < ${#SPLIT_VAR_NAMES[@]}; i++)); do
     if [ "${SPLIT_VAR_NAMES[$i]}" = "$1" ]; then
       [ "$2" = 1 ] || SPLIT_VAR_OK[$i]=0
+      [ "${4:-0}" = 1 ] || SPLIT_VAR_STAGE[$i]=0
       return
     fi
   done
   SPLIT_VAR_NAMES+=("$1")
   SPLIT_VAR_OK+=("$2")
   SPLIT_VAR_G+=("$3")
+  SPLIT_VAR_STAGE+=("${4:-0}")
 }
 # note_for_bindings: T/F/X token arrays of analyze_cmd, one simple command
 # [start, end) with its index. Called for every simple command of a level.
@@ -2526,13 +2614,21 @@ note_for_bindings() { # <start> <end> <group>
   if [ $((a + 2)) -ge "$b" ] || [ "${X[$((a + 2))]}" != in ] || [ -n "${F[$((a + 2))]:-}" ]; then
     split_var_mark "$name" 0 "$g"; return 0
   fi
-  local ok=1
+  local ok=1 stage=0 nw=0
+  [ "${X[$a]}" = for ] && stage=1
   for ((i = a + 3; i < b; i++)); do
     case "${T[$i]}" in S) continue ;; W) ;; *) ok=0; break ;; esac
+    nw=$((nw + 1))
     case "${F[$i]}" in *q*|*g*|*b*) ok=0; break ;; esac
     case "${X[$i]}" in "~"*|*'{'*|*'}'*|*'['*|*'*'*|*'?'*) ok=0; break ;; esac
+    # A merge-stage index is one literal digit 0-3. Any other value turns
+    # :<value>:<path> into another revision form (:/<text> searches commit
+    # messages, and git show then prints a whole commit).
+    case "${F[$i]}" in *s*|*v*) stage=0 ;; esac
+    case "${X[$i]}" in [0-3]) ;; *) stage=0 ;; esac
   done
-  split_var_mark "$name" "$ok" "$g"
+  [ "$ok" = 1 ] && [ "$nw" -ge 1 ] || stage=0
+  split_var_mark "$name" "$ok" "$g" "$stage"
 }
 # zword_check <start> <end>: a word marked z (an unquoted zsh ^ or a # inside
 # a word) in any simple command is a zsh extended glob that can name a
@@ -3068,11 +3164,512 @@ fed_git_read() {
   local s="$1" e="$2" ph="$3" app="$4" tool="$5" j t="" sep=""
   for ((j = s; j < e; j++)); do t="$t$sep${CW[$j]}"; sep=" "; done
   [[ "$t" =~ (^|[[:space:]/\'\"])git([[:space:]]|$) ]] || return 0
-  [[ "$t" =~ (^|[[:space:]])(show|cat-file|archive)([[:space:]]|$) ]] || return 0
-  if [ "$app" -eq 1 ] || { [ -n "$ph" ] && [[ "$t" == *"$ph"* ]]; }; then
-    block "$tool filling in the path of a git show, cat-file or archive (a computed path)"
+  if [[ "$t" =~ (^|[[:space:]])(show|cat-file|archive)([[:space:]]|$) ]]; then
+    if [ "$app" -eq 1 ] || { [ -n "$ph" ] && [[ "$t" == *"$ph"* ]]; }; then
+      block "$tool filling in the path of a git show, cat-file or archive (a computed path)"
+    fi
   fi
+  fed_git_check "$@"
   return 0
+}
+
+# fed_q <word>: FQ is the word quoted for analyze_cmd: printf %q, except a
+# word with an expansion, which stays an expansion.
+fed_q() {
+  local w="$1"
+  if [[ "$w" == *'$'* || "$w" == *'`'* ]]; then
+    w="${w//\\/\\\\}"; FQ="\"${w//\"/\\\"}\""
+  else
+    FQ="$(printf '%q' "$w")"
+  fi
+}
+
+# fed_git_check <start> <end> <placeholder> <appends> <tool> [find paths...]:
+# the git command that xargs, find -exec or parallel runs is checked as if it
+# ran directly, with the input it is fed standing for a computed word
+# (${__cg_fed}): a patch reader (git log -p --) then counts as covering every
+# file. find -exec stops at its ; or + terminator, and a {} word stands for
+# the starting paths of find, which hold every file it can name.
+fed_git_check() {
+  local s="$1" e="$2" ph="$3" app="$4" tool="$5" j w q t="" sep="" piece fed='"${__cg_fed}"' fp=""
+  shift 5
+  for w in "$@"; do fed_q "$w"; fp="$fp${fp:+ }$FQ"; done
+  for ((j = s; j < e; j++)); do
+    w="${CW[$j]}"
+    if [ "$tool" = "find -exec" ]; then
+      case "$w" in ';') break ;; '+') [ "${CW[$((j - 1))]:-}" = "$ph" ] && break ;; esac
+    fi
+    q=""
+    if [ -n "$fp" ] && [ "$w" = "$ph" ]; then
+      q="$fp"
+    elif [ -n "$ph" ] && [[ "$w" == *"$ph"* ]]; then
+      while [[ "$w" == *"$ph"* ]]; do
+        piece="${w%%"$ph"*}"
+        [ -z "$piece" ] || q="$q$(printf '%q' "$piece")"
+        q="$q$fed"; w="${w#*"$ph"}"
+      done
+      [ -z "$w" ] || q="$q$(printf '%q' "$w")"
+    else
+      fed_q "$w"; q="$FQ"
+    fi
+    t="$t$sep$q"; sep=" "
+  done
+  [ "$app" -eq 1 ] && t="$t $fed"
+  [ -n "$t" ] || return 0
+  local f_cw=("${CW[@]}") f_cf=("${CF[@]}")
+  analyze_cmd "$t" $((depth + 1)) "$CUR_CWD"
+  CW=("${f_cw[@]}"); CF=("${f_cf[@]}")
+  return 0
+}
+
+# git_alias_value <name> <dir> <c-values>: 0 and GAV set to the alias text
+# when <name> is a git alias: a `-c alias.NAME=VALUE` of this invocation (the
+# newline-separated <c-values>), else `git config --get alias.NAME` read in
+# <dir>. Returns 2 when the alias may be defined where that lookup cannot see
+# it: the command line names alias.NAME (git config alias.NAME ...,
+# GIT_CONFIG_KEY_n, --config-env), or passes git config that can define one
+# (-c include.path=..., -c includeIf..., --config-env, GIT_CONFIG_*). Returns
+# 1 for a built-in or no alias.
+git_alias_value() {
+  local name="$1" dir="$2" line ln
+  GAV=""
+  case "$GIT_KNOWN_SUBS" in *" $name "*) return 1 ;; esac
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || return 1
+  lc_word "alias.$name"; ln="$LCW"
+  while IFS= read -r line; do
+    [[ "$line" == *=* ]] || continue
+    lc_word "${line%%=*}"
+    [ "$LCW" = "$ln" ] && GAV="${line#*=}"
+  done <<< "$3"
+  [ -n "$GAV" ] && return 0
+  lc_word "$3"
+  case "$LCW" in *include.path*|*includeif.*) return 2 ;; esac
+  lc_word "$STRIPPED"
+  case "$LCW" in *"$ln"*|*git_config*|*--config-env*) return 2 ;; esac
+  [ -d "$dir" ] || return 1
+  GAV="$(git -C "$dir" config --get "alias.$name" 2>/dev/null)" || GAV=""
+  [ -n "$GAV" ]
+}
+
+# Pathspecs that cover every name is_cred_path accepts (a superset; listings
+# are filtered by is_cred_path), from the top of the repository whatever the
+# cwd. Used when git prints every file: no pathspec, or a computed one.
+CRED_GIT_PATHSPECS=(':(top,glob,icase)**/.npmrc*' ':(top,glob,icase)**/.netrc*'
+  ':(top,glob,icase)**/_netrc*' ':(top,glob,icase)**/._netrc*' ':(top,glob,icase)**/.pypirc*'
+  ':(top,glob,icase)**/.yarnrc*' ':(top,glob,icase)**/.git-credentials*'
+  ':(top,glob,icase)**/id_*' ':(top,glob,icase)**/.id_*' ':(top,glob,icase)**/*.env*'
+  ':(top,glob,icase)**/.gem/**' ':(top,glob,icase)**/.docker/**'
+  ':(top,glob,icase)**/.config/gh/**' ':(top,glob,icase)**/.aws/**' ':(top,glob,icase)**/.ssh/**')
+
+# git_tree_has_cred <cwd> <mode> <arg>... -- <path>...: 0 when a credential
+# file is among the files git prints for these args and paths. Modes: tree
+# (each rev's tree: ls-tree, or an empty-tree diff-tree for wildcards and
+# pathspec magic), log (files the history of the revs touches), any (files
+# any commit or the index holds: a revision the guard cannot read), show
+# (files the named commits touch), diff (files the diff covers), difftree
+# (files git diff-tree covers), stash (files the stash entry holds). Paths
+# are pathspecs relative to <cwd>, as git reads them. Outside a work tree git
+# prints nothing, so that is not a credential; inside one a failed listing
+# counts as a credential (fail closed). Only read-only listings run.
+git_tree_has_cred() {
+  local gcwd="$1" mode="$2" top listing="" tf r et=""
+  shift 2
+  local revs=() paths=()
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do revs+=("$1"); shift; done
+  [ $# -gt 0 ] && shift
+  paths=("$@")
+  [ -d "$gcwd" ] || return 1
+  top="$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  case "$mode" in
+    tree)
+      local magic=0 pth
+      for pth in ${paths[@]+"${paths[@]}"}; do
+        case "$pth" in :*|*'*'*|*'?'*|*'['*) magic=1 ;; esac
+      done
+      for r in "${revs[@]}"; do
+        # ls-tree reads no wildcard or pathspec magic; diff-tree against the
+        # empty tree lists the same files and does.
+        if [ "$magic" = 1 ] || ! tf="$(git -C "$gcwd" ls-tree -r --full-name --name-only "$r" -- ${paths[@]+"${paths[@]}"} 2>/dev/null)"; then
+          [ -n "$et" ] || et="$(git -C "$gcwd" hash-object -t tree /dev/null 2>/dev/null)" || return 0
+          tf="$(git -C "$gcwd" -c diff.relative=false diff-tree -r --name-only --no-commit-id "$et" "$r" -- ${paths[@]+"${paths[@]}"} 2>/dev/null)" || return 0
+        fi
+        listing="$listing$tf"$'\n'
+      done
+      ;;
+    log) listing="$(git -C "$gcwd" -c diff.relative=false log -m --name-only --format= "${revs[@]}" -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    any)
+      listing="$(git -C "$gcwd" -c diff.relative=false log --all --reflog -m --name-only --format= -- "${paths[@]}" 2>/dev/null)" || return 0
+      tf="$(git -C "$gcwd" ls-files --full-name -- "${paths[@]}" 2>/dev/null)" || return 0
+      listing="$listing"$'\n'"$tf"
+      ;;
+    show) listing="$(git -C "$gcwd" -c diff.relative=false log --no-walk -m --name-only --format= "${revs[@]}" -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    diff) listing="$(git --no-optional-locks -C "$gcwd" -c diff.relative=false diff --name-only ${revs[@]+"${revs[@]}"} -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    difftree) listing="$(git -C "$gcwd" -c diff.relative=false diff-tree -r -m --name-only --no-commit-id ${revs[@]+"${revs[@]}"} -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    diffindex) listing="$(git --no-optional-locks -C "$gcwd" -c diff.relative=false diff-index --name-only ${revs[@]+"${revs[@]}"} -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    difffiles) listing="$(git --no-optional-locks -C "$gcwd" -c diff.relative=false diff-files --name-only -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    stash)
+      # With no stash list, git stash show prints only an error unless it is
+      # named a commit that exists (one from git stash create, say). A stash
+      # number (0, stash@{0}) needs the stash list. Otherwise a failed listing
+      # still counts as a credential.
+      if ! git -C "$gcwd" rev-parse -q --verify refs/stash >/dev/null 2>&1; then
+        local named=0
+        for r in ${revs[@]+"${revs[@]}"}; do
+          case "$r" in -*) continue ;; esac
+          [[ "$r" =~ ^[0-9]+$ ]] && continue
+          git -C "$gcwd" rev-parse -q --verify "$r" >/dev/null 2>&1 && named=1
+        done
+        [ "$named" = 1 ] || return 1
+      fi
+      listing="$(git -C "$gcwd" -c diff.relative=false stash show --name-only ${revs[@]+"${revs[@]}"} 2>/dev/null)" || return 0
+      ;;
+  esac
+  while IFS= read -r tf; do
+    [ -n "$tf" ] || continue
+    norm_path "$top/$tf" "$top"
+    if is_cred_path "$NP"; then return 0; fi
+  done <<< "$listing"
+  return 1
+}
+
+# git_pathspec_read <sub> <start> <end> <cwd> <redirect> [alias words...]:
+# git readers that print the contents of every file under their paths:
+# archive, grep on a revision, bundle create to stdout, fast-export, and the
+# patch output of log (and git reflog), show, diff, difftool, whatchanged,
+# format-patch, diff-tree, diff-index, diff-files and stash show (with a
+# pathspec, -L <range>:<path>, or none). A directory, the
+# whole tree or the whole history can hold a credential file the command
+# never names, so the files git would print are listed and a credential among
+# them blocks. A computed path counts as every file and a computed revision as
+# every commit. A repository the guard cannot list (--git-dir, GIT_DIR,
+# archive --remote) blocks.
+GP_VAR_RE='\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]|\$\('
+# Long options of log, show, diff and format-patch that take no value.
+GP_NOARG_LONG=' --oneline --graph --no-merges --merges --first-parent --reverse --no-color --color --decorate --no-decorate --abbrev-commit --no-abbrev-commit --no-renames --minimal --patience --histogram --binary --text --no-prefix --full-index --no-ext-diff --ext-diff --no-textconv --textconv --exit-code --quiet --function-context --find-renames --find-copies --find-copies-harder --irreversible-delete --pickaxe-all --pickaxe-regex --topo-order --date-order --author-date-order --no-walk --do-walk --left-right --cherry-pick --cherry-mark --boundary --source --use-mailmap --show-signature --no-notes --numbered --no-numbered --stdout --attach --inline --thread --keep-subject --no-stat --signoff --cover-letter --no-binary --zero-commit --progress --ignore-if-in-upstream --ignore-space-change --ignore-all-space --ignore-blank-lines --ignore-cr-at-eol --ignore-space-at-eol --no-indent-heuristic --indent-heuristic --no-relative --raw --no-patch --name-only --name-status --numstat --shortstat --summary --check --stat --dirstat --cumulative --full-history --dense --sparse --simplify-merges --ancestry-path --no-min-parents --no-max-parents --remerge-diff --dd --diff-merges=off --no-diff-merges --combined-all-paths --no-ita-invisible-in-index --ita-invisible-in-index --default-prefix --no-color-moved --color-moved --dir-diff --no-prompt --prompt --trust-exit-code --no-trust-exit-code --gui --no-gui --symlinks --no-symlinks --keep-index --index '
+# 1 when this git command passed -c or --config-env. Set before the log read.
+GP_CFGOVR=0
+# gp_short_patch <word> <sub>: 0 when <word> is a glued cluster of short
+# options that asks for a patch (-pU3, -uU3, -Up). Options that take an
+# attached value (-S<str>, -G<re>, -O<file>, -n<n>, -L, -I, -l, -M, -C, -B)
+# are not clusters. In stash show, -u means --include-untracked.
+gp_short_patch() {
+  local w="$1" sub="$2"
+  [[ "$w" =~ ^-[A-Za-z]+[0-9]*$ ]] || return 1
+  case "$w" in -[SGOnLIlMCBXR]*) return 1 ;; esac
+  case "$w" in -*p*|-*U*) return 0 ;; esac
+  [ "$sub" != stash ] && case "$w" in -*u*) return 0 ;; esac
+  return 1
+}
+git_pathspec_read() {
+  local sub="$1" st="$2" en="$3" gcwd="$4" redir="$5" j w fl endopts=0 patch=0 nopatch=0 pat=0 skip=0 lr=0 nrev=0 wide=0
+  local anyrev=0 anypath=0 objw=0 stdin=0 bfile="" unk=0 cnt="" cntok=1 cntnext=0
+  shift 5
+  local ws=() fs=() revs=() paths=()
+  for w in "$@"; do ws+=("$w"); fs+=(""); done
+  for ((j = st; j < en; j++)); do ws+=("${CW[$j]}"); fs+=("${CF[$j]}"); done
+  case "$sub" in grep) pat=1 ;; format-patch|fast-export) patch=1 ;; difftool) sub='diff' ;; esac
+  # log, whatchanged and the diff plumbing print no file contents without a
+  # patch option. A reflog walk (log -g, git reflog) reaches commits the
+  # history no longer holds, so it counts as any commit.
+  case "$sub" in
+    log|whatchanged|diff-tree|diff-index|diff-files)
+      for w in ${ws[@]+"${ws[@]}"}; do
+        case "$sub:$w" in
+          log:-g|log:--walk-reflogs) anyrev=1 ;;
+          # Exact --follow, before or after --. rev-list does not follow.
+          log:--follow) cntok=0 ;;
+        esac
+      done
+      # A -c or --config-env on the git command can set log.follow.
+      [ "$sub" = log ] && [ "${GP_CFGOVR:-0}" != 0 ] && cntok=0
+      for w in ${ws[@]+"${ws[@]}"}; do
+        case "$w" in -p|-u|--patch|-U*|--unified*|--patch-with-stat|--patch-with-raw|-c|--cc|--word-diff*|--color-words*|-L*) patch=1 ;; esac
+        gp_short_patch "$w" "$sub" && patch=1
+      done
+      [ "$patch" = 1 ] || return 0
+      ;;
+  esac
+  for ((j = 0; j < ${#ws[@]}; j++)); do
+    w="${ws[$j]}"; fl="${fs[$j]}"
+    if [ "$skip" = 1 ]; then
+      skip=0
+      # -n / --max-count still consume their value; that value is the count.
+      # Any other consumed word means log's count path is not safe.
+      if [ "$cntnext" = 1 ]; then
+        cntnext=0
+        if [[ "$w" =~ ^[0-9]+$ ]]; then cnt="$w"; else cntok=0; fi
+      elif [ "$sub" = log ]; then
+        cntok=0
+      fi
+      continue
+    fi
+    if [ $endopts -eq 0 ] && [ "$lr" = 0 ]; then
+      # log: -<n>, -n <n> and --max-count=<n> record a commit count. Any
+      # other option means the limited listing is not safe. Not whatchanged:
+      # it skips merges, so rev-list would count different commits.
+      case "$sub" in
+        log)
+          case "$w" in
+            --|-) ;;
+            -*)
+              case "$w" in
+                -p|-u|--patch|--patch-with-stat|--patch-with-raw|-c|--cc|-m|--numstat|--shortstat|\
+                --name-only|--name-status|--summary|--raw|--oneline|--no-color|--color|--no-decorate|\
+                --abbrev-commit|--no-abbrev-commit|--no-ext-diff|--no-textconv|--no-renames|--binary|\
+                --text|--full-index|--no-prefix|--stat) ;;
+                --stat=*|--color=*|--decorate=*|--format=*|--pretty=*) ;;
+                --unified=*) [[ "$w" =~ ^--unified=[0-9]+$ ]] || cntok=0 ;;
+                # Glued cluster of only p, u and U<digits> (-pU3, -pu, -U3).
+                -U*) [[ "$w" =~ ^-([pu]+|[pu]*U[0-9]+)$ ]] || cntok=0 ;;
+                -n|--max-count) cntnext=1 ;;
+                --max-count=*)
+                  if [[ "$w" =~ ^--max-count=[0-9]+$ ]]; then cnt="${w#--max-count=}"; continue; fi
+                  cntok=0 ;;
+                -n*)
+                  if [[ "$w" =~ ^-n[0-9]+$ ]]; then cnt="${w#-n}"; continue; fi
+                  cntok=0 ;;
+                -[0-9]*)
+                  if [[ "$w" =~ ^-[0-9]+$ ]]; then cnt="${w#-}"; continue; fi
+                  cntok=0 ;;
+                *) [[ "$w" =~ ^-([pu]+|[pu]*U[0-9]+)$ ]] || cntok=0 ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
+      # Options that take the next word as their value.
+      case "$sub:$w" in
+        archive:-o|archive:--output|archive:--format|archive:--prefix|\
+        grep:-A|grep:-B|grep:-C|grep:-m|grep:--max-count|grep:--max-depth|grep:--threads|\
+        format-patch:-o|format-patch:--output-directory|format-patch:--subject-prefix|format-patch:--to|\
+        format-patch:--cc|format-patch:--in-reply-to|format-patch:--suffix|format-patch:--start-number|\
+        format-patch:-v|format-patch:--reroll-count|format-patch:--signature|format-patch:--signature-file|\
+        format-patch:--base|format-patch:--interdiff|format-patch:--range-diff|format-patch:--creation-factor|\
+        format-patch:--add-header|format-patch:--filename-max-length|format-patch:--cover-from-description|\
+        diff:-x|diff:--extcmd|diff:-t|diff:--tool|[lsdw]*:-l|\
+        [lsdfw]*:--rotate-to|[lsdfw]*:--skip-to|[lsdfw]*:--inter-hunk-context|[lsdfw]*:--anchored|\
+        [lsdfw]*:--diff-algorithm|[lsdfw]*:--src-prefix|[lsdfw]*:--dst-prefix|[lsdfw]*:--line-prefix|\
+        [lsdfw]*:-I|[lsdfw]*:--ignore-matching-lines|[lsdfw]*:--color-moved-ws|[lsdfw]*:--word-diff-regex|\
+        [lsdfw]*:--find-object|[lsdfw]*:--output|[lsdfw]*:--encoding|\
+        [lsdw]*:-n|[lsdw]*:-G|[lsdw]*:-S|[lsdw]*:-O|[lsdw]*:--max-count|[lsdw]*:--skip|\
+        [lsdw]*:--author|[lsdw]*:--committer|[lsdw]*:--grep|[lsdw]*:--since|[lsdw]*:--until|\
+        [lsdw]*:--after|[lsdw]*:--before|[lsdw]*:--pretty|[lsdw]*:--format|[lsdw]*:--diff-filter) skip=1; continue ;;
+        stash:-u|stash:--include-untracked|stash:--only-untracked) revs+=("$w"); continue ;;
+        archive:-l|archive:--list|grep:-l|grep:-L|grep:--files-with-matches|grep:--files-without-match|grep:--name-only) return 0 ;;
+        diff-tree:--stdin|fast-export:--stdin) stdin=1; continue ;;
+        fast-export:--no-data|fast-export:--anonymize) return 0 ;;
+        diff-tree:--root|format-patch:--root) revs+=("$w"); wide=1; continue ;;
+      esac
+      case "$w" in
+        -) ;;
+        --) endopts=1; unk=0; continue ;;
+        --no-index) return 0 ;;
+        --relative) paths+=("."); continue ;;
+        --relative=*) paths+=("${w#--relative=}"); continue ;;
+        --cached|--untracked) [ "$sub" != grep ] || return 0; revs+=("$w"); continue ;;
+        --remote) redir=1; skip=1; continue ;;
+        --remote=*) redir=1; continue ;;
+        -e|-f) pat=0; skip=1; continue ;;
+        -L) patch=1; lr=1; continue ;;
+        -L?*) patch=1; lr=1; w="${w#-L}" ;;
+        -p|-u|--patch|-U*|--unified*|--patch-with-stat|--patch-with-raw|-c|--cc|--word-diff*|--color-words*) patch=1; continue ;;
+        -s|--no-patch|--stat*|--numstat|--shortstat|--name-only|--name-status|--summary|--raw|--dirstat*|--check) nopatch=1; continue ;;
+        --full-diff|--follow) wide=1; revs+=("$w"); continue ;;
+        --all|--branches*|--tags*|--remotes*|--glob=*|--staged|--merge-base) revs+=("$w"); continue ;;
+        -*)
+          # A glued cluster such as -pU3; any other option may take the next
+          # word as its value, so that word is not trusted as a path or a
+          # revision (it counts as every file and every commit).
+          if gp_short_patch "$w" "$sub"; then
+            patch=1
+            [ "$sub" != stash ] || case "$w" in -*u*) revs+=(--include-untracked) ;; esac
+            continue
+          fi
+          case "$w" in
+            --*=*|-?) ;;
+            *) case "$GP_NOARG_LONG" in *" $w "*) ;; *) [ "$sub" = archive ] || [ "$sub" = grep ] || unk=1 ;; esac ;;
+          esac
+          continue
+          ;;
+      esac
+    fi
+    if [ "$unk" = 1 ]; then
+      unk=0
+      case "$sub" in
+        log|show|diff|whatchanged|format-patch|diff-tree|diff-index|diff-files|fast-export) anypath=1; anyrev=1; continue ;;
+      esac
+    fi
+    case "$fl" in *v*) expand_vars "$w"; w="$EV" ;; esac
+    # -L <start>,<end>:<path> or -L :<func>:<path> prints that file's history.
+    if [ "$lr" = 1 ]; then
+      lr=0
+      if [[ "$w" =~ $GP_VAR_RE ]]; then anypath=1; else paths+=("${w##*:}"); fi
+      continue
+    fi
+    if [ "$pat" = 1 ]; then pat=0; continue; fi
+    # <ref>:<path> objects of show are checked by the show branch.
+    case "$sub:$w" in
+      archive:*|grep:*|bundle:*|stash:*|*::*) ;;
+      *:*:*) if [ $endopts -eq 0 ]; then objw=1; [ "$sub" = log ] && cntok=0; continue; fi ;;
+    esac
+    if [[ "$w" =~ $GP_VAR_RE ]]; then
+      case "$w" in *'$('*) block "git $sub with a computed path or revision the credential guard cannot list" ;; esac
+      case "$sub" in
+        archive|bundle|stash) block "git $sub with a computed path or revision the credential guard cannot list" ;;
+        grep)
+          # Input that xargs, find -exec or parallel feeds in (fed_git_check)
+          # can be any revision or any path.
+          if [ "${ws[$j]}" = '${__cg_fed}' ]; then anypath=1; anyrev=1; nrev=1; continue; fi
+          # A bare variable before -- that is not read from input is taken as
+          # a revision, as before.
+          if [ $endopts -eq 0 ] && [[ "${ws[$j]}" =~ $GS_WHOLE_VAR_RE ]] && ! gs_read_bound "${BASH_REMATCH[1]}"; then continue; fi
+          block "git grep with a computed path or revision the credential guard cannot list"
+          ;;
+      esac
+      # A computed word is any file; before -- it may also be any revision.
+      anypath=1
+      [ $endopts -eq 1 ] || anyrev=1
+      continue
+    fi
+    if [ "$sub" = bundle ]; then
+      if [ -z "$bfile" ]; then bfile="$w"; else revs+=("$w"); nrev=1; fi
+      continue
+    fi
+    if [ "$sub" = stash ]; then revs+=("$w"); continue; fi
+    case "$sub" in
+      archive) if [ $nrev -eq 0 ]; then revs+=("$w"); nrev=1; else paths+=("$w"); fi; continue ;;
+    esac
+    if [ $endopts -eq 1 ]; then paths+=("$w"); continue; fi
+    case "$sub" in
+      grep) if git -C "$gcwd" rev-parse --verify -q "$w^{tree}" >/dev/null 2>&1; then revs+=("$w"); nrev=1; else paths+=("$w"); fi ;;
+      *)
+        # log count: only a verified plain commit. Other spellings keep the full listing.
+        if [ "$sub" = log ]; then
+          case "$w" in
+            *:/*|:*|*..*) cntok=0 ;;
+            *'^!'*) cntok=0 ;;
+            *'^@'*) cntok=0 ;;
+            ^*) cntok=0 ;;
+            *'@{'*) cntok=0 ;;
+          esac
+        fi
+        case "$w" in *..*) revs+=("$w"); nrev=1; [ "$sub" = log ] && cntok=0; continue ;; esac
+        local peel='^{commit}'
+        case "$sub" in diff|diff-tree|diff-index) peel='^{tree}' ;; esac
+        if git -C "$gcwd" rev-parse --verify -q "$w$peel" >/dev/null 2>&1; then revs+=("$w"); nrev=1; else paths+=("$w"); [ "$sub" = log ] && cntok=0; fi
+        ;;
+    esac
+  done
+  case "$sub" in
+    archive|grep)
+      [ $nrev -eq 1 ] || return 0
+      [ "$redir" = 0 ] || block "git $sub of a revision in a repository the credential guard cannot list"
+      ;;
+    bundle)
+      [ "$bfile" = - ] && [ ${#revs[@]} -gt 0 ] || return 0
+      [ "$redir" = 0 ] || block "git bundle of a repository the credential guard cannot list"
+      ;;
+    *)
+      if [ "$sub" = stash ] && [ "$patch" = 0 ] && [ "$nopatch" = 0 ]; then
+        # git stash show prints a patch by default when stash.showPatch is set.
+        [ "$(git -C "$gcwd" config --bool --get stash.showPatch 2>/dev/null)" != true ] || patch=1
+        # The command line can set it too (-c, GIT_CONFIG_*, --config-env).
+        lc_word "$STRIPPED"
+        case "$LCW" in *stash.showpatch*) patch=1 ;; esac
+      fi
+      if [ "$sub" = stash ]; then
+        lc_word "$STRIPPED"
+        case "$LCW" in *stash.showincludeuntracked*) revs+=(--include-untracked) ;; esac
+      fi
+      case "$sub" in show|diff) [ "$nopatch" = 1 ] || patch=1 ;; esac
+      [ "$patch" = 1 ] || return 0
+      # diff-tree --stdin reads its commits from input: any commit.
+      [ "$stdin" = 0 ] || anyrev=1
+      # git show of <ref>:<path> objects only (checked by the show branch).
+      if [ "$sub" = show ] && [ "$objw" = 1 ] && [ $nrev -eq 0 ] && [ "$anyrev" = 0 ] && [ ${#paths[@]} -eq 0 ] && [ "$anypath" = 0 ]; then
+        return 0
+      fi
+      [ "$redir" = 0 ] || block "git $sub patch output in a repository the credential guard cannot list"
+      ;;
+  esac
+  # The user's paths, before a missing pathspec is widened below.
+  local upaths=()
+  upaths=(${paths[@]+"${paths[@]}"})
+  # No pathspec, or a computed one: git prints every file, so list the names
+  # a credential file can have.
+  if [ "$anypath" = 1 ] || [ ${#paths[@]} -eq 0 ]; then
+    paths=("${CRED_GIT_PATHSPECS[@]}"); wide=1
+  fi
+  # Paths that are all existing regular files (no glob, no pathspec magic)
+  # print only themselves; their names are checked as operands.
+  if [ "$wide" = 0 ]; then
+    local pth plain=1
+    for pth in "${paths[@]}"; do
+      case "$pth" in :*|*'*'*|*'?'*|*'['*) plain=0 ;; esac
+      { [ -f "$gcwd/$pth" ] && [ ! -L "$gcwd/$pth" ]; } || plain=0
+    done
+    [ "$plain" = 0 ] || return 0
+  fi
+  local r rv=()
+  for r in ${revs[@]+"${revs[@]}"}; do
+    case "$sub:$r" in archive:-*|grep:-*) ;; *) rv+=("$r") ;; esac
+  done
+  local mode
+  case "$sub" in
+    archive|grep) mode=tree ;;
+    bundle) mode=log ;;
+    stash) mode=stash ;;
+    diff) mode='diff' ;;
+    diff-tree) mode=difftree ;;
+    diff-index) mode=diffindex ;;
+    diff-files) mode=difffiles ;;
+    show) mode=show; [ ${#rv[@]} -gt 0 ] || rv=(HEAD) ;;
+    format-patch) mode=log; rv+=(HEAD) ;;
+    *) mode=log; [ ${#rv[@]} -gt 0 ] || rv=(HEAD) ;;
+  esac
+  [ "$anyrev" = 0 ] || mode=any
+  # A commit count (-1, -n 1, --max-count=1) on log names those commits
+  # only, so the listing must not walk the rest of history. rev-list
+  # selects them and show lists the files each one touches. It applies
+  # only with no path, no --follow and no command-line config. Any other
+  # option, or a rev-list that fails, keeps the full listing below.
+  if [ "$sub" = log ]; then
+    if [ -n "$cnt" ] && [ "$cntok" = 1 ] && [ "$anyrev" = 0 ] && [ "$anypath" = 0 ] && [ "$stdin" = 0 ] && [ ${#upaths[@]} -eq 0 ]; then
+      local rr rvdash=0
+      for rr in ${rv[@]+"${rv[@]}"}; do
+        case "$rr" in -*) rvdash=1 ;; esac
+      done
+      if [ "$rvdash" = 0 ]; then
+        local commits="" rc=0 cmt
+        local carr=()
+        commits="$(git -C "$gcwd" rev-list --max-count="$cnt" "${rv[@]}" -- ${upaths[@]+"${upaths[@]}"} 2>/dev/null)" || rc=$?
+        if [ "$rc" -eq 0 ]; then
+          if [ -z "$commits" ]; then return 0; fi
+          while IFS= read -r cmt; do
+            [ -n "$cmt" ] || continue
+            carr+=("$cmt")
+          done <<< "$commits"
+          git_tree_has_cred "$gcwd" show ${carr[@]+"${carr[@]}"} -- "${paths[@]}" || return 0
+          block "git $sub output that covers a tracked credential file"
+        fi
+      fi
+    fi
+  fi
+  git_tree_has_cred "$gcwd" "$mode" ${rv[@]+"${rv[@]}"} -- "${paths[@]}" || return 0
+  block "git $sub output that covers a tracked credential file"
+}
+
+GS_WHOLE_VAR_RE='^\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\}?$'
+GIT_WORD_IN_RE='(^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$)'
+GIT_SHELL_PASS_RE='^[[:space:]]*(command[[:space:]]+)?([^[:space:];&|<>$`()]*/)?git([[:space:]]+([^;&|<>$`()]*))?[[:space:]]*$'
+# gs_read_bound <name>: 0 when the variable may hold a line read from input
+# (`while read -r ref; do git show "$ref"; done < list`).
+# Any name counts when the command reads input into variables at all (a bare
+# `read` sets REPLY; mapfile and readarray fill arrays a loop then walks).
+GS_READS_RE='(^|[^[:alnum:]_])(read|readarray|mapfile)([^[:alnum:]_]|$)'
+gs_read_bound() {
+  [[ "$CMD" =~ $GS_READS_RE ]]
 }
 
 # CG_URL_MULTI_RE: a command line with more than one command, a subshell,
@@ -3837,10 +4434,23 @@ analyze_simple() {
         esac
       done
       k=$a
+      # g_dir: the directory git reads (a literal -C applies); g_redir: the
+      # repository is redirected in a way the listings below cannot follow;
+      # g_cv: the -c values, for -c alias.NAME=VALUE; g_cfgo: -c or
+      # --config-env appeared (log must not use the commit-count shortcut).
+      local g_dir="$CUR_CWD" g_redir=0 g_cv="" g_cfgo=0 k3
       while [ $k -lt $e ]; do
         case "${CW[$k]}" in
-          -c)
+          -C)
             if [ $((k + 1)) -lt $e ]; then
+              resolve_dir "${CW[$((k + 1))]}" "${CF[$((k + 1))]}" "$g_dir"
+              if [ -n "$NP" ]; then g_dir="$NP"; else g_redir=1; fi
+            fi
+            k=$((k + 2)); continue ;;
+          -c)
+            g_cfgo=1
+            if [ $((k + 1)) -lt $e ]; then
+              g_cv="$g_cv${CW[$((k + 1))]}"$'\n'
               gc_key="${CW[$((k + 1))]%%=*}"; gc_val="${CW[$((k + 1))]#*=}"
               # A computed key (protocol.$e.allow) can name any setting.
               case "$gc_key" in
@@ -3852,11 +4462,14 @@ analyze_simple() {
             fi
             k=$((k + 2)); continue ;;
           --config-env|--config-env=*)
+            g_cfgo=1
             if [ "${CW[$k]}" = --config-env ]; then gc_key="${CW[$((k + 1))]:-}"; k=$((k + 2)); else gc_key="${CW[$k]#--config-env=}"; k=$((k + 1)); fi
             case "${gc_key%%=*}" in *'$'*|*'`'*) block "git -c with a computed key the credential guard cannot check" ;; esac
             git_cmd_key "${gc_key%%=*}" && block "git --config-env sets a command or alias from a variable the credential guard cannot read"
             continue ;;
-          -C|--git-dir|--work-tree|--namespace|--attr-source|--super-prefix) k=$((k + 2)); continue ;;
+          --git-dir|--work-tree|--namespace) g_redir=1; k=$((k + 2)); continue ;;
+          --git-dir=*|--work-tree=*|--namespace=*) g_redir=1; k=$((k + 1)); continue ;;
+          --attr-source|--super-prefix) k=$((k + 2)); continue ;;
           --*=*|-p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--exec-path|--html-path|--man-path|--info-path|--version|-v|--help|-h)
             k=$((k + 1)); continue ;;
           # An option that takes a separate value would hide the -c after it
@@ -3898,8 +4511,133 @@ analyze_simple() {
         CW=("${gc_cw[@]}"); CF=("${gc_cf[@]}")
       fi
       [ $k -lt $e ] || return 0
+      for ((k3 = s; k3 < a; k3++)); do
+        case "${CW[$k3]}" in GIT_DIR=*|GIT_WORK_TREE=*|GIT_INDEX_FILE=*|GIT_OBJECT_DIRECTORY=*|GIT_ALTERNATE_OBJECT_DIRECTORIES=*|GIT_NAMESPACE=*|GIT_COMMON_DIR=*) g_redir=1 ;; esac
+      done
+      [ -z "${GIT_DIR:-}${GIT_WORK_TREE:-}${GIT_NAMESPACE:-}${GIT_OBJECT_DIRECTORY:-}${GIT_COMMON_DIR:-}" ] || g_redir=1
+      [ "${CWD_UNCERTAIN:-0}" -eq 0 ] || g_redir=1
+      # A git alias runs its text in place of the subcommand: resolve it (up to
+      # five levels) and check what it expands to. A shell alias (!...) that
+      # runs a git reader with operands, or an alias the command line itself
+      # defines (its value is not known here), blocks.
+      local g_sub="${CW[$k]}" g_n=0 g_rc g_aw=()
+      local g_extra=()
+      while :; do
+        g_rc=0; git_alias_value "$g_sub" "$g_dir" "$g_cv" || g_rc=$?
+        [ "$g_rc" != 1 ] || break
+        [ "$g_rc" != 2 ] || block "git alias $g_sub defined in the same command (the guard cannot read its value)"
+        g_n=$((g_n + 1))
+        [ $g_n -le 5 ] || block "git alias chain deeper than the credential guard follows"
+        case "$GAV" in
+          '!'*)
+            # A body that only runs git (`!git`, `!/usr/bin/git show`,
+            # `!command git`) gets the operands appended: read it as a plain
+            # alias of the words after git.
+            if [[ "${GAV#!}" =~ $GIT_SHELL_PASS_RE ]]; then
+              GAV="${BASH_REMATCH[4]}"
+              if [ -z "$GAV" ]; then
+                k=$((k + 1))
+                [ $k -lt $e ] || return 0
+                g_sub="${CW[$k]}"
+                continue
+              fi
+            else
+              # Any other body runs in a shell with the operands appended:
+              # refuse operands passed to git in it, and check it as a script.
+              if [ $((k + 1)) -lt $e ] && [[ "$GAV" =~ $GIT_WORD_IN_RE ]]; then
+                block "git shell alias $g_sub passing operands to git"
+              fi
+              local g_scw=("${CW[@]}") g_scf=("${CF[@]}")
+              analyze_cmd "${GAV#!}" $((depth + 1)) "$g_dir"
+              CW=("${g_scw[@]}"); CF=("${g_scf[@]}")
+              break
+            fi
+            ;;
+        esac
+        read -ra g_aw <<< "$GAV"
+        # Leading git options in the alias apply before its subcommand.
+        k3=0
+        while [ $k3 -lt ${#g_aw[@]} ]; do
+          case "${g_aw[$k3]}" in
+            -c) g_cv="$g_cv${g_aw[$((k3 + 1))]:-}"$'\n'; g_cfgo=1; k3=$((k3 + 2)) ;;
+            -C|--git-dir|--work-tree|--namespace) g_redir=1; k3=$((k3 + 2)) ;;
+            --config-env) g_cfgo=1; k3=$((k3 + 2)) ;;
+            # Attached form steps one word, same as the -* arm below.
+            --config-env=*) g_cfgo=1; k3=$((k3 + 1)) ;;
+            -*) case "${g_aw[$k3]}" in --git-dir=*|--work-tree=*|--namespace=*) g_redir=1 ;; esac; k3=$((k3 + 1)) ;;
+            *) break ;;
+          esac
+        done
+        [ $k3 -lt ${#g_aw[@]} ] || break
+        g_sub="${g_aw[$k3]}"
+        g_extra=("${g_aw[@]:$((k3 + 1))}" ${g_extra[@]+"${g_extra[@]}"})
+      done
+      for w in ${g_extra[@]+"${g_extra[@]}"}; do check_operand "$w" "" "$CUR_CWD"; done
+      # Seen by git_pathspec_read: command-line config drops log's count path.
+      GP_CFGOVR="$g_cfgo"
       local k2 gs_w
-      case "${CW[$k]}" in
+      case "$g_sub" in
+        archive|grep|log|diff|difftool|whatchanged|show|format-patch|diff-tree|diff-index|diff-files|fast-export)
+          git_pathspec_read "$g_sub" $((k + 1)) "$e" "$g_dir" "$g_redir" ${g_extra[@]+"${g_extra[@]}"} ;;
+        reflog)
+          # git reflog [show] is git log -g: its -p prints the patches of
+          # every commit the reflog reaches. Its other actions print no files.
+          local g_act g_rest=()
+          if [ ${#g_extra[@]} -gt 0 ]; then
+            g_act="${g_extra[0]}"; g_rest=("${g_extra[@]:1}"); k2=$((k + 1))
+          else
+            g_act="${CW[$((k + 1))]:-}"; k2=$((k + 2))
+          fi
+          case "$g_act" in
+            expire|delete|exists|list|drop) ;;
+            show) git_pathspec_read log "$k2" "$e" "$g_dir" "$g_redir" -g ${g_rest[@]+"${g_rest[@]}"} ;;
+            *) git_pathspec_read log $((k + 1)) "$e" "$g_dir" "$g_redir" -g ${g_extra[@]+"${g_extra[@]}"} ;;
+          esac
+          ;;
+        stash|bundle)
+          # git stash show and git bundle create: the action word comes from
+          # the alias text or the command line.
+          local g_act g_rest=()
+          if [ ${#g_extra[@]} -gt 0 ]; then
+            g_act="${g_extra[0]}"; g_rest=("${g_extra[@]:1}")
+            k2=$((k + 1))
+          else
+            g_act="${CW[$((k + 1))]:-}"; k2=$((k + 2))
+          fi
+          case "$g_sub:$g_act" in
+            stash:show) git_pathspec_read stash "$k2" "$e" "$g_dir" "$g_redir" ${g_rest[@]+"${g_rest[@]}"} ;;
+            bundle:create) git_pathspec_read bundle "$k2" "$e" "$g_dir" "$g_redir" ${g_rest[@]+"${g_rest[@]}"} ;;
+          esac
+          ;;
+        cat-file)
+          # --batch and --batch-command print every object named on stdin (a
+          # here-string, heredoc, pipe or file) or in the whole store: the
+          # guard cannot see which files those are. --batch-check prints only
+          # names, types and sizes.
+          # git accepts any unique prefix of --batch-command, and an option
+          # word can come from a variable: expand it, and when a variable
+          # stays unknown and no literal mode (-p, -t, a type) is given, it
+          # may be the option.
+          local g_mode=0 g_unk=0
+          for w in ${g_extra[@]+"${g_extra[@]}"}; do
+            case "$w" in --batch-ch*|--batch-a*) ;; --batch*) block "git cat-file $w reading object names the credential guard cannot see" ;; -p|-t|-s|-e|blob|tree|commit|tag|--textconv|--filters) g_mode=1 ;; esac
+          done
+          for ((k2 = k + 1; k2 < e; k2++)); do
+            w="${CW[$k2]}"
+            case "${CF[$k2]}" in *v*) expand_vars "$w"; w="$EV" ;; esac
+            case "$w" in
+              --batch-ch*|--batch-a*) ;;
+              --batch*) block "git cat-file $w reading object names the credential guard cannot see" ;;
+              -p|-t|-s|-e|blob|tree|commit|tag|--textconv|--filters) g_mode=1 ;;
+            esac
+            [[ "${CW[$k2]}" =~ $GS_WHOLE_VAR_RE ]] && [[ "$w" =~ $GP_VAR_RE ]] && g_unk=1
+          done
+          if [ "$g_unk" = 1 ] && [ "$g_mode" = 0 ]; then
+            block "git cat-file with an option the credential guard cannot read"
+          fi
+          ;;
+      esac
+      case "$g_sub" in
         status|rm|check-ignore|check-attr|ls-files)
           return 0 ;;
         mv)
@@ -3925,7 +4663,29 @@ analyze_simple() {
           return 0
           ;;
       esac
-      if [ "${CW[$k]}" = show ]; then
+      # A :/ search selects a commit, even with an apparent :path suffix.
+      # Never treat that suffix as a filesystem path or a safe tree proof.
+      # Checked for the resolved subcommand (an alias such as show) and for
+      # the word on the command line, over the command words and the words
+      # an alias supplies.
+      local gr_hit=0 gr_word
+      case "${CW[$k]}" in show|cat-file|log|grep) gr_hit=1 ;; esac
+      case "$g_sub" in show|cat-file|log|grep) gr_hit=1 ;; esac
+      if [ "$gr_hit" = 1 ]; then
+        for gr_word in ${g_extra[@]+"${g_extra[@]}"}; do
+          case "$gr_word" in
+            *:/*) block "git revision search reads a computed path the credential guard cannot prove" ;;
+          esac
+        done
+        for ((k2 = k + 1; k2 < e; k2++)); do
+          gr_word="${CW[$k2]}"
+          case "${CF[$k2]}" in *v*) expand_vars "$gr_word"; gr_word="$EV" ;; esac
+          case "$gr_word" in
+            *:/*) block "git revision search reads a computed path the credential guard cannot prove" ;;
+          esac
+        done
+      fi
+      if [ "$g_sub" = show ] || [ "$g_sub" = cat-file ]; then
         # Read-only `git show <ref>:<path>` of tracked source: a computed file
         # name is proven against the ref's tree, not blocked blindly. The
         # proof runs in CUR_CWD, so anything that points git at another
@@ -3955,30 +4715,35 @@ analyze_simple() {
         local gs_re='\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]' gs_m gs_guard gs_comp
         for ((k2 = k + 1; k2 < e; k2++)); do
           gs_w="${CW[$k2]}"
+          # The whole object name is a variable read from input: git prints
+          # whatever <ref>:<path> the input holds.
+          if [[ "$gs_w" =~ $GS_WHOLE_VAR_RE ]] && gs_read_bound "${BASH_REMATCH[1]}"; then
+            block "git $g_sub of an object name read from input"
+          fi
           case "${CF[$k2]}" in *v*) expand_vars "$gs_w"; gs_w="$EV" ;; esac
           gs_guard=0
           while [[ "$gs_w" =~ $gs_re ]] && [ $gs_guard -lt 64 ]; do
             gs_m="${BASH_REMATCH[0]}"; gs_w="${gs_w/"$gs_m"/$'\001'}"; gs_guard=$((gs_guard + 1))
           done
           gs_comp=0
-          case "$gs_w" in *:*$'\001'*) gs_comp=1 ;; esac
+          case "$gs_w" in *$'\001'*) gs_comp=1 ;; esac
           case "${CF[$k2]}" in
             *b*) ;;
             *u*)
               if gs_split_free "${CW[$k2]}" "${CF[$k2]}"; then
                 case "$gs_w" in
-                  *:*$'\001'*) git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" && continue ;;
+                  *:*$'\001'*) [ "${CW[$k]}" = show ] && git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" "${CW[$k2]}" && continue ;;
                 esac
               fi
               ;;
             *)
               case "$gs_w" in
-                *:*$'\001'*|*:*'*'*|*:*'?'*) git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" && continue ;;
+                *:*$'\001'*|*:*'*'*|*:*'?'*) [ "${CW[$k]}" = show ] && git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" "${CW[$k2]}" && continue ;;
               esac
               ;;
           esac
           if [ "$gs_comp" = 1 ]; then
-            block "git show of a computed <ref>:<path> the credential guard cannot prove against the tree git reads"
+            block "git object revision or path the credential guard cannot prove against the tree git reads"
           fi
           check_operand "${CW[$k2]}" "${CF[$k2]}" "$CUR_CWD"
         done
@@ -4085,10 +4850,21 @@ analyze_simple() {
       fed_cmd "$pk" "$pe" "$depth"
       ;;
     find)
+      # The starting paths (after -H, -L, -P, -D <x>, -O<n>); . when none.
+      local f_start=()
+      k=$a
+      while [ $k -lt $e ]; do
+        case "${CW[$k]}" in -H|-L|-P|-O*) k=$((k + 1)) ;; -D) k=$((k + 2)) ;; *) break ;; esac
+      done
+      while [ $k -lt $e ]; do
+        case "${CW[$k]}" in -*|'('|')'|'!'|,) break ;; esac
+        f_start+=("${CW[$k]}"); k=$((k + 1))
+      done
+      [ ${#f_start[@]} -gt 0 ] || f_start=(.)
       for ((k = a; k < e; k++)); do
         case "${CW[$k]}" in
           -exec|-execdir|-ok|-okdir)
-            fed_git_read $((k + 1)) "$e" "{}" 0 "find -exec"
+            fed_git_read $((k + 1)) "$e" "{}" 0 "find -exec" "${f_start[@]}"
             if [ $((k + 1)) -lt $e ] && [ "$CRED_ANY" -eq 1 ] && { lc_word "${CW[$((k + 1))]##*/}"; ! { cg_trusted_word "${CW[$((k + 1))]}" && is_safe_cmd "$LCW"; }; }; then
               block "find -exec in a command line that names a credential file"
             fi
@@ -4285,13 +5061,15 @@ analyze_cmd() {
   # precede the substitution (SPLIT_INHERIT_G) and every taint, then record
   # this level's own bindings first, so a git show inside a substitution of
   # the loop body sees them too.
-  local sv_i sv_n=() sv_ok=() sv_g=()
+  local sv_i sv_n=() sv_ok=() sv_g=() sv_st=()
   for ((sv_i = 0; sv_i < ${#SPLIT_VAR_NAMES[@]}; sv_i++)); do
     if [ "${SPLIT_VAR_OK[$sv_i]}" != 1 ] || [ "${SPLIT_VAR_G[$sv_i]}" -lt "$SPLIT_INHERIT_G" ]; then
       sv_n+=("${SPLIT_VAR_NAMES[$sv_i]}"); sv_ok+=("${SPLIT_VAR_OK[$sv_i]}"); sv_g+=(-1)
+      sv_st+=("${SPLIT_VAR_STAGE[$sv_i]:-0}")
     fi
   done
   local SPLIT_VAR_NAMES=(${sv_n[@]+"${sv_n[@]}"}) SPLIT_VAR_OK=(${sv_ok[@]+"${sv_ok[@]}"}) SPLIT_VAR_G=(${sv_g[@]+"${sv_g[@]}"})
+  local SPLIT_VAR_STAGE=(${sv_st[@]+"${sv_st[@]}"})
   local SPLIT_CUR_G=-1
   SPLIT_INHERIT_G=0
   local nb_s=0 nb_g=0

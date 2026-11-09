@@ -67,6 +67,11 @@ HQ_ROOT="$(hq_normpath "$HQ_ROOT" 2>/dev/null || echo "$HQ_ROOT")"
 # normal lock logic. The wholesale /update-hq release path writes via cp (not
 # the Edit/Write tool), so it is unaffected.
 _norm() { hq_normpath "$1" 2>/dev/null || echo "$1"; }
+# Path comparisons ignore case. Default macOS (APFS) and Windows (NTFS)
+# filesystems are case-insensitive, so .CLAUDE/CLAUDE.md or CORE/x names the
+# same file as .claude/CLAUDE.md or core/x and must hit the same lock. The
+# bypass value check below runs with nocasematch off so its contract is exact.
+shopt -s nocasematch
 CHARTER_MD="$(_norm "$HQ_ROOT/.claude/CLAUDE.md")"
 AGENTS_MD="$(_norm "$HQ_ROOT/AGENTS.md")"
 if [[ "$FILE_PATH" == "$CHARTER_MD" || "$FILE_PATH" == "$AGENTS_MD" ]]; then
@@ -167,9 +172,11 @@ is_bypass_authorized() {
   return 1
 }
 
+shopt -u nocasematch
 if is_bypass_authorized; then
   exit 0
 fi
+shopt -s nocasematch
 
 norm_path() {
   hq_normpath "$1" 2>/dev/null || echo "$1"

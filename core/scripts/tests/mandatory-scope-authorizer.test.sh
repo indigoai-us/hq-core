@@ -95,6 +95,29 @@ rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected exit 2 for cross-company read, got $rc"
 grep -q "Cross-company scope violation" "$TMP/err.txt" || fail "missing block message"
 
+# Capability files are single JSON objects, never jq input streams.
+for stream_case in malformed-alone malformed-first malformed-last valid-first valid-last truncated-suffix malformed-json-alone; do
+  install_fixture "indigo"
+  bad='{"session_id":"sess-bound","company_slug":"indigo","company_slugs":["indigo",3]}'
+  own='{"session_id":"sess-bound","company_slug":"indigo"}'
+  foreign='{"session_id":"sess-bound","company_slug":"otherco"}'
+  case "$stream_case" in
+    malformed-alone) printf '%s\n' "$bad" ;;
+    malformed-first) printf '%s\n' "$bad" "$foreign" ;;
+    malformed-last) printf '%s\n' "$foreign" "$bad" ;;
+    valid-first) printf '%s\n' "$own" "$foreign" ;;
+    valid-last) printf '%s\n' "$foreign" "$own" ;;
+    truncated-suffix) printf '%s\n' "$foreign" '{' ;;
+    malformed-json-alone) printf '%s\n' '{' ;;
+  esac > "$TMP/workspace/sessions/sess-bound/scope-capability.json"
+  payload='{"tool_name":"Read","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"file_path":"companies/otherco/settings/foo.yaml"}}'
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "capability-$stream_case"
+  inherited="$(session_scope_read_companies "$TMP" sess-bound)"
+  [ -z "$inherited" ] || fail "capability-$stream_case granted inherited scope"
+done
+install_fixture "indigo"
+
 echo "[2] bound indigo allows same-company, core, personal, manifest"
 for rel in \
   "companies/indigo/settings/foo.yaml" \
@@ -4768,6 +4791,17 @@ fi
 mv "$TMP/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/arith-helper.saved"
 bash_case 2 arith-missing-helper 'echo hello'
 mv "$TMP/arith-helper.saved" "$TMP/.claude/hooks/bash-arith-subst-guard-lib.sh"
+
+# Regression: a session reported that it could not read the HQ Sync log. Naming
+# the log file works; a scan of the parent directory is refused, and the refusal
+# must name the path that works. The scan stays refused.
+bash_case 0 hq-sync-log-tail 'tail -n 200 ~/.hq/logs/hq-sync.log'
+bash_case 0 hq-sync-log-grep 'grep -n stall "$HOME/.hq/logs/hq-sync.log"'
+bash_case 0 hq-sync-log-rotated 'tail -n 200 ~/.hq/logs/hq-sync.log.1'
+bash_case 2 hq-sync-log-parent-scan 'grep -rn stall ~/.hq'
+grep -q 'tail -n 200 ~/.hq/logs/hq-sync.log' "$TMP/err.txt" || fail 'refused ~/.hq scan does not name the HQ Sync log path'
+bash_case 2 hq-sync-log-parent-find "find ~/.hq -name 'hq-sync*'"
+grep -q 'tail -n 200 ~/.hq/logs/hq-sync.log' "$TMP/err.txt" || fail 'refused ~/.hq find does not name the HQ Sync log path'
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

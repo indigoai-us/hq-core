@@ -158,6 +158,16 @@ jobs:
         run: bash core/scripts/tests/backmerge-apply.test.sh
       - name: Private lists stay out of public hq-core (secret source, fail closed, promotion excludes)
         run: bash .leak-scan/tests/private-lists.test.sh
+      - name: Staging carries its denylist file
+        # Staging reads the list from the tree and leaves the secret unset, so
+        # a missing file means the denylist was deleted (a backmerge once
+        # replayed the public deletion onto staging).
+        if: github.repository == 'indigoai-us/hq-core-staging'
+        run: |
+          if [ ! -f .leak-scan/denylist.yaml ]; then
+            echo "::error file=.leak-scan/denylist.yaml::hq-core-staging is missing .leak-scan/denylist.yaml. Restore it from git history; it stays in staging and out of public hq-core."
+            exit 1
+          fi
       - name: Run denylist scan
         # Public hq-core has no .leak-scan/denylist.yaml; the list comes from
         # this secret there. Staging keeps the file and leaves the secret unset.
@@ -461,6 +471,10 @@ jobs:
         run: bash .claude/hooks/tests/block-company-code-repos.test.sh
       - name: Repo guard common-path process budget
         run: bash core/scripts/tests/repogit-guard-spawn-budget.test.sh
+      - name: Scope authorizer checks long inline commands inside its budget or fails closed with a script-file message
+        run: bash core/scripts/tests/mandatory-scope-authorizer-long-command.test.sh
+      - name: Scope authorizer checks long heredoc, python and Edit payloads well inside the hook cap
+        run: bash core/scripts/tests/mandatory-scope-authorizer-bash32-payload.test.sh
       - name: Repo guard command survives master-hook parsing
         run: bash core/scripts/tests/master-hook-repogit-command-roundtrip.test.sh
       - name: Bash guards collapse simulated jq.exe CRLF in the stdin fallback
@@ -866,6 +880,8 @@ jobs:
         run: timeout 600s bash core/scripts/tests/master-hook-event-process-budget-base-equal.test.sh
       - name: Master-hook dispatch process budget and session-id prefilters
         run: timeout 120s bash core/scripts/tests/master-hook-dispatch-process-budget.test.sh
+      - name: Master-hook bash start count per Bash tool call (Windows nested bash.exe)
+        run: timeout 180s bash core/scripts/tests/master-hook-bash-spawn-count.test.sh
       - name: check-hq-update bounds GitHub network calls
         run: bash core/scripts/tests/check-hq-update-bounded-network.test.sh
       - name: check-hq-update gates repeated failed network checks
@@ -894,6 +910,10 @@ jobs:
         run: timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
       - name: Advisory hooks are hard-capped and fail open; guards are never capped
         run: timeout 600s bash core/scripts/tests/advisory-hook-hard-cap.test.sh
+      - name: Master-hook starts at most two clock processes per child without EPOCHREALTIME
+        run: timeout 300s bash core/scripts/tests/master-hook-legacy-clock-process-budget.test.sh
+      - name: Local turn timing uses wrapper measurements and bounded private storage
+        run: timeout 300s bash core/scripts/tests/turn-timing.test.sh
       - name: Master-hook parallel dispatch (HQ_HOOK_PARALLEL=1) matches sequential output and keeps blocks
         run: timeout 600s bash core/scripts/tests/master-hook-parallel-dispatch.test.sh
       - name: Master-hook parallel dispatch removes result files on SIGTERM and SIGINT
@@ -988,12 +1008,16 @@ jobs:
           timeout 120s bash core/scripts/tests/block-hq-worktree-session.test.sh
       - name: start_session side sessions lock to the parent's company
         run: timeout 120s bash core/scripts/tests/spawn-company-handoff.test.sh
+      - name: first prompt naming one company rebinds a device-default session
+        run: timeout 120s bash core/scripts/tests/prompt-company-first-message-bind.test.sh
       - name: hq_normpath stays fork-free and byte-identical to its awk contract
         run: bash core/scripts/tests/hook-lib-normpath.test.sh
       - name: enforce-vault-write-access blocks mutations without vault write permission
         run: bash core/scripts/tests/enforce-vault-write-access.test.sh
       - name: enforce-vault-write-access avoids parsing unmatched tools twice
         run: bash core/scripts/tests/enforce-vault-write-access-spawn-budget.test.sh
+      - name: protect-core compares locked paths case-insensitively
+        run: bash core/scripts/tests/protect-core-case-insensitive.test.sh
       - name: refresh-vault-access builds the manifest the write-access hook consumes
         run: bash core/scripts/tests/refresh-vault-access.test.sh
       - name: ontology-audience-grant shares the recursive folder/* glob, never a bare private folder
@@ -1175,6 +1199,8 @@ jobs:
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve-missing-jq.test.sh
+      - name: identity-resolve expiry shapes
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve-expiry-shapes.test.sh
       - name: exec-bit index
         run: bash core/scripts/tests/exec-bit-all-scripts.test.sh
       - name: hook-gate path augment
@@ -1203,6 +1229,11 @@ jobs:
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
       - name: Lane senior Stop-gate PATH-shim process budget
         run: bash .claude/hooks/tests/lanes-senior-monitor-stop-gate-process-budget.test.sh
+      - name: Hidden launcher, deferred Stop queue and checkpoint gate on Git Bash
+        # Runs even when an unrelated earlier step failed: this is the only
+        # proof of the Windows launcher.
+        if: ${{ !cancelled() }}
+        run: bash core/scripts/tests/hook-stop-async.test.sh
       - name: hq monitor guard PATH-shim process budget
         run: bash .claude/hooks/tests/hq-monitor-guard-process-budget.test.sh
       - name: hq monitor guard stays fast on a 96 KB command
@@ -1317,6 +1348,8 @@ jobs:
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve.test.sh
       - name: identity-resolve missing engines
         run: bash .claude/skills/deploy/scripts/tests/identity-resolve-missing-jq.test.sh
+      - name: identity-resolve expiry shapes
+        run: bash .claude/skills/deploy/scripts/tests/identity-resolve-expiry-shapes.test.sh
       - name: /import-context redactor and synthetic scan output under stock macOS Bash
         env:
           BASH_BIN: /bin/bash
@@ -1329,6 +1362,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Scope authorizer long payloads inside the hook cap under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/mandatory-scope-authorizer-bash32-payload.test.sh
       - name: Quoted file URI scope under stock macOS Bash
         run: /bin/bash core/scripts/tests/scope-file-uri.test.sh
       - name: Scope-guard hotfix ledger shapes under stock macOS Bash
@@ -1387,6 +1424,8 @@ jobs:
         run: bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
       - name: Advisory hooks are hard-capped under Homebrew Bash and stock /bin/bash 3.2
         run: bash core/scripts/tests/advisory-hook-hard-cap.test.sh
+      - name: Master-hook clock reads stay at two processes per child under stock /bin/bash 3.2
+        run: HQ_TEST_BASH_BIN=/bin/bash bash core/scripts/tests/master-hook-legacy-clock-process-budget.test.sh
       - name: Git-mutation guard blocks a 10,000-line HQ-root commit under Homebrew Bash and /bin/bash 3.2
         run: bash core/scripts/tests/block-hq-root-git-mutation-long-command.test.sh
       - name: check-hq-update bounds GitHub network calls
@@ -1885,6 +1924,10 @@ jobs:
         timeout 60s bash .claude/hooks/tests/block-policy-writes-bash-process-budget.test.sh | tail -200
         timeout 60s bash core/scripts/tests/ensure-hq-desktop-process-budget.test.sh | tail -200
         timeout 600s bash core/scripts/tests/block-guard-hooks-parity.test.sh | tail -200
+    - name: Glob concurrent diagnostic order
+      run: |
+        bash core/scripts/tests/block-hq-glob-diagnostic-order.test.sh
+        GLOB_TEST_UMASK=0777 bash core/scripts/tests/block-hq-glob-diagnostic-order.test.sh
     - name: "[hooks-no-python] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -1924,9 +1967,13 @@ jobs:
       id: t_hooks_no_python__7
       if: "${{ !cancelled() && steps.t_hooks_no_python__6.outcome == 'success' }}"
       run: bash core/scripts/tests/stop-path-timing.test.sh
+    - name: "[hooks-no-python] Deferred Stop hooks return while queued work still runs"
+      id: t_hooks_no_python__7b
+      if: "${{ !cancelled() && steps.t_hooks_no_python__7.outcome == 'success' }}"
+      run: bash core/scripts/tests/hook-stop-async.test.sh
     - name: "[hooks-no-python] Registry hook duplicates are removed (jq + node)"
       id: t_hooks_no_python__8
-      if: "${{ !cancelled() && steps.t_hooks_no_python__7.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_hooks_no_python__7b.outcome == 'success' }}"
       run: bash core/scripts/tests/remove-registry-duplicate-hooks.test.sh
     - name: "[hooks-no-python] Adapter hook ids are stable across local cleanup"
       id: t_hooks_no_python__9
@@ -2492,6 +2539,10 @@ jobs:
       id: t_work_mesh_tests__3
       if: "${{ !cancelled() && steps.t_work_mesh_tests__2.outcome == 'success' }}"
       run: bash core/scripts/tests/register-project.test.sh
+    - name: "[work-mesh-tests] Board project ids: next is max + 1, check refuses duplicates and empty titles"
+      id: t_work_mesh_tests__4
+      if: "${{ !cancelled() && steps.t_work_mesh_tests__3.outcome == 'success' }}"
+      run: bash core/scripts/tests/board-project-id.test.sh
     - name: Per-check results
       if: "${{ always() }}"
       env:
@@ -2687,6 +2738,10 @@ jobs:
       id: t_skill_script_refs__36_standing
       if: "${{ !cancelled() && steps.t_skill_script_refs__36.outcome == 'success' }}"
       run: bash core/scripts/tests/conduct-standing.test.sh
+    - name: "[skill-script-refs] /conduct subagent hand-back (report.md, envelope, refused report write)"
+      id: t_skill_script_refs__36_handback
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36_standing.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-subagent-handback-sidecar.test.sh
     - name: "[skill-script-refs] Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)"
       id: t_skill_script_refs__37
       if: "${{ !cancelled() && steps.t_skill_script_refs__36_standing.outcome == 'success' }}"
@@ -2747,9 +2802,13 @@ jobs:
       id: t_skill_script_refs__51
       if: "${{ !cancelled() && steps.t_skill_script_refs__50.outcome == 'success' }}"
       run: bash core/scripts/tests/deploy-skill-gate-before-upload.test.sh
+    - name: "[skill-script-refs] Deploy shrink guard stops a redeploy that shrinks the live site"
+      id: t_skill_script_refs__shrink_guard
+      if: "${{ !cancelled() && steps.t_skill_script_refs__51.outcome == 'success' }}"
+      run: bash core/scripts/tests/deploy-shrink-guard.test.sh
     - name: "[skill-script-refs] list-apps.sh follows nextCursor and fails closed"
       id: t_skill_script_refs__52
-      if: "${{ !cancelled() && steps.t_skill_script_refs__51.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_skill_script_refs__shrink_guard.outcome == 'success' }}"
       run: bash .claude/skills/deploy/scripts/tests/list-apps.test.sh
     - name: "[skill-script-refs] Deploy request helper rejects errors and supports app multipart uploads"
       id: t_skill_script_refs__53
@@ -2876,9 +2935,13 @@ jobs:
       id: t_hook_path_resolution__4
       if: "${{ !cancelled() && steps.t_hook_path_resolution__3.outcome == 'success' }}"
       run: bash core/scripts/tests/ensure-hq-cli-hook.test.sh
+    - name: "[hook-path-resolution] Session-start cached probes and required hook paths"
+      id: t_hook_path_resolution__4b
+      if: "${{ !cancelled() && steps.t_hook_path_resolution__4.outcome == 'success' }}"
+      run: bash core/scripts/tests/hook-speed-daily.test.sh
     - name: "[hook-path-resolution] ensure-hq-desktop hook detects/updates the desktop app"
       id: t_hook_path_resolution__5
-      if: "${{ !cancelled() && steps.t_hook_path_resolution__4.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_hook_path_resolution__4b.outcome == 'success' }}"
       run: bash core/scripts/tests/ensure-hq-desktop-hook.test.sh
     - name: "[hook-path-resolution] ensure-hq-desktop hook stays inside its process budget"
       id: t_hook_path_resolution__6
@@ -3048,7 +3111,9 @@ jobs:
     - name: "[policy-trigger-migration] inject-policy-cache.test.sh"
       id: t_policy_trigger_migration__12
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__11.outcome == 'success' }}"
-      run: bash core/scripts/tests/inject-policy-cache.test.sh
+      run: |
+        bash core/scripts/tests/inject-policy-cache.test.sh
+        bash core/scripts/tests/inject-policy-cold-read-budget.test.sh
     - name: "[policy-trigger-migration] SessionStart policy evaluation cache across sessions"
       id: t_policy_trigger_migration__13
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__12.outcome == 'success' }}"
@@ -3328,6 +3393,10 @@ jobs:
       id: t_hook_health_prevention__5b
       if: "${{ !cancelled() && steps.t_hook_health_prevention__5.outcome == 'success' }}"
       run: bash core/scripts/tests/block-raw-temp-home.test.sh
+    - name: "[hook-health-prevention] Unbounded search guard"
+      id: t_hook_health_prevention__5c
+      if: "${{ !cancelled() && steps.t_hook_health_prevention__5.outcome == 'success' }}"
+      run: bash core/scripts/tests/block-hq-unbounded-search.test.sh
     - name: "[hook-health-prevention] Adapter prefilter and watchdog contract"
       id: t_hook_health_prevention__6
       if: "${{ !cancelled() && steps.t_hook_health_prevention__5.outcome == 'success' }}"
@@ -3486,6 +3555,8 @@ jobs:
           core/scripts/tests/block-unsafe-package-install-process-budget.test.sh
           core/scripts/tests/block-core-writes-bash-process-budget.test.sh
           core/scripts/tests/block-guard-hooks-parity.test.sh
+          core/scripts/tests/block-hq-glob-diagnostic-order.test.sh
+          .claude/hooks/block-hq-glob.sh
           core/scripts/tests/knowledge-pulse-policy-schema.test.sh
           core/scripts/remove-stray-gate-hooks.sh
           core/scripts/remove-retired-core-hooks.sh

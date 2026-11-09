@@ -163,6 +163,22 @@ EOF" 'template company policy is blocked'
 run 2 "rm -rf $TMP/personal/policies" 'removing the personal policy directory itself is blocked'
 run 2 "mv $TMP/personal/policies /tmp/policy-guard-away" 'moving the personal policy directory itself is blocked'
 
+echo "[1a] a leftover retired _digest.md can be deleted with rm, nothing else"
+printf 'stale digest\n' > "$TMP/companies/acme/policies/_digest.md"
+mkdir -p "$TMP/personal/policies/_digest.md"
+run 0 "rm $TMP/companies/acme/policies/_digest.md" 'rm of a leftover company _digest.md is allowed'
+run 0 "rm -f $TMP/companies/acme/policies/_digest.md" 'rm -f of a leftover company _digest.md is allowed'
+run 0 "cd $TMP/companies/acme/policies && rm _digest.md" 'relative rm of _digest.md after cd is allowed'
+run 2 "rm $TMP/companies/acme/policies/_digest.md $TMP/companies/acme/policies/live.md" \
+  'rm of _digest.md cannot carry a live policy delete with it'
+run 2 "rm -rf $TMP/personal/policies/_digest.md" 'a directory named _digest.md is not exempt'
+run 2 "rm $TMP/companies/acme/policies/_digest.md.bak" 'a near-miss name is not exempt'
+run 2 "cat > $TMP/companies/acme/policies/_digest.md <<EOF
+x
+EOF" 'writing _digest.md through a heredoc stays blocked'
+run 2 "cp /tmp/policy-input $TMP/companies/acme/policies/_digest.md" 'cp onto _digest.md stays blocked'
+rm -rf "$TMP/personal/policies/_digest.md" "$TMP/companies/acme/policies/_digest.md"
+
 echo "[1b] adversarial compound commands cannot borrow a later exemption"
 # Every case contains either a real write behind a command boundary or an
 # invalid extension of the sanctioned route. The old whole-payload scanner

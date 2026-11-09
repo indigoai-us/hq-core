@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "a5042af094352c8aed5f645c77690852a0a2b60b3a9d04b447bdb82744cff5bf",
+  "registry_sha256": "86ca79c55ac7d6ab1a376085b1eaa528e7c61d223b024285a4126aa3d006590a",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -122,6 +122,12 @@
       "trigger_sha256": "83dbf46cb1036612628cc71af7bb667e8880e65e48612b845a007540a1af11d6",
       "when": "deploy || push || share || slack || email || migration",
       "on": "[UserPromptSubmit, AssistantIntent, PreToolUse]"
+    },
+    {
+      "path": "core/policies/hq-artifacts-disabled-explain-and-unblock.md",
+      "trigger_sha256": "24541381983b6af2c909bf0ea2c7bd951e63c1139ae2323d767c0547ecd3d2cb",
+      "when": "disableArtifact || ((artifact || artifacts || canvas || canvases) && (claude || open || enable || turn || create || make || failed || unavailable || blocked || cannot || why)) || (claude && design && (canvas || artifact))",
+      "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {
       "path": "core/policies/hq-audience-mode.md",
@@ -1287,7 +1293,8 @@
                   "args": [
                     "drain",
                     "PreToolUse"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1330,7 +1337,8 @@
                   "args": [
                     "drain",
                     "PreToolUse"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1374,7 +1382,8 @@
                   "args": [
                     "drain",
                     "PreToolUse"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1411,7 +1420,8 @@
                   "args": [
                     "drain",
                     "PreToolUse"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1448,7 +1458,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1490,7 +1501,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1533,7 +1545,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -1569,7 +1582,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9295,8 +9309,356 @@
       }
     },
     {
-      "hook_id": "block-on-active-run",
+      "hook_id": "block-hq-unbounded-search",
       "entry": "PreToolUse/5/16",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "find",
+          "file_path": "find"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "find",
+          "file_path": "find"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "find",
+          "file_path": "find"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "find",
+          "file_path": "find"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "find",
+          "file_path": "find"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "find",
+          "file_path": "find"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "prefilter.re",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "block-hq-unbounded-search",
+      "entry": "PreToolUse/5/16",
+      "rule": "prefilter.re",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Bash",
+              "hooks": [
+                {
+                  "id": "block-hq-unbounded-search",
+                  "script": ".claude/hooks/block-hq-unbounded-search.sh",
+                  "timeout": 5,
+                  "gated": false,
+                  "prefilter": {
+                    "re": "find|grep|bfs"
+                  },
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Bash",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "block-on-active-run",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9341,7 +9703,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9387,7 +9749,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9432,7 +9794,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9478,7 +9840,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": true,
@@ -9523,7 +9885,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": true,
@@ -9569,7 +9931,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": false,
@@ -9612,7 +9974,7 @@
     },
     {
       "hook_id": "block-on-active-run",
-      "entry": "PreToolUse/5/16",
+      "entry": "PreToolUse/5/17",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": false,
@@ -9656,7 +10018,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -9678,7 +10040,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9705,7 +10068,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -9727,7 +10090,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9755,7 +10119,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -9777,7 +10141,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9804,7 +10169,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -9826,7 +10191,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9854,7 +10220,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.policy_vocab",
       "runtime": "claude",
       "matching": true,
@@ -9876,7 +10242,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9903,7 +10270,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.policy_vocab",
       "runtime": "codex",
       "matching": true,
@@ -9925,7 +10292,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -9953,7 +10321,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.policy_vocab",
       "runtime": "claude",
       "matching": false,
@@ -9975,7 +10343,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -10001,7 +10370,7 @@
     },
     {
       "hook_id": "inject-policy-on-trigger",
-      "entry": "PreToolUse/5/17",
+      "entry": "PreToolUse/5/18",
       "rule": "prefilter.policy_vocab",
       "runtime": "codex",
       "matching": false,
@@ -10023,7 +10392,8 @@
                   "after": [
                     "policy-enforcement-gate",
                     "surface-company-infra-policy"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -10050,7 +10420,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -10094,7 +10464,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -10139,7 +10509,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -10183,7 +10553,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -10228,7 +10598,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -10272,7 +10642,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -10317,7 +10687,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -10361,7 +10731,7 @@
     },
     {
       "hook_id": "block-unsafe-package-install",
-      "entry": "PreToolUse/5/18",
+      "entry": "PreToolUse/5/19",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -10406,7 +10776,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -10451,7 +10821,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -10497,7 +10867,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -10542,7 +10912,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -10588,7 +10958,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -10633,7 +11003,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -10679,7 +11049,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -10724,7 +11094,7 @@
     },
     {
       "hook_id": "surface-company-infra-policy",
-      "entry": "PreToolUse/5/19",
+      "entry": "PreToolUse/5/20",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -22599,7 +22969,8 @@
                   "id": "merged-write-guard-shadow",
                   "script": ".claude/hooks/merged-write-guard-shadow.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "runner": "source"
                 }
               ]
             }
@@ -22638,7 +23009,8 @@
                   "id": "merged-write-guard-shadow",
                   "script": ".claude/hooks/merged-write-guard-shadow.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "runner": "source"
                 }
               ]
             }
@@ -22678,7 +23050,8 @@
                   "id": "merged-write-guard-shadow",
                   "script": ".claude/hooks/merged-write-guard-shadow.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "runner": "source"
                 }
               ]
             }
@@ -22717,7 +23090,8 @@
                   "id": "merged-write-guard-shadow",
                   "script": ".claude/hooks/merged-write-guard-shadow.sh",
                   "timeout": 30,
-                  "gated": false
+                  "gated": false,
+                  "runner": "source"
                 }
               ]
             }
@@ -23306,7 +23680,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -23351,7 +23726,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -23397,7 +23773,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -23433,7 +23810,8 @@
                   "gated": false,
                   "after": [
                     "inject-policy-on-trigger"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26369,7 +26747,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26420,7 +26799,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26472,7 +26852,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26523,7 +26904,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26575,7 +26957,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26626,7 +27009,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26678,7 +27062,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -26728,7 +27113,8 @@
                   },
                   "after": [
                     "policy-enforcement-gate"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -34620,7 +35006,8 @@
                   "gated": false,
                   "after": [
                     "migrate-policy-triggers"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -34657,7 +35044,8 @@
                   "gated": false,
                   "after": [
                     "migrate-policy-triggers"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -34695,7 +35083,8 @@
                   "gated": false,
                   "after": [
                     "migrate-policy-triggers"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -34731,7 +35120,8 @@
                   "gated": false,
                   "after": [
                     "migrate-policy-triggers"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -36969,7 +37359,8 @@
                   "args": [
                     "drain",
                     "UserPromptSubmit"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -37007,7 +37398,8 @@
                   "args": [
                     "drain",
                     "UserPromptSubmit"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -37046,7 +37438,8 @@
                   "args": [
                     "drain",
                     "UserPromptSubmit"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -37083,7 +37476,8 @@
                   "args": [
                     "drain",
                     "UserPromptSubmit"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -37838,7 +38232,10 @@
                   "script": ".claude/hooks/session-title.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "after": [
+                    "natural-language-router"
+                  ]
                 }
               ]
             }
@@ -37873,7 +38270,10 @@
                   "script": ".claude/hooks/session-title.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "after": [
+                    "natural-language-router"
+                  ]
                 }
               ]
             }
@@ -37909,7 +38309,10 @@
                   "script": ".claude/hooks/session-title.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "after": [
+                    "natural-language-router"
+                  ]
                 }
               ]
             }
@@ -37943,7 +38346,10 @@
                   "script": ".claude/hooks/session-title.sh",
                   "timeout": 30,
                   "gated": false,
-                  "runner": "source"
+                  "runner": "source",
+                  "after": [
+                    "natural-language-router"
+                  ]
                 }
               ]
             }
@@ -37982,7 +38388,8 @@
                     "auto-session-project",
                     "natural-language-router",
                     "route-deep-plan-to-skill"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -38021,7 +38428,8 @@
                     "auto-session-project",
                     "natural-language-router",
                     "route-deep-plan-to-skill"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -38061,7 +38469,8 @@
                     "auto-session-project",
                     "natural-language-router",
                     "route-deep-plan-to-skill"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }
@@ -38099,7 +38508,8 @@
                     "auto-session-project",
                     "natural-language-router",
                     "route-deep-plan-to-skill"
-                  ]
+                  ],
+                  "runner": "source"
                 }
               ]
             }

@@ -83,8 +83,12 @@ if [[ $warnable -eq 1 && ( "${2:-}" == "--warn" || "${HQ_SCAN_MODE:-}" == "warn"
   rc=$?
   set -e
   # Both annotation forms: "::error::msg" and "::error file=...::msg".
-  out="${out//::error::/::warning::}"
-  out="${out//::error file=/::warning file=}"
+  # Script errors (exit 2), such as a missing denylist, keep their ::error::
+  # annotations so the failure reads as an error, not a warning.
+  if [[ $rc -ne 2 ]]; then
+    out="${out//::error::/::warning::}"
+    out="${out//::error file=/::warning file=}"
+  fi
   [[ -n "$out" ]] && printf '%s\n' "$out"
   if [[ $rc -eq 1 ]]; then
     echo "::warning title=$mode::findings reported (report-only; review is the gate)"
@@ -185,7 +189,7 @@ leak_list_file() {
     printf '%s' "$repo_path"
     return 0
   fi
-  echo "::error::$repo_path missing and $var not set (public hq-core reads this list from the $var secret)" >&2
+  echo "::error::$repo_path missing and $var not set. hq-core-staging must carry $repo_path in its tree (restore it from git history if a commit or backmerge deleted it); public hq-core reads this list from the $var secret." >&2
   return 2
 }
 leak_list_cleanup() { [[ ${#LEAK_LIST_TMPS[@]} -eq 0 ]] || rm -f "${LEAK_LIST_TMPS[@]}"; }

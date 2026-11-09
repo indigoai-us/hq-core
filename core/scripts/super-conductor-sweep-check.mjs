@@ -9,7 +9,7 @@
 // of reported as "nothing new".
 //
 // Usage:
-//   node core/scripts/super-conductor-sweep-check.mjs targets [--channels <csv>]
+//   node core/scripts/super-conductor-sweep-check.mjs targets [--state <file>] [--channels <csv>]
 //       Expanded sweep targets, one per line (sessions, hq_dms, hq_channels,
 //       slack:<workspace>, email:<account>, x, teammates). Channels, workspaces
 //       and accounts come from the owner's prefs unless --channels is given.
@@ -30,6 +30,13 @@
 //       Exit 1 otherwise, listing each missing target. Prints the status line.
 //   node core/scripts/super-conductor-sweep-check.mjs status-line --state <file> --since <iso>
 //       The owner-facing line: channels read, channels skipped and why.
+//
+// Per-company prefs: targets, due, verify and status-line read the owner's
+// prefs through the company overlay (super-conductor-prefs.mjs --company,
+// personal/settings/super-conductor.<slug>.yaml) when --company <slug> is
+// given or, failing that, when the save file's `company` key is one slug. A
+// comma list or no company reads the base file; `--company ''` forces it. A
+// slug the prefs helper refuses also reads the base file.
 //
 // Exit: 0 ok, 1 incomplete sweep, 2 bad arguments, 3 refused record.
 import fs from 'node:fs';
@@ -69,13 +76,34 @@ function opts(argv) {
   return o;
 }
 
-function prefs() {
+// The company whose prefs overlay applies: --company when given, else the save
+// file's `company` key. Only a single slug selects an overlay; a multi-company
+// set (comma list) or none reads the base file, as the heartbeat does.
+export function companyOf(o, state) {
+  const raw = o.company !== undefined ? o.company : (state && typeof state.company === 'string' ? state.company : '');
+  const slug = String(raw || '').trim();
+  return slug && !slug.includes(',') ? slug : '';
+}
+
+function prefs(company) {
+  const get = (args) => JSON.parse(execFileSync('node', [path.join(HERE, 'super-conductor-prefs.mjs'), ...args, 'get'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  // A company the prefs helper refuses (for example a bad slug in the save
+  // file) falls back to the base file, never to the one-channel default: a
+  // shorter target list would let a partial sweep pass verify.
+  if (company) {
+    try { return get(['--company', company]); } catch { /* base file below */ }
+  }
   try {
-    return JSON.parse(execFileSync('node', [path.join(HERE, 'super-conductor-prefs.mjs'), 'get'], { encoding: 'utf8' }));
+    return get([]);
   } catch {
     return { channels: ['hq_dms'] };
   }
 }
+
+// A prefs list may be a YAML list or a comma-separated string (`set` writes a
+// scalar). Iterating a string would yield one target per character.
+const asList = (v) => (Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : [])
+  .map((x) => String(x ?? '').trim()).filter(Boolean);
 
 // {hourly: Set of channel keys, ms}. Missing prefs → every channel constant.
 export function cadenceOf(p) {
@@ -91,15 +119,15 @@ const isHourly = (cad, target) => !!cad && cad.hourly.has(target.split(':')[0]);
 export function targets(p, channelsCsv) {
   const chans = channelsCsv
     ? channelsCsv.split(',').map((s) => s.trim().replace(/ \(from settings\)$/, '')).filter(Boolean)
-    : (p.channels || []);
+    : asList(p.channels);
   const list = ['sessions'];
   for (const c of chans) {
     if (c === 'sessions' || list.includes(c)) continue;
     if (c === 'slack') {
-      const ws = p.slack_workspaces && p.slack_workspaces.length ? p.slack_workspaces : ['default'];
+      const ws = asList(p.slack_workspaces).length ? asList(p.slack_workspaces) : ['default'];
       for (const w of ws) list.push(`slack:${w}`);
     } else if (c === 'email') {
-      const acc = p.email_accounts && p.email_accounts.length ? p.email_accounts : ['default'];
+      const acc = asList(p.email_accounts).length ? asList(p.email_accounts) : ['default'];
       for (const a of acc) list.push(`email:${a}`);
     } else {
       list.push(c);
@@ -186,7 +214,8 @@ function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const o = opts(rest);
   if (cmd === 'targets') {
-    process.stdout.write(targets(prefs(), o.channels).join('\n') + '\n');
+    const st = o.state && fs.existsSync(o.state) ? readState(o.state) : {};
+    process.stdout.write(targets(prefs(companyOf(o, st)), o.channels).join('\n') + '\n');
     return;
   }
   if (cmd === 'record') {
@@ -215,14 +244,16 @@ function main() {
     return;
   }
   if (cmd === 'due') {
-    const p = prefs();
-    process.stdout.write(dueTargets(readState(o.state), targets(p, o.channels), o.now, cadenceOf(p)).join('\n') + '\n');
+    const st = readState(o.state);
+    const p = prefs(companyOf(o, st));
+    process.stdout.write(dueTargets(st, targets(p, o.channels), o.now, cadenceOf(p)).join('\n') + '\n');
     return;
   }
   if (cmd === 'verify' || cmd === 'status-line') {
     if (!o.since || Number.isNaN(Date.parse(o.since))) die('--since <iso> is required', 2);
-    const p = prefs();
-    const r = evaluate(readState(o.state), targets(p, o.channels), o.since, o.now, cadenceOf(p));
+    const st = readState(o.state);
+    const p = prefs(companyOf(o, st));
+    const r = evaluate(st, targets(p, o.channels), o.since, o.now, cadenceOf(p));
     process.stdout.write(statusLine(r) + '\n');
     if (cmd === 'verify' && !r.ok) process.exit(1);
     return;

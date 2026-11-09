@@ -118,11 +118,20 @@ extract_prompt() {
 
 canonical_path() {
   local path="$1" dir base
-  case "$path" in /*) ;; *) path="$ROOT/$path" ;; esac
+  if [ -f "$ROOT/core/scripts/hook-lib.sh" ]; then
+    source "$ROOT/core/scripts/hook-lib.sh"
+    if [ "${HQ_LIB_WINSEP:-0}" = 1 ]; then path=${path//\\//}; fi
+    # Drive roots are absolute only on Windows; Unix joins them to HQ.
+    hq_path_is_absolute "$path" || path="$ROOT/$path"
+  else
+    case "$path" in /*) ;; *) path="$ROOT/$path" ;; esac
+  fi
   dir="$(dirname "$path")"
   base="$(basename "$path")"
   [ -d "$dir" ] || return 1
-  printf '%s/%s' "$(cd "$dir" 2>/dev/null && pwd -P)" "$base"
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)"
+  if [ "${HQ_LIB_WINSEP:-0}" = 1 ]; then dir="$(hq_canonical_path "$dir")"; fi
+  printf '%s/%s' "$dir" "$base"
 }
 
 # Print the session's policy-declared `required-skill:` or `required-brief:`
@@ -315,6 +324,7 @@ enforce_gate_policies() {
     override="$(printf '%s' "$data" | jq -r '.override')"
     missing=""
     while IFS= read -r fact; do
+      fact="${fact%$'\r'}"
       [ -n "$fact" ] || continue
       if [ -n "$freshness" ]; then
         if ! hq_gate_fact_present "$fact" "$freshness"; then
@@ -575,6 +585,8 @@ case "$EVENT" in
         HOOK_STATE_DIR="$(. "$ROOT/core/scripts/hook-lib.sh" && hq_hook_state_dir "$ROOT")"
         umask 077
         while IFS=$'\t' read -r proof_kind name answer; do
+          # jq.exe writes CRLF. Remove only the row terminator, not answer content.
+          answer="${answer%$'\r'}"
           [ -n "$name" ] || continue
           if [ "$proof_kind" = fact ]; then
             PROOF_DIR="$HOOK_STATE_DIR/gate-facts/$SID/proofs"
@@ -631,24 +643,30 @@ case "$EVENT" in
         ;;
     esac
     [ -n "$CANDIDATE" ] || exit 0
+    if [ "$CANDIDATE_KIND" = path ] && [ -f "$ROOT/core/scripts/hook-lib.sh" ]; then
+      source "$ROOT/core/scripts/hook-lib.sh"
+      if [ "${HQ_LIB_WINSEP:-0}" = 1 ]; then CANDIDATE=${CANDIDATE//\\//}; fi
+    fi
     while IFS= read -r skill; do
+      skill="${skill%$'\r'}"
       [ -n "$skill" ] || continue
       expected_skill="$(canonical_path "$ROOT/.claude/skills/$skill/SKILL.md" 2>/dev/null || true)"
       if [ -n "$expected_skill" ] && [ "$CANDIDATE_KIND" = "path" ] \
          && [ "$(basename "$CANDIDATE")" = "SKILL.md" ] \
          && [ -f "$CANDIDATE" ] && [ -r "$CANDIDATE" ] \
          && [ "$(canonical_path "$CANDIDATE" 2>/dev/null || true)" = "$expected_skill" ]; then
-        atomic_update '(.receipts.skills // []) += [$v] | .receipts.skills |= unique' --arg v "$skill"
+        MSYS2_ENV_CONV_EXCL=HQ_GATE_RECEIPT HQ_GATE_RECEIPT="$skill" atomic_update '(.receipts.skills // []) += [env.HQ_GATE_RECEIPT] | .receipts.skills |= unique'
       elif [ -n "$expected_skill" ] && [ "$CANDIDATE_KIND" = "command" ] \
          && candidate_reads_exact_path "$ROOT/.claude/skills/$skill/SKILL.md"; then
-        atomic_update '(.receipts.skills // []) += [$v] | .receipts.skills |= unique' --arg v "$skill"
+        MSYS2_ENV_CONV_EXCL=HQ_GATE_RECEIPT HQ_GATE_RECEIPT="$skill" atomic_update '(.receipts.skills // []) += [env.HQ_GATE_RECEIPT] | .receipts.skills |= unique'
       fi
     done < <(jq -r '.requiredSkills[]?' "$STATE")
     while IFS= read -r brief; do
+      brief="${brief%$'\r'}"
       [ -n "$brief" ] || continue
       case "$brief" in '<declared-'*) continue ;; esac
       if candidate_reads_exact_path "$brief"; then
-        atomic_update '(.receipts.briefs // []) += [$v] | .receipts.briefs |= unique' --arg v "$brief"
+        MSYS2_ENV_CONV_EXCL=HQ_GATE_RECEIPT HQ_GATE_RECEIPT="$brief" atomic_update '(.receipts.briefs // []) += [env.HQ_GATE_RECEIPT] | .receipts.briefs |= unique'
       fi
     done < <(jq -r '.briefs[]?' "$STATE")
     ;;

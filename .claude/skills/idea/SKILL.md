@@ -72,11 +72,19 @@ If company was unresolved in Step 2, prepend a company question:
 ## Step 4: Write Board Entry
 
 1. Read `companies/{co}/board.json`
-2. **Generate ID:**
-   - Collect all `id` values from `projects` array
-   - Extract numeric suffixes from IDs matching `{prefix}-proj-{NNN}` pattern
-   - Next ID = `{prefix}-proj-{max_N + 1}`, zero-padded to 3 digits (4+ if >999)
-   - Use the lowercase prefix convention from existing entries (e.g. `lr`, `ab`, `pe`)
+2. **Generate ID:** the next id is one more than the HIGHEST number used with
+   the board's prefix anywhere in `projects`, never the last entry + 1 (entries
+   are not kept in id order). This prints it:
+   ```bash
+   jq -r '[.projects[]? | .id? | strings | capture("^(?<p>[a-z0-9]+)-proj-(?<n>[0-9]+)$")?] as $ids
+     | (($ids | group_by(.p) | max_by(length) | .[0].p) // error("no {prefix}-proj-{NNN} ids yet")) as $p
+     | ([$ids[] | select(.p == $p) | (.n | tonumber)] | max) + 1 | tostring
+     | "\($p)-proj-\(if length < 3 then ("000" + .)[-3:] else . end)"' companies/{co}/board.json
+   ```
+   The prefix is the one most `{prefix}-proj-{NNN}` ids use (lowercase, e.g.
+   `lr`, `ab`, `pe`). Zero-pad to 3 digits (4+ if >999). When the board has no
+   such ids yet, ask for or derive a short lowercase prefix and use
+   `{prefix}-proj-001`.
 3. **Derive title:** If description is >50 chars, derive a concise 3-6 word title. If ≤50 chars, use as-is for both title and description.
 4. **Build entry:**
    ```json
@@ -96,6 +104,13 @@ If company was unresolved in Step 2, prepend a company question:
    ```
    If user selected an objective in Step 3, set `objective_id` to that objective's ID. Also find the objective's `initiative_ids[0]` (if any) and set `initiative_id` for backward compatibility.
 5. Append to `projects` array. Update root `updated_at`. Write board.json.
+6. **Check for duplicates:** after writing, this must print nothing:
+   ```bash
+   jq -r '[.projects[]? | .id? | strings] | group_by(.) | map(select(length > 1) | .[0]) | .[]' companies/{co}/board.json
+   ```
+   If it prints the id you just wrote, give your entry the next free id (step 2)
+   and write again. If it prints other ids, those duplicates were already on the
+   board: leave them and tell the user which ids are duplicated.
 
 ## Step 5: Confirm & Reindex
 

@@ -504,7 +504,7 @@ run 2 "$TMP/gitfile-alias" 'git commit -m x' \
 # shellcheck source=/dev/null
 . "$ROOT/core/scripts/hook-lib.sh"
 for drive_path in 'C:/Data/x' 'c:/x' 'D:\Data\x' '/c/Data/x'; do
-  if hq_path_is_absolute "$drive_path"; then
+  if HQ_LIB_WINSEP=1 hq_path_is_absolute "$drive_path"; then
     PASS=$((PASS+1))
   else
     FAIL=$((FAIL+1))

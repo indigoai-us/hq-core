@@ -13,4 +13,4 @@ if [ ! -f "$SCRIPT_DIR/lib/forwarder.sh" ]; then
 fi
 # shellcheck source=lib/forwarder.sh
 . "$SCRIPT_DIR/lib/forwarder.sh"
-forwarder_exec "rebuild-all-indexes.sh" "5.78.0" "live" "rebuild-index all" "false" "$@"
+forwarder_exec "rebuild-all-indexes.sh" "5.345.188" "live" "rebuild-index all" "false" "$@"

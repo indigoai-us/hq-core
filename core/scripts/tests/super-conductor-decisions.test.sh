@@ -448,6 +448,109 @@ check "next without --count still prints one object (got: $out)" "$([[ "$out" ==
 node "$DQ" next --file "$C3" --count 0 >/dev/null 2>&1; rc=$?
 check "--count 0 is refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
 
+# Conductor asks: watch --for conductor --ask wakes the conductor for open rows too.
+A="$tmp/cl-ask-decisions.jsonl"
+out="$(node "$DQ" watch --file "$A" --for conductor --ask --once --now 2026-10-22T01:00:00Z)"
+check "conductor --ask watch prints nothing for a missing queue (got: $out)" "$([[ -z "$out" ]]; echo $?)"
+aid="$(node "$DQ" add --file "$A" --source ask --ref 'local_8:ask_1' --question 'Send the pricing reply to Ada?' --body $'Hi Ada,\n\nThe tier is 80% GM.\n\nLine three | with a pipe.' --option 'Send::send the draft as written' --option 'Hold' --relay-session local_8 --no-standing --at 2026-10-22T01:00:00Z)"
+out="$(node "$DQ" watch --file "$A" --for conductor --no-ask --once --now 2026-10-22T01:00:05Z)"
+check "--no-ask (and the default) keeps the conductor to ANSWER lines (got: $out)" "$([[ -z "$out" ]]; echo $?)"
+out="$(node "$DQ" watch --file "$A" --for conductor --ask --once --now 2026-10-22T01:00:10Z)"
+check "conductor --ask watch prints one DECISION line for a new open row (got: $out)" "$([[ "$(wc -l <<<"$out")" -eq 1 && "$out" == 'SUPER-CONDUCTOR DECISION '* ]]; echo $?)"
+grep -q "1 open: Send the pricing reply to Ada? \[Send / Hold\] | body: yes | id $aid | Finish this wakeup's sweep and dispatch first, then ask it in this window" <<<"$out"; check "the conductor DECISION line names the question, options, body flag, id and the ask rule (got: $out)" $?
+check "the conductor DECISION line never carries the body text (got: $out)" "$([[ "$out" != *'Hi Ada'* ]]; echo $?)"
+out="$(node "$DQ" watch --file "$A" --for conductor --ask --once --now 2026-10-22T01:00:20Z)"
+check "a second conductor run prints nothing for the same open row (got: $out)" "$([[ -z "$out" ]]; echo $?)"
+out="$(node "$DQ" watch --file "$A" --for conductor --ask --once --stale-after 300 --now 2026-10-22T01:06:00Z)"
+check "the conductor gets one STALE-DECISION line, count-only push (got: $out)" "$([[ "$(wc -l <<<"$out")" -eq 1 && "$out" == 'SUPER-CONDUCTOR STALE-DECISION '*"id $aid | Send the owner one push notification (PushNotification) with the waiting count only (never the question text), then ask it in this window." ]]; echo $?)"
+node "$DQ" watch --file "$A" --for conductor --ask --no-ask --once >/dev/null 2>&1; rc=$?
+check "--ask and --no-ask together are refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+node "$DQ" watch --file "$A" --for desk --ask --once >/dev/null 2>&1; rc=$?
+check "--ask is refused for the desk (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+# The conductor-asks claim: a normal row, claimed by the conductor for its own picker.
+node "$DQ" answer --file "$A" --id "$aid" --answer Send --desk conductor >/dev/null 2>&1; rc=$?
+check "the conductor cannot answer a normal row it did not claim (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+node "$DQ" claim --file "$A" --id "$aid" --desk desk-z --conductor-asks >/dev/null 2>&1; rc=$?
+check "--conductor-asks is only for --desk conductor (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+out="$(node "$DQ" claim --file "$A" --id "$aid" --desk conductor --conductor-asks)"; rc=$?
+check "claim --conductor-asks lets the conductor claim a normal row (rc $rc, got: $out)" "$([[ $rc -eq 0 && "$out" == "$aid claimed by conductor" ]]; echo $?)"
+node "$DQ" claim --file "$A" --id "$aid" --desk desk-a >/dev/null 2>&1; rc=$?
+check "a desk cannot take a row the conductor is asking (rc $rc)" "$([[ $rc -eq 3 ]]; echo $?)"
+out="$(node "$DQ" answer --file "$A" --id "$aid" --answer Send --desk conductor)"
+check "the conductor answers the row it asked in its window (got: $out)" "$([[ "$out" == "$aid open → answered" ]]; echo $?)"
+out="$(node "$DQ" watch --file "$A" --for conductor --ask --once --now 2026-10-22T01:07:00Z)"
+check "an answered row gets its ANSWER line so the conductor relays it (got: $out)" "$([[ "$(wc -l <<<"$out")" -eq 1 && "$out" == 'SUPER-CONDUCTOR ANSWER '*"relay to (local_8) | id $aid"* ]]; echo $?)"
+# A desk claim after the conductor-asks claim lapsed resets the mode.
+K2="$tmp/cl-askmode-decisions.jsonl"
+km="$(node "$DQ" add --file "$K2" --source conductor --ref km --question 'Rename the label?' --option Yes --option No --no-standing)"
+node "$DQ" claim --file "$K2" --id "$km" --desk conductor --conductor-asks >/dev/null
+# Simulate the conductor's claim lapsing and a desk taking the row.
+node -e 'const fs=require("fs");const f=process.argv[1];fs.appendFileSync(f,JSON.stringify({id:process.argv[2],at:new Date().toISOString(),claimed_by:"desk-x",claimed_at:new Date().toISOString(),claim_mode:"desk"})+"\n")' "$K2" "$km"
+node "$DQ" answer --file "$K2" --id "$km" --answer Yes --desk conductor >/dev/null 2>&1; rc=$?
+check "once a desk holds the row the conductor cannot answer it (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+
+# body: the full text, newlines and pipes kept, shown by show --id.
+r="$(node "$DQ" show --file "$A" --id "$aid" --json)"
+check "show --json prints the row with its body intact (got: $r)" "$([[ "$r" == *'"body":"Hi Ada,\n\nThe tier is 80% GM.\n\nLine three | with a pipe."'* ]]; echo $?)"
+out="$(node "$DQ" show --file "$A" --id "$aid")"
+grep -q '^body:$' <<<"$out" && grep -q '^Line three | with a pipe.$' <<<"$out" && grep -q '^relay to: (local_8)$' <<<"$out" && grep -q '  - Send (Recommended): send the draft as written' <<<"$out"
+check "show prints the body as written with the relay target and options (got: $out)" $?
+node "$DQ" show --file "$A" --id dq_nope >/dev/null 2>&1; rc=$?
+check "show on an unknown id exits 2 (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+out="$(node "$DQ" list --file "$A" | grep "$aid")"
+check "list flags a body without printing it (got: $out)" "$([[ "$out" == *'| body: yes (show --id)' && "$out" != *'Hi Ada'* ]]; echo $?)"
+long="$(head -c 4500 /dev/zero | tr '\0' x)"
+lid="$(node "$DQ" add --file "$A" --source conductor --ref long --question "$long" --body "$long$long" --option a --option b --no-standing --at 2026-10-22T01:02:00Z)"
+r="$(node "$DQ" show --file "$A" --id "$lid" --json)"
+lens="$(node -e 'const r=JSON.parse(process.argv[1]);console.log(r.question.length,r.body.length)' "$r")"
+check "the stored question keeps the 4000 cap and the body is not clipped (got lengths: $lens)" "$([[ "$lens" == "4000 9000" ]]; echo $?)"
+printf 'Draft from a file\nsecond line\n' >"$tmp/draft.txt"
+fid="$(node "$DQ" add --file "$A" --source conductor --ref draftfile --question 'Post the draft?' --body-file "$tmp/draft.txt" --option Post --option Hold --no-standing --at 2026-10-22T01:03:00Z)"
+r="$(node "$DQ" show --file "$A" --id "$fid" --json)"
+check "--body-file reads the body from a file (got: $r)" "$([[ "$r" == *'"body":"Draft from a file\nsecond line"'* ]]; echo $?)"
+node "$DQ" add --file "$A" --source conductor --ref both --question q --body x --body-file "$tmp/draft.txt" --option a --option b >/dev/null 2>&1; rc=$?
+check "--body and --body-file together are refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+node "$DQ" add --file "$A" --source conductor --ref nofile --question q --body-file "$tmp/missing.txt" --option a --option b >/dev/null 2>&1; rc=$?
+check "an unreadable --body-file is refused (rc $rc)" "$([[ $rc -eq 2 ]]; echo $?)"
+
+# --relay-agent: a worker subagent's own ask.
+gid="$(node "$DQ" add --file "$A" --source ask --ref 'agent_1:ask_1' --question 'Worker asks: keep the flaky test?' --option Keep --option Delete --relay-agent agent_abc123 --no-standing --at 2026-10-22T01:04:00Z)"
+r="$(node "$DQ" list --file "$A" --json | grep "$gid")"
+check "relay.agent is kept (got: $r)" "$([[ "$r" == *'"relay":{"agent":"agent_abc123"}'* ]]; echo $?)"
+dqa "$A" "$gid" --answer Keep --relay-by desk --at 2026-10-22T01:04:30Z >/dev/null; rc=$?
+check "--relay-by desk accepts a row whose relay target is an agent (rc $rc)" "$([[ $rc -eq 0 ]]; echo $?)"
+out="$(node "$DQ" watch --file "$A" --for conductor --once --now 2026-10-22T01:10:00Z)"
+check "the ANSWER line names the agent (got: $out)" "$([[ "$out" == *"| relay to agent agent_abc123 | id $gid |"* ]]; echo $?)"
+
+# subject: one row per thing decided; a settled subject carries its answer over new messages.
+out="$(DQ_PATH="$DQ" node -e 'import(process.env.DQ_PATH).then(({subjectFor})=>process.stdout.write([subjectFor("Ana: web-app#5121 is green, can you merge it?"),subjectFor("new commit on PR #237, please re-review"),subjectFor("acme/cli-tool#1219 ready to release"),subjectFor("Deploy site-web #1512 tonight?"),subjectFor("no pr here, not even 5121"),subjectFor("ship it: web-app #5121"),subjectFor("status on #290")].join(",")))')"
+check "subjectFor derives repo, number and kind (got: $out)" "$([[ "$out" == "pr:web-app#5121:merge,pr:#237:review,pr:acme/cli-tool#1219:release,pr:site-web#1512:deploy,,pr:web-app#5121:merge,pr:#290:ask" ]]; echo $?)"
+SB="$tmp/cl-subject-decisions.jsonl"
+s1="$(node "$DQ" add --file "$SB" --source ledger --ref rq_s1 --question 'Ana (hq_channel): web-app#5121 is green, merge it?' --subject auto --option 'Merge::merge now' --option Hold --no-standing --at 2026-10-22T02:00:00Z)"
+r="$(node "$DQ" list --file "$SB" --json | grep "$s1")"
+check "--subject auto stores the derived subject (got: $r)" "$([[ "$r" == *'"subject":"pr:web-app#5121:merge"'* ]]; echo $?)"
+s2="$(node "$DQ" add --file "$SB" --source ledger --ref rq_s2 --question 'Ana (hq_channel): pushed a fix to web-app#5121, merge?' --subject auto --option Merge --option Hold --no-standing --at 2026-10-22T02:01:00Z 2>/dev/null)"; rc=$?
+check "a second message on an open subject exits 3 with the open row's id (rc $rc, got: $s2)" "$([[ $rc -eq 3 && "$s2" == "$s1" ]]; echo $?)"
+s3="$(node "$DQ" add --file "$SB" --source ledger --ref rq_s3 --question 'Ana (hq_channel): can you review web-app#5121?' --subject auto --option 'Handle it' --option Hold --no-standing --at 2026-10-22T02:01:30Z)"; rc=$?
+check "a different kind of ask on the same PR is its own row (rc $rc, got: $s3)" "$([[ $rc -eq 0 && "$s3" != "$s1" ]]; echo $?)"
+dqa "$SB" "$s1" --answer Merge >/dev/null
+out="$(node "$DQ" add --file "$SB" --source ledger --ref rq_s4 --question 'Ana (hq_channel): new commit on web-app#5121, merge now?' --subject auto --option Merge --option Hold --no-standing --at 2026-10-22T02:02:00Z 2>/dev/null)"; rc=$?
+check "a new message on a settled subject exits 4 and prints the carried answer (rc $rc, got: $out)" "$([[ $rc -eq 4 && "$out" == "settled $s1 → Merge (subject pr:web-app#5121:merge; add --reopen <why> to ask again)" ]]; echo $?)"
+out="$(node "$DQ" count --file "$SB")"
+check "the settled add wrote nothing (got: $out)" "$([[ "$out" == '{"answered":1,"open":1}' ]]; echo $?)"
+s5="$(node "$DQ" add --file "$SB" --source ledger --ref rq_s5 --question 'Ana (hq_channel): web-app#5121 merge?' --subject auto --reopen 'changes requested after the go' --option Merge --option Hold --no-standing --at 2026-10-22T02:03:00Z)"; rc=$?
+r="$(node "$DQ" list --file "$SB" --json | grep "$s5")"
+check "--reopen queues a new row for a settled subject with the reason in the question (rc $rc, got: $r)" "$([[ $rc -eq 0 && "$r" == *'"question":"Reopened (changes requested after the go): Ana (hq_channel): web-app#5121 merge?"'* && "$r" == *'"reopened":"changes requested after the go"'* ]]; echo $?)"
+node "$DQ" drop --file "$SB" --id "$s5" --note 'test' --by conductor >/dev/null
+node "$DQ" add --file "$SB" --source ledger --ref rq_s6 --question 'merge web-app#5121?' --subject auto --option Merge --option Hold --no-standing --at 2026-10-22T02:04:00Z >/dev/null 2>&1; rc=$?
+check "a dropped row does not anchor a subject; the settled one still does (rc $rc)" "$([[ $rc -eq 4 ]]; echo $?)"
+s7="$(node "$DQ" add --file "$SB" --source conductor --ref free --question 'Pick the tier' --subject 'pricing:tier' --option A --option B --no-standing --at 2026-10-22T02:05:00Z)"
+s8="$(node "$DQ" add --file "$SB" --source conductor --ref free2 --question 'Pick the tier again' --subject 'pricing:tier' --option A --option B --no-standing --at 2026-10-22T02:05:01Z 2>/dev/null)"; rc=$?
+check "an explicit --subject dedupes too (rc $rc)" "$([[ $rc -eq 3 && "$s8" == "$s7" ]]; echo $?)"
+s9="$(node "$DQ" add --file "$SB" --source conductor --ref nopr --question 'No PR named here' --subject auto --option A --option B --no-standing --at 2026-10-22T02:06:00Z)"; rc=$?
+r="$(node "$DQ" list --file "$SB" --json | grep "$s9")"
+check "--subject auto with no PR stores no subject and dedupes on source+ref as before (rc $rc)" "$([[ $rc -eq 0 && "$r" != *'"subject"'* ]]; echo $?)"
+
 # Skill contract.
 DESK="$ROOT/.claude/skills/decision-desk/SKILL.md"
 DQS="$ROOT/.claude/skills/decision-queue/SKILL.md"

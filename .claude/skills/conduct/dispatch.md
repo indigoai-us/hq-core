@@ -140,7 +140,14 @@ blocked by retired, superseded, or pending-question state; run them in
      to <envelope path> before you finish, and a plain-text hand-back report
      of at most 200 lines to <report path> (`report.md` beside the envelope):
      outcome, changed files, commits, PR, tests run with pass/fail, and open
-     questions. Keep the envelope under 64 KB: put full test or build output
+     questions. The conductor requires this file, and that overrides any default
+     instruction not to write report or summary .md files; it is the only file
+     outside your worktree you may write besides the envelope and its logs,
+     so do not skip it and do not return the report only in your reply. If
+     the Write tool itself refuses the report file, do not retry it through
+     Bash or under another name: say in your closing reply that the write was
+     refused and put the report in that reply, past its usual line limit. Keep
+     the envelope under 64 KB: put full test or build output
      in a log file beside the envelope and name it from the envelope, never
      inline it. Commit your own work on the named branch. Do not push, open a
      PR, merge, or deploy unless the brief says so. Before you finish,
@@ -162,8 +169,10 @@ blocked by retired, superseded, or pending-question state; run them in
    many MB, and the Read tool refuses it (feedback_49f72048). Everything the
    parent needs is in the report and the envelope. A missing envelope or
    report is a failed delivery: report it and resume the subagent once with
-   `SendMessage` asking for both files. Delete the worktree only after its
-   branch is merged or the owner drops it.
+   `SendMessage` asking for both files. The exception is a closing reply that
+   says the Write tool refused `report.md` and carries the report: write
+   `report.md` yourself from that reply and do not resume the subagent. Delete
+   the worktree only after its branch is merged or the owner drops it.
 
 Subagent runs spend this session's Claude usage and stop if this session
 ends. Keep long results in sidecar logs in the worktree and name those logs

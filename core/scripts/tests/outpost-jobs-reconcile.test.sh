@@ -287,6 +287,9 @@ set -e
 [ "$rc" -eq 0 ] || fail "reconcile dry-run failed: $(cat "$TMP/err1.txt")"
 [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.service" ] || fail "service unit missing"
 [ -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] || fail "timer unit missing"
+# feedback_65ee9e51: scheduled jobs sync unattended (parity with hq-cli native reconcile).
+grep -qx 'Environment=HQ_SYNC_UNATTENDED=1' "$UNIT_DIR/hq-job-daily-inbox-digest.service" \
+  || fail "service unit missing Environment=HQ_SYNC_UNATTENDED=1"
 grep -q 'Persistent=true' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "Persistent=true missing"
 grep -q 'RandomizedDelaySec=45' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" || fail "RandomizedDelaySec missing"
 # Characterization: guard the timezone rendering shipped in hq-core-staging#927.
