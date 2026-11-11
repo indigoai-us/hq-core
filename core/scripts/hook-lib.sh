@@ -392,6 +392,24 @@ hq_shell_simple_commands() {
           if (c == "\047") quote = ""; else word = word c
           continue
         }
+        if (quote == "$\047") {
+          # ANSI-C quoting (dollar sign, then a single-quoted string): a
+          # backslash escapes the next character, so an escaped quote does
+          # not end the string. The word keeps the dollar sign and every
+          # escape as written; only the end of the string changes, so an
+          # escaped quote no longer reads as an open single quote that hides
+          # the rest of the command. (No quote characters in this comment:
+          # the awk program is a single-quoted shell string.)
+          rword = rword c
+          if (c == "\\") {
+            nc = substr(text, i + 1, 1)
+            if (nc != "") { word = word c nc; rword = rword nc; i++ }
+            else word = word c
+          }
+          else if (c == "\047") quote = ""
+          else word = word c
+          continue
+        }
         if (quote == "\"") {
           # Inside double quotes a backslash escapes only $ ` " \ and newline,
           # as in Bash. Any other backslash stays in the word, so
@@ -404,6 +422,24 @@ hq_shell_simple_commands() {
             else word = word c
           }
           else word = word c
+          continue
+        }
+        # Two dollar signs are the shell PID expansion, read before any quote.
+        # Take them as a pair so a quote right after them stays an ordinary
+        # single quote and never opens an ANSI-C string. An odd run still
+        # ends in one dollar sign that can start one, as in Bash.
+        if (c == "$" && substr(text, i + 1, 1) == "$") {
+          word = word "$$"; rword = rword "$$"; i++; continue
+        }
+        if (c == "$" && substr(text, i + 1, 1) == "\047") {
+          quote = "$\047"; word = word c; rword = rword c "\047"; i++; continue
+        }
+        # An unquoted # at the start of a word begins a comment that runs to
+        # the end of the line, as in Bash. Without this, a quote character
+        # inside a trailing comment opened a quote that swallowed the whole
+        # command, so no record was emitted and guards saw nothing to check.
+        if (c == "#" && word == "" && rword == "") {
+          while (i < n && substr(text, i + 1, 1) != "\n") i++
           continue
         }
         if (c == "\047" || c == "\"") { quote = c; rword = rword c; continue }
@@ -427,6 +463,9 @@ hq_shell_simple_commands() {
         word = word c; rword = rword c
       }
     }
+    # Input that ends inside a quote is a shell syntax error, but emit what
+    # was read so far: guards then still see the words before the quote.
+    END { if (quote != "") emit() }
   '
 }
 
@@ -719,49 +758,317 @@ hq_path_matches_core_yaml_exclude() {
   return 1
 }
 
-# hq_strip_tokens_containing_literals <command> <literal>...
-#   Remove whitespace-delimited command tokens containing any literal needle,
-#   preserving separators. This stays in Bash so hook hot paths do not spawn a
-#   sed process per configured exclude entry.
-hq_strip_tokens_containing_literals() {
-  local input="$1" remaining token after_token separator consumed needle match
+# --- Always-writable path masking (feedback_fff53135) ----------------------
+# block-core-writes-bash.sh removes every word that names an always-writable
+# path (core.yaml rules.exclude, .claude/settings.local.json,
+# .claude/personal-context.md) before it parses the command. It does this
+# through hq_bash_strip_core_yaml_exclude_tokens and then
+# hq_strip_tokens_containing_literals. Removing a word shifts the words after
+# it, so in `cp .claude/settings.backup.json .claude/settings.local.json` the
+# source took the destination's place and the copy was refused.
+#
+# The guard itself is frozen (merged-write-guard-shadow.test.sh), so the fix
+# lives in these two helpers, which only that guard calls. When every simple
+# command in the text is a plain copy, move or text command (see
+# _hq_writable_mask_shape_is_plain), a word whose whole path is always
+# writable is replaced in place by a stand-in that the guard never treats as
+# protected, so every other word keeps its slot. A word that merely contains
+# such a path, or has a `..` segment, is left as written and checked like any
+# other word. Any other command shape (ln, cp -s/-l/-a/-r, rsync -a, sudo, a
+# heredoc, an interpreter, ...) keeps the old removal exactly, so for those
+# the guard decides as it did before this change: a link planted at an
+# always-writable path that points into a protected directory stays blocked.
+
+HQ_WM_NEEDLES=()
+HQ_WM_EXACT=()
+HQ_WM_DIRS=()
+HQ_WM_SIBLING=()
+HQ_WM_TOKEN_RESULT=""
+HQ_WM_ROOT=""
+HQ_WM_BARE_OK=no
+
+# _hq_writable_mask_bare_ok <command>
+#   Set HQ_WM_BARE_OK=yes when a bare file name (settings.local.json, with no
+#   directory) can only mean the file in .claude/: the command has no cd or
+#   pushd, or every one of them goes to .claude itself. After a cd anywhere
+#   else (for example .claude/hooks) a bare name is checked like any other
+#   word.
+_hq_writable_mask_bare_ok() {
+  local i n tok arg
+  local -a toks=()
+  HQ_WM_BARE_OK=yes
+  case "$1" in *cd*|*pushd*) ;; *) return 0 ;; esac
+  read -r -d '' -a toks <<< "$1" || :
+  n="${#toks[@]}"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    tok="${toks[$i]##*[;&|(]}"
+    tok="${tok//\"/}"; tok="${tok//\'/}"; tok="${tok//\\/}"
+    i=$((i + 1))
+    case "$tok" in cd|pushd) ;; *) continue ;; esac
+    arg="${toks[$i]:-}"
+    arg="${arg//\"/}"; arg="${arg//\'/}"
+    while :; do case "$arg" in ./*) arg="${arg#./}" ;; *) break ;; esac; done
+    arg="${arg%%[;&|)]*}"
+    arg="${arg%/}"
+    if [ "$arg" = ".claude" ] || { [ -n "$HQ_WM_ROOT" ] && [ "$arg" = "${HQ_WM_ROOT%/}/.claude" ]; }; then
+      continue
+    fi
+    HQ_WM_BARE_OK=no
+    return 0
+  done
+  return 0
+}
+
+# _hq_writable_mask_option_ok <command> <option word>
+#   0 when the option cannot make the command create a link or copy one.
+_hq_writable_mask_option_ok() {
+  local cmd="$1" opt="$2" allowed
+  case "$cmd:$opt" in
+    cp:--force|cp:--interactive|cp:--no-clobber|cp:--verbose|cp:--dereference) return 0 ;;
+    mv:--force|mv:--interactive|mv:--no-clobber|mv:--verbose) return 0 ;;
+    rsync:--progress|rsync:--partial|rsync:--checksum|rsync:--update|rsync:--times) return 0 ;;
+    rsync:--perms|rsync:--verbose|rsync:--quiet|rsync:--whole-file) return 0 ;;
+    rsync:--human-readable|rsync:--itemize-changes) return 0 ;;
+    mkdir:--parents|mkdir:--verbose|tee:--append) return 0 ;;
+    *:--*) return 1 ;;
+  esac
+  case "$cmd" in
+    cp) allowed=finvpL ;;
+    mv) allowed=finv ;;
+    rsync) allowed=vhPcuqWtpi ;;
+    mkdir) allowed=pv ;;
+    touch) allowed=acm ;;
+    tee) allowed=ai ;;
+    *) return 1 ;;
+  esac
+  opt="${opt#-}"
+  [ -n "$opt" ] || return 1
+  case "$opt" in *[!$allowed]*) return 1 ;; esac
+  return 0
+}
+
+# _hq_writable_mask_shape_is_plain <command>
+#   0 when every simple command (after NAME=value prefixes) is cp, mv, rsync,
+#   mkdir, touch or tee with only the options above, or a command that writes
+#   nothing itself (echo, printf, cat, ls, test, true, :, cd, pushd, popd).
+#   Redirections are checked by the guard as usual. 1 for anything else,
+#   including a lexer failure, so the caller falls back to the old removal.
+_hq_writable_mask_shape_is_plain() {
+  local records record cmd tok n i end_of_options
+  local -a words
+  records="$(hq_shell_simple_commands "$1" 2>/dev/null)" || return 1
+  [ -n "$records" ] || return 1
+  while IFS= read -r record; do
+    [ -n "$record" ] || continue
+    hq_shell_record_words "$record"
+    words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
+    n="${#words[@]}"
+    i=0
+    while [ "$i" -lt "$n" ] && [[ "${words[$i]}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+      i=$((i + 1))
+    done
+    [ "$i" -lt "$n" ] || continue
+    cmd="${words[$i]}"
+    case "$cmd" in
+      cd|pushd|popd|echo|printf|cat|ls|test|true|:|'[') continue ;;
+      cp|mv|rsync|mkdir|touch|tee) ;;
+      *) return 1 ;;
+    esac
+    end_of_options=0
+    i=$((i + 1))
+    while [ "$i" -lt "$n" ]; do
+      tok="${words[$i]}"
+      i=$((i + 1))
+      [ "$end_of_options" -eq 0 ] || continue
+      case "$tok" in
+        --) end_of_options=1 ;;
+        -) ;;
+        -*) _hq_writable_mask_option_ok "$cmd" "$tok" || return 1 ;;
+      esac
+    done
+  done <<< "$records"
+  return 0
+}
+
+# _hq_writable_mask_token <token> <previous token>
+#   Set HQ_WM_TOKEN_RESULT to the token with an always-writable path replaced
+#   by a stand-in, or to the token unchanged. Only a whole path is masked: a
+#   word in HQ_WM_EXACT, a path inside a directory in HQ_WM_DIRS, or a
+#   temp/backup sibling (no slash after the suffix) of a word in
+#   HQ_WM_SIBLING. A redirection operator, NAME= or --option= prefix and
+#   trailing ; & | ) are kept around the stand-in. A word with a `..`
+#   segment, an inner quote, an escape, an expansion or a glob is never
+#   masked.
+_hq_writable_mask_token() {
+  local token="$1" prev="$2" prefix="" suffix="" core p entry rest hit=no standin
+  local re_redir='^([0-9]*(>>|>\||>|<)|&>>|&>)(.+)$'
+  local re_assign='^([A-Za-z_][A-Za-z0-9_]*=|--[A-Za-z0-9][A-Za-z0-9-]*=)(.+)$'
+  local dbl='//' dot='/./'
+  HQ_WM_TOKEN_RESULT="$token"
+  core="$token"
+  if [[ "$core" =~ $re_redir ]]; then
+    prefix="${BASH_REMATCH[1]}"; core="${BASH_REMATCH[3]}"
+  elif [[ "$core" =~ $re_assign ]]; then
+    prefix="${BASH_REMATCH[1]}"; core="${BASH_REMATCH[2]}"
+  fi
+  while :; do
+    case "$core" in
+      *';'|*'&'|*'|'|*')') suffix="${core: -1}$suffix"; core="${core%?}" ;;
+      *) break ;;
+    esac
+  done
+  case "$core" in
+    \"*\") p="${core#\"}"; p="${p%\"}"; case "$p" in *\"*) return 0 ;; esac; core="$p" ;;
+    \'*\') p="${core#\'}"; p="${p%\'}"; case "$p" in *\'*) return 0 ;; esac; core="$p" ;;
+  esac
+  case "$core" in
+    ''|'~'*|*[\"\'\\\$\`\*\?\[\]\{\}\;\&\|\<\>]*) return 0 ;;
+  esac
+  p="$core"
+  while :; do case "$p" in *//*) p="${p//$dbl//}" ;; *) break ;; esac; done
+  while :; do case "$p" in */./*) p="${p//$dot//}" ;; *) break ;; esac; done
+  while :; do case "$p" in ./*) p="${p#./}" ;; *) break ;; esac; done
+  case "$p" in */.) p="${p%/.}" ;; esac
+  case "$p" in /) ;; */) p="${p%/}" ;; esac
+  case "/$p/" in */../*) return 0 ;; esac
+  [ -n "$p" ] && [ "$p" != "." ] || return 0
+  for entry in ${HQ_WM_EXACT[@]+"${HQ_WM_EXACT[@]}"}; do
+    case "$entry" in */*) ;; *) [ "$HQ_WM_BARE_OK" = yes ] || continue ;; esac
+    [ "$p" = "$entry" ] && { hit=yes; break; }
+  done
+  if [ "$hit" = no ]; then
+    for entry in ${HQ_WM_DIRS[@]+"${HQ_WM_DIRS[@]}"}; do
+      case "$p" in "$entry"|"$entry"/*) hit=yes; break ;; esac
+    done
+  fi
+  if [ "$hit" = no ]; then
+    for entry in ${HQ_WM_SIBLING[@]+"${HQ_WM_SIBLING[@]}"}; do
+      case "$entry" in */*) ;; *) [ "$HQ_WM_BARE_OK" = yes ] || continue ;; esac
+      case "$p" in
+        "$entry".*|"$entry"~*|"$entry"-*|"$entry"_*)
+          rest="${p#"$entry"}"
+          case "$rest" in */*) ;; *) hit=yes; break ;; esac
+          ;;
+      esac
+    done
+  fi
+  [ "$hit" = yes ] || return 0
+  # The guard reads the word after cd/pushd as the new directory. An absolute
+  # stand-in there would look like a cd out of HQ, so use `.` instead.
+  standin=/dev/null
+  if [ -z "$prefix" ]; then
+    prev="${prev##*[;&|(]}"
+    prev="${prev//\"/}"; prev="${prev//\'/}"; prev="${prev//\\/}"
+    case "$prev" in cd|pushd) standin=. ;; esac
+  fi
+  HQ_WM_TOKEN_RESULT="$prefix$standin$suffix"
+}
+
+# _hq_writable_mask_apply <command>
+#   Print the command with each whitespace token that contains a needle in
+#   HQ_WM_NEEDLES either masked (plain command shape) or removed (any other
+#   shape, as before), preserving separators.
+_hq_writable_mask_apply() {
+  local input="$1" remaining token after_token separator consumed needle match mode prev=""
   local whitespace_chars=$' \t\n\r'
-  shift
-  local -a needles=("$@")
   local -a output_parts=()
+  match=no
+  for needle in ${HQ_WM_NEEDLES[@]+"${HQ_WM_NEEDLES[@]}"}; do
+    [ -n "$needle" ] || continue
+    case "$input" in *"$needle"*) match=yes; break ;; esac
+  done
+  [ "$match" = yes ] || { printf '%s' "$input"; return 0; }
+  if _hq_writable_mask_shape_is_plain "$input"; then mode="mask"; else mode="strip"; fi
+  [ "$mode" = strip ] || _hq_writable_mask_bare_ok "$input"
   remaining="$input"
   while [ -n "$remaining" ]; do
     token="${remaining%%[$whitespace_chars]*}"
     after_token="${remaining:${#token}}"
     separator="${after_token%%[!$whitespace_chars]*}"
     match=no
-    for needle in "${needles[@]}"; do
+    for needle in "${HQ_WM_NEEDLES[@]}"; do
       [ -n "$needle" ] || continue
       case "$token" in *"$needle"*) match=yes; break ;; esac
     done
-    [ "$match" = yes ] || output_parts+=("$token")
+    if [ "$match" = no ]; then
+      output_parts+=("$token")
+    elif [ "$mode" = mask ]; then
+      _hq_writable_mask_token "$token" "$prev"
+      output_parts+=("$HQ_WM_TOKEN_RESULT")
+    fi
     output_parts+=("$separator")
+    [ -z "$token" ] || prev="$token"
     consumed=$((${#token} + ${#separator}))
     remaining="${remaining:$consumed}"
   done
-  printf '%s' "${output_parts[@]}"
+  printf '%s' ${output_parts[@]+"${output_parts[@]}"}
 }
 
-# hq_bash_strip_core_yaml_exclude_tokens <command> <hq_root> [<core_yaml>]
-#   Best-effort removal of command tokens that reference rules.exclude paths.
-#   Match full root-relative (and absolute) exclude paths — never basename
-#   substrings, which would strip unrelated protected targets (e.g. toolkit.sh
-#   when .claude/kit/ is excluded).
-hq_bash_strip_core_yaml_exclude_tokens() {
-  local cmd="$1"
-  local hq_root="$2"
-  local core_yaml="${3:-$hq_root/core/core.yaml}"
-  local exc_path rel abs exclude_paths stripped abs_paths_text normalized_abs_paths
-  local -a exclude_needles=()
+# hq_strip_tokens_containing_literals <command> <literal>...
+#   For block-core-writes-bash.sh: handle whitespace-delimited command tokens
+#   that contain any literal needle, preserving separators. A needle with no
+#   slash names a fixed always-writable file in .claude/ (settings.local.json,
+#   personal-context.md): the bare name, .claude/<name>, the absolute form
+#   under CLAUDE_PROJECT_DIR (or the working directory) and their temp/backup
+#   siblings are masked when the command shape is plain (see the section
+#   comment above); otherwise matching tokens are removed as before. A needle
+#   with a slash is an exact path, or a directory when it ends in a slash.
+#   This stays in Bash so hook hot paths do not spawn a sed process per
+#   configured exclude entry.
+hq_strip_tokens_containing_literals() {
+  local input="$1" needle match root
+  shift
+  HQ_WM_NEEDLES=(); HQ_WM_EXACT=(); HQ_WM_DIRS=(); HQ_WM_SIBLING=()
+  match=no
+  for needle in "$@"; do
+    [ -n "$needle" ] || continue
+    HQ_WM_NEEDLES+=("$needle")
+    case "$input" in *"$needle"*) match=yes ;; esac
+  done
+  [ "$match" = yes ] || { printf '%s' "$input"; return 0; }
+  root="${CLAUDE_PROJECT_DIR:-$PWD}"
+  root="$(hq_normpath "$root" 2>/dev/null)" || root=""
+  HQ_WM_ROOT="$root"
+  for needle in "${HQ_WM_NEEDLES[@]}"; do
+    case "$needle" in
+      */) HQ_WM_DIRS+=("${needle%/}") ;;
+      */*) HQ_WM_EXACT+=("$needle") ;;
+      *)
+        HQ_WM_EXACT+=("$needle" ".claude/$needle")
+        HQ_WM_SIBLING+=("$needle" ".claude/$needle")
+        if [ -n "$root" ]; then
+          HQ_WM_EXACT+=("${root%/}/.claude/$needle")
+          HQ_WM_SIBLING+=("${root%/}/.claude/$needle")
+        fi
+        ;;
+    esac
+  done
+  _hq_writable_mask_apply "$input"
+}
 
-  [ -n "$cmd" ] || { printf '%s' "$cmd"; return 0; }
-  [ -f "$core_yaml" ] || { printf '%s' "$cmd"; return 0; }
-  command -v yq >/dev/null 2>&1 || { printf '%s' "$cmd"; return 0; }
+# hq_core_yaml_exclude_needles <hq_root> [<core_yaml>]
+#   Load the literal needles that name core/core.yaml rules.exclude paths into
+#   the array HQ_CORE_YAML_EXCLUDE_NEEDLES: each root-relative path, its
+#   trailing-slash form for a directory, and its absolute form under hq_root.
+#   The same paths, without a trailing slash, are also split into
+#   HQ_CORE_YAML_EXCLUDE_FILES and HQ_CORE_YAML_EXCLUDE_DIRS (relative and
+#   absolute). Empty when the file or yq is missing. Runs in the caller's
+#   shell.
+HQ_CORE_YAML_EXCLUDE_NEEDLES=()
+HQ_CORE_YAML_EXCLUDE_FILES=()
+HQ_CORE_YAML_EXCLUDE_DIRS=()
+hq_core_yaml_exclude_needles() {
+  local hq_root="$1"
+  local core_yaml="${2:-$hq_root/core/core.yaml}"
+  local exc_path rel abs exclude_paths abs_paths_text normalized_abs_paths idx
+  local -a kinds=()
+  HQ_CORE_YAML_EXCLUDE_NEEDLES=()
+  HQ_CORE_YAML_EXCLUDE_FILES=()
+  HQ_CORE_YAML_EXCLUDE_DIRS=()
+
+  [ -f "$core_yaml" ] || return 0
+  command -v yq >/dev/null 2>&1 || return 0
 
   hq_root="$(hq_canonical_path "$hq_root")"
   exclude_paths="$(yq eval '.rules.exclude[]' "$core_yaml" 2>/dev/null)" || exclude_paths=""
@@ -770,9 +1077,14 @@ hq_bash_strip_core_yaml_exclude_tokens() {
     [ -n "$exc_path" ] || continue
     rel="${exc_path%/}"
     [ -n "$rel" ] || continue
-    exclude_needles+=("$rel")
+    HQ_CORE_YAML_EXCLUDE_NEEDLES+=("$rel")
     if [[ "$exc_path" == */ ]]; then
-      exclude_needles+=("$exc_path")
+      HQ_CORE_YAML_EXCLUDE_NEEDLES+=("$exc_path")
+      HQ_CORE_YAML_EXCLUDE_DIRS+=("$rel")
+      kinds+=(d)
+    else
+      HQ_CORE_YAML_EXCLUDE_FILES+=("$rel")
+      kinds+=(f)
     fi
     # hq_root is already in canonical slash form. Normalize all absolute
     # exclude paths in one Bash pass below instead of launching one command
@@ -780,12 +1092,64 @@ hq_bash_strip_core_yaml_exclude_tokens() {
     abs_paths_text+="${hq_root%/}/${rel}"$'\n'
   done <<< "$exclude_paths"
 
-  [ "${#exclude_needles[@]}" -gt 0 ] || { printf '%s' "$cmd"; return 0; }
+  [ "${#HQ_CORE_YAML_EXCLUDE_NEEDLES[@]}" -gt 0 ] || return 0
   normalized_abs_paths="$(hq_normpath "$abs_paths_text")" || normalized_abs_paths=""
+  idx=0
   while IFS= read -r abs; do
-    [ -n "$abs" ] && exclude_needles+=("$abs")
+    [ -n "$abs" ] || continue
+    HQ_CORE_YAML_EXCLUDE_NEEDLES+=("$abs")
+    case "${kinds[$idx]:-}" in
+      d) HQ_CORE_YAML_EXCLUDE_DIRS+=("$abs") ;;
+      f) HQ_CORE_YAML_EXCLUDE_FILES+=("$abs") ;;
+    esac
+    idx=$((idx + 1))
   done <<< "$normalized_abs_paths"
-  stripped="$(hq_strip_tokens_containing_literals "$cmd" "${exclude_needles[@]}")" || stripped=""
+  return 0
+}
+
+# hq_bash_strip_core_yaml_exclude_tokens <command> <hq_root> [<core_yaml>]
+#   For block-core-writes-bash.sh: handle command tokens that reference
+#   rules.exclude paths or the two fixed always-writable files. Match full
+#   root-relative (and absolute) paths, never basename substrings, which would
+#   hide unrelated protected targets (e.g. toolkit.sh when .claude/kit/ is
+#   excluded). With a plain command shape a whole always-writable path is
+#   masked in place; otherwise every token containing one is removed, as
+#   before (see the section comment above).
+hq_bash_strip_core_yaml_exclude_tokens() {
+  local cmd="$1"
+  local hq_root="$2"
+  local core_yaml="${3:-$hq_root/core/core.yaml}"
+  local stripped fixed root
+
+  [ -n "$cmd" ] || { printf '%s' "$cmd"; return 0; }
+  [ -f "$core_yaml" ] || { printf '%s' "$cmd"; return 0; }
+  command -v yq >/dev/null 2>&1 || { printf '%s' "$cmd"; return 0; }
+
+  hq_core_yaml_exclude_needles "$hq_root" "$core_yaml"
+  [ "${#HQ_CORE_YAML_EXCLUDE_NEEDLES[@]}" -gt 0 ] || { printf '%s' "$cmd"; return 0; }
+  HQ_WM_NEEDLES=("${HQ_CORE_YAML_EXCLUDE_NEEDLES[@]}")
+  HQ_WM_EXACT=(${HQ_CORE_YAML_EXCLUDE_FILES[@]+"${HQ_CORE_YAML_EXCLUDE_FILES[@]}"})
+  HQ_WM_DIRS=(${HQ_CORE_YAML_EXCLUDE_DIRS[@]+"${HQ_CORE_YAML_EXCLUDE_DIRS[@]}"})
+  HQ_WM_SIBLING=()
+  # The fixed exceptions join here so that the removal fallback removes
+  # exactly what the two old passes removed, and the guard's second pass
+  # (hq_strip_tokens_containing_literals) then finds nothing left to remove.
+  HQ_WM_NEEDLES+=(settings.local.json personal-context.md)
+  case "$cmd" in
+    *settings.local.json*|*personal-context.md*)
+      root="$(hq_normpath "$(hq_canonical_path "$hq_root")" 2>/dev/null)" || root=""
+      HQ_WM_ROOT="$root"
+      for fixed in settings.local.json personal-context.md; do
+        HQ_WM_EXACT+=("$fixed" ".claude/$fixed")
+        HQ_WM_SIBLING+=("$fixed" ".claude/$fixed")
+        if [ -n "$root" ]; then
+          HQ_WM_EXACT+=("${root%/}/.claude/$fixed")
+          HQ_WM_SIBLING+=("${root%/}/.claude/$fixed")
+        fi
+      done
+      ;;
+  esac
+  stripped="$(_hq_writable_mask_apply "$cmd")" || stripped=""
   # Never fail open. An empty helper result would make block-core-writes-bash
   # treat the command as touching no protected paths and allow the write.
   # Hand the original command back so the caller still sees the real targets.

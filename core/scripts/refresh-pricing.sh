@@ -84,7 +84,7 @@ jq -r '
     "- Free: \(.usage.free | map(free) | join(", ")).",
     "- Domains: \(.usage.domains.standardUsd | usd) standard, \(.usage.domains.premiumUsd | usd) premium, per \(.interval).",
     (if .usage.domains.purchase == null then empty else
-      "- Domain purchase: registrar price plus \(.usage.domains.purchase.markupUsdPerYear | usd) a year, renewing \(.usage.domains.purchase.renewal) on the same basis\(if .usage.domains.purchase.chargedBeforeRenewal then ", charged before each renewal" else "" end); no refunds after a \(.usage.domains.purchase.refundGraceDays)-day grace period."
+      "- Domain purchase: registrar price plus \(.usage.domains.purchase.markupUsdPerYear | usd) a year, renewing \(.usage.domains.purchase.renewal) on the same basis\(if .usage.domains.purchase.chargedBeforeRenewal then ", charged before each renewal" else "" end)\(if .usage.domains.purchase.refundGraceDays then "; no refunds after a \(.usage.domains.purchase.refundGraceDays)-day grace period" else "" end)."
     end),
     "",
     "### Boxes on the usage card (per box, per \(.interval))",

@@ -245,6 +245,12 @@ if [ "$REF_COUNT" -gt 0 ]; then
       # Directory reference without a trailing slash: reachable when any file
       # exists under that prefix.
       echo "  pass  $REL (folder)"
+    elif hq files cat "$REL" --company "$COMPANY" >/dev/null 2>&1; then
+      # The listing check reads the human-oriented browse table, and a
+      # throttled or differently formatted listing can miss a row. Before
+      # reporting a file missing, read it back directly: a file that reads is
+      # in the vault, and a false "missing" here blocks the pickup DM.
+      echo "  pass  $REL (read back)"
     else
       echo "  FAIL  $REL — granted prefix is reachable but this referenced file is NOT in the vault (likely cause: it was never pushed — hq sync push $kpath --company $COMPANY and re-run)"
       FAILED=1

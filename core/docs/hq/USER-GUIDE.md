@@ -110,11 +110,11 @@ Run `hq <command> --help` for options. Commonly used:
 | `hq billing status --company <slug>` | Plan and subscription status |
 | `hq billing usage --company <slug>` | This month's usage, projected bill and biggest drivers (read-only) |
 | `hq db status\|sql\|migrate --company {co}` | Local vault SQLite database. Guide: [vault-databases.md](../../knowledge/public/hq-core/vault-databases.md) |
-| `hq db usage\|sql\|dump\|destroy --company {co} --app {app}` | Database of a deployed app (`database: true`, Team plan). Guide: [app-databases.md](../../knowledge/public/hq-core/app-databases.md) |
+| `hq db usage\|sql\|dump\|destroy --company {co} --app {app}` | Database of a deployed app (`database: true`; on the legacy plans, HQ Workforce). Guide: [app-databases.md](../../knowledge/public/hq-core/app-databases.md) |
 
 Share-session URLs are encrypted single-use 15-minute capabilities. Never paste them into commits, threads, or logs. See policy `core/policies/hq-share-session-urls-are-capabilities.md`.
 
-`hq db provision` creates a remote vault DB and requires a paid plan (on the legacy plans, HQ Workforce). `hq db sql --remote` exists but does not work yet (no remote executor is wired); use local SQL. Never commit `*.db` files into the vault tree.
+`hq db provision` creates a remote vault DB. It is not limited to one plan; a legacy Starter company can be refused while HQ enforces Starter limits. `hq db sql --remote` exists but does not work yet (no remote executor is wired); use local SQL. Never commit `*.db` files into the vault tree.
 
 ### Direct messages (`hq dm`, `/dm`)
 
@@ -512,7 +512,7 @@ HQ captures these **natively, per company** — check HQ first, not your email o
 
 **Your preference for "meeting notes":** defaults to HQ-native. To point a company at email instead, set `meeting_notes_source: email` in `companies/{co}/settings/knowledge/preferences.yaml` (global default lives in `personal/settings/knowledge-preferences.yaml`).
 
-> Signals extraction and the ontology gardener run on HQ cloud. Billing is live: on the legacy plans, inviting the HQ meeting bot requires HQ Workforce (internal id `paid-500`), and a Starter company is refused with an upgrade link. On the usage card, relay what HQ returns. Plans: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md). Reference: [native-knowledge-stores.md](../../knowledge/public/hq-core/native-knowledge-stores.md).
+> Signals extraction and the ontology gardener run on HQ cloud. Billing is live: every HQ company can invite the HQ meeting bot. On HQ Workforce (legacy, internal id `paid-500`) recorded meeting time is billed at $1/hour, counted by the minute, and a company that kept its meeting-hours item through the switch to usage pricing keeps being billed $1/hour. If HQ refuses an invite or asks for a card, relay its message. Plans: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md). Reference: [native-knowledge-stores.md](../../knowledge/public/hq-core/native-knowledge-stores.md).
 
 ## Product surfaces
 
@@ -530,7 +530,7 @@ The Codex desktop app runs chat commands in a workspace-write sandbox by default
 
 - **Local bots** run on your computer under the HQ Fleet Runtime with your own Claude, Codex, or Grok login. Use `hq bot create <name> --hq-fleet-runtime --provider <provider>`, or desktop Settings → Bots. Personal bots can use every company you can access and can later be promoted to cloud compute without a Claude subscription.
 - **Hosted agents** run on HQ infrastructure for a company: `/new-agent`, `hq agents provision`, or the console Bots page.
-- **External bots** run on your own hardware and enroll with `hq agent enroll <code>`. They require a paid plan and are unlimited on it.
+- **External bots** run on your own hardware and enroll with `hq agent enroll <code>`. On legacy Starter an external bot counts toward the 5-member cap. There is no per-bot charge; on the usage card the bot's calls bill at the meter rates.
 - **Chat-app connectors** let a person use HQ from Claude, ChatGPT, Claude Code, Codex, or Grok through the hosted HQ connector (console → Integrations → Connect an agent shows the URL).
 
 Reference: [agents-and-bots.md](../../knowledge/public/hq-core/agents-and-bots.md), [external-agents-mcp.md](../../knowledge/public/hq-core/external-agents-mcp.md).
@@ -539,7 +539,7 @@ Reference: [agents-and-bots.md](../../knowledge/public/hq-core/agents-and-bots.m
 
 [hq.computer](https://hq.computer) is the web UI: team and invites, groups and grants, bots, integrations, secrets, vault, billing, and deployments. Most pages have a matching CLI command or skill. Reference: [hq-console.md](../../knowledge/public/hq-core/hq-console.md). Plans and billing: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md).
 
-Pricing: accounts created from 2026-10-16 18:00 UTC are on the usage card. There is no plan fee; $10 of usage is included every month, and usage past it is billed per meter (sync $0.10 per moved-file leg; gateway call, HQ MCP call and agent run $0.05 each; storage $2.00 per GB-month; secret $0.50 per secret-month; $5 per company or personal vault per month, waived in the trial). The trial is 30 days, capped at $500 of usage. Deploys, DMs and background AI are free. New hosted boxes are small $100, medium $200, large $400 and xlarge $800 a month. New signups choose "Sign up free" or "Request an enterprise demo"; to run HQ without HQ cloud, see [use HQ free, self-hosted or on-prem](https://docs.hq.computer/hq/guide/use-hq-for-free/). Starter, Workforce and Individual are closed to new signups; existing customers keep their current plans and box prices. Exact numbers: [pricing.json](../../knowledge/public/hq-core/pricing.json).
+Pricing: accounts created from 2026-10-16 18:00 UTC are on the usage card. There is no plan fee; $10 of usage is included every month, and usage past it is billed per meter (sync $0.10 per moved-file leg; gateway call $0.001; HQ MCP call and agent run $0.05 each; storage $2.00 per GB-month; secret $0.50 per secret-month; $5 per company or personal vault per month, waived in the trial). The trial is 30 days, capped at $500 of usage. Deploys, DMs and background AI are free. New hosted boxes are small $100, medium $200, large $400 and xlarge $800 a month. New signups choose "Sign up free" or "Book a setup call"; to run HQ without HQ cloud, see [use HQ free, self-hosted or on-prem](https://docs.hq.computer/hq/guide/use-hq-for-free/). Starter, Workforce and Individual are closed to new signups; existing customers keep their current plans and box prices. Exact numbers: [pricing.json](../../knowledge/public/hq-core/pricing.json).
 
 ## Deploy
 

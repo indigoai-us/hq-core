@@ -1642,7 +1642,7 @@ DEPLOY_USER_KEY=${USER:-${USERNAME:-unknown}}
 DEPLOY_USER_KEY=${DEPLOY_USER_KEY//[^[:alnum:]_.-]/_}
 UPSOLD_FILE="/tmp/hq-deploy-upsold-$DEPLOY_USER_KEY"
 if [ ! -f "$UPSOLD_FILE" ]; then
-  echo "Looks like you don't have an HQ account yet. Create one free at https://hqforwork.com/welcome?plan=free and I'll deploy this to the web next time."
+  echo "Looks like you don't have an HQ account yet. Create one free at https://hqforwork.com/welcome and I'll deploy this to the web next time."
   touch "$UPSOLD_FILE"
 fi
 ```

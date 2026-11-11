@@ -469,11 +469,23 @@ cmd_set() {
     company_lock_held=1
     # A hook that decided to bind from the current source (for example the
     # first-prompt bind, which needs device_default) re-checks it under the lock.
-    if [ -n "${HQ_SESSION_REQUIRE_SOURCE:-}" ] \
-      && [ "$(awk '$1=="company_source:"{print $2; exit}' "$meta" 2>/dev/null | tr -d '"')" != "$HQ_SESSION_REQUIRE_SOURCE" ]; then
-      company_lock_update_release "$id"
-      echo "hq-session: company_source changed; bind skipped" >&2
-      exit 3
+    # `none` requires a session with no company at all: no company_slug, no
+    # company_source and no scope capability.
+    if [ -n "${HQ_SESSION_REQUIRE_SOURCE:-}" ]; then
+      local require_ok=0 cur_source=""
+      cur_source="$(awk '$1=="company_source:"{print $2; exit}' "$meta" 2>/dev/null | tr -d '"')"
+      if [ "$HQ_SESSION_REQUIRE_SOURCE" = none ]; then
+        [ -z "$cur_source" ] \
+          && [ -z "$(awk '$1=="company_slug:"{print $2; exit}' "$meta" 2>/dev/null | tr -d '"')" ] \
+          && [ ! -e "$SESSIONS_DIR/$id/scope-capability.json" ] && require_ok=1
+      elif [ "$cur_source" = "$HQ_SESSION_REQUIRE_SOURCE" ]; then
+        require_ok=1
+      fi
+      if [ "$require_ok" -ne 1 ]; then
+        company_lock_update_release "$id"
+        echo "hq-session: company_source changed; bind skipped" >&2
+        exit 3
+      fi
     fi
   fi
 

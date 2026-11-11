@@ -1,0 +1,1 @@
+`plans-and-pricing.md`: every company can invite the HQ meeting bot (recorded meeting hours bill at $1/hour on a Workforce subscription, or for a company that kept its meeting-hours item through the switch to usage pricing), and canceling Workforce returns a company to Starter limits only until December 19, 2026; from then it moves to usage pricing.

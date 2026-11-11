@@ -70,7 +70,7 @@ make_fixture "$BASE_FIXTURE" "$BASE_SOURCE"
 make_fixture "$CANDIDATE_FIXTURE" "$CANDIDATE_SOURCE"
 
 # Keep the executable search path deterministic and exclude shasum.
-for tool in awk bash cat date grep head jq mkdir mv rm rmdir sed sha256sum sleep sort timeout tr uname wc tail setsid; do
+for tool in awk bash cat date env grep head jq mkdir mktemp mv rm rmdir sed sha256sum sleep sort timeout tr uname wc tail setsid; do
   resolved="$(type -P "$tool" || true)"
   [ -n "$resolved" ] || fail "required tool not found: $tool"
   ln -s "$resolved" "$TOOLS/$tool"
@@ -85,10 +85,13 @@ run_hook() {
     HQ_HOOK_TIMEOUT_MASTER_ABSOLUTE_SECONDS=600 \
     timeout 10s "$STRACE" -f -qq -e trace=execve,clone,clone3,fork,vfork \
       -o "$trace" "$BASH_BIN" "$root/.claude/hooks/master-hook.sh" PreToolUse \
-      <<<"$payload" >/dev/null 2>&1
+      <<<"$payload" >/dev/null 2>"$trace.stderr"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "master-hook fixture exited $rc"
+  if [ "$rc" -ne 0 ]; then
+    cat "$trace.stderr" >&2
+    fail "master-hook fixture exited $rc"
+  fi
 }
 
 exec_inventory() {

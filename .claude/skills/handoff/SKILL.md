@@ -20,14 +20,13 @@ Write a thread file + `handoff.json` with minimal foreground token cost. Keep sh
 
 Before saving knowledge, write the exact relative paths intentionally changed by this session into a unique JSON changeset file. Do not scan repository status to expand this list. Use the same changeset file in Step 3.
 
+Write every temp path in this skill out literally in each Bash call. The credential guard cannot resolve shell variables (`"$CHANGESET_TMP"`), command substitution (`$(mktemp ...)`), or globs in path operands, so it blocks those commands and forces a rewrite. Pick the changeset path once as `workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json`, where `{stamp}` is the output of `date -u +%Y%m%dT%H%M%SZ` (the stamp keeps concurrent sessions with the same slug apart), and keep it as `{changeset_file}`. Run `mkdir -p workspace/threads/.handoff-tmp`, write the JSON array to `{changeset_file}` with the `Write` tool, then run:
+
 ```bash
-mkdir -p workspace/threads/.handoff-tmp
-CHANGESET_TMP=$(mktemp workspace/threads/.handoff-tmp/.handoff-changeset-XXXXXX)
-cat > "$CHANGESET_TMP" <<'CHANGESET_JSON'
-["core/knowledge/public/<repo>/<file-you-changed>"]
-CHANGESET_JSON
-bash core/scripts/handoff-knowledge-commit.sh --files-touched-json-file "$CHANGESET_TMP"
+bash core/scripts/handoff-knowledge-commit.sh --files-touched-json-file "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"
 ```
+
+The file holds a JSON array such as `["core/knowledge/public/<repo>/<file-you-changed>"]`.
 
 Include only files this session intentionally changed. List files, not folders: an entry with a trailing slash, an absolute path, or a `..` segment fails the whole changeset, and the helper prints the offending entries. The helper commits only listed files inside personal/core knowledge repositories and the bound company's knowledge repository, and leaves unrelated staged or dirty files untouched. It reads the bound company from `HQ_ACTIVE_COMPANY`, or, when that is empty because the company was bound mid-session, from the session lock's primary company only (`company_slug`; the other members of a multi-company lock are never used). The lock is read only when the session id comes from the environment, and that id is passed to `hq-session.sh` explicitly; `workspace/sessions/.current` is never used, because it can name another live session. The company must be a real `companies/<slug>` directory with an exact-case entry in `companies/manifest.yaml` (this applies to `HQ_ACTIVE_COMPANY` too), otherwise it is treated as unbound. The helper never touches another company's knowledge. A bound company's knowledge that is a plain synced directory (the usual case) syncs through its vault and is not committed. With no bound company it prints `SKIPPED-COMPANY-KNOWLEDGE: <reason>` (no bound company, no session id in the environment, session lock unreadable, or company not registered); keep that line for the Step 6 report. This step behaves the same under Claude, Codex, and Grok.
 
@@ -74,7 +73,7 @@ Write one item per real problem into a `deficiencies[]` array:
 - `kind`: `hq-core` (HQ scaffold, scripts, skills, policies), `local-setup` (this machine or account), or `repo` (the target code repo).
 - `severity`: `high` | `medium` | `low`.
 - `evidence` is required. Drop any item without a concrete evidence string before storing; the finalizer also drops items whose evidence is empty.
-- Write the array to a temp file under `workspace/threads/.handoff-tmp/` (for example `mktemp workspace/threads/.handoff-tmp/deficiencies.XXXXXX`) and keep the path as `{deficiencies_file}`. `[]` is fine. Remove the file after Step 3.
+- Write the array to a temp file under `workspace/threads/.handoff-tmp/` as a literal path such as `workspace/threads/.handoff-tmp/deficiencies-{slug}-{stamp}.json` (same `{stamp}` as Step 1), written with the `Write` tool, and keep the path as `{deficiencies_file}`. `[]` is fine. Remove the file after Step 3.
 
 ### 2.2 Capture signal and entity candidates (opt-in companies only)
 
@@ -108,7 +107,7 @@ Pass the resolved project directory that owns this session's journal. The helper
 
 Pass `--company "{co}"` only for the explicitly resolved owner of this handoff. Omit it for HQ/global work. Never derive ownership from touched paths or distribute a complete thread to multiple companies.
 
-Reuse the `CHANGESET_TMP` file prepared in Step 1 and pass its path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Use `mktemp` under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
+Reuse the `{changeset_file}` prepared in Step 1 and pass its literal path — never inline the changeset into `--files-touched-json`. On Windows Git Bash the OS caps a command line at ~32KB (~8KB under cmd.exe), and a large changeset rides argv through several hops (status-summary, jq) and aborts the handoff. The file form keeps it off argv. This mirrors the learnings temp-file pattern from Step 2. Keep it under `workspace/threads/.handoff-tmp/` (gitignored, exists on Git Bash — do **not** use `/tmp`, which some Windows setups lack; do **not** use a slug-only deterministic path under `workspace/threads/` — concurrent sessions collide and unignored temps flip `git.dirty`). Clean it up whether the finalizer succeeds or fails, and propagate a non-zero finalize exit status:
 
 ```bash
 rc=0
@@ -118,12 +117,12 @@ core/scripts/handoff-finalize.sh \
   --summary "{one-paragraph summary of what changed}" \
   --message "{user's handoff message, or echo of the summary}" \
   --next-steps-json '[{"...json array of next steps..."}]' \
-  --files-touched-json-file "$CHANGESET_TMP" \
+  --files-touched-json-file "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json" \
   --learnings-json '{learnings_json from Step 2}' \
   --deficiencies-json "{deficiencies_file from Step 2b}" \
   --tags-json '["handoff","{co}","{topic}"]' \
   --slug "{short-hyphenated-slug}" || rc=$?
-rm -f "$CHANGESET_TMP"   # clean up on both success and failure
+rm -f "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"   # clean up on both success and failure
 [ "$rc" -eq 0 ] || { echo "handoff-finalize failed (rc=$rc)" >&2; exit "$rc"; }
 ```
 

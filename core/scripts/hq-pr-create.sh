@@ -89,7 +89,7 @@ _hq_prc_cache_file() { # resolved-bin
 # shape as the US-003 hook stage, capped at 2 s.
 hq_fingerprint_value() {
   local bin="${HQ_FINGERPRINT_BIN:-hq}" limit="${HQ_FINGERPRINT_TIMEOUT_SECS:-2}"
-  local tmp="" pid="" waited=0 max_ms=0 out="" value="" path="" cache="" age=0
+  local tmp="" pid="" waited=0 max_ms=0 out="" value="" path="" cache="" age=0 t0=0
   _hq_prc_enabled || return 0
   case "$limit" in ''|*[!0-9]*) limit=2 ;; esac
   # shellcheck disable=SC2086
@@ -119,8 +119,13 @@ hq_fingerprint_value() {
   ( exec $bin fingerprint self --json --offline >"$tmp" 2>/dev/null </dev/null ) &
   pid=$!
   set +m
+  t0=$SECONDS
+  # The poll count assumes each `sleep 0.02` takes 20 ms. On a loaded machine
+  # it can take several times longer, so a wall-clock check bounds the wait
+  # at limit + 1 s plus one sleep (SECONDS has whole-second resolution and the
+  # check runs after each sleep returns).
   while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$max_ms" ]; then
+    if [ "$waited" -ge "$max_ms" ] || [ $((SECONDS - t0)) -gt "$limit" ]; then
       kill -KILL -- -"$pid" 2>/dev/null || {
         pkill -KILL -P "$pid" 2>/dev/null
         kill -KILL "$pid" 2>/dev/null

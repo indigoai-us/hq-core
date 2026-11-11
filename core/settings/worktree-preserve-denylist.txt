@@ -1,0 +1,54 @@
+# HQ-root marker denylist, read by core/scripts/lib/hq-root-markers.sh.
+#
+# A path that matches a line here marks a git tree as holding a copy of an HQ
+# root (or another folder that must never be committed to a code repo). The
+# worktree-preserve flow and the pre-push guard refuse to commit or push such
+# paths. Release-owned: /update-hq replaces this file. Add local entries in
+# personal/settings/worktree-preserve-denylist.txt (same format, read after
+# this file).
+#
+# Line forms (blank lines and # comments are ignored):
+#   dir/          foreign-subtree rule: a path under dir/ is a marker when its
+#                 first two components (dir/sub) are not already a tracked
+#                 directory in the base tree. A repo that legitimately tracks
+#                 personal/skills/ can add personal/skills/x/SKILL.md; a copy
+#                 of an HQ root adds personal/.codex/..., which no scaffold
+#                 tracks, and that is a marker. Two-component files directly
+#                 under dir/ never match this form.
+#   root:dir/     always a marker when the path starts with dir/.
+#   anydir:name   always a marker when any path component equals name.
+#   glob:pattern  always a marker when the path's basename matches pattern
+#                 (shell glob).
+# dir/ and root: rules match from the repository root only; a copy nested
+# deeper (backup/hq/personal/...) is caught by the anydir:, glob: and size
+# rules.
+
+# Folders an HQ root has and a code repo may track parts of. A new
+# second-level folder under one of these (personal/.codex/, companies/<co>/)
+# is reported as foreign:. Expected new folders in a repo's own work are
+# pushed once with HQ_PUSH_GUARD_ALLOW=1. .claude/ is not listed: repos add
+# new .claude/<dir>/ folders routinely, and the HQ-root marker there is
+# .claude/worktrees/ below.
+personal/
+companies/
+workspace/
+.codex/
+repos/
+
+# Names only an HQ root has under personal/.
+root:personal/.codex/
+root:personal/.claude/
+root:personal/.grok/
+root:personal/sessions/
+
+# Folders no code repo tracks.
+root:credentials/
+root:worktrees/
+root:.claude/worktrees/
+root:.sst-sandbox-home/
+
+# Names that only HQ's local state produces.
+anydir:secrets-cache
+anydir:.hq-rescue
+glob:*.drift-*
+glob:*.hq-rescue-*

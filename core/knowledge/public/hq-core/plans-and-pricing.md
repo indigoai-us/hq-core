@@ -51,6 +51,7 @@ account gets $10 of included usage every month and pays for usage past it.
 | Secret | $0.50 per secret-month |
 | Vault | $5 per vault per month, for each company vault and each personal vault; waived during the trial |
 | Included usage | $10 per month |
+| Default spend limit | $100 a month (calendar month, UTC); none for an existing company that has switched and has a card on file |
 | Trial | 30 days, capped at $500 of usage |
 | Free | deploys, DMs, background AI |
 | Domains | $20 standard, $500 premium, per month |
@@ -66,10 +67,13 @@ Boxes on the usage card (new boxes for accounts created after the cutover):
 
 The vault fee is billed as a usage line, so the $10 of included usage covers
 it. The meter ids in `usage.meters` are `member-sync`, `integration-call`,
-`hq-mcp-call`, `agent-run`, `storage`, `secret` and `vault`.
+`hq-mcp-call`, `agent-run`, `storage`, `secret`, `vault` and `meeting-hour`.
 
-New signups choose **Sign up free** (the usage card) or **Request an
-enterprise demo**. Teams that want to run HQ without HQ cloud can **use HQ
+The default spend limit is $100 a month (calendar month, UTC); an existing company that has switched and has a card on file has no default limit. (`usage.spendLimit.defaultUsd`)
+HQ asks for a card the first time usage passes the $10 included allowance (during the trial, $10 of trial usage) with no card on file. (`usage.cardPrompt`)
+
+New signups choose **Sign up free** (the usage card) or **Book a setup
+call**. Teams that want to run HQ without HQ cloud can **use HQ
 free, self-hosted or on-prem**:
 https://docs.hq.computer/hq/guide/use-hq-for-free/
 
@@ -82,7 +86,7 @@ only to a customer who is already on one.
 
 | Plan id (internal) | Name | Scope | Price | People | Secrets | Integrations | Deploys | Storage | Hosted agents included |
 |---|---|---|---|---|---|---|---|---|---|
-| `free` | Starter | company | $0 | 5 | 10 | 1 | unlimited | 10 GiB | 0 |
+| `free` | Starter | company | $0 | 5 | 10 | 3 | unlimited | 10 GiB | 0 |
 | `paid-500` | HQ Workforce | company | $500/mo flat | unlimited | unlimited | unlimited | unlimited | unlimited | 0 (current price); 3 on the legacy price |
 | `enterprise` | Enterprise | company | per contract | unlimited | unlimited | unlimited | unlimited | unlimited | per contract |
 | `personal-50` | Individual | person | $50/mo | 1 | 100 | unlimited | unlimited | 10 GiB | 0 |
@@ -92,9 +96,7 @@ Notes:
 
 - Starter "people" counts humans and self-run bots, and unaccepted invites
   count toward the 5.
-- Workforce is priced per company, not per person. A $20/mo seat price exists
-  in the Stripe catalog, but seat billing is switched off and is not part of
-  the pricing statement.
+- Workforce is priced per company, not per person.
 - Enterprise has no public price. HQ staff assign it.
 - Naming: the product is "HQ Workforce". Internal leftovers still say "team"
   (Stripe lookup keys `hq-team-flat-monthly` and `-v2`, `requiredPlan: "team"`
@@ -123,7 +125,7 @@ created after the cutover use the usage card's box sizes above.
 | Hosted agent, Power (t3.large) | $250/mo | Listed in the console wizard. |
 | Hosted agent, Dev (t3.xlarge) | $500/mo | Listed in the console wizard. |
 | Outpost | $100/mo (small) | New Outposts by size: $100 small, $200 medium, $400 large, $800 xlarge. Existing $80 Outposts keep $80. |
-| Meeting hours | $1/hour | Metered per minute from the first minute, no included hours, billed monthly in arrears on the Workforce subscription. |
+| Meeting hours | $1/hour | Metered per minute from the first minute, no included hours, billed monthly in arrears on the Workforce subscription. A company that kept its meeting-hours item through the switch to usage pricing keeps being billed $1/hour. |
 
 On legacy plans, hosted agents require Workforce (or Enterprise). Creating one on Starter is
 refused with "HQ Workforce plan required to create an agent" and an upgrade
@@ -195,10 +197,15 @@ personal scopes have their own ceilings (table above).
   staff-set paid plan) and cost $10 a month per database app, with 250,000
   compute units and 1 GB included. A company can hold 20 database apps. See
   `app-databases.md`.
-- **Meeting bot invites** require Workforce (`MEETING_PLAN_REQUIRED`).
+- **Meeting bot invites** are open to every company; only an unknown company
+  is refused (`MEETING_PLAN_REQUIRED`). Recorded meeting hours bill at $1/hour
+  on a Workforce subscription, or for a company that kept its meeting-hours
+  item through the switch to usage pricing.
 
-Cancelling Workforce takes effect at the end of the paid period. The company
-returns to Starter limits and no data is deleted.
+Canceling Workforce takes effect at the end of the paid period. Until
+December 19, 2026, the company then returns to Starter limits. From December
+19, 2026, it moves to usage pricing, not Starter. Agent billing stops with the
+subscription. No data is deleted. (pricing.json rule `cancel`)
 
 ## Checking and changing a plan
 

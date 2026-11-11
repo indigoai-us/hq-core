@@ -14,7 +14,7 @@ Ask where the agent should run before anything paid happens. Reference:
 | The user wants | Route |
 |---|---|
 | A bot on their own computer, using their own Claude/Codex/Grok login | Local bot: `hq bot create <name>` (personal, acts as them) or `hq bot create <name> --kind company --company <slug>`. No hosted box. Stop here; this skill's layers do not apply |
-| An agent they already run elsewhere (OpenClaw, grokbot, Muse, any MCP-capable agent) | External bot: console Bots page → Add bot → External bot → Create and get code, then on its host `hq agent enroll <code>`, `hq agent kit install`, register `hq agent mcp`, `hq agent probe`. See `core/knowledge/public/hq-core/external-agents-mcp.md`. Paid plans only; no per-agent charge |
+| An agent they already run elsewhere (OpenClaw, grokbot, Muse, any MCP-capable agent) | External bot: console Bots page → Add bot → External bot → Create and get code, then on its host `hq agent enroll <code>`, `hq agent kit install`, register `hq agent mcp`, `hq agent probe`. See `core/knowledge/public/hq-core/external-agents-mcp.md`. On legacy Starter an external bot counts toward the 5-member cap. No per-agent charge |
 | Their own Claude/ChatGPT/Codex/Grok chat app reading HQ | Console Integrations → Connect an agent. Not an agent identity |
 | An always-on company agent hosted by HQ | This skill (create mode) |
 | An existing agent that is blocked on access | This skill (repair mode) |
@@ -29,8 +29,9 @@ registered its MCPs.
 confirms, from its own runtime, that every capability mounts.**
 
 > **Billing gate (paid resource).** A hosted agent is a recurring charge on
-> the company's payer. The price is company-specific and depends on the size
-> (`basic`, `power`, `dev`); see
+> the company's payer. The price depends on the size: on the usage card
+> `small` \$100, `medium` \$200, `large` \$400 or `xlarge` \$800 a month, plus
+> \$0.05 per agent run; legacy plans use `basic`, `power` and `dev`. See
 > `core/knowledge/public/hq-core/plans-and-pricing.md`, but always quote the
 > number the CLI prints, not a remembered one. Get the operator's explicit
 > approval of that charge and never provision silently. `hq agents provision`
@@ -78,7 +79,7 @@ produces the exact bootstrap block and verifies via probe instead.
 - If the agent exists → **repair mode**: diff what it has against what it
   needs, grant only the gaps.
 - If not → **create mode**: provision the paid agent box through the billing
-  gate — `hq agents provision {name} --company {co} [--model <model>] [--size basic|power|dev]`.
+  gate — `hq agents provision {name} --company {co} [--model <model>] [--size small|medium|large|xlarge]` (legacy `basic|power|dev` is still accepted).
   Every new managed agent is an agents-v2 box with a Codex, Grok, or Claude
   brain (pick the model from `hq agents models`). Omit `--provider`: with
   `--model` the CLI sends `agents-v2`, and with neither the server defaults

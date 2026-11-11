@@ -162,6 +162,24 @@ pgrep -f "$TMP/bin/gh" >/dev/null 2>&1 && no "hung gh killed" || ok "hung gh kil
 left="$(find "$TMP/tmpd" -name 'hq-pr-fp-edit.*' | wc -l | tr -d ' ')"
 [ "$left" = 0 ] && ok "edit temp file removed after timeout" || no "edit temp file removed after timeout ($left left)"
 
+# A loaded machine: every fractional sleep takes 0.4 s. Counting polls alone
+# would stretch the 10 s cap to 40 s; the wall-clock check must still cut it.
+mkdir -p "$TMP/slowbin"
+cat >"$TMP/slowbin/sleep" <<'STUB'
+#!/bin/sh
+case "$1" in
+  *.*) exec /bin/sleep 0.4 ;;
+  *) exec /bin/sleep "$1" ;;
+esac
+STUB
+chmod 755 "$TMP/slowbin/sleep"
+start=$(date +%s)
+payload "gh pr create -R o/r" "https://github.com/o/r/pull/9" | PATH="$TMP/slowbin:$PATH" STUB_GH_HANG=1 TMPDIR="$TMP/tmpd" bash "$HOOK"
+elapsed=$(( $(date +%s) - start ))
+sleep 0.5
+[ "$elapsed" -le 13 ] && ok "10 s cap holds when sleep runs slow ($elapsed s)" || no "10 s cap holds when sleep runs slow ($elapsed s)"
+pgrep -f "$TMP/bin/gh" >/dev/null 2>&1 && no "hung gh killed under slow sleep" || ok "hung gh killed under slow sleep"
+
 # No jq and no node: exit 0, no edit, one log line.
 mkdir -p "$TMP/nojson"
 for t in cat dirname mkdir date sed tr uname; do

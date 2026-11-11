@@ -204,9 +204,13 @@ if [ -n "$COMPANY" ] || [ -n "$PROJECT" ] || [ -n "$TASK" ]; then
 fi
 OBS+='}'
 
-OBS_DIR="${TMPDIR:-/tmp}/hq-work-mesh-obs"
+# Observations live under the HQ root's workspace/, not the system temp folder
+# (on Windows that is the user's Temp, which nothing cleans). The SessionStart
+# hook's sweep removes any that a crashed run leaves behind.
+WM_TMP_ROOT="$ROOT/workspace/tmp/work-mesh"
+OBS_DIR="$WM_TMP_ROOT/obs"
 mkdir -p -- "$OBS_DIR" 2>/dev/null || true
-chmod 700 -- "$OBS_DIR" 2>/dev/null || true
+chmod 700 -- "$WM_TMP_ROOT" "$OBS_DIR" 2>/dev/null || true
 OBS_FILE="$OBS_DIR/$SESSION_ID.bind.$$.json"
 printf '%s\n' "$OBS" >"$OBS_FILE"
 
@@ -221,6 +225,7 @@ fi
 HQ_BIN="$(command -v hq 2>/dev/null || true)"
 if [ -z "$HQ_BIN" ]; then
   printf '%s\n' 'Work Mesh reconcile skipped: hq CLI not found on PATH.' >&2
+  rm -f -- "$OBS_FILE" 2>/dev/null || true
 else
   flag_reader="$ROOT/.claude/hooks/work-mesh-daemon-not-loaded-flag.cjs"
   daemon_warning_enabled=false
@@ -232,7 +237,7 @@ else
   if [ "$daemon_warning_enabled" = "true" ]; then
     # Status only reads the installed service and its live state. Keep this hook
     # bounded, and fail quiet when the CLI or service manager cannot answer.
-    daemon_status_file="$(mktemp "${TMPDIR:-/tmp}/hq-work-mesh-daemon-status.XXXXXX" 2>/dev/null)" || daemon_status_file=""
+    daemon_status_file="$(mktemp "$OBS_DIR/daemon-status.XXXXXX" 2>/dev/null)" || daemon_status_file=""
     if [ -n "$daemon_status_file" ]; then
       HQ_NO_UPDATE_CHECK=1 "$HQ_BIN" mesh daemon status --json >"$daemon_status_file" 2>/dev/null &
       daemon_status_pid=$!
@@ -251,8 +256,9 @@ else
     fi
   fi
   if [ -f "$OBS_FILE" ]; then
-    nohup "$HQ_BIN" mesh context reconcile --observation-file "$OBS_FILE" --machine \
-      >/dev/null 2>&1 </dev/null &
+    # The reconcile is the observation's only reader; remove it when it exits.
+    nohup bash -c '"$1" mesh context reconcile --observation-file "$2" --machine; rm -f -- "$2"' \
+      _ "$HQ_BIN" "$OBS_FILE" >/dev/null 2>&1 </dev/null &
     disown 2>/dev/null || true
   fi
 fi

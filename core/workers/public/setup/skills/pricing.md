@@ -5,7 +5,7 @@ description: How HQ is priced, what each plan includes, what happens at a limit,
 
 # How HQ is priced
 
-Use this whenever a plan, a price or a limit comes up. Two rules first:
+Use this whenever a plan, a price or a limit comes up. Three rules first:
 
 1. **Never guess a company's plan.** Check it (below) before you say anything
    that depends on it. If you cannot check it, say what the plans are and that
@@ -14,6 +14,12 @@ Use this whenever a plan, a price or a limit comes up. Two rules first:
 2. **When HQ answers, pass its answer on.** If a command quotes a price,
    refuses something or returns an upgrade link, tell the person exactly that,
    in plain words, with the link. HQ's answer wins over anything written here.
+3. **Say the billing state once, give the one action, never act on it.**
+   When HQ reports a billing state (usage past a threshold, a paused company,
+   a missing card, a failed payment), say it once in plain words and give the
+   one action: the Billing page in the HQ desktop app, or the exact command HQ
+   named. Then continue with what the person asked. Never add a card, open a
+   checkout for the person, or change a spend limit yourself.
 
 ## Finding out which plan a company is on
 
@@ -37,7 +43,7 @@ often empty; when it is empty it tells you nothing about the plan.
 
 ## The usage card (everyone who signs up from 2026-10-16)
 
-New signups choose **Sign up free** or **Request an enterprise demo**. Sign
+New signups choose **Sign up free** or **Book a setup call**. Sign
 up free puts the account on the usage card: no plan fee, no seat price, and
 $10 of usage included every month. Past the $10, they pay for what they use:
 
@@ -53,6 +59,9 @@ $10 of usage included every month. Past the $10, they pay for what they use:
 Deploys, DMs and background AI are free. The first 30 days are a trial: usage
 is free up to $500, and the vault fee is waived.
 
+The default spend limit is $100 a month (calendar month, UTC); an existing company that has switched and has a card on file has no default limit.
+HQ asks for a card the first time usage passes the $10 included allowance (during the trial, $10 of trial usage) with no card on file.
+
 Hosted boxes (hosted agents, agents in Slack, Outposts) are a monthly price
 per box: small $100, medium $200, large $400, xlarge $800. Quote the price HQ
 shows for the size chosen.
@@ -61,8 +70,8 @@ Someone who wants HQ without HQ cloud (advanced, enterprise or government
 teams, or anyone who prefers to self-host) can use HQ free, self-hosted or
 on-prem: https://docs.hq.computer/hq/guide/use-hq-for-free/
 
-Enterprise is custom, arranged with the HQ team after a demo request
-("Request an enterprise demo" when signing up).
+Enterprise is custom, arranged with the HQ team after a setup call
+("Book a setup call" when signing up).
 
 ## Legacy plans (existing customers only)
 
@@ -70,9 +79,9 @@ Starter, HQ Workforce and Individual are closed to new signups from
 2026-10-16. Existing customers keep their plan and their box prices. Never
 offer these to a new account; describe them only to someone already on one.
 
-**Starter, free.** Up to 5 people (invitations not yet accepted count), 1
-connected app, 10 keys, 10 GB of files, unlimited site deploys, no hosted
-agents. Only adding past a limit is affected: a 6th person, a 2nd connected
+**Starter, free.** Up to 5 people (invitations not yet accepted count), 3
+connected apps, 10 keys, 10 GB of files, unlimited site deploys, no hosted
+agents. Only adding past a limit is affected: a 6th person, a 4th connected
 app, an 11th key, or files past 10 GB. When a company goes over, the owner
 gets reminders, and HQ may refuse to add the next one; if it does, it says so
 and gives a link. Nothing already there is ever removed, and reading,
@@ -85,8 +94,9 @@ apps, keys, files or deploys. Hosted agents are billed per box on top: $100
 (basic), $250 (power) or $500 (dev) a month. Recorded meetings are $1 an
 hour, counted by the minute. Some companies that subscribed earlier are on an
 older Workforce price that includes 3 hosted agents. If the company cancels,
-the change takes effect at the end of the paid period, the company goes back
-to Starter limits, and nothing is deleted.
+the change takes effect at the end of the paid period and nothing is deleted.
+Until December 19, 2026 the company then goes back to Starter limits; from
+December 19, 2026 it moves to usage pricing instead of Starter.
 
 **Individual, $50 a month per person.** For someone's own personal HQ: 100
 personal keys, unlimited connected apps, 10 GB of files and unlimited site

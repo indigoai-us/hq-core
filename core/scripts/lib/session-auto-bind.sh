@@ -144,6 +144,14 @@ session_auto_bind_is_fleet_identity() {
 # keep the command-substitution pipe open. Node is already required to run hq.
 # The default remains two seconds; bounded SessionStart maintenance can request
 # a longer explicit ceiling without changing the caller's process budget.
+# On Windows the wrapper resolves the real launcher first (see windowsLaunch).
+# Callers export this function into detached bash children, where BASH_SOURCE
+# no longer names this file, so the lib folder travels in the environment.
+if [ -z "${HQ_SESSION_AUTO_BIND_LIB_DIR:-}" ]; then
+  case "${BASH_SOURCE[0]:-}" in
+    */session-auto-bind.sh) export HQ_SESSION_AUTO_BIND_LIB_DIR="${BASH_SOURCE[0]%/*}" ;;
+  esac
+fi
 session_auto_bind_run_with_timeout() {
   command -v node >/dev/null 2>&1 || return 127
   local timeout_ms=2000 capture_stderr=0
@@ -168,14 +176,93 @@ session_auto_bind_run_with_timeout() {
   [ "$#" -gt 0 ] || return 127
   node -e '
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 const timeoutMs = Number(process.argv[1]);
 const captureStderr = process.argv[2] === "1";
-const command = process.argv[3];
+const libDir = process.argv[3];
+// The bash running this wrapper. A bare "bash" on a Windows PATH can reach
+// WSL bash.exe in System32 before Git Bash.
+const bashPath = process.argv[4] || "bash";
+const command = process.argv[5];
 if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000 || !command) process.exit(127);
-const child = spawn(command, process.argv.slice(4), {
+const realWindows = process.platform === "win32";
+// HQ_SESSION_AUTO_BIND_TEST_PLATFORM is a test-only switch: it runs the
+// Windows launcher resolution on macOS and Linux against a fake npm layout.
+const resolveWindows = realWindows || process.env.HQ_SESSION_AUTO_BIND_TEST_PLATFORM === "win32";
+// Windows: node spawn() without a shell cannot start the npm hq shims. The
+// extensionless sh shim gives ENOENT and hq.cmd gives EINVAL (CVE-2024-27980
+// hardening). Find the launcher on PATH and run the JS entry it names with
+// this same node. A .cmd that names no entry goes through the PowerShell
+// adapter used by windows-cmd-spawn.mjs (base64 argv, call operator). No
+// argument is ever joined into a command line.
+const windowsLaunch = (file, args) => {
+  const exts = [".com", ".exe", ".bat", ".cmd"];
+  const isFile = (p) => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } };
+  const readHead = (p) => {
+    try {
+      const fd = fs.openSync(p, "r");
+      const buf = Buffer.alloc(8192);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      return buf.toString("utf8", 0, n);
+    } catch (_) { return ""; }
+  };
+  const entryFrom = (dir, rel) => {
+    const entry = path.resolve(dir, ...rel.split(/[\\/]+/).filter(Boolean));
+    return isFile(entry) ? entry : "";
+  };
+  // npm: "%dp0%\node_modules\...\hq.js" %*   pnpm: "%~dp0\..\...\hq.js" %*
+  const cmdEntry = (p) => {
+    const m = readHead(p).match(/"%(?:~dp0|dp0%)\\?([^"%*]+\.[cm]?js)"/i);
+    return m ? entryFrom(path.dirname(p), m[1]) : "";
+  };
+  // npm sh shim: exec node "$basedir/node_modules/.../hq.js" "$@"
+  const shEntry = (p) => {
+    const m = readHead(p).match(/"\$basedir[\\/]([^"$]+\.[cm]?js)"/);
+    return m ? entryFrom(path.dirname(p), m[1]) : "";
+  };
+  const candidates = (base) => (path.extname(base) ? [base] : [...exts.map((e) => base + e), base]);
+  let found = "";
+  if (/[\\/]/.test(file)) {
+    found = candidates(file).find(isFile) || "";
+  } else {
+    for (const dir of String(process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+      found = candidates(path.join(dir, file)).find(isFile) || "";
+      if (found) break;
+    }
+  }
+  if (!found) return { file, args };
+  const ext = path.extname(found).toLowerCase();
+  if (ext === ".js" || ext === ".cjs" || ext === ".mjs") return { file: process.execPath, args: [found, ...args] };
+  if (ext === ".exe" || ext === ".com") return { file: found, args };
+  if (ext === ".cmd" || ext === ".bat") {
+    const entry = cmdEntry(found);
+    if (entry) return { file: process.execPath, args: [entry, ...args] };
+    const shim = libDir ? path.join(libDir, "windows-command-shim.ps1") : "";
+    if (!shim || !isFile(shim)) return { file: found, args };
+    const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+    return {
+      file: path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", shim,
+        ...[found, ...args].map((v) => Buffer.from(String(v), "utf8").toString("base64"))],
+    };
+  }
+  const entry = shEntry(found);
+  if (entry) return { file: process.execPath, args: [entry, ...args] };
+  // A script with a shebang (a Git Bash stub): run it with bash, argv intact.
+  if (readHead(found).startsWith("#!")) return { file: bashPath, args: [found, ...args] };
+  return { file: found, args };
+};
+const launch = resolveWindows
+  ? windowsLaunch(command, process.argv.slice(6))
+  : { file: command, args: process.argv.slice(6) };
+const spawnOptions = {
   detached: true,
   stdio: ["ignore", "pipe", captureStderr ? "pipe" : "ignore"],
-});
+};
+if (realWindows) spawnOptions.windowsHide = true;
+const child = spawn(launch.file, launch.args, spawnOptions);
 let finished = false;
 let stopStatus = null;
 let timeoutTimer = null;
@@ -189,6 +276,8 @@ const finish = (status) => {
 };
 const signalGroup = (signal) => {
   if (!child.pid) return;
+  // Windows has no process groups: stop the child itself.
+  if (realWindows) { try { child.kill(signal); } catch (_) {} return; }
   try { process.kill(-child.pid, signal); } catch (_) {}
 };
 const requestStop = (status) => {
@@ -217,7 +306,7 @@ child.once("close", (code, signal) => {
   finish(status);
 });
 timeoutTimer = setTimeout(() => requestStop(124), timeoutMs);
-' "$timeout_ms" "$capture_stderr" "$@"
+' "$timeout_ms" "$capture_stderr" "${HQ_SESSION_AUTO_BIND_LIB_DIR:-}" "${BASH:-}" "$@"
 }
 
 # Emits a known default-company slug and repair flag as tab-separated fields, or

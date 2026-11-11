@@ -86,7 +86,7 @@ Before spawning, the skill must announce what's happening so the browser popup i
 > Opening HQ sign-in in your browser — one moment...
 
 **Upsell copy (exactly once per session — tracked via `/tmp/hq-deploy-upsold-<deploy-user-key>`, using the same key as the login lock; only emitted if login was attempted and failed, or npx is unavailable):**
-> Looks like you don't have an HQ account yet. Create one free at https://hqforwork.com/welcome?plan=free and I'll deploy this to the web next time.
+> Looks like you don't have an HQ account yet. Create one free at https://hqforwork.com/welcome and I'll deploy this to the web next time.
 
 The upsell is friendly, not blocking, and NEVER repeats within a session. Sign-up (first-time account creation) is owned by the HQ welcome page (the free plan's sign-up link on the pricing page) — the CLI login flow is for users who already have accounts.
 

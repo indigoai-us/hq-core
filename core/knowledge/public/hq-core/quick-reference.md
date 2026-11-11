@@ -266,21 +266,21 @@ Share-session URLs are encrypted single-use 15-minute capabilities — never per
 
 ## CLI: `hq db` (vault databases)
 
-Local SQLite per company (always) + optional remote Postgres-class on a paid plan. On the legacy plans that is **HQ Workforce** (internal id `paid-500`, existing customers only; closed to new signups from 2026-10-16). For accounts on the usage card, relay what HQ returns. Billing is live. Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
+Local SQLite per company (always) + optional remote Postgres-class. The remote DB is available on every plan; legacy Starter can be refused while HQ enforces Starter limits. For any other message, relay what HQ returns. Billing is live. Guide: `core/knowledge/public/hq-core/vault-databases.md`. Requires `@indigoai-us/hq-cli` ≥ 5.62.0.
 
 | Command | Use |
 |---------|-----|
 | `hq db status --company {co}` | Ensure local `~/.hq/db/{co}/vault.db` (WAL); report schema version |
 | `hq db sql --company {co} -- 'SELECT …'` | Query local DB (read-only default; `--write` for mutations) |
 | `hq db migrate --company {co} --hq-root {HQ}` | Apply `companies/{co}/db/migrations/*.sql` |
-| `hq db provision --company {co}` | Remote binding — paid plan only (legacy: HQ Workforce) |
+| `hq db provision --company {co}` | Remote binding (legacy Starter can be refused while HQ enforces Starter limits) |
 | `hq db usage --company {co} --app {app}` | App database usage, included amounts, ceiling and estimated charge |
 | `hq db sql --company {co} --app {app} -- '…'` | SQL against an app's database (read-only unless `--write`) |
 | `hq db dump --company {co} --app {app}` | Export an app's database to a SQL file |
 | `hq db destroy --company {co} --app {app}` | Delete an app's database now (owner or admin, typed confirmation) |
 | `hq db sql --company {co} --remote -- '…'` | Flag exists but always fails today (no remote executor wired); use local SQL |
 
-App databases (`database: true` on a deploy, `@hq/db`, `db/migrations/`): Team plan, $10 a month per app with 250k DPU and 1 GB included, read-only at 4x, 30-day retention after delete. Details: `app-databases.md`.
+App databases (`database: true` on a deploy, `@hq/db`, `db/migrations/`): $10 a month per app (legacy Starter can be refused while HQ enforces Starter limits) with 250k DPU and 1 GB included, read-only at 4x, 30-day retention after delete. Details: `app-databases.md`.
 
 Migrations are vault **text**; binary `.db` files stay machine-local (never under `companies/`). Never print connection strings. Local and remote are not auto-replicated in v1.
 

@@ -43,7 +43,7 @@ If `hq meetings list` returns nothing and `companies/{co}/sources/meetings/` is 
 1. Make the company cloud-backed → `/designate-team {co}` (`hq cloud provision company {co}`).
 2. Invite the HQ meeting bot to the call (Recall.ai via `hq meetings` + bot-invite API).
 3. Notes ingest automatically into `companies/{co}/sources/meetings/`; read them here next time.
-4. Note: signals + ontology follow once provisioned; some of this runs on HQ cloud and **will require HQ Pro once billing ships (not yet — provisioned per-company today via `/designate-team`).**
+4. Note: signals + ontology follow once provisioned (per company via `/designate-team`); some of this runs on HQ cloud. Billing is live: every HQ company can invite the meeting bot, and on HQ Workforce (legacy) recorded meeting time is billed at \$1/hour, and a company that kept its meeting-hours item through the switch to usage pricing keeps being billed \$1/hour. If HQ asks for a card, relay its message.
 
 Then offer: if they want "meeting notes" to mean their **email** for this company instead, set `meeting_notes_source: email` in `companies/{co}/settings/knowledge/preferences.yaml`.
 

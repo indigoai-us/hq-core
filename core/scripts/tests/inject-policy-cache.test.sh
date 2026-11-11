@@ -371,9 +371,13 @@ slash_root="${win_root//\\//}"
   || fail "bash slash-normalize of Windows HQ_ROOT: got $slash_root"
 grep -Fq 'HQ_ROOT="${HQ_ROOT//\\//}"' "$HOOK" \
   || fail "hook does not slash-normalize HQ_ROOT before cache paths"
-grep -Fq 'CACHE_TMP="${CACHE_TMP//\\//}"' "$HOOK" \
-  || fail "hook does not slash-normalize CACHE_TMP before awk redirects"
-ok "hook slash-normalizes HQ_ROOT and CACHE_TMP"
+# The cache paths reach awk through ENVIRON, which keeps backslashes. Behavior
+# is covered end to end by inject-policy-backslash-hqroot.test.sh.
+grep -Fq 'CACHE_TMP = ENVIRON["HQ_PT_CACHE_TMP"]' "$HOOK" \
+  || fail "hook does not pass CACHE_TMP to awk through ENVIRON"
+grep -Fq 'CACHE_STATUS = ENVIRON["HQ_PT_CACHE_STATUS"]' "$HOOK" \
+  || fail "hook does not pass CACHE_STATUS to awk through ENVIRON"
+ok "hook slash-normalizes HQ_ROOT and hands cache paths to awk through ENVIRON"
 
 mangled="$PWD/C:UsershqcoldAppDataLocalTemphq-policy.tmp"
 rm -f "$mangled"

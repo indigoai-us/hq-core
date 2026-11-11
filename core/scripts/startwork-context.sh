@@ -62,7 +62,7 @@ company_list() {
       if (v ~ /^\[/) { gsub(/^\[|\]$/, "", v); n = split(v, a, ","); for (i = 1; i <= n; i++) { x = a[i]; gsub(/^[ \t"\x27]+|[ \t"\x27]+$/, "", x); if (x != "") print x }; exit }
       inl = 1; next
     }
-    inl && /^    - / { x = $0; sub(/^    - /, "", x); gsub(/^[ \t"\x27]+|[ \t"\x27]+$/, "", x); print x; next }
+    inl && /^    +- / { x = $0; sub(/^    +- /, "", x); gsub(/^[ \t"\x27]+|[ \t"\x27]+$/, "", x); print x; next }
     inl && /^    [a-z]/ { exit }
   ' "$MANIFEST"
 }
@@ -88,15 +88,28 @@ cmd_resolve() {
   local hit; hit="$(awk -v want="/$a" '
     /^  [a-z0-9-]+:[[:space:]]*$/ { slug = $0; sub(/^  /, "", slug); sub(/:.*/, "", slug); inl = 0; next }
     /^    repos:/ { inl = 1; next }
-    inl && /^    - / { x = $0; sub(/^    - /, "", x); gsub(/[ \t"\x27]/, "", x); if (substr(x, length(x) - length(want) + 1) == want) print slug; next }
+    inl && /^    +- / { x = $0; sub(/^    +- /, "", x); gsub(/[ \t"\x27]/, "", x); sub(/\/+$/, "", x); if (substr(x, length(x) - length(want) + 1) == want) print slug; next }
     inl && /^    [a-z]/ { inl = 0 }' "$MANIFEST" | sort -u)"
   if [ "$(printf '%s\n' "$hit" | grep -c .)" -eq 1 ]; then printf '{"company":"%s","via":"repo"}\n' "$hit"; return 0; fi
-  # alias: slug prefix or company name match (whole token)
-  local cands; cands="$(awk -v a="$a" '
-    /^  [a-z0-9-]+:[[:space:]]*$/ { slug = $0; sub(/^  /, "", slug); sub(/:.*/, "", slug); if (index(slug, a) == 1) print slug; next }
-    /^    name:/ { v = tolower($0); sub(/^    name:[ \t]*/, "", v); gsub(/["\x27]/, "", v); if (v == a) print slug }' "$MANIFEST" | sort -u)"
+  # alias: compared with case, hyphens, underscores and spaces removed, so
+  # "movefwd" or "Move_Fwd" reaches move-fwd. A slug or company name that
+  # normalizes equal to the argument wins first; two companies that normalize
+  # equal stay ambiguous and come back as candidates. Then a unique slug
+  # prefix (normalized the same way).
+  local an cands=""; an="$(printf '%s' "$a" | tr -cd 'a-z0-9')"
+  if [ -n "$an" ]; then
+    cands="$(awk -v a="$an" '
+      function n(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
+      /^  [a-z0-9-]+:[[:space:]]*$/ { slug = $0; sub(/^  /, "", slug); sub(/:.*/, "", slug); if (n(slug) == a) print slug; next }
+      /^    name:/ { v = $0; sub(/^    name:[ \t]*/, "", v); gsub(/["\x27]/, "", v); if (n(v) == a) print slug }' "$MANIFEST" | LC_ALL=C sort -u)"
+    if [ "$(printf '%s\n' "$cands" | grep -c .)" -eq 0 ]; then
+      cands="$(awk -v a="$an" '
+        function n(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
+        /^  [a-z0-9-]+:[[:space:]]*$/ { slug = $0; sub(/^  /, "", slug); sub(/:.*/, "", slug); if (index(n(slug), a) == 1) print slug }' "$MANIFEST" | LC_ALL=C sort -u)"
+    fi
+  fi
   if [ "$(printf '%s\n' "$cands" | grep -c .)" -eq 1 ]; then printf '{"company":"%s","via":"alias"}\n' "$cands"; return 0; fi
-  printf '{"company":"","candidates":[%s]}\n' "$(printf '%s\n' "$cands" "$hit" | grep . | sort -u | sed 's/.*/"&"/' | paste -sd, -)"
+  printf '{"company":"","candidates":[%s]}\n' "$(printf '%s\n' "$cands" "$hit" | grep . | LC_ALL=C sort -u | sed 's/.*/"&"/' | paste -sd, -)"
   return 3
 }
 
@@ -242,7 +255,7 @@ cmd_block() {
   qmd="$(company_list "$co" qmd_collections | join_max)"; [ "$qmd" = "none" ] && qmd="$co"
   knowledge="$(company_field "$co" knowledge)"; [ -n "$knowledge" ] || knowledge="companies/$co/knowledge/"
   sources="$(company_list "$co" sources | join_max)"
-  repos="$(company_list "$co" repos | sed "s|^repos/[a-z]*/||" | join_max)"
+  repos="$(company_list "$co" repos | sed 's|/*$||; s|.*/||' | join_max)"
   local nrepos; nrepos="$(company_list "$co" repos | grep -c . || true)"
 
   local kfolders=""; [ -d "$ROOT/$knowledge" ] && kfolders="$(find "$ROOT/$knowledge" -mindepth 1 -maxdepth 1 -type d ! -name '_*' ! -name '.*' 2>/dev/null | sed 's|.*/||' | sort | join_max)"

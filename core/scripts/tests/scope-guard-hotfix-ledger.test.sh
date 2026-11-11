@@ -445,6 +445,19 @@ printf '[]' > "$DISPATCH_HQ/workspace/threads/.handoff-tmp/.changeset.fixture.js
 printf '{}' > "$TMP/ordinary-report.json"
 dispatch_case 0 acceptance-503-aws-ecs-file-uri "aws ecs register-task-definition --cli-input-json file://$DISPATCH_HQ/workspace/request.json"
 dispatch_case 0 acceptance-503-handoff-dot-temp 'bash core/scripts/handoff-finalize.sh --files-touched-json-file workspace/threads/.handoff-tmp/.changeset.fixture.json'
+# The real /handoff Step 1 and Step 3 bash blocks, so a skill edit cannot bring
+# back temp paths held in variables, which the dispatcher blocks.
+handoff_skill_block() { # handoff_skill_block <step number>
+  awk -v h="^### $1\\\\. " '$0~h{s=1} s&&/^```bash$/{f=1;next} f&&/^```$/{exit} f' "$ROOT/.claude/skills/handoff/SKILL.md"
+}
+handoff_step1="$(handoff_skill_block 1)"
+handoff_step3="$(handoff_skill_block 3)"
+[ -n "$handoff_step1" ] && [ -n "$handoff_step3" ] || {
+  echo "FAIL: handoff Step 1 or Step 3 bash block not found in SKILL.md" >&2
+  REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+}
+dispatch_case 0 handoff-skill-step1-literal-changeset "$handoff_step1"
+dispatch_case 0 handoff-skill-step3-literal-changeset "$handoff_step3"
 dispatch_case 0 acceptance-503-mktemp-file 'T=$(mktemp); cat "$T"'
 dispatch_case 0 acceptance-503-git-range 'git log --oneline abc123..def456'
 dispatch_case 0 acceptance-b59-quoted-dollar-paren "python3 - <<'PY'

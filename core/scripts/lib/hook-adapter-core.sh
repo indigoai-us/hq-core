@@ -921,7 +921,11 @@ hqad_fallback_records() {
     view_image|ViewImage) ids="image-context-guard policy-enforcement-gate" ;;
     Grep) ids="mandatory-scope-authorizer block-hq-grep policy-enforcement-gate" ;;
     Glob) ids="mandatory-scope-authorizer block-hq-glob policy-enforcement-gate" ;;
-    Edit|Write|MultiEdit) ids="protect-core block-core-writes block-company-git-metadata block-inline-story-impl env-file-no-trailing-newline policy-enforcement-gate" ;;
+    # The scope authorizer guards file writes as it does reads: master-hook
+    # makes no hqd call on the HQ Fleet adapter path, so on this degraded path
+    # nothing else would check a write into another company's files.
+    Edit|Write|MultiEdit) ids="mandatory-scope-authorizer protect-core block-core-writes block-company-git-metadata block-inline-story-impl env-file-no-trailing-newline policy-enforcement-gate" ;;
+    NotebookEdit) ids="mandatory-scope-authorizer policy-enforcement-gate" ;;
     *) ids="policy-enforcement-gate" ;;
   esac
   for id in $ids; do
@@ -941,7 +945,7 @@ hqad_iter_registry() {
     return 0
   fi
   local fields="" payload_cwd="" session_id="" prefilter_text="" active_company=""
-  local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab pf_re_all
+  local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab pf_re_all scope_emitted=0
   if ! fields="$(hqad_prefilter_payload_fields "$event" "$payload")"; then
     [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hook-adapter: prefilter payload parse failed event=%s bytes=%s\n' "$event" "${#payload}" >&2
     printf "ERROR: hqad: malformed payload for %s registry prefilters; using critical fallback guards.\n" "$event" >&2
@@ -1024,6 +1028,7 @@ hqad_iter_registry() {
       esac
       continue
     fi
+    [ "$id" = "mandatory-scope-authorizer" ] && scope_emitted=1
     if [ "$gated" = "1" ]; then
       printf 'gate\t%s\t%s' "$id" "$script"
       if [ -n "$args" ]; then
@@ -1038,6 +1043,18 @@ hqad_iter_registry() {
   done <<HQAD_ROWS
 $rows
 HQAD_ROWS
+  # A registry that parses but registers no scope authorizer for this tool
+  # (for example an empty PreToolUse list) must not drop the scope check:
+  # master-hook makes no hqd call on the HQ Fleet adapter path, so nothing else
+  # would run it. Same tool set as hook-registry.json and the fallback list.
+  if [ "$event" = "PreToolUse" ] && [ "$scope_emitted" -eq 0 ]; then
+    case "$tool" in
+      Bash|Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit)
+        script="$HQ_ROOT/.claude/hooks/mandatory-scope-authorizer.sh"
+        [ ! -f "$script" ] || printf 'gate\t%s\t%s\n' "mandatory-scope-authorizer" "$script"
+        ;;
+    esac
+  fi
 }
 
 # Emit the classified dispatch records for (event, canonical_tool) from

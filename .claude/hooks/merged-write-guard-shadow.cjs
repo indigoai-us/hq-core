@@ -411,6 +411,10 @@ async function main() {
     await refreshSessionFlag(env, input.session_id);
     return;
   }
+  // SessionStart has a separate --refresh registration for its flag snapshot.
+  // Never evaluate or record a lifecycle event as a write-guard observation.
+  if (input.hook_event_name && input.hook_event_name !== "PreToolUse") return;
+  if (!input.tool_name || !input.tool_input) return;
   if (!sessionEnabled(projectDir, input.session_id)) return;
   const hookRoot = path.resolve(__dirname, "../..");
   const record = evaluate(input, hookRoot, projectDir);

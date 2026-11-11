@@ -92,6 +92,23 @@ STUB_HQ_SLEEP=5 bash "$WRAP" --body "slow" >/dev/null
 elapsed=$(( $(date +%s) - start ))
 [ "$(cat "$TMP/body")" = "slow" ] && [ "$elapsed" -lt 5 ] && ok "builder capped at 2 s" || no "builder capped at 2 s ($elapsed s)"
 
+# A loaded machine: every fractional sleep takes 0.3 s. Counting polls alone
+# would stretch the 2 s cap to 30 s; the wall-clock check must still cut it.
+mkdir -p "$TMP/slowbin"
+cat >"$TMP/slowbin/sleep" <<'STUB'
+#!/bin/sh
+case "$1" in
+  *.*) exec /bin/sleep 0.3 ;;
+  *) exec /bin/sleep "$1" ;;
+esac
+STUB
+chmod 755 "$TMP/slowbin/sleep"
+start=$(date +%s)
+fresh
+PATH="$TMP/slowbin:$PATH" STUB_HQ_SLEEP=8 bash "$WRAP" --body "slow-sleep" >/dev/null
+elapsed=$(( $(date +%s) - start ))
+[ "$(cat "$TMP/body")" = "slow-sleep" ] && [ "$elapsed" -lt 6 ] && ok "cap holds when sleep runs slow" || no "cap holds when sleep runs slow ($elapsed s)"
+
 printf 'enabled: false\n' >"$TMP/root/personal/settings/fingerprint.yaml"
 bash "$WRAP" --body "off" >/dev/null
 [ "$(cat "$TMP/body")" = "off" ] && ok "setting off passes through" || no "setting off passes through"

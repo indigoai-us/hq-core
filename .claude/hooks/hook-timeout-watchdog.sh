@@ -283,7 +283,10 @@ fi
 # its child watchdogs (or vice versa).
 test_triggered() {
   [ -n "$test_trigger_file" ] && [ -f "$test_trigger_file" ] || return 1
-  awk -F '\t' -v source="$source_kind" -v hook="$hook_path" -v threshold="$threshold_kind" '
+  # The hook path goes through ENVIRON: awk -v would process its backslashes.
+  HQ_WATCHDOG_HOOK_PATH="$hook_path" \
+    awk -F '\t' -v source="$source_kind" -v threshold="$threshold_kind" '
+    BEGIN { hook = ENVIRON["HQ_WATCHDOG_HOOK_PATH"] }
     $1 == source && $2 == hook && $3 == threshold { found = 1; exit }
     END { exit(found ? 0 : 1) }
   ' "$test_trigger_file" >/dev/null 2>&1

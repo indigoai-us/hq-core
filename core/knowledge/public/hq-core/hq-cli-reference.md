@@ -163,7 +163,7 @@ date in the header, and update `verified_against`.
 | `hq db status` | Show local (and remote when bound) vault DB status; auto-creates local SQLite if missing |
 | `hq db sql` | Run SQL against the company vault DB (local default; --remote for secrets-injected remote; read-only by default) |
 | `hq db migrate` | Apply pending vault text migrations (companies/{co}/db/migrations/*.sql) to the local DB |
-| `hq db provision` | Provision (or re-bind) the company remote vault DB via HQ control plane (HQ Workforce plan) |
+| `hq db provision` | Create a company remote database or your personal database |
 | `hq skill` | Create, stage, promote, and discuss company skills |
 | `hq skill create` | Register, stamp, surface, and sync a company skill |
 | `hq skill register` | Register a company skill to a proposal-lane stamped file without writing the canonical tree |
@@ -333,7 +333,7 @@ rule, never the value.
 | `hq agent inbox` | List this agent's pending HQ messages (mirrored by the kit), or mark them handled |
 | `hq agent inbox done` | Mark inbox items handled and ack them on the server |
 | `hq outposts` | Manage your personal HQ Outposts (EC2 boxes) |
-| `hq outposts provision` (alias: `create`) | Provision a new Outpost ($80/month — requires --yes) |
+| `hq outposts provision` (alias: `create`) | Provision a new Outpost (billed by size: $100 small, $200 medium, $400 large, $800 xlarge a month; requires --yes) |
 | `hq outposts list` | List every Outpost you own |
 | `hq outposts status` | Show live detail for one Outpost |
 | `hq outposts exec` | Run a shell command on an Outpost and print its output (use -- before flags meant for the remote command). |
@@ -478,19 +478,19 @@ rule, never the value.
 
 ## Billing
 
-The prices in these descriptions are the CLI's help text at the version above. HQ Workforce ($500/mo), the $50 Individual plan and the $80 Outpost price are legacy plans and prices: closed to new signups from 2026-10-16 18:00 UTC and kept for existing customers. New signups are on the usage card; see [plans-and-pricing.md](plans-and-pricing.md) and [pricing.json](pricing.json).
+The `hq billing upgrade`, `hq billing sponsor`, `hq db provision` and `hq outposts provision` rows follow the help text of hq-cli 5.345.210; the CLI help names no price for Outpost sizes, so that row adds the prices from [pricing.json](pricing.json). HQ Workforce ($500/mo) and the $50 Individual plan are legacy plans, closed to new signups from 2026-10-16 18:00 UTC and kept for existing customers. Existing $80 Outposts keep $80. New signups are on the usage card; see [plans-and-pricing.md](plans-and-pricing.md) and [pricing.json](pricing.json).
 
 | Command | Description |
 |---|---|
 | `hq billing` | Inspect billing and mint a card-capture link |
 | `hq billing status` | Show subscription status and whether a card is on file |
 | `hq billing checkout` | Mint a Stripe card-capture link (shareable) to add a card |
-| `hq billing upgrade` | Open Stripe Checkout to upgrade this company to HQ Workforce ($500/mo) |
+| `hq billing upgrade` | Open the switch to usage pricing for a company on an earlier plan (usage-pricing companies have nothing to change) |
 | `hq billing usage` | Show this month's usage, projected bill, allowance left and what drives it (read-only; `--card` prints the live price card; hq-cli 5.345.144+) |
-| `hq billing sponsor` | Ask a company to cover your $50 plan, or answer a request |
-| `hq billing sponsor request` | Ask a company to cover your $50 HQ plan |
+| `hq billing sponsor` | Ask a company to cover your personal HQ plan, or answer a request |
+| `hq billing sponsor request` | Ask a company to cover your personal HQ plan |
 | `hq billing sponsor list` | Show sponsorship requests — the company's queue, or your own |
-| `hq billing sponsor approve` | Say yes — put someone's $50 plan on the company bill |
+| `hq billing sponsor approve` | Say yes — put someone's personal plan on the company bill |
 | `hq billing sponsor decline` | Say no to a plan sponsorship request |
 | `hq billing sponsor revoke` | End a sponsorship the company is currently paying for |
 | `hq billing sponsor withdraw` | Take back a sponsorship request you made |

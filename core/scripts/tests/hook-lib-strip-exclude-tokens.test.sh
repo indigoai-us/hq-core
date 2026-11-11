@@ -212,5 +212,58 @@ else
   echo "SKIP: hook integration (jq not available)"
 fi
 
+# --- exclude needles load in-process (feedback fff53135) -------------------
+write_excludes 2 "$TMP/hq/core/core.yaml"
+mkdir -p "$TMP/hq/.claude"
+PATH="$TMP/bins:$PATH" hq_core_yaml_exclude_needles "$TMP/hq" "$TMP/hq/core/core.yaml"
+have_rel1=0; have_rel2=0; have_abs1=0
+for loaded_needle in ${HQ_CORE_YAML_EXCLUDE_NEEDLES[@]+"${HQ_CORE_YAML_EXCLUDE_NEEDLES[@]}"}; do
+  case "$loaded_needle" in
+    .claude/exclude-01.dat) have_rel1=1 ;;
+    .claude/exclude-02.dat) have_rel2=1 ;;
+    /*/.claude/exclude-01.dat) have_abs1=1 ;;
+  esac
+done
+if [ "$have_rel1$have_rel2$have_abs1" = 111 ]; then
+  pass 'exclude needles hold relative and absolute forms'
+else
+  fail "exclude needles were [${HQ_CORE_YAML_EXCLUDE_NEEDLES[*]-}]"
+fi
+HQ_CORE_YAML_EXCLUDE_NEEDLES=(stale)
+hq_core_yaml_exclude_needles "$TMP/hq" "$TMP/hq/core/missing.yaml"
+if [ "${#HQ_CORE_YAML_EXCLUDE_NEEDLES[@]}" -eq 0 ]; then
+  pass 'exclude needles are empty without core.yaml'
+else
+  fail 'exclude needles kept stale entries without core.yaml'
+fi
+
+# --- the shell lexer ends an ANSI-C quoted string at its real end ----------
+# shellcheck disable=SC2016 # literal shell text for the lexer
+ansi_record="$(hq_shell_simple_commands 'echo $'"'"'\'"''"' > x')"
+if [ "$ansi_record" = "echo"$'\037''$\'"'"$'\037''>'$'\037''x' ]; then
+  pass 'ANSI-C escaped quote does not open a quote that hides a redirect'
+else
+  fail "ANSI-C record was [${ansi_record//$'\037'/<US>}]"
+fi
+
+# Two dollar signs are the PID expansion, so the quote after them is an
+# ordinary single quote: the cp that follows is its own command.
+# shellcheck disable=SC2016 # literal shell text for the lexer
+pid_records="$(hq_shell_simple_commands 'echo $$'"'"'\'"'"'; cp evil.sh x; echo '"'"'\'"'"'')"
+pid_second="$(printf '%s\n' "$pid_records" | sed -n 2p)"
+if [ "$pid_second" = "cp"$'\037'"evil.sh"$'\037'"x" ]; then
+  pass 'a quote after $$ does not open an ANSI-C string'
+else
+  fail "PID-expansion records were [${pid_records//$'\037'/<US>}]"
+fi
+# An odd run of dollar signs still ends in an ANSI-C string.
+# shellcheck disable=SC2016 # literal shell text for the lexer
+odd_record="$(hq_shell_simple_commands 'echo $$$'"'"'\'"''"' > x')"
+if [ "$odd_record" = "echo"$'\037''$$$\'"'"$'\037''>'$'\037''x' ]; then
+  pass 'an odd run of dollar signs still opens an ANSI-C string'
+else
+  fail "odd dollar record was [${odd_record//$'\037'/<US>}]"
+fi
+
 echo "hook-lib-strip-exclude-tokens: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]

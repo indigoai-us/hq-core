@@ -874,6 +874,12 @@
       "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {
+      "path": "core/policies/hq-worktree-preserve-uses-shipped-script.md",
+      "trigger_sha256": "2b98c1b063d6a2d0c3c26ba0833e491631a447d1e11aa51ca7e5632b48bea329",
+      "when": "(worktree && (preserve || purge || remove || sweep || disk)) || (add && push && all) || no-verify || (wip && push)",
+      "on": "[PreToolUse, UserPromptSubmit, AssistantIntent]"
+    },
+    {
       "path": "core/policies/hq-worktree-retention.md",
       "trigger_sha256": "ca5f67ebe4ae278daa192a4ee0a0a97a9eddfbfa7ceacff6d033289b339abfb4",
       "when": "worktree",

@@ -186,6 +186,67 @@ if [ -n "$PROJECT" ] && [ -f "$HQ_ROOT/core/scripts/lib/work-mesh-live-rebind.sh
   fi
 fi
 
+# Scratch files (observations, single-flight locks, pending queues, retry
+# logs) live under the HQ root's workspace/, not the system temp folder. On
+# Windows that folder is the user's Temp, which nothing ever cleans.
+WM_TMP_ROOT="$HQ_ROOT/workspace/tmp/work-mesh"
+
+_wm_tmp_dir() {
+  REPLY="$1/$2"
+  mkdir -p -- "$REPLY" 2>/dev/null || return 1
+  chmod 700 -- "$1" "$REPLY" 2>/dev/null || true
+}
+
+# Remove one observation file, only when it sits in this hook's own folder.
+_wm_obs_discard() {
+  case "$1" in
+    "$2"/*) rm -f -- "$1" 2>/dev/null || true ;;
+  esac
+}
+
+# Age-based sweep for runs that crashed before their own cleanup. It only
+# touches entries inside the three scratch folders below (obs, reconcile,
+# register-pending) that are older than a day; live locks are reclaimed after
+# thirty seconds and observations are consumed within seconds, so nothing
+# that old is in use.
+_wm_tmp_sweep_dir() {
+  local dir=$1 minutes=1440
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  find "$dir" -mindepth 1 -maxdepth 1 -type d -mmin +"$minutes" \
+    \( -name '*.lock' -o -name '*.reclaim' -o -name '*.stale.*' \) \
+    -exec rm -rf -- {} + 2>/dev/null || true
+  find "$dir" -mindepth 1 -maxdepth 2 -type f -mmin +"$minutes" \
+    -exec rm -f -- {} + 2>/dev/null || true
+  find "$dir" -mindepth 1 -maxdepth 1 -type d -name '*.pending' -empty -mmin +"$minutes" \
+    -exec rmdir -- {} + 2>/dev/null || true
+  return 0
+}
+
+# Sweeps workspace/tmp/work-mesh, then the same three folders that earlier
+# versions left in the system temp folder. At most once an hour per HQ root:
+# the .swept stamp is written when a sweep finishes.
+_wm_tmp_sweep() {
+  local root=$1 legacy="${TMPDIR:-/tmp}" name
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  if [ -f "$root/.swept" ] && [ -n "$(find "$root/.swept" -mmin -60 2>/dev/null)" ]; then
+    return 0
+  fi
+  for name in obs reconcile register-pending; do
+    _wm_tmp_sweep_dir "$root/$name"
+  done
+  # A legacy folder is swept only when it is a real folder this user owns. In
+  # a shared sticky /tmp, another user cannot then swap it for a symlink while
+  # find walks it. The folder itself goes once it is empty and a day old.
+  for name in hq-work-mesh-obs hq-work-mesh-reconcile hq-register-pending; do
+    [ -d "$legacy/$name" ] && [ ! -L "$legacy/$name" ] && [ -O "$legacy/$name" ] || continue
+    _wm_tmp_sweep_dir "$legacy/$name"
+    find "$legacy/$name" -maxdepth 0 -type d -empty -mmin +1440 \
+      -exec rmdir -- {} + 2>/dev/null || true
+  done
+  : >"$root/.swept" 2>/dev/null || true
+  return 0
+}
+
 # US-039: a CLI older than 5.139.0 leaves pending_registration on board.json.
 # The retry runs up to three `hq mesh project ensure` calls. That work is
 # detached (nohup, log file) and single-flight (mkdir lock per company).
@@ -272,9 +333,14 @@ _wm_retry_pending_detached() {
   [ -f "$script" ] || return 0
   safe="${company//[^A-Za-z0-9._-]/_}"
   [ -n "$safe" ] || return 0
-  dir="${HQ_REGISTER_PENDING_DIR:-${TMPDIR:-/tmp}/hq-register-pending}"
-  mkdir -p -- "$dir" 2>/dev/null || return 0
-  chmod 700 -- "$dir" 2>/dev/null || true
+  if [ -n "${HQ_REGISTER_PENDING_DIR:-}" ]; then
+    dir=$HQ_REGISTER_PENDING_DIR
+    mkdir -p -- "$dir" 2>/dev/null || return 0
+    chmod 700 -- "$dir" 2>/dev/null || true
+  else
+    _wm_tmp_dir "$WM_TMP_ROOT" register-pending || return 0
+    dir=$REPLY
+  fi
   lock="$dir/${safe}.lock"
   log="$dir/${safe}.log"
   _wm_lock_acquire "$lock" 30 || return 0
@@ -287,7 +353,7 @@ _wm_retry_pending_detached() {
 _wm_retry_pending_detached "$COMPANY" || true
 
 _wm_reconcile_drain() {
-  local lock=$1 hq_bin=$2 pending_dir=$3 attempt selected observation last
+  local lock=$1 hq_bin=$2 pending_dir=$3 obs_dir=${4:-} tmp_root=${5:-} attempt selected observation last index older
   local -a pending_files=()
   export LC_ALL=C
   # A crashed lock holder is reclaimable after thirty seconds; keep this
@@ -300,18 +366,30 @@ _wm_reconcile_drain() {
 
       shopt -s nullglob
       pending_files=("$pending_dir"/*.json)
-      [ "${#pending_files[@]}" -gt 0 ] || return 0
-      last=$((${#pending_files[@]} - 1))
-      selected=${pending_files[$last]}
-      observation="$(<"$selected")"
-      # Consume one latest snapshot. If a newer one arrives while the current
-      # reconcile runs, its own drainer is already waiting on this lock.
-      rm -f -- "${pending_files[@]}" 2>/dev/null || true
-      [ -f "$observation" ] || return 0
-      command -v session_auto_bind_run_with_timeout >/dev/null 2>&1 || return 0
-      HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout --timeout-ms 10000 \
-        "$hq_bin" mesh context reconcile --observation-file "$observation" --machine \
-        >/dev/null 2>&1 || true
+      if [ "${#pending_files[@]}" -gt 0 ]; then
+        last=$((${#pending_files[@]} - 1))
+        selected=${pending_files[$last]}
+        observation="$(<"$selected")"
+        # Consume one latest snapshot. If a newer one arrives while the current
+        # reconcile runs, its own drainer is already waiting on this lock. The
+        # older snapshots are superseded, so their observation files go too.
+        for ((index = 0; index < last; index++)); do
+          older="$(<"${pending_files[$index]}")" || older=""
+          [ -n "$obs_dir" ] && _wm_obs_discard "$older" "$obs_dir"
+        done
+        rm -f -- "${pending_files[@]}" 2>/dev/null || true
+        if [ -f "$observation" ] && command -v session_auto_bind_run_with_timeout >/dev/null 2>&1; then
+          HQ_NO_UPDATE_CHECK=1 session_auto_bind_run_with_timeout --timeout-ms 10000 \
+            "$hq_bin" mesh context reconcile --observation-file "$observation" --machine \
+            >/dev/null 2>&1 || true
+        fi
+        [ -n "$obs_dir" ] && _wm_obs_discard "$observation" "$obs_dir"
+      fi
+      # Release the session lock before the sweep, so a long first sweep of
+      # an old backlog never outlives the thirty-second reclaim window.
+      trap - EXIT INT TERM
+      rm -rf -- "$_WM_CHILD_LOCK" 2>/dev/null || true
+      [ -n "$tmp_root" ] && _wm_tmp_sweep "$tmp_root"
       return 0
     fi
     sleep 0.05
@@ -319,30 +397,44 @@ _wm_reconcile_drain() {
 }
 
 _wm_reconcile_detached() {
-  local hq_bin=$1 observation=$2 safe dir lock pending_dir order pending_file pending_tmp worker_pid
-  [ -f "$observation" ] || return 0
-  [ -n "$hq_bin" ] || return 0
-  command -v session_auto_bind_run_with_timeout >/dev/null 2>&1 || return 0
+  # Returns 0 only when a detached drainer now owns the observation file; the
+  # caller removes the file on any other return.
+  local hq_bin=$1 observation=$2 obs_dir=$3 safe dir lock pending_dir order pending_file pending_tmp worker_pid
+  [ -f "$observation" ] || return 1
+  [ -n "$hq_bin" ] || return 1
+  command -v session_auto_bind_run_with_timeout >/dev/null 2>&1 || return 1
   safe="${SID//[^A-Za-z0-9._-]/_}"
-  [ -n "$safe" ] || return 0
-  dir="${HQ_WORK_MESH_RECONCILE_DIR:-${TMPDIR:-/tmp}/hq-work-mesh-reconcile}"
-  mkdir -p -- "$dir" 2>/dev/null || return 0
-  chmod 700 -- "$dir" 2>/dev/null || true
+  [ -n "$safe" ] || return 1
+  if [ -n "${HQ_WORK_MESH_RECONCILE_DIR:-}" ]; then
+    dir=$HQ_WORK_MESH_RECONCILE_DIR
+    mkdir -p -- "$dir" 2>/dev/null || return 1
+    chmod 700 -- "$dir" 2>/dev/null || true
+  else
+    _wm_tmp_dir "$WM_TMP_ROOT" reconcile || return 1
+    dir=$REPLY
+  fi
   lock="$dir/$safe.lock"
   pending_dir="$dir/$safe.pending"
-  mkdir -p -- "$pending_dir" 2>/dev/null || return 0
-  chmod 700 -- "$pending_dir" 2>/dev/null || true
   printf -v order '%020d' "$SEQ"
   pending_file="$pending_dir/$order.$CLIENT_OP.json"
   pending_tmp="$pending_file.tmp.$$"
-  printf '%s\n' "$observation" >"$pending_tmp" 2>/dev/null || return 0
+  # A sweep may remove an empty, day-old pending folder between the mkdir and
+  # the write; one retry recreates it.
+  mkdir -p -- "$pending_dir" 2>/dev/null || return 1
+  chmod 700 -- "$pending_dir" 2>/dev/null || true
+  if ! printf '%s\n' "$observation" >"$pending_tmp" 2>/dev/null; then
+    mkdir -p -- "$pending_dir" 2>/dev/null || return 1
+    chmod 700 -- "$pending_dir" 2>/dev/null || true
+    printf '%s\n' "$observation" >"$pending_tmp" 2>/dev/null || return 1
+  fi
   mv -- "$pending_tmp" "$pending_file" 2>/dev/null || {
     rm -f -- "$pending_tmp" 2>/dev/null || true
-    return 0
+    return 1
   }
   export -f session_auto_bind_run_with_timeout _wm_lock_age_seconds \
-    _wm_reclaim_abandoned_reaper _wm_lock_acquire _wm_reconcile_drain
-  nohup bash -c '_wm_reconcile_drain "$@"' _ "$lock" "$hq_bin" "$pending_dir" \
+    _wm_reclaim_abandoned_reaper _wm_lock_acquire _wm_reconcile_drain \
+    _wm_obs_discard _wm_tmp_sweep _wm_tmp_sweep_dir
+  nohup bash -c '_wm_reconcile_drain "$@"' _ "$lock" "$hq_bin" "$pending_dir" "$obs_dir" "$WM_TMP_ROOT" \
     >/dev/null 2>&1 </dev/null &
   worker_pid=$!
   if [ -n "${HQ_WORK_MESH_RECONCILE_WORKER_PID_FILE:-}" ]; then
@@ -381,15 +473,19 @@ if [ -n "$COMPANY" ] || [ -n "$PROJECT" ] || [ -n "$TASK" ]; then
 fi
 OBS+='}'
 
-OBS_DIR="${TMPDIR:-/tmp}/hq-work-mesh-obs"
-mkdir -p -- "$OBS_DIR" 2>/dev/null || true
-chmod 700 -- "$OBS_DIR" 2>/dev/null || true
-OBS_FILE="$OBS_DIR/$SID.$SEQ.json"
-printf '%s\n' "$OBS" >"$OBS_FILE" 2>/dev/null || true
+OBS_DIR="$WM_TMP_ROOT/obs"
+# The operation id keeps two runs that share a session id and sequence number
+# from writing (and later removing) the same file.
+OBS_FILE="$OBS_DIR/$SID.$SEQ.$CLIENT_OP.json"
+HQ_BIN="$(command -v hq 2>/dev/null || true)"
+# Without an hq CLI nothing would read the observation, so it is not written.
+if [ -n "$HQ_BIN" ]; then
+  _wm_tmp_dir "$WM_TMP_ROOT" obs || true
+  printf '%s\n' "$OBS" >"$OBS_FILE" 2>/dev/null || true
+fi
 if [ -n "${HQ_WORK_MESH_RECONCILE_LOG:-}" ]; then
   printf 'reconcile %s\n' "$OBS_FILE" >>"$HQ_WORK_MESH_RECONCILE_LOG" 2>/dev/null || true
 fi
-HQ_BIN="$(command -v hq 2>/dev/null || true)"
 if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
   # Resolve an otherwise-unbound session before writing a device-default scope.
   # The observation deliberately carries cwd/repo evidence without a trusted
@@ -417,7 +513,23 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
       _wm_preflight_git_config() {
         # A config include can change effective company/remote scope without
         # changing the including file. Such repositories bypass the cache.
-        local dir="$CWD" git_entry git_dir common_dir config_path config_fingerprint worktree_fingerprint
+        local dir="$CWD" next git_entry git_dir common_dir config_path config_fingerprint worktree_fingerprint
+        # Windows paths can arrive with backslashes, doubled when read raw from JSON.
+        # A drive path or a value opening with two backslashes (UNC) counts as Windows.
+        # POSIX values are left alone: a backslash is legal in a POSIX folder name.
+        case "$dir" in
+          [A-Za-z]:[\\/]*)
+            dir="${dir//\\\\//}"
+            dir="${dir//\\//}"
+            ;;
+          \\\\*)
+            dir="${dir//\\\\//}"
+            dir="${dir//\\//}"
+            # Single-backslash UNC (\\server\share) collapses to one leading
+            # slash above; restore the two a UNC path opens with.
+            case "$dir" in //*) ;; *) dir="/$dir" ;; esac
+            ;;
+        esac
         while [ -n "$dir" ] && [ "$dir" != / ]; do
           git_entry="$dir/.git"
           if [ -d "$git_entry" ]; then
@@ -459,7 +571,10 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
             fi
             return 0
           fi
-          dir="${dir%/*}"
+          # A drive root or a value with no separator stops changing here.
+          next="${dir%/*}"
+          [ "$next" != "$dir" ] || break
+          dir=$next
         done
         REPLY=none
       }
@@ -617,6 +732,6 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
         ;;
     esac
   fi
-  _wm_reconcile_detached "$HQ_BIN" "$OBS_FILE"
+  _wm_reconcile_detached "$HQ_BIN" "$OBS_FILE" "$OBS_DIR" || _wm_obs_discard "$OBS_FILE" "$OBS_DIR"
 fi
 exit 0

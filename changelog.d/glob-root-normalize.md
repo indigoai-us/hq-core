@@ -1,0 +1,1 @@
+`block-hq-glob` now normalizes the Glob path and the HQ root before it compares them, so `<hq>/./`, `<hq>//`, `<hq>/core/..` and other spellings of the root are denied the same way as the root itself. The normalization is lexical (no symlink lookup) and uses shell builtins only.
