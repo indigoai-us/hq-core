@@ -1,0 +1,1 @@
+The setup worker's pricing skill and `/hq-cost` share one rule for billing states: say the state once, give the one action (the Billing page in the HQ desktop app, or the exact command HQ named), and never add a card, open a checkout for the person, or change a spend limit.

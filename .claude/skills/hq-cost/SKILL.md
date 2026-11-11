@@ -45,6 +45,16 @@ hq billing usage --card --json
   show what would change in plain words (what goes, what stays, the saving),
   ask one yes/no question, and run `apply` only on a clear yes. A "no" or no
   answer means nothing changes.
+- **Pass on what HQ returns.** If a command quotes a price, refuses something
+  or returns an upgrade link, tell the person exactly that, in plain words,
+  with the link.
+- **Billing state: say it once, give the one action.** When the report or an
+  HQ message shows a billing state (usage past a threshold, a paused company,
+  a missing card, a failed payment), say it once in plain words and give the
+  one action: the Billing page in the HQ desktop app, or the exact command HQ
+  named. Never add a card, open a checkout for the person, or change a spend
+  limit yourself. The fixes below lower usage; they are not a way around a
+  limit.
 - **Nothing is deleted without a preview** of exactly what will be deleted.
   Deletes are one fix at a time; secrets are one name at a time.
 - **Who sees what.** Every person, members included, can see their own

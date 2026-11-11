@@ -114,8 +114,9 @@ cloud services).
 An external bot is an `agt_` agent whose runtime is on hardware HQ does not
 own. The server records `runtime: "external"`.
 
-Plan: blocked on the legacy Starter plan with the shared 402 envelope; free
-and unlimited on paid plans. No Stripe item, no seat, no box. Accounts
+Plan: no per-bot charge and no separate bot limit. On legacy Starter an external bot
+counts toward the 5-member cap, and creation can be refused while the
+workspace is over that cap while HQ enforces Starter limits. No Stripe item, no seat, no box. Accounts
 created from 2026-10-16 are on the usage card, where the bot's calls are
 billed at the card's meter rates. Pricing detail:
 [plans-and-pricing.md](plans-and-pricing.md).

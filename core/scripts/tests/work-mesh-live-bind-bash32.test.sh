@@ -78,7 +78,7 @@ pass "project bind records trusted authority on the live-binding marker"
 OBS_TMP="$SANDBOX/obs-tmp"
 run_bind() {
   local bash_bin="$1"; shift
-  rm -rf "$OBS_TMP"; mkdir -p "$OBS_TMP"
+  rm -rf "$OBS_TMP" "$HQ/workspace/tmp/work-mesh"; mkdir -p "$OBS_TMP"
   env \
     HOME="$SANDBOX/home" \
     TMPDIR="$OBS_TMP" \
@@ -97,7 +97,7 @@ run_bind() {
       --company example-co --project install-flow-rethink --task US-002 \
       ${BIND_SESSION_ARGS:+$BIND_SESSION_ARGS} --root "$HQ"
 }
-obs_file() { find "$OBS_TMP/hq-work-mesh-obs" -name "$SID.bind.*.json" 2>/dev/null | head -1; }
+obs_file() { find "$HQ/workspace/tmp/work-mesh/obs" -name "$SID.bind.*.json" 2>/dev/null | head -1; }
 
 for BASH_BIN in /bin/bash bash; do
   rm -f "$MARKER"
@@ -118,6 +118,8 @@ for BASH_BIN in /bin/bash bash; do
   OBS="$(obs_file)"
   [ -n "$OBS" ] && grep -q '"authority":"trusted"' "$OBS" \
     || fail "$BASH_BIN GROK_SESSION_ID bind did not send trusted authority"
+  [ -z "$(find "$OBS_TMP" -mindepth 1 2>/dev/null | head -1)" ] \
+    || fail "$BASH_BIN bind wrote into the system temp folder"
   pass "$BASH_BIN: GROK_SESSION_ID is a caller-owned session id"
 
   rm -f "$MARKER" "$META"

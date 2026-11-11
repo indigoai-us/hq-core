@@ -11,6 +11,9 @@
 # comes only from tool_response.stdout: its last line that is exactly a
 # github.com pull URL, which is where `gh pr create` prints the new PR.
 
+# Wall-clock start for the 10 s cap. SECONDS can be imported from the
+# environment, so the cap uses the difference from this value.
+HOOK_T0=$SECONDS
 INPUT="$(cat 2>/dev/null || true)"
 
 # Cheap prefilter on the whole payload; the field checks below decide.
@@ -162,9 +165,13 @@ set -m
 ) </dev/null >/dev/null 2>&1 &
 pid=$!
 set +m
+# The cut checks wall-clock time as well as the poll count: on a loaded
+# machine each `sleep 0.1` can take several times longer, so counting polls
+# alone let the hook run well past 10 s. The 10 s counts from hook start, so
+# time spent on the fingerprint lookup comes out of the gh worker's budget.
 waited=0
 while kill -0 "$pid" 2>/dev/null; do
-  if [ "$waited" -ge 100 ]; then
+  if [ "$waited" -ge 100 ] || [ $((SECONDS - HOOK_T0)) -ge 10 ]; then
     if kill -TERM -- -"$pid" 2>/dev/null; then
       sleep 0.3
       kill -KILL -- -"$pid" 2>/dev/null

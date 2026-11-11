@@ -103,8 +103,52 @@ else
   SEARCH_PATH="$PATH_PARAM"
 fi
 
-# Block if searching HQ root exactly (recursive Glob only — not a single-dir list)
-if [ "$SEARCH_PATH" = "$HQ" ] || [ "$SEARCH_PATH" = "$HQ/" ]; then
+# Spell a path without ".", "..", repeated or trailing slashes, and set
+# _hq_glob_norm to the result. Lexical only: symlinks are not resolved, and
+# only "/" separates names. ".." above "/" stays at "/"; a relative path keeps
+# leading ".." and becomes "." when nothing is left. An empty path stays empty.
+# Builtins only, so the hot path starts no process.
+_hq_glob_normalize() {
+  local p=$1 IFS=/ part n=0 abs= noglob=
+  local -a parts kept
+  _hq_glob_norm=
+  [ -n "$p" ] || return 0
+  case $p in /*) abs=/ ;; esac
+  case $- in *f*) noglob=1 ;; esac
+  set -f
+  # Split on IFS=/ with globbing off. read -a would need a here-string, which
+  # bash 3.2-5.0 writes to a temporary file.
+  # shellcheck disable=SC2206
+  parts=($p)
+  [ -n "$noglob" ] || set +f
+  for part in "${parts[@]}"; do
+    case $part in
+      ''|.) ;;
+      ..)
+        if [ "$n" -gt 0 ]; then
+          case ${kept[n-1]} in
+            ..) kept[n]=..; n=$((n+1)) ;;
+            *) n=$((n-1)); unset "kept[n]" ;;
+          esac
+        elif [ -z "$abs" ]; then
+          kept[n]=..; n=$((n+1))
+        fi
+        ;;
+      *) kept[n]=$part; n=$((n+1)) ;;
+    esac
+  done
+  # Quoted: bash 3.2 joins an unquoted ${kept[*]} with spaces here.
+  _hq_glob_norm="$abs${kept[*]}"
+  [ -n "$_hq_glob_norm" ] || _hq_glob_norm=.
+}
+
+# Block if searching the HQ root (recursive Glob only — not a single-dir list),
+# however the path spells it: "$HQ/./", "$HQ//" or "$HQ/core/.." all count.
+_hq_glob_normalize "$SEARCH_PATH"
+_hq_glob_search=$_hq_glob_norm
+_hq_glob_normalize "$HQ"
+if [ "$SEARCH_PATH" = "$HQ" ] || [ "$SEARCH_PATH" = "$HQ/" ] ||
+  [ "$_hq_glob_search" = "$_hq_glob_norm" ]; then
   _hq_glob_query cat '' '' <<EOF
 BLOCKED: Glob from HQ root causes timeouts (1.38M files via symlinked repos).
 

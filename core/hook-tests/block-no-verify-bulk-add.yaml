@@ -1,0 +1,125 @@
+# Fixture for core/hooks/PreToolUse/30-Bash--block-no-verify-bulk-add.sh —
+# blocks `git commit --no-verify` and `git push --no-verify` (incident
+# a1227963, 2026-11-05). `git add -A` with `git push` in one command is allowed.
+# See core/hook-tests/README.md for the schema.
+hookId: block-no-verify-bulk-add
+schemaVersion: 1
+cases:
+  - name: blocks-commit-no-verify
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo commit --no-verify -m wip"
+    expect: block
+
+  - name: blocks-commit-short-n
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo commit -q -n -m wip"
+    expect: block
+
+  - name: blocks-push-no-verify
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo push --no-verify origin main"
+    expect: block
+
+  - name: allows-add-all-then-push
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add -A && git -C /tmp/repo commit -m wip && git -C /tmp/repo push -u origin wip/x"
+    expect: allow
+
+  - name: allows-add-dot-then-push
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add . ; git -C /tmp/repo commit -m wip ; git -C /tmp/repo push"
+    expect: allow
+
+  - name: allows-add-all-glued-separator
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add -A; git -C /tmp/repo push"
+    expect: allow
+
+  - name: allows-add-dot-glued-and
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add .&& git -C /tmp/repo push"
+    expect: allow
+
+  - name: blocks-commit-bundled-short-n
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo commit -qn -m wip"
+    expect: block
+
+  - name: blocks-git-by-path
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "/usr/bin/git -C /tmp/repo commit --no-verify -m wip"
+    expect: block
+
+  - name: allows-add-all-with-stash-push
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add -A && git -C /tmp/repo stash push -m wip"
+    expect: allow
+
+  - name: allows-add-all-with-push-dry-run
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add -A && git -C /tmp/repo push --dry-run"
+    expect: allow
+
+  - name: allows-add-all-commit-without-push
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add -A && git -C /tmp/repo commit -m wip"
+    expect: allow
+
+  - name: allows-push-alone
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo push -u origin wip/x"
+    expect: allow
+
+  - name: allows-add-dry-run-n
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo add -n ."
+    expect: allow
+
+  - name: allows-no-verify-in-commit-message-text
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "git -C /tmp/repo commit -m 'docs: explain why --no-verify is banned'"
+    expect: allow
+
+  - name: allows-with-owner-escape
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "HQ_ALLOW_NO_VERIFY=1 git -C /tmp/repo commit --no-verify -m wip"
+    expect: allow
+
+  - name: allows-non-git
+    event: PreToolUse
+    tool: Bash
+    input:
+      command: "echo --no-verify"
+    expect: allow

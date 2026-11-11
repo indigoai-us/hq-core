@@ -4,7 +4,8 @@
 set -uo pipefail
 export BASH_ENV=/dev/null
 INPUT=""
-while IFS= read -r line; do INPUT+="$line"; done
+# master-hook sends JSON without a trailing newline; keep the final EOF read.
+while IFS= read -r line || [ -n "$line" ]; do INPUT+="$line"; done
 HOOK_SOURCE="${BASH_SOURCE[0]}"
 case "$HOOK_SOURCE" in */*) ;; *) HOOK_SOURCE="./$HOOK_SOURCE" ;; esac
 HOOK_DIR="${HOOK_SOURCE%/*}"

@@ -112,6 +112,9 @@ case "$1 $2" in
     if [ "${HQ_STUB_BROWSE_NO_FILE:-0}" != "1" ]; then
       if [ "${HQ_STUB_BROWSE_WRONG_FILE:-0}" = "1" ]; then
         echo "companies/acme/knowledge/insights/not-notes.md  400  2026-09-11T00:00:00.000Z shared-with-you"
+      elif [ "${HQ_STUB_NOTES_UNPARSEABLE:-0}" = "1" ]; then
+        # A row the table check cannot parse (an ACL label it does not know).
+        echo "companies/acme/knowledge/insights/notes.md  400  2026-09-11T00:00:00.000Z some-future-label"
       else
         echo "companies/acme/knowledge/insights/notes.md  400  2026-09-11T00:00:00.000Z shared-with-you"
       fi
@@ -258,6 +261,34 @@ set -e
 printf '%s' "$OUT" | grep >/dev/null "FAIL  knowledge/insights/notes.md" \
   || fail "exact-key mismatch must name the missing key: $OUT"
 unset HQ_STUB_BROWSE_WRONG_FILE
+
+# --- 6c. the table check misses a row, but the file reads back -> pass ------
+# (feedback_38d04516: browse and cat both found a referenced file that the
+# listing check reported missing, which blocked the pickup DM.)
+write_manifest granted
+export HQ_STUB_NOTES_UNPARSEABLE=1
+mkdir -p "$HQ_STUB_CLOUD/knowledge/insights"
+printf 'notes\n' > "$HQ_STUB_CLOUD/knowledge/insights/notes.md"
+: > "$INVOKE_LOG"
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)" \
+  || fail "a referenced file that reads back must pass even when its listing row is not parsed: $OUT"
+printf '%s' "$OUT" | grep >/dev/null "pass  knowledge/insights/notes.md (read back)" \
+  || fail "read-back pass must be named: $OUT"
+grep >/dev/null '^files cat knowledge/insights/notes.md --company acme' "$INVOKE_LOG" \
+  || fail "read-back must cat the company-relative key: $(cat "$INVOKE_LOG")"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "read-back pass must advance status to verified"
+# Same unparsed row, but the file does not read: still a named failure.
+rm -f "$HQ_STUB_CLOUD/knowledge/insights/notes.md"
+write_manifest granted
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "an unparsed row whose file does not read must still fail"
+printf '%s' "$OUT" | grep >/dev/null "FAIL  knowledge/insights/notes.md" \
+  || fail "unreadable referenced file must be named: $OUT"
+jq -e '.status == "granted"' "$M" >/dev/null || fail "failed read-back must not advance status"
+unset HQ_STUB_NOTES_UNPARSEABLE
 
 # --- 7. two referenced files sharing a parent: browse the parent ONCE, and a
 #     throttled second browse must NOT be misread as "file missing" (the prod

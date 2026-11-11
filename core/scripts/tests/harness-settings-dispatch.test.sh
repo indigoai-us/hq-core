@@ -167,6 +167,37 @@ else
   fail "malformed iterator framing silently emitted zero critical guards"
 fi
 
+# A missing or malformed hook-registry.json degrades to the fallback list, and
+# a registry that parses but registers no scope authorizer (empty hooks, empty
+# PreToolUse list) emits none of its own. master-hook makes no hqd call on the
+# HQ Fleet adapter path, so every one of these must still run the scope
+# authorizer, for file writes as for reads; otherwise a write into another
+# company's files goes unchecked.
+SCOPE_FIX="$(mktemp -d)"
+cp -R "$FIX/." "$SCOPE_FIX/"
+for scope_case in malformed missing empty-hooks empty-pretooluse; do
+  case "$scope_case" in
+    malformed) printf '{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":"not-an-array"}]}}\n' \
+                 > "$SCOPE_FIX/.claude/hooks/hook-registry.json" ;;
+    missing) rm -f "$SCOPE_FIX/.claude/hooks/hook-registry.json" ;;
+    empty-hooks) printf '{"hooks":{}}\n' > "$SCOPE_FIX/.claude/hooks/hook-registry.json" ;;
+    empty-pretooluse) printf '{"hooks":{"PreToolUse":[]}}\n' > "$SCOPE_FIX/.claude/hooks/hook-registry.json" ;;
+  esac
+  for scope_tool in Bash Read Grep Glob Write Edit MultiEdit NotebookEdit; do
+    scope_records="$(HQ_ROOT="$SCOPE_FIX" bash -c '
+      set +u
+      . "$1/core/scripts/lib/hook-adapter-core.sh"
+      hqad_iter_settings PreToolUse "$2" "{\"session_id\":\"scope-fallback\",\"tool_name\":\"$2\",\"tool_input\":{\"file_path\":\"companies/acme/x.md\"}}"
+    ' _ "$SCOPE_FIX" "$scope_tool" 2>/dev/null)"
+    if printf '%s\n' "$scope_records" | grep >/dev/null $'^gate\tmandatory-scope-authorizer\t'; then
+      pass "$scope_case registry: the scope authorizer runs for $scope_tool"
+    else
+      fail "$scope_case registry: no scope authorizer for $scope_tool"
+    fi
+  done
+done
+rm -rf "$SCOPE_FIX"
+
 expected_gate_ids() { # <event> <tool> [payload]
   # The payload carries the session id, so a prefilter.file with
   # {session_id} is judged for the same session the adapter run sees. Grok

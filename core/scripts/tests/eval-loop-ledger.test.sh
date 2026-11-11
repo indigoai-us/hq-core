@@ -131,6 +131,36 @@ if "core/scripts/tests/eval-loop-ledger.test.sh" not in workflow:
 if ledger.DEFAULT_K != 1 or ledger.MAX_K != 2:
     raise SystemExit(f"cap constants drifted: {ledger.DEFAULT_K} {ledger.MAX_K}")
 
+# Siblings share the tree budget. One k=1 child of a k=1 root is the budget.
+# A second child, in another class or in the same class, is refused. This runs
+# before the CLI and path checks so a ledger without the tree budget fails here,
+# on "second sibling class was accepted", and not on an unrelated check first.
+bind_company("sib")
+sib_root = ledger.Ledger(companies, "sib", "c1", "sib").plan(1)
+sib_child = ledger.Ledger(companies, "sib", "c2", "sib").plan(1, parent_run_id=sib_root["run_id"])
+if sib_child["depth"] != 2 or sib_child["parent_run_id"] != sib_root["run_id"]:
+    raise SystemExit(f"first sibling was not accepted at depth 2: {sib_child}")
+try:
+    ledger.Ledger(companies, "sib", "c3", "sib").plan(1, parent_run_id=sib_root["run_id"])
+except ledger.LedgerError as exc:
+    if "k exceeds hard cap" not in str(exc):
+        raise SystemExit(f"second sibling class raised the wrong error: {exc}")
+else:
+    raise SystemExit("second sibling class was accepted")
+if (companies / "sib" / "eval-library" / "c3" / "ledger.json").exists():
+    raise SystemExit("second sibling class wrote a ledger")
+try:
+    ledger.Ledger(companies, "sib", "c1", "sib").plan(1, parent_run_id=sib_root["run_id"])
+except ledger.LedgerError as exc:
+    if "k exceeds hard cap" not in str(exc):
+        raise SystemExit(f"same-class sibling raised the wrong error: {exc}")
+else:
+    raise SystemExit("same-class sibling was accepted")
+sib_root_body = json.loads((companies / "sib" / "eval-library" / "c1" / "ledger.json").read_text())
+sib_child_body = json.loads((companies / "sib" / "eval-library" / "c2" / "ledger.json").read_text())
+if len(sib_root_body["runs"]) != 1 or len(sib_child_body["runs"]) != 1:
+    raise SystemExit(f"sibling refusal mutated the tree: {sib_root_body['runs']} {sib_child_body['runs']}")
+
 # Patching MAX_K must not turn k=3 into the k=2 plan.
 saved_max = ledger.MAX_K
 ledger.MAX_K = 9
@@ -889,34 +919,6 @@ else:
 child_file = json.loads((companies / "tree" / "eval-library" / "c3" / "ledger.json").read_text())
 if child_file["depth"] != 2 or child_file["runs"][0]["parent_run_id"] != root_run["run_id"]:
     raise SystemExit(f"cross-class ledger did not store the chain: {child_file}")
-
-# Siblings share the tree budget. One k=1 child of a k=1 root is the budget.
-# A second child, in another class or in the same class, is refused.
-bind_company("sib")
-sib_root = ledger.Ledger(companies, "sib", "c1", "sib").plan(1)
-sib_child = ledger.Ledger(companies, "sib", "c2", "sib").plan(1, parent_run_id=sib_root["run_id"])
-if sib_child["depth"] != 2 or sib_child["parent_run_id"] != sib_root["run_id"]:
-    raise SystemExit(f"first sibling was not accepted at depth 2: {sib_child}")
-try:
-    ledger.Ledger(companies, "sib", "c3", "sib").plan(1, parent_run_id=sib_root["run_id"])
-except ledger.LedgerError as exc:
-    if "k exceeds hard cap" not in str(exc):
-        raise SystemExit(f"second sibling class raised the wrong error: {exc}")
-else:
-    raise SystemExit("second sibling class was accepted")
-if (companies / "sib" / "eval-library" / "c3" / "ledger.json").exists():
-    raise SystemExit("second sibling class wrote a ledger")
-try:
-    ledger.Ledger(companies, "sib", "c1", "sib").plan(1, parent_run_id=sib_root["run_id"])
-except ledger.LedgerError as exc:
-    if "k exceeds hard cap" not in str(exc):
-        raise SystemExit(f"same-class sibling raised the wrong error: {exc}")
-else:
-    raise SystemExit("same-class sibling was accepted")
-sib_root_body = json.loads((companies / "sib" / "eval-library" / "c1" / "ledger.json").read_text())
-sib_child_body = json.loads((companies / "sib" / "eval-library" / "c2" / "ledger.json").read_text())
-if len(sib_root_body["runs"]) != 1 or len(sib_child_body["runs"]) != 1:
-    raise SystemExit(f"sibling refusal mutated the tree: {sib_root_body['runs']} {sib_child_body['runs']}")
 
 # A chain past depth 2 stays refused. The tree budget and the HQ root are documented.
 source = Path(ledger_path).read_text(encoding="utf-8")

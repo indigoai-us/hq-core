@@ -25,6 +25,8 @@
 #      kill switch                                     -> no rebind
 #   8  hq-session.sh stamps company_source on explicit bind / unbind
 #   9  session title resolves the company after a prompt_mention bind
+#   12 unbound scheduled-task run binds the one company its cwd or task
+#      text names; disagreement, no evidence or a strong bind binds nothing
 
 set -euo pipefail
 command -v jq >/dev/null 2>&1 || { echo "prompt-company-first-message-bind: skipped (jq missing)"; exit 0; }
@@ -363,5 +365,74 @@ new_session s9b acme
 HINT="$(title_hint s9b)"
 case "$HINT" in *"none resolved"*) ;; *) fail "case 9: title hint guessed a company from the device default: $HINT" ;; esac
 pass "title hint resolves a prompt_mention company and does not guess from other sources"
+
+# 12. A scheduled-task run that SessionStart left unbound. Its first line is the
+# <scheduled-task ...> wrapper and nobody is there to bind a company, so the
+# scope guard refused its first command under companies/<co>/. It now binds
+# from the run's cwd, companies/<slug> paths in the task text, or a cue in the
+# task's first line, when all of them name one company.
+unbound_session() { # <sid>
+  mkdir -p "$TMP/workspace/sessions/$1"
+  printf 'session_id: %s\nsenior: user\n' "$1" > "$TMP/workspace/sessions/$1/meta.yaml"
+}
+sched_prompt() { # <body>
+  printf '<scheduled-task name="daily-check" file="/home/u/.claude/scheduled-tasks/daily-check/SKILL.md">\n%s\n</scheduled-task>' "$1"
+}
+run_router_cwd() { # <sid> <prompt> <cwd>
+  jq -cn --arg s "$1" --arg p "$2" --arg t "$TMP/transcripts/$1.jsonl" --arg c "$3" \
+    '{hook_event_name:"UserPromptSubmit",session_id:$s,transcript_path:$t,prompt:$p,cwd:$c}' | bash "$ROUTER"
+}
+unbound_session s12a; transcript s12a 1
+OUT="$(run_router_cwd s12a "$(sched_prompt "Run the daily exceptions report.
+cd $TMP/companies/globex/projects/shop && npm run report")" "$TMP")"
+[ "$(meta_get s12a company_slug)" = globex ] && [ "$(meta_get s12a company_source)" = scheduled_task ] \
+  || fail "case 12: task path did not bind ($(meta_get s12a company_slug)/$(meta_get s12a company_source))"
+[ "$(cap_slugs s12a)" = globex ] || fail "case 12: scope capability is '$(cap_slugs s12a)', expected globex"
+case "$(printf '%s' "$OUT" | ctx_of)" in *"bound this scheduled-task session to company globex"*) ;; *) fail "case 12: no scheduled-task bind notice" ;; esac
+printf '%s' "$OUT" | jq -e . >/dev/null || fail "case 12: output is not valid JSON"
+mkdir -p "$TMP/companies/initech/projects/x"
+unbound_session s12b; transcript s12b 1
+run_router_cwd s12b "$(sched_prompt "Run the daily exceptions report.")" "$TMP/companies/initech/projects/x" >/dev/null
+[ "$(meta_get s12b company_slug)" = initech ] && [ "$(meta_get s12b company_source)" = scheduled_task ] \
+  || fail "case 12: cwd under companies/initech did not bind ($(meta_get s12b company_slug))"
+unbound_session s12c; transcript s12c 1
+run_router_cwd s12c "$(sched_prompt "Daily report for globex")" "$TMP" >/dev/null
+[ "$(meta_get s12c company_slug)" = globex ] || fail "case 12: first-line cue in the task did not bind"
+unbound_session s12d; transcript s12d 1
+run_router_cwd s12d "$(sched_prompt "Run companies/globex/x then companies/initech/y")" "$TMP" >/dev/null
+[ -z "$(meta_get s12d company_slug)" ] || fail "case 12: two companies in the task text bound $(meta_get s12d company_slug)"
+unbound_session s12e; transcript s12e 1
+run_router_cwd s12e "$(sched_prompt "Run companies/globex/x")" "$TMP/companies/initech/projects/x" >/dev/null
+[ -z "$(meta_get s12e company_slug)" ] || fail "case 12: cwd and task text disagree but bound $(meta_get s12e company_slug)"
+unbound_session s12f; transcript s12f 1
+run_router_cwd s12f "$(sched_prompt "Check the inbox and summarize it.")" "$TMP" >/dev/null
+[ -z "$(meta_get s12f company_slug)" ] || fail "case 12: no evidence but bound $(meta_get s12f company_slug)"
+unbound_session s12g; transcript s12g 1
+run_router_cwd s12g "$(sched_prompt "Run companies/nosuchco/x")" "$TMP" >/dev/null
+[ -z "$(meta_get s12g company_slug)" ] || fail "case 12: unknown company dir bound $(meta_get s12g company_slug)"
+# An ordinary (non-scheduled) first prompt still never binds an unbound session.
+unbound_session s12h; transcript s12h 1
+run_router_cwd s12h "work for globex in companies/globex/x" "$TMP/companies/globex" >/dev/null
+[ -z "$(meta_get s12h company_slug)" ] || fail "case 12: ordinary prompt bound an unbound session"
+# A device default is replaced by the task's company; a strong bind is not.
+new_session s12i acme; transcript s12i 1
+run_router_cwd s12i "$(sched_prompt "cd companies/globex && npm test")" "$TMP" >/dev/null
+[ "$(meta_get s12i company_slug)" = globex ] && [ "$(meta_get s12i company_source)" = scheduled_task ] \
+  || fail "case 12: device default not replaced by the task company ($(meta_get s12i company_slug))"
+new_session s12j acme explicit; transcript s12j 1
+run_router_cwd s12j "$(sched_prompt "cd companies/globex && npm test")" "$TMP" >/dev/null
+[ "$(meta_get s12j company_slug)" = acme ] || fail "case 12: explicit bind replaced by a scheduled task"
+# A second prompt in a scheduled session does not bind.
+unbound_session s12k; transcript s12k 2
+run_router_cwd s12k "$(sched_prompt "cd companies/globex && npm test")" "$TMP" >/dev/null
+[ -z "$(meta_get s12k company_slug)" ] || fail "case 12: second prompt bound a scheduled session"
+# REQUIRE_SOURCE=none is re-checked under the lock: a session bound meanwhile is kept.
+new_session s12l acme explicit
+RC=0; HQ_SESSION_REQUIRE_SOURCE=none HQ_SESSION_COMPANY_SOURCE=scheduled_task HS s12l set company_slug globex >/dev/null 2>&1 || RC=$?
+[ "$RC" = 3 ] && [ "$(meta_get s12l company_slug)" = acme ] || fail "case 12: REQUIRE_SOURCE=none bound over a bound session (rc=$RC)"
+unbound_session s12m
+RC=0; HQ_SESSION_REQUIRE_SOURCE=none HQ_SESSION_COMPANY_SOURCE=scheduled_task HS s12m set company_slug globex >/dev/null 2>&1 || RC=$?
+[ "$RC" = 0 ] && [ "$(meta_get s12m company_slug)" = globex ] || fail "case 12: REQUIRE_SOURCE=none refused an unbound session (rc=$RC)"
+pass "an unbound scheduled-task run binds the one company its cwd or task text names; doubt binds nothing"
 
 echo "prompt-company-first-message-bind: all cases passed"

@@ -545,6 +545,12 @@ jobs:
         run: bash core/scripts/tests/git-icon-file-check.test.sh
       - name: Git hook dispatcher is shared by the commit secret scan and the fingerprint stage
         run: bash core/scripts/tests/commit-secret-scan.test.sh
+      - name: Pre-push HQ-root guard refuses pushes that add an HQ root copy
+        run: bash core/scripts/tests/push-guard.test.sh
+      - name: worktree-preserve checks size, HQ-root markers and secrets before committing
+        run: bash core/scripts/tests/worktree-preserve.test.sh
+      - name: PreToolUse blocks git --no-verify and stage-everything-and-push in one command
+        run: bash core/scripts/tests/block-no-verify-bulk-add.test.sh
       - name: Commit-msg hook stamps HQ-Fingerprint only inside HQ and fails open
         run: bash core/scripts/tests/hq-fingerprint-hook.test.sh
       - name: Git hook tests pass from an HQ root with an apostrophe, a space and a double quote
@@ -854,6 +860,9 @@ jobs:
         # dispatches, so a normal pass takes ~27s; per-dispatch bounds are
         # asserted inside the test.
         run: timeout 90s bash core/scripts/tests/sessionstart-slow-work-bounded.test.sh
+      - name: Work Mesh scratch files live under workspace/ and are cleaned up
+        # Drainers finish in about a second; the bound is a hang guard.
+        run: timeout 90s bash core/scripts/tests/work-mesh-scratch-under-workspace.test.sh
       - name: Master-hook success path process budget
         env:
           # Empty on workflow_dispatch and schedule; the resolver then uses
@@ -906,6 +915,8 @@ jobs:
           node --test core/scripts/hook-corpus/corpus.test.mjs
       - name: Master-hook registry dispatch preserves blocking exits
         run: bash core/scripts/tests/master-hook-registry-dispatch.test.sh
+      - name: Master-hook bounds turn-start hook context and keeps task context first
+        run: timeout 120s bash core/scripts/tests/master-hook-context-budget.test.sh
       - name: Timed-out safety guards block; slow non-safety hooks stay non-blocking
         run: timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
       - name: Advisory hooks are hard-capped and fail open; guards are never capped
@@ -939,9 +950,11 @@ jobs:
         run: |
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
           bash core/scripts/tests/resolve-hq-root.test.sh
+          bash core/scripts/tests/master-hook-missing-dependencies.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
           bash core/scripts/tests/master-hook-hook-engine-bridge.test.sh
           bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
+          bash core/scripts/tests/master-hook-hqd-adapter-skip.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
@@ -985,8 +998,14 @@ jobs:
         run: bash core/scripts/tests/block-core-writes-repos-exempt.test.sh
       - name: block-core-writes-bash target-aware write detection
         run: bash core/scripts/tests/block-core-writes-bash.test.sh
+      - name: shell lexer reads ANSI-C strings and $$ like Bash
+        run: bash core/scripts/tests/hook-lib-ansi-c-lexer.test.sh
+      - name: shell lexer skips comments and shows words before an unterminated quote
+        run: bash core/scripts/tests/hook-lib-comment-lexer.test.sh
       - name: block-core-writes-bash blocks chained protected-path variables
         run: bash core/scripts/tests/block-core-writes-bash-chained-vars.test.sh
+      - name: block-core-writes-bash masks only whole always-writable paths
+        run: bash core/scripts/tests/block-core-writes-bash-writable-mask.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
         run: bash core/scripts/tests/block-core-writes-bash-fanout.test.sh
       - name: block-core-writes-bash skips cold-path work and parses once
@@ -1487,6 +1506,7 @@ jobs:
           bash core/scripts/tests/native-plan-session-project.test.sh
           bash core/scripts/tests/policy-prefilter-scale.test.sh
           bash core/scripts/tests/policy-trigger-strictness.test.sh
+          bash core/scripts/tests/trigger-fact-text-linear.test.sh
           bash core/scripts/tests/vyg-preferred-platform-policy.test.sh
       - name: SessionStart hook helper process budget
         env:
@@ -1928,6 +1948,7 @@ jobs:
       run: |
         bash core/scripts/tests/block-hq-glob-diagnostic-order.test.sh
         GLOB_TEST_UMASK=0777 bash core/scripts/tests/block-hq-glob-diagnostic-order.test.sh
+        bash core/scripts/tests/block-hq-glob-root-normalize.test.sh
     - name: "[hooks-no-python] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -2117,6 +2138,10 @@ jobs:
       id: t_setup_skill_direct_install__6
       if: "${{ !cancelled() && steps.t_setup_skill_direct_install__5.outcome == 'success' }}"
       run: bash core/scripts/tests/setup-worker-assistant-wording.test.sh
+    - name: "[setup-skill-direct-install] Billing-state wording matches across pricing.md and /hq-cost"
+      id: t_setup_skill_direct_install__7
+      if: "${{ !cancelled() && steps.t_setup_skill_direct_install__6.outcome == 'success' }}"
+      run: bash core/scripts/tests/billing-state-wording.test.sh
     - name: "[deploy-summary-nounset] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -2866,9 +2891,13 @@ jobs:
       id: t_skill_script_refs__66
       if: "${{ !cancelled() && steps.t_skill_script_refs__65.outcome == 'success' }}"
       run: bash core/scripts/tests/session-auto-bind-multicompany-sessionstart.test.sh
+    - name: "[skill-script-refs] Session auto-bind starts hq on Windows (npm shim resolution)"
+      id: t_skill_script_refs__66b
+      if: "${{ !cancelled() && steps.t_skill_script_refs__66.outcome == 'success' }}"
+      run: bash core/scripts/tests/session-auto-bind-windows-spawn.test.sh
     - name: "[skill-script-refs] Ontology source worklist: ACL retry, ledgers, newest-first order, --redo"
       id: t_skill_script_refs__67
-      if: "${{ !cancelled() && steps.t_skill_script_refs__66.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_skill_script_refs__66b.outcome == 'success' }}"
       run: |
         bash core/scripts/tests/ontology-source-worklist-acl-retry.test.sh
         bash core/scripts/tests/ontology-source-worklist.test.sh
@@ -3114,6 +3143,7 @@ jobs:
       run: |
         bash core/scripts/tests/inject-policy-cache.test.sh
         bash core/scripts/tests/inject-policy-cold-read-budget.test.sh
+        bash core/scripts/tests/inject-policy-backslash-hqroot.test.sh
     - name: "[policy-trigger-migration] SessionStart policy evaluation cache across sessions"
       id: t_policy_trigger_migration__13
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__12.outcome == 'success' }}"
@@ -3494,7 +3524,9 @@ jobs:
     - name: "[shell-portability] lint-shell-portability regression test"
       id: t_shell_portability__2
       if: "${{ !cancelled() && steps.t_shell_portability__1.outcome == 'success' }}"
-      run: bash core/scripts/tests/lint-shell-portability.test.sh
+      run: |
+        bash core/scripts/tests/lint-shell-portability.test.sh
+        bash core/scripts/tests/lint-awk-path-escapes.test.sh
     - name: "[shell-portability] lanes repo merge-hold shim regression"
       id: t_shell_portability__3
       if: "${{ !cancelled() && steps.t_shell_portability__2.outcome == 'success' }}"
@@ -3546,6 +3578,7 @@ jobs:
           core/scripts/hook-lib.sh
           core/scripts/lib/hook-adapter-core.sh
           core/scripts/tests/policy-prefilter-scale.test.sh
+          core/scripts/tests/trigger-fact-text-linear.test.sh
           core/scripts/tests/inject-policy-background-notifications.test.sh
           core/scripts/tests/inject-policy-tool-events.test.sh
           core/scripts/tests/inject-policy-tool-events-cost.sh
@@ -3556,6 +3589,7 @@ jobs:
           core/scripts/tests/block-core-writes-bash-process-budget.test.sh
           core/scripts/tests/block-guard-hooks-parity.test.sh
           core/scripts/tests/block-hq-glob-diagnostic-order.test.sh
+          core/scripts/tests/block-hq-glob-root-normalize.test.sh
           .claude/hooks/block-hq-glob.sh
           core/scripts/tests/knowledge-pulse-policy-schema.test.sh
           core/scripts/remove-stray-gate-hooks.sh
@@ -3572,8 +3606,11 @@ jobs:
           core/scripts/tests/hook-timeout-sentry.test.sh
           core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
           core/scripts/tests/sessionstart-slow-work-bounded.test.sh
+          core/scripts/tests/work-mesh-scratch-under-workspace.test.sh
+          core/scripts/work-mesh-live-bind-trusted.sh
           core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
           core/scripts/lib/session-auto-bind.sh
+          core/scripts/tests/session-auto-bind-windows-spawn.test.sh
           core/scripts/lib/lanes-senior-monitor.sh
           core/hooks/SessionStart/35-work-mesh-session-start.sh
           core/scripts/tests/check-hq-update-bounded-network.test.sh

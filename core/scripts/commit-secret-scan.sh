@@ -19,7 +19,9 @@
 #                          - repos under $HQ_ROOT/repos that set their own
 #                            core.hooksPath: moved to hq.chainHooksPath so the
 #                            dispatcher scans first, then runs their hooks
-#                        Everything changed is backed up first.
+#                        Everything changed is backed up first. The same
+#                        dispatcher runs core/scripts/push-guard.sh as a
+#                        pre-push stage (HQ-root marker and size check).
 #   disable [--dry-run]  put back exactly what `enable` changed
 #   gate                 the pre-commit check itself (used by the dispatcher)
 #   pr-check [BASE]      scan what the branch added since BASE

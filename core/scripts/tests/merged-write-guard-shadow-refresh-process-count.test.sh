@@ -21,6 +21,7 @@ SH
 chmod +x "$BIN/dirname" "$BIN/node"
 
 export HQ_TEST_PROCESS_LOG="$TMP/processes.log" HQ_TEST_INPUT="$TMP/node-input.json"
+ORIGINAL_PATH="$PATH"
 export PATH="$BIN:/usr/bin:/bin"
 payload='{"session_id":"hp31-process-count","value":"same payload"}'
 if ! printf '%s\n' "$payload" | bash "$HOOK" > "$TMP/stdout" 2> "$TMP/stderr"; then
@@ -31,6 +32,25 @@ fi
 [ "$(wc -l < "$HQ_TEST_PROCESS_LOG" | tr -d ' ')" = 1 ] || fail 'refresh hook must invoke one external command'
 [ "$(cat "$HQ_TEST_PROCESS_LOG")" = "node $ROOT/.claude/hooks/merged-write-guard-shadow.cjs --refresh" ] || fail 'refresh hook launched an unexpected command'
 [ "$(cat "$TMP/node-input.json")" = "$payload" ] || fail 'refresh hook changed the input payload'
+
+# master-hook strips trailing newlines before feeding children. The EOF read
+# used to drop the final line and send an empty string to JSON.parse.
+printf '%s' "$payload" | bash "$HOOK" > "$TMP/stdout" 2> "$TMP/stderr"
+[ ! -s "$TMP/stderr" ] || fail 'unterminated payload wrote stderr'
+[ "$(cat "$TMP/node-input.json")" = "$payload" ] || fail 'refresh dropped an unterminated payload'
+
+# Exercise the real parser, with flag access disabled and a scratch root.
+REAL_NODE="$(PATH="$ORIGINAL_PATH" command -v node)"
+printf '%s' '{"hook_event_name":"SessionStart","session_id":"refresh-eof"}' |
+  env PATH="$ORIGINAL_PATH" HQ_FLAGS_API_URL='' HQ_COMPANY_UID='' CLAUDE_PROJECT_DIR="$TMP" \
+  bash "$HOOK" > "$TMP/stdout" 2> "$TMP/stderr"
+[ ! -s "$TMP/stdout" ] && [ ! -s "$TMP/stderr" ] || fail 'real SessionStart refresh is not silent'
+mkdir -p "$TMP/workspace/orchestrator/hook-state/merged-write-guard-shadow"
+printf 'enabled\n' > "$TMP/workspace/orchestrator/hook-state/merged-write-guard-shadow/refresh-eof.enabled"
+printf '%s' '{"hook_event_name":"SessionStart","session_id":"refresh-eof"}' |
+  env CLAUDE_PROJECT_DIR="$TMP" "$REAL_NODE" "$ROOT/.claude/hooks/merged-write-guard-shadow.cjs" > "$TMP/stdout" 2> "$TMP/stderr"
+[ ! -s "$TMP/stdout" ] && [ ! -s "$TMP/stderr" ] || fail 'non-tool shadow invocation is not silent'
+[ ! -e "$TMP/workspace/orchestrator/hook-state/merged-write-guard-shadow.jsonl" ] || fail 'lifecycle event recorded as tool observation'
 
 # The PATH shims only see external commands. A pipeline such as
 # `printf ... | node` forks a helper shell for the printf builtin, which no

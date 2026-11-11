@@ -59,11 +59,16 @@ case "$MODE" in
     if [ -d "$LED" ]; then
       while IFS= read -r f; do
         [ -n "$f" ] || continue; sessions=$((sessions+1)); sid="$(basename "$f" .txt)"
-        fired="$(grep -c . "$f" 2>/dev/null || echo 0)"; fired_list="$fired_list$fired
+        # grep -c prints 0 AND exits 1 on an empty file, so `|| echo 0` added a
+        # second 0; default only when grep printed nothing (feedback_7ff5406c).
+        fired="$(grep -c . "$f" 2>/dev/null)"; [ -n "$fired" ] || fired=0; fired_list="$fired_list$fired
 "
-        r=0; [ -f "$RET/$sid.txt" ] && r="$(grep -c . "$RET/$sid.txt" 2>/dev/null || echo 0)"; ret_list="$ret_list$r
+        r=0; if [ -f "$RET/$sid.txt" ]; then r="$(grep -c . "$RET/$sid.txt" 2>/dev/null)"; [ -n "$r" ] || r=0; fi; ret_list="$ret_list$r
 "
-      done < <(find "$LED" -name '*.txt' -newer "$REF" 2>/dev/null)
+      # One ledger per session is <sid>.txt. The injector also keeps
+      # <sid>.turn.txt, .full.txt, .footer.txt and .deferred-soft.txt in the same
+      # folder; counting those as sessions dragged the median to 0 (feedback_7ff5406c).
+      done < <(find "$LED" -name '*.txt' ! -name '*.*.txt' -newer "$REF" 2>/dev/null)
     rm -f "$REF"
     fi
     fired_med="$(printf '%s' "$fired_list" | grep . | median)"; ret_med="$(printf '%s' "$ret_list" | grep . | median)"

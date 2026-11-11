@@ -401,6 +401,126 @@ CG_SPLIT_DIR_NAMES=(.aws:credentials .aws:config .gem:credentials
   .docker:config.json gh:hosts.yml gh:hosts.yaml)
 CG_SPLIT_ALLOWED=(.env.example .env.sample .env.template .env.schema .env.dist .pub)
 
+# Bash 3.2 runs ${text//pattern/replacement} in time proportional to the
+# number of matches times the length of the text: under a UTF-8 locale a 4 KB
+# word of 4,090 $ references took about 3 s per substitution (about 10 times
+# less under C, still quadratic), and the pre-pass runs several of them, so
+# one such command took 25 s on a laptop and over 30 s on a CI runner. Bash 4
+# and later are linear there and keep the plain expansions. On bash 3.2 a text
+# over CG_SPLIT_SUB_MAX characters goes through field splitting, or one tr or
+# sed process where field splitting cannot be used (bash 3.2 does not split on
+# $'\001', its internal quoting byte), with LC_ALL=C set for that process
+# only. Each gives the same bytes as the expansion it replaces, in linear time.
+# Bash 3.2's ${//} ignores nocasematch, so the case-sensitive tr and sed match
+# it there.
+CG_SPLIT_SLOW_SUB=0
+[ "${BASH_VERSINFO[0]}" -lt 4 ] && CG_SPLIT_SLOW_SUB=1
+CG_SPLIT_SUB_MAX=256
+CG_SPLIT_ALLOWED_SED=()
+for _cg_a in "${CG_SPLIT_ALLOWED[@]}"; do
+  CG_SPLIT_ALLOWED_SED+=(-e "s/${_cg_a//./\\.}//g")
+done
+# The names the full check removes before its CRED_ANY test, in its order.
+CG_FULL_ALLOWED=(.env.example .env.sample .env.template .env.schema .env.dist upstream-pin.env .pub)
+CG_FULL_ALLOWED_SED=()
+for _cg_a in "${CG_FULL_ALLOWED[@]}"; do
+  CG_FULL_ALLOWED_SED+=(-e "s/${_cg_a//./\\.}//g")
+done
+unset _cg_a
+
+# cg_split_long <text>: 0 when <text> takes the bash 3.2 linear path.
+cg_split_long() {
+  [ "$CG_SPLIT_SLOW_SUB" = 1 ] && [ ${#1} -gt "$CG_SPLIT_SUB_MAX" ]
+}
+
+# cg_split_glob <text> -> CG_G: every \001 turned into *. Same value as
+# ${text//$'\001'/*}.
+CG_G=""
+cg_split_glob() {
+  if ! cg_split_long "$1"; then
+    CG_G="${1//$'\001'/*}"
+    return 0
+  fi
+  case "$1" in *$'\001'*) ;; *) CG_G="$1"; return 0 ;; esac
+  # Up to 1,024 characters: the expansion on 256-character pieces, each
+  # bounded, which costs less than starting tr (about 4 ms). A piece never
+  # splits a character, and \001 is one byte in every locale.
+  if [ ${#1} -le 1024 ]; then
+    local s="$1" c i=0 n=${#1}
+    CG_G=""
+    while [ $i -lt $n ]; do
+      c="${s:$i:256}"
+      CG_G="$CG_G${c//$'\001'/*}"
+      i=$((i + 256))
+    done
+    return 0
+  fi
+  # The trailing x keeps trailing newlines from being dropped. If tr fails
+  # (pipefail is set), the slow expansion gives the value instead.
+  if CG_G="$(printf '%sx' "$1" | LC_ALL=C tr '\001' '*' 2>/dev/null)"; then
+    CG_G="${CG_G%x}"
+  else
+    CG_G="${1//$'\001'/*}"
+  fi
+}
+
+# cg_split_lit <glob> -> CG_L: the glob with every * and ? removed. Same value
+# as ${glob//[*?]/}.
+CG_L=""
+cg_split_lit() {
+  if ! cg_split_long "$1"; then
+    CG_L="${1//[*?]/}"
+    return 0
+  fi
+  local old_ifs="$IFS" parts
+  IFS='*?'
+  set -f
+  # shellcheck disable=SC2206
+  parts=($1)
+  set +f
+  IFS=""
+  CG_L="${parts[*]-}"
+  IFS="$old_ifs"
+}
+
+# cg_split_unallow <text> [full] -> CG_UA: every allowed .env template word
+# and .pub removed, in CG_SPLIT_ALLOWED order. Same value as the loop
+# for a in "${CG_SPLIT_ALLOWED[@]}"; do t="${t//$a/}"; done.
+# With "full", the list is CG_FULL_ALLOWED (the full check's CRED_ANY test,
+# which also allows upstream-pin.env), in that order.
+CG_UA=""
+cg_split_unallow() {
+  local t="$1" a hit=0 words sedargs
+  if [ "${2:-}" = full ]; then
+    words=("${CG_FULL_ALLOWED[@]}")
+    sedargs=("${CG_FULL_ALLOWED_SED[@]}")
+  else
+    words=("${CG_SPLIT_ALLOWED[@]}")
+    sedargs=("${CG_SPLIT_ALLOWED_SED[@]}")
+  fi
+  if ! cg_split_long "$t"; then
+    for a in "${words[@]}"; do t="${t//$a/}"; done
+    CG_UA="$t"
+    return 0
+  fi
+  for a in "${words[@]}"; do
+    case "$t" in *"$a"*) hit=1; break ;; esac
+  done
+  if [ "$hit" = 1 ]; then
+    # sed works line by line; no allowed word holds a newline, so removing
+    # them per line gives the same text. sed ends its output with a newline
+    # and the x keeps the text's own trailing newlines; both are taken off.
+    # If sed fails, the slow expansions give the value instead.
+    if CG_UA="$(printf '%s\n' "$t" | LC_ALL=C sed "${sedargs[@]}" 2>/dev/null && printf x)"; then
+      CG_UA="${CG_UA%x}"
+      CG_UA="${CG_UA%$'\n'}"
+      return 0
+    fi
+    for a in "${words[@]}"; do t="${t//$a/}"; done
+  fi
+  CG_UA="$t"
+}
+
 # cg_split_cred <raw command>: return 0 when a word that holds an unknown
 # variable, substitution or ANSI-C escape could expand to a credential name,
 # as in ~/.npm"$F"rc or .e"$F"nv. CRED_WORD_RE only sees credential words
@@ -423,6 +543,8 @@ cg_split_cred() {
   local nc=0 r=1 d
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
+  # Empty the cg_split_dir_is cache (its answers depend on nocasematch).
+  CG_SPLIT_DC_N=0
   # Pass 1: the ${...} expansion is a wildcard (its value is unknown). Pass 2
   # (CG_SPLIT_DEF=1): a ${VAR:-WORD} / ${VAR:=WORD} expands to its literal
   # WORD when the variable is unset, so WORD is marked in place of the
@@ -449,10 +571,10 @@ cg_split_cred() {
 # credential word revealed by decoding ($'\x6e') is matched directly; an
 # allowed .env template word is removed first so it is not a false hit.
 cg_split_check() {
-  local t a
+  local t
   cg_strip_q "$CG_SM"
-  t="$CG_SQ"
-  for a in "${CG_SPLIT_ALLOWED[@]}"; do t="${t//$a/}"; done
+  cg_split_unallow "$CG_SQ"
+  t="$CG_UA"
   [[ "$t" =~ $CRED_WORD_RE ]] && return 0
   cg_split_scan "$CG_SQ"
 }
@@ -464,7 +586,7 @@ cg_split_check() {
 # other characters stay; $"..." is its text; a lone $ stays.
 # Returns 1 (the caller fails closed) on an unterminated ${, or a ${...} or
 # $'...' longer than the scan limits.
-# Linear: field splitting on $, bounded scans, one join at the end.
+# Linear: field splitting on $, bounded scans, output joined from chunks.
 CG_SM=""
 CG_SPLIT_DEF=0
 CG_SPLIT_DEPTH=0
@@ -538,7 +660,7 @@ cg_brace_end() {
 }
 
 cg_split_mark() {
-  local old_ifs="$IFS" parts p i j n out acc name ok b sent=$'\001' be saved dmark off
+  local old_ifs="$IFS" parts p q o n out buf w wf wn acc name ok b sent=$'\001' be saved dmark off d
   # bash 3.2 duplicates a literal $'\001' inside array+=( ... ); a variable
   # does not, so every sentinel below is "$sent".
   IFS='$'
@@ -549,107 +671,156 @@ cg_split_mark() {
   IFS="$old_ifs"
   n=${#parts[@]}
   parts[n - 1]="${parts[n - 1]%x}"
-  # Pieces are collected in an array and joined once: appending to one
-  # string is quadratic on a large heredoc with thousands of $ signs.
-  out=("${parts[0]}")
-  i=1
-  while [ $i -lt $n ]; do
-    p="${parts[$i]}"
-    i=$((i + 1))
-    case "$p" in
-      '{'*)
-        # ${...} parameter expansion. Find its matching } (cg_brace_end). A
-        # $ inside it (${F:-$G}) was split off, so when the } is not in this
-        # piece the next piece is joined and the search repeats. The join
-        # stops once the unclosed text holds a shell separator: then the { is
-        # quoted or inert (echo '${'; cat ~/.np"$F"mrc), the } found later
-        # belongs to another word, and swallowing it would hide a split name
-        # after it. A quote alone does not stop the join: a real default can
-        # hold one (${F:-m"$G"}rc). On the bail the $ is a lone wildcard and
-        # the piece is kept literal, so later pieces are still scanned (i is
-        # unchanged; j is a lookahead).
-        acc="$p"
-        j=$i
-        ok=0
-        off=0
-        while :; do
-          # Each brace scan is bounded; this budget bounds their number
-          # across the whole command, so a deeply nested ${A:-${B:-...}}
-          # cannot run the scan for seconds. The full check blocks brace
-          # nesting over 6 levels anyway, so giving up here changes no
-          # verdict; fail closed (return 1 -> the caller treats it as a hit).
-          CG_SPLIT_WORK=$((CG_SPLIT_WORK + 1))
-          [ "$CG_SPLIT_WORK" -gt 4000 ] && return 1
-          # Only the text joined since the last pass is scanned: the brace
-          # depth carries over (cg_brace_end offset), and the earlier text
-          # was already checked for a separator.
-          cg_brace_end "$acc" "$off"
-          [ "$BE" -ge 0 ] && { ok=1; break; }
-          case "${acc:$off}" in *[" "$'\t'$'\n'";|&<>()"]*) break ;; esac
-          [ $j -lt $n ] || break
-          [ ${#acc} -le 512 ] || break
-          off=${#acc}
-          acc="$acc\$${parts[$j]}"
-          j=$((j + 1))
-        done
-        if [ "$ok" = 1 ]; then
-          i=$j
-          be=$BE
-          dmark="$sent"
-          if [ "$CG_SPLIT_DEF" = 1 ]; then
-            # ${VAR:-WORD}: when VAR is unset the expansion is WORD, so mark
-            # WORD (its own $ refs become wildcards) in place of the wildcard.
-            cg_split_default "${acc:1:$((be - 1))}"
-            # Recurse into the default, but cap the depth: marking a default
-            # re-runs cg_split_mark, and a deeply nested ${A:-${B:-...}} would
-            # otherwise run the hook for seconds. Beyond the cap the default
-            # is a wildcard, the conservative reading (an anchored credential
-            # name still matches). The hook fails closed on a timeout anyway,
-            # so this only keeps a crafted nest from stalling the command.
-            if [ "$CG_HASDEF" = 1 ] && [ "$CG_SPLIT_DEPTH" -lt 24 ]; then
-              saved="$CG_SM"
-              CG_SPLIT_DEPTH=$((CG_SPLIT_DEPTH + 1))
-              if cg_split_mark "$CG_DEF"; then dmark="$CG_SM"; else dmark="$sent"; fi
-              CG_SPLIT_DEPTH=$((CG_SPLIT_DEPTH - 1))
-              CG_SM="$saved"
-            fi
-          fi
-          out+=("$dmark${acc:$((be + 1))}")
-        else
-          out+=("$sent$p")
-        fi
-        ;;
-      "'"*)
-        acc="${p#\'}"
-        # The body ends at the first ' not escaped with a backslash.
-        if [[ "$acc" =~ $CG_SPLIT_ANSI_RE ]]; then
-          b="${BASH_REMATCH[1]}"
-          acc="${BASH_REMATCH[3]}"
-          # Decode the escapes to real characters so a credential name spelled
-          # in ANSI-C ($'\x2e\x65\x6e\x76' = .env) is seen.
-          cg_ansi_decode "$b"
-          out+=("$CG_AD$acc")
-        else
-          out+=("$sent$acc")
-        fi
-        ;;
-      '"'*) out+=("$p") ;;
-      [A-Za-z_]*)
-        name="${p%%[!A-Za-z0-9_]*}"
-        out+=("$sent${p#"$name"}")
-        ;;
-      '') out+=("$sent") ;;
-      [0-9@*#?!-]*) out+=("$sent${p:1}") ;;
-      # $(...): the body is a command, not part of the word, so a space
-      # keeps it apart. COMPUTED_PATH sends the word itself to the full
-      # check.
-      '('*) out+=("$sent ${p:1}") ;;
-      *) out+=("\$$p") ;;
-    esac
+  # Bash 3.2 arrays are linked lists: reading ${a[$i]} walks from the first
+  # element and a+=(x) walks to the last, so indexing or appending to an
+  # array with one entry per $ took seconds on a 60 KB command. Here the
+  # pieces are read once in order (for ... in), a piece waits in the small
+  # window w until CG_SPLIT_LOOK pieces after it are known (the most a ${
+  # join can read ahead, see below), and the output is gathered in a short
+  # string buf that moves to the array out in chunks. The pieces and their
+  # order are the same as an indexed walk over parts.
+  # $1 is no longer needed. Clearing it keeps each cg_split_mark_piece call
+  # from growing with the command length under bash 3.2 (measured: the loop
+  # was about 1.5 times slower at 128 KB with $1 still set).
+  set --
+  out=()
+  buf="${parts[0]}"
+  w=()
+  wf=0
+  wn=0
+  for q in "${parts[@]:1}"; do
+    w[wn]="$q"
+    wn=$((wn + 1))
+    while [ $((wn - wf)) -gt "$CG_SPLIT_LOOK" ]; do
+      cg_split_mark_piece || return 1
+    done
   done
+  while [ "$wf" -lt "$wn" ]; do
+    cg_split_mark_piece || return 1
+  done
+  [ -n "$buf" ] && out+=("$buf")
   IFS=""
-  CG_SM="${out[*]}"
+  # shellcheck disable=SC2124 # ${a[@]+...} only guards an empty array; [*] joins.
+  CG_SM="${out[@]+"${out[*]}"}"
   IFS="$old_ifs"
+  return 0
+}
+
+# A ${ join reads ahead only while the joined text is at most
+# CG_SPLIT_JOIN_MAX characters, and each joined piece adds at least one ($),
+# so it reads at most CG_SPLIT_JOIN_MAX pieces past the ${ piece. The window
+# keeps more than that; it is derived from the limit so the two stay in step.
+CG_SPLIT_JOIN_MAX=512
+CG_SPLIT_LOOK=$((CG_SPLIT_JOIN_MAX + 88))
+
+# cg_split_mark_piece: mark the piece at the front of cg_split_mark's window
+# (w[wf]) and drop it, with any pieces a ${...} joined. Uses the caller's
+# locals. Returns 1 when the work budget runs out.
+cg_split_mark_piece() {
+  p="${w[$wf]}"
+  unset "w[$wf]"
+  wf=$((wf + 1))
+  case "$p" in
+    '{'*)
+      # ${...} parameter expansion. Find its matching } (cg_brace_end). A
+      # $ inside it (${F:-$G}) was split off, so when the } is not in this
+      # piece the next piece is joined and the search repeats. The join
+      # stops once the unclosed text holds a shell separator: then the { is
+      # quoted or inert (echo '${'; cat ~/.np"$F"mrc), the } found later
+      # belongs to another word, and swallowing it would hide a split name
+      # after it. A quote alone does not stop the join: a real default can
+      # hold one (${F:-m"$G"}rc). On the bail the $ is a lone wildcard and
+      # the piece is kept literal, so later pieces are still scanned (wf is
+      # unchanged; d is a lookahead).
+      acc="$p"
+      d=$wf
+      ok=0
+      off=0
+      while :; do
+        # Each brace scan is bounded; this budget bounds their number
+        # across the whole command, so a deeply nested ${A:-${B:-...}}
+        # cannot run the scan for seconds. The full check blocks brace
+        # nesting over 6 levels anyway, so giving up here changes no
+        # verdict; fail closed (return 1 -> the caller treats it as a hit).
+        CG_SPLIT_WORK=$((CG_SPLIT_WORK + 1))
+        [ "$CG_SPLIT_WORK" -gt 4000 ] && return 1
+        # Only the text joined since the last pass is scanned: the brace
+        # depth carries over (cg_brace_end offset), and the earlier text
+        # was already checked for a separator.
+        cg_brace_end "$acc" "$off"
+        [ "$BE" -ge 0 ] && { ok=1; break; }
+        case "${acc:$off}" in *[" "$'\t'$'\n'";|&<>()"]*) break ;; esac
+        [ "$d" -lt "$wn" ] || break
+        [ ${#acc} -le "$CG_SPLIT_JOIN_MAX" ] || break
+        off=${#acc}
+        acc="$acc\$${w[$d]}"
+        d=$((d + 1))
+      done
+      if [ "$ok" = 1 ]; then
+        # The joined pieces are consumed.
+        while [ "$wf" -lt "$d" ]; do
+          unset "w[$wf]"
+          wf=$((wf + 1))
+        done
+        be=$BE
+        dmark="$sent"
+        if [ "$CG_SPLIT_DEF" = 1 ]; then
+          # ${VAR:-WORD}: when VAR is unset the expansion is WORD, so mark
+          # WORD (its own $ refs become wildcards) in place of the wildcard.
+          cg_split_default "${acc:1:$((be - 1))}"
+          # Recurse into the default, but cap the depth: marking a default
+          # re-runs cg_split_mark, and a deeply nested ${A:-${B:-...}} would
+          # otherwise run the hook for seconds. Beyond the cap the default
+          # is a wildcard, the conservative reading (an anchored credential
+          # name still matches). The hook fails closed on a timeout anyway,
+          # so this only keeps a crafted nest from stalling the command.
+          # The recursive call has its own locals; this call's are back
+          # when it returns.
+          if [ "$CG_HASDEF" = 1 ] && [ "$CG_SPLIT_DEPTH" -lt 24 ]; then
+            saved="$CG_SM"
+            CG_SPLIT_DEPTH=$((CG_SPLIT_DEPTH + 1))
+            if cg_split_mark "$CG_DEF"; then dmark="$CG_SM"; else dmark="$sent"; fi
+            CG_SPLIT_DEPTH=$((CG_SPLIT_DEPTH - 1))
+            CG_SM="$saved"
+          fi
+        fi
+        o="$dmark${acc:$((be + 1))}"
+      else
+        o="$sent$p"
+      fi
+      ;;
+    "'"*)
+      acc="${p#\'}"
+      # The body ends at the first ' not escaped with a backslash.
+      if [[ "$acc" =~ $CG_SPLIT_ANSI_RE ]]; then
+        b="${BASH_REMATCH[1]}"
+        acc="${BASH_REMATCH[3]}"
+        # Decode the escapes to real characters so a credential name spelled
+        # in ANSI-C ($'\x2e\x65\x6e\x76' = .env) is seen.
+        cg_ansi_decode "$b"
+        o="$CG_AD$acc"
+      else
+        o="$sent$acc"
+      fi
+      ;;
+    '"'*) o="$p" ;;
+    [A-Za-z_]*)
+      name="${p%%[!A-Za-z0-9_]*}"
+      o="$sent${p#"$name"}"
+      ;;
+    '') o="$sent" ;;
+    [0-9@*#?!-]*) o="$sent${p:1}" ;;
+    # $(...): the body is a command, not part of the word, so a space
+    # keeps it apart. COMPUTED_PATH sends the word itself to the full
+    # check.
+    '('*) o="$sent ${p:1}" ;;
+    *) o="\$$p" ;;
+  esac
+  buf="$buf$o"
+  if [ ${#buf} -gt 256 ]; then
+    out+=("$buf")
+    buf=""
+  fi
   return 0
 }
 
@@ -662,13 +833,84 @@ cg_split_mark() {
 # name (.env.example) is not a credential, so is_env_name rejects it.
 # "$name".test.ts stays allowed: no filler makes *.test.ts a .env name.
 cg_split_env() {
+  if cg_split_long "$1"; then
+    cg_split_env_long "$1"
+    return
+  fi
   local c f g="${1//\?/*}" prev=""
   # Collapse runs of wildcards to one, so a single filler can stand for the
   # whole unknown run (a split can emit adjacent wildcards). The pattern and
   # replacement are unquoted: bash 3.2 keeps quotes in ${v//'x'/'y'} literal.
-  while [ "$g" != "$prev" ]; do prev="$g"; g="${g//\*\*/\*}"; done
+  # The replacement is a bare *: bash 3.2 keeps the backslash of a \*
+  # replacement, which turned ** into \* there, so x.e"$A$B"nv gave the
+  # candidate x.e\nv and passed while bash 4 and later blocked it.
+  while [ "$g" != "$prev" ]; do prev="$g"; g="${g//\*\*/*}"; done
   for f in "" . e n v env rc local production development; do
     c="${g//\*/$f}"
+    is_env_name "$c" && return 0
+  done
+  return 1
+}
+
+# cg_split_env_long <glob>: cg_split_env for a long glob on bash 3.2 (the only
+# caller), the same candidates built in linear time: every run of wildcards
+# becomes one *, as the collapse loop in cg_split_env does, so both lengths
+# of glob give the same candidates and the same decision.
+# The glob is split on * and ? (each ? is a * there); an empty inner field
+# means two wildcards in a row. Each candidate is the collapsed glob with
+# every * turned into the filler, joined from its *-separated fields.
+cg_split_env_long() {
+  local old_ifs="$IFS" parts seq tail c f i k q
+  IFS='*?'
+  set -f
+  # shellcheck disable=SC2206
+  parts=($1x)
+  set +f
+  IFS="$old_ifs"
+  k=$((${#parts[@]} - 1))
+  parts[k]="${parts[k]%x}"
+  # The fields are read in order (for ... in) and the collapsed glob is
+  # gathered in a short string moved to seq in chunks: bash 3.2 indexes and
+  # appends to an array by walking it, which is quadratic over thousands of
+  # fields. Empty pieces are left out of the joins below: bash 3.2 turns an
+  # empty element of "${a[*]}" (IFS empty) into its internal \177 marker.
+  seq=()
+  c="${parts[0]}"
+  i=0
+  for q in "${parts[@]:1}"; do
+    i=$((i + 1))
+    # An empty inner field is one more wildcard in the current run.
+    [ -z "$q" ] && [ $i -lt $k ] && continue
+    c="$c*$q"
+    if [ ${#c} -gt 256 ]; then
+      seq+=("$c")
+      c=""
+    fi
+  done
+  [ -n "$c" ] && seq+=("$c")
+  IFS=""
+  # shellcheck disable=SC2124 # ${a[@]+...} only guards an empty array; [*] joins.
+  c="${seq[@]+"${seq[*]}"}x"
+  IFS='*'
+  set -f
+  # shellcheck disable=SC2206
+  parts=($c)
+  set +f
+  IFS="$old_ifs"
+  # The collapsed glob has no two * in a row, so every field after the first
+  # is non-empty: the inner ones hold text, the last one keeps the x until
+  # the candidate is built.
+  tail=("${parts[@]:1}")
+  for f in "" . e n v env rc local production development; do
+    IFS=""
+    # shellcheck disable=SC2124 # ${a[@]+...} only guards an empty array; [*] joins.
+    if [ -z "$f" ]; then
+      c="${parts[0]}${tail[@]+"${tail[*]}"}"
+    else
+      c="${parts[0]}${tail[@]+"${tail[*]/#/$f}"}"
+    fi
+    IFS="$old_ifs"
+    c="${c%x}"
     is_env_name "$c" && return 0
   done
   return 1
@@ -677,13 +919,66 @@ cg_split_env() {
 # cg_split_dir_is <segment> <dir>...: the segment, written out or split
 # around a variable, can be one of the directories. A segment that is only a
 # variable is not counted.
-cg_split_dir_is() {
-  local seg="$1" d
-  shift
-  case "$seg" in *[!$'\001']*) ;; *) return 1 ;; esac
-  for d in "$@"; do
+# The answer for every directory the callers ask about (CG_SPLIT_DIRSET) is
+# worked out once per segment, when cg_split_scan pushes the segment on its
+# directory stack, and kept on a stack beside it. At each step the scan puts
+# the parent and grandparent with their answers in CG_SPLIT_DC_* (every
+# lookup is about one of those two), so a long parent reached again after
+# many /$G/.. steps is not converted and matched again on every lookup,
+# which on bash 3.2 meant one tr process each time. A lookup compares the
+# segment with [ = ] (exact, unaffected by nocasematch); any other segment
+# is matched directly. cg_split_cred clears the cache on entry.
+CG_SPLIT_DIRSET=(.ssh .aws .docker .gem gh .config)
+CG_SPLIT_DC_SEG1=""
+CG_SPLIT_DC_CLS1=""
+CG_SPLIT_DC_SEG2=""
+CG_SPLIT_DC_CLS2=""
+CG_SPLIT_DC_N=0
+# cg_split_dir_cls <segment> [<glob>] -> CG_DC: " d1 d2 " for each directory
+# in CG_SPLIT_DIRSET the segment can be ("" for a segment that is only a
+# variable). <glob>, when given, is the segment's cg_split_glob value
+# (the scan has it already), so it is not converted twice.
+CG_DC=""
+cg_split_dir_cls() {
+  local d g
+  CG_DC=" "
+  case "$1" in *[!$'\001']*) ;; *) CG_DC=""; return 0 ;; esac
+  if [ $# -ge 2 ]; then
+    g="$2"
+  else
+    cg_split_glob "$1"
+    g="$CG_G"
+  fi
+  for d in "${CG_SPLIT_DIRSET[@]}"; do
     # shellcheck disable=SC2053 # pattern match is intended.
-    [[ "$d" == ${seg//$'\001'/*} ]] && return 0
+    [[ "$d" == $g ]] && CG_DC="$CG_DC$d "
+  done
+}
+cg_split_dir_is() {
+  local seg="$1" d g cls
+  shift
+  if [ "$CG_SPLIT_DC_N" -ge 1 ] && [ "$seg" = "$CG_SPLIT_DC_SEG1" ]; then
+    cls="$CG_SPLIT_DC_CLS1"
+  elif [ "$CG_SPLIT_DC_N" -ge 2 ] && [ "$seg" = "$CG_SPLIT_DC_SEG2" ]; then
+    cls="$CG_SPLIT_DC_CLS2"
+  else
+    cg_split_dir_cls "$seg"
+    cls="$CG_DC"
+  fi
+  for d in "$@"; do
+    case " ${CG_SPLIT_DIRSET[*]} " in
+      *" $d "*)
+        case "$cls" in *" $d "*) return 0 ;; esac
+        ;;
+      *)
+        # Not a cached directory: match it directly.
+        case "$seg" in *[!$'\001']*) ;; *) continue ;; esac
+        cg_split_glob "$seg"
+        g="$CG_G"
+        # shellcheck disable=SC2053 # pattern match is intended.
+        [[ "$d" == $g ]] && return 0
+        ;;
+    esac
   done
   return 1
 }
@@ -697,8 +992,72 @@ cg_split_cred_dir() {
 
 # cg_split_scan <marked text with quotes removed>
 CG_SPLIT_BRACE_RE='\{[^{}]*(,|\.\.)[^{}]*\}'
+# The same test on the text after one {: up to the first } (the text holds
+# no {), with a , or .. before that }.
+CG_SPLIT_BRACE_FIELD_RE='^[^{}]*(,|\.\.)[^{}]*\}'
+
+# cg_split_braces <long word> -> CG_BW: the brace loop of cg_split_scan for a
+# long word on bash 3.2. Returns 1 where that loop gives up (more than 32
+# groups). The loop replaces the first match of CG_SPLIT_BRACE_RE with \001
+# by ${w/match/\001}, which on bash 3.2 costs time proportional to the
+# square of the word. The loop test is unchanged (the regex on the whole
+# word, which also fails as a whole on a word the locale cannot decode). The
+# match is located by splitting the word on {: field i (i >= 1) starts a
+# match exactly when it holds a } and the text before that } holds a , or
+# .., so the first such field is the first match, and its offset is the sum
+# of the field lengths before it. The word is cut there only when the text
+# at that offset is the regex match; otherwise the original replacement
+# runs. Fields are only measured, never joined (bash 3.2 turns an empty
+# element of a "${a[*]}" join into its internal \177 marker).
+CG_BW=""
+cg_split_braces() {
+  local bw="$1" g=0 old_ifs="$IFS" parts f i m hit at pre post
+  while [[ "$bw" == *'{'*'}'* ]] && [[ "$bw" =~ $CG_SPLIT_BRACE_RE ]]; do
+    [ $g -lt 32 ] || return 1
+    m="${BASH_REMATCH[0]}"
+    IFS='{'
+    set -f
+    # shellcheck disable=SC2206
+    parts=($bw"x")
+    set +f
+    IFS="$old_ifs"
+    hit=0
+    i=0
+    # at: offset of the { before the field being read.
+    at=-1
+    for f in "${parts[@]}"; do
+      if [ $i -ge 1 ]; then
+        if [[ "$f" =~ $CG_SPLIT_BRACE_FIELD_RE ]]; then
+          hit=$i
+          break
+        fi
+        at=$((at + 1 + ${#f}))
+      else
+        at=${#f}
+      fi
+      i=$((i + 1))
+    done
+    if [ "$hit" -ge 1 ] && [ "${bw:$at:${#m}}" = "$m" ]; then
+      # An empty ${bw:off} is bash 3.2's internal \177 marker, so the cut
+      # ends are taken only when they hold text.
+      pre=""
+      post=""
+      [ "$at" -gt 0 ] && pre="${bw:0:$at}"
+      [ $((at + ${#m})) -lt ${#bw} ] && post="${bw:$((at + ${#m}))}"
+      bw="$pre"$'\001'"$post"
+    else
+      bw="${bw/"$m"/$'\001'}"
+    fi
+    g=$((g + 1))
+  done
+  CG_BW="$bw"
+  return 0
+}
+
+# Index above the dirs stack in cg_split_scan; more than any segment count.
+CG_SPLIT_DTOP=$((1 << 30))
 cg_split_scan() {
-  local old_ifs="$IFS" w seg prev prev2 pat p n d lit g words=() segs=() pats=() dirs=()
+  local old_ifs="$IFS" w seg prev prev2 pat p n d lit g top words=() segs=() pats=() dirs=() dcls=()
   IFS=$' \t;|&()<>\n'
   set -f
   # shellcheck disable=SC2206
@@ -708,12 +1067,17 @@ cg_split_scan() {
   for w in ${words[@]+"${words[@]}"}; do
     case "$w" in *$'\001'*) ;; *) continue ;; esac
     # Brace expansion picks one of its parts: .n{p,}"$F"mrc.
-    g=0
-    while [[ "$w" == *'{'*'}'* ]] && [[ "$w" =~ $CG_SPLIT_BRACE_RE ]]; do
-      [ $g -lt 32 ] || return 0
-      w="${w/"${BASH_REMATCH[0]}"/$'\001'}"
-      g=$((g + 1))
-    done
+    if cg_split_long "$w"; then
+      cg_split_braces "$w" || return 0
+      w="$CG_BW"
+    else
+      g=0
+      while [[ "$w" == *'{'*'}'* ]] && [[ "$w" =~ $CG_SPLIT_BRACE_RE ]]; do
+        [ $g -lt 32 ] || return 0
+        w="${w/"${BASH_REMATCH[0]}"/$'\001'}"
+        g=$((g + 1))
+      done
+    fi
     IFS='/=:,@'
     set -f
     # shellcheck disable=SC2206
@@ -723,17 +1087,33 @@ cg_split_scan() {
     # prev, prev2: the parent and grandparent segments. Empty and .
     # segments are skipped and .. goes back one (~/.config/gh/./x, gh//x,
     # gh/a/../x).
+    # dirs is a stack kept at falling indices, newest first (top entries):
+    # bash 3.2 finds an array element by walking from the lowest index, so
+    # reading the newest of thousands of segments at the end of the array
+    # made a long path quadratic; at the front it is one or two steps.
+    # dcls beside it holds each segment's cg_split_dir_cls answer, worked
+    # out once when the segment is pushed; CG_SPLIT_DC_* below hands the
+    # parent's and grandparent's answers to cg_split_dir_is.
     dirs=()
+    dcls=()
+    top=0
     prev=""
     prev2=""
+    CG_SPLIT_DC_N=0
     for seg in ${segs[@]+"${segs[@]}"}; do
       case "$seg" in
         ''|.) continue ;;
-        ..) [ ${#dirs[@]} -gt 0 ] && unset "dirs[$((${#dirs[@]} - 1))]" ;;
+        ..)
+          if [ "$top" -gt 0 ]; then
+            unset "dirs[$((CG_SPLIT_DTOP - top))]" "dcls[$((CG_SPLIT_DTOP - top))]"
+            top=$((top - 1))
+          fi
+          ;;
         *)
           case "$seg" in
             *$'\001'*)
-              pat="${seg//$'\001'/*}"
+              cg_split_glob "$seg"
+              pat="$CG_G"
               case "$pat" in
                 *[!*?]*) cg_split_seg "$seg" "$pat" "$prev" "$prev2" && return 0 ;;
                 # Only a variable: any file in a credential directory.
@@ -753,13 +1133,32 @@ cg_split_scan() {
               esac
               ;;
           esac
-          dirs+=("$seg")
+          top=$((top + 1))
+          dirs[CG_SPLIT_DTOP - top]="$seg"
+          # A segment with a variable was converted above (pat).
+          case "$seg" in
+            *$'\001'*) cg_split_dir_cls "$seg" "$pat" ;;
+            *) cg_split_dir_cls "$seg" "$seg" ;;
+          esac
+          dcls[CG_SPLIT_DTOP - top]="$CG_DC"
           ;;
       esac
       prev=""
       prev2=""
-      [ ${#dirs[@]} -gt 0 ] && prev="${dirs[$((${#dirs[@]} - 1))]}"
-      [ ${#dirs[@]} -gt 1 ] && prev2="${dirs[$((${#dirs[@]} - 2))]}"
+      CG_SPLIT_DC_CLS1=""
+      CG_SPLIT_DC_CLS2=""
+      if [ "$top" -gt 0 ]; then
+        prev="${dirs[$((CG_SPLIT_DTOP - top))]}"
+        CG_SPLIT_DC_CLS1="${dcls[$((CG_SPLIT_DTOP - top))]}"
+      fi
+      if [ "$top" -gt 1 ]; then
+        prev2="${dirs[$((CG_SPLIT_DTOP - top + 1))]}"
+        CG_SPLIT_DC_CLS2="${dcls[$((CG_SPLIT_DTOP - top + 1))]}"
+      fi
+      # An empty parent is only-variable-like: no directory (CLS "").
+      CG_SPLIT_DC_SEG1="$prev"
+      CG_SPLIT_DC_SEG2="$prev2"
+      CG_SPLIT_DC_N=2
     done
   done
   return 1
@@ -772,7 +1171,8 @@ cg_split_seg() {
   # An attached short option: -f.e"$F"nv.
   [[ "$pat" =~ ^-[A-Za-z0-9](.+)$ ]] && pats+=("${BASH_REMATCH[1]}")
   for p in "${pats[@]}"; do
-    lit="${p//[*?]/}"
+    cg_split_lit "$p"
+    lit="$CG_L"
     [ ${#lit} -ge 2 ] || continue
     if [[ "$p" =~ ^\*+\.[^.*?]+$ ]]; then
       # $stem.ext: a split name only inside a credential directory.
@@ -1092,7 +1492,7 @@ cg_fast_allow() {
   [ "${HQ_CRED_GUARD_FASTPATH:-1}" != "0" ] || return 1
   # Every helper must be defined; a missing one would otherwise read as "no
   # match" and allow the call.
-  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan cg_split_cred cg_split_check cg_split_mark cg_ansi_decode cg_split_default cg_split_scan cg_split_env cg_split_dir_is cg_split_cred_dir cg_split_seg git_unknown_sub norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
+  declare -F cg_strip_q cg_unescape cg_parse cg_fast_scan cg_split_cred cg_split_check cg_split_mark cg_split_mark_piece cg_ansi_decode cg_split_default cg_split_scan cg_split_env cg_split_env_long cg_split_long cg_split_glob cg_split_lit cg_split_unallow cg_split_braces cg_split_dir_cls cg_split_dir_is cg_split_cred_dir cg_split_seg git_unknown_sub norm_path is_cred_path is_cred_dir is_cred_name_at is_env_name strip_backup >/dev/null 2>&1 || return 1
   [ ${#INPUT} -le 16384 ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   command -v realpath >/dev/null 2>&1 || return 1
@@ -1196,6 +1596,90 @@ fi
 # ---------------------------------------------------------------- full check
 
 command -v jq >/dev/null 2>&1 || block "credential guard cannot parse the tool call (jq missing)"
+
+# ---------------------------------------------------------------- Unicode fold
+# A case-insensitive volume (APFS and HFS+ on macOS, NTFS on Windows) folds
+# some non-ASCII letters to ASCII ones, so `cat ~/.aw<U+017F>/credentials`
+# opens ~/.aws/credentials. Bash's nocasematch does not see that: under
+# LC_ALL=C it compares bytes, and in UTF-8 locales towlower() leaves U+017F
+# and the ligatures alone. The guard therefore also checks a folded copy of
+# the payload.
+#
+# Fold rule (block-credential-file-read fold v1; the native guard in hq-cli
+# must apply the same table). Every string value of the payload JSON,
+# after JSON unescaping, has each code point replaced as follows; all others
+# are kept:
+#   U+00DF (sharp s) -> "ss"     U+1E9E (capital sharp s) -> "ss"
+#   U+017F (long s)  -> "s"      U+212A (Kelvin sign)     -> "k"
+#   U+0130 (I with dot above) -> "i"   U+0131 (dotless i) -> "i"
+#   U+FB00 -> "ff"  U+FB01 -> "fi"  U+FB02 -> "fl"  U+FB03 -> "ffi"
+#   U+FB04 -> "ffl" U+FB05 -> "st"  U+FB06 -> "st"
+#   fullwidth letters and digits, and fullwidth . _ -
+#     U+FF10..U+FF19, U+FF21..U+FF3A, U+FF41..U+FF5A,
+#     U+FF0E, U+FF3F, U+FF0D -> code point - 0xFEE0 (0-9 A-Z a-z . _ -)
+# The first eleven entries other than U+0130 and U+0131 are exactly the
+# non-ASCII code points that a case-insensitive APFS volume resolves to an
+# ASCII name (probed over U+0080..U+2FFFF). U+0130 and U+0131 fold to i in
+# Turkish casing and on NTFS; fullwidth forms map to ASCII under NFKC and
+# under Windows "best fit" code-page conversion. The existing
+# case-insensitive matching (nocasematch) then applies to the result.
+#
+# Every fold produces only letters, digits, ".", "_" or "-". Other fullwidth
+# punctuation is kept as it is: bash and zsh treat U+FF03 or U+FF02 as an
+# ordinary word character, but folded to # or " it would turn the rest of the
+# folded copy into a comment or a quoted string, so the folded copy would
+# hide a read whose name only the folded copy recognizes
+# (`true <U+FF03>; cat ~/.config/gh/ho<U+017F>ts.yml`).
+#
+# Decision: when folding changes the payload, the folded payload is checked
+# first by a second run of this script; if it blocks, that block (exit 2 and
+# its message) is the verdict. Otherwise the payload as sent is checked as
+# before, and must pass too. The folded payload holds none of the folded
+# code points, so the second run folds nothing and does not recurse.
+# Payloads of plain printable ASCII with no \u escape cannot contain a
+# folded code point and skip this step.
+CG_FOLD_JQ='def fold_cp:
+  if . == 223 or . == 7838 then [115, 115]
+  elif . == 383 then [115]
+  elif . == 8490 then [107]
+  elif . == 304 or . == 305 then [105]
+  elif . == 64256 then [102, 102]
+  elif . == 64257 then [102, 105]
+  elif . == 64258 then [102, 108]
+  elif . == 64259 then [102, 102, 105]
+  elif . == 64260 then [102, 102, 108]
+  elif . == 64261 or . == 64262 then [115, 116]
+  elif (. >= 65296 and . <= 65305) or (. >= 65313 and . <= 65338)
+    or (. >= 65345 and . <= 65370) or . == 65294 or . == 65343 or . == 65293
+    then [. - 65248]
+  else [.] end;
+def fold: [explode[] | fold_cp[]] | implode;
+def fold_all: if type == "string" then fold
+  elif type == "object" then map_values(fold_all)
+  elif type == "array" then map(fold_all)
+  else . end;
+[inputs] as $docs
+| if ($docs | length) != 1 then empty
+  else $docs[0] as $o | ($o | fold_all) as $f
+  | if $f == $o then empty else $f end
+  end'
+case "$INPUT" in
+  *'\u'*|*[!' !"#$%&'\''()*+,./01234:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~56789-'$'\t\r\n']*)
+    # A payload jq cannot read is blocked by the full check below.
+    if CG_FOLDED=$(jq -nc "$CG_FOLD_JQ" 2>/dev/null <<<"$INPUT"); then
+      if [ -n "$CG_FOLDED" ]; then
+        "${BASH:-bash}" "${BASH_SOURCE[0]}" <<<"$CG_FOLDED"
+        cg_fold_rc=$?
+        case "$cg_fold_rc" in
+          0) ;;
+          2) exit 2 ;;
+          *) block "credential guard cannot parse the tool call" ;;
+        esac
+      fi
+    fi
+    unset CG_FOLDED cg_fold_rc
+    ;;
+esac
 
 # One jq call for every field. @sh quotes each value for eval; non-string
 # values are rejected (the guard blocks), and more than one JSON document
@@ -1474,10 +1958,12 @@ fi
 # CRED_ANY: a credential word remains after removing allowed names, or a
 # word could expand to one (SPLIT_CRED). Unknown
 # variables and substitutions are treated as wildcards only when it is set.
-ALLOW_STRIPPED="$STRIPPED"
-for allowed in .env.example .env.sample .env.template .env.schema .env.dist upstream-pin.env .pub; do
-  ALLOW_STRIPPED="${ALLOW_STRIPPED//$allowed/}"
-done
+# cg_split_unallow gives the value of the loop
+# for a in "${CG_FULL_ALLOWED[@]}"; do t="${t//$a/}"; done in linear time on
+# bash 3.2 (the loop took about 50 s there on one 16 KB word of .pub under a
+# UTF-8 locale).
+cg_split_unallow "$STRIPPED" full
+ALLOW_STRIPPED="$CG_UA"
 CRED_ANY=0
 if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ] || [ "$COMPUTED_PATH" -eq 1 ] || [ "$SPLIT_CRED" -eq 1 ]; then
   CRED_ANY=1
@@ -2008,9 +2494,13 @@ expand_braces() {
     if [ $((${#out[@]} + ${#work[@]})) -gt 64 ]; then break; fi
   done
   BR=()
+  # The braces come from variables: bash 3.2 keeps the backslash of a \{ or
+  # \} replacement, so cat l{x} was checked as l\{x\} there and a link named
+  # l{x} to a credential file passed.
+  local lb='{' rb='}'
   for cur in ${out[@]+"${out[@]}"} ${work[@]+"${work[@]}"}; do
-    cur="${cur//$'\005'/\{}"
-    cur="${cur//$'\006'/\}}"
+    cur="${cur//$'\005'/$lb}"
+    cur="${cur//$'\006'/$rb}"
     BR+=("$cur")
   done
 }

@@ -22,8 +22,8 @@ jq '.agentRungs[0].monthlyUsd = 120' "$SHIPPED" >"$TMP/rung.json"
 bash "$DRIFT" --live-file "$TMP/rung.json" >/dev/null 2>&1; check "rung price change exits 1" 1 $?
 
 # Usage card (2026-10-16 card): the shipped copy carries the contract shape.
-jq -e '[.usage.meters[] | {(.id): .unitUsd}] | add == {"member-sync":0.10,"integration-call":0.001,"hq-mcp-call":0.05,"agent-run":0.05,"storage":2,"secret":0.5,"vault":5}' "$SHIPPED" >/dev/null
-check "shipped copy carries the card's meter rates, vault included" 0 $?
+jq -e '[.usage.meters[] | {(.id): .unitUsd}] | add == {"member-sync":0.10,"integration-call":0.001,"hq-mcp-call":0.05,"agent-run":0.05,"storage":2,"secret":0.5,"vault":5,"meeting-hour":1}' "$SHIPPED" >/dev/null
+check "shipped copy carries the card's meter rates, vault and meeting hours included" 0 $?
 jq -e '[.usage.meters[] | select(.waivedInTrial == true) | .id] == ["vault"]' "$SHIPPED" >/dev/null
 check "only the vault fee is waived in the trial" 0 $?
 jq -e '.usage.includedUsd == 10 and .usage.trial == {"days":30,"capUsd":500} and .usage.newSignupsFrom == "2026-10-16T18:00:00Z"' "$SHIPPED" >/dev/null
@@ -32,8 +32,8 @@ jq -e '[.usage.boxes[] | [.size, .instanceType, .monthlyUsd]] == [["small","t3.s
 check "shipped copy carries the four-size box ladder" 0 $?
 jq -e '(.usage.free | sort) == ["background-ai","deploys","dms"] and .usage.domains.standardUsd == 20 and .usage.domains.premiumUsd == 500' "$SHIPPED" >/dev/null
 check "deploys, DMs and background AI are free; domains unchanged" 0 $?
-jq -e '.usage.domains.purchase == {"basis":"registrar-cost","markupUsdPerYear":3,"renewal":"yearly","chargedBeforeRenewal":true,"refundGraceDays":5} and ([.billingRules[] | select(.id == "domain-purchase")] | length == 1)' "$SHIPPED" >/dev/null
-check "domain purchase: registrar price plus \$3 a year, yearly, charged before renewal, 5-day refund grace" 0 $?
+jq -e '.usage.domains.purchase == {"basis":"registrar-cost","markupUsdPerYear":3,"renewal":"yearly","chargedBeforeRenewal":true} and ([.billingRules[] | select(.id == "domain-purchase")] | length == 1)' "$SHIPPED" >/dev/null
+check "domain purchase: registrar price plus \$3 a year, yearly, charged before renewal" 0 $?
 jq -e '[.signup.options[].id] == ["free","enterprise"] and .signup.selfHosted.url == "https://docs.hq.computer/hq/guide/use-hq-for-free/"' "$SHIPPED" >/dev/null
 check "signup offers free and enterprise demo, with the self-hosted link" 0 $?
 jq -e '[.plans[] | select(.id != "enterprise") | .newSignupsUntil] | length == 3 and all(. == "2026-10-16T18:00:00Z")' "$SHIPPED" >/dev/null
@@ -88,6 +88,13 @@ grep -q '^- Trial: 30 days, capped at \$500 of usage\.$' "$MD"; check "refresh w
 grep -q '^| xlarge | t3.xlarge | \$800 |$' "$MD"; check "refresh writes the box ladder" 0 $?
 grep -q '^- Use HQ free, self-hosted or on-prem: https://docs.hq.computer/hq/guide/use-hq-for-free/$' "$MD"; check "refresh writes the self-hosted link" 0 $?
 grep -q '^| Workforce | .* | closed from 2026-10-16 |$' "$MD"; check "refresh marks Workforce closed to new signups" 0 $?
+grep -q '^| Meeting hours | \$1.00 | hour | no |$' "$MD"; check "refresh writes the meeting-hour line" 0 $?
+grep -q 'null' "$MD"; check "refresh never writes null into the doc" 1 $?
+jq '.usage.domains.purchase.refundGraceDays = 5' "$SHIPPED" >"$TMP/grace.json"
+bash "$TMP/r/core/scripts/refresh-pricing.sh" --from-file "$TMP/grace.json" >/dev/null 2>&1
+grep -q 'no refunds after a 5-day grace period\.$' "$MD"; check "refresh writes a refund grace when the endpoint publishes one" 0 $?
+bash "$TMP/r/core/scripts/refresh-pricing.sh" --from-file "$SHIPPED" >/dev/null 2>&1
+grep -q '^- Domain purchase: .*charged before each renewal\.$' "$MD"; check "refresh omits the refund grace when the endpoint drops it" 0 $?
 bash "$TMP/r/core/scripts/refresh-pricing.sh" --from-file "$TMP/bad.json" >/dev/null 2>&1
 grep -q '^| Workforce | \$500 | 3 |' "$MD"; check "refresh rewrites the numbers table" 0 $?
 grep -q '^## Hosted agents$' "$MD"; check "refresh keeps prose sections" 0 $?

@@ -119,7 +119,7 @@ SH
 make_fixture "$BASE_FIXTURE" "$BASE_SOURCE"
 make_fixture "$CANDIDATE_FIXTURE" "$CANDIDATE_SOURCE"
 
-for tool in awk bash cat date grep head jq mkdir mv rm rmdir sed sha256sum sleep sort timeout tr uname wc tail setsid; do
+for tool in awk bash cat date env grep head jq mkdir mktemp mv rm rmdir sed sha256sum sleep sort timeout tr uname wc tail setsid; do
   resolved="$(type -P "$tool" || true)"
   [ -n "$resolved" ] || fail "required tool not found: $tool"
   ln -s "$resolved" "$TOOLS/$tool"
@@ -141,10 +141,13 @@ run_event() {
   env -u BASH_ENV -u ENV PATH="$TOOLS" HOME="$TMP/home-${root##*-}" HQ_HOOK_TIMEOUT_SENTRY=0 \
     timeout 30s "$STRACE" -f -qq -e trace=execve,clone,clone3,fork,vfork \
       -o "$trace" "$BASH_BIN" "$root/.claude/hooks/master-hook.sh" "$event" \
-      <<<"$payload" >/dev/null 2>&1
+      <<<"$payload" >/dev/null 2>"$trace.stderr"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "$event fixture exited $rc"
+  if [ "$rc" -ne 0 ]; then
+    cat "$trace.stderr" >&2
+    fail "$event fixture exited $rc"
+  fi
   [ -s "$trace" ] || fail "$event strace produced no data"
 }
 

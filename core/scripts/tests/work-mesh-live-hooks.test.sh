@@ -391,6 +391,7 @@ reset_spool
 run_hook "$SESSION_START" \
   CLAUDE_CODE_SESSION_ID=sid-spawn-ac \
   HQ_SPAWN_COMPANY=acme HQ_SPAWN_PROJECT=proj-a HQ_SPAWN_TASK=US-1 \
+  HQ_REGISTER_PENDING_DIR="$SANDBOX/register-pending" \
   >/dev/null
 last_line | jq -e '.kind=="session_start" and .companySlug=="acme" and .project=="proj-a" and .task=="US-1"' >/dev/null \
   && pass "US-011 spawn envelope on session_start" \

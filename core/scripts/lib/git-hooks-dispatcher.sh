@@ -373,6 +373,17 @@ ghd_stub_text() { # name scan(0|1) trailer(0|1) chain(0|1) qroot qlib qrphys qpr
       printf '  printf %%s\\\\n %s >&2\n' "$(ghd_shq "$(ghd_missing_msg)")"
       printf '  exit 1\n'
       printf 'fi\n' ;;
+    pre-push)
+      # The HQ-root push guard (core/scripts/push-guard.sh) rides with the
+      # secret scan: on in every repo while the scan is on. Like pre-commit,
+      # a missing dispatcher stops the push rather than skipping the check.
+      printf 'if [ %s = 1 ]; then\n' "$s"
+      printf '  if [ -f "$hq_l" ]; then\n'
+      printf 'HQ_ROOT=%s HQ_GHD_STUB_CHAIN=%s HQ_GHD_STUB_PREV="$hq_p" exec bash %s dispatch %s "$@"\n' "$qroot" "$c" "$qlib" "$n"
+      printf '  fi\n'
+      printf '  printf %%s\\\\n %s >&2\n' "$(ghd_shq "$(ghd_missing_msg)")"
+      printf '  exit 1\n'
+      printf 'fi\n' ;;
     commit-msg)
       printf 'hq_go=\n'
       printf 'if [ %s = 1 ] && [ -f "$hq_l" ]; then\n' "$f"
@@ -483,7 +494,7 @@ ghd_husky_block() {
   printf '%s\n' "$GHD_MARK_BEGIN"
   printf 'hq_go=\n'
   printf 'case "${n:-}" in\n'
-  printf '  pre-commit) [ %s = 1 ] && hq_go=1 ;;\n' "$s"
+  printf '  pre-commit|pre-push) [ %s = 1 ] && hq_go=1 ;;\n' "$s"
   printf '  commit-msg)\n'
   printf '    if [ %s = 1 ]; then\n' "$f"
   printf '      hq_o=$PWD; cd -P . 2>/dev/null\n'
@@ -493,8 +504,17 @@ ghd_husky_block() {
   printf 'esac\n'
   printf 'if [ -n "$hq_go" ]; then\n'
   printf '  if [ -f %s ]; then\n' "$qlib"
-  printf '    bash %s husky "$n" "$@" || exit 1\n' "$qlib"
-  printf '  elif [ "$n" = pre-commit ]; then\n'
+  # pre-push: git's ref lines arrive on stdin. Keep a copy in a temp file so
+  # the HQ stage reads it and the repo's own .husky/pre-push still gets it.
+  printf '    if [ "$n" = pre-push ]; then\n'
+  printf '      hq_in=$(mktemp "${TMPDIR:-/tmp}/hq-prepush.XXXXXX") || exit 1\n'
+  printf '      cat >"$hq_in"\n'
+  printf '      bash %s husky "$n" "$@" <"$hq_in" || { rm -f "$hq_in"; exit 1; }\n' "$qlib"
+  printf '      exec <"$hq_in"; rm -f "$hq_in"; unset hq_in\n'
+  printf '    else\n'
+  printf '      bash %s husky "$n" "$@" || exit 1\n' "$qlib"
+  printf '    fi\n'
+  printf '  elif [ "$n" = pre-commit ] || [ "$n" = pre-push ]; then\n'
   printf '    printf %%s\\\\n %s >&2; exit 1\n' "$(ghd_shq "$(ghd_missing_msg)")"
   printf '  fi\n'
   printf 'fi\n'
@@ -657,6 +677,16 @@ ghd_stages() { # name args...: 1 = blocked
       if ghd_feature_on fingerprint && [ -f "$HQ_ROOT/core/scripts/hq-fingerprint-hooks.sh" ]; then
         bash "$HQ_ROOT/core/scripts/hq-fingerprint-hooks.sh" hook commit-msg "$@" >/dev/null 2>&1 </dev/null
       fi ;;
+    pre-push)
+      # HQ-root marker and size backstop on every push (core/scripts/push-guard.sh).
+      # Git hands the ref lines on stdin; keep a copy so a chained hook still
+      # gets them (ghd_dispatch replays GHD_STDIN_REPLAY).
+      if [ -f "$HQ_ROOT/core/scripts/push-guard.sh" ] && [ "${HQ_PUSH_GUARD:-on}" != "off" ]; then
+        GHD_STDIN_REPLAY="$(cat)"
+        bash "$HQ_ROOT/core/scripts/push-guard.sh" gate "$@" <<EOF || return 1
+$GHD_STDIN_REPLAY
+EOF
+      fi ;;
   esac
   return 0
 }
@@ -712,7 +742,15 @@ ghd_dispatch() { # name args...
     fi
   fi
   if [ -n "$d" ] && [ -d "$d" ] && [ "$(cd "$d" && pwd -P)" != "$(cd "$GHD_HOOKS_DIR" 2>/dev/null && pwd -P)" ]; then
-    if [ -f "$d/$n" ] && [ -x "$d/$n" ]; then exec "$d/$n" "$@"; fi
+    if [ -f "$d/$n" ] && [ -x "$d/$n" ]; then
+      # A stage that read stdin (pre-push) saved it; give the chained hook the same lines.
+      if [ -n "${GHD_STDIN_REPLAY+x}" ]; then
+        exec "$d/$n" "$@" <<EOF
+$GHD_STDIN_REPLAY
+EOF
+      fi
+      exec "$d/$n" "$@"
+    fi
   fi
   if [ "$n" = "push-to-checkout" ]; then
     eval "$GHD_PUSH_TO_CHECKOUT_DEFAULT"

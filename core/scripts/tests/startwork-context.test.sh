@@ -33,6 +33,12 @@ companies:
     repos:
     - repos/private/other-site
     knowledge: companies/other/knowledge/
+  nested:
+    name: Nested
+    path: companies/nested
+    repos:
+      - /opt/src/the-starters
+      - repos/private/nested-cli
 YAML
 printf '{"name":"alpha","metadata":{"stage":"build","branchName":"feature/alpha"},"goal":"Ship alpha","userStories":[{"id":"A1","status":"done"},{"id":"A2","status":"queued"}]}\n' > "$FIX/companies/acme/projects/alpha/prd.json"
 sleep 1
@@ -104,6 +110,13 @@ echo "  ok"
 echo "block: list cap"
 out="$(HQ_STARTWORK_MAX_LIST=1 run block --company acme)"
 grep -q '^Repos (2): acme-site (+1 more)$' <<<"$out" || fail "list cap not applied: $(grep '^Repos' <<<"$out")"
+echo "  ok"
+
+echo "block: repo list items indented deeper than the key"
+out="$(run block --company nested)"
+grep -q '^Repos (2): the-starters, nested-cli$' <<<"$out" || fail "indented repos list not read: $(grep '^Repos' <<<"$out")"
+[ "$(run resolve --arg nested-cli)" = '{"company":"nested","via":"repo"}' ] || fail "repo-name resolve missed 6-space list: $(run resolve --arg nested-cli)"
+[ "$(run resolve --arg the-starters)" = '{"company":"nested","via":"repo"}' ] || fail "absolute repo basename resolve missed: $(run resolve --arg the-starters)"
 echo "  ok"
 
 echo "block: no network"
@@ -190,6 +203,45 @@ echo "resolve: slug, repo name, alias, miss"
 set +e; out="$(run resolve --arg zzz)"; rc=$?; set -e
 [ "$rc" -eq 3 ] || fail "miss should exit 3 (got $rc)"
 [ "$out" = '{"company":"","candidates":[]}' ] || fail "miss payload: $out"
+echo "  ok"
+
+# feedback_fdbd311f: `/startwork movefwd` found no candidate for the move-fwd
+# company because resolve compared slugs with their hyphens. Resolve now
+# ignores case, hyphens, underscores and spaces, and a name that two
+# companies share once normalized stays ambiguous.
+echo "resolve: hyphen- and case-insensitive alias, ambiguity kept"
+FIX2="$TMP/hq2"
+mkdir -p "$FIX2/companies"
+cat > "$FIX2/companies/manifest.yaml" <<'YAML'
+companies:
+  move-fwd:
+    name: Move Fwd
+    path: companies/move-fwd
+  move-fwd-labs:
+    name: Move Fwd Labs
+    path: companies/move-fwd-labs
+  north-star:
+    name: North Star
+    path: companies/north-star
+  northstar:
+    name: Northstar Holdings
+    path: companies/northstar
+YAML
+run2() { HQ_ROOT="$FIX2" bash "$SCRIPT" "$@"; }
+[ "$(run2 resolve --arg movefwd)" = '{"company":"move-fwd","via":"alias"}' ] || fail "hyphen-insensitive resolve: $(run2 resolve --arg movefwd)"
+[ "$(run2 resolve --arg MoveFwd)" = '{"company":"move-fwd","via":"alias"}' ] || fail "case-insensitive normalized resolve"
+[ "$(run2 resolve --arg move_fwd)" = '{"company":"move-fwd","via":"alias"}' ] || fail "underscore-insensitive resolve"
+[ "$(run2 resolve --arg 'move fwd labs')" = '{"company":"move-fwd-labs","via":"alias"}' ] || fail "normalized name resolve"
+[ "$(run2 resolve --arg move-fwd)" = '{"company":"move-fwd","via":"slug"}' ] || fail "exact slug still wins"
+[ "$(run2 resolve --arg northstar)" = '{"company":"northstar","via":"slug"}' ] || fail "exact slug wins over a normalized twin"
+set +e; out="$(run2 resolve --arg North_Star)"; rc=$?; set -e
+[ "$rc" -eq 3 ] || fail "two companies that normalize equal must stay ambiguous (rc $rc, $out)"
+[ "$out" = '{"company":"","candidates":["north-star","northstar"]}' ] || fail "ambiguous normalized payload: $out"
+set +e; out="$(run2 resolve --arg movef)"; rc=$?; set -e
+[ "$rc" -eq 3 ] || fail "a prefix of two companies must stay ambiguous (rc $rc, $out)"
+[ "$out" = '{"company":"","candidates":["move-fwd","move-fwd-labs"]}' ] || fail "ambiguous prefix payload: $out"
+set +e; out="$(run2 resolve --arg -- )"; rc=$?; set -e
+[ "$rc" -eq 3 ] && [ "$out" = '{"company":"","candidates":[]}' ] || fail "punctuation-only arg must not match every company: $out"
 echo "  ok"
 
 echo "edit-target: prints the worktree command before work starts (feedback 9b51f5f3)"

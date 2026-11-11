@@ -323,37 +323,135 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "daemon replying after 1s: compan
 else fail "daemon replying after 1s: company write is allowed" "rc=$RC err=$ERR"; fi
 stop_stub
 
-# The env override still works, and a slow daemon is retried once before the
-# shim fails closed: two connections, then the busy message.
+# The env override still works, and a slow daemon gets one attempt: one
+# connection, then the busy message, inside the budget. A timeout is never
+# retried (a second attempt doubled the worst case under load).
 start_slow_stub "$SOCK" "$SLOW_ALLOW" 1
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
 HQ_HQD_SHIM_TIMEOUT_MS=300 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
 CONNS=$(wc -l <"$TMP/conns" | tr -d ' ')
-if [ "$RC" -eq 2 ] && [ "$CONNS" -eq 2 ] && printf '%s' "$ERR" | grep -q 'timed out after 300 ms (daemon busy)'; then
-  pass "busy daemon past the budget: retried once, then fails closed with the busy message"
-else fail "busy daemon past the budget: retried once, then fails closed" "rc=$RC conns=$CONNS err=$ERR"; fi
+if [ "$RC" -eq 2 ] && [ "$CONNS" -eq 1 ] && [ "$el" -lt 1500 ] && printf '%s' "$ERR" | grep -q 'timed out after 300 ms (daemon busy)'; then
+  pass "busy daemon past the budget: one attempt, fails closed with the busy message (${el}ms)"
+else fail "busy daemon past the budget: one attempt, then fails closed" "rc=$RC conns=$CONNS elapsed=${el}ms err=$ERR"; fi
 stop_stub
 
-# A retry that lands after the daemon recovers succeeds: the first connection
-# is answered after 1s (past the 300ms budget), later ones answer at once.
-rm -f "$SOCK"
-STUB_REPLY="$SLOW_ALLOW" perl -e '
-use IO::Socket::UNIX; use Time::HiRes ();
+# A daemon that accepts and never reads, with a payload larger than the
+# socket send buffer (8 KB on macOS, about 208 KB on Linux): the write blocks
+# after a partial send.
+# An alarm-only timeout could not interrupt that write; the non-blocking client
+# must still stop at the budget.
+start_noread_stub() {
+  _sock="$1"
+  rm -f "$_sock"
+  perl -e '
+use IO::Socket::UNIX;
 my $srv = IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 5) or die "listen: $!";
-my $n = 0;
-$SIG{CHLD} = "IGNORE";
-while (my $c = $srv->accept) {
-  $n++;
-  next if fork;
-  my $line = <$c>;
-  Time::HiRes::sleep(1) if $n == 1;
-  print $c $ENV{STUB_REPLY}, "\n"; close $c; exit 0;
-}' "$SOCK" &
-STUB_PID=$!
-_i=0
-while [ ! -S "$SOCK" ] && [ $_i -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+my @held;
+while (my $c = $srv->accept) { push @held, $c; }' "$_sock" &
+  STUB_PID=$!
+  _i=0
+  while [ ! -S "$_sock" ] && [ $_i -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done
+}
+BIG_CMD=$(perl -e 'print "x" x 1100000')
+BIG_WRITE=$(printf '{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"echo %s > companies/otherco/x.md"}}' "$BIG_CMD")
+BIG_OTHER=$(printf '{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"echo %s"}}' "$BIG_CMD")
+start_noread_stub "$SOCK"
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+HQ_HQD_SHIM_TIMEOUT_MS=500 run_shim "$SOCK" "$BIG_WRITE" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 2 ] && [ "$el" -lt 2500 ] && printf '%s' "$ERR" | grep -q 'timed out after 500 ms (daemon busy)'; then
+  pass "daemon that stops reading a 1.1 MB payload: bounded at the budget, company write fails closed (${el}ms)"
+else fail "daemon that stops reading a large payload is bounded by the budget" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+HQ_HQD_SHIM_TIMEOUT_MS=500 run_shim "$SOCK" "$BIG_OTHER" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 0 ] && [ "$el" -lt 2500 ]; then pass "daemon that stops reading: non-company call passes inside the budget (${el}ms)"
+else fail "daemon that stops reading: non-company call" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+HQ_HQD_SHIM_REPORT_UNREACHABLE=1 HQ_HQD_SHIM_TIMEOUT_MS=500 run_shim "$SOCK" "$BIG_WRITE" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 75 ] && [ -z "$ERR" ] && [ "$el" -lt 2500 ]; then pass "daemon that stops reading, master-hook mode: reports 75 inside the budget (${el}ms)"
+else fail "daemon that stops reading, master-hook mode reports 75" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+
+# Caller deadline (master-hook passes its own start + budget): the budget
+# shrinks to the time left, and a deadline already past fails at once.
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+HQ_HQD_SHIM_DEADLINE_MS=$((t0 + 400)) run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 2 ] && [ "$el" -lt 1200 ] && printf '%s' "$ERR" | grep -q 'HQ daemon timed out after'; then
+  pass "caller deadline 400 ms away cuts the 3000 ms default budget (${el}ms)"
+else fail "caller deadline cuts the budget" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+HQ_HQD_SHIM_REPORT_UNREACHABLE=1 HQ_HQD_SHIM_DEADLINE_MS=$((t0 - 5000)) run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 75 ] && [ "$el" -lt 1500 ]; then pass "caller deadline already past: falls back at once (${el}ms)"
+else fail "caller deadline already past falls back at once" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+HQ_HQD_SHIM_DEADLINE_MS=not-a-number run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "malformed caller deadline is ignored"
+else fail "malformed caller deadline is ignored" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# Hard timer: perl stalls while loading a module (before any socket work).
+# The default-action SIGALRM ends it 250 ms after the budget; the shim treats
+# that as a timeout.
+mkdir -p "$TMP/slowlib/JSON"
+# Only the client perl (it alone has HQD_SHIM_SOCKET) stalls; the module probe
+# before it loads the stand-in at once.
+printf 'package JSON::PP; sleep 30 if $ENV{HQD_SHIM_SOCKET}; 1;\n' >"$TMP/slowlib/JSON/PP.pm"
+start_stub "$SOCK" hang
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+PERL5LIB="$TMP/slowlib" HQ_HQD_SHIM_TIMEOUT_MS=400 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 2 ] && [ "$el" -lt 1500 ] && printf '%s' "$ERR" | grep -q 'HQ daemon timed out after 400 ms'; then
+  pass "perl stalled in a module load: hard timer ends it, company write fails closed (${el}ms)"
+else fail "perl stalled in a module load is ended by the hard timer" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+PERL5LIB="$TMP/slowlib" HQ_HQD_SHIM_REPORT_UNREACHABLE=1 HQ_HQD_SHIM_TIMEOUT_MS=400 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+el=$((t1 - t0))
+if [ "$RC" -eq 75 ] && [ "$el" -lt 1500 ]; then pass "perl stalled in a module load, master-hook mode: reports 75 (${el}ms)"
+else fail "perl stalled in a module load, master-hook mode" "rc=$RC elapsed=${el}ms err=$ERR"; fi
+stop_stub
+
+# A client module that fails to load after the probe passed: the client perl
+# exits 76. master-hook mode falls back (75); otherwise the answer is the one
+# for a perl that died (company write fails closed).
+mkdir -p "$TMP/nolib/JSON"
+printf 'package JSON::PP; die "JSON::PP unavailable\\n" if $ENV{HQD_SHIM_SOCKET}; 1;\n' >"$TMP/nolib/JSON/PP.pm"
+PERL5LIB="$TMP/nolib" run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+if [ "$RC" -eq 2 ] && [ "$ERR" = "$UNREACHABLE" ]; then pass "JSON::PP missing: company write fails closed"
+else fail "JSON::PP missing: company write fails closed" "rc=$RC err=$ERR"; fi
+PERL5LIB="$TMP/nolib" HQ_HQD_SHIM_REPORT_UNREACHABLE=1 run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+if [ "$RC" -eq 75 ]; then pass "JSON::PP missing, master-hook mode: reports 75"
+else fail "JSON::PP missing, master-hook mode: reports 75" "rc=$RC err=$ERR"; fi
+
+# A daemon that recovers after a slow first answer is not retried: the one
+# attempt times out and the shim fails closed.
+start_slow_stub "$SOCK" "$SLOW_ALLOW" 1
 HQ_HQD_SHIM_TIMEOUT_MS=300 run_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
-if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "first attempt times out, retry reaches the recovered daemon: allowed"
-else fail "retry after timeout reaches the recovered daemon" "rc=$RC err=$ERR"; fi
+unset HQ_HQD_SHIM_TIMEOUT_MS HQ_HQD_SHIM_DEADLINE_MS HQ_HQD_SHIM_REPORT_UNREACHABLE PERL5LIB
+CONNS=$(wc -l <"$TMP/conns" | tr -d ' ')
+if [ "$RC" -eq 2 ] && [ "$CONNS" -eq 1 ]; then pass "timed-out attempt is not retried (one connection)"
+else fail "timed-out attempt is not retried" "rc=$RC conns=$CONNS err=$ERR"; fi
 stop_stub
 
 # No socket at all (marker present): still fails closed with the connect message.

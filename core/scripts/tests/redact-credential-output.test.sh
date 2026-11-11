@@ -329,13 +329,17 @@ echo "[9] large outputs"
 # minutes and the 1 MB single line about 45 seconds. The hook's timeout is 30 s.
 # big_case NAME FILE EXPECTED — FILE is the raw stdout. The hook must finish in
 # under 20 s, drop every canary, and (when EXPECTED is a file) produce exactly it.
+# These cases check the full-scan code on long text, so they raise the scan
+# window above their size and the time budget to 25 s; section [11] covers
+# the default window, where the middle of such an output is flagged instead.
 big_case() {
   local name="$1" file="$2" expected="$3" rc=0 t0 secs
   jq -Rsc --arg d "$ROOT" \
     '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:"cat x"},tool_response:{stdout:.,stderr:"",interrupted:false}}' \
     "$file" >"$TMP/big.json"
   t0=$SECONDS
-  bash "$HOOK" <"$TMP/big.json" >"$TMP/out" 2>"$TMP/err" || rc=$?
+  HQ_REDACT_OUTPUT_WINDOW=4000000 HQ_REDACT_OUTPUT_BUDGET=25 \
+    bash "$HOOK" <"$TMP/big.json" >"$TMP/out" 2>"$TMP/err" || rc=$?
   secs=$((SECONDS - t0))
   if [ "$rc" != "0" ]; then
     bad "$name: want rc 0 got $rc"
@@ -410,6 +414,242 @@ for p in minimal standard strict; do
     fi
   done
 done
+
+echo "[11] size cap: bounded scan window, notice beyond it, time budget"
+# A 5 MB output took about 14 s and a 50 MB output about 3 minutes before the
+# cap, so the hook rode the 30 s registry timeout. Each run here is killed at
+# its limit + 5 s, so a regression fails fast instead of hanging the suite.
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+# run_capped LIMIT PAYLOAD [ENV...] — sets rc and secs.
+run_capped() {
+  local limit="$1" payload="$2" t0
+  shift 2
+  rc=0
+  t0=$(perl -MTime::HiRes=time -e 'printf "%.0f", time * 1000')
+  env "$@" perl -e 'alarm shift; exec @ARGV or exit 127' "$((limit + 5))" bash "$HOOK" \
+    <"$payload" >"$TMP/out" 2>"$TMP/err" || rc=$?
+  secs=$(perl -MTime::HiRes=time -e 'printf "%.2f", (time * 1000 - shift) / 1000' "$t0")
+}
+under() { awk -v s="$1" -v l="$2" 'BEGIN { exit !(s < l) }'; }
+ctx() { jq -r '.hookSpecificOutput.additionalContext // empty' "$TMP/out" 2>/dev/null; }
+# media_lines N — JSONL with key words on every line and nothing to redact.
+media_lines() { awk -v n="$1" 'BEGIN { for (i = 0; i < n; i++) printf "{\"id\":%d,\"token_count\":%d,\"keyframe\":\"k%07d\",\"pad\":\"xx\"}\n", i, i % 997, i }'; }
+bash_payload_file() { jq -Rsc --arg d "$ROOT" '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:"cat x"},tool_response:{stdout:.,stderr:"",interrupted:false}}' "$1"; }
+read_payload_file() { jq -Rsc --arg d "$ROOT" '{hook_event_name:"PostToolUse",tool_name:"Read",cwd:$d,tool_input:{file_path:"/x/m.jsonl"},tool_response:{type:"text",file:{filePath:"/x/m.jsonl",content:.}}}' "$1"; }
+
+# (a) 5 MB Bash and 50 MB Read outputs of the slow-media shape finish in
+# under 5 s and 15 s, and say that the middle was not checked.
+media_lines 85000 >"$TMP/m5.txt"
+bash_payload_file "$TMP/m5.txt" >"$TMP/m5.json"
+run_capped 5 "$TMP/m5.json"
+if [ "$rc" = "0" ] && under "$secs" 5 && ctx | grep -q "Not fully checked: characters "; then
+  ok "5 MB Bash output finishes in ${secs}s (limit 5 s) with the not-checked notice"
+else
+  bad "5 MB Bash output rc=$rc ${secs}s ctx=$(ctx | head -c 200)"
+fi
+media_lines 850000 >"$TMP/m50.txt"
+read_payload_file "$TMP/m50.txt" >"$TMP/m50.json"
+run_capped 15 "$TMP/m50.json"
+if [ "$rc" = "0" ] && under "$secs" 15 && ctx | grep -q "of file.content"; then
+  ok "50 MB Read output finishes in ${secs}s (limit 15 s) with the not-checked notice"
+else
+  bad "50 MB Read output rc=$rc ${secs}s ctx=$(ctx | head -c 200)"
+fi
+rm -f "$TMP/m50.txt" "$TMP/m50.json"
+
+# (b) In a 5 MB output a credential in the head and one in the tail are
+# redacted; (c) one in the middle is passed through and its offset is inside
+# the range the notice names.
+{ printf 'password=%s-head\n' "$CANARY"; head -n 42500 "$TMP/m5.txt"
+  printf 'password=%s-middle\n' "$CANARY"; tail -n 42500 "$TMP/m5.txt"
+  printf 'password=%s-tail\n' "$CANARY"; } >"$TMP/m5c.txt"
+bash_payload_file "$TMP/m5c.txt" >"$TMP/m5c.json"
+run_capped 5 "$TMP/m5c.json"
+outs="$(jq -r '.hookSpecificOutput.updatedToolOutput.stdout // empty' "$TMP/out" 2>/dev/null)"
+if [ "$rc" = "0" ] && under "$secs" 5 && [ -n "$outs" ] \
+  && ! printf '%s' "$outs" | grep -F -e "$CANARY-head" -e "$CANARY-tail" >/dev/null \
+  && [ "$(printf '%s' "$outs" | grep -c 'password=\[REDACTED\]')" = "2" ]; then
+  ok "credentials in the scanned head and tail of a 5 MB output are redacted (${secs}s)"
+else
+  bad "5 MB head/tail credentials rc=$rc ${secs}s"
+fi
+mid="$(jq -r --arg c "$CANARY-middle" '.hookSpecificOutput.updatedToolOutput.stdout | index($c) // -1' "$TMP/out" 2>/dev/null)"
+range="$(ctx | sed -n 's/.*Not fully checked: characters \([0-9]*\) to \([0-9]*\) (lines [0-9]* to [0-9]*) of stdout.*/\1 \2/p')"
+if [ -n "$range" ] && [ "${mid:--1}" -ge 0 ] && [ "$mid" -ge "${range% *}" ] && [ "$mid" -lt "${range#* }" ] \
+  && ctx | grep -q "may be shown as-is, not redacted"; then
+  ok "a credential beyond the window is flagged: offset $mid inside not-checked range $range"
+else
+  bad "beyond-window credential not flagged: offset=$mid range=$range ctx=$(ctx | head -c 300)"
+fi
+
+# (d) A 5 MB output with no key word anywhere exits early with no output.
+awk 'BEGIN { for (i = 0; i < 250000; i++) printf "frame %d ok at 00:%02d\n", i, i % 60 }' >"$TMP/plain.txt"
+bash_payload_file "$TMP/plain.txt" >"$TMP/plain.json"
+run_capped 5 "$TMP/plain.json"
+if [ "$rc" = "0" ] && [ ! -s "$TMP/out" ]; then
+  ok "5 MB output with no key word: no output (${secs}s)"
+else
+  bad "5 MB plain output rc=$rc out=$(head -c 200 "$TMP/out")"
+fi
+
+# (e) Two large strings share the window: the start of each is scanned and
+# the notice names both fields.
+head -n 20000 "$TMP/m5.txt" >"$TMP/half.txt"
+{ printf 'password=%s-out\n' "$CANARY"; cat "$TMP/half.txt"; } >"$TMP/o.txt"
+{ printf 'password=%s-err\n' "$CANARY"; cat "$TMP/half.txt"; } >"$TMP/e.txt"
+jq -nc --rawfile o "$TMP/o.txt" --rawfile e "$TMP/e.txt" --arg d "$ROOT" \
+  '{hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:"x"},tool_response:{stdout:$o,stderr:$e,interrupted:false}}' >"$TMP/two.json"
+run_capped 5 "$TMP/two.json"
+if [ "$rc" = "0" ] && ! grep -qF -e "$CANARY-out" -e "$CANARY-err" "$TMP/out" \
+  && ctx | grep -q "of stdout" && ctx | grep -q "of stderr"; then
+  ok "two large streams: both heads redacted, both gaps named (${secs}s)"
+else
+  bad "two large streams rc=$rc ctx=$(ctx | head -c 300)"
+fi
+
+# (f) Time budget: with the window raised past a 1 MB key-word-dense output
+# and a 1 s budget, jq is stopped and the hook blocks with a not-checked message.
+awk -v c="$CANARY" 'BEGIN { for (i = 0; i < 20000; i++) printf "line %d password=%s-%d\n", i, c, i }' >"$TMP/dense.txt"
+bash_payload_file "$TMP/dense.txt" >"$TMP/dense.json"
+run_capped 5 "$TMP/dense.json" HQ_REDACT_OUTPUT_WINDOW=4000000 HQ_REDACT_OUTPUT_BUDGET=1
+if [ "$rc" = "2" ] && under "$secs" 4 && grep -q "did not finish checking" "$TMP/err" \
+  && ! grep -qF "$CANARY" "$TMP/out" "$TMP/err"; then
+  ok "time budget stops jq and blocks with a not-checked message (${secs}s)"
+else
+  bad "time budget rc=$rc ${secs}s err=$(head -c 200 "$TMP/err")"
+fi
+
+# (h) Shapes split by the tail cut. One string of about 220 KB; the tail cut
+# target is 32768 characters (1/5 of the window) before the end, and SHAPE
+# is placed so that the target falls K characters into it. Every copy of
+# PROBE left in the output must sit inside a range the notice names.
+# Review of the first version: jq's index counts bytes, so non-ASCII text
+# moved the cut into the next line (A); a mid-line cut in minified JSON (B),
+# a PEM block whose BEGIN is before the cut (C) and a key whose value is on
+# the next line (D) were each shown unredacted and outside the gap.
+# With a sixth argument "head", SHAPE is placed so that the head cut target
+# (131072 characters, 4/5 of the window, from the start) falls K into it.
+cut_case() { # NAME FILLER SHAPE K PROBE [head]
+  local name="$1" filler="$2" shape="$3" k="$4" probe="$5" mode="${6:-tail}" res
+  jq -nc --arg f "$filler" --arg s "$shape" --argjson k "$k" --arg m "$mode" --arg d "$ROOT" '
+    ([range(0; 220000 / ($f | length) | floor)] | map($f) | join("")) as $p
+    | (if $m == "head" then $p[:(131072 - $k)] + $s + $p
+       else $p + $s + $p[:(32768 - (($s | length) - $k))] end) as $text
+    | {hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$d,tool_input:{command:"x"},
+       tool_response:{stdout:$text,stderr:"",interrupted:false}}' >"$TMP/cut.json"
+  run_capped 5 "$TMP/cut.json"
+  res="$(jq -rn --rawfile o "$TMP/out" --slurpfile p "$TMP/cut.json" --arg probe "$probe" '
+    ($o | if length > 0 then fromjson else {} end) as $out
+    | ($out.hookSpecificOutput.updatedToolOutput.stdout // $p[0].tool_response.stdout) as $shown
+    | [($out.hookSpecificOutput.additionalContext // "")
+        | scan("characters ([0-9]+) to ([0-9]+) \\(lines [0-9]+ to [0-9]+\\) of stdout")
+        | {from: (.[0] | tonumber), to: (.[1] | tonumber)}] as $gaps
+    | [$shown | indices($probe)[] as $h
+        | select([$gaps[] | select($h + 1 >= .from and $h + ($probe | length) <= .to)] | length == 0)]
+    | "\(length) \($gaps | length)"' 2>/dev/null)"
+  if [ "$rc" = "0" ] && [ "${res%% *}" = "0" ] && [ "${res#* }" -ge 1 ]; then
+    ok "cut case $name: no credential shown outside a named gap"
+  else
+    bad "cut case $name: rc=$rc unflagged-copies/gaps=$res"
+  fi
+}
+LOREM="lorem ipsum dolor sit amet consectetur adipiscing elit sed do e
+"
+cut_case "A multibyte line before the tail cut" "$LOREM" "ééééééééé
+password=$CANARY-a
+" 0 "$CANARY-a"
+cut_case "A2 box drawing line before an env key" "$LOREM" "──────
+DB_PASSWORD=$CANARY-a2
+" 0 "$CANARY-a2"
+cut_case "B minified JSON cut inside the key" '"name":"lorem","n":1,' "\"password\":\"$CANARY-b\"," 5 "$CANARY-b"
+cut_case "B2 minified JSON cut inside a long value" '"name":"lorem","n":1,' "\"apiKey\":\"$CANARY-b2$(printf 'Q%.0s' $(seq 1 6000))$CANARY-b2\"," 5000 "$CANARY-b2"
+PEM_KIND="RSA PRIV""ATE KEY"
+pem_body=""
+for i in $(seq 1 20); do pem_body="$pem_body$(printf 'MIIFAKE%02d%s' "$i" "$CANARY-c")
+"; done
+cut_case "C PEM block straddling the tail cut" "$LOREM" "-----BEGIN $PEM_KIND-----
+$pem_body-----END $PEM_KIND-----
+" 700 "$CANARY-c"
+cut_case "D key line, value on the next line" "$LOREM" '  "client_secret":
+    "'"$CANARY"'-d",
+' 5 "$CANARY-d"
+
+# Review of the second version: a key line padded past LIMIT before a value
+# on the next line (E), a PEM block with no END whose BEGIN is far before the
+# cut (F, F2), an escaped quoted value longer than LIMIT cut mid-line (G), and
+# a head cut right after a code-like value prefix (H).
+pad="$(printf ' %.0s' $(seq 1 5000))"
+cut_case "E key line padded past LIMIT, value on the next line" "$LOREM" "password:$pad
+$CANARY-e
+" 3000 "$CANARY-e"
+pem_long=""
+for i in $(seq 1 400); do pem_long="$pem_long$(printf 'MIIFAKE%03d%s' "$i" "$CANARY-f")
+"; done
+cut_case "F PEM block with no END line" "$LOREM" "-----BEGIN $PEM_KIND-----
+$pem_long" 15000 "$CANARY-f"
+cut_case "F2 open PEM block, then a complete one" "$LOREM" "-----BEGIN $PEM_KIND-----
+$pem_long-----BEGIN $PEM_KIND-----
+${pem_body}-----END $PEM_KIND-----
+" 15000 "$CANARY-f"
+esc="$(printf 'a\\/b%.0s' $(seq 1 1500))"
+cut_case "G escaped quoted value over LIMIT cut mid-line" '"name":"lorem","n":1,' "\"token\":\"$esc$CANARY-g$esc$CANARY-g\"," 5000 "$CANARY-g"
+cut_case "H head cut after a code-like value prefix" "lorem ipsum dolor sit amet " "password=918273$CANARY-h tail " 15 "918273" head
+# Review of the third version: a head cut right after a comma inside a bare
+# value (I), and inside a token longer than LIMIT (J).
+cut_case "I head cut after a comma inside a value" "lorem ipsum dolor sit amet " "secret: FAKEheadcommaword,$CANARY-i tail " 26 "FAKEheadcommaword" head
+# J: the value starts 4102 characters before the head cut target and runs
+# 9000 characters with no delimiter, so the LIMIT slice before the target is
+# all one token and the old backoff left "password=918273" in the head.
+longtok="918273$(printf 'z%.0s' $(seq 1 9000))"
+cut_case "J head cut inside a token over LIMIT" "lorem ipsum dolor sit amet " "password=$longtok tail " 4111 "918273" head
+
+# (i) A long run of letters and digits inside the window (a compiled
+# contract's bytecode) is scanned quickly. Before the KEYNAME lookbehind the
+# whole-string pass cost grew with the square of the run: 48 KB took 15 s.
+hex="$(head -c 24000 /dev/zero | od -An -tx1 -v | tr -d ' \n')"
+jq -nc --arg c "{\"abi\":[],\"keywords\":[],\"bytecode\":\"0x$hex\"}" --arg d "$ROOT" \
+  '{hook_event_name:"PostToolUse",tool_name:"Read",cwd:$d,tool_input:{file_path:"/x/a.json"},tool_response:{type:"text",file:{filePath:"/x/a.json",content:$c}}}' >"$TMP/hex.json"
+run_capped 3 "$TMP/hex.json"
+if [ "$rc" = "0" ] && under "$secs" 3 && [ ! -s "$TMP/out" ]; then
+  ok "48 KB hex run inside the window: unchanged in ${secs}s (limit 3 s)"
+else
+  bad "48 KB hex run rc=$rc ${secs}s out=$(head -c 200 "$TMP/out")"
+fi
+
+# (g) Outputs up to the window are scanned in full and the hook output is
+# byte-identical to the hook before the cap. The digest was recorded from that
+# hook (efcb8a30e) on these exact payloads; it covers a 160 KiB output at the
+# window edge with credentials at its start, middle and end.
+FIXED="canary-FAKE-NOT-A-TOKEN-pinned"
+PEM_KIND="RSA PRIV""ATE KEY"
+{
+  payload_bash "//registry.example.invalid/:_authToken=$FIXED"
+  payload_bash "password: $FIXED" stderr
+  payload_bash "https://fake:$FIXED@example.invalid/x.git"
+  payload_bash "Authorization: Bearer $FIXED-AbCdEfGhIj"
+  payload_bash "const apiKey = process.env.API_KEY;"
+  payload_bash "nothing to see here"
+  jq -nc --arg c "aws_secret_access_key = $FIXED
+-----BEGIN $PEM_KIND-----
+$FIXED
+-----END $PEM_KIND-----" --arg d "/x" \
+    '{hook_event_name:"PostToolUse",tool_name:"Read",cwd:$d,tool_input:{file_path:"/x/n.txt"},tool_response:{type:"text",file:{filePath:"/x/n.txt",content:$c}}}'
+} | jq -c '.cwd = "/x"' >"$TMP/small.jsonl"
+media_lines 2600 >"$TMP/edge.body"
+{ printf 'password=%s-a\n' "$FIXED"; head -n 1300 "$TMP/edge.body"; printf 'token: %s-b\n' "$FIXED"; tail -n 1300 "$TMP/edge.body"; printf 'secret=%s-c\n' "$FIXED"; } >"$TMP/edge.txt"
+edge_len="$(jq -Rs 'length' "$TMP/edge.txt")"
+bash_payload_file "$TMP/edge.txt" | jq -c '.cwd = "/x"' >>"$TMP/small.jsonl"
+while IFS= read -r line; do
+  printf '%s' "$line" | bash "$HOOK" 2>&1
+  echo "rc=$?"
+done <"$TMP/small.jsonl" >"$TMP/small.out"
+digest="$(sha256_of <"$TMP/small.out")"
+want="3afb858dc5e9838d59e0a77bd55f7d5e24b244abf88bd62dfe5233d8b9345c6a"
+if [ "$edge_len" -le 163840 ] && [ "$edge_len" -gt 150000 ] && [ "$digest" = "$want" ]; then
+  ok "small and window-edge outputs are byte-identical to the uncapped hook"
+else
+  bad "small outputs differ from the uncapped hook: digest $digest want $want (edge length $edge_len)"
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "ALL PASS: redact-credential-output ($pass)"

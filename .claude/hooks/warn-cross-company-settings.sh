@@ -56,7 +56,9 @@ if [ -z "$ACTIVE_CO" ] && echo "$CWD" | grep -qE 'repos/(private|public)/'; then
     MANIFEST="$HQ_ROOT/companies/manifest.yaml"
     if [ -f "$MANIFEST" ]; then
       # Find which company block contains this repo path
-      ACTIVE_CO=$(awk -v repo="$REPO_PATH" '
+      # ENVIRON, not -v: awk processes backslash escapes in -v values.
+      ACTIVE_CO=$(HQ_WCC_REPO="$REPO_PATH" awk '
+        BEGIN { repo = ENVIRON["HQ_WCC_REPO"] }
         /^[a-z]/ && /:/ { company = $0; gsub(/:.*/, "", company) }
         $0 ~ repo { print company; exit }
       ' "$MANIFEST")

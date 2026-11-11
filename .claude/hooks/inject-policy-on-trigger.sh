@@ -98,11 +98,24 @@ SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
 SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 HELPERS="${SCRIPT_DIR%/.claude/hooks}/core/scripts"
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
-# awk treats \U \h \A \L \T as escapes in redirect filenames. A Windows HQ_ROOT
-# such as C:\Users\hqcold\hq made the policy-trigger cache write fatal and left
-# SessionStart with no policy reminder (feedback_8f4f6578). Git Bash accepts
-# forward slashes on the same path.
-HQ_ROOT="${HQ_ROOT//\\//}"
+# A Windows HQ_ROOT such as D:\work\hq is rewritten to D:/work/hq, which Git
+# Bash accepts, so every path derived from it uses one separator. Only Windows
+# hosts and drive or UNC shapes are rewritten: on macOS and Linux a backslash
+# is a legal filename byte, and rewriting it would point the hook at another
+# directory. awk never receives a path through -v or program text (see the
+# evaluator), so a path that keeps its backslashes is still handled unmangled.
+case "$HQ_ROOT" in
+  *\\*)
+    case "${OSTYPE:-}" in
+      msys*|cygwin*|win32*) HQ_ROOT="${HQ_ROOT//\\//}" ;;
+      *)
+        case "$HQ_ROOT" in
+          [A-Za-z]:\\*|\\\\*) HQ_ROOT="${HQ_ROOT//\\//}" ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
 
 # Use master-hook's shared profile/disabled-hook predicate so the scan and its
 # direct enforcement call are governed by the same gate registration state.
@@ -1884,24 +1897,41 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # hook. Under a UTF-8 locale BSD awk aborts the whole pass with
       # "towc: multibyte conversion failure" when a string op meets a split
       # code point, and then no policy loads.
-      # Redirect targets (>> CACHE_TMP, > CACHE_STATUS) still interpret
-      # backslashes after -v. Slash-normalize even if TMPDIR was Windows-shaped.
-      CACHE_TMP="${CACHE_TMP//\\//}"
-      CACHE_STATUS="${CACHE_STATUS//\\//}"
+      # Paths reach awk through ENVIRON, never -v: awk processes backslash
+      # escapes in -v values, so a Windows path such as C:\Users\... lost its
+      # separators ("escape sequence '\U' treated as plain 'U'"), the cache
+      # redirect failed, and SessionStart printed nothing. ENVIRON values are
+      # taken byte for byte. The env prefix on this simple command adds no
+      # process. lint-awk-path-escapes.test.sh keeps paths out of -v here.
+      HQ_PT_EVFACTS_FILE="$FACTS_FILE" HQ_PT_AIFACTS_FILE="$INTENT_FACTS_FILE" \
+      HQ_PT_OUTFACTS_FILE="$OUTPUT_FACTS_FILE" HQ_PT_ALREADY_FILE="$DEDUPE_FILE" \
+      HQ_PT_ALREADY_TURN_FILE="$TURN_FILE" HQ_PT_ALREADY_FULL_FILE="$FULL_FILE" \
+      HQ_PT_DEFERRED_FILE="$DEFERRED_FILE" HQ_PT_EVER_SEEN_FILE="$SEEN_FILE" \
+      HQ_PT_CACHE_TMP="$CACHE_TMP" HQ_PT_CACHE_STATUS="$CACHE_STATUS" \
+      HQ_PT_RETRIEVAL_LEDGER="$STALE_LEDGER" \
       LC_ALL=C awk -v EVENT="$EVENT" -v LEGACY_TOOL_EVENTS="${HQ_POLICY_TOOL_EVENTS:-}" -v INTENT_MODE="$INTENT_MODE" \
           -v EVFACTS="$FACTS_INLINE" -v AIFACTS="$INTENT_FACTS_INLINE" \
-          -v EVFACTS_FILE="$FACTS_FILE" -v AIFACTS_FILE="$INTENT_FACTS_FILE" \
-          -v OUTFACTS="$OUTPUT_FACTS_INLINE" -v OUTFACTS_FILE="$OUTPUT_FACTS_FILE" \
-          -v ALREADY_FILE="$DEDUPE_FILE" -v ALREADY_TURN_FILE="$TURN_FILE" \
-          -v ALREADY_FULL_FILE="$FULL_FILE" -v TOOL_BASELINE="$TOOL_BASELINE" \
-          -v TOOL_STOP_WORDS="$TOOL_STOP_WORDS" -v DEFERRED_FILE="$DEFERRED_FILE" \
-          -v EVER_SEEN_FILE="$SEEN_FILE" \
+          -v OUTFACTS="$OUTPUT_FACTS_INLINE" -v TOOL_BASELINE="$TOOL_BASELINE" \
+          -v TOOL_STOP_WORDS="$TOOL_STOP_WORDS" \
           -v CACHE_RECORDS="$CACHE_RECORDS" -v CACHE_WRITE="$CACHE_WRITE" \
-          -v CACHE_TMP="$CACHE_TMP" -v CACHE_STATUS="$CACHE_STATUS" \
           -v CSEP="$CACHE_SEP" -v TODAY="$STALE_TODAY" \
-          -v RETRIEVAL_LEDGER="$STALE_LEDGER" -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" \
+          -v PERSONAL_SOFT="$INJECT_PERSONAL_SOFT" \
           -v PRINCIPAL="$SESSION_PRINCIPAL" -v RARE_MAX="$RARE_TOKEN_MAX" -v HEADWORDS="$HEAD_WORDS" \
           -v EVREPOS="$EVENT_REPOS" '
+      # First BEGIN in the program, so these are set before any other block.
+      BEGIN {
+        EVFACTS_FILE = ENVIRON["HQ_PT_EVFACTS_FILE"]
+        AIFACTS_FILE = ENVIRON["HQ_PT_AIFACTS_FILE"]
+        OUTFACTS_FILE = ENVIRON["HQ_PT_OUTFACTS_FILE"]
+        ALREADY_FILE = ENVIRON["HQ_PT_ALREADY_FILE"]
+        ALREADY_TURN_FILE = ENVIRON["HQ_PT_ALREADY_TURN_FILE"]
+        ALREADY_FULL_FILE = ENVIRON["HQ_PT_ALREADY_FULL_FILE"]
+        DEFERRED_FILE = ENVIRON["HQ_PT_DEFERRED_FILE"]
+        EVER_SEEN_FILE = ENVIRON["HQ_PT_EVER_SEEN_FILE"]
+        CACHE_TMP = ENVIRON["HQ_PT_CACHE_TMP"]
+        CACHE_STATUS = ENVIRON["HQ_PT_CACHE_STATUS"]
+        RETRIEVAL_LEDGER = ENVIRON["HQ_PT_RETRIEVAL_LEDGER"]
+      }
       # Keep this hot-path parser structurally identical to eval-trigger.sh.
       # In particular, an opening paren needs a closing paren: accepting it
       # here while --check rejects it makes authoring and runtime disagree.
@@ -3282,9 +3312,12 @@ prepare_policy_bodies() {
     fi
   done <<< "$MATCHES"
 
-  if ! LC_ALL=C awk -v map_file="$map_file" -v body_dir="$POLICY_BODY_TMP_DIR" \
-    -v stop="$BODY_STOP" '
+  # Paths go through ENVIRON: awk -v would process backslash escapes in them.
+  if ! HQ_PT_MAP_FILE="$map_file" HQ_PT_BODY_DIR="$POLICY_BODY_TMP_DIR" \
+    LC_ALL=C awk -v stop="$BODY_STOP" '
     BEGIN {
+      map_file = ENVIRON["HQ_PT_MAP_FILE"]
+      body_dir = ENVIRON["HQ_PT_BODY_DIR"]
       while ((getline row < map_file) > 0) {
         split(row, fields, "\t")
         row_id=fields[1]

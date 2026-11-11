@@ -93,6 +93,11 @@ fi
 #     core/scripts/lib/prompt-company-mention.sh
 #   - exactly one manifest company is named; several, or an overlap of names,
 #     means no bind
+# A scheduled-task run (the prompt opens with <scheduled-task ...>) has no
+# person to bind a company, and its first line is the wrapper tag. It may also
+# bind a session that SessionStart left unbound, from the run's cwd under
+# companies/<slug>/, companies/<slug> paths in the task text, or a cue in the
+# task's first line, when all of them name one company (source scheduled_task).
 # Disable with HQ_PROMPT_COMPANY_BIND=0.
 BIND_NOTICE=""
 prompt_company_bind_first_prompt() {
@@ -100,6 +105,7 @@ prompt_company_bind_first_prompt() {
   command -v jq >/dev/null 2>&1 || return 0
   local sid="$SESSION_ID" lib="$HQ_ROOT/core/scripts/lib/prompt-company-mention.sh"
   local hs="$HQ_ROOT/core/scripts/hq-session.sh" meta tp n tr cur src text slug caps out
+  local sched=0 require="device_default" bind_source="prompt_mention"
   [ -f "$lib" ] && [ -f "$hs" ] || return 0
   case "$sid" in ''|.|..|*[!A-Za-z0-9._-]*) return 0 ;; esac
   [ -z "$(extract agent_id)" ] || return 0
@@ -116,12 +122,22 @@ prompt_company_bind_first_prompt() {
   tr="$(grep '"type":"user"' "$tp" 2>/dev/null | grep -c '"tool_result"' || true)"
   [ $(( ${n:-0} - ${tr:-0} )) -le 1 ] || return 0
   grep -q '"type":"assistant"' "$tp" 2>/dev/null && return 0
-  # Binding state: only an unreplaced SessionStart device default may change.
+  # Binding state: only an unreplaced SessionStart device default may change,
+  # or, for a scheduled-task run, a session with no binding at all.
   meta="$HQ_ROOT/workspace/sessions/$sid/meta.yaml"
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
   cur="$(awk '$1=="company_slug:"{sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit}' "$meta")"
   src="$(awk '$1=="company_source:"{sub(/^[^:]+:[[:space:]]*/,""); gsub(/^"|"$/,""); print; exit}' "$meta")"
-  [ "$src" = "device_default" ] && [ -n "$cur" ] && [ "$cur" != "personal" ] || return 0
+  . "$lib" 2>/dev/null || return 0
+  prompt_company_mention_is_scheduled_task "$PROMPT" && sched=1
+  if [ "$src" = "device_default" ] && [ -n "$cur" ] && [ "$cur" != "personal" ]; then
+    :
+  elif [ "$sched" -eq 1 ] && [ -z "$cur" ] && [ -z "$src" ]; then
+    # Unbound scheduled run; the capability check below must also find none.
+    require="none"
+  else
+    return 0
+  fi
   # A multi-company lock set recorded in meta.yaml is never replaced either.
   case "$(awk '$1=="company_slugs:"{sub(/^[^:]+:[[:space:]]*/,""); print; exit}' "$meta")" in *,*) return 0 ;; esac
   if [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ] \
@@ -130,16 +146,28 @@ prompt_company_bind_first_prompt() {
     caps="$(session_scope_read_companies "$HQ_ROOT" "$sid" 2>/dev/null | paste -sd, -)"
     [ "$caps" = "$cur" ] || return 0
   fi
-  . "$lib" 2>/dev/null || return 0
-  text="$(prompt_company_mention_scan_text "$PROMPT")"
-  slug="$(prompt_company_mention_resolve "$HQ_ROOT" "$text")"
+  if [ "$sched" -eq 1 ]; then
+    slug="$(prompt_company_mention_scheduled_task_resolve "$HQ_ROOT" "$(extract cwd)" "$PROMPT")"
+    bind_source="scheduled_task"
+  else
+    text="$(prompt_company_mention_scan_text "$PROMPT")"
+    slug="$(prompt_company_mention_resolve "$HQ_ROOT" "$text")"
+  fi
   [ -n "$slug" ] && [ "$slug" != "$cur" ] || return 0
   # Lock wait is bounded (~1s) and the source is re-checked under the lock.
-  out="$(env HQ_ROOT="$HQ_ROOT" HQ_HQ_SESSION_NO_CLI=1 HQ_SESSION_COMPANY_SOURCE=prompt_mention \
-    HQ_SESSION_LOCK_TRIES=10 HQ_SESSION_REQUIRE_SOURCE=device_default \
+  out="$(env HQ_ROOT="$HQ_ROOT" HQ_HQ_SESSION_NO_CLI=1 HQ_SESSION_COMPANY_SOURCE="$bind_source" \
+    HQ_SESSION_LOCK_TRIES=10 HQ_SESSION_REQUIRE_SOURCE="$require" \
     bash "$hs" --session-id "$sid" set company_slug "$slug" 2>&1)" || return 0
-  BIND_NOTICE="HQ bound this session to company ${slug} because the first message names it (it had been bound to the device default ${cur}). Disregard any company context, policies or knowledge that SessionStart loaded for ${cur}; they do not apply to this session. Use only ${slug}; the company-binding step below is already done.${out:+
+  if [ "$sched" -eq 1 ] && [ -z "$cur" ]; then
+    BIND_NOTICE="HQ bound this scheduled-task session to company ${slug} because the task's folder or instructions point to it (no company was bound at start). Use only ${slug}; the company-binding step below is already done.${out:+
 $out}"
+  elif [ "$sched" -eq 1 ]; then
+    BIND_NOTICE="HQ bound this scheduled-task session to company ${slug} because the task's folder or instructions point to it (it had been bound to the device default ${cur}). Disregard any company context, policies or knowledge that SessionStart loaded for ${cur}; they do not apply to this session. Use only ${slug}; the company-binding step below is already done.${out:+
+$out}"
+  else
+    BIND_NOTICE="HQ bound this session to company ${slug} because the first message names it (it had been bound to the device default ${cur}). Disregard any company context, policies or knowledge that SessionStart loaded for ${cur}; they do not apply to this session. Use only ${slug}; the company-binding step below is already done.${out:+
+$out}"
+  fi
 }
 prompt_company_bind_first_prompt
 

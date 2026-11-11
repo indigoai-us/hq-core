@@ -48,6 +48,8 @@
 #   [24] git cat-file --batch fed by stdin, cat-file with a computed name,
 #        git aliases, object names read in a loop, and archive, grep on a
 #        revision and log -p over a path that holds a credential file
+#   [25] letters a case-insensitive volume folds to ASCII (U+017F, U+212A,
+#        U+00DF, ligatures, fullwidth) under LC_ALL=C and en_US.UTF-8
 # Sections run in the order 1-6, 9, 10, 7, 8, because [8] exports env vars.
 set -uo pipefail
 
@@ -1102,7 +1104,19 @@ if command -v zsh >/dev/null 2>&1; then
   real_shell "zsh id_ed<-> names id_ed25519" "id_ed25519 " zsh -f -c "cd '$FH/.ssh' && print -l id_ed<->"
   real_shell "zsh in (.n)pmrc names .npmrc" ".npmrc " zsh -f -c "cd '$FH' && print -l (.n)pmrc"
 fi
-real_shell "bash function NAME ( body ) runs the body" "ran " bash -c 'function f ( echo ran ); f'
+# Bash 4 and later run the body; bash 3.2 (stock macOS) rejects the form as a
+# syntax error, so nothing runs there. The guard blocks it either way.
+if [ "$(bash -c 'echo "${BASH_VERSINFO[0]}"')" -ge 4 ]; then
+  real_shell "bash function NAME ( body ) runs the body" "ran " bash -c 'function f ( echo ran ); f'
+else
+  if out=$(bash -c 'function f ( echo ran ); f' 2>/dev/null); then
+    bad "real shell: bash 3.2 accepted function NAME ( body ) (output '$out')"
+  elif [ -n "$out" ]; then
+    bad "real shell: bash 3.2 ran part of function NAME ( body ) (output '$out')"
+  else
+    ok "real shell: bash 3.2 rejects function NAME ( body ) as a syntax error"
+  fi
+fi
 # [23] round 7 (#1767 desk shapes). (a) git and npm-family operands with ://
 # kept the old URL exemption; (b) zsh $~ and glob_subst glob a quoted ^ or #
 # value; (c) git runs alias and other config values as commands.
@@ -1277,6 +1291,24 @@ code_body() { # <lines>
 # commands take about 5 s there and under 1 s in bash 5.
 CODE_LINES=2000
 CODE="$(code_body "$CODE_LINES")"
+# The timed cases run the hook under a UTF-8 locale when one is installed, as
+# a real session usually does: bash 3.2 runs some string operations far
+# slower there (the 4,090 $ case below took 25 s under en_US.UTF-8 and 2 s
+# under C before the split-name pre-pass was made linear), so a C-locale run
+# would hide the slow path.
+# (The list is read into a variable first: with pipefail, grep -q closing the
+# pipe early would fail the locale | grep pipeline.)
+UTF8_LC=""
+_locales="
+$(locale -a 2>/dev/null)
+"
+for _lc in en_US.UTF-8 C.UTF-8 en_US.utf8 C.utf8; do
+  case "$_locales" in *"
+$_lc
+"*) UTF8_LC="$_lc"; break ;; esac
+done
+unset _lc _locales
+[ -n "$UTF8_LC" ] || echo "note: no UTF-8 locale installed; timed cases run in the inherited locale"
 timed_case() { # <want-rc> <desc> <command>
   # The command is passed to jq through a file: one argv string over 128 KB
   # fails with E2BIG on Linux, and an empty payload would read as an allow.
@@ -1286,12 +1318,16 @@ timed_case() { # <want-rc> <desc> <command>
     '{session_id:"cred-guard-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$c}}')
   if [ "${#pl}" -le "${#3}" ]; then bad "$2 (payload not built)"; return; fi
   start=$(date +%s)
-  check "$1" "Bash: $2" "$pl"
+  if [ -n "$UTF8_LC" ]; then
+    LC_ALL="$UTF8_LC" check "$1" "Bash: $2" "$pl"
+  else
+    check "$1" "Bash: $2" "$pl"
+  fi
   end=$(date +%s)
   if [ $((end - start)) -le "$LIMIT" ]; then
-    ok "$2 took $((end - start))s (limit ${LIMIT}s = Bash timeout ${BASH_TIMEOUT}s / 4)"
+    ok "$2 took $((end - start))s (limit ${LIMIT}s = Bash timeout ${BASH_TIMEOUT}s / 4, locale ${UTF8_LC:-inherited})"
   else
-    bad "$2 took $((end - start))s, over ${LIMIT}s (Bash timeout ${BASH_TIMEOUT}s / 4)"
+    bad "$2 took $((end - start))s, over ${LIMIT}s (Bash timeout ${BASH_TIMEOUT}s / 4, locale ${UTF8_LC:-inherited})"
   fi
 }
 timed_case 0 "$BIG_LINES line quoted heredoc to a file" "$(printf "cat > out.md <<'EOF'\n%s\nEOF" "$BODY")"
@@ -1311,6 +1347,49 @@ timed_case 2 "eval of a large heredoc substitution names a credential file" "$(p
 # start on every $ and took over 90 s on this 4 KB payload.
 DOLLARS="$(i=0; while [ $i -lt 4090 ]; do printf '$'; i=$((i + 1)); done)"
 timed_case 0 "unbalanced \${ followed by 4,090 \$ signs" "$(printf "cat > o.txt <<'EOF'\nx \${a:-{ %s\nEOF" "$DOLLARS")"
+# Regression: under bash 3.2 each ${text//pattern/repl} in the pre-pass cost
+# (matches x length), and indexing or appending to an array with one entry per
+# $ walked the array, so the pre-pass grew with the square of the command:
+# 25 s for the 4 KB case above under a UTF-8 locale, and four times that for
+# each doubling. Linear now: the 16 KB cases below take a few seconds. Each
+# shape reaches a different former quadratic step: the ${ window and output
+# buffer (mark), one long wildcard segment (glob, literal count and .env
+# candidates), thousands of path segments (directory stack), and many
+# allowed .pub words (template-word removal).
+rep_str() { # <unit> <count>: built by doubling
+  local u="$1" m="$2" s=""
+  while [ "$m" -gt 0 ]; do
+    [ $((m % 2)) -eq 1 ] && s="$s$u"
+    u="$u$u"
+    m=$((m / 2))
+  done
+  printf '%s' "$s"
+}
+DOLLARS16="$(rep_str '$' 16360)"
+timed_case 0 "unbalanced \${ followed by 16,360 \$ signs" "$(printf "cat > o.txt <<'EOF'\nx \${a:-{ %s\nEOF" "$DOLLARS16")"
+timed_case 0 "one 16 KB word of \$ signs between literal text" "$(printf "cat > o.txt <<'EOF'\nxy%s.e\nEOF" "$DOLLARS16")"
+timed_case 0 "4,090 path segments that hold a variable" "$(printf "cat > o.txt <<'EOF'\n%s\nEOF" "$(rep_str 'a$x/' 4090)")"
+timed_case 0 "4,090 .pub words after a variable" "$(printf "cat > o.txt <<'EOF'\n\$x %s\nEOF" "$(rep_str '.pub' 4090)")"
+# A long directory segment that holds a variable, reached again after 1,200
+# /$G/.. steps: its directory test is worked out once, not on every step.
+timed_case 0 "long segment reached again after 1,200 /\$G/.. steps" "echo x\${F}$(rep_str abcdefghij 26)$(rep_str '/$G/..' 1200)"
+# 31 brace groups ahead of a 12 KB word: the brace replacement is linear (it
+# took about 40 s on bash 3.2 under a UTF-8 locale).
+timed_case 0 "31 brace groups ahead of a 12 KB word" "echo $(rep_str '{a,b}' 31)$(rep_str 'a$F' 4000)"
+# The linear paths take words over 256 characters; they still find a split
+# name there.
+LONGA="$(rep_str a 300)"
+timed_case 2 "split .env name in a 300-character word" "cat ${LONGA}.e\"\$F\"nv"
+# 100 .pub words (400 characters) take the linear template-word removal.
+timed_case 2 "split .npmrc name after 100 .pub words" "echo \$x $(rep_str '.pub' 100); cat ~/.np\"\$F\"mrc"
+# One 16 KB word next to a credential read: the full check removes the
+# allowed names (.pub, .env.example, upstream-pin.env, ...) before its
+# CRED_ANY test. That removal took about 50 s on bash 3.2 under a UTF-8
+# locale for 16 KB of .pub (6 s at 8 KB); it is linear now.
+timed_case 2 "16 KB word of .pub in a heredoc, then a split credential read" "$(printf "cat > o.txt <<'EOF'\n\$x %s\nEOF\ncat ~/.np\"\$F\"mrc" "$(rep_str '.pub' 4096)")"
+timed_case 2 "16 KB word of .pub in a heredoc, then a credential read" "$(printf "cat > o.txt <<'EOF'\n%s\nEOF\ncat ~/.npmrc" "$(rep_str '.pub' 4096)")"
+timed_case 2 "16 KB word of upstream-pin.env in a heredoc, then a split credential read" "$(printf "cat > o.txt <<'EOF'\n%s\nEOF\ncat ~/.np\"\$F\"mrc" "$(rep_str 'upstream-pin.env' 1024)")"
+timed_case 2 "split .aws directory word of 150 variables" "cat ~/.a$(rep_str '"$D"' 150)ws/credentials"
 VARBODY="$(i=0; while [ $i -lt 5000 ]; do printf 'line $x${y} $1 "$z"-$w %d\n' "$i"; i=$((i + 1)); done)"
 timed_case 0 "5000 line heredoc of variable references" "$(printf "cat > out.txt <<'EOF'\n%s\nEOF" "$VARBODY")"
 # A deeply nested ${A:-${B:-...}} default: the split-name pre-pass recurses
@@ -1329,6 +1408,8 @@ bash_case 2 "heredoc body ending in blank lines still checked" "$(printf "bash <
 bash_case 2 "substitution with trailing blank lines still checked" "$(printf 'echo "$(cat ~/.npmrc\n\n)"')"
 
 echo "[14] credential names split around a variable"
+mkdir -p "$FH/braces"
+ln -s "$FH/.npmrc" "$FH/braces/l{x}"
 # An unset F expands to nothing, so ~/.npm"$F"rc reads ~/.npmrc. No
 # credential word is written out whole, and the guard used to keep the
 # variable literal and allow the read. Every case runs on the fast path and
@@ -1402,6 +1483,32 @@ for fp in 1 0; do
   bash_case 2 "variable in the middle of a *.env name (fastpath=$fp)" 'cat prod."$E"nv'
   bash_case 2 "variable as the dot of a *.env name (fastpath=$fp)" 'cat prod"$E"env'
   bash_case 2 "variable in the middle of .env (fastpath=$fp)" 'cat x."$E"nv'
+  # Two or more variables in a row inside a .env name. bash 3.2 kept the
+  # backslash of the \* replacement that collapses a run of wildcards, so
+  # the candidate was x.e\nv and these passed there while bash 5 blocked.
+  # Run the suite with CRED_GUARD_HOOK_BASH=/bin/bash to cover bash 3.2.
+  bash_case 2 "two variables in a row inside x.env (fastpath=$fp)" 'cat x.e"$A$B"nv'
+  bash_case 2 "two braced variables in a row inside .env (fastpath=$fp)" 'cat .e${A}${B}nv'
+  bash_case 2 "three variables in a row inside .env.local (fastpath=$fp)" 'cat .e"$A$B$C"nv.local'
+  bash_case 2 "four variables in a row inside prod.env (fastpath=$fp)" 'cat prod"$A$B$C$D"env'
+  bash_case 2 "two variables in a row in a 300-character word (fastpath=$fp)" "cat ${LONGA}.e\"\$A\$B\"nv"
+  bash_case 2 "three variables in a row in a 300-character word (fastpath=$fp)" "cat ${LONGA}.e\"\$A\$B\$C\"nv"
+  bash_case 0 "control: two variables in a row, no .env name (fastpath=$fp)" 'cat x.e"$A$B"nx'
+  bash_case 0 "control: two variables in a row in a 300-character word, no .env name (fastpath=$fp)" "cat ${LONGA}.e\"\$A\$B\"nx"
+  # A brace group with no comma is literal text: cat l{x} reads the file
+  # l{x}. bash 3.2 kept the backslash of the \{ \} replacement that puts the
+  # braces back, so the guard checked l\{x\} there and a link named l{x} to
+  # a credential file passed.
+  bash_case 2 "link named l{x} to .npmrc (fastpath=$fp)" 'cat l{x}' "$FH/braces"
+  bash_case 2 "link named l{x} to .npmrc after ./ (fastpath=$fp)" 'head -1 ./l{x}' "$FH/braces"
+  bash_case 0 "control: l{y} names no file (fastpath=$fp)" 'cat l{y}' "$FH/braces"
+  # The full check removes allowed names (upstream-pin.env, .env.example,
+  # .pub, ...) before it decides whether unknown variables count as
+  # wildcards. On bash 3.2 a long text takes a linear path for that; it must
+  # remove the same names, or "$F" below would read as a wildcard and block.
+  bash_case 0 "control: long word of .pub names, then cat \"\$F\" (fastpath=$fp)" "echo $(rep_str .pub 80); cat \"\$F\""
+  bash_case 0 "control: long word of .env.example names, then cat \"\$F\" (fastpath=$fp)" "echo $(rep_str .env.example 25); cat \"\$F\""
+  bash_case 2 "long word of upstream-pin.env names next to a .env name, then cat \"\$F\" (fastpath=$fp)" "echo $(rep_str upstream-pin.env 20).env; cat \"\$F\""
   # Controls for round 3: a real ${...} with a $ inside, quoted braces, and
   # ordinary two-part extensions stay allowed.
   bash_case 0 "control: \${X:-\$HOME/x} path (fastpath=$fp)" 'cat "${OUT:-$HOME/x}/f.md"'
@@ -1736,6 +1843,26 @@ bash_case 0 "hq-bug Step 2 script" "$hq_bug_step2"
 setup_toolchain="$(grep -m1 'cygpath -u' "$ROOT/.claude/skills/setup/SKILL.md")"
 [ -n "$setup_toolchain" ] || bad "setup toolchain line not found in SKILL.md"
 bash_case 0 "setup toolchain cygpath line" "$setup_toolchain"
+# /handoff passes its changeset file to handoff-finalize.sh. A mktemp path held
+# in a variable is a computed operand the guard blocks, and a variable set in
+# Step 1 is gone by Step 3 (each Bash call is a new shell), so the skill spells
+# the temp path out literally in every block.
+bash_case 2 "mktemp variable passed to handoff-finalize" 'T=$(mktemp workspace/threads/.handoff-tmp/x-XXXXXX); core/scripts/handoff-finalize.sh --files-touched-json-file "$T"'
+handoff_skill="$ROOT/.claude/skills/handoff/SKILL.md"
+for step in 1 3; do
+  handoff_block="$(awk -v h="^### $step\\\\. " '$0~h{s=1} s&&/^```bash$/{f=1;next} f&&/^```$/{exit} f' "$handoff_skill")"
+  if [ -z "$handoff_block" ]; then
+    bad "handoff Step $step bash block not found in SKILL.md"
+    continue
+  fi
+  bash_case 0 "handoff Step $step script" "$handoff_block"
+  if printf '%s' "$handoff_block" | grep -E '\$\(mktemp|CHANGESET_TMP' >/dev/null \
+    || ! printf '%s' "$handoff_block" | grep -F >/dev/null 'workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json'; then
+    bad "handoff Step $step passes the changeset as a literal path"
+  else
+    ok "handoff Step $step passes the changeset as a literal path"
+  fi
+done
 # An operand the guard cannot compute must be named in readable text, with no
 # control character, or the reader sees "(operand: )".
 bash_case 2 "unprovable operand message" 'B=$(mktemp -t x.XXXXXX); B=$(tac "$B")'
@@ -2083,6 +2210,91 @@ bash_case 2 "[24k] log -p -1 -- src cfg" "git log -p -1 -- src cfg" "$HREPO"
 bash_case 2 "[24k] log -p -1 -- ." "git log -p -1 -- ." "$HREPO"
 bash_case 2 "[24k] -c color.ui=never log -p -1" "git -c color.ui=never log -p -1" "$HREPO"
 bash_case 2 "[24k] -c log.follow=true log -p -1" "git -c log.follow=true log -p -1" "$HREPO"
+
+echo "[25] Unicode letters a case-insensitive volume folds to ASCII"
+# APFS resolves ~/.aw<U+017F>/credentials to ~/.aws/credentials, and the
+# same for the other folds in the guard's fold table. Each row runs under
+# LC_ALL=C and en_US.UTF-8: bash's nocasematch folds none of these under C
+# and only some (U+212A, U+0130) under UTF-8.
+mkdir -p "$FH/.awss"
+printf 'region = us-east-1\n' > "$FH/.awss/config"
+printf 'Host example.invalid\n' > "$FH/.ssh/config"
+U_LS=$'\xc5\xbf'         # U+017F long s
+U_KELVIN=$'\xe2\x84\xaa' # U+212A Kelvin sign
+U_SZ=$'\xc3\x9f'         # U+00DF sharp s
+U_CSZ=$'\xe1\xba\x9e'    # U+1E9E capital sharp s
+U_IDOT=$'\xc4\xb0'       # U+0130 I with dot above
+U_DLI=$'\xc4\xb1'        # U+0131 dotless i
+U_ST=$'\xef\xac\x86'     # U+FB06 ligature st
+U_LST=$'\xef\xac\x85'    # U+FB05 ligature long s t
+U_FI=$'\xef\xac\x81'     # U+FB01 ligature fi
+U_FWS=$'\xef\xbd\x93'    # U+FF53 fullwidth s
+U_FWN=$'\xef\xbd\x8e'    # U+FF4E fullwidth n
+U_FWQ=$'\xef\xbc\x82'    # U+FF02 fullwidth quotation mark
+U_FWLP=$'\xef\xbc\x88'   # U+FF08 fullwidth left parenthesis
+U_FWRP=$'\xef\xbc\x89'   # U+FF09 fullwidth right parenthesis
+U_FWHASH=$'\xef\xbc\x83' # U+FF03 fullwidth number sign
+U_FWAPOS=$'\xef\xbc\x87' # U+FF07 fullwidth apostrophe
+U_FWDOT=$'\xef\xbc\x8e'  # U+FF0E fullwidth full stop
+U_FWUS=$'\xef\xbc\xbf'   # U+FF3F fullwidth low line
+for cg_loc in C en_US.UTF-8; do
+  export LC_ALL="$cg_loc"
+  # Blocked: the folded name is a credential file.
+  bash_case 2 "[25] $cg_loc cat ~/.aw<U+017F>/config" "cat ~/.aw$U_LS/config"
+  bash_case 2 "[25] $cg_loc cat ~/.aw<U+017F>/credentials" "cat ~/.aw$U_LS/credentials"
+  read_case 2 "[25] $cg_loc ~/.aw<U+017F>/config" "~/.aw$U_LS/config"
+  read_case 2 "[25] $cg_loc absolute .aw<U+017F>/credentials" "$FH/.aw$U_LS/credentials"
+  bash_case 2 "[25] $cg_loc cat ~/.<U+017F><U+017F>h/deploy_key" "cat ~/.$U_LS${U_LS}h/deploy_key"
+  bash_case 2 "[25] $cg_loc cat ~/.<U+017F><U+017F>h/id_rsa" "cat ~/.$U_LS${U_LS}h/id_rsa"
+  read_case 2 "[25] $cg_loc ~/.<U+017F><U+017F>h/deploy_key" "~/.$U_LS${U_LS}h/deploy_key"
+  bash_case 2 "[25] $cg_loc cat ~/.<U+00DF>h/deploy_key" "cat ~/.${U_SZ}h/deploy_key"
+  bash_case 2 "[25] $cg_loc cat ~/.<U+1E9E>h/deploy_key" "cat ~/.${U_CSZ}h/deploy_key"
+  bash_case 2 "[25] $cg_loc cat ~/.doc<U+212A>er/config.json" "cat ~/.doc${U_KELVIN}er/config.json"
+  read_case 2 "[25] $cg_loc ~/.doc<U+212A>er/config.json" "~/.doc${U_KELVIN}er/config.json"
+  bash_case 2 "[25] $cg_loc cat ~/.g<U+0130>t-credentials" "cat ~/.g${U_IDOT}t-credentials"
+  bash_case 2 "[25] $cg_loc cat ~/.g<U+0131>t-credentials" "cat ~/.g${U_DLI}t-credentials"
+  bash_case 2 "[25] $cg_loc cat ~/.config/gh/ho<U+FB06>s.yml" "cat ~/.config/gh/ho${U_ST}s.yml"
+  bash_case 2 "[25] $cg_loc cat ~/.config/gh/ho<U+FB05>s.yml" "cat ~/.config/gh/ho${U_LST}s.yml"
+  bash_case 2 "[25] $cg_loc cat ~/.con<U+FB01>g/gh/hosts.yml" "cat ~/.con${U_FI}g/gh/hosts.yml"
+  bash_case 2 "[25] $cg_loc cat ~/.aw<U+FF53>/credentials" "cat ~/.aw$U_FWS/credentials"
+  bash_case 2 "[25] $cg_loc cat ~/.<U+FF4E>pmrc" "cat ~/.${U_FWN}pmrc"
+  read_case 2 "[25] $cg_loc ~/.aw<U+FF53>/credentials" "~/.aw$U_FWS/credentials"
+  bash_case 2 "[25] $cg_loc python3 -c open(.aw<U+017F>/credentials)" \
+    "python3 -c 'print(open(\"$FH/.aw$U_LS/credentials\").read())'"
+  bash_case 2 "[25] $cg_loc bash -c cat ~/.aw<U+017F>/credentials" "bash -c 'cat ~/.aw$U_LS/credentials'"
+  # The JSON \u escape of the same letter, decoded by jq before the fold.
+  check 2 "Bash: [25] $cg_loc JSON \\u017f escape in .aw\\u017f/credentials" \
+    "{\"session_id\":\"cred-guard-test\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"cwd\":\"$PROJ\",\"tool_input\":{\"command\":\"cat ~/.aw\\u017f/credentials\"}}"
+  check 2 "Read: [25] $cg_loc JSON \\u212a escape in .doc\\u212aer/config.json" \
+    "{\"session_id\":\"cred-guard-test\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"cwd\":\"$PROJ\",\"tool_input\":{\"file_path\":\"~/.doc\\u212Aer/config.json\"}}"
+  # The fold only adds blocks: a fullwidth quote is a word character to
+  # bash, so the cat below runs and stays blocked.
+  bash_case 2 "[25] $cg_loc echo <U+FF02>; cat ~/.aws/credentials <U+FF02>" \
+    "echo $U_FWQ; cat ~/.aws/credentials $U_FWQ"
+  # Fullwidth # and " are not folded to ASCII, so the folded copy cannot
+  # turn the read of a name only it recognizes into a comment or a string.
+  bash_case 2 "[25] $cg_loc true <U+FF03>; cat ~/.config/gh/ho<U+017F>ts.yml" \
+    "true $U_FWHASH; cat ~/.config/gh/ho${U_LS}ts.yml"
+  bash_case 2 "[25] $cg_loc echo <U+FF02>; cat ~/.config/gh/ho<U+017F>ts.yml <U+FF02>" \
+    "echo $U_FWQ; cat ~/.config/gh/ho${U_LS}ts.yml $U_FWQ"
+  bash_case 2 "[25] $cg_loc true <U+FF03>; cat ~/.aw<U+017F>/config" \
+    "true $U_FWHASH; cat ~/.aw$U_LS/config"
+  bash_case 2 "[25] $cg_loc true <U+FF07>; cat ~/.aw<U+017F>/config" \
+    "true $U_FWAPOS; cat ~/.aw$U_LS/config"
+  bash_case 2 "[25] $cg_loc cat ~/<U+FF0E>npmrc" "cat ~/${U_FWDOT}npmrc"
+  bash_case 2 "[25] $cg_loc cat ~/.ssh/id<U+FF3F>rsa" "cat ~/.ssh/id${U_FWUS}rsa"
+  # Allowed: near misses and ordinary non-ASCII text.
+  bash_case 0 "[25] $cg_loc cat ~/.awss/config (near miss)" "cat ~/.awss/config"
+  read_case 0 "[25] $cg_loc ~/.awss/config (near miss)" "~/.awss/config"
+  bash_case 0 "[25] $cg_loc cat ~/.aw<U+017F><U+017F>/config folds to .awss" "cat ~/.aw$U_LS$U_LS/config"
+  bash_case 0 "[25] $cg_loc cat ~/.<U+017F><U+017F>h/config (ssh config stays allowed)" "cat ~/.$U_LS${U_LS}h/config"
+  bash_case 0 "[25] $cg_loc echo café" "echo caf"$'\xc3\xa9'
+  bash_case 0 "[25] $cg_loc git commit -m with fullwidth parentheses" \
+    "git commit -m \"fix ${U_FWLP}a${U_FWRP}\"" "$TMP"
+  bash_case 0 "[25] $cg_loc echo with unquoted fullwidth parentheses" "echo ${U_FWLP}a${U_FWRP}"
+  bash_case 0 "[25] $cg_loc grep Stra<U+00DF>e notes.txt" "grep Stra${U_SZ}e notes.txt"
+done
+unset LC_ALL cg_loc
 
 echo "[7] profile matrix via hook-gate"
 for p in minimal standard strict; do

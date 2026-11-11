@@ -305,6 +305,26 @@ if [ -f "$SCRIPT_DIR/hook-gate.sh" ]; then
   hq_augment_path
   master_debug_phase_finish source
 fi
+# Check after PATH recovery, before parsing or dispatch: an absent jq yields
+# empty metadata/registry rows and used to silently skip every guard. The
+# native bridge is per-hook, not a dispatcher replacement: even a pinned
+# engine needs jq to select registry entries and merge their verdicts.
+# These are the dispatcher's required tools (awk also reads tenant bindings).
+# Optional acceleration/timeout tools keep their existing fallback paths.
+for master_required_tool in jq bash awk cat date env mkdir mktemp mv rm tr; do
+  if ! command -v "$master_required_tool" >/dev/null 2>&1; then
+    case "$master_required_tool" in
+      jq) master_install_hint='Install jq (Windows: winget install jqlang.jq; macOS: brew install jq; Debian/Ubuntu: sudo apt-get install jq) and ensure it is on PATH.' ;;
+      *) master_install_hint='Install Bash, awk and coreutils (Windows: repair Git for Windows; macOS: restore system tools; Debian/Ubuntu: sudo apt-get install bash gawk coreutils) and ensure they are on PATH.' ;;
+    esac
+    if [ "$EVENT" = PreToolUse ]; then
+      printf 'master-hook: BLOCKED: required tool %s is missing; guards cannot run, failing closed. %s\n' "$master_required_tool" "$master_install_hint" >&2
+      exit 2
+    fi
+    printf 'master-hook: WARNING: required tool %s is missing; skipping %s hooks. %s\n' "$master_required_tool" "$EVENT" "$master_install_hint" >&2
+    exit 0
+  fi
+done
 HQ_ANYWHERE_RUNTIME_ENABLED=true
 HQ_ANYWHERE_RUNTIME_CONFIGURED=false
 case "${HQ_FLAG_HQ_ANYWHERE_RUNTIME:-}" in
@@ -1284,6 +1304,22 @@ exit_code=0
 plain_buf=""
 json_outputs=()
 json_sources=()
+# Per-child context records for the aggregate context budget (see
+# master_apply_context_budget): kind (plain|json), index into
+# master_plain_chunks or json_outputs, hook id, and exit code.
+master_plain_chunks=()
+master_ctx_kind=()
+master_ctx_ref=()
+master_ctx_id=()
+master_ctx_rc=()
+# Record the JSON just appended to json_outputs by master-hook itself (the
+# SessionStart company-binding context), so it counts toward the budget.
+master_ctx_record_json() { # <hook-id>
+  master_ctx_kind+=(json)
+  master_ctx_ref+=("$((${#json_outputs[@]} - 1))")
+  master_ctx_id+=("$1")
+  master_ctx_rc+=(0)
+}
 blocking_hook_sources=()
 timed_out_child_paths=()
 timed_out_child_elapsed_ms=()
@@ -1333,12 +1369,15 @@ master_foreign_bind() {
     fi
     json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
     json_sources+=("$REPO_ROOT/core/scripts/resolve-company.sh")
+    master_ctx_record_json resolve-company
     return 0
   elif [ -n "$PAYLOAD_AGENT_TYPE" ]; then
     # agent_type can identify that a caller is a subagent for denial only; it
     # never names a capability key or selects a company binding.
     context="This subagent event has no agent_id and remains unbound. Restart the session so the host supplies the caller identity."
     json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
+    json_sources+=("$REPO_ROOT/core/scripts/resolve-company.sh")
+    master_ctx_record_json resolve-company
     return 0
   fi
   "${session_cmd[@]}" set foreign_cwd "$foreign_cwd" >/dev/null 2>&1 || true
@@ -1366,6 +1405,7 @@ $bind_out}"
   fi
   json_outputs+=("$(jq -cn --arg ctx "$context" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
   json_sources+=("$REPO_ROOT/core/scripts/resolve-company.sh")
+  master_ctx_record_json resolve-company
 }
 if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
   && [ "$EVENT" = "SessionStart" ] \
@@ -1742,14 +1782,23 @@ master_report_safety_timeout() { # <hook-id> <seconds>
 }
 
 collect_output() { # <rc> <stdout> <source-path>
-  local rc="$1" out="$2" src="$3"
+  local rc="$1" out="$2" src="$3" ctx_id
   if [ -n "$out" ]; then
+    ctx_id="${src##*/}"
+    ctx_id="${ctx_id%.*}"
     if is_json_object "$out"; then
       json_outputs+=("$out")
       json_sources+=("$src")
+      master_ctx_kind+=(json)
+      master_ctx_ref+=("$((${#json_outputs[@]} - 1))")
     else
       plain_buf+="$out"$'\n'
+      master_plain_chunks+=("$out"$'\n')
+      master_ctx_kind+=(plain)
+      master_ctx_ref+=("$((${#master_plain_chunks[@]} - 1))")
     fi
+    master_ctx_id+=("$ctx_id")
+    master_ctx_rc+=("$rc")
   fi
   if [ "$rc" -eq 2 ]; then
     blocking_hook_sources+=("$src")
@@ -1761,6 +1810,160 @@ collect_output() { # <rc> <stdout> <source-path>
   elif [ "$rc" -ne 0 ] && [ "$exit_code" -eq 0 ]; then
     exit_code=$rc
   fi
+}
+
+# Aggregate context budget. Each child bounds its own output (policy
+# reminders have their own ceiling), but nothing bounded the sum, so one
+# event could inject tens of KB of reminders, hints and status text and push
+# the session's task out of view. When this event's collected context is over
+# the budget, rebuild it:
+#   1. kept in full and placed first: output from the hooks that carry the
+#      session's task or handoff (MASTER_CTX_TASK_HOOKS, which includes the
+#      SessionStart company-binding context as resolve-company), from a hook that
+#      exited 2, and from inject-policy-on-trigger (bounded by its own
+#      ceiling, and its seen-ledger assumes the reminder was delivered);
+#   2. always kept, in arrival order: JSON that carries a control field
+#      (decision, updated output, and so on), so a budget can never change
+#      what a hook decided; JSON that carries systemMessage (text the user
+#      sees) or a sessionTitle; and output from once-only hooks (MASTER_CTX_ONCE_HOOKS), which
+#      record that a notice was shown or consume a queue before they print,
+#      so a cut chunk would never be shown again;
+#   3. the rest, in arrival order, while it fits; a chunk that does not fit
+#      is left out and named in one closing line.
+# Applies to the turn-start events, SessionStart (32 KB) and UserPromptSubmit
+# (16 KB). Tool events keep only their per-hook bounds. Under the budget, the
+# output is unchanged. HQ_HOOK_CONTEXT_BUDGET_BYTES sets the budget for both
+# events (0 turns it off); a value that is not a whole number of at most 9
+# digits keeps the default.
+MASTER_CTX_TASK_HOOKS=" resolve-company auto-startwork rewrite-resume-sentinel spawn-company-handoff auto-session-project conduct-link-inherit conduct-lanes-session-start conduct-lanes-link-deliver hqd-hook-shim inject-policy-on-trigger "
+# Once-only notices: welcome-brief-ready (announce marker),
+# 20-setup-completeness-nag (interval stamp written before it prints),
+# natural-language-router (first-prompt marker and company-bind notice),
+# 31-ensure-hq-desktop (deferred-update notice once per version),
+# 35-work-mesh-turn-start (clarification surfaced marker),
+# hq-monitor-session-hook (drains the monitor event queue), session-title
+# (writes its first-turn nudge marker and title state before it prints, so a
+# cut title is never sent again) and check-hq-update (the settings-healed
+# notice prints once, after the heal stamp is written).
+MASTER_CTX_ONCE_HOOKS=" welcome-brief-ready 20-setup-completeness-nag natural-language-router 31-ensure-hq-desktop 35-work-mesh-turn-start hq-monitor-session-hook session-title check-hq-update "
+master_ctx_json_is_control() { # <json>
+  case "$1" in
+    *'"decision"'*|*'"permissionDecision"'*|*'"updatedToolOutput"'*|*'"updatedMCPToolOutput"'*|*'"updatedInput"'*|*'"continue"'*|*'"stopReason"'*|*'"reason"'*) return 0 ;;
+  esac
+  return 1
+}
+# systemMessage is text the user sees; hookSpecificOutput.sessionTitle names
+# the session in the host UI. Either is kept whole from any hook.
+master_ctx_json_shows_user() { # <json>
+  case "$1" in
+    *'"systemMessage"'*|*'"sessionTitle"'*) return 0 ;;
+  esac
+  return 1
+}
+master_apply_context_budget() {
+  local LC_ALL=C  # byte lengths; bash 3.2 and 5 apply it here and restore it on return
+  local budget total=0 used=0 n i kind ref id bytes cut_ids="" rebuilt=""
+  local -a priority=() json_front=() json_drop=() new_outputs=() new_sources=()
+  case "$EVENT" in
+    SessionStart) budget=32768 ;;
+    UserPromptSubmit) budget=16384 ;;
+    *) return 0 ;;
+  esac
+  case "${HQ_HOOK_CONTEXT_BUDGET_BYTES:-}" in
+    ''|*[!0-9]*) ;;
+    *) [ "${#HQ_HOOK_CONTEXT_BUDGET_BYTES}" -gt 9 ] || budget=$((10#$HQ_HOOK_CONTEXT_BUDGET_BYTES)) ;;
+  esac
+  [ "$budget" -gt 0 ] || return 0
+  n=${#master_ctx_kind[@]}
+  [ "$n" -gt 0 ] || return 0
+  for ((i = 0; i < n; i++)); do
+    ref="${master_ctx_ref[$i]}"
+    if [ "${master_ctx_kind[$i]}" = plain ]; then
+      total=$((total + ${#master_plain_chunks[$ref]}))
+    else
+      total=$((total + ${#json_outputs[$ref]}))
+    fi
+  done
+  [ "$total" -gt "$budget" ] || return 0
+
+  # Pass 1: task, blocking, control, user-visible and once-only output is kept
+  # and charged first.
+  for ((i = 0; i < n; i++)); do
+    kind="${master_ctx_kind[$i]}"
+    ref="${master_ctx_ref[$i]}"
+    id="${master_ctx_id[$i]}"
+    priority[i]=0
+    if [ "${master_ctx_rc[$i]}" = 2 ]; then
+      priority[i]=1
+    else
+      case "$MASTER_CTX_TASK_HOOKS" in *" $id "*) priority[i]=1 ;; esac
+    fi
+    if [ "${priority[$i]}" = 0 ]; then
+      case "$MASTER_CTX_ONCE_HOOKS" in *" $id "*) priority[i]=2 ;; esac
+    fi
+    if [ "$kind" = plain ]; then
+      bytes=${#master_plain_chunks[$ref]}
+    else
+      bytes=${#json_outputs[$ref]}
+      if master_ctx_json_is_control "${json_outputs[$ref]}" \
+        || master_ctx_json_shows_user "${json_outputs[$ref]}"; then
+        [ "${priority[$i]}" = 1 ] || priority[i]=2
+      elif [ "${priority[$i]}" = 1 ]; then
+        json_front[ref]=1
+      fi
+    fi
+    [ "${priority[$i]}" = 0 ] || used=$((used + bytes))
+  done
+  # Pass 2: the rest, in arrival order, while it fits.
+  for ((i = 0; i < n; i++)); do
+    [ "${priority[$i]}" = 0 ] || continue
+    kind="${master_ctx_kind[$i]}"
+    ref="${master_ctx_ref[$i]}"
+    if [ "$kind" = plain ]; then
+      bytes=${#master_plain_chunks[$ref]}
+    else
+      bytes=${#json_outputs[$ref]}
+    fi
+    if [ $((used + bytes)) -le "$budget" ]; then
+      used=$((used + bytes))
+      priority[i]=3
+    else
+      [ "$kind" = plain ] || json_drop[ref]=1
+      case " $cut_ids " in *" ${master_ctx_id[$i]} "*) ;; *) cut_ids="${cut_ids:+$cut_ids }${master_ctx_id[$i]}" ;; esac
+    fi
+  done
+  [ -n "$cut_ids" ] || return 0
+
+  # Plain text: task output first, then the once-only and kept rest, each in
+  # arrival order.
+  for ((i = 0; i < n; i++)); do
+    [ "${master_ctx_kind[$i]}" = plain ] && [ "${priority[$i]}" = 1 ] \
+      && rebuilt+="${master_plain_chunks[${master_ctx_ref[$i]}]}"
+  done
+  for ((i = 0; i < n; i++)); do
+    [ "${master_ctx_kind[$i]}" = plain ] || continue
+    case "${priority[$i]}" in
+      2|3) rebuilt+="${master_plain_chunks[${master_ctx_ref[$i]}]}" ;;
+    esac
+  done
+  rebuilt+="> HQ hook context budget: this event's hook output was ${total} bytes, over the ${budget}-byte budget, so output from ${cut_ids} was left out. Task and handoff context was kept and comes first."$'\n'
+  plain_buf="$rebuilt"
+
+  # JSON: task context first, dropped context removed, everything else
+  # (including output not collected per child) in its original order.
+  for ((i = 0; i < ${#json_outputs[@]}; i++)); do
+    [ "${json_front[$i]:-0}" = 1 ] || continue
+    new_outputs+=("${json_outputs[$i]}")
+    new_sources+=("${json_sources[$i]-}")
+  done
+  for ((i = 0; i < ${#json_outputs[@]}; i++)); do
+    [ "${json_front[$i]:-0}" = 1 ] && continue
+    [ "${json_drop[$i]:-0}" = 1 ] && continue
+    new_outputs+=("${json_outputs[$i]}")
+    new_sources+=("${json_sources[$i]-}")
+  done
+  json_outputs=(${new_outputs[@]+"${new_outputs[@]}"})
+  json_sources=(${new_sources[@]+"${new_sources[@]}"})
 }
 
 # hq-hook engine bridge. The plan is resolved once per event, on the first
@@ -1900,8 +2103,65 @@ master_hook_engine_bridge_mode() { # <hook-id> -> HOOK_ENGINE_BRIDGE_MODE (shado
 # hqd (the companion hq-cli global hook skips this root). Feed the same payload
 # to the shim and aggregate its result with the normal master fan-out below.
 # This preserves registry, core, personal, pack, and company hooks while
-# delivering one hqd operation. The shim reports unavailable dependencies or
-# a stale socket with 75 so this invocation can fall back to the direct path.
+# delivering one hqd operation. The shim reports unavailable dependencies, a
+# stale socket, or a timeout with 75 so this invocation falls back to the
+# direct path, which decides alone. The shim gets one attempt that ends by
+# HQ_HQD_SHIM_TIMEOUT_MS (default 3000) after master-hook started, so the time
+# master-hook already spent counts against it.
+#
+# HQ Fleet's local hook adapter (hq-fleet-local-hook-adapter.sh) runs the
+# registry gates, mandatory-scope-authorizer included, under the adapter's own
+# session before it runs master-hook for a PreToolUse. On that path the hqd
+# policy.check (the same authorizer script under hqd's session) is skipped and
+# the direct-path decision a timed-out shim gives is used. Environment
+# variables are inherited by every descendant, so they alone never turn the
+# call off. All of these must hold:
+#   - HQ_CHECKPOINT_RUNTIME=hq-fleet-local and HQ_HARNESS=codex (the adapter
+#     sets both; with HQ_HARNESS=codex this script skips the registry, because
+#     the adapter dispatched it);
+#   - the parent process is the adapter script itself (checked from the
+#     process table, not from the environment), so a Claude session or a hook
+#     started under the adapter does not qualify;
+#   - the authorizer is not switched off for the adapter
+#     (HQ_FLEET_LOCAL_HOOK_SKIP) or the hook profile (HQ_DISABLED_HOOKS), so
+#     the hqd call still backs up an operator opt-out.
+master_parent_is_fleet_adapter() {
+  local parent_cmd="" arg=""
+  case "${PPID:-}" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$PPID" -gt 1 ] || return 1
+  if [ -r "/proc/$PPID/cmdline" ]; then
+    # NUL-separated argv; join the words with spaces.
+    while IFS= read -r -d '' arg; do
+      parent_cmd="${parent_cmd:+$parent_cmd }$arg"
+    done < "/proc/$PPID/cmdline"
+  else
+    parent_cmd="$(ps -o command= -p "$PPID" 2>/dev/null)" || return 1
+  fi
+  # The adapter runs as: /bin/bash <profile>/hooks/hq-fleet-local-hook-adapter.sh --hq-root <root> ...
+  case "$parent_cmd" in
+    *bash\ */hq-fleet-local-hook-adapter.sh\ --hq-root\ *) return 0 ;;
+  esac
+  return 1
+}
+master_fleet_adapter_ran_scope_authorizer() {
+  # Any mention of the authorizer in an opt-out list keeps the hqd call, so a
+  # spelling the gate accepts (quotes, spacing) cannot slip past this check.
+  case "${HQ_FLEET_LOCAL_HOOK_SKIP:-} ${HQ_DISABLED_HOOKS:-}" in
+    *mandatory-scope-authorizer*) return 1 ;;
+  esac
+  command -v hq_hook_profile_allows >/dev/null 2>&1 || return 1
+  hq_hook_profile_allows mandatory-scope-authorizer
+}
+# Environment part of the skip; the parent check runs only once a call would
+# otherwise be made (socket present, hqd enabled), so it costs nothing when
+# there is no daemon.
+master_hqd_shim_skip_env=0
+if [ "$EVENT" = "PreToolUse" ] \
+  && [ "${HQ_CHECKPOINT_RUNTIME:-}" = "hq-fleet-local" ] \
+  && [ "${HQ_HARNESS:-}" = "codex" ] \
+  && master_fleet_adapter_ran_scope_authorizer; then
+  master_hqd_shim_skip_env=1
+fi
 if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
   && [ -d "${CLAUDE_PROJECT_DIR:-}" ] \
   && [ "${CLAUDE_PROJECT_DIR:-}" -ef "$REPO_ROOT" ]; then
@@ -1917,11 +2177,31 @@ if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
   if [ -S "$HQD_SOCKET_PATH" ] && [ -f "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" ]; then
     FLAG_DIR="$REPO_ROOT/core/scripts"
     # shellcheck disable=SC1090 # The path is rooted at the resolved HQ checkout.
-    if . "$FLAG_DIR/hqd-hook-flag-cache-lib.sh" && hqd_hook_flag_cache_store_enabled >/dev/null 2>&1; then
+    if . "$FLAG_DIR/hqd-hook-flag-cache-lib.sh" && hqd_hook_flag_cache_store_enabled >/dev/null 2>&1 \
+      && ! { [ "$master_hqd_shim_skip_env" -eq 1 ] && master_parent_is_fleet_adapter; }; then
       shim_tmp="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/hq-hook-shim.XXXXXX" 2>/dev/null || true)"
       if [ -n "$shim_tmp" ]; then
         shim_rc=0
-        printf '%s' "$INPUT" | HQ_HQD_SHIM_REPORT_UNREACHABLE=1 /bin/sh \
+        shim_deadline_ms=""
+        # Same normalization as the shim: non-numeric or zero -> 3000, capped
+        # at 60000.
+        shim_budget_ms="${HQ_HQD_SHIM_TIMEOUT_MS:-3000}"
+        case "$shim_budget_ms" in ''|*[!0-9]*) shim_budget_ms=3000 ;; esac
+        while [ "${shim_budget_ms#0}" != "$shim_budget_ms" ] && [ "${#shim_budget_ms}" -gt 1 ]; do
+          shim_budget_ms="${shim_budget_ms#0}"
+        done
+        if [ "${#shim_budget_ms}" -gt 5 ]; then
+          shim_budget_ms=60000
+        else
+          shim_budget_ms=$((10#$shim_budget_ms))
+          [ "$shim_budget_ms" -gt 0 ] || shim_budget_ms=3000
+          [ "$shim_budget_ms" -le 60000 ] || shim_budget_ms=60000
+        fi
+        if [[ "${MASTER_STARTED_MS:-}" =~ ^[0-9]{13,15}$ ]]; then
+          shim_deadline_ms=$((MASTER_STARTED_MS + shim_budget_ms))
+        fi
+        printf '%s' "$INPUT" | HQ_HQD_SHIM_REPORT_UNREACHABLE=1 \
+          HQ_HQD_SHIM_DEADLINE_MS="$shim_deadline_ms" /bin/sh \
           "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" "$EVENT" --runtime claude \
           >"$shim_tmp/stdout" 2>"$shim_tmp/stderr" || shim_rc=$?
         if [ "$shim_rc" -ne 75 ]; then
@@ -3199,6 +3479,7 @@ done
 # otherwise a layered PreToolUse blocker that exits 2 with plain-text stderr
 # (no JSON) never reaches `exit "$exit_code"` and the process returns 1.
 par_drain
+master_apply_context_budget
 MASTER_OUTPUT_DEADLINE_MS=""
 output_write_started_ms=""
 MASTER_OUTPUT_ABORTED=0

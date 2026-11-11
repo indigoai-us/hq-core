@@ -12,6 +12,17 @@
 #   - a CRLF copy of a released file still matches
 #   - a failed removal is reported and exits 1
 #   - master-hook's skip list matches the script's retired Stop leaves
+#   - legacy gate entries for this HQ root are removed from the user's Codex
+#     hooks file; the user's own hooks and every other entry are kept
+#   - a hook-gate.sh entry is removed only when its script is on the retired
+#     list and its id matches the script name; a user's own script in
+#     .codex/hooks/ run through hook-gate.sh is kept
+#   - if the Codex hooks file stops parsing between the count and the clean
+#     pass, nothing is written over it and the failure is reported
+#   - a retired script still on disk after the file pass (local edits) keeps
+#     its hooks.json entry
+#   - clean output that does not parse is never moved over hooks.json, and an
+#     interrupted clean pass leaves no temp file
 #
 # Explicitly wired into .github/workflows/pr-checks.yml (tests here are not
 # auto-discovered).
@@ -26,6 +37,8 @@ fail() { FAIL=$((FAIL+1)); echo "FAIL [$1]: $2"; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# Never read or rewrite the real user Codex hooks file.
+export CODEX_HOME="$TMP/codex-home-unused"
 
 make_tree() {
   local dir="$1"
@@ -189,6 +202,163 @@ esac
 cmp -s "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$T13/.codex/hooks/hq-codex-hook-adapter.sh" \
   && cmp -s "$ROOT/.codex/hooks/deny-core-edits.sh" "$T13/.codex/hooks/deny-core-edits.sh" \
   && ok "shipped .codex hooks untouched" || fail "shipped codex" "changed or removed"
+
+# 14. The user's Codex hooks file: legacy gate entries for this HQ root are
+#     removed, everything else is kept, --check reports without writing.
+if command -v node >/dev/null 2>&1; then
+  T14="$TMP/codexhome-root"; mkdir -p "$T14/core"
+  T14P="$(cd -P "$T14" && pwd -P)"
+  CH14="$TMP/codexhome"; mkdir -p "$CH14"
+  cat > "$CH14/hooks.json" <<JSON
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [
+        { "type": "command", "command": "'$T14P/.codex/hooks/hook-gate.sh' detect-secrets '$T14P/.codex/hooks/detect-secrets.sh'", "timeout": 5 },
+        { "type": "command", "command": "bash /opt/user/my-own-hook.sh", "timeout": 5 }
+      ] },
+      { "matcher": "Glob", "hooks": [
+        { "type": "command", "command": "'$T14P/.codex/hooks/hook-gate.sh' block-hq-glob '$T14P/.codex/hooks/block-hq-glob.sh'", "timeout": 5 }
+      ] }
+    ],
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "'$T14P/.codex/hooks/hook-gate.sh' example-gate '$T14P/.codex/hooks/example-gate-runner.sh'", "timeout": 5 },
+        { "type": "command", "command": "'$T14P/.codex/hooks/hook-gate.sh' my-hook '$T14P/.codex/hooks/my-hook.sh'", "timeout": 5 },
+        { "type": "command", "command": "'$T14P/.codex/hooks/hook-gate.sh' detect-secrets '$T14P/.codex/hooks/block-hq-glob.sh'", "timeout": 5 },
+        { "type": "command", "command": "'/other/hq/.codex/hooks/hook-gate.sh' detect-secrets '/other/hq/.codex/hooks/detect-secrets.sh'", "timeout": 5 },
+        { "type": "command", "command": "/bin/sh \"$T14P/core/scripts/hqd-hook-shim.sh\" --runtime codex", "timeout": 300 }
+      ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "'$T14P/.codex/hooks/hook-gate.sh' auto-checkpoint-trigger '$T14P/.codex/hooks/auto-checkpoint-trigger.sh'", "timeout": 5 }
+      ] }
+    ]
+  }
+}
+JSON
+  before="$(cat "$CH14/hooks.json")"
+  out="$(CODEX_HOME="$CH14" bash "$SCRIPT" "$T14" --check 2>&1)"; rc=$?
+  [ "$rc" -eq 1 ] && ok "--check exits 1 with legacy entries in the user Codex hooks file" || fail "codex home --check rc" "rc=$rc out=$out"
+  case "$out" in
+    *"retired Codex hook entries present: 3 in $CH14/hooks.json"*) ok "--check counts the legacy Codex entries" ;;
+    *) fail "codex home --check output" "$out" ;;
+  esac
+  [ "$(cat "$CH14/hooks.json")" = "$before" ] && ok "--check leaves the user Codex hooks file unchanged" || fail "codex home --check" "file changed"
+
+  out="$(CODEX_HOME="$CH14" bash "$SCRIPT" "$T14" 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "cleaning the user Codex hooks file exits 0" || fail "codex home rc" "rc=$rc out=$out"
+  case "$out" in
+    *"removed 3 retired Codex hook entries from $CH14/hooks.json"*) ok "removal from the user Codex hooks file is reported" ;;
+    *) fail "codex home report" "$out" ;;
+  esac
+  left="$(node -e '
+    const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    const cmds = Object.entries(d.hooks).flatMap(([e, gs]) => gs.flatMap((g) => g.hooks.map((h) => e + "|" + (g.matcher || "") + "|" + h.command)));
+    process.stdout.write(cmds.join("\n"));' "$CH14/hooks.json" 2>&1)"
+  expected="PreToolUse|Bash|bash /opt/user/my-own-hook.sh
+SessionStart||'$T14P/.codex/hooks/hook-gate.sh' example-gate '$T14P/.codex/hooks/example-gate-runner.sh'
+SessionStart||'$T14P/.codex/hooks/hook-gate.sh' my-hook '$T14P/.codex/hooks/my-hook.sh'
+SessionStart||'$T14P/.codex/hooks/hook-gate.sh' detect-secrets '$T14P/.codex/hooks/block-hq-glob.sh'
+SessionStart||'/other/hq/.codex/hooks/hook-gate.sh' detect-secrets '/other/hq/.codex/hooks/detect-secrets.sh'
+SessionStart||/bin/sh \"$T14P/core/scripts/hqd-hook-shim.sh\" --runtime codex"
+  [ "$left" = "$expected" ] && ok "user hooks, user gate scripts, mismatched ids, other HQ roots and the global-install entry kept; emptied groups dropped" \
+    || fail "codex home kept entries" "got [$left]"
+  ls "$T14"/workspace/.hq-update-check/settings-backups/*/codex-hooks.json >/dev/null 2>&1 \
+    && ok "user Codex hooks file is backed up before the rewrite" || fail "codex home backup" "no backup written"
+  out="$(CODEX_HOME="$CH14" bash "$SCRIPT" "$T14" 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && [ -z "$out" ] && ok "second run on the user Codex hooks file is a silent no-op" || fail "codex home idempotent" "rc=$rc out=$out"
+
+  # A user Codex hooks file that holds only legacy entries is removed.
+  CH14B="$TMP/codexhome-only"; mkdir -p "$CH14B"
+  printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s","timeout":5}]}]}}\n' \
+    "'$T14P/.codex/hooks/hook-gate.sh' context-meter '$T14P/.codex/hooks/context-meter.sh'" > "$CH14B/hooks.json"
+  CODEX_HOME="$CH14B" bash "$SCRIPT" "$T14" >/dev/null 2>&1
+  [ ! -e "$CH14B/hooks.json" ] && ok "a user Codex hooks file with only legacy entries is removed" || fail "codex home only-legacy" "file kept"
+
+  # The file stops parsing between the count pass and the clean pass (another
+  # tool rewrote it). A node wrapper corrupts the file just before the clean
+  # pass runs. Nothing may be written over it, and the failure is reported.
+  CH14C="$TMP/codexhome-race"; mkdir -p "$CH14C" "$TMP/racebin"
+  printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s","timeout":5}]}]}}\n' \
+    "'$T14P/.codex/hooks/hook-gate.sh' context-meter '$T14P/.codex/hooks/context-meter.sh'" > "$CH14C/hooks.json"
+  REAL_NODE="$(command -v node)"
+  printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = clean ] && printf "{ not json" > "%s"; done\nexec "%s" "$@"\n' \
+    "$CH14C/hooks.json" "$REAL_NODE" > "$TMP/racebin/node"
+  chmod +x "$TMP/racebin/node"
+  out="$(PATH="$TMP/racebin:$PATH" CODEX_HOME="$CH14C" bash "$SCRIPT" "$T14" 2>&1)"; rc=$?
+  [ "$rc" -eq 1 ] && ok "a parse failure in the clean pass exits 1" || fail "codex home race rc" "rc=$rc out=$out"
+  [ "$(cat "$CH14C/hooks.json")" = "{ not json" ] && ok "a parse failure in the clean pass writes nothing" \
+    || fail "codex home race write" "got [$(cat "$CH14C/hooks.json")]"
+  case "$out" in
+    *"could not clean $CH14C/hooks.json"*) ok "a parse failure in the clean pass is reported" ;;
+    *) fail "codex home race report" "$out" ;;
+  esac
+  ls "$CH14C"/hooks.json.hq-retired-tmp.* >/dev/null 2>&1 && fail "codex home race tmp" "temp file left behind" \
+    || ok "a parse failure in the clean pass leaves no temp file"
+
+  # A retired script kept on disk after the file pass (local edits) keeps its
+  # hooks.json entry, so the user's edited copy keeps running. An entry whose
+  # retired script is gone is still removed.
+  T15="$TMP/codexhome-kept-root"; mkdir -p "$T15/core" "$T15/.codex/hooks"
+  T15P="$(cd -P "$T15" && pwd -P)"
+  printf '#!/bin/bash\n# my edited detect-secrets\nexit 0\n' > "$T15/.codex/hooks/detect-secrets.sh"
+  CH15="$TMP/codexhome-kept"; mkdir -p "$CH15"
+  printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"%s","timeout":5},{"type":"command","command":"%s","timeout":5}]}]}}\n' \
+    "'$T15P/.codex/hooks/hook-gate.sh' detect-secrets '$T15P/.codex/hooks/detect-secrets.sh'" \
+    "'$T15P/.codex/hooks/hook-gate.sh' block-hq-glob '$T15P/.codex/hooks/block-hq-glob.sh'" > "$CH15/hooks.json"
+  out="$(CODEX_HOME="$CH15" bash "$SCRIPT" "$T15" --check 2>&1)"; rc=$?
+  case "$out" in
+    *"retired Codex hook entries present: 1 in $CH15/hooks.json"*) ok "--check does not count the entry of a kept retired script" ;;
+    *) fail "codex kept-script --check" "rc=$rc out=$out" ;;
+  esac
+  out="$(CODEX_HOME="$CH15" bash "$SCRIPT" "$T15" 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && [ -f "$T15/.codex/hooks/detect-secrets.sh" ] && ok "edited retired script kept" || fail "codex kept-script rc" "rc=$rc out=$out"
+  left="$(node -e '
+    const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(d.hooks.PreToolUse.flatMap((g) => g.hooks.map((h) => h.command)).join("\n"));' "$CH15/hooks.json" 2>&1)"
+  [ "$left" = "'$T15P/.codex/hooks/hook-gate.sh' detect-secrets '$T15P/.codex/hooks/detect-secrets.sh'" ] \
+    && ok "the entry of a kept retired script stays; the entry of a removed one goes" \
+    || fail "codex kept-script entries" "got [$left]"
+
+  # The clean pass writes something that does not parse: it is re-parsed
+  # before it replaces hooks.json, so nothing is moved over the file.
+  CH16="$TMP/codexhome-badout"; mkdir -p "$CH16" "$TMP/badbin"
+  printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s","timeout":5}]}]}}\n' \
+    "'$T14P/.codex/hooks/hook-gate.sh' context-meter '$T14P/.codex/hooks/context-meter.sh'" > "$CH16/hooks.json"
+  before16="$(cat "$CH16/hooks.json")"
+  printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = clean ] && { printf "{ broken"; exit 0; }; done\nexec "%s" "$@"\n' \
+    "$REAL_NODE" > "$TMP/badbin/node"
+  chmod +x "$TMP/badbin/node"
+  out="$(PATH="$TMP/badbin:$PATH" CODEX_HOME="$CH16" bash "$SCRIPT" "$T14" 2>&1)"; rc=$?
+  [ "$rc" -eq 1 ] && [ "$(cat "$CH16/hooks.json")" = "$before16" ] \
+    && ok "unparseable clean output is not moved over hooks.json" || fail "codex bad output" "rc=$rc file=[$(cat "$CH16/hooks.json")]"
+  ls "$CH16"/hooks.json.hq-retired-tmp.* >/dev/null 2>&1 && fail "codex bad output tmp" "temp file left behind" \
+    || ok "unparseable clean output leaves no temp file"
+
+  # Interrupted during the clean pass: the temp file is removed on exit and
+  # hooks.json is unchanged.
+  CH17="$TMP/codexhome-interrupt"; mkdir -p "$CH17" "$TMP/slowbin"
+  cp "$CH16/hooks.json" "$CH17/hooks.json"
+  printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = clean ] && sleep 2; done\nexec "%s" "$@"\n' \
+    "$REAL_NODE" > "$TMP/slowbin/node"
+  chmod +x "$TMP/slowbin/node"
+  PATH="$TMP/slowbin:$PATH" CODEX_HOME="$CH17" bash "$SCRIPT" "$T14" >/dev/null 2>&1 &
+  pid17=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    ls "$CH17"/hooks.json.hq-retired-tmp.* >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  kill -TERM "$pid17" 2>/dev/null
+  wait "$pid17"; rc=$?
+  [ "$rc" -ne 0 ] && [ "$(cat "$CH17/hooks.json")" = "$before16" ] \
+    && ok "an interrupted clean pass leaves hooks.json unchanged" || fail "codex interrupt" "rc=$rc file=[$(cat "$CH17/hooks.json")]"
+  ls "$CH17"/hooks.json.hq-retired-tmp.* >/dev/null 2>&1 && fail "codex interrupt tmp" "temp file left behind" \
+    || ok "an interrupted clean pass removes its temp file"
+else
+  echo "skip [14] node is not installed"
+fi
 
 echo "remove-retired-core-hooks: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

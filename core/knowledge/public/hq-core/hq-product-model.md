@@ -76,7 +76,8 @@ Reference: [hq-console.md](hq-console.md).
 Every AI teammate is an `agt_` identity. Kinds: local bots on your own machine
 with your own model login (`hq bot`), hosted agents that HQ runs (console or
 `/new-agent`), and external bots on hardware HQ does not own
-(`hq agent enroll`). External bots need a paid plan. Reference:
+(`hq agent enroll`). On legacy Starter an external bot counts toward
+the 5-member cap. Reference:
 [agents-and-bots.md](agents-and-bots.md).
 
 ### Chat-app connectors and MCP
@@ -142,7 +143,7 @@ Details, ignore rules, and conflicts: [hq-sync-model.md](hq-sync-model.md).
 Companies and personal accounts created from 2026-10-16 18:00 UTC are on the
 usage card: no plan fee, $10 of usage included each month, per-meter prices
 past it, and a 30-day trial capped at $500. New signups choose "Sign up free"
-or "Request an enterprise demo"; HQ can also be used free, self-hosted or
+or "Book a setup call"; HQ can also be used free, self-hosted or
 on-prem (https://docs.hq.computer/hq/guide/use-hq-for-free/). Existing
 customers keep their legacy plans: companies on Starter (free), HQ Workforce
 (internal id `paid-500`) or Enterprise, and people on an Individual plan or

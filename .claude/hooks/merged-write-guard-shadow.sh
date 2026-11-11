@@ -6,7 +6,7 @@ set -uo pipefail
 export BASH_ENV=/dev/null
 
 INPUT=""
-while IFS= read -r line; do INPUT+="$line"; done
+while IFS= read -r line || [ -n "$line" ]; do INPUT+="$line"; done
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 SESSION_ID="$(printf '%s\n' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 case "$SESSION_ID" in ''|*[!A-Za-z0-9._-]*) exit 0 ;; esac

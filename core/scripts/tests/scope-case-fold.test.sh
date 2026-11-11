@@ -68,6 +68,13 @@ check 0 Bash "cat core/docs/x"
 check 0 Read "@T@/core/docs/x"
 check 0 Bash "cat companies/manifest.yaml"
 check 0 Read "@T@/companies/_template/readme.md"
+# The shared shell lexer: a quote after $$ (the PID) is an ordinary quote, and
+# an ANSI-C string ends at its real end, so neither hides the next command.
+check 2 Bash "echo \$\$'\\'; cat companies/otherco/settings/x; echo '\\'"
+check 2 Bash "echo \$'\\''; cat companies/otherco/settings/x"
+# The shared shell lexer: a quote inside a trailing comment must not hide
+# the command before it.
+check 2 Bash "cat companies/otherco/settings/x #'"
 
 # On a case-sensitive volume a case variant is a different, missing folder
 # and is not a tenant, so it passes; on a folding volume it is the tenant.

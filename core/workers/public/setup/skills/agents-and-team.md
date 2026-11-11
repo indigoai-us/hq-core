@@ -29,12 +29,12 @@ Run `hq whoami` and `hq companies list`, and read the "Owner context" block.
 3. **Their plan, when the flow depends on it.** Check it as
    `skills/pricing.md` says; never guess it. Inviting people, sharing a
    connected app and sharing a key are included in every plan (within the
-   legacy Starter limits of 5 people, 1 connected app and 10 keys). Hosted
+   legacy Starter limits of 5 people, 3 connected apps and 10 keys). Hosted
    agents, Slack agents included, run on a hosted box. On the usage card
    (every account created from 2026-10-16) that is a box price, from $100 a
    month for the small size, plus $0.05 per agent run. On the legacy plans
-   they are not part of Starter: they need HQ Workforce ($500 a month for the
-   company), and then each agent is billed per box on top. If HQ refuses
+   they are not part of Starter, and HQ refuses one on a Starter company; on
+   HQ Workforce each agent is billed per box on top of the plan. If HQ refuses
    something or quotes a price, pass that answer on.
 
 Never ask anyone to paste a token, a code, a password or a key into this chat.
@@ -54,7 +54,7 @@ what the Bots page shows.
 2. Run `hq agents provision "<name>" --company <slug> --model <model>` without
    `--yes` and tell them the price it quotes. Only after they say yes, run it
    again with `--yes`. If it exits with code 3, HQ needs payment first
-   (a card on the usage card; an upgrade to HQ Workforce on legacy Starter): pass on what it says and
+   (a card on the usage card; a change of plan on legacy Starter): pass on what it says and
    the checkout link it prints, and say an owner has to complete it.
 3. Follow it with `hq agents status <name> --company <slug> --json`. When it
    shows a model sign-in link and code (or run `hq agents login-code`), give
