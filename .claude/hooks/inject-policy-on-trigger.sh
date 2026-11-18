@@ -1552,6 +1552,12 @@ resolve_policy_fact_bridge() {
     [Oo][Ff][Ff]) return 0 ;;
   esac
   [ ! -e "${HOME:-}/.hq/hook-engine.off" ] || return 0
+  # Windows (Git Bash, MSYS2, Cygwin): the helper stays on bash whatever the
+  # plan says, exactly as with the port flag off. OSTYPE is a bash builtin
+  # variable, so this check starts nothing.
+  case "${OSTYPE:-}" in
+    msys*|cygwin*|win32*) return 0 ;;
+  esac
   [ -n "${HQ_HOOK_BRIDGE_PLAN:-}" ] || return 0
   [ -n "${HQ_HOOK_BRIDGE_BIN:-}" ] && [ -f "$HQ_HOOK_BRIDGE_BIN" ] && [ -x "$HQ_HOOK_BRIDGE_BIN" ] || return 0
   [ -n "$FACTS_TMP_DIR" ] && [ -d "$FACTS_TMP_DIR" ] || return 0

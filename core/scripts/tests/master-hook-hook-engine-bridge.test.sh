@@ -38,6 +38,8 @@
 #       and image-context-guard are never bridged: their bash hooks run as
 #       with the flag off and their plan lines are not exported; other ports
 #       bridge unchanged; on darwin and linux nothing changes
+#       (derive-trigger-facts, the injector's fact helper, is dropped the same
+#       way: on Windows its line is never exported to hooks)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -739,6 +741,25 @@ run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys
   && [ "$(env_line)" = "env bin=<unset> plan=<unset>" ] \
   && ok "msys, store-off-only plan: no bridge, nothing exported" \
   || bad "msys store-off-only plan: rc=$RC bridge=$(bridge_calls) env=$(env_line)"
+# The injector's fact helper on Windows: its line is not exported, so the
+# injector runs it on bash; a plan of only that line starts no bridge.
+for ostype in msys cygwin win32; do
+  reset_logs
+  rm -f "$FIX/.claude/hooks/env.log"
+  snapshot_with_port
+  printf '%s\t%s\n' derive-trigger-facts on "$HOOK_ID" on > "$PLAN"
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE="$ostype"
+  [ "$RC" = "0" ] && [ "$(env_line)" = "env bin=$STUB plan=$HOOK_ID|on" ] && [ "$(port_bridged)" = "1" ] \
+    && ok "OSTYPE=$ostype: derive-trigger-facts line not exported" \
+    || bad "OSTYPE=$ostype derive-trigger-facts: rc=$RC env=$(env_line) port-bridged=$(port_bridged)"
+  reset_logs
+  rm -f "$FIX/.claude/hooks/env.log"
+  printf '%s\t%s\n' derive-trigger-facts on > "$PLAN"
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE="$ostype"
+  [ "$RC" = "0" ] && [ "$(bridge_calls)" = "0" ] && [ "$(env_line)" = "env bin=<unset> plan=<unset>" ] \
+    && ok "OSTYPE=$ostype, helper-only plan: nothing exported" \
+    || bad "OSTYPE=$ostype helper-only plan: rc=$RC bridge=$(bridge_calls) env=$(env_line)"
+done
 # darwin and linux: every listed port bridges, as before.
 for ostype in "" darwin25 linux-gnu; do
   reset_logs
