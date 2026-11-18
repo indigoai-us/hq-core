@@ -606,6 +606,8 @@ git_record_anchor() {
   hq_shell_record_executable "$record" || true
   executable="$HQ_SHELL_EXECUTABLE"
   [[ -n "$executable" ]] || return 0
+  # `sudo -D DIR git ...` runs git in DIR, the same as `git -C DIR ...`.
+  c_target="$HQ_SHELL_SUDO_CHDIR"
   hq_shell_record_words "$record"
   words=(${HQ_SHELL_WORDS[@]+"${HQ_SHELL_WORDS[@]}"})
   n=${#words[@]}

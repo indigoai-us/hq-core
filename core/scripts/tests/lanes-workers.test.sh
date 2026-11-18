@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Focused coverage for lane-native role setup and the preserved QA/CI helpers.
+# Focused coverage for role setup (standing subagents by default, runner lanes
+# only under /conduct-runners) and the preserved QA/CI helpers.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 T="$(mktemp -d)"
@@ -7,6 +8,9 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/core/scripts/lib" "$T/core/scripts" "$T/workspace/sessions/test-session" "$T/.claude/skills/conduct/roles" "$T/bin"
 cp "$ROOT/core/scripts/lanes-workers.sh" "$T/core/scripts/"
 cp "$ROOT/core/scripts/hq-session.sh" "$T/core/scripts/"
+cp "$ROOT/core/scripts/conduct-runner-resolve.sh" "$T/core/scripts/"
+mkdir -p "$T/core/settings"
+cp "$ROOT/core/settings/orchestrator.yaml" "$T/core/settings/"
 cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$T/core/scripts/lib/"
 cp "$ROOT/core/scripts/lib/session-id.sh" "$T/core/scripts/lib/"
 cp "$ROOT/.claude/skills/conduct/roles/"*.md "$T/.claude/skills/conduct/roles/"
@@ -29,6 +33,41 @@ eq "$(S get conduct_child_model)" gpt-test 'model pin'
 eq "$(S get conduct_child_effort)" high 'effort pin'
 case "$out" in *'"roles":["frontend","designer","qa"]'*) : ;; *) fail "setup JSON omitted roles" ;; esac
 W setup --session-id test-session --workers 'Front End' >/dev/null 2>&1 && fail 'invalid role accepted'
+
+# Default runner (subagent): every role is a pending standing subagent lane in
+# runs.json, never a runner lane.
+RUNS="$T/workspace/orchestrator/conduct-subagents/test-session/runs.json"
+eq "$(jq -r .runner <<<"$out")" subagent 'setup resolves the default runner to subagent'
+eq "$(jq -r '[.lanes[].backing]|unique|join(",")' <<<"$out")" subagent 'default setup lanes are backed by subagents'
+[ -f "$RUNS" ] || fail 'default setup did not write runs.json'
+eq "$(jq -r '[.runs[].lane.role]|join(",")' "$RUNS")" 'frontend,designer,qa' 'one runs.json lane per role'
+eq "$(jq -r '[.runs[]|.runner,.lane.backing,(.lane.standing|tostring),.state]|unique|join(",")' "$RUNS")" \
+  'pending,subagent,true' 'runs.json rows are pending standing subagent lanes'
+eq "$(jq -r '.runs[]|select(.lane.role=="qa")|.lane.template' "$RUNS")" '.claude/skills/conduct/roles/qa.md' 'runs.json row names the role template'
+eq "$(jq -r '.runs[0].agent_id' "$RUNS")" null 'no agent id until the conductor starts the subagent'
+W setup --session-id test-session --workers 'qa,data' >/dev/null
+eq "$(jq -r '[.runs[].lane.role]|join(",")' "$RUNS")" 'frontend,designer,qa,data' 'setup again replaces a role row instead of adding a second one'
+eq "$(jq -r '.runs[]|select(.lane.role=="data")|.lane.template' "$RUNS")" '.claude/skills/conduct/roles/generic.md' 'unknown role uses the generic template'
+jq '.runs += [{"agent_id":"a1","worker":"backend-dev","task":"one-off","state":"done"}]' "$RUNS" > "$T/runs.tmp" && mv "$T/runs.tmp" "$RUNS"
+W setup --session-id test-session --workers qa >/dev/null
+eq "$(jq -r '.runs[]|select(.agent_id=="a1")|.task' "$RUNS")" one-off 'setup keeps unrelated runs.json rows'
+
+# Runner (/conduct-runners): no runs.json rows; lanes are listed for
+# conduct-standing.sh send. Legacy lane and mixed read as runner.
+rm -f "$RUNS"
+out="$(W setup --session-id test-session --workers 'frontend,qa' --runner runner)"
+eq "$(jq -r .runner <<<"$out")" runner 'setup --runner runner'
+eq "$(jq -r '[.lanes[].backing]|unique|join(",")' <<<"$out")" runner 'runner setup lanes are backed by runners'
+jq -r .note <<<"$out" | grep >/dev/null 'conduct-standing.sh send' || fail 'runner setup does not point at conduct-standing.sh send'
+[ ! -e "$RUNS" ] || fail 'runner setup wrote runs.json subagent rows'
+out="$(W setup --session-id test-session --workers frontend --runner lane 2>"$T/legacy.err")"
+eq "$(jq -r .runner <<<"$out")" runner 'legacy lane reads as runner in setup'
+grep -q 'legacy value' "$T/legacy.err" || fail 'legacy lane did not warn'
+S set conduct_runner mixed
+eq "$(W setup --session-id test-session --workers frontend 2>/dev/null | jq -r .runner)" runner 'a legacy mixed session pin reads as runner'
+[ ! -e "$RUNS" ] || fail 'runner pin setup wrote runs.json subagent rows'
+S set conduct_runner ''
+W setup --session-id test-session --workers frontend --runner pool >/dev/null 2>&1 && fail 'unknown runner accepted'
 
 # Port of 942d38f2: switching an automatic Codex engine clears only automatic
 # model/effort pins that were not explicitly replaced.
@@ -173,7 +212,7 @@ if [ "$1 $2" = "monitor start" ]; then
   done
   [ "${HQ_MONITOR_FAIL:-0}" = 0 ] || { printf '%s\n' '{"ok":false}'; exit 0; }
   printf '{"ok":true,"monitor_id":"mon-test-%s"}\n' "$n"
-elif [ "$1" = lanes ] && [ "$2" = wait ]; then
+elif [ "$1" = runners ] && [ "$2" = wait ]; then
   n=$(cat "$HQ_WAIT_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$HQ_WAIT_COUNT"
   mode=$(sed -n "${n}p" "$HQ_WAIT_SEQUENCE" 2>/dev/null || true)
   [ -n "$mode" ] || mode=$(tail -n 1 "$HQ_WAIT_SEQUENCE" 2>/dev/null || true)
@@ -184,7 +223,7 @@ elif [ "$1" = lanes ] && [ "$2" = wait ]; then
     bad) printf '%s\n' '{"ok":false,"error":"unexpected"}' ;;
     *) exit 2 ;;
   esac
-elif [ "$1" = lanes ] && [ "$2" = show ]; then
+elif [ "$1" = runners ] && [ "$2" = show ]; then
   n=$(cat "$HQ_SHOW_COUNT" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$HQ_SHOW_COUNT"
   answer=$(sed -n "${n}p" "$HQ_SHOW_SEQUENCE" 2>/dev/null || true)
   [ -n "$answer" ] || answer=$(tail -n 1 "$HQ_SHOW_SEQUENCE" 2>/dev/null || true)
@@ -478,7 +517,7 @@ if [ -d "$(monitor_lock_for lane-fail "$S1" "$R1")" ]; then fail 'stale startup 
 
 test_t1; test_t2; test_t2b; test_t3; test_t4; test_t5; test_t7; test_t8; test_t8b; test_t9
 
-case "$(cat "$ROOT/.claude/skills/conduct/dispatch.md")" in *'lanes-completion-watch.sh start'*) : ;; *) fail 'dispatch does not document Codex watcher' ;; esac
-case "$(cat "$ROOT/.claude/skills/_shared/lane-dispatch-protocol.md")" in *'hq lanes wait --any'*) : ;; *) fail 'protocol does not use lane wait' ;; esac
-if rg -n 'conduct-lane-notify\.sh' "$ROOT/.claude/skills/conduct/SKILL.md" "$ROOT/.claude/skills/conduct/dispatch.md" "$ROOT/.claude/skills/_shared/lane-dispatch-protocol.md"; then fail 'owned skills retained old notifier reference'; fi
+case "$(cat "$ROOT/.claude/skills/conduct-runners/dispatch.md")" in *'lanes-completion-watch.sh start'*) : ;; *) fail 'dispatch does not document Codex watcher' ;; esac
+case "$(cat "$ROOT/.claude/skills/_shared/lane-dispatch-protocol.md")" in *'hq runners wait --any'*) : ;; *) fail 'protocol does not use lane wait' ;; esac
+if rg -n 'conduct-lane-notify\.sh' "$ROOT/.claude/skills/conduct/SKILL.md" "$ROOT/.claude/skills/conduct/dispatch.md" "$ROOT/.claude/skills/_shared/conduct-dispatch-core.md" "$ROOT/.claude/skills/conduct-runners/dispatch.md" "$ROOT/.claude/skills/_shared/lane-dispatch-protocol.md"; then fail 'owned skills retained old notifier reference'; fi
 echo 'lanes-workers.test.sh: role setup, templates, QA, CI, and round tracking passed'

@@ -63,7 +63,7 @@ to back from the run's `started_at`.
 
 A story counts as blocked when state.json lists it in `blocked_tasks` or a
 `failed_tasks` entry's `error` starts with `blocked` (`blocked: TIMEOUT`). The
-board status `hq lanes story block` sets is not read here.
+board status `hq runners story block` sets is not read here.
 
 ## Commands
 

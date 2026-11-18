@@ -15,7 +15,7 @@ tags: [projects, collaboration, work-mesh, mqtt, hq-pro]
 ## Rule
 
 Presence and per-turn activity are **automatic** (US-010 enqueue-only hooks +
-`hq mesh daemon`). Agents MUST NOT call the deleted `core/scripts/work-mesh.sh`
+`hq daemon`). Agents MUST NOT call the deleted `core/scripts/work-mesh.sh`
 helper. Do not invent companies or projects from prompt text.
 
 ### Automatic (do nothing)

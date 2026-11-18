@@ -148,7 +148,7 @@ check "3: a story not in flight still refuses a malformed handoff, naming the fi
 cat > "$T/bin/hq" <<'EOF'
 #!/bin/sh
 case "$1" in
-  lanes)
+  runners)
     case "$2" in
       create) printf '{"ok":true,"lane_id":"lane-backend-dev"}\n' ;;
       enqueue) printf '%s\n' "$*" >> "$HQ_TEST_CALLS"; printf '{"ok":true}\n' ;;
@@ -178,7 +178,7 @@ drive d1
 check "4: bad JSON does not kill the driver with 23; it exits 21 naming the repair" \
   '[ "$(exit_code "$S")" = 21 ] && grep -q "malformed handoff, needs repair: S1/backend: handoff needs repair: not valid JSON" "$S/driver/exit"'
 check "4: bad JSON: the handoff file is untouched and the story is held, not failed" \
-  'cmp -s "$S/handoffs/S1-backend.json" "$T/d1.orig" && [ "$(state "$S")" = blocked_needs_owner ] && [ "$(grep -c "^lanes enqueue" "$T/d1/calls")" = 0 ]'
+  'cmp -s "$S/handoffs/S1-backend.json" "$T/d1.orig" && [ "$(state "$S")" = blocked_needs_owner ] && [ "$(grep -c "^runners enqueue" "$T/d1/calls")" = 0 ]'
 
 S="$T/d2/state"; in_flight "$S"
 printf '%s\n' "$MISSING" > "$S/handoffs/S1-backend.json"; cp "$S/handoffs/S1-backend.json" "$T/d2.orig"
@@ -191,7 +191,7 @@ synthetic "reply did not normalize: no JSON object found" > "$S/handoffs/S1-back
 cp "$S/handoffs/S1-backend.json" "$T/d3.orig"
 drive d3
 check "4: a synthetic runner handoff is not re-routed as an early exit; it is held for repair" \
-  '[ "$(exit_code "$S")" = 21 ] && grep -q "runner-synthesized handoff" "$S/driver/exit" && ! grep -q EARLY_EXIT "$S/driver/driver.log" && [ "$(grep -c "^lanes enqueue" "$T/d3/calls")" = 0 ]'
+  '[ "$(exit_code "$S")" = 21 ] && grep -q "runner-synthesized handoff" "$S/driver/exit" && ! grep -q EARLY_EXIT "$S/driver/driver.log" && [ "$(grep -c "^runners enqueue" "$T/d3/calls")" = 0 ]'
 check "4: the synthetic handoff file is left as written" 'cmp -s "$S/handoffs/S1-backend.json" "$T/d3.orig"'
 
 # ---- 5. early-exit rewrite keeps the original ----------------------------------
@@ -202,7 +202,7 @@ export HQ_TEST_CALLS="$T/d5/calls"; : > "$HQ_TEST_CALLS"
 mkdir -p "$S/driver"
 PC_HQ="$T/bin/hq" sh "$DRIVER" --prd "$T/prd.json" --state "$S" --interval 0.2 >"$T/d5/driver.out" 2>&1 &
 DPID=$!; DPIDS="$DPIDS $DPID"
-wait_for 30 grep -qs "^lanes enqueue" "$HQ_TEST_CALLS"
+wait_for 30 grep -qs "^runners enqueue" "$HQ_TEST_CALLS"
 kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
 check "5: an engine-error early exit is still re-routed" 'grep -q "EARLY_EXIT S1/backend" "$S/driver/driver.log"'
 check "5: the lane-written handoff was copied to .orig.1.json before the rewrite" \

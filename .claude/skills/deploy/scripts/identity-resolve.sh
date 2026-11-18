@@ -205,10 +205,10 @@ emit_person_ok() {
 }
 
 emit_machine_ok() {
-  local id_token=$1 expires_at=$2
+  local id_token=$1 expires_at=$2 source=${3:-machine_mint}
   # Agent identity claims exist only on Cognito's ID token. Use it for both
   # fields so hq-deploy and vault membership resolution see the agt_ principal.
-  emit "{\"status\":\"ok\",\"jwt\":\"$id_token\",\"id_token\":\"$id_token\",\"identity\":\"machine\",\"expires_at\":$expires_at,\"source\":\"machine_mint\"}"
+  emit "{\"status\":\"ok\",\"jwt\":\"$id_token\",\"id_token\":\"$id_token\",\"identity\":\"machine\",\"expires_at\":$expires_at,\"source\":\"$source\"}"
 }
 
 MINT_STDERR_FILE=""
@@ -249,6 +249,23 @@ machine_mint_failed() {
   printf '{"status":"login_required","reason":"machine_mint_failed","detail":%s}\n' "$mint_detail_json"
   exit 0
 }
+
+# Company Outpost jobs receive a delegated session at HQ_MACHINE_SESSION_FILE
+# (idToken + expiresAt already minted). That job home has no machine-creds.json,
+# so the mint path below would fail and the person path would return
+# login_required. Use the session tokens and never fall through to browser login.
+if [ -n "${HQ_MACHINE_SESSION_FILE:-}" ]; then
+  if [ ! -r "$HQ_MACHINE_SESSION_FILE" ]; then
+    err "machine_session_unusable"
+  fi
+  IDT=$(token_field "$HQ_MACHINE_SESSION_FILE" "idToken")
+  EXP=$(token_field "$HQ_MACHINE_SESSION_FILE" "expiresAt")
+  [ -n "$EXP" ] || EXP=0
+  if [ -n "$IDT" ] && [ "$EXP" -gt "$((NOW_MS + SKEW_MS))" ] 2>/dev/null; then
+    emit_machine_ok "$IDT" "$EXP" "machine_session"
+  fi
+  err "machine_session_unusable"
+fi
 
 # Fleet agents authenticate non-interactively with machine credentials. Match
 # the CLI's signal: HQ_MACHINE_CREDS_FILE overrides the standard agent path.
@@ -393,13 +410,40 @@ if ! command -v npx >/dev/null 2>&1 && ! command -v hq >/dev/null 2>&1; then
   err "no_token_no_npx"
 fi
 
+# `hq login` is a browser OAuth flow with no machine-identity short-circuit.
+# On a headless box (agent, CI, SSH without a display) it cannot complete and
+# would hold the caller for the full 180 s timeout, so fail fast there.
+# HQ_DEPLOY_LOGIN_BROWSER=1 forces the browser attempt; =0 forces fail-fast.
+login_browser_available() {
+  case "${HQ_DEPLOY_LOGIN_BROWSER:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  [ -n "${CI:-}" ] && return 1
+  [ -n "${BROWSER:-}" ] && return 0
+  case "$(uname -s 2>/dev/null)" in
+    Darwin)
+      # A local macOS user session can open a browser; an SSH session cannot.
+      [ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ] && return 0
+      return 1
+      ;;
+    MINGW*|MSYS*|CYGWIN*) return 0 ;;
+  esac
+  [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && return 0
+  return 1
+}
+if ! login_browser_available; then
+  printf 'HQ sign-in needs a browser, and none is available here. Run `hq login` on a machine with a browser, or configure machine credentials for this agent.\n' >&2
+  err "login_no_browser"
+fi
+
 touch "$LOGIN_LOCK"
 printf 'Opening HQ sign-in in your browser — one moment...\n' >&2
 
 if command -v hq >/dev/null 2>&1; then
-  hq auth login >/dev/null 2>&1 &
+  hq login >/dev/null 2>&1 &
 else
-  npx -y --package=@indigoai-us/hq-cli hq auth login >/dev/null 2>&1 &
+  npx -y --package=@indigoai-us/hq-cli hq login >/dev/null 2>&1 &
 fi
 LOGIN_PID=$!
 # Detach the timer from stdout so a caller capturing it does not wait 180s.

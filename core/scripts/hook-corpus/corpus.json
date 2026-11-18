@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "86ca79c55ac7d6ab1a376085b1eaa528e7c61d223b024285a4126aa3d006590a",
+  "registry_sha256": "f743a85517084d6ce150e7fef88529de1107b23031149c534d7c5ec02ae2e1a2",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -476,6 +476,12 @@
       "trigger_sha256": "fd4d4afeaaef5271e830b29144621ec7ffb649af07a29e7f85963c32ee429b48",
       "when": "sleep || poll || watch || wait-for || monitor || run_in_background || ((loop || while || until) && (sleep || poll || wait))",
       "on": "[PreToolUse, UserPromptSubmit, AssistantIntent]"
+    },
+    {
+      "path": "core/policies/hq-never-ask-user-to-run-commands.md",
+      "trigger_sha256": "2f212be57f39df8ac6a56fcc575bc3ca7f9f51fc3c0636b305aa889f8b79f12b",
+      "when": "terminal || command || cli || run || login || sign-in || signin || authorize || mcp || generate-link || install",
+      "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {
       "path": "core/policies/hq-never-fabricate-research-artifacts.md",
@@ -21917,6 +21923,172 @@
         "hooks": {
           "PreToolUse": [
             {
+              "matcher": "Skill",
+              "hooks": [
+                {
+                  "id": "mandatory-scope-authorizer",
+                  "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Skill",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "mandatory-scope-authorizer",
+      "entry": "PreToolUse/9/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Skill",
+              "hooks": [
+                {
+                  "id": "mandatory-scope-authorizer",
+                  "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Skill",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "mandatory-scope-authorizer",
+      "entry": "PreToolUse/9/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Skill",
+              "hooks": [
+                {
+                  "id": "mandatory-scope-authorizer",
+                  "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic"
+      }
+    },
+    {
+      "hook_id": "mandatory-scope-authorizer",
+      "entry": "PreToolUse/9/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
+              "matcher": "Skill",
+              "hooks": [
+                {
+                  "id": "mandatory-scope-authorizer",
+                  "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+                  "timeout": 30,
+                  "gated": false,
+                  "runner": "source",
+                  "safety": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PreToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "synthetic-neutral-zzzz",
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "mandatory-scope-authorizer",
+      "entry": "PreToolUse/10/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PreToolUse",
+      "registry": {
+        "hooks": {
+          "PreToolUse": [
+            {
               "matcher": "NotebookEdit",
               "hooks": [
                 {
@@ -21949,7 +22121,7 @@
     },
     {
       "hook_id": "mandatory-scope-authorizer",
-      "entry": "PreToolUse/9/0",
+      "entry": "PreToolUse/10/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -21991,7 +22163,7 @@
     },
     {
       "hook_id": "mandatory-scope-authorizer",
-      "entry": "PreToolUse/9/0",
+      "entry": "PreToolUse/10/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -22032,7 +22204,7 @@
     },
     {
       "hook_id": "mandatory-scope-authorizer",
-      "entry": "PreToolUse/9/0",
+      "entry": "PreToolUse/10/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -22074,7 +22246,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -22118,7 +22290,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -22163,7 +22335,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -22207,7 +22379,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -22252,7 +22424,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": true,
@@ -22296,7 +22468,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": true,
@@ -22341,7 +22513,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "prefilter.re",
       "runtime": "claude",
       "matching": false,
@@ -22385,7 +22557,7 @@
     },
     {
       "hook_id": "detect-secrets",
-      "entry": "PreToolUse/9/1",
+      "entry": "PreToolUse/10/1",
       "rule": "prefilter.re",
       "runtime": "codex",
       "matching": false,
@@ -22430,7 +22602,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -22476,7 +22648,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -22523,7 +22695,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -22569,7 +22741,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -22616,7 +22788,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": true,
@@ -22662,7 +22834,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": true,
@@ -22709,7 +22881,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": false,
@@ -22753,7 +22925,7 @@
     },
     {
       "hook_id": "enforce-vault-write-access",
-      "entry": "PreToolUse/9/2",
+      "entry": "PreToolUse/10/2",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": false,
@@ -22798,7 +22970,7 @@
     },
     {
       "hook_id": "block-builtin-plan-mode-during-deep-plan",
-      "entry": "PreToolUse/10/0",
+      "entry": "PreToolUse/11/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -22838,7 +23010,7 @@
     },
     {
       "hook_id": "block-builtin-plan-mode-during-deep-plan",
-      "entry": "PreToolUse/10/0",
+      "entry": "PreToolUse/11/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -22879,7 +23051,7 @@
     },
     {
       "hook_id": "block-builtin-plan-mode-during-deep-plan",
-      "entry": "PreToolUse/10/0",
+      "entry": "PreToolUse/11/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -22919,7 +23091,7 @@
     },
     {
       "hook_id": "block-builtin-plan-mode-during-deep-plan",
-      "entry": "PreToolUse/10/0",
+      "entry": "PreToolUse/11/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -22960,7 +23132,7 @@
     },
     {
       "hook_id": "merged-write-guard-shadow",
-      "entry": "PreToolUse/11/0",
+      "entry": "PreToolUse/12/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -23000,7 +23172,7 @@
     },
     {
       "hook_id": "merged-write-guard-shadow",
-      "entry": "PreToolUse/11/0",
+      "entry": "PreToolUse/12/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -23041,7 +23213,7 @@
     },
     {
       "hook_id": "merged-write-guard-shadow",
-      "entry": "PreToolUse/11/0",
+      "entry": "PreToolUse/12/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -23081,7 +23253,7 @@
     },
     {
       "hook_id": "merged-write-guard-shadow",
-      "entry": "PreToolUse/11/0",
+      "entry": "PreToolUse/12/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -23122,7 +23294,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -23169,7 +23341,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -23217,7 +23389,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -23264,7 +23436,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -23312,7 +23484,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": true,
@@ -23359,7 +23531,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": true,
@@ -23407,7 +23579,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "prefilter.file",
       "runtime": "claude",
       "matching": false,
@@ -23452,7 +23624,7 @@
     },
     {
       "hook_id": "conduct-link-inherit",
-      "entry": "PreToolUse/12/0",
+      "entry": "PreToolUse/13/0",
       "rule": "prefilter.file",
       "runtime": "codex",
       "matching": false,
@@ -23498,7 +23670,7 @@
     },
     {
       "hook_id": "spawn-company-handoff",
-      "entry": "PreToolUse/13/0",
+      "entry": "PreToolUse/14/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": true,
@@ -23540,7 +23712,7 @@
     },
     {
       "hook_id": "spawn-company-handoff",
-      "entry": "PreToolUse/13/0",
+      "entry": "PreToolUse/14/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": true,
@@ -23583,7 +23755,7 @@
     },
     {
       "hook_id": "spawn-company-handoff",
-      "entry": "PreToolUse/13/0",
+      "entry": "PreToolUse/14/0",
       "rule": "entry",
       "runtime": "claude",
       "matching": false,
@@ -23625,7 +23797,7 @@
     },
     {
       "hook_id": "spawn-company-handoff",
-      "entry": "PreToolUse/13/0",
+      "entry": "PreToolUse/14/0",
       "rule": "entry",
       "runtime": "codex",
       "matching": false,
@@ -32647,6 +32819,424 @@
       }
     },
     {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Agent",
+        "tool_input": {
+          "command": "command",
+          "file_path": "command"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Agent",
+        "tool_input": {
+          "command": "command",
+          "file_path": "command"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "command",
+          "file_path": "command"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "SyntheticNonMatchingTool",
+        "tool_input": {
+          "command": "command",
+          "file_path": "command"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "prefilter.policy_vocab",
+      "runtime": "claude",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Agent",
+        "tool_input": {
+          "command": "command",
+          "file_path": "command"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "prefilter.policy_vocab",
+      "runtime": "codex",
+      "matching": true,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Agent",
+        "tool_input": {
+          "command": "command",
+          "file_path": "command"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "prefilter.policy_vocab",
+      "runtime": "claude",
+      "matching": false,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Agent",
+        "tool_input": {
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "toolu_synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        }
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "PostToolUse/13/0",
+      "rule": "prefilter.policy_vocab",
+      "runtime": "codex",
+      "matching": false,
+      "event": "PostToolUse",
+      "registry": {
+        "hooks": {
+          "PostToolUse": [
+            {
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 20,
+                  "gated": false,
+                  "prefilter": {
+                    "policy_vocab": true
+                  },
+                  "after": [
+                    "policy-enforcement-gate"
+                  ],
+                  "runner": "source"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {
+        "core/policies/brainstorm-use-decision-mode.md": "---\nwhen: command\non: [PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]\n---\nSynthetic corpus policy.\n",
+        "workspace/orchestrator/policy-trigger-state/synthetic-corpus.txt": ""
+      },
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "PostToolUse",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "tool_name": "Agent",
+        "tool_input": {
+          "file_path": "synthetic-neutral-zzzz"
+        },
+        "tool_use_id": "exec-synthetic",
+        "tool_response": {
+          "output": "synthetic"
+        },
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
       "hook_id": "precompact-thrashing-detector",
       "entry": "PreCompact/0/0",
       "rule": "entry",
@@ -39329,6 +39919,140 @@
                   "id": "cleanup-mcp-processes",
                   "script": ".claude/hooks/cleanup-mcp-processes.sh",
                   "timeout": 30,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "SessionEnd/0/1",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": true,
+      "event": "SessionEnd",
+      "registry": {
+        "hooks": {
+          "SessionEnd": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 10,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SessionEnd",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "SessionEnd/0/1",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": true,
+      "event": "SessionEnd",
+      "registry": {
+        "hooks": {
+          "SessionEnd": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 10,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SessionEnd",
+        "transcript_path": "$FIXTURE/transcript.jsonl",
+        "turn_id": "synthetic-turn"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "SessionEnd/0/1",
+      "rule": "entry",
+      "runtime": "claude",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "SessionEnd": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 10,
+                  "gated": false
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "env": {},
+      "files": {},
+      "payload": {
+        "session_id": "synthetic-corpus",
+        "cwd": "$FIXTURE",
+        "hook_event_name": "SyntheticUnregisteredEvent",
+        "transcript_path": "$FIXTURE/transcript.jsonl"
+      }
+    },
+    {
+      "hook_id": "inject-policy-on-trigger",
+      "entry": "SessionEnd/0/1",
+      "rule": "entry",
+      "runtime": "codex",
+      "matching": false,
+      "event": "SyntheticUnregisteredEvent",
+      "registry": {
+        "hooks": {
+          "SessionEnd": [
+            {
+              "matcher": "",
+              "hooks": [
+                {
+                  "id": "inject-policy-on-trigger",
+                  "script": ".claude/hooks/inject-policy-on-trigger.sh",
+                  "timeout": 10,
                   "gated": false
                 }
               ]

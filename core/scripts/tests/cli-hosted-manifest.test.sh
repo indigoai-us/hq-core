@@ -323,29 +323,38 @@ printf '# drift\n' >> "$GUARD_ROOT/core/scripts/fixture-live.sh"
 git -C "$GUARD_ROOT" add -A
 expect_guard_failure "$GUARD_ROOT" 'core/scripts/fixture-live.sh: generated forwarder differs from manifest' 'guard detects generated drift'
 
-GUARD_ROOT="$TMP/guard-retired"
-make_guard_root "$GUARD_ROOT"
-printf 'fixture\n' > "$GUARD_ROOT/core/scripts/fixture-retired.sh"
-git -C "$GUARD_ROOT" add -A
-expect_guard_failure "$GUARD_ROOT" 'core/scripts/fixture-retired.sh: retired path exists in tree' 'guard rejects a re-added retired path'
-
-GUARD_ROOT="$TMP/guard-deleted"
-make_guard_root "$GUARD_ROOT"
-printf 'fixture\n' > "$GUARD_ROOT/core/scripts/fixture-deleted.sh"
-git -C "$GUARD_ROOT" add -A
-expect_guard_failure "$GUARD_ROOT" 'core/scripts/fixture-deleted.sh: deleted path exists in tree' 'guard rejects a re-added deleted path'
-
-GUARD_ROOT="$TMP/guard-retired-reference"
-make_guard_root "$GUARD_ROOT"
-printf 'Backmerge reference: core/scripts/fixture-retired.sh\n' > "$GUARD_ROOT/README.txt"
-git -C "$GUARD_ROOT" add -A
-expect_guard_failure "$GUARD_ROOT" 'tracked file README.txt references retired path' 'guard rejects tracked references to retired paths'
-
-GUARD_ROOT="$TMP/guard-deleted-reference"
-make_guard_root "$GUARD_ROOT"
-printf 'Backmerge reference: core/scripts/fixture-deleted.sh\n' > "$GUARD_ROOT/README.txt"
-git -C "$GUARD_ROOT" add -A
-expect_guard_failure "$GUARD_ROOT" 'tracked file README.txt references deleted path' 'guard rejects tracked references to deleted paths'
+# Retired and deleted paths are no longer rows of this manifest. They are
+# entries with state removed in core/functions.yaml, and the function manifest
+# check (hq-cli scripts/check-function-manifest.mjs) fails when such a file is
+# back on disk or something still names it; test/ci/function-manifest-check.test.ts
+# in hq-cli covers both cases. Here: a row that still uses one of the old
+# states is rejected and the message says where the path belongs.
+for old_state in retired deleted; do
+  GUARD_ROOT="$TMP/guard-old-state-$old_state"
+  make_guard_root "$GUARD_ROOT"
+  cat >> "$GUARD_ROOT/core/scripts/cli-hosted.yaml" <<EOF
+  - path: core/scripts/fixture-$old_state.sh
+    command: fixture-$old_state
+    kind: generated
+    root: cwd
+    interpreter: bash
+    min_cli: 5.55.0
+    state: $old_state
+    path_operands: none
+    note: |
+      Why the fixture moved: it tests that the old state is rejected.
+EOF
+  git -C "$GUARD_ROOT" add -A
+  if CATALOG_TEST_NPM_ROOT="$CATALOG_TEST_NPM_ROOT" PATH="$CATALOG_TEST_BIN:$PATH" \
+    bash "$GUARD" --root "$GUARD_ROOT" --manifest "$GUARD_ROOT/core/scripts/cli-hosted.yaml" > "$TMP/guard.out" 2> "$TMP/guard.err"; then
+    fail "guard accepted a row with state $old_state"
+  fi
+  if ! grep -F -q -- "state $old_state for core/scripts/fixture-$old_state.sh is not a cli-hosted state: list the path with state removed in core/functions.yaml" "$TMP/guard.err"; then
+    cat "$TMP/guard.err" >&2
+    fail "guard output for state $old_state did not point at core/functions.yaml"
+  fi
+  printf 'ok: guard rejects a row with state %s and points at core/functions.yaml\n' "$old_state"
+done
 
 GUARD_ROOT="$TMP/guard-hybrid"
 make_guard_root "$GUARD_ROOT"

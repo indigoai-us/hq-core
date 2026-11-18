@@ -103,7 +103,7 @@
 #
 # State dir layout:
 #   stories/<id>.json        phases, current index, state, reroutes, worktree
-#   envelopes/<id>-<phase>.json   envelopes queued to hq lanes
+#   envelopes/<id>-<phase>.json   envelopes queued to hq runners
 #   handoffs/<id>-<phase>.json    accepted phase handoffs
 #   decisions/<id>-<worker>.md    approval items for the parent session
 #   decisions/<id>-blocked-<phase>.md  a worker returned status blocked
@@ -204,7 +204,7 @@
 #
 # Exit codes: 0 ok; 1 refused or failed; 2 usage; 3 lane capacity/admission (retry next tick);
 #   10 held for a parent decision (approval hold, or a blocked or malformed handoff on accept);
-#   11 lane down: `hq lanes enqueue` returned `loop_not_running` or a terminal
+#   11 lane down: `hq runners enqueue` returned `loop_not_running` or a terminal
 #      lane state. The worker mapping is dropped, the story stays queued, and
 #      route prints LANE_DOWN <id> <phase> <worker> ...; tick stops there.
 #   12 no lane: the phase's worker has no row in the run's worker table (NO_LANE);
@@ -911,15 +911,31 @@ function explicit_target(repo) {
   return or(has(m, repo) ? m[repo] : null, has(m, "*") ? m["*"] : null);
 }
 
+// worktree_add: create through core/scripts/worktree-backend.sh (git or twig,
+// per core/settings/worktrees.yaml, falling back to plain git), or plain git
+// when the helper is absent. Windows always uses plain git: twig has no CoW
+// path there, and node may not find bash on PATH.
+function worktree_add(repo, wt, branch, ref) {
+  const helper = E.PC_HQ_ROOT && process.platform !== "win32"
+    ? pjoin(E.PC_HQ_ROOT, "core", "scripts", "worktree-backend.sh") : "";
+  if (!helper || !fs.existsSync(helper)) {
+    return ref === null ? git(repo, "worktree", "add", wt, branch) : git(repo, "worktree", "add", "-b", branch, wt, ref);
+  }
+  const args = ref === null
+    ? [helper, "add", "--repo", repo, "--path", wt, "--branch", branch]
+    : [helper, "add", "--repo", repo, "--path", wt, "--new-branch", branch, "--base", ref];
+  return run("bash", args);
+}
+
 function add_worktree(repo, wt, branch, start) {
   fs.mkdirSync(dirname(wt) || ".", { recursive: true });
   let r, line;
   if (has_ref(repo, "refs/heads/" + branch)) {
-    r = git(repo, "worktree", "add", wt, branch);
+    r = worktree_add(repo, wt, branch, null);
     line = "REUSED " + branch + " (branch exists, not cut again) in " + wt;
   } else {
     const [ref, sha] = start;
-    r = git(repo, "worktree", "add", "-b", branch, wt, ref);
+    r = worktree_add(repo, wt, branch, ref);
     line = "CUT " + branch + " from " + ref + " " + sha.slice(0, 12) + " in " + wt;
   }
   if (r.returncode !== 0) throw new CutError("git worktree add failed for " + wt + " (" + branch + "): " + strip(r.stderr));
@@ -1407,7 +1423,7 @@ const SKIP_DIRS = ["node_modules", ".git", "dist"];
 //      whose `path:` (read from the HQ root) holds a worker.yaml under a worker root or a pack root;
 //   2. its pack id: the worker.id of a worker.yaml a pack under PC_PACKS_ROOT ships (core/packages by default);
 //   3. its directory name under a worker root (the older keying, kept as the fallback).
-// hq lanes keys workers by registry id (dev-qa-tester lives in dev-team/qa-tester), so the directory name
+// hq runners keys workers by registry id (dev-qa-tester lives in dev-team/qa-tester), so the directory name
 // alone cannot find every worker. A registry entry always wins, so a worker the release ships under
 // core/workers next to a pack copy keeps its registered path. A directory outside the packs that the
 // registry does not list, with the directory name of a pack worker of that id, is a stale unpacked copy
@@ -1819,10 +1835,10 @@ function do_route(p, sid) {
   if (lane) {
     let rows;
     try {
-      const listed = JSON.parse(run(E.PC_HQ, ["lanes", "list", "--json"], { timeout: 30000 }).stdout || "{}");
+      const listed = JSON.parse(run(E.PC_HQ, ["runners", "list", "--json"], { timeout: 30000 }).stdout || "{}");
       rows = Array.isArray(listed) ? listed : get(listed, "lanes", null);
-    } catch (e) { die("cannot verify mapped pipeline lane ownership: hq lanes list returned invalid JSON"); }
-    if (!Array.isArray(rows)) die("cannot verify mapped pipeline lane ownership: hq lanes list omitted lanes");
+    } catch (e) { die("cannot verify mapped pipeline lane ownership: hq runners list returned invalid JSON"); }
+    if (!Array.isArray(rows)) die("cannot verify mapped pipeline lane ownership: hq runners list omitted lanes");
     const row = rows.find(x => isDict(x) && get(x, "lane_id") === lane);
     if (!row) { delete laneMap[ph.worker]; jsave(lanesFile, laneMap); lane = null; }
     else if (get(get(row, "company", {}), "slug") !== company || get(row, "project_id") !== project || get(row, "worker") !== ph.worker) {
@@ -1836,7 +1852,7 @@ function do_route(p, sid) {
     const laneBrief = pjoin(laneBriefDir, ph.worker + ".md");
     writeText(laneBrief, "# Pipeline loop lane: " + project + " / " + ph.worker + "\n\n" +
       "Pipeline phases arrive as queued envelopes. Follow each envelope; this standing brief has no task of its own.\n");
-    const createArgs = ["lanes", "create", "--loop", "--company", company, "--project", project,
+    const createArgs = ["runners", "create", "--loop", "--company", company, "--project", project,
       "--story", sid, "--worker", ph.worker, "--brief-file", abspath(laneBrief), "--senior", "session:" + session, "--json"];
     const table = get(or(jload(sp("run.json"), {}), {}), "table", "");
     if (T(table) && exists(table)) {
@@ -1849,10 +1865,10 @@ function do_route(p, sid) {
       const createError = get(answer, "error", null);
       const code = S(isDict(createError) ? get(createError, "code", get(answer, "code", "create_failed")) : (createError || get(answer, "code", "create_failed")));
       if (/admission|capacity|full|limit/i.test(code)) { st.state = "queued"; jsave(sfile(sid), st); print("RETRY " + sid + " " + S(ph.phase) + " lanes-" + code); exit(3); }
-      die("hq lanes create refused pipeline phase: " + code + " " + strip(created.stderr));
+      die("hq runners create refused pipeline phase: " + code + " " + strip(created.stderr));
     }
     lane = get(answer, "lane_id", get(answer, "lane"));
-    if (!T(lane)) die("hq lanes create returned no lane_id");
+    if (!T(lane)) die("hq runners create returned no lane_id");
     laneMap[ph.worker] = lane;
     jsave(lanesFile, laneMap);
   }
@@ -1860,7 +1876,7 @@ function do_route(p, sid) {
   const suffixes = or(get(st, "envelope_suffixes"), {});
   envData.id = baseEnvelopeId + (suffixes[ph.phase] ? ".r" + suffixes[ph.phase] : "");
   envData.result_path = abspath(sp("handoffs", sid + "-" + ph.phase + ".json")); jsave(ep, envData);
-  let r = run(E.PC_HQ, ["lanes", "enqueue", lane, "--envelope", abspath(ep)], { timeout: 30000 });
+  let r = run(E.PC_HQ, ["runners", "enqueue", lane, "--envelope", abspath(ep)], { timeout: 30000 });
   let ans; try { ans = JSON.parse(r.stdout); } catch (e) { ans = {}; }
   let enqueueError = get(ans, "error", null);
   let code = S(isDict(enqueueError) ? get(enqueueError, "code", get(ans, "code", "enqueue_failed")) : (enqueueError || get(ans, "code", "enqueue_failed")));
@@ -1869,7 +1885,7 @@ function do_route(p, sid) {
     const n = Number(suffixes[ph.phase] || 0) + 1;
     suffixes[ph.phase] = n; st.envelope_suffixes = suffixes; envData.id = baseEnvelopeId + ".r" + n;
     jsave(sfile(sid), st); jsave(ep, envData);
-    r = run(E.PC_HQ, ["lanes", "enqueue", lane, "--envelope", abspath(ep)], { timeout: 30000 });
+    r = run(E.PC_HQ, ["runners", "enqueue", lane, "--envelope", abspath(ep)], { timeout: 30000 });
     try { ans = JSON.parse(r.stdout); } catch (e) { ans = {}; }
     enqueueError = get(ans, "error", null);
     code = S(isDict(enqueueError) ? get(enqueueError, "code", get(ans, "code", "enqueue_failed")) : (enqueueError || get(ans, "code", "enqueue_failed")));
@@ -1879,7 +1895,7 @@ function do_route(p, sid) {
       delete laneMap[ph.worker]; jsave(lanesFile, laneMap); st.state = "queued"; jsave(sfile(sid), st);
       print("LANE_DOWN " + sid + " " + S(ph.phase) + " " + S(ph.worker) + " lanes-" + code); exit(11);
     }
-    die("hq lanes enqueue failed for " + sid + "/" + S(ph.phase) + ": " + code + " " + strip(r.stderr));
+    die("hq runners enqueue failed for " + sid + "/" + S(ph.phase) + ": " + code + " " + strip(r.stderr));
   }
   st.state = "in_flight"; st.started = true; st.routed_at = now(); pop(st, "held_for");
   pop(st, "owner_retry");
@@ -2636,7 +2652,7 @@ function lane_runs() {
 
 function withdraw(lane, sid, ph) {
   if (!T(lane)) return false;
-  const r = run(E.PC_HQ, ["lanes", "interrupt", lane, "--story", sid, "--phase", ph, "--json"], { timeout: 30000 });
+  const r = run(E.PC_HQ, ["runners", "interrupt", lane, "--story", sid, "--phase", ph, "--json"], { timeout: 30000 });
   let ans; try { ans = JSON.parse(r.stdout); } catch (e) { return false; }
   const id = sid + "-" + ph;
   if ((get(ans, "withdrawn", []) || []).includes(id)) return true;
@@ -2695,10 +2711,10 @@ function do_stop() {
   }
   do_interrupt("stop: " + (note() || "parent stop command"));
   const lanes = Array.from(lane_runs().values());
-  for (const lane of lanes) run(E.PC_HQ, ["lanes", "stop", lane], { timeout: 30000 });
+  for (const lane of lanes) run(E.PC_HQ, ["runners", "stop", lane], { timeout: 30000 });
   let listed = null;
   try {
-    const parsed = JSON.parse(run(E.PC_HQ, ["lanes", "list", "--json"], { timeout: 30000 }).stdout || "{}");
+    const parsed = JSON.parse(run(E.PC_HQ, ["runners", "list", "--json"], { timeout: 30000 }).stdout || "{}");
     listed = Array.isArray(parsed) ? parsed : get(parsed, "lanes", null);
   } catch (e) { listed = null; }
   const stopped = Array.isArray(listed) && lanes.every(id => {

@@ -48,8 +48,13 @@ work_mesh_live_session_id() {
       [ -n "$id" ] && break
     done
   fi
+  # The shared payload reader: session_id, then Cursor's conversation_id.
+  if [ -z "$id" ] && [ -n "$input" ] && command -v session_id_from_payload >/dev/null 2>&1; then
+    id="$(session_id_from_payload "$input")"
+  fi
   if [ -z "$id" ] && [ -n "$input" ]; then
-    # Prefer jq when present; pure-bash fallback for the common keys.
+    # Other hosts' spellings (sessionId, thread_id), or an older session-id.sh
+    # without session_id_from_payload. jq when present; bash fallback.
     if command -v jq >/dev/null 2>&1; then
       id="$(printf '%s' "$input" | jq -r '.session_id // .sessionId // .conversation_id // .conversationId // .thread_id // .threadId // empty' 2>/dev/null || true)"
     else

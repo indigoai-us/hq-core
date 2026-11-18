@@ -41,11 +41,11 @@
 # Record macOS numbers in the PR when available.
 #
 # Pinned enqueue digest (Bash 3.2 empty-array copy guard):
-#   db440318b8933b7c436c7b7172adffc9e8fd00c92f0e1745ed5da76871accbe7
+#   ac44fc8f68dbe7311811e0e97bba2b1e53b3aa856856db566635a135c6319451
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-PINNED_ENQUEUE_SHA256="db440318b8933b7c436c7b7172adffc9e8fd00c92f0e1745ed5da76871accbe7"
+PINNED_ENQUEUE_SHA256="ac44fc8f68dbe7311811e0e97bba2b1e53b3aa856856db566635a135c6319451"
 
 SESSION_START="$REPO_ROOT/core/hooks/SessionStart/35-work-mesh-session-start.sh"
 TURN_START="$REPO_ROOT/core/hooks/UserPromptSubmit/35-work-mesh-turn-start.sh"
@@ -244,6 +244,83 @@ elif echo "$out5" | jq -e '.hookSpecificOutput.additionalContext|test("paged as 
 else
   pass "no paging text for 4 or fewer options"
 fi
+
+# feedback_7192fc45: Codex request_user_input takes 2 to 3 choices, so the
+# Codex branch pages a long list too (2 options plus 'More options' per page)
+# instead of passing every option in one call.
+cp "$HOME_DIR/.hq/work-context/sessions/sid-many.json" "$HOME_DIR/.hq/work-context/sessions/sid-codex-many.json"
+rm -f "$HOME_DIR/.hq/work-context/sessions/sid-codex-many.ask-surfaced"
+outc="$(run_hook_stdin "$TURN_START" '{"session_id":"sid-codex-many","prompt":"please continue the implementation work"}' \
+  HQ_HARNESS=codex HQ_WORK_MESH_HARNESS=codex || true)"
+echo "$outc" | jq -e '.hookSpecificOutput.additionalContext|test("request_user_input") and test("at most 3 choices per question") and test("this decision has 6") and test("next 2 plus a third choice labelled .More options.") and test("o6")' >/dev/null \
+  && pass "Codex ask with more than 3 options tells the agent to page" \
+  || fail "Codex ask with more than 3 options has no paging guidance: $outc"
+echo "$outc" | jq -e '.hookSpecificOutput.additionalContext|test("if 3 or fewer options remain, show them all with no .More options.") and test("one question per call") and test("exactly these stable options \\(paged as below\\)")' >/dev/null \
+  && pass "Codex paged ask states the last-page rule and marks options as paged" \
+  || fail "Codex paged ask lacks the last-page rule or the paged marker: $outc"
+if echo "$outc" | jq -e '.hookSpecificOutput.additionalContext|test("AskUserQuestion")' >/dev/null 2>&1; then
+  fail "Codex ask names AskUserQuestion: $outc"
+else
+  pass "Codex ask uses request_user_input only"
+fi
+# a 3-option Codex decision fits one request_user_input call: no paging text
+cat >"$HOME_DIR/.hq/work-context/sessions/sid-codex-three.json" <<'JSON'
+{"contractVersion":1,"sessionId":"sid-codex-three","contextStatus":"needs_project","decision":{"decisionId":"dec_c3","askAfter":true,"options":[{"optionId":"c1","label":"C1"},{"optionId":"c2","label":"C2"},{"optionId":"c3","label":"C3"}]},"updatedAt":"2026-09-03T00:00:00Z"}
+JSON
+rm -f "$HOME_DIR/.hq/work-context/sessions/sid-codex-three.ask-surfaced"
+outc3="$(run_hook_stdin "$TURN_START" '{"session_id":"sid-codex-three","prompt":"please continue the implementation work"}' \
+  HQ_HARNESS=codex HQ_WORK_MESH_HARNESS=codex || true)"
+if ! echo "$outc3" | jq -e '.hookSpecificOutput.additionalContext|test("request_user_input") and test("c3")' >/dev/null 2>&1; then
+  fail "Codex 3-option ask missing: $outc3"
+elif echo "$outc3" | jq -e '.hookSpecificOutput.additionalContext|test("at most 3 choices") or test("paged as below")' >/dev/null 2>&1; then
+  fail "paging text added for a 3-option Codex decision: $outc3"
+else
+  pass "no Codex paging text for 3 or fewer options"
+fi
+
+# 4 and 5 options are the first counts the Codex last-page rule applies to.
+# The pages the stated rule gives are [2 + More options], [2] for 4 options
+# and [2 + More options], [3] for 5 options. codex_page_plan applies the rule
+# exactly as the hook words it ("if 3 or fewer options remain, show them all
+# with no 'More options'; otherwise show the next 2 plus a third choice
+# labelled 'More options'"), using the option count the hook reports.
+codex_page_plan() {
+  local remaining="$1" plan=""
+  while [ "$remaining" -gt 3 ]; do
+    plan="${plan}2+More,"
+    remaining=$((remaining - 2))
+  done
+  printf '%s%s' "$plan" "$remaining"
+}
+for n in 4 5; do
+  sid="sid-codex-$n"
+  opts="$(jq -cn --argjson n "$n" '[range(1; $n + 1) | {optionId: ("k\(.)"), label: ("K\(.)")}]')"
+  jq -n --arg sid "$sid" --arg dec "dec_c$n" --argjson opts "$opts" \
+    '{contractVersion:1, sessionId:$sid, contextStatus:"needs_project",
+      decision:{decisionId:$dec, askAfter:true, options:$opts}, updatedAt:"2026-09-03T00:00:00Z"}' \
+    >"$HOME_DIR/.hq/work-context/sessions/$sid.json"
+  rm -f "$HOME_DIR/.hq/work-context/sessions/$sid.ask-surfaced"
+  outn="$(run_hook_stdin "$TURN_START" "{\"session_id\":\"$sid\",\"prompt\":\"please continue the implementation work\"}" \
+    HQ_HARNESS=codex HQ_WORK_MESH_HARNESS=codex || true)"
+  echo "$outn" | jq -e --arg n "$n" '.hookSpecificOutput.additionalContext|test("request_user_input") and test("at most 3 choices per question") and test("this decision has " + $n + ",") and test("exactly these stable options \\(paged as below\\)")' >/dev/null \
+    && pass "Codex ask with $n options is paged" \
+    || fail "Codex ask with $n options is not paged: $outn"
+  echo "$outn" | jq -e '.hookSpecificOutput.additionalContext|test("if 3 or fewer options remain, show them all with no .More options.") and test("otherwise show the next 2 plus a third choice labelled .More options.")' >/dev/null \
+    && pass "Codex $n-option ask states the last-page rule" \
+    || fail "Codex $n-option ask lacks the last-page rule: $outn"
+  missing=""
+  for k in $(seq 1 "$n"); do
+    echo "$outn" | jq -e --arg id "k$k" '.hookSpecificOutput.additionalContext|contains("\"optionId\":\"" + $id + "\"")' >/dev/null 2>&1 || missing="$missing k$k"
+  done
+  [ -z "$missing" ] && pass "Codex $n-option ask lists every option id" || fail "Codex $n-option ask drops option ids:$missing"
+  reported="$(echo "$outn" | jq -r '.hookSpecificOutput.additionalContext' | sed -n 's/.*this decision has \([0-9][0-9]*\),.*/\1/p')"
+  case "$n" in
+    4) want="2+More,2" ;;
+    5) want="2+More,3" ;;
+  esac
+  got="$(codex_page_plan "${reported:-0}")"
+  [ "$got" = "$want" ] && pass "Codex $n options page as $want" || fail "Codex $n options page as $got, want $want (reported count: ${reported:-none})"
+done
 
 # slash / short: still record turn, no ask
 reset_spool

@@ -1,0 +1,31 @@
+# Local gate for the hot-channel adapters that `hq signals run` and
+# `hq sources sync` run (hq-cli src/lib/signals/adapters-catalog.ts).
+# The hq-pro hot-channel catalog is canonical. This file can only turn a
+# registered adapter off; an id hq-cli does not register is ignored, and a
+# registered adapter missing from this list stays on.
+#
+# Keys per adapter:
+#   id       the hq-cli adapter id.
+#   enabled  false skips the adapter with reason flag-off.
+#   flag     the hq-flags key that gates the adapter for a company. Naming the
+#            built-in key keeps its default: slack and linear are on unless the
+#            company row says off; gmail is off unless the row says on.
+#
+# hq-cli also accepts a `schedule` string per adapter but does not act on it;
+# the morning hot-signal-sync bot job sets when adapters run.
+# core/scripts/tests/signals-settings.test.sh checks this file against hq-cli.
+version: 1
+adapters:
+  - id: meetings
+    enabled: true
+  - id: slack
+    enabled: true
+    flag: hq.hot-channel-slack
+  - id: linear
+    enabled: true
+    flag: hq.hot-channel-linear
+  - id: attio
+    enabled: true
+  - id: gmail
+    enabled: true
+    flag: hq.hot-channel-gmail

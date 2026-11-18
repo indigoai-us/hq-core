@@ -1,7 +1,7 @@
 ---
 name: deep-plan
 description: "Deep planning: research subagents plus a 15-question interview for large or strategic PRDs. For light planning use /prd."
-allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(core/scripts/read-policy-frontmatter.sh:*), Bash(npx:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash, Bash(bash core/scripts/resolve-company.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Task, Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(hq core policy frontmatter:*), Bash(npx:*), Bash(hq core work-mesh-bind-trusted:*), Bash, Bash(hq core resolve-company:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(hq core policy frontmatter:*)
 ---
 
 # Deep Plan — Research-First PRD Generation
@@ -17,7 +17,7 @@ After Step 0 resolves `{co}` and before any other tool call that touches project
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task}"
 ```
 
@@ -29,7 +29,7 @@ and reconciles with `observation.trustedContext` (no `--trusted` CLI flag).
 Resolve the company with the shared resolver — never by hand, and never from the first word alone:
 
 ```bash
-bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
+hq core resolve-company --prompt "{the user's full input}"
 ```
 
 It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}`: an explicit whole-token slug in the input wins, then the bound session company, then the enabled device default. A session company always wins over the default; disabled and `needsChoice` defaults resolve as `none`. If `source` is `none`, use the structured picker before creating project files.
@@ -38,8 +38,8 @@ It returns `{"company":"<slug>","source":"prompt|session|device_default|none"}`:
 
 1. **Set `{co}`** = resolved slug for the entire flow. Strip it from the description only when it was the leading token
 2. **Announce:** "Anchored on **{co}**"
-3. **Bind the session** — run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
-4. **Load policies (frontmatter-only)** — Collect eligible files for the resolved company, except `example-policy.md`, `README.md`, and `_digest.md`; preserve their order and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests remain retired; SessionStart injects matching policies via `inject-policy-on-trigger`. Apply hard rules as constraints throughout the PRD
+3. **Bind the session** — run `hq core work-mesh-bind-trusted --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+4. **Load policies (frontmatter-only)** — Collect eligible files for the resolved company, except `example-policy.md`, `README.md`, and `_digest.md`; preserve their order and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `hq core policy frontmatter {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally read the `## Rule` section with a targeted range. Policy digests remain retired; SessionStart injects matching policies via `inject-policy-on-trigger`. Apply hard rules as constraints throughout the PRD
 5. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}` for all `qmd` calls
 6. **Pre-load repos** — Extract `{co}.repos[]` from manifest. Present as repo options in the Architecture tier repo question
 7. **Scope workers** — Filter to company workers (`companies/{co}/workers/`) + public workers (`core/workers/public/`)
@@ -85,7 +85,7 @@ If `{co}` is anchored, scope all searches to that company.
 - Already loaded in Step 0 (frontmatter-only). Do NOT re-read here. Note constraints from that scan
 
 **Repo Policies (if repo resolved):**
-- If target repo identified, list files in `{repoPath}/.claude/policies/` (if the directory exists; skip `README.md` and `_digest.md`), preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Do not prefer a digest file (retired). For hard-enforcement policies, additionally read the `## Rule` section
+- If target repo identified, list files in `{repoPath}/.claude/policies/` (if the directory exists; skip `README.md` and `_digest.md`), preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `hq core policy frontmatter {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Do not prefer a digest file (retired). For hard-enforcement policies, additionally read the `## Rule` section
 
 **Target Repo (if repo specified or discovered):**
 - If anchored: company repos already pre-loaded from manifest. Present as options
@@ -222,14 +222,14 @@ fi
 
 **Behavior:**
 - `{reuse_hq_context} = true`: **skip Agent 2**. Announce: `"Reusing research/hq-context.md from brainstorm (<N> hours old) — skipping HQ Context Scanner"`. Leave the file untouched; the Synthesis step at the end of Step 3.7 already reads every file in `research/`.
-- `{reuse_hq_context} = false` and `hq-context.md` exists but stale/unflagged: dispatch Agent 2 normally — it will **overwrite** the stale file. Announce: `"Brainstorm hq-context.md is stale (>2d) — re-running HQ Context Scanner"`.
+- `{reuse_hq_context} = false` and `hq-context.md` exists but stale/unflagged: dispatch Agent 2 normally — the main session overwrites `research/hq-context.md` with Agent 2's new report, or deletes the stale file if no usable report comes back, so synthesis never reads stale context. Announce: `"Brainstorm hq-context.md is stale (>2d) — re-running HQ Context Scanner"`.
 - No `hq-context.md` or no brainstorm: dispatch Agent 2 normally, no announcement change.
 
 Agents 1 (Codebase Scanner) and 3 (Repo Deep-Read) **always run** when `{repoPath}` exists — brainstorm does not produce those files.
 
 ### Agent Dispatch
 
-Spawn agents in parallel using the Agent tool. Each agent writes its findings to a specific file. The main session waits for all agents to complete before proceeding.
+Spawn agents in parallel using the Agent tool. The Explore agents are read-only (no Write or Edit), so each one returns its findings as its final message. The main session waits for all agents to complete, then writes each returned report verbatim to its file in the table below (creating `{project_dir}/research/` first if needed). If an agent returns no usable report, do not create that file.
 
 **Resolve `{repoPath}`** from Step 2 context (company manifest repos, user input, or brainstorm references). If no repo is identifiable, set `{repoPath} = null`.
 
@@ -258,7 +258,7 @@ Search for and document:
 5. **Auth system**: How is authentication handled? What middleware/guards exist? What roles are defined?
 6. **Key integrations**: External services already wired up (Stripe, SendGrid, analytics, etc.)
 
-Write a structured markdown report to: {project_dir}/research/codebase-scan.md
+Return a structured markdown report as your final message. You are read-only and cannot write files; the main session saves your report to {project_dir}/research/codebase-scan.md.
 
 Format:
 # Codebase Scan: {repo name}
@@ -287,20 +287,23 @@ Keep the report factual and concise — no recommendations, just findings."
 
 #### Agent 2 — HQ Context Scanner
 
+The scanner reads the company worker list and that company's manifest entry, writes the report, and stops. It does not search `core/workers/registry.yaml` or `workers/registry.yaml` line by line.
+
 ```
 Spawn Agent (subagent_type: Explore) with prompt:
 
 "Scan HQ context for a new project '{slug}' ({description}) for company '{co}'.
 
-Search for:
+Read only the sources below. Do not open core/workers/registry.yaml or workers/registry.yaml, and do not scan that registry line by line. For workers and repos, read the company worker list and the company's manifest entry only.
+
 1. **Existing projects**: Read companies/{co}/projects/ — list any related or overlapping projects with their status
-2. **Company workers**: Read companies/{co}/workers/ (if exists) + workers/registry.yaml — list workers relevant to this project's domain
+2. **Company workers**: Read the company worker list at companies/{co}/workers/ (if it exists). Each subdirectory is one worker; read its worker.yaml for the id, description, and skills. List workers relevant to this project's domain. Do not read the full worker registry.
 3. **Company knowledge**: Search companies/{co}/knowledge/ for documents related to '{description keywords}'
 4. **Company policies**: List companies/{co}/policies/ — note any hard-enforcement policies that constrain this project
-5. **Related repos**: Check companies/manifest.yaml for {co}'s repos — note which might be relevant
+5. **Manifest entry**: Read only the '{co}' entry in companies/manifest.yaml (the block under companies: whose key is {co}), including its repos. Do not scan other companies' entries.
 {brainstorm_context}
 
-Write a structured markdown report to: {project_dir}/research/hq-context.md
+Return a structured markdown report as your final message. You are read-only and cannot write files; the main session saves your report to {project_dir}/research/hq-context.md.
 
 Format:
 # HQ Context: {slug}
@@ -318,12 +321,14 @@ Format:
 (hard-enforcement policies with rule summaries)
 
 ## Available Repos
-(company repos from manifest)
+(company repos from the manifest entry)
 
 ## Brainstorm Findings
 (if brainstorm.md exists: recommended approach, rejected approaches, open questions — otherwise 'No brainstorm')
 
-Keep the report factual and concise — no recommendations, just findings."
+Keep the report factual and concise — no recommendations, just findings.
+
+Stop after the report file is written. Do not run further searches, do not re-read the worker registry, and do not revise the report unless the write failed."
 ```
 
 **Brainstorm enrichment:** If brainstorm.md was detected in Step 3.5, append to the Agent 2 prompt:
@@ -352,7 +357,7 @@ Search for:
 4. **CI/CD**: Check .github/workflows/, vercel.json, Dockerfile, deploy scripts — document the deployment pipeline
 5. **Open issues/branches**: Run `git branch -r --list 'origin/feature/*'` — note active feature work that might conflict
 
-Write a structured markdown report to: {project_dir}/research/repo-analysis.md
+Return a structured markdown report as your final message. You are read-only and cannot write files; the main session saves your report to {project_dir}/research/repo-analysis.md.
 
 Format:
 # Repo Analysis: {repo name}
@@ -382,7 +387,7 @@ Keep the report factual and concise — no recommendations, just findings."
 
 After all agents complete, the main session reads the research files and writes a compact synthesis:
 
-1. Read all files in `{project_dir}/research/` that were written by agents
+1. Read all files in `{project_dir}/research/` that the main session wrote from the agent reports (plus a reused `hq-context.md`). If all dispatched scans returned no usable report, say so in `research-brief.md` instead of synthesising from nothing.
 2. Synthesize into `{project_dir}/research/research-brief.md`:
 
 ```markdown

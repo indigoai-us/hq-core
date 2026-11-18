@@ -711,6 +711,19 @@
         ]
       },
       {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true,
+            "runner": "source",
+            "safety": true
+          }
+        ]
+      },
+      {
         "matcher": "NotebookEdit",
         "hooks": [
           {
@@ -1131,6 +1144,24 @@
             }
           }
         ]
+      },
+      {
+        "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+        "hooks": [
+          {
+            "id": "inject-policy-on-trigger",
+            "script": ".claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 20,
+            "gated": true,
+            "prefilter": {
+              "policy_vocab": true
+            },
+            "after": [
+              "policy-enforcement-gate"
+            ],
+            "runner": "source"
+          }
+        ]
       }
     ],
     "PreCompact": [
@@ -1512,6 +1543,12 @@
             "id": "cleanup-mcp-processes",
             "script": ".claude/hooks/cleanup-mcp-processes.sh",
             "timeout": 30,
+            "gated": true
+          },
+          {
+            "id": "inject-policy-on-trigger",
+            "script": ".claude/hooks/inject-policy-on-trigger.sh",
+            "timeout": 10,
             "gated": true
           }
         ]

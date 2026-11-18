@@ -111,6 +111,12 @@ if [ "$SKIP_ASK" -eq 0 ] && [ -f "$STATE" ] && [ ! -f "$SURFACED" ] && command -
   ASK_AFTER="$(jq -r '.decision.askAfter // empty' "$STATE" 2>/dev/null || true)"
   DECISION_ID="$(jq -r '.decision.decisionId // empty' "$STATE" 2>/dev/null || true)"
   OPTIONS_JSON="$(jq -c '.decision.options // []' "$STATE" 2>/dev/null || printf '[]')"
+  OPTION_COUNT="$(jq -r '(.decision.options // []) | length' "$STATE" 2>/dev/null || printf '0')"
+  case "$OPTION_COUNT" in
+    ''|*[!0-9]*) OPTION_COUNT=0 ;;
+  esac
+  PAGING=""
+  STABLE_NOTE=""
   case "$ASK_AFTER" in
     true|True|1)
       case "$HARNESS" in
@@ -123,17 +129,18 @@ if [ "$SKIP_ASK" -eq 0 ] && [ -f "$STATE" ] && [ ! -f "$SURFACED" ] && command -
           CTX="WORK MESH: a project/task clarification is pending (decisionId=${DECISION_ID}). Run: hq mesh context organize --session ${SID} list  then submit with hq mesh context organize --session ${SID} --decision <decisionId> --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not invent a project. ${CREATE_GUIDANCE}"
           ;;
         codex)
-          CTX="WORK MESH CLARIFICATION (once): call request_user_input with exactly these stable options from decision ${DECISION_ID}: ${OPTIONS_JSON}. After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself. ${CREATE_GUIDANCE}"
+          # request_user_input takes 2 to 3 choices per question
+          # (hq-codex-decision-gate-fallback, decision-queue-one-at-a-time).
+          # Page longer lists, as the AskUserQuestion branch below does.
+          if [ "$OPTION_COUNT" -gt 3 ]; then
+            STABLE_NOTE=" (paged as below)"
+            PAGING=" request_user_input allows at most 3 choices per question and this decision has ${OPTION_COUNT}, so do not pass them all in one call. Ask in pages, one question per call, in the order given: if 3 or fewer options remain, show them all with no 'More options'; otherwise show the next 2 plus a third choice labelled 'More options' that opens the next page. Keep every optionId and label exactly as listed; never drop, merge or invent options."
+          fi
+          CTX="WORK MESH CLARIFICATION (once): call request_user_input with exactly these stable options${STABLE_NOTE} from decision ${DECISION_ID}: ${OPTIONS_JSON}.${PAGING} After the user picks, run: hq mesh context organize --session ${SID} --decision ${DECISION_ID} --option <optionId> && bash core/scripts/work-mesh-live-rebind.sh --session ${SID} --from-state. Do not create a project yourself. ${CREATE_GUIDANCE}"
           : >"$SURFACED" 2>/dev/null || true
           ;;
         *)
           # AskUserQuestion accepts 2 to 4 options per question. Page longer lists.
-          OPTION_COUNT="$(jq -r '(.decision.options // []) | length' "$STATE" 2>/dev/null || printf '0')"
-          PAGING=""
-          STABLE_NOTE=""
-          case "$OPTION_COUNT" in
-            ''|*[!0-9]*) OPTION_COUNT=0 ;;
-          esac
           if [ "$OPTION_COUNT" -gt 4 ]; then
             STABLE_NOTE=" (paged as below)"
             PAGING=" AskUserQuestion allows at most 4 options per question and this decision has ${OPTION_COUNT}, so do not pass them all in one call. Ask in pages: page through them in the order given: if 4 or fewer options remain, show them all with no 'More options'; otherwise show the next 3 plus a fourth option labelled 'More options' that opens the next page. Keep every optionId and label exactly as listed; never drop, merge or invent options."

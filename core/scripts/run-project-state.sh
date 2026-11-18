@@ -17,6 +17,7 @@ set -euo pipefail
 # Usage:
 #   run-project-state.sh init     <project> --company <co> [--prd <rel>] [--session-id <id>]
 #                                 [--provider <p>] [--model <m>] [--effort <e>] [--orchestrator <name>]
+#                                 [--runner subagent|runner]
 #   run-project-state.sh start    <project> <story-id>
 #   run-project-state.sh complete <project> <story-id> [--commit <sha>]
 #   run-project-state.sh fail     <project> <story-id> --error <text> [--blocked]
@@ -114,7 +115,7 @@ print_progress() {
 
 case "$CMD" in
   init)
-    COMPANY="" PRD_REL="" SESSION_ID="" PROVIDER="" MODEL="" EFFORT="" ORCH="host-native-agent"
+    COMPANY="" PRD_REL="" SESSION_ID="" PROVIDER="" MODEL="" EFFORT="" ORCH="host-native-agent" RUNNER=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --company) COMPANY="${2:-}"; shift 2 ;;
@@ -124,9 +125,14 @@ case "$CMD" in
         --model) MODEL="${2:-}"; shift 2 ;;
         --effort) EFFORT="${2:-}"; shift 2 ;;
         --orchestrator) ORCH="${2:-}"; shift 2 ;;
+        --runner) RUNNER="${2:-}"; shift 2 ;;
         *) die "init: unknown argument $1" ;;
       esac
     done
+    case "$RUNNER" in
+      ""|subagent|runner) ;;
+      *) die "init: --runner must be subagent or runner, not '$RUNNER'" ;;
+    esac
     [[ -n "$COMPANY" ]] || die "init: --company is required (never inferred from cwd)"
     [[ -n "$PRD_REL" ]] || PRD_REL="companies/$COMPANY/projects/$PROJECT/prd.json"
     [[ "$PRD_REL" != /* && "/$PRD_REL/" != */../* ]] || die "init: --prd must be a path inside the HQ root"
@@ -149,7 +155,7 @@ case "$CMD" in
     write_state "$PRD_REL" \
       --arg project "$PROJECT" --arg company "$COMPANY" --arg prd_path "$PRD_REL" \
       --arg session "$SESSION_ID" --arg provider "$PROVIDER" --arg model "$MODEL" \
-      --arg effort "$EFFORT" --arg orch "$ORCH" --arg ts "$NOW" "
+      --arg effort "$EFFORT" --arg orch "$ORCH" --arg runner "$RUNNER" --arg ts "$NOW" "
       .project = \$project
       | .company = \$company
       | .prd_path = \$prd_path
@@ -162,6 +168,7 @@ case "$CMD" in
       | (if \$provider != \"\" then .provider = \$provider else . end)
       | (if \$model != \"\" then .model = \$model else . end)
       | (if \$effort != \"\" then .effort = \$effort else . end)
+      | (if \$runner != \"\" then .runner = \$runner else . end)
       | $REFRESH"
     TOTAL="$(jq -r '.progress.total' "$STATE_FILE")"
     DONE="$(jq -r '.progress.completed' "$STATE_FILE")"

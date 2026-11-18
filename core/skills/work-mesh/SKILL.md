@@ -1,25 +1,25 @@
 ---
 name: work-mesh
-description: Work Mesh Live — automatic presence via hq mesh daemon; context reconcile/organize; manual session task-status, blocked, and note only.
+description: Work Mesh Live — automatic presence via hq daemon; context reconcile/organize; manual session task-status, blocked, and note only.
 allowed-tools: Bash, Read
 ---
 
 # Work mesh
 
-Presence and per-turn activity are **automatic**. Do not call deleted
-`core/scripts/work-mesh.sh` / pack `listen` / `watch`. Use **hq-cli**:
+Presence and per-turn activity are **automatic**. Do not call a deleted
+work-mesh shell client or pack `listen` / `watch`. Use **hq-cli**:
 
 ## Daemon
 
 ```bash
-hq mesh daemon install
-hq mesh daemon status
+hq daemon install
+hq daemon status
 hq mesh daemon doctor
 ```
 
-One resident process per machine. Flushes `~/.hq/work-mesh/spool.jsonl`, holds
-unverified-company events, publishes MQTT presence (LaunchAgent
-`ai.getindigo.hq-mesh-daemon` / systemd `hq-mesh-daemon.service`).
+`hq daemon` runs Work Mesh Live as its `mesh` service: one resident process per machine. Flushes `~/.hq/work-mesh/spool.jsonl`, holds
+unverified-company events, publishes MQTT presence. `hq daemon install` takes over an older standalone
+unit (LaunchAgent `ai.getindigo.hq-mesh-daemon` / systemd `hq-mesh-daemon.service`).
 
 ## Context
 

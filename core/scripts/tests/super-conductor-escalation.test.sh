@@ -234,7 +234,7 @@ grep -q -- "--link cl-t --name feedback-zero-approver --engine claude --title Se
 check "once bound inside the parent's set, the next tool call joins as <parent>-<name> with HQ_ROOT set ($(cat "$tmp/joins" 2>/dev/null))" $?
 grep -q '"hookEventName":"PostToolUse"' <<<"$out"; check "the standing rules arrive as context on that tool call (got: $out)" $?
 grep -q 'ask once: end the turn on a picker' <<<"$out"; check "the rules make the picker the one path for a decision (got: $out)" $?
-grep -q 'hq lanes link report --state blocked' <<<"$out"; check "the rules keep blocked reports for non-questions (got: $out)" $?
+grep -q 'hq runners link report --state blocked' <<<"$out"; check "the rules keep blocked reports for non-questions (got: $out)" $?
 check "the claim is consumed and the empty invites folder removed" "$([[ ! -e "$L/invites" ]]; echo $?)"
 : >"$tmp/joins"
 smeta sid-child2 co-a
@@ -288,7 +288,7 @@ smeta sid-retry co-a
 echo "503 Service Unavailable" >"$tmp/join-down"
 out="$(ups sid-retry "$brief")"
 check "a failed join prints nothing (got: $out)" "$([[ -z "$out" ]] && pending sid-retry; echo $?)"
-grep -q 'sid-retry join hq lanes link join failed for feedback-zero-retry: 503 Service Unavailable' "$LOG"; check "the failed join is logged with hq's error" $?
+grep -q 'sid-retry join hq runners link join failed for feedback-zero-retry: 503 Service Unavailable' "$LOG"; check "the failed join is logged with hq's error" $?
 rm -f "$tmp/join-down"
 out="$(post sid-retry)"
 grep -q '"hookEventName":"PostToolUse"' <<<"$out"; check "the next tool call retries and joins (got: $out)" $?

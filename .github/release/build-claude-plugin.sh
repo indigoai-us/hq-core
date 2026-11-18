@@ -26,7 +26,8 @@ done < <(find "$repo_root/.claude/skills" -mindepth 1 -maxdepth 1 -type d -print
 for file in hqd-hook-shim.sh hqd-hook-flag-cache-lib.sh hq-anywhere-runtime-flag.cjs; do
   install -m 0755 "$repo_root/core/scripts/$file" "$output/scripts/hq/$file"
 done
-install -m 0755 "$repo_root/core/scripts/hq-claude-plugin-launch.sh" "$output/scripts/hq-claude-plugin-launch.sh"
+# The launcher runs only inside the plugin, so it lives with this builder, not in core.
+install -m 0755 "$repo_root/.github/release/hq-anywhere/hq-claude-plugin-launch.sh" "$output/scripts/hq-claude-plugin-launch.sh"
 
 node - "$output" <<'NODE'
 const fs = require('node:fs');

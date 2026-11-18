@@ -1,0 +1,1 @@
+Workers that `/conduct` launches no longer take the conductor's coordinate-only rule as their own. Every brief and the default dispatch prompt now open with a worker-role line saying the `<auto-conduct>` block is addressed to the launching session, and a Codex host passes `fork_turns: "none"` to `spawn_agent` where offered so the conductor's history is not copied into the worker.

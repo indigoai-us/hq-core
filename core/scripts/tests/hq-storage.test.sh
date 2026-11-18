@@ -974,4 +974,27 @@ if [[ "$RUN_BASH" == /bin/bash ]]; then
 else
   echo "skip: /bin/bash is bash 4+ here; the bash 3.2 empty-array path runs on macOS"
 fi
+# large --json on a repo whose report is megabytes long. Passing the parts to
+# jq as --argjson arguments failed with "Argument list too long" (macOS
+# ARG_MAX is 1 MiB; Linux caps one argument at 128 KiB).
+BIG="$TMP/big-report"
+git init -q -b main "$BIG"
+git -C "$BIG" config user.name t
+git -C "$BIG" config user.email t@example.com
+git -C "$BIG" config commit.gpgsign false
+mkdir -p "$BIG/media"
+LC_ALL=C perl -e '
+  my $dir = shift; my $pad = "x" x 180;
+  for my $i (1..6000) {
+    open(my $f, ">", "$dir/media/clip-$pad-$i.mov") or die; print $f "frame $i\n"; close $f;
+  }' "$BIG"
+git -C "$BIG" add -A
+git -C "$BIG" commit -q -m "many clips"
+L="$("$RUN_BASH" "$SCRIPT" large --json --no-cache --min-bytes 1 --root "$BIG")" \
+  || fail "large --json failed on a megabyte-size report"
+[[ "${#L}" -gt 2000000 ]] || fail "big-report fixture is too small to cover the argument limit: ${#L} bytes"
+echo "$L" | jq -e '.history.count == 6000 and .current.count == 6000' >/dev/null \
+  || fail "large big-report counts: $(echo "$L" | jq -c '{h: .history.count, c: .current.count}')"
+ok
+
 echo "PASS: hq-storage ($PASS checks)"

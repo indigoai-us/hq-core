@@ -236,6 +236,10 @@ validate_company_slug() {
   local slug="${1:-}"
   case "$slug" in ''|*[!a-zA-Z0-9_-]*) echo "hq-session: invalid company_slug: '$slug' (allowed characters: A-Z a-z 0-9 - _)" >&2; return 1 ;; esac
   [ "$slug" != personal ] || { echo "hq-session: personal cannot be combined with a company" >&2; return 1; }
+  if [ ! -e "$REPO_ROOT/companies/$slug" ] && [ ! -L "$REPO_ROOT/companies/$slug" ] && ! hq_session_has_case_alias "$REPO_ROOT" "$slug"; then
+    echo "hq-session: no company directory at companies/$slug/ (looked for $REPO_ROOT/companies/$slug/). Run ls companies/ and pass the exact directory name, or create the company first with /newcompany." >&2
+    return 1
+  fi
   if [ -L "$REPO_ROOT/companies/$slug" ] || ! hq_session_has_exact_company_dir "$REPO_ROOT" "$slug" || hq_session_has_case_alias "$REPO_ROOT" "$slug"; then
     echo "hq-session: company_slug must use the exact real directory name: '$slug'" >&2
     return 1

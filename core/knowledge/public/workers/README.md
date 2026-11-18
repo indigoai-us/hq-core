@@ -16,14 +16,20 @@ Workers are autonomous AI assistants with specialized roles. This knowledge base
 - Back pressure verification before completion
 - Simple loops over complex orchestration
 
-**Where HQ diverges: workers persist in HQ lanes. `/conduct`, `/execute-task`,
-and `/run-project` create worker lanes under the invoking session, company,
-project, and story. A later phase for the same worker and senior continues its
-thread; a live lane receives follow-up work through `hq lanes message`. Lane
-admission and capacity are managed by HQ lanes, and the caller reads completed
-work from the lane envelope.
+**Where HQ diverges: workers can persist.** By default `/conduct`,
+`/execute-task`, and `/run-project` run each worker phase as a subagent (Codex:
+`spawn_agent`) and read its JSON return.
 
-What still holds unchanged: one task at a time per worker lane, back-pressure
+<!-- advanced-mode:start -->
+In advanced mode (`/conduct-runners`)
+workers persist in HQ lanes under the invoking session, company, project, and
+story: a later phase for the same worker and senior continues its thread, a
+live lane receives follow-up work through `hq runners message`, HQ lanes manage
+admission and capacity, and the caller reads completed work from the lane
+envelope.
+<!-- advanced-mode:end -->
+
+What still holds unchanged: one task at a time per worker, back-pressure
 verification before completion, a thin parent, and JSON returns. Those are the
 mechanisms that keep the orchestrator small. See
 `core/policies/ralph-orchestrator-context-discipline.md`, rules 6 and 8.

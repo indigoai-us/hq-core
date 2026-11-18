@@ -33,40 +33,127 @@ export function usesBoxSignIn(c) {
 }
 
 /**
+ * Classify the credential file without throwing. status is one of: ok,
+ * missing, not_regular_file (symlink or other type), bad_owner, bad_mode,
+ * unreadable, parse_error, invalid_shape. Only the class is returned, never
+ * file contents.
+ */
+export function inspectClaudeCredential(file, {uid} = {}) {
+  let fd;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
+  catch (error) {
+    if (error.code === 'ENOENT') return {status: 'missing'};
+    if (error.code === 'ELOOP') return {status: 'not_regular_file'};
+    return {status: 'unreadable', error};
+  }
+  let raw;
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return {status: 'not_regular_file'};
+    if (Number.isInteger(uid) && stat.uid !== uid) return {status: 'bad_owner'};
+    if ((stat.mode & 0o077) !== 0) return {status: 'bad_mode'};
+    raw = fs.readFileSync(fd, 'utf8');
+  } catch (error) { return {status: 'unreadable', error}; }
+  finally { try { fs.closeSync(fd); } catch { /* a failed close does not change the classification */ } }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch { return {status: 'parse_error'}; }
+  const oauth = parsed?.claudeAiOauth;
+  if (!oauth || typeof oauth.accessToken !== 'string' || !/^[A-Za-z0-9_.~+/=-]{20,4096}$/.test(oauth.accessToken)) return {status: 'invalid_shape'};
+  const expiresAt = Number(oauth.expiresAt);
+  return {status: 'ok', access: {accessToken: oauth.accessToken, expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0}};
+}
+
+/**
  * Read only the access token and its expiry. The file must be a regular file,
  * not a symlink, owned by the auth account and private to it.
  */
 export function readClaudeAccess(file, {uid} = {}) {
-  let fd;
-  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
-  catch (error) { if (error.code === 'ENOENT') return null; if (error.code === 'ELOOP') throw new Refusal('provider_credential_unsafe'); throw error; }
-  let raw;
+  const result = inspectClaudeCredential(file, {uid});
+  if (result.status === 'ok') return result.access;
+  if (result.status === 'unreadable') throw result.error;
+  if (['not_regular_file', 'bad_owner', 'bad_mode'].includes(result.status)) throw new Refusal('provider_credential_unsafe');
+  return null;
+}
+
+/**
+ * Why the box is or is not signed in: ok, expired (token past its expiry and
+ * the CLI refresh did not produce a valid one), or one of the
+ * inspectClaudeCredential classes.
+ */
+export function credentialStatus(file, opts = {}) {
+  return credentialDetail(file, opts).status;
+}
+
+/** Like credentialStatus; for `unreadable` also returns the errno code (never the message or path). */
+export function credentialDetail(file, {uid, now = Date.now, refresh = refreshViaCli} = {}) {
+  const brief = r => (r.status === 'unreadable' ? {status: r.status, ...(typeof r.error?.code === 'string' ? {errno: r.error.code} : {})} : {status: r.status});
+  let result = inspectClaudeCredential(file, {uid});
+  if (result.status !== 'ok') return brief(result);
+  if (result.access.expiresAt > now()) return {status: 'ok'};
+  try { refresh(); } catch { /* the re-read decides */ }
+  result = inspectClaudeCredential(file, {uid});
+  if (result.status !== 'ok') return brief(result);
+  return {status: result.access.expiresAt > now() ? 'ok' : 'expired'};
+}
+
+/**
+ * Signed-in check for the watcher. Logs credential_not_usable once each time
+ * the class changes (and never for ok), so a parked box leaves a trace
+ * without a line per tick. The errno code is included for unreadable only.
+ */
+export function checkSignedIn(state, detail) {
+  const {status, errno} = detail();
+  const key = errno ? `${status}:${errno}` : status;
+  if (key !== state.credentialKey) {
+    const previous = state.credentialStatus;
+    const before = state.credentialReport;
+    state.credentialKey = key;
+    state.credentialStatus = status;
+    if (status !== 'ok') console.error(JSON.stringify({service: 'company-signin', code: 'credential_not_usable', reason: status, ...(errno ? {errno} : {})}));
+    // Queue one report to the cloud on a class change to a non-ok class, and one on
+    // recovery. An errno-only change inside the same class is not a new class.
+    // A box that starts out signed in has nothing to recover from and reports nothing.
+    if (status !== 'ok' && status !== previous) state.credentialReport = {action: 'credential-lost', credentialClass: status};
+    else if (status === 'ok' && previous && previous !== 'ok') state.credentialReport = {action: 'credential-ok'};
+    // A newer report replaces the queued one, so it must not wait on the older report's backoff.
+    if (state.credentialReport && state.credentialReport !== before) state.credentialReportRetryAt = 0;
+  }
+  return status === 'ok';
+}
+
+// Wait before resending a credential report the cloud did not take (network or 5xx).
+export const CREDENTIAL_REPORT_RETRY_MS = 60 * 1000;
+
+/**
+ * Send the report checkSignedIn queued. Never throws: the cloud alert is
+ * additional to the sign-in flow, so a failure cannot stop the watcher. A
+ * refusal that retrying cannot fix (4xx other than 401, 403, 408 and 429, such as a
+ * server that does not know the action yet) is logged once and dropped. 401 and 403 can
+ * be a transient machine-token failure, so they retry like 5xx. A retry
+ * happens after CREDENTIAL_REPORT_RETRY_MS. Only the action and the HTTP
+ * status are logged.
+ */
+export async function flushCredentialReport(state, api, {now = Date.now} = {}) {
+  const report = state.credentialReport;
+  if (!report) return;
+  if (state.credentialReportRetryAt && now() < state.credentialReportRetryAt) return;
   try {
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile()) throw new Refusal('provider_credential_unsafe');
-    if (Number.isInteger(uid) && stat.uid !== uid) throw new Refusal('provider_credential_unsafe');
-    if ((stat.mode & 0o077) !== 0) throw new Refusal('provider_credential_unsafe');
-    raw = fs.readFileSync(fd, 'utf8');
-  } finally { fs.closeSync(fd); }
-  let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch { return null; }
-  const oauth = parsed?.claudeAiOauth;
-  if (!oauth || typeof oauth.accessToken !== 'string' || !/^[A-Za-z0-9_.~+/=-]{20,4096}$/.test(oauth.accessToken)) return null;
-  const expiresAt = Number(oauth.expiresAt);
-  return {accessToken: oauth.accessToken, expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0};
+    await api('signin', report);
+    state.credentialReport = null;
+    state.credentialReportRetryAt = 0;
+  } catch (error) {
+    const status = typeof error?.status === 'number' ? error.status : null;
+    const final = status !== null && status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status);
+    if (final) { state.credentialReport = null; state.credentialReportRetryAt = 0; }
+    else state.credentialReportRetryAt = now() + CREDENTIAL_REPORT_RETRY_MS;
+    console.error(JSON.stringify({service: 'company-signin', code: final ? 'credential_report_refused' : 'credential_report_failed', action: report.action, status}));
+  }
 }
 
 /** Signed in means a token that is still valid, or one the CLI can refresh. */
-export function signedIn(file, {uid, now = Date.now, refresh = refreshViaCli} = {}) {
-  try {
-    let access = readClaudeAccess(file, {uid});
-    if (!access) return false;
-    if (access.expiresAt > now()) return true;
-    refresh();
-    access = readClaudeAccess(file, {uid});
-    return access !== null && access.expiresAt > now();
-  } catch { return false; }
+export function signedIn(file, opts = {}) {
+  return credentialStatus(file, opts) === 'ok';
 }
 
 /** One minimal CLI call as the auth account; the CLI refreshes and rewrites its own file. */
@@ -215,7 +302,9 @@ export function pollDelayMs(state, now = Date.now(), {activeMs = ACTIVE_POLL_MS,
 
 /** One watcher step. All side effects are injected for tests. */
 export async function signinTick(state, {api, isSignedIn, start, recordPhase = () => {}, now = Date.now}) {
-  if (isSignedIn()) {
+  const signedInNow = isSignedIn();
+  await flushCredentialReport(state, api, {now});
+  if (signedInNow) {
     state.login?.stop(); state.login = null; state.posted = null; state.lastExit = null;
     if (!state.reported) {
       rememberPhase(state, recordPhase, null);
@@ -286,7 +375,7 @@ export async function signinTick(state, {api, isSignedIn, start, recordPhase = (
   if (state.sentCode && now() - (state.codeSince ?? now()) >= CODE_RESULT_TIMEOUT_MS) {
     // The typed code neither signed in nor made the CLI print a new link. A
     // new login posts a new link, which the server records as a rejected code.
-    console.error(JSON.stringify({service: 'company-signin', code: 'login_code_timeout'}));
+    console.error(JSON.stringify({service: 'company-signin', code: 'login_code_timeout', ...(state.credentialStatus ? {credential: state.credentialStatus} : {})}));
     restartLogin(state, recordPhase);
   } else if (state.posted && !state.sentCode && hot && now() - (state.urlSince ?? now()) >= LOGIN_URL_TTL_MS) {
     // Someone is looking at a link that no longer works: replace it. With no
@@ -312,8 +401,10 @@ export async function watch(configPath, {intervalMs = ACTIVE_POLL_MS, idleInterv
   // At most one refresh attempt every 10 minutes when the stored token has expired.
   let lastRefresh = 0;
   const refresh = () => { if (Date.now() - lastRefresh < 600000) return false; lastRefresh = Date.now(); return refreshViaCli({runuser}); };
+  // Log the credential class when it changes; the tick also carries it on the code-timeout line.
+  const isSignedIn = () => checkSignedIn(state, () => credentialDetail(credentialFile(), {uid: authUid, refresh}));
   const deps = {
-    api, isSignedIn: () => signedIn(credentialFile(), {uid: authUid, refresh}), start: () => startLogin({runuser}),
+    api, isSignedIn, start: () => startLogin({runuser}),
     recordPhase: status => writeSigninPhase(status), now: () => Date.now(),
   };
   for (;;) {

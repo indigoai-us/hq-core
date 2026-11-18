@@ -42,12 +42,16 @@ echo "[3] source-contract: optional env vars are guarded for set -u"
 grep -qF 'API="${HQ_DEPLOY_API:-' "$SRC" || fail "HQ_DEPLOY_API is not read with a default"
 # ...and no BARE, unguarded HQ_DEPLOY_API reference may remain (comments stripped
 # first, since the resolution comment names the var).
-if sed 's/#.*//' "$SRC" | grep -F 'HQ_DEPLOY_API' | grep -qvF '${HQ_DEPLOY_API:-'; then
+# HQ_DEPLOY_API_URL (the hq CLI's own variable, set from the resolved base)
+# is a different name and does not count.
+if sed 's/#.*//' "$SRC" | grep -E 'HQ_DEPLOY_API([^_A-Za-z0-9]|$)' | grep -qvF '${HQ_DEPLOY_API:-'; then
   fail "a bare, unguarded \$HQ_DEPLOY_API reference remains in code"
 fi
-# HOME (read for the cognito-token path) must also be guarded.
-grep -qF '${HOME:-}/.hq/cognito-tokens.json' "$SRC" \
-  || fail "HOME is not guarded (\${HOME:-}) for the cognito-token path read"
+# HOME was read for the cognito-token path; the company gate now goes through
+# the hq CLI, which reads its own tokens. Any HOME read left must be guarded.
+if sed 's/#.*//' "$SRC" | grep -E '\$\{?HOME' | grep -qvF '${HOME:-'; then
+  fail "HOME is read without a \${HOME:-} guard"
+fi
 pass "HQ_DEPLOY_API and HOME are guarded against set -u"
 
 echo "ALL PASS: deploy-summary-nounset"

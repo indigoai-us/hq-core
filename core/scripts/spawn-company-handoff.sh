@@ -11,8 +11,9 @@
 #   pre     PreToolUse on start_session. When the calling main-thread session is
 #           company-bound, record a single-use intent (parent session id only)
 #           and tag the brief with its nonce via updatedInput. A brief that
-#           already holds hq-spawn-intent text in any form is denied, so the
-#           start_session call does not run. The company list is not put in the brief.
+#           already holds hq-spawn-intent text is denied, except when its last
+#           line is exactly a tag this parent already wrote (auto-mode retry
+#           after updatedInput was refused). The company list is not put in the brief.
 #   prompt  UserPromptSubmit. On the session's first prompt only, when the prompt
 #           carries a nonce whose intent is fresh and unconsumed, and this
 #           session's binding came only from a weak default (device_default,
@@ -54,6 +55,10 @@ command -v jq >/dev/null 2>&1 || exit 0
 # whose text above that line holds no other "hq-spawn-intent" text in any form.
 TAG_TEXT='HQ binds this session to the company of the session that started it.'
 TAG_LINE_RE='^\[hq-spawn-intent:([0-9a-f]{32})\] HQ binds this session to the company of the session that started it\.$'
+# The desktop host appends one paragraph after the brief it was given:
+# "\n\nShared notes folder for this group of sessions (...): <abs path>".
+# That paragraph, and only that one, is removed before the tag grammar is checked.
+NOTES_LINE_RE='^Shared notes folder for this group of sessions \([^)]*\): /.+$'
 
 valid_id() { case "${1:-}" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac; return 0; }
 
@@ -118,7 +123,30 @@ case "$MODE" in
     # A brief that already holds tag-shaped text (stale, forged or copied, with or
     # without brackets, anywhere) is denied. Passing it through would let a session
     # hand another session's nonce to the child in the exact tag format.
+    # Exception: auto mode refuses updatedInput, so the caller retries with the
+    # tagged brief this parent just wrote. That last line is exactly our tag for
+    # a still-fresh intent we own; leave the brief unchanged.
     if printf '%s' "$prompt" | grep -qi 'hq-spawn-intent'; then
+      last="${prompt##*$'\n'}"
+      body="${prompt%"$last"}"
+      own_retry=0
+      if [[ "$last" =~ $TAG_LINE_RE ]] && ! printf '%s' "$body" | grep -qi 'hq-spawn-intent'; then
+        sid="$(printf '%s' "$INPUT" | jq -r '.session_id // ""')"
+        nonce="${BASH_REMATCH[1]}"
+        intent="$INTENT_DIR/$nonce.json"
+        if valid_id "$sid" && [ -f "$intent" ] && [ ! -L "$intent" ]; then
+          parent="$(jq -r '.parent_session_id // ""' "$intent" 2>/dev/null || true)"
+          created="$(jq -r '.created_at // 0' "$intent" 2>/dev/null || echo 0)"
+          case "$created" in ''|*[!0-9]*) created=0 ;; esac
+          now="$(date +%s)"
+          if [ "$parent" = "$sid" ] && [ $(( now - created )) -le "$TTL" ]; then
+            own_retry=1
+          fi
+        fi
+      fi
+      if [ "$own_retry" -eq 1 ]; then
+        exit 0
+      fi
       jq -cn --arg reason "start_session denied: the brief already contains hq-spawn-intent text. HQ adds this tag itself; remove it from the brief and retry." \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}'
       exit 0
@@ -150,6 +178,13 @@ case "$MODE" in
     text="$(printf '%s' "$INPUT" | jq -r '.prompt // ""')"
     printf '%s' "$text" | grep -qi 'hq-spawn-intent' || exit 0
     sweep_expired
+    # Drop the host's notes-folder paragraph (blank line + one notes line) when it
+    # is the very end of the prompt and does not itself mention the tag.
+    last="${text##*$'\n'}"
+    if [[ "$last" =~ $NOTES_LINE_RE ]] && ! printf '%s' "$last" | grep -qi 'hq-spawn-intent' \
+      && [[ "$text" == *$'\n\n'"$last" ]]; then
+      text="${text%$'\n\n'"$last"}"
+    fi
     # Strict grammar: the final line must be exactly the tag line pre writes, and
     # nothing above it may mention hq-spawn-intent. A replayed nonce (bracketed or
     # not, anywhere), a second tag, or a tag mid-brief rejects the whole prompt.

@@ -10,7 +10,9 @@ Usage:
     "scores": {item_id: unblock score}, "title_problems": [...],
     "over_cap": {...}, "dangling_priorities": [...], "priority_problems": [...],
     "lead_hint_problem": str|null, "widget_problems": [...], "today_problem": str|null,
-    "index_counts": {...}, "landed": bool}. Exit 0 always; the writer fixes what it reports.
+    "index_counts": {...}, "landed": bool, "signals_notice_problems": [...]}. Exit 0 always;
+    the writer fixes what it reports. signals_notice_problems compares brief.json with the
+    brief-data.json beside it: the stale-signals notice must be the one the code wrote.
 """
 import argparse, json, os, re, sys
 
@@ -431,11 +433,31 @@ def page_problems(brief):
         return [{'where': 'page', 'problem': f'could not check the page ({type(e).__name__})'}]
 
 
+def signals_notice_problems(brief, brief_path):
+    """brief_page.notice_problems against the brief-data.json beside brief.json; [] when
+    that file is missing (nothing to compare with)."""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location('brief_page', os.path.join(here, 'brief_page.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    data = mod._read_data(os.path.join(os.path.dirname(os.path.abspath(brief_path)), 'brief-data.json'))
+    if data is None:
+        return []
+    try:
+        return mod.notice_problems(brief, data)
+    except Exception as e:  # never let this break --check
+        return [{'where': 'signals_notices', 'problem': f'could not check the notice ({type(e).__name__})'}]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--check', required=True, help='brief.json to check')
     a = ap.parse_args()
-    print(json.dumps(check_brief(json.load(open(a.check))), indent=1))
+    brief = json.load(open(a.check))
+    report = check_brief(brief)
+    report['signals_notice_problems'] = signals_notice_problems(brief, a.check)
+    print(json.dumps(report, indent=1))
 
 
 if __name__ == '__main__':

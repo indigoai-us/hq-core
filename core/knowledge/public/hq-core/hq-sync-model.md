@@ -66,8 +66,8 @@ Rules from `src/sync/pull-scope.ts`:
 
 Commands:
 
-- `hq sync mode <shared|all|custom> [--paths <csv>]` sets the mode;
-  `hq sync mode --show` lists every membership's mode.
+- `hq daemon sync mode set <company> <shared|all|custom> [--paths <csv>]` sets the mode;
+  `hq daemon sync mode list` lists every membership's mode.
 - `hq sync narrow` moves a membership from `all` to `shared`. Dry-run by
   default; `--apply` deletes clean files now out of scope and flips the mode;
   `--force` also removes locally modified files (no undo).
@@ -115,7 +115,7 @@ conflict copy: `company-brief.md`, `board.json`, `ontology/**`, `signals/**`,
 | `hq sync now` | Push, then pull. `--all` covers every membership plus the personal vault; `--personal` the personal vault only; `--no-personal` drops the personal leg of `--all`. |
 | `hq sync push [paths...]` | Push to one company (`--company`), the personal vault, or `--all`. |
 | `hq sync pull` | Pull permitted files. Same target flags. |
-| `hq sync status` | Summary of the local sync journal. |
+| `hq daemon sync status --local` | Summary of the local sync journal. |
 | `/hq-sync` skill | Runs `hq-sync-runner --companies --direction both --on-conflict keep` for every cloud-backed company. |
 
 All sync operations, `hq rescue`, and `hq reindex` share one per-root
@@ -192,21 +192,21 @@ Two separate mechanisms:
   machines, including in `all` mode. Fetch one with `hq files get`, which pins
   it.
 
-## Background services: `hq daemon` and `hq mesh daemon`
+## Background services: `hq daemon`
 
-`hq mesh daemon` is the Work Mesh Live process: spool drainer plus MQTT
-presence. It can be installed on its own (`hq mesh daemon install`) as a
-LaunchAgent, systemd user unit, or Scheduled Task. See `work-mesh-live.md`.
+Work Mesh Live (spool drainer plus MQTT presence) runs as the daemon's `mesh`
+service. The older standalone mesh units (LaunchAgent, systemd user unit, or
+Scheduled Task) are taken over by `hq daemon install`; the `hq mesh daemon`
+verbs are retiring. See `work-mesh-live.md`.
 
 `hq daemon` (added 2026-09-24, hidden from `hq --help`) is one supervisor for
-all of a machine's HQ background services. Its `mesh` service runs
-`hq mesh daemon run` as a child process, so the mesh daemon becomes one of its
-units. Services (`src/lib/daemon/catalog.ts`):
+all of a machine's HQ background services. Its `mesh` service runs the
+Work Mesh process as a child, so Work Mesh is one of its units. Services (`src/lib/daemon/catalog.ts`):
 
 | Service | Purpose |
 |---|---|
 | `sync` | Runs hq-cloud's sync runner with `--companies --direction both --on-conflict keep --watch --event-push` |
-| `mesh` | Work Mesh Live presence (`hq mesh daemon run`) |
+| `mesh` | Work Mesh Live presence (spool drain and MQTT) |
 | `heartbeat` | Reports machine status (not yet available on desktop machines) |
 | `inbox` | Agent inbox (agent machines) |
 | `bots` | Local bots |

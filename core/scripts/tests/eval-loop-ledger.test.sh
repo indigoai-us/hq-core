@@ -2,7 +2,7 @@
 # hq-core: public
 # US-002: persisted run ledger, unique labels, and the k=2 cap.
 # Uses temp company roots only. Does not read a live companies/ directory
-# and does not call hq lanes.
+# and does not call hq runners.
 
 set -euo pipefail
 
@@ -293,8 +293,8 @@ if [item[4] for item in argv_list] != labels:
 if any(item[3] != "--label" for item in argv_list):
     raise SystemExit(f"lane argv missing --label: {argv_list}")
 for argv in argv_list:
-    if argv[:3] != ["hq", "lanes", "create"]:
-        raise SystemExit(f"argv is not hq lanes create: {argv}")
+    if argv[:3] != ["hq", "runners", "create"]:
+        raise SystemExit(f"argv is not hq runners create: {argv}")
     if "--provider" in argv or "--model-provider" in argv or "codex" in argv:
         raise SystemExit(f"provider override in argv: {argv}")
 ledger_file = companies / "shape-k1" / "eval-library" / "shape-k1" / "ledger.json"

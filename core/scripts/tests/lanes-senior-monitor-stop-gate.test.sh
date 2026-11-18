@@ -82,7 +82,7 @@ cat >/dev/null 2>&1 || true
 mode="$(cat "$TEST_STUB_MODE_FILE" 2>/dev/null || printf 'pass')"
 printf '%s\n' "$*" >> "$TEST_STUB_LOG"
 printf '%s\n' "${HQ_NO_UPDATE_CHECK:-}" >> "$TEST_STUB_ENV_LOG"
-if [ "${1:-}" != "lanes" ] || [ "${2:-}" != "monitor-check" ]; then
+if [ "${1:-}" != "runners" ] || [ "${2:-}" != "monitor-check" ]; then
   echo "stub hq: unexpected command" >&2
   exit 64
 fi
@@ -118,7 +118,7 @@ case "$mode" in
     exit 0
     ;;
   blocked)
-    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-a"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-a"],"monitor_calls":[{"command":"hq lanes watch lane-a","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
+    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-a"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-a"],"monitor_calls":[{"command":"hq runners watch lane-a","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
     exit 2
     ;;
   no-lanes|terminal)
@@ -126,7 +126,7 @@ case "$mode" in
     exit 0
     ;;
   active-a)
-    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-a"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-a"],"monitor_calls":[{"command":"hq lanes watch lane-a","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
+    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-a"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-a"],"monitor_calls":[{"command":"hq runners watch lane-a","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
     exit 2
     ;;
   active-b)
@@ -306,9 +306,9 @@ run_master "$PAYLOAD_PASS" "$PATH_WITH_HQ"
 [ "$MRC" = "0" ] && pass "uncovered lane maps to a structured Claude Stop block" || fail "uncovered rc=$MRC stderr=$MERR"
 assert_contains "$MOUT" '"decision":"block"' "uncovered block JSON"
 assert_contains "$MOUT" 'lane-a' "uncovered lane id"
-assert_contains "$MOUT" 'hq lanes watch lane-a' "exact Monitor command"
-assert_contains "$MOUT" 'hq lanes stop <lane-id>' "stop remedy"
-assert_contains "$MOUT" 'hq lanes reparent <lane-id>' "reparent remedy"
+assert_contains "$MOUT" 'hq runners watch lane-a' "exact Monitor command"
+assert_contains "$MOUT" 'hq runners stop <lane-id>' "stop remedy"
+assert_contains "$MOUT" 'hq runners reparent <lane-id>' "reparent remedy"
 
 reset_stub error
 run_master "$PAYLOAD_PASS" "$PATH_WITH_HQ"
@@ -380,6 +380,34 @@ RESOLVED="$(env -u HQ_CLI_BIN -u HQ_CLI_FALLBACK_DIRS PATH="/usr/bin:/bin" bash 
 [ "${RESOLVED#*|}" = "/usr/bin:/bin:$BIN" ] && pass "fallback dir is appended to PATH, not prepended" \
   || fail "PATH after fallback is ${RESOLVED#*|}"
 
+# feedback_746a422a: the HQ desktop app installs hq in its own toolchain
+# (~/Library/Application Support/Indigo HQ/toolchain/npm-global/bin), with node
+# in toolchain/node/bin. The fixed list must include that path, and an hq taken
+# from a toolchain npm-global/bin must get the toolchain node appended to PATH.
+grep -F 'HQ_BIN_DEFAULT_DIRS' "$RESOLVER_SRC" | grep -qF '$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin' \
+  && pass "resolver searches the HQ app toolchain npm-global bin" \
+  || fail "resolver default dirs omit the HQ app toolchain npm-global bin"
+TC_ROOT="$TMP/app support/Indigo HQ/toolchain"
+mkdir -p "$TC_ROOT/npm-global/bin" "$TC_ROOT/node/bin"
+cp "$BIN/hq" "$TC_ROOT/npm-global/bin/hq"
+printf '#!/bin/sh\nexit 0\n' > "$TC_ROOT/node/bin/node"
+chmod 755 "$TC_ROOT/npm-global/bin" "$TC_ROOT/node/bin" "$TC_ROOT/npm-global/bin/hq" "$TC_ROOT/node/bin/node"
+TC_LIB="$TMP/toolchain-lib"; install_resolver "$TC_LIB" "$TMP/no-hq:$TC_ROOT/npm-global/bin"
+RESOLVED="$(env -u HQ_CLI_BIN -u HQ_CLI_FALLBACK_DIRS PATH="/usr/bin:/bin" bash -c \
+  '. "$1"; resolve_hq_bin; printf "%s|%s" "$HQ_BIN" "$PATH"' _ "$TC_LIB/core/scripts/lib/resolve-hq-bin.sh")"
+[ "${RESOLVED%%|*}" = "$TC_ROOT/npm-global/bin/hq" ] && pass "resolver finds hq in an HQ app toolchain (path with spaces)" \
+  || fail "toolchain resolver picked '${RESOLVED%%|*}'"
+[ "${RESOLVED#*|}" = "/usr/bin:/bin:$TC_ROOT/npm-global/bin:$TC_ROOT/node/bin" ] \
+  && pass "toolchain hq appends the toolchain node bin after its own bin" \
+  || fail "PATH after toolchain fallback is ${RESOLVED#*|}"
+chmod 757 "$TC_ROOT/node/bin"
+RESOLVED="$(env -u HQ_CLI_BIN -u HQ_CLI_FALLBACK_DIRS PATH="/usr/bin:/bin" bash -c \
+  '. "$1"; resolve_hq_bin; printf "%s|%s" "$HQ_BIN" "$PATH"' _ "$TC_LIB/core/scripts/lib/resolve-hq-bin.sh")"
+[ "${RESOLVED#*|}" = "/usr/bin:/bin:$TC_ROOT/npm-global/bin" ] \
+  && pass "an other-writable toolchain node bin is not added to PATH" \
+  || fail "PATH after unsafe toolchain node is ${RESOLVED#*|}"
+chmod 755 "$TC_ROOT/node/bin"
+
 reset_stub blocked
 run_master "$PAYLOAD_ACTIVE" "$PATH_WITH_HQ"
 [ "$MRC" = "3" ] && pass "stop_hook_active avoids a second block" || fail "stop_hook_active rc=$MRC"
@@ -438,8 +466,8 @@ run_reminder "$WRAP_SS" SessionStart
 assert_contains "$ROUT" 'CLI-REMINDER' "active lane reminder text"
 assert_contains "$ROUT" 'lane-a' "active lane id"
 ACTIVE_CONTEXT="$(printf '%s' "$ROUT" | jq -r '.hookSpecificOutput.additionalContext')"
-assert_contains "$ACTIVE_CONTEXT" 'Monitor(command="hq lanes watch lane-a"' "exact active Monitor call"
-contains "$(cat "$STUB_LOG")" 'lanes monitor-check --session senior-1 --engine claude --json' \
+assert_contains "$ACTIVE_CONTEXT" 'Monitor(command="hq runners watch lane-a"' "exact active Monitor call"
+contains "$(cat "$STUB_LOG")" 'runners monitor-check --session senior-1 --engine claude --json' \
   && pass "session-scoped JSON command is exact" || fail "session-scoped JSON command was not forwarded"
 contains "$(cat "$STUB_ENV_LOG")" '1' && pass "reminder hq calls disable self-update" || fail "reminder did not disable self-update"
 MONITOR_CACHE="$(monitor_cache_file "$TMP/cache")"
@@ -489,9 +517,9 @@ run_reminder "$WRAP_UPS" UserPromptSubmit
   || fail "UserPromptSubmit reminder rc=$RRC stderr=$RERR"
 assert_contains "$ROUT" 'CLI-REMINDER' "UserPromptSubmit reminder after quiet timeout"
 assert_contains "$ROUT" 'lane-a' "UserPromptSubmit lane after quiet timeout"
-contains "$(cat "$STUB_LOG")" 'lanes monitor-check --session senior-1 --engine claude --json' \
+contains "$(cat "$STUB_LOG")" 'runners monitor-check --session senior-1 --engine claude --json' \
   && pass "UserPromptSubmit still checks Monitor state" || fail "UserPromptSubmit skipped Monitor check"
-contains "$(cat "$STUB_LOG")" 'lanes monitor-check --reminder' \
+contains "$(cat "$STUB_LOG")" 'runners monitor-check --reminder' \
   && pass "UserPromptSubmit still asks CLI for reminder" || fail "UserPromptSubmit skipped reminder command"
 
 echo "[2aa] named SessionStart timeout mutation is killed"
@@ -578,7 +606,7 @@ run_reminder "$WRAP_UPS" UserPromptSubmit
 assert_contains "$ROUT" 'lane-b' "new lane after expiry id"
 assert_not_contains "$ROUT" 'lane-a' "new lane after expiry does not repeat old lane"
 NEW_LANE_CONTEXT="$(printf '%s' "$ROUT" | jq -r '.hookSpecificOutput.additionalContext')"
-assert_contains "$NEW_LANE_CONTEXT" 'Monitor(command="hq lanes watch lane-b"' "exact new-lane Monitor call"
+assert_contains "$NEW_LANE_CONTEXT" 'Monitor(command="hq runners watch lane-b"' "exact new-lane Monitor call"
 NEW_LANE_CALLS_AFTER="$(stub_call_count)"
 [ "$NEW_LANE_CALLS_AFTER" = "$((NEW_LANE_CALLS_BEFORE + 2))" ] \
   && pass "new lane refresh launches monitor-check and reminder" || fail "new lane refresh call count was $NEW_LANE_CALLS_AFTER"
@@ -1097,7 +1125,7 @@ for path_label in perl watchdog; do
   run_direct "$TIMEOUT_TEST" "$PAYLOAD_PASS" "$gate_path" claude
   [ "$DRC" = "0" ] && pass "$path_label uncovered exit 2 blocks Claude" || fail "$path_label exit 2 rc=$DRC stderr=$DERR"
   assert_contains "$DOUT" '"decision":"block"' "$path_label exit 2 block JSON"
-  assert_contains "$DOUT" 'hq lanes watch lane-a' "$path_label exit 2 Monitor calls"
+  assert_contains "$DOUT" 'hq runners watch lane-a' "$path_label exit 2 Monitor calls"
   [ "$(stub_call_count)" = "1" ] && pass "$path_label exit 2 calls hq once" || fail "$path_label exit 2 call count=$(stub_call_count)"
 
   reset_stub exit-124
@@ -1168,7 +1196,7 @@ cat > "$TERM_IGNORE_HQ" <<'SH'
 #!/usr/bin/perl
 $SIG{TERM} = 'IGNORE';
 open my $log, '>>', $ENV{TEST_STUB_LOG} or die $!;
-print {$log} "lanes monitor-check --session senior-1 --engine claude --json\n";
+print {$log} "runners monitor-check --session senior-1 --engine claude --json\n";
 close $log;
 open my $calls_file, '<', $ENV{TEST_STUB_LOG} or die $!;
 my @calls = <$calls_file>;

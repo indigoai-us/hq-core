@@ -110,6 +110,18 @@ check '.prd_path != null and .progress.total == 3 and .progress.completed == 3' 
 if HQ_ROOT="$TMP" bash "$HELPER" init demo-proj >/dev/null 2>&1; then fail "init without --company must fail"; fi
 if HQ_ROOT="$TMP" bash "$HELPER" init ../x --company acme >/dev/null 2>&1; then fail "init must reject an unsafe project name"; fi
 
+# --runner records the resolved conduct.runner; only subagent and runner are accepted.
+run init demo-proj --company acme --runner subagent
+check '.runner == "subagent"' "init --runner subagent must record runner"
+run init demo-proj --company acme --runner runner
+check '.runner == "runner"' "init --runner runner must record runner"
+run init demo-proj --company acme
+check '.runner == "runner"' "init without --runner must keep the recorded runner"
+if HQ_ROOT="$TMP" bash "$HELPER" init demo-proj --company acme --runner lane >/dev/null 2>&1; then
+  fail "init must reject a --runner value other than subagent or runner"
+fi
+check '.runner == "runner"' "a rejected --runner must leave state.json unchanged"
+
 # The agent path in SKILL.md must call the helper at run start and after every story.
 grep -Fq 'core/scripts/run-project-state.sh init {project} --company {company}' "$SKILL" \
   || fail "run-project SKILL.md must initialise state.json with run-project-state.sh init"

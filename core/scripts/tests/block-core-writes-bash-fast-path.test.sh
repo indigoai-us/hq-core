@@ -100,10 +100,10 @@ protected_payload="$($REAL_JQ -cn --arg cmd "touch $FIX/core/probe.txt" '{tool_i
 assert_case 'benign command skips protected-path machinery' 0 "$safe_payload" 'jq=1 awk=0 yq=0 sed=0'
 assert_case 'protected write parses once and keeps the deny' 2 "$protected_payload" 'jq=2 awk=1 yq=1 sed=0'
 
-# Payloads without a string command keep the guard's long-standing allow
-# decision: the Grok adapter sends tool_input without a command key when its
+# Hook input jq cannot parse is refused (exit 2). Parseable payloads without a
+# string command keep the guard's long-standing allow decision: the Grok adapter sends tool_input without a command key when its
 # extracted command is empty, so these must not become denials.
-assert_case 'malformed hook JSON stays allowed' 0 'not-json' 'jq=1 awk=0 yq=0 sed=0'
+assert_case 'malformed hook JSON is refused' 2 'not-json' 'jq=1 awk=0 yq=0 sed=0'
 assert_case 'missing command field stays allowed' 0 '{}' 'jq=1 awk=0 yq=0 sed=0'
 assert_case 'empty tool_input stays allowed' 0 '{"tool_input":{}}' 'jq=1 awk=0 yq=0 sed=0'
 

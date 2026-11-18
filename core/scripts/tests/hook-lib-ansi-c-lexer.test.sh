@@ -70,8 +70,41 @@ has_record "x=\$'\\''; cp evil.sh .claude/hooks/x.sh" \
 # in Bash, so the escaped quote stays inside it and the string ends at the
 # final quote: one echo record.
 record_count "echo \$\$\$'a\\'b'" 1 'odd dollar run still opens an ANSI-C string'
-# Plain ANSI-C strings keep their words.
-has_record "printf \$'%s\\n' hello" printf "\$%s\\n" 'ANSI-C word keeps its dollar sign and escapes'
+# Plain ANSI-C strings are decoded as Bash reads them: the dollar sign and the
+# quotes go and the escapes are decoded. Raw mode keeps the word as written.
+# A decoded tab, newline or space becomes "?" so it cannot split the record or
+# the target word (see ansi_char in hook-lib.sh).
+has_record "printf \$'%s\\x41' hello" printf "%sA" 'ANSI-C word is decoded as Bash reads it'
+has_record "printf \$'%s\\t' hello" printf "%s?" 'decoded tab in an ANSI-C word becomes ? and stays in the word'
+
+# An escaped quote next to text that spells a protected path: the record must
+# hold the path Bash runs, with the quote decoded, so a guard can match it.
+# has_full <command> <full record, words joined with |> <label>
+has_full() {
+  local cmd="$1" want="${2//|/$US}" label="$3" records line found=0
+  records="$(hq_shell_simple_commands "$cmd")" || records=""
+  while IFS= read -r line; do
+    [ "$line" = "$want" ] && found=1
+  done <<< "$records"
+  if [ "$found" -eq 1 ]; then pass; else fail "$label: no '$2' record in: $(printf '%s' "$records" | tr '\037' '|')"; fi
+}
+has_full "cp evil \$'.claude/hooks/x\\'.sh'" "cp|evil|.claude/hooks/x'.sh" \
+  'escaped quote in a relative protected path is decoded'
+has_full "cp evil \$'/abs/.claude/hooks/x\\'y'" "cp|evil|/abs/.claude/hooks/x'y" \
+  'escaped quote in an absolute protected path is decoded'
+has_full "cp evil \$'\\x2fabs/.claude/hooks/x\\'y'" "cp|evil|/abs/.claude/hooks/x'y" \
+  'escaped quote with a hex escape for the slash is decoded'
+has_full "cp evil \$'\\x2eclaude/hooks/x\\'y'" "cp|evil|.claude/hooks/x'y" \
+  'escaped quote with a hex escape for the dot is decoded'
+
+# A string of nothing but escaped quotes keeps the as-written shape, also when
+# path text sits next to it. Text outside the string is unchanged.
+has_full "cp evil \$'\\''/abs/.claude/x" "cp|evil|\$\\'/abs/.claude/x" \
+  'quote-only string before an absolute path keeps the as-written shape'
+has_full "cp evil x\$'\\''.claude" "cp|evil|x\$\\'.claude" \
+  'quote-only string after a prefix keeps the as-written shape'
+has_full "cp evil \$'\\'\\''" "cp|evil|\$\\'\\'" \
+  'a string of two escaped quotes keeps the as-written shape'
 
 # --- End to end through block-core-writes-bash.sh ---------------------------
 if command -v jq >/dev/null 2>&1; then

@@ -46,6 +46,24 @@ if [ "${HQ_MACHINE_AUTH_REQUIRED:-}" = "1" ]; then
   exit 2
 fi
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+
+# US-043: an hq-cli whose `hq core jobs reconcile` writes units that start the
+# native runner (`hq core job run`) does the whole reconcile. With an older or
+# missing hq the shell body below runs, and its units start hq-job-run.sh,
+# which stays on disk until US-044 removes both. HQ_JOB_RECONCILE_SHELL=1 keeps
+# the shell body for its own tests.
+# PENDING: hq-cli#2871 merged as 2184f4c85 after v5.345.223 was cut, so the
+# first release that contains it is 5.345.224 or later. Correct this before
+# it merges if that release is not 5.345.224.
+HQ_JOB_RECONCILE_NATIVE_MIN_CLI=5.345.224
+if [ "${HQ_JOB_RECONCILE_SHELL:-0}" != 1 ] && [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ] && command -v hq >/dev/null 2>&1; then
+  # shellcheck source=lib/hq-cli-floor.sh
+  . "$SCRIPT_DIR/lib/hq-cli-floor.sh"
+  if hq_cli_floor_check outpost-jobs-reconcile.sh "$HQ_JOB_RECONCILE_NATIVE_MIN_CLI" 2>/dev/null; then
+    export HQ_NO_UPDATE_CHECK=1
+    exec hq core --hq-root "$HQ_ROOT" jobs reconcile "$@"
+  fi
+fi
 VALIDATE="$SCRIPT_DIR/jobs-validate.sh"
 PROBE="$SCRIPT_DIR/hq-job-probe.sh"
 

@@ -46,7 +46,7 @@ async function startMcpServer({ windows = false } = {}) {
   writeFileSync(
     runnerPath,
     "#!/usr/bin/env node\n" +
-      "require('node:fs').appendFileSync(process.env.US102_CALL_LOG, 'called\\n');\n" +
+      "require('node:fs').appendFileSync(process.env.US102_CALL_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');\n" +
       "process.stdout.write('stub hq result');\n",
     { mode: 0o700 },
   );
@@ -147,6 +147,7 @@ async function startMcpServer({ windows = false } = {}) {
     callLogPath,
     callTool: (name, args) => request("tools/call", { name, arguments: args }),
     hostCallCount: () => hostCallCount(callLogPath),
+    hostCalls: () => existsSync(callLogPath) ? readFileSync(callLogPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [],
     async close() {
       if (child.exitCode === null && child.signalCode === null) {
         const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -164,6 +165,69 @@ function toolArguments(name, command) {
   }
   return { cmd: [command, "-c", "echo synthetic"] };
 }
+
+test("package tools dispatch to the owning content-pack commands", async () => {
+  const server = await startMcpServer();
+  try {
+    for (const [args, expected] of [
+      [{ action: "list" }, ["packs", "list"]],
+      [{ action: "install", source: "github:indigoai-us/hq-pack-example" }, ["install", "github:indigoai-us/hq-pack-example"]],
+      [{ action: "update", slug: "example" }, ["packs", "update", "example", "--check-only"]],
+      [{ action: "update" }, ["packs", "update", "--check-only"]],
+      [{ action: "remove", slug: "example" }, ["packs", "uninstall", "example", "--yes"]],
+    ]) {
+      const response = await server.callTool("hq_packages", args);
+      assert.equal(response.result?.isError, undefined);
+      assert.deepEqual(server.hostCalls().at(-1), expected);
+      if (args.action === "update") {
+        for (const flag of ["--yes", "--allow-hooks", "--allow-mcp"]) {
+          assert.equal(server.hostCalls().at(-1).includes(flag), false);
+        }
+      }
+    }
+    const list = await server.callTool("hq_cli", { args: ["packs", "list", "--json"] });
+    assert.equal(list.result?.isError, undefined);
+    assert.deepEqual(server.hostCalls().at(-1), ["packs", "list", "--json"]);
+    const count = server.hostCallCount();
+    const refused = await server.callTool("hq_cli", { args: ["packs", "uninstall", "example", "--yes"] });
+    assert.equal(refused.result?.isError, true);
+    assert.equal(server.hostCallCount(), count);
+    const status = await server.callTool("hq_cli", { args: ["daemon", "sync", "status", "--json"] });
+    assert.equal(status.result?.isError, undefined);
+    assert.deepEqual(server.hostCalls().at(-1), ["daemon", "sync", "status", "--json"]);
+    const journal = await server.callTool("hq_cli", { args: ["daemon", "sync", "status", "--local", "--json"] });
+    assert.equal(journal.result?.isError, undefined);
+    assert.deepEqual(server.hostCalls().at(-1), ["daemon", "sync", "status", "--local", "--json"]);
+    // US-041: the duplicate spellings are refused before the host runs them.
+    for (const args of [["daemon", "sync", "mode"], ["daemon", "stop"], ["auth", "status"], ["packages", "list"], ["sync", "status"], ["sync", "status", "--json"], ["sync", "mode", "--show"]]) {
+      const before = server.hostCallCount();
+      const response = await server.callTool("hq_cli", { args });
+      assert.equal(response.result?.isError, true);
+      assert.equal(server.hostCallCount(), before);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test("package update and removal refuse option and path slugs before host execution", async () => {
+  const server = await startMcpServer();
+  try {
+    for (const action of ["update", "remove"]) {
+      for (const slug of ["--branch", "--hq-root=x", "../../companies/x", "a/b", "a\\b", "a..b", ""]) {
+        const before = server.hostCallCount();
+        const response = await server.callTool("hq_packages", { action, slug });
+        assert.equal(response.result?.isError, true, `${action} accepted ${slug}`);
+        assert.equal(server.hostCallCount(), before, `${action} invoked CLI for ${slug}`);
+      }
+      const response = await server.callTool("hq_packages", { action, slug: "hq-pack-example_1.2" });
+      assert.equal(response.result?.isError, undefined);
+      assert.equal(server.hostCalls().at(-1)[2], "hq-pack-example_1.2");
+    }
+  } finally {
+    await server.close();
+  }
+});
 
 for (const toolName of ["hq_secrets_exec", "hq_run"]) {
   test(`${toolName} refuses mshta.exe before invoking hq`, async () => {

@@ -1093,6 +1093,18 @@ command -v hq >/dev/null 2>&1 || exit 0
 [ -f "$HQ_ROOT/core/core.yaml" ] || exit 0
 [ -f "$HQ_ROOT/companies/manifest.yaml" ] || exit 0
 
+# Machine-check collect-only (HQ_MACHINE_CHECK=1 and
+# HQ_MACHINE_CHECK_COLLECT_ONLY=1, set by the hq-cli daemon batch when
+# core/core.yaml advertises machineCheckCollectOnly): the three show-once
+# messages below are printed for the batch to collect, but their pending files
+# are not consumed and last-result.shown is not written, because nobody has
+# seen them yet. The session that shows them consumes them. The remediation
+# cooldown, its claim and the bug-report stamps are operational and unchanged.
+COLLECT_ONLY=0
+if [ "${HQ_MACHINE_CHECK:-}" = "1" ] && [ "${HQ_MACHINE_CHECK_COLLECT_ONLY:-}" = "1" ]; then
+  COLLECT_ONLY=1
+fi
+
 # Surface counts from the last bounded repair in the same SessionStart
 # diagnostics stream as the local next step. The remediation itself is detached,
 # so the count is delivered on the next human-visible client-health check.
@@ -1120,7 +1132,11 @@ show_unreached_count_once() {
   else
     printf '<hq-client-health-result>\n%s company journal checks were not reached by the last automatic repair and were left out of its report.\n</hq-client-health-result>\n' "$count"
   fi
-  rm -f "$pending_file" "$lock_file" 2>/dev/null || true
+  if [ "$COLLECT_ONLY" -eq 1 ]; then
+    rm -f "$lock_file" 2>/dev/null || true
+  else
+    rm -f "$pending_file" "$lock_file" 2>/dev/null || true
+  fi
 }
 show_unreached_count_once
 
@@ -1131,7 +1147,9 @@ show_cli_outdated_once() {
   local version
   [ -f "$pending_file" ] || return 0
   version=$(head -c 32 "$pending_file" 2>/dev/null | tr -d '\r\n')
-  rm -f "$pending_file" 2>/dev/null || return 0
+  if [ "$COLLECT_ONLY" -ne 1 ]; then
+    rm -f "$pending_file" 2>/dev/null || return 0
+  fi
   case "$version" in
     [0-9]*.[0-9]*.[0-9]*) ;;
     *) return 0 ;;
@@ -1204,7 +1222,9 @@ show_last_result_once() {
   esac
 
   previous=$(cat "$shown_file" 2>/dev/null || true)
-  if [ "$previous" != "$result_id" ]; then
+  if [ "$previous" != "$result_id" ] && [ "$COLLECT_ONLY" -eq 1 ]; then
+    printf '<hq-client-health-result>\n%s\n</hq-client-health-result>\n' "$step"
+  elif [ "$previous" != "$result_id" ]; then
     temp_file="$shown_file.$$"
     if (umask 077; printf '%s\n' "$result_id" > "$temp_file") 2>/dev/null \
         && mv -f "$temp_file" "$shown_file" 2>/dev/null; then

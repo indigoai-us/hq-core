@@ -2,6 +2,8 @@
 # hq-core: public
 # Regression: outpost-jobs-reconcile.sh units, readiness gate, owner filter, idempotency (US-004).
 set -euo pipefail
+# US-043: test the shell reconcile body, not the hq core jobs reconcile route.
+export HQ_JOB_RECONCILE_SHELL=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"

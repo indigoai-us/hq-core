@@ -38,12 +38,13 @@ grep -q '^description: ' "$SKILL" || fail "frontmatter must carry a description"
 grep -q '^allowed-tools: .*AskUserQuestion' "$SKILL" \
   || fail "allowed-tools must include AskUserQuestion (resolution picker)"
 
-# 2. every helper referenced and shipped
+# 2. every helper referenced (US-043: through its hq core delegate twin) and
+#    the helper still shipped until US-044 deletes it
 for helper in hq-delegate-resolve hq-delegate-bundle hq-delegate-grant \
   hq-delegate-repo hq-delegate-secrets hq-delegate-transfer \
   hq-delegate-verify hq-delegate-send; do
-  grep -q "core/scripts/$helper.sh" "$SKILL" \
-    || fail "skill must reference core/scripts/$helper.sh"
+  grep -q "hq core delegate ${helper#hq-delegate-}" "$SKILL" \
+    || fail "skill must run hq core delegate ${helper#hq-delegate-}"
   [ -f "$ROOT/core/scripts/$helper.sh" ] \
     || fail "referenced helper missing from tree: core/scripts/$helper.sh"
   bash -n "$ROOT/core/scripts/$helper.sh" \
@@ -103,5 +104,9 @@ grep -q 'share-session' "$SKILL" || fail "skill must forbid share-session URLs"
 grep -q 'hq-delegate-never-inlines-secrets-or-share-urls' "$SKILL" \
   || fail "skill must cite the delegation policy"
 grep -qi 'Names only' "$SKILL" || fail "skill must state secret values never move"
+
+# 10. verify helper may outlast the foreground limit
+grep -q 'run_in_background: true' "$SKILL" \
+  || fail "skill must tell the agent to run hq-delegate-verify.sh in the background"
 
 echo "hq-delegate-skill: ok (frontmatter scoped, all 8 helpers shipped+referenced, picker/stop resolution, no approval gate, secrets always granted, inert dry-run, fail-closed semantics)"

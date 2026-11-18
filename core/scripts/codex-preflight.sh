@@ -370,7 +370,7 @@ cmd_doctor() {
     gv="$(grok --version 2>/dev/null | head -1 || true)"
     # HQ needs Grok >= GROK_MIN_VERSION. On 0.2.x a PreToolUse deny does not
     # block one tool call, it cancels the whole turn
-    # (cancellation_category "hook_denied"), and `hq lanes` runs
+    # (cancellation_category "hook_denied"), and `hq runners` runs
     # `grok --single`, where the turn ending ends the process: the lane exits
     # with stopReason "Cancelled" and writes no envelope. Two lanes were lost
     # that way on 2026-09-25 to block-hq-glob correctly refusing a recursive

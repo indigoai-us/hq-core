@@ -40,6 +40,15 @@ reaches the model — an allowing hook's stdout is discarded, and a block reason
 goes to the operator. The adapter runs both for their side effects and surfaces
 their notes as bounded stderr diagnostics.
 
+Policy reminders are handled differently, because they must reach the model.
+On `SessionStart`, `UserPromptSubmit` and `PreToolUse` the policy hook holds its
+reminder and does not record the policies as shown. The adapter returns the held
+text as `PostToolUse` `additionalContext` with the next tool result of any tool,
+and only then are those policies recorded. A session that never calls a tool
+gets no policy reminder. Held text is removed on `SessionEnd` without being
+recorded. When Grok sends no session id nothing is held, because the adapter's
+fallback key (its parent pid) can be reused by a later session.
+
 Everywhere else Grok behaves like Claude. `PreToolUse` and `PostToolUse` deliver
 `hookSpecificOutput.additionalContext` to the model next to the tool result
 (10,000-character cap; a `PreToolUse` deny drops it, so the adapter folds it into
@@ -63,7 +72,7 @@ grok --version
 
 On a 0.2.x build a `PreToolUse` deny does **not** block one tool call — it
 cancels the whole turn (the session records
-`cancellation_category: "hook_denied"`). `hq lanes` runs `grok --single`, where
+`cancellation_category: "hook_denied"`). `hq runners` runs `grok --single`, where
 the end of the turn is the end of the process, so the lane exits with
 `stopReason: "Cancelled"` and never writes its envelope. Any HQ guard then
 kills the worker on its first objection: two indigo lanes were lost this way on

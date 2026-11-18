@@ -45,6 +45,8 @@ NOW=2026-10-19T20:00:00Z
 cat >"$tmp/state.json" <<'EOF'
 {"sweep": {
   "sessions":         {"status": "swept", "last_swept_at": "2026-10-19T19:50:00Z", "cursor": "c"},
+  "subagent_runs":    {"status": "swept", "last_swept_at": "2026-10-19T19:50:00Z", "cursor": "c"},
+  "senior_lanes":     {"status": "swept", "last_swept_at": "2026-10-19T19:50:00Z", "cursor": "c"},
   "hq_dms":           {"status": "swept", "last_swept_at": "2026-10-19T19:50:00Z", "cursor": "c"},
   "slack:alpha":      {"status": "swept", "last_swept_at": "2026-10-19T19:50:00Z", "cursor": "c"},
   "email:a@example.com": {"status": "swept", "last_swept_at": "2026-10-19T19:50:00Z", "cursor": "c"},
@@ -54,7 +56,7 @@ cat >"$tmp/state.json" <<'EOF'
 EOF
 due="$(node "$SWEEP" due --state "$tmp/state.json" --now $NOW | tr '\n' ' ')"
 expect "due: constant targets always, hourly only when over an hour old or never swept" \
-  "sessions hq_dms hq_channels slack:alpha github x " "$due"
+  "sessions subagent_runs senior_lanes hq_dms hq_channels slack:alpha github x " "$due"
 
 # 3. verify for a wakeup that started at 19:55: constant targets swept at 19:50
 # are missing; email (hourly, 10 min old) is fine; hq_channels (65 min old at
@@ -71,7 +73,7 @@ grep -q 'Hourly, not due: email:a@example.com (in 50m)' <<<"$out"; check "a rece
 grep -q 'Hourly, not due: .*x (in 0m)' <<<"$out"; check "it is listed as due now (in 0m) ($out)" $?
 
 # 4. After sweeping only what `due` listed, verify passes.
-for t in sessions hq_dms hq_channels slack:alpha github x; do
+for t in sessions subagent_runs senior_lanes hq_dms hq_channels slack:alpha github x; do
   python3 - "$tmp/state.json" "$t" <<'PY'
 import json, sys
 p, t = sys.argv[1], sys.argv[2]
@@ -93,7 +95,7 @@ channel_cadence:
   hourly: []
 EOF
 due="$(node "$SWEEP" due --state "$tmp/state.json" --now $NOW | tr '\n' ' ')"
-expect "an owner map makes email constant" "sessions hq_dms email:a@example.com " "$due"
+expect "an owner map makes email constant" "sessions subagent_runs senior_lanes hq_dms email:a@example.com " "$due"
 
 # 5b. A constant list without an hourly list takes those channels out of the
 # default hourly list; comma-separated strings work the same as YAML lists.
@@ -103,7 +105,7 @@ expect "constant alone removes email from the default hourly list" \
   "$(node "$PREFS" cadence)"
 printf 'channels: [hq_dms, github]\nchannel_cadence:\n  hourly: "github, x"\n' >"$tmp/p.yaml"
 due="$(node "$SWEEP" due --state "$tmp/state.json" --now 2026-10-19T20:30:00Z | tr '\n' ' ')"
-expect "a comma-separated hourly string is honored by due" "sessions hq_dms " "$due"
+expect "a comma-separated hourly string is honored by due" "sessions subagent_runs senior_lanes hq_dms " "$due"
 
 # 6. Skill contract.
 SC="$ROOT/.claude/skills/super-conductor/SKILL.md"

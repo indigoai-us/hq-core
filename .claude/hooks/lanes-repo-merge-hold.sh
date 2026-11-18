@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Ask hq-cli to enforce the company-gated repo merge hold before Bash calls.
 # hq-cli intentionally treats every check error as allow; this shim does too,
-# except that a merge command too large to pass to hq is denied.
+# with two exceptions that deny: a merge command too large to pass to hq, and
+# an hq that has no `hq runners hold check` command (an hq older than core's
+# requiresHqCli floor), because that hq can never report a hold.
 set -uo pipefail
 
 readonly HOOK_ID="lanes-repo-merge-hold"
@@ -106,7 +108,7 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/lanes-repo-merge-hold.XXXXXX" 2>/dev/null || t
 trap 'rm -rf "$TMP"' EXIT
 
 # Linux rejects any single exec argument over MAX_ARG_STRLEN (131072 bytes
-# with its NUL). `hq lanes hold check` only takes the command as --command, so
+# with its NUL). `hq runners hold check` only takes the command as --command, so
 # a larger command made the exec fail and the hook fail open. Commands up to
 # this size pass unchanged on every platform.
 readonly MAX_COMMAND_ARG_BYTES=131071
@@ -239,7 +241,7 @@ fi
 status=0
 # Keep HQ_NO_UPDATE_CHECK on every bounded hq invocation: startup must not
 # trigger a global install while the five-second hook deadline is running.
-HQ_NO_UPDATE_CHECK=1 "$TIMEOUT_BIN" -k 1s 5s "$HQ_BIN" lanes hold check \
+HQ_NO_UPDATE_CHECK=1 "$TIMEOUT_BIN" -k 1s 5s "$HQ_BIN" runners hold check \
   --command "$HOLD_COMMAND" --json >"$TMP/stdout" 2>"$TMP/stderr" || status=$?
 
 if [ "$status" -eq 0 ]; then
@@ -253,7 +255,7 @@ if [ "$status" -eq 3 ]; then
     and (.[0].ok == false)
     and (.[0].error | type == "string" and length > 0)
   ' "$TMP/stdout" >/dev/null 2>&1; then
-    allow_with_notice "hq lanes hold check returned an invalid exit-3 response"
+    allow_with_notice "hq runners hold check returned an invalid exit-3 response"
   fi
 
   error="$(jq -r '.error' "$TMP/stdout")"
@@ -271,7 +273,7 @@ if [ "$status" -eq 3 ]; then
     reason_label="${reason:-unspecified hold reason}"
     until_label="${hold_until:-unknown}"
     details=""
-    [ -n "$repo" ] && details=" For details, run: hq lanes hold show $repo."
+    [ -n "$repo" ] && details=" For details, run: hq runners hold show $repo."
     deny "Repo merge hold for $repo_label: $reason_label. Until $until_label.$details"
   fi
 
@@ -279,11 +281,23 @@ if [ "$status" -eq 3 ]; then
   response="$error for $repo_label"
   [ -n "$reason" ] && response="$response. Reason: $reason"
   [ -n "$hold_until" ] && response="$response. Until $hold_until"
-  [ -n "$repo" ] && response="$response. For details, run: hq lanes hold show $repo."
+  [ -n "$repo" ] && response="$response. For details, run: hq runners hold show $repo."
   deny "$response"
 fi
 
-# This gate fails open by design to match hq-cli, which treats all check
-# errors (including older CLIs without `lanes hold`) as allow. Capture child
-# stderr so a timeout wrapper or older CLI still produces only one line.
-allow_with_notice "hq lanes hold check did not confirm a hold (exit $status)"
+# An hq without the runners group (or without its hold check) answers every
+# call with Commander's "unknown command" error and exit 1. That hq can never
+# report a hold, so allowing would turn every hold off without a word. Core's
+# requiresHqCli floor is above the release that added `hq runners`, so this
+# only happens on an hq older than core supports: deny and say how to fix it.
+# Only Commander's own wording counts, so a check that ran and then failed
+# still takes the fail-open path below.
+if [ "$status" -eq 1 ] \
+  && LC_ALL=C command grep -Eq "^error: unknown command ['\"]?(runners|hold|check)['\"]?" "$TMP/stderr" 2>/dev/null; then
+  deny "$HOOK_ID: this hq has no 'hq runners hold check' command, so the repo merge hold cannot be checked and the merge is blocked. Update hq to the version core requires (requiresHqCli in core/core.yaml), then run the merge again."
+fi
+
+# Every other error fails open by design to match hq-cli, which treats check
+# errors as allow. Capture child stderr so a timeout wrapper still produces
+# only one line.
+allow_with_notice "hq runners hold check did not confirm a hold (exit $status)"

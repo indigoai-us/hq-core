@@ -42,23 +42,3 @@ entries:
     path_operands: none
     note: |
       Why the fixture moved: it tests hybrid command validation.
-  - path: core/scripts/fixture-retired.sh
-    command: fixture-retired
-    kind: generated
-    root: cwd
-    interpreter: bash
-    min_cli: 5.55.0
-    state: retired
-    path_operands: none
-    note: |
-      Why the fixture moved: it tests retired-path validation.
-  - path: core/scripts/fixture-deleted.sh
-    command: fixture-deleted
-    kind: generated
-    root: cwd
-    interpreter: bash
-    min_cli: 5.66.0
-    state: deleted
-    path_operands: none
-    note: |
-      Why the fixture moved: it tests deleted-path validation.

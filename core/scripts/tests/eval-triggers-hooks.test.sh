@@ -97,9 +97,11 @@ out5="$(call '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"
 out6="$(call '{"hook_event_name":"PreToolUse","tool_name":"Glob","tool_input":{"pattern":"deploy/**"},"session_id":"sess-4"}')"
 [ -z "$out6" ] || fail "non-Bash PreToolUse must not inject (CLI/bash-only), got: [$out6]"
 
-# 9. PostToolUse on a non-Bash tool also injects nothing.
+# 9. PostToolUse on a text tool with no tool input injects nothing: tool
+#    output is never trigger text (inject-policy-non-bash-tools.test.sh
+#    covers the tool-input paths).
 out7="$(call '{"hook_event_name":"PostToolUse","tool_name":"Write","tool_response":{"stdout":"deploy done"},"session_id":"sess-5"}')"
-[ -z "$out7" ] || fail "non-Bash PostToolUse must not inject (CLI/bash-only), got: [$out7]"
+[ -z "$out7" ] || fail "PostToolUse Write output must not inject, got: [$out7]"
 
 # --- AssistantIntent channel: evaluate `when:` ONLY against AI-message facts ---
 cat > "$TMP/core/policies/demo-intent-rule.md" <<'EOF'

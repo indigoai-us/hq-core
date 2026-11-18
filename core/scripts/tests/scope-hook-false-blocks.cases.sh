@@ -18,17 +18,25 @@ cat companies/otherco/settings/x
 B"
 scope_112_case round2 2 'eval "$(cat companies/otherco/settings/x)"'
 scope_112_case round2 2 'bash <(cat companies/otherco/settings/x)'
-scope_112_case round2 2 'hq lanes link report -m "Read workspace/$UNKNOWN/path"'
+# hq runners and its deprecated alias hq lanes get the same cases (US-035
+# parity): the rename must not widen what either spelling lets through.
+for group in runners lanes; do
+  scope_112_case round2 2 "hq $group link report -m \"Read workspace/\$UNKNOWN/path\""
+done
 scope_112_case round2 2 'hq files put -m "Read workspace/$UNKNOWN/path"'
 scope_112_case round2 2 "cat <<'EOF'
 cat companies/otherco/settings/x
 EOF
 | sh"
-for suffix in '> companies/otherco/x' '| tee companies/otherco/x' '; cat companies/otherco/x' '&& cat companies/otherco/x'; do
-  scope_112_case round2 2 "hq lanes link report --text harmless $suffix"
-done
-for option in --out --body-file --text-file; do
-  scope_112_case round2 2 "hq lanes link report $option companies/otherco/x"
+for group in runners lanes; do
+  for suffix in '> companies/otherco/x' '| tee companies/otherco/x' '; cat companies/otherco/x' '&& cat companies/otherco/x'; do
+    scope_112_case round2 2 "hq $group link report --text harmless $suffix"
+    scope_112_case round2 2 "hq $group message lane-1 --text harmless $suffix"
+  done
+  for option in --out --body-file --text-file; do
+    scope_112_case round2 2 "hq $group link report $option companies/otherco/x"
+    scope_112_case round2 2 "hq $group message lane-1 $option companies/otherco/x"
+  done
 done
 for suffix in '> companies/otherco/x' '-o companies/otherco/x' '| tee companies/otherco/x' '--input companies/otherco/x' '-F body=@companies/otherco/x'; do
   scope_112_case round2 2 "gh api repos/owner/repo $suffix"
@@ -45,8 +53,10 @@ The words git update-index and eval \"\$(cat companies/otherco/settings/x)\" are
 EOF"
 mkdir -p "$TMP/workspace/a" "$TMP/workspace/b" "$TMP/workspace/claimed"
 touch "$TMP/workspace/a/one" "$TMP/workspace/b/two" "$TMP/workspace/claimed/latest"
-scope_112_case b7568d4e 0 'hq lanes link report --text "These options include \$(...) that resolve inside workspace/ paths"'
-scope_112_case b7568d4e 0 'hq lanes link report --text "HQ Sync treats companies/{co}/signals/ as server-owned"'
+for group in runners lanes; do
+  scope_112_case b7568d4e 0 "hq $group link report --text \"These options include \\\$(...) that resolve inside workspace/ paths\""
+  scope_112_case b7568d4e 0 "hq $group link report --text \"HQ Sync treats companies/{co}/signals/ as server-owned\""
+done
 scope_112_case b7568d4e 0 "cat > workspace/report.json <<'EOF'
 {\"Path: companies/_template/example next_steps\": \"text\"}
 EOF"
@@ -62,8 +72,11 @@ EOF"
 scope_112_case f286c9e5 2 'head "workspace/$(touch companies/otherco/x)"'
 scope_112_case f286c9e5 2 'cat > "$UNKNOWN/output"'
 scope_112_case f286c9e5 2 'for f in a b; do gh api "repos/owner/repo/contents/$f?ref=main" > companies/otherco/x; done'
-scope_112_case b7568d4e 2 'hq lanes link report --text "Read $(cat companies/otherco/settings/x)"'
-scope_112_case b7568d4e 2 'hq lanes link report --text "Write $(touch companies/otherco/settings/x)"'
+for group in runners lanes; do
+  scope_112_case b7568d4e 2 "hq $group link report --text \"Read \$(cat companies/otherco/settings/x)\""
+  scope_112_case b7568d4e 2 "hq $group link report --text \"Write \$(touch companies/otherco/settings/x)\""
+  scope_112_case b7568d4e 2 "hq $group message lane-1 --text \"Read \$(cat companies/otherco/settings/x)\""
+done
 scope_112_case f286c9e5 2 'for f in workspace/a; do head "$f/$(cat workspace/name)"; done'
 scope_112_case f286c9e5 2 'for f in workspace/a; do f=companies/otherco; head "$f/$(ls $f | head -1)"; done'
 # feedback_92211ef8: a repos/private symlink is that checkout only when the
@@ -174,6 +187,54 @@ payload="$(jq -cn --arg cwd "$TMP" --arg path "${HOME}/.hq/repo-symlink-roots" \
   '{tool_name:"Edit",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path,old_string:"a",new_string:"b"}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "feedback_92211ef8: Edit cannot modify the owner root list"
+# feedback_bc1ed7ee: git -C or cd on a repos/private link to an unlisted
+# checkout outside HQ is still refused, and the block now names the link, its
+# resolved checkout and the owner list, so nobody resolves the link by hand.
+# Links into a company folder keep their own reason.
+mkdir -p "$scope_unreg_outside/.git"
+scope_bc1_expect_reason() {
+  local label="$1" needle="$2"
+  if grep -Fq -- "$needle" "$TMP/err.txt"; then
+    echo "PASS: feedback_bc1ed7ee: $label"
+  else
+    echo "FAIL: feedback_bc1ed7ee: $label (missing: $needle)" >&2
+    sed 's/^/    /' "$TMP/err.txt" >&2
+    REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1))
+  fi
+}
+scope_112_case bc1ed7ee 2 'git -C repos/private/stray fetch'
+scope_bc1_expect_reason 'unlisted link names itself' 'repos/private/stray is a symlink to '"$scope_unreg_outside"
+scope_bc1_expect_reason 'unlisted link names the owner list' 'as one line in $HOME/.hq/repo-symlink-roots in their own editor'
+scope_bc1_expect_reason 'unlisted git checkout names its real path' "git -C $scope_unreg_outside status"
+scope_112_case bc1ed7ee 2 'cd repos/private/stray && git status'
+scope_bc1_expect_reason 'cd into an unlisted link names its checkout' "$scope_unreg_outside"
+scope_112_case bc1ed7ee 2 'git -C repos/private/badco status'
+scope_bc1_expect_reason 'a link into a company folder says so' 'a path through the repo symlink repos/private/badco enters a company folder'
+scope_112_case bc1ed7ee 2 'cat repos/private/app/escape'
+scope_bc1_expect_reason 'a path that leaves a listed checkout says so' 'a path through the repo symlink repos/private/app leaves its checkout'
+scope_112_case bc1ed7ee 0 'git -C repos/private/app status'
+scope_112_case bc1ed7ee 0 'cd repos/private/app && git status'
+# An owner line written as ~/dir means $HOME/dir; any other relative line is
+# still ignored. HOME points outside $TMP so the checkout really leaves HQ.
+scope_tilde_home="$(mktemp -d "${TMP%/*}/scope-tilde-home.XXXXXX")"
+scope_tilde_home="$(cd "$scope_tilde_home" && pwd -P)"
+mkdir -p "$scope_tilde_home/.hq" "$scope_tilde_home/code/tapp/.git"
+ln -s "$scope_tilde_home/code/tapp" "$TMP/repos/private/tapp"
+scope_bc1_saved_home="${HOME:-}"
+export HOME="$scope_tilde_home"
+printf '%s\n' 'code' > "$HOME/.hq/repo-symlink-roots"
+scope_112_case bc1ed7ee 2 'git -C repos/private/tapp status'
+# The owner writes a literal ~/ line; the hook expands it.
+# shellcheck disable=SC2088
+printf '%s\n' '~/code' > "$HOME/.hq/repo-symlink-roots"
+scope_112_case bc1ed7ee 0 'git -C repos/private/tapp status'
+scope_112_case bc1ed7ee 0 'cd repos/private/tapp && git status'
+# shellcheck disable=SC2088
+printf '%s\n' '~/' '~' > "$HOME/.hq/repo-symlink-roots"
+scope_112_case bc1ed7ee 2 'git -C repos/private/tapp status'
+if [ -n "$scope_bc1_saved_home" ]; then export HOME="$scope_bc1_saved_home"; else unset HOME; fi
+rm -f "$TMP/repos/private/tapp"
+rm -rf "$scope_tilde_home"
 # shellcheck source=scope-hook-round3.cases.sh
 . "$ROOT/core/scripts/tests/scope-hook-round3.cases.sh"
 rm -rf "$scope_reg_outside" "$scope_unreg_outside" "$scope_chain_real" \

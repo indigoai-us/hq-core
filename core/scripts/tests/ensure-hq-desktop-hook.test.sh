@@ -727,4 +727,69 @@ grep -qx 'status=deferred' "$STATE/last-result" || fail "late app start must def
 [ ! -f "$STATE/last-attempt.stamp" ] || fail "deferral must clear cooldown"
 no_lifecycle
 
+# Q47: a collect-only machine-check batch (HQ_MACHINE_CHECK=1 and
+# HQ_MACHINE_CHECK_COLLECT_ONLY=1) prints the deferred notice and a finished
+# worker's outcome, but writes no delivery record, so the prompt that shows
+# them still can. The cooldown stamp is operational and untouched.
+reset_root; write_plist "$APP" 0.10.150; fresh_cache
+: > "$RUNNING_FLAG"
+mkdir -p "$STATE"
+printf 'keep\n' > "$STATE/last-attempt.stamp"
+for batch in 1 2; do
+  out="$(run_hook HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1)"
+  has "$out" '<hq-desktop-update-deferred>' || fail "Q47: collect-only batch $batch should print the deferral, got: $out"
+  [ ! -e "$STATE/deferred-notice" ] || fail "Q47: collect-only batch $batch wrote deferred-notice"
+  [ "$(cat "$STATE/last-attempt.stamp")" = "keep" ] || fail "Q47: collect-only batch $batch touched the cooldown stamp"
+done
+out="$(run_hook)"
+has "$out" '<hq-desktop-update-deferred>' || fail "Q47: the prompt after collect-only batches should show the deferral, got: $out"
+[ "$(cat "$STATE/deferred-notice" 2>/dev/null)" = "0.10.200" ] || fail "Q47: the prompt that showed the deferral did not record it"
+out="$(run_hook)"
+[ -z "$out" ] || fail "Q47: the deferral was shown twice for one version, got: $out"
+out="$(run_hook HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1)"
+[ -z "$out" ] || fail "Q47: a collect-only batch after delivery reported the deferral again, got: $out"
+rm -f "$RUNNING_FLAG" "$STATE/app-running.cache"
+
+reset_root; write_plist "$APP" 0.10.200; fresh_cache
+mkdir -p "$STATE"
+printf 'status=updated\nfrom=0.10.150\nto=0.10.200\nreason=\nrelaunched=0\nurl=%s\nat=2026-11-16T00:00:00Z\n' "$MAC_URL" > "$STATE/last-result"
+for batch in 1 2; do
+  out="$(run_hook HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1)"
+  has "$out" '<hq-desktop-updated>' || fail "Q47: collect-only batch $batch should print the outcome, got: $out"
+  [ -f "$STATE/last-result" ] || fail "Q47: collect-only batch $batch claimed the result record"
+done
+out="$(run_hook)"
+has "$out" '<hq-desktop-updated>' || fail "Q47: the prompt after collect-only batches should show the outcome, got: $out"
+[ -z "$(find "$STATE" -maxdepth 1 -name 'last-result*')" ] || fail "Q47: the prompt that showed the outcome did not consume it"
+out="$(run_hook)"
+[ -z "$out" ] || fail "Q47: the outcome was shown twice, got: $out"
+
+# A batch without the collect-only marker (an older hq-cli) is unchanged.
+printf 'status=updated\nfrom=0.10.150\nto=0.10.200\nreason=\nrelaunched=0\nurl=%s\nat=2026-11-16T00:00:00Z\n' "$MAC_URL" > "$STATE/last-result"
+out="$(run_hook HQ_MACHINE_CHECK=1)"
+has "$out" '<hq-desktop-updated>' || fail "Q47: a batch without collect-only should print the outcome, got: $out"
+[ -z "$(find "$STATE" -maxdepth 1 -name 'last-result*')" ] || fail "Q47: a batch without collect-only no longer consumes the result"
+no_lifecycle
+
+# Q47 review C1: an unclaimed outcome must not hold up a newer release. While
+# the daemon owns the checks, only collect-only batches run this hook, so the
+# "updated" record below is never claimed by a prompt. The first batch still
+# prints it and goes on to start the update to 0.10.200.
+stub codesign "echo codesign >> '$CALLS'; exit 0"
+reset_root; write_plist "$APP" 0.10.150; fresh_cache 0.10.200
+mkdir -p "$STATE"
+printf 'status=updated\nfrom=0.10.100\nto=0.10.150\nreason=\nrelaunched=0\nurl=%s\nat=2026-11-16T00:00:00Z\n' "$MAC_URL" > "$STATE/last-result"
+started=0
+for batch in 1 2 3; do
+  out="$(run_hook HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1)"
+  if has "$out" '<hq-desktop-update-started>'; then
+    [ "$batch" -eq 1 ] || fail "Q47 C1: the update started only at collect-only batch $batch"
+    has "$out" '<hq-desktop-updated>' || fail "Q47 C1: the first batch dropped the unclaimed outcome, got: $out"
+    started=1; wait_worker; break
+  fi
+done
+[ "$started" -eq 1 ] || fail "Q47 C1: three collect-only batches never started the update to 0.10.200"
+[ "$(installed_version)" = "0.10.200" ] || fail "Q47 C1: the started update did not land; worker.log: $(cat "$STATE/worker.log" 2>/dev/null)"
+no_lifecycle
+
 echo "PASS: ensure-hq-desktop-hook (closed-app updates, running dispatch and replacement guards, verification, cooldown, locks, Windows, kill switches, concurrency)"

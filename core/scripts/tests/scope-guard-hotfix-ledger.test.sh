@@ -50,7 +50,7 @@ install_fixture() {
     "$TMP/repos/private/cleanlogic-theme/snippets" "$TMP/repos/private/a" "$TMP/repos/private/b" \
     "$TMP/home/.hq" "$TMP/home/.claude/projects/x" "$TMP/.claude/state" "$TMP/.claude/skills/deploy/scripts"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
-  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/hook-caller-lineage.sh" "$TMP/core/scripts/lib/"
@@ -436,7 +436,8 @@ import os
 print('a|b')
 PY"
 dispatch_case 0 41420292-loop-tail 'for i in 1 2; do echo "$(tail -1 workspace/logs/a.html)"; done'
-dispatch_case 0 hotfix-report-text 'hq lanes link report --state working --text "no blanket allow, no bypass env var"'
+dispatch_case 0 hotfix-report-text 'hq runners link report --state working --text "no blanket allow, no bypass env var"'
+dispatch_case 0 hotfix-report-text-lanes-alias 'hq lanes link report --state working --text "no blanket allow, no bypass env var"'
 # Full dispatcher acceptance additions: payloads are JSON, never executed.
 mkdir -p "$DISPATCH_HQ/workspace/threads/.handoff-tmp" "$DISPATCH_HQ/workspace/x/backend" "$DISPATCH_HQ/workspace/x/harness"
 printf '{}' > "$DISPATCH_HQ/workspace/request.json"

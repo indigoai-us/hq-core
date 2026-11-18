@@ -1,0 +1,86 @@
+# Test and build files that stay out of the release tarball.
+#
+# release.yml passes this file to rsync with --exclude-from when it stages the
+# release tree. The repository keeps every file listed here, and its CI runs
+# them. An install runs none of them.
+#
+# rsync filter rules, first match wins: "+ " keeps a path, "- " leaves it out.
+# A name with no "/" matches at any depth, a trailing "/" matches folders only,
+# a leading "/" anchors the rule at the repository root.
+#
+# The test rules are also maintained by hq-cloud src/cli/rescue-core.ts for
+# existing installs. /update-hq then runs core/scripts/remove-installed-test-files.sh,
+# which reads core/scripts/release-install-excludes.rsync, a copy of this file
+# that ships in core. Keep the two identical; remove-installed-test-files.test.sh
+# checks it.
+# .github/release/check-staged-tree.sh independently checks this release tree.
+
+# Kept: test-named files that a shipped script runs.
+# core/workers/public/qa-tester/src/runner.ts runs these specs.
++ /core/workers/public/qa-tester/tests/***
+# The folder itself, so the files named below can be reached.
++ /core/scripts/tests/
+# core/scripts/check-skill-edit.sh runs these seven.
++ /core/scripts/tests/deep-plan-hq-context-scanner.test.sh
++ /core/scripts/tests/skill-script-refs.test.sh
++ /core/scripts/tests/skill-core-script-references.test.sh
++ /core/scripts/tests/skill-body-positional-placeholders.test.sh
++ /core/scripts/tests/skill-company-bind-before-read.test.sh
++ /core/scripts/tests/agent-runtime-skill-metadata.test.sh
++ /core/scripts/tests/agent-runtime-permissions.test.sh
+
+# Left out: everything else in core/scripts/tests.
+- /core/scripts/tests/*
+# Left out: test folders at any depth.
+- tests/
+- __tests__/
+- __fixtures__/
+- __snapshots__/
+# Left out: the root test folder, the hook corpus, two fixture folders.
+- /test/
+- /core/scripts/hook-corpus/
+- /core/workers/public/content-shared/test/
+- /.claude/skills/daily-brief/scripts/fixtures/
+# Left out: test files beside the code they test.
+- *.test.sh
+- *.spec.sh
+- *.test.bash
+- *.spec.bash
+- *.test.mjs
+- *.spec.mjs
+- *.test.cjs
+- *.spec.cjs
+- *.test.js
+- *.spec.js
+- *.test.ts
+- *.spec.ts
+- *.test.tsx
+- *.spec.tsx
+- *.test.py
+- *.spec.py
+- *.test.ps1
+- *.spec.ps1
+- test_*.py
+# Left out: test runners whose names fit no pattern.
+- /core/scripts/test-codex-hook-adapter.sh
+- /core/scripts/anywhere-parity-test.sh
+- /core/scripts/anywhere-vm-test.sh
+- /.claude/skills/outpost-host/test-guard.sh
+
+# Repository-only CI and release tools; installed commands do not call these.
+- /core/scripts/ci/
+- /core/scripts/check-cli-hosted.sh
+- /core/scripts/check-deleted-script-refs.sh
+- /core/scripts/parse-release-tag.sh
+- /core/scripts/promote-release-pr-guard.sh
+- /core/scripts/publish-hq-anywhere-runtime-assets.sh
+- /core/scripts/release-pr-auto-merge.sh
+- /core/scripts/release-pr-check-gate.sh
+- /core/scripts/check-preflight-fixtures.sh
+- /core/scripts/check-pricing-drift.sh
+- /core/scripts/generate-adapter-capabilities.sh
+- /core/scripts/generate-openai-yaml.sh
+- /core/scripts/lint-hook-heredoc-nesting.js
+- /core/scripts/lint-install-deps.sh
+- /core/scripts/lint-shell-errors.sh
+- /core/scripts/compute-checksums.sh

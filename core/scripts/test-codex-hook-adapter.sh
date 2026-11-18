@@ -25,7 +25,8 @@ process.stdout.write("false\n");
 JS
 # The adapter reads the registry dispatch table through the shared library.
 # Keep settings.json too because it still carries the per-event master commands.
-# Hooks the fixture does not stub are skipped by the missing-script guard.
+# Hooks the fixture does not stub are skipped by the missing-script guard,
+# except PreToolUse safety guards, which block when missing (stubbed below).
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
 # SessionStart sources these two. A missing file makes `.` exit the adapter
 # under macOS /bin/bash 3.2, so the suite failed locally on macOS without them.
@@ -52,7 +53,10 @@ hook_id="$1"
 script="$2"
 shift 2
 echo "$hook_id" >> "$TEST_LOG"
-"$script" "$@"
+# Launch like the real hook-gate.sh (bash "$HOOK_SCRIPT"). Executing an
+# unreadable file directly under set -e exits 1 on macOS /bin/bash 3.2 and 126
+# on bash 5, so the launch-failure cases below would differ by shell.
+bash "$script" "$@"
 SH
 chmod +x "$TMP/.claude/hooks/hook-gate.sh"
 
@@ -357,6 +361,15 @@ cat >/dev/null
 echo "enforce-capability-link-render" >> "$TEST_LOG"
 exit 0
 SH
+
+# A missing PreToolUse safety guard blocks instead of being skipped, so every
+# safety guard the fixture does not stub above gets an allow stub.
+for safety_script in $(jq -r '.hooks.PreToolUse[]?.hooks[]? | select(.safety == true) | .script' \
+    "$TMP/.claude/hooks/hook-registry.json" | sort -u); do
+  [ -e "$TMP/$safety_script" ] && continue
+  mkdir -p "$(dirname "$TMP/$safety_script")"
+  printf '#!/bin/bash\ncat >/dev/null\nexit 0\n' > "$TMP/$safety_script"
+done
 
 chmod +x "$TMP/.claude/hooks/"*.sh
 
@@ -707,7 +720,8 @@ assert_contains "$err" "Edits to companies/_template/ are denied"
 # ----- launch failure on a blocking PreToolUse guard fails closed -----
 # A guard that cannot be executed exits 126. Codex treats any exit other than 2
 # as a non-blocking error, so the adapter must map it to 2 (as the Windows
-# launcher does). HQ_CODEX_LAUNCH_FAIL_OPEN=1 restores the old pass-through.
+# launcher does). HQ_CODEX_LAUNCH_FAIL_OPEN=1 restores the old pass-through
+# for launch failures only, including for a safety guard such as this one.
 chmod 000 "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
 set +e
 err="$(run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
@@ -745,11 +759,22 @@ err="$(run_adapter "$payload_bash_safe" 2>&1 >/dev/null)"; rc=$?
 set -e
 cp "$TMP/root-git.bak" "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
 chmod 755 "$TMP/.claude/hooks/block-hq-root-git-mutation.sh"
-if [ "$rc" -ne 127 ]; then
-  echo "Expected a guard that exits 127 by itself to keep status 127, got $rc" >&2
+# block-hq-root-git-mutation is a safety guard (registry "safety": true), so
+# its own exit 127 is not mapped as a launch failure but blocks as a guard
+# that ended without a verdict.
+if [ "$rc" -ne 2 ]; then
+  echo "Expected a safety guard that exits 127 by itself to block with 2, got $rc" >&2
   printf '%s\n' "$err" >&2
   exit 1
 fi
+assert_contains "$err" "guard failed, blocked: block-hq-root-git-mutation exited 127 without a verdict"
+case "$err" in
+  *"could not be launched"*)
+    echo "A guard that ran and exited 127 must not be reported as a launch failure" >&2
+    printf '%s\n' "$err" >&2
+    exit 1
+    ;;
+esac
 
 printf '#!/bin/bash\ncat >/dev/null\nhq-no-such-command-xyz\n' > "$TMP/.claude/hooks/master-hook.sh"
 chmod 755 "$TMP/.claude/hooks/master-hook.sh"

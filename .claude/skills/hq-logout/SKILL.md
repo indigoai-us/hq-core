@@ -5,23 +5,24 @@ disable-model-invocation: true
 allowed-tools: Bash(hq:*), Bash(ls:*), Bash(test:*), Bash(rm:*)
 ---
 
-# /hq-logout — HQ Cognito sign-out (local)
+# /hq-logout — HQ Cognito sign-out
 
-Removes the cached Cognito session at `~/.hq/cognito-tokens.json` so future
-HQ-authenticated operations (deploy, vault, sync) require a fresh sign-in.
+Ends the HQ session on the server and removes the cached Cognito session at
+`~/.hq/cognito-tokens.json`, so future HQ-authenticated operations (deploy,
+vault, sync) require a fresh sign-in.
 
-**Local only.** Refresh tokens remain valid server-side until they expire
-naturally — they just can't be used without `~/.hq/cognito-tokens.json`. If
-you need to revoke at the pool, ask for AWS Cognito GlobalSignOut explicitly
-(not in scope here).
+`hq logout` revokes the refresh token on the server first, so a copied token
+file stops working, and then deletes the local tokens. If the server cannot be
+reached, it still deletes the local tokens and says the session could not be
+ended everywhere; the refresh token then stays valid until it expires.
 
 ## Steps
 
 1. **Probe** — `test -f ~/.hq/cognito-tokens.json`. If absent, report
    "already signed out" and exit.
 
-2. **Clear** — `hq auth logout` (delegates to `@indigoai-us/hq-cli`'s
-   logout subcommand, which removes the token file).
+2. **Sign out** — `hq logout`. Report its message as printed: either a clean
+   sign-out, or a local sign-out whose server-side revoke did not happen.
 
 3. **Confirm** — `test ! -f ~/.hq/cognito-tokens.json` and report success.
 
@@ -31,3 +32,6 @@ you need to revoke at the pool, ask for AWS Cognito GlobalSignOut explicitly
   will trigger a fresh browser flow.
 - Does NOT touch `~/.hq-deploy/config.json` (that's the unrelated
   `hq-deploy` CLI's API-key store, not currently used here).
+- Use `hq logout`, not `hq auth logout`. On older hq-cli releases
+  `hq auth logout` only deleted the local file and left the refresh token
+  valid on the server.

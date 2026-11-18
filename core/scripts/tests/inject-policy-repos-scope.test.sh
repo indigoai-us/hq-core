@@ -42,7 +42,10 @@ clear_policies() { rm -f "$FX/core/policies/"*.md "$CO_POL/"*.md; }
 run() { # <session-id> <cwd> <command> [env...]
   local sid="$1" cwd="$2" cmd="$3" input
   shift 3
-  input="$(jq -cn --arg sid "$sid" --arg cwd "$cwd" --arg cmd "$cmd" \
+  # The command goes to jq through a file: on Linux one argument is capped at
+  # 128 KB (MAX_ARG_STRLEN), and section [6] sends a 300 KB command.
+  printf '%s' "$cmd" > "$FX/run-cmd.txt"
+  input="$(jq -cn --arg sid "$sid" --arg cwd "$cwd" --rawfile cmd "$FX/run-cmd.txt" \
     '{session_id:$sid,hook_event_name:"PostToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$cmd},tool_response:{exit_code:0}}')"
   env -u HQ_POLICY_WORKER_DIR HQ_SESSION_PRINCIPAL=human \
     HQ_ROOT="$FX" CLAUDE_PROJECT_DIR="$FX" "$@" \
@@ -131,5 +134,39 @@ if has 'CO ALL rule' "$out"; then
 else
   fail "company scope did not resolve in this fixture: $out"
 fi
+
+echo "[6] large commands: same matches, and the scan stays linear"
+clear_policies
+rm -rf "$FX/workspace/orchestrator/hook-state/policy-trigger-cache"
+wp "$FX/core/policies" big-vyg 'repos: [vyg]' "BIG VYG rule"
+pad="$(printf 'filler text %.0s' $(seq 1 600))"   # about 7 KB, above the loop limit
+out="$(run "$(sid big-path)" "$FX" "echo $pad; git -C repos/private/vyg log")"
+has 'BIG VYG rule' "$out" || fail "large command: repos/private/vyg not matched: $out"
+out="$(run "$(sid big-wt)" "$FX" "echo $pad; cat workspace/worktrees/vyg/feature-x/a")"
+has 'BIG VYG rule' "$out" || fail "large command: worktree path not matched: $out"
+out="$(run "$(sid big-gh)" "$FX" "echo $pad; gh pr view 3 --repo=acme-org/vyg")"
+has 'BIG VYG rule' "$out" || fail "large command: --repo=owner/vyg not matched: $out"
+out="$(run "$(sid big-other)" "$FX" "echo $pad; git -C repos/private/vyg-tools log; gh pr view -R acme-org/other")"
+! has 'big-vyg' "$out" || fail "large command: vyg policy fired for vyg-tools/other: $out"
+# Overlapping sources: a -R flag followed by a repos path, and a worktree path
+# nested in a repos path. Each must still yield the inner name, small and large.
+wp "$FX/core/policies" big-inner 'repos: [inner]' "BIG INNER rule"
+for size in small large; do
+  p=""; [ "$size" = large ] && p="echo $pad; "
+  out="$(run "$(sid ov-ls-$size)" "$FX" "${p}ls -R repos/private/vyg")"
+  has 'BIG VYG rule' "$out" || fail "$size ls -R repos/private/vyg: vyg not matched: $out"
+  out="$(run "$(sid ov-rsync-$size)" "$FX" "${p}rsync -R repos/private/vyg/x dst")"
+  has 'BIG VYG rule' "$out" || fail "$size rsync -R repos/private/vyg/x: vyg not matched: $out"
+  out="$(run "$(sid ov-nest-$size)" "$FX" "${p}cat repos/private/workspace/worktrees/inner/x")"
+  has 'BIG INNER rule' "$out" || fail "$size nested worktree path: inner not matched: $out"
+done
+# 300 KB naming repos 3,000 times. The old per-match rescan took about 30 s of
+# CPU on this; the single pass takes well under a second.
+many="$(printf 'repos/private/other/x.ts workspace/worktrees/other/y/ -R acme-org/other %.0s' $(seq 1 3000))"
+start=$SECONDS
+out="$(run "$(sid big-many)" "$FX" "echo $many; git -C repos/private/vyg log")"
+elapsed=$((SECONDS - start))
+has 'BIG VYG rule' "$out" || fail "300 KB command: vyg not matched: $out"
+[ "$elapsed" -le 10 ] || fail "300 KB command took ${elapsed}s (limit 10s): repo scan is not linear"
 
 echo "PASS: inject-policy repos scoping"

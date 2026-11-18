@@ -45,7 +45,7 @@ if [ "${3:-}" = --reminder ]; then
   exit 0
 fi
 if [ "${HP26_STUB_MODE:-empty}" = active ]; then
-  printf '{"action":"monitor-check","session_id":"%s","engine":"%s","active_lane_ids":["lane-a"],"uncovered_lane_ids":["lane-a"],"monitor_calls":[{"command":"hq lanes watch lane-a","timeout_ms":1800000,"persistent":true}]}\n' "$session" "$engine"
+  printf '{"action":"monitor-check","session_id":"%s","engine":"%s","active_lane_ids":["lane-a"],"uncovered_lane_ids":["lane-a"],"monitor_calls":[{"command":"hq runners watch lane-a","timeout_ms":1800000,"persistent":true}]}\n' "$session" "$engine"
   exit 2
 fi
 printf '{"action":"monitor-check","session_id":"%s","engine":"%s","active_lane_ids":[],"uncovered_lane_ids":[]}\n' "$session" "$engine"
@@ -233,7 +233,7 @@ cat > "$ROOT/workspace/lanes/lanes/lane-a.json" <<'JSON'
 JSON
 export HP26_STUB_MODE=active
 run_hook SessionStart with-lanes || fail "active SessionStart returned nonzero"
-jq -e '.hookSpecificOutput.hookEventName == "SessionStart" and (.hookSpecificOutput.additionalContext | contains("CLI-REMINDER") and contains("lane-a") and contains("hq lanes watch lane-a"))' "$OUT" >/dev/null \
+jq -e '.hookSpecificOutput.hookEventName == "SessionStart" and (.hookSpecificOutput.additionalContext | contains("CLI-REMINDER") and contains("lane-a") and contains("hq runners watch lane-a"))' "$OUT" >/dev/null \
   || fail "active lane reminder output changed"
 [ "$(call_count)" = 3 ] || fail "active SessionStart did not make the JSON and reminder calls"
 pass "active lane SessionStart preserves reminder and Monitor-call output"

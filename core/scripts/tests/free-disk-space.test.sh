@@ -370,14 +370,58 @@ chmod +x "$TMP/bin/npm"
 export PATH="$TMP/bin:$PATH"
 export NPM_MARKER
 
+# ---- HQ root git with unreachable loose objects, plus sync mirrors ----
+# A 30-day-old autosave commit, then three loose blobs no commit reaches
+# (what a failing autosave leaves behind).
+printf 'saved\n' > "$HQ/saved.txt"
+git -C "$HQ" add saved.txt
+OLD_TS=$(( $(date +%s) - 30 * 86400 ))
+GIT_AUTHOR_DATE="@$OLD_TS +0000" GIT_COMMITTER_DATE="@$OLD_TS +0000" \
+  git -C "$HQ" commit -qm "autosave(hq): saved.txt"
+HQ_SAVED_SHA=$(git -C "$HQ" rev-parse HEAD)
+UNREACHABLE=""
+for n in 1 2 3; do
+  head -c 4096 /dev/urandom > "$TMP/render-$n.bin"
+  UNREACHABLE="$UNREACHABLE $(git -C "$HQ" hash-object -w "$TMP/render-$n.bin")"
+done
+# prune-hq-history keeps git's one-hour grace period, so age these objects past
+# it. FRESH is unreachable but just written (as by a git command still running)
+# and must survive every mode.
+for o in $UNREACHABLE; do
+  perl -e '$t = time - 7200; utime($t, $t, @ARGV) or die' "$HQ/.git/objects/${o:0:2}/${o:2}"
+done
+head -c 4096 /dev/urandom > "$TMP/render-fresh.bin"
+FRESH=$(git -C "$HQ" hash-object -w "$TMP/render-fresh.bin")
+MIRROR_ROOT_T="$HOME/.hq/hq-root-git"
+MIRROR="$MIRROR_ROOT_T/88e74d299052fb32"
+MIRROR_LIVE="$MIRROR_ROOT_T/livemirror0001"
+# A recovery copy is a git store of an HQ root; this one is a copy of $HQ, so
+# every commit in it exists in the HQ root's git.
+mkdir -p "$MIRROR_ROOT_T"
+git clone -q --no-local --bare "$HQ" "$MIRROR"
+mkdir -p "$MIRROR/objects/ab" "$MIRROR_LIVE/objects"
+# cap_bytes is 2 GiB, computed so no 10-digit literal trips the PII phone scanner.
+printf '{"disabled_at":"2026-09-02T07:00:37Z","measured_bytes":23378801803,"cap_bytes":%d,"reason":"staged_snapshot"}\n' "$((2 * 1024 * 1024 * 1024))" \
+  > "$MIRROR/hq-sync-mirror-disabled.json"
+# The mirror shares object files with the HQ root through hard links.
+HQ_OBJ="$HQ/.git/objects/${HQ_SAVED_SHA:0:2}/${HQ_SAVED_SHA:2}"
+ln "$HQ_OBJ" "$MIRROR/objects/ab/shared"
+head -c 2048 /dev/urandom > "$MIRROR/objects/ab/own"
+printf 'live\n' > "$MIRROR_LIVE/objects/keep"
+
 # ---- scan: a hung size probe cannot suppress the bounded inventory ----
 REAL_DU="$(command -v du)"
-mkdir -p "$TMP/scan-bin" "$HOME/Downloads"
+mkdir -p "$TMP/scan-bin" "$HOME/Downloads" "$HOME/.npm/aa-fast" "$HOME/.npm/zz-slow"
+head -c 65536 /dev/urandom > "$HOME/.npm/aa-fast/blob"
 cat > "$TMP/scan-bin/du" <<EOF
 #!/bin/bash
-case "\${2:-}" in
-  "$HOME/.cache") sleep 5 ;;
-esac
+# Match every argument. GNU du and BSD du do not put the path in the same slot
+# once options are split, and a child path is what makes the .npm area partial.
+for a in "\$@"; do
+  case "\$a" in
+    "$HOME/.cache"|"$HOME/.cache/"*|*"/zz-slow"|*"/zz-slow/"*) sleep 5 ;;
+  esac
+done
 exec "$REAL_DU" "\$@"
 EOF
 chmod +x "$TMP/scan-bin/du"
@@ -394,8 +438,275 @@ case "$scan" in
   *"ok"*"$HQ/workspace/worktrees"*) ;;
   *) fail "scan lost completed area results when another probe timed out: $scan" ;;
 esac
-[ "$(printf '%s\n' "$scan" | grep -Ec '  (ok|timeout|missing|error|unavailable)[[:space:]]+')" -le 8 ] \
-  || fail "scan emitted more than the bounded eight area rows: $scan"
+# A timed-out area still reports the entries measured in time, as a lower bound.
+printf '%s\n' "$scan" | grep -E '>=[0-9.]+ KB  partial +'"$HOME/.npm"'$' >/dev/null \
+  || fail "scan did not report a lower bound for the half-measured area: $scan"
+printf '%s\n' "$scan" | grep -E '  ok +'"$HQ/.git"'$' >/dev/null || fail "scan did not size the HQ root git: $scan"
+printf '%s\n' "$scan" | grep -E '  ok +'"$HOME/.hq"'$' >/dev/null || fail "scan did not size ~/.hq: $scan"
+[ "$(printf '%s\n' "$scan" | grep -Ec '  (ok|partial|timeout|missing|error|unavailable)[[:space:]]+')" -le 10 ] \
+  || fail "scan emitted more than the bounded ten area rows: $scan"
+case "$scan" in
+  *"hq-git $HQ/.git loose_objects="*) ;;
+  *) fail "scan did not report HQ git loose vs packed size: $scan" ;;
+esac
+case "$scan" in
+  *"warn autosave-stale"*"age_days=30"*) ;;
+  *) fail "scan did not warn about a 30-day-old autosave commit: $scan" ;;
+esac
+case "$scan" in
+  *"disabled-mirror $MIRROR disabled_at=2026-09-02T07:00:37Z reason=staged_snapshot measured=21.8 GB cap=2.0 GB"*) ;;
+  *) fail "scan did not report the disabled mirror from its marker: $scan" ;;
+esac
+case "$scan" in
+  *"HQ sync recovery copies; trash-disabled-mirror offers one only when every object in it (commits from refs, HEAD and reflogs, and unreferenced objects) exists in $HQ/.git"*) ;;
+  *) fail "scan did not explain that the disabled copy is a recovery copy checked by refs: $scan" ;;
+esac
+case "$scan" in
+  *"same objects"*) fail "scan claimed the recovery copy holds the same objects before any ref check: $scan" ;;
+esac
+case "$scan" in
+  *"active-mirror $MIRROR_LIVE"*) ;;
+  *) fail "scan did not list the active mirror as not offered: $scan" ;;
+esac
+for o in $UNREACHABLE; do
+  git -C "$HQ" cat-file -e "$o" || fail "scan removed an unreachable object"
+done
+
+# ---- prune-hq-history: dry run, refusal without confirmation, lock, apply ----
+LOCK_T="$TMP/locktmp"
+mkdir -p "$LOCK_T"
+dry_hq=$(TMPDIR="$LOCK_T" run prune-hq-history)
+case "$dry_hq" in
+  *"mode=dry-run"*"would-prune objects=3 "*) ;;
+  *) fail "prune-hq-history dry run did not count three unreachable objects: $dry_hq" ;;
+esac
+printf '%s\n' "$dry_hq" | grep -E 'would-prune objects=3 disk=[0-9.]+ (KB|MB) disk_bytes=[1-9][0-9]*$' >/dev/null \
+  || fail "prune-hq-history dry run did not size the objects on disk: $dry_hq"
+case "$dry_hq" in
+  *"may share objects with $HQ/.git; trash-disabled-mirror checks its refs first"*) ;;
+  *) fail "prune-hq-history dry run did not note the recovery copy may share objects: $dry_hq" ;;
+esac
+for o in $UNREACHABLE; do
+  git -C "$HQ" cat-file -e "$o" || fail "prune-hq-history dry run removed $o"
+done
+
+rc=0; out=$(TMPDIR="$LOCK_T" run --apply prune-hq-history) || rc=$?
+[ "$rc" = 3 ] || fail "prune-hq-history --apply without --yes exited $rc: $out"
+case "$out" in *refused*) ;; *) fail "prune-hq-history --apply without --yes did not refuse: $out" ;; esac
+for o in $UNREACHABLE; do
+  git -C "$HQ" cat-file -e "$o" || fail "unconfirmed prune-hq-history removed $o"
+done
+
+mkdir "$LOCK_T/hq-autocommit.lock"
+rc=0; out=$(TMPDIR="$LOCK_T" run --apply --yes prune-hq-history) || rc=$?
+[ "$rc" = 3 ] || fail "prune-hq-history ran while autosave held the lock (rc=$rc): $out"
+case "$out" in *"reason=autosave-lock-held"*) ;; *) fail "prune-hq-history did not name the held lock: $out" ;; esac
+[ -d "$LOCK_T/hq-autocommit.lock" ] || fail "prune-hq-history removed autosave's lock"
+for o in $UNREACHABLE; do
+  git -C "$HQ" cat-file -e "$o" || fail "prune-hq-history removed $o while the lock was held"
+done
+rmdir "$LOCK_T/hq-autocommit.lock"
+
+# A repo that borrows the HQ root's objects (clone --shared writes alternates)
+# would break if the HQ root pruned them, so prune refuses and changes nothing.
+BORROWER="$HQ/repos/borrower"
+mkdir -p "$HQ/repos"
+git clone -q --shared "$HQ" "$BORROWER"
+case "$(cat "$BORROWER/.git/objects/info/alternates")" in *"$HQ/.git/objects"*) ;; *) fail "fixture: clone --shared wrote no alternates to the HQ root" ;; esac
+rc=0; out=$(TMPDIR="$LOCK_T" run --apply --yes prune-hq-history) || rc=$?
+[ "$rc" = 3 ] || fail "prune-hq-history ran while a shared clone borrows the HQ root (rc=$rc): $out"
+case "$out" in *"reason=borrowed-by $BORROWER"*) ;; *) fail "prune-hq-history did not name the borrowing repo: $out" ;; esac
+for o in $UNREACHABLE; do
+  git -C "$HQ" cat-file -e "$o" || fail "prune-hq-history removed $o while a shared clone borrows the HQ root"
+done
+git -C "$BORROWER" fsck --no-dangling >/dev/null 2>&1 || fail "the shared clone broke after the refused prune"
+# A borrower inside an HQ sync recovery copy is found too.
+MIRROR_SHARED="$HOME/.hq/hq-root-git/sharedclone00001"
+git clone -q --bare --shared "$HQ" "$MIRROR_SHARED"
+rm -rf "$BORROWER"
+rc=0; out=$(TMPDIR="$LOCK_T" run prune-hq-history) || rc=$?
+[ "$rc" = 3 ] || fail "prune-hq-history dry run did not refuse with a borrowing recovery copy (rc=$rc): $out"
+case "$out" in *"reason=borrowed-by $MIRROR_SHARED"*) ;; *) fail "prune-hq-history missed a recovery copy that borrows the HQ root: $out" ;; esac
+rm -rf "$MIRROR_SHARED" "$HQ/repos"
+
+out=$(TMPDIR="$LOCK_T" run --apply --yes prune-hq-history)
+case "$out" in *"pruned objects=3 "*) ;; *) fail "prune-hq-history apply did not prune three objects: $out" ;; esac
+for o in $UNREACHABLE; do
+  if git -C "$HQ" cat-file -e "$o" 2>/dev/null; then fail "prune-hq-history left unreachable $o"; fi
+done
+[ "$(git -C "$HQ" rev-parse HEAD)" = "$HQ_SAVED_SHA" ] || fail "prune-hq-history moved HEAD"
+git -C "$HQ" cat-file -e HEAD:saved.txt || fail "prune-hq-history removed a reachable blob"
+git -C "$HQ" cat-file -e "$FRESH" || fail "prune-hq-history removed an object inside the one-hour grace period"
+git -C "$HQ" fsck --no-dangling >/dev/null 2>&1 || fail "HQ git fsck failed after prune-hq-history"
+[ ! -e "$LOCK_T/hq-autocommit.lock" ] || fail "prune-hq-history did not release the autosave lock"
+case "$out" in *"still-held-by $MIRROR"*) ;; *) fail "prune-hq-history did not point at the mirror still holding space: $out" ;; esac
+
+# ---- trash-disabled-mirror: dry run, refusal, guards, apply ----
+TRASH_T="$TMP/trash"
+dry_m=$(run trash-disabled-mirror)
+case "$dry_m" in *"would-trash $MIRROR"*) ;; *) fail "trash-disabled-mirror dry run did not offer the disabled mirror: $dry_m" ;; esac
+case "$dry_m" in *"would-trash $MIRROR_LIVE"*) fail "trash-disabled-mirror offered the active mirror: $dry_m" ;; esac
+printf '%s\n' "$dry_m" | grep -E "mirror-size $MIRROR size=[0-9.]+ KB hard_linked=[0-9.]+ KB" >/dev/null \
+  || fail "trash-disabled-mirror dry run did not report size and hard-linked bytes: $dry_m"
+printf "%s\n" "$dry_m" | grep -E "hard_linked_bytes=[1-9][0-9]*$" >/dev/null || fail "trash-disabled-mirror missed the hard-linked object: $dry_m"
+[ -f "$MIRROR/hq-sync-mirror-disabled.json" ] || fail "trash-disabled-mirror dry run moved the mirror"
+case "$dry_m" in *"refs-covered $MIRROR"*) ;; *) fail "trash-disabled-mirror did not report the ref check that passed: $dry_m" ;; esac
+
+# A recovery copy holding a commit the HQ root lacks (another or a wiped HQ
+# root) is kept, and so is one whose refs cannot be read.
+MARKER_JSON='{"disabled_at":"2026-09-02T07:00:37Z","measured_bytes":1,"cap_bytes":2,"reason":"staged_snapshot"}'
+MIRROR_MISS="$MIRROR_ROOT_T/otherroot0000001"
+git clone -q --no-local --bare "$HQ" "$MIRROR_MISS"
+MISS_TREE=$(git --git-dir="$MIRROR_MISS" mktree </dev/null)
+MISS_SHA=$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid \
+  git --git-dir="$MIRROR_MISS" commit-tree -p "$HQ_SAVED_SHA" -m "only in the recovery copy" "$MISS_TREE")
+git --git-dir="$MIRROR_MISS" update-ref refs/heads/lost "$MISS_SHA"
+if git -C "$HQ" cat-file -e "$MISS_SHA" 2>/dev/null; then fail "fixture: the HQ root already has the recovery-only commit"; fi
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_MISS/hq-sync-mirror-disabled.json"
+MIRROR_BAD="$MIRROR_ROOT_T/unreadable000001"
+mkdir -p "$MIRROR_BAD/objects/ab"
+head -c 1024 /dev/urandom > "$MIRROR_BAD/objects/ab/junk"
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_BAD/hq-sync-mirror-disabled.json"
+dry_r=$(run trash-disabled-mirror)
+case "$dry_r" in *"kept $MIRROR_MISS reason=commit-missing-from-hq-root ($MISS_SHA)"*) ;; *) fail "trash-disabled-mirror did not keep a recovery copy with a ref the HQ root lacks: $dry_r" ;; esac
+case "$dry_r" in *"would-trash $MIRROR_MISS"*) fail "trash-disabled-mirror offered a recovery copy with a missing ref: $dry_r" ;; esac
+case "$dry_r" in *"kept $MIRROR_BAD reason=refs-unreadable"*) ;; *) fail "trash-disabled-mirror did not keep a recovery copy with unreadable refs: $dry_r" ;; esac
+case "$dry_r" in *"would-trash $MIRROR_BAD"*) fail "trash-disabled-mirror offered a recovery copy with unreadable refs: $dry_r" ;; esac
+case "$dry_r" in *"would-trash $MIRROR"*) ;; *) fail "trash-disabled-mirror stopped offering the covered recovery copy: $dry_r" ;; esac
+
+# Branch and tag tips are not the whole history: a detached HEAD or a commit
+# reachable only from a reflog that the HQ root lacks keeps the copy too.
+tgit() {
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid git "$@"
+}
+MIRROR_DET="$MIRROR_ROOT_T/detachedhead0001"
+git clone -q --no-local --bare "$HQ" "$MIRROR_DET"
+DET_SHA=$(tgit --git-dir="$MIRROR_DET" commit-tree -p "$HQ_SAVED_SHA" -m "detached only" "$MISS_TREE")
+git --git-dir="$MIRROR_DET" update-ref --no-deref HEAD "$DET_SHA"
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_DET/hq-sync-mirror-disabled.json"
+MIRROR_RLOG="$MIRROR_ROOT_T/reflogonly000001"
+git clone -q --no-local --bare "$HQ" "$MIRROR_RLOG"
+RLOG_SHA=$(tgit --git-dir="$MIRROR_RLOG" commit-tree -p "$HQ_SAVED_SHA" -m "reflog only" "$MISS_TREE")
+tgit -c core.logAllRefUpdates=always --git-dir="$MIRROR_RLOG" update-ref -m step refs/heads/scratch "$RLOG_SHA"
+tgit -c core.logAllRefUpdates=always --git-dir="$MIRROR_RLOG" update-ref -m reset refs/heads/scratch "$HQ_SAVED_SHA"
+[ -z "$(git --git-dir="$MIRROR_RLOG" for-each-ref --contains "$RLOG_SHA")" ] || fail "fixture: the reflog-only commit is on a ref"
+case "$(git --git-dir="$MIRROR_RLOG" rev-list --reflog)" in *"$RLOG_SHA"*) ;; *) fail "fixture: the reflog does not hold the commit" ;; esac
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_RLOG/hq-sync-mirror-disabled.json"
+for s in "$DET_SHA" "$RLOG_SHA"; do
+  if git -C "$HQ" cat-file -e "$s" 2>/dev/null; then fail "fixture: the HQ root already has $s"; fi
+done
+dry_h=$(run trash-disabled-mirror)
+case "$dry_h" in *"kept $MIRROR_DET reason=commit-missing-from-hq-root ($DET_SHA)"*) ;; *) fail "trash-disabled-mirror did not keep a copy whose detached HEAD the HQ root lacks: $dry_h" ;; esac
+case "$dry_h" in *"would-trash $MIRROR_DET"*) fail "trash-disabled-mirror offered a copy with a detached HEAD the HQ root lacks: $dry_h" ;; esac
+case "$dry_h" in *"kept $MIRROR_RLOG reason=commit-missing-from-hq-root ($RLOG_SHA)"*) ;; *) fail "trash-disabled-mirror did not keep a copy with a reflog-only commit: $dry_h" ;; esac
+case "$dry_h" in *"would-trash $MIRROR_RLOG"*) fail "trash-disabled-mirror offered a copy with a reflog-only commit: $dry_h" ;; esac
+case "$dry_h" in *"would-trash $MIRROR"*) ;; *) fail "trash-disabled-mirror stopped offering the fully covered copy: $dry_h" ;; esac
+
+# Objects no ref or reflog reaches still keep the copy: a dangling commit, a
+# blob only the copy holds, and staged work in a non-bare copy.
+MIRROR_DANG="$MIRROR_ROOT_T/danglingcommit01"
+git clone -q --no-local --bare "$HQ" "$MIRROR_DANG"
+DANG_SHA=$(tgit --git-dir="$MIRROR_DANG" commit-tree -p "$HQ_SAVED_SHA" -m "dangling only" "$MISS_TREE")
+case "$(git --git-dir="$MIRROR_DANG" rev-list --all --reflog HEAD)" in *"$DANG_SHA"*) fail "fixture: the dangling commit is reachable" ;; esac
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_DANG/hq-sync-mirror-disabled.json"
+MIRROR_BLOB="$MIRROR_ROOT_T/blobonly00000001"
+git clone -q --no-local --bare "$HQ" "$MIRROR_BLOB"
+BLOB_SHA=$(printf 'only in the copy\n' | git --git-dir="$MIRROR_BLOB" hash-object -w --stdin)
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_BLOB/hq-sync-mirror-disabled.json"
+MIRROR_STAGED="$MIRROR_ROOT_T/stagedwork000001"
+git clone -q --no-local "$HQ" "$MIRROR_STAGED"
+printf 'staged, not committed\n' > "$MIRROR_STAGED/wip.txt"
+git -C "$MIRROR_STAGED" add wip.txt
+STAGED_BLOB=$(git -C "$MIRROR_STAGED" rev-parse :wip.txt)
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_STAGED/hq-sync-mirror-disabled.json"
+for s in "$DANG_SHA" "$BLOB_SHA" "$STAGED_BLOB"; do
+  if git -C "$HQ" cat-file -e "$s" 2>/dev/null; then fail "fixture: the HQ root already has $s"; fi
+done
+dry_u=$(run trash-disabled-mirror)
+case "$dry_u" in *"kept $MIRROR_DANG reason=object-missing-from-hq-root ($DANG_SHA)"*) ;; *) fail "trash-disabled-mirror did not keep a copy whose only extra object is a dangling commit: $dry_u" ;; esac
+case "$dry_u" in *"kept $MIRROR_BLOB reason=object-missing-from-hq-root ($BLOB_SHA)"*) ;; *) fail "trash-disabled-mirror did not keep a copy whose only extra object is a blob: $dry_u" ;; esac
+case "$dry_u" in *"kept $MIRROR_STAGED reason="*) ;; *) fail "trash-disabled-mirror did not keep a non-bare copy with staged work: $dry_u" ;; esac
+for m in "$MIRROR_DANG" "$MIRROR_BLOB" "$MIRROR_STAGED"; do
+  case "$dry_u" in *"would-trash $m"*) fail "trash-disabled-mirror offered $m: $dry_u" ;; esac
+done
+case "$dry_u" in *"would-trash $MIRROR"*) ;; *) fail "trash-disabled-mirror stopped offering the copy whose objects all exist in the HQ root: $dry_u" ;; esac
+# A clean non-bare copy whose objects all exist still has an index, so it is kept.
+git -C "$MIRROR_STAGED" rm -q --cached wip.txt
+rm -f "$MIRROR_STAGED/wip.txt"
+git -C "$MIRROR_STAGED" prune --expire=now
+dry_u=$(run trash-disabled-mirror)
+case "$dry_u" in *"kept $MIRROR_STAGED reason=non-bare-copy-has-index"*) ;; *) fail "trash-disabled-mirror did not keep a non-bare copy with an index: $dry_u" ;; esac
+rm -rf "$MIRROR_STAGED"
+
+# A shallow HQ root cannot prove it holds a copy's history: keep every copy.
+printf '%s\n' "$HQ_SAVED_SHA" > "$HQ/.git/shallow"
+dry_s=$(run trash-disabled-mirror)
+rm -f "$HQ/.git/shallow"
+case "$dry_s" in *"kept $MIRROR reason=hq-root-shallow"*) ;; *) fail "trash-disabled-mirror did not keep the copy when the HQ root is shallow: $dry_s" ;; esac
+case "$dry_s" in *"would-trash"*) fail "trash-disabled-mirror offered a copy while the HQ root is shallow: $dry_s" ;; esac
+
+# "disabled_at": null is not disabled.
+MIRROR_NULL="$MIRROR_ROOT_T/nullmarker000001"
+git clone -q --no-local --bare "$HQ" "$MIRROR_NULL"
+printf '{"disabled_at": null,"measured_bytes":1,"cap_bytes":2,"reason":"staged_snapshot"}\n' > "$MIRROR_NULL/hq-sync-mirror-disabled.json"
+dry_n=$(run trash-disabled-mirror)
+case "$dry_n" in *"kept $MIRROR_NULL reason=marker-without-disabled_at"*) ;; *) fail "trash-disabled-mirror treated disabled_at null as disabled: $dry_n" ;; esac
+
+# An alternates entry spelled through a symlink, or relative to the HQ root's
+# objects dir, still names the copy, so the copy is kept.
+printf '%s\n' "$MARKER_JSON" > "$MIRROR_NULL/hq-sync-mirror-disabled.json"
+ln -s "$MIRROR_NULL" "$TMP/mirror-link"
+printf '%s\n' "$TMP/mirror-link/objects" > "$HQ/.git/objects/info/alternates"
+dry_l=$(run trash-disabled-mirror)
+case "$dry_l" in *"kept $MIRROR_NULL reason=hq-git-borrows-objects"*) ;; *) fail "a symlinked alternates entry did not keep the borrowed copy: $dry_l" ;; esac
+REL=$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1],sys.argv[2]))' "$MIRROR_NULL/objects" "$HQ/.git/objects")
+printf '%s\n' "$REL" > "$HQ/.git/objects/info/alternates"
+dry_l=$(run trash-disabled-mirror)
+case "$dry_l" in *"kept $MIRROR_NULL reason=hq-git-borrows-objects"*) ;; *) fail "a relative alternates entry did not keep the borrowed copy: $dry_l" ;; esac
+rm -f "$HQ/.git/objects/info/alternates" "$TMP/mirror-link"
+rm -rf "$MIRROR_NULL"
+
+rc=0; out=$(HQ_FREE_DISK_TRASH_DIR="$TRASH_T" run --apply trash-disabled-mirror) || rc=$?
+[ "$rc" = 3 ] || fail "trash-disabled-mirror --apply without --yes exited $rc: $out"
+case "$out" in *refused*) ;; *) fail "trash-disabled-mirror --apply without --yes did not refuse: $out" ;; esac
+[ -d "$MIRROR" ] || fail "unconfirmed trash-disabled-mirror moved the mirror"
+[ ! -e "$TRASH_T" ] || fail "unconfirmed trash-disabled-mirror wrote to the Trash"
+
+# A mirror the HQ root borrows objects from (alternates) is never moved.
+MIRROR_ALT="$MIRROR_ROOT_T/borrowed00000001"
+git clone -q --no-local --bare "$HQ" "$MIRROR_ALT"
+printf '{"disabled_at":"2026-09-02T07:00:37Z","measured_bytes":1,"cap_bytes":2,"reason":"staged_snapshot"}\n' \
+  > "$MIRROR_ALT/hq-sync-mirror-disabled.json"
+printf '%s\n' "$MIRROR_ALT/objects" > "$HQ/.git/objects/info/alternates"
+
+out=$(HQ_FREE_DISK_TRASH_DIR="$TRASH_T" run --apply --yes trash-disabled-mirror)
+case "$out" in *"trashed $MIRROR -> $TRASH_T/hq-sync-mirror-88e74d299052fb32-"*) ;; *) fail "trash-disabled-mirror did not move the mirror to the Trash: $out" ;; esac
+[ ! -e "$MIRROR" ] || fail "trash-disabled-mirror left the mirror in place"
+ls "$TRASH_T"/hq-sync-mirror-88e74d299052fb32-*/hq-sync-mirror-disabled.json >/dev/null 2>&1 \
+  || fail "the trashed mirror is not intact in the Trash"
+case "$out" in *"kept $MIRROR_ALT reason=hq-git-borrows-objects"*) ;; *) fail "trash-disabled-mirror did not keep a mirror the HQ root borrows from: $out" ;; esac
+[ -d "$MIRROR_ALT/objects" ] || fail "trash-disabled-mirror moved a mirror the HQ root borrows from"
+[ -f "$MIRROR_LIVE/objects/keep" ] || fail "trash-disabled-mirror touched the active mirror"
+[ -f "$MIRROR_MISS/hq-sync-mirror-disabled.json" ] || fail "trash-disabled-mirror --apply moved a recovery copy with a missing ref"
+git --git-dir="$MIRROR_MISS" cat-file -e "$MISS_SHA" || fail "the kept recovery copy lost its commit"
+[ -f "$MIRROR_DET/hq-sync-mirror-disabled.json" ] || fail "trash-disabled-mirror --apply moved a copy with an uncovered detached HEAD"
+git --git-dir="$MIRROR_RLOG" cat-file -e "$RLOG_SHA" || fail "trash-disabled-mirror --apply moved a copy with a reflog-only commit"
+git --git-dir="$MIRROR_DANG" cat-file -e "$DANG_SHA" || fail "trash-disabled-mirror --apply moved a copy with a dangling commit"
+git --git-dir="$MIRROR_BLOB" cat-file -e "$BLOB_SHA" || fail "trash-disabled-mirror --apply moved a copy with a copy-only blob"
+[ -f "$MIRROR_BAD/objects/ab/junk" ] || fail "trash-disabled-mirror --apply moved a recovery copy with unreadable refs"
+case "$out" in *"Trash is emptied"*) ;; *) fail "trash-disabled-mirror did not say the space returns after emptying the Trash: $out" ;; esac
+git -C "$HQ" cat-file -e HEAD:saved.txt || fail "HQ git lost a blob after the mirror moved"
+# A longer alternates path that only contains the mirror string is not a borrow.
+MIRROR_SUB="$MIRROR_ROOT_T/borrowed00000001-extra"
+mkdir -p "$MIRROR_SUB/objects" "$MIRROR_ALT"
+printf '{"disabled_at":"2026-09-02T07:00:37Z","measured_bytes":1,"cap_bytes":2,"reason":"staged_snapshot"}\n' \
+  > "$MIRROR_SUB/hq-sync-mirror-disabled.json"
+printf '%s\n' "# note" "$MIRROR_SUB/objects" > "$HQ/.git/objects/info/alternates"
+out=$(HQ_FREE_DISK_TRASH_DIR="$TRASH_T" run --apply --yes trash-disabled-mirror)
+case "$out" in *"trashed $MIRROR_ALT ->"*) ;; *) fail "substring alternates line kept a mirror that is not borrowed: $out" ;; esac
+[ ! -e "$MIRROR_ALT" ] || fail "substring alternates match left the unborrowed mirror"
+[ -d "$MIRROR_SUB/objects" ] || fail "whole-line alternates match trashed the borrowed mirror"
+rm -f "$HQ/.git/objects/info/alternates"
 
 # ---- dry run deletes nothing ----
 dry=$(run prune-backed-up 6)

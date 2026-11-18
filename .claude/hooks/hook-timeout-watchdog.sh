@@ -27,6 +27,7 @@ event_name=""
 started_at=""
 parent_pid=""
 invocation_id=""
+claim_file=""
 sleep_pid=""
 lock_dir=""
 report_done_file=""
@@ -50,9 +51,42 @@ while [ "$#" -gt 0 ]; do
     --parent-pid) parent_pid="${2:-}"; shift 2 ;;
     --invocation-id) invocation_id="${2:-}"; shift 2 ;;
     --threshold) threshold_kind="${2:-}"; shift 2 ;;
+    --claim-file) claim_file="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
+
+# A gate that shares this watchdog across one dispatcher's hook event passes a
+# claim file. Record this pid in it (sibling gates check it with kill -0) and
+# remove it on every exit path while it still names this process. The gates'
+# "<claim>.active" file goes too once the dispatcher has exited.
+# shellcheck disable=SC2329 # Invoked by the EXIT trap below.
+release_claim() {
+  local holder=""
+  [ -n "$claim_file" ] || return 0
+  [ -r "$claim_file" ] && { IFS= read -r holder < "$claim_file"; } 2>/dev/null
+  [ "$holder" != "$$" ] || rm -f "$claim_file" >/dev/null 2>&1 || true
+  if [[ "$parent_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$parent_pid" >/dev/null 2>&1; then
+    rm -f "$claim_file.active" >/dev/null 2>&1 || true
+  elif [ ! -e "$claim_file" ] && [ -r "$claim_file.active" ]; then
+    # Dispatcher still running but no watchdog holds the event (after a
+    # report): drop the active entry once its gate has finished, so the file
+    # does not outlive the event. A live gate's entry is left for its watchdog.
+    local active_line="" active_gate=""
+    { IFS= read -r active_line < "$claim_file.active"; } 2>/dev/null || true
+    active_gate="${active_line#*$'\t'}"
+    active_gate="${active_gate#*$'\t'}"
+    active_gate="${active_gate%%$'\t'*}"
+    if [[ "$active_gate" =~ ^[0-9]+$ ]] && ! kill -0 "$active_gate" >/dev/null 2>&1; then
+      rm -f "$claim_file.active" >/dev/null 2>&1 || true
+    fi
+  fi
+  return 0
+}
+if [ -n "$claim_file" ]; then
+  printf '%s\n' "$$" > "$claim_file" 2>/dev/null || true
+  trap release_claim EXIT
+fi
 
 debug_phase_file=""
 debug_active_phase_file=""
@@ -327,6 +361,8 @@ hold_test_lock() {
 # grace sleep. Configuration parsing and payload metadata extraction happen
 # only after it, so the foreground dispatcher need only signal and reap a
 # sleeping process. The eventual warning still uses the original start time.
+# A shared (claim-file) watchdog skips this sleep; its pre-loop below is its
+# grace.
 if [ -n "$test_trigger_file" ]; then
   test_status waiting-for-trigger
   if ! wait_for_test_trigger; then
@@ -335,6 +371,10 @@ if [ -n "$test_trigger_file" ]; then
   fi
   test_status trigger-seen
   capture_active_debug_phase
+elif [ -n "$claim_file" ]; then
+  # A shared watchdog's grace is its pre-loop below: a gate must still be
+  # running at two checks 1 s apart before any further work.
+  :
 else
   sleep 1 >/dev/null 2>&1 &
   sleep_pid=$!
@@ -342,6 +382,103 @@ else
   sleep_pid=""
 fi
 
+# A shared (claim-file) watchdog is not cancelled by its gates. When the
+# dispatcher it watches has already finished, stop before any further work.
+dispatcher_gone() {
+  [ -n "$claim_file" ] && is_nonnegative_integer "$parent_pid" \
+    && ! kill -0 "$parent_pid" >/dev/null 2>&1
+}
+if dispatcher_gone; then
+  test_status parent-exited
+  exit 0
+fi
+
+# Shared watchdog: follow the gate named in "<claim>.active" (hook id, script,
+# gate pid, and start epoch when the gate's Bash has EPOCHSECONDS).
+seen_gate_pid=""
+seen_gate_since=0
+seen_gate_exact=0
+seen_gate_looks=0
+active_id=""
+active_path=""
+clock=0
+epoch_at_zero=0
+
+# Seconds-since-epoch modification time of a file, or nothing.
+file_mtime() {
+  local value=""
+  value="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)"
+  [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value"
+}
+
+# Date the followed gate from when it wrote the active file (one stat), for a
+# gate whose Bash had no EPOCHSECONDS (macOS /bin/bash 3.2).
+date_seen_gate() {
+  local mtime=""
+  seen_gate_exact=1
+  mtime="$(file_mtime "$claim_file.active")"
+  if [ -n "$mtime" ] && [ "$mtime" -lt "$seen_gate_since" ]; then
+    seen_gate_since="$mtime"
+  fi
+}
+
+# Read the active file and update the followed gate. Returns 0 while a live
+# gate is named. A live gate without an epoch is dated from the file's mtime
+# when first seen (one stat per live gate seen, none for gates already gone).
+observe_active_gate() {
+  local a_id="" a_path="" a_pid="" a_epoch=""
+  if [ -r "$claim_file.active" ]; then
+    { IFS=$'\t' read -r a_id a_path a_pid a_epoch < "$claim_file.active"; } 2>/dev/null || true
+  fi
+  clock=$((epoch_at_zero + SECONDS))
+  if ! [[ "$a_pid" =~ ^[0-9]+$ ]] || [ -z "$a_path" ] \
+    || ! kill -0 "$a_pid" >/dev/null 2>&1; then
+    seen_gate_pid=""
+    return 1
+  fi
+  active_id="$a_id"
+  active_path="$a_path"
+  if [ "$a_pid" != "$seen_gate_pid" ]; then
+    seen_gate_pid="$a_pid"
+    seen_gate_since="$clock"
+    seen_gate_exact=0
+    seen_gate_looks=1
+    if [[ "$a_epoch" =~ ^[0-9]+$ ]] && [ "$a_epoch" -le "$clock" ]; then
+      seen_gate_since="$a_epoch"
+      seen_gate_exact=1
+    else
+      date_seen_gate
+    fi
+  else
+    seen_gate_looks=$((seen_gate_looks + 1))
+    [ "$seen_gate_exact" -eq 1 ] || date_seen_gate
+  fi
+  return 0
+}
+
+# Like a per-gate watchdog, which reads payload metadata and configuration
+# only once its gate has outlived the 1 s grace, a shared watchdog does that
+# work only once the same gate is still running at two checks 1 s apart.
+# Until then it costs one date and a 1 s sleep per check (plus a stat for a
+# live gate under a Bash without EPOCHSECONDS); fast gates add nothing more.
+if [ -n "$claim_file" ] && [ -z "$test_trigger_file" ]; then
+  epoch_at_zero="$(date +%s 2>/dev/null || printf '0')"
+  is_nonnegative_integer "$epoch_at_zero" || epoch_at_zero=0
+  epoch_at_zero=$((epoch_at_zero - SECONDS))
+  while :; do
+    if dispatcher_gone; then
+      test_status parent-exited
+      exit 0
+    fi
+    if observe_active_gate && [ "$seen_gate_looks" -ge 2 ]; then
+      break
+    fi
+    sleep 1 >/dev/null 2>&1 &
+    sleep_pid=$!
+    wait "$sleep_pid" >/dev/null 2>&1 || exit 0
+    sleep_pid=""
+  done
+fi
 # Read only to derive the explicitly allowed event/session/tool metadata. The
 # payload is never written, forwarded, logged, or included in the report.
 input="$(cat 2>/dev/null || true)"
@@ -729,7 +866,8 @@ now_seconds="$(date +%s 2>/dev/null || printf '0')"
 is_nonnegative_integer "$now_seconds" || now_seconds=0
 # Gate launches intentionally omit this timestamp to avoid a foreground process
 # on every fast hook. Sampling after the one-second grace can make its warning
-# at most one second late, while keeping the configured lead approximate.
+# at most one second late, while keeping the configured lead approximate. A
+# shared watchdog sets started_at from the gate it reports instead.
 if ! is_nonnegative_integer "$started_at" || [ "$started_at" -eq 0 ]; then
   started_at="$now_seconds"
 fi
@@ -760,7 +898,55 @@ is_nonnegative_integer "$now_seconds" || now_seconds=0
 wait_seconds=$((warning_at - now_seconds))
 [ "$wait_seconds" -ge 0 ] || wait_seconds=0
 
-if [ -z "$test_trigger_file" ]; then
+if [ -z "$test_trigger_file" ] && [ -n "$claim_file" ]; then
+  # Shared watchdog: follow the gate named in "<claim>.active" (hook id,
+  # script, gate pid, start epoch when the gate's bash has EPOCHSECONDS) and
+  # warn when one gate has run to its own warning point, as a per-gate watchdog
+  # would. Time spent between gates, in master-hook or in the adapter itself
+  # is not a gate's and is not reported here. Checks run at most 4 s apart,
+  # so a warning is at most ~4 s late, and the watchdog exits within ~4 s of
+  # the dispatcher. Clock reads use $SECONDS, not a date process.
+  gate_offset=$((declared_timeout - lead_seconds))
+  # A per-gate watchdog only warns about a gate still running after its 1 s
+  # grace, even when the warning point is 0. Require the same here: at least
+  # 2 whole seconds of gate age, since start times have 1 s resolution.
+  [ "$gate_offset" -ge 2 ] || gate_offset=2
+  while :; do
+    if dispatcher_gone; then
+      test_status parent-exited
+      exit 0
+    fi
+    wait_left=4
+    if observe_active_gate; then
+      gate_due=$((seen_gate_since + gate_offset))
+      if [ "$clock" -ge "$gate_due" ] && [ "$seen_gate_exact" -eq 0 ]; then
+        # Due at the first look and not yet dated: date it now so the
+        # report's elapsed time is the gate's own.
+        date_seen_gate
+        gate_due=$((seen_gate_since + gate_offset))
+      fi
+      if [ "$clock" -ge "$gate_due" ]; then
+        hook_path="$active_path"
+        hook_id="$active_id"
+        hook_name="${hook_path##*/}"
+        started_at="$seen_gate_since"
+        # Hand the event back before the report, which can take a while: a
+        # gate that starts meanwhile then arms a fresh shared watchdog instead
+        # of counting itself covered by one that is about to exit.
+        holder=""
+        { IFS= read -r holder < "$claim_file"; } 2>/dev/null || true
+        [ "$holder" != "$$" ] || rm -f "$claim_file" >/dev/null 2>&1 || true
+        break
+      fi
+      [ $((gate_due - clock)) -ge "$wait_left" ] || wait_left=$((gate_due - clock))
+    fi
+    sleep "$wait_left" >/dev/null 2>&1 &
+    sleep_pid=$!
+    wait "$sleep_pid" >/dev/null 2>&1 || exit 0
+    sleep_pid=""
+  done
+  capture_active_debug_phase
+elif [ -z "$test_trigger_file" ]; then
   sleep "$wait_seconds" >/dev/null 2>&1 &
   sleep_pid=$!
   wait "$sleep_pid" >/dev/null 2>&1 || exit 0
@@ -1121,7 +1307,10 @@ mark_report_done
 # dispatcher's unconditional process-group cancellation safe even if reporting
 # completed just before the hook returned: the PID cannot be recycled into an
 # unrelated process group in that window. A SIGKILLed dispatcher simply makes
-# this loop finish on its next inexpensive poll.
+# this loop finish on its next inexpensive poll. A shared (claim-file) watchdog
+# is never signalled by its gates, so it exits here and releases its claim;
+# the next gate of the event arms a fresh one.
+[ -z "$claim_file" ] || exit 0
 if is_nonnegative_integer "$parent_pid"; then
   while kill -0 "$parent_pid" >/dev/null 2>&1; do
     sleep 1 >/dev/null 2>&1 &

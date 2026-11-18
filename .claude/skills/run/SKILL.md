@@ -170,7 +170,7 @@ Or read knowledge files directly via Read tool if paths are specified in worker.
 
 ### Project work-mesh
 
-Presence is automatic via `hq mesh daemon`. Do not call deleted
+Presence is automatic via `hq daemon`. Do not call deleted
 `hq mesh session check|watch|progress`. For a discrete Board signal only:
 
 ```bash

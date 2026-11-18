@@ -259,8 +259,10 @@ class PersonBrief(unittest.TestCase):
         self.assertEqual([r['from'] for r in data['personal']['dms']], ['Ann'])
 
     def test_membership_inventory(self):
-        with patch.object(sweep, 'run', return_value='COMPANY  MODE  UPDATED  MEMBERSHIP\n────  ───  ───  ───\na  all  —  key\nb  shared  —  key2'):
+        with patch.object(sweep, 'run', return_value='COMPANY  MODE  UPDATED  MEMBERSHIP\n────  ───  ───  ───\na  all  —  key\nb  shared  —  key2') as run:
             self.assertEqual(sweep.membership_slugs('/tmp'), ['a', 'b'])
+        # US-041: the inventory comes from the owning command, not the `hq sync mode --show` duplicate.
+        run.assert_called_once_with(['hq', 'daemon', 'sync', 'mode', 'list'])
         with patch.object(sweep, 'run', return_value='No memberships found. Run `hq onboard` or accept an invite first.'):
             self.assertEqual(sweep.membership_slugs('/tmp'), [])
         with patch.object(sweep, 'run', return_value='Authentication failed'):

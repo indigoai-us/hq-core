@@ -234,6 +234,13 @@ run 2 "nice cp /tmp/policy-input $P" 'nice-wrapped cp into a policy file is bloc
 run 2 "sudo -u root cp /tmp/policy-input $P" 'sudo user-wrapped cp into a policy file is blocked'
 run 2 "parallel cp {} $P ::: /tmp/policy-input" 'parallel direct cp into a policy file is blocked'
 
+# A # right after an operator inside a quoted $( is a comment for Bash 5,
+# but /bin/bash 3.2 ends the substitution at the ) after it and runs the rest.
+for pre in 'echo "$(echo x;#)"' 'echo "$(echo x&#)"' 'echo "$(echo x|#)"' 'echo "$(echo x&&#)"' 'echo "$(;#)"' 'x="$(:;#)"' 'gh pr comment 1 --body "$(echo x;#)"'; do
+  run 2 "$pre ; cp /tmp/policy-input $P
+)\"" "a policy write after $pre is blocked"
+done
+
 echo "[1c] process wrappers that are not policy writes stay allowed"
 # \$ keeps the scanner on (the fast path would otherwise skip these). The
 # original macOS Bash 3.2 abort was on this unwrap, not on a policy write.

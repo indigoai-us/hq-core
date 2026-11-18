@@ -9,7 +9,9 @@
 #   context -> {"hookSpecificOutput":{"hookEventName":..,"additionalContext":..}}
 #
 # Ops: SessionStart -> session.open, PreToolUse -> policy.check,
-#      SessionEnd -> session.close, every other event -> session.get.
+#      SessionEnd -> session.close. Every other event has no hqd operation:
+#      the shim exits 0 without contacting the daemon. (It used to send
+#      session.get there and discard the reply.)
 #
 # Daemon cannot answer: print exactly one stderr line naming the cause, then
 #   timed out (busy)   "HQ daemon timed out after N ms (daemon busy) ..."
@@ -93,6 +95,15 @@ while IFS= read -r payload_line || [ -n "$payload_line" ]; do
   payload=$payload$payload_line
   payload_line=''
 done
+
+# An event named on the command line that has no hqd operation ends here,
+# before the flag read and the perl start. With no event argument (Codex) the
+# event is only known once perl has parsed the payload, and the same test is
+# made there.
+case "$event" in
+  ''|SessionStart|PreToolUse|SessionEnd) ;;
+  *) exit 0 ;;
+esac
 
 # The shim follows the HQ Anywhere flag reader's default-on fail-safe. The
 # local false/0 override keeps the shim inert; unreachable company writes remain blocked.
@@ -288,9 +299,9 @@ if ($event eq "SessionStart") {
   $op = "session.close";
   %args = (runtime => $runtime, sessionId => ($sid || "unknown"));
 } else {
-  $op = "session.get";
-  %args = (runtime => $runtime);
-  $args{sessionId} = $sid if length $sid;
+  # No hqd operation for this event, and nothing to print. The daemon is not
+  # contacted, so an unreachable daemon is not reported here either.
+  exit 0;
 }
 
 # One attempt inside one deadline ($DEADLINE, set in BEGIN). All socket I/O is

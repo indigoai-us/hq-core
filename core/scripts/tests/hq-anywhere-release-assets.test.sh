@@ -21,9 +21,9 @@ plugin="$output/claude-plugin"
 marketplace="$output/claude-marketplace"
 pack="$output/codex-pack"
 
-bash "$repo_root/core/scripts/build-claude-plugin.sh" "$plugin"
-bash "$repo_root/core/scripts/build-claude-marketplace.sh" "$plugin" "$marketplace"
-bash "$repo_root/core/scripts/build-codex-pack.sh" "$pack"
+bash "$repo_root/.github/release/build-claude-plugin.sh" "$plugin"
+bash "$repo_root/.github/release/build-claude-marketplace.sh" "$plugin" "$marketplace"
+bash "$repo_root/.github/release/build-codex-pack.sh" "$pack"
 
 node "$repo_root/core/scripts/validate-agent-runtime-contracts.mjs" --root "$repo_root" --plugin-dir "$plugin"
 node "$repo_root/core/scripts/validate-agent-runtime-contracts.mjs" --root "$repo_root" --skill-dir "$pack"

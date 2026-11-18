@@ -14,10 +14,12 @@ long the cached access token has left. Read-only — touches nothing.
 1. **Probe** — `test -f ~/.hq/cognito-tokens.json`. If absent, print
    "Not signed in. Run `/hq-login`." and exit 0.
 
-2. **Status** — `hq auth status` for cached identity + expiry. If the CLI
-   reports expired, hint that `/hq-login` will silently refresh.
+2. **Status** — `hq whoami --json` for cached identity. Inspect `.authenticated`; exit 0 alone does not prove a valid session.
+   If false, hint that `/hq-login` can refresh or sign in.
 
-3. **Identity** — `hq whoami` for canonical sub/email (Cognito userInfo).
+3. **Identity and expiry** — use the identity fields and `.sessionExpiresAt` from
+   `hq whoami --json`. Use `.sessionExpiring` as the renewal hint. If expiry is null,
+   report that it is unavailable; do not read the token file.
 
 4. **Format** — collapse to one line:
    `signed in as <email> (sub <id-prefix>…) — expires in <Xh Ym>`.
@@ -25,8 +27,7 @@ long the cached access token has left. Read-only — touches nothing.
 
 ## Notes
 
-- Reads `~/.hq/cognito-tokens.json` only — same file as `/deploy`,
-  `/hq-login`, `/hq-logout`.
+- Reads identity and expiry through `hq whoami --json`; never prints token fields.
 - Pool: shared HQ Identity.
 - Does not refresh the token; for that, run `/hq-login` (it auto-refreshes
   if expired).

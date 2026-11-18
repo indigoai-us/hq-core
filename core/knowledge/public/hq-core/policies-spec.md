@@ -292,8 +292,8 @@ evaluated wherever an AI-message look-back exists — during `PreToolUse` and
 `UserPromptSubmit` hook runs — but against a fact set built **only** from the
 assistant's recent messages (see below), with no command/prompt/static facts.
 Use it for "fire on what the AI is about to do" independent of the literal
-command. (Tool events are CLI/Bash-only; `PreToolUse`/`PostToolUse` skip
-non-Bash tools.)
+command. (Passive `PreToolUse` evaluation is Bash-only. `PostToolUse` also
+evaluates the text tools listed in the table below; other tools are skipped.)
 
 **Facts available per channel** (derived by
 [`core/scripts/derive-trigger-facts.sh`](../../../scripts/derive-trigger-facts.sh)):
@@ -310,12 +310,22 @@ keys on whatever word naturally appears when it is relevant (`refactor`,
 | `PreToolUse` other tools | lowercased tool name (`glob`, `grep`, `read`, `write`, `edit`) |
 | `UserPromptSubmit` | every word token of the user's message |
 | `PostToolUse` Bash command and output | every word token of `tool_input.command` and the tool's **output**, plus command-derived facts other than `run_in_background` |
-| `PostToolUse` non-Bash tool | every word token of the tool's **output** |
+| `PostToolUse` Agent / Task | every word token of `description` and `prompt` (prompt cut to 8192 characters) |
+| `PostToolUse` Write / Edit / MultiEdit / NotebookEdit | the file or notebook path plus the first 8192 characters of the new content (`content`, `new_string`, every `edits[].new_string`, `new_source`); never `old_string` or the tool output |
+| `PostToolUse` Read | the file path only; never the file contents |
+| `PostToolUse` other tools | not evaluated |
 | `AssistantIntent` | every word token of assistant message text since the last user turn — **AI-message only, no static facts** |
 | `SessionStart` | static facts only (no command/prompt/AI tokens) |
 | Static session facts (real events only) | `company`, `repo`, `shared_branch` (current branch) |
 | Any text channel (command / prompt / output / AI-intent) | **filename tokens** — see below |
 | Every fact set | `always` (reserved — `when: always` matches unconditionally) |
+
+For the non-Bash `PostToolUse` tools (Agent / Task, Write / Edit / MultiEdit /
+NotebookEdit, Read) the action text above is both the event fact set and the
+output fact set; the tool's real output is never scanned. A policy written for
+`PostToolUse` output words therefore also matches when the same word appears in
+an Agent prompt, in written or edited content, or in a read file's path. Such a
+match ranks as direct, since the words come from the action itself.
 
 The raw `PreToolUse`/`UserPromptSubmit` fact sets deliberately **exclude** the
 look-back so the command/prompt channel and the AI-intent channel stay distinct.
@@ -331,8 +341,9 @@ facts: a literal basename token and a `.ext` token. `.claude/settings.json` yiel
 yields `shot.png` + `.png`. The leading dot of a directory is dropped with the
 path; a dotfile keeps its own leading dot. This is how a file-scoped policy fires
 from `AssistantIntent` — the assistant names the file it is about to edit or read
-(`when: settings.json`, `when: .mcp.json`, `when: .png || .jpg`) even though the
-hook never sees the non-Bash Edit/Read tool call itself. Extensions must be
+(`when: settings.json`, `when: .mcp.json`, `when: .png || .jpg`) before the
+Edit/Read call runs; the PostToolUse rows above match the call's own path after
+it runs. Extensions must be
 letter-led, so dotted version numbers (`v1.5`, `3.13`) are not mistaken for files.
 
 **Slash-command tokens.** A `/command` mentioned in the evaluated text emits a

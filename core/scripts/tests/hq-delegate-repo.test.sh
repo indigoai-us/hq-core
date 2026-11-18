@@ -131,4 +131,26 @@ HQ_ROOT="$FIX" bash "$HELPER" --manifest "$NULL_MANIFEST" >/dev/null 2>&1 \
   || fail "repo:null project must skip cleanly with exit 0"
 [ "$(cat "$NULL_MANIFEST")" = "$BEFORE" ] || fail "repo:null run must change nothing"
 
-echo "hq-delegate-repo: ok (anchored push behind --yes, dirty work surfaced, access unverified stated plainly, vaultPrefixes untouched, null skip)"
+# --- 7. absolute repo.path is used as-is (feedback_6ea99712) -----------------
+# A PRD can name a repo outside the HQ tree by absolute path. The helper used to
+# prefix the HQ root and fail with "not a git repository: <root>//abs/path".
+
+OUTSIDE="$TMP/outside/widget-abs"
+mkdir -p "$TMP/outside"
+git -C "$TMP/outside" clone --quiet "$TMP/origin/widget-repo.git" widget-abs 2>/dev/null
+git -C "$OUTSIDE" switch --quiet feature/widget
+ABS_MANIFEST="$TMP/abs-bundle/manifest.json"
+mkdir -p "$TMP/abs-bundle"
+echo "# Delegation brief — widget" > "$TMP/abs-bundle/BRIEF.md"
+jq --arg p "$OUTSIDE" '.repo.path = $p | .repo.headSha = null | .repo.branchPushed = null' "$MANIFEST" > "$ABS_MANIFEST"
+set +e
+ABS_ERR="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$ABS_MANIFEST" --yes --github-user alicehub 2>&1 >/dev/null)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "absolute repo.path must be used as-is, got exit $RC: $ABS_ERR"
+case "$ABS_ERR" in *"$FIX//"*|*"not a git repository"*) fail "absolute repo.path was prefixed with the HQ root: $ABS_ERR" ;; esac
+OUT_SHA="$(git -C "$OUTSIDE" rev-parse refs/heads/feature/widget)"
+jq -e --arg sha "$OUT_SHA" '.repo.headSha == $sha' "$ABS_MANIFEST" >/dev/null \
+  || fail "absolute repo.path handover must record the outside repo's headSha: $(jq -c '.repo' "$ABS_MANIFEST")"
+
+echo "hq-delegate-repo: ok (anchored push behind --yes, dirty work surfaced, access unverified stated plainly, vaultPrefixes untouched, null skip, absolute repo.path)"

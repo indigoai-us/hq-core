@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Conduct Runners
+  short_description: >-
+    Advanced conduct: lanes run as detached hq runners processes

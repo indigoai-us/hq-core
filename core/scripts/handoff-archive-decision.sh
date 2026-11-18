@@ -38,7 +38,7 @@
 #     and the default branch (main, master, origin/HEAD) are not checked;
 #   - the session has background work: --background-running is passed (the
 #     agent has background tasks or subagents still running), an active
-#     hq lane has this session as its senior (hq lanes list --senior
+#     hq lane has this session as its senior (hq runners list --senior
 #     session:<id> --active), or a running hq monitor targets this session
 #     (hq monitor list --json);
 #   - the session has an ask waiting on the owner: an entry for this session
@@ -247,10 +247,10 @@ done
 [ -n "$SID" ] || no "could not verify background work: no session id"
 case "$SID" in *[!A-Za-z0-9._-]*|.*) no "could not verify background work: invalid session id" ;; esac
 
-lanes="$(HQ_NO_UPDATE_CHECK=1 hq lanes list --senior "session:$SID" --active --json 2>/dev/null)" \
-  || no "could not verify background work: hq lanes list failed"
+lanes="$(HQ_NO_UPDATE_CHECK=1 hq runners list --senior "session:$SID" --active --json 2>/dev/null)" \
+  || no "could not verify background work: hq runners list failed"
 n="$(printf '%s' "$lanes" | jq -e 'select(.ok == true) | .lanes | length' 2>/dev/null)" \
-  || no "could not verify background work: hq lanes list failed"
+  || no "could not verify background work: hq runners list failed"
 [ "$n" -gt 0 ] && no "background work running: $n active lane(s)"
 
 monitors="$(HQ_NO_UPDATE_CHECK=1 hq monitor list --json 2>/dev/null)" \

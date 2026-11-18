@@ -221,38 +221,83 @@ extract() {
   printf '%s' "$STDIN_JSON" | hq_json_get "$1"
 }
 
-# These five scalar values are required on every invocation. When jq is
+# These scalar values are required on every invocation. When jq is
 # available (the same prerequisite for policy evaluation below), extract them
 # in one process rather than launching jq four times. NUL delimiters keep
 # whitespace and embedded newlines intact; command substitution then matches
 # hq_json_get's existing trailing-newline behavior. Fall back to the shared
 # helper when jq or a complete scalar result is unavailable.
+#
+# The last two fields are the trigger text of a non-Bash tool call and the
+# payload the fact helper reads for it (see TOOL TEXT below). Both are empty
+# unless the event is PostToolUse and the tool is one of the text tools.
+# Agent/Task contribute the description and prompt; Write, Edit, MultiEdit
+# and NotebookEdit the file path and the new content; Read the file path.
+# Content and prompt are cut to POLICY_TOOL_TEXT_LIMIT characters and other
+# fields to POLICY_TOOL_FIELD_LIMIT, so the text scanned stays bounded however
+# large the file or prompt is. tool_response is dropped from that payload:
+# a file's contents or a subagent's report are not the action.
+POLICY_TOOL_TEXT_LIMIT=8192
+POLICY_TOOL_FIELD_LIMIT=1024
 INITIAL_FIELDS=()
 if [ -n "$JQ" ]; then
   while IFS= read -r -d '' initial_field; do
     INITIAL_FIELDS+=("$initial_field")
   done < <(
     # shellcheck disable=SC2016 # jq program intentionally uses single quotes.
-    printf '%s' "$STDIN_JSON" | "$JQ" -j '
+    printf '%s' "$STDIN_JSON" | "$JQ" -j \
+      --argjson text_limit "$POLICY_TOOL_TEXT_LIMIT" \
+      --argjson field_limit "$POLICY_TOOL_FIELD_LIMIT" '
       def scalar($path):
         try (getpath($path) | if . == null or type == "object" or type == "array" then "" else tostring end)
         catch "";
-      scalar(["hook_event_name"]) + "\u0000",
+      def str: if type == "string" then . else "" end;
+      def nonul: split("\u0000") | join(" ");
+      def tool_text:
+        (if (.tool_input | type) == "object" then .tool_input else {} end) as $in
+        | (.tool_name // "") as $t
+        | (if $t == "Agent" or $t == "Task" then
+             [($in.description | str | .[0:$field_limit]), ($in.prompt | str | .[0:$text_limit])]
+           elif $t == "Write" then
+             [($in.file_path | str | .[0:$field_limit]), ($in.content | str | .[0:$text_limit])]
+           elif $t == "Edit" then
+             [($in.file_path | str | .[0:$field_limit]), ($in.new_string | str | .[0:$text_limit])]
+           elif $t == "MultiEdit" then
+             [($in.file_path | str | .[0:$field_limit]),
+              ([($in.edits | if type == "array" then .[] else empty end)
+                | if type == "object" then (.new_string | str | .[0:$text_limit]) else "" end]
+               | join("\n") | .[0:$text_limit])]
+           elif $t == "NotebookEdit" then
+             [($in.notebook_path | str | .[0:$field_limit]), ($in.new_source | str | .[0:$text_limit])]
+           elif $t == "Read" then
+             [($in.file_path | str | .[0:$field_limit])]
+           else [] end)
+        | map(select(. != "") | nonul) | join("\n");
+      (try (if .hook_event_name == "PostToolUse" then tool_text else "" end) catch "") as $tool_text
+      | scalar(["hook_event_name"]) + "\u0000",
       scalar(["session_id"]) + "\u0000",
       scalar(["tool_name"]) + "\u0000",
       scalar(["cwd"]) + "\u0000",
       scalar(["tool_input", "command"]) + "\u0000",
-      scalar(["prompt"]) + "\u0000"
+      scalar(["prompt"]) + "\u0000",
+      $tool_text + "\u0000",
+      (if $tool_text == "" then ""
+       else (del(.tool_response) | .tool_name = "Bash" | .tool_input = {command: $tool_text} | tojson)
+       end) + "\u0000"
     ' 2>/dev/null
   )
 fi
-if [ "${#INITIAL_FIELDS[@]}" -eq 6 ]; then
+TOOL_TEXT=""
+TOOL_TEXT_PAYLOAD=""
+if [ "${#INITIAL_FIELDS[@]}" -eq 8 ]; then
   EVENT="${INITIAL_FIELDS[0]}"
   SESSION_ID="${INITIAL_FIELDS[1]}"
   TOOL_NAME="${INITIAL_FIELDS[2]}"
   CWD="${INITIAL_FIELDS[3]}"
   ARG="${INITIAL_FIELDS[4]}"
   PROMPT="${INITIAL_FIELDS[5]}"
+  TOOL_TEXT="${INITIAL_FIELDS[6]}"
+  TOOL_TEXT_PAYLOAD="${INITIAL_FIELDS[7]}"
 else
   EVENT="$(extract hook_event_name)"
   SESSION_ID="$(extract session_id)"
@@ -263,6 +308,59 @@ else
 fi
 [ -z "$EVENT" ] && EVENT="PreToolUse"
 [ -z "$CWD" ] && CWD="$HQ_ROOT"
+
+# Session-pinned index switch (see the index block further down). Off unless
+# HQ_POLICY_SESSION_INDEX or personal/settings/policy-session-index.yaml
+# (then core/settings) turns it on.
+policy_session_index_enabled() {
+  local raw file line value
+  raw="${HQ_POLICY_SESSION_INDEX-}"
+  case "$raw" in
+    1|true|TRUE|on|ON|yes|YES) return 0 ;;
+    0|false|FALSE|off|OFF|no|NO) return 1 ;;
+    "") ;;
+    *) return 1 ;;
+  esac
+  for file in \
+    "$HQ_ROOT/personal/settings/policy-session-index.yaml" \
+    "$HQ_ROOT/core/settings/policy-session-index.yaml"
+  do
+    [ -f "$file" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%%#*}"
+      line="${line%$'\r'}"
+      case "$line" in
+        enabled:*)
+          value="${line#enabled:}"
+          value="${value#"${value%%[![:space:]]*}"}"
+          value="${value%"${value##*[![:space:]]}"}"
+          case "$value" in
+            true|yes|1|on|TRUE|YES|ON) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+    done < "$file"
+  done
+  return 1
+}
+
+# SessionEnd is registered only to remove this session's pinned index files
+# and sweep old ones. It never emits a reminder, flag on or off.
+if [ "$EVENT" = "SessionEnd" ]; then
+  if [ -d "$HQ_ROOT/workspace/orchestrator/policy-session-index" ] \
+     && [ -f "$HELPERS/policy-session-index.sh" ]; then
+    # shellcheck disable=SC1090
+    . "$HELPERS/policy-session-index.sh"
+    policy_session_index_cleanup || true
+  fi
+  # The Grok adapter's session-end call (HQ_POLICY_DROP_HELD=1) carries a
+  # SessionEnd payload and still has to reach the held-reminder drop below,
+  # which exits without emitting.
+  if [ "${HQ_HARNESS:-}" != "grok" ] || [ "${HQ_POLICY_DROP_HELD:-}" != "1" ]; then
+    exit 0
+  fi
+fi
 
 # Background Bash completions and task-notification blocks are harness
 # messages, not user requests. The Monitor expiry signal is classified once
@@ -283,22 +381,276 @@ if [ "$EVENT" = "UserPromptSubmit" ]; then
   esac
 fi
 
-# Plain PreToolUse stdout is not delivered as model context. Avoid passive
-# policy scans there unless the one-release rollback switch is active. Blocking
-# hooks are separate registry entries and remain unaffected. Grok does not
-# deliver PostToolUse context, so do not evaluate or ledger policy slugs there.
-if [ "$EVENT" = "PreToolUse" ] && [ "${HQ_POLICY_TOOL_EVENTS:-}" != "legacy" ]; then
-  [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ] || exit 0
+# HELD REMINDERS. The Grok adapter (HQ_HARNESS=grok) sets
+# HQ_POLICY_REMINDER_DELIVERABLE=0 on an event whose hook output Grok does not
+# hand to the model (every event but PostToolUse). The reminder for such an event is not
+# printed and not recorded as shown. Its text is appended to
+# <state>/<session>.held/out, and its ledger records go to copies of the session
+# ledgers kept in that directory. While the directory exists every run of this
+# hook reads and writes those copies, so a held rule is not held twice. The
+# adapter asks for the held text on an event the host does deliver
+# (HQ_POLICY_FLUSH_HELD=1); only then do the copies replace the session
+# ledgers. HQ_POLICY_DROP_HELD=1 (session end) removes held text without
+# recording it. The three variables are read only under HQ_HARNESS=grok: on
+# Claude Code and Codex every event delivers, nothing is held, and a stray
+# variable changes nothing. A reminder is held only for a session id the host
+# supplied; under a made-up id (HQ_POLICY_SESSION_ID_SYNTHETIC=1) or none it
+# is dropped unrecorded, so text cannot reach a later session that reuses the
+# id.
+POLICY_STATE_DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+POLICY_HELD_KEY="${SESSION_ID:-default}"
+POLICY_HELD_DIR="$POLICY_STATE_DIR/$POLICY_HELD_KEY.held"
+# Every per-session ledger suffix this hook writes. A ledger missing from this
+# list would be written straight to the session's own file on a held event.
+POLICY_HELD_FILES="txt turn.txt seen.tsv full.txt deferred.tsv deferred-soft.txt footer.txt"
+# Held text is delivered in one piece next to a tool result, and Grok clips
+# additionalContext at 10,000 characters. Two full reminders fit.
+POLICY_HELD_MAX_BYTES="${HQ_POLICY_HELD_MAX_BYTES:-8000}"
+case "$POLICY_HELD_MAX_BYTES" in ''|*[!0-9]*) POLICY_HELD_MAX_BYTES=8000 ;; esac
+POLICY_HELD_HOST=0
+[ "${HQ_HARNESS:-}" = "grok" ] && POLICY_HELD_HOST=1
+HOLD_REMINDER=0
+[ "$POLICY_HELD_HOST" -eq 1 ] && [ "${HQ_POLICY_REMINDER_DELIVERABLE:-1}" = "0" ] && HOLD_REMINDER=1
+HOLD_FAIL_REASON=""
+# Deferred queue as it was before this event consumed it. Put back when the
+# hold is refused, so the consumed rules stay queued; put back in the session's
+# own file when the hold starts, where only the held copy may show them
+# consumed.
+DEFERRED_RESTORE_FILE=""
+DEFERRED_RESTORE=""
+
+# HELD STORE LINKS. The held store is written with shell redirection, which
+# follows a symlink and writes through a hard link. A link planted at the held
+# directory or at a file in it would send held text or ledger rows to another
+# file, or hand another file's content to the model. The store is therefore
+# used only when the state directory and the held directory are real
+# directories owned by this user and each file in the held directory is a
+# regular file with one link. New files are created with noclobber, which does
+# not open through a link. A refused store is removed (rm removes the planted
+# names, never their targets; under a symlinked state directory nothing is
+# removed), the reminder of that
+# event is dropped unrecorded, and one line goes to stderr. The checks and the
+# write are separate steps, so a link planted between them by a process that
+# can already write in the state directory is not caught.
+POLICY_HELD_REFUSED=""
+# 1 once a store was refused in this run: nothing more is held for this event.
+POLICY_HELD_STORE_REFUSED=0
+# policy_held_files_ok <path>... — 0 when every path that exists is a regular
+# file, not a symlink, with a link count of 1. One stat process for all paths;
+# none when no path exists.
+policy_held_files_ok() {
+  local path counts="" count existing=()
+  for path in "$@"; do
+    if [ -L "$path" ]; then
+      POLICY_HELD_REFUSED="${path##*/} is a symlink"
+      return 1
+    fi
+    [ -e "$path" ] || continue
+    if [ ! -f "$path" ]; then
+      POLICY_HELD_REFUSED="${path##*/} is not a regular file"
+      return 1
+    fi
+    existing+=("$path")
+  done
+  [ "${#existing[@]}" -gt 0 ] || return 0
+  policy_held_stat_flavour
+  if ! counts="$(policy_held_link_counts "${existing[@]}")"; then
+    # A file that vanished between the checks above and the stat (a concurrent
+    # hand-out or purge) is skipped. Any other failure refuses the store.
+    counts=""
+    for path in "${existing[@]}"; do
+      if count="$(policy_held_link_counts "$path")"; then
+        counts="$counts$count"$'\n'
+      elif [ -e "$path" ] || [ -L "$path" ]; then
+        POLICY_HELD_REFUSED="the link count of the held files could not be read"
+        return 1
+      fi
+    done
+    [ -n "$counts" ] || return 0
+  fi
+  if [ -z "$counts" ]; then
+    POLICY_HELD_REFUSED="the link count of the held files could not be read"
+    return 1
+  fi
+  while IFS= read -r count; do
+    count="${count%$'\r'}"
+    [ -n "$count" ] || continue
+    if [ "$count" != 1 ]; then
+      POLICY_HELD_REFUSED="a held file has a link count other than 1"
+      return 1
+    fi
+  done <<< "$counts"
+  return 0
+}
+# The stat flavour is picked once per run. GNU stat -f is file-system mode, where
+# %l is the maximum name length, so it is never a fallback for a failed stat -c.
+POLICY_HELD_STAT=""
+policy_held_stat_flavour() {
+  [ -z "$POLICY_HELD_STAT" ] || return 0
+  if stat -c %h / >/dev/null 2>&1; then
+    POLICY_HELD_STAT=gnu
+  else
+    POLICY_HELD_STAT=bsd
+  fi
+}
+# policy_held_link_counts <path>... — one link count per line; fails when any
+# path cannot be read.
+policy_held_link_counts() {
+  if [ "$POLICY_HELD_STAT" = gnu ]; then
+    stat -c %h "$@" 2>/dev/null
+  else
+    stat -f %l "$@" 2>/dev/null
+  fi
+}
+# policy_private_dir <prefix> — create a new directory named <prefix>.<pid>.<n>
+# that this run alone made and set POLICY_PRIVATE_DIR to it. mkdir fails on any
+# existing name, a link included, so a name planted in advance is never used.
+POLICY_PRIVATE_DIR=""
+policy_private_dir() {
+  local prefix="$1" dir="" try=0
+  POLICY_PRIVATE_DIR=""
+  while [ "$try" -lt 8 ]; do
+    dir="$prefix.$$.$RANDOM$RANDOM"
+    if mkdir -m 700 "$dir" 2>/dev/null; then
+      [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || return 1
+      POLICY_PRIVATE_DIR="$dir"
+      return 0
+    fi
+    try=$((try + 1))
+  done
+  return 1
+}
+# policy_held_store_ok — 0 when the held directory and every file this hook
+# reads or writes in it pass the checks above.
+policy_held_store_ok() {
+  local suffix paths=("$POLICY_HELD_DIR/out")
+  if [ -L "$POLICY_STATE_DIR" ] || [ ! -d "$POLICY_STATE_DIR" ] || [ ! -O "$POLICY_STATE_DIR" ]; then
+    POLICY_HELD_REFUSED="the policy state directory is a symlink or not a directory owned by this user"
+    return 1
+  fi
+  if [ -L "$POLICY_HELD_DIR" ]; then
+    POLICY_HELD_REFUSED="the held-reminder directory is a symlink"
+    return 1
+  fi
+  if [ ! -d "$POLICY_HELD_DIR" ] || [ ! -O "$POLICY_HELD_DIR" ]; then
+    POLICY_HELD_REFUSED="the held-reminder directory is not a directory owned by this user"
+    return 1
+  fi
+  for suffix in $POLICY_HELD_FILES; do
+    paths+=("$POLICY_HELD_DIR/$POLICY_HELD_KEY.$suffix")
+    # The ledger lock beside each copy is a directory this hook makes.
+    if [ -L "$POLICY_HELD_DIR/$POLICY_HELD_KEY.$suffix.lock" ]; then
+      POLICY_HELD_REFUSED="$POLICY_HELD_KEY.$suffix.lock is a symlink"
+      return 1
+    fi
+  done
+  policy_held_files_ok "${paths[@]}"
+}
+# policy_held_store_refuse — report and remove a store that failed the checks.
+policy_held_store_refuse() {
+  POLICY_HELD_STORE_REFUSED=1
+  # Under a symlinked state directory the held directory belongs to the link's
+  # target, so it is left in place.
+  if [ -L "$POLICY_STATE_DIR" ] || [ ! -d "$POLICY_STATE_DIR" ] || [ ! -O "$POLICY_STATE_DIR" ]; then
+    printf 'inject-policy-on-trigger: held-reminder store refused (%s); left it in place without writing to it.\n' "$POLICY_HELD_REFUSED" >&2
+    return 0
+  fi
+  printf 'inject-policy-on-trigger: held-reminder store refused (%s); removed it without writing to it.\n' "$POLICY_HELD_REFUSED" >&2
+  case "$POLICY_HELD_KEY" in
+    *[!A-Za-z0-9._-]*|.|..) ;;
+    *) rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true ;;
+  esac
+}
+
+# flush_held_reminders <max-bytes> — print the held text and make its ledger
+# records the session's. Prints nothing when nothing is held or the text is
+# larger than <max-bytes> (0 = no limit); it then stays held for a later call.
+# The directory is renamed first, so two concurrent calls cannot both deliver.
+flush_held_reminders() {
+  local max="$1" claim_dir="" claim="" text="" suffix moved=() paths=()
+  local LC_ALL=C
+  case "$POLICY_HELD_KEY" in *[!A-Za-z0-9._-]*|.|..) return 0 ;; esac
+  [ -s "$POLICY_HELD_DIR/out" ] || return 0
+  if ! policy_held_store_ok; then
+    policy_held_store_refuse
+    return 0
+  fi
+  IFS= read -r -d '' text < "$POLICY_HELD_DIR/out" || true
+  [ -n "$text" ] || return 0
+  case "$max" in ''|*[!0-9]*) max=0 ;; esac
+  if [ "$max" -gt 0 ] && [ "${#text}" -gt "$max" ]; then
+    return 0
+  fi
+  # The held directory is renamed into a new directory this run made. A fixed
+  # claim name could be planted in advance as a link, and mv would then move the
+  # held directory into the link's target.
+  policy_private_dir "$POLICY_HELD_DIR.flush" || return 0
+  claim_dir="$POLICY_PRIVATE_DIR"
+  claim="$claim_dir/held"
+  if ! mv "$POLICY_HELD_DIR" "$claim" 2>/dev/null; then
+    rmdir "$claim_dir" 2>/dev/null || true
+    return 0
+  fi
+  if [ -L "$claim" ] || [ ! -d "$claim" ] || [ ! -O "$claim" ]; then
+    printf 'inject-policy-on-trigger: held-reminder store refused (the claimed held directory is not a directory owned by this user); handed out nothing.\n' >&2
+    return 0
+  fi
+  paths=("$claim/out")
+  for suffix in $POLICY_HELD_FILES; do
+    paths+=("$claim/$POLICY_HELD_KEY.$suffix")
+  done
+  if ! policy_held_files_ok "${paths[@]}"; then
+    printf 'inject-policy-on-trigger: held-reminder store refused (%s); handed out nothing.\n' "$POLICY_HELD_REFUSED" >&2
+    rm -rf "$claim_dir" 2>/dev/null || true
+    return 0
+  fi
+  text=""
+  IFS= read -r -d '' text < "$claim/out" || true
+  printf '%s' "$text"
+  for suffix in $POLICY_HELD_FILES; do
+    [ ! -L "$claim/$POLICY_HELD_KEY.$suffix" ] && [ -f "$claim/$POLICY_HELD_KEY.$suffix" ] && moved+=("$claim/$POLICY_HELD_KEY.$suffix")
+  done
+  [ "${#moved[@]}" -eq 0 ] || mv -f "${moved[@]}" "$POLICY_STATE_DIR/" 2>/dev/null || true
+  rm -rf "$claim_dir" 2>/dev/null || true
+}
+if [ "$POLICY_HELD_HOST" -eq 1 ] && [ "${HQ_POLICY_FLUSH_HELD:-}" = "1" ]; then
+  flush_held_reminders "${HQ_POLICY_FLUSH_HELD_MAX_BYTES:-0}"
+  exit 0
 fi
-if [ "$EVENT" = "PostToolUse" ] && [ "${HQ_HARNESS:-}" = "grok" ]; then
+if [ "$POLICY_HELD_HOST" -eq 1 ] && [ "${HQ_POLICY_DROP_HELD:-}" = "1" ]; then
+  # Under a symlinked state directory nothing is removed (see
+  # policy_held_store_refuse).
+  case "$POLICY_HELD_KEY" in
+    *[!A-Za-z0-9._-]*|.|..) ;;
+    *) [ -L "$POLICY_STATE_DIR" ] || rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true ;;
+  esac
   exit 0
 fi
 
-# Tool-event trigger evaluation is scoped to CLI/Bash only — the frequent
-# Read/Write/Edit/Glob tool calls don't pay the policy scan. The message path
-# (UserPromptSubmit) is unaffected and still evaluates on every prompt.
+# Plain PreToolUse stdout is not delivered as model context. Avoid passive
+# policy scans there unless the one-release rollback switch is active. Blocking
+# hooks are separate registry entries and remain unaffected. Grok delivers
+# PostToolUse additionalContext (hook reference in the Grok binary, 1.0.34
+# through 1.0.77), so PostToolUse is evaluated there like on every other host.
+if [ "$EVENT" = "PreToolUse" ] && [ "${HQ_POLICY_TOOL_EVENTS:-}" != "legacy" ]; then
+  [ "$POLICY_ENFORCEMENT_GATE_ENABLED" -eq 1 ] || exit 0
+fi
+
+# TOOL TEXT. Tool events are evaluated for Bash (the command) and, on
+# PostToolUse, for the text tools: Agent/Task (description and prompt),
+# Write/Edit/MultiEdit/NotebookEdit (file path plus a bounded slice of the new
+# content) and Read (file path). For a text tool the fact helper is handed a
+# payload whose command is that text, so the same tokenizer, subject filter,
+# budgets, dedupe and seen-set window apply as for a Bash command. Every other
+# tool (Glob, Grep, ...), a text tool with no text, and any non-Bash
+# PreToolUse exit here as before. The PreToolUse enforcement re-run below
+# stays Bash-only.
 if { [ "$EVENT" = "PreToolUse" ] || [ "$EVENT" = "PostToolUse" ]; } && [ "$TOOL_NAME" != "Bash" ]; then
-  exit 0
+  [ "$EVENT" = "PostToolUse" ] && [ -n "$TOOL_TEXT" ] && [ -n "$TOOL_TEXT_PAYLOAD" ] || exit 0
+  STDIN_JSON="$TOOL_TEXT_PAYLOAD"
+  ARG="$TOOL_TEXT"
+else
+  TOOL_TEXT=""
 fi
 
 # Per-session dedupe ledger (unchanged location for continuity).
@@ -368,6 +720,115 @@ TOOL_STOP_WORDS_DEFAULT="deploy merge release pr prs commit commits push pull te
 TOOL_STOP_WORDS="${HQ_POLICY_TOOL_STOP_WORDS-$TOOL_STOP_WORDS_DEFAULT}"
 SEEN_TTL="${HQ_POLICY_SEEN_TTL_SECONDS:-1800}"
 case "$SEEN_TTL" in ''|*[!0-9]*) SEEN_TTL=1800 ;; esac
+# Point every per-session ledger at <dir> (see HELD REMINDERS above). The names
+# match POLICY_HELD_FILES.
+set_policy_ledger_dir() {
+  DEDUPE_DIR="$1"
+  DEDUPE_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.txt"
+  TURN_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.turn.txt"
+  SEEN_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.seen.tsv"
+  FULL_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.full.txt"
+  DEFERRED_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.deferred.tsv"
+  DEFERRED_SOFT_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.deferred-soft.txt"
+  FOOTER_FILE="$DEDUPE_DIR/$POLICY_HELD_KEY.footer.txt"
+}
+# Reminders are waiting for delivery: this run reads and writes their ledgers.
+# A store that fails the link checks is removed; this run then uses the
+# session's own ledgers.
+if [ "$POLICY_HELD_HOST" -eq 1 ] && [ -s "$POLICY_HELD_DIR/out" ]; then
+  if policy_held_store_ok; then
+    set_policy_ledger_dir "$POLICY_HELD_DIR"
+  else
+    policy_held_store_refuse
+  fi
+fi
+# hold_policy_reminder <text> — keep <text> for the next delivering event and
+# switch this run's ledger writes to the held copies. Returns 1, with
+# HOLD_FAIL_REASON set, when the text cannot be held; the caller then records
+# nothing, so the rows stay eligible.
+hold_policy_reminder() {
+  local text="$1" held="" suffix
+  local LC_ALL=C
+  if [ -z "${SESSION_ID:-}" ] || [ "${HQ_POLICY_SESSION_ID_SYNTHETIC:-0}" = "1" ]; then
+    HOLD_FAIL_REASON="this event does not deliver context and the host supplied no session id to hold the reminder under"
+    return 1
+  fi
+  case "$POLICY_HELD_KEY" in
+    *[!A-Za-z0-9._-]*|.|..)
+      HOLD_FAIL_REASON="this event does not deliver context and the session id cannot name a held-reminder directory"
+      return 1
+      ;;
+  esac
+  if [ "$POLICY_HELD_STORE_REFUSED" -eq 1 ]; then
+    HOLD_FAIL_REASON="this event does not deliver context and the held-reminder store was refused ($POLICY_HELD_REFUSED)"
+    return 1
+  fi
+  # The held directory is created and removed only inside a state directory
+  # that is a real directory owned by this user.
+  [ -e "$POLICY_STATE_DIR" ] || [ -L "$POLICY_STATE_DIR" ] || mkdir -p "$POLICY_STATE_DIR" 2>/dev/null || true
+  if [ -L "$POLICY_STATE_DIR" ] || [ ! -d "$POLICY_STATE_DIR" ] || [ ! -O "$POLICY_STATE_DIR" ]; then
+    printf 'inject-policy-on-trigger: held-reminder store refused (the policy state directory is a symlink or not a directory owned by this user); wrote nothing to it.\n' >&2
+    HOLD_FAIL_REASON="this event does not deliver context and the held-reminder store was refused (the policy state directory is a symlink or not a directory owned by this user)"
+    return 1
+  fi
+  if [ ! -s "$POLICY_HELD_DIR/out" ]; then
+    rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true
+    # mkdir without -p on the last component fails when a name is already
+    # there, so a link planted after the rm above is not adopted.
+    if ! mkdir "$POLICY_HELD_DIR" 2>/dev/null; then
+      HOLD_FAIL_REASON="this event does not deliver context and the held-reminder directory could not be created"
+      return 1
+    fi
+    # noclobber: each file is created new and never opened through a link.
+    set -C
+    for suffix in $POLICY_HELD_FILES; do
+      [ -f "$POLICY_STATE_DIR/$POLICY_HELD_KEY.$suffix" ] || continue
+      held=""
+      IFS= read -r -d '' held < "$POLICY_STATE_DIR/$POLICY_HELD_KEY.$suffix" || true
+      if ! printf '%s' "$held" > "$POLICY_HELD_DIR/$POLICY_HELD_KEY.$suffix" 2>/dev/null; then
+        set +C
+        rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true
+        HOLD_FAIL_REASON="this event does not deliver context and the session ledgers could not be copied"
+        return 1
+      fi
+    done
+    if ! printf '' > "$POLICY_HELD_DIR/out" 2>/dev/null; then
+      set +C
+      rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true
+      HOLD_FAIL_REASON="this event does not deliver context and the held-reminder file could not be created"
+      return 1
+    fi
+    set +C
+  fi
+  # Checked again right before the append: the directory and every file in it
+  # must still be real, single-link and owned by this user.
+  if ! policy_held_store_ok; then
+    policy_held_store_refuse
+    HOLD_FAIL_REASON="this event does not deliver context and the held-reminder store was refused ($POLICY_HELD_REFUSED)"
+    return 1
+  fi
+  held=""
+  if [ -f "$POLICY_HELD_DIR/out" ]; then
+    IFS= read -r -d '' held < "$POLICY_HELD_DIR/out" || true
+  fi
+  # The same text can match again once a compaction purged the held ledger
+  # copies; it is already waiting, so it is not held a second time.
+  case "$held" in
+    *"$text"*) set_policy_ledger_dir "$POLICY_HELD_DIR"; return 0 ;;
+  esac
+  if [ $(( ${#held} + ${#text} + 2 )) -gt "$POLICY_HELD_MAX_BYTES" ]; then
+    [ -n "$held" ] || rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true
+    HOLD_FAIL_REASON="this event does not deliver context and ${#held} bytes of reminders are already held (HQ_POLICY_HELD_MAX_BYTES=${POLICY_HELD_MAX_BYTES})"
+    return 1
+  fi
+  if ! printf '%s\n\n' "$text" >> "$POLICY_HELD_DIR/out" 2>/dev/null; then
+    [ -n "$held" ] || rm -rf "$POLICY_HELD_DIR" 2>/dev/null || true
+    HOLD_FAIL_REASON="this event does not deliver context and the reminder could not be held"
+    return 1
+  fi
+  set_policy_ledger_dir "$POLICY_HELD_DIR"
+  printf 'inject-policy-on-trigger: held %s bytes of policy reminder for the next tool result.\n' "${#text}" >&2
+}
 FACTS_TMP_DIR=""
 JOURNAL_FILE=""
 JOURNAL_DIR=""
@@ -474,6 +935,9 @@ acquire_policy_ledger_lock() {
       rmdir "$lock_dir" 2>/dev/null || true
       return 1
     fi
+    # A lock name that is a symlink is not a lock this hook made. Reclaiming it
+    # as stale would remove a pid file in the directory it points at.
+    [ ! -L "$lock_dir" ] || return 1
 
     # A fresh directory may not have its pid file yet. Preserve it through the
     # grace period and retry. Once a lock is older than the bounded critical
@@ -482,12 +946,21 @@ acquire_policy_ledger_lock() {
     if [ "$stale_checked" -eq 0 ]; then
       stale_checked=1
       if policy_ledger_lock_is_stale "$lock_dir"; then
-        stale_dir="${lock_dir}.stale.$$.$attempt"
-        if mv "$lock_dir" "$stale_dir" 2>/dev/null; then
-          rm -f "$stale_dir/pid" 2>/dev/null || true
+        # The stale lock is renamed into a new directory this run made: a
+        # fixed name could be planted in advance as a link, and mv would move
+        # the lock into the link's target. Without such a directory the lock
+        # is not reclaimed.
+        if policy_private_dir "${lock_dir}.stale"; then
+          stale_dir="$POLICY_PRIVATE_DIR"
+          if mv "$lock_dir" "$stale_dir/lock" 2>/dev/null \
+            && [ ! -L "$stale_dir/lock" ] && [ -d "$stale_dir/lock" ]; then
+            rm -f "$stale_dir/lock/pid" 2>/dev/null || true
+            rmdir "$stale_dir/lock" 2>/dev/null || true
+            rmdir "$stale_dir" 2>/dev/null || true
+            attempt=$((attempt + 1))
+            continue
+          fi
           rmdir "$stale_dir" 2>/dev/null || true
-          attempt=$((attempt + 1))
-          continue
         fi
       fi
     fi
@@ -754,30 +1227,52 @@ compact_policy_ledger() {
 }
 
 # c015 already gives the hook-timeout journal a per-session metadata file.
-# Append the current policy-input sizes there so a subsequent timeout warning
-# carries the context that was observed by this hook. The master hook resets
-# this metadata file at the start of each event, so the append remains bounded
-# to the current dispatch and does not become a second unbounded ledger.
+# Record the current policy-input sizes there so a subsequent timeout warning
+# carries the context that was observed by this hook.
+#
+# The file is rewritten on every run and never appended to, so its size does
+# not depend on how long the session runs. It holds the runtime lines that
+# head the file (written by the master hook, or the defaults below when the
+# master hook has not written any) and one set of the four policy lines. The
+# master hook rewrites the file at the start of an event only while its
+# timeout sentry is on, and an adapter runtime can run this hook with no
+# master hook, so an append grew by four lines per run for the whole of such
+# a session.
+#
+# Only the first POLICY_TRIGGER_METADATA_SCAN_LINES lines are read, so a file
+# that grew under the old append costs no more to rewrite than a small one.
+# Builtins only: no process is started. One short write replaces the content;
+# a reader that meets the file between the truncate and the write sees no
+# policy lines and reports none, as it does for a session with no file.
+POLICY_TRIGGER_METADATA_SCAN_LINES=16
+POLICY_TRIGGER_METADATA_LINE_LIMIT=256
 record_policy_trigger_sizes() {
-  local journal_file metadata_file journal_dir temporary
+  local journal_file metadata_file journal_dir line="" runtime_lines="" scanned=0
   journal_file="$JOURNAL_FILE"
   [ -n "$journal_file" ] || return 0
   metadata_file="${journal_file}.meta"
   journal_dir="${journal_file%/*}"
   [ -d "$journal_dir" ] || mkdir -p "$journal_dir" 2>/dev/null || return 0
-  if [ ! -f "$metadata_file" ]; then
-    temporary="$(mktemp "${metadata_file}.XXXXXX" 2>/dev/null || true)"
-    if [ -n "$temporary" ]; then
-      if printf 'bash_env_set=unset\ntiming_precision=ms\n' > "$temporary" 2>/dev/null; then
-        mv -f "$temporary" "$metadata_file" 2>/dev/null || rm -f "$temporary" 2>/dev/null || true
-      else
-        rm -f "$temporary" 2>/dev/null || true
-      fi
-    fi
+  if [ -f "$metadata_file" ] && [ -r "$metadata_file" ]; then
+    # The file can be replaced or removed between the test and the open; a
+    # failed open leaves the defaults below.
+    {
+      while [ "$scanned" -lt "$POLICY_TRIGGER_METADATA_SCAN_LINES" ]; do
+        line=""
+        IFS= read -r line || [ -n "$line" ] || break
+        scanned=$((scanned + 1))
+        line="${line%$'\r'}"
+        case "$line" in
+          ''|policy_trigger_script=*|policy_trigger_event=*|ledger_bytes_bucket=*|facts_bytes_bucket=*) continue ;;
+        esac
+        [ "${#line}" -le "$POLICY_TRIGGER_METADATA_LINE_LIMIT" ] || continue
+        runtime_lines="${runtime_lines}${line}"$'\n'
+      done < "$metadata_file"
+    } 2>/dev/null || true
   fi
-  [ -f "$metadata_file" ] || return 0
-  printf 'policy_trigger_script=inject-policy-on-trigger.sh\npolicy_trigger_event=%s\nledger_bytes_bucket=%s\nfacts_bytes_bucket=%s\n' \
-    "$EVENT" "$LEDGER_BYTES_BUCKET" "$FACTS_BYTES_BUCKET" >> "$metadata_file" 2>/dev/null || true
+  [ -n "$runtime_lines" ] || runtime_lines=$'bash_env_set=unset\ntiming_precision=ms\n'
+  { printf '%spolicy_trigger_script=inject-policy-on-trigger.sh\npolicy_trigger_event=%s\nledger_bytes_bucket=%s\nfacts_bytes_bucket=%s\n' \
+    "$runtime_lines" "$EVENT" "$LEDGER_BYTES_BUCKET" "$FACTS_BYTES_BUCKET" > "$metadata_file"; } 2>/dev/null || true
 }
 
 FACTS_FILE=""
@@ -842,23 +1337,42 @@ POLICY_FACT_HELPER_CLI_FLOOR="5.342.5"
 # Accept the shim only when its first lines exec this package's dist/index.js
 # under its own directory, so a lookalike `hq` script keeps the forwarder.
 # Builtins only, bounded read: this runs on the hook fast path.
+#
+# pnpm on Windows writes the same kind of shim, but its exec target is the
+# package under pnpm's global directory, for example
+# "$basedir/global/5/node_modules/@indigoai-us/hq-cli/dist/index.js" or
+# "$basedir/../global/5/node_modules/...". Any quoted "$basedir/<relative>"
+# target that ends in node_modules/@indigoai-us/hq-cli/dist/index.js is
+# accepted, the last one in the shim wins, and the relative part may hold only
+# plain path characters (no quote, $, backtick, backslash or space), so a
+# computed or foreign target keeps the forwarder (feedback_45868a9c).
 policy_fact_helper_npm_shim_entry() {
-  local bin="$1" prefix="" entry="" line="" lines=0
+  local bin="$1" prefix="" entry="" found="" line="" rest="" rel="" lines=0
   [ -f "$bin" ] && [ ! -L "$bin" ] || return 0
   prefix="${bin%/*}"
   [ "$prefix" != "$bin" ] || return 0
-  entry="$prefix/node_modules/@indigoai-us/hq-cli/dist/index.js"
-  [ -r "$entry" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     lines=$((lines + 1))
     [ "$lines" -le 40 ] || break
     case "$line" in
-      *'"$basedir/node_modules/@indigoai-us/hq-cli/dist/index.js"'*)
-        printf '%s\n' "$entry"
-        return 0
-        ;;
+      *'"$basedir/'*'node_modules/@indigoai-us/hq-cli/dist/index.js"'*) ;;
+      *) continue ;;
     esac
+    rest="${line#*'"$basedir/'}"
+    rel="${rest%%'"'*}"
+    case "$rel" in
+      node_modules/@indigoai-us/hq-cli/dist/index.js|*/node_modules/@indigoai-us/hq-cli/dist/index.js) ;;
+      *) continue ;;
+    esac
+    case "$rel" in
+      *[!A-Za-z0-9._@/+-]*) continue ;;
+    esac
+    found="$rel"
   done < "$bin"
+  [ -n "$found" ] || return 0
+  entry="$prefix/$found"
+  [ -r "$entry" ] || return 0
+  printf '%s\n' "$entry"
   return 0
 }
 
@@ -926,18 +1440,19 @@ policy_fact_helper_cli_version() {
   printf '%s\n' "$version"
 }
 
-# policy_fact_helper_version_ok <package.json> — true when the package version
-# is at or above the floor. Numeric per-component compare, prerelease suffix
-# dropped, so 5.342.5-rc.1 is treated as 5.342.5 exactly as a floor check that
-# only cares about the fact ABI should.
+# policy_fact_helper_version_ok <package.json> [floor] — true when the package
+# version is at or above the floor (default POLICY_FACT_HELPER_CLI_FLOOR).
+# Numeric per-component compare, prerelease suffix dropped, so 5.342.5-rc.1 is
+# treated as 5.342.5 exactly as a floor check that only cares about the fact
+# ABI should.
 policy_fact_helper_version_ok() {
-  local version="" have="" want="" index=0 left=0 right=0
+  local version="" have="" want="" index=0 left=0 right=0 floor="${2:-$POLICY_FACT_HELPER_CLI_FLOOR}"
   version="$(policy_fact_helper_cli_version "$1")" || return 1
   version="${version%%-*}"
   version="${version%%+*}"
   local -a have_parts=() want_parts=()
   IFS=. read -r -a have_parts <<< "$version"
-  IFS=. read -r -a want_parts <<< "$POLICY_FACT_HELPER_CLI_FLOOR"
+  IFS=. read -r -a want_parts <<< "$floor"
   for index in 0 1 2; do
     have="${have_parts[$index]:-0}"
     want="${want_parts[$index]:-0}"
@@ -1056,15 +1571,79 @@ resolve_policy_fact_bridge() {
   return 0
 }
 
-# run_derive_trigger_facts_bridge <helper> <event> <with-intent 0|1> — the
+# policy_fact_pair_flag <pair 0|1|command> — sets POLICY_FACT_PAIR_FLAG (no
+# subshell, so no extra fork on Git Bash) to the helper flag for a paired
+# call: 1 asks for the AssistantIntent record (--with-assistant-intent), and
+# `command` asks a PostToolUse call for the command facts the same payload
+# gives as PreToolUse (--with-command-facts), so one launch answers both.
+# A helper that predates a flag prints one record and the caller derives the
+# second record with another launch, as before.
+POLICY_FACT_PAIR_FLAG=""
+
+# --with-command-facts is new in the hq-cli release that ships the companion
+# change (hq-cli #2508). An older CLI's JS companion and Rust engine answer an
+# unknown second argument with ShellFallbackRequired, which drops a PostToolUse
+# call from native to the bash fallback (slower on Windows; the same policies
+# fire). So the flag is passed only when the resolved CLI package is at or
+# above this floor. Set it to the release that ships #2508.
+POLICY_FACT_COMMAND_PAIR_CLI_FLOOR="5.345.209"
+POLICY_FACT_COMMAND_PAIR_STATE=""
+
+# policy_fact_command_pair_supported — true when the flag may be sent:
+#   - a packaged companion is resolved and its CLI package is at or above
+#     POLICY_FACT_COMMAND_PAIR_CLI_FLOOR; or
+#   - no companion is resolved, the tree's helper is not the release forwarder
+#     (a deliberate stand-in such as a local patch or a test harness), and the
+#     hq-hook bridge is off, so only that script sees the flag and a script
+#     that ignores it costs the old second launch.
+# The release forwarder without a resolved companion execs a CLI whose version
+# is unknown here, and the bridge engine's version is the CLI's, so both get no
+# flag and keep today's two launches. Run it in the hook's own shell; the
+# answer is kept for the rest of the event.
+policy_fact_command_pair_supported() {
+  local manifest=""
+  case "$POLICY_FACT_COMMAND_PAIR_STATE" in
+    yes) return 0 ;;
+    no) return 1 ;;
+  esac
+  POLICY_FACT_COMMAND_PAIR_STATE="no"
+  [ -z "${HQ_POLICY_FACT_COMMAND_PAIR_DISABLE:-}" ] || return 1
+  resolve_policy_fact_helper
+  if [ -z "$POLICY_FACT_HELPER" ]; then
+    policy_forwarder_is_release_shipped "$HELPERS/derive-trigger-facts.sh" && return 1
+    resolve_policy_fact_bridge
+    [ -z "$POLICY_FACT_BRIDGE_MODE" ] || return 1
+    POLICY_FACT_COMMAND_PAIR_STATE="yes"
+    return 0
+  fi
+  case "$POLICY_FACT_HELPER" in
+    */assets/scaffold/core/scripts/derive-trigger-facts.sh) ;;
+    *) return 1 ;;
+  esac
+  manifest="${POLICY_FACT_HELPER%/assets/scaffold/core/scripts/derive-trigger-facts.sh}/package.json"
+  policy_fact_helper_version_ok "$manifest" "$POLICY_FACT_COMMAND_PAIR_CLI_FLOOR" || return 1
+  POLICY_FACT_COMMAND_PAIR_STATE="yes"
+  return 0
+}
+
+policy_fact_pair_flag() {
+  case "${1:-0}" in
+    1) POLICY_FACT_PAIR_FLAG="--with-assistant-intent" ;;
+    command) POLICY_FACT_PAIR_FLAG="--with-command-facts" ;;
+    *) POLICY_FACT_PAIR_FLAG="" ;;
+  esac
+}
+
+# run_derive_trigger_facts_bridge <helper> <event> <pair 0|1|command> — the
 # helper call through the engine, stdout to POLICY_FACT_BRIDGE_OUT. The inner
 # timeout stays under the injector's 60 s registry timeout so a hung helper is
 # killed by the engine (and the shell helper gets a turn) before master-hook
 # kills the injector.
 run_derive_trigger_facts_bridge() {
-  local helper="$1" event="$2" with_intent="$3"
+  local helper="$1" event="$2"
   local -a helper_args=("$event")
-  [ "$with_intent" != "1" ] || helper_args+=(--with-assistant-intent)
+  policy_fact_pair_flag "$3"
+  [ -z "$POLICY_FACT_PAIR_FLAG" ] || helper_args+=("$POLICY_FACT_PAIR_FLAG")
   printf '%s' "$STDIN_JSON" | HQ_ROOT="$HQ_ROOT" CLAUDE_PROJECT_DIR="$HQ_ROOT" "$HQ_HOOK_BRIDGE_BIN" bridge derive-trigger-facts \
     --mode "$POLICY_FACT_BRIDGE_MODE" --event "$event" --timeout 20 --script "$helper" \
     -- "${helper_args[@]}" > "$POLICY_FACT_BRIDGE_OUT"
@@ -1072,6 +1651,7 @@ run_derive_trigger_facts_bridge() {
 
 run_derive_trigger_facts() {
   local event="$1" with_intent="${2:-0}" helper="" helper_status=0 fact_root="$HQ_ROOT"
+  local -a helper_args=()
   resolve_policy_fact_helper
   helper="${POLICY_FACT_HELPER:-$HELPERS/derive-trigger-facts.sh}"
   resolve_policy_fact_bridge
@@ -1106,28 +1686,17 @@ run_derive_trigger_facts() {
   # The companion derives HQ_ROOT from its own location, which inside the CLI
   # package is not an HQ root. The forwarder passes --hq-root for the same
   # reason; here the env carries it.
+  helper_args=("$event")
+  policy_fact_pair_flag "$with_intent"
+  [ -z "$POLICY_FACT_PAIR_FLAG" ] || helper_args+=("$POLICY_FACT_PAIR_FLAG")
   if [ -n "$STDIN_FILE" ]; then
-    if [ "$with_intent" = "1" ]; then
-      if HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event" --with-assistant-intent < "$STDIN_FILE"; then
-        :
-      else
-        helper_status=$?
-      fi
-    else
-      if HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event" < "$STDIN_FILE"; then
-        :
-      else
-        helper_status=$?
-      fi
-    fi
-  elif [ "$with_intent" = "1" ]; then
-    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event" --with-assistant-intent; then
+    if HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "${helper_args[@]}" < "$STDIN_FILE"; then
       :
     else
       helper_status=$?
     fi
   else
-    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "$event"; then
+    if printf '%s' "$STDIN_JSON" | HQ_ROOT="$fact_root" CLAUDE_PROJECT_DIR="$fact_root" bash "$helper" "${helper_args[@]}"; then
       :
     else
       helper_status=$?
@@ -1308,9 +1877,51 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       FACTS="$(run_derive_trigger_facts "$EVENT")" || true
       INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)" || true
     fi
+  elif [ -n "$TOOL_TEXT" ]; then
+    # A text tool's payload carries no tool_response, so the output-derived
+    # set would add nothing: derive the action text once and use it as both
+    # the event and the output fact set (one helper launch, no output scan).
+    COMMAND_FACTS="$(run_derive_trigger_facts PreToolUse)" || true
+    COMMAND_FACTS=" ${COMMAND_FACTS} "
+    COMMAND_FACTS="${COMMAND_FACTS// run_in_background / }"
+    FACTS="$COMMAND_FACTS"
+    OUTPUT_FACTS="$COMMAND_FACTS"
   else
     DERIVE_EVENT_OK=0
-    if FACTS="$(run_derive_trigger_facts "$EVENT")"; then
+    COMMAND_FACTS=""
+    COMMAND_PAIR_OK=0
+    FACT_PAIR_FILE=""
+    # PostToolUse needs two fact sets from the same payload: the output facts
+    # and the command facts (below). Ask for both in one helper launch
+    # (feedback_45868a9c: two launches per PostToolUse were the measured cost
+    # on Windows). Records come from a file, as in the pair path above. With a
+    # helper that predates --with-command-facts only one record comes back and
+    # the command facts take a second launch, as before. The flag is sent only
+    # to a CLI at or above the release that knows it, so an older engine never
+    # sees it and stays native.
+    if [ "$EVENT" = "PostToolUse" ] && policy_fact_command_pair_supported; then
+      FACT_PAIR_FILE="$(mktemp "$FACTS_TMP_DIR/.policy-trigger-pair.XXXXXX" 2>/dev/null || true)"
+    fi
+    if [ -n "$FACT_PAIR_FILE" ]; then
+      if run_derive_trigger_facts "$EVENT" command > "$FACT_PAIR_FILE"; then
+        DERIVE_EVENT_OK=1
+      else
+        :
+      fi
+      FACTS=""
+      pair_lines=0
+      while IFS= read -r pair_line; do
+        if [ "$pair_lines" -eq 0 ]; then
+          FACTS="$pair_line"
+          pair_lines=1
+        else
+          COMMAND_FACTS="$pair_line"
+          pair_lines=2
+          break
+        fi
+      done < "$FACT_PAIR_FILE"
+      [ "$pair_lines" -lt 2 ] || COMMAND_PAIR_OK=1
+    elif FACTS="$(run_derive_trigger_facts "$EVENT")"; then
       DERIVE_EVENT_OK=1
     else
       :
@@ -1320,7 +1931,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
       # command facts as well as output facts so omitted-on policies that only
       # match a pre-call command still reach a delivering event. Drop
       # run_in_background because that host-provided marker is PreToolUse-only.
-      COMMAND_FACTS="$(run_derive_trigger_facts PreToolUse)" || true
+      if [ "$COMMAND_PAIR_OK" != "1" ]; then
+        COMMAND_FACTS="$(run_derive_trigger_facts PreToolUse)" || true
+      fi
       COMMAND_FACTS=" ${COMMAND_FACTS} "
       COMMAND_FACTS="${COMMAND_FACTS// run_in_background / }"
       # Relevance: the ACTION is the command, not whatever text it printed.
@@ -1533,8 +2146,28 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   #   - `-R owner/name` or `--repo owner/name` in the command (gh).
   # The awk evaluator lower-cases the set before matching.
   EVENT_REPOS=" "
+  # Above this many bytes the event text is scanned with one grep pass per
+  # pattern (one combined pass cannot return overlapping matches, so
+  # `ls -R repos/private/vyg` would yield only "private"). The Bash loops below rescan the rest of the text after every match, so their
+  # cost grows with length times match count: a 320 KB command naming a repo
+  # 4,000 times took about 30 s of CPU. One extra process costs a few
+  # milliseconds.
+  POLICY_EVENT_REPOS_LOOP_MAX=4096
+  policy_collect_event_repos_large() {
+    local name
+    while IFS= read -r name; do
+      name="${name%/}"
+      [ -n "$name" ] && EVENT_REPOS="$EVENT_REPOS${name##*/} "
+    done < <(for re in 'repos/(public|private)/[A-Za-z0-9._-]+' 'workspace/worktrees/[A-Za-z0-9._-]+/' '(^|[[:space:]])(-R|--repo)([[:space:]]+|=)["'"'"']?[A-Za-z0-9._-]+/[A-Za-z0-9._-]+'; do
+        printf '%s' "$1" | LC_ALL=C grep -oE "$re"
+      done | LC_ALL=C awk '!seen[$0]++' || true)
+  }
   policy_collect_event_repos() {
     local src="$1" re
+    if [ "${#src}" -gt "$POLICY_EVENT_REPOS_LOOP_MAX" ]; then
+      policy_collect_event_repos_large "$src"
+      return 0
+    fi
     for re in 'repos/(public|private)/([A-Za-z0-9._-]+)' 'workspace/worktrees/()([A-Za-z0-9._-]+)/'; do
       local rest="$src"
       while [[ $rest =~ $re ]]; do
@@ -1547,6 +2180,8 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
   policy_collect_event_repos "$ARG"
   policy_repo_flag_re='(^|[[:space:]])(-R|--repo)([[:space:]]+|=)["'"'"']?[A-Za-z0-9._-]+/([A-Za-z0-9._-]+)'
   policy_repo_flag_rest="$ARG"
+  # A large ARG had its -R/--repo names collected by the one-pass scan above.
+  [ "${#ARG}" -gt "$POLICY_EVENT_REPOS_LOOP_MAX" ] && policy_repo_flag_rest=""
   while [[ $policy_repo_flag_rest =~ $policy_repo_flag_re ]]; do
     EVENT_REPOS="$EVENT_REPOS${BASH_REMATCH[4]} "
     policy_repo_flag_rest="${policy_repo_flag_rest#*"${BASH_REMATCH[0]}"}"
@@ -1694,7 +2329,9 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     done <<< "$text"
     set +f
   }
-  case "$EVENT" in PreToolUse|PostToolUse) [ -z "$ARG" ] || policy_head_words "$ARG" ;; esac
+  # A text tool's ARG is a path, prompt or file content, not a command line,
+  # so it has no command head words.
+  case "$EVENT" in PreToolUse|PostToolUse) [ -z "$ARG" ] || [ -n "$TOOL_TEXT" ] || policy_head_words "$ARG" ;; esac
   if [ "${#POLICY_FILES[@]}" -gt 0 ] && [ -n "$POLICY_HASH_MODE" ] && [ -n "$POLICY_FINGERPRINT_MODE" ]; then
     POLICY_FINGERPRINT="$(policy_fingerprint "${POLICY_FILES[@]}" 2>/dev/null || true)"
     if [ -n "$POLICY_FINGERPRINT" ]; then
@@ -2595,7 +3232,12 @@ if [ -n "$MATCHES" ] && [ -n "$POLICY_ACTIVE_COMPANIES" ]; then
     [ -n "$_o_path" ] && [ -f "$_o_path" ] || continue
     case "$_o_path" in "$HQ_ROOT"/companies/*|*/companies/*/policies/*) continue ;; esac
     case "$_o_enf" in soft|unset|'') other_paths+=("$_o_path") ;; esac
-  done <<< "${MATCHES//$'\t'/$'\x1f'}"
+  # tr, not ${MATCHES//$'\t'/$'\x1f'}: bash 3.2 (macOS /bin/bash) runs a
+  # global pattern substitution in time that grows much faster than the
+  # string. With a few hundred matched rows (~50 KB) it took over a minute at
+  # full CPU, the host timed the hook out, and the run kept spinning as an
+  # orphan. tr is linear. Per-row substitutions elsewhere stay: a row is small.
+  done < <(printf '%s\n' "$MATCHES" | tr '\t' '\037')
   other_drop=""
   if [ "${#other_paths[@]}" -gt 0 ]; then
     # Only real companies count: a value with no company folder under
@@ -3064,6 +3706,8 @@ fi
 if [ -n "${SESSION_ID:-}" ] && [ -s "$DEFERRED_FILE" ] && [ "${HQ_POLICY_EMIT:-}" != "tsv" ]; then
   case "$EVENT" in
     UserPromptSubmit|SessionStart)
+      DEFERRED_RESTORE_FILE="$DEFERRED_FILE"
+      IFS= read -r -d '' DEFERRED_RESTORE < "$DEFERRED_FILE" || true
       deferred_keep=""
       while IFS= read -r deferred_slug; do
         [ -n "$deferred_slug" ] || continue
@@ -3202,11 +3846,32 @@ if [ "$EVENT" = "PreToolUse" ] && [ "$TOOL_NAME" = "Bash" ] \
   fi
 fi
 
+# Session-pinned index. Off unless HQ_POLICY_SESSION_INDEX or
+# personal/settings/policy-session-index.yaml (then core/settings) says so.
+# Off keeps the reminder below byte-for-byte. On replaces that reminder:
+# new rules are one line, a full index is emitted at SessionStart, after
+# compaction (rebuilt), and every N user turns. Must-fire safety rules still
+# push their binding text on the trigger that matched them, and the
+# enforcement-gate context is printed the same as on the reminder path.
+# policy_session_index_enabled is defined near the event parse above. A call
+# with no session id returns 1 and keeps the reminder below.
+if policy_session_index_enabled && [ -n "${JQ:-}" ] && [ -f "$HELPERS/policy-session-index.sh" ]; then
+  # shellcheck disable=SC1090
+  . "$HELPERS/policy-session-index.sh"
+  if policy_session_index_emit; then
+    exit 0
+  fi
+fi
+
 # No new line to deliver. When every match was delivered earlier in this
 # session (ledger or seen set) the reminder still carries the footer naming
 # the HARD rules that apply again, so the model keeps the pointer.
 if [ -z "$MATCHES" ] && [ -z "${SHOWN_AGAIN_SLUGS}${SEEN_HARD_SLUGS}" ]; then
-  if [ -n "$ENFORCEMENT_CONTEXT" ]; then
+  if [ -n "$ENFORCEMENT_CONTEXT" ] && [ "$HOLD_REMINDER" -eq 1 ]; then
+    printf -v ENFORCEMENT_BLOCK '<policy-enforcement>\n%s\n</policy-enforcement>' "$ENFORCEMENT_CONTEXT"
+    hold_policy_reminder "$ENFORCEMENT_BLOCK" \
+      || printf 'inject-policy-on-trigger: %s; emitted no stdout.\n' "$HOLD_FAIL_REASON" >&2
+  elif [ -n "$ENFORCEMENT_CONTEXT" ]; then
     printf '<policy-enforcement>\n%s\n</policy-enforcement>\n' "$ENFORCEMENT_CONTEXT"
   fi
   exit 0
@@ -4079,6 +4744,28 @@ if [ -n "$HOOK_OUTPUT" ]; then
       NO_STDOUT_REASON="HQ_POLICY_OUTPUT_CEILING_BYTES=${OUTPUT_CEILING} is below the minimum PostToolUse envelope"
     fi
   fi
+  # Held reminders (see HELD REMINDERS near the top). On an event the host does
+  # not deliver, keep the text first and record only what was kept, in the held
+  # ledger copies. A run that started on held copies another call has since
+  # delivered goes back to the session's own ledgers.
+  if [ "$HOLD_REMINDER" -eq 1 ] && [ -n "$HOOK_OUTPUT" ]; then
+    # The deferred queue is put back only in a file that passes the link
+    # checks (HELD STORE LINKS); otherwise the queue stays as this run left it.
+    if ! hold_policy_reminder "$OUT"; then
+      if [ -n "$DEFERRED_RESTORE_FILE" ] && policy_held_files_ok "$DEFERRED_RESTORE_FILE"; then
+        printf '%s' "$DEFERRED_RESTORE" > "$DEFERRED_RESTORE_FILE" 2>/dev/null || true
+      fi
+      HOOK_OUTPUT=""
+      OUT_BYTES=0
+      NO_STDOUT_REASON="$HOLD_FAIL_REASON"
+    elif [ "$DEFERRED_RESTORE_FILE" = "$POLICY_STATE_DIR/$POLICY_HELD_KEY.deferred.tsv" ]; then
+      if policy_held_files_ok "$DEFERRED_RESTORE_FILE"; then
+        printf '%s' "$DEFERRED_RESTORE" > "$DEFERRED_RESTORE_FILE" 2>/dev/null || true
+      fi
+    fi
+  elif [ "$DEDUPE_DIR" = "$POLICY_HELD_DIR" ] && [ ! -d "$POLICY_HELD_DIR" ]; then
+    set_policy_ledger_dir "$POLICY_STATE_DIR"
+  fi
   if [ -n "$HOOK_OUTPUT" ]; then
     record_emitted_match_rows "$MATCHES" "$OUT"
     record_malformed_notice "$OUT"
@@ -4095,7 +4782,7 @@ fi
   && printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$EVENT" "$OUT_BYTES" "$MATCH_COUNT" >> "$STATS_DIR/${SESSION_ID:-unknown}.txt"; } 2>/dev/null || true
 if [ -n "${NO_STDOUT_REASON:-}" ]; then
   printf 'inject-policy-on-trigger: %s; emitted no stdout.\n' "$NO_STDOUT_REASON" >&2
-else
+elif [ "$HOLD_REMINDER" -eq 0 ]; then
   [ -z "$HOOK_OUTPUT" ] || printf '%s\n' "$HOOK_OUTPUT"
 fi
 

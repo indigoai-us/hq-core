@@ -30,6 +30,8 @@ Also invoke implicitly when the user requests a multi-file change in a repo wher
    git -C {source} worktree add --no-track {HQ_ROOT}/workspace/worktrees/{repo}/{name} -b {branch} origin/{default}
    ```
    `--no-track` keeps the base branch from becoming the new branch's upstream (so a plain `git push` targets the feature branch, not the base).
+
+   The script creates it through `core/scripts/worktree-backend.sh`, which reads the worktree backend setting. The default (`git`) runs exactly the command above. With `worktrees.backend: twig` set in `personal/settings/worktrees.yaml` (or `core/settings/worktrees.yaml`, or `HQ_WORKTREE_BACKEND=twig`), it uses `git twig new`, which makes the worktree with copy-on-write on macOS APFS and Linux Btrfs/XFS. If twig is not installed, is older than 0.3.0, or the platform has no copy-on-write, it falls back to plain git without failing. Twig copies tracked files only, so dependencies (`node_modules`, `target/`) still need an install. Run `bash core/scripts/worktree-backend.sh backend` to see which backend is in effect. Removal is the same for both: `git worktree remove`. Details: `core/docs/hq/worktree-backend.md`.
 6. **Print** the absolute worktree path. All subsequent edits, builds, tests run inside that path.
 
 ## Procedure

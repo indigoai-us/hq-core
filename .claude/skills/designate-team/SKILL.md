@@ -133,7 +133,7 @@ if hq whoami >/dev/null 2>&1; then
   hq_whoami_line="$(hq whoami 2>/dev/null | head -1 || true)"
 fi
 echo "HQ environment for designation:"
-echo "  Operator:          ${hq_whoami_line:-<unknown — run \`hq auth login\`>}"
+echo "  Operator:          ${hq_whoami_line:-<unknown — run \`hq login\`>}"
 echo "  Vault API URL:     ${hq_vault_api_url_env:-<CLI default>}"
 echo "  Cognito domain:    ${hq_cognito_domain_env:-<CLI default>}"
 
@@ -265,7 +265,7 @@ case "$membership_visible" in
     echo "WARN: $slug provisioned but not visible via /membership/me." >&2
     echo "  This usually means the CLI authenticated against a different Cognito" >&2
     echo "  pool than the console. Check HQ_COGNITO_DOMAIN / HQ_VAULT_API_URL," >&2
-    echo "  refresh tokens with \`hq auth login\`, and re-run the self-check:" >&2
+    echo "  refresh tokens with \`hq login\`, and re-run the self-check:" >&2
     echo "    curl -H \"Authorization: Bearer \$(jq -r .accessToken ~/.hq/cognito-tokens.json)\" \\" >&2
     echo "      ${membership_check_url%/}/membership/me" >&2
     exit 4

@@ -389,4 +389,56 @@ jq -e 'any(.projects[]; .id == "boarded" and .threadId == "thr_alpha")' "$TMP/hq
   || fail "--board lost the recorded threadId"
 echo "PASS: --board reuses the Board threadId and syncs stories"
 
+# feedback_2b8e4bc8: when more than one Board entry matches the project, the
+# script used to update every match and keep the duplicate alive. It must now
+# refuse, name the duplicate ids and the board-project-id.sh check command, and
+# leave board.json and the mesh untouched.
+mkdir -p "$TMP/hq/companies/acme/projects/twin"
+printf '%s\n' '{"name":"Twin","userStories":[{"id":"US-001","status":"queued"}]}' \
+  > "$TMP/hq/companies/acme/projects/twin/prd.json"
+jq '.projects = ((.projects // []) + [
+      {"id":"twin","title":"Twin"},
+      {"id":"twin-copy","title":"Twin copy","prd_path":"companies/acme/projects/twin/prd.json"}
+    ])' "$TMP/hq/companies/acme/board.json" > "$TMP/board-twin.json"
+cp "$TMP/board-twin.json" "$TMP/hq/companies/acme/board.json"
+: > "$HQ_FAKE_LOG"
+set +e
+HQ_COMPANY_UID=cmp_acme bash "$SCRIPT" acme twin >"$TMP/twin.out" 2>"$TMP/twin.err"
+twin_status=$?
+set -e
+[ "$twin_status" -ne 0 ] || fail "register-project accepted a project with two matching Board entries: $(cat "$TMP/twin.out")"
+grep -q 'registration refused: 2 Board entries' "$TMP/twin.err" || fail "duplicate refusal message: $(cat "$TMP/twin.err")"
+grep -q 'ids: twin, twin-copy' "$TMP/twin.err" || fail "duplicate refusal did not name both ids: $(cat "$TMP/twin.err")"
+grep -q 'board-project-id.sh check acme' "$TMP/twin.err" || fail "duplicate refusal did not name the check command: $(cat "$TMP/twin.err")"
+[ ! -s "$HQ_FAKE_LOG" ] || fail "duplicate refusal still reached hq mesh: $(cat "$HQ_FAKE_LOG")"
+cmp -s "$TMP/board-twin.json" "$TMP/hq/companies/acme/board.json" || fail "duplicate refusal changed board.json"
+# The old-cli path marks the entry pending; it must refuse before that too.
+set +e
+HQ_FAKE_NO_ENSURE=1 HQ_COMPANY_UID=cmp_acme bash "$SCRIPT" acme twin >/dev/null 2>"$TMP/twin-old.err"
+twin_old_status=$?
+set -e
+[ "$twin_old_status" -ne 0 ] || fail "old-cli path accepted duplicate Board entries"
+grep -q 'registration refused' "$TMP/twin-old.err" || fail "old-cli duplicate message: $(cat "$TMP/twin-old.err")"
+cmp -s "$TMP/board-twin.json" "$TMP/hq/companies/acme/board.json" || fail "old-cli duplicate refusal marked board.json pending"
+echo "PASS: register-project refuses a project with duplicate Board entries"
+
+# --board: two entries with the same id must be refused the same way.
+jq '.projects = ((.projects // []) + [
+      {"id":"idea-dup","title":"Idea one"},
+      {"id":"idea-dup","title":"Idea two"}
+    ])' "$TMP/board-twin.json" > "$TMP/board-idea.json"
+cp "$TMP/board-idea.json" "$TMP/hq/companies/acme/board.json"
+: > "$HQ_FAKE_LOG"
+set +e
+HQ_COMPANY_UID=cmp_acme bash "$SCRIPT" --board acme idea-dup >/dev/null 2>"$TMP/idea.err"
+idea_status=$?
+set -e
+[ "$idea_status" -ne 0 ] || fail "--board accepted two Board entries with the same id"
+grep -q 'registration refused: 2 Board entries' "$TMP/idea.err" || fail "--board duplicate message: $(cat "$TMP/idea.err")"
+grep -q 'ids: idea-dup, idea-dup' "$TMP/idea.err" || fail "--board duplicate did not name the ids: $(cat "$TMP/idea.err")"
+grep -q 'board-project-id.sh check acme' "$TMP/idea.err" || fail "--board duplicate did not name the check command: $(cat "$TMP/idea.err")"
+[ ! -s "$HQ_FAKE_LOG" ] || fail "--board duplicate refusal still reached hq mesh: $(cat "$HQ_FAKE_LOG")"
+cmp -s "$TMP/board-idea.json" "$TMP/hq/companies/acme/board.json" || fail "--board duplicate refusal changed board.json"
+echo "PASS: --board refuses a Board id that appears twice"
+
 echo "ok"

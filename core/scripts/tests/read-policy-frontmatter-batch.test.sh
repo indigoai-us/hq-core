@@ -102,19 +102,30 @@ for skill in learn brainstorm knowledge-pulse storyboard startwork deep-plan exe
     fi
   done
   if ! grep -Fq 'chunks of at most ' "$skill_file" || \
-     ! grep -Fq 'bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...' "$skill_file" || \
-     grep -Fq 'hq core policy frontmatter {file1} {file2} ...' "$skill_file" || \
+     ! grep -Fq 'hq core policy frontmatter {file1} {file2} ...' "$skill_file" || \
+     grep -Fq 'bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...' "$skill_file" || \
      ! grep -Fq 'under 30 KB of output' "$skill_file" || \
      ! grep -Fq 'first output block belongs to the chunk’s first file argument' "$skill_file" || \
      ! grep -Fq 'each later block belongs to the path named by its preceding' "$skill_file"; then
     echo "FAIL: $skill does not document bounded chunks and per-file result ownership" >&2
     exit 1
   fi
-  if ! sed -n '4p' "$skill_file" | grep -Fq 'Bash(bash core/scripts/read-policy-frontmatter.sh:*)'; then
-    echo "FAIL: $skill does not allow the floor-checked forwarder command" >&2
+  if ! sed -n '4p' "$skill_file" | grep -Fq 'Bash(hq core policy frontmatter:*)'; then
+    echo "FAIL: $skill does not allow hq core policy frontmatter" >&2
     exit 1
   fi
 done
+
+# US-043: skills call hq core policy frontmatter directly, without the
+# forwarder's floor check. The install floor (core/core.yaml requiresHqCli,
+# enforced by setup, doctor and /update-hq) must stay at or above the
+# command's 5.345.63 floor, so a CLI that prints partial multi-file output
+# never runs it on a compliant install.
+hq_cli_version_ge "${HQ_TEST_CLI_VERSION#>=}" 5.345.63 || {
+  echo "FAIL: requiresHqCli $HQ_TEST_CLI_VERSION is below the 5.345.63 floor of hq core policy frontmatter" >&2
+  exit 1
+}
+printf 'PASS: skills call hq core policy frontmatter and the install floor covers its 5.345.63 floor\n'
 
 if [ "${HQ_TEST_REQUIRE_REAL_CLI:-0}" = 1 ]; then
   REAL_HQ="${HQ_TEST_REAL_CLI:-}"
@@ -178,4 +189,4 @@ if [ "${HQ_TEST_REQUIRE_REAL_CLI:-0}" = 1 ]; then
 fi
 
 printf 'PASS: one hq frontmatter invocation carries both file arguments\n'
-printf 'PASS: all nine policy-reading skills use the floor-checked forwarder in bounded stable chunks and document result ownership\n'
+printf 'PASS: all nine policy-reading skills call hq core policy frontmatter in bounded stable chunks and document result ownership\n'

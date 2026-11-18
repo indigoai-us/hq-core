@@ -47,14 +47,17 @@ New signups choose **Sign up free** or **Book a setup call**. Sign
 up free puts the account on the usage card: no plan fee, no seat price, and
 $10 of usage included every month. Past the $10, they pay for what they use:
 
+<!-- pricing:meters:start -->
 - sync: $0.10 per moved file, per leg
-- a call to a connected app or an outside MCP server through HQ: $0.001
-- an HQ MCP call: $0.05
+- a call to a connected app or an outside MCP server through HQ: $0.10 per 100 calls
+- an HQ MCP call: $0.10 per 100 calls
 - an agent run: $0.05
 - files: $2.00 per GB a month
 - keys: $0.50 per key a month
 - each company vault and each personal vault: $5 a month (part of the $10
   included usage; free during the trial)
+- a meeting hour: $1.00 an hour
+<!-- pricing:meters:end -->
 
 Deploys, DMs and background AI are free. The first 30 days are a trial: usage
 is free up to $500, and the vault fee is waived.

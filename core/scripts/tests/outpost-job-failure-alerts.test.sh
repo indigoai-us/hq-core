@@ -3,6 +3,8 @@
 # Regression: Outpost systemd job units retain the resolved CLI PATH and job-owner UIDs reach hq dm unchanged (US-081).
 # HQ_CLI_REQUIRED_IN_CI: the caller reaches the generated hq-job-notify forwarder.
 set -euo pipefail
+# US-043: test the shell reconcile body, not the hq core jobs reconcile route.
+export HQ_JOB_RECONCILE_SHELL=1
 
 REAL_HQ="$(command -v hq 2>/dev/null || true)"
 export REAL_HQ

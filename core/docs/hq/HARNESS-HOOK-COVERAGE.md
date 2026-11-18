@@ -43,7 +43,7 @@ The enforcement twin of this document is
 ### Repo merge holds
 
 The `lanes-repo-merge-hold` Bash `PreToolUse` hook sends possible merge commands
-to `hq lanes hold check --command … --json`, including shell-quoted token
+to `hq runners hold check --command … --json`, including shell-quoted token
 concatenations such as `gh pr m"erge"`. hq-cli owns command parsing and the
 `lanes.repo-merge-hold` hq-flags gate. The shim bounds each check to five
 seconds and denies only a valid exit-3 response with `ok:false` and a non-empty

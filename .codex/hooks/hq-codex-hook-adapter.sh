@@ -13,6 +13,13 @@ export BASH_ENV=/dev/null
 
 set -uo pipefail
 
+# Operator switch HQ_CODEX_LAUNCH_FAIL_OPEN=1, read once from the environment
+# Codex started this adapter with, before any library is sourced, so nothing
+# the adapter loads can turn it on. See launch_fail_closed_status.
+HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN=0
+[ "${HQ_CODEX_LAUNCH_FAIL_OPEN:-}" = "1" ] && HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN=1
+readonly HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN
+
 INPUT="$(cat 2>/dev/null || echo '{}')"
 
 # jq.exe on Windows writes CRLF line ends in -r output. Strip CR only there,
@@ -90,6 +97,8 @@ if [ -n "$HQ_ROOT" ]; then
   HQ_WORK_MESH_HARNESS=codex
   HQ_HARNESS=codex
   export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME HQ_WORK_MESH_HARNESS HQ_HARNESS
+  # run_master_hook sets this for one master-hook process; never inherited.
+  unset HQ_ADAPTER_SCOPE_AUTHORIZER_RAN
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
   # Single-source dispatch: read .claude/settings.json live so Codex runs
   # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
@@ -248,19 +257,29 @@ emit_diag() {
 # adds u+x to an unreadable file and the exec then fails with no cause set);
 # or the status is 126/127 and hook-lib is absent, so the bare gate fallback
 # launched the file. Other events keep their exit status.
-# HQ_CODEX_LAUNCH_FAIL_OPEN=1 restores the old pass-through while a damaged
-# install is repaired.
+# HQ_CODEX_LAUNCH_FAIL_OPEN=1 in the adapter's own environment restores the
+# old pass-through for launch failures only, while a damaged install is
+# repaired (owner decision). It never passes a guard that
+# ran: a safety guard's exit 1, signal death, or a 126/127 that is not a
+# launch failure still blocks in run_hook.
+is_launch_failure() {
+  local status="$1" path="$2"
+  [ "${HOOK_EVENT:-}" = "PreToolUse" ] || return 1
+  case "$status" in
+    126|127)
+      if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] || [ ! -r "$path" ] \
+        || ! command -v hq_launch_shell_path >/dev/null 2>&1; then
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
 launch_fail_closed_status() {
   local status="$1" label="$2" path="$3" launch_failed=0
-  if [ "${HOOK_EVENT:-}" = "PreToolUse" ] && [ "${HQ_CODEX_LAUNCH_FAIL_OPEN:-}" != "1" ]; then
-    case "$status" in
-      126|127)
-        if [ -n "${HQ_HOOK_LAST_CAUSE:-}" ] || [ ! -r "$path" ] \
-          || ! command -v hq_launch_shell_path >/dev/null 2>&1; then
-          launch_failed=1
-        fi
-        ;;
-    esac
+  if [ "$HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN" != "1" ] && is_launch_failure "$status" "$path"; then
+    launch_failed=1
   fi
   if [ "$launch_failed" -eq 1 ]; then
     printf "HQ blocked this tool call: guard '%s' could not be launched (exit %s). Repair the install with 'hq rescue' or /update-hq. To let tool calls through until then, set HQ_CODEX_LAUNCH_FAIL_OPEN=1.\n" "$label" "$status" >&2
@@ -327,7 +346,26 @@ run_hook() {
   elif [ -z "$warning" ]; then
     printf "Hook '%s' exited %s.\n" "$hook_id" "$status" >&2
   fi
-  exit "$(launch_fail_closed_status "$status" "$hook_id" "$script")"
+  # The operator switch passes a guard that could not be launched; it is
+  # checked before launch_fail_closed_status so the same launch test decides.
+  local launch_fail_open=0
+  if [ "$HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN" = "1" ] && is_launch_failure "$status" "$script"; then
+    launch_fail_open=1
+  fi
+  status="$(launch_fail_closed_status "$status" "$hook_id" "$script")"
+  # A safety guard (registry "safety": true) allows only with exit 0. Codex
+  # treats any exit but 2 as a non-blocking error, so a guard that crashed
+  # (139 for SIGSEGV), exited 1 on an internal error, or ended with any other
+  # code would let the call run unchecked. Block it with master-hook's reason.
+  # The one exception is a launch failure under HQ_CODEX_LAUNCH_FAIL_OPEN=1.
+  if [ "$status" != "2" ] && [ "$launch_fail_open" -eq 0 ] \
+    && [ "${HOOK_EVENT:-}" = "PreToolUse" ] \
+    && command -v hqad_is_safety_hook >/dev/null 2>&1 \
+    && hqad_is_safety_hook "$HQ_ROOT" "$HOOK_EVENT" "$hook_id"; then
+    hqad_safety_block_reason "$hook_id" "$status" >&2
+    exit 2
+  fi
+  exit "$status"
 }
 
 run_script() {
@@ -400,9 +438,13 @@ run_master_hook() {
   local script="$HOOK_DIR/master-hook.sh"
   [ -f "$script" ] || return 0
 
+  local scope_marker="${4:-}"
   local out err status out_text err_text
   out="$(mktemp)"; err="$(mktemp)"; status=0
-  printf '%s' "$payload" | bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
+  # scope_marker is set only when this adapter ran mandatory-scope-authorizer
+  # for this PreToolUse. master-hook then skips the hqd policy.check, which
+  # would run the same authorizer again. Only this master-hook process gets it.
+  printf '%s' "$payload" | HQ_ADAPTER_SCOPE_AUTHORIZER_RAN="$scope_marker" bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
   out_text="$(cat "$out" 2>/dev/null || true)"
   err_text="$(cat "$err" 2>/dev/null || true)"
   append_stdout "$out_text"
@@ -430,7 +472,7 @@ run_master_hook() {
 dispatch_settings_hooks() {
   local event="$1" tools="$2" payload="$3" skip_master="${4:-}"
   command -v hqad_iter_settings >/dev/null 2>&1 || return 0
-  local tool kind a b rest key mode seen="|"
+  local tool kind a b rest key mode seen="|" scope_ran=0 scope_marker
   for tool in $tools; do
     while IFS=$'\t' read -r kind a b rest; do
       [ -n "$kind" ] || continue
@@ -440,16 +482,36 @@ dispatch_settings_hooks() {
       case "$kind" in
         gate)
           mode="$(hqad_mode_for "$event" "$b")"
+          # hqad_launch_registered_hook sets HQAD_CHILD_RC only when it
+          # launched the script, so a profile opt-out or the hook-gate.sh
+          # fallback never counts as a run of the scope authorizer.
+          HQAD_CHILD_RC=""
           if [ -n "$rest" ]; then
             # shellcheck disable=SC2086
             run_hook "$a" "$b" "$payload" "$mode" $rest
           else
             run_hook "$a" "$b" "$payload" "$mode"
           fi
+          if [ "$event" = "PreToolUse" ] && [ "$a" = "mandatory-scope-authorizer" ] \
+            && [ "$mode" = "blocking" ] && [ "${HQAD_CHILD_RC:-}" = "0" ]; then
+            scope_ran=1
+          fi
+          ;;
+        missing)
+          # A PreToolUse safety guard whose script is missing (see
+          # hqad_iter_registry) blocks with a repair message, like
+          # master-hook. HQ_CODEX_LAUNCH_FAIL_OPEN does not pass it.
+          emit_diag
+          hqad_missing_safety_reason "$a" >&2
+          exit 2
           ;;
         master)
           [ -n "$skip_master" ] && continue
-          run_master_hook "$a" "$payload" "$(hqad_mode_for "$event" "")"
+          scope_marker=""
+          if [ "$event" = "PreToolUse" ] && [ "$scope_ran" -eq 1 ]; then
+            scope_marker="PreToolUse:$$"
+          fi
+          run_master_hook "$a" "$payload" "$(hqad_mode_for "$event" "")" "$scope_marker"
           ;;
         script)
           run_script "$a" "$payload" "advisory"

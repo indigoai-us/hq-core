@@ -48,7 +48,7 @@ grep -Fq -- "-path '*/resume-locks' -prune" "$ROOT/core/scripts/resumework-resol
   || fail "resumework resolution can mistake a lock record for a thread"
 grep -Fq 'same resume-lock confirmation procedure from `/resumework` Step 2' "$STARTWORK_SKILL" \
   || fail "startwork latest-handoff resume bypasses the lock"
-grep -Fq 'resume-thread-lock.sh inspect "{thread_id}"' "$STARTWORK_SKILL" \
+grep -Fq 'hq core resume-thread-lock inspect "{thread_id}"' "$STARTWORK_SKILL" \
   || fail "startwork does not inspect the latest thread lock"
 
 mkdir -p "$TMP/workspace/threads"

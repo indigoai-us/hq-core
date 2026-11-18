@@ -19,9 +19,18 @@ Read the gardener's output when you need:
 
 Do NOT read raw `knowledge/`, `sources/`, or `signals/` files to answer broad "what's going on" questions — read the brief first; it's compressed and ranked.
 
+## Turned on per company (off by default)
+
+The gardener only runs for a company whose owner has turned it on. The switch is the company setting `ontologyEnabled`, and it is **off by default**. While it is off, every scheduled and S3-triggered run is a no-op: no `ontology/` or `signals/` prefix and no `company-brief.md` ever appear in the company vault, and nothing reports an error.
+
+- Check it (owner or admin): `hq company --company <slug> settings get` prints `ontologyEnabled=true|false`.
+- Turn it on (owner only): `hq company --company <slug> settings set --ontology-enabled true`. The next knowledge, sources or signals write, or the next 4-hour tick, starts a run. No redeploy is needed.
+
+If a company has knowledge in its vault but no cloud ontology or brief, check this switch before anything else.
+
 ## Trigger model
 
-- **EventBridge schedule** every 4 hours per company
+- **EventBridge schedule** every 4 hours per company; for a company with `ontologyEnabled` off the run does nothing
 - **S3 PUT notifications** on `knowledge/`, `sources/`, `signals/` prefixes — gardener invoked within seconds of the write
 - **Direct invoke** for ad-hoc runs (see "Forcing a fresh run" below)
 
@@ -172,6 +181,7 @@ aws lambda invoke --function-name <gardener-lambda-name> \
 ```
 
 Caveats:
+- For a company with `ontologyEnabled` off, a direct invoke returns `no_changes` with "Ontology gardener disabled for this company". Turn the setting on before you use a forced run to verify that company.
 - The gardener Lambda uses **AWS S3 Files** mounted at `/mnt/s3-{company}/`. Direct `aws s3 cp` PUTs to the bucket may not appear in the mount immediately. Production paths (signals-agent, transcript ingester, source writers in `infra/meeting-storage.ts`) write THROUGH the mount and are immediately visible. Use those for end-to-end tests.
 - Watermark at `ontology/.last-run` can be read via S3 API directly (`aws s3 cp s3://{bucket}/ontology/.last-run -`). Editing it forces a re-scan window.
 

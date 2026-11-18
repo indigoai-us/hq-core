@@ -1,24 +1,24 @@
 # Shared lane dispatch protocol
 
 `/conduct`, `/execute-task`, and `/run-project` create worker lanes through
-`hq lanes`. The calling session remains the senior. This file is the shared
+`hq runners`. The calling session remains the senior. This file is the shared
 mapping; each skill supplies its own brief and verifies its own result.
 
 | Former conduct operation | Lane-native operation |
 |---|---|
-| Assign a named worker and brief | `hq lanes create --worker W --brief-file F --senior session:<id> --json` |
-| List and record worker state | `hq lanes list --json`, filtered to lanes launched by this senior |
-| Stop or preserve a worker thread | `hq lanes stop <lane>` or `hq lanes interrupt <lane>` |
-| Read pending questions and answers | `hq lanes questions list --json` and `hq lanes questions answer` |
-| Send a worker instruction | `hq lanes message <lane> --text <instruction>` |
-| Send or close a linked session | `hq lanes link send` or `hq lanes link close` with the same session flags |
-| Wait for a lane change | `hq lanes wait --any <lane...> --for envelope --for question --for state --timeout <seconds> --json` |
-| Read results | `hq lanes show <lane> --json` and the lane envelope |
+| Assign a named worker and brief | `hq runners create --worker W --brief-file F --senior session:<id> --json` |
+| List and record worker state | `hq runners list --json`, filtered to lanes launched by this senior |
+| Stop or preserve a worker thread | `hq runners stop <lane>` or `hq runners interrupt <lane>` |
+| Read pending questions and answers | `hq runners questions list --json` and `hq runners questions answer` |
+| Send a worker instruction | `hq runners message <lane> --text <instruction>` |
+| Send or close a linked session | `hq runners link send` or `hq runners link close` with the same session flags |
+| Wait for a lane change | `hq runners wait --any <lane...> --for envelope --for question --for state --timeout <seconds> --json` |
+| Read results | `hq runners show <lane> --json` and the lane envelope |
 | Run directory and lifecycle state | hq-cli lane registry and lane artifacts; callers do not read a private run directory when a CLI command exposes the data |
 
 ## 1. Why detached, and what it buys
 
-`hq lanes create` registers and launches a worker lane asynchronously. The
+`hq runners create` registers and launches a worker lane asynchronously. The
 senior session stays responsive, while hq-cli records the lane state, envelope,
 questions, and result. Do not start a second runner beside hq-cli.
 
@@ -55,7 +55,7 @@ and the output envelope path. Never inline a long task prompt in the CLI call.
 Create the lane from the HQ root. Worker lanes use the caller as senior:
 
 ```bash
-hq lanes create --company <company> --project <project> --story <story> \
+hq runners create --company <company> --project <project> --story <story> \
   --worker <worker> --brief-file <brief> --senior session:<session-id> \
   --json
 ```
@@ -65,11 +65,11 @@ Pass every set session pin on every `/conduct` lane: `--provider` from
 `conduct_child_effort`, and `--account` from `conduct_child_account`. An
 explicit flag overrides its matching session pin. When no account pin or
 `--account` flag is set, pass `--account auto`. This rule applies to every
-skill that builds `hq lanes create`, including `/execute-task` and
+skill that builds `hq runners create`, including `/execute-task` and
 `/run-project`.
 Repeating create for the same worker under the same
 senior continues that worker's thread. When the lane is still live, use
-`hq lanes message <lane> --text <instruction>`.
+`hq runners message <lane> --text <instruction>`.
 
 The detached lane launcher captures its owner PID and start time with
 `bash core/scripts/hq-detach.sh --owner-pidfile "$RUN_DIR/owner.pid" -- ...`.
@@ -85,9 +85,9 @@ start a substitute process or pool, and do not pick an account by hand.
 A create response, refused or not, can list signed-out accounts under
 `skipped[]` with a `hq capacity login` fix. The conduct skill raises one
 owner card per account and dedupes it machine-wide; see "Signed-out
-accounts" in `conduct/dispatch.md`. Never run the login yourself.
-Claude parents arm `Monitor(hq lanes watch <lane>)` or a bounded
-background `hq lanes wait`. Codex parents generate a unique
+accounts" in `conduct-runners/dispatch.md`. Never run the login yourself.
+Claude parents arm `Monitor(hq runners watch <lane>)` or a bounded
+background `hq runners wait`. Codex parents generate a unique
 `round_id="$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"` before every
 dispatch, then capture
 `since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"` immediately before the create, message,
@@ -96,7 +96,7 @@ and round with
 `bash core/scripts/lanes-completion-watch.sh start --lane <lane-id> --provider
 codex --session-id "$CODEX_SESSION_ID" --since "$since" --round-id "$round_id"`.
 That starts a persistent `hq monitor` targeted to the parent session; it checks
-`hq lanes show` before and after each bounded `hq lanes wait --any <lane> --for
+`hq runners show` before and after each bounded `hq runners wait --any <lane> --for
 envelope --for state --for question --timeout <seconds> --json` call. Receipt
 and monitor files under `workspace/lanes-runs/<lane-id>/codex-completion/` key
 by `since` and unique round ID. Different IDs keep same-second dispatches
@@ -112,14 +112,14 @@ the wait JSON and do not use the exit code as the delivery verdict.
 
 The lane registry and its state are authoritative; do not kill or recycle
 process groups based on a missing envelope. If a lane is stuck, inspect
-`hq lanes show <lane> --json` and use `hq lanes interrupt` when its session must
-be preserved, or `hq lanes stop` when it must be ended.
+`hq runners show <lane> --json` and use `hq runners interrupt` when its session must
+be preserved, or `hq runners stop` when it must be ended.
 
 ## 6. Correcting a lane mid-flight
 
-Use `hq lanes message <lane> --text <instruction>` or `--text-file <path>` for
+Use `hq runners message <lane> --text <instruction>` or `--text-file <path>` for
 worker lanes. The message is an instruction and can replace earlier scope. Use
-`hq lanes link send` for linked sessions.
+`hq runners link send` for linked sessions.
 
 ## 7. Reading the outcome
 

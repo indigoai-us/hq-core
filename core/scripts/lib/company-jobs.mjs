@@ -17,9 +17,10 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
 export const contentDigest = j => digest(canonical({prompt:j.prompt, script:j.script, context:j.context, schedule:j.schedule}));
 export class Refusal extends Error { constructor(code) { super(code); this.code = code; } }
 function requireThat(condition, code) { if (!condition) throw new Refusal(code); }
+const ADDITIONAL_OUTPOST_ID = /^opc_[0-9A-HJKMNP-TV-Z]{26}$/;
 export function validateConfig(c) {
   requireThat(safe(c.companyUid, /^cmp_[A-Za-z0-9]+$/) && safe(c.companySlug) && safe(c.machineUid, /^out_[A-Za-z0-9]+$/), 'invalid_company_binding');
-  requireThat(c.outpostId === `outpost_${c.companyUid}` && safe(c.instanceId) && safe(c.attemptId), 'invalid_host_binding');
+  requireThat((c.outpostId === `outpost_${c.companyUid}` || (typeof c.outpostId === 'string' && ADDITIONAL_OUTPOST_ID.test(c.outpostId))) && safe(c.instanceId) && safe(c.attemptId), 'invalid_host_binding');
   for (const key of ['hqRoot', 'stateDir', 'unitDir', 'machineCredsFile', 'cloudModule']) requireThat(typeof c[key] === 'string' && path.isAbsolute(c[key]) && !/[\r\n]/.test(c[key]), `invalid_${key}`);
   requireThat(new URL(c.apiUrl).protocol === 'https:', 'https_required');
   requireThat(['claude','codex','grok'].includes(c.provider), 'invalid_provider');
@@ -170,6 +171,67 @@ export function classifySessionResponse(response, secrets = []) {
   if (outcome === 'needs_input') return {outcome:'failed', errorCode:'session_needs_input', reason:boundReason(why, secrets)};
   return {outcome:'failed', errorCode:'session_outcome_missing', reason:boundReason(response.text, secrets)};
 }
+// Process output can carry credentials the runner never granted. Token-like runs are cut too.
+// A run of 32+ token characters that contains "/" is either a file path or a standard base64
+// token. Base64 never has "-", "_" or an inner ".", which almost every path has. A slash run
+// without them is a token, removed whole, when it has "+" or "=", or when a piece between
+// slashes of 16+ characters mixes upper case, lower case and digits. Every other run is read
+// as text or a path, and only its 32+ character pieces are cut (so each JWT part goes too).
+const TOKEN_RUN = /[A-Za-z0-9+/_=.-]{32,}/g;
+const TOKEN_PIECE = /[A-Za-z0-9+_=-]{32,}/g;
+const BASE64_STRETCH = /[A-Za-z0-9+/=]{32,}/g;
+const mixedPiece = piece => piece.length >= 16 && /[A-Z]/.test(piece) && /[a-z]/.test(piece) && /[0-9]/.test(piece);
+// Base64 signals, judged per piece between slashes: "=" only as end padding on a 12+ piece after the
+// first (padding ends a token; a first piece such as "--configuration=" is a flag before a path),
+// "+" only in a 12+ piece that mixes upper and lower case (paths such as c++ or socket+ops are lower case).
+const base64Signal = text => text.split('/').some((piece, index) => (index > 0 && /^[A-Za-z0-9+]{12,}={1,2}$/.test(piece))
+  || (piece.includes('+') && piece.length >= 12 && /[A-Z]/.test(piece) && /[a-z]/.test(piece)));
+function base64Run(run) {
+  const core = run.replace(/\.+$/, '');
+  return core.includes('/') && !/[-_.]/.test(core) && (base64Signal(core) || core.split('/').some(mixedPiece));
+}
+// A KEY= prefix (AWS_SECRET_ACCESS_KEY=, --api_token=) is judged apart from its value: the key stays, a base64 value goes.
+const KEY_PREFIX = /^([A-Za-z0-9_.-]*[A-Za-z0-9_]=)(.+)$/;
+function scrubTokens(text) {
+  return text.replace(TOKEN_RUN, run => {
+    if (base64Run(run)) return '[REDACTED]';
+    const keyed = KEY_PREFIX.exec(run);
+    if (keyed && base64Run(keyed[2])) return keyed[1] + '[REDACTED]';
+    // Inside a path-like run, a 32+ stretch without "-", "_" or "." that has "/" and a base64 signal is a joined token (api-key-<t>, <t>.json).
+    return run.replace(BASE64_STRETCH, part => part.includes('/') && base64Signal(part) ? '[REDACTED]' : part).replace(TOKEN_PIECE, '[REDACTED]');
+  });
+}
+function lastLine(text) {
+  const lines = typeof text === 'string' ? text.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : [];
+  return lines.at(-1) ?? '';
+}
+export function processFailureReason(label, result, budgetSeconds, secrets = []) {
+  if (result?.code === 124) return `${label} exceeded its ${budgetSeconds}s time limit.`;
+  let detail = '';
+  try { const reply = JSON.parse(result?.text ?? ''); if (typeof reply?.text === 'string') detail = lastLine(reply.text); } catch { /* not a session reply */ }
+  if (!detail) detail = lastLine(result?.stderr) || lastLine(result?.text);
+  const head = `${label} exited with status ${result?.code}`;
+  if (!detail) return `${head}.`;
+  for (const value of secrets) if (typeof value === 'string' && value.length >= 4) detail = detail.split(value).join('[REDACTED]');
+  return boundReason(`${head}: ${scrubTokens(detail)}`, secrets);
+}
+// The secret broker's answer, by class: a 403 is a denial; any other status, a token
+// failure or a network error is the broker being unavailable. No error message is kept.
+export function secretFailure(name, error) {
+  const status = Number.isInteger(error?.status) ? error.status : null;
+  let refusal, why;
+  if (status === 403) { refusal = new Refusal('secret_denied'); why = 'the secret broker denied access (HTTP 403)'; }
+  else if (status !== null) { refusal = new Refusal('secret_unavailable'); why = `the secret broker returned HTTP ${status}${typeof error.apiCode === 'string' && /^[a-z0-9_]{1,64}$/.test(error.apiCode) ? ` (${error.apiCode})` : ''}`; }
+  else {
+    refusal = new Refusal('secret_unavailable');
+    const cause = typeof error?.cause?.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.cause.code) ? ` ${error.cause.code}` : '';
+    const kind = error instanceof Refusal && /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code
+      : typeof error?.name === 'string' && /^[A-Za-z]{1,40}$/.test(error.name) ? `${error.name}${cause}` : 'unknown_error';
+    why = `the secret broker could not be reached (${kind})`;
+  }
+  refusal.reason = `Secret ${name} was not released: ${why}.`;
+  return refusal;
+}
 export function resolveJobAccount(c = {}) {
   const user = c.jobUser ?? 'hq-jobs';
   if (Number.isInteger(c.jobUid)) {
@@ -237,7 +299,12 @@ export async function apiClient(c) {
       headers:{authorization:`Bearer ${tokens.idToken}`, 'content-type':'application/json'},
       body:JSON.stringify({...body, companyUid:c.companyUid}),
     });
-    if (!response.ok) { const error = new Refusal(`company_api_${response.status}`); error.status = response.status; throw error; }
+    if (!response.ok) {
+      const error = new Refusal(`company_api_${response.status}`); error.status = response.status;
+      // Keep the server's machine-readable code only. Other body text is never reflected.
+      try { const body = await response.json(); if (typeof body?.code === 'string' && /^[a-z0-9_]{1,64}$/.test(body.code)) error.apiCode = body.code; } catch { /* no usable code */ }
+      throw error;
+    }
     return response.json();
   };
   // Same identity, same cache, bounded like every other machine-token call. The job gets the tokens, never `creds`.
@@ -246,7 +313,7 @@ export async function apiClient(c) {
   return api;
 }
 export function acceptedJob(c, j) {
-  requireThat(j?.ownerKind === 'company-outpost' && j.companyUid === c.companyUid && j.agentUid === `outpost_${c.companyUid}` && j.status === 'active' && !j.deleted, 'not_accepted');
+  requireThat(j?.ownerKind === 'company-outpost' && j.companyUid === c.companyUid && typeof j.agentUid === 'string' && j.agentUid === c.outpostId && j.status === 'active' && !j.deleted, 'not_accepted');
   requireThat(safe(j.jobId, /^job_[A-Za-z0-9]+$/) && safe(j.acceptedRevision) && j.contentDigest === contentDigest(j), 'invalid_revision');
   for (const k of ['machineUid','outpostId','instanceId','attemptId']) requireThat(j.target?.[k] === c[k], 'wrong_target');
   requireThat(Number.isFinite(Date.parse(j.acceptedAt)), 'invalid_acceptance_time');
@@ -944,8 +1011,9 @@ export class CompanyRunner {
         const request={secretName:name};
         // The live broker accepts only companyUid and secretName. Scope further only when it says it can.
         if(this.c.brokerSecretScope===true){request.jobId=j.jobId;request.runId=d.runId;}
-        let result;try{result=await this.api('secret',request);}catch{receipt.blockedSecret=name;throw new Refusal('secret_denied');}
-        requireThat(typeof result.value==='string'&&result.value.length>0,'invalid_secret');granted[name]=result.value;values.push(result.value);
+        let result;try{result=await this.api('secret',request);}catch(error){receipt.blockedSecret=name;throw secretFailure(name,error);}
+        if(!(typeof result?.value==='string'&&result.value.length>0)){receipt.blockedSecret=name;const error=new Refusal('invalid_secret');error.reason=`Secret ${name} was not released: the secret broker returned no value.`;throw error;}
+        granted[name]=result.value;values.push(result.value);
       }
       const env=jobEnvironment({...this.c,jobHome:homes.runHome},granted);
       // HQ sign-in for the job: issued before any job code runs; both the precondition and the session unit get it.
@@ -962,7 +1030,7 @@ export class CompanyRunner {
       if(d.script){
         const preBudget=Math.max(1,Math.min(240000,jobMs));
         const pre=await this.execute('/bin/bash',['-c',d.script],launch({unit:`hq-company-job-run-${d.runId}-pre.service`,timeout:preBudget,runtimeSec:Math.max(1,Math.ceil(preBudget/1000))}));
-        if(pre.code!==0)throw new Refusal(pre.code===124?'timeout':'precondition_failed');
+        if(pre.code!==0){const error=new Refusal(pre.code===124?'timeout':'precondition_failed');error.reason=processFailureReason('Precondition script',pre,Math.ceil(preBudget/1000),values);throw error;}
         if(!pre.text.trim()){receipt.outcome='skipped-precondition';return receipt;}
         request.messageText+='\n\nPrecondition output:\n'+pre.text;
       }
@@ -972,6 +1040,7 @@ export class CompanyRunner {
       if(signin)for(const value of Object.values(signin.env))if(!values.includes(value))values.push(value);
       const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...(signin?{env:{...env,...signin.env},secretNames:[...Object.keys(granted),...Object.keys(signin.env)],redactions:values}:{})}));
       receipt.exitCode=result.code;receipt.outcome=result.code===0?'succeeded':result.code===124?'timeout':'failed';
+      if(result.code!==0){receipt.errorCode=result.code===124?'timeout':'session_failed';receipt.reason=processFailureReason('Job session',result,Math.ceil(jobMs/1000),values);}
       if(result.code===0){
         let response;try{response=JSON.parse(result.text);}catch{throw new Refusal('invalid_session_response');}
         // Exit 0 only says the session process ended cleanly. A run counts as
@@ -982,7 +1051,7 @@ export class CompanyRunner {
         if(verdict.errorCode)receipt.errorCode=verdict.errorCode;
         if(verdict.reason)receipt.reason=verdict.reason;
       }
-    }catch(e){receipt.outcome=['secret_denied','provider_not_signed_in','provider_token_expiring','provider_credential_unsafe','machine_session_unavailable'].includes(e.code)?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
+    }catch(e){if(e instanceof Refusal&&typeof e.reason==='string'&&e.reason)receipt.reason=boundReason(e.reason,values);receipt.outcome=['secret_denied','secret_unavailable','provider_not_signed_in','provider_token_expiring','provider_credential_unsafe','machine_session_unavailable'].includes(e.code)?'blocked':e.code==='timeout'?'timeout':'failed';receipt.errorCode=e instanceof Refusal?e.code:'execution_error';}
     finally{
       if(session)session.stop();
       if(sessionDir)removeSessionDir(this.sessionRoot(),sessionDir);

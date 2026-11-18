@@ -23,16 +23,20 @@ Runs `hq <args...>` on the host. Pass argv, not a shell string.
 
 ```json
 {
-  "args": ["sync", "status"],
+  "args": ["daemon", "sync", "status", "--local"],
   "cwd": ".",
   "timeoutMs": 60000
 }
 ```
 
+`daemon sync status --local` reports the local sync journal summary. The tool
+refuses the older top-level `sync` spelling of it. Without `--local`,
+`["daemon", "sync", "status"]` reports daemon ownership and heartbeat instead.
+
 The tool blocks:
 
 - `hq login`, `hq logout`, `hq onboard`
-- browser/session auth flows other than `hq auth status` and `hq auth refresh`
+- browser/session auth flows other than `hq whoami` and `hq auth refresh`
 - secret-value output (`hq secrets env`, `hq secrets get --reveal`)
 - raw `hq secrets set|exec` and `hq run` through the escape hatch
 

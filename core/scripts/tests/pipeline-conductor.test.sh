@@ -28,7 +28,7 @@ set -eu
 printf '%s\n' "\$*" >> "$T/hq.log"
 printf '%s\n' "\$*" >> "$T/pool.log"
 case "\$1 \$2" in
-  'lanes create')
+  'runners create')
     has_brief=false; for arg in "\$@"; do [ "\$arg" = --brief-file ] && has_brief=true; done
     if [ "\$has_brief" != true ]; then printf "error: required option '--brief-file <path>' not specified\\n" >&2; exit 1; fi
     rc=\$(cat "$T/pool.rc" 2>/dev/null || echo 0)
@@ -39,20 +39,20 @@ case "\$1 \$2" in
     printf '%s\\n' "\$lane" >> "$T/lanes.txt"
     printf '"company":{"slug":"%s"},"project_id":"%s","worker":"%s"' "\$company" "\$project" "\$worker" > "$T/owner.\$lane"
     printf '{"ok":true,"lane_id":"%s"}\\n' "\$lane" ;;
-  'lanes enqueue')
+  'runners enqueue')
     envelope=''; while [ \$# -gt 0 ]; do [ "\$1" = --envelope ] && { envelope="\$2"; shift 2; continue; }; shift; done
     if [ -z "\$envelope" ]; then printf "error: required option '--envelope <file>' not specified\\n" >&2; exit 1; fi
     answer=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
     if [ "\$answer" != enqueue ]; then printf '{"ok":false,"error":"loop_not_running"}\\n'; exit 0; fi
     cp "\$envelope" "$T/queued/"
     printf '{\\n  "ok": true,\\n  "action": "enqueue"\\n}\\n' ;;
-  'lanes interrupt')
+  'runners interrupt')
     story=''; phase=''; while [ \$# -gt 0 ]; do case "\$1" in --story) story="\$2"; shift 2;; --phase) phase="\$2"; shift 2;; *) shift;; esac; done
     answer=\$(cat "$T/pool.answer" 2>/dev/null || echo enqueue)
     if [ "\$answer" = picked_up ] || [ "\$story" = I2 ]; then printf '{"ok":true,"withdrawn":[],"already_picked_up":["%s-%s"]}\\n' "\$story" "\$phase"
     else printf '{"ok":true,"withdrawn":["%s-%s"],"already_picked_up":[]}\\n' "\$story" "\$phase"; fi ;;
-  'lanes stop') touch "$T/stopped.\$3"; printf '{"ok":true}\\n' ;;
-  'lanes list')
+  'runners stop') touch "$T/stopped.\$3"; printf '{"ok":true}\\n' ;;
+  'runners list')
     printf '['; sep=''
     if [ -f "$T/lanes.txt" ]; then while IFS= read -r lane; do
       state=waiting; [ -f "$T/stopped.\$lane" ] && state=stopped
@@ -60,7 +60,7 @@ case "\$1 \$2" in
       printf '%s{"lane_id":"%s",%s,"loop":{"state":"%s","queue_depth":0}}' "\$sep" "\$lane" "\$owner" "\$state"; sep=,
     done < "$T/lanes.txt"; fi
     printf ']\\n' ;;
-  'lanes questions') printf '[]\\n' ;;
+  'runners questions') printf '[]\\n' ;;
   *) printf '{"ok":false,"error":"unexpected_call"}\\n'; exit 1 ;;
 esac
 EOF
@@ -175,12 +175,12 @@ for s in d["userStories"]:
 json.dump(d, open(sys.argv[2], "w"))' "$T/prd.json" "$T/prd-two.json" "$T"
 PC_MAX_STORIES=2 run tick --prd "$T/prd-two.json" --worktree "$T/repoA=$T/wt" --worktree "$T/repoB=$T/wt2" --worktree "$T/wt"
 check "tick exits 0" '[ "$(rc)" = 0 ]'
-check "two stories enqueue into a shared worker lane" '[ "$(grep -c "^lanes enqueue " "$T/pool.log")" = 2 ] && [ "$(grep -c "^lanes create " "$T/pool.log")" = 1 ]'
+check "two stories enqueue into a shared worker lane" '[ "$(grep -c "^runners enqueue " "$T/pool.log")" = 2 ] && [ "$(grep -c "^runners create " "$T/pool.log")" = 1 ]'
 check "each story routed to the worktree of its repo" \
   '[ "$(pyget "$S/stories/S2.json" "d[\"worktree\"]")" = "$T/wt2" ] && [ "$(pyget "$S/stories/S1.json" "d[\"repo\"]")" = "$T/repoA" ]'
 check "both stories in_flight at once" 'grep -q "\"in_flight\"" "$S/stories/S1.json" && grep -q "\"in_flight\"" "$S/stories/S2.json"'
 check "S3 not started" '[ ! -f "$S/stories/S3.json" ]'
-check "envelopes queued through hq lanes enqueue --envelope" '[ -f "$T/queued/S1-backend.json" ] && [ -f "$T/queued/S2-backend.json" ] && grep -q "lanes enqueue .*--envelope" "$T/pool.log"'
+check "envelopes queued through hq runners enqueue --envelope" '[ -f "$T/queued/S1-backend.json" ] && [ -f "$T/queued/S2-backend.json" ] && grep -q "runners enqueue .*--envelope" "$T/pool.log"'
 check "envelope carries literal ACs and worktree" 'python3 -c "import json,sys;d=json.load(open(\"$T/queued/S1-backend.json\"));sys.exit(0 if d[\"acceptance_criteria\"]==[\"A one\",\"A two\"] and d[\"worktree\"]==\"$T/wt\" else 1)"'
 
 # Different stories, different workers in the same tick: S1 moves to qa while S2 stays on backend.
@@ -340,7 +340,7 @@ run route --prd "$T/prd2.json" --story P1
 check "blocked story is not routed again" '[ "$(rc)" = 1 ] && [ ! -s "$T/pool.log" ]'
 run tick --prd "$T/prd2.json" --worktree "$T/wt"
 check "tick routes the independent story, not the blocked one or its dependent" \
-  'grep -q -- "lanes enqueue" "$T/pool.log" && grep -q "ROUTED P4 " "$T/out" && ! grep -q "P1\|P2" "$T/out" && [ ! -f "$S/stories/P2.json" ]'
+  'grep -q -- "runners enqueue" "$T/pool.log" && grep -q "ROUTED P4 " "$T/out" && ! grep -q "P1\|P2" "$T/out" && [ ! -f "$S/stories/P2.json" ]'
 
 # refusals and usage
 run resolve --story P1 --as accepted-partial
@@ -477,7 +477,7 @@ done
 rm -rf "$S"; : > "$T/pool.log"
 PC_MAX_STORIES=2 run tick --prd "$T/prd-ld.json" --worktree "$T/wt"
 check "lane down: tick prints LANE_DOWN once and stops routing" \
-  '[ "$(rc)" = 0 ] && [ "$(grep -c "^LANE_DOWN" "$T/out")" = 1 ] && [ "$(grep -c "^lanes enqueue " "$T/pool.log")" = 1 ] && ! grep -q ERROR "$T/out"'
+  '[ "$(rc)" = 0 ] && [ "$(grep -c "^LANE_DOWN" "$T/out")" = 1 ] && [ "$(grep -c "^runners enqueue " "$T/pool.log")" = 1 ] && ! grep -q ERROR "$T/out"'
 rm -f "$T/pool.answer"
 run tick --prd "$T/prd-ld.json" --worktree "$T/wt"
 check "lane back: the next tick routes the queued story normally" \
@@ -485,10 +485,10 @@ check "lane back: the next tick routes the queued story normally" \
 lane="$(pyget "$S/lanes.json" 'd["backend-dev"]')"
 printf '"company":{"slug":"another-company"},"project_id":"ld","worker":"backend-dev"' > "$T/owner.$lane"
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["state"]="queued"; json.dump(d,open(p,"w"))' "$S/stories/L1.json"
-before="$(grep -c '^lanes enqueue ' "$T/pool.log")"
+before="$(grep -c '^runners enqueue ' "$T/pool.log")"
 run route --prd "$T/prd-ld.json" --story L1
 check "mapped lane owned by another company is refused before enqueue" \
-  '[ "$(rc)" != 0 ] && grep -q "different company, project, or worker" "$T/err" && [ "$(grep -c "^lanes enqueue " "$T/pool.log")" = "$before" ]'
+  '[ "$(rc)" != 0 ] && grep -q "different company, project, or worker" "$T/err" && [ "$(grep -c "^runners enqueue " "$T/pool.log")" = "$before" ]'
 
 # ---- failcap: a phase that failed too often is held for the owner ----
 S="$T/state-failcap"; rm -rf "$S"; : > "$T/pool.log"
@@ -833,7 +833,7 @@ check "interrupt: both in-flight stories marked interrupted" \
 check "interrupt: phase, time and reason recorded" \
   '[ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"phase\"]")" = backend ] && [ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"at\"]")" = 2026-09-21T14:13:20Z ] && [ "$(pyget "$IS/stories/I1.json" "d[\"interrupted\"][\"reason\"]")" = "test stop" ]'
 check "interrupt: the unpicked envelope is withdrawn, the picked-up one is left" \
-  'grep -q "^INTERRUPTED I1 backend withdrawn" "$T/out" && grep -q "^INTERRUPTED I2 backend picked_up" "$T/out" && grep -q "lanes interrupt .*--story I1 --phase backend" "$T/pool.log" && grep -q "lanes interrupt .*--story I2 --phase backend" "$T/pool.log"'
+  'grep -q "^INTERRUPTED I1 backend withdrawn" "$T/out" && grep -q "^INTERRUPTED I2 backend picked_up" "$T/out" && grep -q "runners interrupt .*--story I1 --phase backend" "$T/pool.log" && grep -q "runners interrupt .*--story I2 --phase backend" "$T/pool.log"'
 "$PC" report final --state "$IS" > "$T/out" 2>&1
 check "interrupt: FINAL counts and lists the interrupted stories" \
   'grep -q "interrupted 2," "$T/out" && grep -q "interrupted, routed first on the next driver start: I1 at backend (2026-09-21T14:13:20Z), I2 at backend" "$T/out"'
@@ -863,15 +863,15 @@ kill "$lpid" 2>/dev/null; wait "$lpid" 2>/dev/null
 tbl_tick() {  # <name> <table-file> -> rc in $T/tbl.rc, create line in $T/tbl.create
   : >"$T/pool.log"
   PC_MAX_STORIES=1 "$PC" tick --prd "$T/prd.json" --state "$T/tbl-$1" --worktree "$T/wt" --table "$2" >"$T/tbl.out" 2>"$T/tbl.err"
-  echo $? >"$T/tbl.rc"; grep "^lanes create " "$T/pool.log" >"$T/tbl.create" || true
+  echo $? >"$T/tbl.rc"; grep "^runners create " "$T/pool.log" >"$T/tbl.create" || true
 }
 printf 'backend-dev\tclaude\tclaude-opus-4-8\thigh\nqa-tester\tclaude\tclaude-sonnet-4-6\n' >"$T/tbl-tabs.tsv"
 tbl_tick tabs "$T/tbl-tabs.tsv"
-check "tab-separated table row passes provider, model and effort to lanes create" \
+check "tab-separated table row passes provider, model and effort to runners create" \
   '[ "$(cat "$T/tbl.rc")" = 0 ] && grep -q -- "--provider claude --model claude-opus-4-8 --effort high" "$T/tbl.create"'
 printf 'worker  engine  model  effort\nbackend-dev   claude    claude-opus-4-8   xhigh   # pinned\nqa-tester claude claude-sonnet-4-6\n' >"$T/tbl-spaces.tsv"
 tbl_tick spaces "$T/tbl-spaces.tsv"
-check "space-separated table row passes provider, model and effort to lanes create" \
+check "space-separated table row passes provider, model and effort to runners create" \
   '[ "$(cat "$T/tbl.rc")" = 0 ] && grep -q -- "--provider claude --model claude-opus-4-8 --effort xhigh" "$T/tbl.create"'
 printf 'backend-dev claude\nqa-tester claude claude-sonnet-4-6\n' >"$T/tbl-nomodel.tsv"
 tbl_tick nomodel "$T/tbl-nomodel.tsv"

@@ -282,7 +282,7 @@ hq_sync_report_scope_gaps() {
     echo "$company: $count file(s) in the cloud were not downloaded because this"
     echo "membership syncs in '$mode' mode (only the paths shared with you)."
     printf '%s' "$line" | jq -r '(.samplePaths // [])[] | "  - \(.)"' 2>/dev/null || true
-    echo "To download everything you have access to: hq sync mode all --company $company"
+    echo "To download everything you have access to: hq daemon sync mode set $company all"
     echo "To fetch one file and keep it synced: hq files get companies/$company/<path>"
   done <<EOF
 $events

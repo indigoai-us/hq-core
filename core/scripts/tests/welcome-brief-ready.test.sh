@@ -801,4 +801,32 @@ if grep 'CLAUDE_HEADLESS=1' "$PARITY37" | grep -v 'HQ_WELCOME_BRIEF_HOOK=0' | gr
   fail "anywhere-parity-test: headless run without HQ_WELCOME_BRIEF_HOOK=0"
 fi
 
+echo "[Q47] a collect-only machine-check batch prints the announcement but leaves the marker for the session"
+HOMEQ47="$(new_home q47)"
+ROOTQ47="$(new_root q47)"
+write_run "$ROOTQ47" brief-20260101-000000 ready yes
+index_line brief-20260101-000000 ready >"$ROOTQ47/workspace/brief/index.jsonl"
+for batch in 1 2; do
+  invoke "$HOMEQ47" "$ROOTQ47" "$PAYLOAD" HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1
+  [ "$RC" -eq 0 ] || fail "collect-only batch $batch: exit $RC"
+  [ -z "$ERR" ] || fail "collect-only batch $batch: stderr: $ERR"
+  context="$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.additionalContext')" \
+    || fail "collect-only batch $batch: stdout is not the hook JSON"
+  context="${context//$'\r'/}"
+  [ "$context" = "$EXPECTED" ] || fail "collect-only batch $batch: context mismatch: [$context]"
+  [ ! -e "$HOMEQ47/.hq/onboarding/welcome-brief-announced" ] \
+    || fail "collect-only batch $batch wrote the announced marker"
+done
+# HQ_MACHINE_CHECK_COLLECT_ONLY alone (no HQ_MACHINE_CHECK) is not a batch: the
+# session path announces and writes the marker as before.
+invoke "$HOMEQ47" "$ROOTQ47" "$PAYLOAD" HQ_MACHINE_CHECK_COLLECT_ONLY=1
+assert_announced "session after collect-only batches" "$HOMEQ47" brief-20260101-000000
+invoke "$HOMEQ47" "$ROOTQ47" "$PAYLOAD"
+[ "$RC" -eq 0 ] && [ -z "$OUT" ] || fail "session after delivery: expected silence, got: $OUT"
+# A batch without the collect-only marker (an older hq-cli) keeps the old
+# behaviour and uses up the marker.
+HOMEQ47B="$(new_home q47-old-cli)"
+invoke "$HOMEQ47B" "$ROOTQ47" "$PAYLOAD" HQ_MACHINE_CHECK=1
+assert_announced "batch without collect-only" "$HOMEQ47B" brief-20260101-000000
+
 echo "welcome-brief-ready: ok"

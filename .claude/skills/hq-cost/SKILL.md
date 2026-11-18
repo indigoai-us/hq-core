@@ -24,8 +24,14 @@ through the CLI:
 hq billing usage --card --json
 ```
 
-- `card.meters[]`: `id`, `label`, `unit`, `unitUsd`, and `waivedInTrial` (the
-  vault meter is waived during the trial).
+- `card.meters[]`: `id`, `label`, `unit`, `unitUsd`, `waivedInTrial` (the
+  vault meter is waived during the trial), and on the call meters
+  (`hq-mcp-call`, `integration-call`) `displayPer`, `displayUsd` and
+  `displayText`.
+- The rate you show for a meter is its `displayText` when it has one, word
+  for word (the call meters are priced per 100 calls). Only a meter without
+  `displayText` is shown as `unitUsd` per `unit`, and a non-zero `unitUsd`
+  keeps its digits, so a rate is never shown as zero dollars.
 - `card.includedUsd`: usage included free each month. `card.trial`: days and
   usage cap. `card.free`: what is never billed (deploys, DMs, background AI).
 - The usage report in Step 1 carries the same rates per meter
@@ -92,7 +98,8 @@ The JSON is a `UsageReport`:
 
 - `scope`: `kind` (`company` or `person`), `companySlug`, `role`.
 - `bill`: `meters[]` (per meter: `key`, `displayName`, `unit`, `unitUsd`,
-  `value`, `state`, `monthToDateUsd`, `projectedUsd`), `monthToDateUsd`,
+  `displayText` on the call meters, `value`, `state`, `monthToDateUsd`,
+  `projectedUsd`), `monthToDateUsd`,
   `allowanceUsd`, `allowanceLeftUsd`, `projectedUsd`, `projectedBillUsd`,
   `incomplete`, `daysElapsed`, `daysInMonth`.
 - `storage` (when scanned): current vs old-version bytes, `canDelete`.
@@ -104,6 +111,8 @@ The JSON is a `UsageReport`:
 ## Step 2 — Show it
 
 A short table: meter, amount, rate, projected cost, all from `bill.meters[]`.
+The rate column is the meter's `displayText` when present, else `unitUsd`
+per `unit`.
 A meter whose `state` is `not-available` shows "not counted here yet", never
 zero. Then:
 
@@ -155,14 +164,14 @@ Ask which fix to look at (one question; include "none"). Skip fixes with a
 
 ### exclude-folders — stop syncing folders
 
-1. Run the preview (`hq sync mode --show`, `hq storage status --company <slug> --json`)
+1. Run the preview (`hq daemon sync mode list`, `hq storage status --company <slug> --json`)
    and measure the biggest local folders under the company with `du -sh`.
 2. Propose `.hqignore` lines (one folder per line, for example `exports/`) and
    show the exact lines that would be added to `<HQ root>/.hqignore`.
 3. On yes, append them (never rewrite or remove existing lines). Explain that
    sync stops uploading those folders, files already in the cloud stay until
    removed, and nothing local is deleted. For a member who only needs some
-   folders, `hq sync mode shared` narrows what is downloaded; preview it with
+   folders, `hq daemon sync mode set <slug> shared` narrows what is downloaded; preview it with
    `hq sync narrow` (dry run by default) and apply only on yes.
 
 ### turn-sync-off — turn cloud sync off for one vault or all of them
@@ -173,7 +182,7 @@ vault, or all cloud sync at once. The switches live in the HQ app under
 each vault") and from the account menu (**Sync**). This skill cannot flip
 them; the user does.
 
-1. Preview: run `hq sync mode --show` and `hq daemon sync status --json`, and
+1. Preview: run `hq daemon sync mode list` and `hq daemon sync status --json`, and
    list the vaults this computer syncs (personal plus each company). Point at
    the vault the drivers name, for example the company with the most syncs.
 2. Explain, per vault the user picks: turning it off stops this computer's
@@ -191,7 +200,7 @@ them; the user does.
 4. The CLI honours the same switches: `hq sync push|pull|now` for a vault
    that is off is refused (exit code 3, nothing uploaded or downloaded), and
    `hq sync now --all` skips the off vaults. Confirm with one read:
-   `hq sync status`. The per-vault Sync section ships in the HQ desktop app
+   `hq daemon sync status --local`. The per-vault Sync section ships in the HQ desktop app
    0.11.15 and later; if this computer's app has no Sync section, ask the
    user to update the app first.
 5. No desktop app (CLI-only install where the daemon owns sync): on yes, run

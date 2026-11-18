@@ -8,6 +8,8 @@
 #   free-disk-space.sh [--apply] prune-backed-up [H]
 #   free-disk-space.sh [--apply] slim-idle [D]
 #   free-disk-space.sh [--apply] caches
+#   free-disk-space.sh [--apply --yes] prune-hq-history
+#   free-disk-space.sh [--apply --yes] trash-disabled-mirror
 #
 # Mutating modes dry-run unless --apply is present. prune-backed-up removes
 # only linked git worktrees (a .git file whose git dir is under the common
@@ -22,6 +24,22 @@
 # inside it (recent-session; env HQ_WORKTREE_SESSION_WINDOW_HOURS). slim-idle
 # skips session-owned worktrees too.
 # caches deletes only the named developer cache allowlist below.
+#
+# prune-hq-history runs `git prune --expire=1.hour.ago` on the HQ root git
+# (<hq>/.git). It deletes only loose objects that no commit, ref, reflog, or
+# index reaches and that are over an hour old, so objects a running git
+# command just wrote (not yet referenced) are kept. It holds the autosave
+# lock while it runs. A dry run lists what would go and its size on disk.
+# trash-disabled-mirror moves an HQ sync git recovery copy that sync has
+# disabled (~/.hq/hq-root-git/<id> with hq-sync-mirror-disabled.json) to the
+# Trash, only when every object in it (commits reachable from its refs, HEAD
+# and reflogs, and unreferenced objects) exists in the current HQ root's git.
+# Copies with a missing object, an unreadable store, or a shallow HQ root are
+# kept, and so is a non-bare copy with an index or working-tree changes.
+# prune-hq-history refuses while a repo under the HQ root or a recovery copy
+# borrows the HQ root's objects through objects/info/alternates.
+# It never deletes. Both modes need --apply and --yes; --yes records that
+# the user confirmed the dry run.
 
 set -u
 HQ_ROOT="${HQ_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -33,7 +51,16 @@ ALLOW_IGNORED_DIRS=" $BUILD_DIRS "
 SAFE_DOT_CACHE='gh prisma node agent-browser'
 # ~/Library/Caches directory names that are safe to rebuild. Not a glob.
 LIB_CACHE_NAMES='Homebrew pip Yarn npm pnpm node-gyp go-build cargo turbo typescript electron'
+HQ_GIT_DIR="$HQ_ROOT/.git"
+MIRROR_ROOT="${HQ_SYNC_MIRROR_ROOT:-$HOME/.hq/hq-root-git}"
+MIRROR_MARKER="hq-sync-mirror-disabled.json"
+# Same lock directory as hq-autocommit.sh and hq-storage.sh.
+AUTOSAVE_LOCK_DIR="${TMPDIR:-/tmp}/hq-autocommit.lock"
+AUTOSAVE_STALE_DAYS="${HQ_AUTOSAVE_STALE_DAYS:-7}"
+case "$AUTOSAVE_STALE_DAYS" in ''|*[!0-9]*) AUTOSAVE_STALE_DAYS=7 ;; esac
 APPLY=0
+CONFIRMED=0
+LOCK_HELD=0
 
 # ---------------------------- session liveness ------------------------------
 # A worktree is owned by a live session when a running process has its cwd
@@ -89,7 +116,11 @@ session_owner_reason() {
 }
 
 cleanup_session_lists() { rm -f "${LIVE_PROC_CWDS:-}" "${SESSION_CWDS:-}"; }
-trap cleanup_session_lists EXIT
+on_exit() {
+  cleanup_session_lists
+  release_autosave_lock
+}
+trap on_exit EXIT
 
 # 0 when a file in the worktree (outside .git and build dirs), or its HEAD or
 # HEAD reflog, changed in the last <minutes>.
@@ -110,7 +141,7 @@ recently_touched() {
 }
 
 usage() {
-  sed -n '2,22p' "$0"
+  sed -n '2,35p' "$0"
 }
 
 free_kb() { df -k / | tail -1 | awk '{print $4}'; }
@@ -342,6 +373,37 @@ remove_linked_worktree() {
   git --git-dir="$common" worktree remove -- "$p"
 }
 
+# human_kb <kb> / human_bytes <bytes>
+human_kb() {
+  awk -v kb="${1:-0}" 'BEGIN {
+    if (kb >= 1048576) printf "%.1f GB", kb / 1048576
+    else if (kb >= 1024) printf "%.1f MB", kb / 1024
+    else printf "%d KB", kb }'
+}
+human_bytes() {
+  local b="${1:-0}"
+  case "$b" in ''|*[!0-9]*) b=0 ;; esac
+  human_kb "$((b / 1024))"
+}
+
+# Sizes one scan area into <out>, one `du -sk` line per top-level entry. Each
+# entry is its own du process, so the lines already written survive a
+# timeout and give a lower bound for a tree too big to finish.
+size_area() {
+  local path="$1" out="$2" c rc=0
+  : >"$out"
+  if [ ! -d "$path" ]; then
+    du -sk "$path" >>"$out" 2>/dev/null || rc=1
+    return "$rc"
+  fi
+  for c in "$path"/* "$path"/.[!.]* "$path"/..?*; do
+    [ -L "$c" ] && continue
+    [ -e "$c" ] || continue
+    du -sk "$c" >>"$out" 2>/dev/null || rc=1
+  done
+  return "$rc"
+}
+
 cmd_scan() {
   local budget="${HQ_FREE_DISK_SCAN_TIMEOUT_SECS:-5}" tmp="" i=0 ticks=0 alive=0
   local path="" pid="" size="" out=""
@@ -359,6 +421,8 @@ cmd_scan() {
 
   paths=(
     "$WT_ROOT"
+    "$HQ_GIT_DIR"
+    "$HOME/.hq"
     "$HOME/Library/Caches"
     "$HOME/.cache"
     "$HOME/.npm"
@@ -373,11 +437,12 @@ cmd_scan() {
     for path in "${paths[@]}"; do
       printf '%10s  %-9s  %s\n' "unknown" "unavailable" "$path"
     done
+    hq_git_scan_notes
     return 0
   fi
 
   # Probe the fixed allowlist concurrently. One slow or unreadable tree must
-  # not suppress results from the others, and the table stays at eight rows.
+  # not suppress results from the others, and the table stays at ten rows.
   for path in "${paths[@]}"; do
     out="$tmp/$i.out"
     if [ ! -e "$path" ]; then
@@ -387,12 +452,14 @@ cmd_scan() {
       continue
     fi
     (
-      if du -sk "$path" >"$out" 2>/dev/null; then
+      # Exit with a status, not by signal, so bash prints no "Terminated" notice.
+      trap 'exit 143' TERM
+      if size_area "$path" "$out"; then
         : >"$tmp/$i.done"
       else
         : >"$tmp/$i.failed"
       fi
-    ) &
+    ) 2>/dev/null &
     pids[$i]=$!
     i=$((i + 1))
   done
@@ -419,6 +486,8 @@ cmd_scan() {
     pid="${pids[$i]:-}"
     if [ -n "$pid" ] && [ ! -f "$tmp/$i.done" ] && [ ! -f "$tmp/$i.failed" ] && kill -0 "$pid" 2>/dev/null; then
       : >"$tmp/$i.timeout"
+      # Stop the running du first so it does not outlive the scan.
+      pkill -TERM -P "$pid" 2>/dev/null || true
       kill -TERM "$pid" 2>/dev/null || true
     fi
     i=$((i + 1))
@@ -428,25 +497,30 @@ cmd_scan() {
   for path in "${paths[@]}"; do
     pid="${pids[$i]:-}"
     if [ -n "$pid" ]; then
-      if kill -0 "$pid" 2>/dev/null; then kill -KILL "$pid" 2>/dev/null || true; fi
-      wait "$pid" 2>/dev/null || true
+      if kill -0 "$pid" 2>/dev/null; then
+        pkill -KILL -P "$pid" 2>/dev/null || true
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+      { wait "$pid"; } 2>/dev/null || true
     fi
     i=$((i + 1))
   done
 
   i=0
   for path in "${paths[@]}"; do
+    size="$(awk '$1 ~ /^[0-9]+$/ { s += $1; n++ } END { if (n) print s }' "$tmp/$i.out" 2>/dev/null)"
+    case "$size" in ''|*[!0-9]*) size="" ;; esac
     if [ -f "$tmp/$i.result" ]; then
       :
-    elif [ -f "$tmp/$i.done" ]; then
-      size="$(awk 'NR == 1 && $1 ~ /^[0-9]+$/ { print $1 }' "$tmp/$i.out" 2>/dev/null)"
-      if [ -n "$size" ]; then
-        printf '%s\tok\t%s\n' "$size" "$path" >"$tmp/$i.result"
-      else
-        printf '0\terror\t%s\n' "$path" >"$tmp/$i.result"
-      fi
+    elif [ -f "$tmp/$i.timeout" ] && [ -n "$size" ] && [ "$size" != 0 ]; then
+      # A killed child makes size_area return failure and also write .failed.
+      # Timeout wins so a half-measured tree stays a lower bound, not "ok".
+      printf '%s\tpartial\t%s\n' "$size" "$path" >"$tmp/$i.result"
     elif [ -f "$tmp/$i.timeout" ]; then
       printf '0\ttimeout\t%s\n' "$path" >"$tmp/$i.result"
+    elif [ -f "$tmp/$i.done" ] || { [ -f "$tmp/$i.failed" ] && [ -n "$size" ]; }; then
+      # A partly unreadable tree still reports what du could read.
+      printf '%s\tok\t%s\n' "${size:-0}" "$path" >"$tmp/$i.result"
     else
       printf '0\terror\t%s\n' "$path" >"$tmp/$i.result"
     fi
@@ -461,10 +535,429 @@ cmd_scan() {
       return sprintf("%d KB", kb)
     }
     {
-      shown = ($2 == "ok" ? human($1) : ($2 == "missing" ? "0 KB" : "unknown"))
+      if ($2 == "ok") shown = human($1)
+      else if ($2 == "partial") shown = ">=" human($1)
+      else if ($2 == "missing") shown = "0 KB"
+      else shown = "unknown"
       printf "%10s  %-9s  %s\n", shown, $2, $3
     }'
   rm -rf -- "$tmp"
+  echo "partial = timed out; the size is a lower bound from the entries measured in time."
+  hq_git_scan_notes
+}
+
+# ------------------------- HQ root git and sync mirror ----------------------
+
+hq_git() { git --git-dir="$HQ_GIT_DIR" "$@"; }
+has_hq_git() { [ -d "$HQ_GIT_DIR/objects" ]; }
+
+# Prints "loose_count loose_kb pack_kb garbage_kb" from count-objects -v.
+hq_git_counts() {
+  hq_git count-objects -v 2>/dev/null | awk -F': ' '
+    $1 == "count" { c = $2 } $1 == "size" { s = $2 } $1 == "size-pack" { p = $2 } $1 == "size-garbage" { g = $2 }
+    END { printf "%d %d %d %d\n", c, s, p, g }'
+}
+
+hq_git_summary() {
+  local counts c s p g
+  counts=$(hq_git_counts)
+  read -r c s p g <<EOF
+$counts
+EOF
+  echo "hq-git $HQ_GIT_DIR loose_objects=$c loose=$(human_kb "$s") packed=$(human_kb "$p") garbage=$(human_kb "$g")"
+}
+
+# Warns when the newest autosave commit on HEAD is older than the stale window.
+autosave_staleness() {
+  local ct now_s age day
+  ct=$(hq_git log -1 --format=%ct --grep='^autosave(' HEAD 2>/dev/null) || ct=""
+  case "$ct" in
+    ''|*[!0-9]*)
+      echo "autosave last_commit=none"
+      return 0
+      ;;
+  esac
+  now_s=$(date +%s)
+  case "$now_s" in ''|*[!0-9]*) return 0 ;; esac
+  age=$(( (now_s - ct) / 86400 ))
+  day=$(date -r "$ct" +%Y-%m-%d 2>/dev/null || date -d "@$ct" +%Y-%m-%d 2>/dev/null)
+  if [ "$age" -ge "$AUTOSAVE_STALE_DAYS" ]; then
+    echo "warn autosave-stale last_commit=$day age_days=$age: HQ autosave has not committed in $age days. If loose objects keep growing, autosave is writing files into git without committing them. Run prune-hq-history and report it with /hq-bug."
+  else
+    echo "autosave last_commit=$day age_days=$age"
+  fi
+}
+
+# Directories directly under the mirror root that sync has disabled.
+disabled_mirrors() {
+  local d
+  [ -d "$MIRROR_ROOT" ] || return 0
+  for d in "$MIRROR_ROOT"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    [ -f "$d/$MIRROR_MARKER" ] && printf '%s\n' "$d"
+  done
+  return 0
+}
+
+active_mirrors() {
+  local d
+  [ -d "$MIRROR_ROOT" ] || return 0
+  for d in "$MIRROR_ROOT"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    [ -f "$d/$MIRROR_MARKER" ] || printf '%s\n' "$d"
+  done
+  return 0
+}
+
+# marker_field <file> <name>: a string or number field from the marker JSON.
+# A JSON null reads as empty, so "disabled_at": null is not disabled.
+marker_field() {
+  local v
+  v=$(sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$1" 2>/dev/null | head -1)
+  v="${v%"${v##*[![:space:]]}"}"
+  [ "$v" = null ] && v=""
+  printf '%s\n' "$v"
+}
+
+mirror_marker_line() {
+  local d="$1" m="$1/$MIRROR_MARKER" measured cap
+  measured=$(marker_field "$m" measured_bytes)
+  cap=$(marker_field "$m" cap_bytes)
+  echo "disabled-mirror $d disabled_at=$(marker_field "$m" disabled_at) reason=$(marker_field "$m" reason) measured=$(human_bytes "$measured") cap=$(human_bytes "$cap")"
+}
+
+MIRROR_NOTE="note: every commit in this recovery copy exists in $HQ_GIT_DIR, so its objects are usually the same ones, often as hard links (or APFS clones, which du counts twice). While it exists, pruning the HQ root alone frees almost nothing: the space comes back only when both copies are gone."
+
+# The git dir inside a recovery copy: <dir>/.git when present, else <dir>.
+recovery_git_dir() {
+  if [ -e "$1/.git" ]; then printf '%s\n' "$1/.git"; else printf '%s\n' "$1"; fi
+}
+
+# recovery_refs_in_hq <dir>: 0 when every commit reachable from the recovery
+# copy's refs, HEAD and reflogs exists in the HQ root's git; 1 (prints the
+# first missing commit sha) when one is missing; 2 when the copy cannot be
+# read, has no commits, or any read fails; 3 when the HQ root is shallow (its
+# history is incomplete, so presence there proves nothing); 4 (prints the
+# first missing sha) when any object in the copy, referenced or not, is
+# missing from the HQ root. Only 0 makes the copy a candidate.
+recovery_refs_in_hq() {
+  local gd commits head checked line objs
+  has_hq_git || return 2
+  case "$(hq_git rev-parse --is-shallow-repository 2>/dev/null)" in
+    false) ;;
+    true) return 3 ;;
+    *) return 2 ;;
+  esac
+  gd=$(recovery_git_dir "$1")
+  git --git-dir="$gd" rev-parse --git-dir >/dev/null 2>&1 || return 2
+  head=""
+  if git --git-dir="$gd" rev-parse -q --verify HEAD >/dev/null 2>&1; then head=HEAD; fi
+  commits=$(git --git-dir="$gd" rev-list --all --reflog $head 2>/dev/null) || return 2
+  [ -n "$commits" ] || return 2
+  checked=$(printf '%s\n' "$commits" | hq_git cat-file --batch-check='%(objectname) %(objecttype)' 2>/dev/null) || return 2
+  [ "$(printf '%s\n' "$checked" | wc -l)" -eq "$(printf '%s\n' "$commits" | wc -l)" ] || return 2
+  while IFS= read -r line; do
+    case "$line" in
+      *" commit") ;;
+      *" missing") printf '%s\n' "${line%% *}"; return 1 ;;
+      *) return 2 ;;
+    esac
+  done <<EOF
+$checked
+EOF
+  # Objects no ref points to (a dangling commit, a lone blob, staged work)
+  # are not in rev-list, so every object in the copy must exist in the HQ root.
+  objs=$(git --git-dir="$gd" cat-file --batch-all-objects --batch-check='%(objectname)' 2>/dev/null) || return 2
+  [ -n "$objs" ] || return 2
+  checked=$(printf '%s\n' "$objs" | hq_git cat-file --batch-check='%(objectname) %(objecttype)' 2>/dev/null) || return 2
+  [ "$(printf '%s\n' "$checked" | wc -l)" -eq "$(printf '%s\n' "$objs" | wc -l)" ] || return 2
+  line=$(printf '%s\n' "$checked" | awk '$2 == "missing" { print $1; exit }')
+  if [ -n "$line" ]; then printf '%s\n' "$line"; return 4; fi
+  return 0
+}
+
+# recovery_worktree_state <dir>: prints a reason and returns 0 when a non-bare
+# copy has an index or working-tree changes; returns 1 for a bare copy.
+recovery_worktree_state() {
+  local gd="$1/.git" st
+  [ -e "$gd" ] || return 1
+  if [ -e "$gd/index" ]; then echo "non-bare-copy-has-index"; return 0; fi
+  st=$(git --git-dir="$gd" --work-tree="$1" status --porcelain --untracked-files=all 2>/dev/null) || { echo "non-bare-copy-unreadable"; return 0; }
+  if [ -n "$st" ]; then echo "non-bare-copy-has-changes"; return 0; fi
+  return 1
+}
+
+# Cheap HQ-git and mirror findings for scan: no history walk, no du.
+hq_git_scan_notes() {
+  local d found=0
+  echo "hq git and sync mirror:"
+  if has_hq_git; then
+    hq_git_summary
+    autosave_staleness
+  else
+    echo "hq-git $HQ_GIT_DIR missing"
+  fi
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    mirror_marker_line "$d"
+    found=1
+  done <<EOF
+$(disabled_mirrors)
+EOF
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    echo "active-mirror $d (in use by HQ sync; not offered for removal)"
+  done <<EOF
+$(active_mirrors)
+EOF
+  if [ "$found" = 1 ]; then
+    echo "note: these are HQ sync recovery copies; trash-disabled-mirror offers one only when every object in it (commits from refs, HEAD and reflogs, and unreferenced objects) exists in $HQ_GIT_DIR"
+    echo "offer: trash-disabled-mirror, then prune-hq-history"
+  elif has_hq_git; then
+    echo "offer: prune-hq-history when loose is large"
+  fi
+}
+
+# Prints "count disk_bytes" for loose objects `git prune` would delete.
+unreachable_loose() {
+  local list
+  list=$(hq_git prune -n --expire=1.hour.ago 2>/dev/null) || return 1
+  if [ -z "$list" ]; then
+    echo "0 0"
+    return 0
+  fi
+  printf '%s\n' "$list" | awk '{ print $1 }' \
+    | hq_git cat-file --batch-check='%(objectsize:disk)' 2>/dev/null \
+    | awk '$1 ~ /^[0-9]+$/ { s += $1; n++ } END { printf "%d %d\n", n, s }'
+}
+
+# "total_bytes linked_bytes": regular files under <dir>, and those with more
+# than one hard link (shared with another git store).
+mirror_link_bytes() {
+  find "$1" -type f -print0 2>/dev/null | LC_ALL=C perl -0ne '
+    chomp; my @st = lstat($_) or next; $t += $st[7]; $l += $st[7] if $st[3] > 1;
+    END { printf "%d %d\n", $t, $l }'
+}
+
+take_autosave_lock() {
+  mkdir "$AUTOSAVE_LOCK_DIR" 2>/dev/null || return 1
+  LOCK_HELD=1
+  printf 'pid=%s\n' "$$" >"$AUTOSAVE_LOCK_DIR/owner" 2>/dev/null || true
+}
+
+release_autosave_lock() {
+  [ "$LOCK_HELD" = 1 ] || return 0
+  rm -f -- "$AUTOSAVE_LOCK_DIR/owner" 2>/dev/null || true
+  rmdir "$AUTOSAVE_LOCK_DIR" 2>/dev/null || true
+  LOCK_HELD=0
+}
+
+refuse_unconfirmed() {
+  echo "refused: $1 changes data. Show the dry run to the user, and re-run with --apply --yes only after an explicit yes."
+  exit 3
+}
+
+# Alternates files on the known HQ locations (repos and worktrees under the
+# HQ root, and the HQ sync recovery copies) whose entry names the HQ root's
+# git. Prints the borrowing repo for each. Skips the HQ root's own file.
+hq_root_borrowers() {
+  local f self
+  self="$HQ_GIT_DIR/objects/info/alternates"
+  {
+    find "$HQ_ROOT" -path "$HQ_GIT_DIR" -prune -o -name node_modules -prune -o \
+      -path '*/objects/info/alternates' -type f -print 2>/dev/null
+    if [ -d "$MIRROR_ROOT" ]; then
+      find "$MIRROR_ROOT" -maxdepth 5 -path '*/objects/info/alternates' -type f -print 2>/dev/null
+    fi
+  } | while IFS= read -r f; do
+    [ "$f" = "$self" ] && continue
+    if alternates_lists_mirror "$f" "$HQ_GIT_DIR"; then
+      printf '%s\n' "${f%/objects/info/alternates}"
+    fi
+  done
+}
+
+cmd_prune_hq_history() {
+  local before res n bytes held d borrowers
+  if ! has_hq_git; then
+    echo "hq-git $HQ_GIT_DIR missing; nothing to prune"
+    return 0
+  fi
+  if [ "$APPLY" = 1 ]; then echo "mode=apply"; else echo "mode=dry-run"; fi
+  if [ "$APPLY" = 1 ] && [ "$CONFIRMED" != 1 ]; then refuse_unconfirmed prune-hq-history; fi
+  hq_git_summary
+  autosave_staleness
+  if ! res=$(unreachable_loose); then
+    echo "error: git prune -n failed on $HQ_GIT_DIR; nothing changed"
+    exit 1
+  fi
+  read -r n bytes <<EOF
+$res
+EOF
+  if borrowers=$(hq_root_borrowers) && [ -n "$borrowers" ]; then
+    while IFS= read -r d; do
+      [ -n "$d" ] && echo "kept $HQ_GIT_DIR reason=borrowed-by $d: this repo reads objects from the HQ root through objects/info/alternates; pruning could break it"
+    done <<EOF
+$borrowers
+EOF
+    echo "refused: prune-hq-history does not run while another repo borrows the HQ root's objects. Run 'git repack -a -d' in that repo and remove its alternates entry first."
+    exit 3
+  fi
+  held=$(disabled_mirrors)
+  [ -z "$held" ] || echo "note: a disabled HQ sync recovery copy may share objects with $HQ_GIT_DIR; trash-disabled-mirror checks its refs first"
+  if [ "$APPLY" != 1 ]; then
+    echo "would-prune objects=$n disk=$(human_bytes "$bytes") disk_bytes=$bytes"
+    return 0
+  fi
+  if [ "$n" = 0 ]; then
+    echo "pruned objects=0 disk_bytes=0"
+    return 0
+  fi
+  if ! take_autosave_lock; then
+    echo "kept $HQ_GIT_DIR reason=autosave-lock-held ($AUTOSAVE_LOCK_DIR); try again shortly"
+    exit 3
+  fi
+  before=$(free_kb)
+  if ! hq_git prune --expire=1.hour.ago; then
+    echo "error: git prune failed on $HQ_GIT_DIR"
+    exit 1
+  fi
+  release_autosave_lock
+  echo "pruned objects=$n disk=$(human_bytes "$bytes") disk_bytes=$bytes"
+  hq_git_summary
+  report_freed "$before"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    echo "still-held-by $d: run trash-disabled-mirror to free this space"
+  done <<EOF
+$held
+EOF
+}
+
+# Moves <path> to the user's Trash and prints where it went. Never deletes.
+trash_path() {
+  local p="$1" name dest tdir
+  name="hq-sync-mirror-$(basename "$p")-$(date +%Y%m%d%H%M%S)"
+  if [ -n "${HQ_FREE_DISK_TRASH_DIR:-}" ]; then
+    tdir="$HQ_FREE_DISK_TRASH_DIR"
+  elif [ "$(uname -s)" = Darwin ]; then
+    tdir="$HOME/.Trash"
+  else
+    if command -v gio >/dev/null 2>&1 && gio trash -- "$p" 2>/dev/null; then
+      echo "Trash (gio)"
+      return 0
+    fi
+    tdir="${XDG_DATA_HOME:-$HOME/.local/share}/Trash/files"
+  fi
+  dest="$tdir/$name"
+  if mkdir -p "$tdir" 2>/dev/null && mv -- "$p" "$dest" 2>/dev/null; then
+    echo "$dest"
+    return 0
+  fi
+  # macOS privacy controls can block writes to ~/.Trash from a terminal.
+  # Finder can still move the folder there.
+  if [ -z "${HQ_FREE_DISK_TRASH_DIR:-}" ] && [ "$(uname -s)" = Darwin ] && command -v osascript >/dev/null 2>&1; then
+    if osascript -e 'on run argv' -e 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)' -e 'end run' "$p" >/dev/null 2>&1; then
+      echo "Trash (Finder)"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# An alternates entry is one path per line (git ignores blanks and # comments).
+# Keep the mirror only when a whole line is that mirror or its objects dir.
+# A longer path that merely contains the mirror string is not a borrow.
+alternates_lists_mirror() {
+  local alt="$1" d="$2" line p dreal
+  [ -f "$alt" ] || return 1
+  dreal=$(cd "$d" 2>/dev/null && pwd -P) || dreal=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    case "$line" in
+      "$d"|"$d/"|"$d/objects"|"$d/objects/") return 0 ;;
+    esac
+    # Compare resolved real paths too: a relative entry (relative to the HQ
+    # root's objects dir) or one spelled through a symlink names the same copy.
+    case "$line" in /*) p="$line" ;; *) p="$(dirname "$alt")/../$line" ;; esac
+    p=$(cd "$p" 2>/dev/null && pwd -P) || continue
+    [ -n "$dreal" ] || continue
+    case "$p" in "$dreal"|"$dreal/objects") return 0 ;; esac
+  done <"$alt"
+  return 1
+}
+
+cmd_trash_disabled_mirror() {
+  local d any=0 res total linked dest alt rc miss
+  if [ "$APPLY" = 1 ]; then echo "mode=apply"; else echo "mode=dry-run"; fi
+  if [ "$APPLY" = 1 ] && [ "$CONFIRMED" != 1 ]; then refuse_unconfirmed trash-disabled-mirror; fi
+  [ "$APPLY" = 1 ] && collect_session_cwds
+  alt="$HQ_GIT_DIR/objects/info/alternates"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    any=1
+    mirror_marker_line "$d"
+    if [ -z "$(marker_field "$d/$MIRROR_MARKER" disabled_at)" ]; then
+      echo "kept $d reason=marker-without-disabled_at"
+      continue
+    fi
+    if alternates_lists_mirror "$alt" "$d"; then
+      echo "kept $d reason=hq-git-borrows-objects (listed in $alt)"
+      continue
+    fi
+    rc=0
+    miss=$(recovery_refs_in_hq "$d") || rc=$?
+    if [ "$rc" = 1 ]; then
+      echo "kept $d reason=commit-missing-from-hq-root ($miss): this is an HQ sync recovery copy holding history the HQ root lacks"
+      continue
+    elif [ "$rc" = 4 ]; then
+      echo "kept $d reason=object-missing-from-hq-root ($miss): this recovery copy holds an object (possibly unreferenced) the HQ root lacks"
+      continue
+    elif [ "$rc" = 3 ]; then
+      echo "kept $d reason=hq-root-shallow: $HQ_GIT_DIR is a shallow clone, so it cannot prove it holds this recovery copy's history"
+      continue
+    elif [ "$rc" != 0 ]; then
+      echo "kept $d reason=refs-unreadable: cannot confirm the HQ root holds this recovery copy's history"
+      continue
+    fi
+    if miss=$(recovery_worktree_state "$d"); then
+      echo "kept $d reason=$miss: a non-bare recovery copy with an index or working-tree changes may hold uncommitted work"
+      continue
+    fi
+    echo "refs-covered $d: every object in it (commits from refs, HEAD and reflogs, and unreferenced objects) exists in $HQ_GIT_DIR"
+    if [ "$APPLY" = 1 ] && path_in_list "$LIVE_PROC_CWDS" "$d" "$(cd "$d" 2>/dev/null && pwd -P)"; then
+      echo "kept $d reason=live-process"
+      continue
+    fi
+    res=$(mirror_link_bytes "$d")
+    read -r total linked <<EOF
+$res
+EOF
+    echo "mirror-size $d size=$(human_bytes "$total") hard_linked=$(human_bytes "$linked") size_bytes=$total hard_linked_bytes=$linked"
+    echo "$MIRROR_NOTE"
+    if [ "$APPLY" != 1 ]; then
+      echo "would-trash $d"
+      continue
+    fi
+    if dest=$(trash_path "$d"); then
+      echo "trashed $d -> $dest"
+    else
+      echo "kept $d reason=trash-failed"
+    fi
+  done <<EOF
+$(disabled_mirrors)
+EOF
+  if [ "$any" = 0 ]; then
+    echo "no disabled HQ sync mirror under $MIRROR_ROOT"
+  elif [ "$APPLY" = 1 ]; then
+    echo "The space comes back when the Trash is emptied, and after prune-hq-history if the HQ root still holds unreachable objects."
+  fi
 }
 
 cmd_worktrees_status() {
@@ -676,6 +1169,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --apply) APPLY=1; shift ;;
     --dry-run) APPLY=0; shift ;;
+    --yes) CONFIRMED=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "unknown flag: $1" >&2; usage; exit 2 ;;
@@ -691,5 +1185,7 @@ case "$cmd" in
   prune-backed-up) cmd_prune_backed_up "${extra:-6}" ;;
   slim-idle) cmd_slim_idle "${extra:-7}" ;;
   caches) cmd_caches ;;
+  prune-hq-history) cmd_prune_hq_history ;;
+  trash-disabled-mirror) cmd_trash_disabled_mirror ;;
   *) usage; exit 2 ;;
 esac

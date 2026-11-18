@@ -20,10 +20,12 @@ contributes:
     - finish-estimate
     - handoff-all
     - hq-access
+    - hq-login
     - hq-logout
     - hq-whoami
     - idea
     - import-claude
+    - investigate
     - land-batch
     - land
     - onboard

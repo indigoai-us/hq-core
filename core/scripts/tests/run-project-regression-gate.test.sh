@@ -42,6 +42,7 @@ emit_function() {
 {
   emit_function is_git_repo
   emit_function provision_worktree
+  emit_function wt_backend_add
   emit_function ensure_worktree
   emit_function ensure_missing_repo_worktree
   emit_function ensure_story_worktree

@@ -150,10 +150,12 @@ case "$out" in
   *) fail "rm fail report" "$out" ;;
 esac
 
-# 11. Every retired core/hooks/<event>/ leaf in the script is in master-hook's
-#     skip list, and the skip list names nothing else.
+# 11. Every retired core/hooks/<event>/ leaf in the manifest is in master-hook's
+#     skip list, and the skip list names nothing else. The retired list is read
+#     through the script (--list), which reads core/functions.yaml.
 MH="$ROOT/.claude/hooks/master-hook.sh"
-script_leaves="$(sed -n "/^RETIRED='/,/^'/p" "$SCRIPT" | awk '{print $1}' \
+RETIRED_LIST="$(bash "$SCRIPT" --list)" || fail "retired list" "--list failed"
+script_leaves="$(printf '%s\n' "$RETIRED_LIST" | awk '{print $1}' \
   | sed -n 's#^core/hooks/\([^/]*/[^/]*\)$#\1#p' | sort -u)"
 hook_leaves="$(sed -n '/^# Retired core leaves/,/^    esac/p' "$MH" \
   | sed -n 's#^ *\([A-Za-z]*/[^)]*\.sh\))$#\1#p' | tr '|' '\n' | sort -u)"
@@ -165,7 +167,7 @@ fi
 
 # 12. The legacy Codex hook layer is on the retired list, and shipped .codex
 #     files are not.
-listed="$(sed -n "/^RETIRED='/,/^'/p" "$SCRIPT" | awk '{print $1}' | sort -u)"
+listed="$(printf '%s\n' "$RETIRED_LIST" | awk '{print $1}' | sort -u)"
 missing=""
 for rel in .codex/hooks.json .codex/hooks/hook-gate.sh \
   .codex/hooks/auto-capture-registry.sh .codex/hooks/auto-checkpoint-trigger.sh \
@@ -359,6 +361,99 @@ SessionStart||/bin/sh \"$T14P/core/scripts/hqd-hook-shim.sh\" --runtime codex"
 else
   echo "skip [14] node is not installed"
 fi
+
+# 18. The retired list comes from core/functions.yaml. Without the manifest the
+#     script removes nothing and exits 1.
+T18="$TMP/no-manifest"; make_tree "$T18"
+out="$(HQ_FUNCTION_MANIFEST="$TMP/absent-functions.yaml" bash "$SCRIPT" "$T18" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && ok "a missing manifest exits 1" || fail "missing manifest rc" "got $rc"
+[ -f "$T18/core/hooks/Stop/70-work-mesh-done.sh" ] && [ -f "$T18/core/hooks/work-mesh-done.sh" ] \
+  && ok "a missing manifest removes nothing" || fail "missing manifest" "a retired file is gone"
+case "$out" in
+  *"cannot read the function manifest"*) ok "a missing manifest is reported" ;;
+  *) fail "missing manifest report" "$out" ;;
+esac
+
+# 19. Only a removed entry that carries released_sha256 is deleted. A removed
+#     entry without one, a retiring entry and a live entry are left alone, and
+#     a path that leaves the HQ root is never read from the manifest.
+T19="$TMP/manifest-rules"; make_tree "$T19"
+sum_stop="$(tr -d '\r' < "$FIX/Stop-70-work-mesh-done.sh.txt" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-64)"
+sum_helper="$(tr -d '\r' < "$FIX/work-mesh-done.sh.txt" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-64)"
+M19="$TMP/functions-19.yaml"
+{
+  printf 'schema: 1\nfunctions:\n'
+  printf '  - {"id": "core/hooks/Stop/70-work-mesh-done.sh", "kind": "hook", "owner": "core/hooks/Stop/70-work-mesh-done.sh", "runtimes": ["all"], "hot_path": "turn", "state": "removed", "replaced_by": "core/hooks/Stop/70-work-mesh-turn-end.sh", "released_sha256": ["%s"]}\n' "$sum_stop"
+  printf '  - {"id": "core/hooks/work-mesh-done.sh", "kind": "hook", "owner": "core/hooks/work-mesh-done.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "removed", "replaced_by": "core/hooks/Stop/70-work-mesh-turn-end.sh"}\n'
+  printf '  - {"id": "core/hooks/Stop/70-work-mesh-turn-end.sh", "kind": "hook", "owner": "core/hooks/Stop/70-work-mesh-turn-end.sh", "runtimes": ["all"], "hot_path": "turn", "state": "live"}\n'
+  printf '  - {"id": "../outside.sh", "kind": "hook", "owner": "../outside.sh", "runtimes": ["all"], "hot_path": "cold", "state": "removed", "replaced_by": "nothing", "released_sha256": ["%s"]}\n' "$sum_helper"
+} > "$M19"
+cp "$FIX/work-mesh-done.sh.txt" "$TMP/outside.sh"
+listed19="$(HQ_FUNCTION_MANIFEST="$M19" bash "$SCRIPT" --list)"
+[ "$listed19" = "core/hooks/Stop/70-work-mesh-done.sh $sum_stop" ] \
+  && ok "--list holds only removed entries with a released sha256 inside the root" || fail "manifest list" "[$listed19]"
+out="$(HQ_FUNCTION_MANIFEST="$M19" bash "$SCRIPT" "$T19" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$T19/core/hooks/Stop/70-work-mesh-done.sh" ] \
+  && ok "a removed entry with a matching released sha256 is deleted" || fail "manifest remove" "rc=$rc out=$out"
+[ -f "$T19/core/hooks/work-mesh-done.sh" ] && ok "a removed entry without released_sha256 is kept" || fail "manifest keep" "deleted"
+[ -f "$T19/core/hooks/Stop/70-work-mesh-turn-end.sh" ] && ok "a live entry is kept" || fail "manifest live" "deleted"
+[ -f "$TMP/outside.sh" ] && ok "a path outside the root is never touched" || fail "manifest outside" "deleted"
+
+# 20. The shipped manifest still carries the released copies of both retired
+#     core hooks and of the legacy Codex layer: 25 released copies of 24 paths
+#     when the list moved into the manifest. The list only grows.
+shipped_paths="$(printf '%s\n' "$RETIRED_LIST" | awk '{print $1}' | sort -u | grep -c .)"
+shipped_copies="$(printf '%s\n' "$RETIRED_LIST" | grep -c .)"
+[ "$shipped_paths" -ge 24 ] && [ "$shipped_copies" -ge 25 ] \
+  && ok "the shipped manifest lists at least 25 released copies of 24 retired paths" || fail "shipped list size" "paths=$shipped_paths copies=$shipped_copies"
+printf '%s\n' "$RETIRED_LIST" | grep -xF "core/hooks/Stop/70-work-mesh-done.sh $sum_stop" >/dev/null \
+  && ok "the shipped manifest lists the released Stop leaf" || fail "shipped Stop leaf" "not listed with $sum_stop"
+
+# 21. A removed core script that carries released_sha256 in the shipped
+#     manifest is deleted from an install when it matches the released copy,
+#     and kept when it was edited.
+T21="$TMP/removed-script"; mkdir -p "$T21/core/scripts"
+cp "$FIX/benchmark-turn-timing.sh.txt" "$T21/core/scripts/benchmark-turn-timing.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T21/core/scripts/hq-session.sh"
+out="$(bash "$SCRIPT" "$T21" --check 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && [ -f "$T21/core/scripts/benchmark-turn-timing.sh" ] \
+  && ok "--check reports a released copy of a removed core script and keeps it" || fail "removed script check" "rc=$rc out=$out"
+out="$(bash "$SCRIPT" "$T21" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$T21/core/scripts/benchmark-turn-timing.sh" ] && [ -f "$T21/core/scripts/hq-session.sh" ] \
+  && ok "a released copy of a removed core script is deleted; a live script is kept" || fail "removed script" "rc=$rc out=$out"
+printf '#!/usr/bin/env bash\n# my own benchmark\nexit 0\n' > "$T21/core/scripts/benchmark-turn-timing.sh"
+out="$(bash "$SCRIPT" "$T21" 2>&1)"; rc=$?
+[ -f "$T21/core/scripts/benchmark-turn-timing.sh" ] && ok "an edited copy of a removed core script is kept" || fail "edited removed script" "deleted"
+case "$out" in
+  *"kept core/scripts/benchmark-turn-timing.sh (local edits"*) ok "the kept script is named" ;;
+  *) fail "edited removed script report" "$out" ;;
+esac
+
+# 22. A manifest with no removed entry that carries released_sha256 is
+#     reported and exits 1, in the default mode and with --list.
+T22="$TMP/empty-list"; make_tree "$T22"
+M22="$TMP/functions-22.yaml"
+printf 'schema: 1\nfunctions:\n  - {"id": "core/hooks/Stop/70-work-mesh-turn-end.sh", "kind": "hook", "owner": "core/hooks/Stop/70-work-mesh-turn-end.sh", "runtimes": ["all"], "hot_path": "turn", "state": "live"}\n' > "$M22"
+out="$(HQ_FUNCTION_MANIFEST="$M22" bash "$SCRIPT" "$T22" 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && [ -f "$T22/core/hooks/Stop/70-work-mesh-done.sh" ] \
+  && ok "a manifest with no removed released file exits 1 and removes nothing" || fail "empty list" "rc=$rc out=$out"
+case "$out" in
+  *"lists no removed file with a released sha256"*) ok "the empty list is reported" ;;
+  *) fail "empty list report" "$out" ;;
+esac
+HQ_FUNCTION_MANIFEST="$M22" bash "$SCRIPT" --list >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "--list exits 1 on an empty list" || fail "empty --list rc" "got $rc"
+
+# 23. No path the cleanup deletes on installs exists in this repository: a
+#     removed file that came back would ship and then be deleted on update.
+back=""
+while read -r rel _; do
+  [ -n "$rel" ] || continue
+  if [ -e "$ROOT/$rel" ]; then back="$back $rel"; fi
+done <<EOF
+$RETIRED_LIST
+EOF
+[ -z "$back" ] && ok "no removed file with a released sha256 exists in the repository" || fail "removed file is back" "$back"
 
 echo "remove-retired-core-hooks: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -1,0 +1,1 @@
+Fixed `/deep-plan` so the codebase, HQ context and repo scans now produce their research files. The scans are read-only and return their findings, and the main session writes `research/codebase-scan.md`, `research/hq-context.md` and `research/repo-analysis.md` itself.

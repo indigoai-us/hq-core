@@ -558,7 +558,7 @@ grep -q 'node core/scripts/super-conductor-decisions.mjs' <(sed -n 1,6p "$DESK")
 grep -q -- "--for desk --interval 5" "$DESK"; check "the desk skill arms the desk watcher" $?
 grep -q 'answer --file <queue> --id <id> --answer' "$DESK"; check "the desk skill writes answers with answer --id" $?
 grep -q 'STALE-DECISION' "$DESK" && grep -q 'PushNotification' "$DESK"; check "the desk skill pushes a phone notification on STALE-DECISION" $?
-grep -q -- '--relay-by desk' "$DESK" && grep -q 'hq lanes link send' "$DESK"; check "the desk skill relays answers to child sessions itself" $?
+grep -q -- '--relay-by desk' "$DESK" && grep -q 'hq runners link send' "$DESK"; check "the desk skill relays answers to child sessions itself" $?
 grep -q 'drop --file <queue> --id <id> --note' "$DESK"; check "the desk skill drops with a note" $?
 grep -q -- '--claim <desk name> --count 4' "$DESK"; check "the desk skill claims a drain's rows in one next --count call" $?
 grep -q 'standing add --by desk' "$DESK"; check "the desk skill writes a standing rule from the owner's words" $?

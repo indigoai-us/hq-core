@@ -21,26 +21,46 @@ signals_capture: true
 ontology_capture: true
 ```
 
-Check with `bash core/scripts/knowledge-prefs.sh get {co} signals_capture`.
+Check with `hq core knowledge-prefs get {co} signals_capture`.
 
 ## Where it runs
 
 Each source picks its runtime with `run:` in its `source.yaml`. Session-close
 candidates are gardened by whichever runtime runs `garden` for the company.
 
-### `run: local` — a routine on the owner's Outpost
+### Default: the local bot job
+
+A local bot (`hq bot create`) registers the built-in `hot-signal-sync` job,
+which runs daily at 06:30 in the computer's time zone and builds signals on
+that computer under the person's own logins. No cloud schedule is involved.
+The job is not a `run:` value: it works from the company's connected
+channels. With the engine flag on, its extract step processes declared sources
+marked `run: local` and skips those marked `run: cloud`. See "Built-in
+hot-signal-sync job" in `core/knowledge/public/hq-core/agents-and-bots.md`.
+
+- With the hq-cli flag `cli.bot-signals-engine-job` off (the default), the job
+  runs `hq sources sync`: it lands new source items and builds signals from
+  them with Claude Code (`claude -p`), which must be installed and signed in on
+  the computer whatever runtime the bot uses. It does not run `garden`.
+- With the flag on, the job runs `hq signals run --trigger job`, which uses
+  the main local bot's Claude or Codex login and runs `garden`
+  (`core/scripts/ontology-garden.mjs`) before and after extraction.
+
+To garden by hand on your own machine: `/run ontology garden --company {co}`.
+When the bot job does not garden for the company, or the owner's computer
+is not the right place, use one of the alternatives below.
+
+### Alternative: `run: local` as a routine on the owner's Outpost
 
 `/schedule` jobs run on the owner's Outpost, never as a timer on a laptop.
 Start from `job.example.yaml` in this folder:
 
 1. Copy it to `companies/{co}/jobs/ontology-garden.yaml` and fill `{company}`,
    `owner`, `timezone`, `created_at`.
-2. `bash core/scripts/jobs-validate.sh companies/{co}/jobs/ontology-garden.yaml`
+2. `hq core jobs validate companies/{co}/jobs/ontology-garden.yaml`
 3. `/schedule list` to confirm it is registered and probed.
 
-For a one-off run on your own machine: `/run ontology garden --company {co}`.
-
-### `run: cloud` — a cloud agent
+### Alternative: `run: cloud` with a cloud agent
 
 Use this when the owner's machine should not do the work (large sources, or
 sources that only exist in the vault).

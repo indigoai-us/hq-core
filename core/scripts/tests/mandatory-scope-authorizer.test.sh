@@ -42,7 +42,7 @@ install_fixture() {
     "$TMP/companies/_template" "$TMP/core/docs" "$TMP/personal" \
     "$TMP/workspace/sessions/sess-bound" "$TMP/home/.hq"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
-  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
   cp "$ROOT/core/scripts/lib/hook-caller-lineage.sh" "$TMP/core/scripts/lib/"
@@ -170,6 +170,18 @@ install_fixture "indigo"
 payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"p=../../otherco/settings/secret.yaml; cat companies/indigo/$p"}}'
 rc="$(run_hook "$payload")"
 [ "$rc" = "2" ] || fail "expected block for an expansion in a company path, got $rc"
+
+echo "[7b] Bash follows a for-loop variable with literal values inside a quoted bound-company path"
+install_fixture "indigo"
+payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"for f in a b c; do cat \"companies/indigo/settings/$f.yaml\"; done"}}'
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "literal for-loop variable in a quoted bound-company path is allowed"
+payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"for f in otherco; do cat \"companies/$f/settings/x.yaml\"; done"}}'
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "literal for-loop variable naming a foreign company is blocked"
+payload='{"tool_name":"Bash","session_id":"sess-bound","cwd":"'"$TMP"'","tool_input":{"command":"for f in $(ls); do cat \"companies/indigo/settings/$f\"; done"}}'
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "for-loop over a command substitution stays blocked"
 
 echo "[8] Bash blocks a line-continued foreign company variable"
 install_fixture "indigo"
@@ -469,7 +481,7 @@ install_fixture "indigo"
 ROOT_ALIAS="$TMP/logical-root"
 ln -s "$TMP" "$ROOT_ALIAS"
 cp "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/hook-copy.sh"
-cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$TMP/"
 payload="$(jq -cn --arg path "$ROOT_ALIAS/companies/otherco/settings/secret.yaml" --arg cwd "$ROOT_ALIAS" \
   '{tool_name:"Read",session_id:"sess-bound",cwd:$cwd,tool_input:{file_path:$path}}')"
 rc=0
@@ -756,7 +768,25 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "company-segment glob that also matches another tenant is refused"
-grep -Eq "Path: companies/(otherco|cmp_[A-Z]+)/settings" "$TMP/err.txt" || fail "company-segment glob block names the foreign match"
+grep -Fq 'Path: companies/*/settings/*.yaml' "$TMP/err.txt" || fail "company-segment glob block names the glob as written"
+if grep -Eq "Path: companies/(otherco|cmp_[A-Z]+)/" "$TMP/err.txt"; then
+  fail "company-segment glob block must not name a concrete company path as the operand"
+fi
+grep -Fq 'Reason: the glob spans company folders' "$TMP/err.txt" || fail "company-segment glob block gives the glob reason"
+if grep -Fq 'Target company:' "$TMP/err.txt"; then
+  fail "company-segment glob block must not name a target company"
+fi
+# Regression (feedback 22679f15): a glob over a project name that exists under
+# no other company must still be reported as the glob.
+command='ls companies/*/projects/no-such-project-22679f15'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "glob over companies/*/projects/<name> stays blocked"
+grep -Fq 'Path: companies/*/projects/no-such-project-22679f15' "$TMP/err.txt" || fail "project glob block names the operand as written"
+if grep -Eq "Path: companies/(otherco|cmp_[A-Z]+)/" "$TMP/err.txt"; then
+  fail "project glob block must not name a concrete company path"
+fi
 command='cat companies/[io]therco/settings/*.yaml'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
@@ -901,6 +931,119 @@ expect_exit 0 "$rc" "valid agent_id selects tuple even when agent_type is absent
 echo "[65] main thread keeps its legacy session binding"
 rc="$(run_hook "$(caller_payload '' '' indigo)")"
 expect_exit 0 "$rc" "main thread without agent identity uses session binding"
+
+echo "[65a] an invalid agent_id denial says where the id came from and describes it without printing it"
+# "This call has an invalid agent_id" alone gives no way to tell which value was
+# refused, or whether it came from the hook payload or from HQ_HOOK_AGENT_ID.
+install_fixture "indigo"
+run_hook_env() {
+  # run_hook_env <payload> [NAME=value ...]: the hook with extra environment.
+  local payload="$1" rc=0
+  shift
+  : > "$TMP/err.txt"
+  printf '%s' "$payload" | env "$@" "${BASH_BIN:-bash}" "$TMP/.claude/hooks/mandatory-scope-authorizer.sh" 2>"$TMP/err.txt" || rc=$?
+  printf '%s' "$rc"
+}
+main_payload_65a="$(caller_payload '' '' indigo | jq -c 'del(.agent_id, .agent_type)')"
+rc="$(run_hook "$(caller_payload '../agent-A' general-purpose indigo)")"
+expect_exit 2 "$rc" "payload agent_id with a slash is denied"
+grep -Fq 'This call has an invalid agent_id' "$TMP/err.txt" || fail "the invalid agent_id sentence is kept"
+grep -Fq 'agent_id source: hook payload' "$TMP/err.txt" || fail "payload-sourced denial names the payload: $(cat "$TMP/err.txt")"
+grep -Fq 'agent_id value: 10 bytes' "$TMP/err.txt" || fail "denial gives the byte length: $(cat "$TMP/err.txt")"
+grep -Fq "'/' (0x2F)" "$TMP/err.txt" || fail "denial lists the rejected slash: $(cat "$TMP/err.txt")"
+if grep -Fq '../agent-A' "$TMP/err.txt"; then fail "denial must not print the raw agent_id"; fi
+
+rc="$(run_hook_env "$main_payload_65a" HQ_HOOK_AGENT_ID='x y' HQ_HOOK_AGENT_TYPE='')"
+expect_exit 2 "$rc" "malformed HQ_HOOK_AGENT_ID still fails closed"
+grep -Fq 'agent_id source: environment variable HQ_HOOK_AGENT_ID' "$TMP/err.txt" || fail "environment-sourced denial names the variable: $(cat "$TMP/err.txt")"
+grep -Fq 'agent_id value: 3 bytes' "$TMP/err.txt" || fail "environment denial gives the byte length: $(cat "$TMP/err.txt")"
+grep -Fq 'space (0x20)' "$TMP/err.txt" || fail "environment denial lists the rejected space: $(cat "$TMP/err.txt")"
+grep -Fq 'agent_id in the hook payload: absent' "$TMP/err.txt" || fail "environment denial reports that the payload names no agent: $(cat "$TMP/err.txt")"
+grep -Fq 'already set in the environment of the process that ran this hook' "$TMP/err.txt" || fail "environment denial states where the refused value was set: $(cat "$TMP/err.txt")"
+# The model reads this text. It states the source and must not tell the reader
+# to restart a process, which a session should not do on its own.
+if grep -Eqi 'restart the (process|hq daemon|daemon)' "$TMP/err.txt"; then fail "environment denial must not instruct a process or daemon restart: $(cat "$TMP/err.txt")"; fi
+
+rc="$(run_hook_env "$main_payload_65a" HQ_HOOK_AGENT_ID='x y')"
+expect_exit 2 "$rc" "HQ_HOOK_AGENT_ID without HQ_HOOK_AGENT_TYPE still fails closed"
+grep -Fq 'agent_id source: environment variable HQ_HOOK_AGENT_ID' "$TMP/err.txt" || fail "lone HQ_HOOK_AGENT_ID is named as the source: $(cat "$TMP/err.txt")"
+
+rc="$(run_hook_env "$(caller_payload agent-A general-purpose indigo)" HQ_HOOK_AGENT_ID='x y' HQ_HOOK_AGENT_TYPE='')"
+expect_exit 2 "$rc" "malformed HQ_HOOK_AGENT_ID is not replaced by a valid payload agent_id"
+grep -Fq 'agent_id in the hook payload: a string of 7 characters' "$TMP/err.txt" || fail "environment denial describes the payload agent_id: $(cat "$TMP/err.txt")"
+
+rc="$(run_hook_env "$main_payload_65a" HQ_HOOK_AGENT_ID="$(printf 'a\001b\033[31mc')" HQ_HOOK_AGENT_TYPE='')"
+expect_exit 2 "$rc" "HQ_HOOK_AGENT_ID with control bytes is denied"
+if LC_ALL=C grep -q "$(printf '[\001\033]')" "$TMP/err.txt"; then fail "denial must not print raw control bytes"; fi
+grep -Fq '0x01' "$TMP/err.txt" || fail "denial lists the 0x01 byte: $(cat "$TMP/err.txt")"
+grep -Fq '0x1B' "$TMP/err.txt" || fail "denial lists the escape byte: $(cat "$TMP/err.txt")"
+grep -Fq "'[' (0x5B)" "$TMP/err.txt" || fail "denial lists the printable bracket: $(cat "$TMP/err.txt")"
+
+long_agent_id="$(printf '%s' ' !#$%&()*+,/:;<=>?@[]^{|}~'; printf 'a%.0s' $(seq 1 5000))"
+rc="$(run_hook_env "$main_payload_65a" HQ_HOOK_AGENT_ID="$long_agent_id" HQ_HOOK_AGENT_TYPE='')"
+expect_exit 2 "$rc" "very long HQ_HOOK_AGENT_ID is denied"
+grep -Fq 'agent_id value: 5026 bytes' "$TMP/err.txt" || fail "denial gives the full length of a long value: $(cat "$TMP/err.txt")"
+grep -Fq 'and 14 more' "$TMP/err.txt" || fail "denial caps the rejected-character list: $(cat "$TMP/err.txt")"
+value_line_bytes="$(grep -F 'agent_id value:' "$TMP/err.txt" | LC_ALL=C wc -c | tr -d ' ')"
+[ "$value_line_bytes" -le 400 ] || fail "the agent_id value line is capped (got $value_line_bytes bytes)"
+
+rc="$(run_hook_env "$main_payload_65a" HQ_HOOK_AGENT_ID='..' HQ_HOOK_AGENT_TYPE='')"
+expect_exit 2 "$rc" "HQ_HOOK_AGENT_ID of .. is denied"
+grep -Fq "is '.' or '..'" "$TMP/err.txt" || fail "a dot-only agent_id is explained: $(cat "$TMP/err.txt")"
+
+payload="$(jq -cn --arg cwd "$TMP" \
+  '{tool_name:"Write",session_id:"sess-bound",cwd:$cwd,agent_id:7,agent_type:"general-purpose",
+    tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "non-string agent_id is still denied"
+grep -Fq 'agent_id source: hook payload' "$TMP/err.txt" || fail "non-string denial names the payload: $(cat "$TMP/err.txt")"
+grep -Fq 'agent_id value: not a JSON string (number)' "$TMP/err.txt" || fail "non-string denial names the JSON type: $(cat "$TMP/err.txt")"
+
+payload="$(jq -cn --arg cwd "$TMP" \
+  '{tool_name:"Write",session_id:"sess-bound",cwd:$cwd,agent_id:"agent\u0000A",agent_type:"general-purpose",
+    tool_input:{file_path:($cwd + "/companies/indigo/settings/foo.yaml")}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "agent_id with an embedded NUL is denied, not truncated to a valid id"
+grep -Fq 'This call has an invalid agent_id' "$TMP/err.txt" || fail "embedded-NUL agent_id is reported as invalid: $(cat "$TMP/err.txt")"
+grep -Fq 'contains a NUL character' "$TMP/err.txt" || fail "embedded-NUL denial says so: $(cat "$TMP/err.txt")"
+
+echo "[65b] an empty or absent agent_id is the main thread on a jq that reads a NUL pattern as empty"
+# Defensive case. A jq that handed the regex or separator "\u0000" to a
+# C-string API would read it as the empty pattern. gsub("\u0000"; marker) would
+# then rewrite an EMPTY agent_id into the marker and every main-thread call
+# would look like a subagent with an invalid id. No jq build is known to do
+# that (1.6, 1.7.1 and 1.8.2 handle the pattern correctly), so the shim below
+# is the real jq with that defect simulated.
+install_fixture "indigo"
+session_scope_mint "$TMP" "sess-bound" "indigo" "agent-A"
+real_jq="$(type -P jq)"
+mkdir -p "$TMP/nul-jq"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'args=()\n'
+  printf 'for arg in "$@"; do\n'
+  printf '  arg="${arg//gsub(\\"\\\\u0000\\"/gsub(\\"\\"}"\n'
+  printf '  arg="${arg//split(\\"\\\\u0000\\"/split(\\"\\"}"\n'
+  printf '  args+=("$arg")\n'
+  printf 'done\n'
+  printf 'exec %q "${args[@]}"\n' "$real_jq"
+} > "$TMP/nul-jq/jq"
+chmod +x "$TMP/nul-jq/jq"
+shim_probe="$(printf '{}' | "$TMP/nul-jq/jq" -j '"" | gsub("\u0000"; "MARK")')"
+[ "$shim_probe" = "MARK" ] || fail "the NUL-pattern jq shim must reproduce the defect (got '$shim_probe')"
+rc="$(run_hook_env "$main_payload_65a" PATH="$TMP/nul-jq:$PATH")"
+expect_exit 0 "$rc" "absent agent_id stays the main thread on a NUL-pattern jq"
+rc="$(run_hook_env "$(caller_payload '' '' indigo)" PATH="$TMP/nul-jq:$PATH")"
+expect_exit 0 "$rc" "empty agent_id stays the main thread on a NUL-pattern jq"
+rc="$(run_hook_env "$(caller_payload agent-A general-purpose indigo)" PATH="$TMP/nul-jq:$PATH")"
+expect_exit 0 "$rc" "a valid agent_id is not rewritten on a NUL-pattern jq"
+rc="$(run_hook_env "$(caller_payload '../agent-A' general-purpose indigo)" PATH="$TMP/nul-jq:$PATH")"
+expect_exit 2 "$rc" "a malformed agent_id still fails closed on a NUL-pattern jq"
+rc="$(run_hook_env "$(caller_payload '' general-purpose indigo)" PATH="$TMP/nul-jq:$PATH")"
+expect_exit 2 "$rc" "agent_type without agent_id still fails closed on a NUL-pattern jq"
+if grep -Eq 'gsub\("\\u0000"|split\("\\u0000"' "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh"; then
+  fail "the scope authorizer must not match on a NUL pattern (gsub or split on \\u0000)"
+fi
 
 echo "[66] Task subagent inherits its parent's capability on first use"
 # Claude Code fires no SessionStart for a Task subagent (feedback_284bc210), so
@@ -1149,13 +1292,56 @@ payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
 rc="$(run_hook "$payload")"
 expect_exit 2 "$rc" "workspace loop values are not proven confined"
 
-echo "[84] hq lanes message body is inert message text"
+echo "[84] hq runners message body is inert message text"
+install_fixture "indigo"
+command='hq runners message lane-1 --text "Review companies/otherco/s"'
+payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+  '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 0 "$rc" "hq runners message text is not a file operand"
+
+echo "[84b] the deprecated hq lanes alias keeps message text inert"
 install_fixture "indigo"
 command='hq lanes message lane-1 --text "Review companies/otherco/s"'
 payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
   '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
 rc="$(run_hook "$payload")"
 expect_exit 0 "$rc" "hq lanes message text is not a file operand"
+
+# US-035 parity: the runners spelling must never let through anything the
+# lanes spelling blocks, and the reverse. Each command runs in both spellings;
+# both must give the expected exit, so a widening on either side fails here.
+echo "[84c] hq runners and hq lanes get the same scope decision"
+scope_parity_case() {
+  local expect="$1" tail="$2" group rc
+  for group in runners lanes; do
+    install_fixture "indigo"
+    command="hq $group $tail"
+    payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+      '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+    rc="$(run_hook "$payload")"
+    expect_exit "$expect" "$rc" "parity ($group): hq $group $tail"
+  done
+}
+scope_parity_case 0 'message lane-1 --text "Review companies/otherco/s"'
+scope_parity_case 0 'link report --state working --text "Review companies/otherco/s"'
+scope_parity_case 0 'message lane-1 --text "Read companies/indigo/settings/x"'
+scope_parity_case 2 'message lane-1 --brief-file companies/otherco/settings/x'
+scope_parity_case 2 'create --brief-file companies/otherco/settings/x'
+scope_parity_case 2 'stop companies/otherco/settings/x'
+scope_parity_case 2 'message lane-1 --text "x" > companies/otherco/settings/x'
+scope_parity_case 2 'message lane-1 --text "x"; cat companies/otherco/settings/x'
+scope_parity_case 2 'message lane-1 --text "$(cat companies/otherco/settings/x)"'
+scope_parity_case 2 'link report --text-file companies/otherco/settings/x'
+# A look-alike group name gets no message contract from either spelling.
+for look_alike in runnersx lanesx; do
+  install_fixture "indigo"
+  command="hq $look_alike message lane-1 --text \"Review companies/otherco/s\""
+  payload="$(jq -cn --arg cwd "$TMP" --arg command "$command" \
+    '{tool_name:"Bash",session_id:"sess-bound",cwd:$cwd,tool_input:{command:$command}}')"
+  rc="$(run_hook "$payload")"
+  expect_exit 2 "$rc" "parity: hq $look_alike message text is checked as a path"
+done
 
 echo "[85] gh pr comment body is inert message text"
 install_fixture "indigo"
@@ -1708,6 +1894,8 @@ scope_110_case 2 'curl -o https://companies/otherco/settings/x https://example.c
 grep -Fq 'How to rewrite' "$TMP/err.txt" || true
 scope_110_case 2 'cat $UNSET_DIR/file'
 grep -Fq 'How to rewrite' "$TMP/err.txt" || fail "unresolved variable block explains how to rewrite"
+scope_110_case 2 'cat companies/$(echo otherco)/settings/x'
+grep -Fq 'use the Write tool instead of a Bash heredoc' "$TMP/err.txt" || fail "command substitution block points to the Write tool for file content"
 
 echo "[111] single-company HQ: a company-segment glob resolves to the one locked tenant"
 install_fixture "indigo"
@@ -3537,6 +3725,17 @@ bash_case 2 hqfb-1019-keep "cat > companies/cmp_OTHER/settings/note.md <<'EOF'
 Revenue \$3.2M
 EOF"
 
+echo "[124] an escaped dollar sign in a double-quoted word is not a zsh modifier"
+# The split drops the backslash of `\$`, so a grep pattern "var \$=" read as
+# the zsh `$=` flag. The raw spelling decides: `\$` is literal text, an
+# escaped backslash before `$` (`\\$=p`) leaves the flag in place, and a bare
+# modifier elsewhere in the same command still blocks.
+install_fixture "indigo"
+bash_case 0 "[124] escaped dollar in grep pattern" 'grep -n "var BOXN\|^  var \$=\|^<script>$" workspace/drafts/build.py | head'
+bash_case 2 "[124] escaped backslash then zsh split flag" 'cat "companies/indigo/\\$=p"'
+bash_case 2 "[124] bare zsh split flag" 'cat "companies/indigo/$=p"'
+bash_case 2 "[124] escaped dollar elsewhere, bare modifier on a company path" 'p=x; grep -n "\$p:h" workspace/drafts/build.py; cat companies/indigo/$p:h/settings'
+
 echo "[121] quote removal and backslash escapes are applied before company path checks"
 # bash joins adjacent quoted and unquoted pieces, drops the quotes, and
 # applies backslash escapes before it opens a file. Each blocked form below
@@ -4782,6 +4981,11 @@ arith_case() {
   fi
 }
 . "$ROOT/core/scripts/tests/bash-arith-guard.cases.sh"
+# env-split-review-087: the arithmetic check allows it (bash-arith-guard.test.sh),
+# but the full stack refuses it: the bash -c program uses $CMD, which the command never sets.
+bash_case 2 arith-env-split-review-087-full-stack 'bash -c "$CMD"'
+grep -q 'bash -c program uses \$CMD, which this command does not set' "$TMP/err.txt" \
+  || fail 'arith-env-split-review-087-full-stack: block does not come from the unset-variable scope check'
 bash_case 2 arith-message 'echo $((unknown+1))'
 grep -q 'BLOCKED: Bash arithmetic check' "$TMP/err.txt" || fail 'missing arithmetic-specific block message'
 grep -q 'Rewrite: assign a literal number' "$TMP/err.txt" || fail 'missing arithmetic rewrite hint'
@@ -4802,6 +5006,169 @@ bash_case 2 hq-sync-log-parent-scan 'grep -rn stall ~/.hq'
 grep -q 'tail -n 200 ~/.hq/logs/hq-sync.log' "$TMP/err.txt" || fail 'refused ~/.hq scan does not name the HQ Sync log path'
 bash_case 2 hq-sync-log-parent-find "find ~/.hq -name 'hq-sync*'"
 grep -q 'tail -n 200 ~/.hq/logs/hq-sync.log' "$TMP/err.txt" || fail 'refused ~/.hq find does not name the HQ Sync log path'
+
+# Cursor sends conversation_id on every hook and session_id only on
+# sessionStart (cursor.com/docs/agent/hooks). Each chat's binding must follow
+# its conversation_id, and two chats must not share one.
+echo "[cursor] Cursor payloads name the chat through conversation_id"
+install_fixture ""
+mkdir -p "$TMP/workspace/sessions/cursor-chat-a" "$TMP/workspace/sessions/cursor-chat-b"
+printf 'company_slug: indigo\n' > "$TMP/workspace/sessions/cursor-chat-a/meta.yaml"
+printf 'company_slug: personal\n' > "$TMP/workspace/sessions/cursor-chat-b/meta.yaml"
+# shellcheck source=../lib/session-scope-capability.sh
+. "$ROOT/core/scripts/lib/session-scope-capability.sh"
+session_scope_mint "$TMP" cursor-chat-a indigo
+session_scope_mint "$TMP" cursor-chat-b personal
+cursor_payload() { # <conversation-id> <tool> <tool_input-json>
+  jq -cn --arg cid "$1" --arg tool "$2" --argjson ti "$3" --arg root "$TMP" \
+    '{conversation_id:$cid, generation_id:"gen-1", hook_event_name:"preToolUse",
+      cursor_version:"2.0.34", workspace_roots:[$root], cwd:$root,
+      tool_name:$tool, tool_input:$ti}'
+}
+write_ti() { jq -cn --arg p "$1" '{file_path:$p, content:"x"}'; }
+shell_ti() { jq -cn --arg c "$1" --arg d "$TMP" '{command:$c, working_directory:$d}'; }
+rc="$(run_hook "$(cursor_payload cursor-chat-a Write "$(write_ti "$TMP/companies/indigo/settings/new.md")")")"
+expect_exit 0 "$rc" "cursor-bound-chat-writes-its-company"
+rc="$(run_hook "$(cursor_payload cursor-chat-a Write "$(write_ti "$TMP/companies/otherco/settings/new.md")")")"
+expect_exit 2 "$rc" "cursor-bound-chat-denied-other-company"
+rc="$(run_hook "$(cursor_payload cursor-chat-b Write "$(write_ti "$TMP/companies/indigo/settings/new.md")")")"
+expect_exit 2 "$rc" "cursor-second-chat-does-not-inherit-first-chat-binding"
+rc="$(run_hook "$(cursor_payload cursor-chat-unbound Write "$(write_ti "$TMP/companies/indigo/settings/new.md")")")"
+expect_exit 2 "$rc" "cursor-unbound-chat-denied"
+grep -q 'cursor-chat-unbound' "$TMP/err.txt" \
+  || { echo "FAIL: cursor-unbound-chat-denied names the chat id" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+# Cursor names its shell tool Shell; a raw Cursor payload is still checked.
+rc="$(run_hook "$(cursor_payload cursor-chat-b Shell "$(shell_ti "cat $TMP/companies/indigo/settings/.keep")")")"
+expect_exit 2 "$rc" "cursor-shell-tool-is-checked"
+rc="$(run_hook "$(cursor_payload cursor-chat-a Shell "$(shell_ti "cat $TMP/companies/indigo/settings/.keep")")")"
+expect_exit 0 "$rc" "cursor-shell-tool-bound-chat-allowed"
+
+echo "[stdin-paths] a path read from stdin (read, mapfile, xargs) is refused when unbound or when the command reaches companies/"
+stdin_bash() {
+  jq -cn --arg cwd "$TMP" --arg command "$1" \
+    '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}'
+}
+stdin_list_setup() {
+  mkdir -p "$TMP/workspace/lists"
+  printf 'companies/otherco/settings/.keep\n' > "$TMP/workspace/lists/paths.txt"
+  printf 'companies/indigo/settings/.keep\n' > "$TMP/companies/indigo/settings/paths.txt"
+}
+# Unbound: every shape that opens a value read from stdin is refused.
+install_fixture ""
+stdin_list_setup
+L=workspace/lists/paths.txt
+while IFS= read -r stdin_case; do
+  rc="$(run_hook "$(stdin_bash "${stdin_case#*|}")")"
+  expect_exit 2 "$rc" "stdin-unbound-${stdin_case%%|*}"
+  if [ "$rc" = 2 ]; then
+    grep -q 'come from stdin' "$TMP/err.txt" \
+      || { echo "FAIL: stdin-unbound-${stdin_case%%|*} names the stdin source" >&2; REGRESSION_FAILURES=$((REGRESSION_FAILURES + 1)); }
+  fi
+done <<EOF
+while-read-redirect|while read p; do cat "\$p"; done < $L
+while-read-r-redirect|while IFS= read -r p; do cat "\$p"; done < $L
+while-read-piped|cat $L | while read p; do cat "\$p"; done
+while-read-redirect-target|while read p; do echo x > "\$p"; done < $L
+mapfile|mapfile -t a < $L; cat "\${a[@]}"
+xargs-redirect|xargs cat < $L
+xargs-piped|cat $L | xargs cat
+xargs-replace|xargs -I{} cat {} < $L
+xargs-replace-piped|cat $L | xargs -I{} cat {}
+xargs-arg-file|xargs -a $L cat
+xargs-env-wrapper|env LC_ALL=C xargs -n 1 cat < $L
+EOF
+# Unbound, no company path: printing or testing the value opens nothing.
+while IFS= read -r stdin_case; do
+  rc="$(run_hook "$(stdin_bash "${stdin_case#*|}")")"
+  expect_exit 0 "$rc" "stdin-unbound-allowed-${stdin_case%%|*}"
+done <<EOF
+echo|while read p; do echo "\$p"; done < $L
+test-and-printf|while read p; do [ -f "\$p" ] && printf '%s\n' "\$p"; done < $L
+xargs-echo|xargs echo < $L
+xargs-default|xargs < $L
+count|cat $L | wc -l
+single-quoted|awk '{print \$p}' $L
+xargs-fed-by-mktemp|mktemp -d | xargs -I{} ls {}
+xargs-fed-by-echo|echo hi | xargs -I{} ls {}
+read-fed-by-printf|printf a | while read p; do ls "\$p"; done
+command-v-then-xargs-echo|command -v jq; echo a | xargs echo
+EOF
+# Unbound, a producer whose output is not spelled out keeps the refusal.
+while IFS= read -r stdin_case; do
+  rc="$(run_hook "$(stdin_bash "${stdin_case#*|}")")"
+  expect_exit 2 "$rc" "stdin-unbound-unknown-producer-${stdin_case%%|*}"
+done <<EOF
+echo-of-a-variable|echo "\$X" | xargs cat
+find|find workspace -name '*.txt' | xargs cat
+mktemp-then-file|mktemp -d | xargs -I{} cat {} $L; xargs cat < $L
+echo-of-a-company-path|echo companies/otherco/settings/.keep | xargs cat
+EOF
+# Unbound, shapes that hide the reader, its options or the value: refused,
+# and a reader before a literal company path never stops the later checks.
+while IFS= read -r stdin_case; do
+  rc="$(run_hook "$(stdin_bash "${stdin_case#*|}")")"
+  expect_exit 2 "$rc" "stdin-unbound-hidden-${stdin_case%%|*}"
+done <<EOF
+mapfile-before-company-path|mapfile -tn 0 a < /dev/null; cat companies/otherco/settings/.keep
+readarray-before-company-path|readarray -tn 0 a < /dev/null; cat companies/otherco/settings/.keep
+reader-feeds-later-stage|echo x | xargs true | cat $L | xargs cat
+background-separator|echo x | xargs true & cat $L | xargs cat
+read-d-empty|while IFS= read -r -d '' p; do cat "\$p"; done < $L
+env-by-path|cat $L | /usr/bin/env xargs cat
+unknown-wrapper|cat $L | caffeinate xargs cat
+exec-a|cat $L | exec -a foo xargs cat
+escaped-name|x\\args cat < $L
+split-quoted-name|xarg''s cat < $L
+sh-c|sh -c 'xargs cat' < $L
+eval|eval 'xargs cat' < $L
+bsd-J|cat $L | xargs -J echo cat echo
+process-slot-var|cat $L | xargs --process-slot-var echo cat
+second-variable|while read -r p; do q=\$p; cat "\$q"; done < $L
+for-list|while read -r p; do for f in \$p; do cat "\$f"; done; done < $L
+printf-v|while read -r p; do printf -v q %s "\$p"; cat "\$q"; done < $L
+local|f() { while read -r p; do local q=\$p; cat "\$q"; done; }; f < $L
+indirect|ref=p; read p < $L; cat "\${!ref}"
+redirect-before-name|read < $L p; cat "\$p"
+xargs-attached-redirect|xargs<$L cat
+mapfile-attached-redirect|mapfile<$L; cat "\${MAPFILE[@]}"
+xargs-redirect-before-program|xargs < $L cat
+xargs-option-redirect-before-program|xargs -0 < $L cat
+printf-joins-a-path|printf %s%s compan ies/otherco/settings/.keep | xargs cat
+printf-joins-a-path-read|printf %s%s compan ies/otherco/settings/.keep | while read p; do cat "\$p"; done
+echo-redefined|echo(){ cat $L; }; echo x | xargs cat
+mktemp-redefined|mktemp(){ cat $L; }; mktemp | xargs cat
+mktemp-hashed|hash -p /bin/cat mktemp; mktemp $L | xargs cat
+echo-redefined-value-path|echo(){ cat "\$1"; }; while read p; do echo "\$p"; done < $L
+xargs-program-by-path|xargs workspace/echo < $L
+split-company-across-read-words|echo compan ies/otherco/settings/.keep | while read a b; do cat "\$a\$b"; done
+split-company-single-quote|echo compan''ies/otherco/settings/.keep | while read a b; do cat "\$a\$b"; done
+printf-v-path-then-mktemp|printf -v PATH %s workspace/bin; mktemp | xargs cat
+read-path-then-mktemp|read -r PATH < $L; mktemp | xargs cat
+EOF
+# Bound: the own company's list and files stay allowed; reaching companies/
+# outside the bound scope is refused.
+install_fixture "indigo"
+stdin_list_setup
+while IFS= read -r stdin_case; do
+  rc="$(run_hook "$(stdin_bash "${stdin_case#*|}")")"
+  expect_exit 0 "$rc" "stdin-bound-own-${stdin_case%%|*}"
+done <<EOF
+while-read|while read p; do cat "\$p"; done < companies/indigo/settings/paths.txt
+xargs|xargs cat < companies/indigo/settings/paths.txt
+literal|cat companies/indigo/settings/.keep
+EOF
+while IFS= read -r stdin_case; do
+  rc="$(run_hook "$(stdin_bash "${stdin_case#*|}")")"
+  expect_exit 2 "$rc" "stdin-bound-reaches-${stdin_case%%|*}"
+done <<EOF
+companies-root|cd companies && xargs cat < ../$L
+other-company-list|while read p; do cat "\$p"; done < companies/otherco/settings/.keep
+other-company-text|xargs cat < $L; ls companies/otherco
+EOF
+payload="$(jq -cn --arg cwd "$TMP/companies" --arg command "xargs cat < ../$L" \
+  '{tool_name: "Bash", session_id: "sess-bound", cwd: $cwd, tool_input: {command: $command}}')"
+rc="$(run_hook "$payload")"
+expect_exit 2 "$rc" "stdin-bound-cwd-in-companies"
 
 [ "$REGRESSION_FAILURES" -eq 0 ] || fail "$REGRESSION_FAILURES mandatory scope regression cases failed"
 echo "PASS: mandatory-scope-authorizer.test.sh"

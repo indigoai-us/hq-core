@@ -409,11 +409,33 @@ fi
 # Bash 3.2's quadratic whole-string replacement on large quoted commands.
 VAULT_QUOTE_RUN="[\"'\\\\]*"
 VAULT_PREFIX_RE="[cC]${VAULT_QUOTE_RUN}[oO]${VAULT_QUOTE_RUN}[mM]${VAULT_QUOTE_RUN}[pP]${VAULT_QUOTE_RUN}[aA]${VAULT_QUOTE_RUN}[nN]${VAULT_QUOTE_RUN}[iI]${VAULT_QUOTE_RUN}[eE]${VAULT_QUOTE_RUN}[sS]${VAULT_QUOTE_RUN}/"
-if ! [[ "$CMD" =~ $VAULT_PREFIX_RE ]]; then
+# An escape inside $'...' can spell the prefix ($'\x63ompanies/'), which the
+# regex cannot see, so a command holding $' and a \x, \u, \U or octal escape
+# anywhere is parsed in full. Only those escapes can produce a letter or a
+# slash, so commands whose escapes are \n, \t and the like keep the fast exit.
+if ! [[ "$CMD" =~ $VAULT_PREFIX_RE ]] && [[ "$CMD" != *\$\'* || "$CMD" != *\\[xuU0-7]* ]]; then
   vault_under "$PAYLOAD_CWD" "$VAULT_ROOT" || exit 0
 fi
 
-WRITE_OPS='(^|[[:space:](/])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed[[:space:]]+-i[^[:space:]]*|sed[[:space:]]+--in-place|awk[[:space:]]+-i[[:space:]]+inplace|ln|install)([[:space:]]|$)'
+WRITE_OPS='(^|[[:space:](/])(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|g?sed[[:space:]]+([^;|&]*[[:space:]])?(-[A-Za-z]*[iI]|--in)[^[:space:]]*|(g|m)?awk[[:space:]]+([^;|&]*[[:space:]])?-i[[:space:]]*inplace|(perl|ruby)[[:space:]]+([^;|&]*[[:space:]])?-[A-Za-z]*i[^[:space:]]*|ln|install)([[:space:]]|$)'
+
+# STRIPPED_OPS is matched against a segment with its quotes, backslashes and $
+# removed. It holds the in-place forms of WRITE_OPS, plus a plain op only in
+# command position: at segment start, after a path, a find -exec, or leading
+# words that are assignments, redirects, options, numbers, shell keywords
+# (then, do, if, ...) or launchers (env, sudo, timeout, ...). So 'rm' x and
+# sed '-i' read as writes while grep 'rm' x does not.
+STRIPPED_OPS='(^[[:space:](\{!]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|[0-9]*[<>][^[:space:]]*|sudo|env|command|builtin|exec|nice|nohup|time|timeout|stdbuf|xargs|then|do|else|if|elif|while|until|-[^[:space:]]*|[0-9][^[:space:]]*)[[:space:]]+)*([^[:space:]]*/)?(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|ln|install)([[:space:]]|$))|([[:space:]]-(exec|execdir|ok|okdir)[[:space:]]+([^[:space:]]*/)?(rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|ln|install)([[:space:]]|$))|((^|[[:space:](/])(g?sed[[:space:]]+([^;|&]*[[:space:]])?(-[A-Za-z]*[iI]|--in)[^[:space:]]*|(g|m)?awk[[:space:]]+([^;|&]*[[:space:]])?-i[[:space:]]*inplace|(perl|ruby)[[:space:]]+([^;|&]*[[:space:]])?-[A-Za-z]*i[^[:space:]]*)([[:space:]]|$))'
+
+# write_op_in <segment> — true when WRITE_OPS matches the segment, or
+# STRIPPED_OPS matches a copy with quote characters, backslashes and $ removed
+# ('rm' x, sed '-i', awk -i 'inplace', perl -p$'i'). tr does the removal: a
+# bash ${//} replacement is quadratic on long segments.
+write_op_in() {
+  printf '%s\n' "$1" | grep -Eq "$WRITE_OPS" && return 0
+  [[ "$1" == *[\"\'\\]* ]] || return 1
+  printf '%s\n' "$1" | LC_ALL=C tr -d "\"'\\\\\$" | grep -Eq "$STRIPPED_OPS"
+}
 
 # True when the command cd/pushd-es into a checked-out repo tree (repos/ or
 # workspace/worktrees/) — there, bare-relative companies/ tokens denote the
@@ -428,20 +450,102 @@ if in_repo_context "$CMD"; then
   REPO_CTX="yes"
 fi
 
+# decode_ansi_c <body> — the text of a $'...' segment with its escapes decoded
+# as bash does (\xHH, \NNN, \n, \\, \', ...), so $'sour\x63e' reads as source.
+# printf's format string takes the same escapes; % is doubled so it stays
+# literal. \u and \U are rewritten to \xHH first when they name an ASCII
+# character (bash 3.2 printf has no \u). Sets ANSI_DEC.
+ANSI_DEC=""
+decode_ansi_c() {
+  local body="$1" pre="" pct='%' k ch hex max v
+  for ((k=0; k<${#body}; k++)); do
+    ch="${body:k:1}"
+    if [[ "$ch" == \\ ]]; then
+      ch="${body:k+1:1}"
+      if [[ "$ch" == u || "$ch" == U ]]; then
+        [[ "$ch" == u ]] && max=4 || max=8
+        hex=""
+        while [[ "${#hex}" -lt "$max" && "${body:k+2+${#hex}:1}" == [0-9A-Fa-f] ]]; do
+          hex+="${body:k+2+${#hex}:1}"
+        done
+        if [[ -n "$hex" ]] && v=$((16#$hex)) && [[ "$v" -lt 128 ]]; then
+          pre+="$(printf '\\x%02x' "$v")"
+          k=$((k+1+${#hex}))
+          continue
+        fi
+      fi
+      pre+="\\$ch"
+      k=$((k+1))
+      continue
+    fi
+    pre+="$ch"
+  done
+  printf -v ANSI_DEC "x${pre//$pct/%%}" 2>/dev/null
+  ANSI_DEC="${ANSI_DEC#x}"
+}
+
 strip_token_quotes() {
-  local tok="$1"
+  local tok="$1" ansi="" q="" body="" i c
   # Drop shell grouping characters glued to a word: (cp a b) / { cp a b; }.
   while [[ "$tok" == \(* || "$tok" == \{* ]]; do tok="${tok#?}"; done
   while [[ "$tok" == *\) || "$tok" == *\} ]]; do tok="${tok%?}"; done
+  # ANSI-C quoted words use $'...'; drop that unescaped quote marker even
+  # when it starts inside an option word, while preserving an escaped dollar.
+  # The segment's escapes are decoded, so $'-\x69' reads as -i.
+  for ((i=0; i<${#tok}; i++)); do
+    c="${tok:i:1}"
+    if [[ "$q" == A ]]; then
+      if [[ "$c" == \\ ]]; then
+        body+="$c${tok:i+1:1}"
+        i=$((i+1))
+      elif [[ "$c" == "'" ]]; then
+        decode_ansi_c "$body"
+        ansi+="$ANSI_DEC"
+        body=""
+        q=""
+      else
+        body+="$c"
+      fi
+      continue
+    fi
+    if [[ "$c" == \\ ]]; then
+      ansi+="$c"
+      i=$((i+1))
+      [[ "$i" -lt "${#tok}" ]] && ansi+="${tok:i:1}"
+      continue
+    fi
+    if [[ "$c" == '"' ]]; then
+      [[ -z "$q" ]] && q='"' || { [[ "$q" == '"' ]] && q=""; }
+    elif [[ "$c" == "'" ]]; then
+      [[ -z "$q" ]] && q="'" || { [[ "$q" == "'" ]] && q=""; }
+    elif [[ "$c" == '$' && -z "$q" && "${tok:i+1:1}" == '$' ]]; then
+      # $$ is the PID parameter: the quote after it is a plain one.
+      ansi+='$$'
+      i=$((i+1))
+      continue
+    elif [[ "$c" == '$' && -z "$q" && "${tok:i+1:1}" == "'" ]]; then
+      q=A
+      i=$((i+1))
+      continue
+    fi
+    ansi+="$c"
+  done
+  if [[ "$q" == A ]]; then
+    decode_ansi_c "$body"
+    ansi+="$ANSI_DEC"
+  fi
+  tok="$ansi"
   tok="${tok//\"/}"
   tok="${tok//\'/}"
   tok="${tok//\\/}"
   printf '%s' "$tok"
 }
 
-# split_words <string> — quote-aware word split. Whitespace inside '…' or "…"
-# does not split, so "companies/x/a b.md" stays one word. Quote characters are
-# kept (strip_token_quotes removes them). Fills WORDS.
+# split_words <string> — quote-aware word split. Whitespace inside '…', "…" or
+# $'…' does not split, so "companies/x/a b.md" stays one word. A backslash
+# outside quotes, inside "…" or inside $'…' escapes the next character, so
+# $'a\'b' and \' do not open or close a quote. Quote characters are kept
+# (strip_token_quotes removes them). Fills WORDS.
 WORDS=()
 # Runs in the C locale: every delimiter is ASCII, UTF-8 continuation bytes
 # never equal one, and ${s:i:1} is then a constant-time byte index instead of
@@ -455,10 +559,28 @@ split_words() {
     c="${s:i:1}"
     if [[ -n "$q" ]]; then
       cur+="$c"
-      [[ "$c" == "$q" ]] && q=""
+      if [[ "$c" == \\ && "$q" != "'" ]]; then
+        cur+="${s:i+1:1}"
+        i=$((i+1))
+      elif [[ "$q" == A ]]; then
+        [[ "$c" == "'" ]] && q=""
+      elif [[ "$c" == "$q" ]]; then
+        q=""
+      fi
       continue
     fi
     case "$c" in
+      \\) cur+="$c${s:i+1:1}"; i=$((i+1)); have=1 ;;
+      \$)
+        # $$ is the PID parameter, so the quote after $$ is a plain one.
+        if [[ "${s:i+1:1}" == '$' ]]; then
+          cur+='$$'; i=$((i+1))
+        elif [[ "${s:i+1:1}" == "'" ]]; then
+          q=A; cur+="\$'"; i=$((i+1))
+        else
+          cur+="$c"
+        fi
+        have=1 ;;
       \"|\') q="$c"; cur+="$c"; have=1 ;;
       " "|$'\t'|$'\n')
         if [[ "$have" == 1 ]]; then WORDS[${#WORDS[@]}]="$cur"; fi
@@ -614,16 +736,64 @@ token_denied() {
   return 1
 }
 
+# cut_operand <has_ef> <n> <last_pos> <last raw word> — for a segment the
+# splitter cut inside a quote. Returns 0 when the cut word is the script (the
+# only operand, with no -e or -f), whose file operands follow in later
+# fragments. When the cut word is a later operand it is a file name holding
+# ; | or &: it stays a target, checked as far as it goes, and SEG_CUT keeps it
+# so the main loop checks the whole name once its quote closes.
+cut_operand() {
+  [[ "$SEG_OPEN" = "o" && "$3" = "yes" ]] || return 1
+  [[ "$1" = "no" && "$2" -eq 1 ]] && return 0
+  SEG_CUT="$4"
+  return 1
+}
+
 # collect_write_targets <segment>
 # Per-op write-target extraction (same parser contract as
 # block-core-writes-bash.sh write_targets_match). Fills SEG_TARGETS.
 # Returns 0 = targets extracted, 1 = no write op found, 2 = op found but
 # targets undeterminable (caller falls back to checking every token).
 SEG_TARGETS=()
+# SEG_OPEN is "o" when the splitter cut the segment inside a quote; SEG_INPLACE
+# is set to "yes" when the segment is an in-place sed or awk edit, and SEG_OP to
+# that op. SEG_CUT is the raw start of a file operand the splitter cut inside
+# its quotes (a name holding ; | or &), so the main loop can check the whole name.
+SEG_OPEN="c"
+SEG_INPLACE="no"
+SEG_OP=""
+SEG_CUT=""
+# SEG_EOO is "yes" when the in-place sed, perl, ruby or awk command saw --
+# before the splitter cut it, so later dash-named words are file operands.
+SEG_EOO="no"
+# awk_program_opt <word> — true when <word> (a gawk -W argument, or a long
+# option name without its leading --) names the source, file or exec option,
+# with or without an =value. gawk takes any unique prefix of a long option
+# name, so a prefix counts too. Treating it as the program option makes every
+# positional a file operand, which can only add targets.
+awk_program_opt() {
+  local name="${1%%=*}"
+  [[ -n "$name" ]] || return 1
+  [[ "source" == "$name"* || "file" == "$name"* || "exec" == "$name"* ]]
+}
+
+# collect_write_targets_after <index> — called from collect_write_targets
+# (whose local words array it reads) when the op word at <index> turned out
+# not to write: searches the words after it for another write op.
+collect_write_targets_after() {
+  local from=$(( $1 + 1 )) rest="" k
+  for ((k=from; k<${#words[@]}; k++)); do
+    rest="$rest ${words[$k]}"
+  done
+  [[ -n "${rest// /}" ]] || return 1
+  collect_write_targets "$rest"
+}
+
 collect_write_targets() {
   local segment="$1"
   local words=() clean=() positionals=()
-  local op="" op_i=-1 i j tok next positional_count has_inplace has_ef
+  local eoo op="" op_i=-1 i j n tok next rest positional_count has_inplace has_ef
+  local last_pos
   local target_dir=""
   SEG_TARGETS=()
 
@@ -636,13 +806,14 @@ collect_write_targets() {
   for ((i=0; i<${#clean[@]}; i++)); do
     # /bin/cp and /usr/bin/install are the same ops as cp and install.
     case "${clean[$i]##*/}" in
-      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed|awk|ln|install)
+      rm|rmdir|cp|mv|mkdir|touch|chmod|chown|chgrp|tee|dd|rsync|truncate|shred|sed|gsed|awk|gawk|mawk|perl|ruby|ln|install)
         op="${clean[$i]##*/}"
         op_i=$i
         break
         ;;
     esac
   done
+  case "$op" in gsed) op="sed" ;; gawk|mawk) op="awk" ;; esac
 
   [[ "$op_i" -ge 0 ]] || return 1
 
@@ -777,49 +948,155 @@ collect_write_targets() {
       done
       ;;
 
-    sed)
+    sed|perl|ruby)
+      eoo="no"
       has_inplace="no"
       has_ef="no"
+      last_pos="no"
       for ((i=op_i+1; i<${#clean[@]}; i++)); do
         tok="${clean[$i]}"
+        [[ "$i" -eq $((${#clean[@]}-1)) ]] && last_pos="yes"
+        if [[ "$eoo" = "yes" ]]; then
+          # After -- every word is an operand; ./ keeps a leading - a path.
+          [[ "$tok" == -* ]] && tok="./$tok"
+          positionals[${#positionals[@]}]="$tok"
+          continue
+        fi
         case "$tok" in
-          -i|--in-place|-i*) has_inplace="yes" ;;
-          -e|-f) has_ef="yes"; i=$((i+1)) ;;
-          -e*|-f*) has_ef="yes" ;;
-          --expression|--file) has_ef="yes"; i=$((i+1)) ;;
-          --expression=*|--file=*) has_ef="yes" ;;
-          --*) ;;
-          -*) ;;
+          --) eoo="yes"; last_pos="no" ;;
+          --expression|--file) has_ef="yes"; i=$((i+1)); last_pos="no" ;;
+          --line-length) i=$((i+1)); last_pos="no" ;;
+          --expression=*|--file=*) has_ef="yes"; last_pos="no" ;;
+          --*)
+            last_pos="no"
+            # GNU sed accepts any prefix of --in-place from --in on.
+            rest="${tok%%=*}"
+            if [[ "$op" = "sed" && "${#rest}" -ge 4 && "--in-place" == "$rest"* ]]; then
+              has_inplace="yes"
+            fi
+            ;;
+          -?*)
+            last_pos="no"
+            # A short-option cluster (-n, -Ei, -ni, -i.bak, -pi, -e, -f, -l).
+            # Read it left to right: -i takes the rest of the cluster as its
+            # suffix, and -e, -f and -l take the rest of the cluster or the next
+            # word. BSD sed -I takes the next word as its suffix.
+            rest="${tok#-}"
+            while [[ -n "$rest" ]]; do
+              case "${rest:0:1}" in
+                i) has_inplace="yes"; break ;;
+                I)
+                  if [[ "$op" = "sed" ]]; then
+                    has_inplace="yes"
+                    [[ "${#rest}" -eq 1 ]] && i=$((i+1))
+                  fi
+                  break
+                  ;;
+                e|f|E|l)
+                  if [[ "$op" = "sed" ]]; then
+                    case "${rest:0:1}" in e|f) has_ef="yes" ;; esac
+                    case "${rest:0:1}" in e|f|l) [[ "${#rest}" -eq 1 ]] && i=$((i+1)); break ;; esac
+                  else
+                    case "${rest:0:1}" in e|E) has_ef="yes"; [[ "${#rest}" -eq 1 ]] && i=$((i+1)); break ;; esac
+                  fi
+                  ;;
+                M|m|x|F|C|D|d|V)
+                  [[ "$op" != "sed" ]] && break
+                  ;;
+              esac
+              rest="${rest:1}"
+            done
+            # Bare -i followed by a separate empty suffix word (the macOS form).
+            if [[ "$tok" = "-i" && -z "${clean[$((i+1))]-x}" ]]; then i=$((i+1)); fi
+            ;;
           *) positionals[${#positionals[@]}]="$tok" ;;
         esac
       done
-      [[ "$has_inplace" = "yes" ]] || return 1
+      if [[ "$has_inplace" != "yes" ]]; then
+        # Not an in-place edit, so this word is not the write op. A later
+        # word can still be one (ruby -run -e cp SRC DEST, perl
+        # -MExtUtils::Command -e touch FILE), as it was before sed, perl and
+        # ruby were ops here.
+        collect_write_targets_after "$op_i"
+        return $?
+      fi
+      SEG_INPLACE="yes"
+      SEG_EOO="$eoo"
       j=0
       if [[ "$has_ef" = "no" ]]; then
         j=1
       fi
-      for ((i=j; i<${#positionals[@]}; i++)); do
+      SEG_OP="$op"
+      n=${#positionals[@]}
+      cut_operand "$has_ef" "$n" "$last_pos" "${words[$((${#words[@]}-1))]}" && n=0
+      for ((i=j; i<n; i++)); do
         SEG_TARGETS[${#SEG_TARGETS[@]}]="${positionals[$i]}"
       done
+      [[ "$SEG_OPEN" = "o" ]] && return 0
       ;;
 
     awk)
+      eoo="no"
       has_inplace="no"
+      has_ef="no"
+      last_pos="no"
       for ((i=op_i+1; i<${#clean[@]}; i++)); do
         tok="${clean[$i]}"
         next="${clean[$((i+1))]:-}"
-        if [[ "$tok" = "-i" && "$next" = "inplace" ]]; then
-          has_inplace="yes"
-          i=$((i+1))
+        [[ "$i" -eq $((${#clean[@]}-1)) ]] && last_pos="yes"
+        if [[ "$eoo" = "yes" ]]; then
+          # After -- every word is an operand; ./ keeps a leading - a path.
+          [[ "$tok" == -* ]] && tok="./$tok"
+          positionals[${#positionals[@]}]="$tok"
           continue
         fi
-        [[ -z "$tok" || "$tok" == -* ]] && continue
-        positionals[${#positionals[@]}]="$tok"
+        case "$tok" in
+          -i) [[ "$next" = "inplace" ]] && has_inplace="yes"; i=$((i+1)); last_pos="no" ;;
+          -iinplace) has_inplace="yes"; last_pos="no" ;;
+          -v|-F|-e|-f|-E|-l|-W)
+            # -e, -f and -E supply the program, so every positional is a file.
+            # So does -W source=, -W file= or -W exec= (or a prefix of them).
+            case "$tok" in
+              -e|-f|-E) has_ef="yes" ;;
+              -W) awk_program_opt "$next" && has_ef="yes" ;;
+            esac
+            i=$((i+1))
+            last_pos="no"
+            ;;
+          --) eoo="yes"; last_pos="no" ;;
+          -W?*) awk_program_opt "${tok#-W}" && has_ef="yes"; last_pos="no" ;;
+          --?*=*) awk_program_opt "${tok#--}" && has_ef="yes"; last_pos="no" ;;
+          --?*)
+            # gawk accepts any unique prefix of a long option.
+            if awk_program_opt "${tok#--}"; then has_ef="yes"; i=$((i+1)); fi
+            last_pos="no"
+            ;;
+          -e?*|-f?*|-E?*) has_ef="yes"; last_pos="no" ;;
+          -?*) last_pos="no" ;;
+          *) positionals[${#positionals[@]}]="$tok" ;;
+        esac
       done
-      [[ "$has_inplace" = "yes" ]] || return 1
-      for ((i=1; i<${#positionals[@]}; i++)); do
+      if [[ "$has_inplace" != "yes" ]]; then
+        # Not an in-place edit, so this word is not the write op. A later
+        # word can still be one (ruby -run -e cp SRC DEST, perl
+        # -MExtUtils::Command -e touch FILE), as it was before sed, perl and
+        # ruby were ops here.
+        collect_write_targets_after "$op_i"
+        return $?
+      fi
+      SEG_INPLACE="yes"
+      SEG_EOO="$eoo"
+      j=0
+      if [[ "$has_ef" = "no" ]]; then
+        j=1
+      fi
+      SEG_OP="$op"
+      n=${#positionals[@]}
+      cut_operand "$has_ef" "$n" "$last_pos" "${words[$((${#words[@]}-1))]}" && n=0
+      for ((i=j; i<n; i++)); do
         SEG_TARGETS[${#SEG_TARGETS[@]}]="${positionals[$i]}"
       done
+      [[ "$SEG_OPEN" = "o" ]] && return 0
       ;;
   esac
 
@@ -876,10 +1153,11 @@ check_segment() {
     local LC_ALL=C
     local -a toks=()
     if vault_under "$CWD_CTX" "$VAULT_ROOT"; then
-      if [[ "$segment" == *\>* ]] || echo "$segment" | grep -Eq "$WRITE_OPS"; then
+      if [[ "$segment" == *\>* ]] || write_op_in "$segment"; then
         return 1
       fi
     fi
+    if write_op_in "$segment"; then SEG_INPLACE="yes"; fi
     read -r -a toks <<< "$segment"
     for tok in "${toks[@]+"${toks[@]}"}"; do
       tok="${tok##*>}"
@@ -887,6 +1165,14 @@ check_segment() {
       shopt -s nocasematch
       case "$tok" in
         *companies/*|*companies\\*|*../*|*..\\*|*\~*|*HOME*) shopt -u nocasematch ;;
+        *\$\'*\\*)
+          shopt -u nocasematch
+          # Decoded first: $'\x63ompanies/x' is a vault path, $'\t' is not.
+          case "$(vault_lower "$(strip_token_quotes "$tok")")" in
+            *companies/*|*companies\\*|*../*|*..\\*|*\~*) ;;
+            *) continue ;;
+          esac
+          ;;
         *) shopt -u nocasematch; continue ;;
       esac
       if token_denied "$tok"; then
@@ -903,7 +1189,11 @@ check_segment() {
     fi
   done
 
-  echo "$segment" | grep -Eq "$WRITE_OPS" || return 0
+  # An escape inside $'...' can hide the op or its in-place flag from the raw
+  # text (sed $'-\x69'), so such a segment goes to the parser, which decodes it.
+  if ! write_op_in "$segment"; then
+    [[ "$segment" == *\$\'*\\* ]] || return 0
+  fi
 
   collect_write_targets "$segment"
   rc=$?
@@ -946,13 +1236,14 @@ esac
 SEGMENTS=$(printf '%s\n' "$CMD" | LC_ALL=C awk '
 {
   line = $0; n = length(line); pad = "    " line
-  seg = ""; qc = 0; cmt = 0; start = "U"; cl = -1
+  seg = ""; qc = 0; cmt = 0; start = (q != "" ? "S" : "U"); cl = -1; k = "n"
   for (i = 1; i <= n; i++) {
     c = substr(line, i, 1)
     if (c == ";" || c == "|" || c == "&") {
       d = substr(line, i + 1, 1)
       if ((c == "&" && d == "&") || (c == "|" && d == "|")) i++
-      emit(start, seg, cl); seg = ""; cl = -1; start = (q != "" && qc ? "Q" : "U"); continue
+      emit(start, seg, cl); seg = ""; cl = -1; start = (q != "" ? (qc ? "Q" : "S") : "U")
+      k = (c == ";" ? "s" : (c == "&" ? (d == "&" ? "A" : "a") : (d == "|" ? "P" : "p"))); continue
     }
     seg = seg c
     if (cmt) continue
@@ -962,10 +1253,11 @@ SEGMENTS=$(printf '%s\n' "$CMD" | LC_ALL=C awk '
       if (d != ";" && d != "|" && d != "&") { seg = seg d; i++ }
       continue
     }
-    if (q == "$") { if (c == "\047") q = ""; continue }
+    if (q == "$") { if (c == "\047") { q = ""; if (cl < 0) cl = length(seg) }; continue }
     if (q == "\"") { if (c == "\"") { q = ""; if (cl < 0) cl = length(seg) }; continue }
     w = substr(pad, i, 4)
     if (c == "#" && (substr(w, 4, 1) == " " || substr(w, 4, 1) == "\t")) { cmt = 1; continue }
+    if (c == "$" && substr(line, i + 1, 1) == "$") { seg = seg "$"; i++; continue }
     if (c == "$" && substr(line, i + 1, 1) == "\047") { q = "$"; qc = 0; seg = seg "\047"; i++; continue }
     if (c == "\047" || c == "\"") {
       q = c
@@ -976,17 +1268,119 @@ SEGMENTS=$(printf '%s\n' "$CMD" | LC_ALL=C awk '
 }
 function emit(st, sg, at) {
   if (st == "Q" && at >= 0 && substr(sg, at + 1) ~ /[^ \t]/) st = "U"
-  print st sg
+  print st (q != "" ? "o" : "c") k at "|" sg
 }')
+# The split above also cuts inside quotes, so a sed or awk script such as
+# 's/a/b/;s/c/d/' arrives as fragments and its file operands land in a later
+# fragment. Each fragment still gets its own full check. In addition, after an
+# in-place sed or awk fragment that ends inside an open quote, the words after
+# the closing quote are checked as that command's file operands.
+# tail_denied <raw word> — token_denied for a word after a cut in-place
+# script. BSD sed and gawk stop reading options at the script, so a dash-named
+# word there can be a file: it is checked as ./<word> after --, or whenever it
+# is not shaped like an option (letters only, or --name[=value]). Quotes are
+# stripped first, so a quoted dash-named file is read the same way.
+tail_denied() {
+  local w
+  w="$(strip_token_quotes "$1")"
+  if [[ "$w" == -?* ]]; then
+    if [[ "$SED_EOO" == "yes" ]] || ! [[ "$w" =~ ^-[A-Za-z]+$ || "$w" =~ ^--[A-Za-z][A-Za-z-]*(=.*)?$ ]]; then
+      token_denied "./$w" && return 0
+    fi
+  fi
+  token_denied "$1"
+}
+
+SED_TAIL="no"
+SED_OP=""
+SED_CUT=""
+SED_EOO="no"
 while IFS= read -r SEGMENT; do
+  SEG_ST="${SEGMENT:0:1}"
+  SEG_OPEN="${SEGMENT:1:1}"
+  # The separator the splitter cut before this fragment.
+  case "${SEGMENT:2:1}" in
+    s) SEG_SEP=";" ;; a) SEG_SEP="&" ;; A) SEG_SEP="&&" ;;
+    p) SEG_SEP="|" ;; P) SEG_SEP="||" ;; *) SEG_SEP=$'\n' ;;
+  esac
+  SEGMENT="${SEGMENT:3}"
+  SEG_AT="${SEGMENT%%|*}"
+  SEGMENT="${SEGMENT#*|}"
   SEG_IN_QUOTE="no"
-  [[ "${SEGMENT:0:1}" == "Q" && "$Q_ALLOWED" == "yes" ]] && SEG_IN_QUOTE="yes"
-  SEGMENT="${SEGMENT:1}"
+  [[ "$SEG_ST" == "Q" && "$Q_ALLOWED" == "yes" ]] && SEG_IN_QUOTE="yes"
+  # A file name cut inside its quotes: rebuild it with the separator and check
+  # the whole name once its quote closes.
+  if [[ -n "$SED_CUT" ]]; then
+    if [[ "$SEG_AT" -ge 0 ]]; then
+      if tail_denied "$SED_CUT$SEG_SEP${SEGMENT:0:$SEG_AT}"; then
+        block_message "Command: $CMD"
+        exit 2
+      fi
+      SED_CUT=""
+    else
+      SED_CUT="$SED_CUT$SEG_SEP$SEGMENT"
+    fi
+  fi
+  if [[ "$SED_TAIL" == "yes" && "$SEG_AT" -ge 0 ]]; then
+    split_words "${SEGMENT:$SEG_AT}"
+    SEG_WN=${#WORDS[@]}
+    # A quote reopened in this fragment is cut again. It is a script when it
+    # continues the closed word or is the argument of a script option (-e,
+    # -f); any other reopened word is a file name, checked as far as it goes
+    # here and in full once its quote closes.
+    if [[ "$SEG_OPEN" == "o" && "$SEG_WN" -gt 0 ]]; then
+      SEG_PREV=""
+      [[ "$SEG_WN" -gt 1 ]] && SEG_PREV="$(strip_token_quotes "${WORDS[$((SEG_WN-2))]}")"
+      SEG_SCRIPT_ARG="no"
+      case "$SED_OP" in
+        sed) [[ "$SEG_PREV" =~ ^(-[nsrEuz]*[ef]|--expression|--file)$ ]] && SEG_SCRIPT_ARG="yes" ;;
+        perl|ruby) [[ "$SEG_PREV" =~ ^-[pnaslw]*[eE]$ ]] && SEG_SCRIPT_ARG="yes" ;;
+        awk) [[ "$SEG_PREV" =~ ^-[vFefE]$ ]] && SEG_SCRIPT_ARG="yes" ;;
+      esac
+      # The only word, glued to the closing quote, continues the closed word.
+      case "$SEG_WN:${SEGMENT:$SEG_AT:1}" in
+        1:" "|1:$'\t'|1:) ;;
+        1:*) SEG_SCRIPT_ARG="yes" ;;
+      esac
+      if [[ "$SEG_SCRIPT_ARG" == "yes" ]]; then
+        SEG_WN=$((SEG_WN-1))
+      else
+        SED_CUT="${WORDS[$((SEG_WN-1))]}"
+      fi
+    fi
+    for ((SEG_WI=0; SEG_WI<SEG_WN; SEG_WI++)); do
+      SEG_W="${WORDS[$SEG_WI]}"
+      if [[ "$SED_EOO" != "yes" && "$(strip_token_quotes "$SEG_W")" == "--" ]]; then
+        SED_EOO="yes"
+        continue
+      fi
+      if tail_denied "$SEG_W"; then
+        block_message "Command: $CMD"
+        exit 2
+      fi
+    done
+  fi
+  if [[ "$SEG_OPEN" == "c" ]]; then SED_TAIL="no"; fi
+  SEG_INPLACE="no"
+  SEG_OP=""
+  SEG_CUT=""
+  SEG_EOO="no"
   update_cwd_ctx "$SEGMENT"
   if ! check_segment "$SEGMENT"; then
     block_message "Command: $CMD"
     exit 2
   fi
+  if [[ "$SEG_OPEN" == "o" && "$SEG_INPLACE" == "yes" ]]; then
+    SED_TAIL="yes"
+    SED_OP="$SEG_OP"
+    SED_EOO="$SEG_EOO"
+    [[ -n "$SEG_CUT" ]] && SED_CUT="$SEG_CUT"
+  fi
 done <<< "$SEGMENTS"
+# A cut file name whose quote never closed: check what there is.
+if [[ -n "$SED_CUT" ]] && tail_denied "$SED_CUT"; then
+  block_message "Command: $CMD"
+  exit 2
+fi
 
 exit 0

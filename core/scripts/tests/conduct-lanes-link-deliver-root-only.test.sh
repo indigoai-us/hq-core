@@ -20,7 +20,7 @@ unset HQ_HOOK_AGENT_ID HQ_HOOK_AGENT_TYPE
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
-# Fake hq with the same claim-then-deliver contract as hq lanes link _deliver:
+# Fake hq with the same claim-then-deliver contract as hq runners link _deliver:
 # any call drains every pending message and marks it delivered.
 cat > "$BIN/hq" <<'FAKE'
 #!/usr/bin/env bash
@@ -157,7 +157,7 @@ rm -f "$QUEUE/pending/crlf2.msg"
 pass 'CRLF jq output still delivers to the root and not to a child'
 
 # Grok end to end: run the real adapter so the payload it rebuilds is the one
-# the hook sees. A child tool call must not reach hq lanes link _deliver; the
+# the hook sees. A child tool call must not reach hq runners link _deliver; the
 # root's tool calls must, including a root whose payload names a parent session.
 # The adapter resolves its HQ root from its own path, so it runs from a copy in
 # a temporary HQ root and every hook write lands there, not in this checkout.
@@ -180,7 +180,7 @@ cat > "$GBIN/hq" <<'FAKE'
 printf '%s\n' "$*" >> "$GROK_FAKE_CALLS"
 cat > /dev/null
 case "$*" in
-  "lanes link _deliver"*) jq -cn '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:"[conduct] The session conducting you sent this while you were working.\n\ngrok-marker-9"}}' ;;
+  "runners link _deliver"*) jq -cn '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:"[conduct] The session conducting you sent this while you were working.\n\ngrok-marker-9"}}' ;;
 esac
 exit 0
 FAKE
@@ -194,16 +194,16 @@ run_grok() {
 }
 : > "$GCALLS"
 run_grok "{\"hookEventName\":\"PostToolUse\",\"toolName\":\"Shell\",\"toolInput\":{\"command\":\"echo hi\"},\"cwd\":\"$GHQ\",\"sessionId\":\"$GSID\",\"parentSessionId\":\"grok-parent-$$\",\"subagentType\":\"explorer\"}"
-! grep -q 'lanes link _deliver' "$GCALLS" || fail 'Grok child tool call reached hq lanes link _deliver'
+! grep -q 'runners link _deliver' "$GCALLS" || fail 'Grok child tool call reached hq runners link _deliver'
 ! grep -q 'grok-marker-9' "$TMP/gout" || fail 'Grok child tool call received link text'
 pass 'Grok child tool call (subagentType + parentSessionId) does not deliver'
 : > "$GCALLS"
 run_grok "{\"hookEventName\":\"PostToolUse\",\"toolName\":\"Shell\",\"toolInput\":{\"command\":\"echo hi\"},\"cwd\":\"$GHQ\",\"sessionId\":\"$GSID\"}"
-grep -q 'lanes link _deliver --event PostToolUse' "$GCALLS" || fail "Grok root tool call did not reach hq lanes link _deliver (calls: $(tr '\n' ';' < "$GCALLS"))"
+grep -q 'runners link _deliver --event PostToolUse' "$GCALLS" || fail "Grok root tool call did not reach hq runners link _deliver (calls: $(tr '\n' ';' < "$GCALLS"))"
 pass 'Grok root tool call still delivers, even with HQ_PARENT_SESSION_ID inherited from a lane launcher'
 : > "$GCALLS"
 run_grok "{\"hookEventName\":\"PostToolUse\",\"toolName\":\"Shell\",\"toolInput\":{\"command\":\"echo hi\"},\"cwd\":\"$GHQ\",\"sessionId\":\"$GSID\",\"parentSessionId\":\"grok-parent-$$\"}"
-grep -q 'lanes link _deliver --event PostToolUse' "$GCALLS" || fail "Grok root with parentSessionId and no subagentType did not reach hq lanes link _deliver (calls: $(tr '\n' ';' < "$GCALLS"))"
+grep -q 'runners link _deliver --event PostToolUse' "$GCALLS" || fail "Grok root with parentSessionId and no subagentType did not reach hq runners link _deliver (calls: $(tr '\n' ';' < "$GCALLS"))"
 pass 'Grok root with parentSessionId and no subagentType (resumed, forked, or launcher-spawned) still delivers'
 [ "$(cat "$CURRENT" 2>/dev/null || printf '<absent>')" = "$current_before" ] || fail "Grok end-to-end run changed this checkout's workspace/sessions/.current"
 [ ! -e "$ROOT/workspace/lanes-links/by-session/$GSID" ] && [ ! -e "$ROOT/workspace/sessions/$GSID" ] || fail 'Grok end-to-end run wrote session state into this checkout'

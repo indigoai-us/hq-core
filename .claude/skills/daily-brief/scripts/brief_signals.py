@@ -512,6 +512,62 @@ def meeting_rows(lines, mtgs, is_mine=None):
     return list(groups.values())
 
 
+STALE_FIELDS = ('code', 'reason', 'last_good_run', 'try_now', 'line', 'try_now_line', 'section_line')
+
+
+def gate_stale(hq_root, today, company):
+    """The signals gate's stale notice for one company, or None.
+
+    Step 0's gate writes a notice into today's brief-gate.json for each company whose
+    brief builds without a finished signals run (the run failed, or the wait ended). This
+    copies that company's entry, with the sentences as the gate wrote them, so the brief
+    never words the notice itself. The entry is read from `staleCompanies`, which every
+    gate write carries forward for companies outside its own scope, so a later check for
+    another company does not drop it. When the gate judged no company at all (no list
+    was known), its gate-level notice is used. None when the gate belongs to another day
+    or has no notice for the company. Reads only.
+    """
+    p = os.path.join(hq_root, 'workspace', 'signals', 'runs', today, 'brief-gate.json')
+    try:
+        with open(p, encoding='utf-8') as f:
+            gate = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(gate, dict) or gate.get('today') != today:
+        return None
+    per = gate.get('staleCompanies')
+    stale = per.get(company) if isinstance(per, dict) else None
+    if not isinstance(stale, dict):
+        stale = gate.get('signals_stale')
+        if gate.get('state') not in ('failed', 'waiting') or gate.get('companies') or not isinstance(stale, dict):
+            return None
+    if not isinstance(stale.get('line'), str) or not stale['line']:
+        return None
+    return {k: stale.get(k) for k in STALE_FIELDS}
+
+
+def notices(data):
+    """brief-data.json -> the stale-signals notices of the brief, one per company that has one.
+
+    [{company, code, reason, last_good_run, try_now, line, try_now_line, section_line}], by company
+    slug. This list is `brief.json.signals_notices`; it is always written by code
+    (brief_page.py notice and attach), never by hand. [] when no company is stale.
+    """
+    if not isinstance(data, dict):
+        return []
+    if data.get('mode') == 'person':
+        cos = data.get('companies')
+        secs = sorted((k, v) for k, v in cos.items() if isinstance(k, str)) if isinstance(cos, dict) else []
+    else:
+        secs = [(data.get('company'), data)] if isinstance(data.get('company'), str) and data.get('company') else []
+    out = []
+    for slug, sec in secs:
+        stale = sec.get('signals_stale') if isinstance(sec, dict) else None
+        if isinstance(stale, dict) and isinstance(stale.get('line'), str) and stale['line']:
+            out.append(dict({'company': slug}, **{k: stale.get(k) for k in STALE_FIELDS}))
+    return out
+
+
 def meetings_without_signals(lines, meetings_in_window):
     """The operator's plain line: when meetings exist in the window but no synced
     meeting signals do, say how many meetings are still waiting. None otherwise."""

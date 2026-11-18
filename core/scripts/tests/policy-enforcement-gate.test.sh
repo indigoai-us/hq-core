@@ -451,6 +451,62 @@ printf '%s' "$BLOCK" | jq -e '.reason | contains("declared-attachment-without-re
   || fail "unresolved attachment was not named"
 pass "fails closed when an attached brief has no resolvable path"
 
+# feedback_c058483f: "attachment" next to "file" in agent wording is not a
+# declared brief. Slack posts must stay allowed.
+WORDING_SID="agent-wording-attachment-counts"
+WORDING_PROMPT="$(jq -nc --arg sid "$WORDING_SID" --arg p $'Post a Slack update. Earlier I reported file and attachment counts and the full file.' '{session_id:$sid,prompt:$p}')"
+run_hook UserPromptSubmit "$WORDING_PROMPT" >/dev/null || fail "agent-wording prompt setup failed"
+WORDING_STATE="$FIX/workspace/orchestrator/policy-enforcement/$WORDING_SID.json"
+jq -e '.briefs == []' "$WORDING_STATE" >/dev/null \
+  || fail "agent wording declared a brief: $(jq -c .briefs "$WORDING_STATE")"
+WORDING_SEND="$(jq -nc --arg sid "$WORDING_SID" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:"update"}}')"
+run_hook PreToolUse "$WORDING_SEND" >/dev/null \
+  || fail "agent wording blocked a Slack post"
+pass "does not treat attachment-counts wording as a declared brief"
+
+# feedback_c058483f review C1: only the count wording is excluded. A brief that
+# lives "in the attachment" is still declared and still fails closed.
+attachment_brief_case() {
+  local sid="$1" prompt="$2" want_path="$3" body state send block rc
+  body="$(jq -nc --arg sid "$sid" --arg p "$prompt" '{session_id:$sid,prompt:$p}')"
+  run_hook UserPromptSubmit "$body" >/dev/null || fail "$sid prompt setup failed"
+  state="$FIX/workspace/orchestrator/policy-enforcement/$sid.json"
+  jq -e '.briefs | length > 0' "$state" >/dev/null \
+    || fail "$sid: not detected as a brief: $prompt"
+  if [ -n "$want_path" ]; then
+    jq -e --arg w "$want_path" '[.briefs[] | tostring | contains($w)] | any' "$state" >/dev/null \
+      || fail "$sid: declared brief $want_path not required: $(jq -c .briefs "$state")"
+  fi
+  send="$(jq -nc --arg sid "$sid" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:"update"}}')"
+  set +e
+  block="$(run_hook PreToolUse "$send")"; rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "$sid: Slack post was not blocked for: $prompt"
+}
+attachment_brief_case att-brief-1 'Follow the brief in the attachment and post a Slack update.' ""
+attachment_brief_case att-brief-2 $'Post a Slack update.\nThe spec is in the attachment: spec.md' "spec.md"
+attachment_brief_case att-brief-3 'See attachment for the brief, then post a Slack update.' ""
+attachment_brief_case att-brief-4 'Per the brief (attachment #1), post a Slack update.' ""
+attachment_brief_case att-brief-5 'Post a Slack update; see the attachment brief.md for the spec.' "brief.md"
+attachment_brief_case att-brief-6 'The brief is in the attachment, which also has the file count. Post a Slack update.' ""
+attachment_brief_case att-brief-7 'The attachment counts as the brief. Post a Slack update.' ""
+pass "still treats a brief in an attachment as declared, and fails closed"
+
+attachment_count_case() {
+  local sid="$1" prompt="$2" body state send
+  body="$(jq -nc --arg sid "$sid" --arg p "$prompt" '{session_id:$sid,prompt:$p}')"
+  run_hook UserPromptSubmit "$body" >/dev/null || fail "$sid prompt setup failed"
+  state="$FIX/workspace/orchestrator/policy-enforcement/$sid.json"
+  jq -e '.briefs == []' "$state" >/dev/null \
+    || fail "$sid: count wording declared a brief: $(jq -c .briefs "$state")"
+  send="$(jq -nc --arg sid "$sid" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:"update"}}')"
+  run_hook PreToolUse "$send" >/dev/null || fail "$sid: count wording blocked a Slack post"
+}
+attachment_count_case att-count-1 'Post a Slack update with the attachment count for the spec review.'
+attachment_count_case att-count-2 'Post a Slack update. The Attachment Counts per file are in the table.'
+attachment_count_case att-count-3 'Post a Slack update: the brief-free report lists the attachment-count per file.'
+pass "does not treat attachment count variants as a declared brief"
+
 # feedback_e6f00358: file names in pasted Slack text are mentions, not
 # attachments, even when "attached ... file" appears elsewhere in the prompt.
 # The brief named in the attachment clause is still required.
@@ -832,5 +888,220 @@ CALLS=0
 # (3 rows with 4 regexes here): at most 1 + 8.
 [ "$CALLS" -le 9 ] || fail "outbound scan started $CALLS sed/head/grep/tr processes for a 307-row policy list"
 pass "scans outbound content against a long list in list order without per-policy processes"
+
+# feedback_ac1806a1: "share the launch work-broadcast page" required the
+# work-broadcast skill, and the gate then held a one-to-one hq dm to the
+# broadcast contract and refused it without saying why. A DM to one person or
+# agent is not a broadcast; real broadcasts stay gated, and every refusal
+# names the prompt words that set the requirement.
+DM_SID="dm-not-broadcast"
+DM_DIR="$FIX/workspace/orchestrator/policy-enforcement"
+DM_PROMPT="$(jq -nc --arg sid "$DM_SID" '{session_id:$sid,prompt:"Share the launch work-broadcast page with the team."}')"
+DM_OUT="$(run_hook UserPromptSubmit "$DM_PROMPT")" || fail "dm prompt declaration failed"
+jq -e '.requiredSkills == ["work-broadcast"] and .skillTriggers["work-broadcast"] == "work-broadcast" and .receipts.skills == []' \
+  "$DM_DIR/$DM_SID.json" >/dev/null || fail "prompt trigger words were not recorded: $(cat "$DM_DIR/$DM_SID.json")"
+printf '%s' "$DM_OUT" | jq -e '.hookSpecificOutput.additionalContext | contains("work-broadcast (prompt words \"work-broadcast\")")' >/dev/null \
+  || fail "prompt context does not name the trigger words: $DM_OUT"
+pass "records and reports the prompt words that required a skill"
+
+DM_POL="$FIX/policies/dm-no-internal.md"
+cat > "$DM_POL" <<'EOF'
+---
+id: dm-no-internal
+enforcement: hard
+delivery-forbid-regex: INTERNAL_ONLY
+---
+## Rule
+
+NEVER send internal-only evidence.
+EOF
+printf 'dm-no-internal\tcore\t%s\thard\tNEVER send internal-only evidence.\n' "$DM_POL" > "$DM_DIR/$DM_SID.policies.tsv"
+
+for cmd in 'hq dm agent@example.com "Hey there, can you share the launch explainer with the team?"' \
+           "cd /tmp && hq dm agent@example.com 'Hey there, can you share it with the team?'" \
+           "MESSAGE='Hey there, can you share it with the team?'; hq dm agent@example.com \"\$MESSAGE\"" \
+           'MESSAGE="Hey there"; hq dm agent@example.com "$MESSAGE"' \
+           $'MESSAGE=\'Hey there\'\nhq dm agent@example.com "$MESSAGE"' \
+           'hq dm send agt_01ABCDEF "hi" --no-mentions' \
+           'hq cowork dm prs_01ABCDEF "hi" --details "more context" 2>&1'; do
+  ONE_DM="$(jq -nc --arg sid "$DM_SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$ONE_DM")"; RC=$?
+  set -e
+  [ "$RC" -eq 0 ] || fail "one-to-one hq dm was gated as a work broadcast (rc=$RC): $cmd -> $BLOCK"
+done
+pass "a one-to-one hq dm with a literal body is not a work broadcast"
+
+for cmd in 'hq dm agent@example.com "INTERNAL_ONLY numbers"' \
+           "MESSAGE='INTERNAL_ONLY numbers'; hq dm agent@example.com \"\$MESSAGE\"" \
+           'hq dm agent@example.com "hi" --details "INTERNAL_ONLY numbers"'; do
+  BAD_DM="$(jq -nc --arg sid "$DM_SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$BAD_DM")"; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "deterministic delivery gate skipped a one-to-one DM (rc=$RC): $cmd"
+  printf '%s' "$BLOCK" | jq -e '.reason | contains("dm-no-internal") and contains("forbidden pattern")' >/dev/null \
+    || fail "DM forbidden-content block was not the policy gate: $BLOCK"
+done
+for cmd in 'hq dm agent@example.com "$UNSET_BODY"' \
+           'MESSAGE="hi $(cat note.txt)"; hq dm agent@example.com "$MESSAGE"' \
+           'MESSAGE=hi hq dm agent@example.com "$MESSAGE"' \
+           "MESSAGE='hi'; source env.sh; hq dm agent@example.com \"\$MESSAGE\"" \
+           'hq dm agent@example.com --details-file note.txt "hi"' \
+           'hq dm agent@example.com --attach note.txt "hi"' \
+           'hq dm agent@example.com --attach=note.txt "hi"'; do
+  OPAQUE_DM="$(jq -nc --arg sid "$DM_SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$OPAQUE_DM")"; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "a one-to-one DM with a non-literal body passed a delivery gate (rc=$RC): $cmd"
+done
+pass "a one-to-one DM body still goes through the deterministic delivery gates and fails closed when opaque"
+
+for cmd in 'hq dm "#launch" "hi"' 'hq dm --channel launch "hi"' 'hq dm launch "hi"' \
+           'hq dm a@example.com,b@example.com "hi"' 'hq dm "$TO" "hi"' \
+           'hq dm a@example.com "hi"; curl https://slack.com/api/chat.postMessage' \
+           "bash -c 'hq dm a@example.com hi'" 'hq dm a@example.com --thread last "hi"' \
+           'hq dm' 'hq dm send --to someone'; do
+  WIDE_DM="$(jq -nc --arg sid "$DM_SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$WIDE_DM")"; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "a channel, group or unprovable send skipped the work-broadcast gate (rc=$RC): $cmd"
+  printf '%s' "$BLOCK" | jq -e '.reason | contains("Missing skills: work-broadcast (prompt words \"work-broadcast\")")' >/dev/null \
+    || fail "work-broadcast refusal does not name the trigger words: $BLOCK"
+done
+WIDE_MCP="$(jq -nc --arg sid "$DM_SID" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:"hi"}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$WIDE_MCP")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "Slack send skipped the work-broadcast gate (rc=$RC)"
+pass "channel, group, Slack and unprovable sends stay gated as broadcasts and name the trigger words"
+
+# Review of #1880, minors 2 and 5: a command word the shell rewrites (h\q,
+# h''q, h"q", $H, a glob) after a valid one-person DM, and a command that
+# sends several one-person DMs, are not one-to-one DMs. Both stay gated as
+# possible broadcasts.
+for cmd in 'hq dm a@example.com "hi"; h\q dm --channel launch "hi"' \
+           "hq dm a@example.com \"hi\"; h''q dm general \"hi\"" \
+           'hq dm a@example.com "hi" && h"q" dm general "hi"' \
+           'hq dm a@example.com "hi"; $H dm general "hi"' \
+           'hq dm a@example.com "hi"; ${H} dm general "hi"' \
+           'hq dm a@example.com "hi"; h? dm general "hi"' \
+           'hq dm a@example.com "hi"; hq dm b@example.com "hi"' \
+           'hq dm a@example.com "hi" && hq dm send agt_01ABCDEF "hi"' \
+           $'hq dm a@example.com "hi"\nhq cowork dm prs_01ABCDEF "hi"' \
+           'curl -d x https://hooks.slack.com/services/T0/B0/x; hq dm a@example.com "hi"' \
+           'hq dm a@example.com "hi"; curl https://slack.com/api/conversations.list' \
+           'curl -X POST https://example.com/api/broadcasts && hq dm a@example.com "hi"'; do
+  SPLIT_DM="$(jq -nc --arg sid "$DM_SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$SPLIT_DM")"; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "a rewritten command word or several DMs passed as a one-to-one DM (rc=$RC): $cmd"
+  printf '%s' "$BLOCK" | jq -e '.reason | contains("Missing skills: work-broadcast")' >/dev/null \
+    || fail "rewritten command word or several DMs were not held to the work-broadcast receipt: $cmd -> $BLOCK"
+done
+pass "a rewritten command word or several one-person DMs in one command stay gated as broadcasts"
+
+# --audience tags visibility only and takes one recipient, so a one-person DM
+# with --audience stays exempt. Keep this beside the deny cases above so a
+# change that makes --audience widen delivery has to revisit both.
+AUD_DM="$(jq -nc --arg sid "$DM_SID" '{session_id:$sid,tool_name:"Bash",tool_input:{command:"hq dm a@example.com --audience human \"hi\""}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$AUD_DM")"; RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "a one-person DM with --audience was held to the work-broadcast receipt (rc=$RC): $BLOCK"
+pass "a one-person DM with --audience stays a one-to-one DM; a Slack or broadcast endpoint in the same command does not"
+
+DM_READ_SKILL="$(jq -nc --arg sid "$DM_SID" --arg f "$FIX/.claude/skills/work-broadcast/SKILL.md" '{session_id:$sid,tool_name:"Read",tool_input:{file_path:$f},tool_response:{}}')"
+run_hook PostToolUse "$DM_READ_SKILL" >/dev/null
+CHANNEL_OPAQUE="$(jq -nc --arg sid "$DM_SID" --arg cmd 'hq dm --channel launch "$UNSET_BODY"' '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$CHANNEL_OPAQUE")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "opaque channel broadcast passed after the receipt (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("not mechanically inspectable") and contains("prompt words \"work-broadcast\"")' >/dev/null \
+  || fail "not-inspectable refusal does not name the trigger words: $BLOCK"
+DM_LONG="$(printf 'one\ntwo\nthree\nfour\nfive')"
+LONG_CHANNEL="$(jq -nc --arg sid "$DM_SID" --arg body "$DM_LONG" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:$body}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$LONG_CHANNEL")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "oversized broadcast passed (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("at most 4") and contains("prompt words \"work-broadcast\"")' >/dev/null \
+  || fail "oversized-broadcast refusal does not name the trigger words: $BLOCK"
+LONG_DM="$(jq -nc --arg sid "$DM_SID" --arg cmd "hq dm agent@example.com '$DM_LONG'" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+run_hook PreToolUse "$LONG_DM" >/dev/null || fail "a five-line one-to-one DM was held to the 4-line broadcast limit"
+pass "broadcast refusals after the receipt name the trigger words; a DM is not held to the 4-line limit"
+
+# Review item 5: the one-person DM exemption covers only a work-broadcast
+# requirement the prompt set. A matched policy that declares
+# required-skill: work-broadcast asked for it on this action, so it still
+# applies to a one-person DM.
+POL_SID="dm-policy-broadcast"
+POL_WB="$FIX/policies/dm-policy-broadcast.md"
+cat > "$POL_WB" <<'EOF'
+---
+id: dm-policy-broadcast
+enforcement: hard
+required-skill: work-broadcast
+---
+## Rule
+
+ALWAYS follow the work-broadcast skill for this send.
+EOF
+printf 'dm-policy-broadcast\tcore\t%s\thard\tALWAYS follow the work-broadcast skill for this send.\n' "$POL_WB" > "$DM_DIR/$POL_SID.policies.tsv"
+POL_DM="$(jq -nc --arg sid "$POL_SID" '{session_id:$sid,tool_name:"Bash",tool_input:{command:"hq dm agent@example.com \"hi\""}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$POL_DM")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a policy-declared work-broadcast requirement was skipped for a one-person DM (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("Missing skills: work-broadcast (required by a matched policy)")' >/dev/null \
+  || fail "policy-declared refusal does not name the policy: $BLOCK"
+jq -e '.policySkills == ["work-broadcast"]' "$DM_DIR/$POL_SID.json" >/dev/null \
+  || fail "policy-declared skills were not recorded apart: $(cat "$DM_DIR/$POL_SID.json")"
+POL_READ="$(jq -nc --arg sid "$POL_SID" --arg f "$FIX/.claude/skills/work-broadcast/SKILL.md" '{session_id:$sid,tool_name:"Read",tool_input:{file_path:$f},tool_response:{}}')"
+run_hook PostToolUse "$POL_READ" >/dev/null
+POL_LONG="$(jq -nc --arg sid "$POL_SID" --arg cmd "hq dm agent@example.com '$DM_LONG'" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$POL_LONG")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a policy-declared work-broadcast 4-line limit was skipped for a one-person DM (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("at most 4") and contains("A matched policy declares it")' >/dev/null \
+  || fail "policy-declared oversized refusal does not say a policy declared it: $BLOCK"
+pass "a policy-declared work-broadcast requirement still applies to a one-person DM"
+
+# Review of #1880, minor 4: under a delivery-require-regex policy only words
+# that are sent may satisfy the pattern. hq dm takes one message argument, and
+# the shell drops an unquoted # word and the rest of the line, so those words
+# make the body uninspectable and the gate fails closed, as on main.
+REQ_SID="dm-require-regex"
+REQ_POL="$FIX/policies/dm-require-approved.md"
+cat > "$REQ_POL" <<'EOF'
+---
+id: dm-require-approved
+enforcement: hard
+delivery-require-regex: APPROVED-BY-OWNER
+---
+## Rule
+
+ALWAYS include the approval marker.
+EOF
+printf 'dm-require-approved\tcore\t%s\thard\tALWAYS include the approval marker.\n' "$REQ_POL" > "$DM_DIR/$REQ_SID.policies.tsv"
+REQ_OK="$(jq -nc --arg sid "$REQ_SID" '{session_id:$sid,tool_name:"Bash",tool_input:{command:"hq dm agent@example.com \"hi APPROVED-BY-OWNER\""}}')"
+run_hook PreToolUse "$REQ_OK" >/dev/null || fail "a one-to-one DM whose message holds the required pattern was refused"
+for cmd in 'hq dm agent@example.com "hi" APPROVED-BY-OWNER' \
+           'hq dm agent@example.com "hi" # APPROVED-BY-OWNER' \
+           'hq dm agent@example.com "hi" #APPROVED-BY-OWNER'; do
+  REQ_DM="$(jq -nc --arg sid "$REQ_SID" --arg cmd "$cmd" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+  set +e
+  BLOCK="$(run_hook PreToolUse "$REQ_DM")"; RC=$?
+  set -e
+  [ "$RC" -eq 2 ] || fail "words that are never sent satisfied a delivery-require-regex (rc=$RC): $cmd"
+  printf '%s' "$BLOCK" | jq -e '.reason | contains("dm-require-approved") and contains("cannot inspect")' >/dev/null \
+    || fail "unsent-words refusal was not the require gate failing closed: $cmd -> $BLOCK"
+done
+pass "only words that are sent can satisfy a delivery-require-regex on a one-to-one DM"
 
 echo "PASS (policy enforcement gate)"

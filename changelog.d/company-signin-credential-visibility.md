@@ -1,0 +1,1 @@
+The Company Outpost sign-in watcher now logs why a credential is not usable (`credential_not_usable` with a reason of missing, not_regular_file, bad_owner, bad_mode, unreadable, parse_error, invalid_shape or expired) instead of silently staying in awaiting-claude-login. The code-timeout log line carries the same reason. Only the class is logged, never credential contents.

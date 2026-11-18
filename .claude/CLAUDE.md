@@ -36,7 +36,7 @@ scaffolds, supervises, and syncs work across repos and companies.
   pickup DM — never hand-roll this flow from share/dm primitives).
 - Identity: `/hq-login`, `/hq-logout`, `/hq-whoami`.
 - Bugs and feature requests: `/hq-bug`.
-- Work Mesh Live presence is automatic (enqueue hooks + `hq mesh daemon`). Manual signals only: `hq mesh session task-status|blocked|note --enqueue …`. Board story status: `hq mesh story --story <id> --status <status>`. Clarification: `hq mesh context organize`.
+- Work Mesh Live presence is automatic (enqueue hooks + `hq daemon`). Manual signals only: `hq mesh session task-status|blocked|note --enqueue …`. Board story status: `hq mesh story --story <id> --status <status>`. Clarification: `hq mesh context organize`.
 - Search: `/search`, `hq search`, or `qmd`.
 - Connected apps: `/hq-integrations` or `hq integrations`. For any request to
   look up, read, create, update, or search in an external app (Linear, Notion,

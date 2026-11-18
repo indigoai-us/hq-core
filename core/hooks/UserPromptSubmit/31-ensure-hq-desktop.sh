@@ -548,11 +548,37 @@ fi
 # HOOK: cheap checks only; delegate the heavy lifting to the worker.
 # ===========================================================================
 
+# Machine-check collect-only (HQ_MACHINE_CHECK=1 and
+# HQ_MACHINE_CHECK_COLLECT_ONLY=1, set by the hq-cli daemon batch when
+# core/core.yaml advertises machineCheckCollectOnly): a finished worker's
+# outcome and the deferred notice are printed for the batch to collect, but
+# the result record is not claimed and deferred-notice is not written, because
+# nobody has seen them yet. The run that shows them records them: a legacy
+# prompt, or the daemon's commit run once the native notice has delivered
+# them. An unclaimed outcome never holds up the update itself: after printing
+# it, a collect-only run goes on through the same steps a later prompt would,
+# so a newer release is still fetched and installed. The attempt cooldown,
+# the manifest cache and the running-app cache are operational and unchanged.
+COLLECT_ONLY=0
+if [ "${HQ_MACHINE_CHECK:-}" = "1" ] && [ "${HQ_MACHINE_CHECK_COLLECT_ONLY:-}" = "1" ]; then
+  COLLECT_ONLY=1
+fi
+
 # --- 0. report a finished worker's outcome, exactly once --------------------
 # Prompts from several sessions can land at the same moment. `mv` is atomic,
 # so only ONE of them can claim the record; the others see nothing and carry
-# on with the ordinary (silent, current) path.
-if [ -f "$RESULT" ]; then
+# on with the ordinary (silent, current) path. A collect-only run reads an
+# updated or failed record without claiming it, prints it, and continues.
+COLLECTED_RESULT=0
+if [ "$COLLECT_ONLY" -eq 1 ] && [ -f "$RESULT" ]; then
+  R_STATUS="$(result_get status)"; R_FROM="$(result_get from)"; R_TO="$(result_get to)"
+  R_REASON="$(result_get reason)"; R_URL="$(result_get url)"
+  case "$R_STATUS" in
+    updated) emit_updated "$R_FROM" "$R_TO"; COLLECTED_RESULT=1 ;;
+    failed)  emit_available "$R_FROM" "$R_TO" "$R_URL" "$R_REASON"; COLLECTED_RESULT=1 ;;
+  esac
+fi
+if [ "$COLLECTED_RESULT" -eq 0 ] && [ -f "$RESULT" ]; then
   CLAIM="$RESULT.claim.$$"
   if mv "$RESULT" "$CLAIM" 2>/dev/null; then
     RESULT="$CLAIM"
@@ -615,7 +641,9 @@ defer_notice_once() {
   [ -f "$DEFERRED_NOTICE" ] && IFS= read -r seen < "$DEFERRED_NOTICE" || true
   [ "$seen" = "$LATEST" ] && return 0
   mkdir -p "$STATE_DIR" 2>/dev/null || true
-  printf '%s\n' "$LATEST" > "$tmp" 2>/dev/null && mv "$tmp" "$DEFERRED_NOTICE" 2>/dev/null || true
+  if [ "$COLLECT_ONLY" -ne 1 ]; then
+    printf '%s\n' "$LATEST" > "$tmp" 2>/dev/null && mv "$tmp" "$DEFERRED_NOTICE" 2>/dev/null || true
+  fi
   write_result deferred "$INSTALLED" "$LATEST" app_running 0 "$DOWNLOAD_URL"
   emit_deferred "$INSTALLED" "$LATEST"
 }

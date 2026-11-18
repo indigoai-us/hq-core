@@ -34,7 +34,7 @@ Accept `{co}/{name}`, a bare `{name}`, or a project directory path, plus an opti
 `--brainstorm` flag (or a `brainstorm.md` path) selecting **deck mode**.
 
 1. Set `{co}` from the input when a company is given or inferable (empty for personal
-   projects). When `{co}` is set, run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+   projects). When `{co}` is set, run `hq core work-mesh-bind-trusted --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
 2. Locate the project dir:
    - `companies/{co}/projects/{name}/` when a company is given or inferable.
    - `projects/{name}/` or `personal/projects/{name}/` for personal / HQ projects (no company).

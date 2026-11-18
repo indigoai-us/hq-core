@@ -1,7 +1,7 @@
 ---
 name: execute-task
 description: "Execute one PRD story through coordinated worker phases with test, lint, and typecheck gates."
-allowed-tools: Task, Read, Write, Glob, Grep, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/verify-story-deliverables.sh:*), Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(bash core/scripts/hq-session.sh:*), Bash, Bash(core/scripts/audit-log.sh:*), AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/worker-codex-model.sh:*)
+allowed-tools: Task, Agent, SendMessage, spawn_agent, wait_agent, Read, Write, Glob, Grep, Bash(hq core work-mesh-bind-trusted:*), Bash(hq core verify-story-deliverables:*), Bash(hq runners create:*), Bash(hq runners list:*), Bash(hq runners wait:*), Bash(hq runners message:*), Bash(bash core/scripts/hq-session.sh:*), Bash(sh core/scripts/conduct-runner-resolve.sh:*), Bash, Bash(hq core audit-log:*), AskUserQuestion, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/worker-codex-model.sh:*)
 ---
 
 # Execute Task - Worker-Coordinated Story Execution
@@ -10,10 +10,17 @@ Execute a single user story from a PRD through coordinated worker phases. Each w
 
 **Usage:** `execute-task {project}/{task-id}`
 
-Every assigned worker phase runs through `hq lanes create` (step 6c), with this
-session as senior and the story id on every lane. The same worker lane continues
-its thread across phases under that senior. If it is still live, send the next
-phase with `hq lanes message`; read completed work from its lane envelope.
+By default every assigned worker phase runs on a named in-session subagent
+(step 6c-default): the `Agent` tool in Claude Code, `spawn_agent` / `wait_agent`
+in Codex. The same worker's subagent is resumed across phases with
+`SendMessage` to its agent id, and each phase returns its handoff JSON to this
+session.
+
+<!-- advanced-mode:start -->
+Lanes are advanced mode: when `conduct.runner` is `runner` (set with
+`/conduct-runners`), each phase runs through `hq runners create` instead (step
+6c-lanes), with this session as senior and the story id on every lane.
+<!-- advanced-mode:end -->
 
 **User's input:** `$ARGUMENTS`
 
@@ -21,12 +28,16 @@ phase with `hq lanes message`; read completed work from its lane envelope.
 
 "Pick a task, complete it, commit it."
 
-- One HQ worker lane per worker and senior, continued across phases
+- One named subagent per worker, resumed across phases
 - Keep the existing worker context and handoff files available across phases
-- HQ worker lanes do the phase work through `hq lanes create`
+- Worker subagents do the phase work; the parent never runs a phase itself
+<!-- advanced-mode:start -->
+- In advanced mode (`conduct.runner` runner), one HQ worker lane per worker and
+  senior does the phase work through `hq runners create`, continued across phases
+<!-- advanced-mode:end -->
 - Back pressure keeps code on rails
 - Handoffs preserve context between workers
-- Each worker lane commits its own work before returning
+- Each worker commits its own work before returning
 
 ## Return Contract (when invoked as a story sub-agent)
 
@@ -68,18 +79,36 @@ All normal execute-task behavior still runs (task classification, worker sequenc
 
 **Opt-out (prose mode):** when the prompt explicitly includes `RETURN CONTRACT: prose`, emit the normal human-readable summary. This path is reserved for direct CLI use (no orchestrator parent). Orchestrators MUST inject `RETURN CONTRACT: json` per [ralph-orchestrator-context-discipline](../../../core/policies/ralph-orchestrator-context-discipline.md) (hard policy).
 
-## Runtime Adapter: HQ Worker Lanes
+## Runtime Adapter: Phase Runner
 
-Worker phases use `hq lanes create` in every runtime. The invoking session is
-recorded as senior, and every phase carries the active company, project, story,
-worker, and brief file. HQ lanes owns provider launch, continuity, admission,
-and durable lane state. The caller reads the phase result from the lane envelope
-and keeps the handoff file format documented below.
+Step 5 resolves the runner once with `sh core/scripts/conduct-runner-resolve.sh`
+and records it in the execution state. It prints `subagent` (the default) or
+`runner` (advanced mode, set with `/conduct-runners`).
 
-Do not substitute `Task`, `spawn_agent`, or a headless builder for a phase lane.
-If `hq lanes` is unavailable or refuses the request, preserve the phase as
-queued or report the specific blocker. Do not simulate the worker sequence in
-the parent.
+**Default (`subagent`):** each phase runs on a named in-session subagent: the
+`Agent` tool in Claude Code, `spawn_agent` / `wait_agent` in Codex. The
+subagent receives the phase brief, does the work, commits it, and returns the
+handoff JSON. The same worker's subagent is resumed for its later phases with
+`SendMessage` to its agent id. No `hq runners` call is made in this mode.
+
+<!-- advanced-mode:start -->
+**Advanced mode (`runner`):** worker phases use `hq runners create`. The invoking
+session is recorded as senior, and every phase carries the active company,
+project, story, worker, and brief file. HQ lanes owns provider launch,
+continuity, admission, and durable lane state. The caller reads the phase
+result from the lane envelope and keeps the handoff file format documented
+below. In advanced mode, do not substitute `Task`, `spawn_agent`, or a headless
+builder for a phase lane. If `hq runners` is unavailable or refuses the request,
+preserve the phase as queued or report the specific blocker.
+<!-- advanced-mode:end -->
+
+In both modes the parent never runs a phase itself. Do not simulate the worker
+sequence in the parent. If this session cannot spawn a phase subagent (for
+example, it is itself a subagent without the `Agent` tool), block the story
+with `NEEDS_RUNNER`. A `/run-project` parent then runs `/execute-task` for
+that story from its own session, one story at a time. Run directly, point
+the user to running `/execute-task` from the top-level session,
+`/conduct-runners`, or `/run-project --interactive`.
 
 ## Work Mesh Live — trusted bind (do this first)
 
@@ -87,7 +116,7 @@ Before any other tool call that touches project work, bind the session per
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task}"
 ```
 
@@ -118,7 +147,7 @@ Once `{project}` and `{task-id}` are parsed (and company `{co}` is known from
 the PRD path `companies/{co}/projects/...` or session meta), bind immediately:
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task-id}"
 ```
 
@@ -422,6 +451,17 @@ Create the execution tracking directory and file:
 mkdir -p workspace/orchestrator/{project}/executions
 ```
 
+Resolve the phase runner once with the shared resolver. Take the session id
+from `bash core/scripts/hq-session.sh current`:
+
+```bash
+sh core/scripts/conduct-runner-resolve.sh --session-id {session-id}
+```
+
+It prints `subagent` (default, step 6c-default) or `runner` (advanced mode,
+step 6c-lanes). Record the value as `runner` and use it for every phase of this
+story.
+
 Write to `workspace/orchestrator/{project}/executions/{task-id}.json`:
 
 ```json
@@ -430,6 +470,7 @@ Write to `workspace/orchestrator/{project}/executions/{task-id}.json`:
   "project": "{project}",
   "started_at": "{ISO8601}",
   "status": "in_progress",
+  "runner": "subagent|runner",
   "current_phase": 1,
   "phases": [
     {"worker": "{worker1}", "status": "pending"},
@@ -467,7 +508,7 @@ If `checkout.enabled: false`: skip this step silently.
 ### 5.1 Audit: Task Started
 
 ```bash
-core/scripts/audit-log.sh append \
+hq core audit-log append \
   --event task_started \
   --project {project} \
   --story-id {task.id} \
@@ -529,13 +570,13 @@ Skip silently if no `linearIssueId` or no credentials configured. Never block ex
 
 ### 5.6 Load Applicable Policies
 
-Load policies through the frontmatter-only gate. Collect each applicable file set in stable order and divide it into consecutive chunks of at most 40 files. Invoke `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once per chunk, with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This reads frontmatter only and keeps each tool result bounded.
+Load policies through the frontmatter-only gate. Collect each applicable file set in stable order and divide it into consecutive chunks of at most 40 files. Invoke `hq core policy frontmatter {file1} {file2} ...` once per chunk, with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This reads frontmatter only and keeps each tool result bounded.
 
 1. **Company policies**: Determine the active company from `prd.metadata.company` or manifest repo lookup. Collect eligible files in `companies/{co}/policies/`, skipping `example-policy.md`, preserve their order, and read frontmatter using one complete ordered file list. For any policy with `enforcement: hard` whose `trigger` matches the current task, additionally read its `## Rule` section via targeted Read + range.
 
 2. **Repo policies**: If working inside a repo, list files in `{repoPath}/.claude/policies/` if it exists, preserve their order, and read all frontmatter using one complete ordered file list with each path as a separate argument.
 
-3. **Global policies**: Policy digests (`core/policies/_digest.md`) are **retired**. Collect global policy files, preserve their order, and read their frontmatter using one complete ordered file list to filter by `trigger`; don't load full policy bodies. In the combined output, the initial unlabeled block belongs to its first path; subsequent results start with `# --- policy-file: <path> ---`. SessionStart injects matching policies via `inject-policy-on-trigger`; do not look for a digest file.
+3. **Global policies**: Policy digest files are retired. Collect global policy files, preserve their order, and read their frontmatter using one complete ordered file list to filter by `trigger`; don't load full policy bodies. In the combined output, the initial unlabeled block belongs to its first path; subsequent results start with `# --- policy-file: <path> ---`. SessionStart injects matching policies via `inject-policy-on-trigger`; do not open a digest file.
 
 Include applicable policy rules in worker prompts (step 6b) under `### Applicable Policies`.
 
@@ -546,7 +587,11 @@ Include applicable policy rules in worker prompts (step 6b) under `### Applicabl
 
 ### 6. Execute Each Phase
 
-For each worker in the sequence, create or continue its HQ worker lane with `hq lanes create`, passing the active company, project, story, worker, brief file, and invoking session as senior. Message a live lane with `hq lanes message`. Each worker commits its work before returning and passes a structured handoff to the next phase.
+For each worker in the sequence, run the phase on the runner recorded in step 5. By default that is the worker's named subagent (6c-default), resumed across phases. Each worker commits its work before returning and passes a structured handoff to the next phase.
+
+<!-- advanced-mode:start -->
+In advanced mode the runner is the worker's HQ lane (6c-lanes): create or continue it with `hq runners create`, passing the active company, project, story, worker, brief file, and invoking session as senior, and message a live lane with `hq runners message`.
+<!-- advanced-mode:end -->
 
 #### 6a. Load Worker Config
 
@@ -643,7 +688,7 @@ If the target repo has a qmd collection (check `qmd status`), prefer `qmd vsearc
 Before returning, stage and commit the files you created or modified with a
 descriptive message referencing {task.id}. If the orchestrator finds uncommitted
 changes after your return, it keeps the phase incomplete and returns the commit
-requirement to the same lane. The orchestrator does not commit work for you.
+requirement to the same worker. The orchestrator does not commit work for you.
 
 ### Output Requirements
 When complete, provide JSON:
@@ -663,18 +708,56 @@ When complete, provide JSON:
 }
 ```
 
-#### 6c. Create or Continue the Worker's Lane, Then Dispatch
+#### 6c. Dispatch the Phase
 
-Every phase assigned to a worker uses the same lane mapping as `/conduct`:
+Write the complete phase prompt from 6b to a phase brief file under
+`workspace/orchestrator/{project}/executions/{task-id}/phases/`. Then run it on
+the runner recorded in step 5: 6c-default for `subagent`, 6c-lanes for `runner`.
 
-1. Write the complete phase prompt from 6b to a phase brief file under
-   `workspace/orchestrator/{project}/executions/{task-id}/phases/`.
+#### 6c-default. Run the Phase on an Agent Subagent
+
+1. Hand the phase brief to a named subagent: the `Agent` tool in Claude Code
+   with `name: "{task.id}-{worker.id}"`, or `spawn_agent` then `wait_agent` in
+   Codex. The prompt is the 6b phase prompt from the brief file, plus the
+   instruction to write its handoff JSON to
+   `workspace/orchestrator/{project}/executions/{task-id}/phases/{phase}-{worker.id}.handoff.json`
+   and return the same JSON as its final message.
+2. If this worker already ran an earlier phase of this story, resume that
+   subagent with `SendMessage` to its agent id instead of starting another one.
+3. Record the run in
+   `workspace/orchestrator/conduct-subagents/{session-id}/runs.json`
+   (story, worker, phase, agent id, status) so a resumed session can find it.
+4. Wait for the subagent to finish and read its handoff from the handoff file.
+   If the file is missing, use the JSON in its final message. Validate it
+   before continuing.
+5. If the subagent cannot be spawned (for example, this session is itself a
+   subagent without the `Agent` tool), do not run the phase in the parent.
+   Block the story with `NEEDS_RUNNER`, before any phase ran, so a
+   `/run-project` parent can run `/execute-task` from its own session.
+   Otherwise point the user to running `/execute-task` from the top-level
+   session, `/conduct-runners`, or `/run-project --interactive`.
+
+<!-- advanced-mode:start -->
+#### 6c-lanes. Advanced Mode: Create or Continue the Worker's Lane, Then Dispatch
+
+Only when the runner recorded in step 5 is `runner` (set with
+`/conduct-runners`). Every phase assigned to a worker uses the same lane
+mapping as `/conduct`:
+
+1. Use the phase brief file written above. The brief carries the envelope
+   line from Step 4 of `.claude/skills/_shared/conduct-dispatch-core.md`
+   verbatim, as one line:
+
+   ```text
+   Envelope (hq-lane-envelope.v1): write one JSON object using only these keys: schema_version, decision, summary, story_status, artifacts, story_complete, story_complete_reason, questions, blocked_reason, next_check_at, fingerprint, outcome. schema_version is "hq-lane-envelope.v1". decision is one of "done", "ask", "blocked"; any other value, such as "complete", fails as envelope_invalid. story_status is one of "queued", "in_progress", "review", "done". summary is a non-empty string. artifacts is an array. questions is required and non-empty when decision is "ask", and absent otherwise. Each questions item is an object with question (a non-empty string), context (a non-empty string) and options (an array of strings), plus optional id and recommended (non-empty strings), and no other keys, for example {"id":"q1","question":"Which branch should the fix target?","context":"main and release both carry the bug.","options":["main","release"],"recommended":"main"}. blocked_reason is required and non-empty when decision is "blocked", and absent otherwise. story_complete is optional and is a boolean; story_complete_reason is required and non-empty when story_complete is present, and absent otherwise. story_complete true requires story_status "done" and a story_complete_reason that says what was delivered and how it was verified; story_complete false requires another story_status and a reason that says what is still missing. next_check_at is optional and is an ISO date-time. fingerprint is optional and is a non-empty string or null. outcome is optional; include it when the brief or the Executive standing rules (item 9) ask for it, as an object with only state ("done", "needs_decision" or "partial"), outcome (a non-empty string), gathered (an array of {"label","text"} objects with an optional "ref", all non-empty strings), next_steps (an array of non-empty strings, at least one when state is "partial") and an optional decision_id; state "needs_decision" requires decision_id or a non-empty questions array, and state "done" cannot accompany decision "blocked".
+   ```
+
 2. Resolve the invoking session id with `bash core/scripts/hq-session.sh current`.
    Create the lane with the bound company, project, story, worker id, brief path,
    and `--senior session:{session-id}`:
 
    ```bash
-   hq lanes create --company "{company}" --project "{project}" \
+   hq runners create --company "{company}" --project "{project}" \
      --story "{task.id}" --worker "{worker.id}" \
      --brief-file "{phase brief path}" --senior "session:{session-id}" \
      --account auto --json
@@ -690,31 +773,36 @@ Every phase assigned to a worker uses the same lane mapping as `/conduct`:
    JSON body, including `ok`, `lane_id`, and any admission/capacity error; do
    not infer delivery from the command exit code.
 3. A repeated create for the same worker and senior continues that worker's
-   previous lane thread. If `hq lanes list --json` shows that lane is still
-   live, deliver the follow-up brief with `hq lanes message {lane-id}
+   previous lane thread. If `hq runners list --json` shows that lane is still
+   live, deliver the follow-up brief with `hq runners message {lane-id}
    --text-file {phase brief path} --json` instead of creating another lane.
    An admission or capacity refusal leaves the phase queued for the next tick.
 4. Start and verify the policy-required detached watcher, then wait for an envelope, question, or state change with
-   `hq lanes wait --any {lane-id} --for envelope --for question --for state
+   `hq runners wait --any {lane-id} --for envelope --for question --for state
    --timeout {seconds} --json`. Questions retain the existing user decision
-   path; answer them through `hq lanes questions answer`.
+   path; answer them through `hq runners questions answer`.
 5. Read the lane's latest `hq-lane-envelope.v1` from the reference reported by
-   `hq lanes list --json` (or the lane's `last_envelope.ref`). Read the lane's
-   state with `hq lanes show {lane-id} --json`. Validate the envelope and phase
+   `hq runners list --json` (or the lane's `last_envelope.ref`). Read the lane's
+   state with `hq runners show {lane-id} --json`. Validate the envelope and phase
    handoff before continuing.
+<!-- advanced-mode:end -->
 
-The lane envelope carries the phase result. Keep the existing handoff JSON
+#### 6c (both modes). Record the Handoff
+
+In default mode the subagent's handoff file carries the phase result; in
+advanced mode the lane envelope carries it. Keep the existing handoff JSON
 format between phases, including `from_worker`, `to_worker`, `timestamp`,
 `summary`, `files_created`, `files_modified`, `key_decisions`,
 `context_for_next`, and `back_pressure`. Append each validated handoff as one
 line to `workspace/orchestrator/{project}/executions/{task-id}/handoffs.jsonl`.
-The lane envelope's `artifacts` includes the handoff object so the next phase can
-be built from the envelope rather than process state.
+In advanced mode the lane envelope's `artifacts` includes the handoff object so
+the next phase can be built from the envelope rather than process state.
 
 The senior remains responsible for the current quality gates, retries, commit
 checks, lock release, execution state, and user-facing reports. A malformed
-phase envelope gets the existing single retry with a stricter reminder. A
-second malformed result blocks the story; do not guess from logs or lane state.
+phase handoff or envelope gets the existing single retry with a stricter
+reminder. A second malformed result blocks the story; do not guess from logs,
+subagent transcripts, or lane state.
 
 #### 6c.5 Inline Codex Review (when worker == codex-reviewer)
 
@@ -763,7 +851,7 @@ When iterating through the worker sequence in step 6, check if the current worke
 1. **Read `task.e2eTests`** from prd.json — array of test descriptions.
 2. **Read all existing story test files** in `{repo}/__tests__/stories/` to understand the established pattern (imports, helpers, framework).
 3. **Detect test framework**: Check `package.json` for vitest/jest/bun test. Check `qualityGates` for test runner command. Fall back to `bun test`.
-4. **Dispatch through the worker lane** — use the same 6c create-or-continue flow and place the prompt below in the phase brief. Prompt:
+4. **Dispatch on the phase runner** — place the prompt below in the phase brief and run it with 6c: the worker's subagent (6c-default) by default, or the 6c-lanes create-or-continue flow in advanced mode. Prompt:
 
 ```markdown
 ## You are: acceptance-test-writer
@@ -825,10 +913,19 @@ Also run ALL existing story tests to verify no regressions:
 
 #### 6d. Process Worker Output
 
-Read the completed lane's latest envelope from `hq lanes list --json` and its
-`last_envelope.ref`. The lane records its own state; there is no `record` or
-pool-release call. Parse the envelope and validate the worker's phase handoff
-before branching on success or failure.
+In default mode, read the phase handoff from the subagent's handoff file
+(`phases/{phase}-{worker.id}.handoff.json`, written in 6c-default) or, if the
+file is missing, from the subagent's final message. Update its row in
+`conduct-subagents/{session-id}/runs.json`.
+
+<!-- advanced-mode:start -->
+In advanced mode, read the completed lane's latest envelope from
+`hq runners list --json` and its `last_envelope.ref`. The lane records its own
+state; there is no `record` or pool-release call.
+<!-- advanced-mode:end -->
+
+In both modes, validate the worker's phase handoff before branching on success
+or failure.
 
 Then parse the worker's JSON output.
 
@@ -842,7 +939,7 @@ Then parse the worker's JSON output.
        "Diagnose and fix back-pressure failure. Check: {failed_check_name}. Error: {stdout_stderr_from_failed_check}. Then re-run: {verification.post_execute commands}" 2>&1
      ```
    - **If `codex_available == false`:** Build a `codex-debugger` phase brief with the
-     failure details and use the same 6c lane create-or-continue flow. This is the
+     failure details and run it with 6c: a `codex-debugger` subagent (6c-default) by default, or the 6c-lanes create-or-continue flow in advanced mode. This is the
      existing single recovery attempt, not an additional parallel phase.
    - Record the attempt in `codex_debug_attempts`:
      ```json
@@ -859,9 +956,9 @@ Then parse the worker's JSON output.
 - Store handoff context
 - Append the handoff JSON as one line to
   `workspace/orchestrator/{project}/executions/{task-id}/handoffs.jsonl`. The
-  record keeps the established handoff format and is also included in the lane
-  envelope artifacts for the next phase.
-- HQ lanes records the lane state on every path
+  record keeps the established handoff format. In advanced mode it is also
+  included in the lane envelope artifacts for the next phase.
+- In advanced mode, HQ lanes records the lane state on every path
 - Update execution state
 - Continue to next phase
 
@@ -904,7 +1001,7 @@ After each phase, update `workspace/orchestrator/{project}/executions/{task-id}.
 #### 6e.5 Audit: Phase Completed
 
 ```bash
-core/scripts/audit-log.sh append \
+hq core audit-log append \
   --event phase_completed \
   --project {project} \
   --story-id {task.id} \
@@ -915,15 +1012,15 @@ core/scripts/audit-log.sh append \
   --action "Phase {N} completed: {worker.id}" || true
 ```
 
-#### 6e.7 Verify Worker Lane Committed Its Work
+#### 6e.7 Verify the worker committed its work
 
-After each worker lane returns, verify the commit and changed-file references reported in its envelope:
+After each worker returns (its subagent by default, its lane in advanced mode), verify the commit and changed-file references reported in its handoff or envelope:
 
 ```bash
 cd {target_repo_path} && git status --porcelain
 ```
 
-If the envelope reports changed files without a commit, keep the phase incomplete and return the missing commit requirement to the same lane. Do not create a parent-side commit that claims the worker lane completed its commit step.
+If the handoff or envelope reports changed files without a commit, keep the phase incomplete and return the missing commit requirement to the same worker: `SendMessage` to its subagent by default, or its lane in advanced mode. Do not create a parent-side commit that claims the worker completed its commit step. The orchestrator does not commit work for you.
 
 This enforces the HQ sub-agent rule: each sub-agent MUST commit its own work before completing. The orchestrator is the safety net.
 
@@ -1010,7 +1107,7 @@ A done-mark should mean "work exists", not "a step ran". At completion, list wha
 - **Standalone**: verify and record it yourself before writing `passes: true`:
 
 ```bash
-bash core/scripts/verify-story-deliverables.sh --prd "{prd.json path}" --story "{task-id}" [--repo "{repoPath}"] \
+hq core verify-story-deliverables --prd "{prd.json path}" --story "{task-id}" [--repo "{repoPath}"] \
   --evidence-json '["repo-path:…", "path:…"]' --commits-json '["<short-sha>", …]' --write
 ```
 
@@ -1149,7 +1246,7 @@ Best-effort — never block task completion. Log and continue on failure.
 #### 7c.0 Audit: Task Completed
 
 ```bash
-core/scripts/audit-log.sh append \
+hq core audit-log append \
   --event task_completed \
   --project {project} \
   --story-id {task.id} \
@@ -1243,7 +1340,7 @@ This ensures the failure becomes a rule BEFORE asking the user what to do.
 #### 8.0.6 Audit: Task Failed
 
 ```bash
-core/scripts/audit-log.sh append \
+hq core audit-log append \
   --event task_failed \
   --project {project} \
   --story-id {task.id} \
@@ -1651,8 +1748,9 @@ execute-task landing-page/US-001          # UI component story
 ## Rules
 
 - **ONE task at a time** — never work on multiple tasks
-- **One lane per worker and senior** — continue that lane across phases; message it while live, and never create a competing lane for the same work
-- **Workers must commit their own work** — if a lane returns without a commit, the orchestrator keeps the phase incomplete and sends the commit requirement back to that lane
+- **One named subagent per worker, resumed across phases** — the parent never runs a phase itself; if no subagent can be spawned, block with `NEEDS_RUNNER`
+- **In advanced mode, one lane per worker and senior** — continue that lane across phases; message it while live, and never create a competing lane for the same work
+- **Workers must commit their own work** — if a worker returns without a commit, the orchestrator keeps the phase incomplete and sends the commit requirement back to that worker
 - **Back pressure is mandatory** — no skipping tests/lint/typecheck
 - **Quality gates before passes: true** — run `prd.metadata.qualityGates` before marking a story complete
 - **Capture learnings** — every task generates a learning entry via `/learn`

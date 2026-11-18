@@ -53,8 +53,8 @@ cmd_emit() {
   fi
   [ ! -f "$receipt" ] || return 0
   while :; do
-    show="$(HQ_NO_UPDATE_CHECK=1 hq lanes show "$lane" --json)" || die "hq lanes show failed for $lane"
-    printf '%s' "$show" | jq -e '.ok == true and (.lane | type == "object")' >/dev/null 2>&1 || die "hq lanes show returned an unreadable result for $lane"
+    show="$(HQ_NO_UPDATE_CHECK=1 hq runners show "$lane" --json)" || die "hq runners show failed for $lane"
+    printf '%s' "$show" | jq -e '.ok == true and (.lane | type == "object")' >/dev/null 2>&1 || die "hq runners show returned an unreadable result for $lane"
     state="$(printf '%s' "$show" | jq -r '.lane.state // "unknown"')"
     decision="$(printf '%s' "$show" | jq -r '.lane.last_envelope.decision // empty')"
     ref="$(printf '%s' "$show" | jq -r '.lane.last_envelope.ref // empty')"
@@ -99,14 +99,14 @@ cmd_emit() {
       release_lock "$lock"
       return 0
     fi
-    result="$(HQ_NO_UPDATE_CHECK=1 hq lanes wait --any "$lane" --for envelope --for state --for question --timeout "$timeout" --json 2>/dev/null || true)"
+    result="$(HQ_NO_UPDATE_CHECK=1 hq runners wait --any "$lane" --for envelope --for state --for question --timeout "$timeout" --json 2>/dev/null || true)"
     if printf '%s' "$result" | jq -e '.ok == true' >/dev/null 2>&1; then
       continue
     fi
     if printf '%s' "$result" | jq -e '.error == "wait_timeout"' >/dev/null 2>&1; then
       continue
     fi
-    die "hq lanes wait returned an unreadable result for $lane"
+    die "hq runners wait returned an unreadable result for $lane"
   done
 }
 

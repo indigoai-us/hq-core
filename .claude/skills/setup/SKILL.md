@@ -107,6 +107,21 @@ arguments actually contain `--guided`:
 
 *(guided: `[hq-setup] step=tools status=running`)*
 
+**First: jq missing blocks every tool call.** If any tool call in this
+session is refused with
+`master-hook: BLOCKED: required tool jq is missing`, nothing in this skill can
+run, including the PATH check below and every install step. Do not retry
+tool calls. Stop and ask the user to:
+
+1. Run the jq install command for their OS in their own terminal, from this
+   line: `Install jq (Windows: winget install jqlang.jq; macOS: brew install jq; Debian/Ubuntu: sudo apt-get install jq)`.
+   If winget asks to accept source or package agreements, the user answers it
+   there.
+2. Open a new terminal so PATH picks up jq (`jq --version` should print a
+   version).
+3. Restart Claude Code / Codex from that new terminal or relaunch the app,
+   then run `/setup` again.
+
 Before anything else, check if the HQ Installer left a manifest. HQ Desktop
 writes it to the USER'S home (`~/.hq/install-manifest.json`); older installers
 wrote it inside the HQ folder. Check both — reading only `.hq/` inside HQ made
@@ -157,6 +172,7 @@ If a manifest exists, this phase becomes the primary driver of setup. The manife
 - `dependencies.qmd` failed → no semantic search; install the SANCTIONED pin (see `core/scripts/install-deps.allow`): `npm install -g @tobilu/qmd@2.5.3`, then `qmd index .`. Unpinned installs are blocked by the supply-chain guard on purpose.
 - `dependencies.claude-code` failed → can't run workers; `npm install -g @anthropic-ai/claude-code@<version>` (explicit version pin required by the guard)
 - `dependencies.yq` failed → can't parse YAML configs; `brew install yq` or download binary
+- `jq` MISSING in the PATH check above (check the PATH table) → HQ hook guards cannot run without jq, and master-hook refuses tool calls while it is missing; install it with the jq step in Phase 0b (Windows: `winget install --id jqlang.jq -e --source winget`)
 - `dependencies.hq-cli` failed → can't install packs or sync; `npm install -g @indigoai-us/hq-cli@<version>` (explicit version pin required by the guard)
 - `steps.indexing` failed → search won't work; run `qmd index .` directly
 - `packs` with status `"failed"` or `"running"` (interrupted) → retry each: `npx --package=@indigoai-us/hq-cli hq install {pack-name}`
@@ -268,7 +284,34 @@ if ! command -v gh >/dev/null 2>&1; then
   elif command -v winget  >/dev/null 2>&1; then winget install --id GitHub.cli -e --source winget
   fi
 fi
+
+# jq — required: HQ hook guards cannot run without it, and master-hook
+# refuses tool calls while it is missing. Same installer order as gh. A winget install only reaches PATH for processes
+# started afterwards (%LOCALAPPDATA%\Microsoft\WinGet\Links), so re-check from
+# a new terminal before reporting it missing.
+if ! command -v jq >/dev/null 2>&1; then
+  if   command -v brew    >/dev/null 2>&1; then brew install jq
+  elif command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y jq
+  elif command -v winget  >/dev/null 2>&1; then winget install --id jqlang.jq -e --source winget
+  fi
+fi
 ```
+
+**winget agreements.** The winget lines for gh and jq do not pass
+`--accept-source-agreements` or `--accept-package-agreements`: setup does not
+accept winget's terms on the user's behalf. If winget stops at an agreement
+prompt or fails because the agreements were not accepted, tell the user to run
+the same `winget install` command once in their own terminal and answer the
+prompt there, then re-check.
+
+**jq follow-up.** After `winget install --id jqlang.jq`, tell the user to
+open a new terminal (and restart Claude Code / Codex) so PATH picks up jq,
+then re-check with `command -v jq && jq --version`. If it is still missing,
+record it under "Still needs attention" with the install line
+`Install jq (Windows: winget install jqlang.jq; macOS: brew install jq; Debian/Ubuntu: sudo apt-get install jq)`.
+If a tool call is refused with
+`master-hook: BLOCKED: required tool jq is missing`, follow "First: jq missing
+blocks every tool call" at the top of Phase 0a.
 
 Verify each with `command -v {tool}` afterward. If an install fails (or no
 supported installer is available on this platform), note it under "Still needs
@@ -303,8 +346,10 @@ fine — never block setup on cloud.
 ### 1. Confirm Cognito login
 
 ```bash
-hq auth status 2>/dev/null
+hq whoami --json 2>/dev/null
 ```
+
+Inspect `.authenticated` in the JSON; a signed-out result also exits 0.
 
 - **Signed in, token valid** → continue. Show identity: `hq whoami`.
 - **Token expired** → try a silent refresh first: `hq auth refresh`.

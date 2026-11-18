@@ -3,6 +3,11 @@
 #
 # Generalized from companies/indigo/skills/standup-brief/deploy-brief.sh:
 #   - reuses the shared deploy scripts (identity-resolve, guardrails-check, list-apps)
+#   - company decks find the app and set and read the company gate through the
+#     hq CLI (`hq deploy list`, `hq deploy access`), so the CLI owns the app
+#     lookup and the access-policy calls (US-033). Creating the app, the
+#     password gate, the upload and the takedown have no `hq deploy` command
+#     yet and still call the API directly.
 #   - idempotent: reuses a fixed app name so the URL is stable across reruns
 #   - company-gated when a company slug + cloud_uid resolve from companies/manifest.yaml
 #   - password-protected fallback for personal / no-company projects
@@ -62,10 +67,13 @@ API="${API:-https://api.hq.work}"
 [ -d "$BUILD_DIR" ] || fail "build_dir_missing:$BUILD_DIR"
 [ -f "$BUILD_DIR/index.html" ] || fail "no_index_html:$BUILD_DIR"
 
-# 1. Identity (JWT) + HQ Pro token for policy-gated access-policy calls.
+# 1. Identity (JWT) for the API calls that have no hq CLI command yet.
 JWT="$("$DEPLOY/identity-resolve.sh" 2>/dev/null | jq -r '.jwt // empty')"
 [ -n "$JWT" ] || fail "no_identity (run /hq-login)"
-HQ_PRO_JWT="$(jq -r '.idToken // .accessToken // empty' "${HOME:-}/.hq/cognito-tokens.json" 2>/dev/null || true)"
+
+# hq deploy reads its API base from HQ_DEPLOY_API_URL. Point it at the base
+# resolved above so the CLI calls and the direct calls reach the same API.
+hq_deploy() { HQ_DEPLOY_API_URL="$API" hq deploy "$@"; }
 
 # 2. Guardrails + tarball.
 GR="$("$DEPLOY/guardrails-check.sh" "$BUILD_DIR" 2>/dev/null)"
@@ -95,6 +103,7 @@ ORG_HDR=()
 if [ -n "$CO_SLUG" ]; then
   [ -n "$CO_UID" ] || fail "company_uid_unresolved:$CO_SLUG (no cloud_uid in companies/manifest.yaml; nothing deployed)"
   ORG_HDR=(-H "X-Org-Slug: $CO_SLUG")
+  command -v hq >/dev/null 2>&1 || fail "hq_cli_missing (install @indigoai-us/hq-cli; nothing deployed)"
 fi
 
 is_2xx() { [[ "$1" =~ ^2[0-9]{2}$ ]]; }
@@ -112,8 +121,19 @@ GATE_SLEEP="${HQ_DEPLOY_GATE_SLEEP_SECS:-5}"
 # and the script exited before gating: two internal pages were public for
 # minutes. The id now comes from the lookup or from the create response, and
 # the gate is applied and proven BEFORE any content is uploaded.
-APP_JSON="$(HQ_DEPLOY_JWT="$JWT" "$DEPLOY/list-apps.sh" --api "$API" --name "$APP_NAME" ${CO_SLUG:+--header "X-Org-Slug: $CO_SLUG"})" \
-  || fail "app_list_failed"
+# A company deck asks `hq deploy list`, which reads every page and fails
+# closed. Its query matches names by substring, so keep only the exact name.
+# A personal deck has no company for the CLI and still uses list-apps.sh.
+if [ -n "$CO_SLUG" ]; then
+  LIST_JSON="$(hq_deploy list "$APP_NAME" --company "$CO_SLUG" --json)" || fail "app_list_failed"
+  APP_JSON="$(printf '%s' "$LIST_JSON" | jq -ce --arg n "$APP_NAME" \
+    'if (.apps | type) == "array" then ([.apps[] | select(.name == $n)][0] // "") else error("no apps array") end' \
+    2>/dev/null)" || fail "app_list_failed"
+  [ "$APP_JSON" != '""' ] || APP_JSON=""
+else
+  APP_JSON="$(HQ_DEPLOY_JWT="$JWT" "$DEPLOY/list-apps.sh" --api "$API" --name "$APP_NAME")" \
+    || fail "app_list_failed"
+fi
 APP_EXISTED=false
 if [ -n "$APP_JSON" ]; then
   APP_EXISTED=true
@@ -147,13 +167,11 @@ read_app_state() {
 # pass is worse than no verification: it actively destroyed the thing it was
 # checking. Caught by a live smoke on 2026-07-19; no unit test saw it because
 # the API shape was mocked.
+# `hq deploy access get` reads that endpoint and prints {company, app, policy}.
 read_access_policy() {
-  local response status
-  response="$(curl -sS -w $'\n%{http_code}' -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} \
-    "$API/api/apps/$APP_ID/access-policy" || true)"
-  status="${response##*$'\n'}"
-  is_2xx "$status" || return 1
-  POLICY_STATE="${response%$'\n'*}"
+  local response
+  response="$(hq_deploy access get "$APP_ID" --company "$CO_SLUG" --json 2>/dev/null)" || return 1
+  POLICY_STATE="$(printf '%s' "$response" | jq -ce '.policy | objects' 2>/dev/null)" || return 1
 }
 
 # API-side proof: the app record (and, for company, the policy record) says
@@ -195,14 +213,13 @@ verify_gate() {
   return 1
 }
 
+# `hq deploy access --mode company` writes the company policy. --yes approves
+# dropping an existing password gate, which a company gate replaces; the mode
+# is never public here. The CLI picks the company uid itself (saved policy,
+# app record, then the --company slug); verify_gate then requires the policy
+# to name $CO_UID, so any other company fails closed before upload.
 set_company_gate() {
-  local status
-  status="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "$API/api/apps/$APP_ID/access-policy" \
-    -H "Authorization: Bearer $JWT" ${ORG_HDR[@]+"${ORG_HDR[@]}"} \
-    ${HQ_PRO_JWT:+-H "X-HQ-Pro-Authorization: Bearer $HQ_PRO_JWT"} \
-    -H "Content-Type: application/json" \
-    -d "{\"mode\":\"company\",\"companyUid\":\"$CO_UID\",\"users\":[],\"groups\":[]}" || true)"
-  is_2xx "$status"
+  hq_deploy access "$APP_ID" --company "$CO_SLUG" --mode company --yes --json >/dev/null 2>&1
 }
 
 set_password_gate() {

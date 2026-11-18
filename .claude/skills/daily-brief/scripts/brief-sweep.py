@@ -45,7 +45,7 @@ Rules baked in:
 - No secrets are read or printed. gh runs with the user's own login.
 - Previous runs are read only, through workspace/brief/index.jsonl.
 """
-import argparse, copy, json, os, re, subprocess, sys, tempfile, time, datetime as dt
+import argparse, copy, json, math, os, re, subprocess, sys, tempfile, time, datetime as dt
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -537,6 +537,14 @@ def member_person_uid(company, email, timeout=15):
             and str(r.get('email') or '').strip().lower() == mail
             and isinstance(r.get('person_id'), str) and r['person_id'].startswith('prs_')}
     return uids.pop() if len(uids) == 1 else None
+
+
+def signals_window_hours(now, meetings_from, hours):
+    """Hours of synced signals to read: at least `hours`, and back to
+    `meetings_from` when the meetings window reaches further (a catch-up brief),
+    rounded up to a whole hour."""
+    span = (now - meetings_from).total_seconds() / 3600
+    return max(hours, math.ceil(span))
 
 
 @source('synced_signals')
@@ -2126,7 +2134,7 @@ def membership_slugs(hq_root):
     HQ's read-only sync-mode table is the supported CLI membership inventory.
     Reject unknown output rather than mistake a failed lookup for zero companies.
     """
-    output = run(['hq', 'sync', 'mode', '--show', '--hq-root', hq_root])
+    output = run(['hq', 'daemon', 'sync', 'mode', 'list'])
     output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
     if output.startswith('No memberships found.'):
         return []
@@ -2396,6 +2404,9 @@ def main(argv=None, person_section=False):
     if a.catch_up:
         day0 = dt.datetime.combine(dt.date.fromisoformat(days[0]), dt.time.min).astimezone()
         meetings_from = min(sess_from, day0.astimezone(dt.timezone.utc))
+    # Synced signals cover the same span as the meetings: on a catch-up brief a
+    # meeting from the start of the gap would otherwise show no signals.
+    signal_hours = signals_window_hours(now, meetings_from, a.hours)
     st = Status(a.status, a.company, (sess_from, now), me_names, (meetings_from, now))
     run_id = os.path.basename(os.path.dirname(os.path.abspath(a.out)))
     data = {
@@ -2403,13 +2414,14 @@ def main(argv=None, person_section=False):
         'company': a.company, 'mode': 'company' if a.company else 'personal', 'window': {'from': since, 'to': days[-1], 'today': a.today,
                                          'sessions_from': sess_from.isoformat(), 'sessions_to': now.isoformat(), 'hours': a.hours,
                                          'prs_from': sess_from.isoformat(), 'prs_to': now.isoformat(),
-                                         'attended_meetings_from': meetings_from.isoformat()},
+                                         'attended_meetings_from': meetings_from.isoformat(),
+                                         'signals_from': (now - dt.timedelta(hours=signal_hours)).isoformat()},
         'signals': None, 'prs_other': None,
     }
     steps = [
         ('sessions', 'Reading your work sessions', lambda: sessions(a.hq_root, sess_from, now, a.company)),
         ('meetings', 'Finding your meetings', lambda: meetings(a.company, since)),
-        ('synced_signals', 'Reading synced signals', lambda: synced_signals(a.hq_root, a.company, now, a.hours, email, uid, identity_source)),
+        ('synced_signals', 'Reading synced signals', lambda: synced_signals(a.hq_root, a.company, now, signal_hours, email, uid, identity_source)),
         ('meeting_signals', 'Pulling decisions and action items from meetings', lambda: meeting_signals(a.company, data.get('meetings'), on_meeting, me_names)),
         ('dms', 'Checking your DMs', lambda: dms(a.company)),
         ('fleet', 'Checking your agents', lambda: fleet(a.company)),
@@ -2478,6 +2490,8 @@ def main(argv=None, person_section=False):
         # Meetings in the window but no synced meeting signals yet: say so in one line.
         data['synced_signals']['meetings_without_signals'] = _sibling('brief_signals').meetings_without_signals(
             data['synced_signals'].get('lines'), data.get('meetings'))
+    # Step 0 built this brief without a finished signals run: carry the gate's notice as data.
+    data['signals_stale'] = _sibling('brief_signals').gate_stale(a.hq_root, a.today, a.company) if a.company else None
     if data.get('dms') is not None and 'dms' in SOURCES:
         SOURCES['dms'].update(dm_truncation(data['dms'], DM_LIMIT, sess_from))
     # per-day rollup the generator uses for density and the week arc

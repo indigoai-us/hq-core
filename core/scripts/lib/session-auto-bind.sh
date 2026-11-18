@@ -5,7 +5,9 @@
 # Trusted sources (first hit wins): existing session state, parent session,
 # explicit HQ_SPAWN_COMPANY, a sole real company in the manifest, then the human
 # device default. Fleet/agent boxes never use manifest or device defaults: their
-# dispatch context is the only safe source.
+# dispatch context is the only safe source. The sole manifest company binds new,
+# held and resumed sessions alike; a device default never relabels a held one
+# without the repair opt-in.
 #
 # Sourced; never execute directly.
 
@@ -521,30 +523,30 @@ session_auto_bind_apply() {
   meta_dir="$root/workspace/sessions/$sid"
   meta="$meta_dir/meta.yaml"
   # Held sessions already have durable Work Mesh state. Repairing one with a
-  # device preference is opt-in, and a held session can use the manifest
-  # fallback only when its durable Work Context is explicitly unresolved.
-  if { [ "$source" = "device_default" ] && [ "$repair" != "true" ]; } || \
-     [ "$source" = "manifest_single_company" ]; then
-    local work_context_root context_status
+  # device preference is opt-in.
+  if [ "$source" = "device_default" ] && [ "$repair" != "true" ]; then
+    local work_context_root
     work_context_root="${HQ_WORK_CONTEXT_ROOT:-${HOME:-}/.hq/work-context}"
     # SessionStart records this before its resolver preflight. The preflight
     # itself writes local state, which must not relabel a new session as held.
     if [ "$state_existed_before_preflight" != "0" ] && [ -f "$work_context_root/sessions/$sid.json" ]; then
-      if [ "$source" = "device_default" ]; then
-        [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
-        return 0
-      fi
-      context_status="$(jq -er '
-        if type == "object" and (.contextStatus | type == "string")
-        then .contextStatus else empty end
-      ' "$work_context_root/sessions/$sid.json" 2>/dev/null || true)"
-      if [ "$context_status" != "unresolved" ]; then
-        [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
-        return 0
-      fi
+      [ "$stale_alias" = "true" ] && session_auto_bind_clear_case_alias "$root" "$sid" || true
+      return 0
     fi
   fi
   mkdir -p "$meta_dir" 2>/dev/null || return 0
+
+  # The sole manifest company binds a held or resumed session exactly as it
+  # binds a new one (feedback_763b7911, owner decision 2026-11-09). A session
+  # that started before the company existed, or one resumed with a
+  # ~/.hq/work-context/sessions/<sid>.json record, used to stay unbound, and the
+  # scope hook then refused every companies/<co> read until a manual bind.
+  # The resolver already returns this source only for exactly one real company
+  # and never on a fleet machine; the write happens under the session lock.
+  if [ "$source" = "manifest_single_company" ]; then
+    session_auto_bind_apply_manifest_locked "$root" "$sid" "$slug" "$stale_alias"
+    return 0
+  fi
 
   if [ "$stale_alias" = "true" ]; then
     [ -f "$meta" ] || : > "$meta" || return 0
@@ -562,6 +564,61 @@ session_auto_bind_apply() {
   if command -v session_scope_mint >/dev/null 2>&1; then
     session_scope_mint "$root" "$sid" "$slug" || true
   fi
+  session_auto_bind_spawn_company_set "$root" "$sid" "$slug"
+  return 0
+}
+
+# Bind the sole manifest company under the per-session company lock that
+# hq-session.sh company updates and scope minting share
+# (.company-lock-set.lock). The manifest is the weakest trusted source, so the
+# binding is read again under the lock: an explicit bind that landed after the
+# resolver looked (hq-session.sh set or add company, a parent or a spawn) is
+# kept, never replaced.
+session_auto_bind_apply_manifest_locked() {
+  local root="${1:-}" sid="${2:-}" slug="${3:-}" stale_alias="${4:-false}"
+  local meta_dir meta lock="" current="" meta_value
+  [ -n "$root" ] && [ -n "$sid" ] && [ -n "$slug" ] || return 0
+  meta_dir="$root/workspace/sessions/$sid"
+  meta="$meta_dir/meta.yaml"
+  [ -d "$meta_dir" ] && [ ! -L "$meta_dir" ] || return 0
+  if command -v __session_scope_lock_acquire >/dev/null 2>&1; then
+    lock="$meta_dir/.company-lock-set.lock"
+    __session_scope_lock_acquire "$lock" || return 0
+  fi
+  if command -v session_scope_read >/dev/null 2>&1 && [ -f "$meta_dir/scope-capability.json" ]; then
+    current="$(session_scope_read "$root" "$sid" 2>/dev/null || true)"
+  fi
+  [ -z "$current" ] && [ -f "$meta" ] && current="$(session_auto_bind_meta_slug "$root" "$sid")"
+  if session_auto_bind_is_known_slug "$root" "$current"; then
+    [ -n "$lock" ] && rm -rf -- "$lock"
+    return 0
+  fi
+
+  if [ "$stale_alias" = "true" ]; then
+    { [ -f "$meta" ] || : > "$meta"; } && session_auto_bind_write_binding_meta "$meta" "$slug" "manifest_single_company"
+  elif [ ! -f "$meta" ]; then
+    printf 'session_id: %s\ncompany_slug: %s\ncompany_source: manifest_single_company\nstarted_at: "%s"\nsenior: user\n' \
+      "$sid" "$slug" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$meta"
+  elif ! grep -q '^company_slug:' "$meta" 2>/dev/null; then
+    printf 'company_slug: %s\ncompany_source: manifest_single_company\n' "$slug" >> "$meta"
+  else
+    # A held session's meta can carry an empty company_slug line: fill it in.
+    meta_value="$(session_auto_bind_meta_slug "$root" "$sid")"
+    if [ -z "$meta_value" ]; then
+      session_auto_bind_write_binding_meta "$meta" "$slug" "manifest_single_company"
+    elif ! grep -q '^company_source:' "$meta" 2>/dev/null; then
+      printf 'company_source: manifest_single_company\n' >> "$meta"
+    fi
+  fi
+  # The lock is already held, so mint without taking it again.
+  if command -v session_scope_mint >/dev/null 2>&1; then
+    if [ -n "$lock" ]; then
+      __session_scope_mint_replace=1 session_scope_mint "$root" "$sid" "$slug" || true
+    else
+      session_scope_mint "$root" "$sid" "$slug" || true
+    fi
+  fi
+  [ -n "$lock" ] && rm -rf -- "$lock"
   session_auto_bind_spawn_company_set "$root" "$sid" "$slug"
   return 0
 }

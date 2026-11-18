@@ -6,9 +6,14 @@
 # live), then failed the post-upload APP_ID lookup with app_id_unresolved and
 # exited before applying the gate. Two internal pages were public for minutes.
 #
-# This suite drives the real script against a mocked hq-deploy API and checks:
+# This suite drives the real script against a mocked hq-deploy API and a
+# mocked hq CLI (company decks look the app up and set and read the company
+# gate through `hq deploy list` / `hq deploy access`, US-033) and checks:
 #   - the app is found on any page, or created with the id from the create
 #     response (no second lookup)
+#   - a company deck lists apps only through `hq deploy list`, keeps only the
+#     exact app name, and sets and reads its gate only through
+#     `hq deploy access`, against the same API base and company
 #   - the gate is applied and proven BEFORE any upload, in call order
 #   - if no gate can be proven, nothing is uploaded
 #   - if the gate cannot be proven on the live URL after upload, the app is
@@ -156,6 +161,53 @@ fi
 exit 0
 EOF
   chmod +x "$case_dir/bin/curl"
+
+  # Mock hq CLI: `hq deploy list` and `hq deploy access [get]`. The real CLI
+  # reads every page itself, so the mock returns the apps of every page file.
+  # Each call is logged as "HQ <subcommand> <args>" to calls and, with the
+  # company and API base it used, to hq-calls.
+  cat > "$case_dir/bin/hq" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+[ "${1:-}" = deploy ] || { echo "unexpected hq command: $*" >&2; exit 9; }
+shift
+company="" json=0 mode="" yes=0 positional=()
+sub="$1"; shift
+if [ "$sub" = access ] && [ "${1:-}" = get ]; then sub="access-get"; shift; fi
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --company) company="$2"; shift 2 ;;
+    --mode) mode="$2"; shift 2 ;;
+    --json) json=1; shift ;;
+    --yes) yes=1; shift ;;
+    -*) echo "unexpected hq flag: $1" >&2; exit 9 ;;
+    *) positional+=("$1"); shift ;;
+  esac
+done
+target="${positional[0]:-}"
+printf 'HQ %s %s %s\n' "$sub" "$target" "$mode" >> "$MOCK_DIR/calls"
+printf '%s company=%s api=%s json=%s yes=%s\n' "$sub" "$company" "${HQ_DEPLOY_API_URL:-}" "$json" "$yes" >> "$MOCK_DIR/hq-calls"
+case "$sub" in
+  list)
+    [ -z "${LIST_FAIL_CURSOR:-}" ] || { echo "Could not list deploy apps (HTTP 500, INTERNAL)." >&2; exit 1; }
+    cat "$MOCK_DIR"/pages/*.json | jq -c -s --arg q "$target" --arg c "$company" \
+      '{company: $c, query: $q, apps: [.[].apps[] | select((.name // "") | ascii_downcase | contains($q | ascii_downcase))]}' ;;
+  access)
+    [ "$mode" = company ] || { echo "unexpected access mode: $mode" >&2; exit 9; }
+    if [[ "$PUT_STATUS" == 2* ]]; then
+      touch "$MOCK_DIR/company_set"
+      jq -nc --arg a "$target" --arg c "$company" '{company: $c, app: $a, policy: {mode: "company", companyUid: "cmp_acme", users: [], groups: []}}'
+    else
+      echo "hq-deploy refused the change: company mismatch (ACCESS_POLICY_COMPANY_MISMATCH)" >&2; exit 1
+    fi ;;
+  access-get)
+    if [ -f "$MOCK_DIR/company_set" ]; then policy='{"mode":"company","companyUid":"cmp_acme"}'
+    else policy='{"mode":"public","companyUid":null}'; fi
+    jq -nc --arg a "$target" --arg c "$company" --argjson p "$policy" '{company: $c, app: $a, policy: $p}' ;;
+  *) echo "unexpected hq deploy subcommand: $sub" >&2; exit 9 ;;
+esac
+EOF
+  chmod +x "$case_dir/bin/hq"
 }
 
 # run_case <name> <expected_exit> [ENV=VALUE ...]
@@ -202,10 +254,12 @@ printf '%s\n' '{"apps":[],"nextCursor":null}' > "$TMP/page2/pages/cur3.json"
 run_case page2 0
 printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "expected company mode: $CASE_OUT"
 printf '%s' "$CASE_OUT" | grep >/dev/null '^GATE=302$' || fail "expected GATE=302: $CASE_OUT"
-grep -qF 'GET http://api.test/api/apps?limit=100&cursor=cur2' "$CASE_DIR/calls" || fail "page 2 was not requested"
-grep -qF 'cursor=cur3' "$CASE_DIR/calls" && fail "kept paging after the app was found"
+[ "$(grep -c '^HQ list summary' "$CASE_DIR/calls")" = 1 ] || fail "expected one hq deploy list call: $(cat "$CASE_DIR/calls")"
+grep -qE '^GET http://api\.test/api/apps(\?|$)' "$CASE_DIR/calls" && fail "a company deck listed apps outside hq deploy list"
 [ ! -f "$CASE_DIR/created" ] || fail "created a duplicate app although it exists on page 2"
-assert_before "$CASE_DIR" 'PUT http://api.test/api/apps/app-1/access-policy' 'PUT http://upload.test/archive'
+assert_before "$CASE_DIR" 'HQ access app-1 company' 'PUT http://upload.test/archive'
+assert_before "$CASE_DIR" 'HQ access-get app-1' 'PUT http://upload.test/archive'
+grep -qF '/access-policy' "$CASE_DIR/calls" && fail "a company deck called /access-policy outside hq deploy access"
 assert_before "$CASE_DIR" 'GET http://live.test/' 'PUT http://upload.test/archive'
 pass "paginated lookup succeeds and the gate precedes the upload"
 
@@ -217,10 +271,30 @@ printf '%s\n' '{"apps":[{"name":"else","subdomain":"else","id":"x"}],"nextCursor
 run_case create 0
 printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "expected company mode: $CASE_OUT"
 [ -f "$CASE_DIR/created" ] || fail "app was not created"
-[ "$(grep -c 'GET http://api.test/api/apps?' "$CASE_DIR/calls")" = 2 ] || fail "expected exactly one full list pass (2 pages)"
-assert_before "$CASE_DIR" 'POST http://api.test/api/apps' 'PUT http://api.test/api/apps/app-1/access-policy'
-assert_before "$CASE_DIR" 'PUT http://api.test/api/apps/app-1/access-policy' 'PUT http://upload.test/archive'
+[ "$(grep -c '^HQ list summary' "$CASE_DIR/calls")" = 1 ] || fail "expected exactly one hq deploy list call"
+assert_before "$CASE_DIR" 'POST http://api.test/api/apps' 'HQ access app-1 company'
+assert_before "$CASE_DIR" 'HQ access app-1 company' 'PUT http://upload.test/archive'
 pass "new app is gated by id from the create response, before upload"
+
+echo "[2b] hq deploy list matches by substring: only the exact app name is used"
+make_fixture "$TMP/exact-name"
+printf '%s\n' '{"apps":[{"name":"summary-old","subdomain":"summary-old","id":"app-old","url":"http://old.test"}],"nextCursor":null}' \
+  > "$TMP/exact-name/pages/first.json"
+run_case exact-name 0
+[ -f "$CASE_DIR/created" ] || fail "a substring match was taken for the app: $(cat "$CASE_DIR/calls")"
+grep -qF 'app-old' "$CASE_DIR/calls" && fail "the substring match app-old was used: $(cat "$CASE_DIR/calls")"
+pass "a name that only contains the app name is not the app"
+
+echo "[2c] company deck without the hq CLI fails before any API call"
+make_fixture "$TMP/no-hq"
+rm "$TMP/no-hq/bin/hq"
+mkdir -p "$TMP/no-hq/tools"
+for tool in jq bash; do ln -s "$(command -v "$tool")" "$TMP/no-hq/tools/$tool"; done
+run_case no-hq 1 PATH="$TMP/no-hq/bin:$TMP/no-hq/tools:/usr/bin:/bin"
+printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: hq_cli_missing' || fail "missing hq did not fail closed: $CASE_OUT"
+[ ! -s "$CASE_DIR/calls" ] || fail "API was called without the hq CLI: $(cat "$CASE_DIR/calls")"
+assert_no_upload "$CASE_DIR"; assert_no_mode
+pass "no hq CLI -> no deploy"
 
 echo "[3] a failed list page fails closed: no create, no upload"
 make_fixture "$TMP/list-fail"
@@ -237,6 +311,7 @@ echo "[4] company PUT 400 (wrong org) fails closed: no password fallback, nothin
 run_case put-400 1 PUT_STATUS=400
 printf '%s' "$CASE_OUT" | grep >/dev/null 'ERR: company_gate_unverified (nothing uploaded; a company deck never falls back to a password gate)' \
   || fail "PUT 400 did not fail closed: $CASE_OUT"
+grep -qF 'HQ access app-1 company' "$CASE_DIR/calls" || fail "the company gate was not requested through hq deploy access"
 grep -qF 'POST http://api.test/api/apps/app-1/access-mode' "$CASE_DIR/calls" && fail "a password gate was set on a company deck"
 printf '%s' "$CASE_OUT" | grep >/dev/null '^PASSWORD=' && fail "a password was reported for a company deck: $CASE_OUT"
 assert_no_upload "$CASE_DIR"; assert_no_mode
@@ -250,7 +325,10 @@ api_calls="$(grep -c ' http://api.test/' "$CASE_DIR/orgs")"
 missing="$(grep ' http://api.test/' "$CASE_DIR/orgs" | grep -v ' acme$' || true)"
 [ -z "$missing" ] || fail "API calls without X-Org-Slug: acme: $missing"
 grep -v ' http://api.test/' "$CASE_DIR/orgs" | grep -q ' acme$' && fail "org header leaked to a non-API host: $(cat "$CASE_DIR/orgs")"
-pass "X-Org-Slug: acme on all $api_calls API calls, none on upload or edge"
+bad_hq="$(grep -v ' company=acme api=http://api.test ' "$CASE_DIR/hq-calls" || true)"
+[ -z "$bad_hq" ] || fail "hq deploy calls without --company acme on the resolved API: $bad_hq"
+grep -q '^access company=acme .* json=1 yes=1$' "$CASE_DIR/hq-calls" || fail "the gate write did not pass --json --yes: $(cat "$CASE_DIR/hq-calls")"
+pass "X-Org-Slug: acme on all $api_calls API calls, none on upload or edge; every hq deploy call names acme"
 
 echo "[4c] company slug with no cloud_uid fails closed before any API call"
 make_fixture "$TMP/no-uid"
@@ -273,7 +351,9 @@ CASE_CO="" run_case personal 0
 printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=password$' || fail "personal deck did not use a password gate: $CASE_OUT"
 assert_before "$CASE_DIR" 'POST http://api.test/api/apps/app-1/access-mode' 'PUT http://upload.test/archive'
 grep -q ' acme$' "$CASE_DIR/orgs" && fail "personal deck sent a company org header"
-pass "personal deck uses the password gate"
+grep -q '^HQ ' "$CASE_DIR/calls" && fail "a personal deck called the hq CLI: $(cat "$CASE_DIR/calls")"
+grep -qF 'GET http://api.test/api/apps?limit=100' "$CASE_DIR/calls" || fail "a personal deck did not list through list-apps.sh"
+pass "personal deck uses list-apps.sh and the password gate"
 
 echo "[5c] personal deck whose password gate fails: nothing is uploaded"
 CASE_CO="" run_case personal-gate-fail 1 PASSWORD_STATUS=400
@@ -328,8 +408,10 @@ pass "post-upload verify waits for edge propagation"
 echo "[11] no HQ_DEPLOY_API and no manifest endpoint: the public default https://api.hq.work is used"
 run_case default-api 0 HQ_DEPLOY_API= MOCK_DEFAULT_API=1
 printf '%s' "$CASE_OUT" | grep >/dev/null '^MODE=company$' || fail "default-API deploy did not finish gated: $CASE_OUT"
-grep -qF 'GET https://api.hq.work/api/apps?limit=100' "$CASE_DIR/calls" || fail "app list did not go to https://api.hq.work: $(cat "$CASE_DIR/calls")"
-grep -qF 'PUT https://api.hq.work/api/apps/app-1/access-policy' "$CASE_DIR/calls" || fail "gate did not go to https://api.hq.work"
+bad_hq="$(grep -v ' api=https://api.hq.work ' "$CASE_DIR/hq-calls" || true)"
+[ -z "$bad_hq" ] || fail "hq deploy did not use https://api.hq.work: $bad_hq"
+grep -q '^list ' "$CASE_DIR/hq-calls" || fail "app list did not go through hq deploy list"
+grep -q '^access ' "$CASE_DIR/hq-calls" || fail "gate did not go through hq deploy access"
 grep -qF 'POST https://api.hq.work/api/deploys/deploy-1/complete' "$CASE_DIR/calls" || fail "completion did not go to https://api.hq.work"
 grep -q 'api\.indigo-hq\.com\|http://api\.test' "$CASE_DIR/calls" && fail "a request skipped the public default: $(cat "$CASE_DIR/calls")"
 pass "fresh install deploys through https://api.hq.work"

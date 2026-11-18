@@ -13,15 +13,27 @@ cat > "$TMP/bin/hq" <<'STUB'
 #!/usr/bin/env bash
 set -eu
 case "$1 $2" in
+  'sync-core status')
+    [ "${HQ_TEST_ENGINE:-0}" = 1 ] || { echo "unknown command 'sync-core'" >&2; exit 1; }
+    echo '{"version":1,"vaults":[{"uid":"cmp_acme","kind":"company","slug":"acme","phase":"full"}]}' ;;
   'sync push')
     echo "$3" >> "$HQ_TEST_CLOUD.pushes"
+    if [ "${HQ_TEST_ENGINE:-0}" = 1 ]; then
+      echo "Sync is off for acme on this computer, so hq sync push was refused immediately." >&2
+      exit 1
+    fi
     [ "${HQ_TEST_PUSH_FAIL:-0}" = 0 ] || exit 1
     mkdir -p "$HQ_TEST_CLOUD/projects"
     cp -R "$HQ_ROOT/companies/acme/projects/widget" "$HQ_TEST_CLOUD/projects/"
     if [ "${HQ_TEST_STALE:-0}" = 1 ]; then
       echo '{"metadata":{"owner":"old@example.test"}}' > "$HQ_TEST_CLOUD/projects/widget/prd.json"
     fi ;;
-  'files cat') cat "$HQ_TEST_CLOUD/$3" ;;
+  'files cat')
+    if [ "${HQ_TEST_ENGINE:-0}" = 1 ] && [ "${HQ_TEST_ENGINE_NO_UPLOAD:-0}" = 0 ]; then
+      mkdir -p "$HQ_TEST_CLOUD/projects"
+      cp -R "$HQ_ROOT/companies/acme/projects/widget" "$HQ_TEST_CLOUD/projects/"
+    fi
+    cat "$HQ_TEST_CLOUD/$3" ;;
   *) echo "unexpected command $*" >&2; exit 1 ;;
 esac
 STUB
@@ -56,7 +68,27 @@ jq -e '.publication == null' "$M" >/dev/null || fail 'failed publish received re
 reset_manifest
 jq 'del(.ownershipTransferredAt)' "$M" > "$TMP/m" && mv "$TMP/m" "$M"
 if bash "$ROOT/core/scripts/hq-delegate-publish.sh" --manifest "$M" >/dev/null 2>&1; then fail 'publication before transfer accepted'; fi
-echo 'hq-delegate-publish: ok (final owner and dossier, exact bytes, stable replay, stale/read/write failures gated)'
+# Engine-owned vault: `hq sync push` is refused, so publication must not push
+# and must wait for the engine's upload instead.
+export HQ_DELEGATE_ENGINE_POLL_SECONDS=0 HQ_DELEGATE_ENGINE_WAIT_SECONDS=1
+rm -rf "$HQ_TEST_CLOUD" "$HQ_TEST_CLOUD.pushes" "$PROJ/delegation"
+mkdir -p "$HQ_TEST_CLOUD"
+reset_manifest
+HQ_TEST_ENGINE=1 bash "$ROOT/core/scripts/hq-delegate-publish.sh" --manifest "$M" >/dev/null \
+  || fail 'engine-owned vault: publication failed although the engine uploaded every file'
+[ ! -s "$HQ_TEST_CLOUD.pushes" ] || fail 'engine-owned vault: publish ran hq sync push'
+jq -e '(.publication.files|length)==5' "$M" >/dev/null || fail 'engine-owned vault: publication evidence missing'
+rm -rf "$HQ_TEST_CLOUD" "$PROJ/delegation"
+mkdir -p "$HQ_TEST_CLOUD"
+reset_manifest
+if HQ_TEST_ENGINE=1 HQ_TEST_ENGINE_NO_UPLOAD=1 bash "$ROOT/core/scripts/hq-delegate-publish.sh" --manifest "$M" >/dev/null 2>"$TMP/engine.err"; then
+  fail 'engine-owned vault: publication accepted before the engine uploaded'
+fi
+grep -q 'sync engine has not uploaded' "$TMP/engine.err" || fail 'engine-owned vault: timeout message does not name the engine'
+jq -e '.publication == null' "$M" >/dev/null || fail 'engine-owned vault: timed-out publish received a receipt'
+unset HQ_DELEGATE_ENGINE_POLL_SECONDS HQ_DELEGATE_ENGINE_WAIT_SECONDS
+
+echo 'hq-delegate-publish: ok (final owner and dossier, exact bytes, stable replay, stale/read/write failures gated, engine-owned vault waits instead of pushing)'
 for unsafe in 'https://example.test/share-session/test-capability' '-----BEGIN RSA PRIVATE KEY-----'; do
   reset_manifest
   before="$(sha256sum "$PROJ/delegation/dlg-test/BRIEF.md")"

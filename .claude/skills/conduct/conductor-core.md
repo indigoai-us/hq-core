@@ -3,20 +3,22 @@
 The small always-on part of `/conduct`. It is what a fresh session gets when
 conduct mode is the HQ default, and what every runtime (Claude, Codex, Grok,
 hosted agents) reads before deciding how to handle a message. Lane mechanics,
-engine choice, standing lanes, and briefs live in `SKILL.md` and load only when work
+engine choice, lanes, and briefs live in `SKILL.md` and load only when work
 actually leaves the session.
 
-The block between the inject markers is what hq-cli's `hq lanes session-start`
-command emits at SessionStart. Keep it under 750 bytes; the rest of this file
+The block between the inject markers is what hq-cli emits from its
+SessionStart hook (the CLI's lanes `session-start` command); the conductor
+never runs that command itself. Keep the block under 750 bytes; the rest of this file
 is for the skill and for people.
 
 <!-- inject:start -->
 <auto-conduct>
-Conduct mode is on (conduct.default_enabled). The conductor coordinates and never does project work itself.
-- Inline only: answer from context already loaded, or one status read.
-- Standing lane: a task or ongoing area that matches a worker; it stays open for follow-ups.
-- Subagent: a small bounded task with no matching worker.
-Run `/conduct` with the task; the engine is chosen at first dispatch, not now.
+Conduct mode is on (conduct.default_enabled). The conductor coordinates and never does project work.
+- Inline only: answer from loaded context, or one status read.
+- Standing lane: a worker's area, kept open on a resumable subagent or child session.
+- One-off subagent: a small task, no matching worker.
+- Child session: work that needs its own session.
+Run `/conduct` with the task; the engine is chosen at first dispatch.
 Route by core/settings/intent-index.yaml before reading any skill body. Charter non-negotiables stay in force.
 Leave with `/conduct off`; disable the default with HQ_AUTO_CONDUCT=0, HQ_DISABLED_HOOKS=auto-conduct, or conduct.default_enabled: false in personal/settings/orchestrator.yaml.
 </auto-conduct>
@@ -24,22 +26,21 @@ Leave with `/conduct off`; disable the default with HQ_AUTO_CONDUCT=0, HQ_DISABL
 
 ## Routing rule
 
-Owner decision, 2026-10-22 ("Workers stay open"): the conductor coordinates
-and never does project work itself. This restores the rule from the first
-`/conduct` and replaces the 2026-10-07 triage that kept reads, lookups, and
-short skills inline.
+Workers stay open: the conductor coordinates and never does project work
+itself. Reads, lookups, and short skills go to subagents too.
 
 | Where | What |
 |---|---|
 | Inline | An answer from context already loaded in this session, or one status read (`/conduct status`, one board or lane read) |
-| Standing worker lane | A task or an ongoing area of work that matches an HQ worker or a `--workers` role; it stays open with keep-alive and takes the follow-up tasks for that worker |
+| Lane (standing subagent) | A task or an ongoing area of work that matches an HQ worker or a `--workers` role; a named, resumable background subagent stays open and takes the follow-up tasks for that worker |
 | Background subagent | A small, bounded task with no matching worker: a lookup that needs searching, a check, a draft, one skill run |
-| One-shot lane | Work that outlives this session or runs on a non-Claude engine, with no matching worker |
+| Conduct child session | An area that needs its own session, or work that must outlive this turn; it joins over the conduct link |
 
-This is the `mixed` runner, the default in `core/settings/orchestrator.yaml`.
+This is the default `subagent` runner in `core/settings/orchestrator.yaml`.
 `bash core/scripts/conduct-standing.sh route --kind <answer|status|lookup|small|ongoing>`
-applies the table, including reuse of a standing lane already open for the
-same worker and company. When unsure between inline and a subagent, use a
+applies the table. Work that needs detached processes, admission, Outpost,
+or a non-Claude engine goes to `/conduct-runners`, which has its own
+inject block. When unsure between inline and a subagent, use a
 subagent.
 
 ## Intent index
@@ -61,6 +62,7 @@ no exceptions to them and lanes inherit them through the same charter.
 
 ## What stays in SKILL.md
 
-Engine roster and resolution, worker selection, standing lanes, briefs,
-detached launch, lane messaging, outcome verification, and the per-turn rows.
+Engine roster and resolution, worker selection, lanes on subagents and child
+sessions, briefs, outcome verification, and the per-turn rows. Detached
+runners live in `/conduct-runners`.
 `/conduct off`, `/conduct status`, and steering a running lane are unchanged.

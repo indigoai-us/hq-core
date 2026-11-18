@@ -2374,6 +2374,73 @@ for eng in $ENGINES; do
 done
 
 
+echo "== Q47. a collect-only machine-check batch shows the show-once messages but leaves them for the session =="
+RQ47="$TMP/q47-collect-only"
+build_root "$RQ47"
+Q47_DIR="$RQ47/workspace/.hq-client-health"
+mkdir -p "$Q47_DIR"
+cat > "$Q47_DIR/last-result.json" <<'JSON'
+{
+  "check_class": "sync.journal.personal",
+  "outcome": "fix_failed",
+  "next_step": "ignored free text",
+  "result_id": "71ec3c3a-a0ce-4e38-9a45-9c3770d32f10"
+}
+JSON
+printf '2\n' > "$Q47_DIR/unreached-count.pending"
+printf '5.345.150\n' > "$Q47_DIR/cli-outdated.pending"
+: > "$Q47_DIR/remediation.stamp"
+Q47_STAMP_BEFORE="$(stat -c %Y "$Q47_DIR/remediation.stamp" 2>/dev/null || stat -f %m "$Q47_DIR/remediation.stamp")"
+for batch in 1 2; do
+  run_hook "$RQ47" HQ_STATE_DIR="$TMP/q47-state" HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1
+  case "$HOOK_OUT" in
+    *"HQ hasn't synced your personal files"*"2 company journal checks"*|*"2 company journal checks"*"HQ hasn't synced your personal files"*)
+      case "$HOOK_OUT" in
+        *"hq-cli 5.345.150 is older"*) ok "collect-only batch $batch prints all three show-once messages" ;;
+        *) bad "collect-only batch $batch prints all three show-once messages" "cli-outdated missing: [$HOOK_OUT]" ;;
+      esac ;;
+    *) bad "collect-only batch $batch prints all three show-once messages" "out=[$HOOK_OUT]" ;;
+  esac
+  if [ ! -e "$Q47_DIR/last-result.shown" ] && [ -f "$Q47_DIR/unreached-count.pending" ] && [ -f "$Q47_DIR/cli-outdated.pending" ]; then
+    ok "collect-only batch $batch writes no delivery record"
+  else
+    bad "collect-only batch $batch writes no delivery record" "$(ls "$Q47_DIR")"
+  fi
+  [ "$HOOK_RC" = 0 ] && ok "collect-only batch $batch exits 0" || bad "collect-only batch $batch exits 0" "rc=$HOOK_RC"
+done
+[ ! -e "$Q47_DIR/last-result-show.lock" ] && [ ! -e "$Q47_DIR/unreached-count-show.lock" ] \
+  && ok "collect-only batches release their display claims" \
+  || bad "collect-only batches release their display claims" "$(ls "$Q47_DIR")"
+Q47_STAMP_AFTER="$(stat -c %Y "$Q47_DIR/remediation.stamp" 2>/dev/null || stat -f %m "$Q47_DIR/remediation.stamp")"
+[ "$Q47_STAMP_BEFORE" = "$Q47_STAMP_AFTER" ] \
+  && ok "collect-only leaves the remediation cooldown stamp as it was" \
+  || bad "collect-only leaves the remediation cooldown stamp as it was" "$Q47_STAMP_BEFORE -> $Q47_STAMP_AFTER"
+run_hook "$RQ47" HQ_STATE_DIR="$TMP/q47-state"
+case "$HOOK_OUT" in
+  *"HQ hasn't synced your personal files"*) ok "the session after collect-only batches shows the next step" ;;
+  *) bad "the session after collect-only batches shows the next step" "out=[$HOOK_OUT]" ;;
+esac
+if [ "$(cat "$Q47_DIR/last-result.shown" 2>/dev/null)" = "71ec3c3a-a0ce-4e38-9a45-9c3770d32f10" ] \
+    && [ ! -e "$Q47_DIR/unreached-count.pending" ] && [ ! -e "$Q47_DIR/cli-outdated.pending" ]; then
+  ok "the session that shows the messages records them"
+else
+  bad "the session that shows the messages records them" "$(ls "$Q47_DIR")"
+fi
+run_hook "$RQ47" HQ_STATE_DIR="$TMP/q47-state" HQ_MACHINE_CHECK=1 HQ_MACHINE_CHECK_COLLECT_ONLY=1
+case "$HOOK_OUT" in
+  *"<hq-client-health-result>"*) bad "a collect-only batch after delivery reports nothing shown again" "out=[$HOOK_OUT]" ;;
+  *) ok "a collect-only batch after delivery reports nothing shown again" ;;
+esac
+
+RQ47B="$TMP/q47-old-cli"
+build_root "$RQ47B"
+mkdir -p "$RQ47B/workspace/.hq-client-health"
+cp "$Q47_DIR/last-result.json" "$RQ47B/workspace/.hq-client-health/last-result.json"
+run_hook "$RQ47B" HQ_STATE_DIR="$TMP/q47-state" HQ_MACHINE_CHECK=1
+[ -f "$RQ47B/workspace/.hq-client-health/last-result.shown" ] \
+  && ok "a batch without collect-only (older hq-cli) records the result as before" \
+  || bad "a batch without collect-only (older hq-cli) records the result as before" "no last-result.shown"
+
 echo
 echo "==== check-client-health: $PASS passed, $FAIL failed ===="
 [ "$FAIL" = 0 ] || exit 1

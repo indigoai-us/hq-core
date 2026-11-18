@@ -18,7 +18,7 @@ Specs: `core/knowledge/public/hq-core/source-yaml-spec.md`,
    passed. The worklist script enforces this (exit 4).
 3. **Get the worklist.**
    ```bash
-   bash core/scripts/ontology-source-worklist.sh --company {co} --channel {channel} --limit 20
+   hq core ontology source-worklist --company {co} --channel {channel} --limit 20
    ```
    Each line is either `{file, audience_key, audience}` or `{file, skip}`.
    Items come newest first by the item's own date (meeting start), so a large
@@ -38,7 +38,7 @@ Specs: `core/knowledge/public/hq-core/source-yaml-spec.md`,
    projects, companies, and concepts the item names. One plain line each; no
    quotes longer than one sentence.
 6. **Mark done** only after the item's candidates are written:
-   `bash core/scripts/ontology-source-worklist.sh --company {co} --channel {channel} --mark-done <file>`.
+   `hq core ontology source-worklist --company {co} --channel {channel} --mark-done <file>`.
    To reprocess an item later, clear it with `--redo <file>` (repeatable); the
    next run lists it again.
 7. **Report** in one line: items processed, skipped (with reasons), candidates

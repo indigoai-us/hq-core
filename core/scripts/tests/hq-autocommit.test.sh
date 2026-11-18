@@ -813,6 +813,44 @@ if [[ "$(grep -c "FAIL " "$LOG" || true)" -ne "$fail_lines_healthy" ]]; then
   exit 1
 fi
 
+# Unrelated staged paths must not freeze every autosave (feedback_06a7f136).
+printf 'keep this staged copy\n' > "$TMP/manually-staged.md"
+git -C "$TMP" add -- manually-staged.md
+STAGED_BLOB="$(git -C "$TMP" rev-parse :manually-staged.md)"
+printf 'save me anyway\n' > "$TMP/prestaged-target.md"
+head_before_prestaged="$(git -C "$TMP" rev-parse HEAD)"
+run_hook "sess-prestaged" "prestaged-target.md"
+if [[ "$HOOK_RC" -ne 0 || -n "$HOOK_OUT" ]]; then
+  echo "autosave with a foreign staged path must stay silent; rc=$HOOK_RC out='$HOOK_OUT'" >&2
+  exit 1
+fi
+if [[ "$(git -C "$TMP" rev-parse HEAD)" == "$head_before_prestaged" ]]; then
+  echo "autosave must still commit prestaged-target.md while another path is staged" >&2
+  exit 1
+fi
+if ! git -C "$TMP" show --name-only --format= HEAD | grep -Fqx 'prestaged-target.md'; then
+  echo "the private-index autosave commit must contain prestaged-target.md" >&2
+  exit 1
+fi
+if git -C "$TMP" show --name-only --format= HEAD | grep -Fqx 'manually-staged.md'; then
+  echo "autosave must not commit the foreign staged path" >&2
+  exit 1
+fi
+if ! git -C "$TMP" diff --cached --name-only -- manually-staged.md | grep -Fqx 'manually-staged.md'; then
+  echo "the foreign staged path must remain staged" >&2
+  exit 1
+fi
+if [[ "$(git -C "$TMP" rev-parse :manually-staged.md)" != "$STAGED_BLOB" ]]; then
+  echo "the foreign staged blob must be preserved byte-for-byte" >&2
+  exit 1
+fi
+if ! grep -Fq 'SAVE stage=private-index' "$LOG"; then
+  echo "foreign prestaged autosave must log SAVE stage=private-index" >&2
+  exit 1
+fi
+git -C "$TMP" reset -q -- manually-staged.md
+rm -f "$TMP/manually-staged.md"
+
 # Live contention is normal and silent; an orphaned lock suppresses every
 # autosave indefinitely, so it gets said out loud once.
 printf 'contended\n' > "$TMP/contended.md"

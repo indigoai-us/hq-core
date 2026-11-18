@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/resolve-company.sh:*), Bash, AskUserQuestion, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/startwork-context.sh:*)
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(hq core resume-thread-lock:*), Bash(hq core work-mesh-bind-trusted:*), Bash(hq core resolve-company:*), Bash, AskUserQuestion, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/startwork-context.sh:*)
 ---
 
 # Start Work Session
@@ -40,7 +40,7 @@ Before any other tool call that touches project work, bind the session per
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task}"
 ```
 
@@ -57,7 +57,7 @@ When a company is resolved, `startwork-context.sh orient` (fast path and
 When the argument does not itself select a company, resolve context before entering an unbound path:
 
 ```bash
-bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
+hq core resolve-company --prompt "{the user's full input}"
 ```
 
 Use its company when `source` is `prompt`, `session`, or `device_default`; an existing session company always wins over the device default. `none` (including disabled or `needsChoice` default state) must open the structured company/personal picker, never silently proceed unbound.
@@ -161,7 +161,7 @@ When a task id becomes available later, §2.4 adds it to the session.
    Do not present numbered markdown for this gate — use the structured picker. This is the whole point of the gate: no `qmd search "prd.json"`, no thread-file read, no per-project prd.json reads happen until the user has chosen.
 
 3. **After the pick, load only what that path needs:**
-   - *Resume last session* → before reading the thread file, resolve `thread_id` from `handoff.json.last_thread` and apply the same resume-lock confirmation procedure from `/resumework` Step 2. Run `bash core/scripts/hq-session.sh current` to obtain the session id, then `bash core/scripts/resume-thread-lock.sh inspect "{thread_id}"`. On `unlocked`, acquire the marker with `bash core/scripts/resume-thread-lock.sh acquire "{thread_id}" --session-id "{session_id}"`. On `locked` or `stale`, use AskUserQuestion with the returned `prompt` and stop on cancel; only after **Re-resume anyway** run `bash core/scripts/resume-thread-lock.sh acquire "{thread_id}" --replace --expected-generation "{lock_generation from inspected JSON}" --session-id "{session_id}"`. If replacement exits `4`, re-inspect and ask again because a newer marker replaced the one the user confirmed. Then, and only then, read the thread file handoff.json points to (extract `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`); run `git log --oneline -3`; if the thread references a `project_dir`, read its most-recent journal file (frontmatter + `## Open threads` only — see Project Mode step 4). Skip the global qmd/grep project scan unless the user then asks "what else is active?".
+   - *Resume last session* → before reading the thread file, resolve `thread_id` from `handoff.json.last_thread` and apply the same resume-lock confirmation procedure from `/resumework` Step 2. Run `bash core/scripts/hq-session.sh current` to obtain the session id, then `hq core resume-thread-lock inspect "{thread_id}"`. On `unlocked`, acquire the marker with `hq core resume-thread-lock acquire "{thread_id}" --session-id "{session_id}"`. On `locked` or `stale`, use AskUserQuestion with the returned `prompt` and stop on cancel; only after **Re-resume anyway** run `hq core resume-thread-lock acquire "{thread_id}" --replace --expected-generation "{lock_generation from inspected JSON}" --session-id "{session_id}"`. If replacement exits `4`, re-inspect and ask again because a newer marker replaced the one the user confirmed. Then, and only then, read the thread file handoff.json points to (extract `conversation_summary`, `next_steps`, `git.branch`, `git.current_commit`, `git.dirty`, `files_touched`); run `git log --oneline -3`; if the thread references a `project_dir`, read its most-recent journal file (frontmatter + `## Open threads` only — see Project Mode step 4). Skip the global qmd/grep project scan unless the user then asks "what else is active?".
 
    - *Answer waiting workflow questions* → for each pending gate, oldest first: read its JSON (question, options, context, recommended), ask ONE AskUserQuestion per gate (options from the gate file, recommended first, plus a "Skip this gate" option), and on an answer run `bash core/scripts/workflow-gate.sh answer {id} "{choice}"` (add `--notes` if the user typed free text). Skipped gates stay pending. When done, re-present this entry gate so the user can pick where to work.
    - *Pick company/project/repo* → proceed via the corresponding mode's Gather Context section with the supplied arg.
@@ -197,7 +197,7 @@ Board status comes from the work mesh, never local prd.passes. If ground/check a
 2. Extract `metadata.repoPath` — identify company by matching against manifest repos if the project path did not identify it (`bash core/scripts/startwork-context.sh resolve --arg "{repo basename}"`). Bind the resolved company before continuing.
 2b. Once `{co}` is known, bind and render in one call: `bash core/scripts/startwork-context.sh orient --company "{co}" --mode Project --project "{name}"` (this is the §1.2 bind; do not run it twice). The block's last line carries the project goal and branch; the rest is the company context from Company Mode step 1. When the fast path already bound `{co}` and only the project is new, run `bash core/scripts/startwork-context.sh block --company "{co}" --project "{name}"` and record the project with §2.4.
 3. If repoPath exists: `git -C {repoPath} branch --show-current` and `git -C {repoPath} status --short`, then `bash core/scripts/startwork-context.sh edit-target --repo "{repoPath}"` for the orientation block's "Edit target" lines
-4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq mesh daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
+4. If company `{co}` is resolved, load the live Board from cache / Desktop live read (presence is automatic via `hq daemon`). Prefer `~/.hq/work-mesh/cache/projects/{companyUid}/{projectId}.json` when present. Do not call deleted `hq mesh session ground|check|watch`.
    - `queued` = available next work
    - `in_progress` / `review` = already claimed; do not offer as free next work
    - `done` = done
@@ -244,7 +244,7 @@ it. Only add what `orient` could not know, in one call when there is anything:
 
 ```bash
 # A project or task found after orient ran (one call, both flags when known):
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project_name}" --task "{task_id}"
 # Repo mode only:
 bash core/scripts/hq-session.sh set repo "{repo_name}"
@@ -266,7 +266,7 @@ session.
 Policy loading is NOT this skill's job. Two mechanisms already inject policies before this step runs:
 
 1. **Company policies**: surfaced automatically when `orient` (§1.2 or the fast path) binds the company — the bind emits the company's hard-enforcement rules (deduped and budgeted) directly into the tool result. Do NOT re-scan `companies/{co}/policies/` frontmatter here; that duplicates the bind emission.
-2. **Repo policies**: if repo context resolved and `{repoPath}/.claude/policies/` exists, collect its files except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This is the one scan this step still owns; repo policies are not covered by the company bind.
+2. **Repo policies**: if repo context resolved and `{repoPath}/.claude/policies/` exists, collect its files except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `hq core policy frontmatter {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. This is the one scan this step still owns; repo policies are not covered by the company bind.
 3. **Global policies**: injected by the SessionStart/PreToolUse trigger hook (`inject-policy-on-trigger.sh`). No action here.
 
 Display in orientation block (counts only — `ls | wc -l` is enough for N/K):
@@ -317,7 +317,7 @@ Session Start
 {Mode: Resume | Company: {slug} | Project: {name}}
 {<startwork-context> block, verbatim, whenever a company is resolved}
 
-{If resume: "Last session: {summary}" + "Next steps: {next_steps with status: open}" + "Still open from earlier handoffs: {bash core/scripts/handoff-open-steps.sh list --limit 10, excluding this thread}"; any delegation manifest under workspace/delegations/ still at status `sent` gets `bash core/scripts/hq-delegate-pickup.sh --manifest <m> --check` and its result shown as verified / waiting / FAILED}
+{If resume: "Last session: {summary}" + "Next steps: {next_steps with status: open}" + "Still open from earlier handoffs: {hq core handoff open-steps list --limit 10, excluding this thread}"; any delegation manifest under workspace/delegations/ still at status `sent` gets `hq core delegate pickup --manifest <m> --check` and its result shown as verified / waiting / FAILED}
 {If project: "Goal: {description}" + "Branch: {branchName}"}
 {If repo: "Repo: {repoPath}" + "Company: {slug}" + "Branch: {branch}"}
 {If a repo was resolved (Repo mode, `via: repo`, or a project repoPath): the `edit-target` lines verbatim, so the worktree command is on screen before any work starts}

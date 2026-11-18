@@ -1,23 +1,27 @@
 ---
 name: run-project
-description: "Execute a project's PRD stories through HQ worker lanes that survive compaction. Interactive mode runs in the parent."
-allowed-tools: Read, spawn_agent, wait_agent, Bash(hq lanes create:*), Bash(hq lanes list:*), Bash(hq lanes wait:*), Bash(hq lanes message:*), Bash(hq lanes questions:*), Bash(hq lanes story:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/run-project-state.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(sh core/scripts/pipeline-lane-rows.sh:*), Bash(bash core/scripts/pipeline-conductor.sh:*), Bash(bash core/scripts/pipeline-worker-table.sh:*), Bash(sh core/scripts/pipeline-driver.sh:*), Bash, Write, AskUserQuestion, Task, mcp__visualize__read_me, mcp__visualize__show_widget
+description: "Execute a project's PRD stories through /execute-task on subagents by default; story lanes and pipeline mode run in advanced mode (/conduct-runners). Interactive mode runs in the parent."
+allowed-tools: Read, Agent, spawn_agent, wait_agent, Bash(sh core/scripts/conduct-runner-resolve.sh:*), Bash(hq runners create:*), Bash(hq runners list:*), Bash(hq runners wait:*), Bash(hq runners message:*), Bash(hq runners questions:*), Bash(hq runners story:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/run-project-state.sh:*), Bash(node core/scripts/workflow-runner.mjs:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(ps:*), Bash(grep:*), Bash(bash:*), Bash(jq:*), Bash(cat:*), Bash(tail:*), Bash(kill:*), Bash(ls:*), Bash(mkdir:*), Bash(echo:*), Bash(sleep:*), Bash(qmd:*), Bash(test:*), Bash(hq core work-mesh-bind-trusted:*), Bash(sh core/scripts/pipeline-lane-rows.sh:*), Bash(hq core pipeline conductor:*), Bash(hq core pipeline workers:*), Bash(hq core pipeline driver:*), Bash, Write, AskUserQuestion, Task, mcp__visualize__read_me, mcp__visualize__show_widget
 argument-hint: "{project} [--status] [--resume] [--dry-run] [--inline] [--interactive] [--ralph-mode] [--pipeline] [--in-place] [--timeout N]"
 ---
 
 # Run Project — Codex Router
 
-Codex does not use Claude Code's `Task`, `Plan` sub-agents, `ExitPlanMode`, `/checkpoint`, or `/compact` primitives. The default story path creates an HQ worker lane for each story. If lane execution is unavailable, Codex can use the documented in-session `spawn_agent` / `wait_agent` fallback.
+Codex does not use Claude Code's `Task`, `Plan` sub-agents, `ExitPlanMode`, `/checkpoint`, or `/compact` primitives. The default story path runs each story through `/execute-task` on an in-session subagent: the `Agent` tool in Claude Code, `spawn_agent` / `wait_agent` in Codex.
 
-**Default story execution:** one HQ worker lane for each active story, created
-with `hq lanes create` and this session as senior. Interactive mode stays in the
-parent; the pipeline lane behavior below remains separate.
+**Default story execution (`conduct.runner` is `subagent`):** one subagent per
+active story runs `/execute-task` in default mode and creates no lanes.
+Story lanes and pipeline mode are advanced mode: they run only when
+`conduct.runner` is `runner` (set with `/conduct-runners`). Interactive mode
+stays in the parent.
 
+<!-- advanced-mode:start -->
 **Pipeline mode (`--pipeline`) live children: one loop lane per confirmed
-worker-table row, plus the regression-gate lane.** `hq lanes create` enforces
+worker-table row, plus the regression-gate lane.** In advanced mode, `hq runners create` enforces
 company admission and capacity. A capacity refusal leaves the story queued for
 the next driver tick. The pipeline driver that routes phases is a detached
 script, not a lane, and takes no lane slot.
+<!-- advanced-mode:end -->
 
 **User's input:** $ARGUMENTS
 
@@ -37,7 +41,7 @@ Before any other tool call that touches project work, bind the session per
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task}"
 ```
 
@@ -60,17 +64,41 @@ Extract from `$ARGUMENTS`:
 - `--status` — show orchestrator status, then stop
 - `--dry-run` — show story order, then stop
 - `--resume` — pass through to the chosen execution path
-- `--inline` — the default: dispatch each story through `/execute-task` in an HQ worker lane (Step 3). The name is historical; it means story-delegated execution, as opposed to `--interactive` parent-driven editing.
+- `--inline` — the default: dispatch each story through `/execute-task` (Step 3 in default mode, Step 3L in advanced mode). The name is historical; it means story-delegated execution, as opposed to `--interactive` parent-driven editing.
 - `--interactive` or `--session-mode` — parent-driven Codex execution
-- `--ralph-mode` — the same HQ lane story loop as default, run unattended: skip the preflight approval, auto-advance through every story without between-story pauses, and report once at the end
-- `--pipeline` — opt-in pipeline mode (Step 3P): one persistent loop-mode lane per worker for the whole run, plus a detached driver script (`core/scripts/pipeline-driver.sh`) that routes story phases through them. Without this flag nothing in Step 3P applies and the default coordinator path (Step 3) runs unchanged.
+- `--ralph-mode` — the same story loop as default, run unattended: skip the preflight approval, auto-advance through every story without between-story pauses, and report once at the end
+- `--pipeline` — opt-in pipeline mode (Step 3P, advanced mode only): one persistent loop-mode lane per worker for the whole run, plus a detached driver script (`core/scripts/pipeline-driver.sh`) that routes story phases through them. Without this flag nothing in Step 3P applies and the default story path runs unchanged.
 - `--in-place` — (ralph) skip feature-branch pre-creation; work on the current checkout
 - `--timeout N` — (ralph) per-story wall-clock budget in minutes before a story is marked `blocked: TIMEOUT`. This is the waiter's `deadline` file (dispatch protocol §4-§5), not the runner's `timeoutSecs` — that one only warns and never kills, so it cannot bound anything on its own.
 - `--resume` continues from the next incomplete story (read from `state.json`)
 
-If no execution mode is supplied, route to `--inline`. Each story runs through `/execute-task` in its own HQ worker lane, so the parent holds coordination state only.
+If no execution mode is supplied, route to `--inline`. Each story runs through `/execute-task` on its own subagent (default mode) or in its own HQ worker lane (advanced mode), so the parent holds coordination state only.
 
-Use `--interactive` only when the user asks to steer edits directly in the parent session; it is the one mode that does not dispatch lanes at all. Use `--ralph-mode` for long unattended runs where you do not want to be prompted between stories — it executes the identical worker-authoritative lane loop, just without the pauses.
+**Runner mode — resolve once, before any dispatch.** Read `conduct.runner` with
+the shared resolver:
+
+```bash
+sh core/scripts/conduct-runner-resolve.sh --session-id {session-id}
+```
+
+It prints `subagent` (default) or `runner` (advanced mode, set with
+`/conduct-runners`). Store it as `{runner}`, record it in the run state with
+`--runner {runner}` on `run-project-state.sh init` (Step 3a or 3L.a), and use it
+for the whole run:
+
+- `subagent` → Step 3 (default story loop). No `hq runners` command runs, except
+  `hq runners link` when this session reports to a conductor.
+- `runner` → the `Advanced mode: runners` section: Step 3L (story lanes) or,
+  with `--pipeline`, Step 3P. Both run unchanged.
+
+`--pipeline` with `{runner}` = `subagent` prints exactly one line and exits
+without creating lanes or state:
+
+```text
+Pipeline mode needs advanced mode: run /conduct-runners (conduct.runner runner) first.
+```
+
+Use `--interactive` only when the user asks to steer edits directly in the parent session; it is the one mode that does not dispatch stories at all. Use `--ralph-mode` for long unattended runs where you do not want to be prompted between stories — it executes the identical worker-authoritative story loop, just without the pauses.
 
 **Recommendation posture:** always recommend `--inline`. It runs **continuously — no pause between stories** — except when either condition holds:
 
@@ -79,9 +107,11 @@ Use `--interactive` only when the user asks to steer edits directly in the paren
 
 Everything else auto-continues exactly like ralph-mode. Failed or blocked stories still stop the queue.
 
+<!-- advanced-mode:start -->
 > **Note on the legacy detached orchestrator — not the same thing as a lane.** Earlier versions of this skill launched a detached shell subprocess (`nohup bash run-project.sh … --engine claude`) that ran one headless `claude -p` builder per story, outside the pool and outside the worker system. *That* path is retired: `run-project.sh`'s execution loop is frozen and kept only for `--status`, `--dry-run`, and `--help`; it no longer runs stories, and it has no `claude` builder. The `--engine`/`--builder`, `--swarm`, `--tmux`, `--codex-autofix`, and `--no-monitor` flags belonged to it and are not accepted.
 >
-> Current story lanes are created through `hq lanes create`, carry the invoking session as senior, and run `/execute-task` rather than a bare headless builder.
+> Current stories run `/execute-task` on a subagent (default) or in a story lane created through `hq runners create` with the invoking session as senior (advanced mode), rather than a bare headless builder.
+<!-- advanced-mode:end -->
 
 ## Step 2 — Status, Help, and Dry Run
 
@@ -104,10 +134,127 @@ Before execution, read the project's `prd.json` and check `metadata.designLocked
 
 This is advisory, not a hard stop — many projects (CLIs, infra, libraries) have no visual surface and should proceed without friction. Honor an explicit "yes/proceed" and continue.
 
-## Step 3 — Default Execution: Story Lanes
+## Step 3 — Default Execution: Story Loop
+
+Runs when `{runner}` is `subagent` (the default). The parent plans and
+coordinates. Each story runs through `/execute-task` in default mode on one
+in-session subagent: the `Agent` tool in Claude Code, `spawn_agent` /
+`wait_agent` in Codex. `/execute-task` default mode runs each worker phase on
+its own subagent (its Step 6c-default) and appends every phase handoff to the
+story's `handoffs.jsonl`. This path creates no lanes; only the `/conduct`
+mailbox link, when one exists, is shared with advanced mode.
+
+Resolve the engine and model choices once for the run using the current
+interactive decision gate. Record the selected values with the run state and
+reuse them for each story.
+
+### 3a. Preflight Plan
+
+Run the same preflight as Step 3L.a: resolve the PRD and company, validate the
+target repo and story dependencies, classify incomplete stories with
+`/execute-task` rules, read applicable hard policies, and present the ordered
+plan. For ten or fewer incomplete stories with no session-mode requirement,
+proceed without an extra approval pause. Otherwise ask the user to approve or
+adjust the plan, switch to `--interactive` or `--ralph-mode`, or stop.
+
+Record the run in `workspace/orchestrator/{project}/state.json` with the state
+helper, including the runner:
+
+```bash
+bash core/scripts/run-project-state.sh init {project} --company {company} \
+  --session-id {session-id} --provider {provider} --model {model} --effort {effort} \
+  --runner subagent
+```
+
+On resume, run the same `init`. It keeps the original `started_at`, session
+id and finished tasks, and drops the earlier session's running entries. Then
+read `workspace/orchestrator/conduct-subagents/{session-id}/runs.json` (when
+present) for story subagents this session still has open, and do not dispatch
+a story again while its subagent is running.
+
+### 3b. Story Loop
+
+For each approved incomplete story:
+
+1. Announce the story id, title, and worker sequence. Keep the existing branch
+   setup and best-effort Linear sync. Record the story as running:
+   `bash core/scripts/run-project-state.sh start {project} {story-id}`.
+2. Write the story brief to a file. It tells the subagent to run
+   `/execute-task {project}/{story-id}` in default mode and includes
+   `RETURN CONTRACT: json`, the bound company, applicable policies, the target
+   repo, and the `verify-story-deliverables.sh` evidence gate.
+3. Dispatch one subagent for the story with the brief file path as its
+   prompt and wait for its final message. In Claude Code, use `Agent` with
+   `name: "story-{story-id}"` and a subagent type that has the `Agent` tool;
+   in Codex, `spawn_agent` then `wait_agent`. The parent dispatches the
+   story, never its phases.
+   Nested-subagent fallback: if the host forbids nested subagents (no
+   subagent type has the `Agent` tool, or the story subagent returns
+   `NEEDS_RUNNER` before any phase ran), the parent runs `/execute-task
+   {project}/{story-id}` in default mode itself, one story at a time.
+   `/execute-task` still runs each phase on its own subagent; the parent
+   never runs a phase. Stories do not overlap on this path. Say once which
+   path is in use and keep it for the rest of the run. Mark the story
+   blocked with `NEEDS_RUNNER` only when the parent cannot start phase
+   subagents either.
+4. Parse the subagent's final message with `jq -e`, then validate the story
+   id, worker proof, artifacts, back-pressure results, and parent-visible
+   commits before advancing. Cross-check the story's `handoffs.jsonl`: each
+   phase that ran has one line. Retry malformed JSON exactly once with the
+   existing stricter reminder (`SendMessage` to `story-{story-id}`, or a new
+   `spawn_agent` in Codex); if the second result is malformed, mark the story
+   blocked with `INVALID_RETURN_FORMAT` and stop the queue.
+5. Preserve the one-line story narration and bounded parent reads. Keep
+   detailed logs and long notes on disk.
+6. Update story status through the board wherever the skill already updates
+   status. Do not add status fields to local `prd.json`; `passes` remains spec
+   acceptance data. Mark `passes: true` only after the existing evidence and
+   quality gates pass.
+7. Update state.json after every story, before dispatching the next one, with
+   the same `complete`, `fail` (`--blocked` for `INVALID_RETURN_FORMAT`,
+   `NEEDS_INTERACTION`, `NEEDS_RUNNER`, `TIMEOUT` and other blocks) and
+   `finish` commands as Step 3L.b.7.
+
+Stories are dispatched one at a time by default. Independent stories may run
+concurrently, one subagent each, only when their worker ids differ and they
+have no dependency or file conflict. The nested-subagent fallback never runs
+stories concurrently.
+
+### 3c. Regression Gates
+
+Same cadence as Step 3L.c: every three completed stories, run the applicable
+`metadata.qualityGates` for repos touched since the last gate, and the full
+matrix at final completion, before deploy, after a high-risk cross-repo
+contract change, or when asked. A gate may run on a one-off subagent that
+returns compact JSON. A failed gate stops story advancement and follows the
+existing user decision path.
+
+### 3d. Budget and Recovery
+
+- Do not simulate `/execute-task` by spawning worker-phase agents from the
+  parent. The parent dispatches stories; `/execute-task` dispatches phases.
+  In the nested-subagent fallback the parent runs `/execute-task` itself, and
+  `/execute-task` still dispatches the phases.
+- A story's result comes from its subagent's final JSON (in the fallback,
+  `/execute-task`'s final JSON) and the story's `handoffs.jsonl`, not from
+  local process state.
+- Keep one story active by default. Independent stories overlap only under
+  the constraints in 3b.
+- Read bounded output only. Use compact JSON returns and short tails, not raw
+  test logs or full output files.
+
+<!-- advanced-mode:start -->
+# Advanced mode: runners
+
+Runs only when `{runner}` is `runner` (set with `/conduct-runners`). Step 3L
+and Step 3P below run unchanged from earlier releases. In default mode skip
+this whole section; `--pipeline` in default mode prints the one line from
+Step 1 and exits.
+
+## Step 3L — Story Lanes
 
 The parent plans and coordinates. Each story runs through `/execute-task` in a
-worker lane created with `hq lanes create`; the lane is attributed to the bound
+worker lane created with `hq runners create`; the lane is attributed to the bound
 company, project, and story, and this invoking session is its senior. The lane
 runs the existing worker phases, quality gates, handoffs, and commit checks in
 `.claude/skills/execute-task/SKILL.md`.
@@ -119,7 +266,7 @@ creation only when a worker profile or an explicit `/conduct --workers` pin
 supplies that value. If no provider CLI is available, retain the existing
 in-session `spawn_agent`/`wait_agent` fallback and say which path is in use.
 
-### 3a. Preflight Plan
+### 3L.a. Preflight Plan
 
 Keep the existing preflight: resolve the PRD and company, validate the target
 repo and story dependencies, classify incomplete stories with `/execute-task`
@@ -137,7 +284,8 @@ file shows 0/0.
 
 ```bash
 bash core/scripts/run-project-state.sh init {project} --company {company} \
-  --session-id {session-id} --provider {provider} --model {model} --effort {effort}
+  --session-id {session-id} --provider {provider} --model {model} --effort {effort} \
+  --runner runner
 ```
 
 On resume, run the same `init`: it keeps the original `started_at`, session id
@@ -145,7 +293,7 @@ and finished tasks, drops the earlier session's running entries, and refuses a
 different `--company` than the one recorded. Run `start` again for each story
 whose lane is still live. Keep lane ownership. Never infer company from cwd.
 
-### 3b. Story Loop
+### 3L.b. Story Loop
 
 For each approved incomplete story:
 
@@ -155,7 +303,7 @@ For each approved incomplete story:
 2. Write the story brief to a file and create the story worker lane:
 
    ```bash
-   hq lanes create --company "{company}" --project "{project}" \
+   hq runners create --company "{company}" --project "{project}" \
      --story "{story-id}" --worker "{worker-id}" \
      --brief-file "{brief path}" --senior "session:{session-id}" \
      --account auto --json
@@ -167,16 +315,23 @@ For each approved incomplete story:
    the soonest reset from `next_reset` in one line and never pick an account by
    hand. The brief tells the lane to run `/execute-task {project}/{story-id}` and
    includes `RETURN CONTRACT: json`, applicable policies, the target repo, and
-   the `verify-story-deliverables.sh` evidence gate. Use
-   the same story id for every lane created for its phases. A repeat create for
+   the `verify-story-deliverables.sh` evidence gate. The brief also carries
+   the envelope line from Step 4 of
+   `.claude/skills/_shared/conduct-dispatch-core.md` verbatim, as one line:
+
+   ```text
+   Envelope (hq-lane-envelope.v1): write one JSON object using only these keys: schema_version, decision, summary, story_status, artifacts, story_complete, story_complete_reason, questions, blocked_reason, next_check_at, fingerprint, outcome. schema_version is "hq-lane-envelope.v1". decision is one of "done", "ask", "blocked"; any other value, such as "complete", fails as envelope_invalid. story_status is one of "queued", "in_progress", "review", "done". summary is a non-empty string. artifacts is an array. questions is required and non-empty when decision is "ask", and absent otherwise. Each questions item is an object with question (a non-empty string), context (a non-empty string) and options (an array of strings), plus optional id and recommended (non-empty strings), and no other keys, for example {"id":"q1","question":"Which branch should the fix target?","context":"main and release both carry the bug.","options":["main","release"],"recommended":"main"}. blocked_reason is required and non-empty when decision is "blocked", and absent otherwise. story_complete is optional and is a boolean; story_complete_reason is required and non-empty when story_complete is present, and absent otherwise. story_complete true requires story_status "done" and a story_complete_reason that says what was delivered and how it was verified; story_complete false requires another story_status and a reason that says what is still missing. next_check_at is optional and is an ISO date-time. fingerprint is optional and is a non-empty string or null. outcome is optional; include it when the brief or the Executive standing rules (item 9) ask for it, as an object with only state ("done", "needs_decision" or "partial"), outcome (a non-empty string), gathered (an array of {"label","text"} objects with an optional "ref", all non-empty strings), next_steps (an array of non-empty strings, at least one when state is "partial") and an optional decision_id; state "needs_decision" requires decision_id or a non-empty questions array, and state "done" cannot accompany decision "blocked".
+   ```
+
+   Use the same story id for every lane created for its phases. A repeat create for
    the same worker under the same senior continues that worker's previous
-   thread. If its lane is live, send the follow-up with `hq lanes message`.
+   thread. If its lane is live, send the follow-up with `hq runners message`.
    Read the JSON body for `ok`, `lane_id`, and admission/capacity errors. A
    capacity refusal leaves the story queued for the next tick.
-3. Start and verify the policy-required detached watcher, then wait with `hq lanes wait --any {lane-id} --for envelope
+3. Start and verify the policy-required detached watcher, then wait with `hq runners wait --any {lane-id} --for envelope
    --for question --for state --timeout {seconds} --json`. Questions use the
-   existing user decision flow and `hq lanes questions` commands.
-4. Read the latest lane envelope from `hq lanes list --json` and its
+   existing user decision flow and `hq runners questions` commands.
+4. Read the latest lane envelope from `hq runners list --json` and its
    `last_envelope.ref`. Parse the envelope with `jq -e`, then validate the story id, worker proof, artifacts,
    back-pressure results, and parent-visible commits before advancing. Retry
    malformed JSON exactly once with the existing stricter reminder; if the
@@ -185,7 +340,7 @@ For each approved incomplete story:
 5. Preserve the one-line story narration and bounded parent reads. Keep detailed
    logs and long notes on disk. Do not use conduct pool state as the result
    source.
-6. Update story status through the board and `hq lanes story` wherever the
+6. Update story status through the board and `hq runners story` wherever the
    skill already updates status. Do not add status fields to local `prd.json`;
    `passes` remains spec acceptance data, not a board column. Mark `passes: true`
    only after the existing evidence and quality gates pass.
@@ -201,10 +356,10 @@ Stories are dispatched one at a time by default. Independent stories may run
 concurrently only when their worker ids differ, they have no dependency or file
 conflict, and lane admission accepts each create. A same-worker story reuses its
 existing lane. Do not create a second lane for a worker that is still live; use
-`hq lanes message` for its next brief. Admission and capacity refusals remain
+`hq runners message` for its next brief. Admission and capacity refusals remain
 queued for a later tick rather than bypassing the lane limit.
 
-### 3c. Regression Gates
+### 3L.c. Regression Gates
 
 Keep the existing budget-aware regression cadence: every three completed
 stories, run the applicable `metadata.qualityGates` for repos touched since the
@@ -216,12 +371,12 @@ envelope. Keep detailed logs on disk and the parent transcript to compact JSON.
 A failed gate stops story advancement and follows the existing user decision
 path.
 
-### 3d. Budget and Recovery
+### 3L.d. Budget and Recovery
 
-- Worker lanes are created with `hq lanes create`; admission and capacity are
+- Worker lanes are created with `hq runners create`; admission and capacity are
   owned by HQ lanes. Keep only one lane per worker and senior, and use
-  `hq lanes message` while it is live.
-- A completed phase's result comes from its lane envelope. `hq lanes list
+  `hq runners message` while it is live.
+- A completed phase's result comes from its lane envelope. `hq runners list
   --json` provides lane state and the latest envelope reference; it is not a
   substitute for reading the envelope itself.
 - A lane that is still live after the parent turn is resumable. On recovery,
@@ -238,13 +393,14 @@ path.
 
 ## Step 3P — Pipeline Mode (`--pipeline`)
 
-Only with `--pipeline`. Without the flag, skip this whole step: the default
-path is the story coordinator lanes of Step 3, and nothing below changes it.
+Only with `--pipeline` in advanced mode. Without the flag, skip this whole
+step: the story path is Step 3 (default) or Step 3L (advanced), and nothing
+below changes it.
 
-In pipeline mode each worker gets one `hq lanes` loop lane for the whole run.
+In pipeline mode each worker gets one `hq runners` loop lane for the whole run.
 A detached driver, `core/scripts/pipeline-driver.sh`, owns the story queue: it
 calls `core/scripts/pipeline-conductor.sh` to route each phase with
-`hq lanes enqueue`, accepts each phase's handoff, and re-checks acceptance criteria.
+`hq runners enqueue`, accepts each phase's handoff, and re-checks acceptance criteria.
 The driver makes no engine calls. The parent does not run story coordinators.
 Paths below are under `workspace/orchestrator/{project}/pipeline/`; `{state}`
 is its `state/` subdirectory.
@@ -255,11 +411,11 @@ ends. The `pipeline-conductor` worker (`core/workers/public/dev-team/pipeline-co
 stays as the written reference for the routing rules the driver follows; it is
 not launched, gets no worker-table row, and takes no lane slot.
 
-**3P.1 — Pre-flight first, unchanged.** Run Step 2.5 and the Step 3a preflight
+**3P.1 — Pre-flight first, unchanged.** Run Step 2.5 and the Step 3L.a preflight
 exactly as they run today, including their pauses. If preflight finds stale
 state (wrong branch, dirty tree, stale file anchors, missing auth, an unlocked
 design), pause and surface it the same way; launch no lane until it is
-resolved. Record `session_id` in `state.json` as Step 3 describes. Step 3's
+resolved. Record `session_id` in `state.json` as Step 3L describes. Step 3L's
 single engine question is replaced by the worker table below. The preflight
 lane is separate from the loop lanes created for the pipeline phases.
 
@@ -269,28 +425,28 @@ A story's worker sequence (`worker_preference`, or the overlay below) is the
 full phase sequence for that story, in order: implementer first, then the
 reviewers and testers. The lanes are the union of every story's sequence.
 
-First put the preflight's sequences in run state. The Step 3a preflight
+First put the preflight's sequences in run state. The Step 3L.a preflight
 explorer emits `ordered_stories[]` with a `worker_sequence` per story; save its
 JSON block as `pipeline/preflight-plan.json` and import it into the run's
 overlay (`{state}/overlay.json`; prd.json is not edited):
 
 ```bash
-bash core/scripts/pipeline-conductor.sh classify --prd {prd.json} --state {state} --overlay pipeline/preflight-plan.json
+hq core pipeline conductor classify --prd {prd.json} --state {state} --overlay pipeline/preflight-plan.json
 ```
 
 An overlay entry wins over `worker_preference`, which wins over the keyword
 fallback. Correct one story without a heredoc:
 
 ```bash
-bash core/scripts/pipeline-conductor.sh overlay set --state {state} --story {id} --sequence backend-dev,qa-tester
-bash core/scripts/pipeline-conductor.sh overlay show --state {state}
+hq core pipeline conductor overlay set --state {state} --story {id} --sequence backend-dev,qa-tester
+hq core pipeline conductor overlay show --state {state}
 ```
 
 A story the run should not take (out of scope, waiting on someone) goes on the
 skip list instead of being deleted from prd.json:
 
 ```bash
-bash core/scripts/pipeline-conductor.sh skip --state {state} --story {id} --prd {prd.json} --note "{why}"
+hq core pipeline conductor skip --state {state} --story {id} --prd {prd.json} --note "{why}"
 ```
 
 Skipping a story that others depend on prints the dependents it strands and
@@ -299,7 +455,7 @@ needs `--force`; `unskip --state {state} --story {id}` reverses it.
 Then propose the table from the same sequences:
 
 ```bash
-bash core/scripts/pipeline-worker-table.sh {prd.json} --overlay {state}/overlay.json
+hq core pipeline workers {prd.json} --overlay {state}/overlay.json
 ```
 
 It proposes one `row` for every worker any sequence names (architect and
@@ -329,7 +485,7 @@ Write the confirmed table (one `<worker> <engine> <model> [<effort>]` line per
 lane) to `pipeline/table.tsv` and check the run against it:
 
 ```bash
-bash core/scripts/pipeline-conductor.sh classify --prd {prd.json} --state {state} --table pipeline/table.tsv
+hq core pipeline conductor classify --prd {prd.json} --state {state} --table pipeline/table.tsv
 ```
 
 Without `--story` it checks every story that is not passing or skipped and
@@ -346,14 +502,14 @@ the warnings to the owner; they do not block launch.
 Turn the table into per-lane exports:
 
 ```bash
-bash core/scripts/pipeline-worker-table.sh --confirmed pipeline/table.tsv --overlay {state}/overlay.json {prd.json} > pipeline/lanes.env
+hq core pipeline workers --confirmed pipeline/table.tsv --overlay {state}/overlay.json {prd.json} > pipeline/lanes.env
 ```
 
 It exits 2 on an empty model or an engine other than `claude`/`codex`/`grok`;
 treat that as an unanswered row. Each lane block exports `HQ_CONDUCT_ENGINE`
 (the engine its phases run on) and that engine's model and effort pins.
 
-**3P.3 — Lane admission.** The conductor creates one `hq lanes` loop lane the
+**3P.3 — Lane admission.** The conductor creates one `hq runners` loop lane the
 first time a worker is routed, then reuses that lane for the worker's later
 phases. The CLI applies lane capacity and company admission. If `create` returns
 `ok:false` with an admission or capacity error code, the story stays queued and
@@ -368,7 +524,7 @@ whether to approve the confirmed workers for the whole run; for each approved
 worker run:
 
 ```bash
-bash core/scripts/pipeline-conductor.sh release --state {state} --worker {worker}
+hq core pipeline conductor release --state {state} --worker {worker}
 ```
 
 A hold that was not pre-approved becomes a decision item (3P.6); release that
@@ -387,7 +543,7 @@ deploy, release, production, or merging to the base branch (the patterns are
 owner says go:
 
 ```bash
-bash core/scripts/pipeline-conductor.sh go --state {state} --story {story-id}
+hq core pipeline conductor go --state {state} --story {story-id}
 ```
 
 `resolve` and `park` work on an `awaiting_go` story. The driver keeps routing
@@ -429,7 +585,7 @@ Decide before launch (one choice for the run):
 Cut one worktree per repo before launch and pass each to the driver:
 
 ```bash
-bash core/scripts/pipeline-conductor.sh worktree --state {state} --repo {repo} --shared --prd {prd.json}
+hq core pipeline conductor worktree --state {state} --repo {repo} --shared --prd {prd.json}
 ```
 
 The cut lands at `workspace/worktrees/{project}/{repo-name}/` under the HQ root
@@ -454,7 +610,7 @@ detached from the HQ root with `HQ_SESSION_ID` exported:
 
 ```bash
 bash core/scripts/hq-detach.sh --logfile {state}/driver/detach.log -- \
-  sh core/scripts/pipeline-driver.sh --prd {prd.json} --state {state} \
+  hq core pipeline driver --prd {prd.json} --state {state} \
     --worktree {repo-a}={worktree-a} --worktree {repo-b}={worktree-b} \
     --table pipeline/table.tsv
 ```
@@ -483,15 +639,15 @@ exits it writes `{state}/driver/exit` as `<code> <reason>`:
 |---|---|---|
 | 0 | every story finished (verified, failed after its one reroute, accepted as a partial draft, or parked); `report.md` has its `FINAL:` line | 3P.8 |
 | 2 | usage error | fix the command |
-| 20 | a regression gate is due | run the gate in the `regression-gate` slot (Step 3c), record `pipeline-conductor.sh gate result pass\|fail --state {state}` (add `--story {id} --note "..."` to a `fail` caused by one verified story: it reopens that story, see 3P.6), relaunch the driver |
+| 20 | a regression gate is due | run the gate in the `regression-gate` slot (Step 3L.c), record `pipeline-conductor.sh gate result pass\|fail --state {state}` (add `--story {id} --note "..."` to a `fail` caused by one verified story: it reopens that story, see 3P.6), relaunch the driver |
 | 21 | a decision is needed: a story is held for approval; a phase returned `blocked`, a story has no worktree for its repo, or a story is `awaiting_go`, and nothing else can move; the gate failed; a phase returned `failed` `--max-phase-fails` times; or a phase's engine exited early twice (`engine_exited_early`, see below) (the reason names the status or `engine_exited_early` and the attempt count; the story is then held as `blocked_needs_owner` with `{state}/decisions/<story>-blocked-<phase>.md` carrying each failed handoff's text) | 3P.6: read the decision item, ask the owner once, run the matching command (`resolve --as retry --prd <prd>` re-reads the story's phases, so fix the sequence first with `overlay set` when the lane was wrong; the attempt count starts over), relaunch the driver |
-| 22 | an in-flight phase passed its deadline with no handoff | check the lane with `hq lanes list --json`, then relaunch the driver or stop the run |
+| 22 | an in-flight phase passed its deadline with no handoff | check the lane with `hq runners list --json`, then relaunch the driver or stop the run |
 | 23 | the conductor helper printed something unexpected | read the last lines of `driver.log`, surface them, do not relaunch blindly |
 | 24 | another driver already runs against `{state}` | leave it; re-arm the waiter on it |
 | 25 | retired: the stall check now fires the stall event and exits 28 | - |
-| 26 | lane down: `hq lanes enqueue` reports `loop_not_running`; the story stays `queued` and its worker mapping is removed | restart the driver; the next route creates a fresh loop lane |
+| 26 | lane down: `hq runners enqueue` reports `loop_not_running`; the story stays `queued` and its worker mapping is removed | restart the driver; the next route creates a fresh loop lane |
 | 27 | no lane: a phase's worker has no row in `pipeline/table.tsv`; the reason names the worker and the story stays `queued` | add the row (ask the owner for its engine and model), launch that worker's loop lane as 3P.5 does, relaunch the driver |
-| 28 | a loop lane parked its phase after repeated stalls and raised a question | list its pending question with `hq lanes questions list --company {company} --json`, answer it, then restart the driver |
+| 28 | a loop lane parked its phase after repeated stalls and raised a question | list its pending question with `hq runners questions list --company {company} --json`, answer it, then restart the driver |
 | 29 | stopped on request: the parent ran `pipeline-conductor.sh stop` (see "Stopping a run" below) | relaunch the driver when the owner wants to resume |
 | 130, 143 | interrupted or terminated; in-flight phases are marked `interrupted` first | relaunch the driver; it routes interrupted stories first |
 
@@ -507,13 +663,13 @@ holds the story for the owner (exit 21 naming `engine_exited_early`; the
 decision item carries the reason). A phase whose engine is still running keeps
 the deadline path (exit 22).
 
-**Loop lane admission.** `hq lanes create --loop` applies lane admission and
+**Loop lane admission.** `hq runners create --loop` applies lane admission and
 capacity rules. Admission or capacity refusals leave the story queued for the
 next tick. A stopped or failed lane is removed from `lanes.json` and recreated
 on the next route.
 
 **Stopping a run.** Stop with
-`bash core/scripts/pipeline-conductor.sh stop --state {state} --note "{why}"`.
+`hq core pipeline conductor stop --state {state} --note "{why}"`.
 With a live driver it writes `{state}/driver/stop.json` (a stop envelope,
 `{"kind":"stop"}`) and the driver exits 29 on its next pass; with no live
 driver it marks the stories itself. Every stop path (that command, SIGTERM,
@@ -551,7 +707,7 @@ only loop, and it runs outside every lane.
   (one JSON array: an item per mapped hq loop lane and one
   `kind: "driver"` item). Call `mcp__visualize__read_me` with `["mockup"]`
   once per session first, silently, then render `mcp__visualize__show_widget`
-  in HTML mode from the template `.claude/skills/conduct/lane-rows.html`: one
+  in HTML mode from the template `.claude/skills/conduct-runners/lane-rows.html`: one
   `.row` per worker lane plus one for the driver, the CSS untouched, flex rows,
   never a grid or cards. Per lane row: the worker; the phase chip from
   `phase_label`; the meta from `phase_elapsed_s`, `quiet_s` and
@@ -572,8 +728,8 @@ only loop, and it runs outside every lane.
   phase.
 - Surfaces decision items through the decision queue (`/decision-queue`), one
   at a time: approval items in `{state}/decisions/` marked `status: pending`,
-  and loop lane questions with `hq lanes questions list --company {company}
-  --json`. Answer with `hq lanes questions answer`. Apply
+  and loop lane questions with `hq runners questions list --company {company}
+  --json`. Answer with `hq runners questions answer`. Apply
   each answer with `pipeline-conductor.sh release`, or as the item's options
   describe, then relaunch the driver.
 - On exit 21 for a blocked story (`decisions/<story>-blocked-<phase>.md`,
@@ -584,12 +740,12 @@ only loop, and it runs outside every lane.
 
   | Owner's answer | Command |
   |---|---|
-  | accept it as a partial draft; let dependents start | `bash core/scripts/pipeline-conductor.sh resolve --state {state} --story {id} --as accepted-partial --note "{owner's reason}"` |
-  | run the phase again with this answer | `bash core/scripts/pipeline-conductor.sh resolve --state {state} --story {id} --as retry --note "{owner's answer}"` |
-  | set it aside with everything that depends on it | `bash core/scripts/pipeline-conductor.sh park --state {state} --story {id} --note "{why}"` |
-  | bring a parked story back | `bash core/scripts/pipeline-conductor.sh unpark --state {state} --story {id}` |
-  | leave a story out of the run | `bash core/scripts/pipeline-conductor.sh skip --state {state} --story {id} --prd {prd.json} --note "{why}"` (add `--force` only after the owner accepts the stranded dependents it lists) |
-  | go for a story held `awaiting_go` | `bash core/scripts/pipeline-conductor.sh go --state {state} --story {id}` |
+  | accept it as a partial draft; let dependents start | `hq core pipeline conductor resolve --state {state} --story {id} --as accepted-partial --note "{owner's reason}"` |
+  | run the phase again with this answer | `hq core pipeline conductor resolve --state {state} --story {id} --as retry --note "{owner's answer}"` |
+  | set it aside with everything that depends on it | `hq core pipeline conductor park --state {state} --story {id} --note "{why}"` |
+  | bring a parked story back | `hq core pipeline conductor unpark --state {state} --story {id}` |
+  | leave a story out of the run | `hq core pipeline conductor skip --state {state} --story {id} --prd {prd.json} --note "{why}"` (add `--force` only after the owner accepts the stranded dependents it lists) |
+  | go for a story held `awaiting_go` | `hq core pipeline conductor go --state {state} --story {id}` |
 
   `accepted-partial` is a terminal state, separate from `verified`: it counts
   as done for `dependsOn`, its report line and the `FINAL:` line list the
@@ -606,12 +762,12 @@ only loop, and it runs outside every lane.
 - On exit 20, if the gate fails because of one story the run already
   verified (its own QA passed because the guard test lives outside its suite),
   record the failure naming that story instead of a plain `fail`:
-  `bash core/scripts/pipeline-conductor.sh gate result fail --state {state} --story {id} --note "{what the gate found}"`.
+  `hq core pipeline conductor gate result fail --state {state} --story {id} --note "{what the gate found}"`.
   The conductor reopens the story and sets the gate to `reopened`, which does
   not stop routing; the relaunched driver routes that story first. The same
   works after a plain `gate result fail` was already recorded. To send a
   story back without a gate, run
-  `bash core/scripts/pipeline-conductor.sh reopen --state {state} --story {id} --note "{why}" [--from-phase {phase}]`.
+  `hq core pipeline conductor reopen --state {state} --story {id} --note "{why}" [--from-phase {phase}]`.
   Reopen applies to a `verified` or `accepted_partial` story. It queues the
   story at `--from-phase` (default: the first phase whose worker is not a
   reviewer or tester), archives that phase's and later handoffs as
@@ -632,16 +788,21 @@ rebuild it from `state.json` (`session_id`), `pipeline/table.tsv`,
 `{state}/stories/` (each story's phase and state), `{state}/report.md`,
 `{state}/decisions/`, `{state}/driver/` (`driver.pid` while it runs, `exit`
 once it stopped, `driver.log`), `workspace/sessions/<id>/decisions.jsonl`, and
-`hq lanes list --json` filtered to ids in `{state}/lanes.json` for live lanes.
+`hq runners list --json` filtered to ids in `{state}/lanes.json` for live lanes.
 Do not relaunch a lane whose loop state is `waiting` or `running`. If `driver.pid`
 names a live process, re-arm the waiter; if `exit` is present, act on its code;
 if neither, relaunch the driver.
 
 **3P.8 — Run end: stop every lane.** The driver stops each lane id in
-`{state}/lanes.json`. It reports completion only when `hq lanes list --json`
+`{state}/lanes.json`. It reports completion only when `hq runners list --json`
 shows every owned loop state as `stopped` or the lane is absent from the list.
 It clears the mapping after confirmation so a resumed run creates fresh lanes.
 Then continue with Step 6.
+<!-- advanced-mode:end -->
+
+# Interactive and unattended modes
+
+Both modes read `{runner}` in Step 1 like every other mode.
 
 ## Step 4 — Parent-Driven Interactive Codex Execution
 
@@ -649,7 +810,7 @@ Interactive mode is parent-driven. It replaces Claude session-mode for Codex.
 
 Use when the project is small enough for the parent session and the user may want to steer implementation decisions.
 
-Codex interactive mode is direct parent execution, not proof that the HQ worker pipeline ran. If the user asks for worker-backed execution, or if a PRD/story requires `workers_run`, worker handoffs, or `/execute-task` semantics, stop and route to Ralph/headless (the unattended inline worker loop).
+Codex interactive mode is direct parent execution, not proof that the HQ worker pipeline ran. If the user asks for worker-backed execution, or if a PRD/story requires `workers_run`, worker handoffs, or `/execute-task` semantics, stop and route to the default story loop (Step 3, which runs on `spawn_agent` / `wait_agent` in Codex), or to Ralph/headless (the unattended inline worker loop) for an unattended run.
 
 Process:
 
@@ -662,7 +823,7 @@ Process:
    - applicable policy rules
    - quality gates
    - chosen mode: `interactive`
-4. Ask the user to approve, adjust, or switch to Ralph/headless mode.
+4. Ask the user to approve, adjust, or switch to the default story loop or Ralph/headless mode.
 5. Execute one story at a time in the parent session:
    - make edits directly
    - run back-pressure checks
@@ -678,9 +839,20 @@ Do not spawn an end-to-end `/execute-task` sub-agent in Codex interactive mode u
 
 Use when the project is long-running and the user wants it to run to completion without being prompted between stories.
 
-Ralph/headless is **the same pooled, detached story loop as Step 3, run unattended.** Same lanes, same pool, same return contract; it differs only in that it does not pause.
+Ralph/headless is **the same story loop as Step 3, run unattended.** It reads
+`{runner}` from Step 1 like every other mode. In default mode (`subagent`) it
+runs the Step 3b loop: one story subagent at a time, no lanes. In advanced mode
+(`runner`) it runs the Step 3L.b loop: same lanes, same pool, same return
+contract. Either way it differs only in that it does not pause.
 
-**What detachment does and does not buy here — say this plainly, because the
+In default mode the story subagents live inside the session, so a session that
+ends mid-run stops the in-flight story too. A new session resumes with the same
+`run-project-state.sh init` and the session's
+`workspace/orchestrator/conduct-subagents/{session-id}/runs.json`. The detachment,
+waiter and lane recovery text below applies to advanced mode.
+
+<!-- advanced-mode:start -->
+**Advanced mode: what detachment does and does not buy here — say this plainly, because the
 difference matters to anyone leaving a run going.** The *stories* are detached:
 the in-flight one keeps running and keeps committing when the parent session
 ends, where the previous in-session loop died with its parent mid-story. The
@@ -692,11 +864,12 @@ means no prompts between stories **within a session**, not a run that drives
 itself after the session is gone.
 
 That makes the run *resumable*, not *self-driving*, and resuming takes a new
-session: `hq lanes list --json` shows the lanes launched by the session, and
-`state.json` says which stories are done. A genuinely self-driving run would
+session: in advanced mode `hq runners list --json` shows the lanes launched by
+the session, and in either mode `state.json` says which stories are done. A genuinely self-driving run would
 need the loop itself dispatched as a lane — an extra coordinator level with its
 own lane accounting — which does not exist today. Do not tell a user their run
 will finish on its own after they close the session.
+<!-- advanced-mode:end -->
 
 **5.0 — Pre-flight (run ONCE, before the loop starts).** Skipping the *approval pause* (operational step 1 below) must not skip *validation*. Before auto-advancing, the orchestrator must:
 
@@ -708,23 +881,24 @@ If any pre-flight check cannot be satisfied, stop and surface it; do not start t
 
 The operational differences from default inline are then:
 
-1. **Skip the preflight approval gate (Step 3a).** Still run the preflight explorer slot to build the plan (claimed or resumed the same way), but do not pause for approval — log the plan to `workspace/orchestrator/{project}/codex-session-plan.md` and proceed.
-2. **Auto-advance.** Run the Step 3b story loop for every approved incomplete story back to back. Do not pause between stories (Step 3b.10 already auto-advances; ralph-mode also skips the >10-story and session-mode pauses). All per-story invariants still hold: JSON-validate the worker return, enforce the worker-proof gate, verify parent-visible commits, mark `passes: true` only after verification, and update `state.json` after each story with `core/scripts/run-project-state.sh` (Step 3b.7).
-3. **Run regression gates on cadence.** Apply Step 3c every 3 completed stories exactly as in inline mode.
+1. **Skip the preflight approval gate (Step 3a, or Step 3L.a in advanced mode).** Still run the preflight explorer slot to build the plan (claimed or resumed the same way), but do not pause for approval — log the plan to `workspace/orchestrator/{project}/codex-session-plan.md` and proceed.
+2. **Auto-advance.** Run the Step 3b story loop (Step 3L.b in advanced mode) for every approved incomplete story back to back. Do not pause between stories (the story loop already auto-advances; ralph-mode also skips the >10-story and session-mode pauses). All per-story invariants still hold: JSON-validate the worker return, enforce the worker-proof gate, verify parent-visible commits, mark `passes: true` only after verification, and update `state.json` after each story with `core/scripts/run-project-state.sh` (Step 3b.7 or Step 3L.b.7).
+3. **Run regression gates on cadence.** Apply Step 3c (Step 3L.c in advanced mode) every 3 completed stories exactly as in inline mode.
 4. **Report once.** Emit one compact line per story to the transcript (`[{story_id}] {status} · {files_changed} files · {first_commit_short_sha}`); send anything longer to `workspace/threads/journal/<date>/<story-id>.md`. Surface a single summary at the end rather than pausing throughout.
-5. **Bound wedge time.** A lane that never returns must not stall the run forever. Set the waiter's `deadline` file from the per-story budget (default ~20 min; honor `--timeout N` minutes if passed) — **not** the runner's `timeoutSecs`, which only prints a repeating warning and never kills, so on its own it bounds nothing and the waiter would loop for a `CONDUCT_EXIT` marker that never arrives. When the waiter returns `outcome: deadline`, the lane is **still running**: ask the runner to stop and wait for its `CONDUCT_EXIT` marker (dispatch protocol §5 — signalling the wrapper group never reaches the engine, which the runner spawns detached into a group of its own). Mark the story `blocked` with reason `TIMEOUT`, stop, and surface it either way. Retire the slot with `recycle --force` **only if the lane stopped cleanly and §5's confirmation reported `engine_gone=yes`** — that confirmation runs on every outcome, not just this one, so a `died` or `never-started` lane with a surviving engine group is held back the same way; if the marker never arrived or the group still has members, leave the slot `running`, say the engine may still be live, and let the user decide — reusing an unconfirmed slot puts the next worker in a lane the old one is still writing to. Do not silently move on. Slow back-pressure (e.g. heavy E2E) is the usual cause.
+5. **Bound wedge time.** In default mode, put the per-story budget (default ~20 min; honor `--timeout N` minutes if passed) in the story brief; a story subagent that reports the budget exceeded is marked `blocked` with reason `TIMEOUT`, and the run stops and surfaces it. In advanced mode, a lane that never returns must not stall the run forever. Set the waiter's `deadline` file from the per-story budget (default ~20 min; honor `--timeout N` minutes if passed) — **not** the runner's `timeoutSecs`, which only prints a repeating warning and never kills, so on its own it bounds nothing and the waiter would loop for a `CONDUCT_EXIT` marker that never arrives. When the waiter returns `outcome: deadline`, the lane is **still running**: ask the runner to stop and wait for its `CONDUCT_EXIT` marker (dispatch protocol §5 — signalling the wrapper group never reaches the engine, which the runner spawns detached into a group of its own). Mark the story `blocked` with reason `TIMEOUT`, stop, and surface it either way. Retire the slot with `recycle --force` **only if the lane stopped cleanly and §5's confirmation reported `engine_gone=yes`** — that confirmation runs on every outcome, not just this one, so a `died` or `never-started` lane with a surviving engine group is held back the same way; if the marker never arrived or the group still has members, leave the slot `running`, say the engine may still be live, and let the user decide — reusing an unconfirmed slot puts the next worker in a lane the old one is still writing to. Do not silently move on. Slow back-pressure (e.g. heavy E2E) is the usual cause.
 
 Stop and surface to the user mid-run only on a hard blocker: a story that lands `blocked` (including `INVALID_RETURN_FORMAT`, `NEEDS_INTERACTION`, or `TIMEOUT`), a failed regression gate (coarse 3-story gate or a per-story `all_story_tests_pass: false`), or a worker that cannot run `/execute-task`. Do not silently skip past a blocked story to the next one — auto-advance applies to *passed* stories only.
 
-Every story lane has a PID, a run dir, and a `lane.log`, so **a new session** can pick the run back up — nothing picks itself back up.
+<!-- advanced-mode:start -->
+In advanced mode, every story lane has a PID, a run dir, and a `lane.log`, so **a new session** can pick the run back up — nothing picks itself back up.
 
-**Resume against the original session id, not the new one.** Read `session_id`
+**Advanced mode: resume against the original session id, not the new one.** Read `session_id`
 out of `state.json` and pass it explicitly; the pool and the run dirs are both
 keyed by the session that created them, and a bare `list` in a fresh session
 reports an empty pool while the old lanes are still live:
 
 ```bash
-hq lanes list --json --senior "session:$(jq -r .session_id workspace/orchestrator/{project}/state.json)"
+hq runners list --json --senior "session:$(jq -r .session_id workspace/orchestrator/{project}/state.json)"  # advanced mode only
 ```
 
 That listing names the live lanes and their current state. Re-arm a waiter (dispatch
@@ -734,6 +908,7 @@ whose lane is still up, however incomplete `state.json` says it is. A story
 marked incomplete with a live lane is a story mid-flight, not a story to start
 again. `record`, `recycle` and `cancel` all take `--session-id` too; a recovery
 that omits it operates on the wrong pool silently.
+<!-- advanced-mode:end -->
 
 Progress also lives in `state.json` and `progress.txt`, which the loop updates as it goes; `--status` and `--dry-run` against `{run_project_script}` remain available for out-of-band inspection.
 
@@ -752,9 +927,15 @@ After either mode completes:
 
 - **Do not reference `.Codex/commands/run-project.md` as required source** — this skill is the Codex router.
 - **Do not assume Claude-only primitives** — `Task`, `ExitPlanMode`, `/checkpoint`, and `/compact` are not Codex requirements.
-- **Default stories run through `/execute-task` in an HQ worker lane** created with `hq lanes create`, using the bound company, project, story, worker, brief file, and `--senior session:{id}`. Interactive mode stays parent-driven.
-- **Carry trusted company and story context into every lane** — resolve the company from the run state and pass the project and story explicitly. Never infer a company from cwd.
-- **Use lane results as the delivery record** — inspect `hq lanes list --json`, then read the latest envelope. Do not infer success from local process state or exit code.
+- **Default stories run through `/execute-task` on a subagent**, one per story, with no lanes. Interactive mode stays parent-driven.
+<!-- advanced-mode:start -->
+- In advanced mode (`conduct.runner` is `runner`, set with `/conduct-runners`), stories run in an HQ worker lane created with `hq runners create`, using the bound company, project, story, worker, brief file, and `--senior session:{id}`.
+<!-- advanced-mode:end -->
+- **Carry trusted company and story context into every story subagent or lane** — resolve the company from the run state and pass the project and story explicitly. Never infer a company from cwd.
+- **Use the story result as the delivery record** — in default mode, the subagent's final JSON and the story's `handoffs.jsonl`. Do not infer success from local process state or exit code.
+<!-- advanced-mode:start -->
+- In advanced mode, the delivery record is the lane: inspect `hq runners list --json`, then read the latest envelope.
+<!-- advanced-mode:end -->
 - **Preserve HQ invariants** — PRD acceptance data, board status, file locks, active-run coordination, commits per story, JSON returns, evidence, and quality gates remain required in every mode.
-- **Ask before mode changes** — switching from the default story-lane path to parent-driven interactive or Ralph/headless is a user-facing execution semantic. Preserve the decision gate with text fallback if needed.
+- **Ask before mode changes** — switching from the default story path to parent-driven interactive or Ralph/headless is a user-facing execution semantic. Preserve the decision gate with text fallback if needed.
 - **Budget mode is default** — prefer low-reasoning story execution, compact JSON returns, bounded log reads, changed-repo regression gates, and no parent-side phase fanout.

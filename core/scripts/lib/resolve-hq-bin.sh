@@ -38,11 +38,18 @@ hq_bin_path_is_safe() {
   return 0
 }
 
+#
+# The HQ desktop app installs hq into its own toolchain
+# (~/Library/Application Support/Indigo HQ/toolchain/npm-global/bin) with the
+# node it needs beside it (toolchain/node/bin), and a GUI-launched session's
+# hooks often have neither on PATH (feedback_746a422a). That fixed path is in
+# the list; when hq comes from a toolchain's npm-global/bin, the toolchain's
+# node/bin is appended as well, under the same ownership checks.
 resolve_hq_bin() {
-  local dir dirs
+  local dir dirs toolchain_node
   HQ_BIN="$(command -v hq 2>/dev/null || true)"
   [ -z "$HQ_BIN" ] || return 0
-  dirs="${HOME:+$HOME/.local/bin:$HOME/.npm-global/bin:}/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" # HQ_BIN_DEFAULT_DIRS
+  dirs="${HOME:+$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/Library/Application Support/Indigo HQ/toolchain/npm-global/bin:}/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" # HQ_BIN_DEFAULT_DIRS
   local IFS=:
   for dir in $dirs; do
     case "$dir" in /*) ;; *) continue ;; esac
@@ -50,6 +57,15 @@ resolve_hq_bin() {
     hq_bin_path_is_safe "$dir" && hq_bin_path_is_safe "$dir/hq" || continue
     HQ_BIN="$dir/hq"
     PATH="${PATH:+$PATH:}$dir"
+    case "$dir" in
+      */npm-global/bin)
+        toolchain_node="${dir%/npm-global/bin}/node/bin"
+        if [ -x "$toolchain_node/node" ] && hq_bin_path_is_safe "$toolchain_node" \
+          && hq_bin_path_is_safe "$toolchain_node/node"; then
+          PATH="$PATH:$toolchain_node"
+        fi
+        ;;
+    esac
     export PATH
     return 0
   done

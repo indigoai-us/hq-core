@@ -57,7 +57,7 @@ SESSION
   cat > "$T/bin/hq" <<EOF
 #!/bin/sh
 case "\$1" in
-  lanes)
+  runners)
     case "\$2" in
       create) printf '%s\n' "\$*" >> "$C/calls"; printf '{"ok":true,"lane_id":"lane-backend-dev"}\n' ;;
       enqueue) printf '%s\n' "\$*" >> "$C/calls"; printf '{"ok":true}\n' ;;
@@ -85,13 +85,13 @@ setup one
 phase_exit 7
 start_driver
 wait_for 20 grep -qs "ROUTED\|ACCEPT S1 backend rc=1" "$S/driver/driver.log"
-wait_for 20 eval '[ "$(pyget "$S/stories/S1.json" "d[\"state\"]")" = in_flight ] && grep -q "^lanes enqueue " "$C/calls"'
+wait_for 20 eval '[ "$(pyget "$S/stories/S1.json" "d[\"state\"]")" = in_flight ] && grep -q "^runners enqueue " "$C/calls"'
 check "1: tick line names the story, phase and elapsed time" \
   'grep -q "TICK: EARLY_EXIT S1/backend after 7s: engine_exited_early (engine error: exit code 1)" "$S/driver/driver.log"'
 check "1: the early exit was accepted as a failed handoff with exit_reason" \
   '[ "$(pyget "$S/handoffs/S1-backend.failed.1.json" "d[\"exit_reason\"]")" = engine_exited_early ] || [ "$(pyget "$S/handoffs/S1-backend.json" "d[\"exit_reason\"]")" = engine_exited_early ]'
 check "1: the phase was routed again to the same lane (restart in place) and the driver did not exit" \
-  '[ "$(grep -c "^lanes enqueue " "$C/calls")" = 1 ] && [ "$(pyget "$S/stories/S1.json" "d[\"state\"]")" = in_flight ] && [ ! -f "$S/driver/exit" ]'
+  '[ "$(grep -c "^runners enqueue " "$C/calls")" = 1 ] && [ "$(pyget "$S/stories/S1.json" "d[\"state\"]")" = in_flight ] && [ ! -f "$S/driver/exit" ]'
 sleep 1.1   # the second event must be newer than the re-route
 phase_exit 4
 wait_for 20 test -f "$S/driver/exit"
@@ -99,7 +99,7 @@ check "2: second early exit holds the story: exit 21 naming engine_exited_early"
   '[ "$(exit_code)" = 21 ] && grep -q "engine_exited_early in 2 of 2 attempt(s)" "$S/driver/exit"'
 check "2: S1 is blocked_needs_owner and the decision item names engine_exited_early" \
   '[ "$(pyget "$S/stories/S1.json" "d[\"state\"]")" = blocked_needs_owner ] && grep -q engine_exited_early "$S/decisions/S1-blocked-backend.md"'
-check "2: no third route" '[ "$(grep -c "^lanes enqueue " "$C/calls")" = 1 ]'
+check "2: no third route" '[ "$(grep -c "^runners enqueue " "$C/calls")" = 1 ]'
 
 # ---- case 3: non-terminal handoff plus phase-exit ------------------------------
 setup three
@@ -107,9 +107,9 @@ printf '{"schema":"hq-phase-handoff/v1","story_id":"S1","phase":"backend","worke
 phase_exit 12
 start_driver
 wait_for 20 grep -qs "EARLY_EXIT" "$S/driver/driver.log"
-wait_for 20 grep -q "^lanes enqueue " "$C/calls"
+wait_for 20 grep -q "^runners enqueue " "$C/calls"
 check "3: a non-terminal handoff with a phase-exit is an early exit, then routed again" \
-  'grep -q "TICK: EARLY_EXIT S1/backend after 12s" "$S/driver/driver.log" && grep -q "^lanes enqueue " "$C/calls"'
+  'grep -q "TICK: EARLY_EXIT S1/backend after 12s" "$S/driver/driver.log" && grep -q "^runners enqueue " "$C/calls"'
 kill "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
 
 # ---- case 4: non-terminal handoff, engine still running ------------------------

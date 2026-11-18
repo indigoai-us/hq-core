@@ -7,8 +7,11 @@
 #   bash core/scripts/resumework-resolve.sh <thread-id-or-slug> [--no-vault]
 #
 # Search order (all matches are collected, then de-duplicated by thread_id):
-#   1. workspace/threads/<id>.json (exact), then T-*.json whose name contains
-#      <id>, in workspace/threads/ and workspace/threads/archive/**.
+#   1. workspace/threads/<id>.json (exact), then T-*.json files in
+#      workspace/threads/ and workspace/threads/archive/**. An id that starts
+#      with "T-" is a prefix of the file name ("T-2026...-slug-" matches only
+#      names that start with it); any other id matches anywhere in the name
+#      ("2026...-slug-", "slug").
 #   2. The session's BOUND company only: companies/<co>/workspace/sessions/,
 #      where mirror-thread-to-company writes each company handoff. A handoff
 #      written on another device can arrive here through the company vault
@@ -41,7 +44,7 @@ ARG=""; USE_VAULT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-vault) USE_VAULT=0; shift ;;
-    -h|--help) sed -n '3,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,34p' "$0"; exit 0 ;;
     *) [ -z "$ARG" ] && ARG="$1"; shift ;;
   esac
 done
@@ -69,6 +72,21 @@ esac
 if [ -n "$CO" ] && ! printf '%s' "$CO" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; then CO=""; fi
 [ -n "$CO" ] && [ ! -d "$ROOT/companies/$CO" ] && CO=""
 
+# Name pattern for the T-*.json search. Thread files are named T-<...>.json.
+# An id that starts with "T-" is a prefix the user typed, so it is anchored at
+# the start of the name: the old "T-*${id}*" pattern needed "T-" twice and only
+# the exact-name check could match (feedback_76a8b4f7), and a substring match
+# would let a short "T-a" or "T--" resolve to one unrelated thread. Any other
+# id keeps the substring match. The character check above keeps find pattern
+# characters (* ? [ ]) out of the id, so the pattern matches literally. The id
+# "T-" alone runs no name or vault search (it would match every thread).
+# KEY_NEEDLE is the same rule for vault keys (grep -F on the key text).
+case "$id" in
+  T-) NAME_PATTERN=""; KEY_NEEDLE="" ;;
+  T-*) NAME_PATTERN="${id}*.json"; KEY_NEEDLE="/workspace/sessions/${id}" ;;
+  *) NAME_PATTERN="T-*${id}*.json"; KEY_NEEDLE="$id" ;;
+esac
+
 LIST="$(mktemp "${TMPDIR:-/tmp}/resumework-resolve.XXXXXX")"
 trap 'rm -f "$LIST"' EXIT
 
@@ -79,10 +97,11 @@ collect() {
   if [ -f "$dir/${id}.json" ]; then
     printf '%s\t%s\n' "$source" "$dir/${id}.json" >> "$LIST"
   fi
+  [ -n "$NAME_PATTERN" ] || return 0
   while IFS= read -r f; do
     [ -n "$f" ] && printf '%s\t%s\n' "$source" "$f" >> "$LIST"
   done < <(find "$dir" -maxdepth "$depth" -path '*/resume-locks' -prune -o \
-             -type f -name "T-*${id}*.json" ! -name '*.changeset.json' -print 2>/dev/null)
+             -type f -name "$NAME_PATTERN" ! -name '*.changeset.json' -print 2>/dev/null)
 }
 
 collect local "$ROOT/workspace/threads" 1
@@ -90,12 +109,12 @@ collect archive "$ROOT/workspace/threads/archive" 6
 [ -n "$CO" ] && collect company "$ROOT/companies/$CO/workspace/sessions" 1
 
 VAULT_SEARCHED=false; VAULT_ERROR=""; FETCHED=()
-if [ ! -s "$LIST" ] && [ "$USE_VAULT" = 1 ] && [ -n "$CO" ]; then
+if [ ! -s "$LIST" ] && [ "$USE_VAULT" = 1 ] && [ -n "$CO" ] && [ -n "$KEY_NEEDLE" ]; then
   if command -v "$HQ_BIN" >/dev/null 2>&1; then
     VAULT_SEARCHED=true
     if out="$(cd "$ROOT" && "$HQ_BIN" files search "$id" --company "$CO" 2>&1)"; then
       keys="$(printf '%s\n' "$out" | grep -oE "companies/$CO/workspace/sessions/T-[A-Za-z0-9._-]*\\.json" \
-        | grep -v '\.changeset\.json$' | grep -F -- "$id" | sort -u | head -5 || true)"
+        | grep -v '\.changeset\.json$' | grep -F -- "$KEY_NEEDLE" | sort -u | head -5 || true)"
       while IFS= read -r key; do
         [ -n "$key" ] || continue
         if (cd "$ROOT" && "$HQ_BIN" files get "$key" --company "$CO" >/dev/null 2>&1) && [ -f "$ROOT/$key" ]; then

@@ -1,0 +1,1 @@
+The Bash guards now read the heredoc body of a PR comment, commit message or handoff summary as shell text when the same command also uses `$_`, `${_}`, `${!name}`, `eval`, `declare` or `typeset`. Before, a body hidden from the guards could be run by a later `sh -c "$_"` or `eval "$_"` and write into protected paths.

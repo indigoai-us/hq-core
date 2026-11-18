@@ -713,12 +713,23 @@ hook_timeout_debug_context_json() {
 hook_timeout_attach_debug_context() {
   local report="${1:-}" context="${2:-}"
   [ -n "$report" ] && [ -n "$context" ] || { printf '%s' "$report"; return 0; }
+  # Drop phase timings until the report fits the receiver's 2,048-byte limit.
+  # An entry whose phase recurs later goes first, oldest first, so repeated
+  # child samples (external_command) give way before the one-off early phases
+  # (startup, source, config_load) and the latest sample of each phase. Only
+  # then do the oldest remaining entries go.
   jq -cn --argjson report "$report" --argjson context "$context" '
     ($context.phase_timings // []) as $timings
-    | [range(0; (($timings | length) + 1)) as $drop
+    | ($timings | length) as $count
+    | [range(0; $count) as $i
+      | select(any($timings[($i + 1):][]; .phase? == $timings[$i].phase?)) | $i] as $repeated
+    | ($repeated + ([range(0; $count)] - $repeated)) as $drop_order
+    | [range(0; $count + 1) as $drop
+      | $drop_order[:$drop] as $dropped
       | ($report
         | .metadata.hook_timeout_debug_context = $context
-        | .metadata.hook_timeout_debug_context.phase_timings = $timings[$drop:])
+        | .metadata.hook_timeout_debug_context.phase_timings =
+          [range(0; $count) as $i | select(any($dropped[]; . == $i) | not) | $timings[$i]])
       | select((tojson | utf8bytelength) <= 2048)]
     | if length > 0 then .[0] else $report end
   ' 2>/dev/null || printf '%s' "$report"

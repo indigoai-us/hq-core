@@ -21,7 +21,12 @@ set -uo pipefail
 
 INPUT=$(cat)
 
-FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || true
+# jq may emit a completed value before a malformed tail fails. Never use
+# partial output from a failed parse, including jq version-specific literals.
+if ! FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null); then
+  printf '%s\n' 'BLOCKED: hook input is not cleanly parseable JSON.' >&2
+  exit 2
+fi
 if [[ -z "$FILE_PATH" ]]; then
   exit 0
 fi
@@ -36,6 +41,46 @@ fi
 
 FILE_PATH="$(hq_canonical_path "$FILE_PATH")"
 PROJECT_DIR="$(hq_canonical_path "$PROJECT_DIR")"
+
+# On Windows a folder can be named by its long name or its 8.3 short name
+# (C:/Users/RUNNER~1 and C:/Users/runneradmin). Each path that holds a short
+# name ("~") is rewritten in long form, so the protected-path checks below
+# compare like with like (US-022); a path with no "~" is already long. The
+# longest existing prefix is expanded and a not-yet-existing tail is kept as
+# written. If the lookup fails for a "~" path, the write is refused: its
+# spelling cannot be matched safely. Only Git Bash has cygpath; no other
+# platform runs this.
+bcw_long() {
+  local head="$1" tail="" parent q
+  while [[ -n "$head" && ! -e "$head" ]]; do
+    parent="${head%/*}"
+    if [[ -z "$parent" || "$parent" == "$head" ]]; then
+      return 1
+    fi
+    tail="/${head##*/}$tail"
+    head="$parent"
+  done
+  q="$(cygpath -m -l "$head" 2>/dev/null)" || return 1
+  [[ -n "$q" ]] || return 1
+  printf '%s%s' "$q" "$tail"
+}
+bcw_refuse_unresolved() {
+  printf 'BLOCKED: could not resolve the Windows short (8.3) name in %s, so the protected-path check cannot be trusted.\n' "$1" >&2
+  exit 2
+}
+if command -v cygpath >/dev/null 2>&1; then
+  if [[ "$FILE_PATH" == *"~"* ]]; then
+    bcw_long_value="$(bcw_long "$FILE_PATH")" || bcw_refuse_unresolved "$FILE_PATH"
+    FILE_PATH="$bcw_long_value"
+  fi
+  if [[ "$PROJECT_DIR" == *"~"* ]]; then
+    bcw_long_value="$(bcw_long "$PROJECT_DIR")" || bcw_refuse_unresolved "$PROJECT_DIR"
+    PROJECT_DIR="$bcw_long_value"
+  fi
+  # Windows file systems ignore letter case (C:/HQ/CORE is C:/hq/core), so on
+  # Git Bash every path comparison below is case-insensitive (US-022).
+  shopt -s nocasematch
+fi
 
 CORE_DIR="$PROJECT_DIR/core"
 CLAUDE_DIR="$PROJECT_DIR/.claude"
@@ -69,8 +114,12 @@ is_bypass_authorized() {
   command -v jq >/dev/null 2>&1 || return 1
   local val
   val=$(jq -r '.env.HQ_BYPASS_CORE_PROTECT // empty' "$SETTINGS_LOCAL" 2>/dev/null) || return 1
-  [[ "$val" == "1" || "$val" == "true" ]] && return 0
-  return 1
+  # The flag value is matched exactly on every platform (nocasematch is for paths).
+  local restore_nocase=no ok=1
+  if shopt -q nocasematch; then restore_nocase=yes; shopt -u nocasematch; fi
+  [[ "$val" == "1" || "$val" == "true" ]] && ok=0
+  if [[ "$restore_nocase" == yes ]]; then shopt -s nocasematch; fi
+  return "$ok"
 }
 
 if is_bypass_authorized; then
@@ -106,6 +155,26 @@ fi
 # package contribution link (core/knowledge/* → core/packages/*/knowledge/*):
 # that resolves back INTO core/, and installed pack content is immutable, so
 # the write stays blocked.
+#
+# On Windows the same folder can be spelled with its long name or its 8.3 short
+# name (C:/Users/RUNNER~1 and C:/Users/runneradmin). An absolute link target and
+# the HQ root may use different spellings, so the "back into core/" test also
+# compares both in long form, case-insensitively (US-022). Only Git Bash has
+# cygpath, so this costs nothing elsewhere.
+bcw_long_lower() {
+  local q
+  q="$(cygpath -m -l "$1" 2>/dev/null)" || q=""
+  [[ -n "$q" ]] || q="$1"
+  printf '%s' "$q" | tr '[:upper:]' '[:lower:]'
+}
+bcw_into_core() {
+  [[ "$1" == "$CORE_DIR"/* ]] && return 0
+  command -v cygpath >/dev/null 2>&1 || return 1
+  local r c
+  r="$(bcw_long_lower "$1")"
+  c="$(bcw_long_lower "$CORE_DIR")"
+  [[ "$r" == "$c"/* ]]
+}
 probe="$FILE_PATH"
 while [[ "$probe" == "$CORE_DIR"/* || "$probe" == "$CLAUDE_DIR"/* || \
          "$probe" == "$AGENTS_DIR"/* || "$probe" == "$CODEX_DIR"/* || \
@@ -118,7 +187,7 @@ while [[ "$probe" == "$CORE_DIR"/* || "$probe" == "$CLAUDE_DIR"/* || \
       resolved="$(dirname "$probe")/$resolved"
     fi
     resolved="$(hq_canonical_path "$resolved")"
-    if [[ -n "$resolved" && "$resolved" == "$CORE_DIR"/* ]]; then
+    if [[ -n "$resolved" ]] && bcw_into_core "$resolved"; then
       break # resolves back into core/ (package mount) — keep blocking
     fi
     exit 0

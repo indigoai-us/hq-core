@@ -1,7 +1,7 @@
 ---
 name: dm-bind
 description: Bind this session to one HQ DM channel — post structured status updates there and listen for replies (feedback, requests) that steer the work.
-allowed-tools: Bash(hq:*), Bash(bash core/scripts/hq-dm-bind.sh:*), Read
+allowed-tools: Bash(hq:*), Bash(hq core dm-bind:*), Read
 ---
 
 # /dm-bind — one channel for updates in, feedback out
@@ -27,7 +27,7 @@ Script: `core/scripts/hq-dm-bind.sh` (bind · status · post · poll · listen �
 ## Bind
 
 ```bash
-bash core/scripts/hq-dm-bind.sh bind <channel>
+hq core dm-bind bind <channel>
 ```
 
 Verifies the channel exists, stores it in the session metadata (`dm_channel`),
@@ -82,7 +82,7 @@ Updates are read on a phone by people who did not watch the work. Rules:
 - Under ~600 characters unless it is a decision request.
 
 ```bash
-bash core/scripts/hq-dm-bind.sh post \
+hq core dm-bind post \
   --title "Signup page fix" --state "blocked" \
   --line "The fix is written and passes its checks." \
   --line "The deploy is waiting on a permission the pipeline no longer has." \
@@ -110,7 +110,7 @@ For a longer, already-structured body: `… post --title "…" - < body.md`.
 ## Listen — replies steer the session
 
 ```bash
-bash core/scripts/hq-dm-bind.sh listen --interval 60 --timeout 1800
+hq core dm-bind listen --interval 60 --timeout 1800
 ```
 
 Run it with the Bash tool's `run_in_background: true`. It exits the moment a

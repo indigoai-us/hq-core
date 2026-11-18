@@ -5,6 +5,24 @@
 MASTER_ENTRY_SECONDS="${SECONDS:-0}"
 MASTER_ENTRY_REALTIME="${EPOCHREALTIME:-}"
 export BASH_ENV=/dev/null
+# Give this shell an explicit LANG when it has none, before anything forks.
+# Under Homebrew bash 5.3 on macOS, a locale reset that resolves to "" (a
+# temporary `LC_ALL=C cmd` assignment going out of scope, `unset LC_ALL`, or a
+# function's `local LC_ALL=C` unwinding, with LANG empty) makes bash's libintl
+# setlocale ask CoreFoundation for the preferred languages. CoreFoundation is
+# not safe to use after fork without exec, and master-hook runs every child
+# inside forked subshells (`out="$(run_child ...)"`, the pipeline element that
+# runs the perl runner's `LC_ALL=C perl`), so about 1 run in 10 such a
+# subshell died with SIGSEGV (exit 139) and a safety guard that allowed was
+# reported as crashed. With LANG=C every reset names a locale and never
+# reaches CoreFoundation. LANG stays unexported when it was unset, so hooks and
+# every other child see the same environment as before; an exported empty LANG
+# is unexported first. master-hook's own matching is on ASCII registry ids,
+# tool names and paths, so byte semantics do not change a decision.
+if [ -z "${LANG:-}" ]; then
+  export -n LANG 2>/dev/null || true
+  LANG=C
+fi
 # Master hook — dispatches a hook event to the active company's hook scripts.
 #
 # Usage (from settings.json):
@@ -262,6 +280,25 @@ if . "$SCRIPT_DIR/../../core/scripts/resolve-hq-root.sh" 2>/dev/null \
 fi
 unset HQ_RESOLVE_HQ_ROOT_LIBRARY
 [ -n "$REPO_ROOT" ] || REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Nested install: this hook belongs to an HQ root inside another HQ root's
+# tree, and the launching process exported the outer root as HQ_ROOT. Child
+# hooks read ${HQ_ROOT:-...} first, so they would use the outer install's
+# sessions, company scope and state. Rebind HQ_ROOT to this install and drop
+# the company scope inherited with it, only when the ancestor HQ_ROOT is
+# itself an HQ root (has core/core.yaml); any other HQ_ROOT is left alone.
+# Builtins only (no fork per event).
+case "${HQ_ROOT:-}" in
+  /*)
+    if [ "${HQ_ROOT%/}" != "$REPO_ROOT" ] && command -v hq_root_is_strictly_inside >/dev/null 2>&1 \
+      && hq_root_is_strictly_inside "$HQ_ROOT" "$REPO_ROOT" \
+      && [ -f "${HQ_ROOT%/}/core/core.yaml" ]; then
+      HQ_ROOT="$REPO_ROOT"
+      export HQ_ROOT
+      unset HQ_ACTIVE_COMPANY HQ_COMPANY HQ_COMPANY_SLUG HQ_COMPANY_UID HQ_POLICY_COMPANY \
+        HQ_SPAWN_COMPANY HQ_SPAWN_COMPANIES
+    fi
+    ;;
+esac
 # Shared registry prefilter semantics also power the Codex and Grok adapters.
 # shellcheck source=../../core/scripts/lib/hook-adapter-core.sh
 MASTER_PREFILTER_AVAILABLE=1
@@ -425,10 +462,14 @@ master_session_hash_ensure() {
 MASTER_INVOCATION_ID="$(master_timeout_sha256 "$$" "$MASTER_STARTED_MS" "$EVENT" 2>/dev/null || true)"
 [ -n "$MASTER_INVOCATION_ID" ] || MASTER_INVOCATION_ID="$$-$MASTER_STARTED_MS"
 MASTER_DEBUG_DIRECTORY_READY=0
+# 1 when this run made the journal directory: it is empty, so its first sweep
+# can wait a full interval (journal_sweep_stale_files).
+MASTER_JOURNAL_DIRECTORY_CREATED=0
 # mkdir only when the directory is missing: one fewer process per event.
 if master_timeout_watchdog_enabled \
   && { [ -d "$REPO_ROOT/workspace/.hook-timeout-journal" ] \
-    || mkdir -p "$REPO_ROOT/workspace/.hook-timeout-journal" >/dev/null 2>&1; }; then
+    || { mkdir -p "$REPO_ROOT/workspace/.hook-timeout-journal" >/dev/null 2>&1 \
+      && MASTER_JOURNAL_DIRECTORY_CREATED=1; }; }; then
   MASTER_DEBUG_DIRECTORY_READY=1
   master_debug_initialize "$REPO_ROOT" "$MASTER_INVOCATION_ID"
   if [ -n "$MASTER_DEBUG_PHASE_FILE" ]; then
@@ -475,7 +516,11 @@ stop_master_timeout_watchdog() {
     [ -z "${timeout_journal_file:-}" ] \
       || debug_files+=("$timeout_journal_file.$MASTER_INVOCATION_ID.active")
     if [ "${PAR:-0}" -eq 1 ] && [ -n "${timeout_journal_file:-}" ]; then
-      for par_active_file in "$timeout_journal_file.$MASTER_INVOCATION_ID.active".*; do
+      # Parallel dispatch: one breadcrumb per child, <active>.<index>. The
+      # indexes are 0 to par_n - 1, so the names are built here. A glob would
+      # read the whole journal directory at the end of every event.
+      for ((i = 0; i < ${par_n:-0}; i++)); do
+        par_active_file="$timeout_journal_file.$MASTER_INVOCATION_ID.active.$i"
         [ ! -e "$par_active_file" ] || debug_files+=("$par_active_file")
       done
     fi
@@ -631,6 +676,7 @@ TOOL_NAME=""
 MATCH_KEY=""
 SESSION_ID=""
 PREFILTER_TEXT=""
+POLICY_TOOL_TEXT=""
 PAYLOAD_CWD=""
 PAYLOAD_AGENT_ID=""
 PAYLOAD_AGENT_TYPE=""
@@ -652,7 +698,7 @@ master_read_payload_fields() {
   [[ "$out" == *$'\x1e'* ]] || return 0
   meta="${out/$'\x1e'*/}"
   rest="${out:${#meta}+1}"
-  while ((i < 6)); do
+  while ((i < 7)); do
     if [[ "$meta" == *$'\x1f'* ]]; then
       field="${meta/$'\x1f'*/}"
       meta="${meta:${#field}+1}"
@@ -669,6 +715,7 @@ master_read_payload_fields() {
   PAYLOAD_CWD="${fields[3]}"
   PAYLOAD_AGENT_ID="${fields[4]}"
   PAYLOAD_AGENT_TYPE="${fields[5]}"
+  POLICY_TOOL_TEXT="${fields[6]}"
   PREFILTER_TEXT="$meta"
   TOOL_METADATA_EXTRACTED=1
   if [[ "$rest" == *$'\x1e' ]]; then
@@ -686,15 +733,43 @@ master_payload_fields_jq() {
   # length; gsub and join grow faster than linear on long commands.
   def hq_flat: reduce ("\u0000", "\u001e", "\u001f", "\n") as $sep
     (.; [split($sep) | (.[0] // ""), (.[1:][] | " ", .)] | add);
+  # The trigger text inject-policy-on-trigger.sh builds for a PostToolUse
+  # text tool (keep the two in sync, limits included): Agent/Task description
+  # and prompt, Write/Edit/MultiEdit/NotebookEdit path and new content, Read
+  # path. The policy-vocabulary prefilter tests this text instead of the whole
+  # tool_input and tool_response, so a Read of a file whose contents hold a
+  # policy word does not start the injector, which never scans the contents.
+  def str: if type == "string" then . else "" end;
+  def policy_tool_text:
+    (if (.tool_input | type) == "object" then .tool_input else {} end) as $in
+    | (.tool_name // "") as $t
+    | (if $t == "Agent" or $t == "Task" then
+         [($in.description | str | .[0:1024]), ($in.prompt | str | .[0:8192])]
+       elif $t == "Write" then
+         [($in.file_path | str | .[0:1024]), ($in.content | str | .[0:8192])]
+       elif $t == "Edit" then
+         [($in.file_path | str | .[0:1024]), ($in.new_string | str | .[0:8192])]
+       elif $t == "MultiEdit" then
+         [($in.file_path | str | .[0:1024]),
+          ([($in.edits | if type == "array" then .[] else empty end)
+            | if type == "object" then (.new_string | str | .[0:8192]) else "" end]
+           | join("\n") | .[0:8192])]
+       elif $t == "NotebookEdit" then
+         [($in.notebook_path | str | .[0:1024]), ($in.new_source | str | .[0:8192])]
+       elif $t == "Read" then
+         [($in.file_path | str | .[0:1024])]
+       else [] end)
+    | map(select(. != "")) | join("\n");
   [ (.tool_name // ""),
     (if ($ev == "PreToolUse" or $ev == "PostToolUse") then (.tool_name // "")
      elif $ev == "PreCompact" then (.trigger // "")
      elif $ev == "SessionStart" then (.source // "")
      else "" end),
-    (.session_id // ""),
+    ('"$SESSION_ID_PAYLOAD_JQ"' // ""),
     (.cwd // ""),
     (if .agent_id == null then "" elif (.agent_id | type) == "string" then .agent_id else "!invalid-agent-id-type!" end),
     (if .agent_type == null then "" elif (.agent_type | type) == "string" then .agent_type else "!invalid-agent-type!" end),
+    (try (if $ev == "PostToolUse" then policy_tool_text else "" end) catch ""),
     ((if $ev == "UserPromptSubmit" then (.prompt // "")
       elif (.tool_input | type) == "object" then ((.tool_input | tojson) + ([.tool_input | .. | strings | " ", .] | add // ""))
       else (.prompt // "") end)
@@ -702,11 +777,39 @@ master_payload_fields_jq() {
     (if .tool_name == "Bash" and ($ev == "PreToolUse" or $ev == "PostToolUse")
      then (.tool_input.command // "" | tostring) else "" end)
   ] as $fields
-  | ($fields[0:7] | map(hq_flat) | join("\u001f"))
-    + "\u001e" + ($fields[7] | split("\u0000") | .[0] // "") + "\u001e"
+  | ($fields[0:8] | map(hq_flat) | join("\u001f"))
+    + "\u001e" + ($fields[8] | split("\u0000") | .[0] // "") + "\u001e"
 ' 2>/dev/null
 }
 master_debug_phase_start parse
+# One reader for the payload's session id: session_id, then Cursor's
+# conversation_id. Cursor sends session_id only on sessionStart, so every other
+# Cursor event used to arrive here with no identity.
+# shellcheck source=../../core/scripts/lib/session-id.sh
+. "$REPO_ROOT/core/scripts/lib/session-id.sh" 2>/dev/null || true
+: "${SESSION_ID_PAYLOAD_JQ:=(.session_id // .conversation_id // .conversationId)}"
+# Cursor runs this file for .claude/settings.json hooks and marks every payload
+# with cursor_version. Give children a Claude-shaped payload once, here:
+# session_id from conversation_id, and Cursor's Shell tool as Bash so the Bash
+# guards (matcher "Bash") see Cursor shell commands. Only a payload that names
+# cursor_version pays for this extra jq.
+MASTER_CURSOR_PAYLOAD=0
+case "$INPUT" in
+  *'"cursor_version"'*)
+    master_cursor_input="$(printf '%s' "$INPUT" | jq -c '
+      if type == "object" and (.cursor_version | type) == "string" then
+        (if (.session_id // "") == "" then .session_id = '"$SESSION_ID_PAYLOAD_JQ"' else . end)
+        | (if .tool_name == "Shell" then .tool_name = "Bash" else . end)
+      else empty end' 2>/dev/null)" || master_cursor_input=""
+    master_cursor_input="${master_cursor_input%$'\r'}"
+    if [ -n "$master_cursor_input" ]; then
+      INPUT="$master_cursor_input"
+      MASTER_CURSOR_PAYLOAD=1
+    fi
+    unset master_cursor_input
+    ;;
+esac
+export HQ_HOOK_CURSOR="$MASTER_CURSOR_PAYLOAD"
 master_read_payload_fields < <(master_payload_fields_jq)
 is_tool_event "$EVENT" || TOOL_NAME=""
 master_debug_phase_finish parse
@@ -1042,6 +1145,9 @@ release_journal_compaction_lock() {
   rmdir "$lock_dir" >/dev/null 2>&1 || true
 }
 
+# Cut the journal back to its last 40 rows, the number its reader takes.
+# Called when a timeout is reported (master_hook_sequence_json) and on a timer
+# while the session runs (journal_compact_if_due).
 compact_timeout_journal() {
   local temporary journal_lines
   [ -n "$timeout_journal_file" ] || return 0
@@ -1299,6 +1405,9 @@ sort_group() {
 
 
 # --- Registry dispatch (gated project hooks, in-process) --------------------
+if [ -f "$SCRIPT_DIR/machine-check-owner.sh" ]; then
+  . "$SCRIPT_DIR/machine-check-owner.sh"
+fi
 REGISTRY="$SCRIPT_DIR/hook-registry.json"
 exit_code=0
 plain_buf=""
@@ -1418,6 +1527,17 @@ if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
   esac
 fi
 
+# Nested install warning (SessionStart only). HQ hooks above already use this
+# install's root; Claude Code's own settings, skills and CLAUDE.md loading
+# still reaches folders above it, which a hook cannot change. Name what leaks
+# and the fix once per session. HQ_NESTED_ROOT_WARNING=0 silences it.
+if [ "$EVENT" = "SessionStart" ] && [ "${HQ_NESTED_ROOT_WARNING:-1}" != 0 ] \
+  && command -v hq_root_nested_report >/dev/null 2>&1 \
+  && hq_root_nested_report "$REPO_ROOT"; then
+  json_outputs+=("$(jq -cn --arg ctx "$HQ_NESTED_REPORT Tell the user this once." '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}')")
+  json_sources+=("$REPO_ROOT/core/scripts/resolve-hq-root.sh")
+fi
+
 master_bind_session_start_scope() {
   # Claude Code starts an Agent-tool subagent with SubagentStart, never
   # SessionStart. Pin the subagent's own tuple at spawn from the same single
@@ -1518,8 +1638,13 @@ if (length $marker) { open my $fh, ">", $marker; close $fh; }
 exit(($rc & 127) ? 128 + ($rc & 127) : ($rc >> 8));
 '
 child_completion_dir="$REPO_ROOT/workspace/.hook-timeout-completions"
+child_completion_dir_created=0
 if [ -n "$child_timeout_cmd" ] && [ ! -d "$child_completion_dir" ]; then
-  mkdir -p "$child_completion_dir" >/dev/null 2>&1 || child_completion_dir=""
+  if mkdir -p "$child_completion_dir" >/dev/null 2>&1; then
+    child_completion_dir_created=1
+  else
+    child_completion_dir=""
+  fi
 fi
 child_sequence=0
 # Last-resort bound for a safety guard when neither coreutils timeout nor perl
@@ -1754,6 +1879,78 @@ master_safety_guard_timeout() { # <registry-timeout> <elapsed-seconds>
   printf '%s' "$requested"
 }
 
+# Stop and SubagentStop hold the end of every turn, and the user waits on them.
+# Every Stop hook shares one budget of HQ_MASTER_STOP_BUDGET seconds (default
+# 30), measured from the first budgeted Stop hook. Directory-layer Stop hooks
+# (core, personal, pack and company hooks/Stop) get HQ_MASTER_STOP_CHILD_TIMEOUT
+# (default 10 s) each; registry Stop hooks keep their registry timeout. Either
+# kind is capped by what is left of the budget, and a hook the budget cannot
+# reach is skipped with a stderr note.
+# Six registry Stop hooks are exempt (master_stop_hook_budget_exempt): the
+# conduct link delivery, the lanes monitor gate, and the blocking Stop gates
+# (checkpoint-stop-gate and the three enforce-* gates). They keep their own
+# registry timeout, are never skipped by the budget, and the time they take is
+# not charged to it, so a slow earlier hook cannot hold back conduct or lane
+# delivery or make an enforcement gate fail open.
+MASTER_STOP_CHILD_TIMEOUT_DEFAULT=10
+MASTER_STOP_BUDGET_DEFAULT=30
+MASTER_STOP_BUDGET="${HQ_MASTER_STOP_BUDGET:-$MASTER_STOP_BUDGET_DEFAULT}"
+case "$MASTER_STOP_BUDGET" in ''|*[!0-9]*|0) MASTER_STOP_BUDGET="$MASTER_STOP_BUDGET_DEFAULT" ;; esac
+MASTER_STOP_EVENT=0
+case "$EVENT" in Stop|SubagentStop) MASTER_STOP_EVENT=1 ;; esac
+MASTER_STOP_TIMEOUT=0
+MASTER_STOP_BUDGET_STARTED_SECONDS=""
+# master_stop_child_timeout <requested-seconds>: for a budgeted Stop hook,
+# sets MASTER_STOP_TIMEOUT to the request capped by what is left of the Stop
+# budget, or 0 when it is spent. The first call starts the budget clock.
+# Sets a global instead of printing: no subshell per child.
+master_stop_child_timeout() {
+  local requested="${1:-}" remaining
+  [ -n "$MASTER_STOP_BUDGET_STARTED_SECONDS" ] || MASTER_STOP_BUDGET_STARTED_SECONDS="$SECONDS"
+  remaining=$((MASTER_STOP_BUDGET - (SECONDS - MASTER_STOP_BUDGET_STARTED_SECONDS)))
+  if [ "$remaining" -lt 1 ]; then
+    MASTER_STOP_TIMEOUT=0
+    return 0
+  fi
+  case "$requested" in ''|*[!0-9]*|0) requested="$remaining" ;; esac
+  [ "$requested" -le "$remaining" ] || requested="$remaining"
+  MASTER_STOP_TIMEOUT="$requested"
+}
+# master_stop_hook_budget_exempt <hook-id>: registry Stop hooks that run
+# outside the shared Stop budget (conduct link delivery, the lanes gate, and
+# the blocking Stop gates, which must not fail open on a slow turn).
+master_stop_hook_budget_exempt() { # <hook-id>
+  case "$1" in
+    conduct-lanes-link-deliver|lanes-senior-monitor-stop-gate|\
+    checkpoint-stop-gate|enforce-capability-link-render|\
+    enforce-final-message-link-placement|enforce-humanize-before-send) return 0 ;;
+  esac
+  return 1
+}
+# master_stop_budget_exclude <started-seconds>: moves the budget clock forward
+# by the time an exempt hook took since <started-seconds>, so that time is not
+# charged to the budgeted hooks. Does nothing before the clock has started.
+master_stop_budget_exclude() { # <started-seconds>
+  local started="${1:-}"
+  [ -n "$MASTER_STOP_BUDGET_STARTED_SECONDS" ] || return 0
+  case "$started" in ''|*[!0-9]*) return 0 ;; esac
+  MASTER_STOP_BUDGET_STARTED_SECONDS=$((MASTER_STOP_BUDGET_STARTED_SECONDS + SECONDS - started))
+}
+# Stop gates written for Claude Code: each can return decision "block", and
+# each relies on Claude Code's stop_hook_active to block at most once. Cursor
+# sends no stop_hook_active and, for Claude-style hooks, sets no loop limit
+# (cursor.com/docs/agent/hooks, loop_limit), so on a Cursor payload a block
+# becomes an automatic follow-up that can repeat without end. They do not run
+# for Cursor.
+master_stop_gate_is_claude_only() { # <hook-id>
+  case "$1" in
+    checkpoint-stop-gate|enforce-capability-link-render|\
+    enforce-final-message-link-placement|enforce-humanize-before-send|\
+    lanes-senior-monitor-stop-gate) return 0 ;;
+  esac
+  return 1
+}
+
 master_report_safety_budget_spent() { # <hook-id>
   local hook_name="$1"
   case "$hook_name" in
@@ -1779,6 +1976,59 @@ master_report_safety_timeout() { # <hook-id> <seconds>
   esac
   printf 'guard timed out, blocked: %s did not finish within %ss, so this tool call was not checked.\n' \
     "$hook_name" "$2" >&2 || true
+}
+
+master_report_safety_crash() { # <hook-id> <rc>
+  local hook_name="$1" rc="$2" sig=""
+  case "$hook_name" in
+    ''|*[!A-Za-z0-9._-]*) hook_name="registered hook" ;;
+  esac
+  if [ "$rc" -gt 128 ] && [ "$rc" -le 192 ]; then
+    # Builtin `kill -l` names the signal; it runs only on this crash path.
+    sig="$(kill -l "$((rc - 128))" 2>/dev/null || true)"
+    sig="${sig#SIG}"
+    case "$sig" in ''|*[!A-Z0-9+-]*) sig="" ;; esac
+    if [ -n "$sig" ]; then
+      printf 'guard crashed, blocked: %s was killed by signal %s (SIG%s, exit %s), so this tool call was not checked.\n' \
+        "$hook_name" "$((rc - 128))" "$sig" "$rc" >&2 || true
+    else
+      printf 'guard crashed, blocked: %s was killed by signal %s (exit %s), so this tool call was not checked.\n' \
+        "$hook_name" "$((rc - 128))" "$rc" >&2 || true
+    fi
+    return 0
+  fi
+  printf 'guard failed, blocked: %s exited %s without a verdict, so this tool call was not checked.\n' \
+    "$hook_name" "$rc" >&2 || true
+}
+
+# Verdict of a safety guard (registry "safety": true) from its exit status.
+# Claude Code runs the tool call on any hook exit but 2, so a safety guard
+# allows only with exit 0 and blocks on every other status:
+#   - exit 2 is the guard's own block verdict and is kept;
+#   - a timeout or stop signal (master_safety_rc_is_timeout) blocks with the
+#     "guard timed out" reason;
+#   - any other code blocks with "guard crashed" (a signal death, 128+N, such
+#     as 139 for SIGSEGV) or "guard failed" (any other code, such as 1 or
+#     127). Before this, a guard killed by SIGSEGV exited 139, master-hook
+#     passed 139 on, and the tool call ran unchecked.
+# Exit 1 blocks too (owner decision, 2026-11-10): a safety guard's internal
+# error (`set -e`, an unbound variable under `set -u`) exits 1 under bash 5
+# but 127 under bash 3.2, so the same bug must not allow on one shell and
+# block on the other. Non-safety hooks keep exit 1 as a non-blocking error.
+# This check runs before the fail_closed check, so a guard marked both gets
+# this reason.
+# Sets MASTER_SAFETY_RC to the status to collect.
+master_safety_check_rc() { # <hook-id> <rc> <timeout-seconds>
+  MASTER_SAFETY_RC="$2"
+  case "$2" in
+    0|2) return 0 ;;
+  esac
+  if master_safety_rc_is_timeout "$2"; then
+    master_report_safety_timeout "$1" "$3"
+  else
+    master_report_safety_crash "$1" "$2"
+  fi
+  MASTER_SAFETY_RC=2
 }
 
 collect_output() { # <rc> <stdout> <source-path>
@@ -1966,6 +2216,68 @@ master_apply_context_budget() {
   json_sources=(${new_sources[@]+"${new_sources[@]}"})
 }
 
+# Replay recorder. Off unless the flag core.replay-recorder is true in the
+# cached person flag snapshot; it is off by default. When it is on, this event's
+# payload and the answer just written go to `hq-hook record`, which redacts
+# them and appends them to a size-capped store under ~/.hq/replay-recorder.
+#   kill switches: HQ_REPLAY_RECORDER=off (any case) or ~/.hq/replay-recorder.off
+#   flag source:   ${XDG_CACHE_HOME:-~/.cache}/hq/flags/snapshot-person.json, or
+#                  ${TMPDIR:-/tmp}/hq-cli-flag-snapshots-<uid>/hq/flags/snapshot-person.json,
+#                  which the CLI writes when it cannot write the cache folder
+#   stdin frame:   <payload> 0x1E <stdout JSON> 0x1E <stdout plain text>
+# The CLI writes the snapshot as one line of compact JSON; any other spelling
+# reads as off here. Either file holding the flag starts the recorder, which
+# then reads both in full and lets the newer valid one decide.
+# The fallback sits under a temporary folder other users may write to, so it is
+# read only when it is a regular file owned by this user, not a symlink, inside
+# a hq-cli-flag-snapshots-<uid> folder that is owned by this user and not a
+# symlink. Any other fallback is ignored.
+# With the flag off every check is a builtin or a file test, so no process
+# starts. With it on the recorder runs detached with its output discarded and
+# its result is never read: it cannot change this hook's output or exit code.
+master_replay_record() {
+  local home="${HOME:-}" snapshot="" line="" on=0 bin="" pointer="" plain="" blocked="" bsrc=""
+  local fallback_dir="" fallback=""
+  case "${HQ_REPLAY_RECORDER:-}" in
+    [Oo][Ff][Ff]) return 0 ;;
+  esac
+  [ -n "$home" ] || return 0
+  fallback_dir="${TMPDIR:-/tmp}/hq-cli-flag-snapshots-${UID:-}"
+  fallback="$fallback_dir/hq/flags/snapshot-person.json"
+  for snapshot in "${XDG_CACHE_HOME:-$home/.cache}/hq/flags/snapshot-person.json" "$fallback"; do
+    [ -f "$snapshot" ] || continue
+    if [ "$snapshot" = "$fallback" ]; then
+      [ ! -L "$fallback_dir" ] && [ -d "$fallback_dir" ] && [ -O "$fallback_dir" ] \
+        && [ ! -L "$snapshot" ] && [ -O "$snapshot" ] || continue
+    fi
+    line=""
+    { IFS= read -r line < "$snapshot"; } 2>/dev/null || [ -n "$line" ] || continue
+    case "$line" in
+      *'"core.replay-recorder":true'*) on=1; break ;;
+    esac
+  done
+  [ "$on" -eq 1 ] || return 0
+  [ ! -e "$home/.hq/replay-recorder.off" ] || return 0
+  if [ -n "${HQ_HOOK_ENGINE_BIN:-}" ] && [ -x "${HQ_HOOK_ENGINE_BIN}" ]; then
+    bin="$HQ_HOOK_ENGINE_BIN"
+  elif [ -f "$home/.hq/bin/hq-hook/current" ]; then
+    { IFS= read -r pointer < "$home/.hq/bin/hq-hook/current"; } 2>/dev/null || true
+    pointer="${pointer%$'\r'}"
+    case "$pointer" in
+      /*|[A-Za-z]:[/\\]*) [ -f "$pointer" ] && [ -x "$pointer" ] && bin="$pointer" ;;
+    esac
+  fi
+  [ -n "$bin" ] || return 0
+  # Plain text is written only when no hook answered with a blocking JSON.
+  [ "${has_blocking_json:-0}" -ne 0 ] || plain="${plain_buf:-}"
+  for bsrc in ${blocking_hook_sources[@]+"${blocking_hook_sources[@]}"}; do
+    blocked="${blocked:+$blocked,}${bsrc##*/}"
+  done
+  "$bin" record --event "$EVENT" --exit-code "${exit_code:-0}" \
+    --started-ms "${MASTER_STARTED_MS:-}" --blocked-by "$blocked" \
+    >/dev/null 2>&1 <<< "${INPUT:-}"$'\x1e'"${json_result:-}"$'\x1e'"$plain" &
+}
+
 # hq-hook engine bridge. The plan is resolved once per event, on the first
 # registry hook that reaches dispatch, and every check before the plan call
 # is a builtin or a file test so a disabled bridge starts no process:
@@ -2109,6 +2421,25 @@ master_hook_engine_bridge_mode() { # <hook-id> -> HOOK_ENGINE_BRIDGE_MODE (shado
 # HQ_HQD_SHIM_TIMEOUT_MS (default 3000) after master-hook started, so the time
 # master-hook already spent counts against it.
 #
+# Only three events have an hqd operation: SessionStart (session.open),
+# SessionEnd (session.close) and PreToolUse (policy.check). On every other
+# event the shim sent session.get and discarded the reply, so the shim is not
+# started for them.
+#
+# The registry below owns the PreToolUse scope check: it runs with the daemon
+# down, and under the session's own binding. hqd's policy.check runs the same
+# two scripts (mandatory-scope-authorizer.sh and inject-policy-on-trigger.sh)
+# under a session id of its own, so asking hqd as well ran each check twice
+# and printed a block twice. When this invocation's registry loop will run
+# mandatory-scope-authorizer for the tool call
+# (master_registry_runs_scope_authorizer, defined beside registry_rows), no
+# policy.check is sent. The call stays whenever the registry will not run the
+# authorizer here: another harness dispatched the registry, the authorizer is
+# opted out, its script is missing, or the registry has no authorizer row for
+# the tool. The PreToolUse call is made right after registry_rows is defined.
+# Only function definitions sit between here and there, so its place in the
+# output and its time budget are unchanged.
+#
 # HQ Fleet's local hook adapter (hq-fleet-local-hook-adapter.sh) runs the
 # registry gates, mandatory-scope-authorizer included, under the adapter's own
 # session before it runs master-hook for a PreToolUse. On that path the hqd
@@ -2125,6 +2456,26 @@ master_hook_engine_bridge_mode() { # <hook-id> -> HOOK_ENGINE_BRIDGE_MODE (shado
 #   - the authorizer is not switched off for the adapter
 #     (HQ_FLEET_LOCAL_HOOK_SKIP) or the hook profile (HQ_DISABLED_HOOKS), so
 #     the hqd call still backs up an operator opt-out.
+#
+# The Codex and Grok adapters (.codex/hooks/hq-codex-hook-adapter.sh,
+# .grok/hooks/hq-grok-hook-adapter.sh) also run the registry gates themselves,
+# mandatory-scope-authorizer included, before they run master-hook, and set
+# HQ_HARNESS so this script skips the registry. Without a skip the hqd
+# policy.check ran the authorizer a second time for every Codex and Grok tool
+# call. An adapter that launched the authorizer for this PreToolUse, and saw it
+# exit 0, starts master-hook with HQ_ADAPTER_SCOPE_AUTHORIZER_RAN set to
+# "PreToolUse:<adapter pid>" for that one process. The policy.check is skipped
+# only when all of these hold:
+#   - the event is PreToolUse and HQ_HARNESS is codex or grok;
+#   - the marker names this event and this process's parent (the adapter pipes
+#     the payload straight into master-hook, so the adapter is the parent); a
+#     marker that was inherited or set by hand names another process;
+#   - the parent process is that harness's adapter script (checked from the
+#     process table, as for the fleet adapter), so a marker another program
+#     sets for its own child does not qualify;
+#   - the authorizer is not switched off in HQ_DISABLED_HOOKS or the hook
+#     profile.
+# In every other case the call is made as before.
 master_parent_is_fleet_adapter() {
   local parent_cmd="" arg=""
   case "${PPID:-}" in ''|*[!0-9]*) return 1 ;; esac
@@ -2140,6 +2491,30 @@ master_parent_is_fleet_adapter() {
   # The adapter runs as: /bin/bash <profile>/hooks/hq-fleet-local-hook-adapter.sh --hq-root <root> ...
   case "$parent_cmd" in
     *bash\ */hq-fleet-local-hook-adapter.sh\ --hq-root\ *) return 0 ;;
+  esac
+  return 1
+}
+master_parent_is_harness_adapter() {
+  local parent_cmd="" arg="" adapter=""
+  case "${HQ_HARNESS:-}" in
+    codex) adapter="hq-codex-hook-adapter.sh" ;;
+    grok) adapter="hq-grok-hook-adapter.sh" ;;
+    *) return 1 ;;
+  esac
+  case "${PPID:-}" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$PPID" -gt 1 ] || return 1
+  if [ -r "/proc/$PPID/cmdline" ]; then
+    while IFS= read -r -d '' arg; do
+      parent_cmd="${parent_cmd:+$parent_cmd }$arg"
+    done < "/proc/$PPID/cmdline"
+  else
+    parent_cmd="$(ps -o command= -p "$PPID" 2>/dev/null)" || return 1
+  fi
+  # Codex runs: /bin/bash <root>/.codex/hooks/hq-codex-hook-adapter.sh
+  # Grok runs ./hq-grok-hook-adapter.sh, which the kernel starts through its
+  # #!/bin/bash line: /bin/bash ./hq-grok-hook-adapter.sh
+  case "$parent_cmd" in
+    *bash\ "$adapter"|*bash\ "$adapter"\ *|*bash\ */"$adapter"|*bash\ */"$adapter"\ *) return 0 ;;
   esac
   return 1
 }
@@ -2162,58 +2537,87 @@ if [ "$EVENT" = "PreToolUse" ] \
   && master_fleet_adapter_ran_scope_authorizer; then
   master_hqd_shim_skip_env=1
 fi
-if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
-  && [ -d "${CLAUDE_PROJECT_DIR:-}" ] \
-  && [ "${CLAUDE_PROJECT_DIR:-}" -ef "$REPO_ROOT" ]; then
-  # Same resolution as hqd and core/scripts/hqd-hook-shim.sh: the socket lives
-  # in the daemon/ runtime directory (windows-hook-parity US-001).
-  if [ -n "${HQ_HQD_SOCKET:-}" ]; then
-    HQD_SOCKET_PATH="$HQ_HQD_SOCKET"
-  elif [ -n "${HQ_REGISTRY_DIR:-}" ]; then
-    HQD_SOCKET_PATH="$HQ_REGISTRY_DIR/daemon/hqd.sock"
-  else
-    HQD_SOCKET_PATH="${HOME:-}/.hq/daemon/hqd.sock"
-  fi
-  if [ -S "$HQD_SOCKET_PATH" ] && [ -f "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" ]; then
-    FLAG_DIR="$REPO_ROOT/core/scripts"
-    # shellcheck disable=SC1090 # The path is rooted at the resolved HQ checkout.
-    if . "$FLAG_DIR/hqd-hook-flag-cache-lib.sh" && hqd_hook_flag_cache_store_enabled >/dev/null 2>&1 \
-      && ! { [ "$master_hqd_shim_skip_env" -eq 1 ] && master_parent_is_fleet_adapter; }; then
-      shim_tmp="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/hq-hook-shim.XXXXXX" 2>/dev/null || true)"
-      if [ -n "$shim_tmp" ]; then
-        shim_rc=0
-        shim_deadline_ms=""
-        # Same normalization as the shim: non-numeric or zero -> 3000, capped
-        # at 60000.
-        shim_budget_ms="${HQ_HQD_SHIM_TIMEOUT_MS:-3000}"
-        case "$shim_budget_ms" in ''|*[!0-9]*) shim_budget_ms=3000 ;; esac
-        while [ "${shim_budget_ms#0}" != "$shim_budget_ms" ] && [ "${#shim_budget_ms}" -gt 1 ]; do
-          shim_budget_ms="${shim_budget_ms#0}"
-        done
-        if [ "${#shim_budget_ms}" -gt 5 ]; then
-          shim_budget_ms=60000
-        else
-          shim_budget_ms=$((10#$shim_budget_ms))
-          [ "$shim_budget_ms" -gt 0 ] || shim_budget_ms=3000
-          [ "$shim_budget_ms" -le 60000 ] || shim_budget_ms=60000
+# Environment part of the Codex and Grok adapter skip (see above): the marker
+# must name this event and the parent pid. The parent check runs only once a
+# call would otherwise be made.
+master_hqd_shim_skip_harness=0
+if [ "$EVENT" = "PreToolUse" ]; then
+  case "${HQ_HARNESS:-}" in
+    codex|grok)
+      case "${PPID:-}" in
+        ''|*[!0-9]*) ;;
+        *)
+          if [ "$PPID" -gt 1 ] \
+            && [ "${HQ_ADAPTER_SCOPE_AUTHORIZER_RAN:-}" = "PreToolUse:$PPID" ] \
+            && master_fleet_adapter_ran_scope_authorizer; then
+            master_hqd_shim_skip_harness=1
+          fi
+          ;;
+      esac
+      ;;
+  esac
+fi
+master_hqd_shim_dispatch() {
+  if [ "$HQ_ANYWHERE_RUNTIME_ENABLED" = "true" ] \
+    && [ -d "${CLAUDE_PROJECT_DIR:-}" ] \
+    && [ "${CLAUDE_PROJECT_DIR:-}" -ef "$REPO_ROOT" ]; then
+    # Same resolution as hqd and core/scripts/hqd-hook-shim.sh: the socket lives
+    # in the daemon/ runtime directory (windows-hook-parity US-001).
+    if [ -n "${HQ_HQD_SOCKET:-}" ]; then
+      HQD_SOCKET_PATH="$HQ_HQD_SOCKET"
+    elif [ -n "${HQ_REGISTRY_DIR:-}" ]; then
+      HQD_SOCKET_PATH="$HQ_REGISTRY_DIR/daemon/hqd.sock"
+    else
+      HQD_SOCKET_PATH="${HOME:-}/.hq/daemon/hqd.sock"
+    fi
+    if [ -S "$HQD_SOCKET_PATH" ] && [ -f "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" ]; then
+      FLAG_DIR="$REPO_ROOT/core/scripts"
+      # The registry test comes first: when it holds no shim is started, so
+      # the flag snapshot the shim reads does not need renewing either.
+      # shellcheck disable=SC1090 # The path is rooted at the resolved HQ checkout.
+      if ! { [ "$EVENT" = "PreToolUse" ] && master_registry_runs_scope_authorizer; } \
+        && . "$FLAG_DIR/hqd-hook-flag-cache-lib.sh" && hqd_hook_flag_cache_store_enabled >/dev/null 2>&1 \
+        && ! { [ "$master_hqd_shim_skip_env" -eq 1 ] && master_parent_is_fleet_adapter; } \
+        && ! { [ "$master_hqd_shim_skip_harness" -eq 1 ] && master_parent_is_harness_adapter; }; then
+        shim_tmp="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/hq-hook-shim.XXXXXX" 2>/dev/null || true)"
+        if [ -n "$shim_tmp" ]; then
+          shim_rc=0
+          shim_deadline_ms=""
+          # Same normalization as the shim: non-numeric or zero -> 3000, capped
+          # at 60000.
+          shim_budget_ms="${HQ_HQD_SHIM_TIMEOUT_MS:-3000}"
+          case "$shim_budget_ms" in ''|*[!0-9]*) shim_budget_ms=3000 ;; esac
+          while [ "${shim_budget_ms#0}" != "$shim_budget_ms" ] && [ "${#shim_budget_ms}" -gt 1 ]; do
+            shim_budget_ms="${shim_budget_ms#0}"
+          done
+          if [ "${#shim_budget_ms}" -gt 5 ]; then
+            shim_budget_ms=60000
+          else
+            shim_budget_ms=$((10#$shim_budget_ms))
+            [ "$shim_budget_ms" -gt 0 ] || shim_budget_ms=3000
+            [ "$shim_budget_ms" -le 60000 ] || shim_budget_ms=60000
+          fi
+          if [[ "${MASTER_STARTED_MS:-}" =~ ^[0-9]{13,15}$ ]]; then
+            shim_deadline_ms=$((MASTER_STARTED_MS + shim_budget_ms))
+          fi
+          printf '%s' "$INPUT" | HQ_HQD_SHIM_REPORT_UNREACHABLE=1 \
+            HQ_HQD_SHIM_DEADLINE_MS="$shim_deadline_ms" /bin/sh \
+            "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" "$EVENT" --runtime claude \
+            >"$shim_tmp/stdout" 2>"$shim_tmp/stderr" || shim_rc=$?
+          if [ "$shim_rc" -ne 75 ]; then
+            [ ! -s "$shim_tmp/stderr" ] || cat "$shim_tmp/stderr" >&2
+            shim_output="$(cat "$shim_tmp/stdout" 2>/dev/null || true)"
+            collect_output "$shim_rc" "$shim_output" "$REPO_ROOT/core/scripts/hqd-hook-shim.sh"
+          fi
+          rm -rf "$shim_tmp"
         fi
-        if [[ "${MASTER_STARTED_MS:-}" =~ ^[0-9]{13,15}$ ]]; then
-          shim_deadline_ms=$((MASTER_STARTED_MS + shim_budget_ms))
-        fi
-        printf '%s' "$INPUT" | HQ_HQD_SHIM_REPORT_UNREACHABLE=1 \
-          HQ_HQD_SHIM_DEADLINE_MS="$shim_deadline_ms" /bin/sh \
-          "$REPO_ROOT/core/scripts/hqd-hook-shim.sh" "$EVENT" --runtime claude \
-          >"$shim_tmp/stdout" 2>"$shim_tmp/stderr" || shim_rc=$?
-        if [ "$shim_rc" -ne 75 ]; then
-          [ ! -s "$shim_tmp/stderr" ] || cat "$shim_tmp/stderr" >&2
-          shim_output="$(cat "$shim_tmp/stdout" 2>/dev/null || true)"
-          collect_output "$shim_rc" "$shim_output" "$REPO_ROOT/core/scripts/hqd-hook-shim.sh"
-        fi
-        rm -rf "$shim_tmp"
       fi
     fi
   fi
-fi
+}
+case "$EVENT" in
+  SessionStart|SessionEnd) master_hqd_shim_dispatch ;;
+esac
 
 master_report_block_reason() { # <source-path>
   local source="$1" hook_name
@@ -2469,8 +2873,10 @@ master_report_late_event() {
       IFS=$'\t' read -r active_child_name active_child_event active_child_started_ms < "$active_child_file" || true
     fi
     if [ "${PAR:-0}" -eq 1 ] && [ -n "${active_child_file:-}" ]; then
-      # Parallel dispatch: name the child that has been running longest.
-      for par_active_file in "$active_child_file".*; do
+      # Parallel dispatch: name the child that has been running longest. The
+      # breadcrumbs are read by index, not with a glob over the directory.
+      for ((par_active_index = 0; par_active_index < ${par_n:-0}; par_active_index++)); do
+        par_active_file="$active_child_file.$par_active_index"
         [ -r "$par_active_file" ] || continue
         par_a_name=""; par_a_event=""; par_a_started=""
         IFS=$'\t' read -r par_a_name par_a_event par_a_started < "$par_active_file" || true
@@ -2704,12 +3110,57 @@ registry_dispatch=1
 case "${HQ_HARNESS:-}" in
   codex|grok) registry_dispatch=0 ;;
 esac
+# Registry rows already read for this event, so a second reader sees the same
+# rows as the first (set by master_registry_runs_scope_authorizer).
+MASTER_REGISTRY_ROWS=""
+MASTER_REGISTRY_ROWS_LOADED=0
+# The row registry_rows gives when the registry cannot be read or parsed. The
+# id starts with "!" so it never matches the authorizer test below.
+MASTER_REGISTRY_UNREADABLE_ROW='!registry-unreadable'
+# The row registry_rows gives when there is no registry at all: the scope
+# authorizer as the registry lists it (gated, safety), so the loop runs it, or
+# refuses with the missing-safety-guard line when its script is gone too. The
+# Codex and Grok adapters fall back to the same guard.
+MASTER_REGISTRY_FALLBACK_SCOPE_ROW="mandatory-scope-authorizer"$'\x1f'".claude/hooks/mandatory-scope-authorizer.sh"$'\x1f'"30"$'\x1f'"1"$'\x1f\x1f\x1f\x1f\x1f\x1f'"exec"$'\x1f'"0"$'\x1f'"1"$'\x1f\x1f'
+# A missing or unusable registry used to give the loop no rows, so with hqd
+# down every guard, the scope authorizer included, was skipped. For the tools
+# the scope authorizer guards (the same set as hook-adapter-core.sh) a
+# PreToolUse call now runs the scope authorizer (no registry) or is refused
+# (a registry path that cannot be read or parsed). Other tools and other
+# events keep running with no registry rows, as before.
+master_registry_guarded_tool() {
+  [ "$EVENT" = "PreToolUse" ] || return 1
+  case "$TOOL_NAME" in
+    Bash|Read|Grep|Glob|Edit|Write|MultiEdit|NotebookEdit) return 0 ;;
+  esac
+  return 1
+}
+master_report_registry_unreadable() {
+  local where="${REGISTRY#"$REPO_ROOT"/}"
+  printf 'BLOCKED: the HQ hook registry %s cannot be read or parsed, so the guards cannot run; failing closed. From a terminal outside this session run git -C "%s" checkout -- "%s" (or hq rescue), then retry.\n' \
+    "$where" "$REPO_ROOT" "$where" >&2
+  [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: block %s (registry-unreadable)\n' "$TOOL_NAME" >&2
+}
 # Policy vocabulary compilation and all registry prefilter checks live in
 # core/scripts/lib/hook-adapter-core.sh so adapters and Claude share one path.
 # Registry rows for (event, match key), cached as a file while it is newer
 # than the registry so the jq parse (one fork, ~130 ms on Windows) runs once
 # per registry change instead of once per tool call.
 registry_rows() {
+  if [ "$MASTER_REGISTRY_ROWS_LOADED" -eq 1 ]; then
+    printf '%s\n' "$MASTER_REGISTRY_ROWS"
+    return 0
+  fi
+  # No jq for a path that is not a regular file: a FIFO or a device would hang
+  # or stream. Nothing here is cached, so a repaired registry applies at once.
+  if [ ! -f "$REGISTRY" ]; then
+    if [ -e "$REGISTRY" ] || [ -L "$REGISTRY" ]; then
+      printf '%s\n' "$MASTER_REGISTRY_UNREADABLE_ROW"
+    elif master_registry_guarded_tool; then
+      printf '%s\n' "$MASTER_REGISTRY_FALLBACK_SCOPE_ROW"
+    fi
+    return 0
+  fi
   local key_safe="${MATCH_KEY//[^A-Za-z0-9_.-]/_}"
   local cache="$REPO_ROOT/workspace/orchestrator/hook-state/registry-rows/${EVENT}.${key_safe:-none}.rows"
   if [ -f "$cache" ] && [ "$cache" -nt "$REGISTRY" ] && [ "$cache" -nt "$SCRIPT_DIR/master-hook.sh" ]; then
@@ -2719,8 +3170,13 @@ registry_rows() {
   fi
   local rows
   master_debug_phase_start config_load
-  rows="$(jq -r --arg ev "$EVENT" --arg key "$MATCH_KEY" '
-    (.hooks[$ev] // [])[] as $entry
+  # Slurp, so an empty or truncated file and trailing garbage fail the parse
+  # instead of yielding no rows. A failed parse gives the one row
+  # MASTER_REGISTRY_UNREADABLE_ROW, so the loop below can refuse.
+  rows="$(jq -rs --arg ev "$EVENT" --arg key "$MATCH_KEY" '
+    if length != 1 or (.[0] | type) != "object" or (.[0].hooks | type) != "object"
+    then error("hook registry is not a JSON object with a hooks object") else .[0] end
+    | (.hooks[$ev] // [])[] as $entry
     | ($entry.matcher // "") as $m
     | select($m == "" or $m == "*" or ($key | test("^(" + $m + ")$")))
     | $entry.hooks[]
@@ -2732,13 +3188,50 @@ registry_rows() {
         (if .fail_closed == true then "1" else "0" end),
         (if .safety == true then "1" else "0" end),
         ((.prefilter.re_all // []) | join("\u001e")),
-        ((.after // []) | join(" "))] | join("")' "$REGISTRY" 2>/dev/null)" || rows=""
+        ((.after // []) | join(" "))] | join("")' "$REGISTRY" 2>/dev/null)" || rows="$MASTER_REGISTRY_UNREADABLE_ROW"
   master_debug_phase_finish config_load
   printf '%s\n' "$rows"
+  # The unreadable verdict is never cached: a registry restored with an older
+  # mtime (cp -p, rsync -a, a backup restore) must not stay refused.
+  [ "$rows" != "$MASTER_REGISTRY_UNREADABLE_ROW" ] || return 0
   if mkdir -p "${cache%/*}" 2>/dev/null; then
     printf '%s\n' "$rows" > "$cache.tmp.$$" 2>/dev/null && mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || rm -f "$cache.tmp.$$" 2>/dev/null
   fi
 }
+
+# True when the registry loop below will run mandatory-scope-authorizer for
+# this PreToolUse, so hqd is not asked to run it a second time. Each test
+# mirrors a way the loop can pass over a row. When one of them cannot be shown
+# to hold, the answer is "no" and the hqd policy.check is kept. The rows read
+# here are the rows the loop reads (registry_rows returns them again).
+master_registry_runs_scope_authorizer() {
+  local rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed rsafety rpf_re_all rafter
+  [ "$EVENT" = "PreToolUse" ] || return 1
+  # The three conditions the loop itself starts with.
+  [ "$registry_dispatch" -eq 1 ] || return 1
+  [ -f "$REGISTRY" ] || return 1
+  command -v hq_hook_profile_allows >/dev/null 2>&1 || return 1
+  if [ "$MASTER_REGISTRY_ROWS_LOADED" -ne 1 ]; then
+    MASTER_REGISTRY_ROWS="$(registry_rows)"
+    MASTER_REGISTRY_ROWS_LOADED=1
+  fi
+  while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed rsafety rpf_re_all rafter; do
+    [ "$rid" = "mandatory-scope-authorizer" ] || continue
+    [ "$rscript" = ".claude/hooks/mandatory-scope-authorizer.sh" ] || return 1
+    # A prefilter could skip the row. The authorizer has none today.
+    rpf_re_all="${rpf_re_all%$'\r'}"
+    [ -z "$rpf_re$rpf_env$rpf_file$rpf_vocab$rpf_re_all" ] || return 1
+    if [ "$rgated" = "1" ]; then
+      hq_hook_profile_allows "$rid" || return 1
+    fi
+    [ -f "$REPO_ROOT/$rscript" ] || return 1
+    return 0
+  done <<< "$MASTER_REGISTRY_ROWS"
+  return 1
+}
+if [ "$EVENT" = "PreToolUse" ]; then
+  master_hqd_shim_dispatch
+fi
 
 master_report_missing_guard() { # <hook-id> <script>
   # Bash is blocked too, so the repair runs in a terminal outside the
@@ -2746,6 +3239,18 @@ master_report_missing_guard() { # <hook-id> <script>
   printf 'BLOCKED: %s guard script %s is missing; failing closed.\n' "$1" "$2" >&2
   printf 'Restore it from a terminal outside this session: git -C "%s" checkout -- "%s" (or re-run /update-hq).\n' "$REPO_ROOT" "$2" >&2
   [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: block %s (missing-script, fail_closed)\n' "$1" >&2
+}
+
+# A missing safety guard (registry "safety": true) blocks like an unreadable
+# one, so deleting or renaming the script cannot switch the guard off. Bash
+# may be blocked too, so the repair runs in a terminal outside the session.
+master_report_missing_safety_guard() { # <hook-id>
+  local hook_name="$1"
+  case "$hook_name" in
+    ''|*[!A-Za-z0-9._-]*) hook_name="registered hook" ;;
+  esac
+  printf 'BLOCKED: a required HQ safety check is missing (%s). Run hq rescue from a terminal (or re-run /update-hq) to repair it, then retry.\n' "$hook_name" >&2
+  [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: block %s (missing-script, safety)\n' "$hook_name" >&2
 }
 
 # --- Parallel child dispatch (HQ_HOOK_PARALLEL=1, default off) ---------------
@@ -2842,11 +3347,132 @@ par_sweep_stale_tmpdirs() { # <dir>: hq-par.<pid>.<random> or hq-par.<random>
   done
   [ "${#stale[@]}" -eq 0 ] || par_remove_if_old d -rf "${stale[@]}"
 }
+# A master-hook that is killed before master_remove_completion_markers leaves
+# its <invocation>.<n>.done markers behind, and nothing else removes them. The
+# directory then grows without bound, and every in-shell glob over it (the
+# sweep below) pays for each entry: bash 5.3 on macOS in the C locale spends
+# about 0.1 ms of CPU per directory entry, so tens of thousands of leftover
+# markers add seconds to every hook event. Old markers are removed here, by
+# name and age alone (a live run's marker is never older than that run), with
+# one find at most once per PAR_MARKER_SWEEP_SECONDS per workspace. Markers of
+# the bridge fallback (<marker>.fb) go the same way. The stamp sits beside the
+# directory, not in it, and is claimed before the find so concurrent runs do
+# not all sweep. The clock is the one this shell already initialized, so an
+# event inside the interval starts no process, and neither does the run that
+# created the directory: it has nothing to remove and only writes the stamp.
+# A run that cannot read that clock or write the stamp skips the sweep.
+PAR_MARKER_SWEEP_SECONDS="${HQ_HOOK_MARKER_SWEEP_SECONDS:-600}"
+case "$PAR_MARKER_SWEEP_SECONDS" in ''|*[!0-9]*|0?*) PAR_MARKER_SWEEP_SECONDS=600 ;; esac
+[ "${#PAR_MARKER_SWEEP_SECONDS}" -le 9 ] || PAR_MARKER_SWEEP_SECONDS=600
+# par_sweep_claim <stamp file> <interval seconds> <created> is the stamp check
+# both timed sweeps share (the markers above, the timeout journal below). It
+# returns 0 when a sweep is due and has written the stamp, and 1 when the
+# sweep is inside its interval, when <created> is 1 (the run made the
+# directory: only the stamp is written), or when the clock or the stamp
+# cannot be used.
+par_sweep_claim() { # <stamp file> <interval seconds> <created>
+  local stamp="$1" interval="$2" created="${3:-0}" now="" last=""
+  if command -v hook_timeout_epoch_seconds >/dev/null 2>&1 && hook_timeout_epoch_seconds; then
+    now="${HOOK_TIMEOUT_EPOCH_SECONDS:-}"
+  else
+    now="${EPOCHSECONDS:-}"
+  fi
+  # Decimal digits with no leading zero, so the arithmetic below cannot read
+  # the value as octal.
+  case "$now" in ''|*[!0-9]*|0*) return 1 ;; esac
+  [ "${#now}" -le 10 ] || return 1
+  if [ "$created" = 1 ]; then
+    { printf '%s\n' "$now" > "$stamp"; } 2>/dev/null || true
+    return 1
+  fi
+  if [ -f "$stamp" ]; then
+    { IFS= read -r last < "$stamp"; } 2>/dev/null || true
+    case "$last" in
+      ''|*[!0-9]*|0*) ;;
+      *)
+        if [ "${#last}" -le 10 ] && [ "$last" -le "$now" ] \
+          && [ "$((now - last))" -lt "$interval" ]; then
+          return 1
+        fi
+        ;;
+    esac
+  fi
+  { printf '%s\n' "$now" > "$stamp"; } 2>/dev/null || return 1
+}
+par_sweep_stale_markers() { # <dir>
+  par_sweep_claim "$1.swept" "$PAR_MARKER_SWEEP_SECONDS" "${child_completion_dir_created:-0}" || return 0
+  find "$1" -maxdepth 1 -type f \( -name '*.done' -o -name '*.done.fb' \) \
+    -mmin +"$PAR_STALE_MINUTES" -exec rm -f {} + >/dev/null 2>&1 || true
+}
 # Swept in both modes, so files left by a killed parallel run do not stay
-# behind after the flag is turned off.
+# behind after the flag is turned off. Markers go first, so the glob in
+# par_sweep_stale_files reads a directory that is already small.
 if [ -n "$child_completion_dir" ] && [ -d "$child_completion_dir" ]; then
+  par_sweep_stale_markers "$child_completion_dir"
   par_sweep_stale_files "$child_completion_dir"
 fi
+# The timeout journal directory, at most once per JOURNAL_SWEEP_SECONDS
+# (stamp: .hook-timeout-journal.swept). Nothing else removes its files once a
+# session or a killed dispatch is gone, so it grew by several files per
+# session. One find removes two kinds of file, each by its own age bound, and
+# only names in these forms:
+#   - per-dispatch files older than PAR_STALE_MINUTES: the active-child
+#     breadcrumbs (<session>.tsv.<invocation>.active and .active.<index>) and
+#     the phase files (<invocation>.debug.tsv and .debug.tsv.*). A dispatch
+#     removes its own when it ends and cannot live that long, so an old one
+#     was left by a run that was killed;
+#   - per-session files older than JOURNAL_SESSION_STALE_MINUTES (7 days):
+#     the journal (<session>.tsv), the files beside it (.meta,
+#     .root-storage-class, .spawn-ms, .compact-stamp, temporary files) and
+#     <session>.cli-version. The journal is appended to on every event of its
+#     session, so one that old belongs to a session that has been silent for
+#     7 days. Its only reader is the timeout report, which lists the hooks
+#     that ran just before a slow one; rows from before a gap that long say
+#     nothing about a timeout now. The other files are caches, written once
+#     and rebuilt by their reader when missing, so a session that runs longer
+#     than the bound loses nothing but one rebuild.
+# Subdirectories (the journal compaction lock) and files with other names are
+# left alone.
+JOURNAL_SWEEP_SECONDS=3600
+JOURNAL_SESSION_STALE_MINUTES=10080
+journal_sweep_stale_files() { # <dir>
+  par_sweep_claim "$1.swept" "$JOURNAL_SWEEP_SECONDS" "$MASTER_JOURNAL_DIRECTORY_CREATED" || return 0
+  find "$1" -maxdepth 1 -type f \( \
+    \( \( -name '*.active' -o -name '*.active.*' -o -name '*.debug.tsv' -o -name '*.debug.tsv.*' \) \
+      -mmin +"$PAR_STALE_MINUTES" \) \
+    -o \( \( -name '*.tsv' -o -name '*.tsv.*' -o -name '*.cli-version' -o -name '*.cli-version.*' \) \
+      -mmin +"$JOURNAL_SESSION_STALE_MINUTES" \) \
+    \) -exec rm -f {} + </dev/null >/dev/null 2>&1 || true
+}
+# The directory is swept whether or not the timeout sentry is on in this run:
+# hooks that derive the journal path themselves write there too.
+if [ "$MASTER_DEBUG_DIRECTORY_READY" -eq 1 ] || [ -d "$REPO_ROOT/workspace/.hook-timeout-journal" ]; then
+  journal_sweep_stale_files "$REPO_ROOT/workspace/.hook-timeout-journal"
+fi
+# This session's own journal, at most once per JOURNAL_COMPACT_SECONDS
+# (stamp: <session>.tsv.compact-stamp, beside the journal). Every dispatched
+# hook appends a row to it, here and in the adapter core, and its only reader
+# takes the last 40 rows (hook_timeout_sequence_json). It was cut back to 40
+# rows only when a timeout was reported, so a session that reported none kept
+# every row until the session ended. The sweep above removes a journal by age
+# and does not bound one that is still being written.
+# The check is par_sweep_claim: an event that is not due reads the stamp with
+# builtins and starts no process. A due event starts one wc, and the lock,
+# tail and mv of compact_timeout_journal only when the journal holds more
+# than 40 rows. A session with no stamp yet gets one and waits a full
+# interval, so the first events of a session start no process here. The stamp
+# is a per-session file: the sweep above removes it with the journal.
+JOURNAL_COMPACT_SECONDS=600
+journal_compact_if_due() {
+  local stamp created=0
+  [ -n "$timeout_journal_file" ] || return 0
+  [ -f "$timeout_journal_file" ] || return 0
+  stamp="$timeout_journal_file.compact-stamp"
+  [ -f "$stamp" ] || created=1
+  par_sweep_claim "$stamp" "$JOURNAL_COMPACT_SECONDS" "$created" || return 0
+  compact_timeout_journal
+}
+journal_compact_if_due
 # Result files sit beside the completion markers
 # (<invocation>.par.<pid>.<idx>.*) and go out with the markers' single batched
 # rm; a temp dir is the fallback.
@@ -3173,7 +3799,9 @@ par_drain() {
       out=""
     fi
     if [ "${par_kind[$i]}" = reg ]; then
-      if [ "$EVENT" = "PreToolUse" ] && [ "${par_fc[$i]:-0}" = "1" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+      # A safety guard gets master_safety_check_rc's reason below instead.
+      if [ "$EVENT" = "PreToolUse" ] && [ "${par_fc[$i]:-0}" = "1" ] && [ "${par_safety[$i]:-0}" != "1" ] \
+        && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
         case "$rc" in
           124|137|142) printf 'BLOCKED: %s timed out after %ss; failing closed.\n' "$id" "${par_timeout[$i]}" >&2 ;;
           *) printf 'BLOCKED: %s exited %s without a verdict; failing closed.\n' "$id" "$rc" >&2 ;;
@@ -3181,9 +3809,9 @@ par_drain() {
         rc=2
       fi
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: run %s rc=%s %sms\n' "$id" "$rc" "$((e - s))" >&2
-      if [ "${par_safety[$i]}" = "1" ] && master_safety_rc_is_timeout "$rc"; then
-        master_report_safety_timeout "$id" "${par_timeout[$i]}"
-        rc=2
+      if [ "${par_safety[$i]}" = "1" ]; then
+        master_safety_check_rc "$id" "$rc" "${par_timeout[$i]}"
+        rc="$MASTER_SAFETY_RC"
       fi
     else
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: run %s rc=%s %sms\n' "$id" "$rc" "$((e - s))" >&2
@@ -3203,16 +3831,38 @@ par_drain() {
 }
 # --- end parallel child dispatch ----------------------------------------------
 
-if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_profile_allows >/dev/null 2>&1; then
+# With no regular registry file the loop still runs for a guarded tool call:
+# registry_rows gives the scope authorizer row or the unreadable row.
+if [ "$registry_dispatch" -eq 1 ] && command -v hq_hook_profile_allows >/dev/null 2>&1 \
+  && { [ -f "$REGISTRY" ] || master_registry_guarded_tool; }; then
   # Unit separator (0x1f) framing: tab is IFS whitespace, so consecutive empty
   # fields would collapse and shift later columns (a hook's args would land in
   # the prefilter slot and silently skip it).
   while IFS=$'\x1f' read -r rid rscript rtimeout rgated rpf_re rpf_env rpf_file rpf_vocab rargs rrunner rfail_closed rsafety rpf_re_all rafter; do
     [ -n "$rid" ] || continue
+    if [ "$rid" = "$MASTER_REGISTRY_UNREADABLE_ROW" ]; then
+      master_registry_guarded_tool || continue
+      if [ "$PAR" -eq 1 ]; then
+        par_enqueue_synth "$REGISTRY" master_report_registry_unreadable
+        continue
+      fi
+      master_report_registry_unreadable
+      collect_output 2 "" "$REGISTRY"
+      continue
+    fi
     # A CR from a CRLF jq row would otherwise become a one-character re_all
     # regex and skip hooks that have no prefilter.
     rpf_re_all="${rpf_re_all%$'\r'}"
     rafter="${rafter%$'\r'}"
+    if command -v master_machine_check_owned_by_daemon >/dev/null 2>&1 && master_machine_check_owned_by_daemon "$EVENT" "$rscript"; then
+      continue
+    fi
+    # Claude-only Stop gates do not run on a Cursor payload.
+    if [ "$MASTER_STOP_EVENT" -eq 1 ] && [ "$MASTER_CURSOR_PAYLOAD" = "1" ] \
+      && master_stop_gate_is_claude_only "$rid"; then
+      [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (claude-only stop gate, cursor payload)\n' "$rid" >&2
+      continue
+    fi
     if [ "$rgated" = "1" ]; then
       # An unknown profile name is treated as strict inside the gate, so it
       # can only add guards, never skip them.
@@ -3221,8 +3871,15 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     if [ "$MASTER_PREFILTER_AVAILABLE" -eq 1 ]; then
       [ -z "$rpf_vocab" ] || master_debug_phase_start policy_load
       prefilter_match_rc=0
+      # A row whose only text prefilter is policy_vocab tests a PostToolUse
+      # text tool's bounded trigger text, the text the injector scans. Other
+      # rows, and a text tool with no trigger text, keep the full text.
+      prefilter_text="$PREFILTER_TEXT"
+      if [ -n "$rpf_vocab" ] && [ -n "$POLICY_TOOL_TEXT" ] && [ -z "$rpf_re$rpf_re_all" ]; then
+        prefilter_text="$POLICY_TOOL_TEXT"
+      fi
       hqad_registry_prefilter_match \
-        "$EVENT" "$REPO_ROOT" "$ACTIVE_COMPANY" "$PAYLOAD_CWD" "$SESSION_ID" "$PREFILTER_TEXT" \
+        "$EVENT" "$REPO_ROOT" "$ACTIVE_COMPANY" "$PAYLOAD_CWD" "$SESSION_ID" "$prefilter_text" \
         "$rpf_re" "$rpf_env" "$rpf_file" "$rpf_vocab" "$rid" "$rpf_re_all" || prefilter_match_rc=$?
       [ -z "$rpf_vocab" ] || master_debug_phase_finish policy_load
       if [ "$prefilter_match_rc" -ne 0 ]; then
@@ -3245,6 +3902,17 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       esac
     fi
     if [ ! -f "$REPO_ROOT/$rscript" ]; then
+      # A missing safety PreToolUse guard blocks, the same as an unreadable
+      # one, with a repair message. A guard marked both gets this reason.
+      if [ "$EVENT" = "PreToolUse" ] && [ "${rsafety:-0}" = "1" ]; then
+        if [ "$PAR" -eq 1 ]; then
+          par_enqueue_synth "$REPO_ROOT/$rscript" master_report_missing_safety_guard "$rid"
+          continue
+        fi
+        master_report_missing_safety_guard "$rid"
+        collect_output 2 "" "$REPO_ROOT/$rscript"
+        continue
+      fi
       # A missing fail_closed PreToolUse guard is treated like a crashed one:
       # block, so deleting or renaming the guard script cannot switch it off.
       if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ]; then
@@ -3258,6 +3926,22 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       fi
       [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: skip %s (missing-script)\n' "$rid" >&2
       continue
+    fi
+    # Registry Stop hooks share the Stop budget, except the exempt conduct,
+    # lanes and blocking-gate hooks. Checked after the gates so a hook that would not run
+    # anyway gets no "skipped" note.
+    master_stop_exempt_started=""
+    if [ "$MASTER_STOP_EVENT" -eq 1 ]; then
+      if master_stop_hook_budget_exempt "$rid"; then
+        master_stop_exempt_started="$SECONDS"
+      else
+        master_stop_child_timeout "$rtimeout"
+        if [ "$MASTER_STOP_TIMEOUT" -eq 0 ]; then
+          printf 'master-hook: Stop budget (%ss) spent; skipped %s.\n' "$MASTER_STOP_BUDGET" "$rid" >&2
+          continue
+        fi
+        rtimeout="$MASTER_STOP_TIMEOUT"
+      fi
     fi
     if [ "$PAR" -eq 1 ]; then
       par_enqueue reg "$rid" "$REPO_ROOT/$rscript" "$rtimeout" "${rfail_closed:-0}" "$rsafety" "$rrunner" "$rargs" "$rafter"
@@ -3319,6 +4003,11 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
           [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s exited %s without a verdict; running bash\n' "$rid" "$rc" >&2
           rc=0
           master_child_started_ms=""
+          # The bridge run wrote its own marker. record_child_execution below
+          # only sees the fallback's marker, so queue this one here; before,
+          # every event whose engine gave no verdict left one .done file.
+          [ -z "$child_completion_marker" ] || [ ! -e "$child_completion_marker" ] \
+            || child_completion_markers_pending+=("$child_completion_marker")
           prepare_child_completion_marker
           # shellcheck disable=SC2086 # args are space-separated literals from the registry.
           out="$(run_child "$child_timeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
@@ -3333,6 +4022,7 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     master_now_ms >/dev/null
     child_ended_ms="$MASTER_NOW_MS"
     record_child_execution "$REPO_ROOT/$rscript" "$child_started_ms" "$child_ended_ms" "$rc" "$child_completion_marker" "$child_timeout"
+    [ -z "$master_stop_exempt_started" ] || master_stop_budget_exclude "$master_stop_exempt_started"
     # A capped advisory child that ran out of time fails open: exit 0 and none
     # of its partial output.
     if [ "$child_advisory_capped" = "1" ] && [ "$master_child_timed_out" = "1" ]; then
@@ -3344,7 +4034,9 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
     # A PreToolUse guard marked fail_closed gives no verdict when it times out
     # (124/142, or 137 when killed) or crashes. Without this, that "no verdict"
     # is a non-2 exit and Claude Code runs the tool call.
-    if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+    # A safety guard gets master_safety_check_rc's reason below instead.
+    if [ "$EVENT" = "PreToolUse" ] && [ "${rfail_closed:-0}" = "1" ] && [ "${rsafety:-0}" != "1" ] \
+      && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
       case "$rc" in
         124|137|142) printf 'BLOCKED: %s timed out after %ss; failing closed.\n' "$rid" "$child_timeout" >&2 ;;
         *) printf 'BLOCKED: %s exited %s without a verdict; failing closed.\n' "$rid" "$rc" >&2 ;;
@@ -3352,9 +4044,9 @@ if [ "$registry_dispatch" -eq 1 ] && [ -f "$REGISTRY" ] && command -v hq_hook_pr
       rc=2
     fi
     [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "$rid" "$rc" "$trace_start"
-    if [ "$rsafety" = "1" ] && master_safety_rc_is_timeout "$rc"; then
-      master_report_safety_timeout "$rid" "$child_timeout"
-      rc=2
+    if [ "$rsafety" = "1" ]; then
+      master_safety_check_rc "$rid" "$rc" "$child_timeout"
+      rc="$MASTER_SAFETY_RC"
     fi
     master_debug_phase_start parse
     collect_output "$rc" "$out" "$REPO_ROOT/$rscript"
@@ -3424,6 +4116,9 @@ hooks=("${ordered_hooks[@]+${ordered_hooks[@]}}")
 [ "$PAR" -eq 0 ] || par_load_dir_after
 for hook in ${hooks[@]+"${hooks[@]}"}; do
   base="${hook##*/}"
+  if command -v master_machine_check_owned_by_daemon >/dev/null 2>&1 && master_machine_check_owned_by_daemon "$EVENT" "${hook#"$REPO_ROOT/"}"; then
+    continue
+  fi
   matcher="$(parse_matcher "$base" "$hook")"
 
   if [ "$MONITOR_EXPIRY_NOTIFICATION" -eq 1 ]; then
@@ -3444,9 +4139,24 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
     fi
   fi
 
+  master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
+  if [ "$MASTER_STOP_EVENT" -eq 1 ]; then
+    # Directory Stop hooks run one after another at the end of every turn;
+    # 120 s each let one hung personal or company hook hold the turn for
+    # minutes. They get a short default and share the Stop budget.
+    master_child_timeout="${HQ_MASTER_STOP_CHILD_TIMEOUT:-$MASTER_STOP_CHILD_TIMEOUT_DEFAULT}"
+    case "$master_child_timeout" in ''|*[!0-9]*|0) master_child_timeout="$MASTER_STOP_CHILD_TIMEOUT_DEFAULT" ;; esac
+    master_stop_child_timeout "$master_child_timeout"
+    if [ "$MASTER_STOP_TIMEOUT" -eq 0 ]; then
+      printf 'master-hook: Stop budget (%ss) spent; skipped %s.\n' "$MASTER_STOP_BUDGET" "$base" >&2
+      continue
+    fi
+    master_child_timeout="$MASTER_STOP_TIMEOUT"
+  fi
+
   if [ "$PAR" -eq 1 ]; then
     par_dir_after "$base"
-    par_enqueue dir "$base" "$hook" "${HQ_MASTER_CHILD_TIMEOUT:-120}" 0 0 exec "" "$PAR_AFTER"
+    par_enqueue dir "$base" "$hook" "$master_child_timeout" 0 0 exec "" "$PAR_AFTER"
     continue
   fi
   rc=0
@@ -3455,7 +4165,6 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   child_started_ms="$MASTER_NOW_MS"
   master_child_started_ms="$child_started_ms"
   prepare_child_completion_marker
-  master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
   # The single dispatcher watchdog armed at the top covers every child; the
   # previous per-child re-arm cost two setsid bash processes per hook.
   master_debug_phase_start external_command
@@ -3780,6 +4489,88 @@ if [ "$EVENT" = "PreToolUse" ] && [ -n "$plain_buf" ] && [ -n "$json_result" ] &
   # Drop leftover plain even if fold failed; mixed stdout blocks the tool.
   plain_buf=""
 fi
+# Cursor exports no chat id to shell commands, so `hq-session.sh set
+# company_slug` in a Cursor chat had no identity and failed closed, leaving the
+# chat on its SessionStart `personal` binding. Two repairs, both only for an
+# allowed Cursor shell call with a valid payload id:
+#   1. updatedInput: the command, prefixed with `export HQ_SESSION_ID=<id>;`.
+#      Cursor maps hookSpecificOutput.updatedInput to its updated_input
+#      (cursor.com/docs/reference/third-party-hooks), so every hq script the
+#      command runs resolves this chat's id. Skipped on Windows, where
+#      Cursor's shell is PowerShell and `export` is not a command.
+#   2. A command that opens with the in-tree bind is bound here, on the payload
+#      id, through this HQ's own hq-session.sh. That covers Windows and a
+#      Cursor build that ignores updated_input; the command's own bind then
+#      repeats the same write.
+#      Cursor runs PreToolUse hooks before its approval prompt (the hook
+#      returns the permission decision), so a command the user then declines
+#      has still bound the chat. That is accepted: the bind only moves this
+#      chat to the company the agent itself asked for, through the same
+#      hq-session.sh checks the command would run, it grants nothing outside
+#      that company, and the chat can rebind at any time. Binding after the
+#      command ran would need
+#      PostToolUse, which Cursor fires only on success, and the command's own
+#      bind fails without identity in exactly the cases this fallback covers.
+# master_ere_escape <text>: prints <text> with every ERE metacharacter quoted,
+# for a literal path inside a [[ =~ ]] pattern.
+master_ere_escape() {
+  local in="$1" out="" c i=0
+  while [ "$i" -lt "${#in}" ]; do
+    c="${in:i:1}"
+    case "$c" in
+      '\'|'^') out="$out\\$c" ;;
+      '.'|'['|']'|'*'|'$'|'+'|'?'|'('|')'|'{'|'}'|'|') out="${out}[$c]" ;;
+      *) out="$out$c" ;;
+    esac
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+master_cursor_session_repair() {
+  local prefix updated slug bind_re
+  [ "$MASTER_CURSOR_PAYLOAD" = "1" ] && [ "$EVENT" = "PreToolUse" ] || return 0
+  [ "$TOOL_NAME" = "Bash" ] && [ "$TOOL_COMMAND_EXTRACTED" -eq 1 ] || return 0
+  [ "$exit_code" -eq 0 ] && [ "$has_blocking_json" -eq 0 ] || return 0
+  command -v session_id_is_valid >/dev/null 2>&1 && session_id_is_valid "$SESSION_ID" || return 0
+  bind_re='^[[:space:]]*(bash[[:space:]]+)?(\./|'"$(master_ere_escape "$REPO_ROOT")"'/)?core/scripts/hq-session\.sh[[:space:]]+set[[:space:]]+company_slug[[:space:]]+([A-Za-z0-9][A-Za-z0-9_-]*)[[:space:]]*($|&&|;|'$'\n'')'
+  if [[ "$TOOL_COMMAND" =~ $bind_re ]]; then
+    slug="${BASH_REMATCH[3]}"
+    # A relative script path names this HQ's script only from the HQ root.
+    if [ "${BASH_REMATCH[2]}" = "$REPO_ROOT/" ] \
+      || [ "$(cd "${PAYLOAD_CWD:-/nonexistent}" 2>/dev/null && pwd -P)" = "$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" ]; then
+      if ! (
+        # In-tree helper: no CLI startup on the PreToolUse path.
+        export HQ_HQ_SESSION_NO_CLI=1
+        set -- bash "$REPO_ROOT/core/scripts/hq-session.sh" --session-id "$SESSION_ID" set company_slug "$slug"
+        rc=0
+        hook_timeout_run_bounded 10 "$@" || rc=$?
+        # 127 from the runner: no timeout tool on this host; run unbounded.
+        [ "$rc" -ne 127 ] || { rc=0; "$@" || rc=$?; }
+        exit "$rc"
+      ) </dev/null >/dev/null 2>&1; then
+        printf 'master-hook: Cursor bind of %s for this chat failed; the command will report why.\n' "$slug" >&2
+      fi
+    fi
+  fi
+  case "${OSTYPE:-}" in msys*|cygwin*|win32*) return 0 ;; esac
+  prefix="export HQ_SESSION_ID=$SESSION_ID; "
+  case "$TOOL_COMMAND" in "$prefix"*) return 0 ;; esac
+  updated="$(printf '%s' "$INPUT" | jq -c --arg p "$prefix" --arg prev "$json_result" --arg plain "$plain_buf" '
+    ((try ($prev | fromjson) catch {}) | if type == "object" then . else {} end) as $r
+    | (.tool_input | if type == "object" then . else {} end) as $ti
+    | ($r.hookSpecificOutput // {}) as $h
+    | $r + {hookSpecificOutput: ($h + {
+        hookEventName: "PreToolUse",
+        updatedInput: ($ti + {command: ($p + ($ti.command // "" | tostring))})
+      } + (if $plain == "" then {} else {additionalContext:
+        ([$h.additionalContext, $plain] | map(select(type == "string" and length > 0)) | join("\n\n"))} end))}
+  ' 2>/dev/null)" || updated=""
+  updated="${updated%$'\r'}"
+  [ -n "$updated" ] || return 0
+  json_result="$updated"
+  plain_buf=""
+}
+master_cursor_session_repair
 master_debug_phase_start output_stdout
 # Plain text goes first. PreToolUse plain was folded into the JSON above (or
 # is plain-only); other events keep main's plain-then-JSON order, so a plain
@@ -3816,4 +4607,5 @@ master_remove_completion_markers
 [ -z "${HQ_HOOK_TRACE:-}" ] || trace_ran "master-hook:$EVENT total" "$exit_code" "${MASTER_TRACE_START:-}"
 # Let a deduped twin of this event follow this verdict (see dedupe above).
 [ -z "$dedupe_claimed_lock" ] || printf '%s %s\n' "$exit_code" "$has_blocking_json" > "$dedupe_claimed_lock.rc" 2>/dev/null || true
+master_replay_record || true
 exit "$exit_code"

@@ -11,17 +11,19 @@ the YAML.
 | | **Outpost scheduled jobs** (this spec) | **Fleet Agent Scheduled Jobs** |
 |---|---|---|
 | Who | End-user personal/company jobs | Hosted agents and local bots |
-| Where | User Outpost (systemd user timers) | hq-pro-agents job records on EventBridge Scheduler; agents-v2 boxes also run HqFleet-native cron on the box clock |
-| Registry | `personal/jobs/*.yaml`, `companies/{co}/jobs/*.yaml` | hq-pro-agents job records (`/v1/agents/{uid}/jobs`); HqFleet cron store on the box |
+| Where | User Outpost (systemd user timers) | Local bots: on the bot's own computer, fired by the bot while it runs. Hosted agents: hq-pro-agents job records on a cloud scheduler; agents-v2 boxes also run HqFleet-native cron on the box clock |
+| Registry | `personal/jobs/*.yaml`, `companies/{co}/jobs/*.yaml` | Local bots: `jobs.json` in the bot's folder (classic CLI runtime) or the HQ Fleet Runtime job store in the bot's profile. Hosted agents: hq-pro-agents job records (`/v1/agents/{uid}/jobs`); HqFleet cron store on the box |
 | Product surface | `/schedule` | `hq bot jobs <name>` (local bots), `hq agents jobs list\|pause\|cancel` (hosted agents) |
 
 Do **not** unify these systems in v1. Paths stay `…/jobs/` for Outpost jobs.
 Fleet scheduling is described in
-[agents-and-bots.md](agents-and-bots.md#scheduled-jobs): `hq bot jobs` and
-`hq agents jobs` both manage hq-pro EventBridge jobs, and
-`hq-agents-v2-import-jobs` (hq-agents-v2) migrates an agent's EventBridge
-jobs onto HqFleet cron and pauses the originals (verified against
-hq-cli@dfe49a48, hq-pro-agents@f6275ec7, hq-agents-v2@5ec6d18 on 2026-09-27).
+[agents-and-bots.md](agents-and-bots.md#scheduled-jobs). `hq bot jobs` keeps
+a local bot's jobs on its own computer, including the built-in daily
+`hot-signal-sync` job (verified against hq-cli@d06e794a on 2026-11-13).
+`hq agents jobs` manages hosted agents' hq-pro jobs, and
+`hq-agents-v2-import-jobs` (hq-agents-v2) moves an agent's hq-pro jobs onto
+HqFleet cron and pauses the originals (verified against hq-pro-agents@f6275ec7
+and hq-agents-v2@5ec6d18 on 2026-09-27).
 
 ## Registry locations
 

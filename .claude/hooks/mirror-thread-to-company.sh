@@ -13,6 +13,12 @@
 #   - thread JSON missing/unparseable
 #   - metadata.company missing
 #
+# Refusals (exit 2, reason on stderr; handoff-finalize turns these into exit 5
+# when it asked for a mirror):
+#   - ambiguous or invalid ownership
+#   - a scope capability exists but yields no lock set (no meta.yaml fallback)
+#   - no capability and no meta.yaml company_slug (no lock set at all)
+#
 # This hook is purely additive. The canonical thread store at workspace/threads/
 # remains the source of truth.
 
@@ -81,15 +87,36 @@ source "$HQ_ROOT/core/scripts/lib/session-id.sh"
 SESSION_ID=$(session_id_resolve "$HQ_ROOT")
 [ -n "$SESSION_ID" ] || exit 0
 SESSION_META="$HQ_ROOT/workspace/sessions/$SESSION_ID/meta.yaml"
-[ -r "$SESSION_META" ] || exit 0
-BOUND_COMPANY=$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$SESSION_META" 2>/dev/null || true)
-LOCKED_COMPANIES="$BOUND_COMPANY"
-if [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
-  # shellcheck source=core/scripts/lib/session-scope-capability.sh
-  . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
-  if command -v session_scope_read_companies >/dev/null 2>&1; then
-    LOCKED_COMPANIES="$(session_scope_read_companies "$HQ_ROOT" "$SESSION_ID" 2>/dev/null || true)"
+SESSION_CAPABILITY="$HQ_ROOT/workspace/sessions/$SESSION_ID/scope-capability.json"
+# Always apply the session lock, including desktop sessions with a session id
+# and no meta.yaml. Missing-meta used to skip this check and mirror into the
+# thread owner even when that company was outside the locked set.
+LOCKED_COMPANIES=""
+if [ -f "$SESSION_CAPABILITY" ]; then
+  # A capability that exists is authoritative. If it is malformed, written for
+  # another session or agent, or names a symlinked company, it yields no lock
+  # set, and meta.yaml must not override that refusal.
+  if [ -f "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" ]; then
+    # shellcheck source=core/scripts/lib/session-scope-capability.sh
+    . "$HQ_ROOT/core/scripts/lib/session-scope-capability.sh" 2>/dev/null || true
+    if command -v session_scope_read_companies >/dev/null 2>&1; then
+      LOCKED_COMPANIES="$(session_scope_read_companies "$HQ_ROOT" "$SESSION_ID" 2>/dev/null || true)"
+    fi
   fi
+  if [ -z "$LOCKED_COMPANIES" ]; then
+    echo "mirror-thread-to-company: refusing to mirror into $COMPANY: the session scope capability is invalid or does not match this session" >&2
+    exit 2
+  fi
+elif [ -r "$SESSION_META" ]; then
+  # Fall back to meta.yaml only when no capability file exists.
+  LOCKED_COMPANIES=$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$SESSION_META" 2>/dev/null || true)
+fi
+# Fail closed, and loudly, when there is no lock set (no capability and no
+# meta.yaml company). handoff-finalize reports a non-zero exit as
+# "company mirror failed" when a mirror was requested.
+if [ -z "$LOCKED_COMPANIES" ]; then
+  echo "mirror-thread-to-company: refusing to mirror into $COMPANY: session has no company lock (no scope capability and no meta.yaml company_slug)" >&2
+  exit 2
 fi
 printf '%s\n' "$LOCKED_COMPANIES" | awk -v wanted="$COMPANY" '$0 == wanted { found = 1 } END { exit !found }' || exit 0
 

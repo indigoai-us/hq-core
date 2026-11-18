@@ -57,10 +57,13 @@ to `AGENTS.md`) references this file as the canonical directory map under its
 - **`repos/`** — code only, split into `repos/public/` and `repos/private/`. The
   only trees that get pushed to git remotes. A symlink at `repos/private/<name>`
   or `repos/public/<name>` may point at a checkout outside this tree only when
-  that checkout's directory is listed in `$HOME/.hq/repo-symlink-roots` (one
-  absolute directory per line; blank lines and `#` comments are ignored). The
-  owner adds a root by editing that file in their own editor. A session cannot
-  read or modify it. A listed directory is ignored when it is `/`, `$HOME`,
+  that checkout's directory, or a folder above it, is listed in
+  `$HOME/.hq/repo-symlink-roots` (one absolute directory per line, or one
+  that starts with `~/` for a folder under `$HOME`; blank lines and `#`
+  comments are ignored). The owner adds a root by editing that file in their
+  own editor. A session cannot read or modify it. When a command is refused
+  because the list does not cover a link, the block message names the link,
+  the directory it resolves to and the line to add. A listed directory is ignored when it is `/`, `$HOME`,
   this HQ root, an ancestor of either, or anywhere under `companies/`. The
   hook reads the list again on every check and skips an entry whose final
   path component is a symlink, so a listed directory later replaced by a link

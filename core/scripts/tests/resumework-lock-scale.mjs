@@ -92,7 +92,7 @@ function shellLockCommand() {
   let block = blocks.find((candidate) => candidate.includes('thread_file="<resolved-thread-file>"'));
   if (!block) fail('could not extract the resumework lock-inspect/open-steps block');
   block = block.replace('thread_file="<resolved-thread-file>"', 'thread_file="$ROOT/workspace/threads/$RESUMEWORK_THREAD_ID.json"');
-  const command = 'bash core/scripts/handoff-open-steps.sh list --limit 10';
+  const command = 'hq core handoff open-steps list --limit 10';
   const instrumented = `export RESUMEWORK_TRACE_OPEN_STEPS=1\n__open_start="$(perl -MTime::HiRes=time -e 'printf("%d\\n", time()*1000)')"\n${command}\n__open_end="$(perl -MTime::HiRes=time -e 'printf("%d\\n", time()*1000)')"\nprintf '%s\\n' "$((__open_end - __open_start))" >> "$RESUMEWORK_OPEN_STEPS_TIMINGS"\nunset RESUMEWORK_TRACE_OPEN_STEPS`;
   if (!block.includes(command)) fail('lock block did not contain the measured open-steps call');
   return block.replace(command, instrumented);

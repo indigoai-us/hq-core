@@ -62,7 +62,7 @@ the user declined registration for this entry earlier; skip the sync unless the
 user asks for it in this session. Otherwise run:
 
 ```bash
-bash core/scripts/register-project.sh {co} {name}
+hq core register-project {co} {name}
 ```
 
 The script runs `hq mesh project ensure` with the stories file, writes `threadId` and `channelId` onto the company `board.json` entry, re-reads that entry, and prints one line: `registered {co}/{name} thread=<threadId> channel=<channelId>`. That line is the verify line. If the script exits non-zero, or stdout is not that line, registration is incomplete. Say "registration incomplete" in the Step 9 report and do not continue as if the project is on the Board. Do not create a replacement project.

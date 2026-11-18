@@ -68,7 +68,7 @@ for dir in core/workers/public/*/ companies/*/workers/*/; do
 done
 
 # Force a fresh registry regen
-bash core/scripts/generate-workers-registry.sh
+hq core generate-workers-registry
 ```
 
 ### 3. Deprecated Directories

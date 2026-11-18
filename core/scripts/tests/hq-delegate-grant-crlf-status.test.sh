@@ -49,6 +49,8 @@ chmod +x "$TMP/bin/jq"
 # portable; jq behavior and all command arguments remain real to the fixture.
 TEST_GRANT="$TMP/hq-delegate-grant-msys.sh"
 sed 's/\${OSTYPE:-}/${TEST_OSTYPE:-}/g; s/\${MSYSTEM:-}/${TEST_MSYSTEM:-}/g; s/sed -b/sed/g' "$GRANT" > "$TEST_GRANT"
+mkdir -p "$TMP/lib"
+cp "$(dirname "$GRANT")/lib/delegate-engine.sh" "$TMP/lib/"
 
 set +e
 OUTPUT="$(PATH="$TMP/bin:$PATH" REAL_JQ="$REAL_JQ" TEST_OSTYPE=msys TEST_MSYSTEM=MINGW64 HQ_ROOT="$TMP/hqroot" bash "$TEST_GRANT" --manifest "$TMP/manifest.json" 2>&1)"

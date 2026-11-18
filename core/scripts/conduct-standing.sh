@@ -2,23 +2,34 @@
 # hq-core: public
 # conduct-standing.sh — /conduct routing and standing worker lanes.
 #
-# Owner decision, 2026-10-22 ("Workers stay open"): the conductor coordinates
-# and does no project work itself. Small bounded tasks go to background
-# subagents; an ongoing area of work goes to a standing worker lane that stays
-# open with keep-alive and takes the follow-up tasks in that area.
+# Workers stay open: the conductor coordinates and does no project work
+# itself. Small bounded tasks go to background subagents; an ongoing area of
+# work goes to a standing worker that takes the follow-up tasks in that area.
+# Under the default runner (subagent) that worker is a standing Agent subagent
+# recorded in runs.json, and this helper creates and messages no runner lane.
+# Opening and messaging runner lanes (send) belongs to /conduct-runners, the
+# advanced mode. close ends runner lanes this session already opened under
+# any runner.
 #
 # Usage:
 #   bash core/scripts/conduct-standing.sh route --kind <answer|status|lookup|small|ongoing> \
 #        [--worker <id>] [--company <slug>] [--outlives] [--engine <e>] \
-#        [--runner mixed|subagent|lane] [--session-id <id>]
+#        [--host claude|codex] [--runner subagent|runner] [--session-id <id>]
 #     Prints {route, runner, worker, lane, standing, reason}. route is one of:
-#       inline      answer from context already loaded, or one status read
-#       subagent    a task with no matching worker (or runner subagent)
-#       lane-reuse  a standing lane for this worker and company is open
-#       lane-open   open (or resume) a lane; standing:true when a worker matches
-#     The runner comes from --runner, the conduct_runner session pin, then
-#     conduct.runner in personal/ and core/ settings/orchestrator.yaml, then
-#     mixed.
+#       inline             answer from context already loaded, or one status read
+#       subagent           a one-off subagent: no matching worker
+#       standing-subagent  (subagent) a standing subagent for the worker; reuse
+#                          its runs.json lane with SendMessage or start one
+#       child-session      (subagent) work that outlives this session: a conduct
+#                          child session, or /conduct-runners for a runner
+#       needs-runners      (subagent) an engine other than the host's: offer
+#                          /conduct-runners. --host (default claude) names the
+#                          session's own engine; a Codex host runs Codex
+#                          subagents with spawn_agent in default mode.
+#       lane-reuse         (runner) a standing lane for this worker and company is open
+#       lane-open          (runner) open a lane; standing:true when a worker matches
+#     The runner comes from core/scripts/conduct-runner-resolve.sh, given
+#     --runner and the session id; this script does not read the settings.
 #
 #   bash core/scripts/conduct-standing.sh agent-type --worker <id> [--company <slug>]
 #     Prints {worker, subagent_type, worker_yaml, skill_files}. subagent_type is
@@ -28,22 +39,26 @@
 #
 #   bash core/scripts/conduct-standing.sh send --worker <id> --company <slug> \
 #        --brief-file <path> [--project <p>] [--story <s> | --no-story <reason>] \
-#        [--session-id <id>] [-- <extra hq lanes create flags>]
-#     Routes one task to the worker's standing lane. Reuses the recorded lane
-#     with `hq lanes message --text-file` when it is still open; otherwise runs
-#     `hq lanes create --keep-alive`, turns on `hq lanes keep-alive --on
-#     --standing`, and records the lane. Prints {action, lane, worker, company}.
-#     action is "reused" or "opened". A create refusal prints the create JSON
-#     and exits 3 so the conductor runs the brief as a subagent instead.
+#        [--runner <r>] [--session-id <id>] [-- <extra hq runners create flags>]
+#     /conduct-runners only. Routes one task to the worker's standing runner
+#     lane: `hq runners message --text-file` when the recorded lane is open,
+#     otherwise `hq runners create --keep-alive` plus `hq runners keep-alive --on
+#     --standing`. Prints {action, lane, worker, company}; action is "reused" or
+#     "opened". A create refusal prints the create JSON and exits 3. Under the
+#     subagent runner it calls no hq command and exits 4.
 #
 #   bash core/scripts/conduct-standing.sh list [--session-id <id>]
 #   bash core/scripts/conduct-standing.sh find --worker <id> --company <slug> [--session-id <id>]
 #   bash core/scripts/conduct-standing.sh forget --lane <id> [--session-id <id>]
 #
-#   bash core/scripts/conduct-standing.sh close [--dry-run] [--session-id <id>]
-#     On /conduct off or /handoff: turns keep-alive off and interrupts every
-#     standing lane this session opened (resumable, so a later create for the
-#     same worker continues its thread), then clears the record.
+#   bash core/scripts/conduct-standing.sh close [--dry-run] [--runner <r>] [--session-id <id>]
+#     /conduct off, /conduct-runners off, or /handoff: turns keep-alive off and
+#     interrupts every standing runner lane recorded for this session
+#     (resumable), then clears the record. It runs under any runner, so lanes
+#     an earlier /conduct-runners turn or an older core opened still close
+#     after the session moves to subagent. It never opens or messages a lane;
+#     with no record it calls no hq command. Standing subagents end when the
+#     conductor stops resuming them and marks their runs.json rows closed.
 #
 # State: workspace/sessions/<session-id>/conduct-standing-lanes.json
 # Set HQ_BIN to override the hq binary (tests).
@@ -53,7 +68,7 @@ set -euo pipefail
 ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 HQ_BIN="${HQ_BIN:-hq}"
 
-usage() { sed -n '3,49p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,60p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "conduct-standing: $*" >&2; exit 1; }
 need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
 valid_id() { case "$1" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
@@ -87,7 +102,7 @@ find_lane() { read_state | jq -r --arg w "$1" --arg c "$2" \
 # worker thread instead.
 lane_closed() {
   local show state
-  show="$("$HQ_BIN" lanes show "$1" --json 2>/dev/null)" || return 0
+  show="$("$HQ_BIN" runners show "$1" --json 2>/dev/null)" || return 0
   state="$(printf '%s' "$show" | jq -r '.lane.state // .state // "unknown"' 2>/dev/null)" || return 0
   case "$state" in
     stopped|cancelled|canceled|failed|retired|superseded|unknown|null|"") return 0 ;;
@@ -95,30 +110,29 @@ lane_closed() {
   return 1
 }
 
-# Runner: --runner, then the conduct_runner session pin, then conduct.runner in
-# personal/ and core/ settings/orchestrator.yaml, then mixed.
-yaml_runner() {
-  [ -f "$1" ] || return 0
-  awk '/^conduct:/ {on=1; next} on && /^[^ #]/ {on=0}
-       on && /^  runner:/ {v=$2; gsub(/["'\'']/, "", v); print v; exit}' "$1"
-}
+# The runner comes from core/scripts/conduct-runner-resolve.sh, the one
+# resolver shared with lanes-workers.sh and the Stop gate.
 resolve_runner() {
-  local r="$1"
-  [ -n "$r" ] || r="$(bash "$ROOT/core/scripts/hq-session.sh" --session-id "$SID" get conduct_runner 2>/dev/null || true)"
-  [ -n "$r" ] || r="$(yaml_runner "$ROOT/personal/settings/orchestrator.yaml")"
-  [ -n "$r" ] || r="$(yaml_runner "$ROOT/core/settings/orchestrator.yaml")"
-  [ -n "$r" ] || r=mixed
-  case "$r" in mixed|subagent|lane) printf '%s' "$r" ;; *) die "unknown conduct runner: $r (mixed, subagent or lane)" ;; esac
+  local r args=(--root "$ROOT")
+  [ -z "$1" ] || args+=(--runner "$1")
+  [ -z "$SID" ] || args+=(--session-id "$SID")
+  r="$(sh "$ROOT/core/scripts/conduct-runner-resolve.sh" "${args[@]}")" || die "could not resolve the conduct runner (subagent or runner)"
+  printf '%s' "$r"
 }
 
+# Default /conduct (runner subagent) opens and messages no runner lane: that
+# belongs to /conduct-runners.
+SUBAGENT_NO_LANES="the session runner is subagent: default /conduct keeps standing workers on Agent subagents (runs.json) and opens no runner lane; use /conduct-runners for runner lanes"
+
 cmd_route() {
-  local kind="" worker="" company="" outlives=0 engine="" lane="" runner=""
+  local kind="" worker="" company="" outlives=0 engine="" host=claude lane="" runner=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --kind) need_val "$@"; kind="$2"; shift 2 ;;
       --worker) need_val "$@"; worker="$2"; shift 2 ;;
       --company) need_val "$@"; company="$2"; shift 2 ;;
       --engine) need_val "$@"; engine="$2"; shift 2 ;;
+      --host) need_val "$@"; host="$2"; shift 2 ;;
       --runner) need_val "$@"; runner="$2"; shift 2 ;;
       --outlives) outlives=1; shift ;;
       --session-id) need_val "$@"; SID="$2"; shift 2 ;;
@@ -127,6 +141,7 @@ cmd_route() {
   done
   case "$kind" in answer|status|lookup|small|ongoing) ;; *) die "route: --kind must be answer, status, lookup, small or ongoing" ;; esac
   [ -z "$worker" ] || valid_id "$worker" || die "route: invalid --worker: $worker"
+  case "$host" in claude|codex) ;; *) die "route: --host must be claude or codex" ;; esac
   out() { jq -cn --arg r "$1" --arg w "$worker" --arg l "$2" --argjson s "$3" --arg why "$4" --arg run "$runner" \
     '{route:$r, runner:(if $run=="" then null else $run end), worker:(if $w=="" then null else $w end), lane:(if $l=="" then null else $l end), standing:$s, reason:$why}'; }
   case "$kind" in
@@ -135,16 +150,26 @@ cmd_route() {
   esac
   resolve_sid
   runner="$(resolve_runner "$runner")"
-  if [ -n "$worker" ]; then
-    [ -n "$company" ] || die "route: --company is required with --worker"
-    if [ "$runner" != subagent ]; then
-      lane="$(find_lane "$worker" "$company")"
-      if [ -n "$lane" ]; then out lane-reuse "$lane" true "standing $worker lane is open"; return; fi
-      out lane-open "" true "task matches the $worker worker"; return
+  [ -z "$worker" ] || [ -n "$company" ] || die "route: --company is required with --worker"
+  if [ "$runner" = subagent ]; then
+    if [ -n "$engine" ] && [ "$engine" != "$host" ]; then
+      out needs-runners "" false "an engine other than the host's ($host) needs a runner: offer /conduct-runners; default /conduct opens no runner lane"; return
     fi
+    if [ "$outlives" = 1 ]; then
+      out child-session "" false "work outlives this session: use a conduct child session, or /conduct-runners for a runner; default /conduct opens no runner lane"; return
+    fi
+    if [ -n "$worker" ]; then
+      out standing-subagent "" true "standing subagent for the $worker worker in $company: resume its runs.json lane with SendMessage, or start one"; return
+    fi
+    out subagent "" false "small bounded task with no matching worker: one-off subagent"; return
   fi
-  if [ "$outlives" = 1 ] || { [ -n "$engine" ] && [ "$engine" != claude ]; } || [ "$runner" = lane ]; then
-    out lane-open "" false "work outlives the session, runs on a non-Claude engine, or the lane runner is set"; return
+  if [ -n "$worker" ]; then
+    lane="$(find_lane "$worker" "$company")"
+    if [ -n "$lane" ]; then out lane-reuse "$lane" true "standing $worker lane is open"; return; fi
+    out lane-open "" true "task matches the $worker worker"; return
+  fi
+  if [ "$outlives" = 1 ] || { [ -n "$engine" ] && [ "$engine" != claude ]; }; then
+    out lane-open "" false "work outlives the session or runs on a non-Claude engine"; return
   fi
   out subagent "" false "small bounded task with no standing lane"
 }
@@ -192,7 +217,7 @@ cmd_agent_type() {
 }
 
 cmd_send() {
-  local worker="" company="" brief="" project="" story="" nostory="" lane resp
+  local worker="" company="" brief="" project="" story="" nostory="" lane resp runner=""
   local -a extra=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -202,6 +227,7 @@ cmd_send() {
       --project) need_val "$@"; project="$2"; shift 2 ;;
       --story) need_val "$@"; story="$2"; shift 2 ;;
       --no-story) need_val "$@"; nostory="$2"; shift 2 ;;
+      --runner) need_val "$@"; runner="$2"; shift 2 ;;
       --session-id) need_val "$@"; SID="$2"; shift 2 ;;
       --) shift; extra=("$@"); break ;;
       *) die "send: unknown option: $1" ;;
@@ -214,14 +240,19 @@ cmd_send() {
   [ -z "$story" ] || [ -z "$nostory" ] || die "send: --story and --no-story are exclusive"
   [ -n "$story" ] || [ -n "$nostory" ] || nostory="conduct standing $worker lane"
   resolve_sid
+  runner="$(resolve_runner "$runner")"
+  if [ "$runner" = subagent ]; then
+    echo "conduct-standing: send refused: $SUBAGENT_NO_LANES" >&2
+    return 4
+  fi
 
   lane="$(find_lane "$worker" "$company")"
   if [ -n "$lane" ] && ! lane_closed "$lane"; then
     local -a mflags=()
     [ -z "$project" ] || mflags+=(--project "$project")
     [ -z "$story" ] || mflags+=(--story "$story")
-    "$HQ_BIN" lanes message "$lane" --text-file "$brief" ${mflags[@]+"${mflags[@]}"} --json >/dev/null \
-      || die "send: hq lanes message $lane failed"
+    "$HQ_BIN" runners message "$lane" --text-file "$brief" ${mflags[@]+"${mflags[@]}"} --json >/dev/null \
+      || die "send: hq runners message $lane failed"
     jq -cn --arg l "$lane" --arg w "$worker" --arg c "$company" '{action:"reused", lane:$l, worker:$w, company:$c}'
     return
   fi
@@ -231,14 +262,14 @@ cmd_send() {
                    --senior "session:$SID" --keep-alive --json)
   [ -z "$project" ] || cflags+=(--project "$project")
   if [ -n "$story" ]; then cflags+=(--story "$story"); else cflags+=(--no-story "$nostory"); fi
-  resp="$("$HQ_BIN" lanes create "${cflags[@]}" ${extra[@]+"${extra[@]}"})" || true
+  resp="$("$HQ_BIN" runners create "${cflags[@]}" ${extra[@]+"${extra[@]}"})" || true
   lane="$(printf '%s' "$resp" | jq -r 'select(.ok != false) | .lane_id // .lane.id // empty' 2>/dev/null || true)"
   if [ -z "$lane" ]; then
-    [ -n "$resp" ] || resp='{"ok":false,"error":"no response from hq lanes create"}'
+    [ -n "$resp" ] || resp='{"ok":false,"error":"no response from hq runners create"}'
     printf '%s\n' "$resp"
     return 3
   fi
-  "$HQ_BIN" lanes keep-alive "$lane" --on --standing --json >/dev/null \
+  "$HQ_BIN" runners keep-alive "$lane" --on --standing --json >/dev/null \
     || echo "conduct-standing: keep-alive --standing failed for $lane; the lane is open but will not wait for follow-up work" >&2
   read_state | jq --arg w "$worker" --arg c "$company" --arg l "$lane" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '.lanes = ([.lanes[]|select(.worker != $w or .company != $c)] + [{worker:$w, company:$c, lane:$l, opened_at:$now}])' \
@@ -285,23 +316,36 @@ cmd_forget() {
 }
 
 cmd_close() {
-  local dry=0 lane failed=0
+  local dry=0 lane failed=0 runner="" n
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1; shift ;;
+      --runner) need_val "$@"; runner="$2"; shift 2 ;;
       --session-id) need_val "$@"; SID="$2"; shift 2 ;;
       *) die "close: unknown option: $1" ;;
     esac
   done
   resolve_sid
+  runner="$(resolve_runner "$runner")"
+  n="$(read_state | jq '.lanes|length')"
+  if [ "$runner" = subagent ]; then
+    if [ "$n" = 0 ]; then
+      echo "no runner lanes closed: $SUBAGENT_NO_LANES. Standing subagents end when you stop resuming them and mark their runs.json rows closed."
+      return 0
+    fi
+    # Cleanup, not dispatch: these lanes were opened by an earlier
+    # /conduct-runners turn or an older core, and still name this session as
+    # their senior. Close them; never open or message one.
+    echo "closing $n runner lane(s) this session opened before it moved to the subagent runner."
+  fi
   for lane in $(read_state | jq -r '.lanes[].lane'); do
     if [ "$dry" = 1 ]; then
-      echo "would close $lane: hq lanes keep-alive $lane --off; hq lanes interrupt $lane"
+      echo "would close $lane: hq runners keep-alive $lane --off; hq runners interrupt $lane"
       continue
     fi
-    "$HQ_BIN" lanes keep-alive "$lane" --off --json >/dev/null 2>&1 || { echo "conduct-standing: keep-alive --off failed for $lane" >&2; failed=1; continue; }
+    "$HQ_BIN" runners keep-alive "$lane" --off --json >/dev/null 2>&1 || { echo "conduct-standing: keep-alive --off failed for $lane" >&2; failed=1; continue; }
     if ! lane_closed "$lane"; then
-      "$HQ_BIN" lanes interrupt "$lane" --reason "conduct closed its standing lanes" --json >/dev/null 2>&1 || true
+      "$HQ_BIN" runners interrupt "$lane" --reason "conduct closed its standing lanes" --json >/dev/null 2>&1 || true
     fi
     read_state | jq --arg l "$lane" '.lanes |= map(select(.lane != $l))' | write_state
     echo "closed $lane"

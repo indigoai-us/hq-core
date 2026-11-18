@@ -78,7 +78,7 @@ excluded. A start batch must hold at least one stage. ``usd`` is a finite
 number at or above 0, or ``unpriced``. Lane argv never carries a provider
 flag; new lanes keep the Grok default.
 
-This module does not call ``hq lanes``, a model, or the control plane.
+This module does not call ``hq runners``, a model, or the control plane.
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ CHECK_EXCLUDED = "excluded"
 CHECK_UNSCORED = "unscored"
 UNPRICED = "unpriced"
 
-# Flags that would override the Grok default on ``hq lanes create``.
+# Flags that would override the Grok default on ``hq runners create``.
 PROVIDER_OVERRIDE_FLAGS = ("--provider", "--model-provider")
 
 _STATE_KEYS = {
@@ -426,7 +426,7 @@ def _stamp(company: str, run_id: str, stages: Sequence[Mapping[str, object]]) ->
 
 
 def lane_create_argv(label: str, *, provider: str | None = None) -> list[str]:
-    """Argv for a later ``hq lanes create``. No provider flag is included.
+    """Argv for a later ``hq runners create``. No provider flag is included.
 
     Passing ``provider`` raises. The lanes CLI keeps its Grok default.
     """
@@ -434,7 +434,7 @@ def lane_create_argv(label: str, *, provider: str | None = None) -> list[str]:
         raise LedgerError("provider override")
     if not isinstance(label, str) or label == "":
         raise LedgerError("invalid label")
-    argv = ["hq", "lanes", "create", "--label", label]
+    argv = ["hq", "runners", "create", "--label", label]
     for flag in PROVIDER_OVERRIDE_FLAGS:
         if flag in argv:
             raise LedgerError("provider override")

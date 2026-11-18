@@ -1,5 +1,7 @@
 # shellcheck shell=bash
 # hq-core: public
+# shellcheck source=core/scripts/lib/epochrealtime.sh
+. "${BASH_SOURCE[0]%/*}/epochrealtime.sh" 2>/dev/null || true
 # hook-adapter-core.sh — single-source hook dispatch for the Codex and Grok
 # adapters.
 #
@@ -39,6 +41,18 @@
 # Requires: HQ_ROOT exported by the caller, and jq on PATH. Reads
 # $HQ_ROOT/.claude/settings.json. Emits nothing (returns 0) if either is absent,
 # so the adapter's own minimal safety net still applies.
+
+# An adapter (Codex, Grok, bot runtimes) that sources this library dispatches
+# one hook event and launches gates through hook-gate.sh. Those gates read this
+# pid to share one timeout watchdog per event instead of starting one per gate.
+# A nested adapter re-exports its own. Claude's master-hook does not launch
+# gates, so it leaves the variable alone.
+case "${HQ_HARNESS:-}" in
+  codex|grok)
+    HQAD_DISPATCHER_PID=$$
+    export HQAD_DISPATCHER_PID
+    ;;
+esac
 
 # Match a settings.json matcher against a canonical (Claude) tool name.
 #   - Empty matcher or "*"            -> always matches.
@@ -483,17 +497,12 @@ hqad_event_watchdog_sha256() {
 }
 
 hqad_event_watchdog_now_ms() {
-  local realtime seconds fraction now
-  realtime="${EPOCHREALTIME:-}"
-  if [ -n "$realtime" ]; then
-    seconds="${realtime%%.*}"
-    fraction="${realtime#*.}"
-    fraction="${fraction}000"
-    fraction="${fraction:0:3}"
-    if [[ "$seconds" =~ ^[0-9]+$ ]] && [[ "$fraction" =~ ^[0-9]{3}$ ]]; then
-      printf '%s%s' "$seconds" "$fraction"
-      return 0
-    fi
+  local now
+  if [ -n "${EPOCHREALTIME:-}" ] \
+    && command -v hq_epochrealtime_parse >/dev/null 2>&1 \
+    && hq_epochrealtime_parse "$EPOCHREALTIME"; then
+    printf '%s' "$HQ_EPOCH_MS"
+    return 0
   fi
   now="$(date +%s%3N 2>/dev/null || true)"
   if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
@@ -739,6 +748,74 @@ HQAD_CAP_ROWS
   HQAD_CAP_SECONDS="$t"
 }
 
+# hqad_is_safety_hook <root> <event> <hook-id>
+# Returns 0 when <hook-id> has a registry row on <event> marked
+# "safety": true (the same test as master-hook's `.safety == true`). One jq
+# read per event per process. A missing or unreadable registry marks nothing.
+HQAD_SAFETY_EVENT=""
+HQAD_SAFETY_IDS=""
+hqad_is_safety_hook() {
+  local root="$1" event="$2" id="$3"
+  [ -n "$id" ] || return 1
+  if [ "$HQAD_SAFETY_EVENT" != "$event" ]; then
+    HQAD_SAFETY_EVENT="$event"
+    HQAD_SAFETY_IDS="$(jq -r --arg ev "$event" '
+      [(.hooks[$ev] // [])[]? | objects
+       | (.hooks // [])[]? | objects
+       | select(.safety == true and (.id | type) == "string") | .id]
+      | join("|")
+    ' < "$root/.claude/hooks/hook-registry.json" 2>/dev/null || true)"
+    # Native Windows jq.exe ends -r output with CRLF.
+    HQAD_SAFETY_IDS="|${HQAD_SAFETY_IDS%$'\r'}|"
+  fi
+  case "$HQAD_SAFETY_IDS" in
+    *"|$id|"*) return 0 ;;
+  esac
+  return 1
+}
+
+# hqad_safety_block_reason <hook-id> <status>
+# Prints master-hook's reason for a safety guard that ended without a verdict
+# (any status but 0 and 2): "guard crashed, blocked" for a signal death
+# (128+N) and "guard failed, blocked" for any other code, including exit 1.
+# A safety guard allows only with exit 0.
+hqad_safety_block_reason() {
+  local name="$1" rc="$2" sig=""
+  case "$name" in
+    ''|*[!A-Za-z0-9._-]*) name="registered hook" ;;
+  esac
+  case "$rc" in
+    ''|*[!0-9]*) rc=1 ;;
+  esac
+  if [ "$rc" -gt 128 ] && [ "$rc" -le 192 ]; then
+    sig="$(kill -l "$((rc - 128))" 2>/dev/null || true)"
+    sig="${sig#SIG}"
+    case "$sig" in ''|*[!A-Z0-9+-]*) sig="" ;; esac
+    if [ -n "$sig" ]; then
+      printf 'guard crashed, blocked: %s was killed by signal %s (SIG%s, exit %s), so this tool call was not checked.\n' \
+        "$name" "$((rc - 128))" "$sig" "$rc"
+    else
+      printf 'guard crashed, blocked: %s was killed by signal %s (exit %s), so this tool call was not checked.\n' \
+        "$name" "$((rc - 128))" "$rc"
+    fi
+    return 0
+  fi
+  printf 'guard failed, blocked: %s exited %s without a verdict, so this tool call was not checked.\n' \
+    "$name" "$rc"
+}
+
+# hqad_missing_safety_reason <hook-id>
+# Prints master-hook's reason for a safety guard whose script is missing.
+# hqad_iter_registry emits a `missing` record for it; the adapters block on it.
+hqad_missing_safety_reason() {
+  local name="$1"
+  case "$name" in
+    ''|*[!A-Za-z0-9._-]*) name="registered hook" ;;
+  esac
+  printf 'BLOCKED: a required HQ safety check is missing (%s). Run hq rescue from a terminal (or re-run /update-hq) to repair it, then retry.\n' \
+    "$name"
+}
+
 # Parse the same prefilter input text as master-hook: object tool_input JSON
 # plus its decoded string values, otherwise the prompt, plus PostToolUse
 # tool_response JSON; flatten record separators and newlines before regex
@@ -945,7 +1022,7 @@ hqad_iter_registry() {
     return 0
   fi
   local fields="" payload_cwd="" session_id="" prefilter_text="" active_company=""
-  local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab pf_re_all scope_emitted=0
+  local rows="" line decoded matcher id script gated args pf_re pf_env pf_file pf_vocab pf_re_all missing profile_rc scope_emitted=0
   if ! fields="$(hqad_prefilter_payload_fields "$event" "$payload")"; then
     [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hook-adapter: prefilter payload parse failed event=%s bytes=%s\n' "$event" "${#payload}" >&2
     printf "ERROR: hqad: malformed payload for %s registry prefilters; using critical fallback guards.\n" "$event" >&2
@@ -1019,7 +1096,14 @@ hqad_iter_registry() {
         "$([ "$pf_vocab" = "1" ] && printf yes || printf no)" >&2
     fi
     hqad_matcher_matches "$matcher" "$tool" "$event" || continue
-    [ -f "$script" ] || continue
+    # A missing script is skipped, except a PreToolUse safety guard: that
+    # blocks, as in master-hook, through a `missing` record once its
+    # prefilter matches. Safety comes from the registry, read here with jq.
+    missing=0
+    if [ ! -f "$script" ]; then
+      [ "$event" = "PreToolUse" ] && hqad_is_safety_hook "$HQ_ROOT" "$event" "$id" || continue
+      missing=1
+    fi
     if ! hqad_registry_prefilter_match "$event" "$HQ_ROOT" "$active_company" "$payload_cwd" "$session_id" "$prefilter_text" "$pf_re" "$pf_env" "$pf_file" "$pf_vocab" "$id" "$pf_re_all"; then
       case "$HQAD_PREFILTER_REASON" in
         prefilter|policy-vocab)
@@ -1029,6 +1113,17 @@ hqad_iter_registry() {
       continue
     fi
     [ "$id" = "mandatory-scope-authorizer" ] && scope_emitted=1
+    if [ "$missing" = "1" ]; then
+      # A hook profile that turns this guard off skips it, as the launcher
+      # would; a profile error still blocks.
+      if [ "$gated" = "1" ] && command -v hq_hook_profile_allows >/dev/null 2>&1; then
+        profile_rc=0
+        hq_hook_profile_allows "$id" || profile_rc=$?
+        [ "$profile_rc" -eq 1 ] && continue
+      fi
+      printf 'missing\t%s\t%s\n' "$id" "$script"
+      continue
+    fi
     if [ "$gated" = "1" ]; then
       printf 'gate\t%s\t%s' "$id" "$script"
       if [ -n "$args" ]; then

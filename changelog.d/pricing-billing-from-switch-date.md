@@ -1,0 +1,1 @@
+The plans and pricing doc now says that existing accounts moved to usage pricing are billed for usage from their switch date, with no free preview period; the 30-day trial is for new signups only. The scheduled switch time in the pricing doc and `pricing.json` now reads December 19, 2026 at 00:00 Pacific (08:00 UTC).

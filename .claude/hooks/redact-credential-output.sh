@@ -28,6 +28,21 @@
 #              user part is 16 or more characters (a token, not a login name)
 #   aws        aws_access_key_id, aws_secret_access_key, aws_session_token
 #   PEM        the body of any -----BEGIN ... PRIVATE KEY----- block
+#   slack      any Slack token (xoxb-, xoxp-, xoxa-, xoxo-, xoxs-, xoxr-,
+#              xoxe-) wherever it appears: free text such as a notes field,
+#              JSON strings, multi-line output, with no key name before it.
+#              The prefix is kept (xoxb-[REDACTED]); feedback 166f01a7.
+#   klaviyo    a Klaviyo private key (pk_ then 20 or more letters or digits)
+#              wherever it appears, with no key name or header needed; the
+#              prefix is kept (pk_[REDACTED]); feedback 3a8f7046.
+#   authorization  the whole value after an Authorization header: Bearer,
+#              Basic, Token, Digest, Negotiate, NTLM, or one of the listed
+#              hyphenated schemes Klaviyo-API-Key and AWS4-HMAC-SHA256 (with its
+#              comma-separated Credential=, Signature= parts). The header
+#              shape is a colon then a scheme or token, so prose such as
+#              "Authorization failed" is left readable.
+#              An unknown scheme word (X-Api-Key, DPoP, Splunk, SSWS) before a
+#              token of 8 or more characters is masked with the token.
 #
 # Values on the line after a `key=` or `"auth":`, JSON-escaped quotes
 # (\"auth\":\"X\") and quoted values are covered. A value counts as already
@@ -73,8 +88,9 @@ case "${HQ_REDACT_OUTPUT_BUDGET:-}" in ''|*[!0-9]*|0*) ;; *) BUDGET=$HQ_REDACT_O
 INPUT=$(cat)
 
 # Cheap precheck on the raw payload. Every shape below contains one of these
-# words (JSON escaping does not touch them), or a URL with userinfo.
-if ! printf '%s' "$INPUT" | LC_ALL=C grep -qiE 'auth|pass|pwd|secret|token|key|credential|bearer|://[^/[:space:]"]+@'; then
+# words (JSON escaping does not touch them), a Slack token prefix, or a URL
+# with userinfo.
+if ! printf '%s' "$INPUT" | LC_ALL=C grep -qiE 'auth|pass|pwd|secret|token|key|credential|bearer|xox[abposre]-|pk_[A-Za-z0-9]{20}|://[^/[:space:]"]+@'; then
   exit 0
 fi
 
@@ -137,6 +153,16 @@ IFS= read -r -d '' JQ_PROG <<'JQ' || true
   def CODE: "(?:[$(\\[{<=!&|`]|\\.\\.\\.|%[-0-9.]*[sdqvx](?![A-Za-z0-9])|[0-9]{1,6}(?=[\\s,;)}\\]'\"]|$)|(?:none|null|nil|true|false|undefined|string|number|boolean|bool|str|int|float|bytes|any|unknown|object|void|never|required|optional|read|write|self|this|new|await|function|lambda)(?![A-Za-z0-9_])|[A-Za-z_$][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*[(\\[]|[A-Za-z_$][A-Za-z_$]*(?:\\.[A-Za-z_$][A-Za-z_$]*)+(?![A-Za-z0-9_$.\\-/+=:@])|[A-Za-z_$][A-Za-z_$]*[;,)](?:\\s|$))";
   def BARE: "(?:[^\\s\"'\\\\&]|&(?![A-Za-z0-9_.\\-]+=)|\"(?=[A-Za-z0-9]))+";
   def GVAL: "(?:" + TAIL + "|(?!\\[REDACTED\\])(?!" + CODE + ")(?!\")" + BARE + ")";
+  # APART: one Name=value part of a Digest or AWS4 Authorization list; the
+  # value is quoted (plain or JSON-escaped quotes) or a bare run.
+  def APART: "[A-Za-z0-9_-]+=(?:\\\\?\"(?:[^\"\\\\\\n]|\\\\[^\"])*\\\\?\"|[^\\s\"'\\\\,]+)";
+  # AUNK: an unknown scheme word (DPoP, Splunk, SSWS, X-Api-Key, ...) before
+  # a token: any token after a hyphenated word (main masked those), a token of
+  # 8 or more characters after a plain word. It sits outside the kept
+  # prefix, so the scheme word and the token after it are both masked; before,
+  # only the first word was masked and the token printed in clear. Known
+  # schemes keep their own rule below and never match AUNK.
+  def AUNK: "(?:(?!(?:bearer|basic|token|digest|negotiate|ntlm|klaviyo-api-key|aws4(?:-[A-Za-z0-9]+)*)[ \\t])(?:[A-Za-z][A-Za-z0-9_.]*-[A-Za-z0-9_.-]*[ \\t]+(?=[^\\s\"'\\\\])|[A-Za-z][A-Za-z0-9_.-]*[ \\t]+(?=[A-Za-z0-9._~+/=-]{8,})))";
   def BEARERVAL: "(?:" + TAIL + "|(?!\\[REDACTED\\])[A-Za-z0-9._~+/=-]{8,})";
   def VALQ: "(?:\\[REDACTED\\][^\"\\\\\\n]+|(?!\\[REDACTED\\])[^\"\\\\\\n]+)";
   def VALQP: "(?!\\$[({A-Za-z_]|[(\\\\]|\\.\\.\\.)(?:\\[REDACTED\\](?:[^\"\\\\\\n]|\\\\.)+|(?!\\[REDACTED\\])(?:[^\"\\\\\\n]|\\\\.)+)";
@@ -152,8 +178,21 @@ IFS= read -r -d '' JQ_PROG <<'JQ' || true
   def ENVKEY: "(?:[A-Za-z0-9]+[_.-])*?(?:[A-Za-z0-9]*(?:secret|token|password|passwd|credentials?|auth)|pass|pwd|apikey|(?<=[_.-])key)(?=[_.-]|[ \\t]*=)(?:[_.-][A-Za-z0-9]+)*";
   def LIMIT: 4096;
   def hot: test("auth|pass|pwd|secret|token|key|credential|bearer|://"; "i");
+  # SLACK: a Slack token anywhere in the text. It is matched on the whole
+  # string, so a token in free text, after a newline or inside a JSON string
+  # is redacted with or without a key name before it. Whatever precedes the
+  # prefix does not matter: ANSI color output (ESC[32m, grep's
+  # ESC[01;31mESC[K) and plain letters or digits put a word character there.
+  def SLACK: "(?<k>xox[abposre]-)[A-Za-z0-9-]{10,}";
+  # KLAVIYO: a Klaviyo private key, pk_ then 20 or more letters or digits,
+  # with anything before it, including a letter or underscore (x_pk_...).
+  # Matched on the whole string like SLACK, so it needs no key name or Authorization header
+  # (feedback 3a8f7046). The prefix is kept (pk_[REDACTED]).
+  def KLAVIYO: "(?<k>pk_)[A-Za-z0-9]{20,}";
   def redact_multiline:
-    gsub("(?<k>-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)[\\s\\S]*?(?=-----END [A-Z0-9 ]*PRIVATE KEY-----|\\z)"; "\(.k)\n[REDACTED]\n"; "i")
+    gsub(SLACK; "\(.k)[REDACTED]")
+    | gsub(KLAVIYO; "\(.k)[REDACTED]")
+    | gsub("(?<k>-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)[\\s\\S]*?(?=-----END [A-Z0-9 ]*PRIVATE KEY-----|\\z)"; "\(.k)\n[REDACTED]\n"; "i")
     | gsub("(?<k>" + NPMKEY + Q + "[ \\t]*[=:]" + NL + Q + ")" + VAL; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>(?:^|\\n)[ \\t]*(?:password|passwd)" + Q + "[ \\t]*[=:]" + NL + Q + ")" + GVAL; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>\\\\?\"(?:auth|identitytoken|registrytoken)\\\\?\"[ \\t]*:" + NL + "\\\\?\")" + VALQ; "\(.k)[REDACTED]"; "i")
@@ -164,19 +203,63 @@ IFS= read -r -d '' JQ_PROG <<'JQ' || true
     gsub("(?<k>" + NPMKEY + Q + "(?>" + SEP + "|[ \\t]+)" + Q + ")" + $v; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>\\b(?:machine|default)\\b[^\\n]*?\\bpassword[ \\t]+)" + $v; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>(?:^|\\n)[ \\t]*(?:password|passwd)" + Q + "(?>" + GSEP + "|[ \\t]+)" + Q + ")" + $g; "\(.k)[REDACTED]"; "i")
-    | gsub("(?<k>\\bauthorization" + Q + SEP + Q + "(?>(?:(?:bearer|basic|token|digest)[ \\t]+)?))(?!\\$[({A-Za-z_])" + $v; "\(.k)[REDACTED]"; "i")
+    | gsub("(?<k>\\bauthorization" + Q + SEP + Q + "(?:digest|aws4(?:-[A-Za-z0-9]+)*)[ \\t]+)(?!\\[REDACTED\\])" + APART + "(?:[ \\t]*,[ \\t]*" + APART + ")*"; "\(.k)[REDACTED]"; "i")
+    | gsub("(?<k>\\bauthorization" + Q + SEP + Q + ")(?!\\$[({A-Za-z_])" + AUNK + $v; "\(.k)[REDACTED]"; "i")
+    | gsub("(?<k>\\bauthorization" + Q + SEP + Q + "(?>(?:(?:bearer|basic|token|digest|negotiate|ntlm|klaviyo-api-key|aws4-hmac-sha256)[ \\t]+)?))(?!\\$[({A-Za-z_])" + $v + "(?:,[ \\t]*[A-Za-z0-9_-]+=[^\\s\"'\\\\,]+)*"; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>\\bbearer[ \\t]+)" + $b; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>\\baws_(?:access_key_id|secret_access_key|session_token)" + Q + SEP + Q + ")" + $v; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>(?:^|\\n)[ \\t]*(?:-[ \\t]+)?(?:export[ \\t]+)?" + ENVKEY + "[ \\t]*=(?![=~>])[ \\t]*" + Q + ")" + $g; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>(?:^|\\n)[ \\t]*(?:-[ \\t]+)?[\"']?(?:pass|pwd|auth)[\"']?[ \\t]*:(?![:=+?-])[ \\t]*" + Q + ")" + $g; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>" + KEYNAME + GSEP + ")" + $g; "\(.k)[REDACTED]"; "i");
-  def redact_line:
+  # gcloud secrets versions access takes a secret NAME, never a value, but the
+  # KEYNAME rule reads the name after `--secret=` as a credential and hid it
+  # (feedback_c4aa4a7e). The name is held out of the line rules only when the
+  # whole line is exactly
+  #   gcloud secrets versions access <latest|N> --secret=<NAME>
+  # with optional leading spaces or a `$ ` prompt and optional trailing spaces
+  # or tabs, N is 1 to 4 digits and NAME passes GC_NAME_OK. Every other form
+  # (--set-secrets, --update-secrets, mount paths, a projects/ path, a quoted
+  # name, any other flag, word or separator on the line, a carriage return) is
+  # redacted exactly as before. While the line rules run, the held = is
+  # swapped for \u0001 and swapped back after; a block that already contains
+  # \u0001 is never held.
+  # - a NAME is all upper case (UPPER_SNAKE) or all lower case (kebab or
+  #   snake), at most 80 characters, with two to five segments of which one
+  #   is a secret word (GC_WORD: key, secret, token, password, ...), so a
+  #   held value is a secret name, never a passphrase such as
+  #   correct-horse-battery;
+  # - at most three segments are not a secret word, and at most one of those
+  #   is 8 or more characters (then at most 12), so key-<long word> and
+  #   <four-word passphrase>-key are not held;
+  # - every segment is under 16 characters, one over 7 characters does not
+  #   mix letters and digits, and at most one segment holds a digit and is
+  #   then under 8 characters, so a pasted token does not pass as a name.
+  def GC_SEG_OK: (length < 16) and ((length < 8) or ((test("[0-9]") and test("[A-Za-z]")) | not));
+  def GC_WORD: "^(?:keys?|secrets?|tokens?|passwords?|passwd|pass|pwd|credentials?|auth|apikeys?)$";
+  def GC_NAME_OK:
+    (length <= 80)
+    and test("^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[a-z][a-z0-9]*(?:[-_][a-z0-9]+)+)$")
+    and ([splits("[-_]")]
+         | (length <= 5)
+         and all(.[]; GC_SEG_OK)
+         and any(.[]; test(GC_WORD; "i"))
+         and ([.[] | select(test("[0-9]"))] | (length <= 1) and all(.[]; length < 8))
+         and ([.[] | select(test(GC_WORD; "i") | not)]
+              | (length <= 3) and ([.[] | select(length >= 8)] | (length <= 1) and all(.[]; length <= 12))));
+  def GC_ACCESS: "(?<p>(?:^|\\n)[ \\t]*(?:\\$[ \\t]+)?gcloud[ \\t]+secrets[ \\t]+versions[ \\t]+access[ \\t]+(?:latest|[0-9]{1,4})[ \\t]+--secret)=(?<v>[A-Za-z0-9_-]+)(?<e>[ \\t]*)(?=\\n|$)";
+  def hold_gcloud_names:
+    gsub(GC_ACCESS; if (.v | GC_NAME_OK) then "\(.p)\u0001\(.v)\(.e)" else "\(.p)=\(.v)\(.e)" end);
+  def redact_line_rules:
     val_rules(VAL; BEARERVAL; GVAL)
     | gsub("(?<k>\\\\?\"(?:auth|identitytoken|registrytoken)\\\\?\"[ \\t]*:[ \\t]*\\\\?\")" + VALQ; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>" + KEYNAME + "[\"']?" + GSEP + "(?<!\\\\)[\"'])" + VALQP; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>" + KEYNAME + "\\\\[\"']" + GSEP + "\\\\[\"'])" + VALQ; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>[a-z][a-z0-9+.-]*://[^/\\s:@\"']+:)(?!\\$[({A-Za-z_])[^@\\s/\"']+(?=@)"; "\(.k)[REDACTED]"; "i")
     | gsub("(?<k>[a-z][a-z0-9+.-]*://)(?!\\[REDACTED\\])[^/\\s:@\"'\\\\]{16,}(?=@)"; "\(.k)[REDACTED]"; "i");
+  def redact_line:
+    if test("gcloud") and (test("\u0001") | not)
+    then hold_gcloud_names | redact_line_rules | gsub("\u0001"; "=")
+    else redact_line_rules end;
   # A line over LIMIT bytes (minified JSON) is cut into pieces of about LIMIT
   # bytes at `,"` (plain, or the `,` before an escaped `\"`). No line-rule key
   # or quoted value contains `,"`. The values that can span it are the

@@ -1,6 +1,6 @@
 ---
 id: hq-no-grep-discovery
-title: Never Grep for PRD or Worker Discovery
+title: Use Indexes for Project and Worker Discovery
 when: grep
 on: [PreToolUse]
 enforcement: hard
@@ -10,16 +10,8 @@ public: true
 
 ## Rule
 
-Never use Grep to find `prd.json`, `worker.yaml`, or discover project/company/worker directories. This is hook-enforced — Grep calls with these patterns are blocked.
-
-**Use instead:**
-- **Project PRDs:** `qmd search "{name} prd.json" --json -n 5` → parse results → `Read` the file
-- **Workers:** `Read core/workers/registry.yaml` → find path → `Read {path}/worker.yaml`. If the path is missing, the worker is not available — do not fall back to a raw repo script.
-- **Companies:** `Read companies/manifest.yaml` — all companies listed there
-- **Known exact path:** `Read companies/{co}/projects/{name}/prd.json` directly
-
-Grep is for exact pattern matching in code (e.g. `import.*AuthService` with `glob: "*.ts"`), not for file discovery.
+Do not use Grep to find `prd.json` or `worker.yaml` files. Use qmd for project discovery, such as `qmd search "project prd.json" --json -n 5`, then read the selected file. Read `core/workers/registry.yaml` to find a worker and read its `worker.yaml`; if the worker is absent, treat it as unavailable and do not fall back to a raw repository script. Read `companies/manifest.yaml` to discover companies. Read a known file directly. Use Grep for exact content searches within a specified directory.
 
 ## Rationale
 
-Same as Glob blocking: qmd and index files (`manifest.yaml`, `registry.yaml`) are the correct discovery tools. Grep for `prd.json` or `worker.yaml` patterns teaches the wrong habit and bypasses the indexed search system.
+Indexed discovery avoids broad scans and matches the registered legacy hooks.

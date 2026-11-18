@@ -47,9 +47,12 @@ if count == 0 or count > limit:
 required = (
     "handoff-sync-prefetch.sh",
     "resumework-resolve.sh",
+    # US-043: open-steps runs the hq core twin. The lock calls stay on the
+    # helper: they pass $thread_id, set from a substitution, and the
+    # credential guard blocks hq with an operand it cannot evaluate.
     "resume-thread-lock.sh inspect",
     "resume-thread-lock.sh acquire",
-    "handoff-open-steps.sh list --limit 10",
+    "hq core handoff open-steps list --limit 10",
     "git -C /absolute/path/to/repo status --short",
     "hq-session.sh set mode \"Resume\"",
 )
@@ -83,7 +86,10 @@ blocks = [block for _, block in re.findall(r"(?m)^([ \t]*)```bash[ \t]*\n(.*?)^\
 block = next((block for block in blocks if 'arg="$ARGUMENTS"' in block), None)
 if block is None:
     raise SystemExit("resumework timing: thread-resolution Bash block not found")
-print(block.replace("$ARGUMENTS", "\"$RESUMEWORK_THREAD_ID\""), end="")
+# Write bytes: on Windows, text-mode stdout turns each LF into CR LF, and
+# the Bash guards then cannot classify a case header that ends in CR.
+# An agent's Bash command has LF line ends.
+sys.stdout.buffer.write(block.replace("$ARGUMENTS", "\"$RESUMEWORK_THREAD_ID\"").encode("utf-8"))
 PYBLOCK
 )"
 LOCK_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" <<'PYBLOCK'
@@ -102,7 +108,7 @@ if block is None:
 # literal path for each sample below; a `$ROOT/...$RESUMEWORK_THREAD_ID`
 # assignment would be a value the scope guard cannot prove (#1512 review).
 block = block.replace('thread_file="<resolved-thread-file>"', 'thread_file="__RESUMEWORK_THREAD_FILE__"')
-print(block, end="")
+sys.stdout.buffer.write(block.encode("utf-8"))  # bytes: keep LF on Windows
 PYBLOCK
 )"
 METADATA_COMMAND="$(python3 - "$ROOT/.claude/skills/resumework/SKILL.md" "$ROOT" <<'PYBLOCK'
@@ -121,7 +127,7 @@ if block is None:
 # environment, and the scope guard blocks `git -C` with a variable the
 # command does not set.
 block = re.sub(r"(git -C )\S+", lambda m: m.group(1) + sys.argv[2], block).replace('"{co}"', '"indigo"')
-print(block, end="")
+sys.stdout.buffer.write(block.encode("utf-8"))  # bytes: keep LF on Windows
 PYBLOCK
 )"
 
@@ -134,6 +140,12 @@ median() {
   sort -n | awk '{ a[NR]=$1 } END { if (!NR) { print 0; exit } if (NR%2) print a[(NR+1)/2]; else print int((a[NR/2]+a[NR/2+1])/2) }'
 }
 
+CR=$'\r'
+for extracted in "$THREAD_FIND_COMMAND" "$LOCK_COMMAND" "$METADATA_COMMAND"; do
+  case "$extracted" in
+    *"$CR"*) echo "resumework timing: an extracted Bash block has a carriage return; it must keep LF line ends" >&2; exit 1 ;;
+  esac
+done
 commands=("$THREAD_FIND_COMMAND" "$LOCK_COMMAND" "$METADATA_COMMAND")
 labels=("thread-resolution-prefetch" "lock-inspect-acquire-open-steps" "git-session-metadata")
 

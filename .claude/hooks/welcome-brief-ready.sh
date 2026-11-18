@@ -32,6 +32,12 @@
 # neither does a newest run while an older candidate is still going. One
 # unreadable candidate is skipped and the rest are still read. A failed write
 # stays silent, and a marker this run created but could not fill is removed.
+# Machine-check collect-only (HQ_MACHINE_CHECK=1 and
+# HQ_MACHINE_CHECK_COLLECT_ONLY=1, set by the hq-cli daemon batch when
+# core/core.yaml advertises machineCheckCollectOnly): the announcement is
+# printed for the batch to collect, but the announced marker is not created,
+# because nobody has seen it yet. The checked-none file is a scan cache, not a
+# delivery record, and is written as usual.
 # Registered in .claude/hooks/hook-registry.json immediately after
 # auto-startwork. settings.json only starts master-hook.sh, which dispatches
 # that registry; the Codex and Grok adapters read it too.
@@ -86,7 +92,7 @@ fi
 [ "$session_principal" = "human" ] || silent
 
 # Headless runs that keep the person's env and so resolve as human: the
-# detached checkpoint sibling (hq core checkpoint) and hq lanes workers.
+# detached checkpoint sibling (hq core checkpoint) and hq runners workers.
 [ -z "${HQ_CHECKPOINT_SIBLING:-}" ] || silent
 [ -z "${HQ_LANE_ID:-}" ] || silent
 
@@ -627,6 +633,11 @@ esac
 sentence='Your welcome brief is ready. [Open your welcome brief](hq://brief). See your files: [Open your files](hq://vault).'
 instruction='Show that sentence to the person in your first reply.'
 output="{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"${sentence}\\n${instruction}\"}}"
+
+if [ "${HQ_MACHINE_CHECK:-}" = "1" ] && [ "${HQ_MACHINE_CHECK_COLLECT_ONLY:-}" = "1" ]; then
+  printf '%s\n' "$output"
+  exit 0
+fi
 
 # Exclusive create. The redirection error stays off stderr. Losers of a
 # concurrent startup, and an unwritable directory, produce no announcement.

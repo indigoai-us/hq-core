@@ -340,6 +340,7 @@ fi
 FX="$TMP/fx root"
 mkdir -p "$FX/core/scripts/lib"
 cp "$ROOT/core/scripts/lib/hook-stop-async.sh" "$FX/core/scripts/lib/"
+cp "$ROOT/core/scripts/lib/epochrealtime.sh" "$FX/core/scripts/lib/"
 cp "$ROOT/core/scripts/hook-stop-async-drain.sh" "$FX/core/scripts/"
 printf '#!/usr/bin/env bash\necho launcher-down >&2\nexit 1\n' >"$FX/core/scripts/hq-hidden-run.sh"
 cp "$FX/core/scripts/hq-hidden-run.sh" "$FX/core/scripts/hq-detach.sh"

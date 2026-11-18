@@ -60,7 +60,13 @@ REPO_REL="$(jq -r '.repo.path // empty' "$MANIFEST")"
 BRANCH="$(jq -r '.repo.branch // empty' "$MANIFEST")"
 [ -n "$REPO_REL" ] || die "manifest repo block has no path"
 
-REPO_DIR="$HQ_ROOT/$REPO_REL"
+# repo.path is HQ-root-relative (repos/private/x) or, for a project whose PRD
+# names a repo outside the HQ tree, absolute (feedback_6ea99712). Prefixing the
+# root to an absolute path produced "<root>//Users/...".
+case "$REPO_REL" in
+  /*|[A-Za-z]:[\\/]*) REPO_DIR="$REPO_REL" ;;
+  *) REPO_DIR="$HQ_ROOT/$REPO_REL" ;;
+esac
 [ -d "$REPO_DIR/.git" ] || git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1 \
   || die "not a git repository: $REPO_DIR"
 

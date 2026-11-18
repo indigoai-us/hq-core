@@ -58,7 +58,7 @@ instructions: |
   - Never spawn a child agent (no Task tool, no `claude -p`, no `codex exec`,
     no `grok -p`). Every phase is queued into an hq-cli loop lane through
     `core/scripts/pipeline-conductor.sh route`, which calls
-    `hq lanes enqueue`.
+    `hq runners enqueue`.
   - Never start a background loop inside a lane. The driver is the only loop.
   - Never set `passes` in prd.json. A story is finished when its literal
     acceptance criteria pass the re-check; the parent records it.

@@ -13,8 +13,36 @@
 
 set -euo pipefail
 
+# Give this shell an explicit LANG when it has none. Under Homebrew bash 5.3
+# on macOS, a locale reset that resolves to "" (unset LC_ALL, or a function's
+# `local LC_ALL=C` going out of scope, with LANG empty) makes bash's libintl
+# setlocale ask CoreFoundation for the preferred languages. This guard runs
+# inside a forked subshell (the source runner's `( . "$child" )` and every
+# `$(...)`), and CoreFoundation is not safe to use after fork without exec, so
+# about 1 run in 15 died with SIGSEGV (exit 139). With LANG=C every reset
+# names a locale and never reaches CoreFoundation.
+# This does change the shell's own locale on Homebrew bash 5.3: with no LANG
+# or LC_* variable, libintl resolved the locale through CoreFoundation to
+# UTF-8 (not C), so `${#é}` was 1 and nocasematch folded the Kelvin sign to k.
+# After this block the shell uses C byte semantics. The checks that decide
+# run under scope_c_locale or LC_ALL=C already (grep, tr, sort, awk), so
+# decisions are the same. The nocaseglob `compgen` calls now fold ASCII only;
+# company slugs are ASCII, so a company folder still matches its case
+# variants. LANG stays unexported when it was unset, so child commands see the
+# same environment; an exported empty LANG is unexported first.
+if [ -z "${LANG:-}" ]; then
+  export -n LANG 2>/dev/null || true
+  LANG=C
+fi
+
 # scope_tool_location_bounded leaves this marker after a timeout.
-trap 'rmdir "${TMPDIR:-/tmp}/hq-scope-tool-slow.$$" 2>/dev/null || true' EXIT
+# The trap keeps the exit status: bash 3.2 otherwise exits with the status of
+# the trap's last command, so an error exit would become 0 (allow).
+# SCOPE_SOURCING is set while a helper file is sourced: bash 3.2 ends the
+# whole script with status 0 on a syntax error inside a sourced file, so an
+# exit while it is still set is a refusal.
+SCOPE_SOURCING=""
+trap 'scope_exit_rc=$?; rmdir "${TMPDIR:-/tmp}/hq-scope-tool-slow.$$" 2>/dev/null || :; if [ -n "$SCOPE_SOURCING" ]; then printf "BLOCKED: Cross-company scope check. The hook helper %s did not load; refresh the hook installation.\n" "$SCOPE_SOURCING" >&2; scope_exit_rc=2; fi; exit "$scope_exit_rc"' EXIT
 
 # The host kills a safety guard at 25 s and treats that as a block with no
 # explanation. A long inline command is checked token by token, so the guard
@@ -48,7 +76,8 @@ INPUT=
 IFS= read -r -d '' INPUT || true
 INPUT="${INPUT%"${INPUT##*[!$'\n']}"}"
 
-if [ "${HQ_HOOK_CWD+set}" = "set" ]; then
+# The Unicode-folded copy (HQ_SCOPE_FOLD_COPY) reads its cwd from the copy.
+if [ "${HQ_HOOK_CWD+set}" = "set" ] && [ -z "${HQ_SCOPE_FOLD_COPY:-}" ]; then
   PAYLOAD_CWD="$HQ_HOOK_CWD"
 else
   PAYLOAD_CWD="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
@@ -57,6 +86,11 @@ if [ "${HQ_HOOK_TOOL_NAME+set}" = "set" ]; then
   TOOL="$HQ_HOOK_TOOL_NAME"   # parsed once by master-hook.sh
 else
   TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
+fi
+# Cursor names its shell tool Shell; master-hook already maps it to Bash. Do the
+# same when this guard is run on a raw Cursor payload, so the command is checked.
+if [ "$TOOL" = "Shell" ]; then
+  case "$INPUT" in *'"cursor_version"'*) TOOL="Bash" ;; esac
 fi
 
 # bash 3.2 (the stock macOS shell) runs ${var//[class]/} in time that grows
@@ -1394,6 +1428,13 @@ scope_candidate_is_inert_text() {
   backtick=$'\140'
   # Only a standalone echo/printf is inert. A pipe, redirect, command
   # separator, or substitution can feed or execute the printed path.
+  # scope_mask_literal_expansions rewrites only $, backticks and glob
+  # characters, so the separators, redirects and newlines below are the same
+  # in the raw and the masked text. Test them on the raw text first: a long
+  # multi-line command (a python or node heredoc) then returns here instead
+  # of masking the whole command again for every candidate path in it, which
+  # took most of the 25 s hook cap on 5 to 6 KB heredocs (feedback_075f4505).
+  case "$command_text" in *';'*|*'|'*|*'&'*|*'<'*|*'>'*|*$'\n'*) return 1 ;; esac
   masked_segment="$(scope_mask_literal_expansions "$command_text")"
   case "$masked_segment" in *';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'$('*|*"$backtick"*|*$'\n'*) return 1 ;; esac
   # Quoted message values are data only for commands whose option contract
@@ -1407,7 +1448,8 @@ scope_candidate_is_inert_text() {
       # It is text the CLI sends, never a path it opens.
       text_option_re="$data_option_re|^[[:space:]]*hq[[:space:]]+dm[[:space:]]+(send[[:space:]]+)?((--channel|--thread)[[:space:]]+)?[^[:space:]\"'-][^[:space:]]*[[:space:]]+(\"[^\"]*$|'[^']*$)"
       ;;
-    'hq lanes message '*|'hq lanes link report '*) text_option_re="$data_option_re" ;;
+    # hq lanes is the deprecated alias of hq runners; both spellings carry text.
+    'hq runners message '*|'hq runners link report '*|'hq lanes message '*|'hq lanes link report '*) text_option_re="$data_option_re" ;;
     'hq mesh '* )
       if [[ "$command_head" =~ ^hq[[:space:]]+mesh[[:space:]]+[^[:space:]]+[[:space:]]+note([[:space:]]|$) ]]; then
         text_option_re="$data_option_re"
@@ -1847,9 +1889,17 @@ scope_check_bash_candidate_inner() {
       # `companies/*/knowledge` passes when every matching tenant is locked
       # (always true in a single-company HQ) and fails on any other tenant.
       if [[ "$masked" == companies/* ]] && scope_expand_company_segment_glob "$candidate" "$first_segment"; then
+        # Remember the operand as typed, so a block on one expanded match
+        # reports the glob and not a concrete path the user never wrote.
+        local glob_operand_set=0
+        if [ -z "${SCOPE_GLOB_OPERAND:-}" ]; then
+          SCOPE_GLOB_OPERAND="$candidate"
+          glob_operand_set=1
+        fi
         for expanded in ${scope_glob_words[@]+"${scope_glob_words[@]}"}; do
           scope_check_bash_candidate_inner "$expanded" "$command_text" "$((depth + 1))" "" "$occurrence_prefix" "$occurrence_suffix"
         done
+        [ "$glob_operand_set" -eq 0 ] || SCOPE_GLOB_OPERAND=""
         return 0
       fi
       scope_block_rel "$candidate" "glob in the company segment is not allowed"
@@ -2062,20 +2112,93 @@ scope_word_quotes_outside_company_paths() {
 # (scope_norm_scan), so an escaped or single-quoted `$`, `*`, `?` or `[`
 # arrives as a literal marker (`companies/x/\$schema.json` stays a plain file
 # name) while a real expansion still reaches the fail-closed variable checks.
+# True when <word> is text of an interpreter heredoc body and not a word of
+# the shell command around it.
+scope_word_is_interp_body_text() {
+  local word="${1:-}"
+  [ -n "${scope_interp_bodies:-}" ] \
+    && { [[ "$scope_interp_bodies" == *"$word"* ]] || [[ "${scope_interp_bodies_unquoted:-}" == *"$word"* ]] \
+      || [[ "${scope_interp_bodies_masked:-}" == *"$word"* ]] || [[ "${scope_interp_bodies_masked_unquoted:-}" == *"$word"* ]]; } \
+    && [[ "${scope_interp_outside_unquoted:-}" != *"$word"* ]] \
+    && [[ "${scope_interp_outside_masked_unquoted:-}" != *"$word"* ]]
+}
+
+# Copied company skill mirrors (scope_skill_mirror_companies) on a word's bash
+# value. The raw `.claude` scan reads the spelled text, so shell quoting
+# (`otherco\:x`, `otherco"":x`, `otherco':'x`, `.claude/sk\ills/otherco:x`,
+# `otherco$':'x`) and brace expansion (`{otherco:x,y}`, `other{co,}:x`) hid
+# the mirror's folder name from it. Here the word after quote removal, and
+# each word its braces expand to, is checked by folder name. A `$'...'` string
+# with a backslash escape can spell any character, so a skills path that
+# holds one is refused.
+scope_check_normalized_skill_word() {
+  local word="${1:-}" raw="${2-}" w co wb wpre wrest wtail wcore
+  # shellcheck disable=SC2254
+  case "/$word" in */$SCOPE_SKILLS_SEG_PAT*) ;; *) return 0 ;; esac
+  if [ "$#" -ge 2 ] && scope_text_has_ansi_escape "$raw"; then
+    scope_block_rel "$word" "a \$'...' escape in a skills path cannot be checked; spell the folder name literally"
+  fi
+  case "$word" in *:*|*'{'*|*'}'*) ;; *) return 0 ;; esac
+  if [ "$#" -ge 2 ] && scope_word_spelled_literally "$word" "$raw"; then
+    case "$word" in *'{'*|*'}'*) ;; *) return 0 ;; esac
+  fi
+  scope_word_is_interp_body_text "$word" && return 0
+  scope_brace_expand "$word" \
+    || scope_block_rel "$word" "a brace expansion in a skills path is too large to check; spell each folder literally"
+  for w in "${SCOPE_BRACE_WORDS[@]}"; do
+    # A brace left after expansion is literal text that a program fills in
+    # at run time (`xargs -I{} cat .claude/skills/otherco{}`, find -exec), so
+    # the folder it names cannot be checked. companies/ paths with a literal
+    # brace are refused the same way (scope_check_bash_candidate_inner).
+    # This runs before the `$` strip below, so a `${name}` expansion is
+    # dropped here and left to the variable checks instead of reading as a
+    # literal brace (review of c699363d1, trade-off a). A `}`, `]` or `,`
+    # after the last segment with no `{` after `skills/` is JSON or prose
+    # punctuation (`jq '{path: ".claude/skills/x"}'`), as scope_check_normalized_word
+    # treats it after `companies/`.
+    wb="$w"
+    while :; do
+      case "$wb" in
+        *'${'*'}'*) wpre="${wb%%\$\{*}"; wrest="${wb#*\$\{}"; wb="$wpre${wrest#*\}}" ;;
+        *) break ;;
+      esac
+    done
+    wtail="/$wb"
+    # shellcheck disable=SC2254
+    case "$wtail" in */$SCOPE_SKILLS_SEG_PAT*) wtail="${wtail#*/$SCOPE_SKILLS_SEG_PAT}" ;; *) wtail="" ;; esac
+    case "$wtail" in
+      *'{'*) ;;
+      *[\},\]]*)
+        wcore="${wtail%%[\},\]]*}"
+        case "${wtail#"$wcore"}" in */*) ;; *) wtail="$wcore" ;; esac
+        ;;
+    esac
+    case "$wtail" in
+      *'{'*|*'}'*)
+        scope_block_rel "$w" "a {} placeholder or literal brace in a skills path is filled in at run time, so the folder cannot be checked; spell the folder name literally"
+        ;;
+    esac
+    # `$':'` reaches this split as a bare `$` before the colon.
+    w="${w//\$/}"
+    scope_skill_mirror_companies "$w"
+    for co in $SCOPE_SKILL_MIRROR_COS; do
+      scope_rel_allowed "companies/$co" || scope_block_rel "$w"
+    done
+  done
+  return 0
+}
+
 scope_check_normalized_word() {
   local word="${1:-}" rest frag
   case "$word" in *companies/*) ;; *) return 0 ;; esac
+  # No outside-HQ exemption for an absolute path that holds companies/: the
+  # disk can change between this check and the open, so the
+  # fragment is checked as this HQ's companies/ whatever comes in front.
   if [ "$#" -ge 2 ]; then
     scope_word_spelled_literally "$word" "${2:-}" && return 0
     scope_word_quotes_outside_company_paths "$word" "${2:-}" && return 0
   fi
-  if [ -n "${scope_interp_bodies:-}" ] \
-    && { [[ "$scope_interp_bodies" == *"$word"* ]] || [[ "${scope_interp_bodies_unquoted:-}" == *"$word"* ]] \
-      || [[ "${scope_interp_bodies_masked:-}" == *"$word"* ]] || [[ "${scope_interp_bodies_masked_unquoted:-}" == *"$word"* ]]; } \
-    && [[ "${scope_interp_outside_unquoted:-}" != *"$word"* ]] \
-    && [[ "${scope_interp_outside_masked_unquoted:-}" != *"$word"* ]]; then
-    return 0
-  fi
+  scope_word_is_interp_body_text "$word" && return 0
   rest="$word"
   while [[ "$rest" == *companies/* ]]; do
     frag="companies/${rest#*companies/}"
@@ -2128,8 +2251,10 @@ scope_check_normalized_split() {
       if [ "${#norm_lines[@]}" -eq "${#raw_lines[@]}" ] \
         && [ "${#raw_words[@]}" -eq "${#norm_words[@]}" ]; then
         scope_check_normalized_word "${norm_words[$w]}" "${raw_words[$w]}"
+        scope_check_normalized_skill_word "${norm_words[$w]}" "${raw_words[$w]}"
       else
         scope_check_normalized_word "${norm_words[$w]}"
+        scope_check_normalized_skill_word "${norm_words[$w]}"
       fi
     done
   done
@@ -2374,7 +2499,7 @@ scope_check_bash_glob_candidate() {
 }
 
 case "$TOOL" in
-  Read|Grep|Glob|Bash|Write|Edit|MultiEdit|NotebookEdit) ;;
+  Read|Grep|Glob|Bash|Write|Edit|MultiEdit|NotebookEdit|Skill) ;;
   *) exit 0 ;;
 esac
 
@@ -2527,7 +2652,8 @@ scope_case_fold_text() {
 # any doubt (a scan that did not run cleanly) returns 1 and the full fold
 # runs. Called in the C locale, and each grep gets LC_ALL=C, so -i folds ASCII
 # letters only, which is what the [xX] patterns from scope_case_pattern match.
-#   - No long s or Kelvin sign.
+#   - No code point from the volume subset of the shared fold table
+#     (path-fold-lib.sh).
 #   - Every case-insensitive match of the HQ root, and of "companies", is
 #     already the canonical spelling. grep -o reports the leftmost
 #     non-overlapping matches, the same ones scope_case_replace_all rewrites,
@@ -2536,7 +2662,7 @@ scope_case_fold_text() {
 #     runs the walk takes) is its own on-disk entry.
 scope_case_fold_is_noop() {
   local text="${1:-}" lit scan seg
-  case "$text" in *$'\xc5\xbf'*|*$'\xe2\x84\xaa'*) return 1 ;; esac
+  _hq_path_fold_volume_needed_bytes "$text" && return 1
   for lit in "$HQ_ROOT" companies; do
     # Prints "<count of non-canonical matches> <rc of grep -o> <rc of grep -c>".
     scan="$(printf '%s\n' "$text" | LC_ALL=C grep -a -o -i -F -e "$lit" \
@@ -2575,14 +2701,19 @@ scope_case_fold_text_bytes() {
     SCOPE_CASE_TEXT="$text"
     return 0
   fi
-  # Unicode case folding maps two non-ASCII letters onto ASCII ones: U+017F
-  # (long s) folds to s and U+212A (Kelvin sign) to k, so `companie\u017f/x`
-  # opens companies/x. Spell them as the ASCII letter first.
+  # A folding volume maps some non-ASCII letters onto ASCII ones: U+017F
+  # (long s) opens s, U+212A (Kelvin sign) k, U+00DF (sharp s) ss and the
+  # Latin ligatures their letters, so `companie\u017f/x` opens companies/x
+  # and an HQ root spelled with a ligature opens the HQ root. Spell them as
+  # ASCII first, with the volume subset of the shared fold table
+  # (path-fold-lib.sh). The rest of fold v1 (fullwidth forms, dotless i) is
+  # checked on a second copy of the payload, never folded into this one:
+  # the volume keeps those names distinct, and a fullwidth full stop folded
+  # to "." would turn a folder name into `..`.
   # Every substitution below goes through scope_literal_replace_all, not
   # ${text//lit/rep}: see that helper for why (bash 3.2 cost on long payloads).
-  scope_literal_replace_all "$text" $'\xc5\xbf' s
-  scope_literal_replace_all "$SCOPE_LIT_OUT" $'\xe2\x84\xaa' k
-  text="$SCOPE_LIT_OUT"
+  hq_path_fold_volume "$text"
+  text="$HQ_PATH_FOLD_OUT"
   if [ -z "${SCOPE_CASE_ROOT_PAT:-}" ]; then
     scope_case_pattern "$HQ_ROOT"
     SCOPE_CASE_ROOT_PAT="$SCOPE_CASE_PAT"
@@ -2651,9 +2782,175 @@ scope_resolve_absolute_path() {
     fi
     resolved="$candidate"
   done
+  # Another spelling of the HQ root (or of companies/) that opens the same
+  # folder is that folder: classify by identity, not by the string.
+  scope_hq_identity_path "$resolved"
+  [ -n "$SCOPE_IDENT_OUT" ] && resolved="$SCOPE_IDENT_OUT"
   # A case variant of the HQ root, companies/, or a slug names the same folder.
   scope_case_fold_text "$resolved"
   printf '%s' "$SCOPE_CASE_TEXT"
+}
+
+# Strip the whitespace that the host trims from a file-tool path before it
+# opens it (JavaScript String.prototype.trim: ASCII space, tab, LF, VT, FF,
+# CR, and U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F,
+# U+3000, U+FEFF). Result in SCOPE_TRIMMED.
+scope_trim_tool_path() {
+  local p="${1:-}" prev=""
+  scope_c_locale_enter
+  while [ "$p" != "$prev" ]; do
+    prev="$p"
+    case "$p" in
+      [$' \t\n\v\f\r']*) p="${p:1}" ;;
+      $'\xc2\xa0'*) p="${p:2}" ;;
+      $'\xe1\x9a\x80'*|$'\xe2\x80'[$'\x80'-$'\x8a'$'\xa8'$'\xa9'$'\xaf']*|$'\xe2\x81\x9f'*|$'\xe3\x80\x80'*|$'\xef\xbb\xbf'*) p="${p:3}" ;;
+    esac
+    case "$p" in
+      *[$' \t\n\v\f\r']) p="${p%?}" ;;
+      *$'\xc2\xa0') p="${p%??}" ;;
+      *$'\xe1\x9a\x80'|*$'\xe2\x80'[$'\x80'-$'\x8a'$'\xa8'$'\xa9'$'\xaf']|*$'\xe2\x81\x9f'|*$'\xe3\x80\x80'|*$'\xef\xbb\xbf') p="${p%???}" ;;
+    esac
+  done
+  scope_c_locale_leave
+  SCOPE_TRIMMED="$p"
+}
+
+# The path a file tool opens for <raw>, spelled the way the host computes it:
+# trimmed, `~` and `~/` expanded to $HOME, a relative path joined to the
+# payload cwd, then normalized lexically (`.` and `..` removed as text,
+# without following links; the kernel then follows links in what is left).
+# The guard's own resolution applies `..` after following links, which is
+# what a shell does, so a file-tool path is checked in both forms. A
+# backslash is an ordinary character except on Windows. Result in
+# SCOPE_OPEN_PATH; empty when there is no path.
+scope_tool_open_path() {
+  local p="${1:-}" base seg rest out="" last=0
+  local -a kept
+  scope_trim_tool_path "$p"
+  p="$SCOPE_TRIMMED"
+  SCOPE_OPEN_PATH=""
+  [ -n "$p" ] || return 0
+  case "${OSTYPE:-}" in msys*|cygwin*|win32*) p="${p//\\//}" ;; esac
+  case "$p" in
+    '~') p="${HOME:-/}" ;;
+    '~/'*) p="${HOME:-}/${p#'~/'}" ;;
+  esac
+  case "$p" in
+    /*) ;;
+    *)
+      base="${PAYLOAD_CWD:-}"
+      case "$base" in /*) ;; *) base="$HQ_ROOT" ;; esac
+      p="$base/$p"
+      ;;
+  esac
+  kept=()
+  rest="${p#/}"
+  while [ "$last" -eq 0 ]; do
+    case "$rest" in
+      */*) seg="${rest%%/*}"; rest="${rest#*/}" ;;
+      *) seg="$rest"; last=1 ;;
+    esac
+    case "$seg" in
+      ''|.) ;;
+      ..) [ "${#kept[@]}" -eq 0 ] || unset "kept[$((${#kept[@]} - 1))]" ;;
+      *) kept[${#kept[@]}]="$seg" ;;
+    esac
+  done
+  for seg in ${kept[@]+"${kept[@]}"}; do
+    out="$out/$seg"
+  done
+  SCOPE_OPEN_PATH="${out:-/}"
+}
+
+# Check the path a file tool opens when it differs from the spelling the
+# other checks saw (see scope_tool_open_path).
+scope_check_tool_open_path() {
+  local raw="${1:-}" kind="${2:-file}" chk
+  # Common case first, with no work: no `~`, no `.` or `..` segment, no
+  # empty segment and no backslash next to `..`. The checks already run on
+  # the HQ-root and cwd joins cover such a path as it is opened.
+  # A relative path is joined to the payload cwd, so the cwd counts too.
+  case "$raw" in /*) chk="$raw/" ;; *) chk="${PAYLOAD_CWD:-}/$raw/" ;; esac
+  case "$raw" in
+    '~'*|*'\'*..*|*..*'\'*) ;;
+    *)
+      case "$chk" in
+        *//*|*/./*|*/../*) ;;
+        *) return 0 ;;
+      esac
+      ;;
+  esac
+  scope_tool_open_path "$raw"
+  [ -n "$SCOPE_OPEN_PATH" ] || return 0
+  case "${OSTYPE:-}" in
+    msys*|cygwin*|win32*) ;;
+    *)
+      # The guard's path checks read `\` as a separator; the tool does not.
+      # With `..` in the path the two can name different folders.
+      case "$SCOPE_OPEN_PATH" in
+        *'\'*)
+          case "$raw" in
+            *..*) scope_block_rel "$raw" "a path with a backslash and .. cannot be classified; spell it with / and without .." ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  [ "$SCOPE_OPEN_PATH" != "$raw" ] || return 0
+  if [ "$kind" = search ]; then
+    scope_check_recursive_search_root "$SCOPE_OPEN_PATH"
+  else
+    scope_check_raw "$SCOPE_OPEN_PATH"
+  fi
+}
+
+# Rewrite an absolute path that reaches the HQ root, or HQ's companies/
+# folder, under another spelling: a letter the volume folds (a ligature,
+# sharp s, case), a second mount of the same volume (a firmlink or bind
+# mount), or a link in a parent folder. Each existing ancestor is compared
+# with the root and with companies/ by identity (`-ef`: same device and
+# inode); the first match from the deepest ancestor up is replaced with the
+# canonical spelling and the rest is kept. Sets SCOPE_IDENT_OUT, or leaves it
+# empty when the path is spelled under the root already or reaches neither.
+# Builtins only: this runs on every path check.
+scope_hq_identity_path() {
+  local p="${1:-}" up rest
+  SCOPE_IDENT_OUT=""
+  [ -n "$HQ_ROOT" ] || return 0
+  case "$p" in
+    /*) ;;
+    *) return 0 ;;
+  esac
+  case "$p" in
+    "$HQ_ROOT") return 0 ;;
+    "$HQ_ROOT"/companies|"$HQ_ROOT"/companies/*) return 0 ;;
+    "$HQ_ROOT"/*)
+      # Spelled under the root: only the companies/ segment can still be
+      # another spelling of the folder.
+      rest="${p#"$HQ_ROOT"/}"
+      up="${rest%%/*}"
+      case "$up" in ""|.|..) return 0 ;; esac
+      if [ "$HQ_ROOT/$up" -ef "$HQ_ROOT/companies" ]; then
+        SCOPE_IDENT_OUT="$HQ_ROOT/companies${rest#"$up"}"
+      fi
+      return 0
+      ;;
+  esac
+  up="${p%/}"
+  while [ -n "$up" ]; do
+    if [ "$up" -ef "$HQ_ROOT/companies" ]; then
+      rest="${p#"$up"}"
+      SCOPE_IDENT_OUT="$HQ_ROOT/companies$rest"
+      return 0
+    fi
+    if [ "$up" -ef "$HQ_ROOT" ]; then
+      rest="${p#"$up"}"
+      SCOPE_IDENT_OUT="$HQ_ROOT$rest"
+      return 0
+    fi
+    up="${up%/*}"
+  done
+  return 0
 }
 
 self_src="${BASH_SOURCE[0]:-$0}"
@@ -2679,23 +2976,153 @@ if [ -z "$HQ_ROOT" ]; then
   done
 fi
 [ -n "$HQ_ROOT" ] && [ -d "$HQ_ROOT/companies" ] || exit 0
+# The shared Unicode fold table (fold v1). Without it a payload holding a
+# folded code point cannot be classified, so it is refused; plain ASCII and
+# other text pass through unchanged. A helper that is present but does not
+# load completely (unreadable, truncated, a syntax error) refuses every call.
+scope_fold_lib="${self_dir:-${BASH_SOURCE[0]%/*}}/path-fold-lib.sh"
+scope_fold_lib_broken() {
+  printf '%s\n' 'BLOCKED: Cross-company scope check. The path fold helper (path-fold-lib.sh) did not load; refresh the hook installation.' >&2
+  exit 2
+}
+if [ -e "$scope_fold_lib" ] || [ -L "$scope_fold_lib" ]; then
+  HQ_PATH_FOLD_LIB_LOADED=""
+  [ -f "$scope_fold_lib" ] && [ -r "$scope_fold_lib" ] || scope_fold_lib_broken
+  # bash 3.2 ends the whole script with status 0 on a syntax error inside a
+  # sourced file, before any check below could run. So read the file first
+  # (one builtin call) and require its last line: a truncated copy, an
+  # empty file or a one-line stub is refused before it is sourced.
+  scope_fold_lib_text=""
+  IFS= read -r -d '' scope_fold_lib_text < "$scope_fold_lib" || true
+  scope_fold_lib_text="${scope_fold_lib_text%"${scope_fold_lib_text##*[!$'\n']}"}"
+  case "$scope_fold_lib_text" in
+    *$'\nHQ_PATH_FOLD_LIB_LOADED=1') ;;
+    *) scope_fold_lib_broken ;;
+  esac
+  unset scope_fold_lib_text
+  # shellcheck source=path-fold-lib.sh
+  SCOPE_SOURCING=path-fold-lib.sh
+  if ! . "$scope_fold_lib"; then SCOPE_SOURCING=""; scope_fold_lib_broken; fi
+  SCOPE_SOURCING=""
+  [ "${HQ_PATH_FOLD_LIB_LOADED:-}" = 1 ] || scope_fold_lib_broken
+  for scope_fold_fn in hq_path_fold hq_path_fold_volume _hq_path_fold_needed_bytes _hq_path_fold_volume_needed_bytes; do
+    declare -F "$scope_fold_fn" >/dev/null || scope_fold_lib_broken
+  done
+  [ -n "${HQ_PATH_FOLD_V1_JQ:-}" ] && [ -n "${HQ_PATH_FOLD_VOLUME_JQ:-}" ] || scope_fold_lib_broken
+  unset scope_fold_fn
+else
+  _hq_path_fold_needed_bytes() { return 1; }
+  _hq_path_fold_volume_needed_bytes() { return 1; }
+  hq_path_fold() { HQ_PATH_FOLD_OUT="${1:-}"; }
+  hq_path_fold_volume() { HQ_PATH_FOLD_OUT="${1:-}"; }
+  scope_c_locale_enter
+  case "$INPUT" in
+    *[![:print:][:space:]]*|*'\u'*|*'\U'*)
+      scope_c_locale_leave
+      printf '%s\n' 'BLOCKED: Cross-company scope check. The path fold helper (path-fold-lib.sh) is missing; refresh the hook installation.' >&2
+      exit 2
+      ;;
+  esac
+  scope_c_locale_leave
+fi
+unset scope_fold_lib
+
+# Fold the payload once, with jq, before any check reads it. Only a payload
+# that holds a folded code point (raw or as a JSON \u escape) pays for this.
+#  - The volume subset of fold v1 is folded into INPUT itself only when the
+#    volume folds case: those spellings then open the ASCII-named file. On a
+#    case-sensitive volume they name a different path and stay as sent.
+#  - When the payload also holds a fold v1 code point outside the subset
+#    (fullwidth forms, dotless i), a copy folded with all of fold v1 is
+#    checked by a second run of this hook first, and its block is the
+#    verdict. The payload is then checked as sent (with the subset folded),
+#    so a fold can only add blocks. The copy holds no folded code point, and
+#    HQ_SCOPE_FOLD_COPY stops a third run.
+scope_fold_vol=0
+scope_fold_v1=0
+scope_c_locale_enter
+# Volume letters (sharp s, long s, Kelvin sign, Latin ligatures) open the
+# ASCII name only where the filesystem folds them. On a case-sensitive
+# volume those bytes are a different path and must stay as sent. Fullwidth
+# forms and dotless i are not volume folds: they are still checked on a
+# second copy so a fold can only add blocks.
+if scope_case_folds; then
+  _hq_path_fold_volume_needed_bytes "$INPUT" && scope_fold_vol=1
+  _hq_path_fold_needed_bytes "$INPUT" && scope_fold_v1=1
+  case "$INPUT" in
+    *'\u00'[dD][fF]*|*'\u1'[eE]9[eE]*|*'\u017'[fF]*|*'\u212'[aA]*|*'\u'[fF][bB]'0'[0-6]*)
+      scope_fold_vol=1; scope_fold_v1=1 ;;
+  esac
+else
+  case "$INPUT" in
+    *$'\xc4\xb0'*|*$'\xc4\xb1'*) scope_fold_v1=1 ;;
+    *$'\xef\xbc'[$'\x8d'$'\x8e'$'\x90'-$'\x99'$'\xa1'-$'\xba'$'\xbf']*) scope_fold_v1=1 ;;
+    *$'\xef\xbd'[$'\x81'-$'\x9a']*) scope_fold_v1=1 ;;
+  esac
+fi
+case "$INPUT" in
+  *'\u013'[01]*|*'\u'[fF][fF][0-5][0-9a-fA-F]*) scope_fold_v1=1 ;;
+esac
+scope_c_locale_leave
+if [ "$scope_fold_v1" -eq 1 ] && [ -z "${HQ_SCOPE_FOLD_COPY:-}" ]; then
+  scope_fold_copy="$(printf '%s' "$INPUT" | jq -nc "$HQ_PATH_FOLD_V1_JQ" 2>/dev/null)" || {
+    printf '%s\n' 'BLOCKED: Cross-company scope check. The tool call could not be parsed for the Unicode path check.' >&2
+    exit 2
+  }
+  if [ -n "$scope_fold_copy" ]; then
+    scope_fold_rc=0
+    HQ_SCOPE_FOLD_COPY=1 "${BASH:-bash}" "$self_src" <<<"$scope_fold_copy" || scope_fold_rc=$?
+    case "$scope_fold_rc" in
+      0) ;;
+      2) exit 2 ;;
+      *)
+        printf '%s\n' 'BLOCKED: Cross-company scope check. The Unicode-folded copy of the tool call could not be checked.' >&2
+        exit 2
+        ;;
+    esac
+  fi
+  unset scope_fold_copy scope_fold_rc
+fi
+if [ "$scope_fold_vol" -eq 1 ]; then
+  scope_fold_payload="$(printf '%s' "$INPUT" | jq -nc "$HQ_PATH_FOLD_VOLUME_JQ" 2>/dev/null)" || {
+    printf '%s\n' 'BLOCKED: Cross-company scope check. The tool call could not be parsed for the Unicode path check.' >&2
+    exit 2
+  }
+  [ -z "$scope_fold_payload" ] || INPUT="$scope_fold_payload"
+  unset scope_fold_payload
+fi
+unset scope_fold_vol scope_fold_v1
 physical_root="$(scope_resolve_absolute_path "$HQ_ROOT" 2>/dev/null || true)"
 [ -n "$physical_root" ] && HQ_ROOT="$physical_root"
 unset SCOPE_CASE_FOLDS SCOPE_CASE_ROOT_PAT
 [ -f "$HQ_ROOT/core/scripts/lib/session-authz.sh" ] || exit 0
 
 LIB_DIR="$HQ_ROOT/core/scripts/lib"
+SCOPE_SOURCING="core/scripts/lib (session helpers)"
 # shellcheck source=../../core/scripts/lib/session-authz.sh
 . "$LIB_DIR/session-authz.sh"
 # shellcheck source=../../core/scripts/lib/session-scope-capability.sh
 . "$LIB_DIR/session-scope-capability.sh"
 # shellcheck source=../../core/scripts/lib/session-id.sh
 . "$LIB_DIR/session-id.sh"
+SCOPE_SOURCING=""
 
 # Fold case variants of company paths in everything the checks read: the
 # payload (paths, commands) and the working directory.
-scope_case_fold_text "$INPUT"
-INPUT="$SCOPE_CASE_TEXT"
+# For the file tools the checks read one field, the path, so fold that field
+# after it is extracted (see the tool dispatch below) and not the whole payload.
+# The payload of a Write or Edit carries the full new content, and the fold's
+# cost grows with every root or companies/ mention in it: under the stock macOS
+# /bin/bash 3.2 a path-dense company README edit ran past the 25 s guard cap
+# before any check started (feedback_346a71a9). Folding the decoded path is
+# also stricter than folding JSON text, where an escape could hide a variant.
+case "$TOOL" in
+  Read|Write|Edit|MultiEdit|NotebookEdit) ;;
+  *)
+    scope_case_fold_text "$INPUT"
+    INPUT="$SCOPE_CASE_TEXT"
+    ;;
+esac
 scope_case_fold_text "$PAYLOAD_CWD"
 PAYLOAD_CWD="$SCOPE_CASE_TEXT"
 
@@ -2723,28 +3150,128 @@ PAYLOAD_CWD="$SCOPE_CASE_TEXT"
 if [ "${HQ_HOOK_SESSION_ID+set}" = "set" ]; then
   SESSION_ID="$HQ_HOOK_SESSION_ID"
 else
-  SESSION_ID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty')"
+  # session_id, or Cursor's conversation_id (its payloads carry session_id only
+  # on sessionStart). Same precedence master-hook uses for HQ_HOOK_SESSION_ID.
+  # The raw value is kept so a malformed id is still reported as
+  # invalid-session below rather than as a missing one.
+  SESSION_ID="$(printf '%s' "$INPUT" | jq -r "$SESSION_ID_PAYLOAD_JQ"' // empty')"
 fi
 CALLER_AGENT_ID=""
 CALLER_AGENT_TYPE=""
+# Where CALLER_AGENT_ID came from, for the denial text: "payload" or "environment".
+CALLER_AGENT_ID_SOURCE="payload"
 if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ] && [ "${HQ_HOOK_AGENT_TYPE+set}" = "set" ]; then
   CALLER_AGENT_ID="$HQ_HOOK_AGENT_ID"
   CALLER_AGENT_TYPE="$HQ_HOOK_AGENT_TYPE"
+  CALLER_AGENT_ID_SOURCE="environment"
 else
   # Read both caller fields in one process; hook process budgets are deliberately
-  # tight. NUL framing preserves ordinary values and marks embedded NUL invalid.
+  # tight. NUL framing preserves ordinary values. A value holding a NUL becomes
+  # an invalid marker, found by code point. This is defensive: a jq that handed
+  # a "\u0000" regex or separator to a C-string API would read it as the empty
+  # pattern, and a gsub on it would rewrite an EMPTY agent_id into the marker,
+  # so every main-thread call would look like a subagent with an invalid id. No
+  # jq build is known to do that (1.6, 1.7.1 and 1.8.2 handle the pattern
+  # correctly). An empty value is returned untouched.
   {
     IFS= read -r -d '' CALLER_AGENT_ID || true
     IFS= read -r -d '' CALLER_AGENT_TYPE || true
   } < <(printf '%s' "$INPUT" | jq -j '
-    (if .agent_id == null then "" elif (.agent_id | type) == "string" then .agent_id else "!invalid-agent-id-type!" end | gsub("\u0000"; "!invalid-agent-id-nul!"))
+    def hq_caller_field($bad_type; $bad_nul):
+      if . == null then ""
+      elif type != "string" then $bad_type
+      elif length == 0 then ""
+      elif any(explode[]; . == 0) then $bad_nul
+      else . end;
+    (.agent_id | hq_caller_field("!invalid-agent-id-type!"; "!invalid-agent-id-nul!"))
     + "\u0000" +
-    (if .agent_type == null then "" elif (.agent_type | type) == "string" then .agent_type else "!invalid-agent-type!" end | gsub("\u0000"; "!invalid-agent-type-nul!"))
+    (.agent_type | hq_caller_field("!invalid-agent-type!"; "!invalid-agent-type-nul!"))
     + "\u0000"
   ')
-  if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ]; then CALLER_AGENT_ID="$HQ_HOOK_AGENT_ID"; fi
+  if [ "${HQ_HOOK_AGENT_ID+set}" = "set" ]; then
+    CALLER_AGENT_ID="$HQ_HOOK_AGENT_ID"
+    CALLER_AGENT_ID_SOURCE="environment"
+  fi
   if [ "${HQ_HOOK_AGENT_TYPE+set}" = "set" ]; then CALLER_AGENT_TYPE="$HQ_HOOK_AGENT_TYPE"; fi
 fi
+
+# scope_describe_rejected_identity <value>
+#   Sets SCOPE_IDENTITY_DESC to a description of a refused identity that is safe
+#   to print: its byte length and the distinct bytes outside [A-Za-z0-9._-],
+#   each as a hex code, with the character itself only when it is printable
+#   ASCII. The value is never printed. At most 4096 bytes are scanned and 12
+#   distinct bytes listed. Builtins only.
+scope_describe_rejected_identity() {
+  local LC_ALL=C
+  local value="${1:-}" scan="" ch="" dec=0 hex="" seen=" " out="" i=0 len=0 distinct=0
+  len=${#value}
+  scan="$value"
+  [ "$len" -le 4096 ] || scan="${value:0:4096}"
+  for ((i = 0; i < ${#scan}; i++)); do
+    ch="${scan:i:1}"
+    case "$ch" in [A-Za-z0-9._-]) continue ;; esac
+    printf -v dec '%d' "'$ch" 2>/dev/null || dec=63
+    dec=$((dec & 255))
+    case "$seen" in *" $dec "*) continue ;; esac
+    seen="$seen$dec "
+    distinct=$((distinct + 1))
+    [ "$distinct" -le 12 ] || continue
+    printf -v hex '0x%02X' "$dec"
+    if [ "$dec" -eq 32 ]; then
+      out="$out, space ($hex)"
+    elif [ "$dec" -ge 33 ] && [ "$dec" -le 126 ]; then
+      out="$out, '$ch' ($hex)"
+    else
+      out="$out, $hex"
+    fi
+  done
+  SCOPE_IDENTITY_DESC="$len bytes"
+  if [ "$distinct" -eq 0 ]; then
+    SCOPE_IDENTITY_DESC="$SCOPE_IDENTITY_DESC; no rejected characters, but the value is '.' or '..'"
+  else
+    SCOPE_IDENTITY_DESC="$SCOPE_IDENTITY_DESC; rejected characters: ${out#, }"
+    [ "$distinct" -le 12 ] || SCOPE_IDENTITY_DESC="$SCOPE_IDENTITY_DESC and $((distinct - 12)) more"
+  fi
+  [ "$len" -le 4096 ] || SCOPE_IDENTITY_DESC="$SCOPE_IDENTITY_DESC (first 4096 bytes checked)"
+}
+
+# scope_invalid_agent_id_detail
+#   Sets SCOPE_AGENT_ID_DETAIL: where the refused agent_id came from and what
+#   was wrong with it, so a report of the denial can be diagnosed from its text.
+#   Runs on the denial path only (one jq).
+scope_invalid_agent_id_detail() {
+  local payload_state="" value_desc="" source_line=""
+  payload_state="$(printf '%s' "$INPUT" | jq -r '
+    if type != "object" then "unreadable"
+    elif .agent_id == null then "absent"
+    elif (.agent_id | type) != "string" then "not a JSON string (" + (.agent_id | type) + ")"
+    elif any(.agent_id | explode[]; . == 0) then "a string that contains a NUL character"
+    else "a string of " + (.agent_id | length | tostring) + " characters" end
+  ' 2>/dev/null || true)"
+  [ -n "$payload_state" ] || payload_state="unreadable"
+  if [ "$CALLER_AGENT_ID_SOURCE" = "environment" ]; then
+    scope_describe_rejected_identity "$CALLER_AGENT_ID"
+    value_desc="$SCOPE_IDENTITY_DESC"
+    source_line="agent_id source: environment variable HQ_HOOK_AGENT_ID, which this hook uses in place of the payload
+agent_id in the hook payload: $payload_state"
+    if [ "$payload_state" = "absent" ]; then
+      source_line="$source_line
+The payload names no agent, so this is a main-thread call. The refused value was already set in the environment of the process that ran this hook (for example the hq daemon); this call did not supply it."
+    fi
+  else
+    source_line="agent_id source: hook payload"
+    case "$CALLER_AGENT_ID" in
+      '!invalid-agent-id-type!'|'!invalid-agent-id-nul!') value_desc="${payload_state#a string that }" ;;
+      *)
+        scope_describe_rejected_identity "$CALLER_AGENT_ID"
+        value_desc="$SCOPE_IDENTITY_DESC"
+        ;;
+    esac
+  fi
+  SCOPE_AGENT_ID_DETAIL="$source_line
+agent_id value: $value_desc
+An agent_id may hold only letters, digits, '.', '_' and '-'."
+}
 CALLER_KIND="main"
 CALLER_IDENTITY_ERROR=""
 if [ -n "$SESSION_ID" ] && ! session_scope_identity_is_valid "$SESSION_ID"; then
@@ -2938,12 +3465,14 @@ scope_normalize_hq_relative() {
   [ -n "$raw" ] || { printf '%s' ""; return 0; }
   raw="${raw//\\//}"
 
+  # Quoted: bash tilde-expands an unquoted `~` in a case pattern, so `~/*`
+  # never matched a literal `~/` path and it was taken as relative to HQ.
   case "$raw" in
-    ~/*)
+    '~/'*)
       [ -n "${HOME:-}" ] || { printf '%s' ""; return 0; }
-      raw="${HOME}/${raw#~/}"
+      raw="${HOME}/${raw#'~/'}"
       ;;
-    ~)
+    '~')
       raw="${HOME:-}"
       [ -n "$raw" ] || { printf '%s' ""; return 0; }
       ;;
@@ -2996,7 +3525,863 @@ scope_company_slug_for_rel() {
       [ -d "$HQ_ROOT/companies/$co" ] || return 0
       printf '%s' "$co"
       ;;
+    *)
+      # A copied company skill mirror (scope_skill_mirror_companies).
+      scope_skill_mirror_companies "$rel"
+      [ -z "$SCOPE_SKILL_MIRROR_COS" ] || printf '%s' "${SCOPE_SKILL_MIRROR_COS%% *}"
+      ;;
   esac
+}
+
+# Copied company skill mirrors (PR #1862). `hq` copies each company skill into
+# .claude/skills/<slug>:<name>, and `hq install-global` adds a
+# `hq-<slug>:<name>` entry (a link or a copy) to the user-level skills folder.
+# A copy never resolves into companies/, so a Read, cat or Grep of it passed
+# the company checks. The folder name decides the owner instead: a path inside
+# an entry of any `skills` folder (.claude/skills, the user-level skills folder
+# under CLAUDE_CONFIG_DIR, which need not be named .claude) whose name begins
+# with `<slug>:` or `hq-<slug>:`, where companies/<slug> is a company folder,
+# is that company's path. Sets SCOPE_SKILL_MIRROR_COS to the matching slugs,
+# space-separated (usually one or none). String work and company-folder tests;
+# `tr` runs only for an upper-case slug, and a `personal:` entry adds the file
+# tests of scope_personal_overlay_skill (no process for a linked mirror).
+# A path that spells an empty, `.` or `<dir>/..` segment before the mirror name
+# (`skills//otherco:x`, `skills/./otherco:x`, `skills/y/../otherco:x`) is
+# checked in its lexical form too (scope_lexical_path), so the folder after
+# `skills/` is the one the shell opens (review of e93e1c63e minor 1).
+SCOPE_SKILLS_SEG_PAT='[Ss][Kk][Ii][Ll][Ll][Ss]/'
+SCOPE_SKILL_MIRROR_COS=""
+# Set by a caller that passes scope_skill_mirror_companies a bare
+# `skills/<entry>/...` name: the skills folder that entry is in.
+SCOPE_SKILL_MIRROR_DIR=""
+# The personal overlay (personal/skills/<name>) is mirrored into skills folders
+# as `personal:<name>`, the same shape as a mirror of a company whose slug is
+# `personal` (the per-user company folder; `personal` is also the reserved
+# no-company bind value). personal/ is writable without a bind, so an overlay
+# folder of that name proves nothing by itself. A `personal:<name>` entry is
+# the overlay's only when its own SKILL.md is the overlay's: a link that
+# reaches personal/skills/<name>/SKILL.md (how hq lays mirrors out), or a
+# regular file byte-identical to it (a copied mirror). The session cannot make
+# either true for a company mirror, because writes to a mirror are refused.
+# Only the plain `personal:` form is treated this way; `hq-personal:` stays a
+# company name.
+SCOPE_OVERLAY_MD=""
+scope_personal_overlay_source() { # <name>: sets SCOPE_OVERLAY_MD to the overlay SKILL.md
+  local name="${1:-}" base="$HQ_ROOT/personal"
+  SCOPE_OVERLAY_MD=""
+  case "$name" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  [ -d "$base" ] && [ ! -L "$base" ] || return 1
+  [ -d "$base/skills" ] && [ ! -L "$base/skills" ] || return 1
+  [ -d "$base/skills/$name" ] && [ ! -L "$base/skills/$name" ] || return 1
+  [ -f "$base/skills/$name/SKILL.md" ] && [ ! -L "$base/skills/$name/SKILL.md" ] || return 1
+  SCOPE_OVERLAY_MD="$base/skills/$name/SKILL.md"
+  return 0
+}
+scope_skill_entry_is_overlay() { # <skills folder entry> <name>
+  local entry="${1:-}" name="${2:-}"
+  scope_personal_overlay_source "$name" || return 1
+  [ -d "$entry" ] && [ ! -L "$entry" ] || return 1
+  # `-ef` is true when both names reach the same file (same device and
+  # inode), so a linked SKILL.md is checked with no process. This runs once
+  # per `personal:` mirror on every Skill call that reaches the name rule.
+  if [ -L "$entry/SKILL.md" ]; then
+    [ "$entry/SKILL.md" -ef "$SCOPE_OVERLAY_MD" ] || return 1
+    return 0
+  fi
+  [ -f "$entry/SKILL.md" ] || return 1
+  [ "$entry/SKILL.md" -ef "$SCOPE_OVERLAY_MD" ] && return 0
+  cmp -s "$entry/SKILL.md" "$SCOPE_OVERLAY_MD" 2>/dev/null || return 1
+  return 0
+}
+scope_personal_overlay_skill() { # <name after the personal: prefix>
+  [ -d "$HQ_ROOT/.claude/skills" ] && [ ! -L "$HQ_ROOT/.claude/skills" ] || return 1
+  scope_skill_entry_is_overlay "$HQ_ROOT/.claude/skills/personal:${1:-}" "${1:-}"
+}
+scope_skill_mirror_companies() {
+  local path="${1:-}" rest seg cand co lc out=" " norm="" pre hq_skills
+  SCOPE_SKILL_MIRROR_COS=""
+  path="/${path//\\//}"
+  # shellcheck disable=SC2254
+  case "$path" in */$SCOPE_SKILLS_SEG_PAT*) ;; *) return 0 ;; esac
+  case "${path#/}" in
+    *//*|*/./*|*/../*|*/.|*/..|./*|../*)
+      scope_lexical_path "$path"
+      [ "$SCOPE_LEXICAL_PATH" = "$path" ] || norm="$SCOPE_LEXICAL_PATH"
+      ;;
+  esac
+  for rest in "$path" ${norm:+"$norm"}; do
+    while :; do
+      # shellcheck disable=SC2254
+      case "$rest" in */$SCOPE_SKILLS_SEG_PAT*) ;; *) break ;; esac
+      pre="${rest%%/$SCOPE_SKILLS_SEG_PAT*}"
+      rest="${rest#*/$SCOPE_SKILLS_SEG_PAT}"
+      seg="${rest%%/*}"
+      hq_skills=0
+      case "$pre" in
+        /.claude|"$HQ_ROOT/.claude") hq_skills=1 ;;
+        '') [ "$SCOPE_SKILL_MIRROR_DIR" != "$HQ_ROOT/.claude/skills" ] || hq_skills=1 ;;
+      esac
+      for cand in "$seg" "${seg#[Hh][Qq]-}"; do
+        case "$cand" in *:*) cand="${cand%%:*}" ;; *) continue ;; esac
+        lc=""
+        case "$cand" in *[A-Z]*) lc="$(printf '%s' "$cand" | tr '[:upper:]' '[:lower:]')" ;; esac
+        for co in "$cand" ${lc:+"$lc"}; do
+          case "$co" in ''|.|..|_*|*[!A-Za-z0-9._-]*) continue ;; esac
+          [ -d "$HQ_ROOT/companies/$co" ] || continue
+          # A personal-overlay mirror is not a company's (see above).
+          # Only the plain `personal:<name>` form, not `hq-personal:<name>`,
+          # and only an entry of the HQ .claude/skills folder (named by the
+          # path, or by SCOPE_SKILL_MIRROR_DIR for a bare `skills/<entry>`
+          # name), not a user-level one or any other folder called skills.
+          if [ "${lc:-$cand}" = personal ] && [ "${seg%%:*}" = "$cand" ] && [ "$hq_skills" -eq 1 ] \
+            && scope_personal_overlay_skill "${seg#*:}"; then continue; fi
+          case "$out" in *" $co "*) ;; *) out+="$co " ;; esac
+        done
+      done
+    done
+  done
+  out="${out# }"
+  SCOPE_SKILL_MIRROR_COS="${out% }"
+  return 0
+}
+
+# Lexical form of a path in SCOPE_LEXICAL_PATH: empty and `.` segments dropped,
+# each `<dir>/..` removed. A leading `..` of a relative path is kept; one
+# above `/` is dropped. Symlinks are not followed: a link before `..` can make
+# the shell open another folder, so callers check this form as well as the
+# spelled one, never instead of it.
+SCOPE_LEXICAL_PATH=""
+scope_lexical_path() {
+  local p="${1:-}" seg lead="" out="" n=0 i
+  local -a parts=()
+  case "$p" in /*) lead=/ ;; esac
+  p="$p/"
+  while [ -n "$p" ]; do
+    seg="${p%%/*}"
+    p="${p#*/}"
+    case "$seg" in
+      ''|.) ;;
+      ..)
+        if [ "$n" -gt 0 ] && [ "${parts[$((n - 1))]}" != .. ]; then
+          n=$((n - 1))
+          unset "parts[$n]"
+        elif [ -z "$lead" ]; then
+          parts[n]=..
+          n=$((n + 1))
+        fi
+        ;;
+      *)
+        parts[n]="$seg"
+        n=$((n + 1))
+        ;;
+    esac
+  done
+  for ((i = 0; i < n; i++)); do
+    out+="${out:+/}${parts[$i]}"
+  done
+  SCOPE_LEXICAL_PATH="$lead$out"
+  return 0
+}
+
+# Company skills a requested name matches, for the Skill rule (PR #1862,
+# decision 2026-11-09). The name set holds, for each folder under
+# companies/<slug>/skills/ (and companies/<slug>/.claude/skills/) that holds a
+# SKILL.md, the folder name and the frontmatter `name`, each also as
+# `<slug>:<name>` and `hq-<slug>:<name>`, all in lower case. Copied mirrors
+# add their names too, keyed by the slug in the folder name
+# (scope_skill_mirror_companies): `.claude/skills/<slug>:<name>` and the
+# user-level `hq-<slug>:<name>`, so a mirror whose source in companies/ was
+# removed or renamed still answers to its frontmatter name as <slug>'s skill.
+# No transcript is read and no link is resolved to decide a name. The set is
+# cached per HQ root in workspace/.scope-skill-names/v3, keyed on a checksum
+# of the stat (mtime, size, inode, path) of every skills folder, skill folder
+# and SKILL.md it reads, so a skill that is added, removed, renamed or edited
+# rebuilds it.
+# Each spelling in SCOPE_SKILL_REQ is looked up; SCOPE_SKILL_HITS gets one
+# `<slug>\t<folder>\t<name>` line per match. Returns 1 when the frontmatter
+# pass fails, so the caller can fail closed.
+SCOPE_SKILL_HITS=""
+# The one spelling both sides of the Skill rule compare (review of c699363d1
+# minor 5), run under LC_ALL=C on recorded names and on the request: ASCII
+# letters lower-cased, each run of white space (tab, line break, space) read
+# as one space, each run of control or non-ASCII bytes read as `?`, and the
+# characters outside [a-z0-9._:-] trimmed from both ends, as the request is
+# trimmed. `CAF` followed by an upper- or lower-case accented E reads `caf`
+# either way, and `a<TAB>b` reads `a b`.
+# shellcheck disable=SC2016
+SCOPE_SKILL_CANON_FN='
+  function canon(v) {
+    v = tolower(v)
+    gsub(/[\t\n\r\013\014 ]+/, " ", v)
+    gsub(/[\001-\010\016-\037\177-\377]+/, "?", v)
+    sub(/^[^a-z0-9._:-]+/, "", v)
+    sub(/[^a-z0-9._:-]+$/, "", v)
+    return v
+  }
+'
+# shellcheck disable=SC2016
+SCOPE_SKILL_MATCH_AWK='
+  BEGIN {
+    n = split(ENVIRON["SCOPE_SKILL_REQ"], a, "\n")
+    for (i = 1; i <= n; i++) if (a[i] != "") want[a[i]] = 1
+  }
+  NR == 1 && check { if ($0 != ENVIRON["SCOPE_SKILL_KEY"]) { bad = 1; exit 3 } next }
+  $0 == "--end--" { ok = 1; next }
+  ($1 in want) { print $2 "\t" $3 "\t" $1 }
+  END { if (bad || (check && !ok)) exit 3 }
+'
+# Identity of the name-set cache file: inode, change time (to the nanosecond
+# where stat gives it) and size. The guard writes it to <cache>.stamp after
+# it writes the cache, and trusts the cache only while the two still match
+# (review of c699363d1 minor 4). Any rewrite, move or truncation of the cache
+# changes its change time, which no user command can set back, so a cache
+# edited outside the guard (`grep -v otherco v3 > t && mv t v3`) is rebuilt.
+# Writes into workspace/.scope-skill-names/ are also refused outright
+# (scope_check_skill_cache_text, scope_check_skill_cache_path).
+scope_skill_cache_ident() {
+  case "${OSTYPE:-}" in
+    darwin*|*bsd*) stat -f '%i %.9Fc %z' "$1" 2>/dev/null ;;
+    *) stat -c '%i %z %s' "$1" 2>/dev/null ;;
+  esac
+}
+# The name-set cache folder may be written only by this guard. A Write,
+# Edit, MultiEdit or NotebookEdit whose path names the folder (spelled, after
+# `..`, or through a link) is refused. In Bash, a command word that resolves
+# to a path inside the folder (relative to the session cwd, after `..`,
+# through a link, or as the value after `=`) is refused, reads included, and
+# so is a glob or brace word that can expand to one. A word that only
+# mentions the folder name (a grep pattern, an echo, a commit message) or a
+# dot glob that cannot reach the folder (`ls -d .*` at the HQ root,
+# `sed 's/.*//'`) is not a path into it and is allowed (review of PR 1907,
+# 2026-11-13). A path built from variables, after a `cd`, or inside an
+# interpreter program is not seen here; the stamp check in
+# scope_skill_company_hits rebuilds a cache rewritten that way.
+SCOPE_SKILL_CACHE_DIR_PAT='[Ss][Cc][Oo][Pp][Ee]-[Ss][Kk][Ii][Ll][Ll]-[Nn][Aa][Mm][Ee][Ss]'
+# scope_skill_cache_refuse [<path>] [bash]
+#   With `bash`, the reason also says that reads go through the Read tool: the
+#   Bash check refuses any command word that is a path into this folder,
+#   reads included.
+scope_skill_cache_refuse() {
+  local why="workspace/.scope-skill-names/ holds the scope guard's skill-name cache; only the guard writes it"
+  [ "${2:-}" != bash ] || why="$why. A Bash command with a path into this folder is refused, reads included; read the cache with the Read tool"
+  scope_block_rel "${1:-workspace/.scope-skill-names}" "$why"
+}
+# scope_check_skill_cache_path <path> [bash]
+scope_check_skill_cache_path() {
+  local p="${1:-}" mode="${2:-}" abs phys
+  [ -n "$p" ] || return 0
+  case "$p" in
+    /*) abs="$p" ;;
+    '~'*) abs="${HOME:-}${p#\~}" ;;
+    *) abs="${PAYLOAD_CWD:-$HQ_ROOT}/$p" ;;
+  esac
+  scope_lexical_path "$abs"
+  # shellcheck disable=SC2254
+  case "$abs/" in */.$SCOPE_SKILL_CACHE_DIR_PAT/*) scope_skill_cache_refuse "$p" "$mode" ;; esac
+  # shellcheck disable=SC2254
+  case "$SCOPE_LEXICAL_PATH/" in */.$SCOPE_SKILL_CACHE_DIR_PAT/*) scope_skill_cache_refuse "$p" "$mode" ;; esac
+  for phys in "$SCOPE_LEXICAL_PATH" "${SCOPE_LEXICAL_PATH%/*}"; do
+    phys="$(scope_resolve_absolute_path "$phys" 2>/dev/null || true)"
+    # shellcheck disable=SC2254
+    case "$phys/" in */.$SCOPE_SKILL_CACHE_DIR_PAT/*) scope_skill_cache_refuse "$p" "$mode" ;; esac
+  done
+  return 0
+}
+# scope_skill_cache_glob_reaches <glob-word>
+#   Returns 0 when the glob word, taken from the session cwd, can match the
+#   cache folder or a path inside it: each of its leading segments matches
+#   the matching segment of $HQ_ROOT/workspace/.scope-skill-names (or of that
+#   folder's resolved path), with no case, and a segment matched against a
+#   dot name starts with a literal `.` (no dotglob). Callers set nocasematch.
+scope_skill_cache_glob_reaches() {
+  local w="${1:-}" abs cache n i ps cs ok
+  local -a pat=() cp=()
+  case "$w" in
+    /*) abs="$w" ;;
+    '~'*) abs="${HOME:-}${w#\~}" ;;
+    *) abs="${PAYLOAD_CWD:-$HQ_ROOT}/$w" ;;
+  esac
+  scope_lexical_path "$abs"
+  IFS=/ read -r -a pat <<< "${SCOPE_LEXICAL_PATH#/}"
+  for cache in "$HQ_ROOT/workspace/.scope-skill-names" \
+      "$(scope_resolve_absolute_path "$HQ_ROOT/workspace" 2>/dev/null || true)/.scope-skill-names"; do
+    case "$cache" in /*) ;; *) continue ;; esac
+    scope_lexical_path "$cache"
+    IFS=/ read -r -a cp <<< "${SCOPE_LEXICAL_PATH#/}"
+    n=${#cp[@]}
+    [ "${#pat[@]}" -ge "$n" ] || continue
+    ok=1
+    for ((i = 0; i < n; i++)); do
+      ps="${pat[$i]}"
+      cs="${cp[$i]}"
+      case "$cs" in .*) case "$ps" in .*) ;; *) ok=0; break ;; esac ;; esac
+      # shellcheck disable=SC2053
+      [[ "$cs" == $ps ]] || { ok=0; break; }
+    done
+    [ "$ok" -eq 1 ] && return 0
+  done
+  return 1
+}
+scope_check_skill_cache_text() {
+  local t w x c hit=0 nocase=0
+  local -a words=() segs=() cands=()
+  scope_drop_quote_chars "${1:-}" bs
+  t="$SCOPE_DROPPED"
+  # Cheap exits: a literal path into the folder spells its name, and a glob
+  # that can reach it has a segment that starts with `.` and holds a glob or
+  # brace character.
+  # shellcheck disable=SC2254
+  case "$t" in *$SCOPE_SKILL_CACHE_DIR_PAT*) hit=1 ;; esac
+  case "$t" in *.*[\*\?\[\{]*) hit=1 ;; esac
+  [ "$hit" -eq 1 ] || return 0
+  local seppat=$'[;&|<>()\n\t]'
+  if [ "${#t}" -lt 1024 ]; then
+    t="${t//$seppat/ }"
+  else
+    t="$(printf '%sx' "$t" | LC_ALL=C tr ';&|<>()\n\t' '         ')"
+    t="${t%x}"
+  fi
+  shopt -q nocasematch && nocase=1
+  read -r -a words <<< "$t"
+  for w in ${words[@]+"${words[@]}"}; do
+    cands=("$w")
+    case "$w" in ?*=?*) cands+=("${w#*=}") ;; esac
+    for c in "${cands[@]}"; do
+      case "$c" in
+        *[\*\?\[\{]*) ;;
+        *)
+          # shellcheck disable=SC2254
+          case "$c" in *$SCOPE_SKILL_CACHE_DIR_PAT*) scope_check_skill_cache_path "$c" bash ;; esac
+          continue
+          ;;
+      esac
+      case "$c" in *.*) ;; *) continue ;; esac
+      if ! scope_brace_expand "$c"; then
+        # Too many words to expand: refuse only a dot segment holding a brace.
+        case "/$c" in */.*'{'*) scope_skill_cache_refuse "$c" bash ;; esac
+        continue
+      fi
+      segs=(${SCOPE_BRACE_WORDS[@]+"${SCOPE_BRACE_WORDS[@]}"})
+      for x in ${segs[@]+"${segs[@]}"}; do
+        case "$x" in
+          *[\*\?\[]*)
+            shopt -s nocasematch
+            if scope_skill_cache_glob_reaches "$x"; then
+              [ "$nocase" -eq 1 ] || shopt -u nocasematch
+              scope_skill_cache_refuse "$x" bash
+            fi
+            [ "$nocase" -eq 1 ] || shopt -u nocasematch
+            ;;
+          *) scope_check_skill_cache_path "$x" bash ;;
+        esac
+      done
+    done
+  done
+  return 0
+}
+scope_skill_company_hits() {
+  local cache="$HQ_ROOT/workspace/.scope-skill-names/v3" key="" names="" hits="" tmp d f n rc co seg ident="" stamp="" fk
+  local user_skills="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/skills"
+  local -a paths=() files=() recs=()
+  SCOPE_SKILL_HITS=""
+  for d in "$HQ_ROOT"/companies/*/skills "$HQ_ROOT"/companies/*/.claude/skills; do
+    [ -d "$d" ] || continue
+    n="${d#"$HQ_ROOT"/companies/}"
+    case "$n" in _*) continue ;; esac
+    paths+=("$d")
+    for f in "$d"/*/SKILL.md; do
+      if [ -e "$f" ] || [ -L "$f" ]; then
+        paths+=("${f%/SKILL.md}" "$f")
+        files+=("$f")
+        seg="${f%/SKILL.md}"
+        # A folder in companies/<slug>/.claude/skills is a skill root Claude
+        # Code loads under the bare folder name (B). A folder in
+        # companies/<slug>/skills is a source that hq mirrors as
+        # <slug>:<name> (P): its folder name is reached only with the prefix.
+        case "$d" in */.claude/skills) fk=B ;; *) fk=P ;; esac
+        recs+=("$fk"$'\t'"${n%%/*}"$'\t'"${seg##*/}"$'\t'"$f")
+      fi
+    done
+  done
+  # Copied mirrors: `<slug>:<name>` in .claude/skills and `hq-<slug>:<name>`
+  # in the user-level skills folder.
+  for d in "$HQ_ROOT/.claude/skills" "$user_skills"; do
+    [ -d "$d" ] || continue
+    paths+=("$d")
+    for f in "$d"/*:*/SKILL.md; do
+      if [ -e "$f" ] || [ -L "$f" ]; then
+        seg="${f%/SKILL.md}"
+        seg="${seg##*/}"
+        SCOPE_SKILL_MIRROR_DIR="$d"
+        scope_skill_mirror_companies "skills/$seg/SKILL.md"
+        SCOPE_SKILL_MIRROR_DIR=""
+        [ -n "$SCOPE_SKILL_MIRROR_COS" ] || continue
+        paths+=("${f%/SKILL.md}" "$f")
+        files+=("$f")
+        for co in $SCOPE_SKILL_MIRROR_COS; do
+          recs+=("P"$'\t'"$co"$'\t'"${seg#*:}"$'\t'"$f")
+        done
+      fi
+    done
+  done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  case "${OSTYPE:-}" in
+    darwin*|*bsd*) key="$({ stat -L -f '%m %z %i %N' "${paths[@]}" 2>/dev/null || true; } | cksum)" || key="" ;;
+    *) key="$({ stat -L -c '%Y %s %i %n' "${paths[@]}" 2>/dev/null || true; } | cksum)" || key="" ;;
+  esac
+  [ -n "$key" ] || key="none $$ $RANDOM"
+  # v4: a mirror or source folder name no longer adds its bare name.
+  key="v4 ${#files[@]} $key"
+  if [ -f "$cache" ] && [ ! -L "$cache" ] && [ -r "$cache" ] \
+    && [ -f "$cache.stamp" ] && [ ! -L "$cache.stamp" ] \
+    && IFS= read -r stamp < "$cache.stamp" && [ -n "$stamp" ] \
+    && ident="$(scope_skill_cache_ident "$cache")" && [ "$ident" = "$stamp" ]; then
+    rc=0
+    hits="$(SCOPE_SKILL_KEY="$key" SCOPE_SKILL_REQ="$SCOPE_SKILL_REQ" LC_ALL=C awk -F'\t' -v check=1 "$SCOPE_SKILL_MATCH_AWK" "$cache")" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      SCOPE_SKILL_HITS="$hits"
+      return 0
+    fi
+  fi
+  names="$(
+    for n in "${recs[@]}"; do
+      f="${n##*$'\t'}"
+      if [ -f "$f" ] && [ -r "$f" ]; then printf 'R%s\n' "$n"; else printf 'N%s\n' "$n"; fi
+    done | LC_ALL=C awk -F'\t' "$SCOPE_SKILL_CANON_FN"'
+      function out1(v) {
+        if (v == "") return
+        if (!PONLY) print v "\t" co "\t" folder
+        print co ":" v "\t" co "\t" folder
+        print "hq-" co ":" v "\t" co "\t" folder
+      }
+      # Each name is stored in the canonical spelling a request is compared
+      # in (canon), and lower-cased as written when that differs.
+      function emit1(v,   p, np, j, c) {
+        if (v == "") return
+        # A tab or line break would split the record: emit the name with
+        # each one read as a space, and each piece between them.
+        if (v ~ /[\t\r\n]/) {
+          np = split(v, p, /[\t\r\n]+/)
+          for (j = 1; j <= np; j++) emit1(p[j])
+          gsub(/[\t\r\n]/, " ", v)
+        }
+        c = canon(v)
+        out1(c)
+        v = tolower(v)
+        # A spelling with a control byte is stored only in canonical form,
+        # so no name can spell the undecodable marker.
+        if (v != c && v !~ /[\001-\037\177]/) out1(v)
+      }
+      # A name is emitted as decoded and with outer white space trimmed,
+      # since a requested name arrives trimmed.
+      function emit(v,   w) {
+        emit1(v)
+        w = v
+        sub(/^[ \t\r\n]+/, "", w)
+        sub(/[ \t\r\n]+$/, "", w)
+        if (w != v) emit1(w)
+      }
+      function ws(s) { match(s, /^[ \t]*/); return RLENGTH }
+      # A name is read only up to 1024 bytes a line and in all (review of
+      # c699363d1 minor 2): longer text is undecodable, so decoding stays
+      # bounded however large a SKILL.md frontmatter line is.
+      function big(s) { if (length(s) > 1024) { UNDEC = 1; return 1 } return 0 }
+      function ltrim(s) { sub(/^[ \t]+/, "", s); return s }
+      function rtrim(s) { sub(/[ \t]+$/, "", s); return s }
+      function blank(s) { return s ~ /^[ \t]*$/ }
+      function nl(n,   s) { s = ""; while (n-- > 0) s = s "\n"; return s }
+      function hexval(h,   i, d, v) {
+        v = 0
+        for (i = 1; i <= length(h); i++) {
+          d = index("0123456789abcdef", tolower(substr(h, i, 1))) - 1
+          if (d < 0) return -1
+          v = v * 16 + d
+        }
+        return v
+      }
+      function utf8(c) {
+        if (c < 128) return sprintf("%c", c)
+        if (c < 2048) return sprintf("%c%c", 192 + int(c / 64), 128 + c % 64)
+        if (c < 65536) return sprintf("%c%c%c", 224 + int(c / 4096), 128 + int(c / 64) % 64, 128 + c % 64)
+        return sprintf("%c%c%c%c", 240 + int(c / 262144), 128 + int(c / 4096) % 64, 128 + int(c / 64) % 64, 128 + c % 64)
+      }
+      # Decode the YAML scalar that starts at text t on frontmatter line i,
+      # for a key indented k columns (review of e93e1c63e minor 2): tags
+      # (!x, !!str, !<uri>) and anchors (&a) are dropped and the anchor is
+      # recorded, an alias (*a) takes its anchored value, double-quoted
+      # escapes are decoded, and quoted, plain and block scalars continued on
+      # more-indented lines are folded. Sets UNDEC when the value cannot be
+      # decoded (a flow collection, an unknown alias or escape, a reserved
+      # indicator, an unclosed quote). Sets NXT to the last line read.
+      function scalar(i, t, k,   na, an, j, c, v, x) {
+        na = 0
+        t = ltrim(t)
+        if (big(t)) { NXT = i; return "" }
+        while (1) {
+          if (substr(t, 1, 2) == "!<") {
+            j = index(t, ">")
+            if (j == 0) { UNDEC = 1; NXT = i; return "" }
+            t = ltrim(substr(t, j + 1)); continue
+          }
+          c = substr(t, 1, 1)
+          if (c == "!" || c == "&") {
+            match(t, /^[!&][^ \t]*/)
+            if (c == "&") an[++na] = substr(t, 2, RLENGTH - 1)
+            t = ltrim(substr(t, RLENGTH + 1)); continue
+          }
+          if ((t == "" || t ~ /^#/) && i < FM && !blank(L[i + 1]) && ws(L[i + 1]) > k && ltrim(L[i + 1]) !~ /^#/) {
+            i++; t = ltrim(L[i])
+            if (big(t)) { NXT = i; return "" }
+            continue
+          }
+          break
+        }
+        NXT = i
+        c = substr(t, 1, 1)
+        if (t == "" || t ~ /^#/) v = ""
+        else if (c == "*") {
+          match(t, /^\*[^ \t]+/); x = substr(t, 2, RLENGTH - 1)
+          if (x in ANC) v = ANC[x]; else { UNDEC = 1; v = "" }
+        }
+        else if (c == "\"") v = dq(i, substr(t, 2))
+        else if (c == "\047") v = sq(i, substr(t, 2))
+        else if (c == "|" || c == ">") v = blk(i, t, k)
+        else if (c == "[" || c == "{" || c == "@" || c == "`") { UNDEC = 1; v = "" }
+        else v = plain(i, t, k)
+        for (j = 1; j <= na; j++) {
+          if (UNDEC) delete ANC[an[j]]; else ANC[an[j]] = v
+        }
+        return v
+      }
+      function plain(i, t, k,   v, s, stop, b) {
+        v = t; stop = 0; b = 0
+        if (match(v, /[ \t]#/)) { v = substr(v, 1, RSTART - 1); stop = 1 }
+        v = rtrim(v)
+        while (!stop && i < FM) {
+          s = L[i + 1]
+          if (blank(s)) { b++; i++; continue }
+          if (ws(s) <= k) break
+          s = ltrim(s)
+          if (s ~ /^#/) break
+          i++
+          if (big(s)) break
+          if (match(s, /[ \t]#/)) { s = substr(s, 1, RSTART - 1); stop = 1 }
+          v = v (b ? nl(b) : " ") rtrim(s)
+          b = 0
+          if (big(v)) break
+        }
+        NXT = i
+        return v
+      }
+      # Line folding inside a quoted scalar: trailing white space of the line
+      # is dropped (unless escaped), leading white space of the next one too,
+      # one line break reads as a space and each blank line as a newline.
+      function fold(i,   b) {
+        b = 0
+        while (i < FM && blank(L[i + 1])) { b++; i++ }
+        FI = i + 1
+        return (b ? nl(b) : " ")
+      }
+      function dq(i, t,   out, j, n, c, e, h, d, lit, x, cnt) {
+        out = ""; lit = 0; cnt = 0
+        while (1) {
+          if (big(t)) { NXT = i; return out }
+          n = length(t); j = 1
+          while (j <= n) {
+            if (++cnt > 1024) { UNDEC = 1; NXT = i; return out }
+            c = substr(t, j, 1)
+            if (c == "\"") { NXT = i; return out }
+            if (c == "\\") {
+              if (j == n) break
+              e = substr(t, j + 1, 1); j += 2; lit = 0
+              if (e == "x" || e == "u" || e == "U") {
+                d = (e == "x") ? 2 : (e == "u") ? 4 : 8
+                h = hexval(substr(t, j, d))
+                if (length(substr(t, j, d)) < d || h < 0) { UNDEC = 1; NXT = i; return out }
+                out = out utf8(h); j += d; continue
+              }
+              if (e == "0") continue
+              x = index("abtnvfre \"/\\\t", e)
+              if (x > 0) { out = out substr("\007\010\t\n\013\014\r\033 \"/\\\t", x, 1); continue }
+              if (e == "N") { out = out utf8(133); continue }
+              if (e == "_") { out = out utf8(160); continue }
+              if (e == "L") { out = out utf8(8232); continue }
+              if (e == "P") { out = out utf8(8233); continue }
+              UNDEC = 1; NXT = i; return out
+            }
+            if (c == " " || c == "\t") lit++; else lit = 0
+            out = out c; j++
+          }
+          if (i >= FM) { UNDEC = 1; NXT = i; return out }
+          if (j <= n) {
+            # An escaped line break joins the lines with nothing between.
+            fold(i); i = FI
+          } else {
+            out = substr(out, 1, length(out) - lit)
+            out = out fold(i); i = FI
+          }
+          lit = 0
+          t = ltrim(L[i])
+        }
+      }
+      function sq(i, t,   out, q, lit) {
+        out = ""
+        while (1) {
+          if (big(t) || big(out)) { NXT = i; return out }
+          while ((q = index(t, "\047")) > 0) {
+            if (substr(t, q + 1, 1) == "\047") { out = out substr(t, 1, q); t = substr(t, q + 2); continue }
+            NXT = i
+            return out substr(t, 1, q - 1)
+          }
+          if (i >= FM) { UNDEC = 1; NXT = i; return out t }
+          out = out rtrim(t) fold(i); i = FI
+          t = ltrim(L[i])
+        }
+      }
+      # A block scalar (| or >): its lines are joined with newlines (literal)
+      # or spaces (folded). Both joins and the first line are emitted.
+      function blk(i, t, k,   ci, s, lit, fol, first, b) {
+        ci = -1; lit = ""; fol = ""; first = ""; b = 0
+        while (i < FM) {
+          s = L[i + 1]
+          if (blank(s)) { b++; i++; continue }
+          if (ws(s) <= k) break
+          if (ci < 0) ci = ws(s)
+          i++
+          if (big(s) || big(lit)) break
+          s = substr(s, ci + 1)
+          if (first == "") { first = s; lit = s; fol = s }
+          else { lit = lit nl(b + 1) s; fol = fol (b ? nl(b) : " ") s }
+          b = 0
+        }
+        NXT = i
+        BLIT = lit; BFIRST = first
+        return fol
+      }
+      # The value of a `name:` line: quotes removed, a doubled single quote
+      # unescaped, a trailing comment dropped. The raw text is emitted too,
+      # so an odd spelling only adds names.
+      function value(v,   c, q, out) {
+        c = substr(v, 1, 1)
+        if (c == "\"") {
+          v = substr(v, 2); q = index(v, "\"")
+          return (q > 0) ? substr(v, 1, q - 1) : v
+        }
+        if (c == "\047") {
+          v = substr(v, 2); out = ""
+          while ((q = index(v, "\047")) > 0) {
+            if (substr(v, q + 1, 1) == "\047") { out = out substr(v, 1, q); v = substr(v, q + 2); continue }
+            return out substr(v, 1, q - 1)
+          }
+          return out v
+        }
+        sub(/[ \t]+#.*$/, "", v)
+        sub(/[ \t]+$/, "", v)
+        return v
+      }
+      # One record per line: R or N (a readable regular file or not) then B
+      # or P (see the record loop), the company slug, the skill folder name
+      # (for a mirror, the part after the slug prefix) and the SKILL.md path.
+      # Claude Code does not resolve a bare name to a prefixed folder (with
+      # only `ownco:hello-world` present, `hello-world` is an unknown skill),
+      # so a P folder name is stored only with its prefixes. A frontmatter
+      # `name` is an alias Claude Code does load (`ownco-hello-world` loads
+      # a folder `ownco:hello-world` whose frontmatter carries that name), so
+      # it is stored in every spelling.
+      {
+        kind = substr($1, 1, 1); fk = substr($1, 2, 1); co = $2; folder = $3; file = $4
+        if (file == "" || co == "") next
+        # A SKILL.md the guard cannot read (no permission, a FIFO, a dangling
+        # link) hides its frontmatter name, so its folder name keeps every
+        # spelling.
+        PONLY = (fk == "P" && kind == "R")
+        emit(folder)
+        PONLY = 0
+        if (kind != "R") next
+        # The frontmatter lines, from after the opening --- to the closing
+        # --- or ... (or the end of the file).
+        n = 0; FM = 0
+        while ((r = (getline line < file)) > 0) {
+          n++
+          sub(/\r$/, "", line)
+          if (n == 1) {
+            sub(/^\357\273\277/, "", line)
+            if (line !~ /^---[ \t]*$/) break
+            continue
+          }
+          if (line ~ /^(---|\.\.\.)[ \t]*$/) break
+          L[++FM] = line
+        }
+        close(file)
+        split("", ANC)
+        for (i = 1; i <= FM; i++) {
+          line = L[i]
+          # A `name` key at any indent: a mapping indented as a whole is
+          # still the top level, and a nested `name` only adds names.
+          if (line ~ /^[ \t]*["\047]?name["\047]?[ \t]*:/) {
+            k = ws(line)
+            raw = line
+            sub(/^[ \t]*["\047]?name["\047]?[ \t]*:[ \t]*/, "", raw)
+            sub(/[ \t]+$/, "", raw)
+            UNDEC = 0; BLIT = ""; BFIRST = ""
+            v = scalar(i, raw, k)
+            emit(v)
+            if (BLIT != "") { emit(BLIT); emit(BFIRST) }
+            # The one-line reading of earlier versions, and the raw text,
+            # so an odd spelling only adds names. As in #1862, a one-line
+            # value that starts with | or > (quoted or not: `name: "|"`)
+            # also emits the next indented line (review of c699363d1).
+            if (length(raw) <= 1024) {
+              ov = value(raw)
+              emit(ov)
+              if (raw != v) emit(raw)
+              if (ov ~ /^[|>]/ && i < FM && L[i + 1] ~ /^[ \t]+[^ \t]/ && length(L[i + 1]) <= 1024) {
+                nx = L[i + 1]; sub(/^[ \t]+/, "", nx); sub(/[ \t]+$/, "", nx)
+                emit(nx)
+              }
+            }
+            # A name that cannot be decoded could be any name: the Skill
+            # rule refuses every call while this company is out of scope.
+            if (UNDEC) print "\001undecodable\t" co "\t" folder
+          } else if (line ~ /(^|[ \t])&[^ \t]/) {
+            # Record anchors for a later `name: *alias`.
+            match(line, /(^|[ \t])&[^ \t]/)
+            saved = UNDEC; UNDEC = 0
+            scalar(i, substr(line, RSTART), ws(line))
+            UNDEC = saved
+          }
+        }
+      }
+    '
+  )" || return 1
+  [ -n "$names" ] || return 1
+  if [ -d "$HQ_ROOT/workspace" ] && [ ! -L "$HQ_ROOT/workspace/.scope-skill-names" ]; then
+    if [ -d "$HQ_ROOT/workspace/.scope-skill-names" ] || mkdir "$HQ_ROOT/workspace/.scope-skill-names" 2>/dev/null; then
+      tmp="$cache.$$.$RANDOM"
+      if printf '%s\n%s\n--end--\n' "$key" "$names" > "$tmp" 2>/dev/null; then
+        if mv -f "$tmp" "$cache" 2>/dev/null && ident="$(scope_skill_cache_ident "$cache")" && [ -n "$ident" ] \
+          && printf '%s\n' "$ident" > "$tmp.stamp" 2>/dev/null; then
+          mv -f "$tmp.stamp" "$cache.stamp" 2>/dev/null || rm -f "$tmp.stamp" 2>/dev/null || true
+        else
+          rm -f "$tmp" "$tmp.stamp" 2>/dev/null || true
+        fi
+      else
+        rm -f "$tmp" 2>/dev/null || true
+      fi
+    fi
+  fi
+  hits="$(printf '%s\n' "$names" | SCOPE_SKILL_REQ="$SCOPE_SKILL_REQ" LC_ALL=C awk -F'\t' -v check=0 "$SCOPE_SKILL_MATCH_AWK")" || return 1
+  SCOPE_SKILL_HITS="$hits"
+  return 0
+}
+
+# Every spelling of a requested skill name the Skill rule compares, lower
+# case, one per line in SCOPE_SKILL_REQ: the name, the part after each `:`,
+# and each of those with leading `hq-` prefixes and leading characters other
+# than [a-z0-9] removed (`hq-otherco:x`, `otherco:/x` and ` x` all reach `x`).
+SCOPE_SKILL_REQ=$'\n'
+scope_skill_request_names() { # <name> [whole]: with `whole`, only the whole name
+  local s="${1:-}" whole="${2:-}" part p out=$'\n'
+  # The canonical spelling recorded names are stored in (SCOPE_SKILL_CANON_FN).
+  # A name of only lower-case ASCII letters, digits and ._:- is already in it.
+  # Each line is canonicalised on its own and the line breaks are kept: the
+  # match splits SCOPE_SKILL_REQ on them, so `x` LF `anatomy` still looks up
+  # `anatomy` alone (canon turns a line break inside one string into a space).
+  case "$s" in
+    *[!abcdefghijklmnopqrstuvwxyz0123456789._:-]*)
+      # shellcheck disable=SC2016
+      s="$(printf '%s' "$s" | LC_ALL=C awk "$SCOPE_SKILL_CANON_FN"'{ printf "%s%s", (NR > 1 ? "\n" : ""), canon($0) }')" \
+        || scope_block_rel "(requested skill name)" "the requested skill name could not be read to check it"
+      ;;
+  esac
+  part="$s"
+  while :; do
+    p="$part"
+    while [ -n "$p" ]; do
+      case "$out" in *$'\n'"$p"$'\n'*) ;; *) out+="$p"$'\n' ;; esac
+      case "$p" in
+        hq-*) p="${p#hq-}" ;;
+        [!a-z0-9]*) p="${p#?}" ;;
+        *) break ;;
+      esac
+    done
+    [ -z "$whole" ] || break
+    case "$part" in *:*) part="${part#*:}" ;; *) break ;; esac
+  done
+  # The name set lists a company skill whose frontmatter name could not be
+  # decoded under this key (scope_skill_company_hits), so every request
+  # looks it up.
+  SCOPE_SKILL_REQ="$out"$'\001'"undecodable"$'\n'
+  return 0
+}
+
+# A requested skill name that a non-company skill owns (owner direction
+# 2026-11-14): 0 when the HQ .claude/skills folder or the user-level skills
+# folder holds a real folder of exactly this name (same case, no link) with a
+# readable SKILL.md (a regular file, or a link to one inside the HQ root and
+# outside companies/), and the folder name is not a company mirror
+# (scope_skill_mirror_companies). Claude Code registers a skill under its
+# folder name, so a call for this name loads this folder, not a company skill
+# that shares the name. Core skills, pack skills (`hq-pack-x:name`),
+# personal-overlay skills (`personal:name`) and user-level skills are such
+# folders. Both skills folders are read, because either can supply the skill
+# Claude Code loads: an entry of this name in either one that is anything less
+# (an empty folder, a link, another case, an entry of a skills folder that is
+# itself a link) returns 1, and the company name rule decides. An install
+# whose .claude/skills is a link therefore keeps the name rule for every name.
+# This relies on Claude Code resolving a request by folder name before any
+# frontmatter `name`: a company mirror `<slug>:other` whose frontmatter name
+# equals a core folder's name is not what a call for that name loads.
+scope_skill_noncompany_folder() { # <requested name>
+  local name="${1:-}" d e f exact found=0 res rel
+  local user_skills="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/skills"
+  case "$name" in ''|.*|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+  SCOPE_SKILL_MIRROR_DIR="$HQ_ROOT/.claude/skills"
+  scope_skill_mirror_companies "skills/$name/SKILL.md"
+  SCOPE_SKILL_MIRROR_DIR=""
+  # A mirror folder of companies that are all in this session's scope owns
+  # its name as well: `ownco:signals` loads ownco's skill whatever another
+  # company calls its skills. A mirror of any out-of-scope company does not.
+  for f in $SCOPE_SKILL_MIRROR_COS; do
+    scope_rel_allowed "companies/$f" || return 1
+  done
+  for d in "$HQ_ROOT/.claude/skills" "$user_skills"; do
+    e="$d/$name"
+    if [ ! -e "$e" ] && [ ! -L "$e" ]; then continue; fi
+    [ -d "$d" ] && [ ! -L "$d" ] || return 1
+    [ -d "$e" ] && [ ! -L "$e" ] || return 1
+    case "$name" in
+      [Pp][Ee][Rr][Ss][Oo][Nn][Aa][Ll]:*)
+        # A `personal:` entry in either folder has to be the overlay's own.
+        [ "${name%%:*}" = personal ] && scope_skill_entry_is_overlay "$e" "${name#*:}" || return 1
+        ;;
+      *)
+        if [ -L "$e/SKILL.md" ]; then
+          # hq lays a pack or company skill out as links to its source. A
+          # linked SKILL.md counts when it resolves to a regular file inside
+          # the HQ root that is not a path of an out-of-scope company.
+          res="$(scope_resolve_absolute_path "$e/SKILL.md" 2>/dev/null)" || return 1
+          case "$res" in "$HQ_ROOT"/*) rel="${res#"$HQ_ROOT"/}" ;; *) return 1 ;; esac
+          case "$rel" in companies) return 1 ;; esac
+          # Outside companies/ and company mirrors, or inside a company this
+          # session is bound to.
+          scope_rel_allowed "$rel" || return 1
+          [ -f "$res" ] && [ ! -L "$res" ] && [ -r "$res" ] || return 1
+        else
+          [ -f "$e/SKILL.md" ] && [ -r "$e/SKILL.md" ] || return 1
+        fi
+        ;;
+    esac
+    # The listing decides the case: on a case-insensitive disk the tests
+    # above also pass for a folder spelled in another case.
+    exact=0
+    for f in "$d/${name:0:1}"*; do
+      if [ "$f" = "$e" ]; then exact=1; break; fi
+    done
+    [ "$exact" -eq 1 ] || return 1
+    found=1
+  done
+  [ "$found" -eq 1 ]
 }
 
 scope_is_manifest_rel() {
@@ -3023,10 +4408,22 @@ scope_rel_allowed() {
     return 0
   fi
 
-  local co
+  local co mirror_co
   co="$(scope_company_slug_for_rel "$rel")"
   [ -n "$co" ] || return 0
   [ "$co" != "__companies_root__" ] || return 0
+  case "$rel" in
+    companies/*) ;;
+    *)
+      # A copied company skill mirror: every company its folder name can
+      # name must be in scope (`hq-<slug>:x` can name two).
+      scope_skill_mirror_companies "$rel"
+      for mirror_co in $SCOPE_SKILL_MIRROR_COS; do
+        scope_rel_allowed "companies/$mirror_co" || return 1
+      done
+      return 0
+      ;;
+  esac
   [ -z "$CALLER_IDENTITY_ERROR" ] || return 1
   scope_load_bound_company
 
@@ -3063,7 +4460,7 @@ scope_print_rewrite_hint() {
   local rel="${1:-}" backtick=$'\140' remote_re
   case "$rel" in
     *'$('*|*"$backtick"*)
-      printf '%s\n' "How to rewrite: a command substitution's output cannot be checked. Run the inner command first, then use the literal path it printed." >&2
+      printf '%s\n' "How to rewrite: a command substitution's output cannot be checked. Run the inner command first, then use the literal path it printed. To write file content that contains backticks or \$( ) (for example markdown code spans in a brief), use the Write tool instead of a Bash heredoc." >&2
       # Inside double quotes the local shell runs $(...) before ssh or
       # `hq outposts exec` sends the command, so the substitution reads local
       # paths. Single quotes send it unexpanded to run on the remote host.
@@ -3094,6 +4491,9 @@ scope_block_rel() {
   # binding the right company is the correct remedy there.
   scope_names_companies=0
   case "$rel" in companies|companies/*|*/companies/*) scope_names_companies=1 ;; esac
+  if [ -n "$co" ] && [ "$scope_names_companies" -eq 0 ] && [ -z "$block_reason" ]; then
+    block_reason="this is a copy of a $co skill (a skills folder entry named $co:<name> or hq-$co:<name>), so it is checked as companies/$co/skills"
+  fi
   if [ -z "$co" ] && [ "$scope_names_companies" -eq 0 ]; then
     cat >&2 <<EOF
 BLOCKED: Cross-company scope violation
@@ -3116,7 +4516,9 @@ EOF
   if [ "$CALLER_IDENTITY_ERROR" = "missing" ]; then
     bound_msg="This subagent call has no agent_id, so its company access is denied. Restart the session so the host supplies the caller identity."
   elif [ "$CALLER_IDENTITY_ERROR" = "invalid" ]; then
-    bound_msg="This call has an invalid agent_id, so its company access is denied. Restart the session so the host supplies a valid caller identity."
+    scope_invalid_agent_id_detail
+    bound_msg="This call has an invalid agent_id, so its company access is denied. Restart the session so the host supplies a valid caller identity.
+$SCOPE_AGENT_ID_DETAIL"
   elif [ "$CALLER_IDENTITY_ERROR" = "invalid-session" ]; then
     bound_msg="This call has an invalid session_id, so its company access is denied. Restart the session so the host supplies a valid session identity."
   elif [ -z "$SESSION_ID" ]; then
@@ -3152,7 +4554,7 @@ EOF
     cat >&2 <<EOF
 BLOCKED: Cross-company scope violation
 Tool: $TOOL
-Path: $rel
+Path: ${SCOPE_GLOB_OPERAND:-$rel}
 EOF
     # A traversal such as companies/example-co/../../otherco names one company
     # lexically and opens another. Label the company the path resolves to.
@@ -3164,7 +4566,14 @@ EOF
     esac
     # Still `unknown` here: this branch is reached for a companies/ path whose
     # slug could not be resolved, which is exactly an unknown target company.
-    printf 'Target company: %s\n' "${co:-unknown}" >&2
+    if [ -n "${SCOPE_GLOB_OPERAND:-}" ] && [ "$rel" != "$SCOPE_GLOB_OPERAND" ]; then
+      # The glob was blocked on one of its matches. The operand is what the
+      # user wrote, so name it as a glob over companies/ and give the match
+      # that is outside the lock as an example, not as the path requested.
+      printf 'Reason: the glob spans company folders, and one of them (%s) is not locked to this session\n' "${co:-unknown}" >&2
+    else
+      printf 'Target company: %s\n' "${co:-unknown}" >&2
+    fi
   fi
   # The reason is printed as its own line. Wrapping it in `glob "..." blocked:`
   # reported every non-glob refusal as a glob failure.
@@ -3193,16 +4602,52 @@ scope_check_rel() {
   scope_rel_allowed "$rel" || scope_block_rel "$rel"
 }
 
+# A relative tool path checked as relative to the HQ root, whatever the cwd.
+scope_check_raw_hq_anchored() {
+  local raw="${1:-}" rel
+  case "$raw" in
+    ''|/*|'~'|'~/'*) return 0 ;;
+  esac
+  rel="$(scope_normalize_hq_relative "$raw")"
+  rel="$(scope_resolve_rel_symlinks "$rel")"
+  scope_check_lexical_company "$raw" "$rel"
+  scope_check_rel "$rel"
+}
+
 scope_check_raw() {
   local raw="${1:-}" rel
   [ -n "$raw" ] || return 0
   case "$raw" in
     */__hq_scope_*_location__*) scope_block_tool_location_parent "$raw" ;;
   esac
+  # File-tool paths are relative to the payload cwd, and that form is checked
+  # too. The path as spelled is always checked as HQ-relative first: a cwd
+  # outside HQ can be swapped for a link into HQ between this check and the
+  # open, so a relative companies/ path never escapes the normal check.
+  # From the HQ root the cwd-joined form below is the same check.
+  case "${COMMAND_CWD:-}" in
+    ''|"$HQ_ROOT"|"$HQ_ROOT"/) ;;
+    *) scope_check_raw_hq_anchored "$raw" ;;
+  esac
+  case "$raw" in
+    /*|~|~/*) ;;
+    *)
+      if [ -n "${COMMAND_CWD:-}" ]; then
+        case "$COMMAND_CWD" in
+          /*) raw="${COMMAND_CWD%/}/$raw" ;;
+        esac
+      fi
+      ;;
+  esac
   rel="$(scope_normalize_hq_relative "$raw")"
   rel="$(scope_resolve_rel_symlinks "$rel")"
   scope_check_lexical_company "$raw" "$rel"
   scope_check_rel "$rel"
+  # Outside the HQ root (a user-level `hq-<slug>:<name>` copy), the path as
+  # spelled is checked for a company skill mirror folder.
+  if [ -z "$rel" ]; then
+    case "$raw" in *[Ss][Kk][Ii][Ll][Ll][Ss]/*) scope_check_rel "$raw" ;; esac
+  fi
 }
 
 # Program-name trust (feedback_ef130236). Several token exemptions decide that
@@ -3247,7 +4692,7 @@ scope_compute_shadowed_names() {
 # name-based exemptions. A `bash|sh <script>` record is judged by the script.
 scope_head_is_untrusted() {
   local head_index head
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   head="${scope_tokens[$head_index]:-}"
   case "$head" in
     bash|sh|zsh)
@@ -3596,14 +5041,38 @@ scope_check_cwd_token() {
 # True when <tok> occurs in the scanned command as a whole shell word (blank,
 # quote or operator on both sides). A tokenizer fragment (`companies/` from
 # `companies/(x)/y`) or a case pattern (`*)`) is not a word anyone passes.
+#
+# The word view depends only on the scanned command, so it is built once per
+# distinct command text and reused for every token. bash 3.2 (the stock macOS
+# shell) runs ${text//[class]/ } in time close to length x length, and this
+# ran it over the whole command for every token checked: a 4 KB chain of
+# commands with about 60 company paths took 45 s and was blocked at the 25 s
+# hook cap (feedback_075f4505, 6e8aaa84). Text of 1 KB or more goes through
+# one tr in the C locale; the bytes it maps are ASCII, and UTF-8 never puts an
+# ASCII byte inside another character, so the result is the same as the class
+# substitution. Cache globals are initialised here so the environment cannot
+# seed them.
+SCOPE_SW_READY=0
+SCOPE_SW_SRC=""
+SCOPE_SW_PADDED=""
 scope_token_is_standalone_word() {
   local tok="${1:-}" padded
-  # Quotes and backslashes join a word (`"companies"/`, `compan''ies/`), so
-  # they are deleted; operators and blanks separate words.
-  padded=" ${scope_scan_cmd:-}"$'\n'
-  scope_drop_quote_chars "$padded" bs; padded="$SCOPE_DROPPED"
-  padded="${padded//[;|&<>$'\n'$'\t']/ } "
-  [[ "$padded" == *" $tok "* ]]
+  if [ "$SCOPE_SW_READY" -ne 1 ] || [ "$SCOPE_SW_SRC" != "${scope_scan_cmd:-}" ]; then
+    # Quotes and backslashes join a word (`"companies"/`, `compan''ies/`), so
+    # they are deleted; operators and blanks separate words.
+    padded=" ${scope_scan_cmd:-}"$'\n'
+    scope_drop_quote_chars "$padded" bs; padded="$SCOPE_DROPPED"
+    if [ "${#padded}" -lt 1024 ]; then
+      padded="${padded//[;|&<>$'\n'$'\t']/ } "
+    else
+      padded="$(printf '%sx' "$padded" | LC_ALL=C tr ';|&<>\n\t' '       ')"
+      padded="${padded%x} "
+    fi
+    SCOPE_SW_SRC="${scope_scan_cmd:-}"
+    SCOPE_SW_PADDED="$padded"
+    SCOPE_SW_READY=1
+  fi
+  [[ "$SCOPE_SW_PADDED" == *" $tok "* ]]
 }
 
 # True when token <index> is the pattern operand of a real grep/rg: the first
@@ -3613,7 +5082,7 @@ scope_token_is_search_pattern() {
   local index="${1:-0}" h j t
   [ "${scope_head_untrusted:-1}" -eq 0 ] || return 1
   case "${SCOPE_REC_HEAD:-}" in grep|egrep|fgrep|rg) ;; *) return 1 ;; esac
-  h="$(scope_command_head_index)"
+  scope_command_head_index_set; h="$SCOPE_HEAD_INDEX"
   j=$((h + 1))
   while [ "$j" -lt "${#scope_tokens[@]}" ]; do
     t="${scope_tokens[$j]}"
@@ -3838,7 +5307,7 @@ scope_var_assigned_nonliterally() {
 scope_token_is_copy_destination() {
   local index="${1:-0}" h j t last=-1 count=0
   case "${SCOPE_REC_HEAD:-}" in cp|mv|rsync|scp|ditto|rclone|gsutil) ;; *) return 1 ;; esac
-  h="$(scope_command_head_index)"
+  scope_command_head_index_set; h="$SCOPE_HEAD_INDEX"
   [ "${scope_tokens[$((index - 1))]:-}" = -t ] && return 0
   [ "${scope_tokens[$((index - 1))]:-}" = --target-directory ] && return 0
   for ((j = h + 1; j < ${#scope_tokens[@]}; j++)); do
@@ -3976,6 +5445,10 @@ scope_positional_values() {
 SCOPE_TAR_PLAIN_READY=0
 SCOPE_TAR_PLAIN_SRC=""
 SCOPE_TAR_PLAIN=""
+# 1 when that text names tar as a word. The regex runs over the whole command,
+# and the function runs once per simple command: a python or node heredoc is
+# hundreds of them, so test it once per distinct text (feedback_075f4505).
+SCOPE_TAR_HAS_WORD=0
 scope_check_tar_program_options() {
   local i k t v name full opt rest letters prog n start=-1 base flags plain h=0
   local flag_re='^([ 	]+-{1,2}[A-Za-z0-9_.,=+-]*)*$'
@@ -3993,9 +5466,14 @@ scope_check_tar_program_options() {
     scope_drop_quote_chars "$plain" bs
     SCOPE_TAR_PLAIN_SRC="$plain"
     SCOPE_TAR_PLAIN="$SCOPE_DROPPED"
+    SCOPE_TAR_HAS_WORD=0
+    if [[ "$SCOPE_DROPPED" =~ $tar_word_re ]]; then SCOPE_TAR_HAS_WORD=1; fi
     SCOPE_TAR_PLAIN_READY=1
   fi
   plain="${SCOPE_TAR_PLAIN-}"
+  # Read the cached answer into this frame: the sh -c recursion below runs
+  # this function on other text and overwrites the globals.
+  local has_tar_word="$SCOPE_TAR_HAS_WORD"
   # GNU tar reads extra options from TAR_OPTIONS; refuse any mention, and
   # in a command that runs tar, refuse an assignment or export whose name
   # is built from an expansion (`${T}OPTIONS=`, `export $(...)`), since it
@@ -4003,7 +5481,7 @@ scope_check_tar_program_options() {
   case "$plain" in
     *TAR_OPT*) scope_block_rel "TAR_OPTIONS" "tar options set through TAR_OPTIONS cannot be checked; pass them on the tar command line" ;;
   esac
-  if [[ "$plain" =~ $tar_word_re ]]; then
+  if [ "$has_tar_word" = 1 ]; then
     local built_name_re='(^|[;&|({[:space:]])[A-Za-z0-9_]*\$[^=[:space:];&|]*='
     local built_export_re='(^|[;&|({[:space:]])(export|declare|typeset|readonly|local|env|set)([[:space:]]+-[A-Za-z-]+)*[[:space:]]+[^=[:space:];&|]*\$'
     if [[ "$plain" =~ $built_name_re ]] || [[ "$plain" =~ $built_export_re ]]; then
@@ -4022,7 +5500,7 @@ scope_check_tar_program_options() {
   local runner_re='(^|[^A-Za-z0-9_./-])(sh|bash|zsh|dash|ksh|mksh|ash|tcsh|csh|fish|busybox|eval|source|exec|python[0-9.]*|perl[0-9.]*|ruby|node|nodejs|deno|bun|php|lua|luajit|tclsh|wish|expect|osascript|awk|gawk|mawk|nawk|busybox|Rscript|R|julia|swift|xargs|parallel|make|gmake|chmod|env|nohup|script|watch)([[:space:]]|$)'
   local dot_runner_re='(^|[;&|({!]|'$'\n'')[[:space:]]*\.[[:space:]]'
   local path_head_re='(^|[;&|({!]|'$'\n'')[[:space:]]*(\./|/|~/)[^[:space:];&|]*'
-  if [[ "$plain" =~ $tar_word_re ]] && [[ "$plain" =~ $prog_opt_re ]]; then
+  if [ "$has_tar_word" = 1 ] && [[ "$plain" =~ $prog_opt_re ]]; then
     # An interpreter run on a script file the command neither writes nor
     # pipes into (`tar -I zstd -cf a.tar.zst src && python3 build.py`) is
     # not handed this command's text, so that word alone does not refuse
@@ -4108,7 +5586,7 @@ scope_check_tar_program_options() {
       *'$'*|*'`'*) start=$h ;;
     esac
     name="${scope_tokens[$h]}"
-    if [ "$start" -lt 0 ] && [[ "$plain" =~ $tar_word_re ]] && [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]]; then
+    if [ "$start" -lt 0 ] && [ "$has_tar_word" = 1 ] && [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_.-]*$ ]]; then
       case "$plain" in
         *"$name()"*|*"$name ()"*|*"function $name"*|*"alias $name="*) start=$h ;;
       esac
@@ -4715,6 +6193,12 @@ scope_check_cwd_value() {
     scope_check_cwd_abs "$abs"
   elif [ -e "$abs" ] && scope_cwd_in_companies; then
     scope_check_cwd_abs "$abs"
+  else
+    # A copied company skill mirror named from inside a skills folder
+    # (`ln -s otherco:x alias` from .claude/skills).
+    case "$val" in
+      *:*) if [ -e "$abs" ]; then scope_check_cwd_abs "$abs"; fi ;;
+    esac
   fi
   return 0
 }
@@ -4899,7 +6383,15 @@ scope_lexical_company() {
   lex="${lex//\\//}"
   case "$lex" in
     "$HQ_ROOT"/*) lex="${lex#"$HQ_ROOT"/}" ;;
-    /*|'~'*) return 0 ;;
+    /*)
+      # The HQ root under another spelling that opens the same folder.
+      scope_hq_identity_path "$lex"
+      case "$SCOPE_IDENT_OUT" in
+        "$HQ_ROOT"/*) lex="${SCOPE_IDENT_OUT#"$HQ_ROOT"/}" ;;
+        *) return 0 ;;
+      esac
+      ;;
+    '~'*) return 0 ;;
   esac
   while :; do
     case "$lex" in
@@ -4931,7 +6423,9 @@ scope_check_lexical_company() {
   esac
   co="$(scope_lexical_company "$raw")"
   [ -n "$co" ] || return 0
+  # An empty relative form means the path did not resolve inside this HQ.
   case "$rel" in
+    "") return 0 ;;
     "companies/$co"|"companies/$co"/*) return 0 ;;
   esac
   scope_rel_allowed "companies/$co" \
@@ -5011,6 +6505,16 @@ scope_scan_search_symlinks() {
       scanned=$((scanned + 1))
       [ "$scanned" -le "$max_entries" ] || \
         scope_block_rel "companies/(search root scan limit exceeded; narrow the root and retry)"
+      # A copied company skill mirror folder in the tree is read by the
+      # search like the company folder it copies. Glob lists names only.
+      if [ "$TOOL" != Glob ]; then
+        # shellcheck disable=SC2254
+        case "$entry" in
+          */$SCOPE_SKILLS_SEG_PAT*:*)
+            case "${entry##*/$SCOPE_SKILLS_SEG_PAT}" in */*) ;; *:*) scope_check_rel "$entry" ;; esac
+            ;;
+        esac
+      fi
       if [ -L "$entry" ]; then
         rel="$(scope_normalize_hq_relative "$entry")"
         if [ -n "$rel" ]; then
@@ -5038,7 +6542,11 @@ scope_check_search_root() {
     scope_block_rel "companies/(unresolvable search root symlink)"
   fi
   rel="$(scope_resolve_payload_path "$raw")"
-  [ "$rel" != "__OUTSIDE_HQ__" ] || return 0
+  if [ "$rel" = "__OUTSIDE_HQ__" ]; then
+    # A user-level `hq-<slug>:<name>` skill copy is that company's path.
+    case "$candidate_abs" in *[Ss][Kk][Ii][Ll][Ll][Ss]/*) scope_check_rel "$candidate_abs" ;; esac
+    return 0
+  fi
   scope_check_rel "$rel"
 }
 
@@ -5274,7 +6782,9 @@ scope_glob_static_prefix() {
   for ((i = 0; i < ${#pattern}; i++)); do
     ch="${pattern:i:1}"
     case "$ch" in
-      '*'|'?'|'[') break ;;
+      # `{` starts a brace alternative: the host's Glob cuts its base
+      # folder there too, so `compan{ies}/x` searches from the HQ root.
+      '*'|'?'|'['|'{') break ;;
       *) prefix+="$ch" ;;
     esac
   done
@@ -6782,7 +8292,7 @@ scope_token_is_remote_url_with_substitutions() {
   case "$token" in http://*'$('*|https://*'$('*) ;; *) return 1 ;; esac
   case "$token" in *$'\140'*|*"$mark"*) return 1 ;; esac
   [[ "${scope_scan_cmd:-}" == *\\* ]] && return 1
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   [ "$index" -gt "$head_index" ] || return 1
   head="${scope_tokens[$head_index]##*/}"
   scope_url_is_remote_operand "$head" "${scope_tokens[$((index - 1))]}" "$token" || return 1
@@ -6867,7 +8377,7 @@ scope_token_is_url_variable_operand() {
     return 1
   fi
   case "$token" in *'$('*|*$'\140'*) return 1 ;; esac
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   [ "$index" -gt "$head_index" ] || return 1
   head="${scope_tokens[$head_index]##*/}"
   scope_url_is_remote_operand "$head" "${scope_tokens[$((index - 1))]}" "https://x" || return 1
@@ -6908,7 +8418,7 @@ scope_token_is_vcs_ref_operand() {
   [ "$index" -gt 0 ] || return 1
   # A loop or conditional keyword can lead the record (`do curl ...`); the
   # URL exemption must see the program itself. git and gh keep using token 0.
-  url_head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; url_head_index="$SCOPE_HEAD_INDEX"
   url_head="${scope_tokens[$url_head_index]##*/}"
   if [ "$head" = gh ]; then
     # gh sends the -R/--repo value to the GitHub API; it never opens it.
@@ -6974,7 +8484,17 @@ scope_token_is_vcs_ref_operand() {
 # Index in scope_tokens of the program a simple command runs: the splitter
 # leaves a leading loop or conditional keyword (`do echo ...`, `then sed
 # ...`) in the record, so skip those words.
-scope_command_head_index() {
+#
+# scope_command_head_index_set stores the same index in SCOPE_HEAD_INDEX
+# without a subshell. The token checks ask for it once or more per word, and
+# a $(...) forks the whole hook process each time: a 5 to 6 KB python or node
+# heredoc has about 2,500 such calls, several seconds of the 25 s hook cap on
+# macOS (feedback_075f4505).
+# It runs in the hook's own shell under set -u, so scope_tokens starts out
+# empty here instead of unbound for a call before the first record.
+SCOPE_HEAD_INDEX=0
+scope_tokens=()
+scope_command_head_index_set() {
   local i=0
   while [ "$i" -lt "${#scope_tokens[@]}" ]; do
     case "${scope_tokens[$i]}" in
@@ -6982,7 +8502,11 @@ scope_command_head_index() {
       *) break ;;
     esac
   done
-  printf '%s' "$i"
+  SCOPE_HEAD_INDEX=$i
+}
+scope_command_head_index() {
+  scope_command_head_index_set
+  printf '%s' "$SCOPE_HEAD_INDEX"
 }
 
 # scope_mask_simple_arithmetic <word> — sets scope_arith_view to <word> with
@@ -7047,7 +8571,7 @@ scope_token_is_nofile_substitution() {
   case "$body" in *'$('*|*"$backtick"*|*'('*|*')'*|*"$(printf '\001')"*) return 1 ;; esac
   [ -n "$body" ] || return 1
   [[ "${scope_scan_cmd:-}" == *\\* ]] && return 1
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   [ "$index" -gt "$head_index" ] || return 1
   head="${scope_tokens[$head_index]:-}"
   head="${head##*/}"
@@ -7165,7 +8689,7 @@ scope_token_is_prose() {
     case "$reduced" in
       *'$'*|*"$mark"*)
         local head_index
-        head_index="$(scope_command_head_index)"
+        scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
         head="${scope_tokens[$head_index]:-}"
         head="${head##*/}"
         case "$head" in echo|printf) ;; *) return 1 ;; esac
@@ -7535,7 +9059,7 @@ scope_token_is_data_option_substitution() {
   body="${body%)}"
   # Only clients that send the value somewhere: `-d` is a directory for
   # mktemp and unzip, so the option alone does not make the value data.
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   head="${scope_tokens[$head_index]:-}"
   # `bash core/scripts/handoff-finalize.sh ...` runs the same script.
   case "$head" in
@@ -7821,7 +9345,7 @@ scope_token_is_sed_script() {
   var_re='\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?'
   case "$token" in *'$('*) ;; *) [[ "$token" =~ $var_re ]] || return 1 ;; esac
   case "$token" in *$'\140'*|*"$mark"*|*$'\n'*) return 1 ;; esac
-  i="$(scope_command_head_index)"
+  scope_command_head_index_set; i="$SCOPE_HEAD_INDEX"
   head="${scope_tokens[$i]:-}"
   head="${head##*/}"
   case "$head" in sed|gsed) ;; *) return 1 ;; esac
@@ -7956,7 +9480,7 @@ scope_text_piece_is_escaped() {
 # through the normal checks, including redirects following the endpoint.
 scope_token_is_gh_api_endpoint() {
   local index="$1" h token
-  h="$(scope_command_head_index)"
+  scope_command_head_index_set; h="$SCOPE_HEAD_INDEX"
   [ "${scope_tokens[$h]:-}" = gh ] || return 1
   [ "${scope_tokens[$((h + 1))]:-}" = api ] || return 1
   [ "$index" -eq "$((h + 2))" ] || return 1
@@ -7965,12 +9489,278 @@ scope_token_is_gh_api_endpoint() {
   return 0
 }
 
+# Paths that come from stdin. `read`, `mapfile` and `readarray` set a
+# variable from data the guard never sees (a list file, a pipe), and `xargs`
+# appends such data to the command it runs. A program that opens that value
+# as a path can reach any company. When the session has no company bound, or
+# the command reaches companies/ outside the bound scope (or runs inside
+# companies/), a command that feeds outside data to one of them is refused
+# unless one of two things is proven:
+#   - every stage that feeds a reader prints only text the command spells out
+#     (echo or printf with literal words, or mktemp), so nothing unknown
+#     reaches stdin (scope_stdin_sources_known); or
+#   - every reader is one the guard parsed, every xargs runs a program that
+#     opens nothing (echo, printf, ...), and no expansion outside echo,
+#     printf and test is used anywhere in the command, so a value read from
+#     stdin can only be printed or tested (scope_stdin_values_unused).
+# Anything the checks cannot parse counts as unproven.
+SCOPE_STDIN_WORD_RE='(^|[^A-Za-z0-9_.-])(read|mapfile|readarray|xargs)([^A-Za-z0-9_.-]|$)'
+# Text that can change what a command name runs: a function definition, an
+# alias, hash, enable or builtin, a PATH or ENV assignment, or a read,
+# printf -v, mapfile or getopts whose target is one of those names. A
+# command holding any of these proves nothing about echo, printf, mktemp or
+# test.
+SCOPE_STDIN_REDEFINE_RE='\([[:space:]]*\)|(^|[^A-Za-z0-9_.-])(function|alias|unalias|hash|enable|builtin|source|\.)([[:space:]]|$)|(^|[^A-Za-z0-9_])(PATH|ENV|BASH_ENV|SHELLOPTS|BASHOPTS)\+?=|(^|[^A-Za-z0-9_])(printf[[:space:]]+-v|read|readarray|mapfile|getopts)([[:space:]]+-?[A-Za-z0-9]+)*[[:space:]]+(PATH|ENV|BASH_ENV|SHELLOPTS|BASHOPTS)([^A-Za-z0-9_]|$)'
+SCOPE_STDIN_KEYWORDS=' while until if then do else elif ! time { ( } ) '
+SCOPE_STDIN_SAFE_HEADS=' echo printf [ [[ test '
+SCOPE_STDIN_SAFE_XARGS=' echo printf true false basename dirname '
+
+# <text> without quote characters and backslashes, in SCOPE_STDIN_PLAIN.
+scope_stdin_plain() {
+  local t="${1:-}"
+  t="${t//\\/}"
+  t="${t//\'/}"
+  t="${t//\"/}"
+  SCOPE_STDIN_PLAIN="$t"
+  return 0
+}
+
+# Number of reader words (read, mapfile, readarray, xargs) in <text>, in
+# SCOPE_STDIN_WORDS.
+scope_stdin_count_words() {
+  local t="${1:-}" n=0
+  while [[ "$t" =~ $SCOPE_STDIN_WORD_RE ]]; do
+    n=$((n + 1))
+    t=" ${t#*"${BASH_REMATCH[0]}"}"
+  done
+  SCOPE_STDIN_WORDS="$n"
+  return 0
+}
+
+# Index of the command word in scope_stdin_words (keywords, assignments and
+# known wrappers skipped), in SCOPE_STDIN_HEAD.
+scope_stdin_head() {
+  local i=0 n="${#scope_stdin_words[@]}" w base wrapper=""
+  while [ "$i" -lt "$n" ]; do
+    w="${scope_stdin_words[$i]}"
+    case "$SCOPE_STDIN_KEYWORDS" in *" $w "*) i=$((i + 1)); continue ;; esac
+    if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]]; then i=$((i + 1)); continue; fi
+    base="${w##*/}"
+    case "$base" in
+      env|command|builtin|nohup|nice|time|stdbuf) wrapper="$base"; i=$((i + 1)); continue ;;
+    esac
+    if [ -n "$wrapper" ]; then
+      case "$wrapper:$w" in
+        env:-u|nice:-n) i=$((i + 2)); continue ;;
+        env:-i|env:-|nice:-[0-9]*|stdbuf:-[ioe]*|command:-p|time:-p) i=$((i + 1)); continue ;;
+      esac
+    fi
+    break
+  done
+  SCOPE_STDIN_HEAD="$i"
+  return 0
+}
+
+# True when the xargs whose options start at word <from> runs a program that
+# opens nothing. Unknown options, a non-number count, or any other program
+# are not proven.
+scope_stdin_xargs_safe() {
+  local i="$1" n="${#scope_stdin_words[@]}" w next util
+  while [ "$i" -lt "$n" ]; do
+    w="${scope_stdin_words[$i]}"
+    next="${scope_stdin_words[$((i + 1))]:-}"
+    case "$w" in
+      -0|-r|-t|-x|--null|--no-run-if-empty|--verbose|--exit) i=$((i + 1)) ;;
+      -n|-L|-P|-s)
+        [[ "$next" =~ ^[0-9]+$ ]] || return 1
+        i=$((i + 2)) ;;
+      -n[0-9]*|-L[0-9]*|-P[0-9]*|-s[0-9]*|--max-args=[0-9]*|--max-lines=[0-9]*|--max-procs=[0-9]*|--max-chars=[0-9]*)
+        [[ "$w" =~ ^-(-[a-z-]+=|[nLPs])[0-9]+$ ]] || return 1
+        i=$((i + 1)) ;;
+      -I|-d|-E) [ -n "$next" ] || return 1; i=$((i + 2)) ;;
+      -I?*|-d?*|-E?*|--replace|--replace=*|--delimiter=*|--eof=*) i=$((i + 1)) ;;
+      --) i=$((i + 1)); break ;;
+      '<'|'>'|'>>'|'<>'|'&>'|'&>>'|'>|'|[0-9]'>'|[0-9]'>>'|[0-9]'<') i=$((i + 2)) ;;
+      '<'*|'>'*|[0-9]'>'*|[0-9]'<'*|'&>'*) i=$((i + 1)) ;;
+      '|'*) return 0 ;;
+      -*) return 1 ;;
+      *) break ;;
+    esac
+  done
+  w="${scope_stdin_words[$i]:-}"
+  case "$w" in ''|'|'*) return 0 ;; esac
+  # The program by its exact name: a path (workspace/echo) is not proven.
+  util="$w"
+  case "$SCOPE_STDIN_SAFE_XARGS" in *" $util "*) return 0 ;; esac
+  return 1
+}
+
+# True when the command reaches companies/ outside the bound scope: it runs
+# inside companies/, or names a companies/ path whose first segment is not a
+# bound company (manifest.yaml and _template excepted).
+scope_stdin_reaches_companies() {
+  local text="${1:-}" re seg
+  scope_cwd_in_companies && return 0
+  re='(^|[^A-Za-z0-9_.-])companies(/+([^/[:space:]"'"'"';|&)<>]*))?'
+  while [[ "$text" =~ $re ]]; do
+    seg="${BASH_REMATCH[3]:-}"
+    text="${text#*"${BASH_REMATCH[0]}"}"
+    case "$seg" in
+      manifest.yaml|_template) continue ;;
+      ''|.|..|*[!A-Za-z0-9_.-]*) return 0 ;;
+    esac
+    scope_company_is_locked "$seg" || return 0
+  done
+  return 1
+}
+
+# True when every reader takes its input from a pipe whose earlier stages
+# print only text the command spells out: echo or printf with literal words
+# (no quotes, expansions, globs or escapes), or mktemp, with no company path.
+# A redirect, here-document, process substitution, `xargs -a`, a reader fed
+# by another reader, or any other producer is not proven.
+scope_stdin_sources_known() {
+  local text="${1:-}" piece k last i stage squeezed nl=$'\n'
+  local literal_re='^(echo|printf)([[:space:]]+[^]$`*?[<>(){}|;&~%]+)*$'
+  local mktemp_re='^mktemp([[:space:]]+[-A-Za-z0-9._/]+)*$'
+  local -a stages=()
+  case "$text" in *'<'*|*'`'*|*'$('*) return 1 ;; esac
+  scope_stdin_plain "$text"
+  if [[ "$SCOPE_STDIN_PLAIN" =~ $SCOPE_STDIN_REDEFINE_RE ]]; then return 1; fi
+  if [[ "$text" =~ (^|[[:space:]])(-[[:alnum:]]*a|--arg-file) ]]; then return 1; fi
+  text="${text//|&/|}"
+  text="${text//&&/$nl}"
+  text="${text//||/$nl}"
+  text="${text//;/$nl}"
+  text="${text//&/$nl}"
+  while IFS= read -r piece; do
+    stages=()
+    IFS='|' read -r -a stages <<< "$piece"
+    last=-1
+    k=0
+    while [ "$k" -lt "${#stages[@]}" ]; do
+      scope_stdin_plain "${stages[$k]}"
+      [[ "$SCOPE_STDIN_PLAIN" =~ $SCOPE_STDIN_WORD_RE ]] && last="$k"
+      k=$((k + 1))
+    done
+    [ "$last" -ge 1 ] || { [ "$last" -lt 0 ] && continue; return 1; }
+    i=0
+    while [ "$i" -lt "$last" ]; do
+      stage="${stages[$i]}"
+      stage="${stage#"${stage%%[![:space:]]*}"}"
+      stage="${stage%"${stage##*[![:space:]]}"}"
+      case "$stage" in *companies*|*..*|*\'*|*\"*|*\\*) return 1 ;; esac
+      squeezed="${stage// /}"
+      squeezed="${squeezed//$'\t'/}"
+      case "$squeezed" in *companies*|*..*) return 1 ;; esac
+      [[ "$stage" =~ $literal_re ]] || [[ "$stage" =~ $mktemp_re ]] || return 1
+      i=$((i + 1))
+    done
+  done <<< "$text"
+  return 0
+}
+
+# True when a value read from stdin can only be printed or tested: every
+# reader word in the text is a command the tokenizer shows (no reader hidden
+# in sh -c, eval or an unknown wrapper), every xargs runs a program that
+# opens nothing, and every expansion in the command is an operand of echo,
+# printf (without -v), test, [ or [[ and is not a redirection target. Any
+# command substitution, indirect expansion or arithmetic outside those is
+# not proven.
+scope_stdin_values_unused() {
+  local cmd="${1:-}" rec i head base k w bare prev safe heads=0
+  local -a records=() raws=()
+  case "$cmd" in *'${!'*|*'`'*|*'$('*) return 1 ;; esac
+  scope_stdin_plain "$cmd"
+  if [[ "$SCOPE_STDIN_PLAIN" =~ $SCOPE_STDIN_REDEFINE_RE ]]; then return 1; fi
+  scope_stdin_count_words "$SCOPE_STDIN_PLAIN"
+  while IFS= read -r rec; do records[${#records[@]}]="$rec"; done <<< "$(hq_shell_simple_commands "$cmd")"
+  while IFS= read -r rec; do raws[${#raws[@]}]="$rec"; done <<< "$(hq_shell_simple_commands "$cmd" raw)"
+  [ "${#records[@]}" -eq "${#raws[@]}" ] || return 1
+  i=0
+  while [ "$i" -lt "${#records[@]}" ]; do
+    rec="${records[$i]}"
+    i=$((i + 1))
+    [ -n "$rec" ] || continue
+    scope_stdin_words=()
+    IFS=$'\037' read -r -a scope_stdin_words <<< "$rec"
+    [ "${#scope_stdin_words[@]}" -gt 0 ] || continue
+    scope_stdin_head
+    base="${scope_stdin_words[$SCOPE_STDIN_HEAD]:-}"
+    base="${base##*/}"
+    case "$base" in
+      read|mapfile|readarray) heads=$((heads + 1)) ;;
+      xargs)
+        heads=$((heads + 1))
+        scope_stdin_xargs_safe $((SCOPE_STDIN_HEAD + 1)) || return 1 ;;
+    esac
+  done
+  [ "$heads" -eq "$SCOPE_STDIN_WORDS" ] || return 1
+  i=0
+  while [ "$i" -lt "${#raws[@]}" ]; do
+    rec="${raws[$i]}"
+    i=$((i + 1))
+    [ -n "$rec" ] || continue
+    scope_stdin_words=()
+    IFS=$'\037' read -r -a scope_stdin_words <<< "$rec"
+    [ "${#scope_stdin_words[@]}" -gt 0 ] || continue
+    scope_stdin_head
+    head="${scope_stdin_words[$SCOPE_STDIN_HEAD]:-}"
+    scope_stdin_plain "$head"
+    head="$SCOPE_STDIN_PLAIN"
+    safe=0
+    case "$SCOPE_STDIN_SAFE_HEADS" in *" $head "*) safe=1 ;; esac
+    prev=""
+    k=0
+    while [ "$k" -lt "${#scope_stdin_words[@]}" ]; do
+      w="${scope_stdin_words[$k]}"
+      [ "$head" = printf ] && [ "$w" = -v ] && safe=0
+      # Single-quoted text is literal.
+      bare="$w"
+      while [[ "$bare" =~ \'[^\']*\' ]]; do bare="${bare/"${BASH_REMATCH[0]}"/}"; done
+      case "$bare" in
+        *'$'*)
+          case "$prev" in '<'*|'>'*|[0-9]'>'*|[0-9]'<'*|'&>'*) return 1 ;; esac
+          [ "$k" -ge "$SCOPE_STDIN_HEAD" ] || return 1
+          [ "$safe" = 1 ] || return 1
+          ;;
+      esac
+      prev="$w"
+      k=$((k + 1))
+    done
+    [ "$head" = printf ] && [ "$safe" = 0 ] && return 1
+  done
+  return 0
+}
+
+# Refuses (exit 2) a command that feeds outside data to a reader whose value
+# may be opened as a path, when the session has no company bound or the
+# command reaches companies/. Returns 0 otherwise. Returns non-zero only on an
+# internal failure, which the caller turns into a refusal.
+scope_check_stdin_path_operands() {
+  local cmd="${1:-}"
+  scope_stdin_plain "$cmd"
+  [[ "$SCOPE_STDIN_PLAIN" =~ $SCOPE_STDIN_WORD_RE ]] || return 0
+  # With no pipe, redirect or argument file, no outside data reaches stdin.
+  case "$cmd" in
+    *'|'*|*'<'*) ;;
+    *) [[ "$SCOPE_STDIN_PLAIN" =~ (^|[[:space:]])(-[[:alnum:]]*a|--arg-file) ]] || return 0 ;;
+  esac
+  scope_load_bound_company
+  if [ -n "${BOUND_CO:-}" ] && ! scope_stdin_reaches_companies "$cmd"; then
+    return 0
+  fi
+  scope_stdin_sources_known "$cmd" && return 0
+  scope_stdin_values_unused "$cmd" && return 0
+  scope_block_rel "companies/(a path read from stdin)" "a path operand may come from stdin (read, mapfile or xargs), so the guard cannot see which company it names. Name the files literally, or bind the company whose files you need and keep the command inside companies/<that company>"
+}
+
 # Bound a filename selected by ls without executing the user's substitution.
 # Check every possible entry, not only the current first/last entry. Arbitrary
 # cat output cannot be bounded this way and remains fail-closed.
 scope_token_is_bounded_loop_read() {
   local index="$1" h token re name inner prefix values dir entry count=0
-  h="$(scope_command_head_index)"
+  scope_command_head_index_set; h="$SCOPE_HEAD_INDEX"
   case "${scope_tokens[$h]:-}" in head|tail|cat) ;; *) return 1 ;; esac
   [ "$index" -gt "$h" ] || return 1
   token="${scope_tokens[$index]}"
@@ -8016,7 +9806,7 @@ scope_token_is_test_string_operand() {
   body="${token#\$(}"
   body="${body%)}"
   case "$body" in ''|*'('*|*')'*|*$'\140'*|*'|'*|*'<'*|*'>'*|*';'*|*'&'*|*$'\n'*) return 1 ;; esac
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   # `if [ ... ]`, `while test ...`: the splitter keeps the keyword in the
   # record, and the test command is the next word.
   case "${scope_tokens[$head_index]:-}" in if|elif|while|until) head_index=$((head_index + 1)) ;; esac
@@ -8051,7 +9841,7 @@ scope_token_is_curl_write_out_format() {
   [ "$index" -gt 0 ] && prev="${scope_tokens[$((index - 1))]:-}"
   # An empty or past-the-end head index must not trip set -u. resumework
   # bash blocks and assignment-only / bare-loop records hit this.
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   case "$head_index" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -8513,7 +10303,7 @@ scope_token_is_remote_operand_substitution() {
   # (scope_candidate_is_single_quoted) already covers it, and its `$(` with a
   # glob inside is remote text that the prose-substitution rules would refuse.
   [[ "${scope_scan_cmd:-}" == *"'$token'"* ]] && return 1
-  head_index="$(scope_command_head_index)"
+  scope_command_head_index_set; head_index="$SCOPE_HEAD_INDEX"
   case "$head_index" in ''|*[!0-9]*) return 1 ;; esac
   [ "$head_index" -lt "${#scope_tokens[@]}" ] || return 1
   scope_remote_position tokens "$index" "$head_index" || return 1
@@ -8535,7 +10325,7 @@ scope_token_is_text_option_value() {
   [ "$index" -gt 0 ] || return 1
   token="${scope_tokens[$index]:-}"
   prev="${scope_tokens[$((index - 1))]:-}"
-  head="${scope_tokens[$(scope_command_head_index)]:-}"
+  scope_command_head_index_set; head="${scope_tokens[$SCOPE_HEAD_INDEX]:-}"
   head="${head##*/}"
   case "$token" in
     --*=*) opt="${token%%=*}"; token="${token#*=}" ;;
@@ -8554,8 +10344,9 @@ scope_token_is_text_option_value() {
     *) return 1 ;;
   esac
   local known_message=0 escaped_token message_head
-  message_head="$(scope_command_head_index)"
-  if [ "$head" = hq ] && [ "${scope_tokens[$((message_head + 1))]:-}" = lanes ]; then
+  scope_command_head_index_set; message_head="$SCOPE_HEAD_INDEX"
+  if [ "$head" = hq ] && { [ "${scope_tokens[$((message_head + 1))]:-}" = runners ] \
+    || [ "${scope_tokens[$((message_head + 1))]:-}" = lanes ]; }; then
     if [ "${scope_tokens[$((message_head + 2))]:-}" = message ] \
       || { [ "${scope_tokens[$((message_head + 2))]:-}" = link ] \
         && [ "${scope_tokens[$((message_head + 3))]:-}" = report ]; }; then
@@ -8619,7 +10410,8 @@ scope_token_is_text_option_value() {
 # A repos/private/<name> or repos/public/<name> symlink may point at a checkout
 # outside the HQ tree only when that checkout's directory is listed in the
 # owner root file. The file is $HOME/.hq/repo-symlink-roots, outside the HQ
-# tree: one absolute directory per line, blank lines and # comments ignored.
+# tree: one absolute directory per line (or ~/dir for a folder under $HOME),
+# blank lines and # comments ignored.
 # The owner adds a root by editing that file in their own editor. This hook
 # refuses any Bash, Read, Write, Edit, or MultiEdit that names the file, so a
 # session cannot add a root for itself. companies/manifest.yaml is not the
@@ -8702,6 +10494,17 @@ scope_load_owner_roots() {
     line="${line%$'\r'}"
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
+    # An owner writing ~/Documents/repos means their home folder. Any other
+    # relative line is still ignored. The quoted ~/ is the literal text.
+    # shellcheck disable=SC2088
+    case "$line" in
+      '~/'?*)
+        case "${HOME:-}" in
+          /*) line="${HOME%/}/${line#'~/'}" ;;
+          *) continue ;;
+        esac
+        ;;
+    esac
     case "$line" in
       ""|\#*) continue ;;
       /*) ;;
@@ -9008,8 +10811,11 @@ scope_cd_dotdot_checked() {
   phys="$(scope_resolve_absolute_path "${COMMAND_CWD%/}/$raw" 2>/dev/null || true)"
   [ -n "$phys" ] || scope_block_rel "$raw" "a relative path after cd could not be resolved"
   if [ -n "${SCOPE_CD_REPO_ROOT:-}" ]; then
-    if scope_repo_root_is_rejected "$SCOPE_CD_REPO_ROOT" || ! scope_owner_root_covers "$SCOPE_CD_REPO_ROOT"; then
-      scope_block_rel "$raw" "a relative path after cd is inside a repo symlink the owner root list does not allow"
+    if scope_repo_root_is_rejected "$SCOPE_CD_REPO_ROOT"; then
+      scope_block_rel "$raw" "a relative path after cd is inside a repo symlink that points at /, \$HOME, the HQ root, a folder above one of them, or a company folder"
+    fi
+    if ! scope_owner_root_covers "$SCOPE_CD_REPO_ROOT"; then
+      scope_block_rel "$raw" "a relative path after cd is inside a repo symlink the owner root list does not allow (the link resolves to $SCOPE_CD_REPO_ROOT; the owner can add that folder as one line in \$HOME/.hq/repo-symlink-roots in their own editor)"
     fi
     if ! scope_path_inside "$phys" "$SCOPE_CD_REPO_ROOT"; then
       scope_block_rel "$raw" "a relative path after cd leaves the repo symlink target"
@@ -10068,10 +11874,25 @@ scope_note_repo_link_mutations() {
   fi
 }
 
-# Prints allow, deny, or fallthrough. allow/deny apply only to a literal path
-# through a repos/ symlink. An outside checkout is allowed only when its
-# resolved directory is on the owner root list, the path stays inside that
-# directory, and neither the directory nor the path is rejected or sensitive.
+# The block reason for a repos/ symlink to a checkout outside HQ that the
+# owner root list does not cover. It names the link, its resolved directory
+# and the owner's remedy, so nobody has to resolve the link by hand
+# (feedback_bc1ed7ee). The list stays owner-only: a session cannot edit it.
+scope_unlisted_repo_link_reason() {
+  local link_rel="${1:-}" repo_root="${2:-}" hint=""
+  if [ -e "$repo_root/.git" ]; then
+    hint=" Until then, name the checkout by its real path (for example: git -C $repo_root status)."
+  fi
+  printf '%s is a symlink to %s, which is not on the owner repo checkout list. To use the repos/ path, the owner adds %s (or a folder above it) as one line in $HOME/.hq/repo-symlink-roots in their own editor; a session cannot edit that list.%s' \
+    "$link_rel" "$repo_root" "$repo_root" "$hint"
+}
+
+# Prints allow, deny<TAB>reason, or fallthrough. allow/deny apply only to a
+# literal path through a repos/ symlink. An outside checkout is allowed only
+# when its resolved directory is on the owner root list, the path stays inside
+# that directory, and neither the directory nor the path is rejected or
+# sensitive. Each deny carries the reason that applies, so the block message
+# says which check failed.
 scope_registered_repo_decision() {
   local raw="${1:-}" rel_lex="" link_rel="" repo_root="" final="" backtick
   backtick=$'\140'
@@ -10090,25 +11911,28 @@ scope_registered_repo_decision() {
   [ -n "$link_rel" ] || { printf '%s' fallthrough; return 0; }
   [ -L "$HQ_ROOT/$link_rel" ] && [ -d "$HQ_ROOT/$link_rel" ] || { printf '%s' fallthrough; return 0; }
   repo_root="$(scope_resolve_absolute_path "$HQ_ROOT/$link_rel" 2>/dev/null || true)"
-  [ -n "$repo_root" ] && [ "$repo_root" != "/" ] || { printf '%s' deny; return 0; }
+  [ -n "$repo_root" ] && [ "$repo_root" != "/" ] || { printf 'deny\t%s' "the target of the repo symlink $link_rel cannot be resolved, or is /"; return 0; }
   repo_root="${repo_root%/}"
   case "$raw" in
     /*) final="$(scope_resolve_absolute_path "$raw" 2>/dev/null || true)" ;;
     *) final="$(scope_resolve_absolute_path "$HQ_ROOT/$raw" 2>/dev/null || true)" ;;
   esac
-  [ -n "$final" ] || { printf '%s' deny; return 0; }
+  [ -n "$final" ] || { printf 'deny\t%s' "a path through the repo symlink $link_rel cannot be resolved"; return 0; }
   final="${final%/}"
+  case "$final" in
+    "$HQ_ROOT"/companies|"$HQ_ROOT"/companies/*)
+      printf 'deny\t%s' "a path through the repo symlink $link_rel enters a company folder"
+      return 0
+      ;;
+  esac
   if scope_repo_root_is_rejected "$repo_root" || scope_repo_root_is_rejected "$final"; then
-    printf '%s' deny
+    printf 'deny\t%s' "the repo symlink $link_rel points at /, \$HOME, the HQ root, a folder above one of them, or a company folder; none of those is a checkout"
     return 0
   fi
   if scope_link_path_is_sensitive "$repo_root" || scope_link_path_is_sensitive "$final"; then
-    printf '%s' deny
+    printf 'deny\t%s' "a path through the repo symlink $link_rel hits a sensitive path (rc, SSH, AWS, GPG, env, netrc, shell profile, gh or kube config)"
     return 0
   fi
-  case "$final" in
-    "$HQ_ROOT"/companies|"$HQ_ROOT"/companies/*) printf '%s' deny; return 0 ;;
-  esac
   if scope_owner_root_covers "$repo_root" && scope_path_inside "$final" "$repo_root"; then
     printf '%s' allow
     return 0
@@ -10119,7 +11943,11 @@ scope_registered_repo_decision() {
       return 0
       ;;
   esac
-  printf '%s' deny
+  if ! scope_path_inside "$final" "$repo_root"; then
+    printf 'deny\t%s' "a path through the repo symlink $link_rel leaves its checkout $repo_root"
+    return 0
+  fi
+  printf 'deny\t%s' "$(scope_unlisted_repo_link_reason "$link_rel" "$repo_root")"
 }
 
 scope_check_bash_skill_path() {
@@ -10322,9 +12150,15 @@ scope_check_bash_skill_path() {
       case "$raw_masked:$rel" in
         workspace/*:workspace/*|core/*:core/*|personal/*:personal/*|repos/*:repos/*) ;;
         *)
-          case "$(scope_registered_repo_decision "$expanded_raw")" in
+          local repo_decision
+          repo_decision="$(scope_registered_repo_decision "$expanded_raw")"
+          case "$repo_decision" in
             allow) return 0 ;;
-            deny) scope_block_rel "$raw" "a path through a repo symlink is not an owner-listed checkout, leaves that checkout, enters another company, or hits a sensitive path" ;;
+            deny|deny$'\t'*)
+              repo_decision="${repo_decision#deny}"
+              repo_decision="${repo_decision#$'\t'}"
+              scope_block_rel "$raw" "${repo_decision:-a path through a repo symlink is not an owner-listed checkout, leaves that checkout, enters another company, or hits a sensitive path}"
+              ;;
           esac
           [ -n "$rel" ] || scope_block_rel "$raw" "an expanded path leaves the HQ root"
           scope_check_rel "$rel"
@@ -10400,6 +12234,21 @@ scope_check_bash_skill_path() {
       case "$rel" in
         companies|companies/*)
           scope_check_bash_candidate_inner "$HQ_ROOT/$rel" "$command_text" 0 "" "" ""
+          ;;
+        *[Ss][Kk][Ii][Ll][Ll][Ss]/*)
+          # `cat .claude/skills/*/SKILL.md` also opens the copied company
+          # skill mirrors it matches. Each match is checked by its folder
+          # name (scope_skill_mirror_companies).
+          scope_check_rel "$rel"
+          local skill_glob_match
+          local -a skill_glob_matches=()
+          # shellcheck disable=SC2206
+          skill_glob_matches=( "$HQ_ROOT"/$rel )
+          for skill_glob_match in ${skill_glob_matches[@]+"${skill_glob_matches[@]}"}; do
+            if [ -e "$skill_glob_match" ] || [ -L "$skill_glob_match" ]; then
+              scope_check_rel "${skill_glob_match#"$HQ_ROOT"/}"
+            fi
+          done
           ;;
       esac
       return 0
@@ -12552,24 +14401,199 @@ case "$TOOL" in
     # at dirname+jq+jq, over the spawn budget of 2, on paths that never touch
     # repos/. The root-list check still runs on that same path.
     scope_tool_path="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')"
+    # The host trims the path before it opens it.
+    scope_trim_tool_path "$scope_tool_path"
+    scope_tool_path="$SCOPE_TRIMMED"
+    # The payload was not folded for file tools; fold only the path.
+    scope_case_fold_text "$scope_tool_path"
+    scope_tool_path="$SCOPE_CASE_TEXT"
     scope_block_if_names_owner_roots "$scope_tool_path" path
+    [ "$TOOL" = Read ] || scope_check_skill_cache_path "$scope_tool_path"
     scope_check_raw "$scope_tool_path"
     # A relative path is opened from the payload cwd (feedback_ef130236).
     case "$scope_tool_path" in
       ''|/*|'~'*) ;;
       *) case "${PAYLOAD_CWD:-}" in "$HQ_ROOT"|'') ;; /*) scope_check_cwd_abs "${PAYLOAD_CWD%/}/$scope_tool_path" ;; esac ;;
     esac
+    # The path the tool really opens: `~` expanded, `..` removed as text.
+    scope_check_tool_open_path "$scope_tool_path"
+    ;;
+  Skill)
+    # The Skill tool has Claude Code read a skill's SKILL.md itself, so no
+    # Read of it reaches this hook. Company skills are refused by NAME
+    # (decision 2026-11-09, PR #1862). Earlier versions of this check tried to
+    # work out which folder Claude Code would load for a name; each review
+    # found a layout they got wrong, and reading the transcript cost seconds
+    # per call. A requested name that a skill of a company outside this
+    # session's scope carries (see scope_skill_company_hits) is refused. The
+    # request is compared in every spelling scope_skill_request_names gives.
+    # An unbound session treats every company as out of scope.
+    #
+    # One exception (owner direction 2026-11-14): a name that a core, pack,
+    # personal-overlay or user-level skill folder owns
+    # (scope_skill_noncompany_folder) is never refused for sharing a name
+    # with a company skill. The first rule refused every core skill on an
+    # install where a company folder held a copy of the core skills. Names
+    # addressed to a company (`<slug>:x`, `hq-<slug>:x`, `companies/<slug>:x`)
+    # are refused before the exception is read.
+    #
+    # Name trimming: Claude Code trims the name (JavaScript trim, which also
+    # removes Unicode spaces) and strips one leading `/`. Every leading and
+    # trailing character outside [A-Za-z0-9._:-] is dropped here, a superset.
+    scope_skill_name="$(printf '%s' "$INPUT" | jq -r '.tool_input.skill // empty')"
+    while [ -n "$scope_skill_name" ] && [[ "${scope_skill_name:0:1}" != [A-Za-z0-9._:-] ]]; do
+      scope_skill_name="${scope_skill_name:1}"
+    done
+    while [ -n "$scope_skill_name" ] && [[ "${scope_skill_name: -1}" != [A-Za-z0-9._:-] ]]; do
+      scope_skill_name="${scope_skill_name%?}"
+    done
+    [ -n "$scope_skill_name" ] || exit 0
+    scope_skill_refuse() { # <slug> <what collides>
+      scope_load_bound_company
+      {
+        printf 'BLOCKED: Cross-company scope violation\n'
+        printf 'Tool: Skill\n'
+        printf 'Skill: %s\n' "$scope_skill_name"
+        printf 'Colliding company skill: %s\n' "$2"
+        printf 'Target company: %s\n' "$1"
+        printf 'Session: %s\n' "${SESSION_ID:-unknown}"
+        printf 'Session locked companies: %s\n' "${BOUND_COS:-none}"
+        printf '\n'
+        printf 'A Skill call is refused when its name is addressed to, or carried only by, a\n'
+        printf "skill of a company outside this session's scope. Core, pack, personal and\n"
+        printf 'user-level skills load whatever companies name their skills.\n'
+      } >&2
+      if [ "$1" = personal ]; then
+        # `personal` is the reserved no-company bind value, so a company
+        # folder with that slug can never be added to a session.
+        printf 'companies/personal cannot be bound: "personal" is reserved for no-company work. Personal overlay skills (personal/skills/<name>) load without a bind; this name is not one of them.\n' >&2
+      elif [ -z "$BOUND_CO" ]; then
+        printf 'To use %s skills, bind the company: core/scripts/hq-session.sh set company_slug %s\n' "$1" "$1" >&2
+      else
+        printf 'To use %s skills as well, add the company: core/scripts/hq-session.sh add company %s\n' "$1" "$1" >&2
+      fi
+      printf 'If you meant a different skill with the same name, ask the owners to rename one of the two skills so no %s skill shares the name.\n' "$1" >&2
+      exit 2
+    }
+    # A `<slug>:` or `hq-<slug>:` prefix, or a directory-scoped prefix under
+    # companies/<slug>/, names that company whatever follows it.
+    scope_skill_pre="${scope_skill_name%:*}"
+    [ "$scope_skill_pre" != "$scope_skill_name" ] || scope_skill_pre=""
+    # A prefixed name whose prefix pieces are neither a company nor a folder
+    # (`anthropic-skills:pdf`, `hq-pack-x:review`) is in a plugin or pack
+    # namespace. Claude Code resolves it there, so only the whole name is
+    # compared with company skill names, not the part after the colon. A
+    # prefix that is a folder is a directory-scoped name (`workspace:x`) and
+    # keeps every spelling.
+    # This relies on Claude Code resolving `x:y` only to a skill registered
+    # under that whole name, never to a bare skill or alias `y` when the
+    # prefix is unknown; its skill list shows `review`, `personal:review` and
+    # `hq-pack-engineering:review` as separate names. A malformed name
+    # (`x::y`, `x:/y`) keeps every spelling.
+    scope_skill_whole=""
+    [ -z "$scope_skill_pre" ] || scope_skill_whole=whole
+    case "$scope_skill_name" in *::*|*:/*|*/|:*|*:) scope_skill_whole="" ;; esac
+    while [ -n "$scope_skill_pre" ]; do
+      scope_skill_piece="${scope_skill_pre%%:*}"
+      case "$scope_skill_pre" in *:*) scope_skill_pre="${scope_skill_pre#*:}" ;; *) scope_skill_pre="" ;; esac
+      case "$scope_skill_piece" in ''|.|..|*/*|*[!A-Za-z0-9._-]*) scope_skill_whole="" ;; esac
+      if [ -n "$scope_skill_whole" ]; then
+        # A folder of that name under the HQ root, the payload cwd, the
+        # session's project folder or any company folder makes it a
+        # directory-scoped name.
+        for scope_skill_dir in "$HQ_ROOT" "${PAYLOAD_CWD:-}" "${CLAUDE_PROJECT_DIR:-}" "$HQ_ROOT"/companies/*; do
+          [ -n "$scope_skill_dir" ] || continue
+          if [ -e "$scope_skill_dir/$scope_skill_piece" ] || [ -L "$scope_skill_dir/$scope_skill_piece" ]; then
+            scope_skill_whole=""
+          fi
+        done
+      fi
+      case "$scope_skill_piece" in
+        */*)
+          scope_skill_co="$(scope_lexical_company "$scope_skill_piece/x")"
+          if [ -n "$scope_skill_co" ] && ! scope_rel_allowed "companies/$scope_skill_co"; then
+            scope_skill_refuse "$scope_skill_co" "the name is scoped to a folder under companies/$scope_skill_co"
+          fi
+          ;;
+        *)
+          case "$scope_skill_piece" in *[A-Z]*) scope_skill_piece="$(printf '%s' "$scope_skill_piece" | tr '[:upper:]' '[:lower:]')" ;; esac
+          for scope_skill_co in "$scope_skill_piece" "${scope_skill_piece#hq-}"; do
+            case "$scope_skill_co" in ''|.|..|_*|*[!a-z0-9._-]*) continue ;; esac
+            [ -d "$HQ_ROOT/companies/$scope_skill_co" ] || continue
+            scope_skill_whole=""
+            # `personal:<name>` is the personal overlay's skill, not the
+            # skill of a company named personal, when the overlay has it.
+            # Only the plain `personal:<name>` spelling of the whole request.
+            if [ "$scope_skill_co" = personal ] && [ "$scope_skill_piece" = personal ] \
+              && [ "${scope_skill_name%%:*}" = personal ] && scope_personal_overlay_skill "${scope_skill_name#*:}"; then continue; fi
+            if ! scope_rel_allowed "companies/$scope_skill_co"; then
+              scope_skill_refuse "$scope_skill_co" "the name starts with the company prefix $scope_skill_co:"
+            fi
+          done
+          ;;
+      esac
+    done
+    # A skills folder entry of exactly this name whose SKILL.md links into a
+    # company outside this session's scope is that company's skill, whatever
+    # the entry is called (`ownco:x/SKILL.md` -> companies/otherco/...).
+    case "$scope_skill_name" in
+      ''|.*|*[!A-Za-z0-9._:-]*) ;;
+      *)
+        for scope_skill_dir in "$HQ_ROOT/.claude/skills" "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/skills"; do
+          scope_skill_md="$scope_skill_dir/$scope_skill_name/SKILL.md"
+          if [ ! -L "$scope_skill_md" ] && [ ! -L "$scope_skill_dir/$scope_skill_name" ]; then continue; fi
+          scope_skill_res="$(scope_resolve_absolute_path "$scope_skill_md" 2>/dev/null || true)"
+          case "$scope_skill_res" in
+            "$HQ_ROOT"/*)
+              scope_skill_rel="${scope_skill_res#"$HQ_ROOT"/}"
+              if ! scope_rel_allowed "$scope_skill_rel"; then
+                scope_skill_co="$(scope_company_slug_for_rel "$scope_skill_rel")"
+                scope_skill_refuse "${scope_skill_co:-unknown}" "the skill folder $scope_skill_name links to a file of companies/${scope_skill_co:-another company}"
+              fi
+              ;;
+          esac
+        done
+        ;;
+    esac
+    # A name a core, pack, personal-overlay or user-level skill folder owns
+    # loads whatever companies name their skills. Company-addressed names
+    # were refused above.
+    if ! scope_skill_noncompany_folder "$scope_skill_name"; then
+      scope_skill_request_names "$scope_skill_name" "$scope_skill_whole"
+      if ! scope_skill_company_hits; then
+        scope_block_rel "companies/(company skill names)" "the company skill list could not be read to check this skill name"
+      fi
+      while IFS=$'\t' read -r scope_skill_co scope_skill_folder scope_skill_req; do
+        [ -n "$scope_skill_co" ] || continue
+        if ! scope_rel_allowed "companies/$scope_skill_co"; then
+          if [ "$scope_skill_req" = $'\001'undecodable ]; then
+            scope_skill_refuse "$scope_skill_co" "$scope_skill_co:$scope_skill_folder, whose frontmatter name the guard cannot decode, so any requested name could load it; the owners should write that name as a plain or quoted string"
+          fi
+          scope_skill_refuse "$scope_skill_co" "$scope_skill_co:$scope_skill_folder (a skill of companies/$scope_skill_co or a copy of one), which also answers to \"$scope_skill_req\""
+        fi
+      done <<< "$SCOPE_SKILL_HITS"
+    fi
     ;;
   NotebookEdit)
     scope_tool_path="$(printf '%s' "$INPUT" | jq -r '.tool_input.notebook_path // empty')"
+    scope_trim_tool_path "$scope_tool_path"
+    scope_tool_path="$SCOPE_TRIMMED"
+    scope_case_fold_text "$scope_tool_path"
+    scope_tool_path="$SCOPE_CASE_TEXT"
+    scope_check_skill_cache_path "$scope_tool_path"
     scope_check_raw "$scope_tool_path"
     case "$scope_tool_path" in
       ''|/*|'~'*) ;;
       *) case "${PAYLOAD_CWD:-}" in "$HQ_ROOT"|'') ;; /*) scope_check_cwd_abs "${PAYLOAD_CWD%/}/$scope_tool_path" ;; esac ;;
     esac
+    scope_check_tool_open_path "$scope_tool_path"
     ;;
   Grep|Glob)
     scope_search_root="$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty')"
+    scope_trim_tool_path "$scope_search_root"
+    scope_search_root="$SCOPE_TRIMMED"
+    # The root the tool really searches: `~` expanded, `..` removed as text.
+    [ -z "$scope_search_root" ] || scope_check_tool_open_path "$scope_search_root" search
     scope_search_root_is_implicit=0
     if [ -z "$scope_search_root" ]; then
       scope_search_root="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
@@ -12583,6 +14607,9 @@ case "$TOOL" in
       /*) case "${PAYLOAD_CWD:-}" in "$HQ_ROOT"|'') ;; *) scope_check_cwd_abs "$scope_search_root" ;; esac ;;
       '~'*) ;;
       *)
+        # A relative root is also checked as HQ-relative, whatever the cwd:
+        # a cwd outside HQ can be swapped for a link into HQ before the search.
+        [ "$scope_search_root_is_implicit" -eq 1 ] || scope_check_raw_hq_anchored "$scope_search_root"
         case "${PAYLOAD_CWD:-}" in
           /*) scope_check_cwd_abs "${PAYLOAD_CWD%/}/$scope_search_root" ;;
         esac
@@ -12598,12 +14625,36 @@ case "$TOOL" in
     if [ "$TOOL" = "Glob" ]; then
       scope_pattern="$(printf '%s' "$INPUT" | jq -r '.tool_input.pattern // empty')"
       scope_prefix="$(scope_glob_static_prefix "$scope_pattern")"
+      # The tool starts its search at the last `/` before the first glob
+      # character, so a partial segment (`companies/be*`, `compan{ies}`) is
+      # not part of the base folder.
+      if [ "$scope_prefix" != "$scope_pattern" ]; then
+        case "$scope_prefix" in
+          */*) scope_prefix="${scope_prefix%/*}/" ;;
+          *) scope_prefix="" ;;
+        esac
+      fi
       if [ -n "$scope_prefix" ]; then
         case "$scope_prefix" in
+          '~'|'~/'*) scope_pattern_root="${HOME:-}${scope_prefix#'~'}" ;;
           /*) scope_pattern_root="$scope_prefix" ;;
-          *) scope_pattern_root="${scope_search_root%/}/$scope_prefix" ;;
+          *)
+            scope_pattern_root="${scope_search_root%/}/$scope_prefix"
+            # A relative base is HQ-relative too, as for the search root.
+            case "$scope_search_root" in
+              /*)
+                if [ "$scope_search_root_is_implicit" -eq 1 ]; then
+                  scope_check_raw_hq_anchored "$scope_prefix"
+                fi
+                ;;
+              '~'*) ;;
+              *) scope_check_raw_hq_anchored "${scope_search_root%/}/$scope_prefix" ;;
+            esac
+            ;;
         esac
         scope_check_recursive_search_root "$scope_pattern_root"
+        # The base folder the tool searches, with `..` removed as text.
+        scope_check_tool_open_path "$scope_pattern_root" search
       fi
     fi
     ;;
@@ -12615,7 +14666,9 @@ case "$TOOL" in
     # the common path free of the extra source.
     case "$cmd" in
       *$'\r\n'*)
+        SCOPE_SOURCING=core/scripts/hook-lib.sh
         . "$HQ_ROOT/core/scripts/hook-lib.sh"
+        SCOPE_SOURCING=""
         hq_crlf_to_lf cmd
         ;;
     esac
@@ -12632,12 +14685,15 @@ case "$TOOL" in
     SCOPE_LINK_MUTATION_DESTS=""
     SCOPE_REPO_CD_HANDLED=0
     scope_block_if_names_owner_roots "$cmd"
+    scope_check_skill_cache_text "$cmd"
     # Inspect the original quoting before the path scanner decodes ANSI-C strings.
     if [ ! -f "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh" ]; then
       printf '%s\n' 'BLOCKED: Bash arithmetic check. The arithmetic guard helper is missing; refresh the hook installation.' >&2
       exit 2
     fi
+    SCOPE_SOURCING=bash-arith-subst-guard-lib.sh
     . "${BASH_SOURCE[0]%/*}/bash-arith-subst-guard-lib.sh"
+    SCOPE_SOURCING=""
     if ! hq_arith_guard_check "$scope_arith_raw"; then
       hq_arith_guard_message
       if [ "${#scope_arith_raw}" -gt 16384 ]; then
@@ -12859,7 +14915,9 @@ case "$TOOL" in
     fi
     # Reuse the shared non-evaluating shell splitter so recursive checks see
     # every simple command, including commands after separators and pipelines.
+    SCOPE_SOURCING=core/scripts/hook-lib.sh
     . "$HQ_ROOT/core/scripts/hook-lib.sh"
+    SCOPE_SOURCING=""
     # Bash removes an unquoted backslash-newline before tokenizing, so scan the
     # same normalized form when extracting possible path tokens.
     #
@@ -12908,6 +14966,12 @@ case "$TOOL" in
         fi
         ;;
     esac
+    # A path read from stdin (read, mapfile, xargs) names no company the guard
+    # can see; see scope_check_stdin_path_operands. A failure inside the check
+    # refuses the call.
+    if ! scope_check_stdin_path_operands "$scope_scan_cmd"; then
+      scope_block_rel "companies/(a path read from stdin)" "the stdin path check could not finish; spell paths literally"
+    fi
     # Variables in inline interpreter programs and directory options (see
     # scope_inline_expansions_check_word). It reads the command as typed,
     # before line continuations are joined (see scope_inline_lex). Run in a
@@ -13201,17 +15265,29 @@ case "$TOOL" in
     # this way, so other commands skip the second split. The same holds for
     # the second parse of `eval` and `sh -c` text: with no quote or backslash
     # it sees the same words as the first parse.
+    # A command that names a `skills/` folder takes the second split too, so
+    # a copied skill mirror spelled with quotes, escapes or braces is checked
+    # by its folder name (scope_check_normalized_skill_word).
     scope_norm_scan=""
+    scope_norm_wanted=0
     case "$scope_scan_cmd" in
       *[\"\'\\]*)
         scope_drop_quote_chars "$scope_scan_cmd" bs
-        if [[ "$SCOPE_DROPPED" == *companies* ]]; then
-          scope_norm_scan="$(scope_mask_literal_expansions "$scope_scan_cmd")"
-          scope_check_normalized_split "$scope_norm_scan"
-          scope_check_reparsed_text 0 "$scope_scan_cmd"
-        fi
+        case "$SCOPE_DROPPED" in
+          *companies*|*[Ss][Kk][Ii][Ll][Ll][Ss]/*) scope_norm_wanted=1 ;;
+        esac
+        ;;
+      *[Ss][Kk][Ii][Ll][Ll][Ss]/*)
+        # A brace after `skills/` with no colon in sight can still be an
+        # xargs -I or find -exec placeholder (`.claude/skills/otherco{}`).
+        case "$scope_scan_cmd" in *'{'*|*'}'*) scope_norm_wanted=1 ;; esac
         ;;
     esac
+    if [ "$scope_norm_wanted" -eq 1 ]; then
+      scope_norm_scan="$(scope_mask_literal_expansions "$scope_scan_cmd")"
+      scope_check_normalized_split "$scope_norm_scan"
+      scope_check_reparsed_text 0 "$scope_scan_cmd"
+    fi
     scope_segments="$(hq_shell_simple_commands "$scope_scan_cmd")"
     scope_zsh_code_qual_re='[^[:space:];&|<>($]\([^()[:space:]"'"'"']*(e[^A-Za-z0-9)[:space:]]|\+[A-Za-z_])[^()]*\)([[:space:];&|<>)]|$)'
     # zsh applies a modifier whatever follows it (`$p:hx` is head(p) then
@@ -13220,12 +15296,74 @@ case "$TOOL" in
     # and the `$~p` / `$^p` / `$=p` flags (and their braced forms), and any
     # `${(flags)p}` group, which the resolver reads as plain text.
     scope_zsh_modifier_re='\$\{?[A-Za-z_][A-Za-z0-9_]*:[htreaAclquQPsgxXFfwW&0-9]|\$[A-Za-z_][A-Za-z0-9_]*\[|\$\{?[~^=]|\$\{\('
+    # <token> <index>: the token (at the 0-based record index) carries a zsh
+    # modifier. The split drops the
+    # backslash of an escaped dollar sign (`"var \$="` becomes `var $=`), so
+    # when the command spells `\$` the raw spelling of the same word is read
+    # too: escaped-backslash pairs go first, then every `\$`, and the
+    # modifier must still show in what remains.
+    scope_token_is_zsh_modifier() {
+      local probe
+      [[ "$1" =~ $scope_zsh_modifier_re ]] || return 1
+      [ "${#scope_raw_tokens[@]}" -gt 0 ] || return 0
+      [ "$2" -lt "${#scope_raw_tokens[@]}" ] || return 0
+      probe="${scope_raw_tokens[$2]}"
+      probe="${probe//\\\\/}"
+      probe="${probe//\\\$/}"
+      [[ "$probe" =~ $scope_zsh_modifier_re ]]
+    }
     # zsh glob qualifiers that run code (`*(e:REPLY=...:)`, `x(.e'...')`,
     # `*(+fn)`) replace each match with any word, so nothing about the
     # pattern bounds the result. Checked on the raw text: the tokenizer
     # splits the qualifier group apart.
     scope_qual_text="$scope_scan_cmd"
     [ -n "$scope_interp_bodies" ] && scope_qual_text="$scope_interp_outside"
+    # The quoted program argument of an interpreter one-liner (`py* -c
+    # '...'`, `node -e '...'`) is literal text to zsh: no globbing happens
+    # inside quotes, so `.get(e,0)` or a dict comprehension in it is not a
+    # qualifier. Such an argument is dropped before the qualifier check only
+    # when all of these hold:
+    # - the text has no `#`, `<<` or `$'` (comments, heredoc bodies and
+    #   ANSI-C strings change where quotes start);
+    # - the tokenizer reads `py*`/`node` as the command word of a simple
+    #   command, `-c`/`-e` as its first argument, and the program as one
+    #   whole single-quoted word, or one double-quoted word with no `$`,
+    #   backtick or backslash;
+    # - once every such `py* -c <program>` is removed, no quote or backslash
+    #   is left anywhere in the text. A quote left over means some other
+    #   quoted word could hold interpreter-looking text, so nothing is dropped.
+    case "$scope_qual_text" in
+      *'#'*|*'<<'*|*"\$'"*) ;;
+      *\'*|*\"*)
+        # The tokenizer prints one record per line, so a program argument
+        # that spans lines never came back as one word. A line break is read
+        # as `;` for this pass: outside quotes the two separate commands the
+        # same way, and inside quotes both are literal text. The qualifier
+        # pattern treats `;` as it treats white space at a word edge and
+        # matches across it inside a group, so the flattened text is checked
+        # at least as strictly as the original.
+        scope_interp_strip="${scope_qual_text//$'\n'/;}"
+        scope_interp_word_re="^('[^']*'|\"[^\"\$\`\\\\]*\")$"
+        while IFS= read -r scope_interp_rec; do
+          [ -n "$scope_interp_rec" ] || continue
+          IFS=$'\037' read -r -a scope_interp_w <<< "$scope_interp_rec"
+          [ "${#scope_interp_w[@]}" -ge 3 ] || continue
+          [[ "${scope_interp_w[0]}" =~ ^(py[a-z]*[0-9.]*|node)$ ]] || continue
+          case "${scope_interp_w[1]}" in -c|-e) ;; *) continue ;; esac
+          [[ "${scope_interp_w[2]}" =~ $scope_interp_word_re ]] || continue
+          scope_interp_piece="${scope_interp_w[0]} ${scope_interp_w[1]} ${scope_interp_w[2]}"
+          case "$scope_interp_strip" in
+            *"$scope_interp_piece"*)
+              scope_interp_strip="${scope_interp_strip/"$scope_interp_piece"/${scope_interp_w[0]} ${scope_interp_w[1]} X}"
+              ;;
+          esac
+        done <<< "$(hq_shell_simple_commands "$scope_interp_strip" raw)"
+        case "$scope_interp_strip" in
+          *[\'\"\\]*) ;;
+          *) scope_qual_text="$scope_interp_strip" ;;
+        esac
+        ;;
+    esac
     # A zsh `${(flags)name}` group (`(e)`, `(j:/:)`, `(L)`) rewrites the
     # value; the tokenizer splits it at the parentheses, so the raw text is
     # checked.
@@ -13235,10 +15373,29 @@ case "$TOOL" in
     if [[ "$scope_qual_text" =~ $scope_zsh_code_qual_re ]]; then
       scope_block_rel "${BASH_REMATCH[0]}" "a zsh glob qualifier that runs code (e or +) cannot be checked"
     fi
+    # The split removes the backslash from an escaped dollar sign, so a grep
+    # pattern such as "var \$=" reads as the zsh `$=` flag. When the command
+    # spells `\$`, read the raw split (same records and words, quotes and
+    # backslashes kept) and refuse a zsh modifier only when the raw word,
+    # with its escaped dollars removed, still shows one.
+    scope_raw_records=()
+    scope_record_index=-1
+    case "$scope_scan_cmd" in
+      *'\$'*)
+        while IFS= read -r scope_record; do
+          scope_raw_records[${#scope_raw_records[@]}]="$scope_record"
+        done <<< "$(hq_shell_simple_commands "$scope_scan_cmd" raw)"
+        ;;
+    esac
     while IFS= read -r scope_record; do
+      scope_record_index=$((scope_record_index + 1))
       [ -n "$scope_record" ] || continue
       IFS=$'\037' read -r -a scope_tokens <<< "$scope_record"
       [ "${#scope_tokens[@]}" -gt 0 ] || continue
+      scope_raw_tokens=()
+      if [ "${#scope_raw_records[@]}" -gt 0 ] && [ "$scope_record_index" -lt "${#scope_raw_records[@]}" ]; then
+        IFS=$'\037' read -r -a scope_raw_tokens <<< "${scope_raw_records[$scope_record_index]}"
+      fi
       scope_head_untrusted=0
       SCOPE_REC_HEAD=""
       scope_head_is_untrusted && scope_head_untrusted=1
@@ -13261,7 +15418,7 @@ case "$TOOL" in
         case "$scope_token" in
           companies/*|.claude*)
             # The company scan above reads `$d:h` as `$d` plus literal text.
-            if [[ "$scope_token" =~ $scope_zsh_modifier_re ]]; then
+            if scope_token_is_zsh_modifier "$scope_token" "$scope_token_index"; then
               scope_block_rel "$scope_token" "a zsh modifier on a variable cannot be checked; spell the path literally"
             fi
             # companies/, companies//, companies/. name the companies/ folder.
@@ -13277,7 +15434,7 @@ case "$TOOL" in
         # `companies/$d:s/a/b/`) rewrites the value the resolver proved, so
         # the word is refused in every position, git operands and redirect
         # targets included (`git show x > companies$p:hotherco/f`).
-        if [[ "$scope_token" =~ $scope_zsh_modifier_re ]]; then
+        if scope_token_is_zsh_modifier "$scope_token" "$scope_token_index"; then
           scope_block_rel "$scope_token" "a zsh modifier on a variable cannot be checked; spell the path literally"
         fi
         [ "$scope_head_untrusted" -eq 0 ] && scope_token_is_vcs_ref_operand "$scope_token_index" && continue

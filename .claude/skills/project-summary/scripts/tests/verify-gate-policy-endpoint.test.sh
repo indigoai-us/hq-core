@@ -59,10 +59,12 @@ else
 fi
 
 # --- the script must actually query the policy endpoint --------------------
-if grep -q 'api/apps/\$APP_ID/access-policy' "$SCRIPT"; then
-  pass "deploy-summary.sh reads the access-policy endpoint"
+# Since US-033 the policy is read through `hq deploy access get`, which calls
+# GET /api/apps/{id}/access-policy and prints it under .policy.
+if grep -q 'hq_deploy access get "\$APP_ID"' "$SCRIPT" && grep -qF "jq -ce '.policy | objects'" "$SCRIPT"; then
+  pass "deploy-summary.sh reads the access policy through hq deploy access get"
 else
-  fail "deploy-summary.sh does not query /access-policy — the trap is back"
+  fail "deploy-summary.sh does not read the access policy endpoint — the trap is back"
 fi
 
 # ...and must NOT gate company verification on the always-null app field.

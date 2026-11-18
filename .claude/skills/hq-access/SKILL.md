@@ -37,7 +37,7 @@ hq access "<target>" --json [--company <slug>] [--no-fix]
 `hq access` ships in `@indigoai-us/hq-cli` **>= 5.109.0**. It vends through
 `/sts/vend`, checks the exact prefix ACL (carve-out denies honoured, "no ACL
 record" = membership-distributed, not denied), fetches and pins on
-`not-synced` (running `hq sync status` / `hq sync doctor` and retrying once if
+`not-synced` (running `hq daemon sync status --local` / `hq sync doctor` and retrying once if
 the fetch fails), and on `no-access` resolves the grantor and asks once before
 sending the DM.
 
@@ -71,7 +71,7 @@ Stop at the first rung that decides the outcome.
    deny on the exact prefix under a broader read) → `no-access`.
 4. **Not local?** `ls <hqRoot>/companies/<slug>/<key>`. Present → `local`.
    Otherwise `hq files get companies/<slug>/<key> --company <slug>` (materializes
-   and pins). If get fails for a non-403 reason: `hq sync status`, then
+   and pins). If get fails for a non-403 reason: `hq daemon sync status --local`, then
    `hq sync doctor --reconcile-conflicts` (dry-run; add `--yes` only if it
    reports conflict twins), then retry get exactly once. If the output contains
    a bulk-asymmetry circuit-breaker message, surface it verbatim and stop —
@@ -118,6 +118,6 @@ Never reply "the file does not exist" without naming which of the three it is
 ## See also
 
 - `/hq-files` — grants, ACLs, browse/cat/get, pins
-- `/hq-sync` — full sync, `hq sync status`, `hq sync doctor`
+- `/hq-sync` — full sync, `hq daemon sync status --local`, `hq sync doctor`
 - `/hq-heal --class access` — routes here
 - `/dm` — the notification primitive the request rung uses

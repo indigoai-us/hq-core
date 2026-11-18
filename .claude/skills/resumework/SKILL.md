@@ -1,7 +1,7 @@
 ---
 name: resumework
 description: "Resume a specific handoff thread by id. For the latest handoff use /startwork."
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/resumework-resolve.sh:*), Bash(session_id="$(bash core/scripts/hq-session.sh:*), Bash(lock_json="$(bash core/scripts/resume-thread-lock.sh:*), Bash(if bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-open-steps.sh:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/resumework-resolve.sh:*), Bash(session_id="$(bash core/scripts/hq-session.sh:*), Bash(lock_json="$(bash core/scripts/resume-thread-lock.sh:*), Bash(if bash core/scripts/resume-thread-lock.sh:*), Bash(hq core handoff open-steps:*), Bash, AskUserQuestion
 ---
 
 # Resume Work From a Thread
@@ -75,7 +75,7 @@ lock_status="$(jq -r '.status // empty' <<<"$lock_json")"
 case "$lock_status" in
   unlocked)
     if bash core/scripts/resume-thread-lock.sh acquire "$thread_id" --session-id "$session_id"; then
-      bash core/scripts/handoff-open-steps.sh list --limit 10
+      hq core handoff open-steps list --limit 10
     else
       rc=$?
       if [ "$rc" -ne 3 ]; then exit "$rc"; fi
@@ -101,7 +101,7 @@ lock_generation="<confirmed-lock-generation>"
 session_id="$(bash core/scripts/hq-session.sh current)"
 [ -n "$session_id" ] || session_id=unknown-session
 bash core/scripts/resume-thread-lock.sh acquire "$thread_id" --replace --expected-generation "$lock_generation" --session-id "$session_id"
-bash core/scripts/handoff-open-steps.sh list --limit 10
+hq core handoff open-steps list --limit 10
 ```
 
 If acquisition race-loses with exit `3`, re-inspect and ask using the new prompt. If the confirmed replacement exits `4`, the marker changed while the question was open; re-inspect it and ask again using the new prompt. Never reuse the earlier confirmation to replace a newer lock.
@@ -113,7 +113,7 @@ Never silently proceed or silently replace a marker. A stale marker (expired aft
 Read the resolved thread file (it's small — one Read). Extract:
 
 - `conversation_summary` — what the prior session accomplished
-- `next_steps[]` — the ordered todo handed off. Each step carries `id` and `status`; show only `status: open` ones. The pre-read lock command also lists steps left open by OTHER recent handoffs. Close a step with `bash core/scripts/handoff-open-steps.sh close <id>` when it is actually done.
+- `next_steps[]` — the ordered todo handed off. Each step carries `id` and `status`; show only `status: open` ones. The pre-read lock command also lists steps left open by OTHER recent handoffs. Close a step with `hq core handoff open-steps close <id>` when it is actually done.
 - `git.branch`, `git.current_commit`, `git.dirty`
 - `files_touched[]` — the changeset boundary
 - `learnings[]` — operational notes (do **not** re-`/learn` them; they're already applied)

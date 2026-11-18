@@ -1,7 +1,7 @@
 ---
 name: super-conductor
 description: Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
-allowed-tools: Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(hq lanes link:*), Bash(hq lanes list:*), Bash(hq lanes stop:*), Bash(hq lanes reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Bash(node core/scripts/super-conductor-open-asks.mjs:*), Bash(node core/scripts/super-conductor-state.mjs:*), Bash(node core/scripts/super-conductor-requests.mjs:*), Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(node core/scripts/super-conductor-triage.mjs:*), mcp__ccd_session__start_session, Bash(hq lanes questions:*), Bash(hq mesh story:*), Agent, Bash(node core/scripts/lib/super-conductor-scope.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
+allowed-tools: Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(sh core/scripts/conduct-runner-resolve.sh:*), Bash(hq runners link:*), Bash(hq runners list:*), Bash(hq runners show:*), Bash(hq runners stop:*), Bash(hq runners reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Bash(node core/scripts/super-conductor-open-asks.mjs:*), Bash(node core/scripts/super-conductor-state.mjs:*), Bash(node core/scripts/super-conductor-requests.mjs:*), Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(node core/scripts/super-conductor-triage.mjs:*), mcp__ccd_session__start_session, Bash(hq runners questions:*), Bash(hq mesh story:*), Agent, Bash(node core/scripts/lib/super-conductor-scope.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
 argument-hint: "[off | status | interval <1m|5m|10m|seconds> | channels <hq_dms,slack,email,x> | <note for the team>]"
 ---
 
@@ -23,13 +23,44 @@ more. Every inbound item lands in the request ledger on disk
 (`workspace/reports/conduct/<link>-requests.jsonl`, "Request ledger" below)
 the moment a watcher or sweep worker sees it, and keeps its status there
 until it is done; the conductor reads rows, not channels. Reading a channel
-in full, drafting, and project work run in sweep workers, lanes, and child
-sessions, so a compaction or a restart of this session loses nothing and a
+in full, drafting, and project work run in sweep workers, subagents, and
+child sessions, so a compaction or a restart of this session loses nothing and a
 picker open here never stops a sweep.
 
 This is `/conduct` turned outward: `/super-conductor` links sessions the owner
 already has open and handles the team's inbound comms. It does not launch
 manager lanes.
+
+## Runner mode
+
+Resolve the conduct runner once at the start of every wakeup:
+
+```bash
+sh core/scripts/conduct-runner-resolve.sh --session-id <this session id>
+```
+
+It prints `subagent` (the default) or `runner` (advanced mode, the
+`/conduct-runners` path). Legacy `mixed` and `lane` values read as `runner`.
+Record the value in the save file as `conduct_runner`.
+
+- Default mode (`subagent`): status comes from the conduct link and each
+  adopted session's subagent runs. Read `hq runners link list` and
+  `hq runners link read --link <link>` for children and reports, and
+  `workspace/orchestrator/conduct-subagents/<session-id>/runs.json` for each
+  adopted session's subagents. Do not create lanes.
+- Advanced mode (`runner`): read the same sources. This session also
+  registers its own routed tasks as lanes (Step 6b).
+
+`hq runners link` is the session mailbox in both modes.
+
+Senior lanes, both modes: the Executive opens its lanes with this conductor
+as senior whatever `conduct.runner` says, so read them in default mode too.
+When any lane record names this session as senior, read
+`hq runners list --json --senior session:<this session id>`,
+`hq runners show <lane>` for detail, and
+`hq runners questions list --status pending` for its `needs_decision`
+questions (Step 8). These reads are read-only: default mode never creates,
+messages, stops or reaps a lane.
 
 ## Step 0: Resume from the save file
 
@@ -150,13 +181,14 @@ decision queue, never by relaying between conductors.
   own:
   ```bash
   hq monitor stop <heartbeat.monitor_id from the save file>
-  hq lanes link close
+  hq runners link close
   ```
   then call `ScheduleWakeup` with `stop: true` in case a fallback wakeup is
   pending.
 - `status` → render the session board (see "Rendering") from the JSON returned
-  by `hq lanes link list`, `hq lanes list --json --senior session:<this session id>`,
-  and the DM inbox. Start the board with the loop line
+  by `hq runners link list`, the adopted sessions' `runs.json` files, and the DM
+  inbox ("Runner mode"), plus the senior lanes from
+  `hq runners list --json --senior session:<this session id>`. Start the board with the loop line
   `loop: armed, every <N>s, heartbeat <monitor_id> running, channels <list>`
   (or `loop: NOT armed`, then arm it per Step 2b). Check the heartbeat with
   `hq monitor list --json`, never from memory. Launch nothing, send nothing.
@@ -206,7 +238,7 @@ run; it stays in the saved defaults.
 ## Step 2: Open the link and name this session
 
 ```bash
-hq lanes link open --engine claude --host-session "<this session's desktop id>"
+hq runners link open --engine claude --host-session "<this session's desktop id>"
 ```
 
 The desktop id is the `local_…` value other sessions see in the `from=` field
@@ -319,7 +351,9 @@ at all.
    - give the exact join command `/conduct-join <link> <short-name>`;
    - ask for one report with the full working set: repo paths and branches,
      worktree paths, open PR numbers, HQ-root files being modified (policies,
-     skills, `core/`, `.claude/`), intended merges/deploys/publishes, blockers;
+     skills, `core/`, `.claude/`), intended merges/deploys/publishes, blockers,
+     and the session id its `/conduct` subagent runs are recorded under
+     (`workspace/orchestrator/conduct-subagents/<session-id>/runs.json`);
    - set the standing rules (Step 5);
    - name this conductor's desktop session id for wake-up pings.
 3. A `queued` delivery means the session is mid-turn or waiting on the owner.
@@ -341,7 +375,7 @@ at all.
 
 ## Step 4: Collision pass on every report
 
-Read reports with `hq lanes link read --link <link>` and use the JSON
+Read reports with `hq runners link read --link <link>` and use the JSON
 `.messages` value. The list response provides `.children`, `.unread_reports`,
 and each child's `name`, `state`, `note`, and `undelivered` fields.
 Compare each new working set against every other child's. Flag and resolve:
@@ -351,11 +385,18 @@ Compare each new working set against every other child's. Flag and resolve:
 | Two sessions in one repo | Confirm separate worktrees and branches. Warn both about merge-time conflicts in shared directories. Ask for PR numbers so merges can be sequenced. |
 | Two sessions editing the same HQ-root path (a skill, a hook, `core/scripts`) | Assign one owner. Tell the other to stop writing there until released. |
 | One session delegating or handing off a project another session is still running | Pause the runner, push everything, verify the branch head matches before handover. |
-| A request to stop or reap lanes | The conductor does not stop child-owned lanes. `hq lanes reap --json` reports stale local lanes by default. Read its JSON candidates first; use `hq lanes stop <lane-id>` only for a lane this session owns and with authorization. |
+| A request to stop or reap lanes | The conductor does not stop child-owned lanes. The advanced-mode steps follow this table. |
 | Shared machine state changed (hook settings, `settings.local.json`, global config) | Record it in the overnight log, tell every child, and ask the author not to change it again without a go. |
 | Any merge, deploy, publish, release, force-push, or delete | Apply Step 5 standing authorization and Step 8 enforcement. Hold actions outside that authorization and every listed picker exception; never bypass a hook. |
 
-Send resolutions with `hq lanes link send --child <name>` (or `all`). Read
+<!-- advanced-mode:start -->
+In advanced mode, for a request to stop or reap lanes: `hq runners reap --json`
+reports stale local lanes by default. Read its JSON candidates first; use
+`hq runners stop <lane-id>` only for a lane this session owns and with
+authorization.
+<!-- advanced-mode:end -->
+
+Send resolutions with `hq runners link send --child <name>` (or `all`). Read
 `.queued` and `.children` from its JSON response. A
 message to a child is an instruction that outranks its brief. Every send also
 follows the delivery rule in Step 8.
@@ -368,17 +409,20 @@ file on disk.
 
 Read `core/settings/executive-standing-rules.md`, or its replacement
 `personal/settings/executive-standing-rules.md` in the HQ root when present.
-Every child receives that same selected file verbatim, including Executive
-lanes created by `hq lanes create --signal` when `--rules-file` is omitted.
+Every child receives that same selected file verbatim, including the
+Executive's lanes opened under this conductor without `--rules-file`, in
+either mode.
 Apply its review, shipping and owner-ask rules alongside the operational
 rules below; an explicit lane brief can further limit authorized actions.
 
 - Never stop, reap, or signal a lane by matching process arguments.
 - Keep one company per session; refuse cross-company instructions.
 - Secrets never go in a report.
-- An Executive lane's owner decision follows Step 8's lane-question path:
-  call `hq lanes ask` and end with the `needs_decision` outcome block from
-  the standing rules. Do not open a second picker or send a DM for it.
+- In either mode, an Executive lane's owner decision follows Step 8's
+  lane-question path: the lane queues its question with the lane ask command
+  from the standing rules and ends with the `needs_decision` outcome block.
+  The conductor asks the owner one picker for it. Do not open a second picker
+  or send a DM for it.
 - For other children, a decision for the owner ends the child's turn on it, as a picker or the
   next-step box, with two or three options, recommended first. The
   conductor's open-ask wake finds it within a minute and asks it here; the
@@ -464,9 +508,18 @@ the named message in it is read. `verify` judges an hourly target at the
 wakeup's start, so one whose hour runs out during the turn is not flagged.
 
 Sweep evidence is mandatory. `node core/scripts/super-conductor-sweep-check.mjs
-targets` lists every target the conductor covers: `sessions`, each selected
-channel, one `slack:<workspace>` per Slack workspace, and one
-`email:<account>` per email account. After reading a target, record it:
+targets` lists every target the conductor covers: `sessions`,
+`subagent_runs`, `senior_lanes`, each selected channel, one
+`slack:<workspace>` per Slack workspace, and one `email:<account>` per email
+account. `subagent_runs` is always swept in both modes: read
+`workspace/orchestrator/conduct-subagents/<session-id>/runs.json` for each
+adopted session (default-mode subagents never appear in `hq runners link
+list`). Record its cursor as the newest `runs.json` modification time, or
+`none` when no adopted session has one yet. `senior_lanes` is always swept
+in both modes too: read `hq runners list --json --senior session:<this session
+id>` and `hq runners questions list --status pending` (Step 8), read-only.
+Record its cursor as the newest pending question id, or `none`. After
+reading a target, record it:
 
 ```bash
 node core/scripts/super-conductor-sweep-check.mjs record --state <save file> --target <t> --cursor <cursor>
@@ -475,7 +528,9 @@ node core/scripts/super-conductor-sweep-check.mjs record --state <save file> --t
 A target that cannot be read is recorded only after every fallback path for
 its channel was tried, in this order: Slack `hq_integration`, `hq_slack_cli`
 (the Slack CLI with the owner token, when installed), `slack_mcp`; email `hq_integration`, `mail_mcp` (Superhuman),
-`gmail_connector`; X `hq_integration`, `x_mcp`. A mail MCP that needs re-auth
+`gmail_connector`; X `hq_integration`, `x_mcp`; `subagent_runs`
+`conduct_subagents_runs_json`; `senior_lanes` `hq_lanes_list_senior`,
+`hq_lanes_questions`. A mail MCP that needs re-auth
 is one failed path, not a reason to stop. Then:
 
 ```bash
@@ -735,30 +790,62 @@ wakeup:
   go.
 - Keep the latest summary under `team` in the save file.
 
-## Step 6b: Route work through lanes, with Work Mesh ownership
+## Step 6b: Route work, with Work Mesh ownership
 
 A ledger row whose kind this session confirmed as `work` at triage (never a
 guessed kind, never `fyi` or `info`) and that a child owns goes to that child
-on the link (`set --status routed --session <id>`). One that nobody owns becomes a
-`/conduct` task: dispatch it, register it (`hq lanes create --runner
-subagent` for an in-session worker, or a process lane when it must outlive
-this session), and `set --status routed --lane <lane id>`, so `hq lanes
-list` is the one view of what is in flight and `reap` and `orphans` apply.
-When the request maps to a Board story, the lane claims it (`hq mesh claim`
-/ `hq mesh story --status in_progress`); the conductor never claims a story
-itself. A capacity refusal (`no_account_with_room`) keeps the row `new` with
-a note and is retried on the next wakeup; it never runs the work in this
-session. A lane's completion event closes the row (`done --result <lane>`).
+on the link (`set --status routed --session <id>`). One that nobody owns
+becomes a `/conduct` task, routed by the runner mode from "Runner mode".
+When the request maps to a Board story, the worker that takes it claims it
+(`hq mesh claim` / `hq mesh story --status in_progress`); the conductor never
+claims a story itself. A capacity refusal (`no_account_with_room`) keeps the
+row `new` with a note and is retried on the next wakeup; it never runs the
+work in this session.
 
-On every sweep, run `hq lanes list --json` and match lanes whose senior is
-`session:<this conductor>` within the locked company set. This includes
-lanes created by the Executive with `--senior session:<this conductor>`.
-Use the lane record and `hq lanes link status <link> --json` to match its
-registered child name. Read its reports with `hq lanes link read --link
-<link>` like any other child's, and list the report under that child's name.
-A lane is not an unknown child merely because the Executive created it.
-Keep the company boundary: reports from other or unresolved companies remain
-count-only until their company and senior can be verified.
+An area session the conductor starts for a company or work area gets a brief
+whose first line is `/conduct` in default mode and `/conduct-runners` in
+advanced mode, so the new session opens in the matching conduct skill. A
+brief-first-line check accepts `/conduct`, `/conduct-runners`,
+`/decision-desk`, and `single-task session (owner approved)`.
+
+Default mode (`subagent`): dispatch the task as a `/conduct` subagent or a
+conduct child session (`.claude/skills/conduct/dispatch.md`), record it in
+this session's
+`workspace/orchestrator/conduct-subagents/<session-id>/runs.json`, and
+`set --status routed --session <agent id or child session id>`. The
+subagent's `report.md` and envelope, or the child's link report, close the
+row (`done --result <report path or child>`). Do not create a lane.
+
+On every sweep, read each adopted session's `runs.json` (the `subagent_runs`
+target) and the link reports from `hq runners link read --link <link>`. List a
+subagent under the session that started it, and a report under its child's
+name.
+
+On every sweep, in either mode, also run
+`hq runners list --json --senior session:<this session id>` within the locked
+company set. It holds the lanes the Executive opened with this conductor as
+senior. Use `hq runners show <lane>` and `hq runners link status <link> --json`
+to match a lane to its registered child name. Read its reports with
+`hq runners link read --link <link>` like any other child's, and list the
+report under that child's name. A lane is not an unknown child merely
+because the Executive created it. Its pending question goes through Step 8.
+
+<!-- advanced-mode:start -->
+### Advanced mode (conduct.runner runner)
+
+When the runner resolves to `runner`, register the task as a lane instead:
+`hq runners create --runner subagent` for an in-session worker, or a process
+lane when it must outlive this session, then `set --status routed --lane
+<lane id>`, so `hq runners list` is the one view of what is in flight and
+`reap` and `orphans` apply. A lane's completion event closes the row
+(`done --result <lane>`).
+
+In advanced mode the same senior-lane list also holds the lanes this
+session registered, and they are swept the same way.
+<!-- advanced-mode:end -->
+
+In both modes, keep the company boundary: reports from other or unresolved
+companies remain count-only until their company and senior can be verified.
 
 ## Step 7: Loop
 
@@ -769,11 +856,11 @@ this session with one of these lines:
 | Line | Meaning | Action |
 |---|---|---|
 | `SUPER-CONDUCTOR TICK` | the interval elapsed | full wakeup (below) |
-| `SUPER-CONDUCTOR REPORT` | a child reported; the line names each child of this company set since the last REPORT, its state, and a blocked child's question (reports from other or unknown companies are only counted) | `hq lanes link read --link <link>`, then full wakeup; a blocked question goes to `/decision-queue` first, unless the line says it is already an OPEN-ASK: then queue that ask once by its ask_id |
+| `SUPER-CONDUCTOR REPORT` | a child reported; the line names each child of this company set since the last REPORT, its state, and a blocked child's question (reports from other or unknown companies are only counted) | `hq runners link read --link <link>`, then full wakeup; a blocked question goes to `/decision-queue` first, unless the line says it is already an OPEN-ASK: then queue that ask once by its ask_id |
 | `SUPER-CONDUCTOR OPEN-ASK` | a session of this company set is waiting on an unanswered picker or next-step card; the line names the session, the question, the buttons, and the ask_id | first `open-asks.mjs check --session <id> --ask-id <id>`: exit 0 means the owner already answered it in that window, so mark it `answered_in_source` and do nothing else; exit 3 means it is open: `open-asks.mjs mark --status queued`, then `decisions.mjs add --source ask --ref <session>:<ask_id>` with the question, the buttons as options and the session as the relay target (Step 8); the desk asks it, the ANSWER line brings the pick back |
 | `SUPER-CONDUCTOR ASK-ANSWERED` | a queued ask was answered by the owner in its own window | drop it: `decisions.mjs drop --note "answered in source"` if it is on the queue; relay nothing; log it |
 | `SUPER-CONDUCTOR CRITICAL` | a message on a critical channel, or an HQ DM from a teammate on the list, arrived (Step 6, "Critical channels") | read `requests.mjs list --open --priority critical` now, before anything else in this wakeup; route work rows at once; decisions are already on the queue |
-| `SUPER-CONDUCTOR TRIAGE` | the triage daemon classified new ledger rows: fyi closed, decisions queued, work pending | route the work rows (`requests.mjs list --open --kind work --triaged`) to lanes or children (Step 6b); nothing to ask |
+| `SUPER-CONDUCTOR TRIAGE` | the triage daemon classified new ledger rows: fyi closed, decisions queued, work pending | route the work rows (`requests.mjs list --open --kind work --triaged`) to subagents or children, or to lanes in advanced mode (Step 6b); nothing to ask |
 | `SUPER-CONDUCTOR ANSWER` | the owner answered a decision on the desk that the desk does not relay itself (a teammate's request, the conductor's own item, or a child's ask whose desk relay failed two minutes ago); the line carries the answer, the decision id and the relay target | relay it now: `requests.mjs set --status answered` for a ledger-sourced decision, the quoted `OWNER GO` (or hold) on the link and by `send_message` to the relay session, then `decisions.mjs relayed --id <id> --by conductor`. The desk relays a child session's answer itself (`/decision-desk` Step 3b), so most child asks never produce this line |
 | `SUPER-CONDUCTOR TRIAGE-EXITED` or `ANSWER-WATCH-EXITED` | a background worker stopped; the heartbeat is still ticking | tell the owner once, do that worker's job by hand on each wakeup (triage new rows; `decisions.mjs list --status answered`), and re-arm per Step 2b |
 | `SUPER-CONDUCTOR ASK-WATCH-EXITED` | the open-ask watcher stopped; the heartbeat is still ticking | tell the owner once with the reason, run open-asks by hand on each wakeup, and re-arm per Step 2b |
@@ -941,14 +1028,16 @@ prose or ask "want me to walk these?" first.
   compaction); a guessed
   `decision` that turns out to be an information request is answered and
   set `done` instead.
-- Lane questions: `hq lanes questions list --status pending --company <slug> --json`
-  for each locked company; answer with `hq lanes questions answer <id>
+- Lane questions (both modes, whenever this session is senior of a lane;
+  the Executive's lanes name the conductor as senior in default mode too):
+  `hq runners questions list --status pending --company <slug> --json`
+  for each locked company; answer with `hq runners questions answer <id>
   --choice <n>` after the picker. An Executive lane's pending question is
   its `needs_decision` end state. Queue it by the stable lane question id
   through the decision queue and ask exactly one picker, even if the same
   question also arrives in a link report or an open-ask sweep. Preserve its
   options and their choice numbers. On the owner's answer, recheck that the
-  question is pending, then run `hq lanes questions answer <id> --choice <n>`;
+  question is pending, then run `hq runners questions answer <id> --choice <n>`;
   this re-wakes the lane. Record the answered question id so later sweeps do
   not queue it again. Never send a teammate DM or a second picker for it.
 
@@ -1128,7 +1217,7 @@ Answers arrive as `SUPER-CONDUCTOR ANSWER` lines (or, on a timer wake,
 `open-asks.mjs check` once more before relaying; an answer the owner already
 gave in the source window is not relayed (drop the row with the note
 "answered in source"). Write the answer first: `requests.mjs set --id <rq>
---status answered --note "<the quoted answer>"` (and `hq lanes questions
+--status answered --note "<the quoted answer>"` (and `hq runners questions
 answer` for a lane question), then relay it, then `decisions.mjs relayed
 --id <id> --result "<link send + session id>"`. Relay every answer to the owning child as a quoted `OWNER GO`
 (or hold) in the same turn, and say in the relay that its open question is
@@ -1141,7 +1230,7 @@ needs one click. Then log the answer, and set the row `done --result
 
 ### Delivery rule (hard)
 
-A `hq lanes link send` returns JSON with `queued: true`; it only lands when
+A `hq runners link send` returns JSON with `queued: true`; it only lands when
 the child next takes a turn, and a child that is blocked waiting on the owner
 does not take a turn.
 
@@ -1153,11 +1242,13 @@ does not take a turn.
 - Record each child's desktop session id (the `local_…` value from its
   join or from `list_sessions`) in the save file and the overnight log at
   join time so wakes never need a lookup.
-- On every wakeup read `hq lanes link list` and
-  `hq lanes list --json --senior session:<this session id>`. Link JSON uses
-  `.children` and `.unread_reports`; lane JSON supplies status for this
-  session's lanes (`state`, `last_line`, `pr`, `inbox_pending`, `elapsed_s`,
-  and `exit`). Any child showing `undelivered > 0` for more than one tick
+- On every wakeup read `hq runners link list` and each adopted session's
+  `runs.json` ("Runner mode"). Link JSON uses `.children` and
+  `.unread_reports`; `runs.json` supplies each subagent's agent id, worker,
+  task label, report and envelope paths, and `since`. In both modes also
+  read `hq runners list --json --senior session:<this session id>`; lane JSON
+  supplies status for this session's lanes (`state`, `last_line`, `pr`,
+  `inbox_pending`, `elapsed_s`, and `exit`). Any child showing `undelivered > 0` for more than one tick
   gets a direct `send_message` that repeats the pending instruction and tells
   it to drain the mailbox. A child whose `send_message` returns "archived" is
   dropped from the board and logged.
@@ -1170,7 +1261,10 @@ and append later steps. Continue checking answers on every sweep.
 Keep `workspace/reports/conduct/<link>-state.json` next to the log, with these
 fields:
 
-- `children`: name → desktop session id;
+- `children`: name → desktop session id, plus the session id that names its
+  `conduct-subagents/<session-id>/runs.json` when it reported one;
+- `conduct_runner`: `subagent` or `runner`, from the latest wakeup's
+  resolver call ("Runner mode");
 - `open_decisions`: arrival order, each `{id, source, question, status}`
   where `source` names the session id or channel and event id it came from,
   so it can be re-asked without the conversation;
@@ -1245,9 +1339,22 @@ decision at a time, recommended option first.
 
 ## Rendering
 
-End every turn in which children are working with one row per session
-(`mcp__visualize__show_widget`, template `.claude/skills/conduct/lane-rows.html`):
-name, state and company, a plain-words task, and the last thing it reported.
+End every turn in which children are working with the status board
+(`mcp__visualize__show_widget`, template `.claude/skills/conduct-runners/lane-rows.html`).
+Each row shows name, state and company, a plain-words task, and the last
+thing it reported. Build the rows from the sources the runner mode reads:
+
+- Default mode: one row per child session on the link (its last link
+  report), and one row per running subagent in each adopted session's
+  `runs.json`, with `subagent` as the runner chip, the agent id as the row
+  id, elapsed time from `since`, a `standing` chip when the record has a
+  `lane` object, and the session that started it, plus one lane row per
+  Executive lane from `hq runners list --json --senior session:<this session id>`.
+  Two adopted sessions each running two subagents, plus one child session
+  and no senior lanes, give 4 subagent rows and 1 child row.
+- Advanced mode: the same rows; the senior-lane list also holds the lanes
+  this session registered.
+
 Green working, yellow waiting on the owner or on CI, blue done or idle.
 The board is status only. When an item waits on the owner, show the board
 first and leave the active Queue card available. A fallback picker is used
@@ -1277,9 +1384,10 @@ only after a logged ask failure.
 
 ## See also
 
-- `/conduct` — launch detached lanes for tasks typed here
+- `/conduct` — run tasks typed here as subagents and child sessions
+- `/conduct-runners` — advanced mode: detached runners for tasks typed here
 - `/conduct-join` — the child's half of the link
 - `/decision-queue` — one-at-a-time owner decisions
 - `/overnight` — team-comms triage loop that runs inside this session
-- `hq lanes link` — the session mailbox; data lives in `workspace/lanes-links/`
+- `hq runners link` — the session mailbox; data lives in `workspace/lanes-links/`
   only while its sessions remain

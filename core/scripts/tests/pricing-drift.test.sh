@@ -22,8 +22,10 @@ jq '.agentRungs[0].monthlyUsd = 120' "$SHIPPED" >"$TMP/rung.json"
 bash "$DRIFT" --live-file "$TMP/rung.json" >/dev/null 2>&1; check "rung price change exits 1" 1 $?
 
 # Usage card (2026-10-16 card): the shipped copy carries the contract shape.
-jq -e '[.usage.meters[] | {(.id): .unitUsd}] | add == {"member-sync":0.10,"integration-call":0.001,"hq-mcp-call":0.05,"agent-run":0.05,"storage":2,"secret":0.5,"vault":5,"meeting-hour":1}' "$SHIPPED" >/dev/null
+jq -e '[.usage.meters[] | {(.id): .unitUsd}] | add == {"member-sync":0.10,"integration-call":0.001,"hq-mcp-call":0.001,"agent-run":0.05,"storage":2,"secret":0.5,"vault":5,"meeting-hour":1}' "$SHIPPED" >/dev/null
 check "shipped copy carries the card's meter rates, vault and meeting hours included" 0 $?
+jq -e '[.usage.meters[] | select(.id == "integration-call" or .id == "hq-mcp-call") | {displayPer, displayUsd, displayText}] == [{"displayPer":100,"displayUsd":0.1,"displayText":"$0.10 per 100 calls"},{"displayPer":100,"displayUsd":0.1,"displayText":"$0.10 per 100 calls"}]' "$SHIPPED" >/dev/null
+check "integration-call and hq-mcp-call display per 100 calls" 0 $?
 jq -e '[.usage.meters[] | select(.waivedInTrial == true) | .id] == ["vault"]' "$SHIPPED" >/dev/null
 check "only the vault fee is waived in the trial" 0 $?
 jq -e '.usage.includedUsd == 10 and .usage.trial == {"days":30,"capUsd":500} and .usage.newSignupsFrom == "2026-10-16T18:00:00Z"' "$SHIPPED" >/dev/null
@@ -48,6 +50,9 @@ drift_case() { # name, jq filter applied to the shipped copy, expected exit, exp
   fi
 }
 drift_case "sync rate change exits 1" '(.usage.meters[] | select(.id == "member-sync") | .unitUsd) = 0.08' 1 "usage.meters.member-sync.unitUsd"
+drift_case "integration-call displayText change exits 1" '(.usage.meters[] | select(.id == "integration-call") | .displayText) = "$9.99 per 100 calls"' 1 "usage.meters.integration-call.displayText"
+drift_case "hq-mcp-call displayPer change exits 1" '(.usage.meters[] | select(.id == "hq-mcp-call") | .displayPer) = 1000' 1 "usage.meters.hq-mcp-call.displayPer"
+drift_case "hq-mcp-call displayUsd change exits 1" '(.usage.meters[] | select(.id == "hq-mcp-call") | .displayUsd) = 1' 1 "usage.meters.hq-mcp-call.displayUsd"
 drift_case "vault fee change exits 1" '(.usage.meters[] | select(.id == "vault") | .unitUsd) = 10' 1 "usage.meters.vault.unitUsd"
 drift_case "vault no longer waived in trial exits 1" '(.usage.meters[] | select(.id == "vault") | .waivedInTrial) = false' 1 "usage.meters.vault.waivedInTrial"
 drift_case "dropping the vault meter exits 1" '.usage.meters |= map(select(.id != "vault"))' 1 "usage.meters.vault"
@@ -75,15 +80,18 @@ HQ_PRICING_DRIFT_ALLOW_UNREACHABLE=1 HQ_PRICING_URL="http://127.0.0.1:9/v1/prici
 check "unreachable with allow flag exits 0" 0 $?
 
 # refresh-pricing.sh regenerates only the marked section, idempotently.
-mkdir -p "$TMP/r/core/scripts" "$TMP/r/core/knowledge/public/hq-core"
+mkdir -p "$TMP/r/core/scripts" "$TMP/r/core/knowledge/public/hq-core" "$TMP/r/core/workers/public/setup/skills"
 cp "$ROOT/core/scripts/refresh-pricing.sh" "$TMP/r/core/scripts/"
 cp "$ROOT/core/knowledge/public/hq-core/pricing-and-billing.md" "$TMP/r/core/knowledge/public/hq-core/"
+cp "$ROOT/core/knowledge/public/hq-core/plans-and-pricing.md" "$TMP/r/core/knowledge/public/hq-core/"
+cp "$ROOT/core/workers/public/setup/skills/pricing.md" "$TMP/r/core/workers/public/setup/skills/"
 MD="$TMP/r/core/knowledge/public/hq-core/pricing-and-billing.md"
 bash "$TMP/r/core/scripts/refresh-pricing.sh" --from-file "$SHIPPED" >/dev/null 2>&1; check "refresh exits 0" 0 $?
 cmp -s "$MD" "$ROOT/core/knowledge/public/hq-core/pricing-and-billing.md"; check "shipped md matches its pricing.json" 0 $?
 grep -q '^| Sync | \$0.10 | sync | no |$' "$MD"; check "refresh writes the usage meter table" 0 $?
 grep -q '^| Vault | \$5.00 | vault-month | yes |$' "$MD"; check "refresh writes the vault fee, waived in trial" 0 $?
-grep -q '^| Gateway call | \$0.001 | call | no |$' "$MD"; check "refresh keeps a tenth-of-a-cent price" 0 $?
+grep -q '^| Gateway call | \$0.10 per 100 calls | call | no |$' "$MD"; check "refresh quotes the gateway display price" 0 $?
+grep -q '^| HQ MCP call | \$0.10 per 100 calls | call | no |$' "$MD"; check "refresh quotes the HQ MCP display price" 0 $?
 grep -q '^- Trial: 30 days, capped at \$500 of usage\.$' "$MD"; check "refresh writes the trial cap" 0 $?
 grep -q '^| xlarge | t3.xlarge | \$800 |$' "$MD"; check "refresh writes the box ladder" 0 $?
 grep -q '^- Use HQ free, self-hosted or on-prem: https://docs.hq.computer/hq/guide/use-hq-for-free/$' "$MD"; check "refresh writes the self-hosted link" 0 $?

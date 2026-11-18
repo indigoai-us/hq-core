@@ -146,7 +146,7 @@ echo '[1d] merge-word prefilter: real merges reach hq, field names and prose ski
 # hq-cli counts a command as a merge only when a shell word is exactly
 # "merge", a word ends in "/merge", or a word contains "mergePullRequest".
 # Every form below must still reach hq. Most are merges to hq-cli; a few
-# (uppercase, $(...), backticks, hq lanes merge) are deliberately wider than
+# (uppercase, $(...), backticks, hq runners merge) are deliberately wider than
 # its parser. The skip list holds "merge" inside a longer word (mergeable,
 # mergeStateStatus, merged, --merges, unmerged), which hq-cli never treats as
 # a merge.
@@ -164,7 +164,7 @@ merge_reach_corpus=(
   'gh pr --repo acme/widgets merge 5 --admin'
   'git merge topic'
   'git -C /tmp/x merge --ff-only origin/main'
-  'hq lanes merge acme/widgets 5'
+  'hq runners merge acme/widgets 5'
   'gh api -X PUT repos/acme/widgets/pulls/5/merge'
   'gh api --method PUT /repos/acme/widgets/pulls/5/merge -f sha=abc'
   'gh api -X PUT https://api.github.com/repos/acme/widgets/pulls/5/merge/'
@@ -366,7 +366,7 @@ if [ "$LAST_RC" = 0 ] \
     and (.hookSpecificOutput.permissionDecisionReason | contains($repo))
     and (.hookSpecificOutput.permissionDecisionReason | contains($reason))
     and (.hookSpecificOutput.permissionDecisionReason | contains($until))
-    and (.hookSpecificOutput.permissionDecisionReason | contains("hq lanes hold show acme/widgets"))
+    and (.hookSpecificOutput.permissionDecisionReason | contains("hq runners hold show acme/widgets"))
   ' <<<"$LAST_OUT" >/dev/null; then
   ok 'exit 3 denies with repo, hold reason, until, and details command'
 else
@@ -423,12 +423,53 @@ for code in 1 2; do
   fi
 done
 
-invoke_direct 'gh pr merge 5 -R acme/widgets' 'HQ_HOLD_TEST_EXIT=1' \
-  "HQ_HOLD_TEST_STDERR=unknown command: lanes hold"
+echo '[4b] an hq with no runners hold check blocks the merge (fails closed, US-035)'
+# Commander's exact output when a group or subcommand does not exist. An hq
+# older than core's requiresHqCli floor has no `hq runners`; one between the
+# rename and the hold check has no `hold`. Neither can ever report a hold.
+for missing in runners hold check; do
+  invoke_direct 'gh pr merge 5 -R acme/widgets' 'HQ_HOLD_TEST_EXIT=1' \
+    "HQ_HOLD_TEST_STDERR=error: unknown command '$missing'
+(Did you mean lanes?)
+"
+  if [ "$LAST_RC" = 0 ] \
+    && jq -e '
+      .hookSpecificOutput.permissionDecision == "deny"
+      and (.hookSpecificOutput.permissionDecisionReason | startswith("lanes-repo-merge-hold: "))
+      and (.hookSpecificOutput.permissionDecisionReason | contains("hq runners hold check"))
+      and (.hookSpecificOutput.permissionDecisionReason | contains("requiresHqCli"))
+    ' <<<"$LAST_OUT" >/dev/null 2>&1 \
+    && [ -s "$TMP/calls" ]; then
+    ok "hq answering unknown command '$missing' denies the merge"
+  else
+    bad "hq answering unknown command '$missing' denies the merge (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
+  fi
+done
+
+# The deny is only for Commander's own wording on exit 1. The same words from
+# a check that ran (another exit code, or not at the start of a line) are a
+# check error and keep failing open, like every other unexpected result.
+invoke_direct 'gh pr merge 5 -R acme/widgets' 'HQ_HOLD_TEST_EXIT=2' \
+  "HQ_HOLD_TEST_STDERR=error: unknown command 'runners'"
 if [ "$LAST_RC" = 0 ] && [ -z "$LAST_OUT" ] && has_one_named_diagnostic; then
-  ok 'older hq without lanes hold allows with one named diagnostic'
+  ok 'unknown-command text on exit 2 still allows with one named diagnostic'
 else
-  bad "older hq without lanes hold allows with one named diagnostic (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
+  bad "unknown-command text on exit 2 still allows with one named diagnostic (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
+fi
+invoke_direct 'gh pr merge 5 -R acme/widgets' 'HQ_HOLD_TEST_EXIT=1' \
+  "HQ_HOLD_TEST_STDERR=hq runners: error: unknown command 'runners'"
+if [ "$LAST_RC" = 0 ] && [ -z "$LAST_OUT" ] && has_one_named_diagnostic; then
+  ok 'unknown-command text not at line start still allows with one named diagnostic'
+else
+  bad "unknown-command text not at line start still allows with one named diagnostic (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
+fi
+
+# A non-merge command never starts hq, so an old hq cannot block git status.
+invoke_direct 'git status' 'HQ_HOLD_TEST_EXIT=1' "HQ_HOLD_TEST_STDERR=error: unknown command 'runners'"
+if [ "$LAST_RC" = 0 ] && [ -z "$LAST_OUT" ] && [ -z "$LAST_ERR" ] && [ ! -s "$TMP/calls" ]; then
+  ok 'an hq without runners does not affect non-merge commands'
+else
+  bad "an hq without runners does not affect non-merge commands (rc=$LAST_RC, out=$LAST_OUT, err=$LAST_ERR)"
 fi
 
 echo '[5] timeout and missing hq fail open'
@@ -457,7 +498,7 @@ fi
 echo '[6] command text reaches hq unchanged'
 exact_command=$'FOO="quoted value" gh pr merge 7 -R acme/widgets --squash &&\nprintf "%s\\n" two-lines\n\n'
 invoke_direct "$exact_command" 'HQ_HOLD_TEST_EXIT=0' 'HQ_HOLD_TEST_STDOUT={"ok":true}'
-printf '%s\0' lanes hold check --command "$exact_command" --json > "$TMP/expected-argv"
+printf '%s\0' runners hold check --command "$exact_command" --json > "$TMP/expected-argv"
 if [ "$LAST_RC" = 0 ] && cmp -s "$TMP/expected-argv" "$TMP/argv"; then
   ok 'quoted, compound, multiline command argument is byte-for-byte unchanged'
 else

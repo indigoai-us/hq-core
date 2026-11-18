@@ -57,7 +57,7 @@ cat > "$mktemp_body" <<'EOF'
 ...
 EOF
 
-core/scripts/session-journal.sh write "<title>" \
+hq core session-journal write "<title>" \
   --files "<comma-separated relative paths touched, optional>" \
   --body-file "$mktemp_body"
 
@@ -69,7 +69,7 @@ rm -f "$mktemp_body"
 ### `--list`
 
 ```bash
-core/scripts/session-journal.sh list
+hq core session-journal list
 ```
 
 Prints today's `INDEX.md`. If the user wants a different day, pass `--date YYYY-MM-DD` through.
@@ -77,7 +77,7 @@ Prints today's `INDEX.md`. If the user wants a different day, pass `--date YYYY-
 ### `--read <NNN>`
 
 ```bash
-core/scripts/session-journal.sh read <NNN>
+hq core session-journal read <NNN>
 ```
 
 Prints a specific entry. Useful after `/handoff` continuation when the SessionStart hook surfaced the INDEX and you need a specific entry's detail.

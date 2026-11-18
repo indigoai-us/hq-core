@@ -1,0 +1,1 @@
+Under Codex and Grok with hqd running, a tool call now runs the policy guard once instead of twice. The adapter already runs the scope authorizer for the call, so master-hook no longer also asks hqd for a policy check that would run it again. When the adapter did not run the authorizer (opted out, or a tool it does not cover), master-hook still asks hqd.

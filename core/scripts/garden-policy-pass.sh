@@ -5,7 +5,16 @@
 #
 # Candidate rules (any one is enough):
 #   unused       zero retrievals in --days (default 90) AND created more than
-#                --days ago. Retrievals come from policy-retrieval-report.sh.
+#                --days ago. Retrievals come from policy-retrieval-report.sh
+#                (direct reads) AND from the trigger loader's per-session
+#                ledgers in workspace/orchestrator/policy-trigger-state/
+#                (injections), which is how most policies are used. Absence
+#                is judged only when that evidence reaches back at least
+#                --days: on a younger install the window is not observed, so
+#                nothing is retired as unused (feedback_34db91b5).
+#
+# A policy read or injected within --days is never retired, whatever other
+# candidate rule matches it; it is listed as "stay" with the reason.
 #   superseded   status: superseded AND an active policy lists this id in its
 #                supersedes: field (the replacement is live).
 #   retire-when  retire_when: is present. The script cannot judge free text, so
@@ -70,6 +79,28 @@ trap 'rm -rf "$tmp"' EXIT
 HQ_ROOT="$HQ_ROOT" bash "$SCRIPT_DIR/policy-retrieval-report.sh" "${dirs[@]}" \
   | tail -n +2 > "$tmp/retrieval.tsv"
 
+# Injection evidence: ids the trigger loader delivered within --days. The
+# per-session ledgers (<sid>.txt, .turn.txt, .full.txt) hold one id per line
+# and are rewritten when a rule is delivered, so a file modified after the
+# cutoff counts its ids as recent; .seen.tsv rows carry their own epoch.
+# Footers and deferred queues are not deliveries and are left out.
+state_dir="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
+ledger_file="$HQ_ROOT/workspace/orchestrator/policy-retrieval-ledger.jsonl"
+cutoff=$(( now - days * 86400 ))
+cutoff_stamp="$(date -u -r "$cutoff" +%Y%m%d%H%M.%S 2>/dev/null || date -u -d "@$cutoff" +%Y%m%d%H%M.%S)"
+TZ=UTC touch -t "$cutoff_stamp" "$tmp/cutoff-ref"
+: > "$tmp/injected"
+state_older=0
+if [ -d "$state_dir" ]; then
+  find "$state_dir" -maxdepth 1 -type f -name '*.txt' ! -name '*.footer.txt' ! -name '*.deferred-soft.txt' \
+    -newer "$tmp/cutoff-ref" -exec awk 'NF { print $1 }' {} + >> "$tmp/injected" 2>/dev/null || true
+  find "$state_dir" -maxdepth 1 -type f -name '*.seen.tsv' -newer "$tmp/cutoff-ref" \
+    -exec awk -F'\t' -v c="$cutoff" '$2 ~ /^[0-9]+$/ && $2 + 0 >= c { print $1 }' {} + >> "$tmp/injected" 2>/dev/null || true
+  [ -n "$(find "$state_dir" -maxdepth 1 -type f \( -name '*.txt' -o -name '*.seen.tsv' \) ! -newer "$tmp/cutoff-ref" -print 2>/dev/null | head -n 1)" ] \
+    && state_older=1
+fi
+sort -u "$tmp/injected" -o "$tmp/injected"
+
 # Frontmatter of every policy: path, id, status, created, retire_when, supersedes.
 fm() {
   awk -v path="$1" '
@@ -116,8 +147,26 @@ days_of() {  # YYYY-MM-DD... -> days since epoch (civil calendar, no date(1) dia
 }
 today_days=$(( now / 86400 ))
 
+# Evidence coverage: the window is observed only when some retrieval-ledger row
+# or trigger-state ledger is at least --days old. Otherwise "no retrievals in
+# --days" would be claimed over a shorter history (feedback_34db91b5: 90 days
+# over a 17-day ledger).
+evidence_covered=0
+evidence_since=""
+if [ -f "$ledger_file" ]; then
+  evidence_since="$(jq -r '.ts // empty' "$ledger_file" 2>/dev/null | sort | head -n 1 || true)"
+  first_days="$(days_of "$evidence_since")"
+  [ -n "$first_days" ] && [ $((today_days - first_days)) -ge "$days" ] && evidence_covered=1
+fi
+[ "$state_older" = 1 ] && evidence_covered=1
+
+# hq core policy retire needs hq-cli >= 5.341.3; a missing or older hq fails
+# each retire with the floor message, as the forwarder did.
+# shellcheck source=lib/hq-cli-floor.sh
+. "$SCRIPT_DIR/lib/hq-cli-floor.sh"
 retire() {  # path reason
-  bash "$SCRIPT_DIR/policy-retire.sh" "$1" --reason "$2" --by garden-policy-pass >/dev/null 2>"$tmp/err"
+  { hq_cli_floor_check policy-retire.sh 5.341.3 &&
+    hq core --hq-root "$HQ_ROOT" policy retire "$1" --reason "$2" --by garden-policy-pass; } >/dev/null 2>"$tmp/err"
 }
 
 evaluated=0 retired=0 would=0 skipped=0 failed=0
@@ -133,15 +182,22 @@ while IFS=$'\037' read -r path id status created retire_when _supersedes; do
     if [ "$status" = "superseded" ] && grep -qxF "$id" "$tmp/live-superseded"; then
       cand="superseded by a live policy"
     fi
-    if [ -z "$cand" ]; then
-      last="$(awk -F'\t' -v p="$path" -v r="$rel" '$3==p || $3==r { print $1; exit }' "$tmp/retrieval.tsv")"
+    last="$(awk -F'\t' -v p="$path" -v r="$rel" '$3==p || $3==r { print $1; exit }' "$tmp/retrieval.tsv")"
+    recent="" base="${path##*/}"; base="${base%.md}"
+    if [ -n "$last" ] && [ "$last" != "never" ]; then
+      ld="$(days_of "$last")"; [ -n "$ld" ] && [ $((today_days - ld)) -le "$days" ] && recent="read $last"
+    fi
+    if [ -z "$recent" ] && { grep -qxF "$id" "$tmp/injected" || grep -qxF "$base" "$tmp/injected"; }; then
+      recent="injected by the trigger loader within $days days"
+    fi
+    if [ -z "$cand" ] && [ -z "$recent" ]; then
       cdays="$(days_of "$created")"
-      recent=0
-      if [ -n "$last" ] && [ "$last" != "never" ]; then
-        ld="$(days_of "$last")"; [ -n "$ld" ] && [ $((today_days - ld)) -le "$days" ] && recent=1
-      fi
-      if [ "$recent" = 0 ] && [ -n "$cdays" ] && [ $((today_days - cdays)) -gt "$days" ]; then
-        cand="no retrievals in $days days and created $created"
+      if [ -n "$cdays" ] && [ $((today_days - cdays)) -gt "$days" ]; then
+        if [ "$evidence_covered" = 1 ]; then
+          cand="no retrievals in $days days and created $created"
+        else
+          reason="retrieval evidence starts ${evidence_since:-later than the install} and covers less than $days days; absence not judged"
+        fi
       fi
     fi
     if [ -z "$cand" ] && [ -n "$retire_when" ]; then
@@ -150,7 +206,10 @@ while IFS=$'\037' read -r path id status created retire_when _supersedes; do
       done
       [ -z "$cand" ] && { decision="judge"; reason="retire_when: $retire_when"; }
     fi
-    if [ -n "$cand" ]; then
+    if [ -n "$cand" ] && [ -n "$recent" ]; then
+      # A rule in use is never retired, whatever else matches it.
+      decision="stay"; reason="in use ($recent); not retired although: $cand"
+    elif [ -n "$cand" ]; then
       case "$rel" in
         core/policies/*|*/core/policies/*) decision="skip"; reason="core policy, never retired by garden ($cand)" ;;
         *)
@@ -158,8 +217,8 @@ while IFS=$'\037' read -r path id status created retire_when _supersedes; do
           elif retire "$path" "garden: $cand"; then decision="retired"; reason="$cand"
           else decision="failed"; reason="$cand; $(tr '\n' ' ' < "$tmp/err")"; fi ;;
       esac
-    elif [ "$decision" = "stay" ]; then
-      reason="no retirement evidence"
+    elif [ "$decision" = "stay" ] && [ -z "$reason" ]; then
+      if [ -n "$recent" ]; then reason="in use ($recent)"; else reason="no retirement evidence"; fi
     fi
   fi
   case "$decision" in

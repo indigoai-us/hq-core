@@ -57,7 +57,7 @@ has "$STARTWORK" "Fall-through" \
 # A company resolved by the normal startwork flow must be persisted before
 # any mode-specific context gathering can run repo commands or project scans.
 # The bind is `startwork-context.sh orient`, which runs the trusted bind
-# (hq-session.sh set company_slug inside work-mesh-live-bind-trusted.sh) and
+# (hq core work-mesh-bind-trusted, which sets company_slug through hq-session) and
 # fails closed when the bind does not land (startwork-context.test.sh).
 has "$STARTWORK" 'bash core/scripts/startwork-context.sh orient --company "{co}"' \
   "startwork: resolved company is not mechanically bound"
@@ -65,8 +65,12 @@ bind_line="$(grep -nF 'bash core/scripts/startwork-context.sh orient --company "
 grep -qF 'hq-session.sh" --session-id "$sid" set company_slug' "$ROOT/core/scripts/startwork-context.sh" \
   || grep -qF 'set company_slug "$COMPANY"' "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" \
   || fail "startwork: orient no longer reaches hq-session.sh set company_slug"
-grep -qF 'work-mesh-live-bind-trusted.sh" "${pin[@]}"' "$ROOT/core/scripts/startwork-context.sh" \
-  || fail "startwork: orient no longer runs the trusted bind"
+# US-043: orient calls bind_trusted, which runs hq core work-mesh-bind-trusted
+# or, on a missing or older hq-cli, the shell binder.
+grep -qF 'bind_trusted "${pin[@]}"' "$ROOT/core/scripts/startwork-context.sh" \
+  && grep -qF 'hq core --hq-root "$ROOT" work-mesh-bind-trusted "$@"' "$ROOT/core/scripts/startwork-context.sh" \
+  && grep -qF 'work-mesh-live-bind-trusted.sh" "$@"' "$ROOT/core/scripts/startwork-context.sh" \
+  || fail "startwork: orient no longer runs the trusted bind (hq core work-mesh-bind-trusted with the shell fallback)"
 gather_line="$(grep -nF '### 2. Gather Context' "$STARTWORK" | head -1 | cut -d: -f1)"
 [ -n "$bind_line" ] && [ -n "$gather_line" ] && [ "$bind_line" -lt "$gather_line" ] \
   || fail "startwork: company binding must precede all mode-specific context gathering"

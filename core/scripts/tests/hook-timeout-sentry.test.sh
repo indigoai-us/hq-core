@@ -107,6 +107,15 @@ EOF
     command -v perl >/dev/null 2>&1 || fail 'neither GNU timeout nor Perl is available for bounded hook tests'
     cat > "$TMP/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
+# Real timeout accepts -k DURATION (master-hook.sh passes it for safety
+# guards). Accept and drop it; this alarm-only fallback sends no follow-up KILL.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -k) shift 2 ;;
+    --kill-after=*|--foreground|--preserve-status) shift ;;
+    *) break ;;
+  esac
+done
 seconds="${1%s}"
 shift
 exec perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
@@ -130,7 +139,19 @@ make_root() {
   # blocks every matching call when such a guard script is missing.
   local guard="block-credential-file-read.sh"
   [ ! -f "$ROOT/.claude/hooks/$guard" ] || cp "$ROOT/.claude/hooks/$guard" "$root/.claude/hooks/$guard"
-  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$root/.claude/hooks/"
+  # A missing PreToolUse safety guard blocks too, so each ships as an allow
+  # stub. make_gate_hook later replaces the detect-secrets stub.
+  local safety_script
+  if [ -f "$root/.claude/hooks/hook-registry.json" ]; then
+    for safety_script in $(jq -r '.hooks.PreToolUse[]?.hooks[]? | select(.safety == true) | .script' \
+        "$root/.claude/hooks/hook-registry.json" | sort -u); do
+      [ ! -e "$root/$safety_script" ] || continue
+      mkdir -p "$(dirname "$root/$safety_script")"
+      printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' > "$root/$safety_script"
+      chmod +x "$root/$safety_script"
+    done
+  fi
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$root/.claude/hooks/"
   cp "$CODEX_CONFIG_SRC" "$root/.codex/config.toml"
   cp "$GROK_BRIDGE_SRC" "$root/.grok/hooks/hq-grok-user-bridge.json"
   cp "$GATE_SRC" "$root/.claude/hooks/hook-gate.sh"
@@ -835,12 +856,39 @@ EOF
 chmod +x "$R6/bin/jq"
 set +e
 env PATH="$R6/bin:$PATH" HQ_TEST_HQ_ARGS="$R6/hq.args" HQ_TEST_HQ_STDIN="$R6/hq.stdin" HQ_TEST_HQ_ACK="$R6/hq.ack" \
-  HQ_TEST_ROOT="$R6" HQ_TEST_SYSTEM_JQ="$SYSTEM_JQ" HQ_TEST_JQ_DELAY_MARKER="$R6/jq-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 \
+  HQ_TEST_ROOT="$R6" HQ_TEST_SYSTEM_JQ="$SYSTEM_JQ" HQ_TEST_JQ_DELAY_MARKER="$R6/jq-delayed" HQ_HOOK_TIMEOUT_MASTER_WARN_LEAD_SECONDS=2 HQ_HOOK_TRACE=1 \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE="$R6/watchdog.status" \
   HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE="$R6/watchdog.trigger" \
   timeout 15s bash "$R6/.claude/hooks/master-hook.sh" PreToolUse >"$R6/out" 2>"$R6/err" <<<"$(payload master-dispatch-session)"
 r6_rc=$?
 set -e
+if [ "$r6_rc" -ne 0 ]; then
+  # Failure-only diagnostics. HQ_HOOK_TRACE=1 makes master-hook log each
+  # registry guard it ran, skipped or blocked on stderr.
+  {
+    echo "--- case [6] diagnostics (rc=$r6_rc) ---"
+    echo "master stderr ($R6/err):"
+    cat "$R6/err" 2>/dev/null || echo "(unavailable)"
+    echo "master stdout ($R6/out):"
+    cat "$R6/out" 2>/dev/null || echo "(unavailable)"
+    echo "registry guards that ran, were skipped or blocked:"
+    grep -E '^master-hook: (run|skip|block|bridge) ' "$R6/err" 2>/dev/null || echo "(none traced)"
+    echo "safety guard stubs in the fixture:"
+    if [ -f "$R6/.claude/hooks/hook-registry.json" ]; then
+      for diag_script in $(jq -r '.hooks.PreToolUse[]?.hooks[]? | select(.safety == true) | .script' \
+          "$R6/.claude/hooks/hook-registry.json" | sort -u); do
+        if [ -x "$R6/$diag_script" ]; then
+          echo "  $diag_script executable"
+        elif [ -e "$R6/$diag_script" ]; then
+          echo "  $diag_script NOT executable"
+        else
+          echo "  $diag_script MISSING"
+        fi
+      done
+    fi
+    echo "--- end diagnostics ---"
+  } >&2
+fi
 [ "$r6_rc" -eq 0 ] || fail "master dispatcher timed out outside child execution (rc=$r6_rc, watchdog=$(cat "$R6/watchdog.status" 2>/dev/null || printf unavailable), triggers=$(wc -l < "$R6/watchdog.trigger" 2>/dev/null || printf 0), acknowledgements=$(wc -l < "$R6/hq.ack" 2>/dev/null || printf 0))"
 [ "$(event_count "$R6")" = "1" ] || fail "slow master dispatcher should emit exactly one warning"
 jq -e '
@@ -1703,6 +1751,15 @@ case "$(uname -s 2>/dev/null || printf unknown)" in
     # exists on the test host. Its SIGALRM status must map to the hook contract.
     cat > "$R17/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
+# Real timeout accepts -k DURATION (master-hook.sh passes it for safety
+# guards). Accept and drop it; this alarm-only fallback sends no follow-up KILL.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -k) shift 2 ;;
+    --kill-after=*|--foreground|--preserve-status) shift ;;
+    *) break ;;
+  esac
+done
 seconds="${1%s}"
 shift
 exec perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
@@ -1948,6 +2005,30 @@ bounded_report="$(hook_timeout_attach_debug_context "$base_report" "$debug_conte
   || fail "24-phase hook timeout report exceeded the 2,048-byte CLI limit"
 jq -e '.metadata.hook_timeout_debug_context.phase_timings | length <= 24' \
   <<<"$bounded_report" >/dev/null || fail "payload bound dropped phase limit"
+# Trimming for the byte limit drops older repeats of a phase first, so the
+# one-off early phases and the latest child sample stay in the report.
+early_phase_timings="$(jq -cn '
+  [{phase: "startup", elapsed_ms: 11}, {phase: "source", elapsed_ms: 12},
+   {phase: "config_load", elapsed_ms: 13}, {phase: "policy_load", elapsed_ms: 14}]
+  + [range(1; 21) | {phase: "external_command", elapsed_ms: (100000 + .)}]')"
+early_debug_context="$(hook_timeout_debug_context_json master-hook.sh PreToolUse 4000 3600 400 \
+  "$early_phase_timings" external_command check-hq-update.sh 2100 unavailable 16 2)"
+early_base_report="$(jq -c '.metadata.hook_sequence += [range(1; 9)
+  | {script: "registry-guard-\(.).sh", event: "PreToolUse", ms: 10}]' <<<"$base_report")"
+early_bounded_report="$(hook_timeout_attach_debug_context "$early_base_report" "$early_debug_context")"
+[ "$(printf '%s' "$early_bounded_report" | wc -c | tr -d '[:space:]')" -le 2048 ] \
+  || fail "early-phase hook timeout report exceeded the 2,048-byte CLI limit"
+jq -e '
+  .metadata.hook_timeout_debug_context.phase_timings as $kept
+  | ($kept | length) < 24
+    and ($kept[:4] | map(.phase)) == ["startup", "source", "config_load", "policy_load"]
+    and $kept[-1] == {phase: "external_command", elapsed_ms: 100020}
+    and ([$kept[] | select(.phase == "external_command") | .elapsed_ms]
+      | . == sort and length >= 1)
+' <<<"$early_bounded_report" >/dev/null || {
+  jq -c '.metadata.hook_timeout_debug_context.phase_timings' <<<"$early_bounded_report" >&2 || true
+  fail "byte bound dropped early phases before repeated child samples"
+}
 
 old_cli="$TMP/bin/hq-old-version"
 new_cli="$TMP/bin/hq-new-version"

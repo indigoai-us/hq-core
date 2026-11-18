@@ -66,14 +66,14 @@ st="$(PATH="$BARE_PATH" bash -c '
 pass "checkpoint-stop-gate drains stdin when hq is missing"
 fi
 
-echo "[6] hq lanes SessionStart wrapper: unsupported local CLI still drains stdin"
+echo "[6] hq runners SessionStart wrapper: unsupported local CLI still drains stdin"
 jq -n --rawfile p "$TMP/filler" \
   '{hook_event_name:"SessionStart",source:"startup",session_id:"drain-session",padding:$p}' > "$TMP/session-start.json"
 st="$(cat "$TMP/session-start.json" | bash "$ROOT/.claude/hooks/conduct-lanes-session-start.sh" >/dev/null 2>&1 && echo 0 || echo $?)"
 [ "$st" = "0" ] || fail "SessionStart wrapper failed to drain stdin (pipeline status $st)"
-pass "hq lanes SessionStart wrapper drains stdin before environment and CLI guards"
+pass "hq runners SessionStart wrapper drains stdin before environment and CLI guards"
 
-echo "[7] hq lanes linked-session guard: unlinked PostToolUse still drains stdin"
+echo "[7] hq runners linked-session guard: unlinked PostToolUse still drains stdin"
 jq -n --rawfile p "$TMP/filler" \
   '{hook_event_name:"PostToolUse",session_id:"unlinked-session",tool_input:{command:$p}}' > "$TMP/unlinked-post.json"
 st="$(cat "$TMP/unlinked-post.json" | bash "$ROOT/.claude/hooks/conduct-lanes-link-deliver.sh" PostToolUse >/dev/null 2>&1 && echo 0 || echo $?)"

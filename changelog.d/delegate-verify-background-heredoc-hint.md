@@ -1,0 +1,1 @@
+The delegate skill now tells the agent to run `hq-delegate-verify.sh` in the background, because the helper can run longer than the foreground command limit. The scope hook's command-substitution refusal now says to use the Write tool for file content that contains backticks or `$( )`.

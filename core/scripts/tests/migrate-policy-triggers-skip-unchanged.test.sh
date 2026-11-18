@@ -114,6 +114,94 @@ touch "$BIN/hq"   # a newer hq ships newer migration rules
 run
 [ "$(calls)" = "$((before_hq + 1))" ] || fail "a newer hq binary should re-run, got $(calls)"
 
+# US-016 c4: /update-hq runs the forwarder directly, so the native command's
+# own success stamp (<state>/<sha256 of scope>/last-success) is the only fresh
+# one. The hook must accept it with no hq start and no write, for this root's
+# exact scope only. The expected path is computed here independently from the
+# hq-cli formula: sha256("<realpath root>\0" + "<dir>\0"...), dirs = core,
+# personal, personal/workers/*/policies (sorted), then the company's policies
+# and workers/*/policies when CLAUDE_PROJECT_DIR is under companies/<co>.
+sha256_hex() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -c1-64; else shasum -a 256 | cut -c1-64; fi; }
+U="$TMP/updated"
+mkdir -p "$U/core/policies" "$U/personal/policies" "$U/personal/workers/.dot/policies" \
+  "$U/personal/workers/b/policies" "$U/personal/workers/a/policies" "$U/personal/workers/nopol" \
+  "$U/companies/acme/policies" "$U/companies/acme/workers/w2/policies" "$U/workspace" "$U/core/scripts/lib"
+printf -- '---\nid: u1\nenforcement: hard\nwhen: always\n---\nx\n' > "$U/core/policies/u1.md"
+cp "$HQROOT/core/core.yaml" "$U/core/core.yaml"
+cp "$HQROOT/core/scripts/migrate-policy-triggers.sh" "$U/core/scripts/"
+cp "$HQROOT/core/scripts/lib/forwarder.sh" "$HQROOT/core/scripts/lib/hq-cli-floor.sh" "$U/core/scripts/lib/"
+UR="$(cd -P "$U" && pwd)"
+native_stamp_for() { # $1 = CLAUDE_PROJECT_DIR the hook sees
+  local h
+  h="$( {
+    printf '%s\0' "$UR" "$UR/core/policies" "$UR/personal/policies" \
+      "$UR/personal/workers/.dot/policies" "$UR/personal/workers/a/policies" "$UR/personal/workers/b/policies"
+    case "$1" in */companies/acme*) printf '%s\0' "$UR/companies/acme/policies" "$UR/companies/acme/workers/w2/policies" ;; esac
+  } | sha256_hex)"
+  printf '%s/.local/state/hq-migrate-policy-triggers/%s/last-success\n' "$TMP" "$h"
+}
+U_STAMP="$U/workspace/orchestrator/policy-trigger-state/migrate-policy-triggers.stamp"
+urun() { env -i PATH="$BIN:/usr/bin:/bin" HOME="$TMP" HQ_ROOT="$U" CLAUDE_PROJECT_DIR="${UPD:-$U}" "$@" bash "$FORWARDER" </dev/null; }
+put_native() { mkdir -p "$(dirname "$1")"; printf '%s\n' "${2:-999999999}" > "$1"; }
+sleep 1
+NS="$(native_stamp_for "$U")"
+put_native "$NS"
+before="$(calls)"
+urun
+[ "$(calls)" = "$before" ] || fail "a current native last-success stamp must skip hq, got $(calls) after $before"
+[ ! -e "$U_STAMP" ] && [ ! -e "$U_STAMP.new" ] || fail "the native-stamp skip must not write the hook's stamp"
+[ -z "$(find "$U/workspace" -type f)" ] || fail "the native-stamp skip must write nothing under workspace/"
+
+# A company session hashes a different scope: that stamp alone must not pass.
+UPD="$U/companies/acme" urun
+[ "$(calls)" = "$((before + 1))" ] || fail "a native stamp for another scope must not skip hq, got $(calls)"
+rm -f "$U_STAMP"
+NSC="$(native_stamp_for "$U/companies/acme")"
+put_native "$NSC"
+UPD="$U/companies/acme" urun
+[ "$(calls)" = "$((before + 1))" ] || fail "the company scope's own native stamp must skip hq, got $(calls)"
+
+# A root the migration never ran for still migrates (the stamp is per root).
+mkdir -p "$TMP/other"; cp -R "$U/." "$TMP/other/"; rm -rf "$TMP/other/workspace"; mkdir -p "$TMP/other/workspace"
+env -i PATH="$BIN:/usr/bin:/bin" HOME="$TMP" HQ_ROOT="$TMP/other" CLAUDE_PROJECT_DIR="$TMP/other" bash "$FORWARDER" </dev/null
+[ "$(calls)" = "$((before + 2))" ] || fail "a root without its own native stamp must still migrate, got $(calls)"
+
+# Malformed, unreadable or missing native stamps are never a pass.
+exp=$((before + 2))
+put_native "$NS" "not-a-time"
+urun; exp=$((exp + 1))
+[ "$(calls)" = "$exp" ] || fail "a malformed native stamp must not skip hq, got $(calls)"
+rm -f "$U_STAMP"
+if [ "$(id -u)" != 0 ]; then   # root can read a mode-000 file
+  put_native "$NS"; chmod 000 "$NS"
+  urun; exp=$((exp + 1))
+  chmod 600 "$NS"
+  [ "$(calls)" = "$exp" ] || fail "an unreadable native stamp must not skip hq, got $(calls)"
+  rm -f "$U_STAMP"
+fi
+rm -f "$NS"
+urun; exp=$((exp + 1))
+[ "$(calls)" = "$exp" ] || fail "a missing native stamp must run hq, got $(calls)"
+rm -f "$U_STAMP"
+
+# The existing rules still apply to the native stamp: policy edits, a newer
+# hq binary and the force switch.
+sleep 1; put_native "$NS"; sleep 1
+printf -- '---\nid: x\nenforcement: hard\n---\nx\n' > "$U/personal/workers/a/policies/x.md"
+urun; exp=$((exp + 1))
+[ "$(calls)" = "$exp" ] || fail "a policy newer than the native stamp must re-run, got $(calls)"
+rm -f "$U_STAMP"
+sleep 1; put_native "$NS"
+urun
+[ "$(calls)" = "$exp" ] || fail "a native stamp newer than the edit must skip again, got $(calls)"
+sleep 1; touch "$BIN/hq"
+urun; exp=$((exp + 1))
+[ "$(calls)" = "$exp" ] || fail "an hq binary newer than the native stamp must re-run, got $(calls)"
+rm -f "$U_STAMP"
+sleep 1; put_native "$NS"
+urun HQ_MIGRATE_TRIGGERS_FORCE=1; exp=$((exp + 1))
+[ "$(calls)" = "$exp" ] || fail "HQ_MIGRATE_TRIGGERS_FORCE=1 must re-run despite a native stamp, got $(calls)"
+
 # A failing run must not record a stamp.
 rm -f "$STAMP"
 cat > "$BIN/hq" <<EOF
@@ -126,4 +214,4 @@ set +e; run; rc=$?; set -e
 [ "$rc" -eq 3 ] || fail "exit code of hq must propagate, got $rc"
 [ ! -f "$STAMP" ] || fail "a failing run must not write the stamp"
 
-echo "PASS: migrate-policy-triggers skips hq when policies are unchanged and re-runs on change, force, args, newer hq"
+echo "PASS: migrate-policy-triggers skips hq when policies are unchanged (own or native last-success stamp, exact scope) and re-runs on change, force, args, newer hq, bad stamps"

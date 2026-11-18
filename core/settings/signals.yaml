@@ -1,0 +1,39 @@
+# Defaults for `hq signals run`, the meeting rider jobs and the daily brief's
+# signals gate. hq-cli reads this file (src/lib/signals/settings.ts and
+# src/lib/bot/jobs/meeting-rider.ts, meeting-detect.ts); the daily brief reads
+# the top-level numbers (.claude/skills/daily-brief/scripts/brief_gate.py).
+# Every value here equals the built-in default, so a missing file runs the same.
+# The command line overrides maxTurns and maxBudgetUsd per run
+# (--max-turns, --max-budget-usd). For the four top-level numbers, hq-cli
+# ignores an invalid value with a warning and keeps the default. The
+# incremental and rider readers drop an invalid value without a warning, and a
+# file that is not valid YAML stops incremental runs and the meeting rider jobs.
+# core/scripts/tests/signals-settings.test.sh checks this file against hq-cli.
+
+# Most model turns the extract step may take in one run. Whole number, 1 or more.
+maxTurns: 40
+
+# Spend cap in US dollars for the extract step in one run. 0 or more.
+maxBudgetUsd: 2.00
+
+# Local hour after which a scheduled (--trigger job) run does the garden step
+# only and is recorded partial with partialReason late-start. Whole hour 1-24;
+# 24 turns the limit off.
+lateStartHour: 22
+
+# Minutes the daily brief waits for today's signals run before it builds with
+# a stale-signals notice. brief_gate.py keeps it between 1 and 180.
+briefWaitMinutes: 20
+
+# Limits for one incremental pass over a growing source
+# (`hq signals run --source ... --incremental`).
+incremental:
+  max_turns: 12
+  max_budget_usd: 0.40
+
+# Meeting rider bot jobs: seconds between passes over a live meeting
+# (interval_seconds) and between checks for a new meeting
+# (detect_interval_seconds). hq-cli never goes below 5.
+rider:
+  interval_seconds: 20
+  detect_interval_seconds: 60

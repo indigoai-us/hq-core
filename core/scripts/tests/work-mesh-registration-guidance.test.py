@@ -41,7 +41,7 @@ class RegistrationGuidanceTest(unittest.TestCase):
                 text = (ROOT / f'.claude/skills/{name}/SKILL.md').read_text()
                 step = text.split('## Step 5.7:', 1)[1].split('## Step 6:', 1)[0]
                 self.assertIn('Local `board.json` does not establish the server project', step)
-                self.assertIn('bash core/scripts/register-project.sh {co} {name}', step)
+                self.assertIn('hq core register-project {co} {name}', step)
                 self.assertIn('registration incomplete', step)
                 self.assertIn('registered {co}/{name} thread=<threadId> channel=<channelId>', step)
                 self.assertNotIn('PUT /v1/work-mesh/projects/{projectId}', step)

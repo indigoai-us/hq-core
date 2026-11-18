@@ -114,12 +114,13 @@ grep -q 'inbound request' "$SANDBOX/poll.out" || fail "poll must print the inbou
 ! grep -q 'own one\|own two' "$SANDBOX/poll.out" || fail "poll must filter own machine posts"
 echo "PASS: machine principal polling filters senderMachineUid"
 
-# An older CLI must refuse before a post is attempted.
+# An older CLI must refuse before a post is attempted. 5.309.1 is on npm but
+# has no hq core dm-bind; 5.310.0 is the first release with it (US-043).
 before="$(grep -c '^dm room ' "$CALLS" || true)"
 rc=0
-HQ_VERSION=5.309.0 bash "$BIND" post --title "Too old" >/dev/null 2>"$SANDBOX/old.err" || rc=$?
+HQ_VERSION=5.309.1 bash "$BIND" post --title "Too old" >/dev/null 2>"$SANDBOX/old.err" || rc=$?
 [ "$rc" = 127 ] || fail "old hq-cli must be rejected before forwarding (rc=$rc)"
-grep -q 'hq-cli >= 5.309.1' "$SANDBOX/old.err" || fail "old CLI rejection must name the required version"
+grep -q 'hq-cli >= 5.310.0' "$SANDBOX/old.err" || fail "old CLI rejection must name the required version"
 after="$(grep -c '^dm room ' "$CALLS" || true)"
 [ "$before" = "$after" ] || fail "old hq-cli must not attempt a post"
 echo "PASS: machine principal refuses an older hq-cli before posting"

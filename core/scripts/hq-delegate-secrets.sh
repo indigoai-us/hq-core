@@ -9,9 +9,14 @@
 #     [--env-schema <path>]
 #
 # Behavior:
-#   - derives required secret NAMES from the project's / repo's .env.schema
-#     (--env-schema overrides discovery); no schema -> records secrets: []
-#     and says so plainly rather than guessing at credentials
+#   - derives required secret NAMES from, in order: --env-schema, the project
+#     folder's .env.schema, prd.json metadata.secrets, then the repo's
+#     .env.schema (the widest source, used only when the project declares
+#     nothing); no source -> records secrets: [] and says so plainly rather
+#     than guessing at credentials. The plan output names the source.
+#   - before sharing anything, every name is checked against
+#     `hq secrets list --company <co>` (names only); one missing name aborts
+#     the whole step with nothing shared
 #   - without --yes: prints a full-prose confirmation listing every name and
 #     the principal, then exits 2 granting nothing — this step is a privilege
 #     handover and gets its own confirmation, separate from the file grants
@@ -91,27 +96,46 @@ fi
 
 # --- discover the env schema --------------------------------------------------
 
-if [ -z "$ENV_SCHEMA" ]; then
+# Narrowest declaration first. A project-scoped source (the project folder's
+# .env.schema or prd.json metadata.secrets) names what this lane needs; the
+# repo's .env.schema names everything the whole repo needs and is only used
+# when the project declares nothing.
+SOURCE_KIND="" SOURCE_PATH="" NAMES=""
+NAME_RE='^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*$'
+names_from_schema() { # schema-path -> stdout (KEY= lines; comments and blanks ignored)
+  grep -E '^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*=' "$1" | cut -d= -f1 | sort -u
+}
+PROJECT_DIR="$HQ_ROOT/companies/$COMPANY/projects/$PROJECT"
+if [ -n "$ENV_SCHEMA" ]; then
+  [ -f "$ENV_SCHEMA" ] || die "--env-schema not found: $ENV_SCHEMA"
+  SOURCE_KIND="--env-schema"; SOURCE_PATH="$ENV_SCHEMA"
+  NAMES="$(names_from_schema "$ENV_SCHEMA")"
+elif [ -f "$PROJECT_DIR/.env.schema" ]; then
+  SOURCE_KIND="project .env.schema"; SOURCE_PATH="$PROJECT_DIR/.env.schema"
+  NAMES="$(names_from_schema "$SOURCE_PATH")"
+elif [ -f "$PROJECT_DIR/prd.json" ] \
+  && jq -e '(.metadata.secrets // null) | type == "array" and length > 0' "$PROJECT_DIR/prd.json" >/dev/null 2>&1; then
+  SOURCE_KIND="prd.json metadata.secrets"; SOURCE_PATH="$PROJECT_DIR/prd.json"
+  NAMES="$(jq -r '.metadata.secrets[] | if type == "object" then (.name // empty) else . end' "$SOURCE_PATH" | sort -u)"
+  BAD="$(printf '%s\n' "$NAMES" | grep -v -E "$NAME_RE" || true)"
+  [ -z "$BAD" ] || die "prd.json metadata.secrets has an entry that is not a secret name: $(printf '%s' "$BAD" | tr '\n' ' ')— nothing granted"
+else
   REPO_REL="$(jq -r '.repo.path // empty' "$MANIFEST")"
-  for candidate in \
-    "$HQ_ROOT/companies/$COMPANY/projects/$PROJECT/.env.schema" \
-    "${REPO_REL:+$HQ_ROOT/$REPO_REL/.env.schema}"; do
-    [ -n "$candidate" ] && [ -f "$candidate" ] && { ENV_SCHEMA="$candidate"; break; }
-  done
+  if [ -n "$REPO_REL" ] && [ -f "$HQ_ROOT/$REPO_REL/.env.schema" ]; then
+    SOURCE_KIND="repo .env.schema"; SOURCE_PATH="$HQ_ROOT/$REPO_REL/.env.schema"
+    NAMES="$(names_from_schema "$SOURCE_PATH")"
+  fi
 fi
 
-if [ -z "$ENV_SCHEMA" ] || [ ! -f "$ENV_SCHEMA" ]; then
+if [ -z "$SOURCE_PATH" ]; then
   update_manifest '.secrets = [] | .secretsSkipped = false'
-  echo "hq-delegate-secrets: no .env.schema found for this project or its repo — no secret names to grant. If the project needs credentials, add an .env.schema and re-run, or grant them manually with 'hq secrets share'."
+  echo "hq-delegate-secrets: no .env.schema found for this project or its repo, and prd.json declares no metadata.secrets — no secret names to grant. If the project needs credentials, add a project .env.schema (or prd.json metadata.secrets) and re-run, or grant them manually with 'hq secrets share'."
   exit 0
 fi
 
-# --- parse names (KEY= lines; comments and blanks ignored) --------------------
-
-NAMES="$(grep -E '^[A-Z][A-Z0-9_]*(/[A-Z][A-Z0-9_]+)*=' "$ENV_SCHEMA" | cut -d= -f1 | sort -u)"
 if [ -z "$NAMES" ]; then
   update_manifest '.secrets = [] | .secretsSkipped = false'
-  echo "hq-delegate-secrets: $ENV_SCHEMA declares no secret names — nothing to grant"
+  echo "hq-delegate-secrets: $SOURCE_PATH declares no secret names — nothing to grant"
   exit 0
 fi
 NAME_COUNT="$(printf '%s\n' "$NAMES" | wc -l | tr -d ' ')"
@@ -120,7 +144,12 @@ NAME_COUNT="$(printf '%s\n' "$NAMES" | wc -l | tr -d ' ')"
 
 echo "Secret access handover — this grants the recipient the ability to use these credentials."
 echo
-echo "The following $NAME_COUNT secret name(s), declared by $(basename "$ENV_SCHEMA") for project '$PROJECT', will be shared with read permission to '$PRINCIPAL' in company '$COMPANY':"
+echo "Source: $SOURCE_KIND ($SOURCE_PATH)"
+if [ "$SOURCE_KIND" = "repo .env.schema" ]; then
+  echo "The project declares no secrets of its own, so the repo-wide schema is used. Narrow it with a project .env.schema or prd.json metadata.secrets if the lane needs fewer."
+fi
+echo
+echo "The following $NAME_COUNT secret name(s), declared by $(basename "$SOURCE_PATH") for project '$PROJECT', will be shared with read permission to '$PRINCIPAL' in company '$COMPANY':"
 echo
 printf '%s\n' "$NAMES" | sed 's/^/  - /'
 echo
@@ -144,6 +173,23 @@ fi
 
 [ -n "$SHARE_PRINCIPAL" ] \
   || die "recipient '$PRINCIPAL' cannot be a secret-ACL principal and the manifest has no usable grantPrincipal — run hq-delegate-grant.sh --yes first; nothing granted"
+
+# Every name must exist in the company vault before any share runs, so a
+# typo or an undeclared secret never leaves a partial grant behind. Names
+# only: `hq secrets list` prints no values.
+LISTED="$(hq secrets list --company "$COMPANY" 2>/dev/null)" \
+  || die "could not list secret names for company '$COMPANY' (hq secrets list failed) — nothing granted"
+MISSING=""
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  printf '%s\n' "$LISTED" | awk -v n="$name" '$1 == n { found = 1 } END { exit !found }' \
+    || MISSING="$MISSING $name"
+done <<EOF
+$NAMES
+EOF
+if [ -n "$MISSING" ]; then
+  die "these name(s) from $SOURCE_KIND do not exist in company '$COMPANY':${MISSING} — nothing granted; add them with 'hq secrets set' or remove them from $SOURCE_PATH, then re-run"
+fi
 
 printf '%s\n' "$NAMES" | while IFS= read -r name; do
   hq secrets --company "$COMPANY" share "$name" --with "$SHARE_PRINCIPAL" --permission read \

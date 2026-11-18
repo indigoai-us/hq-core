@@ -123,7 +123,7 @@ entries:
     kind: generated
     root: live
     interpreter: bash
-    min_cli: 5.78.0
+    min_cli: 5.89.0
     state: forwarded
     path_operands: none
     note: |
@@ -159,7 +159,7 @@ entries:
     kind: generated
     root: live
     interpreter: bash
-    min_cli: 5.309.1
+    min_cli: 5.310.0
     state: forwarded
     path_operands: none
     note: |
@@ -436,3 +436,81 @@ entries:
     path_operands: options:--source
     note: |
       The wrapper captures CLI stdout and writes a worktree creation stamp after a successful call.
+  - path: core/scripts/outpost-jobs-reconcile.sh
+    command: jobs reconcile
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.292.0
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: hands the reconcile to hq core jobs reconcile once the installed
+      hq-cli writes units that start hq core job run (the script's
+      HQ_JOB_RECONCILE_NATIVE_MIN_CLI); an older or missing hq keeps the shell
+      body until US-044. 5.292.0 is the first release with the command.
+  - path: core/scripts/startwork-context.sh
+    command: work-mesh-bind-trusted
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.310.0
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: orient runs the trusted bind through hq core and reports a failed
+      bind (including a missing hq) as exit 4.
+  - path: core/scripts/refresh-vault-access-session-start.sh
+    command: refresh-vault-access
+    kind: hybrid
+    root: cwd
+    interpreter: bash
+    min_cli: 5.307.0
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: the detached SessionStart refresh checks the floor, then runs
+      hq core refresh-vault-access; a missing or older hq fails in the child.
+  - path: core/scripts/garden-policy-pass.sh
+    command: policy retire
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: each retirement checks the floor, then runs hq core policy retire.
+  - path: core/scripts/lint-policy-triggers.sh
+    command: eval-trigger
+    kind: hybrid
+    root: cwd
+    interpreter: bash
+    min_cli: 5.341.3
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: the trigger check runs hq core eval-trigger after the floor check
+      and fails the lint closed when it cannot run.
+  - path: core/scripts/lint-skill-company-bind.sh
+    command: work-mesh-bind-trusted
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.310.0
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: the linter names hq core work-mesh-bind-trusted as the bind to run
+      and accepts it as a bind; it does not run the command itself.
+  - path: core/scripts/anywhere-parity-test.sh
+    command: resolve-company
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.308.0
+    state: forwarded
+    path_operands: none
+    note: |
+      US-043: the manual parity check asks hq core resolve-company for the
+      device default company.

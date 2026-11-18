@@ -326,6 +326,12 @@ jobs:
         run: bash core/scripts/tests/agent-runtime-skill-metadata.test.sh
       - name: check-skill-edit local pre-push wrapper contract
         run: bash core/scripts/tests/check-skill-edit.test.sh
+      - name: Installed release tree excludes repository tooling
+        run: bash .github/release/staged-tree.test.sh
+      - name: Release tarball passes the hq-cli installed-core check
+        run: bash .github/release/installed-core-check.test.sh
+      - name: /update-hq takes test and tooling files out of an existing install
+        run: bash .github/release/remove-installed-test-files.test.sh
       - name: Codex pack build regression test
         run: bash core/scripts/tests/build-codex-pack.test.sh
       - name: HQ Anywhere package contract regression test
@@ -386,6 +392,7 @@ jobs:
             core/scripts/tests/hq-job-run-approval-mode.test.sh \
             core/scripts/tests/hq-job-probe.test.sh \
             core/scripts/tests/outpost-jobs-reconcile.test.sh \
+            core/scripts/tests/outpost-jobs-reconcile-native-route.test.sh \
             core/scripts/tests/personal-job-oncalendar.test.sh \
             core/scripts/tests/outpost-cron-oncalendar.test.sh \
             core/scripts/company-jobs-install.sh \
@@ -473,8 +480,16 @@ jobs:
         run: bash core/scripts/tests/repogit-guard-spawn-budget.test.sh
       - name: Scope authorizer checks long inline commands inside its budget or fails closed with a script-file message
         run: bash core/scripts/tests/mandatory-scope-authorizer-long-command.test.sh
+      - name: Scope authorizer folds only the path for file tools, so long Write and Edit content stays fast
+        run: bash core/scripts/tests/scope-authorizer-file-tool-fold-path.test.sh
       - name: Scope authorizer checks long heredoc, python and Edit payloads well inside the hook cap
         run: bash core/scripts/tests/mandatory-scope-authorizer-bash32-payload.test.sh
+      - name: Scope authorizer never refuses a core, pack, personal or user-level skill for sharing a company skill name
+        run: bash core/scripts/tests/scope-skill-name-collision.test.sh
+      - name: Scope authorizer loads a bound company's own skills and plugin skills, and reads a multi-line interpreter one-liner as program text
+        run: bash core/scripts/tests/scope-guard-false-blocks.test.sh
+      - name: Scope authorizer loads a bare skill name that only a company mirror folder suffix shares
+        run: bash core/scripts/tests/scope-skill-bare-names.test.sh
       - name: Repo guard command survives master-hook parsing
         run: bash core/scripts/tests/master-hook-repogit-command-roundtrip.test.sh
       - name: Bash guards collapse simulated jq.exe CRLF in the stdin fallback
@@ -549,6 +564,8 @@ jobs:
         run: bash core/scripts/tests/push-guard.test.sh
       - name: worktree-preserve checks size, HQ-root markers and secrets before committing
         run: bash core/scripts/tests/worktree-preserve.test.sh
+      - name: worktree-backend uses git by default, twig when opted in, and falls back to git without failing
+        run: bash core/scripts/tests/worktree-backend.test.sh
       - name: PreToolUse blocks git --no-verify and stage-everything-and-push in one command
         run: bash core/scripts/tests/block-no-verify-bulk-add.test.sh
       - name: Commit-msg hook stamps HQ-Fingerprint only inside HQ and fails open
@@ -748,6 +765,7 @@ jobs:
           bash core/scripts/tests/hq-job-run-approval-mode.test.sh
           bash core/scripts/tests/hq-job-probe.test.sh
           bash core/scripts/tests/outpost-jobs-reconcile.test.sh
+          bash core/scripts/tests/outpost-jobs-reconcile-native-route.test.sh
           bash core/scripts/tests/personal-job-oncalendar.test.sh
           # Ubuntu runners ship systemd-analyze; require it so every
           # rendered OnCalendar value is validated by systemd itself.
@@ -802,8 +820,12 @@ jobs:
         run: node core/scripts/hook-corpus/differential.mjs --engine-a 'bash .claude/hooks/master-hook.sh' --engine-b 'bash .claude/hooks/master-hook.sh'
       - name: Credential-file read guard blocks Read and Bash readers in every path form
         run: bash core/scripts/tests/credential-read-guard.test.sh
+      - name: Arithmetic guard decision corpus
+        run: bash core/scripts/tests/bash-arith-guard.test.sh
       - name: Credential guard fast path allows only what the full check allows (zero verdict diff)
         run: bash core/scripts/tests/credential-read-guard-fastpath.test.sh
+      - name: Credential guard blocks a command it cannot check within its time budget
+        run: bash core/scripts/tests/credential-read-guard-time-budget.test.sh
       - name: PostToolUse redactor removes credential values from tool output
         run: bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed PreToolUse guard blocks on timeout; redaction survives sibling exits
@@ -812,6 +834,8 @@ jobs:
         run: bash core/scripts/tests/policy-enforcement-gate.test.sh
       - name: Policy enforcement gate UserPromptSubmit path parses and runs
         run: bash core/scripts/tests/policy-enforcement-gate-bash32.test.sh
+      - name: Safe-store helper refuses planted links, FIFOs and open modes
+        run: bash core/scripts/tests/safe-store.test.sh
 
   core-write-protection:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') }}
@@ -828,6 +852,10 @@ jobs:
           command -v hq
           hq core --help
           HQ_CLI_REQUIRED_IN_CI=1 bash core/scripts/check-cli-hosted.sh
+      - name: Callers of twinned helpers run hq core, within the install floor (US-043)
+        run: |
+          node --test core/scripts/tests/rewrite-core-callers.test.mjs
+          node core/scripts/ci/rewrite-core-callers.mjs --check
       - name: Company skill mirrors use a slug only behind the hq-flags gate
         run: bash core/scripts/tests/auto-mirror-company-skill.test.sh
       - name: Agent secret reveal guard covers Bash and Codex PreToolUse
@@ -846,6 +874,8 @@ jobs:
         run: bash core/scripts/tests/hooks-bash-env-neutralize.test.sh
       - name: Hook timeout Sentry watchdog
         run: bash core/scripts/tests/hook-timeout-sentry.test.sh
+      - name: Adapter gates share one timeout watchdog per event; hung gate still bounded
+        run: timeout 600s bash core/scripts/tests/hook-gate-event-watchdog.test.sh
       - name: Hook timeout warning reports measured time; adapter hooks in the timing journal
         run: bash core/scripts/tests/hook-timing-honest-warning.test.sh
       - name: Policy reminders on tool events carry only rules about the action
@@ -919,6 +949,8 @@ jobs:
         run: timeout 120s bash core/scripts/tests/master-hook-context-budget.test.sh
       - name: Timed-out safety guards block; slow non-safety hooks stay non-blocking
         run: timeout 600s bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Codex and Grok adapters block a safety guard that exits anything but 0 or 2
+        run: timeout 300s bash core/scripts/tests/adapter-safety-guard-exit.test.sh
       - name: Advisory hooks are hard-capped and fail open; guards are never capped
         run: timeout 600s bash core/scripts/tests/advisory-hook-hard-cap.test.sh
       - name: Master-hook starts at most two clock processes per child without EPOCHREALTIME
@@ -929,6 +961,14 @@ jobs:
         run: timeout 600s bash core/scripts/tests/master-hook-parallel-dispatch.test.sh
       - name: Master-hook parallel dispatch removes result files on SIGTERM and SIGINT
         run: timeout 300s bash core/scripts/tests/master-hook-parallel-signal-cleanup.test.sh
+      - name: Master-hook removes old completion markers of killed runs, at most once per interval
+        run: timeout 300s bash core/scripts/tests/master-hook-stale-completion-markers.test.sh
+      - name: Master-hook leaves no completion marker when the hook engine gives no verdict
+        run: timeout 300s bash core/scripts/tests/master-hook-completion-marker-leak.test.sh
+      - name: Master-hook prunes the timeout journal directory and does not read it on every event
+        run: timeout 300s bash core/scripts/tests/master-hook-timeout-journal-prune.test.sh
+      - name: Master-hook and the policy injector keep a running session's timeout journal and metadata file small
+        run: timeout 300s bash core/scripts/tests/master-hook-timeout-journal-size-bound.test.sh
       - name: Advisory hook cap holds with HQ_HOOK_PARALLEL=1
         run: HQ_HOOK_PARALLEL=1 timeout 600s bash core/scripts/tests/advisory-hook-hard-cap.test.sh
       - name: Dispatcher order, budget, fail-open and watchdog tests with HQ_HOOK_PARALLEL=1
@@ -950,16 +990,22 @@ jobs:
         run: |
           bash core/scripts/tests/hq-anywhere-runtime-flag.test.sh
           bash core/scripts/tests/resolve-hq-root.test.sh
+          bash core/scripts/tests/nested-hq-root-isolation.test.sh
           bash core/scripts/tests/master-hook-missing-dependencies.test.sh
           bash core/scripts/tests/master-hook-double-dispatch.test.sh
+          bash core/scripts/tests/master-hook-replay-recorder.test.sh
           bash core/scripts/tests/master-hook-hook-engine-bridge.test.sh
           bash core/scripts/tests/master-hook-hqd-socket-path.test.sh
           bash core/scripts/tests/master-hook-hqd-adapter-skip.test.sh
+          bash core/scripts/tests/master-hook-hqd-single-check.test.sh
+          bash core/scripts/tests/codex-grok-hqd-single-guard.test.sh
+          timeout 600s bash core/scripts/tests/master-hook-registry-fail-closed.test.sh
           bash core/scripts/tests/master-hook-foreign-bind.test.sh
           bash core/scripts/tests/sessionstart-repo-rooted-hq-skills.test.sh
           bash core/scripts/tests/master-hook-empty-json-outputs.test.sh
           bash core/scripts/tests/master-hook-pretooluse-valid-json.test.sh
           bash core/scripts/tests/master-hook-stop-schema.test.sh
+          bash core/scripts/tests/master-hook-cursor-session.test.sh
           bash core/scripts/tests/master-hook-library-fail-open.test.sh
           bash core/scripts/tests/hq-agent-session-hooks.test.sh
           bash core/scripts/anywhere-parity-test.test.sh
@@ -1002,8 +1048,14 @@ jobs:
         run: bash core/scripts/tests/hook-lib-ansi-c-lexer.test.sh
       - name: shell lexer skips comments and shows words before an unterminated quote
         run: bash core/scripts/tests/hook-lib-comment-lexer.test.sh
+      - name: shell lexer decodes ANSI-C escapes and reads backtick substitutions and heredoc bodies like Bash
+        run: bash core/scripts/tests/hook-lib-lexer-escapes-backticks-heredocs.test.sh
+      - name: shell lexer reads command substitutions in double quotes and backticks at a word start as commands
+        run: bash core/scripts/tests/hook-lib-lexer-substitutions.test.sh
       - name: block-core-writes-bash blocks chained protected-path variables
         run: bash core/scripts/tests/block-core-writes-bash-chained-vars.test.sh
+      - name: block-core-writes-bash reads the command behind sudo options
+        run: bash core/scripts/tests/block-core-writes-bash-sudo-options.test.sh
       - name: block-core-writes-bash masks only whole always-writable paths
         run: bash core/scripts/tests/block-core-writes-bash-writable-mask.test.sh
       - name: block-core-writes-bash avoids grep/sed process fanout
@@ -1156,6 +1208,12 @@ jobs:
         run: bash core/scripts/tests/session-title-windows-argv.test.sh
       - name: Pipeline Windows path and lock identity
         run: bash core/scripts/tests/pipeline-windows-path-lock.test.sh
+      - name: block-core-writes keeps package links immutable across long and 8.3 spellings (US-022)
+        run: bash core/scripts/tests/block-core-writes-package-mount-83.test.sh
+      - name: block-core-writes blocks protected writes across long and 8.3 root spellings (US-022)
+        run: bash core/scripts/tests/block-core-writes-scope-83.test.sh
+      - name: block-core-writes ignores letter case on Windows and rewrites both paths or neither (US-022)
+        run: bash core/scripts/tests/block-core-writes-case-windows.test.sh
       - name: Session journal cross-PID lock diagnostic and regression test
         run: bash core/scripts/tests/checkpoint-journal-noise.test.sh
       - name: Policy hook resolves the npm hq shim without starting node (US-001)
@@ -1381,6 +1439,8 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer.test.sh
+      - name: Scope authorizer long Write and Edit content under stock macOS Bash (path-only fold)
+        run: /bin/bash core/scripts/tests/scope-authorizer-file-tool-fold-path.test.sh
       - name: Scope authorizer long payloads inside the hook cap under stock macOS Bash
         env:
           BASH_BIN: /bin/bash
@@ -1395,8 +1455,18 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/scope-guard-family-b.test.sh
+      - name: Shared path fold table under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/path-fold-lib.test.sh
+      - name: Scope guard HQ-root identity on a folding volume under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/scope-root-fs-identity.test.sh
       - name: Credential-file read guard under stock macOS Bash
         run: /bin/bash core/scripts/tests/credential-read-guard.test.sh
+      - name: Arithmetic guard decision corpus under stock macOS Bash
+        run: /bin/bash core/scripts/tests/bash-arith-guard.test.sh
       - name: Handoff finalizer git add error classification under stock macOS Bash
         run: /bin/bash core/scripts/tests/handoff-finalize-stage-error.test.sh
       - name: Handoff finalizer index.lock retry under stock macOS Bash
@@ -1415,6 +1485,11 @@ jobs:
         env:
           CRED_GUARD_HOOK_BASH: /bin/bash
         run: /bin/bash core/scripts/tests/credential-read-guard-fastpath.test.sh
+      - name: Credential guard time budget under stock macOS Bash
+        env:
+          CRED_GUARD_HOOK_BASH: /bin/bash
+          CRED_GUARD_BUDGET_CAP_CHECK: "1"
+        run: /bin/bash core/scripts/tests/credential-read-guard-time-budget.test.sh
       - name: Credential output redactor under stock macOS Bash
         run: /bin/bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed guard timeout under stock macOS Bash
@@ -1427,6 +1502,9 @@ jobs:
         run: bash core/scripts/tests/hook-gate-path-augment.test.sh
       - name: hook-gate exec-bit self-heal
         run: bash core/scripts/tests/hook-gate-exec-bit.test.sh
+      - name: Adapter gates share one timeout watchdog per event (PATH bash and /bin/bash 3.2)
+        timeout-minutes: 10
+        run: bash core/scripts/tests/hook-gate-event-watchdog.test.sh
       - name: Welcome brief SessionStart hook under stock macOS Bash
         env:
           BASH_BIN: /bin/bash
@@ -1441,6 +1519,8 @@ jobs:
         run: bash core/scripts/ci/run-shell-smoke-timeout-tests.sh
       - name: Timed-out safety guards block under Homebrew Bash and stock /bin/bash 3.2
         run: bash core/scripts/tests/master-hook-safety-guard-timeout.test.sh
+      - name: Codex and Grok adapters block a crashed safety guard under stock /bin/bash 3.2
+        run: /bin/bash core/scripts/tests/adapter-safety-guard-exit.test.sh
       - name: Advisory hooks are hard-capped under Homebrew Bash and stock /bin/bash 3.2
         run: bash core/scripts/tests/advisory-hook-hard-cap.test.sh
       - name: Master-hook clock reads stay at two processes per child under stock /bin/bash 3.2
@@ -1502,6 +1582,7 @@ jobs:
           bash core/scripts/tests/hq-agent-session-policy.test.sh
           bash core/scripts/tests/hq-agent-session-skill-dispatch.test.sh
           bash core/scripts/tests/inject-policy-baseline-bounds.test.sh
+          bash core/scripts/tests/inject-policy-non-bash-tools.test.sh
           bash core/scripts/tests/inject-policy-parser-parity.test.sh
           bash core/scripts/tests/native-plan-session-project.test.sh
           bash core/scripts/tests/policy-prefilter-scale.test.sh
@@ -2138,9 +2219,13 @@ jobs:
       id: t_setup_skill_direct_install__6
       if: "${{ !cancelled() && steps.t_setup_skill_direct_install__5.outcome == 'success' }}"
       run: bash core/scripts/tests/setup-worker-assistant-wording.test.sh
+    - name: "[setup-skill-direct-install] Setup worker knows which tools need a private app"
+      id: t_setup_skill_direct_install__6a
+      if: "${{ !cancelled() && steps.t_setup_skill_direct_install__6.outcome == 'success' }}"
+      run: bash core/scripts/tests/setup-worker-app-first-connectors.test.sh
     - name: "[setup-skill-direct-install] Billing-state wording matches across pricing.md and /hq-cost"
       id: t_setup_skill_direct_install__7
-      if: "${{ !cancelled() && steps.t_setup_skill_direct_install__6.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_setup_skill_direct_install__6a.outcome == 'success' }}"
       run: bash core/scripts/tests/billing-state-wording.test.sh
     - name: "[deploy-summary-nounset] reset checkout"
       if: "${{ !cancelled() }}"
@@ -2282,6 +2367,14 @@ jobs:
       id: t_journal_session_isolation__cwdtrust
       if: "${{ !cancelled() && steps.t_journal_session_isolation__17.outcome == 'success' }}"
       run: bash core/scripts/tests/scope-cwd-symlink-trust.test.sh
+    - name: "[journal-session-isolation] Shared path fold table (fold v1)"
+      id: t_journal_session_isolation__pathfold
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__17.outcome == 'success' }}"
+      run: bash core/scripts/tests/path-fold-lib.test.sh
+    - name: "[journal-session-isolation] Scope guard classifies the HQ root by filesystem identity"
+      id: t_journal_session_isolation__rootident
+      if: "${{ !cancelled() && steps.t_journal_session_isolation__17.outcome == 'success' }}"
+      run: bash core/scripts/tests/scope-root-fs-identity.test.sh
     - name: "[journal-session-isolation] Resumework skill commands stay within allowed paths"
       id: t_journal_session_isolation__18
       if: "${{ !cancelled() && steps.t_journal_session_isolation__17.outcome == 'success' }}"
@@ -2622,7 +2715,9 @@ jobs:
     - name: "[skill-script-refs] /startwork capability block (company-scoped, no network, alias resolve)"
       id: t_skill_script_refs__7
       if: "${{ !cancelled() && steps.t_skill_script_refs__6.outcome == 'success' }}"
-      run: bash core/scripts/tests/startwork-context.test.sh
+      run: |
+        bash core/scripts/tests/startwork-context.test.sh
+        bash core/scripts/tests/startwork-bind-route.test.sh
     - name: "[skill-script-refs] /import-context redactor and synthetic scan output"
       id: t_skill_script_refs__8
       if: "${{ !cancelled() && steps.t_skill_script_refs__7.outcome == 'success' }}"
@@ -2651,7 +2746,7 @@ jobs:
       id: t_skill_script_refs__14
       if: "${{ !cancelled() && steps.t_skill_script_refs__13.outcome == 'success' }}"
       run: bash core/scripts/tests/conduct-session-start-payload.test.sh
-    - name: "[skill-script-refs] /conduct session links use hq lanes"
+    - name: "[skill-script-refs] /conduct session links use hq runners"
       id: t_skill_script_refs__15
       if: "${{ !cancelled() && steps.t_skill_script_refs__14.outcome == 'success' }}"
       run: bash core/scripts/tests/conduct-session-links-use-hq-lanes.test.sh
@@ -2763,13 +2858,53 @@ jobs:
       id: t_skill_script_refs__36_standing
       if: "${{ !cancelled() && steps.t_skill_script_refs__36.outcome == 'success' }}"
       run: bash core/scripts/tests/conduct-standing.test.sh
+    - name: "[skill-script-refs] /conduct runner default (subagent) and resolution order"
+      id: t_skill_script_refs__36_runner_default
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36_standing.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-runner-default.test.sh
+    - name: "[skill-script-refs] Conduct dispatch split keeps every heading once (default file names only hq runners link)"
+      id: t_skill_script_refs__36b_dispatch_headings
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36_runner_default.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-dispatch-headings.test.sh
+    - name: "[skill-script-refs] /conduct-runners advanced mode (lanes CLI, inject block, lane rows)"
+      id: t_skill_script_refs__36c_conduct_runners
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36b_dispatch_headings.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-runners-skill.test.sh
     - name: "[skill-script-refs] /conduct subagent hand-back (report.md, envelope, refused report write)"
       id: t_skill_script_refs__36_handback
       if: "${{ !cancelled() && steps.t_skill_script_refs__36_standing.outcome == 'success' }}"
       run: bash core/scripts/tests/conduct-subagent-handback-sidecar.test.sh
+    - name: "[skill-script-refs] /conduct briefs carry the exact hq-lane-envelope.v1 values"
+      id: t_skill_script_refs__36d_brief_envelope
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36_handback.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-brief-envelope-values.test.sh
+    - name: "[skill-script-refs] /conduct workers carry the worker-role line"
+      id: t_skill_script_refs__36d2_worker_role
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36_handback.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-worker-role-line.test.sh
+    - name: "[skill-script-refs] Default /conduct makes no runner calls"
+      id: t_skill_script_refs__36e_no_runner_calls
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36d_brief_envelope.outcome == 'success' }}"
+      run: bash core/scripts/tests/conduct-default-no-runner-calls.test.sh
+    - name: "[skill-script-refs] Lanes Stop gate and monitor reminder are no-ops with zero lanes"
+      id: t_skill_script_refs__36f_zero_lanes_noop
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36e_no_runner_calls.outcome == 'success' }}"
+      run: bash core/scripts/tests/lanes-monitor-zero-lanes-noop.test.sh
+    - name: "[skill-script-refs] /execute-task runner mode"
+      id: t_skill_script_refs__36g_execute_task_runner
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36f_zero_lanes_noop.outcome == 'success' }}"
+      run: bash core/scripts/tests/execute-task-runner-mode.test.sh
+    - name: "[skill-script-refs] /run-project runner mode"
+      id: t_skill_script_refs__36h_run_project_runner
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36g_execute_task_runner.outcome == 'success' }}"
+      run: bash core/scripts/tests/run-project-runner-mode.test.sh
+    - name: "[skill-script-refs] /super-conductor runner mode"
+      id: t_skill_script_refs__36i_super_conductor_runner
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36h_run_project_runner.outcome == 'success' }}"
+      run: bash core/scripts/tests/super-conductor-runner-mode.test.sh
     - name: "[skill-script-refs] Ralph orchestrator policy (JSON contract kept, spawn-per-story gone)"
       id: t_skill_script_refs__37
-      if: "${{ !cancelled() && steps.t_skill_script_refs__36_standing.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_skill_script_refs__36b_dispatch_headings.outcome == 'success' }}"
       run: bash core/scripts/tests/ralph-orchestrator-policy.test.sh
     - name: "[skill-script-refs] Orchestrator skills claim pool slots (execute-task + run-project)"
       id: t_skill_script_refs__38
@@ -2783,7 +2918,7 @@ jobs:
       id: t_skill_script_refs__40
       if: "${{ !cancelled() && steps.t_skill_script_refs__39.outcome == 'success' }}"
       run: bash core/scripts/tests/pipeline-conductor.test.sh
-    - name: "[skill-script-refs] Pipeline hq lanes contract and retries"
+    - name: "[skill-script-refs] Pipeline hq runners contract and retries"
       id: t_skill_script_refs__41
       if: "${{ !cancelled() && steps.t_skill_script_refs__40.outcome == 'success' }}"
       run: bash core/scripts/tests/pipeline-hq-lanes.test.sh
@@ -2862,7 +2997,7 @@ jobs:
     - name: "[skill-script-refs] Pricing drift and refresh scripts (offline regression)"
       id: t_skill_script_refs__59
       if: "${{ !cancelled() && steps.t_skill_script_refs__58.outcome == 'success' }}"
-      run: bash core/scripts/tests/pricing-drift.test.sh
+      run: bash core/scripts/tests/pricing-drift.test.sh && bash core/scripts/tests/refresh-pricing-display.test.sh
     - name: "[skill-script-refs] Shipped pricing.json matches the live GET /v1/pricing endpoint"
       id: t_skill_script_refs__60
       if: "${{ !cancelled() && steps.t_skill_script_refs__59.outcome == 'success' }}"
@@ -2908,7 +3043,9 @@ jobs:
     - name: "[skill-script-refs] resumework resolves company-mirrored and vault handoffs and lists repeats by full id"
       id: t_skill_script_refs__69
       if: "${{ !cancelled() && steps.t_skill_script_refs__68.outcome == 'success' }}"
-      run: bash core/scripts/tests/resumework-resolve.test.sh
+      run: |
+        bash core/scripts/tests/resumework-resolve.test.sh
+        bash core/scripts/tests/resumework-resolve-prefix.test.sh
     - name: "[skill-script-refs] Deploy skill documents live agent deploy identity"
       id: t_skill_script_refs__70
       if: "${{ !cancelled() && steps.t_skill_script_refs__69.outcome == 'success' }}"
@@ -2917,6 +3054,14 @@ jobs:
       id: t_skill_script_refs__74
       if: "${{ !cancelled() && steps.t_skill_script_refs__70.outcome == 'success' }}"
       run: bash core/scripts/tests/overnight-conduct-mode.test.sh
+    - name: "[skill-script-refs] /deep-plan HQ context scanner stops after the company worker list"
+      id: t_skill_script_refs__75
+      if: "${{ !cancelled() && steps.t_skill_script_refs__74.outcome == 'success' }}"
+      run: bash core/scripts/tests/deep-plan-hq-context-scanner.test.sh
+    - name: "[skill-script-refs] Shipped core calls the owning commands, not the US-041 duplicates"
+      id: t_skill_script_refs__76
+      if: "${{ !cancelled() && steps.t_skill_script_refs__75.outcome == 'success' }}"
+      run: bash core/scripts/tests/us041-duplicate-command-callers.test.sh
     - name: "[skill-command-script] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -3101,6 +3246,9 @@ jobs:
       id: t_policy_trigger_migration__3
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__2.outcome == 'success' }}"
       run: bash core/scripts/tests/migrate-policy-triggers-skip-unchanged.test.sh
+    - name: "[policy-trigger-migration] Machine-check ownership and update lifecycle"
+      if: "${{ !cancelled() && steps.t_policy_trigger_migration__3.outcome == 'success' }}"
+      run: bash core/scripts/tests/machine-check-owner.test.sh
     - name: "[policy-trigger-migration] Policy line ending regression test"
       id: t_policy_trigger_migration__3b
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__3.outcome == 'success' }}"
@@ -3133,6 +3281,10 @@ jobs:
       id: t_policy_trigger_migration__10
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__9.outcome == 'success' }}"
       run: bash core/scripts/tests/inject-policy-tool-events.test.sh
+    - name: "[policy-trigger-migration] PostToolUse derives both fact sets in one helper launch (feedback_45868a9c)"
+      id: t_policy_trigger_migration__10_one_fact_launch
+      if: "${{ !cancelled() && steps.t_policy_trigger_migration__10.outcome == 'success' }}"
+      run: bash .claude/hooks/tests/inject-policy-posttool-one-fact-launch.test.sh
     - name: "[policy-trigger-migration] Multi-company policy loading follows the session capability"
       id: t_policy_trigger_migration__11
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__10.outcome == 'success' }}"
@@ -3164,6 +3316,10 @@ jobs:
       id: t_policy_trigger_migration__17
       if: "${{ !cancelled() && steps.t_policy_trigger_migration__16.outcome == 'success' }}"
       run: bash core/scripts/tests/inject-policy-batched-bodies.test.sh
+    - name: "[policy-trigger-migration] Session-pinned policy index behind a per-person flag"
+      id: t_policy_trigger_migration__18
+      if: "${{ !cancelled() && steps.t_policy_trigger_migration__17.outcome == 'success' }}"
+      run: bash core/scripts/tests/policy-session-index.test.sh
     - name: "[stale-review-base] reset checkout"
       if: "${{ !cancelled() }}"
       run: |
@@ -3246,6 +3402,10 @@ jobs:
       id: t_work_mesh_live__5
       if: "${{ !cancelled() && steps.t_work_mesh_live__4.outcome == 'success' }}"
       run: bash core/scripts/tests/work-mesh-live-hooks.test.sh
+    - name: "[work-mesh-live] Session events go through the spool only (US-038)"
+      id: t_work_mesh_live__6
+      if: "${{ !cancelled() && steps.t_work_mesh_live__5.outcome == 'success' }}"
+      run: bash core/scripts/tests/work-mesh-spool-only-hooks.test.sh
     - name: "[instance-artifacts] full checkout"
       if: "${{ !cancelled() }}"
       uses: actions/checkout@v4
@@ -3577,6 +3737,9 @@ jobs:
         files=(
           core/scripts/hook-lib.sh
           core/scripts/lib/hook-adapter-core.sh
+          core/scripts/lib/work-mesh-enqueue.sh
+          core/scripts/lib/hook-stop-async.sh
+          core/scripts/lib/epochrealtime.sh
           core/scripts/tests/policy-prefilter-scale.test.sh
           core/scripts/tests/trigger-fact-text-linear.test.sh
           core/scripts/tests/inject-policy-background-notifications.test.sh
@@ -3604,9 +3767,11 @@ jobs:
           core/scripts/tests/bench-hooks-runtime.test.sh
           core/scripts/tests/us146-gh-positional-repo-anchors.test.sh
           core/scripts/tests/hook-timeout-sentry.test.sh
+          core/scripts/tests/hook-gate-event-watchdog.test.sh
           core/scripts/tests/hook-timeout-watchdog-attribution.test.sh
           core/scripts/tests/sessionstart-slow-work-bounded.test.sh
           core/scripts/tests/work-mesh-scratch-under-workspace.test.sh
+          core/scripts/tests/work-mesh-ulid-comma-locale.test.sh
           core/scripts/work-mesh-live-bind-trusted.sh
           core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh
           core/scripts/lib/session-auto-bind.sh
@@ -3702,6 +3867,27 @@ jobs:
       id: t_cli_hosted_forwarders__2
       if: "${{ !cancelled() && steps.t_cli_hosted_forwarders__1.outcome == 'success' }}"
       run: bash core/scripts/check-cli-hosted.sh
+    # The check is scripts/check-function-manifest.mjs in the hq-cli package;
+    # it is not part of core. It runs from the pinned hq-cli installed above,
+    # so a command is compared with the manifest when the pin moves. The pin
+    # (requiresHqCli >=5.345.221) ships the script, so a missing script fails.
+    - name: "[cli-hosted-forwarders] Function manifest check (core/functions.yaml)"
+      id: t_cli_hosted_forwarders__10
+      if: "${{ !cancelled() && steps.t_cli_hosted_forwarders__1.outcome == 'success' }}"
+      run: |
+        set -euo pipefail
+        package="$(npm root -g)/@indigoai-us/hq-cli"
+        check="$package/scripts/check-function-manifest.mjs"
+        version="$(hq --version)"
+        if [ ! -f "$package/package.json" ]; then
+          echo "::error::the pinned hq-cli package was not found at $package"
+          exit 1
+        fi
+        if [ ! -f "$check" ]; then
+          echo "::error::pinned hq-cli $version does not ship scripts/check-function-manifest.mjs. The pin is the highest of requiresHqCli in core/core.yaml, the forwarded min_cli rows in core/scripts/cli-hosted.yaml and HQ_CI_MIN_CLI in core/scripts/ci/install-pinned-hq-cli.sh; 5.345.217 is the first release that ships it."
+          exit 1
+        fi
+        node "$check" --core-root "$PWD" --cli-package "$package"
     - name: "[cli-hosted-forwarders] CLI-hosted generator, floor and guard contract"
       id: t_cli_hosted_forwarders__3
       if: "${{ !cancelled() && steps.t_cli_hosted_forwarders__2.outcome == 'success' }}"
@@ -3759,9 +3945,13 @@ jobs:
       run: |
         set -euo pipefail
         brief_test_home="$(mktemp -d)"
-        for suite in test_brief_helpers test_brief_additions test_local_sessions test_person_brief test_brief_company test_brief_page test_brief_signals; do
+        for suite in test_brief_helpers test_brief_additions test_local_sessions test_person_brief test_brief_company test_brief_page test_brief_signals test_brief_gate; do
           env HOME="$brief_test_home" XDG_CONFIG_HOME="$brief_test_home" XDG_CACHE_HOME="$brief_test_home" CLAUDE_CONFIG_DIR="$brief_test_home" CODEX_HOME="$brief_test_home" python3 -I ".claude/skills/daily-brief/scripts/$suite.py"
         done
+    - name: "[daily-brief-tests] Signals settings match the hq-cli readers"
+      id: t_daily_brief_tests__2
+      if: "${{ !cancelled() }}"
+      run: bash core/scripts/tests/signals-settings.test.sh
     - name: Per-check results
       if: "${{ always() }}"
       env:

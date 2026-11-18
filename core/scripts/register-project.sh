@@ -148,6 +148,22 @@ board_path() {
   printf '%s\n' "$ROOT/companies/$1/board.json"
 }
 
+# Refuse when more than one Board entry matches the project being registered.
+# Updating every match used to keep a duplicate id alive on the board
+# (feedback_2b8e4bc8). $3 is the jq select() filter; extra args are jq --arg
+# pairs it uses. The hq-cli native port prints the same message.
+refuse_ambiguous_board_match() {
+  local company="$1" project="$2" filter="$3" board ids count list
+  shift 3
+  board="$(board_path "$company")"
+  [ -f "$board" ] || return 0
+  ids="$(jq -r "$@" "[.projects[]? | select($filter) | (.id // \"(no id)\" | tostring)] | .[]" "$board" 2>/dev/null | tr -d '\r')" || return 0
+  count="$(printf '%s\n' "$ids" | grep -c . || true)"
+  [ "${count:-0}" -gt 1 ] || return 0
+  list="$(printf '%s\n' "$ids" | grep . | paste -s -d ',' - | sed 's/,/, /g')"
+  die "registration refused: $count Board entries in companies/$company/board.json match $project (ids: $list). Remove or renumber the duplicates so one entry remains, then re-run. \`bash core/scripts/board-project-id.sh check $company\` lists every duplicate id."
+}
+
 mark_pending() {
   local company="$1" project="$2"
   local board prd rel now title tmp
@@ -197,6 +213,9 @@ register_one() {
   local mesh_project
   mesh_project="$(mesh_project_id_for_prd "$company" "$project")"
   [ -f "$prd" ] || die "registration incomplete: missing $prd"
+  refuse_ambiguous_board_match "$company" "$project" \
+    '.id == $mesh or .id == $project or .prd_path == $path or .mesh_project_id == $mesh or .mesh_project_id == $project' \
+    --arg mesh "$mesh_project" --arg project "$project" --arg path "companies/$company/projects/$project/prd.json"
   local uid
   uid="$(resolve_uid "$company")"
   if ! cli_has_project_ensure; then
@@ -276,6 +295,7 @@ register_brainstorm() {
   uid="$(resolve_uid "$company")"
   board="$(board_path "$company")"
   [ -f "$board" ] || die "registration incomplete: missing $board"
+  refuse_ambiguous_board_match "$company" "$project" '.id == $id or .mesh_project_id == $id' --arg id "$project"
   title="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .title // empty' "$board" | tr -d '\r')"
   description="$(jq -r --arg id "$project" '[.projects[]? | select(.id == $id or .mesh_project_id == $id)] | first | .description // empty' "$board" | tr -d '\r')"
   [ -n "$title" ] || die "registration incomplete: missing local Board project $company/$project"

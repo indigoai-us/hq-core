@@ -248,7 +248,7 @@ check_sweep() {
 }
 
 # Who reported since the last REPORT line, from the link's pending queue (read
-# only; the conductor still drains it with `hq lanes link read`). Prints
+# only; the conductor still drains it with `hq runners link read`). Prints
 # "<last at>\t<name> (state): first line; ..." or nothing. Report text is shown
 # only for children whose joined company (children/<name>/meta.json) is in
 # the --company set; others, and every child when no --company was given, are
@@ -306,7 +306,7 @@ report_summary() {
       const pick = head[2] === "blocked" ? (body.find((l) => /\?\s*$/.test(l)) || body.find((l) => l.includes("?")) || body[0] || "") : (body[0] || "");
       out.push(`${clip(head[1], 40)} (${head[2]}): ${clip(pick, 200)}`);
     }
-    if (hidden) out.push(`${hidden} report${hidden > 1 ? "s" : ""} from sessions outside this company set or with no company (read them with hq lanes link read)`);
+    if (hidden) out.push(`${hidden} report${hidden > 1 ? "s" : ""} from sessions outside this company set or with no company (read them with hq runners link read)`);
     if (out.length) process.stdout.write(`${last}\t${out.slice(0, 5).join("; ")}${out.length > 5 ? `; +${out.length - 5} more` : ""}`);
   ' "$dir" "$last_report_at" "$companies" "$asks_file" 2>/dev/null || true
 }
@@ -494,7 +494,7 @@ while :; do
     timer_next=0
     emit TICK "Sweep due. $resume_hint"
   else
-    bg_wait "$HQ_BIN" lanes link wait --link "$link" --timeout "$interval"
+    bg_wait "$HQ_BIN" runners link wait --link "$link" --timeout "$interval"
     rc=$?
     out="$(cat "$wait_out")"
     case "$rc" in

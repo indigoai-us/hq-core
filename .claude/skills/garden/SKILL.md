@@ -29,7 +29,7 @@ Multi-worker audit pipeline: Scout → Auditor → Curator. Detects stale conten
 
 Retires personal and company policies by evidence so the corpus fades on its
 own. Retirement is never gated on human review: the pass retires, reports, and
-a wrong call is reversed with `bash core/scripts/policy-retire.sh <id> --restore`.
+a wrong call is reversed with `hq core policy retire <id> --restore`.
 It runs on its own and is not part of the Scout → Auditor → Curator pipeline
 below. The approval gates there do not apply to this pass.
 

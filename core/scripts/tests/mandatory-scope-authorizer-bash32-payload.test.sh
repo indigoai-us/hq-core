@@ -46,7 +46,7 @@ FIXTURE=$TMP/hq-root
 mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/core/scripts/lib" "$FIXTURE/companies/indigo/settings" \
   "$FIXTURE/companies/otherco/settings" "$FIXTURE/companies/_template" "$FIXTURE/personal" \
   "$FIXTURE/workspace/sessions/sess-bound"
-for path in .claude/hooks/bash-arith-subst-guard-lib.sh .claude/hooks/mandatory-scope-authorizer.sh \
+for path in .claude/hooks/bash-arith-subst-guard-lib.sh .claude/hooks/path-fold-lib.sh .claude/hooks/mandatory-scope-authorizer.sh \
   core/scripts/lib/session-authz.sh core/scripts/lib/session-scope-capability.sh \
   core/scripts/lib/session-id.sh core/scripts/hook-lib.sh core/scripts/lib/hook-caller-lineage.sh \
   core/scripts/hqd-hook-flag-cache-lib.sh; do
@@ -201,6 +201,9 @@ if [ "$RC" = 2 ] && grep -q 'TAR_OPTIONS' "$ERR_FILE"; then ok "quote-split tar 
 
 # 5. Decision equivalence of the rewritten helpers, in this shell (run the
 # whole test under /bin/bash on macOS to cover bash 3.2).
+# The fold calls the shared path fold helper, which the hook sources.
+# shellcheck source=../../../.claude/hooks/path-fold-lib.sh
+. "$ROOT/.claude/hooks/path-fold-lib.sh"
 missing_helper=0
 for fn in scope_case_folds scope_case_pattern scope_case_replace_all scope_case_company_entry \
   scope_literal_replace_all scope_c_locale_enter scope_c_locale_leave scope_case_fold_is_noop \
@@ -417,6 +420,178 @@ if [ "${#SQ_OFFSETS[@]}" -gt 12 ] && [ "$SQ_MISMATCH" -eq 0 ]; then
 else
   bad "single-quoted state: $SQ_MISMATCH mismatches over ${#SQ_OFFSETS[@]} offsets"
 fi
+
+# 6. Long command chains and code heredocs under the 6000-character scan gate
+# (feedback_075f4505, 6e8aaa84, 13a3d9e0, 8e92cfec, 180ba972, on 16.0.46).
+# Per word or per candidate path, three spots still worked on the whole
+# command: scope_token_is_standalone_word ran ${text//[;|&<>...]/ } over it
+# (close to length x length under bash 3.2: a 4 KB chain took 45 s and a
+# 5.8 KB chain over 60 s), scope_candidate_is_inert_text masked it for every
+# candidate, and scope_check_tar_program_options matched the tar regex over
+# it once per simple command (hundreds in a heredoc program). Every token
+# check also forked the hook for $(scope_command_head_index). A 5.8 KB python
+# or node heredoc took 12 to 19 s on the authorizer alone, and the host
+# blocked it at 25 s once master-hook's other guards ran.
+BUDGET6=10
+chain_cmd() {
+  local out="" i=0
+  while [ "${#out}" -lt 5600 ]; do
+    out+="ls companies/indigo/notes/item-$i.md | wc -l; jq -r '.rows[] | select(.n == \"$i\") | .p' companies/indigo/notes/b.json | head -3 && "
+    i=$((i + 1))
+  done
+  printf '%s%s' "$out" "${1:-true}"
+}
+CHAIN_CMD=$(chain_cmd)
+echo "command chain: ${#CHAIN_CMD} characters"
+run_hook chain-6k Bash "$(bash_input "$CHAIN_CMD")"
+expect_allowed "5.6 KB chain of commands on the bound company" "$BUDGET6"
+run_hook chain-6k-deny Bash "$(bash_input "$(chain_cmd "cat companies/otherco/settings/x")")"
+expect_denied "5.6 KB chain that ends by reading another company" "$BUDGET6"
+
+code_py_body() {
+  local out="import json, re"$'\n' i=0
+  while [ "${#out}" -lt 5600 ]; do
+    out+="p = open('companies/indigo/notes/item-$i.md').read()"$'\n'
+    out+="p = p.replace('\`old $i\`', \"\`new $i\` it's \$$i\")"$'\n'
+    out+="open('companies/indigo/notes/item-$i.md', 'w').write(p)"$'\n'
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+CODE_PY=$(code_py_body)
+code_py_cmd() { printf "python3 - <<'PY'\n%s%s\nPY" "$CODE_PY" "${1:-}"; }
+run_hook code-py Bash "$(bash_input "$(code_py_cmd)")"
+expect_allowed "5.6 KB python edit heredoc with quotes, backticks and dollars" "$BUDGET6"
+run_hook code-py-deny Bash "$(bash_input "$(code_py_cmd "x = open('companies/otherco/settings/x').read()"$'\n')")"
+expect_denied "5.6 KB python edit heredoc that opens another company" "$BUDGET6"
+
+code_node_body() {
+  local out="const fs = require('fs');"$'\n'"const path = require('path');"$'\n' i=0
+  while [ "${#out}" -lt 5600 ]; do
+    out+="const p$i = path.join('companies/indigo/data', \`item-\${$i}.json\`);"$'\n'
+    out+="fs.writeFileSync(p$i, \`Row \${p$i}: \${JSON.stringify({a: $i, b: \"x\"})} it's done\`);"$'\n'
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+CODE_NODE=$(code_node_body)
+code_node_cmd() { printf "node - <<'JS'\n%s%s\nJS" "$CODE_NODE" "${1:-}"; }
+run_hook code-node Bash "$(bash_input "$(code_node_cmd)")"
+expect_allowed "5.6 KB node heredoc with template literals" "$BUDGET6"
+run_hook code-node-deny Bash "$(bash_input "$(code_node_cmd "fs.writeFileSync('companies/otherco/settings/x', '1');"$'\n')")"
+expect_denied "5.6 KB node heredoc that writes another company" "$BUDGET6"
+
+# 6a. The cached standalone-word view answers as the old per-call build did,
+# for short and long (tr) text, and is rebuilt when the command text changes.
+for fn in scope_drop_quote_chars scope_token_is_standalone_word scope_mask_literal_expansions \
+  scope_command_head_index_set scope_command_head_index; do
+  fn_src=$(sed -n "/^$fn() {/,/^}/p" "$HOOK_SRC")
+  eval "$fn_src"
+  if declare -F "$fn" >/dev/null; then ok "helper $fn extracted from the hook"; else bad "helper $fn not defined after extraction"; fi
+done
+old_standalone_word() {
+  local tok="${1:-}" padded
+  padded=" ${scope_scan_cmd:-}"$'\n'
+  scope_drop_quote_chars "$padded" bs; padded="$SCOPE_DROPPED"
+  padded="${padded//[;|&<>$'\n'$'\t']/ } "
+  [[ "$padded" == *" $tok "* ]]
+}
+SCOPE_SW_READY=0
+SCOPE_SW_SRC=""
+SCOPE_SW_PADDED=""
+SW_MISMATCH=0
+SW_CHECKED=0
+SW_TOKENS=(companies companies/ ./companies// "*" "*/x" "c*/otherco" ls x a/../companies "companies/*" "'companies'" "\"companies\"/" b.json item-3.md "-3" "tab" "café")
+SW_TEXTS=(
+  "ls companies"
+  "ls */x; cat c*/otherco	tab|ls a/../companies&&echo \"companies\"/ 'x'"
+  "ls compan''ies/ ./companies// > out < in"
+  "$CHAIN_CMD"
+  "$CHAIN_CMD ls */x	tab café ls companies/*"
+  "$(code_py_cmd)"
+  "ls companies"
+)
+for text in "${SW_TEXTS[@]}"; do
+  scope_scan_cmd=$text
+  for tok in "${SW_TOKENS[@]}"; do
+    want=0; got=0
+    old_standalone_word "$tok" || want=$?
+    scope_token_is_standalone_word "$tok" || got=$?
+    SW_CHECKED=$((SW_CHECKED + 1))
+    [ "$want" = "$got" ] || SW_MISMATCH=$((SW_MISMATCH + 1))
+  done
+done
+if [ "$SW_MISMATCH" -eq 0 ]; then ok "standalone-word cache matches the per-call build on $SW_CHECKED checks"; else bad "standalone-word cache: $SW_MISMATCH mismatches over $SW_CHECKED checks"; fi
+# The long-text view is built once: the second lookup on the same text does
+# not rebuild it, so 400 lookups on the 5.6 KB chain stay well under 2 s.
+scope_scan_cmd=$CHAIN_CMD
+SCOPE_SW_READY=0
+start=$SECONDS
+for ((k = 0; k < 400; k++)); do scope_token_is_standalone_word companies || true; done
+sw_elapsed=$((SECONDS - start))
+if [ "$sw_elapsed" -le 2 ]; then ok "400 standalone-word lookups on the chain in ${sw_elapsed}s"; else bad "400 standalone-word lookups on the chain took ${sw_elapsed}s"; fi
+unset scope_scan_cmd
+
+# 6b. scope_command_head_index_set (and the printing wrapper) give the index
+# main's scope_command_head_index gave before this change. MAIN_HEAD_INDEX_SRC
+# is that function copied verbatim from main at eaea3b351. When the checkout
+# has that commit, the copy is first compared with the hook file there, so a
+# wrong copy fails instead of agreeing with itself.
+MAIN_HEAD_INDEX_REF=eaea3b351
+MAIN_HEAD_INDEX_SRC='scope_command_head_index() {
+  local i=0
+  while [ "$i" -lt "${#scope_tokens[@]}" ]; do
+    case "${scope_tokens[$i]}" in
+      do|then|else|elif|'"'"'{'"'"'|'"'"'!'"'"'|while|until|if) i=$((i + 1)) ;;
+      *) break ;;
+    esac
+  done
+  printf '"'"'%s'"'"' "$i"
+}'
+if git -C "$ROOT" cat-file -e "$MAIN_HEAD_INDEX_REF^{commit}" 2>/dev/null; then
+  main_hook_src=$(git -C "$ROOT" show "$MAIN_HEAD_INDEX_REF:.claude/hooks/mandatory-scope-authorizer.sh")
+  main_fn_src=$(printf '%s\n' "$main_hook_src" | sed -n '/^scope_command_head_index() {/,/^}/p')
+  if [ "$main_fn_src" = "$MAIN_HEAD_INDEX_SRC" ]; then
+    ok "head index reference is main's function at $MAIN_HEAD_INDEX_REF"
+  else
+    bad "head index reference differs from main's function at $MAIN_HEAD_INDEX_REF"
+  fi
+else
+  echo "commit $MAIN_HEAD_INDEX_REF not in this checkout: using the pinned copy of main's head index function"
+fi
+main_head_index_src=${MAIN_HEAD_INDEX_SRC/scope_command_head_index()/main_head_index()}
+eval "$main_head_index_src"
+HI_MISMATCH=0
+HI_CHECKED=0
+for record in "" "ls" "do echo x" "then sed -n 1p f" "! { if while until cat x" "else elif" "do then" \
+  "while" "until true" "if" "{ ls; }" "ls do" "done" "fi" "case x in" "for f in a" "select x" "function f" "[[ -n x ]]" "do do do"; do
+  # shellcheck disable=SC2206
+  scope_tokens=($record)
+  want=$(main_head_index)
+  scope_command_head_index_set
+  printed=$(scope_command_head_index)
+  HI_CHECKED=$((HI_CHECKED + 1))
+  [ "$want" = "$SCOPE_HEAD_INDEX" ] && [ "$want" = "$printed" ] || HI_MISMATCH=$((HI_MISMATCH + 1))
+done
+if [ "$HI_MISMATCH" -eq 0 ]; then ok "head index without a subshell matches main's function on $HI_CHECKED records"; else bad "head index: $HI_MISMATCH mismatches with main's function over $HI_CHECKED records"; fi
+scope_tokens=()
+
+# 6c. scope_candidate_is_inert_text now tests ; | & < > and newlines on the
+# raw text before masking. That is only the same answer if the mask never
+# adds or removes those characters: check it on text full of quotes,
+# escapes, dollars and backticks.
+MASK_MISMATCH=0
+for text in "echo companies/x" "echo 'a;b' \"c|d\" \\& \$x" "printf '%s\\n' a > b" $'echo a\nb' \
+  "echo \`x\` \$(y) 'it''s' \\\$z ; ls" "$(code_py_cmd)" "$(code_node_cmd)" "$CHAIN_CMD"; do
+  masked=$(scope_mask_literal_expansions "$text")
+  for ch in ';' '|' '&' '<' '>' $'\n'; do
+    raw_has=0; masked_has=0
+    case "$text" in *"$ch"*) raw_has=1 ;; esac
+    case "$masked" in *"$ch"*) masked_has=1 ;; esac
+    [ "$raw_has" = "$masked_has" ] || MASK_MISMATCH=$((MASK_MISMATCH + 1))
+  done
+done
+if [ "$MASK_MISMATCH" -eq 0 ]; then ok "mask keeps separators, redirects and newlines as written"; else bad "mask changed separators in $MASK_MISMATCH cases"; fi
 
 if (( FAIL > 0 )); then
   printf 'mandatory-scope-authorizer-bash32-payload: %s passed, %s failed\n' "$PASS" "$FAIL" >&2

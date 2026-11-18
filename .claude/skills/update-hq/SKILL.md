@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/remove-stray-gate-hooks.sh:*), Bash(bash core/scripts/remove-retired-core-hooks.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), AskUserQuestion
+allowed-tools: Read, Bash, Bash(HQ_ROOT={hq-root} hq core migrate-policy-triggers:*), Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/remove-stray-gate-hooks.sh:*), Bash(bash core/scripts/remove-retired-core-hooks.sh:*), Bash(bash core/scripts/remove-installed-test-files.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -99,6 +99,19 @@ Keep the pre-op backup: do **not** pass `--no-backup` unless the user explicitly
 
 ## Phase 4: Verify project hooks, repair if needed, and report
 
+After a successful rescue, backfill policy triggers once from the updated HQ root
+(the selected `--hq-root`, if supplied):
+
+```bash
+HQ_ROOT={hq-root} hq core migrate-policy-triggers
+```
+
+Run this for stable and staging updates before the hook health check. If it fails,
+report the failure and stop; do not claim the update completed. This idempotent
+migration also runs at SessionStart through the hash-gated
+`migrate-policy-triggers-if-changed.sh` hook, which covers policies that arrive by
+`/hq-sync`, a CLI update or a hand edit.
+
 `hq rescue` preserves user drift and replaces release-owned paths. Its settings
 reconcile can empty `.claude/settings.json` hook arrays and copy `master-hook.sh`
 into `.claude/settings.local.json`. Restore shipped hook wiring before checking
@@ -124,6 +137,56 @@ Stop leaf either way. It also keeps a file whose folder is a symlink out of
 `core/hooks`. Show the user every `kept` or `could not remove` line it prints,
 with the file path, so they can delete or keep that file themselves. A failed
 removal makes it exit 1; report that line and continue with the health check.
+
+An update also removes the release's test files from the install. `hq rescue`
+no longer copies test folders (the `tests` folders of the core scripts, the
+hooks, skills and workers), fixture and hook-corpus folders, or test files
+such as `*.test.sh` into an install; the release repository keeps them
+for its own checks. On an existing install it deletes a test file the previous
+release installed when the file is byte-identical to that released copy. It
+keeps a test file you changed, and one whose folder links outside the HQ root,
+and prints a `kept (release test file ...)` line for each. Show the user those
+lines with the file path. When rescue reports `Baseline: HEAD compare`, it has
+no previous release to compare with and removes no test file on that run. Eight
+test files that shipped scripts run, the hook test cases that
+`hq doctor --deep` reads, and worker skill documents named `*-test.md` stay
+installed. This needs an `hq` whose rescue has the install exclusion list; an
+older `hq` still copies the test files.
+
+Then take out the test and tooling files the release no longer ships, which
+rescue on an older `hq` copies in or leaves behind (the `Baseline: HEAD compare`
+case, the CI and release scripts). Preview first:
+
+```bash
+bash core/scripts/remove-installed-test-files.sh {hq-root} --check
+```
+
+It lists each file it would move (`would move: <path>`) and exits 1 when there
+is one, 0 when there is none. It scans only the release-owned trees (`core/`,
+`.claude/`, `.codex/`, `.grok/`, `.agents/`). It uses the same rules the release runs on its
+tarball (hq-cli's `scripts/check-function-manifest.mjs --installed-core`, `hq`
+5.345.221 or newer, with the rules in `core/scripts/release-install-excludes.rsync`).
+It never touches any other top-level folder or file (git, company, repo,
+personal, workspace, `.hq` state, the user's own folders), installed packs
+other than `core/packages/hq-pack-cowork/`, company or pack skills
+(`.claude/skills/<prefix>:<name>/`) and their wrappers, `node_modules` folders,
+the test files that shipped scripts run, or a file behind a linked folder
+(printed as `kept`).
+
+Show the user the count and the listed paths, and ask with AskUserQuestion
+whether to move them. Run it only on yes:
+
+```bash
+bash core/scripts/remove-installed-test-files.sh {hq-root}
+```
+
+It moves each file into `~/.hq/backups/update-hq-test-files-<time>/` under its
+path in the HQ root (nothing is deleted, so a file the user changed can be
+copied back), removes folders the moves left empty, and runs the check again.
+Report the `moved N` line and the backup folder. Exit 0 means the installed-core
+check is clean. Exit 1 means a move failed or a file is still reported: show
+those lines and continue. Exit 2 (no `node`, or an `hq` older than 5.345.221)
+means nothing was moved: say so and continue with the health check.
 
 If settings.json is missing or still invalid, repair the released `.claude` tree,
 restore hooks again, and re-check. Keep any other mapped release flags such as

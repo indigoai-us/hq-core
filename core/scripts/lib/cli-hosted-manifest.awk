@@ -36,7 +36,10 @@ function emit_entry(    valid) {
     report("invalid min_cli for " path)
     valid = 0
   }
-  if (state != "forwarded" && state != "retired" && state != "deleted") {
+  if (state == "retired" || state == "deleted") {
+    report("state " state " for " path " is not a cli-hosted state: list the path with state removed in core/functions.yaml and delete this row")
+    valid = 0
+  } else if (state != "forwarded") {
     report("invalid state for " path)
     valid = 0
   }

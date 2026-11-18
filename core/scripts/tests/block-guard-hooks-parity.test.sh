@@ -636,6 +636,21 @@ then
   source_override_block=1
 fi
 
+# PR 1972: the candidate core Bash guard refuses hook input that jq cannot
+# parse cleanly (exit 2) where the pinned baseline used partial or empty jq
+# output and allowed it. Accept exactly that divergence: core guard, baseline
+# allowed, candidate denied with the exact parse message and no stdout, and the
+# recorded input fails a clean jq parse. That parse is the harness's own
+# check, so like the baseline run it must not be logged by an operation-
+# counting jq shim; otherwise the fast-path suite sees jq=2 for one hook run.
+malformed_input_block=0
+if [ "$target_kind" = core ] && [ "$base_rc" -eq 0 ] && [ "$candidate_rc" -eq 2 ] \
+  && [ ! -s "$record/candidate/stdout" ] \
+  && [ "$(cat "$record/candidate/stderr")" = 'BLOCKED: hook input is not cleanly parseable JSON.' ] \
+  && ! env HQ_TEST_OPERATION_LOG=/dev/null jq -e . "$record/input" >/dev/null 2>&1; then
+  malformed_input_block=1
+fi
+
 # US-008: the candidate exempts a single-line hq-pr-create.sh invocation (via
 # bash, sh, or direct execution) the same way it exempts `gh pr create`, so PR
 # body text is not parsed as install commands. The pinned baseline predates the
@@ -681,6 +696,8 @@ elif [ "$segment_install_block" -eq 1 ]; then
   :
 elif [ "$source_override_block" -eq 1 ]; then
   :
+elif [ "$malformed_input_block" -eq 1 ]; then
+  :
 elif [ "$base_rc" -ne "$candidate_rc" ]; then
   if [ "$target_kind" != unsafe ] || [ "$invalid_release_age" -ne 1 ] \
     || [ "$base_rc" -ne 0 ] || [ "$candidate_rc" -ne 2 ]; then
@@ -697,7 +714,7 @@ fi
 for field in stdout stderr exit; do
   if { [ "$intentional_release_age_block" -eq 1 ] || [ "$pr_create_wrapper" -eq 1 ] \
       || [ "$launcher_wrapper_block" -eq 1 ] || [ "$segment_install_block" -eq 1 ] \
-      || [ "$source_override_block" -eq 1 ]; } \
+      || [ "$source_override_block" -eq 1 ] || [ "$malformed_input_block" -eq 1 ]; } \
     && { [ "$field" = stderr ] || [ "$field" = exit ]; }; then
     continue
   fi

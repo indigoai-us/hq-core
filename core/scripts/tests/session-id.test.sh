@@ -182,4 +182,22 @@ cursor_hs CURSOR_AGENT=1 "$FR/core/scripts/hq-session.sh" --session-id cursor-ch
   || fail "Cursor write with --session-id failed: $(cat "$TMP/cursor-flag.err")"
 [ -d "$FR/workspace/sessions/cursor-chat-2" ] || fail "Cursor session record not keyed by --session-id"
 
+echo "[payload] hook payloads name the session through session_id or Cursor's conversation_id"
+# Cursor sends conversation_id on every hook and session_id only on sessionStart.
+command -v session_id_from_payload >/dev/null 2>&1 || fail "session_id_from_payload is not defined"
+assert_eq "$(session_id_from_payload '{"conversation_id":"c7f1-chat","cursor_version":"2.0.1","hook_event_name":"preToolUse"}')" \
+  "c7f1-chat" "conversation_id-only payload"
+assert_eq "$(session_id_from_payload '{"conversationId":"camel-chat"}')" "camel-chat" "conversationId payload"
+assert_eq "$(session_id_from_payload '{"session_id":"sess-a","conversation_id":"conv-b"}')" "sess-a" "session_id outranks conversation_id"
+assert_eq "$(session_id_from_payload '{"tool_input":{"session_id":"nested"},"cursor_version":"2"}')" "" "nested key never counts"
+assert_eq "$(session_id_from_payload '{"conversation_id":"../escape"}')" "" "path-shaped conversation_id rejected"
+assert_eq "$(session_id_from_payload '{"session_id":"../escape","conversation_id":"ok-1"}')" "" "malformed session_id is not skipped for the next key"
+assert_eq "$(session_id_from_payload '')" "" "empty payload"
+# The bash fallback (no jq on PATH) reads the same keys.
+nojq_bin="$TMP/nojq-bin"
+mkdir -p "$nojq_bin"
+for tool in bash tr; do ln -s "$(command -v "$tool")" "$nojq_bin/$tool"; done
+got="$(PATH="$nojq_bin" bash -c '. "$1"; session_id_from_payload "{\"conversation_id\": \"nojq-chat\", \"cursor_version\": \"2\"}"' _ "$LIB")"
+assert_eq "$got" "nojq-chat" "conversation_id without jq"
+
 echo "PASS: session-id.test.sh"

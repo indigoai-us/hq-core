@@ -306,6 +306,83 @@ test('an expired token that the CLI cannot refresh is not signed in, so the watc
   assert.equal(signin.signedIn(c.file, {now: () => 5000, refresh: () => { c.write(99999); return true; }}), true);
 });
 
+test('credentialStatus names why a credential file is not usable', t => {
+  const c = credDir(t);
+  const uid = process.getuid();
+  const no = {now: () => 5000, refresh: () => false};
+  assert.equal(signin.credentialStatus(c.file, {uid, ...no}), 'missing');
+  c.write(99999, 0o644);
+  assert.equal(signin.credentialStatus(c.file, {uid, ...no}), 'bad_mode');
+  assert.equal(signin.signedIn(c.file, {uid, ...no}), false);
+  c.write(99999);
+  assert.equal(signin.credentialStatus(c.file, {uid: uid + 1, ...no}), 'bad_owner');
+  assert.equal(signin.credentialStatus(c.file, {uid, ...no}), 'ok');
+  fs.writeFileSync(c.file, '{not json', {mode: 0o600});
+  assert.equal(signin.credentialStatus(c.file, {uid, ...no}), 'parse_error');
+  fs.writeFileSync(c.file, JSON.stringify({claudeAiOauth: {accessToken: 'short'}}), {mode: 0o600});
+  assert.equal(signin.credentialStatus(c.file, {uid, ...no}), 'invalid_shape');
+  const link = path.join(c.dir, 'link.json');
+  fs.symlinkSync(c.file, link);
+  assert.equal(signin.credentialStatus(link, {uid, ...no}), 'not_regular_file');
+  c.write(1000);
+  assert.equal(signin.credentialStatus(c.file, {uid, ...no}), 'expired');
+});
+
+test('checkSignedIn logs once per credential class change, includes errno for unreadable, and is silent on ok', t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(JSON.parse(String(line))));
+  const state = {};
+  const run = detail => signin.checkSignedIn(state, () => detail);
+  assert.equal(run({status: 'bad_mode'}), false);
+  assert.equal(run({status: 'bad_mode'}), false);
+  assert.equal(run({status: 'unreadable', errno: 'EACCES'}), false);
+  assert.equal(run({status: 'unreadable', errno: 'EIO'}), false);
+  assert.equal(run({status: 'unreadable', errno: 'EIO'}), false);
+  assert.equal(run({status: 'ok'}), true);
+  assert.equal(run({status: 'ok'}), true);
+  assert.equal(run({status: 'bad_mode'}), false);
+  assert.deepEqual(lines, [
+    {service: 'company-signin', code: 'credential_not_usable', reason: 'bad_mode'},
+    {service: 'company-signin', code: 'credential_not_usable', reason: 'unreadable', errno: 'EACCES'},
+    {service: 'company-signin', code: 'credential_not_usable', reason: 'unreadable', errno: 'EIO'},
+    {service: 'company-signin', code: 'credential_not_usable', reason: 'bad_mode'},
+  ]);
+});
+
+test('credentialDetail reports the errno code only for unreadable', t => {
+  const c = credDir(t);
+  c.write(99999);
+  const opts = {uid: process.getuid(), now: () => 5000, refresh: () => false};
+  // A file used as a directory component fails to open with ENOTDIR.
+  assert.deepEqual(signin.credentialDetail(path.join(c.file, 'x'), opts), {status: 'unreadable', errno: 'ENOTDIR'});
+  c.write(99999, 0o644);
+  assert.deepEqual(signin.credentialDetail(c.file, opts), {status: 'bad_mode'});
+});
+
+test('readClaudeAccess keeps its contract: null for missing or malformed, Refusal for unsafe', t => {
+  const c = credDir(t);
+  assert.equal(signin.readClaudeAccess(c.file), null);
+  fs.writeFileSync(c.file, '{not json', {mode: 0o600});
+  assert.equal(signin.readClaudeAccess(c.file), null);
+  c.write(99999, 0o666);
+  assert.throws(() => signin.readClaudeAccess(c.file), {code: 'provider_credential_unsafe'});
+});
+
+test('watcher: the code-timeout log line carries the credential class when one is known', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(String(line)));
+  let clock = 1_000_000;
+  const api = async (_op, body) => body.action === 'login-code' ? {code: 'abcDEF123#state'} : body.action === 'regenerate-pending' ? {pending: false} : {ok: true};
+  const login = () => ({alive: () => true, output: () => 'Open https://claude.ai/oauth/authorize?x=1 now', sendCode() {}, stop() {}});
+  const state = {credentialStatus: 'bad_mode'};
+  const deps = {api, isSignedIn: () => false, start: login, now: () => clock};
+  await signin.signinTick(state, deps);
+  clock += signin.CODE_RESULT_TIMEOUT_MS;
+  await signin.signinTick(state, deps);
+  const line = lines.find(l => l.includes('login_code_timeout'));
+  assert.deepEqual(JSON.parse(line), {service: 'company-signin', code: 'login_code_timeout', credential: 'bad_mode'});
+});
+
 test('restarted watcher posts a new link and still honours regenerate', async () => {
   const calls = [];
   const phases = [];
@@ -499,4 +576,125 @@ test('a typed code that neither signs in nor brings a new link restarts the logi
   assert.equal(b.state.sentCode, null);
   assert.deepEqual(lines.map(l => JSON.parse(l)), [{service: 'company-signin', code: 'login_code_timeout'}]);
   assert(!lines.join('\n').includes('abcDEF'));
+});
+
+test('checkSignedIn queues one credential-lost report per class change and one credential-ok on recovery', t => {
+  t.mock.method(console, 'error', () => {});
+  const state = {};
+  const run = detail => signin.checkSignedIn(state, () => detail);
+  run({status: 'ok'});
+  assert.equal(state.credentialReport, undefined, 'a box that starts signed in reports nothing');
+  run({status: 'missing'});
+  assert.deepEqual(state.credentialReport, {action: 'credential-lost', credentialClass: 'missing'});
+  state.credentialReport = null;
+  run({status: 'missing'});
+  assert.equal(state.credentialReport, null, 'no change, no report');
+  run({status: 'expired'});
+  assert.deepEqual(state.credentialReport, {action: 'credential-lost', credentialClass: 'expired'});
+  state.credentialReport = null;
+  run({status: 'unreadable', errno: 'EACCES'});
+  state.credentialReport = null;
+  run({status: 'unreadable', errno: 'EIO'});
+  assert.equal(state.credentialReport, null, 'errno-only change is not a new class');
+  run({status: 'ok'});
+  assert.deepEqual(state.credentialReport, {action: 'credential-ok'});
+});
+
+test('a newer credential report is not delayed by the backoff of an older one', async t => {
+  t.mock.method(console, 'error', () => {});
+  const sent = [];
+  let fail = true;
+  const api = async (op, body) => {
+    if (fail) throw Object.assign(new Error('x'), {status: 503});
+    sent.push(body.action);
+    return {};
+  };
+  const now = () => 5000;
+  const state = {};
+  const run = detail => signin.checkSignedIn(state, () => detail);
+  run({status: 'ok'});
+  run({status: 'missing'});
+  await signin.flushCredentialReport(state, api, {now});
+  assert.equal(state.credentialReportRetryAt, 5000 + signin.CREDENTIAL_REPORT_RETRY_MS, 'the 503 set a backoff');
+  run({status: 'ok'});
+  assert.deepEqual(state.credentialReport, {action: 'credential-ok'});
+  assert.equal(state.credentialReportRetryAt, 0, 'queuing a newer report clears the backoff');
+  fail = false;
+  await signin.flushCredentialReport(state, api, {now});
+  assert.deepEqual(sent, ['credential-ok'], 'ok is sent without waiting for the backoff');
+});
+
+test('signinTick reports a lost credential once, then recovery, in order with login-complete', async t => {
+  t.mock.method(console, 'error', () => {});
+  const calls = [];
+  const api = async (op, body) => { calls.push(body.action); return body.action === 'login-code' ? {code: null} : body.action === 'regenerate-pending' ? {pending: false} : {}; };
+  let detail = {status: 'missing'};
+  const state = {};
+  const login = () => ({alive: () => true, exitInfo: () => null, output: () => '', stop() {}, sendCode() {}});
+  const deps = {api, isSignedIn: () => signin.checkSignedIn(state, () => detail), start: login};
+  await signin.signinTick(state, deps);
+  await signin.signinTick(state, deps);
+  assert.equal(calls.filter(a => a === 'credential-lost').length, 1);
+  detail = {status: 'ok'};
+  await signin.signinTick(state, deps);
+  assert.deepEqual(calls.filter(a => ['credential-lost', 'credential-ok', 'login-complete'].includes(a)), ['credential-lost', 'credential-ok', 'login-complete']);
+});
+
+test('flushCredentialReport: 404 is final; 401, 403, 408 and 429 keep the report and retry after the pause', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(JSON.parse(String(line))));
+  const report = () => ({action: 'credential-lost', credentialClass: 'missing'});
+  const failWith = status => async () => { throw Object.assign(new Error('x'), {status}); };
+  const now = () => 5000;
+  const final = {credentialReport: report()};
+  await signin.flushCredentialReport(final, failWith(404), {now});
+  assert.equal(final.credentialReport, null);
+  assert.equal(lines.at(-1).code, 'credential_report_refused');
+  for (const status of [401, 403, 408, 429]) {
+    const state = {credentialReport: report()};
+    await signin.flushCredentialReport(state, failWith(status), {now});
+    assert.deepEqual(state.credentialReport, report(), `${status} keeps the report`);
+    assert.equal(state.credentialReportRetryAt, 5000 + signin.CREDENTIAL_REPORT_RETRY_MS);
+    assert.deepEqual(lines.at(-1), {service: 'company-signin', code: 'credential_report_failed', action: 'credential-lost', status});
+  }
+});
+
+test('a failing credential report cannot abort signinTick', async t => {
+  t.mock.method(console, 'error', () => {});
+  const calls = [];
+  const api = async (op, body) => {
+    calls.push(body.action);
+    if (body.action === 'credential-lost') throw Object.assign(new Error('x'), {status: 401});
+    return body.action === 'login-code' ? {code: null} : body.action === 'regenerate-pending' ? {pending: false} : {};
+  };
+  const state = {};
+  const login = () => ({alive: () => true, exitInfo: () => null, output: () => '', stop() {}, sendCode() {}});
+  const deps = {api, isSignedIn: () => signin.checkSignedIn(state, () => ({status: 'missing'})), start: login};
+  assert.equal(await signin.signinTick(state, deps), 'awaiting_sign_in');
+  assert(calls.includes('regenerate-pending'), 'the tick ran to the end');
+  assert.deepEqual(state.credentialReport, {action: 'credential-lost', credentialClass: 'missing'});
+});
+
+test('flushCredentialReport drops a final refusal, retries a transient failure after a pause, and never throws', async t => {
+  const lines = [];
+  t.mock.method(console, 'error', line => lines.push(JSON.parse(String(line))));
+  let clock = 1000;
+  const now = () => clock;
+  const refuse = Object.assign(new Error('x'), {status: 400});
+  const state = {credentialReport: {action: 'credential-lost', credentialClass: 'missing'}};
+  await signin.flushCredentialReport(state, async () => { throw refuse; }, {now});
+  assert.equal(state.credentialReport, null);
+  assert.deepEqual(lines.at(-1), {service: 'company-signin', code: 'credential_report_refused', action: 'credential-lost', status: 400});
+  state.credentialReport = {action: 'credential-lost', credentialClass: 'missing'};
+  let attempts = 0;
+  const flaky = async () => { attempts += 1; if (attempts === 1) throw Object.assign(new Error('x'), {status: 503}); return {ok: true}; };
+  await signin.flushCredentialReport(state, flaky, {now});
+  assert.equal(attempts, 1);
+  assert.notEqual(state.credentialReport, null);
+  await signin.flushCredentialReport(state, flaky, {now});
+  assert.equal(attempts, 1, 'waits before retrying');
+  clock += signin.CREDENTIAL_REPORT_RETRY_MS;
+  await signin.flushCredentialReport(state, flaky, {now});
+  assert.equal(attempts, 2);
+  assert.equal(state.credentialReport, null);
 });

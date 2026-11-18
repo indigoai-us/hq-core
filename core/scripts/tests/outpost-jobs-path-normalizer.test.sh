@@ -2,6 +2,8 @@
 # Regression: macOS ships Bash 3.2, where expanding an empty array under
 # nounset is an unbound-variable error. Relative PATH entries normalize away.
 set -euo pipefail
+# US-043: test the shell reconcile body, not the hq core jobs reconcile route.
+export HQ_JOB_RECONCILE_SHELL=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RECON="${OUTPOST_RECONCILE_SOURCE:-$ROOT/core/scripts/outpost-jobs-reconcile.sh}"
