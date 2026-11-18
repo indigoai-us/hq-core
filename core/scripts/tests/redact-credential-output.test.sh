@@ -23,6 +23,13 @@
 #   [10] round 3: source code on Read is unchanged (code shapes, shell
 #        references, prose), hyphenated headers, more key spellings,
 #        query-string values, embedded and escaped quotes
+#   [11] gcloud secret names: only the exact `gcloud secrets versions access
+#        <version> --secret=<NAME>` line keeps the NAME visible
+#   [11] size cap: bounded scan window, notice beyond it, time budget
+#   [12] feedback 166f01a7: Slack tokens (xoxb- and the other prefixes)
+#        in free text, JSON strings, multi-line and long output
+#   [13] feedback 3a8f7046: Klaviyo pk_ keys, Authorization header values
+#        in every form (Bearer, Klaviyo-API-Key, curl -H), prose controls
 #
 # Sections [1], [3], [7] and [8] run every case twice, once with the text in
 # stdout and once in stderr.
@@ -321,6 +328,277 @@ redacts "query-string password with & inside" "pw?password=$CANARY&x" "password=
 # Corey I1: partial leaks through embedded or JSON-escaped quotes.
 redacts "bare value with an embedded quote" "password=abc\"$CANARY" "password="
 redacts "JSON value with escaped quotes" "{\"password\":\"FAKE\\\"$CANARY\\\"inner\"}" "\"password\":\""
+
+echo "[11] gcloud secret names in the exact access command stay visible (feedback c4aa4a7e)"
+# gcloud secrets versions access <latest|N> --secret=<NAME> takes a secret
+# NAME, not a value. When that command is the whole line and NAME is built
+# around a secret word, the NAME stays visible. Every other gcloud form is
+# redacted exactly as on main.
+# redacts_value VALUE NAME TEXT EXPECT: redacts with VALUE as the canary.
+redacts_value() {
+  local saved="$CANARY"
+  CANARY="$1"
+  redacts "$2" "$3" "$4"
+  CANARY="$saved"
+}
+unchanged "gcloud access --secret=NAME with latest" "gcloud secrets versions access latest --secret=db-password"
+unchanged "gcloud access --secret=NAME with a version number" "gcloud secrets versions access 3 --secret=API_TOKEN"
+unchanged "gcloud access --secret=NAME with leading and trailing spaces" "  gcloud secrets versions access latest --secret=stripe-secret-key  "
+unchanged "gcloud access --secret=NAME on its own line in a block" "line one
+gcloud secrets versions access 12 --secret=jwt-secret
+line three"
+unchanged "gcloud --secret name with space" "gcloud secrets versions add DB_PASSWORD --secret API_TOKEN --data-file=-"
+unchanged "gcloud secret resource path" "gcloud secrets describe projects/123/secrets/API_TOKEN/versions/latest"
+redacts_value "db-password" "gcloud access followed by another flag" "gcloud secrets versions access latest --secret=db-password --project=demo-prod" "--secret="
+redacts_value "API_TOKEN" "gcloud access with a double-quoted NAME" "gcloud secrets versions access latest --secret=\"API_TOKEN\"" "--secret=\""
+redacts_value "stripe-key" "gcloud --set-secrets reference list" "gcloud run deploy api --set-secrets=STRIPE_SECRET_KEY=stripe-key:latest" "STRIPE_SECRET_KEY="
+redacts_value "api-key" "gcloud --update-secrets reference" "gcloud run services update api --update-secrets=API_KEY=api-key:2" "API_KEY="
+# Values on the same gcloud line, and --secret= outside gcloud, stay redacted.
+redacts "gcloud access followed by an export" \
+  "gcloud secrets versions access latest --secret=db-password && export API_TOKEN=$CANARY" \
+  "export API_TOKEN="
+redacts "gcloud --client-secret value redacted" \
+  "gcloud run deploy api --set-secrets=API_KEY=api-key:latest --client-secret=$CANARY" \
+  "--client-secret="
+redacts "gcloud --set-env-vars value redacted" "gcloud run deploy api --set-env-vars=API_TOKEN=$CANARY" "API_TOKEN="
+redacts "--secret= outside gcloud stays redacted" "jwt encode --secret=$CANARY" "--secret="
+redacts "--secret= after a gcloud word in another command name" "notgcloud-tool --secret=$CANARY" "--secret="
+
+# Review of #1864: shapes that leaked under an earlier, wider version of the
+# fix. Each is redacted as on main, except the exact access line after a
+# `$ ` prompt, which stays visible.
+unchanged "gcloud after a shell prompt" "\$ gcloud secrets versions access latest --secret=API_TOKEN"
+redacts_value "db-password" "gcloud access in backticks" "\`gcloud secrets versions access latest --secret=db-password\`" "--secret="
+redacts "another tool's --secret after | on a gcloud line" "gcloud secrets list | jwt encode --secret=$CANARY" "--secret="
+redacts "another tool's --secret after && on a gcloud line" "gcloud secrets list && jwt encode --secret=$CANARY" "--secret="
+redacts "another tool's --secret after ; on a gcloud line" "gcloud secrets list; jwt encode --secret=$CANARY" "--secret="
+redacts "literal --set-secrets value" "gcloud run deploy api --set-secrets=API_KEY=$CANARY" "API_KEY="
+redacts "literal --update-secrets value" "gcloud run services update api --update-secrets=API_TOKEN=$CANARY" "API_TOKEN="
+redacts "literal --set-secrets value with a version" "gcloud run deploy api --set-secrets=API_KEY=$CANARY:latest" "API_KEY="
+redacts "PASSWORD= item inside a --set-secrets list" "gcloud run deploy api --set-secrets=A=n:1,PASSWORD=$CANARY" "PASSWORD="
+redacts "PASSWORD= item with a version inside a list" "gcloud run deploy api --set-secrets=A=n:1,PASSWORD=$CANARY:1" "PASSWORD="
+redacts "gcloud command inside JSON" "{\"cmd\":\"gcloud x --secret=$CANARY\"}" "--secret="
+redacts "URL credential in a gcloud --secret value" "gcloud x --secret=https://user:$CANARY@example.com" "--secret="
+redacts "URL credential in a --set-secrets item" "gcloud x --set-secrets=A=https://user:$CANARY@example.com:1" "//user:"
+redacts "gcloud --secret= with a token-shaped value" "gcloud secrets versions access latest --secret=$CANARY" "--secret="
+redacts "gcloud --secret= with a double-quoted token value" "gcloud secrets versions access latest --secret=\"$CANARY\"" "--secret=\""
+redacts "gcloud --secret= with a single-quoted token value" "gcloud secrets versions access latest --secret='$CANARY'" "--secret='"
+redacts "gcloud --secret= with a long hex value" "gcloud secrets versions access latest --secret=${CANARY}3f9a8b7c6d5e4f3a2b1c0d9e" "--secret="
+
+# Review 3 of #1864. These fake values are name-shaped (one case, short
+# segments), unlike $CANARY, because each leak shape below only showed for a
+# name-shaped value.
+GC_KEYLIKE="fake-canary-key"
+GC_KEYLIKE_UP="FAKE_CANARY_TOKEN"
+GC_WORDS="fake-canary-words"
+GC_WORDS_UP="FAKE_CANARY_WORDS"
+GC_MIXED7="fake1ab-fake2cd-fake3ef"
+GC_HEX28="fa4e0c0ffee0fa4e0c0ffee0beef"
+GC_NUM19="$(printf '1%018d' 7)"
+GC_LS="$(printf '\342\200\250')"
+
+# A command substitution is not the whole line, so the NAME is redacted.
+redacts_value "db-password" "gcloud access inside a command substitution" "K=\$(gcloud secrets versions access latest --secret=db-password)" "--secret="
+
+# Critical 1: another tool's --secret inside gcloud's own arguments.
+redacts_value "$GC_KEYLIKE" "another tool's --secret after -- in gcloud compute ssh" "gcloud compute ssh vm1 -- mytool --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after -- in gcloud run" "gcloud run deploy api -- mytool --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret in a double-quoted --command" "gcloud compute ssh vm1 --command \"mytool --secret=$GC_KEYLIKE now\"" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret in a single-quoted --command" "gcloud compute ssh vm1 --command='mytool --secret=$GC_KEYLIKE now'" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret in gcloud run --command" "gcloud run jobs create job1 --command \"mytool --secret=$GC_KEYLIKE now\"" "--secret="
+redacts_value "$GC_KEYLIKE_UP" "upper-case value in gcloud run --command='...'" "gcloud run jobs create job1 --command='mytool --secret=$GC_KEYLIKE_UP now'" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after a carriage return" "gcloud secrets list"$'\r'"jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after a vertical tab" "gcloud secrets list"$'\v'"jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after a form feed" "gcloud secrets list"$'\f'"jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after U+2028" "gcloud secrets list${GC_LS}jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "--secret in prose after the word gcloud" "gcloud is installed, now run: jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE_UP" "--secret in a gcloud log line" "gcloud [info] starting --secret=$GC_KEYLIKE_UP" "--secret="
+
+# Critical 2 (review 3): a projects/<project>/secrets/<NAME> path. The hook
+# does not keep projects paths visible, so these are redacted as on main.
+redacts_value "$GC_HEX28" "28-character hex project in a --secret reference" "gcloud secrets versions access latest --secret=projects/$GC_HEX28/secrets/db-password" "--secret="
+redacts_value "$GC_NUM19" "19-digit project in a --secret reference" "gcloud secrets versions access latest --secret=projects/$GC_NUM19/secrets/db-password" "--secret="
+redacts_value "$GC_HEX28" "28-character hex project in a --set-secrets reference" "gcloud run deploy api --set-secrets=DB_PASSWORD=projects/$GC_HEX28/secrets/db-password:latest" "DB_PASSWORD="
+
+# A one-case, short-segment value with no secret word fails the NAME check
+# and is redacted as on main.
+redacts_value "$GC_WORDS" "lower-case passphrase in gcloud's own --secret" "gcloud secrets versions access latest --secret=$GC_WORDS" "--secret="
+redacts_value "$GC_WORDS_UP" "upper-case passphrase in gcloud's own --secret" "gcloud secrets versions access latest --secret=$GC_WORDS_UP" "--secret="
+redacts_value "$GC_MIXED7" "7-character mixed segments in gcloud's own --secret" "gcloud secrets versions access latest --secret=$GC_MIXED7" "--secret="
+redacts_value "$GC_WORDS" "passphrase as the NAME of a --secret reference" "gcloud secrets versions access latest --secret=projects/demo-prod/secrets/$GC_WORDS" "--secret="
+redacts_value "$GC_WORDS" "passphrase as a --set-secrets REF" "gcloud run deploy api --set-secrets=API_KEY=$GC_WORDS:latest" "API_KEY="
+redacts_value "$GC_WORDS" "passphrase REF after a held secret name in one list" "gcloud run deploy api --set-secrets=API_KEY=api-key:latest,FOO=$GC_WORDS:latest" "API_KEY="
+redacts_value "$GC_NUM19" "19-digit version in a --set-secrets item" "gcloud run deploy api --set-secrets=API_KEY=api-key:$GC_NUM19" "API_KEY="
+
+# Review 4 of #1864. Every value below is a fake canary.
+# Critical 1: token-shaped ENV names and mount paths in --set-secrets and
+# --update-secrets items. The hook does not keep these lists visible. Main
+# redacts the rest of the list after an `API_KEY=` item, and these cases
+# check that the token-shaped values stay redacted.
+# The ghp_ and AKIA canaries are split so the secret scanner does not read
+# this file as holding a key; the hook sees the joined value.
+GC_MIXED20="FakeCanaryTokenAbCdE"
+GC_GHP40="ghp_""FakeCanaryNotAToken0000000000000000"
+GC_AKID20="AKIA""FAKECANARY000000"
+GC_HEX40="fa4e0c0ffee0fa4e0c0ffee0beef0c0ffee0fa4e"
+GC_B64="RkFLRS1DQU5BUlktTk9ULUEtVE9LRU4"
+GC_PHRASE15="fakecanarywords"
+GC_PHRASE15_UP="FAKECANARYWORDS"
+GC_PAD="$(printf '%04100d' 0)"
+GC_HELD400=""
+for gc_i in $(seq 1 400); do GC_HELD400="${GC_HELD400}API_KEY=api-key:${gc_i},"; done
+for gc_v in "$GC_MIXED20" "$GC_GHP40" "$GC_AKID20" "$GC_PHRASE15" "$GC_PHRASE15_UP"; do
+  redacts_value "$gc_v" "token-shaped ENV in a later --set-secrets item (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets=API_KEY=api-key:1,${gc_v}=db-key:1" "API_KEY="
+  redacts_value "$gc_v" "token-shaped ENV in gcloud functions deploy (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud functions deploy fn --set-secrets=API_KEY=api-key:1,${gc_v}=db-key:1" "API_KEY="
+  redacts_value "$gc_v" "token-shaped ENV in --update-secrets (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run services update api --update-secrets=DB_PASSWORD=db-password:1,${gc_v}=db-key:1" "DB_PASSWORD="
+  redacts_value "$gc_v" "token-shaped ENV in the space form (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets API_KEY=api-key:1,${gc_v}=db-key:1" "API_KEY="
+  redacts_value "$gc_v" "token-shaped ENV after a DB_PASSWORD item (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets=DB_PASSWORD=db-password:1,${gc_v}=db-key:1" "DB_PASSWORD="
+  redacts_value "$gc_v" "token-shaped ENV on a line over 4096 bytes (${gc_v:0:4}..., ${#gc_v} chars)" "${GC_PAD}; gcloud run deploy api --set-secrets=API_KEY=api-key:1,${gc_v}=db-key:1" "API_KEY="
+  redacts_value "$gc_v" "token-shaped ENV after 400 held items (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets=${GC_HELD400}${gc_v}=db-key:1" "API_KEY="
+done
+for gc_v in "$GC_MIXED20" "$GC_GHP40" "$GC_AKID20" "$GC_HEX40" "$GC_B64" "$GC_PHRASE15" "$GC_PHRASE15_UP"; do
+  redacts_value "$gc_v" "token-shaped mount path in a later --set-secrets item (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets=API_KEY=api-key:1,/${gc_v}=db-key:1" "API_KEY="
+  redacts_value "$gc_v" "token-shaped mount path segment in --update-secrets (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run services update api --update-secrets=DB_PASSWORD=db-password:1,/etc/secrets/${gc_v}=db-key:1" "DB_PASSWORD="
+  redacts_value "$gc_v" "token-shaped mount path on a line over 4096 bytes (${gc_v:0:4}..., ${#gc_v} chars)" "${GC_PAD}; gcloud run deploy api --set-secrets=API_KEY=api-key:1,/${gc_v}=db-key:1" "API_KEY="
+done
+# An ENV and a mount path built around a secret word are redacted as on main.
+redacts_value "db-password" "gcloud --set-secrets ENV and mount path list" "gcloud run deploy api --set-secrets=API_KEY=api-key:latest,/etc/secrets/db-password=db-password:1" "API_KEY="
+unchanged "gcloud --secret name with one short digit segment" "gcloud secrets versions access latest --secret=api-key-v2"
+redacts_value "db-key" "gcloud access followed by a # comment" "gcloud secrets versions access latest --secret=db-key # note" "--secret="
+
+# Minor 1 (review 4): another tool's --secret after a C0 control, ESC, DEL, a
+# zero-width character or an unquoted # { } ! on a gcloud line. This is not
+# the exact access line, so it is redacted as on main.
+GC_ZWSP="$(printf '\342\200\213')"
+GC_BOM="$(printf '\357\273\277')"
+GC_WJ="$(printf '\342\201\240')"
+for gc_sep in "$(printf '\034')" "$(printf '\037')" "$(printf '\007')" "$(printf '\010')" "$(printf '\033[1E')" "$(printf '\033E')" "$(printf '\177')" "$GC_ZWSP" "$GC_BOM" "$GC_WJ"; do
+  redacts_value "$GC_KEYLIKE" "another tool's --secret after a control or format character" "gcloud secrets list${gc_sep}jwt encode --secret=$GC_KEYLIKE" "--secret="
+done
+redacts_value "$GC_KEYLIKE" "another tool's --secret after #" "gcloud secrets list # jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after {" "gcloud secrets list { jwt encode --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after !" "gcloud secrets list ! jwt encode --secret=$GC_KEYLIKE" "--secret="
+
+# Minor 2: random-looking segments do not pass just by ending in a secret word.
+GC_MIXED7_KEY="fake1ab-fake2cd-fake3ef-key"
+GC_HEX7_SECRET="fa4e0c1-fa4e0c2-fa4e0c3-secret"
+GC_DIGITS_KEY="key-$(printf '1%014d' 1)-$(printf '1%014d' 2)"
+GC_LONG_KEY="fake-canary-words-again-more-key"
+for gc_v in "$GC_MIXED7_KEY" "$GC_HEX7_SECRET" "$GC_DIGITS_KEY" "$GC_LONG_KEY"; do
+  redacts_value "$gc_v" "random-looking segments in gcloud's own --secret (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud secrets versions access latest --secret=$gc_v" "--secret="
+  redacts_value "$gc_v" "random-looking segments as a projects path NAME (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud secrets versions access latest --secret=projects/demo-prod/secrets/$gc_v" "--secret="
+  redacts_value "$gc_v" "random-looking segments as a --set-secrets REF (${gc_v:0:4}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets=API_KEY=${gc_v}:latest" "API_KEY="
+done
+
+# Review 5 of #1864. Every value below is a fake canary.
+# A --secret projects path and a --set-secrets REF with a projects path are
+# redacted as on main, project and NAME alike.
+for gc_v in "$GC_WORDS" "$GC_PHRASE15" "fake-canary-passphrase"; do
+  redacts_value "$gc_v" "project of a --secret projects path (${gc_v:0:4}..., ${#gc_v} chars)" \
+    "gcloud secrets versions access latest --secret=projects/$gc_v/secrets/db-password" "--secret="
+  redacts_value "$gc_v" "project of a --set-secrets REF (${gc_v:0:4}..., ${#gc_v} chars)" \
+    "gcloud run deploy api --set-secrets=DB_PASSWORD=projects/$gc_v/secrets/db-password:latest" "DB_PASSWORD="
+done
+
+# Gap 2 (review 4, minor 3): another tool's --secret after gcloud run
+# --command or --args. This is not the exact access line, so it is redacted
+# as on main.
+redacts_value "$GC_KEYLIKE" "another tool's --secret after unquoted --command and --args" "gcloud run jobs create job1 --command mytool --args --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE_UP" "upper-case value after unquoted --command and --args" "gcloud run jobs create job1 --command mytool --args --secret=$GC_KEYLIKE_UP" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after --args with no --command" "gcloud run deploy api --image=img --args --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret in --args=" "gcloud run jobs create job1 --args=--secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after --command=" "gcloud run jobs update job1 --command=mytool --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after a quoted --args" "gcloud run jobs create job1 \"--args\" --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after a single-quoted --command" "gcloud run jobs create job1 '--command' mytool --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after a quoted --" "gcloud run deploy api \"--\" mytool --secret=$GC_KEYLIKE" "--secret="
+# gcloud's own --set-secrets before --command and --args is redacted too.
+redacts_value "$GC_KEYLIKE" "gcloud --set-secrets before --command and --args" \
+  "gcloud run jobs create job1 --set-secrets=API_KEY=api-key:latest --command mytool --args --secret=$GC_KEYLIKE" "--secret="
+redacts_value "db-password" "gcloud access with another flag before --secret" "gcloud secrets versions access latest --commandsfile=x --secret=db-password" "--secret="
+
+# Review 6 of #1864. Every value below is a fake canary.
+# Critical 1: a passphrase as the file name or a directory of a later
+# mount-path item. Main redacts the rest of the list after `API_KEY=` or
+# `DB_PASSWORD=`, and the hook does not keep these lists visible.
+for gc_v in "$GC_WORDS" "fake_canary_words" "fake.canary.words" "fake-cnry-jumps-high" "fak3r-canary" "fake.cnry7"; do
+  for gc_m in "/etc/secrets/$gc_v" "/var/secrets/$gc_v" "/secrets/$gc_v" "/mnt/keys/$gc_v" "/$gc_v/key" "/etc/$gc_v/token"; do
+    redacts_value "$gc_v" "passphrase in a later mount path $gc_m (run deploy)" "gcloud run deploy api --set-secrets=API_KEY=api-key:1,${gc_m}=db-key:1" "API_KEY="
+    redacts_value "$gc_v" "passphrase in a later mount path $gc_m (--update-secrets)" "gcloud run services update api --update-secrets=DB_PASSWORD=db-password:1,${gc_m}=db-key:1" "DB_PASSWORD="
+    redacts_value "$gc_v" "passphrase in a later mount path $gc_m (beta functions)" "gcloud beta functions deploy fn --set-secrets=API_KEY=api-key:1,${gc_m}=db-key:1" "API_KEY="
+  done
+done
+# Mount paths are redacted as on main.
+redacts_value "db-password" "gcloud --set-secrets mount path list" "gcloud run deploy api --set-secrets=API_KEY=api-key:latest,/var/run/secrets/db-password=db-password:2" "API_KEY="
+
+# Critical 2: main redacts from a single-quoted --secret=' to the next double
+# quote or the end of the line, so everything after it stays redacted.
+GC_SQ="gcloud secrets versions access latest --secret='db-password'"
+for gc_v in "$GC_KEYLIKE" "$GC_KEYLIKE_UP" "$CANARY"; do
+  for gc_t in " | jwt --secret $gc_v" " && jwt --secret $gc_v" " | docker login -u u -p $gc_v" " && mysql -p$gc_v" \
+      " && curl -u admin:$gc_v example.invalid" " && sshpass -p $gc_v ssh host" " && mytool --set-env-vars=DB_PASS=$gc_v" \
+      " --token $gc_v" "$(printf '\t')$gc_v" ")x $gc_v" "&x=$gc_v" ";$gc_v" "|$gc_v"; do
+    redacts_value "$gc_v" "text after a single-quoted --secret='NAME' (${gc_t:0:8}...)" "${GC_SQ}${gc_t}" "--secret='"
+  done
+  redacts_value "$gc_v" "text after a single-quoted --secret='NAME' on a line over 4096 bytes" "${GC_PAD}; ${GC_SQ} | jwt --secret $gc_v" "--secret='"
+done
+# A single-quoted --set-secrets list is redacted as on main.
+redacts_value "api-key" "gcloud single-quoted --set-secrets list" "gcloud run deploy api --set-secrets='API_KEY=api-key:latest'" "API_KEY="
+
+# Critical 3 (review 6): a separator glued to the NAME. The line is then not
+# the exact access line, so main's bare-value rule redacts up to the next
+# whitespace, including the text after the separator.
+for gc_v in "$GC_KEYLIKE" "$CANARY"; do
+  for gc_s in ";" "|" "&&" "&" ">" "<" "<<<" "(x)"; do
+    redacts_value "$gc_v" "value glued to $gc_s after a held --secret" "gcloud secrets versions access latest --secret=db-password${gc_s}${gc_v}" "--secret="
+    redacts_value "$gc_v" "value glued to $gc_s after a held --set-secrets list" "gcloud run deploy api --set-secrets=API_KEY=api-key:1${gc_s}${gc_v}" "API_KEY="
+    redacts_value "$gc_v" "value glued to $gc_s after --update-secrets" "gcloud run services update api --update-secrets=DB_PASSWORD=db-password:1${gc_s}${gc_v}" "DB_PASSWORD="
+  done
+  redacts_value "$gc_v" "value in backticks glued to a held --secret" "gcloud secrets versions access latest --secret=db-password\`${gc_v}\`" "--secret="
+done
+# Text after the NAME, even after whitespace, means the line is not the
+# exact access command, so the NAME is redacted as on main.
+redacts_value "db-password" "gcloud access followed by ; and a command" "gcloud secrets versions access latest --secret=db-password; echo done" "--secret="
+redacts_value "db-password" "gcloud access followed by a pipe" "gcloud secrets versions access latest --secret=db-password | head -c 0" "--secret="
+
+# Minor 1 (review 6): another tool's --secret after a non-ASCII or format
+# character on a gcloud line is redacted as on main.
+for gc_sep in "$(printf '\341\240\216')" "$(printf '\315\217')" "$(printf '\330\234')" "$(printf '\341\205\237')" \
+    "$(printf '\343\205\244')" "$(printf '\357\276\240')" "$(printf '\363\240\200\240')" "$(printf '\342\200\252')" \
+    "$(printf '\342\200\256')" "$(printf '\342\201\246')" "$(printf '\342\201\251')"; do
+  redacts_value "$GC_KEYLIKE" "another tool's --secret after a Unicode format character" "gcloud secrets list${gc_sep}jwt encode --secret=$GC_KEYLIKE" "--secret="
+done
+
+# Minor 2 (review 6): another tool's --secret after prose words on a gcloud
+# line is redacted as on main.
+redacts_value "$GC_KEYLIKE" "another tool's --secret after 'then' in prose" "gcloud run deploy api then jwt --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after 'is used then' in prose" "gcloud run is used then mytool --secret=$GC_KEYLIKE" "--secret="
+
+# Minor 3: a long word or a long passphrase next to a secret word.
+for gc_v in "key-$GC_PHRASE15" "db-key-$GC_PHRASE15" "fake-canary-words-again-key" "FAKE_CANARY_WORDS_AGAIN_KEY"; do
+  redacts_value "$gc_v" "long word or passphrase next to a secret word in --secret (${gc_v:0:6}..., ${#gc_v} chars)" "gcloud secrets versions access latest --secret=$gc_v" "--secret="
+  redacts_value "$gc_v" "long word or passphrase next to a secret word as a --set-secrets REF (${gc_v:0:6}..., ${#gc_v} chars)" "gcloud run deploy api --set-secrets=API_KEY=${gc_v}:latest" "API_KEY="
+done
+# Still visible: the exact access line with a NAME that has one word of 8 to
+# 12 characters.
+unchanged "gcloud --secret name with one 8-letter word" "gcloud secrets versions access latest --secret=sendgrid-api-key"
+
+# Review 6 of #1864: the simple fallback. Only the exact access line keeps
+# the NAME visible, so the --set-secrets and --update-secrets lists, their
+# mount paths and versions, and another tool's --secret in gcloud prose are
+# redacted as on main. Every value below is a fake canary.
+redacts_value "canaryhorse" "passphrase in the directories of a later mount path (run deploy)" "gcloud run deploy api --set-secrets=API_KEY=api-key:latest,/correct/canaryhorse/battery/staple/key=db-key:1" "API_KEY="
+redacts_value "canaryhorse" "passphrase in the directories of a later mount path (--update-secrets)" "gcloud run services update api --update-secrets=DB_PASSWORD=db-password:latest,/a/canaryhorse/c/d/e/key=db-key:1" "DB_PASSWORD="
+redacts_value "canaryhorse" "passphrase in the directories of a later mount path (functions deploy)" "gcloud functions deploy fn --set-secrets=API_KEY=api-key:latest,/correct/canaryhorse/battery/staple/key=db-key:1" "API_KEY="
+redacts_value "fake-cnry-word-key" "three short words and a secret word as a mount file name" "gcloud run deploy api --set-secrets=API_KEY=api-key:latest,/etc/secrets/fake-cnry-word-key=db-key:1" "API_KEY="
+redacts_value "123456789" "9-digit version in a later --set-secrets item" "gcloud run deploy api --set-secrets=API_KEY=api-key:latest,DB_KEY=db-key:123456789" "API_KEY="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after gcloud prose with a comma" "gcloud run deploy api, next run mytool --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after gcloud secrets prose" "gcloud secrets docs say mytool --secret=$GC_KEYLIKE" "--secret="
+redacts_value "$GC_KEYLIKE" "another tool's --secret after docker words on a gcloud line" "gcloud run deploy api --image x docker run img --secret=$GC_KEYLIKE" "--secret="
+redacts_value "db-password" "gcloud access with a 5-digit version" "gcloud secrets versions access 12345 --secret=db-password" "--secret="
+redacts_value "db-password" "gcloud access after a global flag" "gcloud --project=demo-prod secrets versions access latest --secret=db-password" "--secret="
+redacts_value "db-password" "gcloud beta access" "gcloud beta secrets versions access latest --secret=db-password" "--secret="
+redacts_value "db-password" "gcloud access with a CRLF line end" "gcloud secrets versions access latest --secret=db-password"$'\r' "--secret="
+redacts_value "db-password" "gcloud access with the flag before the version" "gcloud secrets versions access --secret=db-password latest" "--secret="
 
 echo "[9] large outputs"
 # A PostToolUse timeout lets output through unredacted, so size is a
@@ -650,6 +928,228 @@ if [ "$edge_len" -le 163840 ] && [ "$edge_len" -gt 150000 ] && [ "$digest" = "$w
 else
   bad "small outputs differ from the uncapped hook: digest $digest want $want (edge length $edge_len)"
 fi
+
+echo "[12] feedback 166f01a7: Slack tokens anywhere in the output"
+# Fake token-shaped values, built at run time so no scanner sees a token in
+# this file: "xo" + "x" + type letter + "-" + digits + the canary.
+SLK_XO="xo"
+slk() { printf '%s%s%s-%s' "$SLK_XO" "x" "$1" "123456789-987654321-$CANARY"; }
+TOKB="$(slk b)"
+redacts "slack bot token in op item get notes text" "ID:          abcdefghijklmnop
+Title:       alerts app
+Notes:       rotate monthly
+$TOKB
+owner ops" "${SLK_XO}xb-"
+redacts "slack bot token inside a JSON notes value" "{\"id\":\"abc\",\"fields\":[{\"id\":\"notesPlain\",\"label\":\"notesPlain\",\"value\":\"alerts app. $TOKB (bot)\"}]}" "${SLK_XO}xb-"
+redacts "slack token after a plain label" "bot: $TOKB" "${SLK_XO}xb-"
+redacts "slack token mid-sentence" "the app uses $TOKB for posting" "${SLK_XO}xb-"
+for t in p a o s r e; do
+  redacts "slack xox$t- token" "value $(slk "$t") end" "${SLK_XO}x$t-"
+done
+redacts "slack rotated xoxe.xoxp- token" "refresh ${SLK_XO}xe.$(slk p)" "${SLK_XO}xp-"
+redacts "two slack tokens on separate lines" "a $(slk b)
+b $(slk p)" "${SLK_XO}xp-"
+rc=0
+payload_bash "a $(slk b)
+b $(slk p)" | bash "$HOOK" >"$TMP/out" 2>&1 || rc=$?
+if [ "$rc" = "0" ] && [ "$(grep -o "${SLK_XO}x[bp]-\[REDACTED\]" "$TMP/out" | wc -l | tr -d ' ')" = "2" ] && ! grep -qF "$CANARY" "$TMP/out"; then
+  ok "both slack tokens redacted"
+else
+  bad "both slack tokens redacted rc=$rc out=$(head -c 300 "$TMP/out")"
+fi
+rc=0
+jq -nc --arg c "notes
+$TOKB
+" --arg d "$ROOT" \
+  '{hook_event_name:"PostToolUse",tool_name:"Read",cwd:$d,tool_input:{file_path:"/x/notes.txt"},tool_response:{type:"text",file:{filePath:"/x/notes.txt",content:$c}}}' \
+  | bash "$HOOK" >"$TMP/out" 2>&1 || rc=$?
+if [ "$rc" = "0" ] && grep -q '"updatedToolOutput"' "$TMP/out" && ! grep -qF "$CANARY" "$TMP/out"; then
+  ok "slack token in a Read response redacted"
+else
+  bad "slack token in a Read response rc=$rc out=$(head -c 300 "$TMP/out")"
+fi
+# A long minified JSON line (over the 4096-byte split) still loses the token.
+LONGPAD="$(printf '%05000d' 0)"
+redacts "slack token in a long JSON line" "{\"pad\":\"$LONGPAD\",\"notes\":\"x $TOKB\"}" "${SLK_XO}xb-"
+# Whatever precedes the prefix: ANSI color codes (grep/rg --color=always)
+# and plain letters or digits put a word character right before it.
+ESC="$(printf '\033')"
+redacts "slack token after an ANSI color code" "${ESC}[32m$TOKB${ESC}[0m" "${SLK_XO}xb-"
+redacts "slack token in grep --color=always match highlight" "notes.txt:3:${ESC}[01;31m${ESC}[K$TOKB${ESC}[m${ESC}[K" "${SLK_XO}xb-"
+redacts "slack token in rg --color=always output" "${ESC}[0m${ESC}[35mnotes.txt${ESC}[0m:${ESC}[0m${ESC}[1m${ESC}[31m$(slk p)${ESC}[0m" "${SLK_XO}xp-"
+redacts "slack token right after letters" "abc$TOKB" "${SLK_XO}xb-"
+redacts "slack token right after digits" "42$(slk a)" "${SLK_XO}xa-"
+# Controls: prose about token prefixes and already-redacted values.
+unchanged "slack prefix named in prose" "Slack bot tokens start with ${SLK_XO}xb- and user tokens with ${SLK_XO}xp-."
+unchanged "slack prefix with a short tail" "see ${SLK_XO}xb-docs"
+unchanged "already-redacted slack token" "bot ${SLK_XO}xb-[REDACTED] ok"
+
+echo "[13] feedback 3a8f7046: Klaviyo private keys and the whole Authorization header value"
+# The key is the letter x only, so a leak is a run of x; it is built at run
+# time so no scanner sees a key-shaped value in this file.
+PKV="$(printf 'x%.0s' $(seq 1 30))"
+PKT="p""k_"
+# redacts_pk NAME TEXT EXPECT — like redacts, but the secret is $PKV.
+redacts_pk() {
+  local name="$1" text="$2" expect="$3" rc stream out
+  for stream in stdout stderr; do
+    rc=0
+    payload_bash "$text" "$stream" | bash "$HOOK" >"$TMP/out" 2>"$TMP/err" || rc=$?
+    out="$(jq -r --arg s "$stream" '.hookSpecificOutput.updatedToolOutput[$s] // empty' "$TMP/out" 2>/dev/null)"
+    if [ "$rc" != "0" ]; then
+      bad "$name ($stream): want rc 0 got $rc"
+    elif printf '%s' "$out" | grep -F "xxxxxxxxxx" >/dev/null; then
+      bad "$name ($stream): key leaked: $(printf '%s' "$out" | tr '\n' ' ')"
+    elif ! printf '%s' "$out" | grep >/dev/null -F -e "${expect}[REDACTED]"; then
+      bad "$name ($stream): expected '${expect}[REDACTED]' in: $(printf '%s' "$out" | tr '\n' ' ')"
+    else
+      ok "$name ($stream)"
+    fi
+  done
+}
+redacts_pk "klaviyo pk_ key alone" "key is ${PKT}${PKV} ok" "${PKT}"
+redacts_pk "klaviyo pk_ key at the start of the output" "${PKT}${PKV}" "${PKT}"
+redacts_pk "klaviyo pk_ key after an earlier redacted header (curl error)" "> Authorization: [REDACTED]
+> ${PKT}${PKV}" "${PKT}"
+redacts_pk "Authorization Klaviyo-API-Key header" "Authorization: Klaviyo-API-Key ${PKT}${PKV}" "Authorization: Klaviyo-API-Key "
+redacts_pk "curl -H Klaviyo-API-Key form" "curl -s -H 'Authorization: Klaviyo-API-Key ${PKT}${PKV}' -H 'revision: 2024-10-15' https://a.klaviyo.com/api/lists" "Authorization: Klaviyo-API-Key "
+redacts "Authorization Bearer header" "Authorization: Bearer $CANARY" "Authorization: Bearer "
+redacts "Authorization Bearer header, JSON form" "{\"Authorization\": \"Bearer $CANARY\"}" "Bearer "
+redacts "Authorization Klaviyo-API-Key header, non-pk value" "Authorization: Klaviyo-API-Key $CANARY" "Authorization: Klaviyo-API-Key "
+redacts "curl -H Authorization Bearer form" "curl -sS -H \"Authorization: Bearer $CANARY\" https://api.example.test/v1/items" "Authorization: Bearer "
+redacts "curl -H Authorization Bearer form, verbose request line" "> Authorization: Bearer $CANARY" "Authorization: Bearer "
+redacts_pk "AWS4 Authorization, comma-space parts" "Authorization: AWS4-HMAC-SHA256 Credential=AKIA${PKV}/20240101/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=${PKV}" "Authorization: AWS4-HMAC-SHA256 "
+redacts_pk "AWS4 Authorization, comma without space" "Authorization: AWS4-HMAC-SHA256 Credential=AKIA${PKV}/d/r/s/aws4_request,SignedHeaders=host,Signature=${PKV}" "Authorization: AWS4-HMAC-SHA256 "
+redacts_pk "Digest Authorization, quoted parts and response" "Authorization: Digest username=\"u${PKV}\", realm=\"r\", nonce=\"${PKV}\", cnonce=\"c${PKV}\", response=\"${PKV}\", qop=auth, nc=00000001" "Authorization: Digest "
+redacts_pk "Digest Authorization, JSON form" "{\"Authorization\": \"Digest username=\\\"u\\\", response=\\\"${PKV}\\\"\"}" "Digest "
+redacts_pk "klaviyo pk_ key after an underscore" "see x_${PKT}${PKV} end" "x_${PKT}"
+redacts_pk "klaviyo pk_ key after letters" "token${PKT}${PKV} end" "token${PKT}"
+redacts_pk "Authorization Negotiate header" "Authorization: Negotiate ${PKV}" "Authorization: Negotiate "
+redacts_pk "Authorization NTLM header" "Authorization: NTLM ${PKV}" "Authorization: NTLM "
+redacts_pk "authorization header, lower case, no space after the colon" "authorization:Bearer ${PKV}" "authorization:Bearer "
+redacts_pk "authorization header, lower case, no scheme, no space" "authorization:${PKV}" "authorization:"
+# A scheme-less hyphenated token (UUID-style API key) followed by whitespace
+# is the value, not a scheme: #1911 read any hyphenated word as a scheme, so
+# only the next word was masked and the token printed in clear. The token is
+# the letter q only, so a leak is a run of q; it is built at run time.
+QG="qqqq"
+QTOK="${QG}${QG}-${QG}-${QG}-${QG}-${QG}${QG}${QG}"
+TAB="$(printf '\t')"
+# redacts_q NAME TEXT EXPECT — like redacts, but the secret is a run of q.
+redacts_q() {
+  local name="$1" text="$2" expect="$3" rc stream out
+  for stream in stdout stderr; do
+    rc=0
+    payload_bash "$text" "$stream" | bash "$HOOK" >"$TMP/out" 2>"$TMP/err" || rc=$?
+    out="$(jq -r --arg s "$stream" '.hookSpecificOutput.updatedToolOutput[$s] // empty' "$TMP/out" 2>/dev/null)"
+    if [ "$rc" != "0" ]; then
+      bad "$name ($stream): want rc 0 got $rc"
+    elif printf '%s' "$out" | grep -F "$QG" >/dev/null || grep -qF "$QG" "$TMP/err"; then
+      bad "$name ($stream): token leaked: $(printf '%s' "$out" | tr '\n' ' ')"
+    elif ! printf '%s' "$out" | grep >/dev/null -F -e "${expect}[REDACTED]"; then
+      bad "$name ($stream): expected '${expect}[REDACTED]' in: $(printf '%s' "$out" | tr '\n' ' ')"
+    else
+      ok "$name ($stream)"
+    fi
+  done
+}
+redacts_q "Authorization hyphenated token then space" "Authorization: ${QTOK} user=bob" "Authorization: "
+redacts_q "Authorization hyphenated token then tab" "Authorization: ${QTOK}${TAB}user=bob" "Authorization: "
+redacts_q "Authorization tab after colon and token" "Authorization:${TAB}${QTOK}${TAB}next" "Authorization:${TAB}"
+redacts_q "Authorization hyphenated token, JSON form" "{\"Authorization\": \"${QTOK} next\"}" "\"Authorization\": \""
+redacts_q "Authorization hyphenated token, JSON escaped quotes" "{\\\"Authorization\\\": \\\"${QTOK} next\\\"}" "\\\"Authorization\\\": \\\""
+redacts_q "Authorization hyphenated token, compact JSON" "{\"Authorization\":\"${QTOK} next\"}" "\"Authorization\":\""
+redacts_q "curl -H hyphenated token, single quotes" "curl -s -H 'Authorization: ${QTOK} x' https://api.example.test/v1" "Authorization: "
+redacts_q "curl -H hyphenated token, double quotes" "curl -s -H \"Authorization: ${QTOK} x\" https://api.example.test/v1" "Authorization: "
+redacts_q "Authorization token with hyphenated prefix and suffix" "Authorization: abc-${QTOK}-def next" "Authorization: "
+redacts_q "Authorization hyphenated token, trailing space only" "Authorization: ${QTOK} " "Authorization: "
+redacts_q "Authorization hyphenated token, double spaces" "Authorization:  ${QTOK}  next" "Authorization:  "
+redacts_q "authorization hyphenated token, lower case" "authorization: ${QTOK} next" "authorization: "
+redacts_q "AUTHORIZATION hyphenated token, upper case" "AUTHORIZATION: ${QTOK} next" "AUTHORIZATION: "
+redacts_q "Authorization token with 8 hyphen groups" "Authorization: ${QG}-${QG}-${QG}-${QG}-${QG}-${QG}-${QG}-${QG} next" "Authorization: "
+redacts_q "Authorization two-part hyphenated token" "Authorization: ${QG}${QG}-${QG}${QG} next" "Authorization: "
+redacts_q "Authorization short hyphenated token" "Authorization: ${QG}-${QG} next" "Authorization: "
+redacts_q "Proxy-Authorization hyphenated token" "Proxy-Authorization: ${QTOK} next" "Proxy-Authorization: "
+redacts_q "Authorization hyphenated token then semicolon" "Authorization: ${QTOK} ; next" "Authorization: "
+redacts_q "authorization with an equals sign, hyphenated token" "authorization=${QTOK} next" "authorization="
+redacts_q "verbose request line, hyphenated token" "> Authorization: ${QTOK} x" "Authorization: "
+redacts_q "Authorization hyphenated token then several words" "Authorization: ${QTOK} one two three" "Authorization: "
+# Pre-#1911 behavior kept: digits-first token, comma, end of line, Bearer.
+redacts_q "Authorization digits-first hyphenated token" "Authorization: 1234${QG}-${QG}-${QG} next" "Authorization: "
+redacts_q "Authorization hyphenated token then comma" "Authorization: ${QTOK}, next" "Authorization: "
+redacts_q "Authorization hyphenated token at end of line" "Authorization: ${QTOK}" "Authorization: "
+redacts_q "Authorization Bearer hyphenated token then space" "Authorization: Bearer ${QTOK} next" "Authorization: Bearer "
+# Known hyphenated schemes stay schemes, in any case, with a hyphenated value.
+redacts_q "Authorization Klaviyo-API-Key, hyphenated value and trailing text" "Authorization: Klaviyo-API-Key ${QTOK} next" "Authorization: Klaviyo-API-Key "
+redacts_q "authorization klaviyo-api-key, lower case scheme" "authorization: klaviyo-api-key ${QTOK}" "authorization: klaviyo-api-key "
+# PR 1986 review C1 and I1: an unknown scheme word, hyphenated or not, before
+# a token. The guard masked only the scheme word and the token printed in
+# clear. Both words are masked now. QLONG is a run of q, built at run time.
+QLONG="${QG}${QG}${QG}${QG}"
+redacts_q "Authorization unknown hyphenated scheme X-Api-Key" "Authorization: X-Api-Key ${QLONG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme X-Api-Key, hyphenated token" "Authorization: X-Api-Key ${QTOK}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme Foo-Bar then text" "Authorization: Foo-Bar ${QLONG} next" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme Foo-Bar, hyphenated token then text" "Authorization: Foo-Bar ${QTOK} next" "Authorization: "
+redacts_q "Authorization unknown scheme DPoP" "Authorization: DPoP ${QLONG}" "Authorization: "
+redacts_q "Authorization unknown scheme Splunk" "Authorization: Splunk ${QLONG}" "Authorization: "
+redacts_q "Authorization unknown scheme SSWS" "Authorization: SSWS ${QLONG}" "Authorization: "
+redacts_q "Authorization unknown scheme DPoP then text" "Authorization: DPoP ${QLONG} next" "Authorization: "
+redacts_q "authorization unknown scheme, lower case" "authorization: dpop ${QLONG}" "authorization: "
+redacts_q "Authorization unknown scheme, tab separated" "Authorization:${TAB}SSWS${TAB}${QLONG}" "Authorization:${TAB}"
+redacts_q "Authorization unknown scheme, JSON form" "{\"Authorization\": \"DPoP ${QLONG}\"}" "\"Authorization\": \""
+redacts_q "Authorization unknown scheme, JSON escaped quotes" "{\\\"Authorization\\\": \\\"Splunk ${QLONG}\\\"}" "\\\"Authorization\\\": \\\""
+redacts_q "curl -H unknown hyphenated scheme" "curl -s -H 'Authorization: X-Api-Key ${QLONG}' https://api.example.test/v1" "Authorization: "
+redacts_q "Proxy-Authorization unknown scheme" "Proxy-Authorization: SSWS ${QLONG}" "Proxy-Authorization: "
+redacts_q "authorization with an equals sign, unknown scheme" "authorization=Splunk ${QLONG}" "authorization="
+redacts_q "verbose request line, unknown scheme" "> Authorization: DPoP ${QLONG}" "Authorization: "
+# Delta review C1b: a short token after an unknown hyphenated scheme word.
+redacts_q "Authorization unknown hyphenated scheme, short token" "Authorization: X-Api-Key ${QG}qq" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, short token then text" "Authorization: Foo-Bar ${QG} next" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, one-character token" "Authorization: X-Api-Key q" "Authorization: "
+# Delta review 2 C1c: a symbol-first token after an unknown hyphenated scheme word.
+redacts_q "Authorization unknown hyphenated scheme, token starting with !" "Authorization: X-Api-Key !${QG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, token starting with %" "Authorization: X-Api-Key %${QG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, token starting with @" "Authorization: X-Api-Key @${QG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, token starting with #" "Authorization: X-Api-Key #${QG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, token starting with *" "Authorization: X-Api-Key *${QG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, token starting with :" "Authorization: X-Api-Key :${QG}" "Authorization: "
+redacts_q "Authorization unknown hyphenated scheme, token starting with (" "Authorization: X-Api-Key (${QG}" "Authorization: "
+redacts_q "Authorization Foo-Bar, short symbol-first token then text" "Authorization: Foo-Bar !${QG} next" "Authorization: "
+# Known schemes keep the scheme word readable with a long token.
+redacts_q "Authorization Bearer, long token" "Authorization: Bearer ${QLONG} next" "Authorization: Bearer "
+redacts_q "Authorization Basic, long token" "Authorization: Basic ${QLONG}" "Authorization: Basic "
+redacts_q "Authorization Token, long token" "Authorization: Token ${QLONG}" "Authorization: Token "
+redacts_q "Authorization Negotiate, long token" "Authorization: Negotiate ${QLONG}" "Authorization: Negotiate "
+redacts_q "Authorization NTLM, long token" "Authorization: NTLM ${QLONG}" "Authorization: NTLM "
+redacts_q "Authorization Klaviyo-API-Key, long token" "Authorization: Klaviyo-API-Key ${QLONG}" "Authorization: Klaviyo-API-Key "
+redacts_q "Authorization lower-case bearer, long token" "authorization: bearer ${QLONG}" "authorization: bearer "
+# Controls for the unknown-scheme rule: no new masking of prose or header lists.
+unchanged "Authorization in a header list" "Content-Type, Authorization, X-Request-Id"
+unchanged "Authorization header named in prose" "The Authorization header is missing from the request."
+unchanged "Authorization with a variable reference" "Authorization: \$TOKEN"
+# A short word after the first word is not read as a token: the second word
+# stays readable, as on main.
+keeps_q() {
+  local name="$1" text="$2" expect="$3" stream out
+  for stream in stdout stderr; do
+    payload_bash "$text" "$stream" | bash "$HOOK" >"$TMP/out" 2>"$TMP/err" || true
+    out="$(jq -r --arg s "$stream" '.hookSpecificOutput.updatedToolOutput[$s] // empty' "$TMP/out" 2>/dev/null)"
+    if printf '%s' "$out" | grep >/dev/null -F -e "$expect"; then
+      ok "control: $name ($stream)"
+    else
+      bad "control: $name ($stream): expected '$expect' in: $(printf '%s' "$out" | tr '\n' ' ')"
+    fi
+  done
+}
+keeps_q "Authorization short words after the colon" "Authorization: see the docs" "[REDACTED] the docs"
+# Controls: prose and short values stay readable.
+unchanged "Authorization in prose, no header shape" "Authorization failed for the request, try again."
+unchanged "Authorization in prose, mid-sentence" "The Authorization step was skipped because the user was not signed in."
+unchanged "pk_ prefix with a short tail" "the id pk_abc is a primary key name"
+unchanged "already-redacted Authorization header" "Authorization: Bearer [REDACTED]"
+unchanged "already-redacted Digest Authorization header" "Authorization: Digest [REDACTED]"
+unchanged "pk_ in a longer word with a short tail" "the name spk_short is fine"
+unchanged "already-redacted pk_ key" "key ${PKT}[REDACTED] ok"
 
 if [ "$fail" -eq 0 ]; then
   echo "ALL PASS: redact-credential-output ($pass)"

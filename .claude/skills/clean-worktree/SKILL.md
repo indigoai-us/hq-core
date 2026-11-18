@@ -1,7 +1,7 @@
 ---
 name: clean-worktree
 description: "Merge an HQ worktree branch back into local main, then remove the worktree and branch. Local only; never pushes."
-allowed-tools: Bash(git:*), Bash(docker:*), Bash(ls:*), Bash(rmdir:*), Bash(bash "${HQ_ROOT}/core/scripts/clean-worktree-reconcile-handoff.sh:*), Read, AskUserQuestion
+allowed-tools: Bash(git:*), Bash(docker:*), Bash(ls:*), Bash(rmdir:*), Bash(hq core clean-worktree-reconcile-handoff:*), Read, AskUserQuestion
 ---
 
 # Clean HQ Worktree
@@ -77,7 +77,7 @@ the branch being merged. It leaves differing files in place and exits non-zero;
 surface those files to the user and stop before merging.
 
 ```bash
-bash "${HQ_ROOT}/core/scripts/clean-worktree-reconcile-handoff.sh" \
+hq core clean-worktree-reconcile-handoff \
   "${HQ_ROOT}" "<BRANCH>"
 ```
 

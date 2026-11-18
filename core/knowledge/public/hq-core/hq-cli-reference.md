@@ -16,7 +16,7 @@ from the live commander tree by `scripts/generate-command-catalog.mjs`, and the
 registration order lives in `src/command-registration-plan.ts`.
 
 - 55 top-level commands are registered. 52 are public; 3 are hidden
-  (`hq core`, `hq lanes`, `hq daemon`) and are listed only at the end.
+  (`hq core`, `hq runners`, `hq daemon`) and are listed only at the end.
 - Hidden subcommands of public roots are omitted (for example the hidden
   `hq dm send`; the normal form is `hq dm <recipient-or-channel> "message"`).
 - Descriptions are the first sentence of each catalog entry. Run
@@ -26,7 +26,7 @@ registration order lives in `src/command-registration-plan.ts`.
 
 ## Notes that the one-line descriptions do not show
 
-- **Login providers.** `hq login` and `hq auth login` accept
+- **Login providers.** `hq login` accepts
   `--provider google|microsoft|picker`. `google` maps to the Cognito `Google`
   IdP, `microsoft` to `MicrosoftPersonal`, and `picker` opens the Cognito
   Hosted UI chooser (which also covers email and password accounts).
@@ -66,10 +66,8 @@ date in the header, and update `verified_against`.
 | `hq logout` | Log out and clear cached credentials |
 | `hq whoami` | Show the currently authenticated user |
 | `hq auth` | Manage the local HQ Cognito session |
-| `hq auth login` | Sign in to HQ — opens the Cognito Hosted UI and caches tokens locally |
-| `hq auth logout` | Clear the cached HQ Cognito session |
 | `hq auth refresh` | Ensure a valid cached Cognito session (refresh only if expiring; no-op if already valid) |
-| `hq auth status` | Show whether a valid HQ session is cached |
+| `hq whoami --json` | Inspect `.authenticated` for a valid cached identity; signed-out also exits 0 |
 | `hq fingerprint` | Fingerprint commands; with no argument prints help |
 | `hq fingerprint <value>` | Resolve `hqfp1:...` from local records, then the HQ registry. `--json`. Exit 0 found, 1 no record, 2 not an HQ fingerprint |
 | `hq fingerprint self` | Print the fingerprint for the current HQ session and register it once per session. `--json`, `--offline`, `--no-register`. Always exits 0 |
@@ -459,10 +457,8 @@ rule, never the value.
 | `hq packs update` | Update an installed content pack (re-install latest) |
 | `hq packs uninstall` (alias: `remove`) | Un-wire and archive an installed content pack |
 | `hq packages` | Package management commands |
-| `hq packages install` | Install a package. |
-| `hq packages remove` | Remove an installed package (archives it first) |
+| `hq remove` | Remove an installed registry package (archives it first) |
 | `hq packages update` | Check for and apply package updates |
-| `hq packages list` (alias: `ls`) | List installed content packs and the curated catalog |
 | `hq packages packs` | Content-pack lifecycle (install via `hq install`) |
 | `hq packages packs list` (alias: `ls`) | List installed content packs and the curated catalog |
 | `hq packages packs update` | Update an installed content pack (re-install latest) |
@@ -523,7 +519,7 @@ These roots are registered with `hidden: true` and are not a stable public surfa
 | Command | Description |
 |---|---|
 | `hq core` | HQ scaffold scripts hosted by the CLI (core; not a stable surface) (subcommands omitted) |
-| `hq lanes` | Create, supervise, and steer worker lanes; routed decision queue (subcommands omitted) |
+| `hq runners` | Create, supervise, and steer worker lanes; routed decision queue (subcommands omitted). `hq lanes` is its deprecated alias. |
 | `hq daemon` | Run all of this machine's HQ background services under one supervisor |
 | `hq daemon install` | Detect this machine's type, install the daemon, and start its default services |
 | `hq daemon uninstall` | Stop the daemon and remove its OS unit |

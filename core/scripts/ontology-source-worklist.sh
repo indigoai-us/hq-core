@@ -299,13 +299,18 @@ ordered_items() {
 }
 ordered_items > "$work/order" || { echo "could not list items in sources/$ch" >&2; exit 1; }
 
+# Pass 1: take the first --limit items in order and read each one's audience
+# from its own frontmatter. An item that names no audience there and whose
+# rule allows it is queued for an ACL lookup (`hq files acl`), the one step
+# that leaves this machine. Results are kept per item under $work so the
+# emit order below stays the listing order.
 n=0
+: > "$work/need-acl"
 while IFS= read -r f <&3; do
   [ -f "$f" ] || continue
-  b="$(basename "$f")"
   [ "$n" -ge "$limit" ] && break
   n=$((n+1))
-  rel="sources/$ch/$b"
+  printf '%s\n' "$f" > "$work/item.$n"
   aud=""
   case "$rule" in
     company) aud="company" ;;
@@ -322,25 +327,54 @@ while IFS= read -r f <&3; do
       # the frontmatter contract exercised in hq-pro
       # test/sources/inbound/slack-personal-dm.test.ts.
       [ -n "$aud" ] || aud="$(participant_ids "$f" resolved_participants | grep -E '@|^(prs|agt)_' | paste -sd, -)"
-      if [ -z "$aud" ]; then
-        # A transient ACL or jq failure must not turn a source into a durable
-        # no-audience skip. Retry once, while treating valid empty ACL output as
-        # a completed lookup that needs no retry.
-        for attempt in 1 2; do
-          acl_output=""
-          if acl_output="$("$HQ" files --company "$co" acl "$rel" --json 2>/dev/null \
-            | jq -r '[.direct[]? | select(.granteeType=="person" or .granteeType=="email" or .granteeType=="agent") | select(.permission=="read" or .permission=="write" or .permission=="admin") | .granteeId] | unique | join(",")' 2>/dev/null)"; then
-            aud="$acl_output"
-            break
-          fi
-          aud=""
-        done
-      fi ;;
+      [ -n "$aud" ] || printf '%s\n' "$n" >> "$work/need-acl" ;;
   esac
+  printf '%s' "$aud" > "$work/aud.$n"
+done 3< "$work/order"
+
+# Pass 2: ACL lookups, HQ_WORKLIST_ACL_PARALLEL at a time (default 10). One
+# lookup takes several seconds of network time and the items do not depend on
+# each other, so a batch of 20 finishes in the time one or two took in
+# sequence. A transient ACL or jq failure must not turn a source into a
+# durable no-audience skip: retry once, while treating valid empty ACL output
+# as a completed lookup that needs no retry.
+acl_audience() { # $1 item number; writes the audience (possibly empty) to $work/acl.$1
+  local rel acl_output attempt
+  rel="sources/$ch/$(basename "$(cat "$work/item.$1")")"
+  for attempt in 1 2; do
+    acl_output=""
+    if acl_output="$("$HQ" files --company "$co" acl "$rel" --json 2>/dev/null \
+      | jq -r '[.direct[]? | select(.granteeType=="person" or .granteeType=="email" or .granteeType=="agent") | select(.permission=="read" or .permission=="write" or .permission=="admin") | .granteeId] | unique | join(",")' 2>/dev/null)"; then
+      printf '%s' "$acl_output" > "$work/acl.$1"
+      return 0
+    fi
+  done
+  : > "$work/acl.$1"
+}
+parallel="${HQ_WORKLIST_ACL_PARALLEL:-10}"
+case "$parallel" in ''|*[!0-9]*|0) parallel=10 ;; esac
+inflight=0
+while IFS= read -r i; do
+  [ -n "$i" ] || continue
+  acl_audience "$i" &
+  inflight=$((inflight+1))
+  if [ "$inflight" -ge "$parallel" ]; then wait; inflight=0; fi
+done < "$work/need-acl"
+wait
+
+# Pass 3: emit in listing order.
+i=0
+while [ "$i" -lt "$n" ]; do
+  i=$((i+1))
+  f="$(cat "$work/item.$i")"
+  b="$(basename "$f")"
+  rel="sources/$ch/$b"
+  aud="$(cat "$work/aud.$i")"
+  [ -n "$aud" ] || [ ! -f "$work/acl.$i" ] || aud="$(cat "$work/acl.$i")"
   if [ -z "$aud" ]; then
     printf '%s\t%s\t%s\n' "$b" "no-audience" "$PARSER_VERSION" >> "$skip_ledger"
     jq -cn --arg f "$rel" '{file:$f, skip:"no-audience"}'; continue
   fi
   key="$(HQ_ROOT="$root" bash "$here/ontology-candidate.sh" key "$aud")"
   jq -cn --arg f "$rel" --arg k "$key" --arg a "$aud" '{file:$f, audience_key:$k, audience:($a|split(","))}'
-done 3< "$work/order"
+done

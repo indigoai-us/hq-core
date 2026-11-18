@@ -249,6 +249,19 @@ fi
 [ -f "$INTENTS/$N19.json" ] || fail "exact-format replay consumed the acme intent"
 pass "exact-format replayed tag is denied by pre"
 
+# 23. Auto-mode retry: the host refuses updatedInput, so the same parent
+#     resubmits the tagged brief. pre must not deny; the child still binds.
+#     Numbered 23 because #1935 already landed case 21 (host notes suffix).
+new_session parent-23; HS parent-23 set company_slug acme >/dev/null
+new_session child-23 globex device_default
+P23="$(spawn parent-23 "Fix the landing page")"
+out23="$(pre_payload parent-23 "$P23" | bash "$SCRIPT" pre)"
+[ -z "$out23" ] || fail "own tagged retry produced output: $out23"
+[ "$(printf '%s' "$P23" | grep -o 'hq-spawn-intent:' | wc -l | tr -d ' ')" = 1 ] || fail "own tagged retry changed tag count: $P23"
+first_prompt child-23 "$P23" >/dev/null
+[ "$(slug child-23)" = acme ] || fail "own tagged retry did not bind child-23 (got $(slug child-23))"
+pass "auto-mode retry of this parent's tagged brief is allowed"
+
 # 20. A missing or unreadable transcript fails closed: no binding.
 new_session parent-20; HS parent-20 set company_slug acme >/dev/null
 new_session ch-20 globex device_default
@@ -263,6 +276,43 @@ prompt_payload ch-20b "$P20" | bash "$SCRIPT" prompt >/dev/null
 chmod 600 "$TMP/transcripts/ch-20b.jsonl"
 [ "$(slug ch-20b)" = globex ] || fail "unreadable transcript was treated as the first prompt"
 pass "missing or unreadable transcript fails closed"
+
+# 21. The desktop host appends a "Shared notes folder" paragraph after the brief,
+#     so the tag is no longer the final line. Every tagged side session from
+#     2026-11-09 to 2026-11-12 had this suffix and none was bound. The handoff
+#     must still bind when that exact host line follows the tag.
+NOTES="Shared notes folder for this group of sessions (outside the repo; read siblings' notes there, leave hand-over notes or large findings there instead of pasting them into messages): /Users/me/Library/Application Support/Claude/side-session-notes/local_abc"
+new_session parent-21; HS parent-21 set company_slug acme >/dev/null
+new_session ch-21 globex device_default
+P21="$(spawn parent-21)"
+first_prompt ch-21 "$P21
+
+$NOTES" >/dev/null
+[ "$(slug ch-21)" = acme ] || fail "host notes-folder suffix after the tag blocked the handoff (child is $(slug ch-21))"
+pass "tag followed by the host's notes-folder line still binds"
+
+# 22. Only that one host line is allowed after the tag: other text after it,
+#     or a notes line that itself mentions the tag, is still refused.
+new_session parent-22; HS parent-22 set company_slug acme >/dev/null
+new_session ch-22 globex device_default
+P22="$(spawn parent-22)"
+first_prompt ch-22 "$P22
+
+$NOTES
+more text" >/dev/null
+[ "$(slug ch-22)" = globex ] || fail "text after the notes line was accepted"
+new_session ch-22b globex device_default
+P22b="$(spawn parent-22)"
+first_prompt ch-22b "$P22b
+
+Shared notes folder for this group of sessions (x): /tmp/hq-spawn-intent" >/dev/null
+[ "$(slug ch-22b)" = globex ] || fail "a notes line naming hq-spawn-intent was accepted"
+new_session ch-22c globex device_default
+P22c="$(spawn parent-22)"
+first_prompt ch-22c "$P22c
+Shared notes folder for this group of sessions (x): /tmp/notes" >/dev/null
+[ "$(slug ch-22c)" = globex ] || fail "a notes line without the host's blank separator was accepted"
+pass "only the host's exact notes-folder paragraph may follow the tag"
 
 # 18. Registry order on start_session: conduct-link-inherit records the
 # original brief before this hook appends the tag, so the child's prompt still

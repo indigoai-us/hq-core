@@ -19,7 +19,7 @@ export BASH_ENV=/dev/null
 # On 0.2.56 a PreToolUse `deny` does not block one tool call -- it ends the whole
 # turn (session events.jsonl records
 # {"type":"turn_ended","outcome":"cancelled","cancellation_category":"hook_denied"}),
-# and under `grok --single` (how `hq lanes` invokes Grok) that exits the process
+# and under `grok --single` (how `hq runners` invokes Grok) that exits the process
 # with stopReason "Cancelled" and no envelope, so the lane dies on the first
 # guard that says no. Two indigo lanes were lost this way on 2026-09-25, both to
 # block-hq-glob rejecting `list_dir` on the HQ root. On 1.0.41 the same deny
@@ -77,7 +77,10 @@ export BASH_ENV=/dev/null
 #     to the operator rather than added to the model's context.
 # Both still run their side-effect hooks (autocommit, checkpoints, policy eval),
 # and this adapter routes their notes to bounded stderr diagnostics so they stay
-# visible in the scrollback instead of vanishing.
+# visible in the scrollback instead of vanishing. The policy reminder is the
+# exception: the policy hook holds it, unrecorded, and this adapter returns it
+# as PostToolUse additionalContext with the next tool result
+# (flush_held_policy_reminders).
 #
 # Canonical policy stays in .claude/hooks/. Claude settings.json, Codex
 # (.codex/), and Grok (.grok/ + optional user bridge installed by hq reindex) all
@@ -197,6 +200,8 @@ if [ -n "$HQ_ROOT" ]; then
   HQ_WORK_MESH_HARNESS=grok
   HQ_HARNESS=grok
   export HQ_ROOT CLAUDE_PROJECT_DIR HQ_CHECKPOINT_RUNTIME HQ_WORK_MESH_HARNESS HQ_HARNESS
+  # run_master sets this for one master-hook process; never inherited.
+  unset HQ_ADAPTER_SCOPE_AUTHORIZER_RAN
   . "$HQ_ROOT/core/scripts/hook-lib.sh" 2>/dev/null || true
   # Single-source dispatch: read .claude/settings.json live so Grok runs
   # exactly the hooks Claude runs (hqad_iter_settings / hqad_mode_for).
@@ -204,6 +209,17 @@ if [ -n "$HQ_ROOT" ]; then
   # Share the existing profile gate in-process so each registry hook does not
   # start another hook-gate.sh process.
   . "$GATE" --lib 2>/dev/null || true
+  # Tell the policy hook which events can carry its reminder to the model.
+  # Only PostToolUse can: SessionStart and UserPromptSubmit output is discarded
+  # by Grok, and the hook's PreToolUse reminder is plain text that Grok also
+  # drops when a call is refused at the approval prompt. On the other events the
+  # hook holds the reminder, unrecorded, until flush_held_policy_reminders
+  # delivers it with a tool result.
+  if [ "$EVENT" = "PostToolUse" ]; then
+    export HQ_POLICY_REMINDER_DELIVERABLE=1
+  else
+    export HQ_POLICY_REMINDER_DELIVERABLE=0
+  fi
 fi
 
 # Fail-open outside HQ trees (never wedge non-HQ projects). Gate presence is
@@ -400,7 +416,12 @@ RUN_IN_BACKGROUND="$(jget '.toolInput.run_in_background // .tool_input.run_in_ba
 # invoking process ($PPID - stable within a Grok session, distinct across).
 SID="$(jget '.session_id // .sessionId // .conversationId // .threadId // empty')"
 [ -z "$SID" ] && SID="${GROK_SESSION_ID:-}"
-[ -z "$SID" ] && SID="grok-${PPID}"
+# A made-up id can be reused by a later session (pid reuse), so the policy hook
+# must not hold reminder text under it.
+if [ -z "$SID" ]; then
+  SID="grok-${PPID}"
+  export HQ_POLICY_SESSION_ID_SYNTHETIC=1
+fi
 export HQAD_EVENT_SESSION_ID="$SID"
 PARENT_SID_PAYLOAD="$(jget '.parent_session_id // .parentSessionId // empty')"
 PARENT_SID="$PARENT_SID_PAYLOAD"
@@ -534,7 +555,45 @@ allow_pre() {
   fi
 }
 
+# Deliver the policy reminders inject-policy-on-trigger held on events Grok does
+# not hand to the model (HELD REMINDERS in that hook). The hook prints the held
+# text and only then records those policies as shown, so the ledger never runs
+# ahead of delivery. Grok clips additionalContext at 10,000 characters: the held
+# text is taken only when it fits beside what this event already collected, and
+# otherwise waits for the next tool result. Costs one file test per PostToolUse
+# when nothing is held.
+HQ_GROK_CONTEXT_BUDGET="${HQ_GROK_CONTEXT_BUDGET:-9500}"
+case "$HQ_GROK_CONTEXT_BUDGET" in ''|*[!0-9]*) HQ_GROK_CONTEXT_BUDGET=9500 ;; esac
+flush_held_policy_reminders() {
+  local hook="$HOOK_DIR/inject-policy-on-trigger.sh" room held
+  [ -s "$HQ_ROOT/workspace/orchestrator/policy-trigger-state/$SID.held/out" ] || return 0
+  [ -f "$hook" ] || return 0
+  room=$((HQ_GROK_CONTEXT_BUDGET - ${#CONTEXT_ACCUM} - 2))
+  [ "$room" -gt 0 ] || return 0
+  # Whatever the hook printed was recorded as shown, so keep it whatever its
+  # exit status.
+  held="$(printf '%s' "$CLAUDE_JSON" \
+    | HQ_POLICY_FLUSH_HELD=1 HQ_POLICY_FLUSH_HELD_MAX_BYTES="$room" bash "$hook" 2>/dev/null)" || true
+  [ -n "$held" ] || return 0
+  if [ -z "$CONTEXT_ACCUM" ]; then
+    CONTEXT_ACCUM="$held"
+  else
+    CONTEXT_ACCUM="${held}
+
+${CONTEXT_ACCUM}"
+  fi
+}
+
+# Session end: held text that never met a tool result is removed, unrecorded.
+drop_held_policy_reminders() {
+  local hook="$HOOK_DIR/inject-policy-on-trigger.sh"
+  [ -d "$HQ_ROOT/workspace/orchestrator/policy-trigger-state/$SID.held" ] || return 0
+  [ -f "$hook" ] || return 0
+  printf '%s' "$CLAUDE_JSON" | HQ_POLICY_DROP_HELD=1 bash "$hook" >/dev/null 2>&1 || true
+}
+
 emit_post_context() {
+  flush_held_policy_reminders
   [ -n "$CONTEXT_ACCUM" ] || return 0
   jq -c -n --arg c "$CONTEXT_ACCUM" \
     '{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext:$c}}'
@@ -592,6 +651,20 @@ run_block() { # <hook-id> <hook-script> [payload] [extra-gate-args...]
 ${reason}"
     else
       reason="$warning"
+    fi
+  fi
+  # Every non-zero exit denies here already. A safety guard (registry
+  # "safety": true) that ended without a verdict (any status but 0 and 2)
+  # leads with master-hook's named reason, so a crash or internal error reads
+  # as one and not as the guard's own block.
+  if [ "$status" -ne 2 ] && [ "$EVENT" = "PreToolUse" ] \
+    && command -v hqad_is_safety_hook >/dev/null 2>&1 \
+    && hqad_is_safety_hook "$HQ_ROOT" "$EVENT" "$id"; then
+    if [ -n "$reason" ]; then
+      reason="$(hqad_safety_block_reason "$id" "$status")
+${reason}"
+    else
+      reason="$(hqad_safety_block_reason "$id" "$status")"
     fi
   fi
   [ -z "$reason" ] && reason="Blocked by HQ guard: $id"
@@ -854,12 +927,15 @@ hqad_gate_override() {
 # Run master-hook.sh (company/personal/pack fan-out) for an event. Advisory
 # except on PreToolUse, where a company guard's non-zero exit denies the tool.
 run_master() {
-  local event_arg="$1" payload="${2:-$CLAUDE_JSON}" mode="${3:-advisory}"
+  local event_arg="$1" payload="${2:-$CLAUDE_JSON}" mode="${3:-advisory}" scope_marker="${4:-}"
   local script="$HOOK_DIR/master-hook.sh"
   [ -f "$script" ] || return 0
   local out err status err_text out_text
   out="$(mktemp)"; err="$(mktemp)"; status=0
-  printf '%s' "$payload" | bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
+  # scope_marker is set only when this adapter ran mandatory-scope-authorizer
+  # for this PreToolUse. master-hook then skips the hqd policy.check, which
+  # would run the same authorizer again. Only this master-hook process gets it.
+  printf '%s' "$payload" | HQ_ADAPTER_SCOPE_AUTHORIZER_RAN="$scope_marker" bash "$script" "$event_arg" >"$out" 2>"$err" || status=$?
   out_text="$(cat "$out" 2>/dev/null || true)"
   err_text="$(cat "$err" 2>/dev/null || true)"
   rm -f "$out" "$err"
@@ -891,7 +967,7 @@ dispatch_settings_hooks() {
   local event="$1" tools="$2" payload="$3" skip_master="${4:-}"
   [ -n "$HQ_GROK_ADAPTER_TRACE" ] && printf '%s %s\n' "$event" "$tools" >>"$HQ_GROK_ADAPTER_TRACE" 2>/dev/null
   command -v hqad_iter_settings >/dev/null 2>&1 || return 0
-  local tool kind a b rest key mode seen="|"
+  local tool kind a b rest key mode seen="|" scope_ran=0 scope_marker
   for tool in $tools; do
     while IFS=$'\t' read -r kind a b rest; do
       [ -n "$kind" ] || continue
@@ -907,8 +983,16 @@ dispatch_settings_hooks() {
           fi
           mode="$(hqad_mode_for "$event" "$b")"
           if [ "$mode" = "blocking" ]; then
+            # hqad_launch_registered_hook sets HQAD_CHILD_RC only when it
+            # launched the script, so a profile opt-out or the hook-gate.sh
+            # fallback never counts as a run of the scope authorizer.
+            HQAD_CHILD_RC=""
             # shellcheck disable=SC2086
             run_block "$a" "$b" "$payload" $rest
+            if [ "$event" = "PreToolUse" ] && [ "$a" = "mandatory-scope-authorizer" ] \
+              && [ "${HQAD_CHILD_RC:-}" = "0" ]; then
+              scope_ran=1
+            fi
           else
             # A successful advisory hook's additionalContext goes to the model
             # on PreToolUse/PostToolUse; any other stdout becomes bounded
@@ -916,9 +1000,18 @@ dispatch_settings_hooks() {
             run_advisory "$a" "$b" "$payload" "diag" $rest
           fi
           ;;
+        missing)
+          # A PreToolUse safety guard whose script is missing (see
+          # hqad_iter_registry) denies with a repair message, like master-hook.
+          deny "$(compact_reason "$(hqad_missing_safety_reason "$a")")"
+          ;;
         master)
           [ -n "$skip_master" ] && continue
-          run_master "$a" "$payload" "$(hqad_mode_for "$event" "")"
+          scope_marker=""
+          if [ "$event" = "PreToolUse" ] && [ "$scope_ran" -eq 1 ]; then
+            scope_marker="PreToolUse:$$"
+          fi
+          run_master "$a" "$payload" "$(hqad_mode_for "$event" "")" "$scope_marker"
           ;;
         script)
           run_script_advisory "$a" "$payload"
@@ -1230,7 +1323,8 @@ case "$EVENT" in
   # Grok supports these lifecycle events natively; settings.json registers the
   # master-hook company/personal/pack fan-out on each (SessionEnd has live
   # listeners). Side-effect only — output is dropped, exit ignored by Grok.
-  SessionEnd)       dispatch_settings_hooks "SessionEnd" "ANY" "$CLAUDE_JSON" ;;
+  SessionEnd)       dispatch_settings_hooks "SessionEnd" "ANY" "$CLAUDE_JSON"
+                    drop_held_policy_reminders ;;
   Notification)     dispatch_settings_hooks "Notification" "ANY" "$CLAUDE_JSON" ;;
   *) ;;
 esac

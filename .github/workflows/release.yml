@@ -270,7 +270,9 @@ jobs:
             --exclude='.git' \
             --exclude='.github' \
             --exclude='.leak-scan' \
+            --exclude-from=.github/release/install-excludes.rsync \
             ./ "$STAGE/"
+          bash .github/release/check-staged-tree.sh "$STAGE" .
 
       - name: Create tarball and checksum
         run: |
@@ -278,6 +280,24 @@ jobs:
           NAME="${{ steps.meta.outputs.name }}"
           tar -czf "${NAME}.tar.gz" -C /tmp/stage "${NAME}"
           sha256sum "${NAME}.tar.gz" > "${NAME}.tar.gz.sha256"
+
+      - name: Setup Node for the installed-core check
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Installed-core check on the release tarball
+        # Unpacks the tarball an install receives and runs hq-cli's
+        # check-function-manifest.mjs --installed-core on it (US-031). Any test
+        # or tooling file fails the release before it is created.
+        run: |
+          set -euo pipefail
+          NAME="${{ steps.meta.outputs.name }}"
+          CHECK_DIR="$RUNNER_TEMP/installed-core-check"
+          rm -rf "$CHECK_DIR"
+          mkdir -p "$CHECK_DIR"
+          tar -xzf "${NAME}.tar.gz" -C "$CHECK_DIR"
+          bash .github/release/installed-core-check.sh "$CHECK_DIR/${NAME}"
 
       - name: Resolve release notes body
         id: notes

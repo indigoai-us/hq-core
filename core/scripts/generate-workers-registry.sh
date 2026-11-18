@@ -13,4 +13,4 @@ if [ ! -f "$SCRIPT_DIR/lib/forwarder.sh" ]; then
 fi
 # shellcheck source=lib/forwarder.sh
 . "$SCRIPT_DIR/lib/forwarder.sh"
-forwarder_exec "generate-workers-registry.sh" "5.78.0" "live" "generate-workers-registry" "false" "$@"
+forwarder_exec "generate-workers-registry.sh" "5.89.0" "live" "generate-workers-registry" "false" "$@"

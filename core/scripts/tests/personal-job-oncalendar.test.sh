@@ -3,6 +3,8 @@
 # Personal OnCalendar output must match origin/main (hq-core-staging 5c9760db
 # and later). Company jobs render wildcard minutes in lib/company-jobs.mjs.
 set -euo pipefail
+# US-043: test the shell reconcile body, not the hq core jobs reconcile route.
+export HQ_JOB_RECONCILE_SHELL=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"

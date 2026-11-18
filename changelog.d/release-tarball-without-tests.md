@@ -1,0 +1,1 @@
+The release tarball no longer carries test folders, fixture and hook-corpus folders, or test files (907 files, about a quarter of the archive). The repository keeps them and its checks still run them. `/update-hq` now says that `hq rescue` removes unchanged test files from an existing install and keeps the ones you changed.

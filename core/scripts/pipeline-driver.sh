@@ -156,7 +156,7 @@
 # Stall check: --stall-window (default 600 seconds, env PIPELINE_DRIVER_STALL_SECS).
 #   The stall starts at the later of the oldest in-flight phase's route time and
 #   the last lane status change, and is kept in driver/stall.json so a restart
-#   does not reset it. The lane state comes from `hq lanes list --json`
+#   does not reset it. The lane state comes from `hq runners list --json`
 #   (loop state and queue depth). The event fires once per stall;
 #   accepting any phase clears it. No notification hook exists for the driver,
 #   so firing writes the event and exits 28 for the parent's waiter.
@@ -305,14 +305,14 @@ stop_lanes() {
   lane_file="$STATE/lanes.json"
   while IFS= read -r lane; do
     [ -n "$lane" ] || continue
-    "$PC_HQ" lanes stop "$lane" >/dev/null 2>&1 || true
+    "$PC_HQ" runners stop "$lane" >/dev/null 2>&1 || true
   done <<EOF
 $(jq -r 'to_entries[] | .value' "$STATE/lanes.json" 2>/dev/null)
 EOF
   deadline=$(( $(date +%s) + 60 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     local rows
-    rows="$("$PC_HQ" lanes list --json 2>/dev/null)"
+    rows="$("$PC_HQ" runners list --json 2>/dev/null)"
     if printf '%s' "$rows" | jq -e --slurpfile owned "$lane_file" '
       (if type == "array" then . else .lanes end) as $rows |
       ($rows | type == "array") and
@@ -415,7 +415,7 @@ function laneRows() {
     lanes = new Map();
     try {
       const owned = load(path.join(S, 'lanes.json')) || {};
-      const r = cp.spawnSync(HQ, ['lanes', 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
+      const r = cp.spawnSync(HQ, ['runners', 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
       if (!r.error) {
         const text = String(r.stdout || ''), starts = [text.indexOf('['), text.indexOf('{')].filter((n) => n >= 0);
         const parsed = JSON.parse(starts.length ? text.slice(Math.min(...starts)) : text);
@@ -680,7 +680,7 @@ function dumps(v) {
 let rows = [];
 try {
   const owned = load(path.join(S, 'lanes.json')) || {};
-  const r = require('child_process').spawnSync(HQ, ['lanes', 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
+  const r = require('child_process').spawnSync(HQ, ['runners', 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
   const text = String(r.stdout || ''), starts = [text.indexOf('['), text.indexOf('{')].filter((n) => n >= 0);
   const parsed = JSON.parse(starts.length ? text.slice(Math.min(...starts)) : text);
   const listed = Array.isArray(parsed) ? parsed : (isObj(parsed) && Array.isArray(parsed.lanes) ? parsed.lanes : []);
@@ -832,9 +832,9 @@ act() {
       LANE_STALLED)
         company="$(jq -r '.company_slug // empty' "$STATE/run.json" 2>/dev/null)"
         lane="$(jq -r --arg w "$d" '.[$w] // empty' "$STATE/lanes.json" 2>/dev/null)"
-        questions="$("$PC_HQ" lanes questions list --company "$company" --json 2>/dev/null | jq -c --arg lane "$lane" '.questions[]? | select(.lane_id == $lane and .status == "pending")' 2>/dev/null | head -1)"
+        questions="$("$PC_HQ" runners questions list --company "$company" --json 2>/dev/null | jq -c --arg lane "$lane" '.questions[]? | select(.lane_id == $lane and .status == "pending")' 2>/dev/null | head -1)"
         log "LANE_QUESTION story=$b phase=$c lane=$lane question=${questions:-missing}"
-        finish 28 "loop lane $lane parked after repeated stalls for $b/$c; answer its pending question with hq lanes questions answer, then restart the driver: ${questions:-no pending question returned}" ;;
+        finish 28 "loop lane $lane parked after repeated stalls for $b/$c; answer its pending question with hq runners questions answer, then restart the driver: ${questions:-no pending question returned}" ;;
       INFLIGHT) ;;
       ACTIVE) ACTIVE="$b" ;;
       '') ;;

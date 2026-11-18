@@ -4,7 +4,7 @@
 #
 # Why this exists. HQ's Grok adapter needs Grok >= GROK_MIN_VERSION: on a 0.2.x
 # build a PreToolUse deny does not block one tool call, it cancels the whole
-# turn (cancellation_category "hook_denied"), and `hq lanes` runs
+# turn (cancellation_category "hook_denied"), and `hq runners` runs
 # `grok --single`, where the turn ending ends the process. A lane then dies on
 # the first guard that objects. `doctor` is the documented place an operator
 # learns this, so a wrong verdict there is worse than no check at all.

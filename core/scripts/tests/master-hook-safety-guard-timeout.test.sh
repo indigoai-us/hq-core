@@ -9,6 +9,22 @@
 # kills the guard's process group, and exits 2 with "guard timed out, blocked".
 # Non-safety hooks keep the old fail-open behavior.
 #
+# Also pins that a safety guard allows only with exit 0: one killed by a
+# signal (SIGSEGV, exit 139), or ending with exit 1 or any other code that is
+# not a verdict (exit 5), blocks with a reason that names the guard and the
+# signal or code (owner decision 2026-11-10 for exit 1), in sequential and
+# parallel dispatch, also when the guard is marked fail_closed. A non-safety
+# hook's exit 1 keeps its meaning: a non-blocking hook error (master-hook
+# exits 1 and the call runs).
+#
+# Also pins that a safety guard whose script is missing blocks with exit 2
+# and a repair message (owner decision 2026-11-10), in sequential and
+# parallel dispatch, while a missing non-safety hook is still skipped.
+#
+# Run it with LANG unset under Homebrew bash 5.3 as well: the perl runner's
+# `LC_ALL=C perl` unwind used to crash master-hook's forked subshell with
+# SIGSEGV about 1 run in 10 there, which this test then saw as a guard crash.
+#
 # Each case runs under every runner master-hook can pick (coreutils timeout,
 # the perl fallback, and the plain-bash fallback when neither exists) and
 # under every Bash found: the PATH bash (bash 5 on CI and Homebrew) and
@@ -126,6 +142,33 @@ cat >/dev/null
 exit 0
 SH
 chmod +x "$FIX/.claude/hooks/fast-deny.sh" "$FIX/.claude/hooks/fast-allow.sh"
+# A guard that dies by SIGSEGV, as mandatory-scope-authorizer did under
+# Homebrew bash 5.3. `sh -c 'kill -SEGV $PPID'` signals the shell that runs
+# the guard body: the script itself under the exec runner, the ( . ) subshell
+# under the source runner. Works under bash 3.2, which has no BASHPID.
+cat > "$FIX/.claude/hooks/segv-guard.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+sh -c 'kill -SEGV "$PPID"'
+sleep 5
+echo "segv guard survived"
+exit 0
+SH
+# An internal error: exit 1, the existing non-blocking hook error.
+cat > "$FIX/.claude/hooks/error-guard.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+printf 'fixture guard internal error\n' >&2
+exit 1
+SH
+# Any other code is not a verdict.
+cat > "$FIX/.claude/hooks/odd-exit-guard.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 5
+SH
+chmod +x "$FIX/.claude/hooks/segv-guard.sh" "$FIX/.claude/hooks/error-guard.sh" \
+  "$FIX/.claude/hooks/odd-exit-guard.sh"
 
 # PATH variants. "timeout" keeps coreutils timeout (skipped when absent, as on
 # stock macOS); "perl" hides timeout; "bash" hides timeout and perl.
@@ -203,9 +246,11 @@ PAYLOAD="$(jq -nc --arg cwd "$FIX" \
 
 now_ms() { perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000'; }
 
-write_registry() { # <id> <script> <timeout> <safety:true|false> [runner]
+write_registry() { # <id> <script> <timeout> <safety:true|false> [runner] [fail_closed:true|false]
   jq -n --arg id "$1" --arg script ".claude/hooks/$2" --argjson t "$3" --argjson s "$4" --arg r "${5:-}" \
-    '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{id:$id,script:$script,timeout:$t,gated:false,safety:$s} + (if $r == "" then {} else {runner:$r} end)]}]}}' \
+    --argjson fc "${6:-false}" \
+    '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{id:$id,script:$script,timeout:$t,gated:false,safety:$s}
+      + (if $r == "" then {} else {runner:$r} end) + (if $fc then {fail_closed:true} else {} end)]}]}}' \
     > "$FIX/.claude/hooks/hook-registry.json"
   rm -rf "$FIX/workspace/orchestrator/hook-state/registry-rows"
 }
@@ -299,6 +344,114 @@ for bash_bin in "${BASHES[@]}"; do
     run_master "$bash_bin" "$runner"
     [ "$RC" = "0" ] || fail "$tag: fast allow guard expected exit 0, got $RC; stderr=$(cat "$TMP/err")"
     pass "$tag: fast safety guards keep exit 2 and exit 0"
+
+    # ── 4a. A safety guard killed by SIGSEGV blocks, under both runners ─────
+    # Before the fix master-hook passed 139 on and Claude Code ran the call.
+    for r in exec source; do
+      write_registry segv-guard segv-guard.sh 30 true "$r"
+      run_master "$bash_bin" "$runner"
+      [ "$RC" = "2" ] || fail "$tag: $r-runner SIGSEGV safety guard should block with exit 2, got $RC; stderr=$(cat "$TMP/err")"
+      grep -q 'guard crashed, blocked: segv-guard was killed by signal 11 (SIGSEGV, exit 139)' "$TMP/err" \
+        || fail "$tag: $r-runner SIGSEGV block reason missing guard or signal; stderr=$(cat "$TMP/err")"
+      ! grep -q 'segv guard survived' "$TMP/out" || fail "$tag: $r-runner SIGSEGV guard was not killed"
+      ! grep -q 'guard timed out' "$TMP/err" || fail "$tag: $r-runner SIGSEGV reported as a timeout"
+    done
+    # The same crash in a hook without "safety" keeps the old non-blocking result.
+    write_registry segv-guard segv-guard.sh 30 false source
+    run_master "$bash_bin" "$runner"
+    [ "$RC" != "2" ] || fail "$tag: SIGSEGV in a non-safety hook must not block; stderr=$(cat "$TMP/err")"
+    ! grep -q 'guard crashed, blocked' "$TMP/err" || fail "$tag: non-safety hook printed the safety crash reason"
+    pass "$tag: SIGSEGV safety guard blocked (exec and source runners); non-safety hook unchanged"
+
+    # ── 4c. A safety guard allows only with exit 0 ─────────────────────────
+    # Owner decision 2026-11-10: exit 1 from a safety guard blocks too, since
+    # an internal error exits 1 under bash 5 and 127 under bash 3.2. A
+    # non-safety hook's exit 1 stays a non-blocking hook error: master-hook
+    # exits 1, Claude Code reports it and runs the tool call.
+    for r in exec source; do
+      write_registry error-guard error-guard.sh 30 true "$r"
+      run_master "$bash_bin" "$runner"
+      [ "$RC" = "2" ] || fail "$tag: $r-runner exit-1 safety guard should block with exit 2, got $RC; stderr=$(cat "$TMP/err")"
+      grep -q 'guard failed, blocked: error-guard exited 1 without a verdict' "$TMP/err" \
+        || fail "$tag: $r-runner exit-1 block reason missing; stderr=$(cat "$TMP/err")"
+      grep -q 'fixture guard internal error' "$TMP/err" || fail "$tag: $r-runner exit-1 guard lost its stderr"
+      write_registry odd-exit-guard odd-exit-guard.sh 30 true "$r"
+      run_master "$bash_bin" "$runner"
+      [ "$RC" = "2" ] || fail "$tag: $r-runner exit-5 safety guard should block with exit 2, got $RC; stderr=$(cat "$TMP/err")"
+      grep -q 'guard failed, blocked: odd-exit-guard exited 5 without a verdict' "$TMP/err" \
+        || fail "$tag: $r-runner exit-5 block reason missing; stderr=$(cat "$TMP/err")"
+      write_registry fast-allow fast-allow.sh 30 true "$r"
+      run_master "$bash_bin" "$runner"
+      [ "$RC" = "0" ] || fail "$tag: $r-runner exit-0 safety guard should allow, got $RC; stderr=$(cat "$TMP/err")"
+      ! grep -q 'blocked' "$TMP/err" || fail "$tag: $r-runner exit-0 safety guard was reported as blocked"
+    done
+    write_registry error-guard error-guard.sh 30 false source
+    run_master "$bash_bin" "$runner"
+    [ "$RC" = "1" ] || fail "$tag: exit-1 non-safety hook should keep exit 1, got $RC; stderr=$(cat "$TMP/err")"
+    grep -q 'fixture guard internal error' "$TMP/err" || fail "$tag: exit-1 non-safety hook lost its stderr"
+    ! grep -q 'blocked' "$TMP/err" || fail "$tag: exit-1 non-safety hook was reported as blocked"
+    pass "$tag: safety guard exit 1 and exit 5 block, exit 0 allows; non-safety exit 1 unchanged"
+
+    # ── 4d. A guard marked safety and fail_closed gets the safety reason ───
+    for g in segv-guard error-guard; do
+      write_registry "$g" "$g.sh" 30 true source true
+      run_master "$bash_bin" "$runner"
+      [ "$RC" = "2" ] || fail "$tag: safety+fail_closed $g should block with exit 2, got $RC; stderr=$(cat "$TMP/err")"
+      grep -Eq "guard (crashed|failed), blocked: $g " "$TMP/err" \
+        || fail "$tag: safety+fail_closed $g missing the safety reason; stderr=$(cat "$TMP/err")"
+      ! grep -q 'failing closed' "$TMP/err" || fail "$tag: safety+fail_closed $g printed the older fail_closed line"
+    done
+    pass "$tag: safety+fail_closed guard blocks with the safety reason"
+
+    # ── 4e. Parallel dispatch (HQ_HOOK_PARALLEL=1 needs bash 5.1+) ─────────
+    if [ "${bash_ver%%.*}" -gt 5 ] || { [ "${bash_ver%%.*}" -eq 5 ] && [ "${bash_ver#*.}" -ge 1 ]; }; then
+      for g in 'segv-guard|2|guard crashed, blocked: segv-guard was killed by signal 11 (SIGSEGV, exit 139)' \
+               'error-guard|2|guard failed, blocked: error-guard exited 1 without a verdict' \
+               'odd-exit-guard|2|guard failed, blocked: odd-exit-guard exited 5 without a verdict' \
+               'fast-allow|0|'; do
+        gid="${g%%|*}"; rest="${g#*|}"; want="${rest%%|*}"; reason="${rest#*|}"
+        write_registry "$gid" "$gid.sh" 30 true source
+        HQ_HOOK_PARALLEL=1 run_master "$bash_bin" "$runner"
+        [ "$RC" = "$want" ] || fail "$tag: parallel $gid expected exit $want, got $RC; stderr=$(cat "$TMP/err")"
+        if [ -n "$reason" ]; then
+          grep -qF "$reason" "$TMP/err" || fail "$tag: parallel $gid reason missing; stderr=$(cat "$TMP/err")"
+        else
+          ! grep -q 'blocked' "$TMP/err" || fail "$tag: parallel $gid was reported as blocked"
+        fi
+      done
+      write_registry error-guard error-guard.sh 30 false source
+      HQ_HOOK_PARALLEL=1 run_master "$bash_bin" "$runner"
+      [ "$RC" = "1" ] || fail "$tag: parallel exit-1 non-safety hook should keep exit 1, got $RC; stderr=$(cat "$TMP/err")"
+      pass "$tag: parallel dispatch applies the same safety-guard rule"
+    fi
+
+    # ── 4f. A missing safety guard script blocks with a repair message ─────
+    # Owner decision 2026-11-10: it blocks like an unreadable one, so deleting
+    # or renaming the script cannot switch the guard off. A missing hook
+    # without "safety" (and without fail_closed) is still skipped.
+    missing_reason='BLOCKED: a required HQ safety check is missing (gone-guard). Run hq rescue from a terminal (or re-run /update-hq) to repair it, then retry.'
+    rm -f "$FIX/.claude/hooks/gone-guard.sh"
+    par_modes=(0)
+    if [ "${bash_ver%%.*}" -gt 5 ] || { [ "${bash_ver%%.*}" -eq 5 ] && [ "${bash_ver#*.}" -ge 1 ]; }; then
+      par_modes+=(1)
+    fi
+    for par in "${par_modes[@]}"; do
+      mode="sequential"
+      [ "$par" = "1" ] && mode="parallel"
+      for fc in false true; do
+        write_registry gone-guard gone-guard.sh 30 true source "$fc"
+        HQ_HOOK_PARALLEL="$par" run_master "$bash_bin" "$runner"
+        [ "$RC" = "2" ] || fail "$tag: $mode missing safety guard (fail_closed=$fc) should block with exit 2, got $RC; stderr=$(cat "$TMP/err")"
+        grep -qF "$missing_reason" "$TMP/err" \
+          || fail "$tag: $mode missing safety guard (fail_closed=$fc) repair message missing; stderr=$(cat "$TMP/err")"
+        ! grep -q 'failing closed' "$TMP/err" || fail "$tag: $mode missing safety guard printed the fail_closed line"
+      done
+      write_registry gone-guard gone-guard.sh 30 false source
+      HQ_HOOK_PARALLEL="$par" run_master "$bash_bin" "$runner"
+      [ "$RC" = "0" ] || fail "$tag: $mode missing non-safety hook should be skipped (exit 0), got $RC; stderr=$(cat "$TMP/err")"
+      ! grep -q 'BLOCKED' "$TMP/err" || fail "$tag: $mode missing non-safety hook was reported as blocked"
+    done
+    pass "$tag: missing safety guard blocks with the repair message; missing non-safety hook skipped"
 
     # ── 4b. A spent shared budget blocks the next safety guard ──────────────
     # The slow non-safety hook uses about 2 s of a 1 s budget, so the safety

@@ -24,10 +24,19 @@ JS
 cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$TMP/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.claude/settings.json" "$TMP/.claude/settings.json"
 cp "$ROOT/.claude/hooks/hook-registry.json" "$TMP/.claude/hooks/hook-registry.json"
-# The real guard under test. Every other registered hook is absent from the
-# fixture and skipped by the adapter's missing-script guard.
+# The real guard under test. Other registered hooks are absent and skipped by
+# the adapter's missing-script guard, except PreToolUse safety guards: a
+# missing one blocks, so each gets an allow stub here.
 cp "$ROOT/.claude/hooks/env-file-no-trailing-newline.sh" "$TMP/.claude/hooks/env-file-no-trailing-newline.sh"
 chmod +x "$TMP/.claude/hooks/env-file-no-trailing-newline.sh"
+for script in $(jq -r '.hooks.PreToolUse[]?.hooks[]? | select(.safety == true) | .script' \
+    "$TMP/.claude/hooks/hook-registry.json" | sort -u); do
+  f="$TMP/$script"
+  [ -e "$f" ] && continue
+  mkdir -p "$(dirname "$f")"
+  printf '#!/bin/bash\ncat >/dev/null 2>&1 || true\nexit 0\n' > "$f"
+  chmod +x "$f"
+done
 git -C "$TMP" init -q
 
 # Stub gate: run every hook regardless of profile, so this test checks the

@@ -52,7 +52,7 @@ fi
 ## Step 0: Company + Project Resolution
 
 Same company anchor pattern as all HQ commands:
-1. Resolve via `bash core/scripts/resolve-company.sh --prompt "{input}"` (session bind first, then a whole-token scan of the input — not the first word alone)
+1. Resolve via `hq core resolve-company --prompt "{input}"` (session bind first, then a whole-token scan of the input — not the first word alone)
 2. If matched: set `{co}`, load policies
 3. Resolve project: find `companies/{co}/projects/{slug}/prd.json` or infer from recent git activity
 

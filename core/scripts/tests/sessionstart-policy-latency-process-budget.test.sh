@@ -140,6 +140,7 @@ run_equivalence_case() {
   timeout 30s env -u BASH_ENV -u ENV -u HQ_POLICY_WORKER_DIR PATH="$TEST_PATH" HOME="$root/home" \
     XDG_STATE_HOME="$root/home/.local/state" HQ_ROOT="$root" \
     CLAUDE_PROJECT_DIR="$root" HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 HQ_INJECT_PERSONAL_SOFT=1 \
+    HQ_NESTED_ROOT_WARNING=0 \
     bash "$root/.claude/hooks/master-hook.sh" "$event" \
     <<<"$payload" >"$out" 2>"$err"
   rc=$?

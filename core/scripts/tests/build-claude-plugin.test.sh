@@ -22,7 +22,7 @@ for path in '$HOME/.claude/projects/session.jsonl' '<repo>/.claude/policies/rule
   fi
 done
 
-bash "$repo_root/core/scripts/build-claude-plugin.sh" "$plugin"
+bash "$repo_root/.github/release/build-claude-plugin.sh" "$plugin"
 node "$repo_root/core/scripts/validate-agent-runtime-contracts.mjs" --root "$repo_root" --plugin-dir "$plugin"
 
 # A skill folder that is also a Claude Code plugin (the run-project progress
@@ -111,7 +111,7 @@ HQ_MARKER="$tmp/hq.marker" HQ_TOOLCHAIN_DIR="$toolchain" HOME="$tmp/home" PATH="
   /bin/sh "$plugin/scripts/hq-claude-plugin-launch.sh" mcp serve
 grep -qx 'mcp serve' "$tmp/hq.marker"
 
-bash "$repo_root/core/scripts/build-claude-marketplace.sh" "$plugin" "$marketplace"
+bash "$repo_root/.github/release/build-claude-marketplace.sh" "$plugin" "$marketplace"
 node - "$marketplace" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -126,7 +126,7 @@ NODE
 nested_plugin="$marketplace/plugins/hq/nested-input"
 mkdir -p "$nested_plugin"
 printf 'preserve input\n' > "$nested_plugin/marker"
-if bash "$repo_root/core/scripts/build-claude-marketplace.sh" "$nested_plugin" "$marketplace" >"$tmp/overlap.out" 2>&1; then
+if bash "$repo_root/.github/release/build-claude-marketplace.sh" "$nested_plugin" "$marketplace" >"$tmp/overlap.out" 2>&1; then
   echo 'marketplace builder accepted an input nested inside its deletion target' >&2
   exit 1
 fi

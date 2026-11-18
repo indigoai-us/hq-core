@@ -25,7 +25,7 @@ FIXTURE=$TMP/hq-root
 mkdir -p "$FIXTURE/.claude/hooks" "$FIXTURE/core/scripts/lib" "$FIXTURE/companies/indigo/settings" \
   "$FIXTURE/companies/otherco/settings" "$FIXTURE/companies/_template" "$FIXTURE/personal" \
   "$FIXTURE/workspace/sessions/sess-bound"
-for path in .claude/hooks/bash-arith-subst-guard-lib.sh .claude/hooks/mandatory-scope-authorizer.sh \
+for path in .claude/hooks/bash-arith-subst-guard-lib.sh .claude/hooks/path-fold-lib.sh .claude/hooks/mandatory-scope-authorizer.sh \
   core/scripts/lib/session-authz.sh core/scripts/lib/session-scope-capability.sh \
   core/scripts/lib/session-id.sh core/scripts/hook-lib.sh core/scripts/lib/hook-caller-lineage.sh \
   core/scripts/hqd-hook-flag-cache-lib.sh; do

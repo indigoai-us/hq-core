@@ -50,6 +50,13 @@
 #        revision and log -p over a path that holds a credential file
 #   [25] letters a case-insensitive volume folds to ASCII (U+017F, U+212A,
 #        U+00DF, ligatures, fullwidth) under LC_ALL=C and en_US.UTF-8
+#   [26] git listings of names git quotes (non-ASCII, "), alias text with
+#        quotes, backslashes or a newline, ^@, ^! and ^-<n> revisions, and
+#        path words holding a tab, under LC_ALL=C and en_US.UTF-8
+#   [27] feedback 166f01a7: a credential path in an interpreter's
+#        environment (F=... python3, env F=..., export F=...), *.env
+#        names in code, and recursive grep / rg / ag limited to
+#        credential files by --include or -g (loud block)
 # Sections run in the order 1-6, 9, 10, 7, 8, because [8] exports env vars.
 set -uo pipefail
 
@@ -131,9 +138,16 @@ ref_compare() { # <desc> <payload> <rc> [PATH]
 }
 
 # check <want-rc> <desc> <payload>
+# CHECK_HOOK_SECS is set to the wall time of the hook under test alone, so a
+# timed case measures one hook run against its budget. The reference hook
+# that ref_compare runs in the fast-path differential is outside that window.
+CHECK_HOOK_SECS=0
 check() {
-  local want="$1" desc="$2" pl="$3" rc=0
+  local want="$1" desc="$2" pl="$3" rc=0 t0 t1
+  t0=$(date +%s)
   printf '%s' "$pl" | HOME="$FH" "$HOOK_BASH" "$HOOK" >"$TMP/out" 2>"$TMP/err" || rc=$?
+  t1=$(date +%s)
+  CHECK_HOOK_SECS=$((t1 - t0))
   ref_compare "$desc" "$pl" "$rc"
   if grep -qF "$CANARY" "$TMP/out" "$TMP/err"; then
     bad "$desc (hook output contains file contents)"
@@ -1312,22 +1326,26 @@ unset _lc _locales
 timed_case() { # <want-rc> <desc> <command>
   # The command is passed to jq through a file: one argv string over 128 KB
   # fails with E2BIG on Linux, and an empty payload would read as an allow.
-  local start end pl
+  # The budget applies to one run of the hook under test (CHECK_HOOK_SECS),
+  # not to the reference run the fast-path differential adds in check().
+  local secs pl
   printf '%s' "$3" > "$TMP/big-cmd.txt"
   pl=$(jq -nc --rawfile c "$TMP/big-cmd.txt" --arg cwd "$PROJ" \
     '{session_id:"cred-guard-test",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:$c}}')
   if [ "${#pl}" -le "${#3}" ]; then bad "$2 (payload not built)"; return; fi
-  start=$(date +%s)
+  CHECK_HOOK_SECS=-1
   if [ -n "$UTF8_LC" ]; then
     LC_ALL="$UTF8_LC" check "$1" "Bash: $2" "$pl"
   else
     check "$1" "Bash: $2" "$pl"
   fi
-  end=$(date +%s)
-  if [ $((end - start)) -le "$LIMIT" ]; then
-    ok "$2 took $((end - start))s (limit ${LIMIT}s = Bash timeout ${BASH_TIMEOUT}s / 4, locale ${UTF8_LC:-inherited})"
+  secs=$CHECK_HOOK_SECS
+  if [ "$secs" -lt 0 ]; then
+    bad "$2 (hook run was not timed)"
+  elif [ "$secs" -le "$LIMIT" ]; then
+    ok "$2 took ${secs}s (limit ${LIMIT}s = Bash timeout ${BASH_TIMEOUT}s / 4, locale ${UTF8_LC:-inherited})"
   else
-    bad "$2 took $((end - start))s, over ${LIMIT}s (Bash timeout ${BASH_TIMEOUT}s / 4, locale ${UTF8_LC:-inherited})"
+    bad "$2 took ${secs}s, over ${LIMIT}s (Bash timeout ${BASH_TIMEOUT}s / 4, locale ${UTF8_LC:-inherited})"
   fi
 }
 timed_case 0 "$BIG_LINES line quoted heredoc to a file" "$(printf "cat > out.md <<'EOF'\n%s\nEOF" "$BODY")"
@@ -2295,6 +2313,352 @@ for cg_loc in C en_US.UTF-8; do
   bash_case 0 "[25] $cg_loc grep Stra<U+00DF>e notes.txt" "grep Stra${U_SZ}e notes.txt"
 done
 unset LC_ALL cg_loc
+
+echo "[26] git listings of quoted names, alias text git splits, ^@ and ^! revisions"
+# Each blocked row printed the tracked fake .npmrc of QREPO while the guard
+# returned 0. Commit A tracks <e-acute>/.npmrc and q"d/.npmrc (git quotes both
+# names unless -z), B changes src only, C changes <u-umlaut>/notes.txt only.
+QREPO="$TMP/quotedrepo"
+Q_E=$'\xc3\xa9'  # U+00E9
+Q_U=$'\xc3\xbc'  # U+00FC
+Q_TAB=$'\t'
+mkdir -p "$QREPO/$Q_E" "$QREPO/q\"d" "$QREPO/$Q_U" "$QREPO/src" "$QREPO/t${Q_TAB}ab" "$QREPO/s p"
+git -C "$QREPO" init -q 2>/dev/null
+printf '//registry.example.invalid/:_authToken=%s\n' "$CANARY" > "$QREPO/$Q_E/.npmrc"
+printf '//registry.example.invalid/:_authToken=%s\n' "$CANARY" > "$QREPO/q\"d/.npmrc"
+printf 'n\n' > "$QREPO/$Q_U/notes.txt"
+printf '//registry.example.invalid/:_authToken=%s\n' "$CANARY" > "$QREPO/t${Q_TAB}ab/.npmrc"
+printf 'n\n' > "$QREPO/s p/notes.txt"
+mkdir -p "$QREPO/sub" "$QREPO/a:sub"
+printf '//registry.example.invalid/:_authToken=%s\n' "$CANARY" > "$QREPO/sub/.npmrc"
+printf '//registry.example.invalid/:_authToken=%s\n' "$CANARY" > "$QREPO/a:sub/.npmrc"
+printf 'a\n' > "$QREPO/src/a.txt"
+printf 'b\n' > "$QREPO/src/b.txt"
+git -C "$QREPO" add -A >/dev/null 2>&1
+git -C "$QREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m A >/dev/null 2>&1
+printf 'b\n' >> "$QREPO/src/a.txt"
+git -C "$QREPO" -c user.email=t@example.invalid -c user.name=t commit -q -am B >/dev/null 2>&1
+printf 'c\n' >> "$QREPO/$Q_U/notes.txt"
+git -C "$QREPO" -c user.email=t@example.invalid -c user.name=t commit -q -am C >/dev/null 2>&1
+# A branch named a, so a:<path> is also a revision:path spelling.
+git -C "$QREPO" branch a HEAD >/dev/null 2>&1
+# Untracked and empty: a glob run from src names q"d there.
+mkdir -p "$QREPO/src/q\"d"
+# Untracked files named like an option and a revision, for globs run in w.
+mkdir -p "$QREPO/w"
+: > "$QREPO/w/-p"
+: > "$QREPO/w/HEAD~2"
+# Alias text with quotes, a backslash, or a newline (git config writes \n).
+git -C "$QREPO" config alias.q5 '"log" -p'
+git -C "$QREPO" config alias.qo '"log" --oneline'
+git -C "$QREPO" config alias.qs '"show" HEAD'
+git -C "$QREPO" config alias.bs 'lo\g -p'
+git -C "$QREPO" config alias.sq "'show' HEAD~2"
+git -C "$QREPO" config alias.nl $'log\n-p'
+git -C "$QREPO" config alias.nlo $'log\n--oneline'
+git -C "$QREPO" config alias.nls $'show\nHEAD'
+# RREPO for (p): the checked-out branch never tracked a credential file;
+# branch other adds sub/.npmrc.
+RREPO="$TMP/revglobrepo"
+mkdir -p "$RREPO/src"
+git -C "$RREPO" init -q 2>/dev/null
+printf 'a\n' > "$RREPO/src/a.txt"
+git -C "$RREPO" add -A >/dev/null 2>&1
+git -C "$RREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m A >/dev/null 2>&1
+git -C "$RREPO" checkout -q -b other >/dev/null 2>&1
+mkdir -p "$RREPO/sub"
+printf '//registry.example.invalid/:_authToken=%s\n' "$CANARY" > "$RREPO/sub/.npmrc"
+git -C "$RREPO" add -A >/dev/null 2>&1
+git -C "$RREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m cred >/dev/null 2>&1
+git -C "$RREPO" checkout -q - >/dev/null 2>&1
+for cg_loc in C en_US.UTF-8; do
+  export LC_ALL="$cg_loc"
+  # (a) quoted names in git's own listings: the guard lists with -z.
+  bash_case 2 "[26a] $cg_loc log -p -- <e-acute>" "git log -p -- $Q_E" "$QREPO"
+  bash_case 2 "[26a] $cg_loc archive HEAD <e-acute> | tar" "git archive HEAD $Q_E | tar -xO" "$QREPO"
+  bash_case 2 "[26a] $cg_loc grep canary HEAD -- <e-acute>" "git grep canary HEAD -- $Q_E" "$QREPO"
+  bash_case 2 "[26a] $cg_loc show HEAD~2 -- <e-acute>" "git show HEAD~2 -- $Q_E" "$QREPO"
+  bash_case 2 "[26a] $cg_loc log -p -- 'q\"d'" "git log -p -- 'q\"d'" "$QREPO"
+  bash_case 2 "[26a] $cg_loc archive HEAD (whole tree)" "git archive HEAD | tar -xO" "$QREPO"
+  bash_case 2 "[26a] $cg_loc show HEAD~2:<e-acute>/\$f in a loop" \
+    "for f in \$(ls -A $Q_E); do git show HEAD~2:$Q_E/\$f; done" "$QREPO"
+  # (e) a tab or newline in a path word: the tokenizer stores a tab as a
+  # space and a newline as \003, so such a path counts as every file.
+  bash_case 2 "[26e] $cg_loc log -p -- 't<TAB>ab'" "git log -p -- 't${Q_TAB}ab'" "$QREPO"
+  bash_case 2 "[26e] $cg_loc log -p -- t\$'\\t'ab" "git log -p -- t\$'\\t'ab" "$QREPO"
+  bash_case 2 "[26e] $cg_loc archive HEAD 't<TAB>ab' | tar" "git archive HEAD 't${Q_TAB}ab' | tar -xO" "$QREPO"
+  bash_case 0 "[26e] $cg_loc log -p -- 's p' (a space, no tab)" "git log -p -- 's p'" "$QREPO"
+  bash_case 0 "[26e] $cg_loc archive HEAD 's p' | tar" "git archive HEAD 's p' | tar -xO" "$QREPO"
+  # (f) an unquoted glob or brace is expanded by the shell before git reads
+  # it; a -c alias value the shell computes is not the text the guard sees.
+  bash_case 2 "[26f] $cg_loc log -p -- q?d" "git log -p -- q?d" "$QREPO"
+  bash_case 2 "[26f] $cg_loc archive HEAD q?d | tar" "git archive HEAD q?d | tar -xO" "$QREPO"
+  bash_case 2 "[26f] $cg_loc grep canary HEAD -- t?ab" "git grep canary HEAD -- t?ab" "$QREPO"
+  bash_case 2 "[26f] $cg_loc show HEAD~2 -- {q,x}?d" "git show HEAD~2 -- {q,x}?d" "$QREPO"
+  bash_case 2 "[26f] $cg_loc -c alias.zx=\$'log\\x20-p' zx" "git -c alias.zx=\$'log\\x20-p' zx" "$QREPO"
+  bash_case 2 "[26f] $cg_loc -c alias.zv=log\${X}-p zv" "X=\$'\\n'; git -c \"alias.zv=log\${X}-p\" zv" "$QREPO"
+  bash_case 2 "[26f] $cg_loc -c alias.zp=\$(printf ...) zp" "git -c \"alias.zp=\$(printf 'log -p')\" zp" "$QREPO"
+  bash_case 2 "[26f] $cg_loc -c alias.zb=log\`echo ' -p'\` zb" "git -c alias.zb=\"log\`echo ' -p'\`\" zb" "$QREPO"
+  # (g) found in re-review: a [:class:] glob, a glob the shell expands in
+  # its own cwd while git runs in -C, brace words among git's options or as
+  # the subcommand, and a leading ~ in a path word.
+  bash_case 2 "[26g] $cg_loc log -p -- q[[:punct:]]d" "git log -p -- q[[:punct:]]d" "$QREPO"
+  bash_case 2 "[26g] $cg_loc archive HEAD q[[:punct:]]d | tar" "git archive HEAD q[[:punct:]]d | tar -xO" "$QREPO"
+  bash_case 2 "[26g] $cg_loc -C .. log -p -- q?d from src" "git -C .. log -p -- q?d" "$QREPO/src"
+  bash_case 2 "[26g] $cg_loc {-c,alias.zn=log\\ -p} zn" "git {-c,alias.zn=log\\ -p} zn" "$QREPO"
+  bash_case 2 "[26g] $cg_loc -c {alias.zn=log\\ -p,zn}" "git -c {alias.zn=log\\ -p,zn}" "$QREPO"
+  bash_case 2 "[26g] $cg_loc {log,-p}" "git {log,-p}" "$QREPO"
+  bash_case 2 "[26g] $cg_loc log {-p,--stat}" "git log {-p,--stat}" "$QREPO"
+  bash_case 2 "[26g] $cg_loc log -p -- ~+/q?d" "git log -p -- ~+/q?d" "$QREPO"
+  # (h) found in the third review: a ':' inside a bracket, a word the shell
+  # leaves unexpanded (quoted *, set -f) that git reads as a pathspec,
+  # nullglob, a glob as the subcommand, and ~+ as git -C.
+  bash_case 2 "[26h] $cg_loc log -p -- su[b:]" "git log -p -- su[b:]" "$QREPO"
+  bash_case 2 "[26h] $cg_loc log -p -- s[!:]b" "git log -p -- s[!:]b" "$QREPO"
+  bash_case 2 "[26h] $cg_loc log -p -- \"s*\"[c]" "git log -p -- \"s*\"[c]" "$QREPO"
+  bash_case 2 "[26h] $cg_loc set -f; log -p -- s*c" "set -f; git log -p -- s*c" "$QREPO"
+  bash_case 2 "[26h] $cg_loc shopt -s nullglob; log -p -- zz?" "shopt -s nullglob; git log -p -- zz?" "$QREPO"
+  bash_case 2 "[26h] $cg_loc l[o]g -p as the subcommand" "git l[o]g -p" "$QREPO"
+  bash_case 2 "[26h] $cg_loc -C ~+ log -p -- s?b" "git -C ~+ log -p -- s?b" "$QREPO"
+  # A glob that matches nothing counts as every file: nullglob (set in a
+  # form the guard cannot read) would leave git no pathspec.
+  bash_case 2 "[26h] $cg_loc log -p -- s?c/z* (no match)" "git log -p -- s?c/z*" "$QREPO"
+  # (i) found in the fourth review: a glob that matches a file named like an
+  # option or a revision, and nullglob turned on with a spelling the text
+  # check misses.
+  bash_case 2 "[26i] $cg_loc log -[p] next to a file -p" "git log -[p]" "$QREPO/w"
+  bash_case 2 "[26i] $cg_loc show HEAD?2 -- next to a file HEAD~2" "git show HEAD?2 --" "$QREPO/w"
+  bash_case 2 "[26i] $cg_loc shopt -s null\"\"glob; log -p -- zz?" "shopt -s null\"\"glob; git log -p -- zz?" "$QREPO"
+  bash_case 2 "[26i] $cg_loc log -p -- a* in w (no match)" "git log -p -- a*" "$QREPO/w"
+  # (j) found in the fifth review: nullglob set in a spelling or a sourced
+  # file, :(literal) pathspec magic with a glob, and a brace expansion the
+  # guard does not finish.
+  bash_case 2 "[26j] $cg_loc sh\"\"opt -s null\"\"glob; log -p -- zz?" "sh\"\"opt -s null\"\"glob; git log -p -- zz?" "$QREPO"
+  bash_case 2 "[26j] $cg_loc log -p -- ':(literal)'s?b" "git log -p -- ':(literal)'s?b" "$QREPO"
+  bash_case 2 "[26j] $cg_loc log {-p,HEAD{,}{,}{,}{,}{,}{,}}" "git log {-p,HEAD{,}{,}{,}{,}{,}{,}}" "$QREPO"
+  bash_case 0 "[26j] $cg_loc log -p -- s?c/*.txt (matches)" "git log -p -- s?c/*.txt" "$QREPO"
+  # (k) found in the sixth review: a ':' in a path word after -- or in
+  # pathspec magic, and a glob before -- that matches a file named -p.
+  bash_case 2 "[26k] $cg_loc log -p -- a:s?b" "git log -p -- a:s?b" "$QREPO"
+  bash_case 2 "[26k] $cg_loc archive HEAD a:s?b | tar" "git archive HEAD a:s?b | tar -xO" "$QREPO"
+  bash_case 2 "[26k] $cg_loc log -p -- ':(attr:!zz)'s?b" "git log -p -- ':(attr:!zz)'s?b" "$QREPO"
+  bash_case 2 "[26k] $cg_loc log ?p next to a file -p" "git log ?p" "$QREPO/w"
+  bash_case 2 "[26k] $cg_loc log [-]p next to a file -p" "git log [-]p" "$QREPO/w"
+  bash_case 0 "[26k] $cg_loc show HEAD:src/?.txt (object, literal ref and dir)" "git show HEAD:src/?.txt" "$QREPO"
+  # A glob in the directory part of an object name has no tree proof: blocked.
+  bash_case 2 "[26k] $cg_loc show HEAD:s?c/a.txt (glob in the directory)" "git show HEAD:s?c/a.txt" "$QREPO"
+  # (l) found in the seventh review: archive and grep paths whose part before
+  # ':' is a branch, and a glob before -- that the same command makes match
+  # a file named -p (the hook runs before touch does).
+  bash_case 2 "[26l] $cg_loc archive HEAD a:s?b (branch a) | tar" "git archive HEAD a:s?b | tar -xO" "$QREPO"
+  bash_case 2 "[26l] $cg_loc grep canary HEAD a:s?b (branch a)" "git grep canary HEAD a:s?b" "$QREPO"
+  bash_case 2 "[26l] $cg_loc touch ./-p; log ?p" "touch ./-p; git log ?p" "$QREPO/src"
+  bash_case 2 "[26l] $cg_loc touch ./--patch; log --pat[c]h -- ../sub" "touch ./--patch; git log --pat[c]h -- ../sub" "$QREPO/src"
+  bash_case 0 "[26l] $cg_loc log --oneline --grep=fix*" "git log --oneline --grep=fix*" "$QREPO"
+  # (m) found in the eighth review: a <ref>:<glob> object word the tree
+  # proof does not pass; the shell can match it to a cwd file named
+  # HEAD:sub/.npmrc and hand git that object name.
+  bash_case 2 "[26m] $cg_loc show HEAD:sub/?npmrc --" "git show HEAD:sub/?npmrc --" "$QREPO"
+  bash_case 2 "[26m] $cg_loc show HEAD:sub/[^a]npmrc --" "git show HEAD:sub/[^a]npmrc --" "$QREPO"
+  bash_case 2 "[26m] $cg_loc cat-file -p HEAD:sub/?npmrc" "git cat-file -p HEAD:sub/?npmrc" "$QREPO"
+  # (n) found in the ninth review: the ':' itself can come from the cwd
+  # file name the glob matches (HEAD?sub/.npmrc, H*).
+  bash_case 2 "[26n] $cg_loc mkdir HEAD:sub; show HEAD?sub/.npmrc --" \
+    "mkdir -p HEAD:sub; touch HEAD:sub/.npmrc; git show HEAD?sub/.npmrc --" "$QREPO/w"
+  bash_case 2 "[26n] $cg_loc show H* --" "git show H* --" "$QREPO/w"
+  bash_case 2 "[26n] $cg_loc cat-file -p HEAD?sub/.npmrc" "git cat-file -p HEAD?sub/.npmrc" "$QREPO/w"
+  # (o) found in the tenth review: for cat-file, -- ends the options and the
+  # object name still follows.
+  bash_case 2 "[26o] $cg_loc cat-file -p -- HEAD?sub/.npmrc" "git cat-file -p -- HEAD?sub/.npmrc" "$QREPO/w"
+  bash_case 2 "[26o] $cg_loc cat-file -p -- HEAD:sub/?npmrc" "git cat-file -p -- HEAD:sub/?npmrc" "$QREPO"
+  bash_case 2 "[26o] $cg_loc alias c=cat-file; c -p -- H*" "git -c alias.c=cat-file c -p -- H*" "$QREPO/w"
+  bash_case 0 "[26n] $cg_loc show --format=%h:%s* HEAD (option word)" "git show --format=%h:%s* HEAD" "$QREPO"
+  bash_case 0 "[26n] $cg_loc show HEAD -- s?c/*.txt (paths after --)" "git show HEAD -- s?c/*.txt" "$QREPO"
+  # A glob option word before -- blocks even with no matching file: the same
+  # command can create one before git runs.
+  bash_case 2 "[26i] $cg_loc log --oneline -[n] 1 in w (no file -n)" "git log --oneline -[n] 1" "$QREPO/w"
+  bash_case 0 "[26g] $cg_loc log -p -- s?c/{a,b}.txt" "git log -p -- s?c/{a,b}.txt" "$QREPO"
+  bash_case 0 "[26g] $cg_loc log {--oneline,--stat}" "git log {--oneline,--stat}" "$QREPO"
+  bash_case 0 "[26f] $cg_loc log -p -- s?p (no credential there)" "git log -p -- s?p" "$QREPO"
+  bash_case 0 "[26f] $cg_loc log -p -- s?c/*.txt" "git log -p -- s?c/*.txt" "$QREPO"
+  bash_case 0 "[26f] $cg_loc -c alias.zl='log --oneline' zl" "git -c alias.zl='log --oneline' zl" "$QREPO"
+  bash_case 0 "[26a] $cg_loc log -p -- <u-umlaut> (no credential there)" "git log -p -- $Q_U" "$QREPO"
+  bash_case 0 "[26a] $cg_loc archive HEAD <u-umlaut> | tar" "git archive HEAD $Q_U | tar -xO" "$QREPO"
+  bash_case 0 "[26a] $cg_loc grep n HEAD -- <u-umlaut>" "git grep n HEAD -- $Q_U" "$QREPO"
+  bash_case 0 "[26a] $cg_loc show HEAD -- <u-umlaut>" "git show HEAD -- $Q_U" "$QREPO"
+  # (b) and (d) alias text: quotes and backslashes removed, a newline splits.
+  bash_case 2 "[26b] $cg_loc alias q5 = \"log\" -p" "git q5" "$QREPO"
+  bash_case 2 "[26b] $cg_loc alias bs = lo\\g -p" "git bs" "$QREPO"
+  bash_case 2 "[26b] $cg_loc alias sq = 'show' HEAD~2" "git sq" "$QREPO"
+  bash_case 2 "[26b] $cg_loc -c alias.zq='\"log\" -p' zq" "git -c alias.zq='\"log\" -p' zq" "$QREPO"
+  bash_case 2 "[26d] $cg_loc alias nl = log<LF>-p" "git nl" "$QREPO"
+  bash_case 2 "[26d] $cg_loc -c alias.zn=\$'log\\n-p' zn" "git -c alias.zn=\$'log\\n-p' zn" "$QREPO"
+  bash_case 2 "[26d] $cg_loc -c alias.zs=\$'show\\nHEAD~2' zs" "git -c alias.zs=\$'show\\nHEAD~2' zs" "$QREPO"
+  bash_case 0 "[26b] $cg_loc alias qo = \"log\" --oneline" "git qo" "$QREPO"
+  bash_case 0 "[26b] $cg_loc alias qs = \"show\" HEAD (C only)" "git qs" "$QREPO"
+  bash_case 0 "[26d] $cg_loc alias nlo = log<LF>--oneline" "git nlo" "$QREPO"
+  bash_case 0 "[26d] $cg_loc alias nls = show<LF>HEAD (C only)" "git nls" "$QREPO"
+  bash_case 0 "[26d] $cg_loc -c alias.zo=\$'log\\n--oneline' zo" "git -c alias.zo=\$'log\\n--oneline' zo" "$QREPO"
+  # (c) revisions rev-parse --verify does not take.
+  bash_case 2 "[26c] $cg_loc log -p HEAD~1^@" "git log -p HEAD~1^@" "$QREPO"
+  bash_case 2 "[26c] $cg_loc log -p -1 HEAD~1^@" "git log -p -1 HEAD~1^@" "$QREPO"
+  bash_case 2 "[26c] $cg_loc show HEAD~1^@" "git show HEAD~1^@" "$QREPO"
+  bash_case 2 "[26c] $cg_loc show HEAD~2^!" "git show HEAD~2^!" "$QREPO"
+  bash_case 0 "[26c] $cg_loc show HEAD^! (C only)" "git show HEAD^!" "$QREPO"
+  bash_case 0 "[26c] $cg_loc show HEAD^@ (B only)" "git show HEAD^@" "$QREPO"
+  bash_case 0 "[26c] $cg_loc log -p HEAD^-1 (C only)" "git log -p HEAD^-1" "$QREPO"
+  bash_case 0 "[26c] $cg_loc log -p HEAD~1^-1 (B only)" "git log -p HEAD~1^-1" "$QREPO"
+  bash_case 0 "[26c] $cg_loc diff HEAD~1^! (B only)" "git diff HEAD~1^!" "$QREPO"
+  # (p) found in the PR review: before --, a glob word the shell expands to
+  # a revision once a file of that name exists (made in the same command).
+  # RREPO's checked-out branch tracks no credential file; branch other does.
+  bash_case 2 "[26p] $cg_loc touch HEAD..other; log -p HEAD..oth*" \
+    "touch HEAD..other; git log -p HEAD..oth*" "$RREPO"
+  bash_case 2 "[26p] $cg_loc touch HEAD...other; log -p HEAD...o*" \
+    "touch HEAD...other; git log -p HEAD...o*" "$RREPO"
+  bash_case 2 "[26p] $cg_loc format-patch --stdout HEAD..o*" "git format-patch --stdout HEAD..o*" "$RREPO"
+  bash_case 2 "[26p] $cg_loc touch 'other^!'; log -p o*^!" "touch 'other^!'; git log -p o*^!" "$RREPO"
+  bash_case 2 "[26p] $cg_loc touch other; log -p o* --" "touch other; git log -p o* --" "$RREPO"
+  bash_case 2 "[26p] $cg_loc touch other; diff o* -- sub" "touch other; git diff o* -- sub" "$RREPO"
+  bash_case 2 "[26p] $cg_loc touch other; grep canary o* -- sub" "touch other; git grep canary o* -- sub" "$RREPO"
+  bash_case 2 "[26p] $cg_loc touch other; format-patch --stdout -1 o* --" \
+    "touch other; git format-patch --stdout -1 o* --" "$RREPO"
+  bash_case 0 "[26p] $cg_loc log -p src/*.txt (other branch holds the file)" "git log -p src/*.txt" "$RREPO"
+  bash_case 0 "[26p] $cg_loc log -p -- src/*.txt" "git log -p -- src/*.txt" "$RREPO"
+  bash_case 0 "[26p] $cg_loc diff HEAD src/*.txt" "git diff HEAD src/*.txt" "$RREPO"
+  bash_case 0 "[26p] $cg_loc grep foo* -- src (pattern word)" "git grep foo* -- src" "$RREPO"
+done
+unset LC_ALL cg_loc
+echo "[27] feedback 166f01a7: interpreter environment, *.env names in code, recursive grep filtered to env files"
+mkdir -p "$PROJ/tools/bot"
+printf 'API_KEY=%s\n' "$CANARY" > "$PROJ/tools/bot/.env"
+printf 'API_KEY=%s\n' "$CANARY" > "$PROJ/tools/bot/prod.env"
+printf 'API_KEY=fake\n' > "$PROJ/tools/bot/.env.example"
+TB="$PROJ/tools/bot"
+# Absolute .env paths written out in the code (already blocked; pinned here
+# because the report saw an absolute path pass).
+bash_case 2 "166f01a7 python -c read and write of an absolute .env" "python3 -c \"p='$TB/.env'; s=open(p).read(); open(p,'w').write(s.replace('a','b'))\""
+bash_case 2 "166f01a7 multi-line python -c on an absolute .env" "$(printf "python3 -c '\nimport pathlib\np = pathlib.Path(\"%s/.env\")\np.write_text(p.read_text())\n'" "$TB")"
+bash_case 2 "166f01a7 os.path.join to .env" "python3 -c \"import os; print(open(os.path.join('$TB', '.env')).read())\""
+# The path handed over in the environment: the code never names it.
+bash_case 2 "166f01a7 env prefix to python -c" "F=$TB/.env python3 -c \"import os; s=open(os.environ['F']).read(); open(os.environ['F'],'w').write(s)\""
+bash_case 2 "166f01a7 env prefix after env" "env F=$TB/.env python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7 env prefix to node -e" "ENV_FILE=$TB/.env node -e \"console.log(require('fs').readFileSync(process.env.ENV_FILE,'utf8'))\""
+bash_case 2 "166f01a7 env prefix to a python script" "ENV_FILE=$TB/.env python3 script.py"
+bash_case 2 "166f01a7 env prefix with tilde" "F=~/proj/tools/bot/.env python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7 export then python" "export F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7 export on its own line then python" "$(printf "export F=%s/.env\npython3 -c \"import os; print(open(os.environ['F']).read())\"" "$TB")"
+bash_case 2 "166f01a7 assign, export NAME, then python" "F=$TB/.env; export F; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7 declare -x then python" "declare -x F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7 env prefix .npmrc to ruby" "F=$FH/.npmrc ruby -e \"puts File.read(ENV['F'])\""
+# *.env names in code.
+bash_case 2 "166f01a7 python -c opens prod.env" "python3 -c \"print(open('$TB/prod.env').read())\""
+bash_case 2 "166f01a7 node -e opens app.env in double quotes" "node -e 'console.log(require(\"fs\").readFileSync(\"$TB/app.env\",\"utf8\"))'"
+# Recursive grep, rg and ag limited to credential files: a loud block.
+bash_case 2 "166f01a7 grep -rl --include=\".env\"" "grep -rl --include=\".env\" SLACK_BOT_TOKEN $PROJ/tools"
+if grep -q 'git-ignored' "$TMP/err"; then ok "166f01a7 grep --include block explains the incomplete result"; else bad "166f01a7 grep --include block message: $(head -c 300 "$TMP/err" | tr '\n' ' ')"; fi
+bash_case 2 "166f01a7 grep -r --include .env (separate value, no -l)" "grep -r --include .env SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 grep -Rl --include='*.env'" "grep -Rl --include='*.env' SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 grep -rl --include='.env*'" "grep -rl --include='.env*' SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 grep --recursive -l --include=.env.local" "grep --recursive -l --include=.env.local SLACK_BOT_TOKEN ."
+bash_case 2 "166f01a7 grep -rl --include=.npmrc" "grep -rl --include=.npmrc authToken ."
+bash_case 2 "166f01a7 rg -l -g .env" "rg -l -g '.env' SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 rg -l -g.env (attached)" "rg -l -g.env SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 rg -l --glob=.env" "rg -l --glob=.env SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 rg -l --iglob '*.env'" "rg -l --iglob '*.env' SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7 ag -l -G env regex" "ag -l -G '\\.env\$' SLACK_BOT_TOKEN tools"
+# Security review of 728bef8: *.env names in the environment (the value has
+# no closing quote after it), more export forms, awk ENVIRON, .envrc, the
+# long form of ag -G, and rg --files with a credential filter.
+bash_case 2 "166f01a7r2 prod.env prefix to python -c" "F=$TB/prod.env python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 app.env prefix to node -e" "F=$TB/app.env node -e \"console.log(require('fs').readFileSync(process.env.F,'utf8'))\""
+bash_case 2 "166f01a7r2 env prod.env to python" "env F=$TB/prod.env python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 export prod.env then python" "export F=$TB/prod.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 export NAME before the assignment" "export F; F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 set -a then assignment" "set -a; F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 set -o allexport then assignment" "set -o allexport; F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 export then += completes the name" "export F=$TB/.e; F+=nv; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 printf -v then export" "printf -v F '%s' $TB/.env; export F; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 printf -vF attached then export" "printf -vF '%s/.env' $TB; export F; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 local -x then python" "local -x F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 awk getline from ENVIRON" "F=$TB/.env awk 'BEGIN{while((getline l < ENVIRON[\"F\"])>0) print l}'"
+bash_case 2 "166f01a7r2 awk ARGV from ENVIRON" "F=$TB/prod.env awk 'BEGIN{ARGV[1]=ENVIRON[\"F\"]; ARGC=2} {print}'"
+bash_case 2 "166f01a7r2 export then awk ENVIRON" "export F=$TB/.env; awk 'BEGIN{ARGV[1]=ENVIRON[\"F\"]; ARGC=2} {print}'"
+bash_case 2 "166f01a7r2 .envrc prefix to python" "F=$TB/.envrc python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "166f01a7r2 python -c opens .envrc" "python3 -c \"print(open('$TB/.envrc').read())\""
+bash_case 2 "166f01a7r2 ag --file-search-regex (separate value)" "ag -l --file-search-regex '\\.env\$' SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7r2 ag --file-search-regex= (attached)" "ag -l --file-search-regex='\\.env\$' SLACK_BOT_TOKEN tools"
+bash_case 2 "166f01a7r2 rg --files -g .env (blocked, as the header says)" "rg --files -g '.env' tools"
+bash_case 2 "166f01a7r2 ag --file-search-regex keeps the operand check" "ag --file-search-regex x ~/.npmrc"
+bash_case 0 "166f01a7r2 control: set -a with a plain value" "set -a; FOO=bar; python3 -c \"print(1)\""
+bash_case 0 "166f01a7r2 control: printf -v not exported" "printf -v F '%s' $TB/.env; python3 -c \"print(1)\""
+bash_case 0 "166f01a7r2 control: export NAME with a plain value" "export F; F=production; python3 -c \"print(1)\""
+bash_case 0 "166f01a7r2 control: awk ENVIRON with no credential" "awk 'BEGIN{print ENVIRON[\"HOME\"]}'"
+bash_case 0 "166f01a7r2 control: += with a plain value" "export P=/usr/bin; P+=:/bin; python3 -c \"print(1)\""
+bash_case 0 "166f01a7r2 control: ag --file-search-regex '\\.ts\$'" "ag -l --file-search-regex '\\.ts\$' SLACK_BOT_TOKEN tools"
+# Controls: these still pass.
+bash_case 0 "166f01a7 control: grep -l on a named .env path" "grep -l SLACK_BOT_TOKEN $TB/.env"
+bash_case 0 "166f01a7 control: find -name .env lists paths" "find $PROJ/tools -name .env -type f"
+bash_case 0 "166f01a7 control: grep -rl --include=.env.example" "grep -rl --include=.env.example SLACK_BOT_TOKEN tools"
+bash_case 0 "166f01a7 control: grep -rl --include='*.ts'" "grep -rl --include='*.ts' SLACK_BOT_TOKEN tools"
+bash_case 0 "166f01a7 control: grep -rl --include='*.environment.ts'" "grep -rl --include='*.environment.ts' SLACK_BOT_TOKEN tools"
+bash_case 0 "166f01a7 control: grep -rl --exclude=.env" "grep -rl --exclude=.env SLACK_BOT_TOKEN tools"
+bash_case 0 "166f01a7 control: rg -g '!*.env' excludes env files" "rg -l -g '!*.env' SLACK_BOT_TOKEN tools"
+bash_case 0 "166f01a7 control: plain recursive grep" "grep -rl SLACK_BOT_TOKEN tools"
+bash_case 0 "166f01a7 control: env prefix without a credential" "FOO=bar python3 -c \"print(1)\""
+bash_case 0 "166f01a7 control: export NODE_ENV then node" "export NODE_ENV=production; node -e \"console.log(1)\""
+bash_case 0 "166f01a7 control: env prefix .env.example" "ENV_FILE=$TB/.env.example python3 -c \"import os; print(open(os.environ['ENV_FILE']).read())\""
+bash_case 0 "166f01a7 control: env prefix .env to ls" "ENV_FILE=$TB/.env ls"
+bash_case 0 "166f01a7 control: local (not exported) then python" "local F=$TB/.env; python3 -c \"print(1)\""
+bash_case 0 "166f01a7 control: process.env in node" "node -e \"console.log(process.env.HOME)\""
+bash_case 0 "166f01a7 control: settings.env attribute" "python3 -c \"x = settings.env; print(x)\""
+bash_case 0 "166f01a7 control: os.environ lookup" "python3 -c \"import os; print(os.environ.get('X'))\""
+
+# Review of PR 1911 (C1): environment values from another variable, a
+# substitution or a parameter expansion, env -S and shopt allexport. A value
+# the guard cannot resolve fails closed when the command names a credential.
+bash_case 2 "1911c1 prefix from an earlier variable" "ENV_FILE=$TB/.env; F=\$ENV_FILE python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 prefix G=\$F" "F=$TB/.env; G=\$F python3 -c \"import os; print(open(os.environ['G']).read())\""
+bash_case 2 "1911c1 export G=\$F" "F=$TB/.env; export G=\$F; python3 -c \"import os; print(open(os.environ['G']).read())\""
+bash_case 2 "1911c1 G=\$F; export G" "F=$TB/.env; G=\$F; export G; python3 -c \"import os; print(open(os.environ['G']).read())\""
+bash_case 2 "1911c1 prefix from \$(echo path)" "F=\$(echo $TB/.env) python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 export from \$(echo path)" "export F=\$(echo $TB/.env); python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 prefix from backticks" "F=\`echo $TB/.env\` python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 quoted substitution to node" "F=\"\$(printf %s $TB/.env)\" node -e \"console.log(require('fs').readFileSync(process.env.F,'utf8'))\""
+bash_case 2 "1911c1 prefix \${NOPE:-path}" "F=\${NOPE:-$TB/.env} python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 export \${NOPE:-path}" "export F=\${NOPE:-$TB/.env}; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 env -S quoted string" "env -S 'F=$TB/.env python3 -c \"import os; print(open(os.environ[\\\"F\\\"]).read())\"'"
+bash_case 2 "1911c1 env -S attached" "env -S\"F=$TB/.env python3\" -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 env --split-string" "env --split-string='F=$TB/.env python3 script.py'"
+bash_case 2 "1911c1 shopt -so allexport" "shopt -so allexport; F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 shopt -s -o allexport" "shopt -s -o allexport; F=$TB/.env; python3 -c \"import os; print(open(os.environ['F']).read())\""
+bash_case 2 "1911c1 awk ENVIRON from \$(echo path)" "F=\$(echo $TB/.env) awk 'BEGIN{ARGV[1]=ENVIRON[\"F\"]; ARGC=2} {print}'"
+# C2: BASH_ENV, ENV, --init-file and --rcfile name a file the shell sources.
+bash_case 2 "1911c2 BASH_ENV prefix to bash -xc" "BASH_ENV=$TB/.env bash -xc :"
+bash_case 2 "1911c2 BASH_ENV prefix, declare -p" "BASH_ENV=$TB/.env bash -c 'declare -p API_KEY'"
+bash_case 2 "1911c2 export BASH_ENV then bash" "export BASH_ENV=$TB/.env; bash -xc :"
+bash_case 2 "1911c2 env BASH_ENV= bash" "env BASH_ENV=$TB/.env bash -c :"
+bash_case 2 "1911c2 BASH_ENV from a variable" "F=$TB/.env; BASH_ENV=\$F bash -xc :"
+bash_case 2 "1911c2 ENV prefix to sh -i" "ENV=$TB/.env sh -i -c :"
+bash_case 2 "1911c2 BASH_ENV .npmrc" "BASH_ENV=~/.npmrc bash -c :"
+bash_case 2 "1911c2 bash --init-file" "bash --init-file $TB/.env -ic 'declare -p API_KEY'"
+bash_case 2 "1911c2 bash --rcfile then -c" "bash --rcfile ~/.npmrc -i -c :"
+bash_case 2 "1911c2 bash --init-file=" "bash --init-file=$TB/.env -i"
+# Controls for this fix and the review's false-block list.
+bash_case 0 "1911 control: grep -r --include='*.env.example'" "grep -r --include='*.env.example' KEY tools"
+bash_case 0 "1911 control: rg -g '*.env.example'" "rg -l -g '*.env.example' KEY tools"
+bash_case 0 "1911 control: grep --include='*.env.sample'" "grep -rl --include='*.env.sample' KEY tools"
+bash_case 0 "1911 control: GIT_SSH_COMMAND with ~/.ssh before python" "GIT_SSH_COMMAND=\"ssh -i ~/.ssh/deploy_key\" python3 deploy.py"
+bash_case 0 "1911 control: SSH_AUTH_SOCK under ~/.ssh" "SSH_AUTH_SOCK=~/.ssh/agent.sock python3 -c \"print(1)\""
+bash_case 0 "1911 control: AWS_CONFIG_FILE=~/.aws/config" "AWS_CONFIG_FILE=~/.aws/config python3 tool.py"
+bash_case 0 "1911 control: prefix from \$(pwd)" "F=\$(pwd)/out.txt python3 -c \"print(1)\""
+bash_case 0 "1911 control: prefix \${TMPDIR:-/tmp}" "OUT=\${TMPDIR:-/tmp}/x python3 -c \"print(1)\""
+bash_case 0 "1911 control: prefix from git rev-parse" "X=\$(git rev-parse HEAD) python3 -c \"print(1)\""
+bash_case 0 "1911 control: export from a variable" "export NODE_ENV=\$MODE; node -e \"console.log(1)\""
+bash_case 0 "1911 control: BASH_ENV=/dev/null" "BASH_ENV=/dev/null bash -c 'echo hi'"
+bash_case 0 "1911 control: bash --init-file project rc" "bash --init-file ./scripts/dev-rc.sh -i"
+bash_case 0 "1911 control: env -S without a credential" "env -S 'python3 -c print(1)'"
+bash_case 0 "1911 control: shopt -s nullglob" "shopt -s nullglob; python3 -c \"print(1)\""
 
 echo "[7] profile matrix via hook-gate"
 for p in minimal standard strict; do

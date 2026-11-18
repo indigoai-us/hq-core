@@ -209,6 +209,54 @@ check "equal dates order by filename" \
   "$(bash "$w" --company acme --channel meetings-keys --limit 3 | jq -r '.file' | sed 's#.*/##' | tr '\n' ' ' | sed 's/ $//')" \
   "z-nodate-new.md tie-a.md tie-b.md"
 
+# --- ACL lookups run in parallel, keep listing order, and still retry once ---
+mkdir -p "$t/companies/acme/sources/meetings-acl"
+A="$t/companies/acme/sources/meetings-acl"
+printf 'channel: meetings-acl\nkind: meeting\narrives: cloud\naudience_rule: attendees\nprocessor: ontology/process-source\nrun: local\nschedule: on-close\n' > "$A/source.yaml"
+for i in 1 2 3 4 5 6; do
+  printf -- '---\nid: acl%s\nscheduled_start_time: 2026-07-0%sT10:00:00Z\n---\nbody\n' "$i" "$i" > "$A/acl$i.md"
+done
+printf -- '---\nid: aclfm\nscheduled_start_time: 2026-07-09T10:00:00Z\nattendees: [fm@x.com]\n---\nbody\n' > "$A/aclfm.md"
+cat > "$t/hq-slow" <<'STUB'
+#!/usr/bin/env bash
+# One second per lookup; records every call; the first call for acl3 fails.
+log="${HQ_STUB_LOG:?}"
+printf '%s\n' "$*" >> "$log"
+sleep 1
+case "$*" in
+  *"acl sources/meetings-acl/acl3.md"*)
+    if [ "$(grep -c 'acl3.md' "$log")" -eq 1 ]; then exit 1; fi
+    echo '{"direct":[{"granteeType":"person","granteeId":"prs_01ACL3","permission":"read"}]}' ;;
+  *"acl sources/meetings-acl/acl5.md"*) echo '{"direct":[]}' ;;
+  *"acl sources/meetings-acl/acl"*)
+    n="$(printf '%s' "$*" | sed -n 's#.*/acl\([0-9][0-9]*\)\.md.*#\1#p')"
+    printf '{"direct":[{"granteeType":"person","granteeId":"prs_01ACL%s","permission":"read"}]}\n' "$n" ;;
+  *) echo '{"direct":[]}' ;;
+esac
+STUB
+chmod +x "$t/hq-slow"
+: > "$t/acl-calls.log"
+acl_start="$(date +%s)"
+outacl="$(HQ_BIN="$t/hq-slow" HQ_STUB_LOG="$t/acl-calls.log" bash "$w" --company acme --channel meetings-acl --limit 7)"
+acl_secs=$(( $(date +%s) - acl_start ))
+check "acl items keep listing order (newest first) with the frontmatter item in place" \
+  "$(printf '%s\n' "$outacl" | jq -r '.file' | sed 's#.*/##' | tr '\n' ' ' | sed 's/ $//')" \
+  "aclfm.md acl6.md acl5.md acl4.md acl3.md acl2.md acl1.md"
+check "each acl item carries its own looked-up audience" \
+  "$(printf '%s\n' "$outacl" | jq -r 'select(.file|endswith("acl6.md")) | .audience | join(",")')" "prs_01ACL6"
+check "frontmatter item never asked the acl" "$(grep -c 'aclfm.md' "$t/acl-calls.log")" 0
+check "a failed first lookup is retried once and resolves" \
+  "$(printf '%s\n' "$outacl" | jq -r 'select(.file|endswith("acl3.md")) | .audience | join(",")')" "prs_01ACL3"
+check "acl3 was looked up exactly twice" "$(grep -c 'acl3.md' "$t/acl-calls.log")" 2
+check "empty acl answer is a no-audience skip" \
+  "$(printf '%s\n' "$outacl" | jq -r 'select(.file|endswith("acl5.md")) | .skip')" "no-audience"
+check "seven one-second lookups ran in parallel (under 5s wall)" "$([ "$acl_secs" -lt 5 ] && echo fast || echo "slow:${acl_secs}s")" fast
+: > "$t/acl-calls.log"
+serial_start="$(date +%s)"
+HQ_WORKLIST_ACL_PARALLEL=1 HQ_BIN="$t/hq-slow" HQ_STUB_LOG="$t/acl-calls.log" bash "$w" --company acme --channel meetings-acl --limit 3 --force >/dev/null
+serial_secs=$(( $(date +%s) - serial_start ))
+check "HQ_WORKLIST_ACL_PARALLEL=1 runs lookups one at a time" "$([ "$serial_secs" -ge 2 ] && echo serial || echo "fast:${serial_secs}s")" serial
+
 sed -i.bak 's/run: local/run: cloud/' "$M/source.yaml"
 bash "$w" --company acme --channel meetings >/dev/null 2>&1; check "run: cloud refuses locally" "$?" 4
 bash "$w" --company acme --channel meetings --force >/dev/null 2>&1; check "--force overrides" "$?" 0

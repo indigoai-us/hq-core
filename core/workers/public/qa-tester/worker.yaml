@@ -179,7 +179,7 @@ instructions: |
   ### Sub-agent screenshot isolation (primary defense):
   For 5+ page audits, NEVER load screenshots into parent context. Instead:
   1. `agent-browser screenshot /tmp/audit-{page}.jpg --full`
-  2. `bash core/scripts/resize-screenshot.sh /tmp/audit-{page}.jpg`
+  2. `hq core resize-screenshot /tmp/audit-{page}.jpg`
   3. Spawn Explore agent: `Read /tmp/audit-{page}.jpg and analyze for [criteria]`
   4. Agent returns text findings — parent accumulates zero images
 
@@ -190,4 +190,4 @@ instructions: |
 
   ### Safety net:
   PostToolUse hook auto-resizes agent-browser screenshots to 1800px max.
-  Manual fallback: `bash core/scripts/resize-screenshot.sh <path>`
+  Manual fallback: `hq core resize-screenshot <path>`

@@ -36,6 +36,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 TMP=""
 PREFIX=""
+SHIM_DIR=""
 PKG=""
 NODE_LOG=""
 COMPANION_LOG=""
@@ -46,12 +47,25 @@ BASH_LOG=""
 #              npm-crlf — the same shim with CRLF line endings
 #              other — a regular `hq` script beside the package that is not
 #                      an npm shim for it
+#              pnpm — the pnpm shim in PNPM_HOME, package under
+#                     PNPM_HOME/global/5/node_modules (feedback_45868a9c)
+#              pnpm-parent — the pnpm shim in PNPM_HOME/bin, package under
+#                     PNPM_HOME/global/5/node_modules, reached via ../
+#              pnpm-foreign — a pnpm-shaped shim whose target is another
+#                     package's dist/index.js
+#              pnpm-computed — a pnpm-shaped shim whose target path holds a
+#                     shell expansion
 build_fixture() {
   local label="$1" version="$2" kind="$3"
   TMP="$WORK/$label"
   PREFIX="$TMP/npm-prefix"
+  SHIM_DIR="$PREFIX"
   PKG="$PREFIX/node_modules/@indigoai-us/hq-cli"
-  mkdir -p "$TMP/.claude/hooks" "$TMP/core" "$TMP/bin" "$TMP/home" \
+  case "$kind" in
+    pnpm|pnpm-foreign|pnpm-computed) PKG="$PREFIX/global/5/node_modules/@indigoai-us/hq-cli" ;;
+    pnpm-parent) SHIM_DIR="$PREFIX/bin"; PKG="$PREFIX/global/5/node_modules/@indigoai-us/hq-cli" ;;
+  esac
+  mkdir -p "$TMP/.claude/hooks" "$TMP/core" "$TMP/bin" "$TMP/home" "$SHIM_DIR" \
     "$PKG/dist" "$PKG/assets/scaffold/core/scripts/lib"
   cp "$HOOK_SOURCE" "$TMP/.claude/hooks/inject-policy-on-trigger.sh"
   ln -s "$ROOT/core/scripts" "$TMP/core/scripts"
@@ -137,8 +151,36 @@ NPMSHIM
 exec node "$HOME/some-other-cli/index.js" "$@"
 OTHER
       ;;
+    pnpm|pnpm-parent|pnpm-foreign|pnpm-computed)
+      local target="global/5/node_modules/@indigoai-us/hq-cli/dist/index.js"
+      case "$kind" in
+        pnpm-parent) target="../global/5/node_modules/@indigoai-us/hq-cli/dist/index.js" ;;
+        pnpm-foreign)
+          mkdir -p "$PREFIX/global/5/node_modules/other-cli/dist"
+          printf '%s\n' '// other' > "$PREFIX/global/5/node_modules/other-cli/dist/index.js"
+          target="global/5/node_modules/other-cli/dist/index.js"
+          ;;
+        pnpm-computed) target='global/$PNPM_STORE/node_modules/@indigoai-us/hq-cli/dist/index.js' ;;
+      esac
+      # The shape @zkochan/cmd-shim writes for a pnpm global bin on Windows.
+      {
+        printf '%s\n' '#!/bin/sh' \
+          'basedir=$(dirname "$(echo "$0" | sed -e '"'"'s,\\,/,g'"'"')")' '' \
+          'case `uname` in' '    *CYGWIN*) basedir=`cygpath -w "$basedir"`;;' 'esac' '' \
+          'if [ -z "$NODE_PATH" ]; then' \
+          '  export NODE_PATH="C:\Users\u\AppData\Local\pnpm\global\5\node_modules"' \
+          'else' \
+          '  export NODE_PATH="C:\Users\u\AppData\Local\pnpm\global\5\node_modules;$NODE_PATH"' \
+          'fi' \
+          'if [ -x "$basedir/node" ]; then'
+        printf '  exec "$basedir/node"  "$basedir/%s" "$@"\n' "$target"
+        printf '%s\n' 'else'
+        printf '  exec node  "$basedir/%s" "$@"\n' "$target"
+        printf '%s\n' 'fi'
+      } > "$SHIM_DIR/hq"
+      ;;
   esac
-  chmod +x "$PREFIX/hq"
+  chmod +x "$SHIM_DIR/hq"
 }
 
 # run_event <event> <legacy|default> — one event through the hook with the
@@ -156,13 +198,13 @@ run_event() {
   unset BASH_ENV ENV HQ_POLICY_WORKER_DIR
   set +e
   if [ "$mode" = "legacy" ]; then
-    PATH="$PREFIX:$TMP/bin:$PATH" HOME="$TMP/home" HQ_POLICY_TOOL_EVENTS=legacy \
+    PATH="$SHIM_DIR:$TMP/bin:$PATH" HOME="$TMP/home" HQ_POLICY_TOOL_EVENTS=legacy \
       XDG_STATE_HOME="$TMP/home/.local/state" HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
       HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 \
       bash "$TMP/.claude/hooks/inject-policy-on-trigger.sh" \
       <<<"$payload" >"$TMP/hook.out" 2>"$TMP/hook.err"
   else
-    PATH="$PREFIX:$TMP/bin:$PATH" HOME="$TMP/home" \
+    PATH="$SHIM_DIR:$TMP/bin:$PATH" HOME="$TMP/home" \
       XDG_STATE_HOME="$TMP/home/.local/state" HQ_ROOT="$TMP" CLAUDE_PROJECT_DIR="$TMP" \
       HQ_HOOK_PROFILE=standard HQ_HOOK_TIMEOUT_SENTRY=0 \
       bash "$TMP/.claude/hooks/inject-policy-on-trigger.sh" \
@@ -298,5 +340,42 @@ grep -q "$TMP/core/scripts/derive-trigger-facts.sh" "$BASH_LOG" || {
   exit 1
 }
 
-printf 'PASS: npm shim PostToolUse reached the companion %s time(s) with 0 node starts; PreToolUse 0 node starts; CRLF shim resolved; below-floor, replaced-package and non-shim hq fell through to the forwarder\n' \
+# ---------------------------------------------------------------------------
+# 7. pnpm shims (feedback_45868a9c): the exec target is the package under pnpm's
+#    global directory, next to the shim or one level up. Both resolve to the
+#    packaged companion with no node start. A pnpm-shaped shim for another
+#    package, or one whose target holds a shell expansion, keeps the forwarder.
+# ---------------------------------------------------------------------------
+for kind in pnpm pnpm-parent; do
+  build_fixture "shim-$kind" 5.342.5 "$kind"
+  [ ! -L "$SHIM_DIR/hq" ] || { echo "FAIL: $kind fixture hq must be a regular file" >&2; exit 1; }
+  run_event PreToolUse legacy
+  [ "$(count_lines "$COMPANION_LOG")" -ge 1 ] && [ "$(count_lines "$NODE_LOG")" -eq 0 ] || {
+    echo "FAIL: a Windows $kind hq shim did not resolve to the packaged companion (node starts: $(count_lines "$NODE_LOG"))" >&2
+    head -5 "$NODE_LOG" >&2
+    exit 1
+  }
+done
+for kind in pnpm-foreign pnpm-computed; do
+  build_fixture "shim-$kind" 5.342.5 "$kind"
+  run_event PreToolUse legacy
+  [ "$(count_lines "$COMPANION_LOG")" -eq 0 ] || {
+    echo "FAIL: a $kind hq shim was treated as the shim for @indigoai-us/hq-cli" >&2
+    cat "$COMPANION_LOG" >&2
+    exit 1
+  }
+  grep -q "$TMP/core/scripts/derive-trigger-facts.sh" "$BASH_LOG" || {
+    echo "FAIL: a $kind hq shim did not fall through to the forwarder" >&2
+    cat "$BASH_LOG" >&2
+    exit 1
+  }
+done
+build_fixture shim-pnpm-below-floor 5.342.4 pnpm
+run_event PreToolUse legacy
+[ "$(count_lines "$COMPANION_LOG")" -eq 0 ] || {
+  echo "FAIL: the packaged companion ran from a below-floor CLI behind a pnpm shim" >&2
+  exit 1
+}
+
+printf 'PASS: npm shim PostToolUse reached the companion %s time(s) with 0 node starts; PreToolUse 0 node starts; CRLF and pnpm shims resolved; below-floor, replaced-package, non-shim and foreign or computed pnpm targets fell through to the forwarder\n' \
   "$POST_COMPANION"

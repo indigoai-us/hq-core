@@ -176,6 +176,19 @@ if grep -Fq 'Argument list too long' "$TMP/candidate.err"; then
   fail "candidate still hit E2BIG"
 fi
 
+# c015's existing hook-timeout journal metadata receives the size buckets that
+# explain a later timeout warning for this policy hook. The hook rewrites the
+# metadata on every run, so check it now, while the oversized run is the
+# latest one; the runs below replace these lines with their own.
+grep -Fxq 'policy_trigger_script=inject-policy-on-trigger.sh' "$JOURNAL.meta" \
+  || fail "hook-timeout metadata did not name the policy hook"
+grep -Fxq 'policy_trigger_event=PreToolUse' "$JOURNAL.meta" \
+  || fail "hook-timeout metadata did not record the event"
+grep -Fxq 'ledger_bytes_bucket=>128K' "$JOURNAL.meta" \
+  || fail "hook-timeout metadata missed the oversized ledger bucket"
+grep -Fxq 'facts_bytes_bucket=>128K' "$JOURNAL.meta" \
+  || fail "hook-timeout metadata missed the oversized facts bucket"
+
 compacted_bytes="$(wc -c < "$LEDGER")"
 compacted_bytes="${compacted_bytes//[!0-9]/}"
 [ "$compacted_bytes" -lt 65536 ] \
@@ -275,6 +288,13 @@ run_adapter() {
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "$runtime adapter exceeded the 30s deadline or failed (rc=$rc): $(tail -n 5 "$err")"
+  # Grok does not hand PreToolUse policy text to the model, so the hook holds
+  # it: the record is in the held ledger copy, not yet in the session ledger.
+  if [ "$runtime" = "grok" ]; then
+    ! grep -Fxq 'large-fact-policy' "$ledger" \
+      || fail "grok adapter recorded the large-fact policy as shown before delivering it"
+    ledger="${ledger%.txt}.held/${sid}.txt"
+  fi
   grep -Fxq 'large-fact-policy' "$ledger" \
     || fail "$runtime adapter did not evaluate and record the large-fact policy"
   grep -Eq $'\tPreToolUse\t[1-9][0-9]*\t1$' \
@@ -300,16 +320,12 @@ run_adapter() {
 run_adapter codex "$TMP/.codex/hooks/hq-codex-hook-adapter.sh" large-policy-codex-session large
 run_adapter grok "$TMP/.grok/hooks/hq-grok-hook-adapter.sh" large-policy-grok-session small
 
-# c015's existing hook-timeout journal metadata receives the size buckets that
-# explain a later timeout warning for this policy hook.
-grep -Fxq 'policy_trigger_script=inject-policy-on-trigger.sh' "$JOURNAL.meta" \
-  || fail "hook-timeout metadata did not name the policy hook"
-grep -Fxq 'policy_trigger_event=PreToolUse' "$JOURNAL.meta" \
-  || fail "hook-timeout metadata did not record the event"
-grep -Fxq 'ledger_bytes_bucket=>128K' "$JOURNAL.meta" \
-  || fail "hook-timeout metadata missed the oversized ledger bucket"
-grep -Fxq 'facts_bytes_bucket=>128K' "$JOURNAL.meta" \
-  || fail "hook-timeout metadata missed the oversized facts bucket"
+# After every run above wrote to it, the metadata holds the runtime lines and
+# one set of policy lines: it does not grow with the number of runs.
+[ "$(grep -c '^policy_trigger_script=' "$JOURNAL.meta")" = "1" ] \
+  || fail "hook-timeout metadata holds more than one set of policy lines: $(wc -l < "$JOURNAL.meta") lines"
+grep -Fxq 'bash_env_set=unset' "$JOURNAL.meta" \
+  || fail "hook-timeout metadata lost its runtime lines"
 
 for fact_file in \
   "$TMP/workspace/orchestrator/hook-state"/.policy-trigger-facts.* \

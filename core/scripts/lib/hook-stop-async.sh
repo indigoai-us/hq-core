@@ -21,6 +21,9 @@
 # (default 1800, a hung item). Workers claim each item by renaming it, so two
 # workers after a takeover never run the same item twice.
 
+# shellcheck source=core/scripts/lib/epochrealtime.sh
+. "${BASH_SOURCE[0]%/*}/epochrealtime.sh" 2>/dev/null || true
+
 hook_stop_async_now() { date +%s 2>/dev/null || echo 0; }
 
 # Exit 0 when the lock at $1 is stale (or unreadable), 1 when it is live.
@@ -84,8 +87,11 @@ hook_stop_async_enter() {
   # Items hold the hook payload, which can include conversation text.
   chmod 700 "$queue" "$items" 2>/dev/null || true
 
-  local ts="${EPOCHREALTIME:-}"
-  ts="${ts//./}"
+  local ts=""
+  if [ -n "${EPOCHREALTIME:-}" ] && command -v hq_epochrealtime_parse >/dev/null 2>&1 \
+    && hq_epochrealtime_parse "$EPOCHREALTIME"; then
+    ts="$HQ_EPOCH_DIGITS"
+  fi
   [ -n "$ts" ] || ts="$(date +%s)000000"
   local id="${ts}-$$-${RANDOM:-0}"
   local stage="$queue/staging.$id"

@@ -47,8 +47,10 @@ delivery-require-regex: ^:chart_with_upwards_trend:
 
 User prompts also declare requirements without policy metadata when they name a
 required skill, request a Slack/work broadcast, or refer to an attached brief.
-If an attachment is declared but no path is available in the hook payload or
-prompt, delivery fails closed and asks for a resolvable path.
+Wording such as "the brief in the attachment" still declares one. Only the
+count phrase "attachment count" or "attachment counts" is not a declaration.
+If an attached brief is declared but no path is available in the hook payload or prompt, delivery
+fails closed and asks for a resolvable path.
 
 ## Governed outbound actions
 

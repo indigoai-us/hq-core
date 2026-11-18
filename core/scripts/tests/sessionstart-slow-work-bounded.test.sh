@@ -272,7 +272,7 @@ case "${1:-}:${2:-}" in
     printf '%s\n' completed > "$TEST_MESH_DONE"
     exit 0
     ;;
-  lanes:monitor-check)
+  runners:monitor-check)
     if [ "${TEST_LANES_MODE:-fast}" = slow ]; then
       printf '%s\n' "$$" >> "$TEST_LANES_PID_FILE"
       ps -o pgid= -p "$$" 2>/dev/null | tr -d '[:space:]' >> "$TEST_LANES_PGID_FILE"

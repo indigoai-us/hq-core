@@ -1,7 +1,7 @@
 ---
 name: conduct-join
 description: Join this already-running session to a /conduct session as one of its children, so the conductor can send it instructions and receive its reports. Use when the user says "/conduct-join <link>", "join the conductor", "report to the conduct session", or pastes a link id that starts with "cl-". Also handles "leave" to detach.
-allowed-tools: Bash(hq lanes link:*), Bash(bash core/scripts/hq-session.sh:*), Read
+allowed-tools: Bash(hq runners link:*), Bash(bash core/scripts/hq-session.sh:*), Read
 argument-hint: "<link id> [name] | leave | status"
 ---
 
@@ -17,9 +17,9 @@ and nothing else.
 
 ## Step 1: Parse the argument
 
-- `leave` → `hq lanes link leave`, say the session is on its
+- `leave` → `hq runners link leave`, say the session is on its
   own again, stop.
-- `status` → run `hq lanes link list` and read `.link` and the matching child
+- `status` → run `hq runners link list` and read `.link` and the matching child
   in `.children` to report this session's name and state. Stop.
 - First word starts with `cl-` → that is the link id. An optional second word is
   the name this session goes by on the link. With no name, derive a short one
@@ -31,7 +31,7 @@ and nothing else.
 ## Step 2: Join
 
 ```bash
-hq lanes link join --link "{link}" --name "{name}" \
+hq runners link join --link "{link}" --name "{name}" \
   --engine "{claude|codex|grok}" --title "{one line: what this session is doing}" \
   --host-session "{this session's desktop id, when the host exposes one}"
 ```
@@ -59,7 +59,7 @@ On a host that dispatches no hooks, check by hand at natural pauses — between
 steps, and before finishing a turn:
 
 ```bash
-hq lanes link inbox
+hq runners link inbox
 ```
 
 Read the inbox text from the JSON `.messages` field.
@@ -76,12 +76,12 @@ Report when there is something the conductor needs: a result, a blocker, a
 question for the operator, or a change of state. Do not report routine progress.
 
 ```bash
-hq lanes link report --state "{working|blocked|idle|done}" \
+hq runners link report --state "{working|blocked|idle|done}" \
   --text "{what changed, what was verified and how, links, open questions}"
 ```
 
 Use `--text-file <path>` for anything long. A state change with nothing to say
-is `hq lanes link status --state {state} --note "{short}"`; read `.name` and
+is `hq runners link status --state {state} --note "{short}"`; read `.name` and
 `.state` from its JSON response.
 
 A successful report prints JSON with `queued: true` and
@@ -114,5 +114,5 @@ asked here may never be seen.
 ## See also
 
 - `/conduct` — the conductor's half, including how it adopts and steers sessions
-- `hq lanes link` — the mailbox
-- `hq lanes link _deliver` — the hook delivery command
+- `hq runners link` — the mailbox
+- `hq runners link _deliver` — the hook delivery command

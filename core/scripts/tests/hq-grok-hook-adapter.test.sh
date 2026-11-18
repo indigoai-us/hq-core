@@ -467,7 +467,7 @@ set -eu
 printf '%s\n' "$*" >> "$GROK_LANES_CALLS"
 cat > "$GROK_LANES_INPUT"
 case "${1:-}" in
-  lanes)
+  runners)
     case "${2:-}" in
       link) printf '%s\n' "$GROK_LANES_OUTPUT" ;;
     esac
@@ -489,8 +489,8 @@ assert_contains "$ADAPTER_OUT" 'Grok linked context' "linked-session PostToolUse
 grep -Fxq 'PostToolUse Execute' "$HQ_GROK_ADAPTER_TRACE" || {
   echo "FAIL: Grok did not dispatch PostToolUse for the tool (trace: $(cat "$HQ_GROK_ADAPTER_TRACE" 2>/dev/null))" >&2; FAIL=$((FAIL + 1));
 }
-grep -Fxq 'lanes link _deliver --event PostToolUse' "$GROK_LANES_CALLS" || {
-  echo "FAIL: Grok did not route PostToolUse through hq lanes link _deliver (calls: $(cat "$GROK_LANES_CALLS" 2>/dev/null); stderr: $ADAPTER_ERR)" >&2; FAIL=$((FAIL + 1));
+grep -Fxq 'runners link _deliver --event PostToolUse' "$GROK_LANES_CALLS" || {
+  echo "FAIL: Grok did not route PostToolUse through hq runners link _deliver (calls: $(cat "$GROK_LANES_CALLS" 2>/dev/null); stderr: $ADAPTER_ERR)" >&2; FAIL=$((FAIL + 1));
 }
 
 export GROK_LANES_OUTPUT='{"decision":"block","reason":"Grok linked Stop block"}'
@@ -501,8 +501,8 @@ assert_contains "$ADAPTER_OUT" 'Grok linked Stop block' "linked-session Stop rea
 grep -Fxq 'Stop ANY' "$HQ_GROK_ADAPTER_TRACE" || {
   echo "FAIL: Grok did not dispatch Stop (trace: $(cat "$HQ_GROK_ADAPTER_TRACE" 2>/dev/null))" >&2; FAIL=$((FAIL + 1));
 }
-grep -Fxq 'lanes link _deliver --event Stop' "$GROK_LANES_CALLS" || {
-  echo "FAIL: Grok did not route Stop through hq lanes link _deliver (calls: $(cat "$GROK_LANES_CALLS" 2>/dev/null); stderr: $ADAPTER_ERR)" >&2; FAIL=$((FAIL + 1));
+grep -Fxq 'runners link _deliver --event Stop' "$GROK_LANES_CALLS" || {
+  echo "FAIL: Grok did not route Stop through hq runners link _deliver (calls: $(cat "$GROK_LANES_CALLS" 2>/dev/null); stderr: $ADAPTER_ERR)" >&2; FAIL=$((FAIL + 1));
 }
 jq -e '.stop_hook_active == true' "$GROK_LANES_INPUT" >/dev/null || {
   echo "FAIL: linked-session Stop payload lost Grok's stopHookActive value" >&2; FAIL=$((FAIL + 1));

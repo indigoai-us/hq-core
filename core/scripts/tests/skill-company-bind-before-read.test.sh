@@ -127,6 +127,21 @@ MD
 expect_pass "hq core hq-session set company_slug after anchor"
 echo "ok 8 hq core hq-session set"
 
+# US-043: skills call the trusted bind and the policy reader through hq core.
+write_skill demo <<'MD'
+1. **Set `{co}`** = matched slug
+2. **Bind the session** — run `hq core work-mesh-bind-trusted --company "{co}"`
+3. For each chunk, run `hq core policy frontmatter {file1} {file2}`
+MD
+expect_pass "hq core work-mesh-bind-trusted after anchor"
+write_skill demo <<'MD'
+1. **Set `{co}`** = matched slug
+2. For each chunk, run `hq core policy frontmatter {file1} {file2}`
+3. **Bind the session** — run `hq core work-mesh-bind-trusted --company "{co}"`
+MD
+expect_fail "hq core policy frontmatter before the bind" 'SKILL.md:2: reads a company path before the session is bound (company anchored at line 1)'
+echo "ok 8b hq core bind and policy read"
+
 write_skill demo <<'MD'
 Resolve the company from `bash core/scripts/hq-session.sh get company_slug`.
 Read `companies/{co}/board.json`.

@@ -417,6 +417,7 @@ run_master_phase_case() {
     'HQ_HARNESS=codex' \
     "HOME=$root/home" \
     'HQ_DISABLED_HOOKS=' \
+    'HQ_NESTED_ROOT_WARNING=0' \
     "HQ_HOOK_TIMEOUT_SENTRY=$sentry" \
     "HQ_HOOK_TIMEOUT_SENTRY_TEST_TRIGGER_FILE=$root/watchdog.trigger" \
     "HQ_HOOK_TIMEOUT_SENTRY_TEST_STATUS_FILE=$root/watchdog.status" \

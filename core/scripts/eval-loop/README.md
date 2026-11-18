@@ -2,7 +2,7 @@
 
 Closed surface and per-company library for one `/execute-task` class.
 
-US-001 surface, US-002 ledger, and US-003 packets. Later stories add the probe, selection, adoption, and the evidence report. This directory does not start `hq lanes` and does not edit conduct or super-conductor.
+US-001 surface, US-002 ledger, and US-003 packets. Later stories add the probe, selection, adoption, and the evidence report. This directory does not start `hq runners` and does not edit conduct or super-conductor.
 
 ## Surface
 

@@ -1,7 +1,7 @@
 ---
 name: pin
 description: Anchor this session to one goal — the message, target, or outcome it keeps working toward across loops, wakeups, compactions, and hand-offs — and check progress against it.
-allowed-tools: Bash(bash core/scripts/hq-pin.sh:*), Bash(core/scripts/hq-pin.sh:*), Read
+allowed-tools: Bash(hq core pin:*), Bash(hq core pin:*), Read
 ---
 
 # /pin — the goal this session is anchored to
@@ -25,7 +25,7 @@ Script: `core/scripts/hq-pin.sh` (set · show · check · note · done · clear)
 ## Set
 
 ```bash
-bash core/scripts/hq-pin.sh set "Ship agents v3 for every company and retire the old runtime" \
+hq core pin set "Ship agents v3 for every company and retire the old runtime" \
   --done "every production agent runs the current runtime" \
   --done "old-runtime boxes are deprovisioned" \
   --done "live smoke passes and a standing monitor watches it" \
@@ -39,7 +39,7 @@ least one.
 ## Behaviour while pinned
 
 - **At every wake** (a loop tick, a background task returning, a resume after
-  compaction), run `bash core/scripts/hq-pin.sh check` first. Its one line is
+  compaction), run `hq core pin check` first. Its one line is
   the frame for the tick: what is being worked toward and how many criteria
   are still open.
 - **Requests that arrive mid-session** (chat, a bound DM channel, a task
@@ -56,8 +56,8 @@ least one.
 ## Show and check
 
 ```bash
-bash core/scripts/hq-pin.sh show    # full pin: goal, owner, channel, criteria, progress
-bash core/scripts/hq-pin.sh check   # one line for loop ticks; exit 3 when there is no pin
+hq core pin show    # full pin: goal, owner, channel, criteria, progress
+hq core pin check   # one line for loop ticks; exit 3 when there is no pin
 ```
 
 ## Notes

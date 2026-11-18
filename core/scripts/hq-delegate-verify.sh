@@ -66,10 +66,15 @@ if [ "$DRY_RUN" -eq 1 ]; then
 
   # Secret names the US-005 step would grant (same .env.schema derivation).
   REPO_REL="$(printf '%s' "$PLAN_JSON" | jq -r '.repo.path // empty')"
+  # An absolute repo.path is used as-is, never under the HQ root (feedback_6ea99712).
+  case "$REPO_REL" in
+    ''|/*|[A-Za-z]:[\\/]*) REPO_ABS="$REPO_REL" ;;
+    *) REPO_ABS="$HQ_ROOT/$REPO_REL" ;;
+  esac
   SCHEMA=""
   for candidate in \
     "$HQ_ROOT/companies/$COMPANY/projects/$PROJECT/.env.schema" \
-    "${REPO_REL:+$HQ_ROOT/$REPO_REL/.env.schema}"; do
+    "${REPO_ABS:+$REPO_ABS/.env.schema}"; do
     [ -n "$candidate" ] && [ -f "$candidate" ] && { SCHEMA="$candidate"; break; }
   done
   SECRET_NAMES="(none — no .env.schema found)"

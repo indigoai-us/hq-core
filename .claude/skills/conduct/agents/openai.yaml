@@ -2,4 +2,4 @@ interface:
   display_name: >-
     Conduct
   short_description: >-
-    Put the session into orchestrator mode — every task is assigned
+    Orchestrator mode: route tasks to lanes and subagents

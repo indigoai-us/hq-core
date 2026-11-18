@@ -45,10 +45,10 @@ Ask these questions (can batch related ones):
 
 ### 5. Context Needs
 - **What project context does this worker need?** (overview, architecture, domain, decisions, stakeholders, learnings)
-- **Does it need more or less than its type's defaults?** (see `core/knowledge/context-needs/registry.yaml`)
+- **Does it need more or less than a typical worker of this type?** Put extras in this worker's `worker.yaml` `context_needs` block. There is no separate context-needs registry file.
 - **Any external context required?** (brand guidelines, API specs, voice guides, etc.)
 
-**Tip:** Reference `core/knowledge/context-needs/README.md` for context file descriptions. Most workers can use their type's defaults.
+**Tip:** Most workers can omit `context_needs` and rely on the files listed under `context`.
 
 ### 6. Verification
 - **What checks ensure quality?** (type checks, character limits, voice consistency)
@@ -97,13 +97,10 @@ verification:
   approval_required: {true|false}
 
 context_needs:
-  # Reference core/knowledge/context-needs/registry.yaml for type defaults
-  # Only include if overriding type defaults
-  extends: {WorkerType}  # Inherit type defaults
-  overrides:  # Optional: override specific needs
-    required:
-      - file: {context-file}
-        reason: "{why this worker needs this}"
+  # Optional. Only include when this worker needs files beyond `context`.
+  required:
+    - file: {context-file}
+      reason: "{why this worker needs this}"
 
 tasks:
   source: personal/projects/{associated-project}/prd.json  # Or companies/{co}/projects/{associated-project}/prd.json
@@ -121,25 +118,9 @@ instructions: |
 
 `core/workers/registry.yaml` is an auto-generated index produced by `core/scripts/generate-workers-registry.sh` (invoked from `.claude/hooks/reindex.sh` on every Stop / PostToolUse-Write). **Do not edit it directly.** Just create the worker.yaml with `worker.id`, `worker.type`, `worker.description` and the registry regenerates automatically. Optional fields the generator picks up: `worker.status` (default "active"), `worker.company`, `worker.team`.
 
-### Update Context Needs Registry (if overriding defaults)
+### Context needs live on the worker
 
-If the worker has context needs different from its type's defaults, add to `core/knowledge/context-needs/registry.yaml`:
-
-```yaml
-workers:
-  {worker-id}:
-    extends: {WorkerType}
-    overrides:
-      required:
-        - file: {context-file}
-          reason: "{why this worker specifically needs this}"
-    additional_external:
-      - type: {external-context-type}
-        path: {path-to-external-context}
-        when: "{when this context is needed}"
-```
-
-**Skip this if:** The worker's needs match its type's defaults (most common case).
+Do not write a shared `core/knowledge/context-needs/` file. That tree is not in core. If this worker needs extra files, put them in its own `worker.yaml` `context_needs` block. Skip that block when `context` is enough.
 
 ### Task Source Options
 
@@ -176,7 +157,7 @@ Workers can get tasks from:
 
 The `worker.yaml` you just created IS the registration. `core/workers/registry.yaml` regenerates from it automatically when reindex fires (Stop / PostToolUse-Write hook). No manifest edits required for shared workers; company-scoped workers are discovered via the `worker.company:` field inside their own `worker.yaml`.
 
-To force an immediate regen: `bash core/scripts/generate-workers-registry.sh`.
+To force an immediate regen: `hq core generate-workers-registry`.
 
 ### Capture Learning (Auto-Learn)
 
@@ -200,7 +181,7 @@ Run `/learn` to register the new worker in the learning system:
 
 Provide next steps:
 1. "Worker created at `companies/{company}/workers/{worker-id}/` (or `core/workers/public/{worker-id}/` if shared)"
-2. "Registry auto-regenerated on next reindex (or run `bash core/scripts/generate-workers-registry.sh` to force)"
+2. "Registry auto-regenerated on next reindex (or run `hq core generate-workers-registry` to force)"
 3. "Test with on-demand execution first"
 4. If using queue: "Add tasks to queue.json to get started"
 5. If using PRD: "Run `/prd {project-name}` to create the PRD, then link it in worker.yaml"

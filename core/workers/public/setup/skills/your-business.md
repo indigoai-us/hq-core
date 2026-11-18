@@ -112,9 +112,55 @@ day to day?" Take what they add in their own words, and add anything from your
 recommendations they did not mention ("You didn't mention a note taker. Do
 you record your calls?").
 
+### Tools that only let approved AI apps sign in
+
+Some platforms only let a short list of approved AI apps (the official Claude
+and ChatGPT connectors) sign in. HQ cannot use that sign-in, so the only
+direct route is a small private app the person creates for their own account.
+You already know this for these tools. Do not try `hq integrations connect`,
+do not search the web, and do not plan an "Open the sign-in" step for them:
+
+- **Shopify.** In the Shopify Dev Dashboard (https://dev.shopify.com/dashboard),
+  create an app called "HQ", give its version read-only scopes (read_orders,
+  read_products, read_customers, read_analytics), release it and install it
+  on the store. The Client ID and Client secret go into two one-time vault
+  links (`hq secrets generate-link SHOPIFY_CLIENT_ID` and
+  `SHOPIFY_CLIENT_SECRET`), and you need the store's .myshopify.com address.
+- **Meta** (Facebook and Instagram ads). In Meta for Developers, create a
+  business app; in Business Settings, add a system user with access to the ad
+  accounts and generate a token with read-only ads access (ads_read). The
+  token goes into a one-time vault link, and you need the ad account IDs.
+
+Treat any other tool the same way once `hq integrations connect` says its
+sign-in "doesn't accept new client registrations", and record what you
+learned in the progress note so you do not rediscover it.
+
+When the person names one of these tools, your very first reply says both of
+these things, in this order:
+
+1. **It needs a small private app.** One sentence on why ("Shopify only lets
+   approved AI apps sign in, so HQ needs its own small private app for your
+   store") and that it takes about five minutes. Then the steps above, with
+   the vault links already made.
+2. **A system that already holds this data may be quicker.** Ask whether they
+   already use a data warehouse (BigQuery, Snowflake, Redshift), an analytics
+   tool (Triple Whale, Northbeam, Polar) or a customer data platform (vyg).
+   These already collect store and ad data, often from several tools at
+   once, and usually connect with a key or a normal sign-in. If they have
+   one, recommend connecting it first; they can still make the private app
+   later for anything it does not cover.
+
+For example:
+
+> Shopify only lets approved AI apps sign in, so HQ needs its own small
+> private app for your store. It takes about five minutes: ... Before you do
+> that: do you already use something like Triple Whale, Northbeam, Polar,
+> vyg or a data warehouse? Those already have your Shopify data and are
+> usually quicker to connect, so I'd start there if you do.
+
 ### Work out how to connect each tool yourself
 
-There is no list of supported tools. For each tool, find out how it connects,
+There is no list of supported tools. For each tool not covered above, find out how it connects,
 the way a good engineer would, and then do it:
 
 1. **Ask HQ first.** `hq integrations inspect <domain>` (for example
@@ -129,8 +175,10 @@ the way a good engineer would, and then do it:
    - a well-maintained community MCP server,
    - an export, email report or shared sheet, when there is no API.
    Prefer the tool's own route over a third-party app that sits in front of
-   it. Only suggest a substitute (for example a commerce aggregator instead of
-   Shopify itself) if the direct route is genuinely impossible, and say why.
+   it. Only suggest a substitute if the direct route is genuinely impossible,
+   and say why. The exception is the tools that only let approved AI apps
+   sign in (see above): for those, always mention the systems that already
+   hold the data alongside the private app.
 3. **Connect it through HQ, never by hand.**
    - MCP server: `hq integrations connect --mcp-url <url> --display-name
      "<Tool>" --provider <slug>`, or `hq integrations connect --docs-url
@@ -254,8 +302,9 @@ or any business that does work for clients.
 
 - **Store** (Shopify, WooCommerce, BigCommerce, Amazon Seller Central).
 - **Data warehouse or analytics** (BigQuery, Snowflake, Triple Whale,
-  Northbeam, Polar, Google Analytics), so bots can answer performance
-  questions from real numbers.
+  Northbeam, Polar, vyg, Google Analytics), so bots can answer performance
+  questions from real numbers. These often already hold the Shopify and Meta
+  data, so offer them when the store or ad platform needs a private app.
 - **Marketing systems**: ad platforms (Meta, Google, TikTok), email and SMS
   (Klaviyo, Postscript, Attentive), reviews (Okendo, Junip, Yotpo).
 - **Project management** (as above).

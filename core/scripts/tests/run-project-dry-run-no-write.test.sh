@@ -55,22 +55,25 @@ mkdir -p "$HQ_FIXTURE/core/scripts/lib" "$HQ_FIXTURE/core/scripts" \
 cp "$ROOT/core/scripts/lib/detect-codex.sh" "$HQ_FIXTURE/core/scripts/lib/detect-codex.sh"
 
 REGISTRY_LOG="$HQ_FIXTURE/workspace/orchestrator/repo-run-registry.log"
-cat > "$HQ_FIXTURE/core/scripts/repo-run-registry.sh" <<'SH'
+# US-043: run-project.sh calls hq core repo-run-registry and hq core
+# audit-log. The stub hq records every call into the logs the dry run must not
+# touch.
+cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$HQ_FIXTURE/core/scripts/lib/hq-cli-floor.sh"
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/hq" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "$HQ_ROOT/workspace/orchestrator/repo-run-registry.log"
-if [[ "$1" == "register" ]]; then
-  printf '%s\n' 'fixture-run-id'
-fi
+[[ "${1:-}" == "--version" ]] && { printf '%s\n' 9.9.9; exit 0; }
+case " $* " in
+  *" repo-run-registry "*)
+    printf '%s\n' "$*" >> "$HQ_ROOT/workspace/orchestrator/repo-run-registry.log"
+    [[ " $* " == *" register "* ]] && printf '%s\n' 'fixture-run-id'
+    ;;
+  *" audit-log "*) printf '%s\n' "$*" >> "$HQ_ROOT/workspace/orchestrator/audit.log" ;;
+esac
+exit 0
 SH
-chmod +x "$HQ_FIXTURE/core/scripts/repo-run-registry.sh"
-
-cat > "$HQ_FIXTURE/core/scripts/audit-log.sh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$HQ_ROOT/workspace/orchestrator/audit.log"
-SH
-chmod +x "$HQ_FIXTURE/core/scripts/audit-log.sh"
+chmod +x "$TMP/bin/hq"
 cat > "$HQ_FIXTURE/core/settings/orchestrator.yaml" <<'YAML'
 worktree:
   enabled: true
@@ -132,6 +135,8 @@ set +e
 env \
   -u CODEX_SESSION_ID -u CODEX_SANDBOX -u CODEX_EXECUTION_ID -u CODEX_AGENT_ID -u OPENAI_CODEX \
   HQ_ROOT="$HQ_FIXTURE" \
+  HOME="$TMP" \
+  PATH="$TMP/bin:$PATH" \
   HQ_TEST_RUN_PROJECT_SCRIPT="$SCRIPT" \
   bash -x "$SCRIPT" "$PROJECT" --dry-run \
   > "$TMP/output" 2> "$TMP/trace"
@@ -171,5 +176,22 @@ if [[ "$failures" -gt 0 ]]; then
   echo "run-project dry-run no-write test failed ($failures assertions)" >&2
   exit 1
 fi
+
+# US-043: outside a dry run the helpers reach hq core with the run's root.
+helpers="$TMP/run-project-helpers.sh"
+sed -n -e '/^audit_log() {$/,/^}$/p' -e '/^repo_run_registry() {$/,/^}$/p' "$SCRIPT" > "$helpers"
+[[ "$(grep -c '^}$' "$helpers")" == 2 ]] || { echo "FAIL: audit_log/repo_run_registry not found in $SCRIPT" >&2; exit 1; }
+: > "$REGISTRY_LOG"; : > "$AUDIT_FILE"
+(
+  export HOME="$TMP" PATH="$TMP/bin:$PATH" HQ_ROOT="$HQ_FIXTURE"
+  # shellcheck source=/dev/null
+  . "$helpers"
+  [[ "$(repo_run_registry register --repo demo)" == fixture-run-id ]] || exit 1
+  audit_log append --event project_started --project "$PROJECT" || exit 1
+) || { echo "FAIL: run-project helpers did not reach hq core" >&2; exit 1; }
+grep -qxF "core --hq-root $HQ_FIXTURE repo-run-registry register --repo demo" "$REGISTRY_LOG" \
+  || { echo "FAIL: repo-run-registry call: $(cat "$REGISTRY_LOG")" >&2; exit 1; }
+grep -qxF "core --hq-root $HQ_FIXTURE audit-log append --event project_started --project $PROJECT" "$AUDIT_FILE" \
+  || { echo "FAIL: audit-log call: $(cat "$AUDIT_FILE")" >&2; exit 1; }
 
 echo "run-project dry-run no-write test passed"

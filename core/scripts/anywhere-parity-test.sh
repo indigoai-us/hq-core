@@ -110,7 +110,7 @@ hq_root_company() {
   local hq="$1" json co
   if [ -f "$hq/core/scripts/resolve-company.sh" ]; then
     json="$(cd "$hq" && env "${UNSET_ARGS[@]}" HQ_SESSION_ID="parity-expect-$NONCE" \
-      bash "$hq/core/scripts/resolve-company.sh" --root "$hq" --prompt "" 2>/dev/null </dev/null)" || json=""
+      hq core --hq-root "$hq" resolve-company --root "$hq" --prompt "" 2>/dev/null </dev/null)" || json=""
     case "$json" in
       *'"source":"device_default"'*)
         co="$(printf '%s' "$json" | sed -n 's/.*"company":"\([A-Za-z0-9_.-]*\)".*/\1/p')"

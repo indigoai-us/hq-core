@@ -27,6 +27,12 @@ printf 'companies:\n  %s:\n    name: Acme\n    path: companies/%s\n' "$CO" "$CO"
 cat > "$TMP/bin/hq" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = core ] && [ "${2:-}" = --help ]; then echo "hq-session exact-company-directory-match-v1"; exit 0; fi
+# US-043: startwork-context binds through `hq core --hq-root R
+# work-mesh-bind-trusted`; the stub runs the in-tree twin with that root.
+if [ "${1:-}" = core ] && [ "${2:-}" = --hq-root ] && [ "${4:-}" = work-mesh-bind-trusted ]; then
+  root="$3"; shift 4
+  HQ_ROOT="$root" exec bash "$root/core/scripts/work-mesh-live-bind-trusted.sh" "$@"
+fi
 [ "${1:-}" = core ] && [ "${2:-}" = hq-session ] || exit 98
 root="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-}}"
 if [ -z "$root" ]; then

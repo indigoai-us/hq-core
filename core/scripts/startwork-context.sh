@@ -171,6 +171,21 @@ last_thread() {
   echo "${hit:-none for $co}"
 }
 
+# US-043: bind through `hq core work-mesh-bind-trusted` when the installed
+# hq-cli has it. With no hq, or one below the floor, the shell binder runs as
+# before (it ships until US-044). HQ_STARTWORK_BIND_SHELL=1 forces the shell.
+STARTWORK_BIND_NATIVE_MIN_CLI=5.310.0
+bind_trusted() {
+  if [ "${HQ_STARTWORK_BIND_SHELL:-0}" != 1 ] && command -v hq >/dev/null 2>&1 \
+    && [ -f "$ROOT/core/scripts/lib/hq-cli-floor.sh" ] \
+    && ( . "$ROOT/core/scripts/lib/hq-cli-floor.sh" \
+         && hq_cli_floor_check startwork-context.sh "$STARTWORK_BIND_NATIVE_MIN_CLI" ) >/dev/null 2>&1; then
+    hq core --hq-root "$ROOT" work-mesh-bind-trusted "$@"
+  else
+    bash "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "$@"  # hq-core-fallback
+  fi
+}
+
 # orient: the whole company half of /startwork in one call. Binds this
 # session (trusted bind: company, optional project, mode), checks the bind
 # landed, then prints the capability block, the last-thread line and the
@@ -216,7 +231,7 @@ cmd_orient() {
   local binderr
   binderr="$(mktemp "${TMPDIR:-/tmp}/startwork-bind-err.XXXXXX")" || binderr=/dev/null
   if ! digest="$(HQ_ROOT="$ROOT" HQ_COMPANY_BIND_POLICY_BYTES="${HQ_STARTWORK_POLICY_BYTES:-5120}" \
-    bash "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "${pin[@]}" 2>"$binderr")"; then
+    bind_trusted "${pin[@]}" 2>"$binderr")"; then
     wait "$blockpid" 2>/dev/null; rm -f "$blockf"
     echo "startwork-context: bind failed for '$co' (root: $ROOT)" >&2
     if [ "$binderr" != /dev/null ]; then

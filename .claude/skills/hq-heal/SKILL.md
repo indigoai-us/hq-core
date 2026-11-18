@@ -1,7 +1,7 @@
 ---
 name: hq-heal
 description: Triage and repair HQ session errors such as hook crashes, sync conflicts, or MCP failures.
-allowed-tools: Read, Write, Edit, Bash, Bash(bash core/scripts/git-pack-extension-check.sh:*), Bash(bash core/scripts/git-icon-file-check.sh:*), Bash(bash core/scripts/hq-root-git-reinit.sh:*), Glob, Grep, AskUserQuestion
+allowed-tools: Read, Write, Edit, Bash, Bash(hq core git-pack-extension-check:*), Bash(bash core/scripts/git-icon-file-check.sh:*), Bash(bash core/scripts/hq-root-git-reinit.sh:*), Glob, Grep, AskUserQuestion
 ---
 
 # HQ Heal — Session Error Triage
@@ -254,7 +254,7 @@ Finder writes a file named `Icon` plus a carriage return into folders with a cus
 Then run the pack probe (report-only; it never renames without `--fix`):
 
 ```bash
-bash core/scripts/git-pack-extension-check.sh --root .
+hq core git-pack-extension-check --root .
 ```
 
 A packfile set is three files sharing a basename — `pack-<sha>.pack`, `.idx`, `.rev` — and git pairs them **by extension**. If any one of them loses its extension, git stops seeing the whole set: the objects are still on disk byte for byte, but they become unreachable, and git reports them as missing. `git fsck` will agree they are gone and `git gc` cannot help, because nothing is corrupt.

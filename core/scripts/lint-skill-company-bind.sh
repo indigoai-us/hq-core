@@ -11,10 +11,12 @@
 #
 # Rules (body only; frontmatter is skipped):
 #   anchor  first line containing "Set `{co}`" or "Anchored on **{co}**"
-#   bind    work-mesh-live-bind-trusted.sh, hq-session.sh set company_slug,
-#           hq core hq-session set company_slug (skills shipped in the Codex
-#           pack cannot name core/ paths), or hq-session.sh add company
-#   read    companies/{co}/ or read-policy-frontmatter
+#   bind    hq core work-mesh-bind-trusted, work-mesh-live-bind-trusted.sh,
+#           hq-session.sh set company_slug, hq core hq-session set
+#           company_slug (skills shipped in the Codex pack cannot name core/
+#           paths), or hq-session.sh add company
+#   read    companies/{co}/, hq core policy frontmatter or
+#           read-policy-frontmatter
 # After the anchor line, a bind must appear on or before the first read line.
 # Skills with no anchor are not checked.
 #
@@ -37,12 +39,13 @@ for skill_md in "$SKILLS_DIR"/*/SKILL.md; do
     done { next }
     !anchor && (index($0, "Set `{co}`") || index($0, "Anchored on **{co}**")) { anchor = NR }
     !anchor { next }
-    index($0, "work-mesh-live-bind-trusted.sh") \
+    index($0, "hq core work-mesh-bind-trusted") \
+      || index($0, "work-mesh-live-bind-trusted.sh") \
       || index($0, "hq-session.sh set company_slug") \
       || index($0, "hq-session set company_slug") \
       || index($0, "hq-session.sh add company") { done = 1; next }
-    index($0, "companies/{co}/") || index($0, "read-policy-frontmatter") {
-      printf "%s:%d: reads a company path before the session is bound (company anchored at line %d). Bind first: bash core/scripts/work-mesh-live-bind-trusted.sh --company \"{co}\"\n", file, NR, anchor
+    index($0, "companies/{co}/") || index($0, "read-policy-frontmatter") || index($0, "hq core policy frontmatter") {
+      printf "%s:%d: reads a company path before the session is bound (company anchored at line %d). Bind first: hq core work-mesh-bind-trusted --company \"{co}\"\n", file, NR, anchor
       bad = 1
       done = 1
     }

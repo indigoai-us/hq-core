@@ -174,7 +174,7 @@ addressed to whoever operates that runtime (often the agent itself via DM):
 
 ```bash
 # --- HQ agent bootstrap: {agent} @ {co} ---
-hq login                      # or hq auth status if already authenticated
+hq login                      # or hq whoami --json if already authenticated
 # /accept <token>             # only if membership is still pending
 hq sync pull --company {co}  # pulls the permitted company vault files
 hq secrets list --company {co}   # must show the granted keys

@@ -34,6 +34,13 @@ cat > "$TMP/bin/hq" <<STUB
 echo "\$*" >> "\$HQ_STUB_LOG"
 case "\$1 \$2" in
   "secrets share") echo "error: unknown option --company placement" >&2; exit 1 ;;
+  "secrets list")
+    # names only, one per line after a header; the stub vault is HQ_STUB_VAULT
+    [ "\${HQ_STUB_LIST_FAILS:-0}" = 1 ] && exit 1
+    echo "NAME                      UPDATED"
+    tr ' ' '\n' <<< "\${HQ_STUB_VAULT:-}" | sed '/^$/d' | sed 's/$/   2026-01-01/'
+    exit 0
+    ;;
   "secrets --company") exit 0 ;;
   "secrets get"|"secrets env"|"secrets exec")
     echo "$SENTINEL"
@@ -45,6 +52,8 @@ STUB
 chmod +x "$TMP/bin/hq"
 export PATH="$TMP/bin:$PATH"
 export HQ_STUB_LOG="$INVOKE_LOG"
+# Names the stub vault knows (checked before any share; nothing missing here)
+export HQ_STUB_VAULT="DATABASE_URL WIDGET_API_KEY STRIPE_WEBHOOK_SECRET SERVICE/API_KEY REPO_ONLY_TOKEN LANE_TOKEN"
 
 # --- fixture: HQ root, project with .env.schema, bundle ----------------------
 
@@ -184,4 +193,88 @@ HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 \
 grep -q "^secrets --company acme share WIDGET_API_KEY --with bob@acme.test --permission read$" "$INVOKE_LOG" \
   || fail "person-uid secrets must be shared with the mapped email: $(cat "$INVOKE_LOG")"
 
-echo "hq-delegate-secrets: ok (names only, own confirm gate, --no-secrets and no-schema paths, sentinel value never surfaced)"
+# --- 9. source precedence: project schema > prd.json metadata.secrets > repo --
+
+REPO_DIR="$FIX/repos/private/widget-repo"
+mkdir -p "$REPO_DIR"
+printf 'REPO_ONLY_TOKEN=\nWIDGET_API_KEY=\nSERVICE/API_KEY=\n' > "$REPO_DIR/.env.schema"
+write_repo_manifest() {
+  write_manifest
+  jq '.repo = {"path":"repos/private/widget-repo"}' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+}
+
+# 9a. no project declaration -> repo schema, and the plan says so
+rm -f "$PROJ/.env.schema" "$PROJ/prd.json"
+write_repo_manifest
+: > "$INVOKE_LOG"
+set +e
+PLAN="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" 2>/dev/null)"
+RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "repo-schema plan must exit 2, got $RC"
+printf '%s' "$PLAN" | grep >/dev/null "Source: repo .env.schema" || fail "plan must name the repo schema as the source: $PLAN"
+printf '%s' "$PLAN" | grep >/dev/null "REPO_ONLY_TOKEN" || fail "plan must list the repo schema's names"
+printf '%s' "$PLAN" | grep >/dev/null -i "project declares no secrets" || fail "plan must say the repo-wide schema is a fallback: $PLAN"
+
+# 9b. prd.json metadata.secrets beats the repo schema (strings and {name} objects)
+cat > "$PROJ/prd.json" <<'JSON'
+{"metadata":{"secrets":["LANE_TOKEN",{"name":"WIDGET_API_KEY","purpose":"ads read"}]}}
+JSON
+write_repo_manifest
+: > "$INVOKE_LOG"
+PLAN="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes 2>&1)" || fail "prd.json-sourced grant failed: $PLAN"
+printf '%s' "$PLAN" | grep >/dev/null "Source: prd.json metadata.secrets" || fail "plan must name prd.json as the source: $PLAN"
+SHARE_COUNT="$(grep -c '^secrets --company acme share' "$INVOKE_LOG")"
+[ "$SHARE_COUNT" -eq 2 ] || fail "prd.json source must share exactly its 2 names, got $SHARE_COUNT: $(cat "$INVOKE_LOG")"
+grep -q "share REPO_ONLY_TOKEN" "$INVOKE_LOG" && fail "repo-only name must not be shared when prd.json declares the lane's secrets"
+jq -e '.secrets == ["LANE_TOKEN","WIDGET_API_KEY"]' "$MANIFEST" >/dev/null || fail "manifest must record the prd.json names: $(jq -c .secrets "$MANIFEST")"
+
+# 9c. a project .env.schema beats prd.json
+printf 'LANE_TOKEN=\n' > "$PROJ/.env.schema"
+write_repo_manifest
+: > "$INVOKE_LOG"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 || fail "project-schema grant failed"
+[ "$(grep -c '^secrets --company acme share' "$INVOKE_LOG")" -eq 1 ] || fail "project schema must win: $(cat "$INVOKE_LOG")"
+grep -q "share LANE_TOKEN --with" "$INVOKE_LOG" || fail "project schema name must be shared"
+
+# 9d. an empty prd.json metadata.secrets does not shadow the repo schema
+rm -f "$PROJ/.env.schema"
+echo '{"metadata":{"secrets":[]}}' > "$PROJ/prd.json"
+write_repo_manifest
+: > "$INVOKE_LOG"
+HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes >/dev/null 2>&1 || fail "empty prd.json secrets must fall through to the repo schema"
+grep -q "share REPO_ONLY_TOKEN --with" "$INVOKE_LOG" || fail "empty metadata.secrets must fall through to the repo schema: $(cat "$INVOKE_LOG")"
+rm -f "$PROJ/prd.json"
+
+# --- 10. a missing name aborts before any share -----------------------------
+
+printf 'WIDGET_API_KEY=\nNOT_IN_VAULT_URL=\n' > "$PROJ/.env.schema"
+write_manifest
+: > "$INVOKE_LOG"
+set +e
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "a name missing from the vault must fail"
+if grep -q '^secrets --company acme share' "$INVOKE_LOG"; then
+  fail "no share may run when any name is missing: $(cat "$INVOKE_LOG")"
+fi
+grep -q '^secrets list --company acme' "$INVOKE_LOG" || fail "names must be checked with hq secrets list: $(cat "$INVOKE_LOG")"
+printf '%s' "$OUT" | grep >/dev/null "NOT_IN_VAULT_URL" || fail "failure must name the missing secret: $OUT"
+printf '%s' "$OUT" | grep >/dev/null "nothing granted" || fail "failure must say nothing was granted: $OUT"
+jq -e '.secrets == []' "$MANIFEST" >/dev/null || fail "aborted run must not record names"
+
+# 10b. the list itself failing aborts with nothing shared
+printf 'WIDGET_API_KEY=\n' > "$PROJ/.env.schema"
+write_manifest
+: > "$INVOKE_LOG"
+set +e
+OUT="$(HQ_STUB_LIST_FAILS=1 HQ_ROOT="$FIX" bash "$HELPER" --manifest "$MANIFEST" --yes 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "an unlistable vault must fail closed"
+if grep -q '^secrets --company acme share' "$INVOKE_LOG"; then
+  fail "no share may run when the vault cannot be listed: $(cat "$INVOKE_LOG")"
+fi
+
+echo "hq-delegate-secrets: ok (names only, own confirm gate, --no-secrets and no-schema paths, source precedence, pre-share existence check, sentinel value never surfaced)"

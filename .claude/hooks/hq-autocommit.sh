@@ -13,6 +13,8 @@
 # workspace/logs/hq-autocommit.log and warned about once per session — an
 # orphaned .git/index.lock used to stop autosave for hours while producing zero
 # output anywhere, which read to the user as a healthy quiet system.
+# Unrelated staged paths used to skip every autosave on the machine; those
+# edits now save through a private index so the shared staged set is untouched.
 #
 # Exit status stays 0 on git failure so a broken autosave never blocks the
 # editor. Set HQ_AUTOCOMMIT_STRICT=1 to make failures exit non-zero instead
@@ -292,17 +294,60 @@ if [[ -z "$STATUS_OUT" ]]; then
   exit 0
 fi
 
-PRESTAGED="$(git -C "$HQ_ROOT" diff --cached --name-only 2>&1)"
+PRESTAGED="$(git -C "$HQ_ROOT" -c core.quotepath=false diff --cached --name-only --no-renames 2>&1)"
 PRESTAGED_RC=$?
 if [[ $PRESTAGED_RC -ne 0 ]]; then
   report_failure "diff-cached" "$PRESTAGED_RC" "$PRESTAGED"
 fi
 PRESTAGED_MARK="$WARN_DIR/prestaged-since"
+# Committing through the shared index would pick up someone else's staged set.
+# Skip forever froze every session on the machine (feedback_06a7f136). Hold
+# when this path (or a directory add) overlaps the staged set, so partial
+# stages stay intact. If the leftover staged paths are unrelated files, save
+# this file through a private index seeded from HEAD and leave the shared
+# index untouched.
+AUTOCOMMIT_INDEX=""
+PRESTAGED_FOREIGN=0
+PRESTAGED_OVERLAP=0
 if [[ -n "$PRESTAGED" ]]; then
-  # Someone else is mid-commit with a staged index. Not our index to touch.
-  # A brief overlap with a concurrent commit is normal; an index that stays
-  # staged means every autosave is skipped, so log each skip and warn once the
-  # staged set outlives the staleness window (feedback 09c2b7a0).
+  while IFS= read -r -d '' staged_path; do
+    [[ -n "$staged_path" ]] || continue
+    case "$staged_path" in
+      "$REL_PATH"|"$REL_PATH"/*)
+        PRESTAGED_OVERLAP=1
+        ;;
+      *)
+        PRESTAGED_FOREIGN=1
+        ;;
+    esac
+  done < <(git -C "$HQ_ROOT" diff --cached --name-only --no-renames -z 2>/dev/null)
+  # Nothing classified means the listing failed. Hold rather than guess.
+  if [[ "$PRESTAGED_OVERLAP" -eq 0 && "$PRESTAGED_FOREIGN" -eq 0 ]]; then
+    PRESTAGED_OVERLAP=1
+  fi
+fi
+REL_IS_DIR=0
+if [[ -d "$HQ_ROOT/$REL_PATH" ]]; then
+  REL_IS_DIR=1
+fi
+# A merge, cherry-pick, revert or rebase that stopped leaves staged or unmerged
+# paths. Those are not leftovers: committing now would end the operation and
+# record a tree that drops the other side. Hold, as before this change.
+git_op_in_progress() {
+  local op_marker op_path
+  for op_marker in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    op_path="$(git -C "$HQ_ROOT" rev-parse --git-path "$op_marker" 2>/dev/null || true)"
+    [[ -n "$op_path" ]] || continue
+    [[ "$op_path" == /* ]] || op_path="$HQ_ROOT/$op_path"
+    [[ -e "$op_path" ]] && return 0
+  done
+  return 1
+}
+GIT_OP_IN_PROGRESS=0
+if [[ -n "$PRESTAGED" ]] && git_op_in_progress; then
+  GIT_OP_IN_PROGRESS=1
+fi
+if [[ -n "$PRESTAGED" && ( "$PRESTAGED_OVERLAP" -eq 1 || "$REL_IS_DIR" -eq 1 || "$GIT_OP_IN_PROGRESS" -eq 1 ) ]]; then
   PRESTAGED_COUNT="$(printf '%s\n' "$PRESTAGED" | grep -c .)"
   NOW_EPOCH="$(date +%s)"
   mkdir -p "$WARN_DIR" 2>/dev/null || true
@@ -320,6 +365,14 @@ if [[ -n "$PRESTAGED" ]]; then
       "WARNING: HQ autosave is skipping edits because the HQ git index already has ${PRESTAGED_COUNT} staged path(s) that nobody has committed. Local HQ edits are NOT being committed until those paths are committed or unstaged (see: git diff --cached --name-only). Details: workspace/logs/hq-autocommit.log"
   fi
   exit 0
+fi
+if [[ "$PRESTAGED_FOREIGN" -eq 1 ]]; then
+  AUTOCOMMIT_INDEX="$(mktemp "${TMPDIR:-/tmp}/hq-autocommit-index.XXXXXX" 2>/dev/null)"
+  if [[ -z "$AUTOCOMMIT_INDEX" ]]; then
+    report_failure "private-index" 1 "could not create private index"
+  fi
+  PRESTAGED_COUNT="$(printf '%s\n' "$PRESTAGED" | grep -c .)"
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SAVE stage=private-index staged=${PRESTAGED_COUNT} path=${REL_PATH} session=${SESSION_KEY}"
 fi
 rm -f "$PRESTAGED_MARK" 2>/dev/null || true
 
@@ -351,13 +404,71 @@ else
   fi
 fi
 if [[ "$LOCK_ACQUIRED" -ne 1 ]]; then
+  [[ -n "$AUTOCOMMIT_INDEX" ]] && rm -f -- "$AUTOCOMMIT_INDEX"
   exit 0
 fi
 SELF_BIRTH="$(process_birth_token "$$")"
 printf 'pid=%s\nbirth=%s\n' "$$" "$SELF_BIRTH" >"$LOCK_DIR/owner" 2>/dev/null || true
-trap 'rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+SHARED_LOCK=""
+HOLD_SHARED_LOCK=0
+HEAD_MOVED=0
+cleanup_autocommit() {
+  # Interrupted after HEAD moved but before the shared index was replaced: put
+  # HEAD back so the shared index never shows a staged revert of the save.
+  if [[ "$HEAD_MOVED" -eq 1 && -n "${PRIVATE_BASE:-}" && -n "${NEW_COMMIT:-}" ]]; then
+    git -C "$HQ_ROOT" update-ref -m "autosave(hq): roll back interrupted save" HEAD "$PRIVATE_BASE" "$NEW_COMMIT" >/dev/null 2>&1 || true
+  fi
+  rm -f -- "$LOCK_DIR/owner" 2>/dev/null || true
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  [[ -n "${AUTOCOMMIT_INDEX:-}" ]] && rm -f -- "$AUTOCOMMIT_INDEX" 2>/dev/null
+  [[ "$HOLD_SHARED_LOCK" -eq 1 && -n "$SHARED_LOCK" ]] && rm -f -- "$SHARED_LOCK" 2>/dev/null
+  return 0
+}
+trap cleanup_autocommit EXIT
 
 recover_stale_index_lock
+
+PRIVATE_BASE=""
+SHARED_INDEX=""
+if [[ -n "$AUTOCOMMIT_INDEX" ]]; then
+  SHARED_INDEX="$(git -C "$HQ_ROOT" rev-parse --git-path index 2>/dev/null || true)"
+  [[ -z "$SHARED_INDEX" || "$SHARED_INDEX" == /* ]] || SHARED_INDEX="$HQ_ROOT/$SHARED_INDEX"
+  if [[ -z "$SHARED_INDEX" || ! -f "$SHARED_INDEX" ]]; then
+    report_failure "private-index" 1 "could not locate the shared index"
+  fi
+  SHARED_LOCK="$SHARED_INDEX.lock"
+  # Take git's own index lock (exclusive create). When another git writer holds
+  # it, step aside and retry on the next edit. A plain `git commit` does not
+  # hold it while its editor or hooks run, so the ref compare-and-swap below
+  # (and that commit's own) is what keeps the two from overwriting each other.
+  if ( set -o noclobber; : >"$SHARED_LOCK" ) 2>/dev/null; then
+    HOLD_SHARED_LOCK=1
+  else
+    log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=index-busy path=${REL_PATH} session=${SESSION_KEY}"
+    exit 0
+  fi
+  # The index cannot change now. Hold if this path got staged or an operation
+  # started since the first check.
+  git --literal-pathspecs -C "$HQ_ROOT" diff --cached --quiet --no-renames -- "$REL_PATH" 2>/dev/null
+  RECHECK_RC=$?
+  if [[ $RECHECK_RC -ne 0 ]] || git_op_in_progress; then
+    log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=prestaged-recheck path=${REL_PATH} session=${SESSION_KEY}"
+    exit 0
+  fi
+  PRIVATE_BASE="$(git -C "$HQ_ROOT" rev-parse --verify -q HEAD 2>/dev/null || true)"
+  if [[ -z "$PRIVATE_BASE" ]]; then
+    report_failure "rev-parse" 1 "could not resolve HEAD for the private index"
+  fi
+  READ_TREE_OUT="$(GIT_INDEX_FILE="$AUTOCOMMIT_INDEX" git -C "$HQ_ROOT" read-tree "$PRIVATE_BASE" 2>&1)"
+  READ_TREE_RC=$?
+  if [[ $READ_TREE_RC -ne 0 ]]; then
+    report_failure "read-tree" "$READ_TREE_RC" "$READ_TREE_OUT"
+  fi
+  export GIT_INDEX_FILE="$AUTOCOMMIT_INDEX"
+  # A name such as `notes/a[1].md` is a glob pathspec by default and would pull
+  # matching siblings into the commit that the shared-index fixup never syncs.
+  export GIT_LITERAL_PATHSPECS=1
+fi
 
 ADD_LOCK_MAX_RETRIES=3
 ADD_LOCK_RETRIES=0
@@ -476,10 +587,66 @@ fi
 # Autosave commits carry no HQ-Fingerprint trailer. A fingerprint marks work a
 # session produced, never the session saving itself. --no-verify also keeps
 # the commit-msg hook from stamping one.
-COMMIT_OUT="$(git -c gc.auto=0 -c maintenance.auto=false -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" 2>&1)"
+if [[ -z "$AUTOCOMMIT_INDEX" ]]; then
+  COMMIT_OUT="$(git -c gc.auto=0 -c maintenance.auto=false -C "$HQ_ROOT" commit --no-verify -m "autosave(hq): ${msg_path}" 2>&1)"
+  COMMIT_RC=$?
+  if [[ $COMMIT_RC -ne 0 ]]; then
+    report_failure "commit" "$COMMIT_RC" "$COMMIT_OUT"
+  fi
+  exit 0
+fi
+
+# Private-index save. `git commit` refreshes every index entry, and a
+# HEAD-seeded index has no stat data, so it would re-hash every tracked file on
+# each save (minutes on a large HQ). Write the tree and commit it directly.
+TREE_OUT="$(git -C "$HQ_ROOT" write-tree 2>&1)"
+TREE_RC=$?
+if [[ $TREE_RC -ne 0 ]]; then
+  report_failure "write-tree" "$TREE_RC" "$TREE_OUT"
+fi
+NEW_COMMIT="$(git -C "$HQ_ROOT" commit-tree "$TREE_OUT" -p "$PRIVATE_BASE" -m "autosave(hq): ${msg_path}" 2>&1)"
 COMMIT_RC=$?
 if [[ $COMMIT_RC -ne 0 ]]; then
-  report_failure "commit" "$COMMIT_RC" "$COMMIT_OUT"
+  report_failure "commit-tree" "$COMMIT_RC" "$NEW_COMMIT"
+fi
+# Compare-and-swap: if HEAD moved since the private index was seeded, someone
+# else committed. Do not overwrite their commit; the next edit saves this path.
+UPDATE_REF_OUT="$(git -C "$HQ_ROOT" update-ref -m "commit: autosave(hq): ${msg_path}" HEAD "$NEW_COMMIT" "$PRIVATE_BASE" 2>&1)"
+UPDATE_REF_RC=$?
+if [[ $UPDATE_REF_RC -ne 0 ]]; then
+  log_line "[$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)] SKIP stage=head-moved path=${REL_PATH} session=${SESSION_KEY}"
+  exit 0
+fi
+HEAD_MOVED=1
+trap 'exit 1' INT TERM HUP
+
+# HEAD moved, but the shared index still holds this path's previous version, so
+# it would show as a staged revert. Point that one entry at the committed blob
+# and leave every other staged path alone. Build the new shared index inside
+# the lock file we hold, then rename it into place, as git does. If any step
+# fails, move HEAD back so the shared index and HEAD stay consistent.
+unset GIT_INDEX_FILE
+SAVED_MODE=""; SAVED_BLOB=""
+read -r SAVED_MODE _ SAVED_BLOB _ <<< "$(git --literal-pathspecs -C "$HQ_ROOT" ls-tree "$NEW_COMMIT" -- "$REL_PATH" 2>/dev/null)"
+SYNC_RC=1
+SYNC_OUT="no committed entry for this path"
+if [[ -n "$SAVED_BLOB" ]] && cp -p -- "$SHARED_INDEX" "$SHARED_LOCK" 2>/dev/null; then
+  SYNC_OUT="$(GIT_INDEX_FILE="$SHARED_LOCK" git -C "$HQ_ROOT" update-index --add --cacheinfo "${SAVED_MODE},${SAVED_BLOB},${REL_PATH}" 2>&1)"
+  SYNC_RC=$?
+  if [[ $SYNC_RC -eq 0 ]]; then
+    if mv -f -- "$SHARED_LOCK" "$SHARED_INDEX" 2>/dev/null; then
+      HOLD_SHARED_LOCK=0
+      HEAD_MOVED=0
+    else
+      SYNC_RC=1
+      SYNC_OUT="could not replace the shared index"
+    fi
+  fi
+fi
+if [[ $SYNC_RC -ne 0 ]]; then
+  git -C "$HQ_ROOT" update-ref -m "autosave(hq): roll back ${msg_path}" HEAD "$PRIVATE_BASE" "$NEW_COMMIT" >/dev/null 2>&1 || true
+  HEAD_MOVED=0
+  report_failure "shared-index" "$SYNC_RC" "$SYNC_OUT"
 fi
 
 exit 0

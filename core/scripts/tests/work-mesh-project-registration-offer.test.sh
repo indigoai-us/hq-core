@@ -150,7 +150,7 @@ p_interview="$(step_line "$PRD" '## Step 4: Discovery Interview')"
 echo "PASS: /prd registers the project before the interview"
 
 grep -Fq '_shared/prd-finalize.md' "$PRD" || fail "/prd does not reference _shared/prd-finalize.md"
-grep -Fq 'register-project.sh {co} {name}' "$FINALIZE" || fail "finalize no longer syncs stories onto the registered project"
+grep -Fq 'hq core register-project {co} {name}' "$FINALIZE" || fail "finalize no longer syncs stories onto the registered project"
 for f in "$BRAINSTORM" "$PRD" "$FINALIZE"; do
   if grep -Eq 'offer-project-create-on-brainstorm|registration-offer.sh --(accept|defer)|Create the Work Mesh project now|Not now' "$f"; then
     fail "$f still carries the flag or prompt flow"

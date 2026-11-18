@@ -21,6 +21,9 @@
 #     [--cwd P] [--hq-root P] [--company-slug S] [--project P] [--task T] \
 #     [--tool-writes N] [--spool PATH]
 
+# shellcheck source=core/scripts/lib/epochrealtime.sh
+. "${BASH_SOURCE[0]%/*}/epochrealtime.sh" 2>/dev/null || true
+
 # Crockford base32 alphabet (ULID) — no I L O U
 _WORK_MESH_CROCKFORD='0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 
@@ -68,11 +71,15 @@ work_mesh_ulid() {
   local -i i rem val
 
   if [[ -n "${EPOCHREALTIME-}" ]]; then
-    local sec=${EPOCHREALTIME%.*}
-    local frac=${EPOCHREALTIME#*.}000
-    frac=${frac:0:3}
-    now_ms=$((10#$sec * 1000 + 10#$frac))
-  else
+    # EPOCHREALTIME uses the locale decimal separator ("," under de_DE, a
+    # multibyte character under ar_EG, ...); hq_epochrealtime_parse does not
+    # depend on the separator.
+    if command -v hq_epochrealtime_parse >/dev/null 2>&1 \
+      && hq_epochrealtime_parse "$EPOCHREALTIME"; then
+      now_ms=$((10#$HQ_EPOCH_MS))
+    fi
+  fi
+  if [[ -z "${now_ms-}" ]]; then
     now_ms=$(date +%s%3N 2>/dev/null || true)
     case "$now_ms" in
       ""|*[!0-9]*)

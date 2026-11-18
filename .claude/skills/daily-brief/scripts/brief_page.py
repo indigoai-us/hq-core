@@ -17,11 +17,21 @@ choice of cards (SKILL.md, Step 4b):
   check     validate a page against the format and the design rules. Exit 1 on errors.
   attach    validate a page and write it into brief.json as `page`. Fail soft: an invalid
             page is left out, brief.json keeps every other field, and the reasons go to
-            `page_problems` and stderr.
+            `page_problems` and stderr. With brief-data.json (--data, or the file beside
+            brief.json) it also writes `brief.json.signals_notices` and, when a company's
+            signals are stale, puts that company's notice card at the top of the page and
+            labels or leaves out the cards that come from its signals. A stale brief always
+            gets a valid page: when the written one is invalid, a page written by code is
+            attached in its place. No page is written unless it passed the validator;
+            exit 2 when signals are stale and no valid page could be built.
+  notice    write `brief.json.signals_notices` from brief-data.json; when a company is
+            stale and brief.json has no valid page yet, also the page written by code.
+            Exit 1 when brief-data.json cannot be read, 2 as for attach.
 
 Pure helpers are unit-tested in test_brief_page.py.
 """
 import argparse
+import copy
 import datetime as dt
 import importlib.util
 import json
@@ -802,15 +812,23 @@ def candidates(data, now):
                               'visual': 'siren' if on_top >= 1 else None},
                      'drill': {'signals': [_signal('ci', f'{r.get("workflow")} red on main', r.get('since'))]},
                      'facts': {'product': (h or {}).get('product'), 'workflow': r.get('workflow'), 'age_hours': hrs, 'repo': repo}})
-        for mtg in _dicts(s.get('meeting_signals')):
+        # Stale signals: with a last good run the to-do cards say where they are from; with none
+        # they are left out, and the notice card says so.
+        stale = _dict(s.get('signals_stale'))
+        stale = stale if _is_str(stale.get('line')) else {}
+        left_out = bool(stale) and not _good_date(stale)
+        for mtg in ([] if left_out else _dicts(s.get('meeting_signals'))):
             for a in _dicts(mtg.get('action_items')):
                 if not a.get('mine'):
                     continue
                 h = _hours(mtg.get('start') or mtg.get('date'), now)
+                facts = {'meeting': mtg.get('title'), 'age_hours': h}
+                if stale:
+                    facts['signals_from'] = stale.get('section_line')
                 add({'company': slug, 'type': 'task', 'kind': 'note', 'size': 'M', 'symbol': 'list-checks',
                      'data': {'hours': h},
                      'drill': {'signals': [_signal('meeting', a.get('text'), mtg.get('start'))]},
-                     'facts': {'meeting': mtg.get('title'), 'age_hours': h}})
+                     'facts': facts})
         attended = [m for m in _dicts(s.get('meetings')) if m.get('attended')]
         team = sum(1 for m in _dicts(s.get('meetings')) if not m.get('attended'))
         if attended:
@@ -918,10 +936,504 @@ def skeleton(data, person, now, names=None, cands=None, tz=None):
             'data': {'stats': stats,
                      'spark': spark, 'sparkLabel': 'your day', 'unit': 'things',
                      'ticks': tick_labels(start, end, 4, tz)}}
-    return {'version': 1, 'companies': companies, 'person': {'name': person},
+    page = {'version': 1, 'companies': companies, 'person': {'name': person},
             'window': {'from': start.isoformat(timespec='seconds'), 'to': end.isoformat(timespec='seconds'),
                        'zoom': zoom_for(hours_away), 'label': window_label(hours_away), 'hoursAway': hours_away},
             'theme': {'style': 'merged'}, 'summary': [lead] + summary_side(cands, data), 'dropped': [], 'stream': []}
+    return apply_notices(page, stale_notices(data), notice_context(data))
+
+
+# ---------- stale signals ----------
+#
+# Everything here is designed against what the desktop app draws on a closed card in the
+# merged style: the corner tag (`label`, else the type's name, with the company badge when the
+# card has `company`), the glyph and the `title`. `why` is drawn only when a card is opened.
+
+NOTICE_ID = 'signals-stale'           # one card per stale company: signals-stale-<slug>
+NOTICE_LABEL = 'Stale signals'        # the notice card's corner tag
+# The corner tag of a stale signal card must fit the smallest card with a company badge. The
+# app draws an S card 190 px wide at its narrowest; the tag starts 20 px in, a badge takes
+# 24 px and the mono text about 8 px a character, so 17 characters end at 180 px.
+TAG_MAX_CHARS = 17
+# An opened card shows two lines of `why`. In the 904 px drill those two lines held about 85
+# characters before the app cut the text; 76 leaves room for a word that wraps early. It is
+# a hard cap: the reason is fixed and at most 47 characters, and the company name is what
+# gives way, cut at a word boundary with an ellipsis at NAME_MAX_CHARS (27 + ": " + 47 = 76).
+NOTICE_WHY_MAX_CHARS = 76
+NAME_MAX_CHARS = 27
+# A closed card shows at most two lines of title (the app clamps the rest). At an S card on
+# the narrowest grid a title line holds about 114 px of text in the app's font: "last
+# updated Sep 30, 2025" measured 130 px over 25 characters, 5.2 px a character on average;
+# taking the widest glyphs at 1.25 times that, 6.5 px, a line surely holds 114 / 6.5 = 17
+# characters. So the date always comes first in a title, as one unbreakable block of at most
+# 14 characters ("Sep 30, 2025 ·"), behind a lead word of at most 12 ("Last updated"): it
+# ends by line 2 whatever the font does, and only the company name after it can be clamped.
+# The name, which is also on the badge and in the opened text, follows as one unbreakable
+# block of "· " and at most 15 characters and two words (17, one S line), and the whole title
+# is at most 43 characters: "Last updated Sep 30, 2025 · Cyan Laborator…" (25 + 3 + 15 = 43).
+NOTICE_TITLE_MAX_CHARS = 43
+TITLE_NAME_MAX_CHARS = 15
+TITLE_NAME_MAX_WORDS = 2
+TITLE_LINE_CHARS = 17
+TITLE_LINES = 2
+# The opened card draws the same title in a large serif face. Round 3 measured its line in
+# the 904 px drill: "Echo Partners: last" (19 characters) held one line and "Contoso
+# Pharmac…: last" (22) did not, so a drill line is taken as 19 characters.
+DRILL_LINE_CHARS = 19
+# Ask my bot sends this card's `drill.bot` as written; a name there is cut only past this.
+BOT_NAME_MAX_CHARS = 60
+# Why today's signals are missing, one plain sentence per gate code. It follows the company
+# name and a colon in the opened text ("Acme Inc: sign-in to a connected account failed.").
+NOTICE_REASON = {
+    'auth': 'sign-in to a connected account failed.',
+    'config': 'the signals setup is not complete.',
+    'run-failed': "today's signals run failed.",
+    'start-failed': "today's signals run could not start.",
+    'timed-out': "today's signals run has not finished yet.",
+    'no-record': "today's signals run stopped before it finished.",
+    'not-run': "today's signals run has not finished yet.",
+}
+NOTICE_REASON_DEFAULT = "today's signals run did not finish."
+# timed-out and not-run read the same on purpose: to the reader both mean today's run is
+# still under way and may yet finish. The gate keeps them apart in `code`.
+# When no signals run has ever finished, the opened text says that first and then gives the
+# reason in short form, all within NOTICE_WHY_MAX_CHARS: 52 + 1 + 23 = 76 at most.
+NEVER_GOOD_WHY = 'No run has finished yet, so signal cards are hidden.'
+NEVER_GOOD_REASON = {
+    'auth': 'Sign-in failed.',
+    'config': 'Setup is not complete.',
+    'run-failed': 'The run failed.',
+    'start-failed': 'The run did not start.',
+    'timed-out': 'The run is not done.',
+    'no-record': 'The run stopped early.',
+    'not-run': 'The run is not done.',
+}
+NEVER_GOOD_REASON_DEFAULT = 'The run did not finish.'
+# The fallback page has no name to greet unless brief-data.json carries one. The app always
+# draws its headline as "<greeting>, <person.name>." and rejects a page whose name is blank,
+# so a bare "Good morning." cannot be produced from this side. With no name the field holds
+# a phrase instead, and the headline reads "Good morning, here is your brief.": no name, no
+# word standing in for one, no stray comma or space.
+NO_NAME = 'here is your brief'
+TODO_STAT = 'to-dos for you'
+NOTE_PREFIX = 'Signals are stale: '
+# Card types written from signals, and the drill sources only signals carry on a company
+# brief (connected apps are read through synced signals, never live).
+SIGNAL_TYPES = ('task', 'decided')
+SIGNAL_SOURCES_ONLY = ('meeting', 'email')
+# Titles for the page code writes when the writer's page is missing or invalid.
+FALLBACK_LEAD = 'Your day at a glance'
+FALLBACK_TITLES = {'ask': 'Answer the open question', 'stalled': 'Move the stalled work', 'landed': 'See what shipped',
+                   'broke': 'Fix what is broken', 'task': 'Do your to-do', 'meeting': 'See your meetings'}
+
+
+def _good_date(notice):
+    d = _dict(_dict(notice).get('last_good_run')).get('date')
+    return d if _is_str(d) else None
+
+
+_SIGNALS = []  # brief_signals, loaded once
+
+
+def stale_notices(data):
+    """brief_signals.notices(data): one notice per company whose signals are stale; [] on any error."""
+    try:
+        if not _SIGNALS:
+            _SIGNALS.append(_sibling('brief_signals'))
+        return [n for n in _SIGNALS[0].notices(data) if isinstance(n, dict) and _is_str(n.get('company'))]
+    except Exception:
+        return []
+
+
+_GATE = []  # brief_gate, loaded once
+
+
+def shown_date(iso, today=None):
+    """brief_gate.human_date: the one helper for a date shown to a person ("Oct 1")."""
+    try:
+        if not _GATE:
+            _GATE.append(_sibling('brief_gate'))
+        return _GATE[0].human_date(iso, today)
+    except Exception:
+        return str(iso)
+
+
+def page_today(page):
+    """The day of the end of the page's window. Only a stand-in for the brief's local day
+    when brief-data.json is not at hand (notice_context has the real one)."""
+    to = _dict(_dict(page).get('window')).get('to')
+    return to[:10] if _is_str(to) else None
+
+
+def notice_context(data):
+    """What the notice wording needs from brief-data.json, as {today, multi}.
+
+    `today` is `window.today`, the local day the sweep was given: the same day the gate
+    judges by, so a date gets its year in the page's wording exactly when it does in the
+    gate's sentences. `multi` is True when this brief covers more than one company (the
+    company sections of a person brief), whether or not each has cards today."""
+    data = _dict(data)
+    today = _dict(data.get('window')).get('today')
+    if not (_is_str(today) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', today)):
+        today = None
+    cos = data.get('companies') if data.get('mode') == 'person' else None
+    count = len([k for k in cos if isinstance(k, str)]) if isinstance(cos, dict) else (1 if _is_str(data.get('company')) else 0)
+    ctx = {'multi': count > 1}
+    if today:
+        ctx['today'] = today  # absent: apply_notices reads the page's own day instead
+    return ctx
+
+
+def short_name(name, max_chars, max_words=None, whole_words=False):
+    """A company name cut to fit, with an ellipsis when anything was cut. With `whole_words`
+    the cut falls between words (a single word too long for the room is still cut inside)."""
+    name = ' '.join(str(name).split())
+    words = name.split(' ')
+    out = ' '.join(words[:max_words]) if max_words else name
+    cut = out != name
+    if len(out) + (1 if cut else 0) > max_chars:
+        kept = []
+        if whole_words:
+            for word in out.split(' '):
+                if len(' '.join(kept + [word])) + 1 > max_chars:
+                    break
+                kept.append(word)
+        out = ' '.join(kept) if kept else out[:max_chars - 1].rstrip()
+        cut = True
+    return out + '\u2026' if cut else out
+
+
+def signal_label(notice, today=None):
+    """The corner tag of a card written from a stale company's signals: "From Oct 1", with
+    the year only when it is not this year's ("From Sep 30, 2025", the longest it gets)."""
+    return f'From {shown_date(_good_date(notice), today)}'[:TAG_MAX_CHARS]
+
+
+def title_lines(title, width=TITLE_LINE_CHARS):
+    """`title` wrapped the way a browser does it, at `width` characters a line: lines break
+    at ordinary spaces only, so text joined by no-break spaces stays on one line."""
+    lines = []
+    for word in title.split(' '):
+        if lines and len(lines[-1]) + 1 + len(word) <= width:
+            lines[-1] += ' ' + word
+        else:
+            lines.append(word)
+    return lines
+
+
+def date_shown(title, date):
+    """True when `date` (with its no-break spaces) ends within the lines the app draws."""
+    seen = ''
+    for line in title_lines(title)[:TITLE_LINES]:
+        seen += line + ' '
+    return date in seen
+
+
+def notice_card(notice, today=None, name=None, multi=False):
+    """The notice card of one stale company. It carries that company's slug, the page's
+    existing warning look (a `broke` note with the warning glyph) and only sentences fixed in
+    code. Each part says something the others do not:
+
+    - `title`, on the closed and the opened card, says how old the signals are, date first:
+      "Last updated Oct 1" (the date of the last good run, when they were last updated, not
+      when anything broke). When the brief covers more than one company (`multi`) the name
+      follows: "Last updated Oct 1 · Acme Inc". When no run has ever finished it is "No
+      signals yet · Acme Inc", in every brief, so the opened text need not repeat the name.
+    - `why`, on the opened card, says why: "Acme Inc: sign-in to a connected account failed."
+      When no run has ever finished: "No run has finished yet, so signal cards are hidden.
+      Sign-in failed." It names the company unless the title already does.
+    - `drill.bot` is what Ask my bot sends, one statement with nothing said twice.
+
+    No possessive of a company name. A long name is cut with an ellipsis; the date and the
+    reason are never cut, and the caps are enforced here."""
+    slug = notice['company']
+    code = notice.get('code')
+    code = code if isinstance(code, str) else None
+    reason = NOTICE_REASON.get(code, NOTICE_REASON_DEFAULT)
+    good = _good_date(notice)
+    who = name if _is_str(name) else slug
+    bot_name = short_name(who, BOT_NAME_MAX_CHARS, whole_words=True)
+    if good:
+        when = shown_date(good, today)[:len('Sep 30, 2025')]
+        fixed = when.replace(' ', '\u00a0')  # a no-break space keeps the date on one line
+        lead = f'Last updated {fixed}'
+        ask = f'Signals for {bot_name} were last updated {when}.'
+    else:
+        fixed, lead = None, 'No signals yet'
+        ask = f'No signals run has finished yet for {bot_name}, so its signal cards are not shown.'
+    title = lead
+    if multi or not good:
+        # "·" stays with the name, so a line may start with "· Acme Inc" but never with a bare
+        # dot, and the date block stays whole.
+        room = NOTICE_TITLE_MAX_CHARS - len(f'{lead} · ')
+        named = short_name(who, min(TITLE_NAME_MAX_CHARS, room), TITLE_NAME_MAX_WORDS).replace(' ', '\u00a0')
+        # The name is one unbreakable block too ("· " + 15 = 17, one line at the narrowest S
+        # card), so no line holds a lone word of it.
+        title = f'{lead} ·\u00a0{named}'
+        if _lint_title(title) or (fixed and not date_shown(title, fixed)):
+            title = lead  # the name is on the badge and in the opened text
+    if good:
+        why = f'{short_name(who, min(NAME_MAX_CHARS, NOTICE_WHY_MAX_CHARS - len(reason) - 2), whole_words=True)}: {reason}'
+    else:
+        why = f'{NEVER_GOOD_WHY} {NEVER_GOOD_REASON.get(code, NEVER_GOOD_REASON_DEFAULT)}'
+        if title == lead:  # the title could not name the company, so the opened text does
+            why = f'{short_name(who, NAME_MAX_CHARS, whole_words=True)}: {reason}'
+    bot = f'From my Daily Brief: {ask} {reason[:1].upper()}{reason[1:]} What should I do about it?'
+    return {'id': f'{NOTICE_ID}-{slug}', 'kind': 'note', 'type': 'broke', 'size': 'M', 'symbol': 'warning',
+            'company': slug, 'label': NOTICE_LABEL, 'title': title[:NOTICE_TITLE_MAX_CHARS],
+            'why': why[:NOTICE_WHY_MAX_CHARS], 'data': {}, 'drill': {'signals': [], 'bot': bot}}
+
+
+def is_notice(w):
+    return isinstance(w, dict) and isinstance(w.get('id'), str) and w['id'].startswith(NOTICE_ID)
+
+
+def from_signals(w):
+    """True for a card whose facts come from signals: a to-do or a decision, or any card (but
+    the meetings count, which is calendar facts) that cites a meeting or an email."""
+    typ = w.get('type')
+    if typ in SIGNAL_TYPES:
+        return True
+    if typ in ('meeting', 'summary'):
+        return False
+    return any(s.get('source') in SIGNAL_SOURCES_ONLY for s in _dicts(_dict(w.get('drill')).get('signals')))
+
+
+def apply_notices(page, notices, ctx=None):
+    """The page with stale signals shown, company by company. Returns the page unchanged when
+    no company is stale.
+
+    - One notice card per stale company, by slug, first beside the lead. One company: its
+      card and one more card. Two: both. Three or more: the first three beside the lead and
+      the rest at the head of the stream.
+    - A card written from a stale company's signals gets the corner tag "Signals from
+      <date>" (`label`, drawn on the closed card) and its `why` starts with that company's
+      `section_line`. When the company has no good run the card is left out.
+    - A company whose signals are fresh is not touched: its cards keep their tag and `why`.
+    - A signal card that names no company (the to-do count), or sits under `personal`, which
+      has no signals of its own, cannot be tied to one company's run and is left out; so is
+      the lead's to-do count.
+    Applying it twice gives the same page, which is how the check tells it was applied.
+    `ctx` is notice_context(brief-data.json): the local day and whether the brief covers more
+    than one company. Without it both are read off the page as a stand-in.
+    """
+    notices = sorted((n for n in notices or [] if isinstance(n, dict) and _is_str(n.get('company'))),
+                     key=lambda n: n['company'])
+    if not notices or not isinstance(page, dict):
+        return page
+    page = copy.deepcopy(page)
+    names = _dict(page.get('companies'))
+    ctx = _dict(ctx)
+    today = ctx.get('today') if 'today' in ctx else page_today(page)
+    multi = ctx.get('multi') if 'multi' in ctx else len([k for k in names if k != PERSONAL]) > 1
+    by = {n['company']: n for n in notices}
+    for band in ('summary', 'dropped', 'stream'):
+        ws = page.get(band)
+        if not isinstance(ws, list):
+            continue
+        kept = []
+        for i, w in enumerate(ws):
+            if not isinstance(w, dict) or (band == 'summary' and i == 0):
+                kept.append(w)
+                continue
+            if is_notice(w):
+                continue
+            if from_signals(w):
+                co = w.get('company')
+                if co is None or co == PERSONAL:
+                    continue
+                n = by.get(co) if isinstance(co, str) else None
+                if n is not None:
+                    line = n.get('section_line')
+                    if not _good_date(n) or not _is_str(line):
+                        continue
+                    w['label'] = signal_label(n, today)
+                    why = w.get('why') if _is_str(w.get('why')) else ''
+                    if not why.startswith(line):
+                        joined = f'{line} {why}'.strip()
+                        w['why'] = joined if len(joined) <= WHY_MAX_CHARS else line[:WHY_MAX_CHARS]
+            kept.append(w)
+        page[band] = kept
+    summary = page.get('summary')
+    if isinstance(summary, list) and summary and isinstance(summary[0], dict):
+        lead = summary[0]
+        stats = _dict(lead.get('data')).get('stats')
+        if isinstance(stats, list):
+            lead['data']['stats'] = [x for x in stats if not (isinstance(x, dict) and x.get('label') == TODO_STAT)]
+        cards = [notice_card(n, today, _dict(names.get(n['company'])).get('name'), bool(multi)) for n in notices]
+        top, rest = cards[:SUMMARY_MAX - 1], cards[SUMMARY_MAX - 1:]
+        side = []
+        if len(top) == 1:
+            side = [w for w in summary[1:] if isinstance(w, dict)][:1]
+            if side:
+                side[0]['size'] = 'M'
+            else:
+                top[0]['size'] = 'L'
+        elif len(top) == 3:
+            top[1]['size'] = top[2]['size'] = 'S'
+        page['summary'] = [lead] + top + side
+        if rest:
+            stream = page.get('stream') if isinstance(page.get('stream'), list) else []
+            page['stream'] = (rest + stream)[:STREAM_MAX]
+    return page
+
+
+def _constant_frame(now):
+    """A page frame that holds nothing read from any file: the last 24 hours, a bare lead."""
+    end = now.isoformat(timespec='seconds')
+    start = (now - dt.timedelta(hours=24)).isoformat(timespec='seconds')
+    return {'version': 1, 'companies': {}, 'person': {'name': NO_NAME},
+            'window': {'from': start, 'to': end, 'zoom': zoom_for(24), 'label': window_label(24), 'hoursAway': 24},
+            'theme': {'style': 'merged'},
+            'summary': [{'id': 'lead', 'kind': 'focus', 'size': 'XL', 'type': 'summary', 'symbol': 'sun-horizon',
+                         'title': '', 'data': {}}], 'dropped': [], 'stream': []}
+
+
+def reader_name(data):
+    """The name the fallback page greets: `brief-data.json.person.name` when the data carries
+    one, as a display first name (person_name, the same means the cards' names use). With
+    none, NO_NAME, so the greeting names nobody ("Good morning, here is your brief.")."""
+    raw = _dict(_dict(data).get('person')).get('name')
+    if _is_str(raw):
+        try:
+            name = person_name(raw.strip())
+        except Exception:
+            name = None
+        if _is_str(name):
+            return name.strip()[:40]
+    return NO_NAME
+
+
+def _valid(page):
+    try:
+        return validate_page(page)['ok']
+    except Exception:
+        return False
+
+
+def fallback_page(data, notices, names=None, now=None):
+    """A valid page written by code alone, or None when none can be built. It is for a stale
+    brief whose written page is missing or invalid, so the notice is always on a page the
+    app draws.
+
+    Nothing in it comes from a file a writer may have edited (page.json, page-draft.json):
+    the frame is the one `skeleton` builds from brief-data.json, with a fixed lead title, the
+    notice cards, and one card per candidate with a fixed title by type. Each attempt is
+    checked with validate_page, and only a page that passes is returned: first that page,
+    then the same frame with the notice cards alone, then a constant frame with the notice
+    cards alone. `names` is {slug: company name} from the manifest."""
+    data = _dict(data)
+    notices = [n for n in notices or [] if isinstance(n, dict) and _is_str(n.get('company'))]
+    if not notices:
+        return None
+    now = now or _ts(_dict(data.get('window')).get('sessions_to')) or dt.datetime.now(dt.timezone.utc)
+    names = {k: v for k, v in _dict(names).items() if _is_str(k) and _is_str(v)}
+    ctx = notice_context(data)
+    attempts = []
+    try:
+        cands = candidates(data, now)
+        base = skeleton(data, reader_name(data), now, names, cands)
+        base['summary'][0]['title'] = FALLBACK_LEAD
+        base['summary'], base['dropped'] = base['summary'][:1], []
+        stream, per_type = [], {}
+        for c in cands:
+            title = FALLBACK_TITLES.get(c.get('type'))
+            if not title or c.get('company') not in base['companies'] or per_type.get(c['type'], 0) >= 3:
+                continue
+            per_type[c['type']] = per_type.get(c['type'], 0) + 1
+            w = {k: copy.deepcopy(c[k]) for k in ('company', 'type', 'kind', 'size', 'symbol', 'data', 'drill') if k in c}
+            w.update(id=f'f-{c.get("id")}', title=title)
+            _dict(w.get('data')).pop('visual', None)
+            stream.append(w)
+        attempts += [dict(base, stream=stream[:max(0, STREAM_MAX - len(notices))]), dict(base, stream=[])]
+    except Exception:
+        pass
+    attempts.append(_constant_frame(now))
+    for frame in attempts:
+        try:
+            frame = copy.deepcopy(frame)
+            frame['summary'][0]['title'] = FALLBACK_LEAD
+            companies = _dict(frame.get('companies'))
+            for n in notices:
+                if not _is_str(_dict(companies.get(n['company'])).get('name')):
+                    companies[n['company']] = {'name': names.get(n['company'], n['company'])}
+            frame['companies'] = companies
+            page = apply_notices(frame, notices, ctx)
+        except Exception:
+            continue
+        if _valid(page) and apply_notices(page, notices, ctx) == page:
+            return page
+    return None
+
+
+def stamp_notices(brief, notices):
+    """brief with `signals_notices` set and each notice `line` first in `learned_notes`.
+
+    The app does not draw either today; the page is what the reader sees. They are the
+    machine-readable record. A stale line that is no longer current is removed."""
+    out = dict(brief) if isinstance(brief, dict) else {}
+    out['signals_notices'] = notices
+    lines = list(dict.fromkeys(n['line'] for n in notices if _is_str(n.get('line'))))
+    old = out.get('learned_notes')
+    rest = [x for x in old if not (isinstance(x, str) and (x.startswith(NOTE_PREFIX) or x in lines))] \
+        if isinstance(old, list) else []
+    if lines or isinstance(old, list):
+        out['learned_notes'] = lines + rest
+    return out
+
+
+def with_notices(brief, data, names=None):
+    """brief with the notice written by code: `signals_notices`, and, when a company is
+    stale, a valid page that shows it. A page already on the brief gets the notice applied;
+    when that page is missing or invalid, the fallback page takes its place. Any page this
+    leaves on a stale brief has passed validate_page; when no valid page can be built the
+    brief is left with no page (callers report that: see main)."""
+    notices = stale_notices(data)
+    out = stamp_notices(brief, notices)
+    if not notices:
+        return out
+    page = out.get('page')
+    try:
+        page = apply_notices(page, notices, notice_context(data)) if isinstance(page, dict) else None
+    except Exception:
+        page = None
+    if page is None or not _valid(page):
+        page = fallback_page(data, notices, names)
+    if page is None:
+        out.pop('page', None)
+    else:
+        out['page'] = page
+    return out
+
+
+def notice_problems(brief, data):
+    """Problems with how brief.json carries the stale-signals notice, against brief-data.json.
+
+    `signals_notices` must equal what the code derives from brief-data.json, and when a
+    company is stale the brief must have a valid page that is the page apply_notices gives.
+    [] when all is in place."""
+    out = []
+    if not isinstance(brief, dict):
+        return out
+    want = stale_notices(data)
+    if brief.get('signals_notices') != want:
+        out.append({'where': 'signals_notices',
+                    'problem': 'does not match brief-data.json; run brief_page.py notice (never edit it by hand)'})
+    if stamp_notices(brief, want).get('learned_notes') != brief.get('learned_notes'):
+        out.append({'where': 'learned_notes',
+                    'problem': 'the stale-signals lines are missing, changed or left over; run brief_page.py notice'})
+    if want:
+        page = brief.get('page')
+        try:
+            shown = isinstance(page, dict) and validate_page(page)['ok'] \
+                and apply_notices(page, want, notice_context(data)) == page
+        except Exception:
+            shown = False
+        if not shown:
+            out.append({'where': 'page', 'problem': 'signals are stale and the brief has no valid page showing each '
+                                                    "company's notice card and signal card labels; run brief_page.py "
+                                                    'notice (or attach) again'})
+    return out
 
 
 # ---------- attach ----------
@@ -934,22 +1446,65 @@ def _write_json(path, obj):
     os.replace(tmp, path)
 
 
-def attach(brief, page):
+def attach(brief, page, data=None, names=None):
     """(brief, report): `page` set on brief when it validates; otherwise `page` removed and
-    `page_problems` set. Every other field of brief is left as it was."""
+    `page_problems` set. Every other field of brief is left as it was.
+
+    With `data` (brief-data.json) it also sets `signals_notices` and, when a company's
+    signals are stale, applies the notice to the page first (apply_notices). A stale brief
+    ends with a valid page: when the written page is missing or invalid, the page code
+    writes (fallback_page) is attached in its place, and `page_problems` still says what
+    was wrong with the written one. Only a page that passed validate_page is ever set;
+    report['no_page'] is True when signals are stale and no valid page could be built."""
+    notices = None if data is None else stale_notices(data)
+    if notices:
+        try:
+            page = apply_notices(page, notices, notice_context(data))
+        except Exception:  # a page too malformed to change is rejected by the check below
+            pass
     try:
         report = validate_page(page)
     except Exception as e:  # validate_page does not raise; this is a second line of defence
         report = {'ok': False, 'errors': [{'where': 'page', 'problem': f'could not check the page ({type(e).__name__})'}],
                   'warnings': []}
-    out = dict(brief)
+    out = dict(brief) if notices is None else stamp_notices(brief, notices)
+    report['fallback'] = report['no_page'] = False
     if report['ok']:
         out['page'] = page
         out.pop('page_problems', None)
     else:
         out.pop('page', None)
         out['page_problems'] = report['errors'][:20]
+        if notices:
+            fallback = fallback_page(data, notices, names)
+            if fallback is None:
+                report['no_page'] = True
+            else:
+                out['page'] = fallback
+                report['fallback'] = True
     return out, report
+
+
+def _read_data(path):
+    """brief-data.json as a dict, or None when it cannot be read."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _manifest_names(run_dir):
+    """{slug: company name} from the company manifest of the HQ root this run folder is in
+    (workspace/brief/<run_id>/); {} when it cannot be read."""
+    try:
+        bc = _sibling('brief_company')
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(run_dir))))
+        names = bc.manifest_names(bc.read_manifest(root))
+        return {k: v for k, v in names.items() if _is_str(k) and _is_str(v)} if isinstance(names, dict) else {}
+    except Exception:
+        return {}
 
 
 def main(argv=None):
@@ -966,6 +1521,10 @@ def main(argv=None):
     at = sub.add_parser('attach', help='validate a page and write it into brief.json (fail soft)')
     at.add_argument('--brief', required=True)
     at.add_argument('--page', required=True)
+    at.add_argument('--data', default=None, help='brief-data.json (default: the one beside --brief)')
+    nt = sub.add_parser('notice', help='write brief.json.signals_notices from brief-data.json')
+    nt.add_argument('--brief', required=True)
+    nt.add_argument('--data', default=None, help='brief-data.json (default: the one beside --brief)')
     a = ap.parse_args(argv)
     if a.cmd == 'skeleton':
         with open(a.data, encoding='utf-8') as f:
@@ -993,19 +1552,51 @@ def main(argv=None):
         return 0 if report['ok'] else 1
     with open(a.brief, encoding='utf-8') as f:
         brief = json.load(f)
+    run_dir = os.path.dirname(os.path.abspath(a.brief))
+    data = _read_data(a.data or os.path.join(run_dir, 'brief-data.json'))
+    names = _manifest_names(run_dir)
+    # Without brief-data.json the notice cannot be written or checked. `notice` says so and
+    # exits 1; `attach` says so and keeps the exit code it always had.
+    no_data = {'problem': 'could not read brief-data.json, so the stale-signals notice was not written; '
+                          'pass --data and run this again'}
+    # Signals are stale and no valid page could be built: exit 2, never an invalid page.
+    no_page = {'problem': 'signals are stale and no valid page could be built, so brief.json has no page; do not '
+                          'run this again: finish the brief and start the closing reply with the notice'}
+    if a.cmd == 'notice':
+        if data is None:
+            print(json.dumps(dict(no_data, signals_notices=None)))
+            return 1
+        brief = with_notices(brief, data, names)
+        _write_json(a.brief, brief)
+        result = {'signals_notices': len(brief['signals_notices']), 'page': 'page' in brief}
+        if brief['signals_notices'] and 'page' not in brief:
+            print(json.dumps(dict(result, **no_page)))
+            return 2
+        print(json.dumps(result))
+        return 0
     try:
         with open(a.page, encoding='utf-8') as f:
             page = json.load(f)
     except (OSError, ValueError) as e:
         page = None
         print(f'[page] could not read the page: {type(e).__name__}', file=sys.stderr)
-    out, report = attach(brief, page)
+    out, report = attach(brief, page, data, names)
     _write_json(a.brief, out)
     if not report['ok']:
         print(f'[page] left out of brief.json: {len(report["errors"])} problems; see page_problems', file=sys.stderr)
+        if report['fallback']:
+            print('[page] signals are stale, so a page written by code (the notice and the computed cards) '
+                  'was attached instead', file=sys.stderr)
         for e in report['errors'][:10]:
             print(f'[page]   {e["where"]}: {e["problem"]}', file=sys.stderr)
-    print(json.dumps({'attached': report['ok'], 'errors': len(report['errors']), 'warnings': len(report['warnings'])}))
+    result = {'attached': report['ok'], 'errors': len(report['errors']), 'warnings': len(report['warnings']),
+              'signals_notices': len(out.get('signals_notices') or []), 'fallback_page': report['fallback']}
+    if report['no_page']:
+        print(json.dumps(dict(result, **no_page)))
+        return 2
+    if data is None:
+        result.update(no_data, signals_notices=None)
+    print(json.dumps(result))
     return 0
 
 

@@ -109,7 +109,7 @@ The driver repeats one pass every `--interval` seconds (default 15):
    validate` and requires `status: passed`, builds and validates the envelope
    (literal `acceptanceCriteria`, story title and description, constraints,
    worktree, deadline, `result_path`), creates or reuses a company-bound worker
-   lane, and calls `hq lanes enqueue <lane-id> --envelope <file>`. An admission
+   lane, and calls `hq runners enqueue <lane-id> --envelope <file>`. An admission
    or capacity refusal prints `RETRY`; the story stays `queued` for the next
    tick. `loop_not_running` drops the worker mapping, leaves the story queued,
    prints `LANE_DOWN <id> <phase> <worker> ...`, exits 11, and the next tick
@@ -126,7 +126,7 @@ The driver exits, writing `{state}/driver/exit` as `<code> <reason>`:
 | 22 | an in-flight phase passed its envelope `deadline` with no handoff |
 | 23 | the helper printed a line the driver does not know, or a call failed |
 | 24 | another driver already runs against this state dir |
-| 25 | stall: a phase has been in flight longer than `--stall-window` (default 600 seconds), no handoff landed, and `hq lanes list --json` shows every owned loop lane `waiting` with `queue_depth` 0 |
+| 25 | stall: a phase has been in flight longer than `--stall-window` (default 600 seconds), no handoff landed, and `hq runners list --json` shows every owned loop lane `waiting` with `queue_depth` 0 |
 | 26 | lane down: the loop lane is no longer running. The story stays `queued`; the next tick creates a fresh lane |
 | 27 | no lane: a phase's worker has no row in the confirmed table passed with `--table`. The story stays `queued`. Add the row, launch that lane, restart the driver |
 | 130, 143 | interrupted or terminated |

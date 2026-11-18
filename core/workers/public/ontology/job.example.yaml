@@ -1,6 +1,6 @@
 # Example /schedule job: garden {company}'s ontology every morning on the
 # owner's Outpost. Copy to companies/{company}/jobs/ontology-garden.yaml,
-# replace the placeholders, then `bash core/scripts/jobs-validate.sh <file>`.
+# replace the placeholders, then `hq core jobs validate <file>`.
 id: ontology-garden
 name: Ontology garden
 schedule: "0 6 * * *"

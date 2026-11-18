@@ -11,6 +11,7 @@ relates_to:
   - .claude/skills/new-agent/SKILL.md
 verified_against:
   - hq-cli@dfe49a48 (2026-09-27)
+  - hq-cli v5.345.215 (2026-11-13, scheduled jobs and hot-signal-sync only)
   - hq-pro-agents@f6275ec7 (2026-09-27)
   - hq-agents-v2@5ec6d18 (2026-09-27)
   - hq-fleet-runtime@483c5a3 (2026-09-27)
@@ -63,7 +64,7 @@ computer with your own model login".
 | `companies <name>` | Show or change a company bot's memberships |
 | `workers` | Workers a bot can be created from |
 | `adopt <name>`, `restore [--all]` | Bring owned bots back to this computer. Re-issuing credentials rotates the machine secret; one machine runs a local bot at a time |
-| `jobs <name>` | List, add (`--add` with `--every` or `--cron`, `--tz`), or remove (`--rm`) recurring jobs. The schedule lives in hq-pro-agents on EventBridge, not on the computer |
+| `jobs <name>` | List, add (`--add` with `--every` or `--cron`), reschedule (`--reschedule`), or remove (`--rm`) recurring jobs. The schedule lives with the bot on this computer and the bot fires its own jobs while it runs; see [Scheduled jobs](#scheduled-jobs). `--tz` applies only to bots on the classic CLI runtime |
 | `promote <name> --company <cmp_uid>` | Move the bot to HQ Fleet compute while keeping its agent UID and DM conversation |
 | `rm <name>` | Stop the runtime, remove its local profile and credentials, and delete the cloud identity and local state |
 | `daemon install\|uninstall\|status <name>` | Manage the LaunchAgent for legacy local bots |
@@ -219,10 +220,56 @@ flag `agents.turn-cost-capture` is the only gate, and it defaults off.
 
 | Surface | Store and scheduler |
 |---|---|
-| `hq bot jobs <name>` (local bots) | hq-pro-agents job record, fired by EventBridge; the bot's inbox loop runs the fired job |
-| `hq agents jobs list\|pause\|cancel` (hosted agents) | Same hq-pro EventBridge jobs. Pause sets the schedule to DISABLED; cancel deletes the schedule and the record |
+| `hq bot jobs <name>` (local bot on the classic CLI runtime) | `jobs.json` in the bot's own folder. The bot's inbox loop fires due jobs while the bot runs; no crontab, launchd or systemd entry is written. After a sleep or outage a job runs once for its newest missed time, labeled a catch-up |
+| `hq bot jobs <name>` (local bot on the HQ Fleet Runtime) | The Fleet Runtime's job store in the bot's profile on this computer, in this computer's time zone. Jobs run while the bot's Fleet gateway runs. Jobs from an older `jobs.json` move into it when the bot starts |
+| `hq agents jobs list\|pause\|cancel` (hosted agents) | hq-pro-agents job records on a cloud schedule. Pause sets the schedule to DISABLED; cancel deletes the schedule and the record |
 | HqFleet cron on a v2 box | Runtime-native cron on the box clock (no per-job timezone). `hq-agents-v2-import-jobs` migrates an agent's hq-pro jobs onto it and pauses the originals |
 | Outpost jobs (`/schedule`) | systemd user timers on a user's Outpost; see [outpost-jobs-spec.md](outpost-jobs-spec.md) |
+
+### Built-in hot-signal-sync job (local bots)
+
+When a local bot starts, it registers a built-in job named `hot-signal-sync`
+that runs daily at 06:30 in this computer's time zone. Each company gets one
+such job on the computer, held by one bot:
+
+- A bot with its own company registers the job for that company.
+- On the HQ Fleet Runtime, a personal bot with no company of its own registers
+  one job for each company its owner belongs to.
+- On the classic CLI runtime, a bot with no company registers the job for the
+  HQ's active company, and the bot runs the sync once right after registering
+  it.
+- On both runtimes, when the owner has several personal bots, the Executive
+  bot holds the jobs.
+
+Change the time with `hq bot jobs <bot> --reschedule <jobId> --every "<when>"`,
+or remove the job with `--rm`; a removed job is not added back on the next
+start.
+
+What the job runs depends on the hq-cli flag `cli.bot-signals-engine-job`,
+which is off by default. The HQ Fleet Runtime reads the flag when the bot
+starts; the classic CLI runtime reads it each time the job fires. The Fleet
+Runtime runs the commands below; the classic CLI runtime runs the same work
+inside the bot process.
+
+| Flag | Runs (same as) | What it does |
+|---|---|---|
+| Off (default) | `hq sources sync` | Lands new items from the company's connected sources and builds signals from them with Claude Code |
+| On | `hq signals run --trigger job` | Runs the signals engine: garden, adapters, extract, garden, upload, and writes a run record under `workspace/signals/runs/{date}/{company}.json` |
+
+Signals are extracted on this computer, under the person's own logins:
+
+- With the flag off, the signals pass always runs Claude Code (`claude -p`),
+  whatever runtime the bot uses. Claude Code must be installed and signed in
+  on this computer; a bot that only has a Codex login reports that Claude is
+  signed out or not installed.
+- With the flag on, extraction uses the main local bot's Claude or Codex
+  login.
+
+There is no cloud schedule for this job: it runs only while the bot runs. The
+daily brief can also start a signals run: when the engine runs as a job on this
+computer, `/daily-brief` Step 0 starts `hq signals run --trigger brief` for
+each company the gate shows as waiting, and waits for it
+(`.claude/skills/daily-brief/scripts/brief_gate.py check --start-run`).
 
 ## Which one to use
 
@@ -240,6 +287,11 @@ flag `agents.turn-cost-capture` is the only gate, and it defaults off.
   `src/lib/bot/config.ts`, `src/lib/bot/api.ts`,
   `docs/agent-create-payment-required.md`, `docs/local-bot-promotion.md`,
   `docs/open-bot-comms.md`, `docs/external-agents-cli.md`
+- hq-cli@d06e794a (scheduled jobs and hot-signal-sync):
+  `src/commands/bot-jobs.ts`, `src/commands/bot.ts`,
+  `src/lib/bot/local-jobs.ts`, `src/lib/bot/fleet-cron.ts`,
+  `src/lib/bot/jobs/hot-signal-sync.ts`, `src/lib/bot/signals-engine-flag.ts`,
+  `src/lib/signals/engine.ts`
 - hq-pro-agents@f6275ec7: `src/agents/handler.ts` (provider default and
   `LEGACY_MANAGED_PROVIDER_RETIRED`, `busyGateEnabled`, Slack routes),
   `src/agents/local-bot-routes.ts`, `src/agent-config/setup-steps.ts`,

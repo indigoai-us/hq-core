@@ -58,7 +58,7 @@ SESSION
 #!/bin/sh
 case "\$1" in
   mesh) printf '%s\n' "\$*" >> "$C/mesh-calls"; printf '{"ok":true}\n' ;;
-  lanes)
+  runners)
     case "\$2" in
       create|enqueue) printf '{"ok":true,"lane_id":"lane-backend-dev"}\n' ;;
       list) printf '[]\n' ;;

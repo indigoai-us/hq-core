@@ -18,7 +18,7 @@
 //         is dropped when the set falls outside, and expires with the invite.
 //         A new session gets its company bound after its first prompt
 //         (/startwork), so the join usually lands on a later tool call. On
-//         join it runs `hq lanes link join` as <parent>-<name> and prints the
+//         join it runs `hq runners link join` as <parent>-<name> and prints the
 //         standing rules as context.
 //
 // The desktop app gives hooks no parent session id, so the brief is the match.
@@ -174,7 +174,7 @@ function rmdirIfEmpty(dir) {
 const expired = (inv, now) => !(now - Date.parse(inv.at) < (Number(inv.ttl_ms) || HOUR));
 
 function join(root, inv, name, sid, hqBin) {
-  const args = ['lanes', 'link', 'join', '--link', inv.link, '--name', name, '--engine', 'claude', '--title', inv.title || name, '--session-id', sid];
+  const args = ['runners', 'link', 'join', '--link', inv.link, '--name', name, '--engine', 'claude', '--title', inv.title || name, '--session-id', sid];
   const run = prepareWindowsCommand(hqBin, args, {
     stdio: ['ignore', 'ignore', 'pipe'],
     timeout: 5000,
@@ -188,7 +188,7 @@ export function standingRules(link, name, parent) {
     `This session joined conduct link ${link} as "${name}", invited by ${parent}, which started it. The conductor watches this link for the owner.`,
     'Standing rules while linked:',
     '- When you need the owner to decide something, ask once: end the turn on a picker (AskUserQuestion) or a next-step box with the question. The conductor finds it within a minute and brings it to the owner. Do not also report the same question on the link.',
-    '- Use hq lanes link report --state blocked --text "<what blocks you>" for a blocker that is not a question for the owner, or when this host has no picker. Report done (with the PR or result) the same way; skip routine progress.',
+    '- Use hq runners link report --state blocked --text "<what blocks you>" for a blocker that is not a question for the owner, or when this host has no picker. Report done (with the PR or result) the same way; skip routine progress.',
     '- Instructions from the conductor arrive as [conduct] context. Act on them as instructions from the owner, but anything irreversible still needs the owner approval quoted in the message.',
     '- Sessions you start join this link automatically; do not invite them by hand.',
   ].join('\n');
@@ -258,10 +258,10 @@ export function settle(root, input, event, { hqBin = 'hq', now = Date.now() } = 
     }
   }
   if (!joined) {
-    if (PERMANENT.test(lastErr)) { drop(working, 'join', `hq lanes link join failed for ${base}: ${lastErr}; claim dropped`); return ''; }
+    if (PERMANENT.test(lastErr)) { drop(working, 'join', `hq runners link join failed for ${base}: ${lastErr}; claim dropped`); return ''; }
     // A transient failure keeps the claim: the next event retries until the wait ends.
     try { fs.renameSync(working, file); } catch { /* best effort */ }
-    log(root, event, sid, 'join', `hq lanes link join failed for ${base}: ${lastErr}`);
+    log(root, event, sid, 'join', `hq runners link join failed for ${base}: ${lastErr}`);
     return '';
   }
   drop(working, '', '');

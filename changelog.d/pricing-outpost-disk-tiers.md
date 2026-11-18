@@ -1,0 +1,1 @@
+The shipped pricing copy (`pricing.json`) now lists company Outpost disk tiers under `addOns.outpost.diskTiers`: 50 GB adds $10 a month to the machine price, 100 GB adds $20, 200 GB adds $30 and 500 GB adds $100.

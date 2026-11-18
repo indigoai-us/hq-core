@@ -9,7 +9,7 @@ Do **not** rely on prompt classifiers or `auto-session-project`.
 2. Write session meta **and** reconcile with trusted context in one call:
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task}"
 ```
 

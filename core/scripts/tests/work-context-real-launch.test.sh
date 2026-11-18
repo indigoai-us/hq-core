@@ -169,7 +169,7 @@ env PATH="$SANDBOX/bin:$PATH" HOME="$HOME_DIR" WORK_MESH_HOME="$WORK_MESH_HOME" 
   HQ_DAEMON_STATUS_JSON='{"ok":true,"running":false,"message":"LaunchAgent ai.getindigo.hq-mesh-daemon: installed (not loaded)"}' \
   HQ_SESSION_ID="$SID" bash "$BIND" --company acme --root "$HQ" \
   >/dev/null 2>"$not_loaded_err"
-grep -Fqx 'Work Mesh daemon is installed but not loaded; start it with: hq mesh daemon install' "$not_loaded_err" \
+grep -Fqx 'Work Mesh daemon is installed but not loaded; start it with: hq daemon install' "$not_loaded_err" \
   && [ -s "$not_loaded_calls" ] \
   && pass "enabled daemon warning emits the start command" \
   || fail "enabled daemon warning was absent: $(cat "$not_loaded_err" 2>/dev/null)"
@@ -427,7 +427,7 @@ cache_run() {
   if [ "$cache_case" = needs_project ]; then
     fixture="$(printf '%s' "$fixture" | jq -c '. + {decision:{decisionId:"decision-fixture",askAfter:true,options:[{optionId:"existing",label:"Existing project"}]}}')"
   fi
-  env PATH="$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" \
+  env PATH="${cache_path_prefix:+$cache_path_prefix:}$SANDBOX/bin:$PATH" HOME="$HOME" WORK_MESH_HOME="$WORK_MESH_HOME" \
     WORK_MESH_SPOOL="$WORK_MESH_SPOOL" WORK_MESH_SEQ_DIR="$WORK_MESH_SEQ_DIR" \
     HQ_ROOT="$HQ" HQ_WORK_CONTEXT_ROOT="$HOME_DIR/.hq/work-context" \
     HQ_AGENT_IDENTITY_FILE="$SANDBOX/agent-identity.json" \
@@ -452,6 +452,57 @@ cache_turn_start() {
     bash "$TURN_START" <<<"{\"session_id\":\"$sid\",\"prompt\":\"help me choose project\"}" \
     >"$output" 2>"$output.err"
 }
+cache_file_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+# A chmod that treats "--" after the mode the way BSD chmod (macOS) does: it is
+# a file name, so the real paths are changed, "chmod: --: No such file or
+# directory" is printed and the exit status is 1. GNU chmod accepts the form,
+# so without this a Linux run cannot see a "chmod MODE -- FILE && mv" chain
+# that never reaches its mv on macOS.
+cache_real_chmod="$(command -v chmod)"
+cache_bsd_chmod_dir="$SANDBOX/bsd-chmod-bin"
+mkdir -p "$cache_bsd_chmod_dir"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'real=%q\n' "$cache_real_chmod"
+  cat <<'SHIM'
+operands=()
+mode_seen=0
+dashdash_after_mode=0
+for arg in "$@"; do
+  if [ "$mode_seen" -eq 0 ]; then
+    case "$arg" in
+      --|-[RfhvHLP]*) ;;
+      *) mode_seen=1 ;;
+    esac
+    operands+=("$arg")
+  elif [ "$arg" = "--" ]; then
+    dashdash_after_mode=1
+  else
+    operands+=("$arg")
+  fi
+done
+"$real" "${operands[@]}"
+rc=$?
+if [ "$dashdash_after_mode" -eq 1 ]; then
+  echo 'chmod: --: No such file or directory' >&2
+  exit 1
+fi
+exit "$rc"
+SHIM
+} > "$cache_bsd_chmod_dir/chmod"
+"$cache_real_chmod" +x "$cache_bsd_chmod_dir/chmod"
+: >"$SANDBOX/bsd-chmod-probe"
+if "$cache_bsd_chmod_dir/chmod" 600 -- "$SANDBOX/bsd-chmod-probe" 2>/dev/null; then
+  fail "BSD chmod shim accepted -- after the mode"
+elif "$cache_bsd_chmod_dir/chmod" 640 "$SANDBOX/bsd-chmod-probe" 2>/dev/null \
+  && [ "$(cache_file_mode "$SANDBOX/bsd-chmod-probe")" = 640 ]; then
+  pass "BSD chmod shim rejects -- after the mode and still changes modes"
+else
+  fail "BSD chmod shim did not change a mode without --"
+fi
+cache_path_prefix=""
 : >"$cache_calls"
 : >"$cache_default_calls"
 for cache_case in needs_project company_conflict; do
@@ -503,6 +554,34 @@ for cache_case in needs_project company_conflict; do
       && pass "first UserPromptSubmit matches synchronous decision and board output" \
       || fail "first UserPromptSubmit differs after cached SessionStart"
   fi
+  # Same cache hit with a BSD-style chmod first on PATH: the restore must not
+  # depend on chmod accepting "--" after the mode.
+  before_bsd="$(wc -l < "$cache_calls")"
+  cache_path_prefix="$cache_bsd_chmod_dir"
+  cache_run "$cache_case" bsdchmod
+  cache_path_prefix=""
+  after_bsd="$(wc -l < "$cache_calls")"
+  bsd_sessions="$HOME_DIR/.hq/work-context/sessions"
+  bsd_state="$bsd_sessions/sid-cache-$cache_case-bsdchmod.json"
+  bsd_board="$bsd_sessions/sid-cache-$cache_case-bsdchmod/board.md"
+  [ "$after_bsd" -eq "$before_bsd" ] \
+    && pass "$cache_case BSD-chmod run is a cache hit" \
+    || fail "$cache_case BSD-chmod run did not hit the preflight cache"
+  [ -f "$bsd_state" ] && [ -f "$bsd_board" ] \
+    && jq -S 'del(.sessionId,.clientOperationId)' "$bsd_state" >"$SANDBOX/$cache_case-bsd.state.norm" \
+    && jq -S 'del(.sessionId,.clientOperationId)' "$SANDBOX/$cache_case-reference.state" >"$SANDBOX/$cache_case-reference.state.norm" \
+    && cmp -s "$SANDBOX/$cache_case-bsd.state.norm" "$SANDBOX/$cache_case-reference.state.norm" \
+    && cmp -s "$bsd_board" "$SANDBOX/$cache_case-reference.board" \
+    && pass "$cache_case cache hit restores session state and board under BSD chmod" \
+    || fail "$cache_case cache hit did not restore session state or board under BSD chmod"
+  bsd_modes="state=$(cache_file_mode "$bsd_state") board=$(cache_file_mode "$bsd_board") dir=$(cache_file_mode "$bsd_sessions/sid-cache-$cache_case-bsdchmod")"
+  [ "$bsd_modes" = "state=600 board=600 dir=700" ] \
+    && pass "$cache_case restored session state and board are 600 in a 700 folder" \
+    || fail "$cache_case restored modes are wrong: $bsd_modes"
+  bsd_tmp_left="$(find "$HOME_DIR/.hq/work-context" \( -name '*.tmp' -o -name '.sessionstart-preflight-cache.*' \) | sort)"
+  [ -z "$bsd_tmp_left" ] \
+    && pass "$cache_case cache hit leaves no temporary file" \
+    || fail "$cache_case cache hit left temporary files: $bsd_tmp_left"
   cache_created_after="$(jq -r '.createdAt' "$HOME_DIR/.hq/work-context/sessionstart-preflight-cache.json")"
   [ "$cache_created_before" = "$cache_created_after" ] \
     && pass "$cache_case cache hit preserves original TTL timestamp" \

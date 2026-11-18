@@ -64,6 +64,16 @@ NON_EXECUTING_REFERENCE_ALLOWLIST = {
     # Copies worktree.sh into a throwaway HQ root and runs it against a stub
     # `hq` that only records --source; it never reaches the real CLI.
     ("core/scripts/tests/worktree-relative-source.test.sh", "worktree.sh"),
+    # US-043: the caller-rewrite test feeds helper paths to the rewriter as
+    # text and checks the rewritten text; it never runs a helper.
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "audit-log.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "generate-workers-registry.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "hq-dm-bind.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "hq-pin.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "read-policy-frontmatter.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "rebuild-threads-index.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "refresh-vault-access.sh"),
+    ("core/scripts/tests/rewrite-core-callers.test.mjs", "worktree.sh"),
 }
 
 # This test's own allowlist contains forwarder names as Python metadata. The
@@ -77,6 +87,13 @@ ANALYZER_METADATA_ALLOWLIST = {
     # Named in references_forwarder()'s docstring as the worked example of the
     # suffix false positive it exists to prevent. Prose, not execution.
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "worktree.sh"),
+    # Named by the rewrite-core-callers.test.mjs allowlist entries above.
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "audit-log.sh"),
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "generate-workers-registry.sh"),
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "hq-dm-bind.sh"),
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "hq-pin.sh"),
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "read-policy-frontmatter.sh"),
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "refresh-vault-access.sh"),
 }
 ALLOWLISTED_REFERENCES = (
     NON_EXECUTING_REFERENCE_ALLOWLIST | ANALYZER_METADATA_ALLOWLIST

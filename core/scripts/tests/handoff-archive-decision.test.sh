@@ -41,7 +41,7 @@ cat > "$bin/hq" <<'EOF'
 #!/usr/bin/env bash
 echo "hq $*" >> "$FAKE_CALLS"
 case "$1 $2" in
-  "lanes list")
+  "runners list")
     [ "${FAKE_LANES_FAIL:-0}" = 1 ] && { echo "boom" >&2; exit 1; }
     if [ -n "${FAKE_LANES_JSON:-}" ]; then printf '%s\n' "$FAKE_LANES_JSON"; else echo '{"ok":true,"action":"list","lanes":[]}'; fi ;;
   "monitor list")
@@ -214,11 +214,11 @@ pass "open PR on the session's branch refuses; gh failure refuses"
 #     aimed at it, and in-session background tasks. Failures refuse.
 : > "$calls"
 expect "archive: yes" --msg "--archive"
-grep -q "^hq lanes list --senior session:$SID --active --json" "$calls" || fail "lanes not filtered by session: $(cat "$calls")"
+grep -q "^hq runners list --senior session:$SID --active --json" "$calls" || fail "lanes not filtered by session: $(cat "$calls")"
 FAKE_LANES_JSON='{"ok":true,"lanes":[{"lane_id":"L1","state":"running"}]}' \
   expect "archive: no (background work running: 1 active lane(s))" --msg "--archive"
-FAKE_LANES_FAIL=1 expect "archive: no (could not verify background work: hq lanes list failed)" --msg "--archive"
-FAKE_LANES_JSON='{"ok":false}' expect "archive: no (could not verify background work: hq lanes list failed)" --msg "--archive"
+FAKE_LANES_FAIL=1 expect "archive: no (could not verify background work: hq runners list failed)" --msg "--archive"
+FAKE_LANES_JSON='{"ok":false}' expect "archive: no (could not verify background work: hq runners list failed)" --msg "--archive"
 FAKE_MONITORS_JSON='{"monitors":[{"monitor_id":"mon_1","target":{"kind":"session","sessionId":"'"$SID"'"},"state":{"status":"running"}}]}' \
   expect "archive: no (background work running: monitor mon_1)" --msg "--archive"
 FAKE_MONITORS_JSON='{"monitors":[{"monitor_id":"mon_2","target":{"kind":"session","sessionId":"other"},"state":{"status":"running"}}]}' \
@@ -262,7 +262,7 @@ pass "pending asks refuse; unreadable ask records refuse"
 : > "$calls"
 expect "archive: yes" --msg "--archive" --cwd "$TMP_ROOT/wt"
 grep -q '^gh pr list' "$calls" || fail "all-clear skipped the PR check"
-grep -q '^hq lanes list' "$calls" || fail "all-clear skipped the lanes check"
+grep -q '^hq runners list' "$calls" || fail "all-clear skipped the lanes check"
 grep -q '^hq monitor list' "$calls" || fail "all-clear skipped the monitor check"
 pass "all-clear path archives after every check"
 

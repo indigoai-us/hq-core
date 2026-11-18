@@ -72,7 +72,7 @@ hq-pack-cowork/
 | `hq_members` | `hq members <action>` | list / invite / revoke memberships. |
 | `hq_groups` | `hq groups <action>` | list / members / create / delete / add / remove. |
 | `hq_dm` | `hq dm` | Send a direct message (HQ Desktop App notification). |
-| `hq_packages` | `hq packages` / `install` / `remove` | list / install / remove / update packages. |
+| `hq_packages` | `hq packs list/update/uninstall` / `hq install` | list / install / remove / update content packs. |
 | `hq_modules` | `hq modules <action>` | list / add / sync / update knowledge modules. |
 | `hq_meetings` | `hq meetings <action>` | list / get / search / transcript / notes. |
 | `hq_sources` | `hq sources <action>` | list / get / channels / entities. |

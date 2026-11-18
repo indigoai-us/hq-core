@@ -36,7 +36,7 @@ make_machine_creds() {
 
 HOME_USERNAME="$TMP/home-username"
 make_token "$HOME_USERNAME" "username.jwt"
-OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   USERNAME=windows-user HOME="$HOME_USERNAME" "$RESOLVER" 2>"$TMP/username.err")
 STATUS=$?
 if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
@@ -82,6 +82,61 @@ if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
 else
   fail "machine resolver should mint without browser login (got: $OUTPUT)"
 fi
+
+# Company Outpost jobs hand HQ_MACHINE_SESSION_FILE (minted tokens, no
+# machine-creds.json). The resolver must use those tokens and skip browser login.
+HOME_SESSION="$TMP/home-session"
+mkdir -p "$HOME_SESSION" "$TMP/session-tmp"
+SESSION_FILE="$TMP/machine-session.json"
+jq -n --argjson expires "$FUTURE_MS" \
+  '{idToken:"session.id",accessToken:"session.access",expiresAt:$expires}' \
+  > "$SESSION_FILE"
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_SESSION" USER=session-user TMPDIR="$TMP/session-tmp" \
+  HQ_MACHINE_SESSION_FILE="$SESSION_FILE" \
+  /bin/bash "$RESOLVER" 2>"$TMP/session.err")
+STATUS=$?
+SESSION_LOCK="$TMP/session-tmp/hq-deploy-login-attempted-session-user"
+if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
+  --argjson expires "$FUTURE_MS" \
+  '.status == "ok" and .identity == "machine" and .jwt == "session.id" and .id_token == "session.id" and .source == "machine_session" and .expires_at == $expires' >/dev/null \
+  && [ ! -e "$SESSION_LOCK" ] \
+  && ! grep -q 'Opening HQ sign-in' "$TMP/session.err"; then
+  pass "delegated machine session returns the ID token without mint or browser login"
+else
+  fail "delegated machine session should return machine_session tokens (got: $OUTPUT)"
+fi
+
+# A missing or unreadable HQ_MACHINE_SESSION_FILE fails closed.
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_SESSION" USER=session-missing TMPDIR="$TMP/session-tmp" \
+  HQ_MACHINE_SESSION_FILE="$TMP/no-such-machine-session.json" \
+  /bin/bash "$RESOLVER" 2>"$TMP/session-missing.err")
+STATUS=$?
+if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
+  '.status == "login_required" and .reason == "machine_session_unusable"' >/dev/null \
+  && ! grep -q 'Opening HQ sign-in' "$TMP/session-missing.err"; then
+  pass "missing delegated machine session fails closed without browser login"
+else
+  fail "missing delegated machine session should fail closed (got: $OUTPUT)"
+fi
+
+# An expired delegated session fails closed instead of falling through to person tokens.
+make_token "$HOME_SESSION" "person.jwt"
+jq -n '{idToken:"stale.id",accessToken:"stale.access",expiresAt:1}' > "$SESSION_FILE"
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  HOME="$HOME_SESSION" USER=session-stale TMPDIR="$TMP/session-tmp" \
+  HQ_MACHINE_SESSION_FILE="$SESSION_FILE" \
+  /bin/bash "$RESOLVER" 2>"$TMP/session-stale.err")
+STATUS=$?
+if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
+  '.status == "login_required" and .reason == "machine_session_unusable"' >/dev/null \
+  && ! grep -q 'Opening HQ sign-in' "$TMP/session-stale.err"; then
+  pass "expired delegated machine session fails closed instead of using person tokens"
+else
+  fail "expired delegated machine session should fail closed (got: $OUTPUT)"
+fi
+rm -f "$HOME_SESSION/.hq/cognito-tokens.json"
 
 # A failed machine mint must stop immediately, without the login lock/browser
 # fallback used by the human path.
@@ -317,7 +372,7 @@ HOME_STRAY="$TMP/home-stray"
 make_token "$HOME_STRAY" "person.jwt"
 make_machine_cache "$HOME_STRAY/.hq/work-mesh/daemon" "$FUTURE_MS"
 STRAY_REFRESH_LOG="$TMP/stray-refresh.log"
-OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   HOME="$HOME_STRAY" USER=stray-user TMPDIR="$TMP/stray-tmp" \
   STRAY_REFRESH_LOG="$STRAY_REFRESH_LOG" PATH="$BIN_STRAY:$PATH" \
   /bin/bash "$RESOLVER" 2>"$TMP/stray.err")
@@ -334,7 +389,7 @@ fi
 # mode, so a damaged agent never reaches the human browser sign-in.
 HOME_STRAY_ONLY="$TMP/home-stray-only"
 make_machine_cache "$HOME_STRAY_ONLY/.hq/work-mesh/daemon" "$FUTURE_MS"
-OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   HOME="$HOME_STRAY_ONLY" USER=stray-only TMPDIR="$TMP/stray-tmp" \
   /bin/bash "$RESOLVER" 2>"$TMP/stray-only.err")
 if printf '%s\n' "$OUTPUT" | jq -e '.status == "login_required" and .reason == "machine_mint_failed"' >/dev/null \
@@ -346,7 +401,7 @@ fi
 
 HOME_UNKNOWN="$TMP/home-unknown"
 make_token "$HOME_UNKNOWN" "unknown.jwt"
-OUTPUT=$(env -u USER -u USERNAME -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u USER -u USERNAME -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   HOME="$HOME_UNKNOWN" "$RESOLVER" 2>"$TMP/unknown.err")
 STATUS=$?
 if [ "$STATUS" = "0" ] && printf '%s\n' "$OUTPUT" | jq -e \
@@ -366,7 +421,7 @@ TMPDIR_TEST="$(cd "$TMPDIR_TEST" && pwd)"
 LOGIN_LOCK="$TMPDIR_TEST/hq-deploy-login-attempted-$SAFE_KEY"
 touch "$LOGIN_LOCK"
 # Keep real PATH (jq/node required for engine probe); lock short-circuits before login.
-OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" \
   TMPDIR="$TMPDIR_TEST" \
   /bin/bash "$RESOLVER" 2>"$TMP/lock.err")
@@ -380,27 +435,63 @@ fi
 # Regression (feedback_7dc25705): a login lock older than the TTL is stale and
 # must not block login forever. A stub hq makes the login attempt a no-op.
 mkdir -p "$TMP/stub-bin"
-printf '#!/bin/sh\nexit 0\n' > "$TMP/stub-bin/hq"
+cat > "$TMP/stub-bin/hq" <<'STUB'
+#!/bin/sh
+[ "$#" -eq 1 ] && [ "$1" = login ] || exit 22
+printf '%s\n' "$1" > "$LOGIN_ARGS_LOG"
+exit 0
+STUB
 chmod +x "$TMP/stub-bin/hq"
 touch -t 200001010000 "$LOGIN_LOCK"
-OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" TMPDIR="$TMPDIR_TEST" \
-  PATH="$TMP/stub-bin:$PATH" /bin/bash "$RESOLVER" 2>"$TMP/stale.err")
+  HQ_DEPLOY_LOGIN_BROWSER=1 \
+  LOGIN_ARGS_LOG="$TMP/login-args" PATH="$TMP/stub-bin:$PATH" /bin/bash "$RESOLVER" 2>"$TMP/stale.err")
 STATUS=$?
 if [ "$STATUS" = "0" ] && [ "$(printf '%s\n' "$OUTPUT" | jq -r '.reason // empty')" = "login_attempt_failed" ] \
-  && [ -z "$(find "$LOGIN_LOCK" -prune -mmin +1 2>/dev/null)" ]; then
+  && [ -z "$(find "$LOGIN_LOCK" -prune -mmin +1 2>/dev/null)" ] \
+  && [ "$(cat "$TMP/login-args" 2>/dev/null)" = login ]; then
   pass "a stale login lock past its TTL is retaken and login is retried"
 else
   fail "stale login lock still blocked login (got: $OUTPUT)"
 fi
 # The freshly retaken lock blocks again within the TTL.
-OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
   USERNAME="$SAFE_USERNAME" HOME="$TMP/home-lock" TMPDIR="$TMPDIR_TEST" \
   PATH="$TMP/stub-bin:$PATH" /bin/bash "$RESOLVER" 2>/dev/null)
 if [ "$(printf '%s\n' "$OUTPUT" | jq -r '.reason // empty')" = "login_already_attempted" ]; then
   pass "a fresh login lock still blocks a second login inside the TTL"
 else
   fail "fresh login lock did not block (got: $OUTPUT)"
+fi
+
+# Regression: with no token, no machine credentials and no browser (agent box,
+# CI, SSH without a display), the resolver must fail fast with a clear reason
+# instead of waiting up to 180 s on a browser login that cannot complete.
+mkdir -p "$TMP/hang-bin" "$TMP/home-headless" "$TMP/headless-tmp"
+cat > "$TMP/hang-bin/hq" <<'STUB'
+#!/bin/sh
+printf 'called\n' > "$LOGIN_ARGS_LOG"
+sleep 30
+STUB
+chmod +x "$TMP/hang-bin/hq"
+HEADLESS_TMP="$(cd "$TMP/headless-tmp" && pwd)"
+HEADLESS_START=$(date +%s)
+OUTPUT=$(env -u USER -u HQ_MACHINE_CREDS_FILE -u HQ_MACHINE_SESSION_FILE -u HQ_MACHINE_TOKEN_STATE_DIR -u HQ_WORK_MESH_ROOT \
+  -u DISPLAY -u WAYLAND_DISPLAY -u BROWSER -u CI -u HQ_DEPLOY_LOGIN_BROWSER \
+  USERNAME=headless-user HOME="$TMP/home-headless" TMPDIR="$HEADLESS_TMP" \
+  SSH_CONNECTION="192.0.2.1 1 198.51.100.2 22" LOGIN_ARGS_LOG="$TMP/headless-login" \
+  PATH="$TMP/hang-bin:$PATH" /bin/bash "$RESOLVER" 2>"$TMP/headless.err" </dev/null)
+STATUS=$?
+ELAPSED=$(( $(date +%s) - HEADLESS_START ))
+if [ "$STATUS" = "0" ] && [ "$ELAPSED" -lt 10 ] \
+  && [ "$(printf '%s\n' "$OUTPUT" | jq -r '.status + ":" + (.reason // "")')" = "login_required:login_no_browser" ] \
+  && grep -q 'needs a browser' "$TMP/headless.err" \
+  && [ ! -e "$TMP/headless-login" ] \
+  && [ ! -e "$HEADLESS_TMP/hq-deploy-login-attempted-headless-user" ]; then
+  pass "headless box without a browser fails fast with login_no_browser"
+else
+  fail "headless login should fail fast (status=$STATUS elapsed=${ELAPSED}s got: $OUTPUT)"
 fi
 
 if [ "$FAIL" = "0" ]; then echo "ALL PASS"; exit 0; else echo "FAILURES"; exit 1; fi

@@ -1,7 +1,7 @@
 ---
 name: delegate
 description: "Hand a project to a person or fleet agent: grants, dossier, ownership transfer, and a pickup DM."
-allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(bash core/scripts/hq-delegate-resolve.sh:*), Bash(bash core/scripts/hq-delegate-bundle.sh:*), Bash(bash core/scripts/hq-delegate-grant.sh:*), Bash(bash core/scripts/hq-delegate-repo.sh:*), Bash(bash core/scripts/hq-delegate-secrets.sh:*), Bash(bash core/scripts/hq-delegate-transfer.sh:*), Bash(bash core/scripts/hq-delegate-verify.sh:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(bash core/scripts/hq-delegate-pickup.sh:*), Bash(rm:*)
+allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq core delegate resolve:*), Bash(hq core delegate bundle:*), Bash(hq core delegate grant:*), Bash(hq core delegate repo:*), Bash(hq core delegate secrets:*), Bash(hq core delegate transfer:*), Bash(hq core delegate verify:*), Bash(hq core delegate send:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(hq core delegate pickup:*), Bash(rm:*)
 ---
 
 # /delegate — one-command project handoff
@@ -62,7 +62,7 @@ the stage from the manifest (`project.stage`), so nothing below changes.
 ### 2. Resolve the recipient — confirm before anything else
 
 ```bash
-bash core/scripts/hq-delegate-resolve.sh --company <co> --to "<recipient>"
+hq core delegate resolve --company <co> --to "<recipient>"
 ```
 
 - **Exit 0** — JSON `{kind, principal, displayName}`. Continue.
@@ -79,7 +79,7 @@ Resolution is single-company and tenancy-safe; never look across companies.
 ### 3. Dry run (when `--dry-run`)
 
 ```bash
-bash core/scripts/hq-delegate-verify.sh --dry-run --company <co> --project <project> --to <principal> [--mode share]
+hq core delegate verify --dry-run --company <co> --project <project> --to <principal> [--mode share]
 ```
 
 Print the plan verbatim and stop. Nothing is pushed, granted, transferred, or
@@ -100,7 +100,7 @@ delegation itself does not depend on it.
 ### 5. Build the bundle
 
 ```bash
-bash core/scripts/hq-delegate-bundle.sh build --company <co> --project <project> \
+hq core delegate bundle build --company <co> --project <project> \
   --to <principal> --to-kind <kind> --to-name "<displayName>" [--mode share]
 ```
 
@@ -117,9 +117,9 @@ the secret names, and whether the branch needs pushing — it is not a gate, and
 nothing waits on the user here:
 
 ```bash
-bash core/scripts/hq-delegate-grant.sh --manifest <manifest>          # vault grants incl. write escalation
-bash core/scripts/hq-delegate-repo.sh --manifest <manifest>           # exit 2 only when a local-only branch needs pushing
-bash core/scripts/hq-delegate-secrets.sh --manifest <manifest>        # secret NAMES that will be granted (only skipped when the user typed --no-secrets)
+hq core delegate grant --manifest <manifest>          # vault grants incl. write escalation
+hq core delegate repo --manifest <manifest>           # exit 2 only when a local-only branch needs pushing
+hq core delegate secrets --manifest <manifest>        # secret NAMES that will be granted (only skipped when the user typed --no-secrets)
 ```
 
 ### 7. State the plan, then proceed — no confirmation
@@ -139,7 +139,11 @@ State — do not ask — what is about to happen, in one compact full-prose bloc
 - every vault prefix with its permission — noting plainly that **write** lets
   the recipient upload, overwrite, and delete under the project prefix, and
   that access persists until manually revoked
-- every secret name being granted (read) — this always happens, values never
+- every secret name being granted (read), and where the names came from
+  (the secrets helper prints `Source:` — the project's `.env.schema`, then
+  `prd.json` `metadata.secrets`, then the repo's `.env.schema` as the
+  widest fallback; every name is checked against the company vault before
+  any share runs) — this always happens, values never
   move, and the recipient consumes them via `hq run` / `hq secrets exec`
 - the repo and branch, including "the branch exists only locally and will be
   pushed" when the repo helper said so
@@ -158,12 +162,16 @@ name a recipient it cannot resolve. Everything else proceeds unasked.
 ### 8. Execute, in order, stopping at the first failure
 
 ```bash
-bash core/scripts/hq-delegate-grant.sh --manifest <manifest> --yes
-bash core/scripts/hq-delegate-repo.sh --manifest <manifest> --yes        # when the project has a repo
-bash core/scripts/hq-delegate-secrets.sh --manifest <manifest> --yes     # always, unless the user typed --no-secrets
-bash core/scripts/hq-delegate-transfer.sh --manifest <manifest>          # skipped automatically in share mode; runs hq mesh project reassign
-bash core/scripts/hq-delegate-verify.sh --manifest <manifest>            # reachability probe — gates the send
+hq core delegate grant --manifest <manifest> --yes
+hq core delegate repo --manifest <manifest> --yes        # when the project has a repo
+hq core delegate secrets --manifest <manifest> --yes     # always, unless the user typed --no-secrets
+hq core delegate transfer --manifest <manifest>          # skipped automatically in share mode; runs hq mesh project reassign
+hq core delegate verify --manifest <manifest>            # reachability probe — gates the send
 ```
+
+The verify helper can run longer than the foreground command limit on a large
+project. Run it with `run_in_background: true` and wait for its exit status
+instead of running it in the foreground and retrying after a timeout.
 
 Verification invokes `core/scripts/hq-delegate-publish.sh` to publish the final
 PRD, brief, manifest, and journal. It compares canonical cloud bytes with local
@@ -185,7 +193,7 @@ intensity `light`) — plain and factual, no hype. Never rewrite the generated
 command lines, recipients, or flags. Then:
 
 ```bash
-bash core/scripts/hq-delegate-send.sh --manifest <manifest> --send --headline "<humanized headline>"
+hq core delegate send --manifest <manifest> --send --headline "<humanized headline>"
 ```
 
 One DM, prompt and brief attached from files. The helper refuses to send
@@ -211,9 +219,9 @@ until the recipient demonstrably has it. Record the receipt the moment there is
 evidence, and let silence turn into a FAILED state instead of an open question:
 
 ```bash
-bash core/scripts/hq-delegate-pickup.sh --manifest <manifest> --ack "<their reply, verbatim>"   # they acknowledged
-bash core/scripts/hq-delegate-pickup.sh --manifest <manifest> --check                            # probe: recipient commit on the branch? (exit 0 picked-up, 6 waiting, 5 FAILED past the window)
-bash core/scripts/hq-delegate-pickup.sh --manifest <manifest> --status                           # one-line state
+hq core delegate pickup --manifest <manifest> --ack "<their reply, verbatim>"   # they acknowledged
+hq core delegate pickup --manifest <manifest> --check                            # probe: recipient commit on the branch? (exit 0 picked-up, 6 waiting, 5 FAILED past the window)
+hq core delegate pickup --manifest <manifest> --status                           # one-line state
 ```
 
 Default window is 72h (`HQ_DELEGATE_PICKUP_WINDOW_HOURS`). A FAILED result names
@@ -278,3 +286,4 @@ no jargon. Example:
   skill's verification step follows)
 - `core/knowledge/public/hq-core/delegation-bundle-spec.md` — the manifest
   contract every helper reads
+

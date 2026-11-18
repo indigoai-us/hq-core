@@ -228,11 +228,12 @@ is the main way to free space; the date cutoff (`prune`) is secondary.
 
 ## CLI: `hq mesh` (Work Mesh Live)
 
-Presence and per-turn activity are automatic via hooks + `hq mesh daemon`. Manual verbs only: `task-status`, `blocked`, `note`. See `core/knowledge/public/hq-core/work-mesh-live.md` and `core/skills/work-mesh/`.
+Presence and per-turn activity are automatic via hooks + `hq daemon` (its `mesh` service drains the spool). Manual verbs only: `task-status`, `blocked`, `note`. See `core/knowledge/public/hq-core/work-mesh-live.md` and `core/skills/work-mesh/`.
 
 | Command | Use |
 |---------|-----|
-| `hq mesh daemon install\|status\|doctor` | Resident presence + spool flush (replaces pack listen) |
+| `hq daemon install\|status` | Resident presence + spool flush (the daemon's `mesh` service) |
+| `hq mesh daemon doctor` | Work Mesh health: MQTT, spool, held/dead-letter, outbox and flush |
 | `hq mesh context reconcile` (`--observation-file`/`--observation-json`) | Resolve company/project (no `--session`) |
 | `hq mesh context organize\|correct\|untracked` (`--session` / sessionId arg) | Bind, correct, or mark untracked |
 | `hq mesh context default get\|set\|clear` | Device default company |

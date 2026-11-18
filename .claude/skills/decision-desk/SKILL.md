@@ -1,7 +1,7 @@
 ---
 name: decision-desk
 description: The owner's decision desk for one /super-conductor link. It opens one picker per queued decision, writes the answer back to the link's decision queue, and does nothing else. Use when the user says "/decision-desk <link>", "open the decision desk", or "ask me the conductor's decisions here".
-allowed-tools: Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(hq monitor:*), Bash(hq lanes link send:*), Bash(bash core/scripts/hq-session.sh:*), Bash(cat:*), Bash(ls:*), Read, AskUserQuestion, PushNotification, mcp__ccd_session_mgmt__set_session_title, mcp__ccd_session_mgmt__send_message
+allowed-tools: Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(hq monitor:*), Bash(hq runners link send:*), Bash(bash core/scripts/hq-session.sh:*), Bash(cat:*), Bash(ls:*), Read, AskUserQuestion, PushNotification, mcp__ccd_session_mgmt__set_session_title, mcp__ccd_session_mgmt__send_message
 argument-hint: "<link>"
 ---
 
@@ -192,7 +192,7 @@ session's relay failed or it was closed), so a relay is never duplicated.
 
 1. On the link, when the row has `relay.link` and `relay.child`:
    ```bash
-   hq lanes link send --link <relay.link> --child <relay.child> \
+   hq runners link send --link <relay.link> --child <relay.child> \
      --text "OWNER GO (decision desk, <ISO time>): <question> → <answer>"
    ```
    The text is the owner's pick quoted as it was asked, nothing added. A

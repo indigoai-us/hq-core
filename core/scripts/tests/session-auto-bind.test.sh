@@ -19,7 +19,7 @@ mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/bin" \
   "$TMP/.grok/hooks"
 
 cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
-cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$TMP/.claude/hooks/"
 cp "$ROOT/.claude/hooks/hook-gate.sh" "$TMP/.claude/hooks/" 2>/dev/null || true
 cp "$ROOT/core/scripts/lib/session-authz.sh" "$TMP/core/scripts/lib/"
 cp "$ROOT/core/scripts/lib/session-scope-capability.sh" "$TMP/core/scripts/lib/"
@@ -413,26 +413,48 @@ rc="$(run_auth "$payload")"
   && [ "$rc" = "0" ] \
   && pass "one real manifest company binds and permits its settings read"
 
+# feedback_763b7911 (owner decision 2026-11-09): a held or resumed session
+# with no company binds the sole manifest company exactly as a new one does,
+# whatever its durable Work Context says.
 mkdir -p "$TMP/work-context/sessions"
-printf '{"sessionId":"us251-held-needs-company","contextStatus":"needs_company"}\n' \
-  > "$TMP/work-context/sessions/us251-held-needs-company.json"
-HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
-  session_auto_bind_apply "$TMP" "us251-held-needs-company" "" "1"
-[ ! -f "$TMP/workspace/sessions/us251-held-needs-company/meta.yaml" ] \
-  || us251_fail "held needs_company session was manifest auto-bound"
-[ ! -f "$TMP/workspace/sessions/us251-held-needs-company/scope-capability.json" ] \
-  || us251_fail "held needs_company session minted a scope capability"
-[ ! -f "$TMP/workspace/sessions/us251-held-needs-company/meta.yaml" ] \
-  && [ ! -f "$TMP/workspace/sessions/us251-held-needs-company/scope-capability.json" ] \
-  && pass "held needs_company session stays unbound while new one-company session binds"
-us251_assert_held_status_stays_unbound "us251-held-company-conflict" \
+us251_assert_held_status_binds "us251-held-needs-company" \
+  '{"sessionId":"us251-held-needs-company","contextStatus":"needs_company"}'
+us251_assert_held_status_binds "us251-held-company-conflict" \
   '{"sessionId":"us251-held-company-conflict","contextStatus":"company_conflict"}'
-us251_assert_held_status_stays_unbound "us251-held-bound" \
+us251_assert_held_status_binds "us251-held-bound" \
   '{"sessionId":"us251-held-bound","contextStatus":"bound"}'
 us251_assert_held_status_binds "us251-held-unresolved" \
   '{"sessionId":"us251-held-unresolved","contextStatus":"unresolved"}'
-us251_assert_held_status_stays_unbound "us251-held-unreadable-status" \
+us251_assert_held_status_binds "us251-held-unreadable-status" \
   '{"sessionId":"us251-held-unreadable-status","contextStatus":'
+grep -qx 'company_source: manifest_single_company' \
+  "$TMP/workspace/sessions/us251-held-needs-company/meta.yaml" \
+  || us251_fail "held session bind did not record its manifest source"
+[ ! -e "$TMP/workspace/sessions/us251-held-needs-company/.company-lock-set.lock" ] \
+  || us251_fail "held session bind left the session company lock behind"
+
+# The case the report hit: SessionStart ran before, so meta.yaml exists with no
+# company (or an empty company_slug line) and the session is held.
+mkdir -p "$TMP/workspace/sessions/us251-held-resumed" "$TMP/workspace/sessions/us251-held-empty-slug"
+printf 'session_id: us251-held-resumed\nstarted_at: "2026-11-01T09:00:00Z"\nsenior: user\n' \
+  > "$TMP/workspace/sessions/us251-held-resumed/meta.yaml"
+printf 'session_id: us251-held-empty-slug\ncompany_slug: \nsenior: user\n' \
+  > "$TMP/workspace/sessions/us251-held-empty-slug/meta.yaml"
+for sid in us251-held-resumed us251-held-empty-slug; do
+  printf '{"sessionId":"%s","contextStatus":"needs_company"}\n' "$sid" > "$TMP/work-context/sessions/$sid.json"
+  HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+    session_auto_bind_apply "$TMP" "$sid"
+  [ "$(session_auto_bind_meta_slug "$TMP" "$sid")" = "indigo" ] \
+    || us251_fail "resumed $sid session with an existing meta.yaml was not bound"
+  [ "$(session_scope_read "$TMP" "$sid")" = "indigo" ] \
+    || us251_fail "resumed $sid session did not mint the sole-company scope"
+  [ "$(grep -c '^company_slug:' "$TMP/workspace/sessions/$sid/meta.yaml")" = "1" ] \
+    || us251_fail "resumed $sid session meta.yaml has a duplicate company_slug line"
+done
+payload='{"tool_name":"Read","session_id":"us251-held-resumed","cwd":"'"$TMP"'","tool_input":{"file_path":"'"$TMP"'/companies/indigo/settings/foo.yaml"}}'
+rc="$(run_auth "$payload")"
+[ "$rc" = "0" ] || us251_fail "resumed one-company session could not read its settings (status=$rc)"
+[ "$us251_failures" -eq 0 ] && pass "resumed held sessions bind the sole company and pass the scope hook"
 
 printf 'companies:\n  _template:\n    name: Template\n  indigo:\n    name: Indigo\nsettings:\n  mode: strict\n' \
   > "$TMP/companies/manifest.yaml"
@@ -486,6 +508,82 @@ session_auto_bind_apply "$TMP" "us251-already-bound"
 [ "$(session_auto_bind_meta_slug "$TMP" "us251-already-bound")" = "otherco" ] \
   && [ "$(session_scope_read "$TMP" "us251-already-bound")" = "otherco" ] \
   && pass "existing company binding remains unchanged"
+
+echo "== feedback_763b7911 held-session sole-company cases =="
+failures_before_763="$us251_failures"
+mkdir -p "$TMP/work-context/sessions"
+
+# Held session, two real companies: never binds.
+printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: Other\n' > "$TMP/companies/manifest.yaml"
+printf '{"sessionId":"f763-held-two","contextStatus":"needs_company"}\n' > "$TMP/work-context/sessions/f763-held-two.json"
+mkdir -p "$TMP/workspace/sessions/f763-held-two"
+printf 'session_id: f763-held-two\nsenior: user\n' > "$TMP/workspace/sessions/f763-held-two/meta.yaml"
+HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+  session_auto_bind_apply "$TMP" "f763-held-two"
+[ -z "$(session_auto_bind_meta_slug "$TMP" "f763-held-two")" ] \
+  || us251_fail "held session with two companies was bound"
+[ ! -f "$TMP/workspace/sessions/f763-held-two/scope-capability.json" ] \
+  || us251_fail "held session with two companies minted a scope capability"
+
+# Fleet machine, one company: never binds, held or new.
+printf 'companies:\n  indigo:\n    name: Indigo\n' > "$TMP/companies/manifest.yaml"
+printf '{"sessionId":"f763-fleet-held","contextStatus":"needs_company"}\n' > "$TMP/work-context/sessions/f763-fleet-held.json"
+for sid in f763-fleet-held f763-fleet-new; do
+  HQ_AGENT_WORKDIR="$TMP/agent-workdir" HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+    session_auto_bind_apply "$TMP" "$sid"
+  [ ! -f "$TMP/workspace/sessions/$sid/meta.yaml" ] \
+    || us251_fail "fleet $sid session was bound to the manifest company"
+  [ ! -f "$TMP/workspace/sessions/$sid/scope-capability.json" ] \
+    || us251_fail "fleet $sid session minted a scope capability"
+done
+mkdir -p "$TMP/fake-root/var/lib/hq-agent"
+printf '{}\n' > "$TMP/fake-root/var/lib/hq-agent/identity.json"
+HQ_AGENT_ROOT_PREFIX="$TMP/fake-root" HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+  session_auto_bind_apply "$TMP" "f763-fleet-held"
+[ ! -f "$TMP/workspace/sessions/f763-fleet-held/meta.yaml" ] \
+  || us251_fail "canonical fleet identity held session was bound to the manifest company"
+
+# An explicit bind is never replaced: a held session already bound to another
+# real company (hq-session.sh set), or to personal, keeps it.
+for pair in "f763-explicit-otherco:otherco" "f763-explicit-personal:personal"; do
+  sid="${pair%%:*}"; bound="${pair#*:}"
+  mkdir -p "$TMP/workspace/sessions/$sid"
+  printf 'session_id: %s\ncompany_slug: %s\ncompany_source: explicit\n' "$sid" "$bound" \
+    > "$TMP/workspace/sessions/$sid/meta.yaml"
+  session_scope_mint "$TMP" "$sid" "$bound"
+  printf '{"sessionId":"%s","contextStatus":"needs_company"}\n' "$sid" > "$TMP/work-context/sessions/$sid.json"
+  HQ_WORK_CONTEXT_ROOT="$TMP/work-context" HQ_SESSION_AUTO_BIND_SKIP_DEVICE_DEFAULT=1 \
+    session_auto_bind_apply "$TMP" "$sid"
+  [ "$(session_auto_bind_meta_slug "$TMP" "$sid")" = "$bound" ] \
+    || us251_fail "held $sid explicit bind was replaced in metadata"
+  [ "$(session_scope_read "$TMP" "$sid")" = "$bound" ] \
+    || us251_fail "held $sid explicit bind was replaced in its scope capability"
+done
+
+# A bind that lands after the resolver looked is read again under the lock and
+# kept: call the locked writer as the resolver would, after hq-session.sh bound.
+mkdir -p "$TMP/workspace/sessions/f763-race"
+printf 'session_id: f763-race\ncompany_slug: otherco\ncompany_source: explicit\n' \
+  > "$TMP/workspace/sessions/f763-race/meta.yaml"
+session_scope_mint "$TMP" "f763-race" "otherco"
+session_auto_bind_apply_manifest_locked "$TMP" "f763-race" "indigo" false
+[ "$(session_auto_bind_meta_slug "$TMP" "f763-race")" = "otherco" ] \
+  || us251_fail "a bind that landed before the locked write was replaced in metadata"
+[ "$(session_scope_read "$TMP" "f763-race")" = "otherco" ] \
+  || us251_fail "a bind that landed before the locked write was replaced in its scope"
+[ ! -e "$TMP/workspace/sessions/f763-race/.company-lock-set.lock" ] \
+  || us251_fail "the locked writer left the session company lock behind"
+
+# A device default still never relabels a held session without the opt-in.
+printf '{"sessionId":"f763-held-device","contextStatus":"needs_company"}\n' > "$TMP/work-context/sessions/f763-held-device.json"
+printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: Other\n' > "$TMP/companies/manifest.yaml"
+HQ_WORK_CONTEXT_ROOT="$TMP/work-context" \
+  HQ_DEFAULT_COMPANY_JSON='{"enabled":true,"source":"configured","slug":"indigo","needsChoice":false}' \
+  session_auto_bind_apply "$TMP" "f763-held-device"
+[ ! -f "$TMP/workspace/sessions/f763-held-device/meta.yaml" ] \
+  || us251_fail "held session was relabeled by a device default without the repair opt-in"
+
+[ "$us251_failures" = "$failures_before_763" ] && pass "feedback_763b7911: held sessions bind only the sole company, never on fleet, never over a bind"
 
 [ "$us251_failures" -eq 0 ] || exit 1
 echo "session-auto-bind: all passed"

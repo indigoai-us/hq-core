@@ -225,7 +225,8 @@ _hq_ag_words() {
 #     [A-Za-z0-9_.,:/%+@-], otherwise replaced by \001 (opaque literal);
 #     with REENTRY=1 it is kept as written, since it may run as code;
 #   - backslash escapes become \001 (kept as the escaped char with REENTRY);
-#   - double quotes are dropped; inside them whitespace becomes \002 and
+#   - double quotes are dropped (_hq_ag_dqpos lists where a $NAME or ${...}
+#     inside them starts); inside them whitespace becomes \002 and
 #     ; & | ( ) ! < > become \004, so quoted text never starts a command,
 #     while $(...), ${...} and `...` stay visible;
 #   - quoted heredoc bodies are dropped (kept as code with REENTRY);
@@ -233,6 +234,11 @@ _hq_ag_words() {
 #   - comments are dropped.
 
 _hq_ag_lit() {
+  if [ "$re" = 0 ]; then
+    _hq_ag_quote_pos[${#_hq_ag_quote_pos[@]}]=${#_hq_ag_V}
+    _hq_ag_quote_start[${#_hq_ag_quote_start[@]}]=$i
+    _hq_ag_quote_end[${#_hq_ag_quote_end[@]}]=$j_literal_end
+  fi
   if [ "$re" = 1 ]; then
     _hq_ag_V+="$1"
   elif [ -z "$1" ]; then
@@ -240,6 +246,9 @@ _hq_ag_lit() {
   elif [[ "$1" =~ $_HQ_AG_SAFE_LIT_RE ]]; then
     _hq_ag_V+="$1"
   else
+    _hq_ag_literal_pos[${#_hq_ag_literal_pos[@]}]=${#_hq_ag_V}
+    _hq_ag_literal_text[${#_hq_ag_literal_text[@]}]="$1"
+    _hq_ag_literal_end[${#_hq_ag_literal_end[@]}]=$j_literal_end
     _hq_ag_V+=$'\001'
   fi
 }
@@ -308,15 +317,29 @@ _hq_ag_hd_start() {
 }
 
 _hq_ag_lex() {
-  local s="$1" re="$2" n=${#1} i=0 j c d t w k nf=0 cd=0 body rest delim hq strip delimiter_quote
+  local s="$1" re="$2" n=${#1} i=0 j c d t w k nf=0 cd=0 body rest delim hq strip delimiter_quote j_literal_end=0 dq_start=0 dq_pos=0
   local hd_end=-1 hd_skip=-1 hd_frame=0 hd_base=0 nh=0 hk=0 tab=$'\t'
   local p_code=$'[]\'"\\\\$()`#<[\n]*'
   local p_dq=$'[\'"\\\\$` \t\n;&|()!<>]*'
   local -a ft=() fd=() hdd=() hdq=() hds=()
   _hq_ag_V=""
+  _hq_ag_literal_pos=()
+  _hq_ag_literal_text=()
+  _hq_ag_literal_end=()
+  _hq_ag_map_v=()
+  _hq_ag_map_s=()
+  if [ "$re" = 0 ]; then
+    _hq_ag_quote_pos=()
+    _hq_ag_quote_start=()
+    _hq_ag_quote_end=()
+  fi
   _hq_ag_qpos=" "
+  _hq_ag_lpos=" "
+  _hq_ag_dqpos=" "
   _hq_ag_ansi=0
   while :; do
+    _hq_ag_map_v[${#_hq_ag_map_v[@]}]=${#_hq_ag_V}
+    _hq_ag_map_s[${#_hq_ag_map_s[@]}]=$i
     [ "${#_hq_ag_V}" -le 16384 ] || return 1
     if [ "$hd_end" -ge 0 ] && [ "$i" -ge "$hd_end" ]; then
       if [ "$hd_frame" = 1 ]; then
@@ -351,7 +374,14 @@ _hq_ag_lex() {
     if [ "$t" = D ] || [ "$t" = H ]; then
       case "$c" in
         '"')
-          if [ "$t" = D ]; then nf=$((nf - 1)); else _hq_ag_V+=$'\001'; fi
+          if [ "$t" = D ]; then
+            if [ "$re" = 0 ]; then
+              _hq_ag_quote_pos[${#_hq_ag_quote_pos[@]}]=$dq_pos
+              _hq_ag_quote_start[${#_hq_ag_quote_start[@]}]=$dq_start
+              _hq_ag_quote_end[${#_hq_ag_quote_end[@]}]=$((i + 1))
+            fi
+            nf=$((nf - 1))
+          else _hq_ag_V+=$'\001'; fi
           i=$((i + 1))
           ;;
         "'") _hq_ag_V+=$'\001'; i=$((i + 1)) ;;
@@ -383,9 +413,11 @@ _hq_ag_lex() {
           elif [ "${s:i+1:1}" = '{' ]; then
             # Parameter operators retain their meaning inside double quotes.
             _hq_ag_close "$s" $((i + 2)) '{' '}' || return 1
+            [ "$t" != D ] || _hq_ag_dqpos+="${#_hq_ag_V} "
             _hq_ag_V+="${s:i:_hq_ag_m-i+1}"
             i=$((_hq_ag_m + 1))
           else
+            [ "$t" != D ] || _hq_ag_dqpos+="${#_hq_ag_V} "
             _hq_ag_V+='$'
             i=$((i + 1))
           fi
@@ -406,12 +438,24 @@ _hq_ag_lex() {
       "'")
         _hq_ag_qpos+="${#_hq_ag_V} "
         rest="${s:i+1}"
+        if [ "$hd_end" -ge 0 ]; then
+          # A heredoc body kept as code (shell reentry) is read whole before
+          # any shell parses it, so a quote cannot close past the delimiter
+          # line. A quote the body never closes (an apostrophe in prose fed
+          # to cat) is kept as one opaque character and the lex goes on. The
+          # text after it is still read as code: inside a nested heredoc or
+          # after a comment the apostrophe is data, and the shell runs the
+          # lines that follow.
+          rest="${s:i+1:hd_end-i-1}"
+          case "$rest" in *"'"*) ;; *) _hq_ag_V+=$'\001'; i=$((i + 1)); continue ;; esac
+        fi
         case "$rest" in *"'"*) ;; *) return 1 ;; esac
         body="${rest%%\'*}"
+        j_literal_end=$((i + ${#body} + 2))
         _hq_ag_lit "$body"
         i=$((i + ${#body} + 2))
         ;;
-      '"') _hq_ag_qpos+="${#_hq_ag_V} "; ft[nf]=D; fd[nf]=0; nf=$((nf + 1)); i=$((i + 1)) ;;
+      '"') dq_start=$i; dq_pos=${#_hq_ag_V}; _hq_ag_qpos+="${#_hq_ag_V} "; ft[nf]=D; fd[nf]=0; nf=$((nf + 1)); i=$((i + 1)) ;;
       '\')
         d="${s:i+1:1}"
         if [ "$d" = $'\n' ]; then
@@ -444,13 +488,14 @@ _hq_ag_lex() {
               j=$((j + 1))
             done
             [ "$j" -lt "$n" ] || return 1
+            j_literal_end=$((j + 1))
             if [ "$re" = 1 ]; then
               case "$body" in *'\'*) _hq_ag_ansi=1 ;; esac
             fi
             _hq_ag_lit "$body"
             i=$((j + 1))
             ;;
-          '"') ft[nf]=D; fd[nf]=0; nf=$((nf + 1)); i=$((i + 2)) ;;
+          '"') _hq_ag_qpos+="${#_hq_ag_V} "; _hq_ag_lpos+="${#_hq_ag_V} "; ft[nf]=D; fd[nf]=0; nf=$((nf + 1)); i=$((i + 2)) ;;
           '(') ft[nf]=S; fd[nf]=0; nf=$((nf + 1)); _hq_ag_V+='$('; i=$((i + 2)) ;;
           '[') ft[nf]=B; fd[nf]=0; nf=$((nf + 1)); _hq_ag_V+='$['; i=$((i + 2)) ;;
           *) _hq_ag_V+='$'; i=$((i + 1)) ;;
@@ -572,8 +617,9 @@ _hq_ag_lex() {
 
 # ---------------------------------------------------------------- proofs
 
-# _hq_ag_bind NAME KIND POS. KIND: N number, I identifier literal, U unknown,
-# R:<names> same as those variables.
+# _hq_ag_bind NAME KIND POS. KIND: N number, I identifier literal, L other
+# literal, Q literal with quoted blanks, U unknown, R:<names> same as those
+# variables.
 _hq_ag_bind() {
   local loop=0 expiry=${#_hq_ag_V}
   local kind="$2"
@@ -622,7 +668,7 @@ _hq_ag_prove() {
       case "$kd" in
         U) return 1 ;;
         I) [ "$md" = ind ] || [ "$md" = command ] || return 1 ;;
-        L) [ "$md" = command ] || return 1 ;;
+        L | Q) [ "$md" = command ] || return 1 ;;
         R:*)
           for r in ${kd#R:}; do
             _hq_ag_prove "$r" "${_hq_ag_bp[k]}" "$md" $((dp + 1)) || return 1
@@ -996,6 +1042,14 @@ _hq_ag_classify() {
   fi
   if [[ "$v" =~ $_HQ_AG_SAFE_LIT_RE ]]; then
     _hq_ag_kind=L
+    return
+  fi
+  # A double-quoted literal whose only other characters are quoted blanks
+  # (\002), such as C="/Applications/Google Chrome.app/.../Google Chrome", is
+  # one fixed word only while its expansion is double-quoted. Usable as a
+  # command name in that form (_hq_ag_heads checks it), never as a number.
+  if [[ "${v//$'\002'/_}" =~ $_HQ_AG_SAFE_LIT_RE ]]; then
+    _hq_ag_kind=Q
     return
   fi
   case "$v" in
@@ -1948,14 +2002,203 @@ _hq_ag_command_path() {
   local word="$1" _hq_ag_rname=""
   local root_re='^\$\(git rev-parse --show-toplevel\)/[A-Za-z0-9_./-]+$'
   if _hq_ag_resolved_value "$word"; then
+    _hq_ag_runner_name "$_hq_ag_rname" && return 1
     _hq_ag_resolver_ok "$_hq_ag_rname"
     return
   fi
   if [[ "$word" =~ $root_re ]]; then
+    _hq_ag_runner_name "$word" && return 1
     _hq_ag_resolver_ok "$word"
     return
   fi
   return 1
+}
+
+# IFS changes. A statement that sets IFS makes the shell split unquoted
+# values at the new characters, so a value with no blank can still become a
+# command and its arguments. Sets _hq_ag_ifs to "" (IFS is never changed),
+# "k" (changed only to the plain literal characters in _hq_ag_ifs_chars) or
+# "u" (changed to a value this command does not show). IFS given only as a
+# prefix of read, mapfile, readarray, printf or echo applies to that one
+# command. Any other mention of IFS as a name (export, local, declare, read
+# into it, a subshell, a loop) counts as a change anywhere in the command,
+# since a loop or function can run the change before an earlier-written use.
+_hq_ag_ifs_scan() {
+  local text="$_hq_ag_V" rest pre at after val tail word
+  local scoped_re='^[[:space:]]+(([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|()<>]*[[:space:]]+)*)(read|mapfile|readarray|printf|echo)([[:space:];&|)<>]|$)'
+  local unset_re='(^|[[:space:];&|(])unset([[:space:]]+-v)?[[:space:]]+$'
+  _hq_ag_ifs="" _hq_ag_ifs_chars=""
+  case "$text" in *IFS*) ;; *) return 0 ;; esac
+  rest="$text"
+  while :; do
+    case "$rest" in *IFS*) ;; *) break ;; esac
+    pre="${rest%%IFS*}"; at=${#pre}; after="${rest:at+3}"
+    rest="$after"
+    # Part of a longer name, or a read of $IFS / ${IFS} / ${#IFS}.
+    case "${pre: -1}" in [A-Za-z0-9_\$\{\#\!]) continue ;; esac
+    case "$after" in [A-Za-z0-9_]*) continue ;; esac
+    case "$after" in
+      '='* | '+='*)
+        val="${after#*=}"; val="${val%%[[:space:];&|()<>]*}"
+        tail="${after#*=}"; tail="${tail:${#val}}"
+        # Scoped prefix of a command that does not run other shell code.
+        [[ "$tail" =~ $scoped_re ]] && continue
+        case "$val" in
+          *[!A-Za-z0-9_.,:/%+@=-]*) _hq_ag_ifs=u ;;
+          *) [ "$_hq_ag_ifs" = u ] || _hq_ag_ifs=k; _hq_ag_ifs_chars="$_hq_ag_ifs_chars$val" ;;
+        esac
+        [ "${after:0:1}" = + ] && _hq_ag_ifs=u
+        ;;
+      *)
+        [[ "$pre" =~ $unset_re ]] && continue
+        _hq_ag_ifs=u
+        ;;
+    esac
+  done
+  return 0
+}
+
+# An unquoted expansion used as a command word: refuse it when a changed IFS
+# could split the value into a command and its arguments.
+_hq_ag_ifs_split() { # VALUE KNOWN(1|0)
+  case "$_hq_ag_ifs" in
+    '') return 1 ;;
+    u) return 0 ;;
+  esac
+  [ "$2" = 1 ] || { [ -n "$_hq_ag_ifs_chars" ] && return 0; return 1; }
+  local i=0 ch
+  while [ "$i" -lt "${#_hq_ag_ifs_chars}" ]; do
+    ch="${_hq_ag_ifs_chars:i:1}"
+    case "$1" in *"$ch"*) return 0 ;; esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Options of the command prefixes that take a value. A short option word is
+# read left to right: at the first letter that takes a value, the rest of the
+# word is that value, and only when the letter ends the word is the next word
+# the value. A --name=value form carries its own value. Returns 0 when the
+# next word is the value. Sets _hq_ag_optshell=1 when the option's value is
+# split or run as a command line (env -S, the lock tool's -c, script -c), with
+# any attached value in _hq_ag_optval. The lock tool is spelled floc[k] so the
+# shell-portability lint, which looks for calls to it, does not read the
+# pattern as one.
+_hq_ag_prefix_optarg() { # PREFIX WORD
+  local short="" long=" " shell_short="" shell_long=" " w="$2" i=1 ch
+  _hq_ag_optshell=0 _hq_ag_optval=""
+  case "$1" in
+    sudo) short=ugCDhprtUT; long=" --user --group --close-from --chdir --host --prompt --role --type --other-user --command-timeout " ;;
+    doas) short=uC ;;
+    env) short=uCSP; long=" --unset --chdir --split-string --argv0 "; shell_short=S; shell_long=" --split-string " ;;
+    xargs) short=ILnPsdEaJR; long=" --max-lines --max-args --max-procs --max-chars --delimiter --eof --arg-file --process-slot-var " ;;
+    nice) short=n; long=" --adjustment " ;;
+    exec) short=a ;;
+    timeout | gtimeout) short=sk; long=" --signal --kill-after " ;;
+    stdbuf) short=ioe; long=" --input --output --error " ;;
+    ionice) short=cnpPu; long=" --class --classdata --pid --pgid --uid " ;;
+    chroot) long=" --userspec --groups " ;;
+    caffeinate) short=tw ;;
+    taskset) long=" " ;;
+    floc[k]) short=wEc; long=" --timeout --wait --conflict-exit-code --command "; shell_short=c; shell_long=" --command " ;;
+    watch) short=ndq; long=" --interval --differences --equexit " ;;
+    script) short=cTEFt; long=" --command --log-timing --echo --timing "; shell_short=c; shell_long=" --command " ;;
+    strace) short=abeEIopPsSuUX; long=" --output --trace --signal --status --user --env " ;;
+    arch) long=" -arch " ;;
+    sandbox-exec) short=fpnD ;;
+  esac
+  case "$long" in *" $w "*)
+    case "$shell_long" in *" $w "*) _hq_ag_optshell=1 ;; esac
+    return 0 ;;
+  esac
+  case "$w" in
+    --*=*)
+      case "$shell_long" in *" ${w%%=*} "*) _hq_ag_optshell=1; _hq_ag_optval="${w#*=}" ;; esac
+      return 1 ;;
+    --*) return 1 ;;
+  esac
+  [ -n "$short" ] || return 1
+  while [ "$i" -lt "${#w}" ]; do
+    ch="${w:i:1}"
+    case "$ch" in
+      [$short])
+        case "$ch" in [$shell_short]) [ -z "$shell_short" ] || _hq_ag_optshell=1 ;; esac
+        if [ $((i + 1)) -eq "${#w}" ]; then return 0; fi
+        _hq_ag_optval="${w:i+1}"
+        return 1 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Lexer anchors map code-view positions back to the original shell source.
+_hq_ag_valid_split_span() {
+  local source="$1" option="$2" separate="$3" token prefix quote tail
+  [ "$_hq_ag_rewrite_start" -le "$_hq_ag_token_start" ] || return 1
+  [ "$_hq_ag_token_start" -lt "$_hq_ag_rewrite_end" ] || return 1
+  token="${source:_hq_ag_token_start:_hq_ag_rewrite_end-_hq_ag_token_start}"
+  case "$token" in
+    \$\'*) quote="'"; token="${token:2}" ;;
+    \"*) quote='"'; token="${token:1}" ;;
+    \'*) quote="'"; token="${token:1}" ;;
+    *) return 1 ;;
+  esac
+  [ "${token:${#token}-1}" = "$quote" ] || return 1
+  token="${token:0:${#token}-1}"
+  [ "$token" = "${optv//$'\002'/ }" ] || return 1
+  prefix="${source:_hq_ag_rewrite_start:_hq_ag_token_start-_hq_ag_rewrite_start}"
+  if [ "$separate" = 1 ]; then
+    [ "${prefix:0:${#option}}" = "$option" ] || return 1
+    tail="${prefix:${#option}}"
+    [ -n "$tail" ] && [[ "$tail" != *[!$' \t']* ]] || return 1
+  else
+    [ "$prefix" = "${option:0:${#option}-${#_hq_ag_optval}}" ] || return 1
+  fi
+  case "${source:_hq_ag_rewrite_end:1}" in
+    '' | ' ' | $'\t' | $'\n' | ';' | '&' | '|' | ')' | '<' | '>') ;;
+    *) return 1 ;;
+  esac
+}
+
+_hq_ag_source_offset() {
+  local target="$1" index=0
+  _hq_ag_source=0
+  while [ "$index" -lt "${#_hq_ag_map_v[@]}" ]; do
+    [ "${_hq_ag_map_v[index]}" -le "$target" ] || break
+    _hq_ag_source=$((${_hq_ag_map_s[index]} + target - ${_hq_ag_map_v[index]}))
+    index=$((index + 1))
+  done
+}
+
+# A command that runs a later word as a command (find actions, env, sudo and
+# the other prefixes). Reached through a variable or a resolver, the head scan
+# cannot follow the command it runs, so such a computed name is refused.
+_hq_ag_runner_name() {
+  local n="${1##*/}"
+  case "$n" in *.exe | *.EXE) n="${n%????}" ;; esac
+  case "$n" in
+    find | gfind | env | genv | sudo | doas | xargs | gxargs | exec | nice | time | nohup | timeout | gtimeout | stdbuf \
+      | setsid | chroot | ionice | caffeinate | taskset | unbuffer | floc[k] | watch | script | strace | arch | sandbox-exec) return 0 ;;
+  esac
+  return 1
+}
+
+_hq_ag_env_option_known() {
+  local option="$1" offset=1 letter
+  case "$option" in
+    --unset | --unset=* | --chdir | --chdir=* | --split-string | --split-string=* | --ignore-environment | --null | --debug | --) return 0 ;;
+    --*) return 1 ;;
+  esac
+  while [ "$offset" -lt "${#option}" ]; do
+    letter="${option:offset:1}"
+    case "$letter" in
+      u | C | S | P) return 0 ;;
+      i | v | 0) ;;
+      *) return 1 ;;
+    esac
+    offset=$((offset + 1))
+  done
 }
 
 # Opaque or computed command names can hide arithmetic builtins themselves.
@@ -1963,7 +2206,7 @@ _hq_ag_command_path() {
 # variable may name a literal non-evaluating command/path proved in this same
 # command; all other computed heads are refused without running them.
 _hq_ag_heads() {
-  local text="$1" base="$2" depth="${3:-0}" start=0 stop=0 nw k head word pos inner j rest pre at nm v found idx function_name=0 case_depth=0 case_pattern=0 restart_case=0
+  local text="$1" base="$2" depth="${3:-0}" start=0 stop=0 nw k head word pos inner j rest pre at nm v found idx function_name=0 case_depth=0 case_pattern=0 restart_case=0 prefix="" in_find=0 quoted posarg=0 pname _hq_ag_optshell=0 _hq_ag_optval="" optv optslot=0 slot optpos literal_index
   local function_re='^[A-Za-z_][A-Za-z0-9_]*\(\)\{?$'
   local -a words=() positions=()
   [ "$depth" -le 16 ] || { _hq_ag_reason="nested shell code exceeds the arithmetic guard limit"; return 1; }
@@ -1989,11 +2232,47 @@ _hq_ag_heads() {
       start=$((stop + 1)); continue
     fi
     head=1
+    prefix=""
+    in_find=0
+    posarg=0
+    optslot=0
     restart_case=0
     k=0
     while [ "$k" -lt "$nw" ]; do
+      [ "$_hq_ag_rewrite_start" -lt 0 ] || return 0
       word="${words[k]}"; pos=$((base + positions[k])); k=$((k + 1))
-      [ "$head" = 1 ] || continue
+      if [ "$head" != 1 ]; then
+        # Every find execution action runs a command, not only the first:
+        # a later -exec after ';', '{} +', -o, ',' or parentheses starts a
+        # new command word.
+        if [ "$in_find" = 1 ]; then
+          case "$word" in -exec | -execdir | -ok | -okdir) head=1; prefix=""; posarg=0; optslot=0 ;; esac
+        fi
+        continue
+      fi
+      quoted=0
+      case "$_hq_ag_dqpos" in *" $pos "*) quoted=1 ;; esac
+      # A word a prefix takes before its command (an option value, or the
+      # duration, directory, mask, lock file or typescript of timeout, chroot,
+      # taskset, the lock tool or script) is skipped. Unquoted, a variable there can
+      # split into that word and a hidden command, so it is checked as a
+      # command word; any other unquoted expansion there is refused.
+      slot=0
+      if [ "$optslot" = 1 ]; then
+        optslot=0; slot=1
+      elif [ "$posarg" = 1 ]; then
+        case "$word" in -*) ;; *) posarg=0; slot=1 ;; esac
+      fi
+      if [ "$slot" = 1 ]; then
+        if [ "$quoted" = 1 ]; then continue; fi
+        if ! [[ "$word" =~ $_HQ_AG_VARREF_RE ]]; then
+          case "$word" in
+            *'$'* | *'`'*)
+              _hq_ag_reason="an expansion in an argument of $prefix could split into a hidden command"; return 1 ;;
+          esac
+          continue
+        fi
+      fi
       if [ "$function_name" = 1 ]; then
         function_name=0
         if [[ "$word" =~ $_HQ_AG_NAME_RE ]] || [[ "$word" =~ $function_re ]]; then continue; fi
@@ -2007,7 +2286,159 @@ _hq_ag_heads() {
         $'\006'*) head=0; continue ;;
         function) function_name=1; continue ;;
         'if' | 'then' | 'else' | 'elif' | 'while' | 'until' | 'do' | '{' | '!' | command | builtin | --) continue ;;
-        -*) continue ;;
+        -*)
+          # Skip the value of a prefix option that takes one, so the word the
+          # prefix runs is still checked as the command.
+          if [ -n "$prefix" ]; then
+            if [ "$prefix" = env ]; then
+              _hq_ag_env_option_known "$word" || { _hq_ag_reason="an unmodeled env option could hide the command"; return 1; }
+            fi
+            if [ "$quoted" = 0 ]; then
+              case "$word" in
+                *'$'* | *'`'*)
+                  _hq_ag_reason="an expansion in an option of $prefix could split into a hidden command"; return 1 ;;
+              esac
+            fi
+            optv=""
+            if _hq_ag_prefix_optarg "$prefix" "$word"; then
+              [ "$k" -lt "$nw" ] && optv="${words[k]}"
+              optpos=$((base + ${positions[k]:-0}))
+              optslot=1
+            else
+              optv="$_hq_ag_optval"
+              optpos=$((pos + ${#word} - ${#optv}))
+            fi
+            # A value the prefix splits or runs as a command line may not
+            # carry an expansion or opaque quoted text.
+            if [ "$_hq_ag_optshell" = 1 ]; then
+              if [ "$prefix" = env ] && [ "$_hq_ag_reentry" = 1 ]; then
+                _hq_ag_reason="an env split string cannot be checked while re-parsing shell code"; return 1
+              fi
+              _hq_ag_rewrite_end=-1
+              # Only env's split string can recover an opaque literal. Keep
+              # all other callers' handling of opaque shell code unchanged.
+              if [ "$prefix" = env ] && [ "$optv" = $'\001' ]; then
+                # Keep the earlier conservative argv boundary: recovering
+                # opaque text must not hide a later shell-code argument.
+                if [ $((k + optslot)) -lt "$nw" ]; then
+                  _hq_ag_reason="arguments after an opaque env split string cannot be checked"; return 1
+                fi
+                literal_index=0
+                while [ "$literal_index" -lt "${#_hq_ag_literal_pos[@]}" ]; do
+                  if [ "${_hq_ag_literal_pos[literal_index]}" = "$optpos" ]; then
+                    optv="${_hq_ag_literal_text[literal_index]}"
+                    _hq_ag_rewrite_end=${_hq_ag_literal_end[literal_index]}
+                    break
+                  fi
+                  literal_index=$((literal_index + 1))
+                done
+              fi
+              if [ "$prefix" = env ]; then
+                case "$optv" in -*) _hq_ag_reason="an env split string beginning with an option cannot be checked"; return 1 ;; esac
+                # A $"..." string is translated through the locale catalog, so
+                # its text is not what env splits and runs.
+                local split_end=$((optpos + ${#optv})) quote_position
+                for quote_position in $_hq_ag_lpos; do
+                  if [ "$quote_position" -ge "$optpos" ] && [ "$quote_position" -le "$split_end" ]; then
+                    _hq_ag_reason="a locale-translated env split string cannot be checked"; return 1
+                  fi
+                done
+                # A split option written inside quotes ("-S bash -c") carries its
+                # command line in the option word itself, where the head scan
+                # does not look. Only a value quoted on its own can be checked.
+                if [ "$optslot" = 0 ]; then
+                  # The source map puts a quoted word's start just past its
+                  # opening quote, so look at the character before it too.
+                  _hq_ag_source_offset "$pos"
+                  case "${cmd:_hq_ag_source:1}" in
+                    \' | \" | \$)
+                      _hq_ag_reason="a quoted env split option cannot be checked"; return 1 ;;
+                  esac
+                  if [ "$_hq_ag_source" -gt 0 ]; then
+                    case "${cmd:_hq_ag_source-1:1}" in
+                      \' | \")
+                        _hq_ag_reason="a quoted env split option cannot be checked"; return 1 ;;
+                    esac
+                  fi
+                  # A quote anywhere in the option name (-"S bash -s",
+                  # --split-"string=...") also moves the command line into it.
+                  # The value's own opening quote (-S"git status") ends the
+                  # segment and is allowed; any other quote is not.
+                  local option_source=$_hq_ag_source option_text
+                  _hq_ag_source_offset "$optpos"
+                  option_text="${cmd:option_source:_hq_ag_source-option_source}"
+                  case "$option_text" in *\' | *\") option_text="${option_text%?}" ;; esac
+                  case "$option_text" in
+                    *\'* | *\"*)
+                      _hq_ag_reason="a quoted env split option cannot be checked"; return 1 ;;
+                  esac
+                fi
+                # This deliberately excludes escapes, quotes and every
+                # expansion marker. Parentheses allow literal program data
+                # such as print(1); recheck the text as code before admitting it.
+                if ! [[ "${optv//$'\002'/ }" =~ ^[A-Za-z0-9_.,:/%+@()=\ -]+$ ]] \
+                  || ! (hq_arith_guard_check "${optv//$'\002'/ }"); then
+                  _hq_ag_reason="the env split string is not a checked literal command line"; return 1
+                fi
+                # Re-analyse the whole source after replacing this option and
+                # its value. This retains stdin, wrappers and trailing argv.
+                _hq_ag_source_offset "$pos"
+                _hq_ag_rewrite_start=$_hq_ag_source
+                # Only a whole quoted token may be rewritten. Unquoted
+                # one-word values already remain visible to normal analysis.
+                literal_index=0
+                _hq_ag_token_start=-1
+                while [ "$literal_index" -lt "${#_hq_ag_quote_pos[@]}" ]; do
+                  if [ "${_hq_ag_quote_pos[literal_index]}" = "$optpos" ]; then
+                    _hq_ag_token_start=${_hq_ag_quote_start[literal_index]}
+                    _hq_ag_rewrite_end=${_hq_ag_quote_end[literal_index]}
+                    break
+                  fi
+                  literal_index=$((literal_index + 1))
+                done
+                if [ "$_hq_ag_token_start" -lt 0 ]; then
+                  # Quoting inside a value that is not one whole quoted token
+                  # (ba"sh -s") hides the split command from normal analysis.
+                  for quote_position in $_hq_ag_qpos; do
+                    if [ "$quote_position" -ge "$optpos" ] && [ "$quote_position" -le "$split_end" ]; then
+                      _hq_ag_reason="quoting in the env split value could hide the command"; return 1
+                    fi
+                  done
+                  _hq_ag_rewrite_start=-1
+                  continue
+                fi
+                if ! _hq_ag_valid_split_span "$cmd" "$word" "$optslot"; then
+                  _hq_ag_reason="the env split string does not occupy a complete quoted token"; return 1
+                fi
+                _hq_ag_rewrite_text="${optv//$'\002'/ }"
+                return 0
+              fi
+              case "$optv" in
+                *'$'* | *'`'* | *$'\001'*)
+                  _hq_ag_reason="a command line given to $prefix holds an expansion, so the command it runs could not be checked"; return 1 ;;
+              esac
+            fi
+          fi
+          continue ;;
+      esac
+      # Command prefixes run a later word as a command: check it as one. A
+      # literal path to one (/usr/bin/env) counts the same.
+      pname="$word"
+      case "$word" in */*) [[ "$word" =~ $_HQ_AG_SAFE_LIT_RE ]] && pname="${word##*/}" ;; esac
+      # GNU tools installed under a g prefix behave like the plain names.
+      case "$pname" in genv) pname=env ;; gfind) pname=find ;; gxargs) pname=xargs ;; esac
+      case "$pname" in
+        find) prefix=find; in_find=1; head=0; continue ;;
+        env | sudo | doas | xargs | exec | nice | time | nohup | timeout | gtimeout | stdbuf | setsid | chroot | ionice | caffeinate \
+          | taskset | unbuffer | floc[k] | watch | script | strace | arch | sandbox-exec)
+          prefix="$pname"; posarg=0
+          # These take one argument before the command: a duration, a
+          # directory, a CPU mask, a lock file or a typescript file.
+          case "$pname" in timeout | gtimeout | chroot | taskset | floc[k] | script) posarg=1 ;; esac
+          continue ;;
+      esac
+      if [ "$slot" = 0 ] && [ "$posarg" = 1 ]; then posarg=0; continue; fi
+      case "$word" in
         case)
           if ! _hq_ag_unquoted_word "$pos" 4; then head=0; continue; fi
           if [ $((k + 1)) -ge "$nw" ] || [ "${words[k+1]}" != in ]; then
@@ -2030,7 +2461,24 @@ _hq_ag_heads() {
           ;;
       esac
       if [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]]; then continue; fi
-      if _hq_ag_command_path "$word"; then head=0; continue; fi
+      if _hq_ag_command_path "$word"; then
+        if [ "$quoted" = 0 ] && _hq_ag_ifs_split "" 0; then
+          _hq_ag_reason="IFS is changed in this command, so the shell may split this unquoted command name into a command and arguments"; return 1
+        fi
+        [ "$slot" = 1 ] || head=0
+        continue
+      fi
+      # After a prefix such as env or sudo, only an unquoted variable is
+      # checked as the command it runs; other words keep their old handling.
+      if [ -n "$prefix" ] && { [ "$quoted" = 1 ] || ! [[ "$word" =~ $_HQ_AG_VARREF_RE ]]; }; then
+        if [ "$prefix" = env ]; then
+          case "$word" in *'{'* | *'}'*) _hq_ag_reason="brace expansion could hide an env option"; return 1 ;; esac
+          # A quoted word that is not a plain token can hold an option and
+          # its value together ('-S bash -c'), which env still parses.
+          case "$word" in $'\001'*) _hq_ag_reason="a quoted env argument could hide an option or the command"; return 1 ;; esac
+        fi
+        head=0; continue
+      fi
       if [[ "$word" =~ $_HQ_AG_VARREF_RE ]]; then
         nm="${BASH_REMATCH[1]}"; found=0; idx=0
         [ "$_hq_ag_uncertain_flow" = 0 ] || { _hq_ag_reason="a computed command name crosses an uncertain shell scope"; return 1; }
@@ -2043,12 +2491,34 @@ _hq_ag_heads() {
               _hq_ag_resolver_ok "$_hq_ag_rname" || {
                 _hq_ag_reason="a computed command name may invoke arithmetic or shell evaluation"; return 1
               }
+              if _hq_ag_runner_name "$_hq_ag_rname"; then
+                _hq_ag_reason="a computed command name runs another command that could not be checked"; return 1
+              fi
+              if [ "$quoted" = 0 ] && _hq_ag_ifs_split "" 0; then
+                _hq_ag_reason="IFS is changed in this command, so the shell may split this unquoted command name into a command and arguments"; return 1
+              fi
             else
-              if [ "${_hq_ag_aproof[idx]}" != 1 ] || ! [[ "$v" =~ $_HQ_AG_SAFE_LIT_RE ]]; then
+              # Quoted blanks (\002) inside the literal stay part of the one
+              # word the shell runs, as in _hq_ag_classify.
+              if [ "${_hq_ag_aproof[idx]}" != 1 ] || ! [[ "${v//$'\002'/_}" =~ $_HQ_AG_SAFE_LIT_RE ]]; then
                 _hq_ag_reason="a computed command name is not a proven literal"; return 1
+              fi
+              # Unquoted, the shell splits such a value at its blanks: the
+              # first field becomes the command and the rest its arguments.
+              # Only the double-quoted expansion runs the value as one word.
+              case "$v" in
+                *$'\002'*)
+                  [ "$quoted" = 1 ] || { _hq_ag_reason="a computed command name holds a blank and is expanded without double quotes, so the shell would split it into a command and arguments"; return 1; }
+                  ;;
+              esac
+              if [ "$quoted" = 0 ] && _hq_ag_ifs_split "$v" 1; then
+                _hq_ag_reason="IFS is changed in this command, so the shell may split this unquoted command name into a command and arguments"; return 1
               fi
               if _hq_ag_evaluating_name "$v"; then
                 _hq_ag_reason="a computed command name may invoke arithmetic or shell evaluation"; return 1
+              fi
+              if _hq_ag_runner_name "${v%%$'\002'*}"; then
+                _hq_ag_reason="a computed command name runs another command that could not be checked"; return 1
               fi
             fi
             if [ "${_hq_ag_ae[idx]}" -lt "$pos" ]; then found=1; fi
@@ -2062,7 +2532,8 @@ _hq_ag_heads() {
             _hq_ag_reason="an unclassified expansion supplies the command name and could hide arithmetic evaluation"; return 1 ;;
         esac
       fi
-      head=0
+      # A checked skipped word leaves the command word still to come.
+      [ "$slot" = 1 ] || head=0
     done
     [ "$restart_case" = 0 ] || continue
     if [ "$case_depth" -gt 0 ]; then
@@ -2074,17 +2545,25 @@ _hq_ag_heads() {
   if [ "$case_depth" -ne 0 ]; then _hq_ag_reason="case command boundaries could not be classified"; return 1; fi
   # Substitutions in arguments are code too; arithmetic expansions themselves
   # are handled by the expression checker.
+  # Process and command substitutions are checked by one recursive call each.
+  # The scan resumes after the closing parenthesis: the call already covered
+  # everything nested inside, and scanning it again would make the work grow
+  # exponentially with the nesting depth.
   j=0
   while :; do
     rest="${text:j}"
-    case "$rest" in *'$('* ) ;; *) break ;; esac
-    pre="${rest%%'$('*}"; at=$((j + ${#pre}))
-    if [ "${text:at+2:1}" != '(' ]; then
-      _hq_ag_close "$text" $((at + 2)) '(' ')' || return 1
-      inner="${text:at+2:_hq_ag_m-at-2}"
-      _hq_ag_heads "$inner" $((base + at + 2)) $((depth + 1)) || return 1
+    case "$rest" in *'<('* | *'>('* | *'$('*) ;; *) break ;; esac
+    pre="${rest%%[<>\$]\(*}"; at=$((j + ${#pre}))
+    if [ "${text:at:1}" = '$' ] && [ "${text:at+2:1}" = '(' ]; then
+      # $(( starts arithmetic, which the expression checker handles; keep
+      # scanning inside it for substitutions.
+      j=$((at + 2)); continue
     fi
-    j=$((at + 2))
+    _hq_ag_close "$text" $((at + 2)) '(' ')' || return 1
+    # The recursive call reuses _hq_ag_m, so keep the close position here.
+    j=$((_hq_ag_m + 1))
+    inner="${text:at+2:_hq_ag_m-at-2}"
+    _hq_ag_heads "$inner" $((base + at + 2)) $((depth + 1)) || return 1
   done
   j=0
   while :; do
@@ -2101,6 +2580,11 @@ _hq_ag_heads() {
 hq_arith_guard_check() {
   HQ_ARITH_GUARD_REASON=""
   local cmd="${1:-}"
+  local rewrite_depth="${2:-0}"
+  if [ "$rewrite_depth" -gt 16 ]; then
+    HQ_ARITH_GUARD_REASON="nested split strings exceed the arithmetic guard limit"
+    return 1
+  fi
   # These literal command heads do not evaluate Bash arithmetic arguments.
   # With no expansion, redirection, separator or escape, quoting their data
   # cannot introduce a second shell command. Keep large data arguments cheap.
@@ -2121,9 +2605,13 @@ hq_arith_guard_check() {
   local LC_ALL=C
   local _hq_ag_V="" _hq_ag_m=0 _hq_ag_ansi=0 _hq_ag_he=0 _hq_ag_hs=0 _hq_ag_tn="" _hq_ag_kind=""
   local _hq_ag_mode=collect _hq_ag_reason="" _hq_ag_nw=0 _hq_ag_nfl=0 _hq_ag_nfr=0
-  local _hq_ag_qpos=" " _hq_ag_assoc=" " _hq_ag_int=" " _hq_ag_nref=" " _hq_ag_uncertain_flow=0 _hq_ag_reentry=0 _hq_ag_case_context=0
+  local _hq_ag_qpos=" " _hq_ag_lpos=" " _hq_ag_dqpos=" " _hq_ag_assoc=" " _hq_ag_int=" " _hq_ag_nref=" " _hq_ag_uncertain_flow=0 _hq_ag_reentry=0 _hq_ag_case_context=0
   local _hq_ag_nb=0 _hq_ag_nc=0 _hq_ag_na=0 _hq_ag_start=0 _hq_ag_proof=0 _hq_ag_nr=0 _hq_ag_nar=0 k nm
   local -a _hq_ag_rs=() _hq_ag_re=() _hq_ag_ars=() _hq_ag_are=()
+  local -a _hq_ag_literal_pos=() _hq_ag_literal_text=()
+  local -a _hq_ag_literal_end=() _hq_ag_map_v=() _hq_ag_map_s=()
+  local -a _hq_ag_quote_pos=() _hq_ag_quote_start=() _hq_ag_quote_end=()
+  local _hq_ag_rewrite_start=-1 _hq_ag_rewrite_end=-1 _hq_ag_rewrite_text="" _hq_ag_source=0 _hq_ag_token_start=-1
   local -a _hq_ag_w=() _hq_ag_wp=() _hq_ag_fl=() _hq_ag_forraw=() _hq_ag_forpos=() _hq_ag_forend=() _hq_ag_forlist=()
   local -a _hq_ag_bn=() _hq_ag_bk=() _hq_ag_bp=() _hq_ag_be=()
   local -a _hq_ag_ck=() _hq_ag_ct=() _hq_ag_cp=() _hq_ag_cn=()
@@ -2159,9 +2647,19 @@ hq_arith_guard_check() {
   # Supported same-shell branches/loops use the proof lifetimes above.
   local flow_re='(^|[[:space:];&|])(case|function|select)([[:space:];(]|$)|(^|[[:space:];&|])\{([[:space:];]|$)|(^|[^$=(])\([^()]|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)|\$\([^()][^)]*='
   if [[ "$_hq_ag_V" =~ $flow_re ]]; then _hq_ag_uncertain_flow=1; fi
+  local _hq_ag_ifs="" _hq_ag_ifs_chars=""
+  _hq_ag_ifs_scan
   if ! _hq_ag_heads "$_hq_ag_V" 0; then
     HQ_ARITH_GUARD_REASON="${_hq_ag_reason:-a command name could not be classified}"
     return 1
+  fi
+  if [ "$_hq_ag_rewrite_start" -ge 0 ]; then
+    local rewritten="${cmd:0:_hq_ag_rewrite_start}${_hq_ag_rewrite_text}${cmd:_hq_ag_rewrite_end}"
+    if ! (_hq_ag_lex "$rewritten" 0); then
+      HQ_ARITH_GUARD_REASON="rewriting an env split string leaves unbalanced quoting"; return 1
+    fi
+    hq_arith_guard_check "$rewritten" $((rewrite_depth + 1))
+    return $?
   fi
   _hq_ag_mode=collect
   _hq_ag_run_ctx
@@ -2176,7 +2674,7 @@ hq_arith_guard_check() {
   for nm in $_hq_ag_int $_hq_ag_nref; do
     k=0
     while [ "$k" -lt "$_hq_ag_nb" ]; do
-      if [ "${_hq_ag_bn[k]}" = "$nm" ] && [ "${_hq_ag_bk[k]}" = U ]; then
+      if [ "${_hq_ag_bn[k]}" = "$nm" ] && { [ "${_hq_ag_bk[k]}" = U ] || [ "${_hq_ag_bk[k]}" = Q ]; }; then
         HQ_ARITH_GUARD_REASON="\$$nm is an integer or nameref variable that is given a value this command does not show"
         return 1
       fi

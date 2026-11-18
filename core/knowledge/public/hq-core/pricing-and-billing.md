@@ -130,13 +130,12 @@ checkout then starts with a 30-day trial and bills normally when the trial ends.
 ## Moving existing customers to usage pricing
 
 Existing Workforce, Individual and Outpost-only accounts move to usage pricing
-on December 19, 2026 at 00:00 UTC (the scheduled switch). Each account is
-emailed beforehand with what changes for it. On the switch date the flat plan
-ends with a prorated credit, and a 30-day preview starts: the company is on
-usage pricing and sees its usage, but usage is not charged. Usage billing
-starts 30 days after the switch date (January 18, 2027 for a December 19, 2026
-switch), at the rates in `usage.meters` with `usage.includedUsd` of usage
-included a month. Boxes keep their current price until HQ moves them to their
+at the scheduled switch, December 19, 2026 at 00:00 Pacific (08:00 UTC). Each
+account is emailed beforehand with what changes for it. On the switch date the
+flat plan ends with a prorated credit and usage billing starts that day, at the rates in
+`usage.meters` with `usage.includedUsd` of usage included a month. There is no
+free preview period after the switch; the only free period is the 30-day trial
+for new signups. Boxes keep their current price until HQ moves them to their
 `usage.boxes` list prices, with notice beforehand. After that, HQ adds a box
 to the bill when a bot starts. A bot billed on its own line is paused when it
 stops. A company that has switched stays on usage pricing; there is no
@@ -147,9 +146,9 @@ The app shows a preview first: the price today, the estimated price a month
 after the switch, the box lines at list prices, the items that are kept, and
 the spend limit before and after. The switch applies exactly what the preview
 showed, including moving running boxes to list prices. If anything changed
-since the preview, nothing is switched and the app shows the new preview. An
-owner's own switch has no 30-day preview: usage is billed from the moment of
-the switch. Only an owner can switch. The switch is not offered when HQ has
+since the preview, nothing is switched and the app shows the new preview. As
+with the scheduled switch, usage is billed from the moment of the switch. Only
+an owner can switch. The switch is not offered when HQ has
 turned self-serve switching off with a server setting, or when the company's
 plan is discounted, comped (enterprise, invoiced or staff-set), past due or
 otherwise not active, was moved back by HQ staff before, carries items the
@@ -214,15 +213,15 @@ checks.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-11-10T23:49:38.455Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-11-18T10:27:15.287Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
-### Usage card (new signups from 2026-10-16, card version 2026-10-16)
+### Usage card (new signups from 2026-10-16, card version 2026-11-13)
 
 | Meter | Price | Per | Waived in trial |
 |---|---|---|---|
 | Sync | $0.10 | sync | no |
-| Gateway call | $0.001 | call | no |
-| HQ MCP call | $0.05 | call | no |
+| Gateway call | $0.10 per 100 calls | call | no |
+| HQ MCP call | $0.10 per 100 calls | call | no |
 | Agent run | $0.05 | run | no |
 | Storage | $2.00 | GB-month | no |
 | Secret | $0.50 | secret-month | no |

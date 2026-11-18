@@ -8,7 +8,7 @@
 # Usage (from the HQ root):
 #   sh core/scripts/pipeline-lane-rows.sh --state <pipeline state dir> [--session-id <id>]
 #
-# A loop lane is loaded from hq lanes list --json and the run's lanes.json. Lane item fields:
+# A loop lane is loaded from hq runners list --json and the run's lanes.json. Lane item fields:
 #   kind             "lane"
 #   worker           the slot's worker id
 #   subagent_id      the slot's subagent id
@@ -21,11 +21,11 @@
 #   phase_index      1-based index of the current phase, or null
 #   phase_count      number of phases of the story, or null
 #   phase_elapsed_s  seconds since the phase was routed (routed_at), or null
-#   quiet_s          null (not reported by hq lanes)
-#   inbox_pending    hq lanes inbox count when available
-#   last_line        latest lane status line from hq lanes, or null
-#   exit             null (not reported by hq lanes)
-#   pr               latest pull-request URL from hq lanes, or null
+#   quiet_s          null (not reported by hq runners)
+#   inbox_pending    hq runners inbox count when available
+#   last_line        latest lane status line from hq runners, or null
+#   exit             null (not reported by hq runners)
+#   pr               latest pull-request URL from hq runners, or null
 #   story_title      the story's title, or null
 #   run_dir          null (loop lane internals are not read)
 # Driver item fields:
@@ -75,7 +75,7 @@ else
   echo '[]' >"$TMP/stories.json"
 fi
 
-"$PC_HQ" lanes list --json >"$TMP/lanes.json" 2>/dev/null || echo '[]' >"$TMP/lanes.json"
+"$PC_HQ" runners list --json >"$TMP/lanes.json" 2>/dev/null || echo '[]' >"$TMP/lanes.json"
 jq -e 'type == "array"' "$TMP/lanes.json" >/dev/null 2>&1 || echo '[]' >"$TMP/lanes.json"
 [ -f "$STATE/lanes.json" ] || echo '{}' >"$STATE/lanes.json"
 jq -n --argjson now "$NOW" --slurpfile S "$TMP/stories.json" --slurpfile L "$TMP/lanes.json" --slurpfile M "$STATE/lanes.json" '

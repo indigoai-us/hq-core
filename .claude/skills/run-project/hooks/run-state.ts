@@ -19,6 +19,8 @@ export type OrchestratorState = {
   failed_tasks?: unknown
   blocked_tasks?: unknown
   regression_gates?: unknown
+  /** `subagent` (default) or `runner`. Recorded only; stories map the same either way. */
+  runner?: unknown
 }
 
 /** The fields of the project's prd.json this reads. */

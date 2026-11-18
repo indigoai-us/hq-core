@@ -79,7 +79,7 @@ mkdir -p "$BIN"
 cat > "$BIN/hq" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_CALLS"
-if [ "${1:-}" = --version ]; then printf '5.345.67\n'; exit 0; fi
+if [ "${1:-}" = --version ]; then printf '5.345.210\n'; exit 0; fi
 if [ "${1:-}" = monitor ]; then printf 'on\n'; exit 0; fi
 printf 'conductor text\n'
 FAKE
@@ -98,7 +98,7 @@ pass 'monitor note reaches a session with no lanes'
 
 : > "$FAKE_CALLS"
 printf '%s' "$PAYLOAD" | bash "$ROOT/.claude/hooks/conduct-lanes-session-start.sh" >"$TMP/out"
-grep -Fq 'lanes session-start' "$FAKE_CALLS" || fail 'fresh session did not reach the auto-conduct bootstrap'
+grep -Fq 'runners session-start' "$FAKE_CALLS" || fail 'fresh session did not reach the auto-conduct bootstrap'
 grep -Fq 'conductor text' "$TMP/out" || fail 'auto-conduct output was not passed through'
 pass 'fresh session reaches the auto-conduct bootstrap'
 

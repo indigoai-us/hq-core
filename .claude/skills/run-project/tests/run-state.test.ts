@@ -24,6 +24,22 @@ describe('runFromState', () => {
     expect(run.gates).toEqual([{ afterStory: 'US-002', passed: true }])
   })
 
+  test('a default-mode (subagent) run with no lane ids maps to the same stories', () => {
+    const laneFree = { ...STATE, runner: 'subagent' }
+    const run = runFromState('demo-proj', laneFree, PRD)
+
+    expect(JSON.stringify(laneFree)).not.toMatch(/lane/)
+    expect(run.isFinished).toBe(false)
+    expect(run.stories.map(one => `${one.id}:${one.status}`)).toEqual([
+      'US-001:done',
+      'US-002:done',
+      'US-003:failed',
+      'US-004:running',
+      'US-005:pending',
+    ])
+    expect(run).toEqual(runFromState('demo-proj', STATE, PRD))
+  })
+
   test('finished stories, failed ones included, are timed back to back from the run start', () => {
     const run = runFromState('demo-proj', STATE, PRD)
     const s = summarize(run, T0 + 30 * MIN)

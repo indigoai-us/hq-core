@@ -143,7 +143,15 @@ mkdir -p "$TARGET_PARENT"
 # otherwise a plain `git push` from the worktree targets the base (e.g. main)
 # or aborts on the upstream-name mismatch.
 echo "→ creating worktree $TARGET on branch $BRANCH from $BASE_REF"
-git -C "$SOURCE" worktree add --no-track "$TARGET" -b "$BRANCH" "$BASE_REF"
+# worktree-backend.sh picks git or twig per core/settings/worktrees.yaml and
+# falls back to plain git; the direct call covers an HQ root without it.
+WT_BACKEND="$HQ_ROOT/core/scripts/worktree-backend.sh"
+if [ -f "$WT_BACKEND" ]; then
+  HQ_ROOT="$HQ_ROOT" bash "$WT_BACKEND" add --repo "$SOURCE" --path "$TARGET" \
+    --new-branch "$BRANCH" --base "$BASE_REF" --no-track
+else
+  git -C "$SOURCE" worktree add --no-track "$TARGET" -b "$BRANCH" "$BASE_REF"
+fi
 
 SHORT_SHA="$(git -C "$TARGET" rev-parse --short HEAD)"
 

@@ -17,7 +17,12 @@
 set -uo pipefail
 
 INPUT=$(cat)
-CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) || true
+# jq may emit a completed value before a malformed tail fails. Never use
+# partial output from a failed parse, including jq version-specific literals.
+if ! CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null); then
+  printf '%s\n' 'BLOCKED: hook input is not cleanly parseable JSON.' >&2
+  exit 2
+fi
 [[ -z "$CMD" ]] && exit 0
 
 # This lexical candidate check is deliberately a superset of every deny path

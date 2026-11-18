@@ -31,7 +31,7 @@ All commands accept `--company <slug>` to target a specific company. If omitted,
 
 ## Access vs. Download (read without syncing)
 
-Vault **access** and local **download** are separate. Your access is decided server-side at vend-time (STS credential scope + ACL resolution + owner/admin role-bypass). Download is what a *sync* materializes onto your local HQ tree, governed per-membership by `syncMode` (`all | shared | custom`, set with `hq sync mode`).
+Vault **access** and local **download** are separate. Your access is decided server-side at vend-time (STS credential scope + ACL resolution + owner/admin role-bypass). Download is what a *sync* materializes onto your local HQ tree, governed per-membership by `syncMode` (`all | shared | custom`, set with `hq daemon sync mode set <company> <mode>`).
 
 The browse/retrieve commands let you reach a file you have **access** to without **downloading** your whole share:
 
@@ -171,7 +171,7 @@ read-only (or absent). This stops doomed local mutations to read-only shares
 before the next sync rejects or clobbers them.
 
 - Refresh the manifest after your grants change:
-  `bash core/scripts/refresh-vault-access.sh [--company <slug>]`
+  `hq core refresh-vault-access [--company <slug>]`
   (sources: `hq files shared-with-me` for grants, `hq members` for your role).
 - Fail-open by design: no manifest, an unlisted company, or role
   owner/admin/unknown means no local enforcement — the server-side STS/ACL

@@ -46,9 +46,22 @@
 # same Cursor window shares, so two concurrent chats would resolve to one
 # session record — the cross-session write this file exists to prevent. Cursor
 # passes conversation_id only to hook scripts on stdin and exports no
-# conversation id to shell commands (cursor.com/docs/agent/hooks). A Cursor
-# session supplies its id through HQ_SESSION_ID or hq-session.sh --session-id;
+# conversation id to shell commands (cursor.com/docs/agent/hooks). In a Cursor
+# chat, master-hook's PreToolUse rewrites each shell command to begin with
+# `export HQ_SESSION_ID=<conversation_id>;` (Cursor's updated_input), so the
+# command resolves through HQ_SESSION_ID like any other host. Without that
+# rewrite a Cursor session supplies its id through hq-session.sh --session-id;
 # hq-session.sh prints that hint when a Cursor write has no identity.
+#
+# HOOK PAYLOADS
+#
+# Hook scripts read the id from the JSON payload on stdin, not the environment.
+# Claude Code, Codex and Grok send session_id. Cursor sends conversation_id on
+# every hook and session_id only on sessionStart, where the two are equal
+# (cursor.com/docs/agent/hooks: "same as conversation_id").
+# session_id_from_payload is the one reader for that field;
+# SESSION_ID_PAYLOAD_JQ is the same precedence for callers that already run jq
+# over the payload.
 #
 # The env precedence list matches .claude/skills/_shared/journal.sh so every
 # per-session artifact (journal, session meta, scope capability) keys off the
@@ -109,4 +122,36 @@ session_id_resolve() {
     id="$(session_id_from_current_file "$root")"
   fi
   printf '%s' "$id"
+}
+
+# The payload fields that carry the session id, in precedence order. Top-level
+# keys only: a nested tool_input object can hold any key, so it never counts.
+# shellcheck disable=SC2034 # read by callers that embed it in their own jq.
+SESSION_ID_PAYLOAD_JQ='(.session_id // .conversation_id // .conversationId)'
+
+# session_id_from_payload <json>
+#   Print the session id a hook payload names, or nothing. Reads the top-level
+#   session_id, then conversation_id, then conversationId (Cursor), and prints
+#   the first one present when it passes session_id_is_valid. A malformed value
+#   is not skipped in favour of the next key: the payload named an id that
+#   cannot be used, so the caller gets nothing and fails closed.
+session_id_from_payload() {
+  local payload="${1:-}" id="" key re
+  [ -n "$payload" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    id="$(printf '%s' "$payload" | jq -r "$SESSION_ID_PAYLOAD_JQ"' // empty | if type == "string" then . else "!invalid!" end' 2>/dev/null || true)"
+  else
+    # No jq: the first "key": "value" pair per key, in precedence order. An
+    # escaped key inside a JSON string cannot match, because its closing quote
+    # follows a backslash rather than the key's last letter.
+    for key in session_id conversation_id conversationId; do
+      re="\"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+      if [[ "$payload" =~ $re ]]; then
+        id="${BASH_REMATCH[1]}"
+        break
+      fi
+    done
+  fi
+  session_id_is_valid "$id" && printf '%s' "$id"
+  return 0
 }

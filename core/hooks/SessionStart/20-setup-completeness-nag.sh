@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # SessionStart reminder for installs whose durable /setup artifacts are missing.
 # Exit code: always 0. This hook is advisory and deliberately fail-open.
+#
+# The .last stamp does two jobs. After a probe that finds nothing to say
+# (setup complete, or the status script unavailable) it throttles the probe to
+# once per interval. After a reminder it is the delivery cooldown, and it is
+# written only once the reminder has been printed.
+#
+# Machine-check collect-only (HQ_MACHINE_CHECK=1 and
+# HQ_MACHINE_CHECK_COLLECT_ONLY=1, set by the hq-cli daemon batch when
+# core/core.yaml advertises machineCheckCollectOnly): the reminder is printed
+# for the batch to collect, but no delivery stamp is written, because nobody
+# has seen it yet. The session that shows it writes the stamp. So the status
+# probe still runs once per interval while a reminder is due, a collect-only
+# run keeps the reminder in setup-completeness-nag.<key>.collected (a cache:
+# the probe time, then the reminder) and reprints it from there until the
+# interval passes. Delivery removes the cache.
 
 set -uo pipefail
 
@@ -32,6 +47,12 @@ set -uo pipefail
   NOW="$(date +%s 2>/dev/null || true)"
   [ -n "$NOW" ] || exit 0
 
+  COLLECT_FILE="$STATE_DIR/setup-completeness-nag.$STATE_KEY.collected"
+  COLLECT_ONLY=0
+  if [ "${HQ_MACHINE_CHECK:-}" = "1" ] && [ "${HQ_MACHINE_CHECK_COLLECT_ONLY:-}" = "1" ]; then
+    COLLECT_ONLY=1
+  fi
+
   mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
   LAST_NAG="$(cat "$STATE_FILE" 2>/dev/null || true)"
   if [[ "$LAST_NAG" =~ ^[0-9]+$ ]]; then
@@ -39,10 +60,29 @@ set -uo pipefail
     if [ "$AGE" -ge 0 ] && [ "$AGE" -lt "$INTERVAL_SECONDS" ]; then exit 0; fi
   fi
 
+  # Collect-only: a reminder collected inside the interval is reprinted
+  # without probing again.
+  if [ "$COLLECT_ONLY" -eq 1 ] && [ -f "$COLLECT_FILE" ]; then
+    COLLECTED_AT=""
+    COLLECTED=""
+    { IFS= read -r COLLECTED_AT && IFS= read -r COLLECTED; } < "$COLLECT_FILE" 2>/dev/null || true
+    if [[ "$COLLECTED_AT" =~ ^[0-9]+$ ]] && [ -n "$COLLECTED" ]; then
+      AGE=$((NOW - COLLECTED_AT))
+      if [ "$AGE" -ge 0 ] && [ "$AGE" -lt "$INTERVAL_SECONDS" ]; then
+        printf '%s\n' "$COLLECTED"
+        exit 0
+      fi
+    fi
+  fi
+
   # A hook normally holds this empty directory for milliseconds. Recover one
   # older than five minutes so an interrupted process cannot disable reminders.
   if [ -d "$LOCK_DIR" ]; then
-    LOCK_MTIME="$(date -r "$LOCK_DIR" +%s 2>/dev/null || true)"
+    if [[ "$OSTYPE" == darwin* ]]; then
+      LOCK_MTIME="$(stat -f %m "$LOCK_DIR" 2>/dev/null || true)"
+    else
+      LOCK_MTIME="$(stat -c %Y "$LOCK_DIR" 2>/dev/null || true)"
+    fi
     if [[ "$LOCK_MTIME" =~ ^[0-9]+$ ]]; then
       LOCK_AGE=$((NOW - LOCK_MTIME))
       if [ "$LOCK_AGE" -ge 300 ]; then
@@ -64,24 +104,43 @@ set -uo pipefail
 
   STATUS_RC=0
   STATUS_JSON="$($STATUS_SCRIPT --root "$REPO_ROOT" --json 2>/dev/null)" || STATUS_RC=$?
-  # Gate every completed status invocation, including an unavailable result,
-  # so a broken setup probe cannot run on every SessionStart.
-  printf '%s\n' "$NOW" > "$STATE_FILE" 2>/dev/null || true
-  [ "$STATUS_RC" -eq 2 ] && { rmdir "$LOCK_DIR" 2>/dev/null || true; exit 0; }
-  if printf '%s' "$STATUS_JSON" | jq -e '.complete == true' >/dev/null 2>&1; then
+  # Gate every completed status invocation that has nothing to show, including
+  # an unavailable result, so a broken setup probe cannot run on every
+  # SessionStart.
+  throttle_and_exit() {
+    printf '%s\n' "$NOW" > "$STATE_FILE" 2>/dev/null || true
+    rm -f "$COLLECT_FILE" 2>/dev/null || true
     rmdir "$LOCK_DIR" 2>/dev/null || true
     exit 0
+  }
+  [ "$STATUS_RC" -eq 2 ] && throttle_and_exit
+  if printf '%s' "$STATUS_JSON" | jq -e '.complete == true' >/dev/null 2>&1; then
+    throttle_and_exit
   fi
 
   MISSING="$(printf '%s' "$STATUS_JSON" | jq -r '[.missingRequired[] | gsub("-"; " ")] | join(", ")' 2>/dev/null || true)"
-  [ -n "$MISSING" ] || { rmdir "$LOCK_DIR" 2>/dev/null || true; exit 0; }
+  [ -n "$MISSING" ] || throttle_and_exit
 
   CONTEXT="HQ setup is unfinished: missing ${MISSING}. Run /setup to finish it. Silence this reminder with HQ_NO_SETUP_NAG=1."
-  jq -nc --arg context "$CONTEXT" \
-    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$context}}' || {
-      rmdir "$LOCK_DIR" 2>/dev/null || true
-      exit 0
-    }
+  REMINDER="$(jq -nc --arg context "$CONTEXT" \
+    '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$context}}')" || REMINDER=""
+  [ -n "$REMINDER" ] || throttle_and_exit
+
+  # The delivery cooldown starts only once the reminder is out. A collect-only
+  # batch run shows nobody anything, so it leaves the stamp alone.
+  if printf '%s\n' "$REMINDER"; then
+    if [ "$COLLECT_ONLY" -eq 1 ]; then
+      COLLECT_TMP="$COLLECT_FILE.tmp.$$"
+      if printf '%s\n%s\n' "$NOW" "$REMINDER" > "$COLLECT_TMP" 2>/dev/null; then
+        mv -f "$COLLECT_TMP" "$COLLECT_FILE" 2>/dev/null || rm -f "$COLLECT_TMP" 2>/dev/null
+      else
+        rm -f "$COLLECT_TMP" 2>/dev/null
+      fi
+    else
+      printf '%s\n' "$NOW" > "$STATE_FILE" 2>/dev/null || true
+      rm -f "$COLLECT_FILE" 2>/dev/null || true
+    fi
+  fi
 
   rmdir "$LOCK_DIR" 2>/dev/null || true
 } 2>/dev/null || true

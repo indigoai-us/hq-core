@@ -1,7 +1,7 @@
 ---
 name: learn
 description: Turn reusable findings into scoped policies or insight files.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash, Bash(bash core/scripts/read-policy-frontmatter.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(qmd:*), Bash(grep:*), Bash(mkdir:*), Bash(date:*), Bash(ls:*), Bash(bash:*), Bash(git:*), Bash(rm:*), Bash(stat:*), Bash, Bash(hq core policy frontmatter:*)
 ---
 
 # Learn - Automated Learning Pipeline
@@ -45,7 +45,7 @@ See `core/knowledge/public/hq-core/insights-spec.md` for the insight file format
 
 Before processing, load applicable policies with minimal context burn:
 
-1. Collect eligible paths in the global policy set except `example-policy.md`, keep their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator.
+1. Collect eligible paths in the global policy set except `example-policy.md`, keep their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `hq core policy frontmatter {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator.
 2. Note `enforcement: hard` titles. Only Read the `## Rule` section of hard-enforcement policies if one looks relevant to the current learning
 
 Skip full policy body loads — the frontmatter contains enough metadata for the learn pipeline.
@@ -340,7 +340,7 @@ fills these fields itself and never asks the user about them
 - `on:` is where it is evaluated. Default for a real trigger: `[PreToolUse, PostToolUse, UserPromptSubmit, AssistantIntent]` (the `when:` does the filtering). `[SessionStart]` with `when: always` is a last resort for a hard rule with no nameable signal, not the home for "baseline" or "ambient" rules: those have a moment when they apply (writing a message, reading a file, choosing between options), and the keyword for that moment is the trigger. HP-4 of hq-hook-perf moved every core `when: always` policy to keywords for this reason.
 - **`enforcement: hard` + an unconditional `when:` on a reactive event is blocked.** `when: always` (or an OR-chain containing `always`) is TRUE for every command and every prompt, so on `PreToolUse`/`UserPromptSubmit`/`PostToolUse`/`AssistantIntent` it takes a session cap slot from a policy that actually matched. Either move it to `on: [SessionStart]`, or name the real signal — usually the OR-chain is already there and `always` is redundant noise in front of it.
 - If you genuinely can't name a signal and the rule is `enforcement: hard`, `when: always` + `on: [SessionStart]` is allowed; a soft rule without a signal is not worth a policy file.
-- You may omit both fields when `tags:` or `trigger:` supplies a derivable signal: the SessionStart `migrate-policy-triggers.sh` hook backfills them on the next session. If no signal is derivable, only an `enforcement: hard` policy receives the `when: always` + `on: [SessionStart]` fallback; soft or unset policies remain untriggered. Setting the fields at authoring time is better — the migrator never overwrites an existing `when:`.
+- Set these fields when authoring a policy. For older policies where `tags:` or `trigger:` supplies a derivable signal, the hash-gated SessionStart hook (`migrate-policy-triggers-if-changed.sh`) backfills them on the next session after a policy file changes, and `/update-hq` also runs the backfill after an update. If no signal is derivable, only an `enforcement: hard` policy receives the `when: always` + `on: [SessionStart]` fallback; soft or unset policies remain untriggered. The migrator never overwrites an existing `when:`.
 
 **Keep an `enforcement: hard` body short.** A hard policy is quoted verbatim into
 every session it fires in, so its length is a recurring context cost, and the

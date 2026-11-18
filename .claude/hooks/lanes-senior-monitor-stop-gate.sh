@@ -68,12 +68,12 @@ early_gate_error() {
       ;;
   esac
   if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
-    printf 'WARNING: stop_hook_active=true; no second Stop block was emitted. Resolve the hook error, or run hq lanes stop / hq lanes reparent.\n' >&2
+    printf 'WARNING: stop_hook_active=true; no second Stop block was emitted. Resolve the hook error, or run hq runners stop / hq runners reparent.\n' >&2
     return 3
   fi
   # No parser is available here, so keep the fallback block static and safely
   # JSON-encoded. The detailed diagnostic is already on stderr.
-  printf '%s\n' '{"decision":"block","reason":"Lane Monitor coverage could not be verified. Repair or update hq-cli, then retry; or run hq lanes stop / hq lanes reparent for lanes that should leave this senior."}'
+  printf '%s\n' '{"decision":"block","reason":"Lane Monitor coverage could not be verified. Repair or update hq-cli, then retry; or run hq runners stop / hq runners reparent for lanes that should leave this senior."}'
   # CLAUDE_EARLY_ERROR_BLOCK_RETURN
   return 0
 }
@@ -141,11 +141,11 @@ gate_error() {
   # Claude Code sets this after a Stop block has already caused a continuation.
   # The first block names the remedy; a second block would trap that remedy.
   if [ "$STOP_HOOK_ACTIVE" = "true" ]; then
-    printf 'WARNING: stop_hook_active=true; no second Stop block was emitted. Resolve the named coverage/error remedy, or run hq lanes stop / hq lanes reparent.\n' >&2
+    printf 'WARNING: stop_hook_active=true; no second Stop block was emitted. Resolve the named coverage/error remedy, or run hq runners stop / hq runners reparent.\n' >&2
     return 3
   fi
 
-  reason="Monitor coverage could not be verified. Repair or update hq-cli, then retry. If the lane should no longer remain under this senior, run hq lanes stop <lane-id> or hq lanes reparent <lane-id> <senior>."
+  reason="Monitor coverage could not be verified. Repair or update hq-cli, then retry. If the lane should no longer remain under this senior, run hq runners stop <lane-id> or hq runners reparent <lane-id> <senior>."
   reason="${reason}
 Detail: $detail"
   if ! emit_block "$reason"; then
@@ -247,7 +247,7 @@ Uncovered lane ids:
 $uncovered
 Exact Monitor calls to copy:
 $calls
-Remedy: arm the Monitor call(s) above; or run hq lanes stop <lane-id> / hq lanes reparent <lane-id> <senior> so the lane is no longer this session's active senior lane."
+Remedy: arm the Monitor call(s) above; or run hq runners stop <lane-id> / hq runners reparent <lane-id> <senior> so the lane is no longer this session's active senior lane."
 
   if [ "$ENGINE" != "claude" ]; then
     printf 'ERROR: hq-cli reported uncovered lanes for engine %s, which has no Claude Monitor requirement.\n%s\n' "$ENGINE" "$reason" >&2
@@ -272,35 +272,25 @@ if [ -z "$SESSION_ID" ]; then
   exit "$rc"
 fi
 
-# Resolve hq the way the running session does before calling it missing
-# (feedback_26faa03c). The lookup is shared with the lanes reminder shim:
-# core/scripts/lib/resolve-hq-bin.sh (PATH, then fixed owner-checked install dirs).
-HQ_BIN=""
-RESOLVE_HQ_BIN_LIB="$HOOK_DIR/../../core/scripts/lib/resolve-hq-bin.sh"
-if [ -f "$RESOLVE_HQ_BIN_LIB" ] && . "$RESOLVE_HQ_BIN_LIB" 2>/dev/null; then
-  resolve_hq_bin || true
-else
-  HQ_BIN="$(command -v hq 2>/dev/null || true)"
-fi
-if [ -z "$HQ_BIN" ]; then
-  rc=0
-  # MISSING_HQ_MUST_ERROR
-  gate_error "hq CLI is missing from PATH and the usual install locations; install or update hq-cli" || rc=$?
-  exit "$rc"
-fi
-
 # NO_ACTIVE_LANE_MUST_SKIP_HQ: every Stop in every session reached this point
 # and started a full hq process (~0.5 s of CPU) even when the session owned no
 # lane, or only finished ones. monitor-check only covers lanes in
 # MONITOR_ACTIVE_LANE_STATES (running, queued, awaiting_input, blocked), so a
 # store that provably holds no such lane for this session has nothing to gate.
-# Any doubt (unreadable store, unparsable record) falls through to the CLI,
-# which keeps its fail-closed error handling.
+# This check runs before hq is resolved, so a session without lanes passes
+# even when hq is missing. Returns:
+#   0  an active lane names this session as senior
+#   1  no such lane
+#   2  unsure about the records: an unreadable record file, a malformed or
+#      truncated record, or jq missing or failing. Always falls through to
+#      the CLI and its fail-closed handling, in every runner mode.
+#   3  the lane store directory itself cannot be read. Handled by the
+#      default-mode rule below.
 session_has_active_lane() {
   local lane_dir="$HQ_ROOT/workspace/lanes/lanes" rc record content
   local -a records=() matched=()
   [ -e "$lane_dir" ] || return 1
-  [ -d "$lane_dir" ] && [ -r "$lane_dir" ] && [ -x "$lane_dir" ] || return 2
+  [ -d "$lane_dir" ] && [ -r "$lane_dir" ] && [ -x "$lane_dir" ] || return 3
   shopt -s nullglob
   records=("$lane_dir"/*.json)
   shopt -u nullglob
@@ -329,9 +319,59 @@ session_has_active_lane() {
   [ "$rc" -eq 1 ] && return 1
   return 2
 }
+
+# ZERO_LANE_DEFAULT_MODE: the default /conduct runner (`subagent`) writes no
+# lane record, so in default mode this gate stays inert until a lane record
+# names this session as its senior. An unreadable lane store directory
+# (status 3) is the one doubt this rule settles: when the session's runner
+# resolves to `subagent`, that store counts as zero lanes, with one warning
+# line on stderr and exit 0. Under `runner`, or when the runner cannot be
+# resolved, it falls through to the CLI and its fail-closed handling. Doubt
+# about a record that was read (status 2: malformed or truncated record, an
+# unreadable record file, jq missing) always falls through, in every mode.
+resolve_conduct_runner() {
+  local resolver candidate
+  resolver=''
+  for candidate in "$HQ_ROOT/core/scripts/conduct-runner-resolve.sh" "$HOOK_DIR/../../core/scripts/conduct-runner-resolve.sh"; do
+    if [ -f "$candidate" ]; then
+      resolver="$candidate"
+      break
+    fi
+  done
+  [ -n "$resolver" ] || return 1
+  sh "$resolver" --session-id "$SESSION_ID" --root "$HQ_ROOT" 2>/dev/null
+}
+
 ACTIVE_LANE_STATUS=0
 session_has_active_lane || ACTIVE_LANE_STATUS=$?
+# ZERO_LANE_FAST_PATH_MUST_EXIT: no active lane for this session. Exit before
+# hq is resolved or launched, so a session without lanes never blocks.
 [ "$ACTIVE_LANE_STATUS" -eq 1 ] && exit 0
+if [ "$ACTIVE_LANE_STATUS" -eq 3 ]; then
+  CONDUCT_RUNNER="$(resolve_conduct_runner || true)"
+  if [ "$CONDUCT_RUNNER" = "subagent" ]; then
+    printf 'WARNING: lanes Stop gate: lane store %s is unreadable; conduct runner is subagent, so this session is treated as having no lanes.\n' "$HQ_ROOT/workspace/lanes/lanes" >&2
+    # UNREADABLE_DEFAULT_MODE_MUST_PASS
+    exit 0
+  fi
+fi
+
+# Resolve hq the way the running session does before calling it missing.
+# The lookup is shared with the lanes reminder shim:
+# core/scripts/lib/resolve-hq-bin.sh (PATH, then fixed owner-checked install dirs).
+HQ_BIN=""
+RESOLVE_HQ_BIN_LIB="$HOOK_DIR/../../core/scripts/lib/resolve-hq-bin.sh"
+if [ -f "$RESOLVE_HQ_BIN_LIB" ] && . "$RESOLVE_HQ_BIN_LIB" 2>/dev/null; then
+  resolve_hq_bin || true
+else
+  HQ_BIN="$(command -v hq 2>/dev/null || true)"
+fi
+if [ -z "$HQ_BIN" ]; then
+  rc=0
+  # MISSING_HQ_MUST_ERROR
+  gate_error "hq CLI is missing from PATH and the usual install locations; install or update hq-cli" || rc=$?
+  exit "$rc"
+fi
 
 ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/hq-lanes-monitor-check.XXXXXX" 2>/dev/null || true)"
 if [ -z "$ERR_FILE" ]; then
@@ -356,7 +396,7 @@ HQ_NO_UPDATE_CHECK=1
 CLAUDE_PROJECT_DIR="$HQ_ROOT"
 export HQ_NO_UPDATE_CHECK HQ_ROOT CLAUDE_PROJECT_DIR
 RESULT="$(run_hq_with_timeout "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" "$TIMEOUT_MARKER" \
-  "$HQ_BIN" lanes monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json \
+  "$HQ_BIN" runners monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json \
   2>"$ERR_FILE")" || HQ_RC=$?
 { HQ_ERR="$(<"$ERR_FILE")"; } 2>/dev/null || HQ_ERR=''
 
@@ -365,14 +405,14 @@ if [ -f "$TIMEOUT_MARKER" ]; then
   : > "$ERR_FILE" 2>/dev/null || true
   HQ_RC=0
   RESULT="$(run_hq_with_timeout "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" "$TIMEOUT_MARKER" \
-    "$HQ_BIN" lanes monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json \
+    "$HQ_BIN" runners monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json \
     2>"$ERR_FILE")" || HQ_RC=$?
   { HQ_ERR="$(<"$ERR_FILE")"; } 2>/dev/null || HQ_ERR=''
 
   if [ -f "$TIMEOUT_MARKER" ]; then
-    printf 'WARNING: hq lanes monitor-check timed out twice (%ss each); Monitor coverage was not verified this turn\n' \
+    printf 'WARNING: hq runners monitor-check timed out twice (%ss each); Monitor coverage was not verified this turn\n' \
       "$LANES_MONITOR_CHECK_TIMEOUT_SECONDS" >&2
-    detail="hq lanes monitor-check timed out twice"
+    detail="hq runners monitor-check timed out twice"
     # INNER_TIMEOUT_MUST_NOT_BLOCK
     case "$ENGINE" in
       codex|grok) exit 3 ;;
@@ -387,7 +427,7 @@ case "$HQ_RC" in
     if [ -z "$RESULT" ] || ! printf '%s' "$RESULT" | jq -e '
       type == "object" and .action == "monitor-check" and .ok == true
     ' >/dev/null 2>&1; then
-      detail="hq lanes monitor-check returned invalid success JSON"
+      detail="hq runners monitor-check returned invalid success JSON"
       [ -n "$HQ_ERR" ] && detail="$detail: $(compact_detail "$HQ_ERR")"
       rc=0
       gate_error "$detail" || rc=$?
@@ -410,7 +450,7 @@ case "$HQ_RC" in
         and ((.persistent | type) == "boolean")
       )
     ' >/dev/null 2>&1; then
-      detail="hq lanes monitor-check returned invalid uncovered JSON"
+      detail="hq runners monitor-check returned invalid uncovered JSON"
       [ -n "$HQ_ERR" ] && detail="$detail: $(compact_detail "$HQ_ERR")"
       rc=0
       gate_error "$detail" || rc=$?
@@ -419,12 +459,12 @@ case "$HQ_RC" in
     rc=0
     emit_uncovered "$RESULT" || rc=$?
     if [ "$rc" -eq 1 ]; then
-      gate_error "hq lanes monitor-check exit 2 did not contain usable uncovered lane ids and Monitor calls" || rc=$?
+      gate_error "hq runners monitor-check exit 2 did not contain usable uncovered lane ids and Monitor calls" || rc=$?
     fi
     exit "$rc"
     ;;
   *)
-    detail="hq lanes monitor-check exited $HQ_RC"
+    detail="hq runners monitor-check exited $HQ_RC"
     [ -n "$HQ_ERR" ] && detail="$detail: $(compact_detail "$HQ_ERR")"
     rc=0
     gate_error "$detail" || rc=$?

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pipeline-lane-rows contract over a fake hq lanes list response.
+# pipeline-lane-rows contract over a fake hq runners list response.
 # shellcheck disable=SC2016  # check() evals single-quoted assertions on purpose
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +15,7 @@ mkdir -p "$T/bin" "$T/state/stories" "$T/state/handoffs" "$T/state/driver"
 cat > "$T/bin/hq" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FAKE_HQ_LOG"
-[ "$1 $2" = "lanes list" ] || exit 2
+[ "$1 $2" = "runners list" ] || exit 2
 cat "$FAKE_HQ_LIST"
 EOF
 chmod +x "$T/bin/hq"
@@ -50,12 +50,12 @@ cp "$T/out" "$T/initial.json"
 q() { jq -r "$1" "$T/out"; }
 check "exits 0 and prints one JSON array" '[ $rc = 0 ] && [ "$(q "type")" = array ]'
 check "only mapped loop lanes and the driver are rendered" '[ "$(q "length")" = 3 ] && [ "$(q "[.[]|select(.kind==\"lane\")|.worker]|join(\",\")")" = "backend-dev,qa-tester" ]'
-check "hq lanes list is called with JSON output" 'grep -q "^lanes list --json$" "$FAKE_HQ_LOG"'
+check "hq runners list is called with JSON output" 'grep -q "^runners list --json$" "$FAKE_HQ_LOG"'
 L='.[]|select(.worker=="backend-dev")'
 check "lane id, loop state and pid presence map to row fields" '[ "$(q "$L|[.kind,.subagent_id,.status,.pid_alive]|map(tostring)|join(\" \")")" = "lane lane-a waiting true" ]'
 check "story and phase label come from pipeline state" '[ "$(q "$L|.story")" = US-1 ] && [ "$(q "$L|.phase_label")" = "US-1 · backend-dev · building" ]'
 check "phase index and count come from pipeline state" '[ "$(q "$L|[.phase,.phase_index,.phase_count]|map(tostring)|join(\" \")")" = "backend 2 3" ]'
-check "elapsed time and CL-1 lane fields come from the pipeline state and hq lanes list" '[ "$(q "$L|.phase_elapsed_s")" -ge 90 ] && [ "$(q "$L|.phase_elapsed_s")" -lt 120 ] && [ "$(q "$L|[.inbox_pending,.last_line,.pr]|map(tostring)|join(\"|\")")" = "1|Running the tests|https://github.com/acme/app/pull/42" ]'
+check "elapsed time and CL-1 lane fields come from the pipeline state and hq runners list" '[ "$(q "$L|.phase_elapsed_s")" -ge 90 ] && [ "$(q "$L|.phase_elapsed_s")" -lt 120 ] && [ "$(q "$L|[.inbox_pending,.last_line,.pr]|map(tostring)|join(\"|\")")" = "1|Running the tests|https://github.com/acme/app/pull/42" ]'
 check "lane internals are not read for quiet time, exit or run directory" '[ "$(q "$L|[.quiet_s,.exit,.run_dir]|map(tostring)|join(\" \")")" = "null null null" ]'
 M='.[]|select(.worker=="qa-tester")'
 check "stopped lane with no pid has no active story or PR" '[ "$(q "$M|[.status,.pid_alive,.story,.pr,.inbox_pending]|map(tostring)|join(\" \")")" = "stopped false null null 0" ]'

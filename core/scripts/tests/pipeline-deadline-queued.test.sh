@@ -6,7 +6,7 @@
 #   envelope) -> no DEADLINE, no exit 22, the story stays in flight.
 # Case 2: the deadline has passed and the lane is working this envelope
 #   (active_envelope_id == envelope id) -> exit 22 as before.
-# Case 3: the deadline has passed and hq lanes list has no row for the lane
+# Case 3: the deadline has passed and hq runners list has no row for the lane
 #   (the lane is gone) -> exit 22 as before; a missing row is not "queued".
 # Case 4: the envelope waits in the queue past its deadline, then the lane
 #   picks it up -> no exit 22 right at pickup; the phase gets its full budget
@@ -38,7 +38,7 @@ trap cleanup EXIT
 export HQ_ROOT="$T/hq" PC_HQ_ROOT="$T/hq"
 mkdir -p "$HQ_ROOT/workspace/sessions"
 
-rows_for() { # rows_for <active_envelope_id or empty>: hq lanes list --json for the lane
+rows_for() { # rows_for <active_envelope_id or empty>: hq runners list --json for the lane
   if [ -n "$1" ]; then active="\"$1\""; else active=null; fi
   printf '[{"lane_id":"lane-backend-dev","state":"queued","loop":{"state":"waiting","queue_depth":1,"active_envelope_id":%s,"pid":1}}]\n' "$active"
 }
@@ -66,7 +66,7 @@ SESSION
   cat > "$C/bin/hq" <<EOF
 #!/bin/sh
 case "\$1" in
-  lanes)
+  runners)
     case "\$2" in
       list) cat "$C/rows.json" ;;
       stop) printf '[]\n' > "$C/rows.json"; printf '{"ok":true}\n' ;;

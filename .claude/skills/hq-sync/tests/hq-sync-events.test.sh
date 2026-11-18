@@ -266,7 +266,7 @@ printf '%s' "$gap_out" | grep -q "  - board.json" \
   || fail "(f) expected the root-level board.json sample path"
 printf '%s' "$gap_out" | grep -q "'shared' mode" \
   || fail "(f) expected the sync mode"
-printf '%s' "$gap_out" | grep -q "hq sync mode all --company acme" \
+printf '%s' "$gap_out" | grep -q "hq daemon sync mode set acme all" \
   || fail "(f) expected the sync-mode remedy"
 printf '%s' "$gap_out" | grep -qF "hq files get companies/acme/<path>" \
   || fail "(f) expected the files-get remedy"

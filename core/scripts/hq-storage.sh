@@ -1204,13 +1204,16 @@ large() {
           my @st = stat(_); next unless $st[7] > $min;
           printf "{\"path\":%s,\"bytes\":%d,\"mtime\":%d,\"idle_days\":%d}\n", js($p), $st[7], $st[9], int(($now - $st[9]) / 86400);
         }' "$min" "$now") >"$tmp/cur"
-  local cur
-  cur="$(jq -n --slurpfile cur "$tmp/cur" '
+  # The history and current parts reach jq through files. On a repo with a
+  # few hundred thousand objects they are megabytes long, and passing them
+  # with --argjson failed with "Argument list too long".
+  printf '%s\n' "$hist" >"$tmp/hist.json"
+  jq -n --slurpfile cur "$tmp/cur" '
     $cur | map(.mtime |= todate) | sort_by(-.bytes)
-    | {count: length, bytes: (map(.bytes) | add // 0), files: .}')"
+    | {count: length, bytes: (map(.bytes) | add // 0), files: .}' >"$tmp/cur.json"
 
-  jq -cn --argjson min "$min" --argjson h "$hist" --argjson c "$cur" \
-    '{min_bytes: $min, history: $h, current: $c}'
+  jq -cn --argjson min "$min" --slurpfile h "$tmp/hist.json" --slurpfile c "$tmp/cur.json" \
+    '{min_bytes: $min, history: $h[0], current: $c[0]}'
 }
 
 # strip-large --manifest <file>: rewrite history so every listed blob is

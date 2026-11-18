@@ -23,7 +23,9 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); printf 'ok   %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf 'FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '     %s\n' "$2"; }
 
-TMP=$(mktemp -d /tmp/hqshim.XXXXXX)
+# The physical path: hqd refuses a socket path with a symlink in it, and /tmp
+# is a symlink on macOS.
+TMP=$(cd "$(mktemp -d /tmp/hqshim.XXXXXX)" && pwd -P)
 STUB_PID=''
 HQD_PID=''
 cleanup() {
@@ -120,7 +122,7 @@ else fail "enabled marker without socket: company write fails closed" "rc=$RC er
 # hqd's default socket is under <HOME>/.hq/daemon, matching hqdSocketPath().
 LAUNCHER_ROOT="$TMP/plugin"
 mkdir -p "$LAUNCHER_ROOT/scripts/hq" "$HOME/.hq/daemon"
-cp "$HERE/hq-claude-plugin-launch.sh" "$LAUNCHER_ROOT/scripts/hq-claude-plugin-launch.sh"
+cp "$HERE/../../.github/release/hq-anywhere/hq-claude-plugin-launch.sh" "$LAUNCHER_ROOT/scripts/hq-claude-plugin-launch.sh"
 cp "$SHIM" "$HERE/hq-anywhere-runtime-flag.cjs" "$HERE/hqd-hook-flag-cache-lib.sh" "$LAUNCHER_ROOT/scripts/hq/"
 unset HQ_HQD_SOCKET HQ_HQD_SHIM_TIMEOUT_MS
 run_plugin_launcher() {
@@ -280,9 +282,13 @@ if [ "$RC" -eq 0 ] && [ "$ERR" = "$CONNECT_FAIL" ] && printf '%s' "$OUT" | grep 
   pass "absent socket: SessionStart binds personal"
 else fail "absent socket: SessionStart binds personal" "rc=$RC out=$OUT err=$ERR"; fi
 
+# UserPromptSubmit has no hqd operation, so the daemon is not contacted and an
+# absent socket is not reported on it. (The line used to come from a
+# session.get whose reply was discarded.) SessionStart and PreToolUse above
+# still report it.
 run_shim "$NOSOCK" "$PROMPT" UserPromptSubmit
-if [ "$RC" -eq 0 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "absent socket: UserPromptSubmit passes with the line"
-else fail "absent socket: UserPromptSubmit" "rc=$RC err=$ERR"; fi
+if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ]; then pass "absent socket: UserPromptSubmit passes without contacting the daemon"
+else fail "absent socket: UserPromptSubmit" "rc=$RC out=$OUT err=$ERR"; fi
 
 SOCK="$TMP/stub.sock"
 start_stub "$SOCK" hang
@@ -560,6 +566,47 @@ if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'bound to company: indigo' &&
 else fail "SessionStart session.open" "rc=$RC out=$OUT req=$(cat "$TMP/req")"; fi
 stop_stub
 
+# Events with no hqd operation send nothing. The shim used to send session.get
+# on each of them and discard the reply. The stub writes every request line it
+# receives to $TMP/req, so a missing file means no request was made.
+start_stub "$SOCK" '{"id":1,"ok":true,"result":{"sessions":[]}}'
+for _ev in UserPromptSubmit PostToolUse Stop SubagentStop PreCompact Notification; do
+  rm -f "$TMP/req"
+  _p=$(printf '{"session_id":"s1","hook_event_name":"%s","cwd":"/tmp"}' "$_ev")
+  run_shim "$SOCK" "$_p" "$_ev"
+  if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ] && [ ! -e "$TMP/req" ]; then pass "$_ev: no request to the daemon, no output"
+  else fail "$_ev: no request to the daemon, no output" "rc=$RC out=$OUT err=$ERR req=$(cat "$TMP/req" 2>/dev/null)"; fi
+  # Codex passes no event argument: the event comes from the payload.
+  run_shim "$SOCK" "$_p" --runtime codex
+  if [ "$RC" -eq 0 ] && [ -z "$OUT$ERR" ] && [ ! -e "$TMP/req" ]; then pass "$_ev named only in the payload: no request to the daemon"
+  else fail "$_ev named only in the payload: no request to the daemon" "rc=$RC out=$OUT err=$ERR req=$(cat "$TMP/req" 2>/dev/null)"; fi
+done
+stop_stub
+
+# The three events with an operation still send it, with or without the event
+# argument, and none of them sends session.get.
+start_stub "$SOCK" '{"id":1,"ok":true,"result":{"closed":true}}'
+run_shim "$SOCK" '{"session_id":"s1","hook_event_name":"SessionEnd","cwd":"/tmp"}' SessionEnd
+if [ "$RC" -eq 0 ] && grep -q '"op":"session.close"' "$TMP/req" && grep -q '"sessionId":"s1"' "$TMP/req"; then
+  pass "SessionEnd sends session.close"
+else fail "SessionEnd sends session.close" "rc=$RC req=$(cat "$TMP/req" 2>/dev/null)"; fi
+rm -f "$TMP/req"
+run_shim "$SOCK" '{"session_id":"s1","hook_event_name":"SessionEnd","cwd":"/tmp"}' --runtime codex
+if [ "$RC" -eq 0 ] && grep -q '"op":"session.close"' "$TMP/req"; then pass "SessionEnd named only in the payload sends session.close"
+else fail "SessionEnd named only in the payload sends session.close" "rc=$RC req=$(cat "$TMP/req" 2>/dev/null)"; fi
+stop_stub
+start_stub "$SOCK" '{"id":1,"ok":true,"result":{"decision":"allow","reasons":[],"additionalContext":""}}'
+run_shim "$SOCK" "$WRITE_OTHER" --runtime codex
+if [ "$RC" -eq 0 ] && grep -q '"op":"policy.check"' "$TMP/req"; then pass "PreToolUse named only in the payload sends policy.check"
+else fail "PreToolUse named only in the payload sends policy.check" "rc=$RC req=$(cat "$TMP/req" 2>/dev/null)"; fi
+stop_stub
+start_stub "$SOCK" '{"id":1,"ok":true,"result":{"runtime":"codex","sessionId":"s1","cwd":"/tmp/foreign-repo","company":"acme"}}'
+run_shim "$SOCK" "$START" --runtime codex
+if [ "$RC" -eq 0 ] && grep -q '"op":"session.open"' "$TMP/req" && printf '%s' "$OUT" | grep -q 'bound to company: acme'; then
+  pass "SessionStart named only in the payload sends session.open"
+else fail "SessionStart named only in the payload sends session.open" "rc=$RC out=$OUT req=$(cat "$TMP/req" 2>/dev/null)"; fi
+stop_stub
+
 # ---------------------------------------------------------------- part 2
 CLI=''
 GLOBAL_NPM_ROOT=''
@@ -631,14 +678,14 @@ JS
     if [ "$RC" -eq 0 ]; then pass "real hqd: write inside the foreign repo is allowed"
     else fail "real hqd: foreign repo write allowed" "rc=$RC err=$ERR"; fi
 
-    # Median round-trip over 100 hook calls (SessionStart-style session ops;
-    # policy.check time is the scope authorizer's own and is reported too).
-    P_F=$(printf '{"session_id":"e2e","hook_event_name":"UserPromptSubmit","cwd":"%s","prompt":"hi"}' "$FOREIGN")
+    # Median round-trip over 100 hook calls. The calls are SessionStart
+    # (session.open): UserPromptSubmit, used here before, no longer contacts
+    # the daemon, so timing it would not measure a round-trip.
     : >"$TMP/times"
     n=0
     while [ $n -lt 100 ]; do
       a=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000000')
-      printf '%s' "$P_F" | HQ_HQD_SOCKET="$HQD_SOCK" sh "$SHIM" UserPromptSubmit >/dev/null 2>"$TMP/err"
+      printf '%s' "$START_F" | HQ_HQD_SOCKET="$HQD_SOCK" sh "$SHIM" SessionStart >/dev/null 2>"$TMP/err"
       b=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000000')
       echo $(((b - a) / 1000)) >>"$TMP/times"
       n=$((n + 1))

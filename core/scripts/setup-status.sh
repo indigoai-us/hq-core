@@ -143,7 +143,9 @@ fi
 
 if ! command -v hq >/dev/null 2>&1; then
   add_check "cloud-login" "HQ Cloud session is active" "optional" false "hq is not on PATH"
-elif command -v timeout >/dev/null 2>&1 && timeout 0.25 hq auth status >/dev/null 2>&1; then
+elif command -v timeout >/dev/null 2>&1 \
+  && identity_json="$(timeout 0.25 hq whoami --json 2>/dev/null)" \
+  && printf '%s' "$identity_json" | jq -e '.authenticated == true' >/dev/null 2>&1; then
   add_check "cloud-login" "HQ Cloud session is active" "optional" true ""
 else
   add_check "cloud-login" "HQ Cloud session is active" "optional" false "no active HQ Cloud session or status is unavailable"

@@ -7,7 +7,7 @@
 # HQ_VAULT_API_URL -> https://hqapi.hq.computer) on every plan price, allowance,
 # new-signup cutoff, agent rung, add-on price, the grandfather rule, the usage
 # card (version, cutover, included usage, trial, every meter including the
-# vault fee, the box ladder, free items, domains) and the signup options.
+# vault fee, displayPer, displayUsd, displayText, the box ladder, free items, domains) and the signup options.
 # Meter labels, other prose fields and generatedAt are ignored.
 #
 # Usage: bash core/scripts/check-pricing-drift.sh [--live-file <path>]
@@ -72,7 +72,7 @@ PROJECT='{
   usage: (.usage | if . == null then null else {
     version, newSignupsFrom, includedUsd,
     trial: {days: .trial.days, capUsd: .trial.capUsd},
-    meters: ([.meters[] | {key: .id, value: {unit, unitUsd, waivedInTrial: (.waivedInTrial // false)}}] | from_entries),
+    meters: ([.meters[] | {key: .id, value: {unit, unitUsd, waivedInTrial: (.waivedInTrial // false), displayPer, displayUsd, displayText}}] | from_entries),
     boxes: ([.boxes[] | {key: .size, value: {instanceType, monthlyUsd}}] | from_entries),
     free: (.free | sort),
     domains: {standardUsd: .domains.standardUsd, premiumUsd: .domains.premiumUsd}

@@ -5,9 +5,9 @@ when: ((delete || deleted || undelete || recover || recovery || restore || quara
 on: [UserPromptSubmit, PreToolUse]
 enforcement: hard
 tier: 1
-version: 2
+version: 3
 created: 2026-09-26
-updated: 2026-09-26
+updated: 2026-11-16
 source: owner-request
 public: true
 ---
@@ -18,7 +18,7 @@ Use this procedure only to recover a specific HQ file. Confirm its exact path an
 
 Keep user-controlled values out of shell source. Read each exact key into a shell variable without evaluating it, then pass it as one quoted argument, such as `"$key"`. Quote the company slug and local HQ root the same way. Do not paste a raw vault key into a command.
 
-The hq-cli 5.224.0 help output confirms the `hq files` options and the `hq files versions`, `hq files restore`, `hq files get`, and `hq sync status` forms used below.
+The hq-cli 5.224.0 help output confirms the `hq files` options and the `hq files versions`, `hq files restore` and `hq files get` forms used below. `hq daemon sync status --local` needs hq-cli 5.345.220 or later.
 
 ### Local mirror history
 
@@ -26,7 +26,7 @@ The released hq-cli has no command to inspect the Desktop local git mirror or re
 
 ### Scope quarantine
 
-A scope shrink can leave a file under `<HQ>/.hq/scope-quarantine/<journalSlug>/` while removing it from the sync journal. Run `hq sync status --hq-root "$hq_root"` to check the local journal summary. This command does not list quarantined files or restore them. The released hq-cli has no command for either task. Stop and ask the HQ maintainer for an approved recovery procedure.
+A scope shrink can leave a file under `<HQ>/.hq/scope-quarantine/<journalSlug>/` while removing it from the sync journal. Run `hq daemon sync status --local --hq-root "$hq_root"` to check the local journal summary. This command does not list quarantined files or restore them. The released hq-cli has no command for either task. Stop and ask the HQ maintainer for an approved recovery procedure.
 
 ### Vault version history
 

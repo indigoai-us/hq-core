@@ -34,6 +34,7 @@ run "skill-script-refs regression" bash core/scripts/tests/skill-script-refs.tes
 run "skill core script references" bash core/scripts/tests/skill-core-script-references.test.sh
 run "no positional/fenced \$ARGUMENTS in skill bodies" bash core/scripts/tests/skill-body-positional-placeholders.test.sh
 run "skill company bind before read" bash core/scripts/tests/skill-company-bind-before-read.test.sh
+run "deep-plan HQ context scanner bounds" bash core/scripts/tests/deep-plan-hq-context-scanner.test.sh
 
 # agent-runtime-skill-metadata job
 if [[ -z "${HQ_AGENT_RUNTIME_PARSER_ROOT:-}" ]]; then

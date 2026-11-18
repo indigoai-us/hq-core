@@ -15,6 +15,22 @@ fi
 # shellcheck source=core/scripts/lib/work-mesh-enqueue.sh
 . "$HQ_ROOT/core/scripts/lib/work-mesh-enqueue.sh" 2>/dev/null || exit 0
 
+# chmod MODE PATH... for paths this hook builds. No "--" after the mode: BSD
+# chmod (macOS) reads it as a file name, prints "No such file or directory"
+# and exits 1 after changing the real paths, so a following "&& mv" never
+# runs. A path that starts with "-" (only possible through a relative
+# override such as HQ_WORK_CONTEXT_ROOT) gets "./" in front instead.
+_wm_chmod() {
+  local mode=$1 path
+  local -a paths=()
+  shift
+  for path in "$@"; do
+    case "$path" in -*) path="./$path" ;; esac
+    paths+=("$path")
+  done
+  chmod "$mode" "${paths[@]}"
+}
+
 INPUT=""
 IFS= read -r -d '' INPUT || true
 [ -n "$INPUT" ] || INPUT='{}'
@@ -143,7 +159,7 @@ TASK="${HQ_SPAWN_TASK:-}"
 SEQ_DIR="${WORK_MESH_SEQ_DIR:-$HOME/.hq/work-mesh/seq}"
 if [ ! -d "$SEQ_DIR" ]; then
   mkdir -p -- "$SEQ_DIR" 2>/dev/null || true
-  chmod 700 -- "$SEQ_DIR" 2>/dev/null || true
+  _wm_chmod 700 "$SEQ_DIR" 2>/dev/null || true
 fi
 COMPANIES=()
 META_LOCK_SET=""
@@ -194,7 +210,7 @@ WM_TMP_ROOT="$HQ_ROOT/workspace/tmp/work-mesh"
 _wm_tmp_dir() {
   REPLY="$1/$2"
   mkdir -p -- "$REPLY" 2>/dev/null || return 1
-  chmod 700 -- "$1" "$REPLY" 2>/dev/null || true
+  _wm_chmod 700 "$1" "$REPLY" 2>/dev/null || true
 }
 
 # Remove one observation file, only when it sits in this hook's own folder.
@@ -336,7 +352,7 @@ _wm_retry_pending_detached() {
   if [ -n "${HQ_REGISTER_PENDING_DIR:-}" ]; then
     dir=$HQ_REGISTER_PENDING_DIR
     mkdir -p -- "$dir" 2>/dev/null || return 0
-    chmod 700 -- "$dir" 2>/dev/null || true
+    _wm_chmod 700 "$dir" 2>/dev/null || true
   else
     _wm_tmp_dir "$WM_TMP_ROOT" register-pending || return 0
     dir=$REPLY
@@ -408,7 +424,7 @@ _wm_reconcile_detached() {
   if [ -n "${HQ_WORK_MESH_RECONCILE_DIR:-}" ]; then
     dir=$HQ_WORK_MESH_RECONCILE_DIR
     mkdir -p -- "$dir" 2>/dev/null || return 1
-    chmod 700 -- "$dir" 2>/dev/null || true
+    _wm_chmod 700 "$dir" 2>/dev/null || true
   else
     _wm_tmp_dir "$WM_TMP_ROOT" reconcile || return 1
     dir=$REPLY
@@ -421,10 +437,10 @@ _wm_reconcile_detached() {
   # A sweep may remove an empty, day-old pending folder between the mkdir and
   # the write; one retry recreates it.
   mkdir -p -- "$pending_dir" 2>/dev/null || return 1
-  chmod 700 -- "$pending_dir" 2>/dev/null || true
+  _wm_chmod 700 "$pending_dir" 2>/dev/null || true
   if ! printf '%s\n' "$observation" >"$pending_tmp" 2>/dev/null; then
     mkdir -p -- "$pending_dir" 2>/dev/null || return 1
-    chmod 700 -- "$pending_dir" 2>/dev/null || true
+    _wm_chmod 700 "$pending_dir" 2>/dev/null || true
     printf '%s\n' "$observation" >"$pending_tmp" 2>/dev/null || return 1
   fi
   mv -- "$pending_tmp" "$pending_file" 2>/dev/null || {
@@ -610,18 +626,18 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
       PREFLIGHT_CACHED_STATE="$(printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -r '.artifacts.sessionState // empty' 2>/dev/null)" || PREFLIGHT_CACHED_STATE=""
       if [ -n "$PREFLIGHT_CACHED_STATE" ]; then
         mkdir -p -- "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
-        chmod 700 -- "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
+        _wm_chmod 700 "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
         printf '%s' "$PREFLIGHT_CACHED_STATE" | jq -c --arg sid "$SID" --arg op "$CLIENT_OP" \
           'if type == "object" then .sessionId=$sid | .clientOperationId=$op else . end' \
           > "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" 2>/dev/null && \
-          chmod 600 -- "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" 2>/dev/null && \
+          _wm_chmod 600 "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" 2>/dev/null && \
           mv -f -- "$WORK_CONTEXT_ROOT/sessions/$SID.json.tmp" "$WORK_CONTEXT_ROOT/sessions/$SID.json" 2>/dev/null || true
       fi
       if [ "$(printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -r '.artifacts.board // empty' 2>/dev/null)" ]; then
         mkdir -p -- "$WORK_CONTEXT_ROOT/sessions/$SID" 2>/dev/null || true
         printf '%s' "$PREFLIGHT_CACHE_HIT" | jq -jr '.artifacts.board // empty' \
           > "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" 2>/dev/null && \
-          chmod 600 -- "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" 2>/dev/null && \
+          _wm_chmod 600 "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" 2>/dev/null && \
           mv -f -- "$WORK_CONTEXT_ROOT/sessions/$SID/board.md.tmp" "$WORK_CONTEXT_ROOT/sessions/$SID/board.md" 2>/dev/null || true
       fi
     else
@@ -672,7 +688,7 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
             case "$PREFLIGHT_REPAIR" in true) PREFLIGHT_REPAIR_JSON=true ;; *) PREFLIGHT_REPAIR_JSON=false ;; esac
             if PREFLIGHT_CACHE_NOW="$(date +%s 2>/dev/null)" && [[ "$PREFLIGHT_CACHE_NOW" =~ ^[0-9]+$ ]]; then
               mkdir -p -- "$WORK_CONTEXT_ROOT" 2>/dev/null || true
-              chmod 700 -- "$WORK_CONTEXT_ROOT" 2>/dev/null || true
+              _wm_chmod 700 "$WORK_CONTEXT_ROOT" 2>/dev/null || true
               PREFLIGHT_CACHE_TMP="$(mktemp "$WORK_CONTEXT_ROOT/.sessionstart-preflight-cache.XXXXXX" 2>/dev/null)" || PREFLIGHT_CACHE_TMP=""
               if [ -n "$PREFLIGHT_CACHE_TMP" ]; then
                 PREFLIGHT_CACHE_STATE_FILE="$WORK_CONTEXT_ROOT/sessions/$SID.json"
@@ -685,7 +701,7 @@ if [ -n "$HQ_BIN" ] && [ -f "$OBS_FILE" ]; then
                   --rawfile board "$PREFLIGHT_CACHE_BOARD_FILE" \
                   '{version:1,createdAt:$now,key:$key,repair:$repair,result:.,artifacts:{sessionState:($state | select(length > 0) // null),board:($board | select(length > 0) // null)}}' \
                   > "$PREFLIGHT_CACHE_TMP" 2>/dev/null; then
-                  chmod 600 -- "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true
+                  _wm_chmod 600 "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true
                   mv -f -- "$PREFLIGHT_CACHE_TMP" "$PREFLIGHT_CACHE_FILE" 2>/dev/null || rm -f -- "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true
                 else
                   rm -f -- "$PREFLIGHT_CACHE_TMP" 2>/dev/null || true

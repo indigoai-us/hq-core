@@ -67,7 +67,7 @@ run() { # <root> <sid> <cwd> <prompt>
   jq -cn --arg sid "$2" --arg cwd "$3" --arg p "$4" \
     '{session_id:$sid,hook_event_name:"UserPromptSubmit",cwd:$cwd,prompt:$p}' \
     | env PATH="$TMP/bin:$PATH" FAKE_FACT_LIB="$FACT_LIB" HQ_ROOT="$1" CLAUDE_PROJECT_DIR="$1" \
-        HQ_POLICY_RELEVANCE_CAP=0 HQ_INJECT_PERSONAL_SOFT=1 bash "$HOOK" 2>/dev/null || true
+        HQ_POLICY_RELEVANCE_CAP=0 HQ_INJECT_PERSONAL_SOFT=1 "${RUN_BASH:-bash}" "$HOOK" 2>/dev/null || true
 }
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
@@ -159,6 +159,36 @@ lock "$R" s-vn verdanote
 OUT="$(run "$R" s-vn "$R" "run the backfill")"
 has "$OUT" MARK_PLAIN && ok "[j] untagged rule kept under another company's lock" || bad "[j] untagged rule dropped under verdanote lock"
 has "$OUT" MARK_ACME && bad "[j] acme policy surfaced under verdanote lock" || ok "[j] acme policy skipped under verdanote lock"
+
+echo "[k] a lock with several hundred matched policies stays fast"
+# The skip pass used to split every matched row with one global
+# ${MATCHES//$'\t'/$'\x1f'}. Under bash 3.2 that substitution grows far faster
+# than the string: ~50 KB of matched rows took over a minute at full CPU.
+K="$TMP/hq-many"
+mkdir -p "$K/core/policies" "$K/personal/policies" "$K/core/scripts/lib" \
+  "$K/companies/acme/policies" "$K/companies/verdanote/policies" \
+  "$K/workspace/orchestrator/policy-trigger-state" "$K/.codex/hooks"
+cp "$HQ_SRC/core/scripts/lib/session-scope-capability.sh" "$K/core/scripts/lib/"
+cp "$HQ_SRC/core/scripts/hqd-hook-flag-cache-lib.sh" "$K/core/scripts/"
+printf '%s\n' 'process.stdout.write("true")' > "$K/.codex/hooks/codex-explicit-path-flag.cjs"
+n=0
+while [ "$n" -lt 400 ]; do
+  policy "$K/personal/policies/bulk-policy-with-a-fairly-long-file-name-$n.md" "bulk-$n" 'backfill' soft "MARK_BULK_$n"
+  n=$((n + 1))
+done
+policy "$K/personal/policies/vn-many.md" vn-many 'backfill' soft MARK_MANY_VN 'company: verdanote'
+lock "$K" s-many acme
+# Use the system bash where one exists: macOS hosts run hooks under bash 3.2,
+# where the old substitution was slow; a newer bash on PATH would hide it.
+K_BASH=bash
+[ -x /bin/bash ] && K_BASH=/bin/bash
+k_start=$(date +%s)
+OUT="$(RUN_BASH="$K_BASH" run "$K" s-many "$K" "run the backfill")"
+k_secs=$(( $(date +%s) - k_start ))
+[ "$k_secs" -le 10 ] && ok "[k] 400 matched policies under a lock in ${k_secs}s" \
+  || bad "[k] 400 matched policies under a lock took ${k_secs}s (limit 10s)"
+has "$OUT" MARK_MANY_VN && bad "[k] verdanote policy surfaced under acme lock" || ok "[k] other-company policy still skipped"
+has "$OUT" MARK_BULK_ && ok "[k] untagged bulk policies surface" || bad "[k] no bulk policy surfaced: $OUT"
 
 [ "$failures" -eq 0 ] || { echo "$failures failure(s)"; exit 1; }
 echo "all passed"

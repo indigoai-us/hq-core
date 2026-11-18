@@ -9,7 +9,7 @@ mkdir -p "$BIN" "$TMP/root/workspace/lanes-links/by-session"
 export PATH="$BIN:/usr/bin:/bin"
 export CLAUDE_PROJECT_DIR="$TMP/root"
 export FAKE_CALLS="$TMP/calls" FAKE_INPUT="$TMP/input" FAKE_NO_SELF_UPDATE="$TMP/no-self-update" FAKE_DISABLED_HOOKS="$TMP/disabled-hooks" FAKE_MODE=ok
-export FAKE_VERSION=5.345.63 FAKE_STDOUT=$'linked output\nsecond line\n'
+export FAKE_VERSION=5.345.210 FAKE_STDOUT=$'linked output\nsecond line\n'
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
@@ -39,7 +39,7 @@ printf '%s' '{"hookEventName":"SessionStart","source":"startup","session_id":"si
 "$SESSION" < "$PAYLOAD" > "$TMP/out" 2> "$TMP/err"
 cmp -s <(printf '%s' "$FAKE_STDOUT") "$TMP/out" || fail 'SessionStart output was not passed through byte for byte'
 cmp -s "$PAYLOAD" "$FAKE_INPUT" || fail 'SessionStart payload was not passed through'
-grep -Fxq 'lanes session-start' "$FAKE_CALLS" || fail 'SessionStart did not call hq lanes session-start'
+grep -Fxq 'runners session-start' "$FAKE_CALLS" || fail 'SessionStart did not call hq runners session-start'
 [ "$(cat "$FAKE_NO_SELF_UPDATE")" = 1 ] || fail 'SessionStart did not disable hq self-update'
 [ ! -s "$TMP/err" ] || fail 'SessionStart emitted stderr on success'
 HQ_DISABLED_HOOKS=auto-conduct "$SESSION" < "$PAYLOAD" > /dev/null 2> "$TMP/err"
@@ -55,9 +55,9 @@ for mode in fail timeout; do
 done
 
 : > "$FAKE_CALLS"
-FAKE_MODE=ok FAKE_VERSION=5.345.62 "$SESSION" < "$PAYLOAD" > "$TMP/out" 2> "$TMP/err"
+FAKE_MODE=ok FAKE_VERSION=5.345.209 "$SESSION" < "$PAYLOAD" > "$TMP/out" 2> "$TMP/err"
 [ ! -s "$TMP/out" ] && [ ! -s "$TMP/err" ] || fail 'old hq CLI did not fail open silently'
-! grep -q 'lanes session-start' "$FAKE_CALLS" || fail 'old hq CLI reached the new command'
+! grep -q 'runners session-start' "$FAKE_CALLS" || fail 'old hq CLI reached the new command'
 pass 'SessionStart fails open below the CLI floor'
 
 mkdir -p "$TMP/no-hq"
@@ -80,8 +80,8 @@ for event in PostToolUse Stop; do
   FAKE_MODE=ok "$LINK" "$event" < "$PAYLOAD" > "$TMP/out" 2> "$TMP/err"
   cmp -s <(printf '%s' "$FAKE_STDOUT") "$TMP/out" || fail "$event output was not passed through byte for byte"
   cmp -s "$PAYLOAD" "$FAKE_INPUT" || fail "$event payload was not passed through"
-  grep -Fxq "lanes link _deliver --event $event" "$FAKE_CALLS" || fail "$event did not call the expected hq command"
-  pass "linked $event delegates payload and output to hq lanes link _deliver"
+  grep -Fxq "runners link _deliver --event $event" "$FAKE_CALLS" || fail "$event did not call the expected hq command"
+  pass "linked $event delegates payload and output to hq runners link _deliver"
 done
 
 : > "$FAKE_CALLS"

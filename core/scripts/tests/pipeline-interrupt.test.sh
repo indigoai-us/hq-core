@@ -2,7 +2,7 @@
 # Tests for interrupted phases on a pipeline-driver.sh stop (bash 3.2 portable).
 #
 # Real pieces: pipeline-driver.sh, pipeline-conductor.sh, pipeline-envelope.sh.
-# Stub: fake hq. Its lanes list returns the mapped loop lane and enqueue puts
+# Stub: fake hq. Its runners list returns the mapped loop lane and enqueue puts
 # the envelope in the lane's pending queue, so a routed phase stays in flight
 # (no lane runs it) until the test stops the driver.
 #
@@ -47,26 +47,26 @@ cat > "$T/bin/hq" <<EOF
 #!/usr/bin/env bash
 set -eu
 case "\$1 \$2" in
-  'lanes create')
+  'runners create')
     has_brief=false; for arg in "\$@"; do [ "\$arg" = --brief-file ] && has_brief=true; done
     if [ "\$has_brief" != true ]; then printf "error: required option '--brief-file <path>' not specified\\n" >&2; exit 1; fi
     rm -f "$T/stopped"
     printf '{\"ok\":true,\"lane_id\":\"lane-backend-dev\"}\\n' ;;
-  'lanes enqueue')
+  'runners enqueue')
     envfile=''; while [ \$# -gt 0 ]; do case "\$1" in --envelope) envfile="\$2"; shift 2;; *) shift;; esac; done
     if [ -z "\$envfile" ]; then printf "error: required option '--envelope <file>' not specified\\n" >&2; exit 1; fi
     mkdir -p "$LANE/inbox/pending"; cp "\$envfile" "$LANE/inbox/pending/\$(date +%s)-\$RANDOM.json"; printf '{\\n  "ok": true\\n}\\n' ;;
-  'lanes list')
+  'runners list')
     state=waiting; [ -f "$T/stopped" ] && state=stopped
     depth=0; for f in "$LANE"/inbox/pending/*.json; do [ -f "\$f" ] && depth=1; done
     project=\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("name",""))' "$T/prd.json")
     printf '{"ok":true,"action":"list","lanes":[{"lane_id":"lane-backend-dev","company":{"slug":"indigo"},"project_id":"%s","worker":"backend-dev","loop":{"state":"%s","pid":1,"queue_depth":%s}}]}\\n' "\$project" "\$state" "\$depth" ;;
-  'lanes interrupt')
+  'runners interrupt')
     story=''; phase=''; while [ \$# -gt 0 ]; do case "\$1" in --story) story="\$2"; shift 2;; --phase) phase="\$2"; shift 2;; *) shift;; esac; done
     pending=''; for f in "$LANE"/inbox/pending/*.json; do [ -f "\$f" ] || continue; if jq -e --arg s "\$story" --arg p "\$phase" '.story_id == \$s and .phase == \$p' "\$f" >/dev/null; then pending="\$f"; break; fi; done
     if [ -n "\$pending" ]; then rm -f "\$pending"; printf '{"ok":true,"withdrawn":["%s-%s"],"already_picked_up":[]}\\n' "\$story" "\$phase"
     else printf '{"ok":true,"withdrawn":[],"already_picked_up":["%s-%s"]}\\n' "\$story" "\$phase"; fi ;;
-  'lanes stop') touch "$T/stopped"; printf '{"ok":true}\\n' ;;
+  'runners stop') touch "$T/stopped"; printf '{"ok":true}\\n' ;;
   *) printf '{"ok":false,"error":"unexpected_call"}\\n'; exit 1 ;;
 esac
 EOF

@@ -1,0 +1,18 @@
+# Worktree backend for code-repo dev worktrees.
+#
+# backend: git   plain `git worktree add` (default)
+# backend: twig  `git twig new` (https://twig.leostera.dev), which makes the
+#                new worktree with native copy-on-write on macOS APFS and Linux
+#                Btrfs/XFS. Needs git-twig 0.3.0+ on PATH
+#                (`cargo install git-twig --locked`). When twig is missing, the
+#                platform is unsupported, or twig fails, HQ falls back to plain
+#                git without failing.
+#
+# To opt in without editing core, create personal/settings/worktrees.yaml with
+# the same shape (it wins over this file), or set HQ_WORKTREE_BACKEND=twig for
+# one shell. Check what is in effect with:
+#   bash core/scripts/worktree-backend.sh backend
+#
+# Read by core/scripts/worktree-backend.sh. Docs: core/docs/hq/worktree-backend.md
+worktrees:
+  backend: git

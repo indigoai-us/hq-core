@@ -71,7 +71,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # up. Resolving only one level made no-argument invocations look under
 # core/core/policies and report that no policy directories existed.
 HQ_ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}}"
-EVAL="$SCRIPT_DIR/eval-trigger.sh"
+# The evaluator is `hq core eval-trigger`, which needs hq-cli >= 5.341.3. A
+# missing or older hq fails the lint closed with the floor message.
+# shellcheck source=lib/hq-cli-floor.sh
+. "$SCRIPT_DIR/lib/hq-cli-floor.sh"
+eval_trigger() {
+  hq_cli_floor_check eval-trigger.sh 5.341.3 && HQ_NO_UPDATE_CHECK=1 hq core eval-trigger "$@"
+}
 
 # shellcheck source=lib/policy-limits.sh
 . "$SCRIPT_DIR/lib/policy-limits.sh"
@@ -129,10 +135,6 @@ if [ "${#DIRS[@]}" -eq 0 ]; then
 fi
 if [ "${#DIRS[@]}" -eq 0 ]; then
   echo "no policy directories found under $HQ_ROOT" >&2
-  exit 2
-fi
-if [ ! -f "$EVAL" ]; then
-  echo "missing evaluator: $EVAL" >&2
   exit 2
 fi
 
@@ -285,7 +287,7 @@ RECORDS="$TMPROOT/policy-records.tsv"
 if ! awk -F'\t' '$2 != "" { print NR "\t" $2 }' "$FACTS_TSV" > "$CHECK_INPUT"; then
   die "failed to prepare policy trigger checks"
 fi
-if ! bash "$EVAL" --check < "$CHECK_INPUT" > "$CHECK_OUTPUT"; then
+if ! eval_trigger --check < "$CHECK_INPUT" > "$CHECK_OUTPUT"; then
   die "policy trigger evaluator failed"
 fi
 if ! awk -F'\t' -v status_file="$CHECK_OUTPUT" '

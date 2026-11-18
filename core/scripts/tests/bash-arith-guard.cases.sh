@@ -207,6 +207,63 @@ arith_case 2 continued-heredoc-body-marker $'cat <<EOF\nEO\\\nF\nlet unknown'
 arith_case 2 ansi-heredoc-delimiter $'cat <<$\'EOF\'\ntext\nEOF\nlet unknown'
 arith_case 2 locale-heredoc-delimiter $'cat <<$"EOF"\ntext\nEOF\nlet unknown'
 arith_case 2 sourced-heredoc-compound $'if true; then . /dev/stdin <<\'EOF\'\nlet unknown\nEOF\nfi'
+# Shell reentry (bash $S) keeps a quoted heredoc body as code. An apostrophe
+# in prose fed to cat never closes; the rest of that body cannot run, so the
+# lex keeps it as opaque data instead of failing. Code in such a body is
+# still checked.
+arith_case 0 reentry-quoted-heredoc-apostrophe $'S=workspace/x.sh; bash $S a | tail -1\ncat >> /tmp/arith-output <<\'EOF\'\nthe walkthrough\'s chip\nEOF\necho done'
+arith_case 2 reentry-quoted-heredoc-arithmetic $'bash <<\'EOF\'\necho $((unknown+1))\nEOF'
+# A double-quoted literal with a blank is one fixed command word, never a
+# number. An evaluating shell named this way stays refused.
+arith_case 0 quoted-blank-command-literal 'C="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; "$C" --headless=new --screenshot=/tmp/arith-output file:///tmp/arith-fixture'
+arith_case 2 quoted-blank-literal-as-number 'C="/Applications/Google Chrome"; echo $((C+1))'
+arith_case 2 quoted-shell-command-literal $'C="/usr/bin/bash"; "$C" -c \'echo $((unknown+1))\''
+arith_case 0 quoted-blank-command-literal-braces 'C="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; "${C}" --headless=new --screenshot=/tmp/arith-output file:///tmp/arith-fixture'
+# Unquoted, the shell splits a value with a blank: its first field is the
+# command and the rest are arguments. Only the double-quoted expansion is one
+# word, so every unquoted use of such a value as a command is refused.
+arith_case 2 split-blank-command-bash $'C="bash -c"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-bash-braces $'C="bash -c"; ${C} \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-declare 'unknown=$1; C="declare -i"; $C n=$unknown'
+arith_case 2 split-blank-command-let 'unknown=$1; C="let x"; $C unknown'
+arith_case 2 split-blank-command-trap $'C="trap --"; $C \'echo $((unknown+1))\' EXIT'
+arith_case 2 split-blank-command-eval 'C="eval let"; $C unknown'
+arith_case 2 split-blank-command-env-shell $'C="env bash -c"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-shell-path $'C="/bin/bash -c"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-sudo-shell $'C="sudo bash"; $C -c \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-xargs-shell $'C="xargs bash"; $C -c \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-command-eval $'C="command eval"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-ssh $'C="ssh host"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-leading-blank $'C=" bash"; $C -c \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-trailing-blank $'C="bash "; $C -c \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-tab $'C="bash\t-c"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-newline $'C="bash\n-c"; $C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-empty-quotes-before $'C="bash -c"; ""$C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-empty-single-quotes-before $'C="bash -c"; \'\'$C \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-empty-quotes-after $'C="bash -c"; $C"" \'echo $((unknown+1))\''
+arith_case 2 split-blank-command-after-command-word 'unknown=$1; C="declare -i"; command $C n=$unknown'
+arith_case 2 split-blank-command-after-builtin-word 'unknown=$1; C="declare -i"; builtin $C n=$unknown'
+arith_case 2 split-blank-command-after-pipe 'unknown=$1; C="declare -i"; true | $C n=$unknown'
+arith_case 2 split-blank-command-after-and 'unknown=$1; C="declare -i"; true && $C n=$unknown'
+arith_case 2 split-blank-command-quoted-then-unquoted 'unknown=$1; C="declare -i"; "$C" x; $C n=$unknown'
+arith_case 2 split-blank-command-unquoted-then-quoted 'unknown=$1; C="declare -i"; $C n=$unknown; "$C" x'
+arith_case 2 split-blank-command-quoted-in-heredoc-only $'C="declare -i"; cat <<EOF\n"$C"\nEOF\n$C n=$unknown'
+arith_case 2 split-blank-command-program-path 'C="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; $C --headless=new'
+# An apostrophe is data inside a nested heredoc and after a comment, so the
+# shell runs the lines that follow it. The rest of a kept body is read as code.
+arith_case 2 reentry-nested-heredoc-apostrophe-arithmetic $'bash <<\'EOF\'\ncat <<\'X\'\na it\'s\nX\necho $((unknown+1))\nEOF'
+arith_case 2 reentry-nested-heredoc-apostrophe-let $'bash <<\'EOF\'\ncat <<\'X\'\na it\'s\nX\nlet unknown\nEOF'
+arith_case 2 reentry-nested-heredoc-apostrophe-sh $'sh <<\'EOF\'\ncat <<\'X\'\na it\'s\nX\necho $((unknown+1))\nEOF'
+arith_case 2 reentry-nested-heredoc-apostrophe-escaped-delimiter $'bash <<\'EOF\'\ncat <<\\X\na it\'s\nX\necho $((unknown+1))\nEOF'
+arith_case 2 reentry-nested-heredoc-apostrophe-strip-delimiter $'bash <<\'EOF\'\ncat <<-\'X\'\na it\'s\nX\necho $((unknown+1))\nEOF'
+arith_case 2 reentry-nested-heredoc-apostrophe-redirect-first $'bash <<\'EOF\'\ncat > /dev/null <<\'X\'\na it\'s\nX\necho $((unknown+1))\nEOF'
+arith_case 2 reentry-nested-heredoc-apostrophe-header-line $'bash <<\'EOF\'\ncat <<\'X\'; echo it\'s\nX\nlet unknown\nEOF'
+arith_case 2 reentry-nested-heredoc-three-apostrophes $'bash <<\'EOF\'\ncat <<\'X\'\nit\'s and that\'s and it\'s\nX\nlet unknown\nEOF'
+arith_case 2 reentry-sourced-nested-heredoc-apostrophe $'. /dev/stdin <<\'EOF\'\ncat <<\'X\'\na it\'s\nX\nlet unknown\nEOF'
+arith_case 2 reentry-comment-apostrophe-arithmetic $'bash <<\'EOF\'\n(true)# it\'s\necho $((unknown+1))\nEOF'
+arith_case 2 reentry-comment-apostrophe-let $'bash <<\'EOF\'\n(true)# it\'s\nlet unknown\nEOF'
+arith_case 2 reentry-apostrophe-line-then-arithmetic $'bash <<\'EOF\'\n: it\'s\necho $((unknown+1))\nEOF'
+arith_case 0 reentry-quoted-heredoc-apostrophe-more-lines $'S=workspace/x.sh; bash $S a | tail -1\ncat >> /tmp/arith-output <<\'EOF\'\nthe walkthrough\'s chip\nand a second line\nEOF\necho done'
 arith_case 2 resolved-test-name '$(command -v test) -v "arr[unknown]"'
 arith_case 2 dynamic-test-name 'cmd=test; "$cmd" -v "arr[unknown]"'
 arith_case 2 dynamic-builtin-wrapper 'cmd=builtin; "$cmd" declare -i n=unknown'
@@ -290,3 +347,456 @@ arith_case 2 resolved-var-hash-p 'hash -p /tmp/arith-bin/x mytool; P=$(command -
 # A resolver test does not cost the rest of the command its numeric proofs.
 arith_case 0 resolver-test-then-arith 'if [ -x "$(command -v jq)" ]; then n=1; echo $((n+1)); fi'
 arith_case 2 resolved-var-reentry "bash -c 'P=\$(command -v python3); \$P x'"
+# A statement that changes IFS (a bare IFS=..., or IFS given to export, local,
+# declare, typeset or readonly) makes the shell split unquoted values at the
+# new characters. An unquoted $VAR command word whose value holds one of them,
+# or any unquoted $VAR command word when the new IFS is not a plain literal,
+# is refused. IFS given only as a prefix of read, mapfile, readarray, printf
+# or echo applies to that one command and changes nothing else.
+arith_case 2 ifs-colon-split-shell $'IFS=:; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-letter-split-shell $'IFS=x; C=bashx-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-colon-split-declare 'unknown=$1; IFS=:; C=declare:-i; $C n=$unknown'
+arith_case 2 ifs-colon-split-braces $'IFS=:; C=bash:-c; ${C} \'echo $((unknown+1))\''
+arith_case 2 ifs-quoted-value $'IFS=":"; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-ansi-tab $'IFS=$\'\\t\'; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-ansi-newline $'IFS=$\'\\n\'; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-export $'export IFS=:; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-declare $'declare IFS=:; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-local $'f() { local IFS=:; C=bash:-c; $C \'echo $((unknown+1))\'; }; f'
+arith_case 2 ifs-after-use-in-loop $'C=bash:-c; for i in 1 2; do $C \'echo $((unknown+1))\'; IFS=:; done'
+arith_case 2 ifs-in-subshell $'(IFS=:; C=bash:-c; $C \'echo $((unknown+1))\')'
+arith_case 2 ifs-set-then-reset $'IFS=:; C=bash:-c; $C \'echo $((unknown+1))\'; unset IFS'
+arith_case 2 ifs-prefix-of-other-command $'C=bash:-c; IFS=: true; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-read-into-ifs $'read -r IFS < /tmp/arith-fixture; C=bash:-c; $C \'echo $((unknown+1))\''
+arith_case 2 ifs-colon-env-split $'IFS=:; C=bash:-c; env $C \'echo $((unknown+1))\''
+# A split value given to a command prefix is the command the prefix runs.
+arith_case 2 prefix-env-split-shell $'C="bash -c"; env $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-options-split-shell $'C="bash -c"; env -i FOO=1 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-unset-split-shell $'C="bash -c"; env -u HOME $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-split-shell $'C="bash -c"; sudo $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-user-split-shell $'C="bash -c"; sudo -u root $C \'echo $((unknown+1))\''
+arith_case 2 prefix-xargs-split-shell $'C="bash -c"; xargs $C \'echo $((unknown+1))\''
+arith_case 2 prefix-command-split-shell $'C="bash -c"; command $C \'echo $((unknown+1))\''
+arith_case 2 prefix-exec-split-shell $'C="bash -c"; exec $C \'echo $((unknown+1))\''
+arith_case 2 prefix-nice-split-shell $'C="bash -c"; nice -n 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-time-split-shell $'C="bash -c"; time $C \'echo $((unknown+1))\''
+arith_case 2 prefix-nohup-split-shell $'C="bash -c"; nohup $C \'echo $((unknown+1))\''
+arith_case 2 prefix-nested-split-shell $'C="bash -c"; sudo env nice $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-braces-split-shell $'C="bash -c"; env ${C} \'echo $((unknown+1))\''
+arith_case 2 prefix-env-unset-declare 'unknown=$1; C="declare -i"; env $C n=$unknown'
+# Long options that take a value, --name=value, -- and option clusters.
+arith_case 2 prefix-env-long-unset $'C="bash -c"; env --unset HOME $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-long-user $'C="bash -c"; sudo --user root $C \'echo $((unknown+1))\''
+arith_case 2 prefix-nice-long-adjustment $'C="bash -c"; nice --adjustment 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-long-equals $'C="bash -c"; env --unset=HOME $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-long-equals $'C="bash -c"; sudo --user=root $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-end-of-options $'C="bash -c"; env -- $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-option-cluster $'C="bash -c"; sudo -iu root $C \'echo $((unknown+1))\''
+# More prefixes, and literal paths to them.
+arith_case 2 prefix-timeout-split-shell $'C="bash -c"; timeout 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-timeout-signal-split-shell $'C="bash -c"; timeout -s KILL 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-timeout-long-signal-split-shell $'C="bash -c"; timeout --signal KILL -- 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-stdbuf-split-shell $'C="bash -c"; stdbuf -o L $C \'echo $((unknown+1))\''
+arith_case 2 prefix-setsid-split-shell $'C="bash -c"; setsid $C \'echo $((unknown+1))\''
+arith_case 2 prefix-doas-split-shell $'C="bash -c"; doas -u root $C \'echo $((unknown+1))\''
+arith_case 2 prefix-chroot-split-shell $'C="bash -c"; chroot /tmp/arith-root $C \'echo $((unknown+1))\''
+arith_case 2 prefix-ionice-split-shell $'C="bash -c"; ionice -c 3 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-caffeinate-split-shell $'C="bash -c"; caffeinate -t 60 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-path-split-shell $'C="bash -c"; /usr/bin/env $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-path-split-shell $'C="bash -c"; /usr/bin/sudo $C \'echo $((unknown+1))\''
+# A value attached to a short option ends that option word, whatever its last
+# letter is, so the next word is the command.
+arith_case 2 prefix-sudo-attached-user $'C="bash -c"; sudo -uroot $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-attached-unset $'C="bash -c"; env -uFOOS $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-cluster-attached-user $'C="bash -c"; sudo -iuroot $C \'echo $((unknown+1))\''
+arith_case 2 prefix-nice-attached-adjustment $'C="bash -c"; nice -n5 $C \'echo $((unknown+1))\''
+# Relative paths to a prefix.
+arith_case 2 prefix-env-dot-path-split-shell $'C="bash -c"; ./env $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-parent-path-split-shell $'C="bash -c"; ../bin/env $C \'echo $((unknown+1))\''
+# Options whose value is split or run as a command line.
+arith_case 2 prefix-env-split-string-var $'C="bash -c"; env -S $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-split-string-quoted-var $'C="bash -c"; env -S "$C \'echo $((unknown+1))\'"'
+arith_case 2 prefix-env-split-string-long-var $'C="bash -c"; env --split-string $C \'echo $((unknown+1))\''
+arith_case 2 prefix-env-split-string-long-equals-var 'C="declare -i"; env --split-string="$C n=$1"'
+arith_case 2 prefix-env-split-string-attached-var 'C="declare -i"; env -S"$C n=$1"'
+arith_case 2 prefix-flock-command-var $'C="bash -c"; flock /tmp/arith-lock -c "$C \'echo $((unknown+1))\'"'
+# More prefixes.
+arith_case 2 prefix-taskset-split-shell $'C="bash -c"; taskset 0x1 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-unbuffer-split-shell $'C="bash -c"; unbuffer $C \'echo $((unknown+1))\''
+arith_case 2 prefix-flock-split-shell $'C="bash -c"; flock -w 5 /tmp/arith-lock $C \'echo $((unknown+1))\''
+arith_case 2 prefix-watch-split-shell $'C="bash -c"; watch -n 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-script-split-shell $'C="bash -c"; script -q /tmp/arith-typescript $C \'echo $((unknown+1))\''
+arith_case 2 prefix-strace-split-shell $'C="bash -c"; strace -o /tmp/arith-trace $C \'echo $((unknown+1))\''
+arith_case 2 prefix-arch-split-shell $'C="bash -c"; arch -arch x86_64 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-gtimeout-split-shell $'C="bash -c"; gtimeout 5 $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sandbox-exec-split-shell $'C="bash -c"; sandbox-exec -n no-network $C \'echo $((unknown+1))\''
+# A word a prefix takes before its command can hide the command when an
+# unquoted variable fills it and splits.
+arith_case 2 prefix-timeout-positional-var $'C="5 bash -c"; timeout $C \'echo $((unknown+1))\''
+arith_case 2 prefix-timeout-signal-positional-var $'C="5 bash -c"; timeout -s KILL $C \'echo $((unknown+1))\''
+arith_case 2 prefix-gtimeout-positional-var $'C="5 bash -c"; gtimeout $C \'echo $((unknown+1))\''
+arith_case 2 prefix-chroot-positional-var $'C="/ bash -c"; chroot $C \'echo $((unknown+1))\''
+arith_case 2 prefix-taskset-positional-var $'C="0x1 bash -c"; taskset $C \'echo $((unknown+1))\''
+arith_case 2 prefix-flock-positional-var $'C="/tmp/l bash -c"; flock $C \'echo $((unknown+1))\''
+arith_case 2 prefix-script-positional-var $'C="/tmp/t bash -c"; script $C \'echo $((unknown+1))\''
+arith_case 2 prefix-timeout-positional-braces $'C="5 bash -c"; timeout ${C} \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-option-value-var $'C="root bash -c"; sudo -u $C \'echo $((unknown+1))\''
+arith_case 2 prefix-nice-option-value-var $'C="5 bash -c"; nice -n $C \'echo $((unknown+1))\''
+arith_case 2 prefix-timeout-option-value-var $'C="KILL 5 bash -c"; timeout -s $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-long-option-value-var $'C="root bash -c"; sudo --user $C \'echo $((unknown+1))\''
+arith_case 2 prefix-sudo-attached-option-var $'C="root bash -c"; sudo -u$C \'echo $((unknown+1))\''
+arith_case 2 prefix-timeout-positional-unset-var $'timeout $T bash -c \'echo $((unknown+1))\''
+arith_case 2 prefix-flock-positional-substitution $'flock $(echo /tmp/l bash -c) \'echo $((unknown+1))\''
+# Allowed: IFS scoped to read or similar, and ordinary uses that do not split.
+arith_case 0 ifs-read-loop 'while IFS= read -r line; do echo "$line"; done < f.txt'
+arith_case 0 ifs-read-array 'IFS=, read -ra arr <<< "a,b"; echo "${arr[0]}"'
+arith_case 0 ifs-read-loop-then-command 'C=jq; while IFS= read -r line; do $C -n 1; done < f.txt'
+arith_case 0 ifs-read-colon-then-command 'C=git; IFS=: read -r a b < f.txt; $C status'
+arith_case 0 ifs-bare-no-split-chars 'IFS=:; C=git; $C status'
+arith_case 0 ifs-bare-quoted-command 'IFS=:; C=bash:-c; echo "$C"'
+arith_case 0 ifs-plain-command-var 'C=git; $C status'
+arith_case 0 prefix-env-quoted-path 'C="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; env "$C" --version'
+arith_case 0 prefix-env-plain-var 'C=git; env $C status'
+arith_case 0 prefix-sudo-home-path 'sudo "$HOME/bin/tool" --version'
+arith_case 0 prefix-nohup-quoted 'C=git; nohup "$C" status'
+arith_case 0 prefix-xargs-plain 'xargs -n 1 echo < f.txt'
+arith_case 0 prefix-timeout-plain 'C=git; timeout 30 $C status'
+arith_case 0 prefix-timeout-quoted 'C=git; timeout --signal=KILL 30 "$C" status'
+arith_case 0 prefix-env-path-plain 'C=git; /usr/bin/env -u HOME $C status'
+arith_case 0 prefix-sudo-long-user-quoted 'sudo --user root "$HOME/bin/tool" --version'
+arith_case 0 prefix-caffeinate-literal 'caffeinate -i make test'
+arith_case 0 prefix-sudo-attached-user-plain 'C=git; sudo -uroot $C status'
+arith_case 0 prefix-nice-attached-quoted 'C=git; nice -n5 "$C" status'
+arith_case 0 prefix-env-split-string-literal 'env -S "git status"'
+arith_case 0 prefix-env-split-string-single-literal "env -S 'python3 -c print(1)'"
+arith_case 0 prefix-env-split-string-attached-literal "env -S'python3 -c print(1)'"
+arith_case 0 prefix-env-split-string-long-literal "env --split-string='python3 -c print(1)'"
+arith_case 0 prefix-env-split-string-after-prefix "command env -S 'python3 -c print(1)'"
+arith_case 2 prefix-env-split-string-escape "env -S 'echo \\x24x'"
+arith_case 2 prefix-env-split-string-long-expansion "env --split-string='echo \$x'"
+arith_case 2 prefix-env-split-single-variable "env -S 'echo \$x'"
+arith_case 2 prefix-env-split-double-variable 'env -S "echo $x"'
+arith_case 2 prefix-env-split-single-braced "env -S 'echo \${x}'"
+arith_case 2 prefix-env-split-double-braced 'env -S "echo ${x}"'
+arith_case 2 prefix-env-split-single-substitution "env -S 'echo \$(echo x)'"
+arith_case 2 prefix-env-split-double-substitution 'env -S "echo $(echo x)"'
+arith_case 2 prefix-env-split-single-backticks 'env -S '\''echo `echo x`'\'''
+arith_case 2 prefix-env-split-double-backticks 'env -S "echo `echo x`"'
+arith_case 2 prefix-env-split-single-arithmetic "env -S 'echo \$((1+2))'"
+arith_case 2 prefix-env-split-double-arithmetic 'env -S "echo $((1+2))"'
+arith_case 2 prefix-env-split-single-glob "env -S 'echo *'"
+arith_case 2 prefix-env-split-double-glob 'env -S "echo *"'
+arith_case 2 prefix-env-split-single-question "env -S 'echo ?'"
+arith_case 2 prefix-env-split-double-question 'env -S "echo ?"'
+arith_case 2 prefix-env-split-single-bracket "env -S 'echo [ab]'"
+arith_case 2 prefix-env-split-double-bracket 'env -S "echo [ab]"'
+arith_case 2 prefix-env-split-single-process "env -S 'echo <(echo x)'"
+arith_case 2 prefix-env-split-double-process 'env -S "echo <(echo x)"'
+arith_case 0 prefix-flock-plain 'C=git; flock /tmp/arith-lock $C status'
+arith_case 0 prefix-taskset-quoted 'C=git; taskset 0x1 "$C" status'
+arith_case 0 prefix-timeout-literal-var 'T=30; timeout $T git status'
+arith_case 0 prefix-timeout-quoted-var 'timeout "$T" git status'
+arith_case 0 prefix-sudo-quoted-option-value 'sudo -u "$U" git status'
+arith_case 0 prefix-nice-literal-option-value 'N=5; nice -n $N git status'
+arith_case 0 prefix-flock-quoted-file 'flock "$HOME/l" git status'
+arith_case 0 prefix-timeout-literal-var-then-var 'T=30; C=git; timeout $T $C status'
+
+# Split-string trailing-argument and re-parsing regressions.
+arith_case 0 env-split-review-001 'env -S '"'"'python3 -c print(1)'"'"''
+arith_case 2 env-split-review-002 'env -S '"'"'bash -c ((x))'"'"''
+arith_case 2 env-split-review-003 'env -S '"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-004 'env -S '"'"'1=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-005 'env -S '"'"'a-b=1 bash -c ((x))'"'"''
+arith_case 0 env-split-review-006 'env -S '"'"'a.b=1 bash -c let'"'"''
+arith_case 2 env-split-review-007 'env -S '"'"'x=y bash -c ((x))'"'"''
+arith_case 2 env-split-review-008 'env -S '"'"'-u y bash -c ((x))'"'"''
+arith_case 2 env-split-review-009 'env -S '"'"'-i bash -c ((x))'"'"''
+arith_case 2 env-split-review-010 'env -S '"'"'-S bash -c ((x))'"'"''
+arith_case 2 env-split-review-011 'env -S '"'"'-C /tmp bash -c ((x))'"'"''
+arith_case 2 env-split-review-012 'env -S '"'"'-- bash -c ((x))'"'"''
+arith_case 2 env-split-review-013 'env -iS '"'"'bash -c ((x))'"'"''
+arith_case 2 env-split-review-014 'env -S '"'"'bash -c ((x))'"'"' extra'
+arith_case 2 env-split-review-015 'env -S '"'"'sh'"'"' -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-016 'env -S '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-017 'env -S '"'"'a.b=1 bash'"'"' -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-018 'env --split-string='"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-019 'env --split-string '"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-020 'env -S'"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-021 'command env -S '"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-022 '/usr/bin/env -S '"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-023 'sudo env -S '"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-024 'env -S $'"'"'a.b=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-025 'env -S '"'"'a.b=1 bash -c ((x))'"'"''"'"'x'"'"''
+arith_case 2 env-split-review-026 'env -S "a.b=1 bash -c ((x))"'
+arith_case 2 env-split-review-027 'env -S '"'"'echo ${x}'"'"''
+arith_case 2 env-split-review-028 'env -S '"'"'echo \$x'"'"''
+arith_case 2 env-split-review-029 'env -S '"'"'echo \c'"'"''
+arith_case 2 env-split-review-030 'env -S '"'"'echo #x'"'"''
+arith_case 2 env-split-review-031 'env -S '"'"'a.b=1 x=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-032 'env -S '"'"'f() bash -c ((x))'"'"''
+arith_case 2 env-split-review-033 'env -S '"'"'(bash -c ((x)))'"'"''
+arith_case 0 env-split-review-034 'env -S '"'"'bash -c (x)'"'"''
+arith_case 2 env-split-review-035 'env -S '"'"'a.b=1 bash -c ((a))'"'"''
+arith_case 2 env-split-review-036 'env -S '"'"'a.b=1 bash -c let'"'"' x'
+arith_case 2 env-split-review-037 'env -S '"'"'a.b=1 sh -c ((x))'"'"''
+arith_case 2 env-split-review-038 'env -S '"'"'a.b=1 zsh -c ((x))'"'"''
+arith_case 0 env-split-review-039 'env -S '"'"'a.b=1 bash script.sh'"'"''
+arith_case 0 env-split-review-040 'env -S '"'"'BASH_ENV=/tmp/f bash -c true'"'"''
+arith_case 0 env-split-review-041 'env -S '"'"'a.b=1 env -S bash'"'"''
+arith_case 2 env-split-review-042 'env -S '"'"'a.b=1 eval ((x))'"'"''
+arith_case 2 env-split-review-043 'env -S '"'"'bash -c ((RANDOM))'"'"''
+arith_case 2 env-split-review-044 'env -S '"'"'git status'"'"' ; bash -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-045 'env -S '"'"'x=1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-046 'env -S '"'"'-u -- bash -c ((x))'"'"''
+arith_case 2 env-split-review-047 'env -S '"'"'-P /bin bash -c ((x))'"'"''
+arith_case 2 env-split-review-048 'env -S '"'"'-uu bash -c ((x))'"'"''
+arith_case 2 env-split-review-049 'env -S '"'"'-Sbash -c ((x))'"'"''
+arith_case 2 env-split-review-050 'env -S '"'"'--chdir=/tmp bash -c ((x))'"'"''
+arith_case 2 env-split-review-051 'env -S '"'"'--unset=PATH bash -c ((x))'"'"''
+arith_case 2 env-split-review-052 'env -S '"'"'a.b=1 bash -c (((x)))'"'"''
+arith_case 2 env-split-review-053 'env -S '"'"'nice -n1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-054 'env -S '"'"'nice -n bash -c ((x))'"'"''
+arith_case 2 env-split-review-055 'env -S '"'"'timeout bash -c ((x))'"'"''
+arith_case 2 env-split-review-056 'env -S '"'"'timeout 1 bash -c ((x))'"'"''
+arith_case 2 env-split-review-057 'env -S '"'"'xargs -a bash -c ((x))'"'"''
+arith_case 2 env-split-review-058 'env -S '"'"'sudo -u bash -c ((x))'"'"''
+arith_case 0 env-split-review-059 'env -S '"'"'a.b=1 python3 -c print(1)'"'"''
+arith_case 2 env-split-review-060 'bash -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-061 'env bash -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-062 'env -S bash -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-063 'env -S '"'"'bash -c'"'"' '"'"'let x'"'"''
+arith_case 2 env-split-review-064 'env -S '"'"'bash -c'"'"' '"'"'$((x))'"'"''
+arith_case 2 env-split-review-065 'env -S '"'"'bash -c'"'"' '"'"'echo $(id)'"'"''
+arith_case 2 env-split-review-066 'env -S '"'"'bash -c'"'"' "$CMD"'
+arith_case 2 env-split-review-067 'env -S '"'"'bash -c'"'"' "$1"'
+arith_case 2 env-split-review-068 'env -S '"'"'bash'"'"' -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-069 'env -S '"'"'sh -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-070 'env -S '"'"'eval'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-071 'env -S '"'"'python3 -c'"'"' '"'"'print(1)'"'"''
+arith_case 0 env-split-review-072 'env -S '"'"'git status'"'"''
+arith_case 0 env-split-review-073 'env -S '"'"'git'"'"' status'
+arith_case 2 env-split-review-074 'env -S '"'"'bash -c'"'"' '"'"'git status'"'"''
+arith_case 0 env-split-review-075 'env -S '"'"'bash'"'"' script.sh'
+arith_case 0 env-split-review-076 'bash script.sh'
+arith_case 0 env-split-review-077 'BASH_ENV=/tmp/f bash -c true'
+arith_case 0 env-split-review-078 'bash -c '"'"'(x)'"'"''
+arith_case 2 env-split-review-079 'env -S '"'"'xargs bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-080 'env -S '"'"'sudo bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-081 'env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' && true'
+arith_case 2 env-split-review-082 'env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' | cat'
+arith_case 2 env-split-review-083 'env --split-string='"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-084 'env -S'"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-085 'env -iS '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-review-086 'env -S '"'"'bash -c'"'"' -- '"'"'((x))'"'"''
+# env-split-review-087 (bash -c "$CMD") lives in bash-arith-guard.test.sh:
+# the arithmetic check allows it, but the full stack refuses it (scope guard).
+arith_case 0 env-split-review-088 'bash -c '"'"'echo $(id)'"'"''
+arith_case 2 env-split-review-089 'bash -c '"'"'let x'"'"''
+arith_case 2 env-split-review-090 'bash -c '"'"'$((x))'"'"''
+arith_case 2 env-split-review-091 'sh -c '"'"'((x))'"'"''
+arith_case 2 env-split-review-092 'sudo bash -c '"'"'((x))'"'"''
+arith_case 0 env-split-review-093 'python3 -c '"'"'print(1)'"'"''
+arith_case 2 env-split-review-094 'env -S '"'"'git status'"'"' && bash -c '"'"'((x))'"'"''
+arith_case 2 env-split-nested-prefix 'command sudo env -S '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-nested-split 'env -S '"'"'env -S bash'"'"' -c '"'"'((x))'"'"''
+arith_case 2 env-split-nested-subshell '(env -S '"'"'bash -c'"'"' '"'"'((x))'"'"')'
+arith_case 2 env-split-eval 'eval "env -S '"'"'bash -c'"'"' '"'"'((x))'"'"'"'
+arith_case 2 env-split-shell-reentry 'bash -c "env -S '"'"'bash -c'"'"' '"'"'((x))'"'"'"'
+arith_case 2 env-split-ansi-split 'env -S $'"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-ansi-code 'env -S '"'"'bash -c'"'"' $'"'"'((x))'"'"''
+arith_case 2 env-split-newline 'env -S '"'"'bash -c'"'"' \
+ '"'"'((x))'"'"''
+arith_case 2 env-split-split-newline 'env -S '"'"'bash
+-c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-split-heredoc 'env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' <<'"'"'EOF'"'"'
+text
+EOF'
+arith_case 2 env-split-heredoc-shell 'bash <<'"'"'EOF'"'"'
+env -S '"'"'bash -c'"'"' '"'"'((x))'"'"'
+EOF'
+arith_case 0 env-split-literal-chain 'env -S '"'"'python3 -c print(1)'"'"' && true'
+arith_case 0 env-split-literal-pipe 'env -S '"'"'python3 -c print(1)'"'"' | cat'
+
+# Split strings retain the surrounding stdin and wrapper context.
+arith_case 0 env-context-two-literals "env -S 'git status' && env -S 'git log'"
+arith_case 2 env-context-literal-then-stdin "env -S 'git status'; printf '((x))' | env -S 'bash -s'"
+arith_case 2 env-context-double-stdin 'env -S "bash -s" <<< '\''((x))'\'''
+arith_case 2 env-context-attached-stdin "printf '((x))' | env -S'bash -s'"
+arith_case 2 env-context-long-stdin "printf '((x))' | env --split-string='bash -s'"
+arith_case 2 env-context-r2-107 'printf '"'"'((x))'"'"' | env -S '"'"'bash -s'"'"''
+arith_case 2 env-context-r2-108 'printf '"'"'((x))'"'"' | env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-r2-109 'echo '"'"'((x))'"'"' | env -S '"'"'a.b=1 sh'"'"''
+arith_case 2 env-context-r2-110 'env -S '"'"'bash -s'"'"' <<<'"'"'((x))'"'"''
+arith_case 2 env-context-r2-111 'env -S '"'"'a.b=1 bash'"'"' <<<'"'"'((x))'"'"''
+arith_case 2 env-context-r2-112 'env -S '"'"'sudo bash'"'"' <<<'"'"'((x))'"'"''
+arith_case 2 env-context-r2-113 'env -S '"'"'a.b=1 bash'"'"' <<'"'"'EOF'"'"'
+((x))
+EOF'
+arith_case 2 env-context-r2-114 'env -S '"'"'bash -s'"'"' 0<<'"'"'EOF'"'"'
+let x
+EOF'
+arith_case 2 env-context-r2-115 'env -S '"'"'bash -s'"'"' < <(printf '"'"'((x))'"'"')'
+arith_case 2 env-context-r2-116 'exec 0<<<'"'"'((x))'"'"'; env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-r2-117 '{ printf '"'"'((x))'"'"'; } | env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-r2-118 'printf '"'"'let x'"'"' | env -S '"'"'bash -s'"'"''
+arith_case 2 env-context-r2-119 'printf '"'"'$((x))'"'"' | env -S '"'"'bash -s'"'"''
+arith_case 2 env-context-r2-120 'echo '"'"'((x))'"'"' | timeout 5 env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-r2-121 'echo '"'"'((x))'"'"' | nohup env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-r2-122 'echo '"'"'((x))'"'"' | exec env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-r2-123 'env -S '"'"'a.b=1 zsh'"'"' <<<'"'"'((x))'"'"''
+arith_case 2 env-context-r2-124 'env -S '"'"'a.b=1 bash -i'"'"' <<<'"'"'((x))'"'"''
+arith_case 2 env-context-r2-125 'printf '"'"'((x))'"'"' | env -S '"'"'xargs bash -c'"'"''
+arith_case 2 env-context-r2-126 'printf '"'"'((x))'"'"' | env -S '"'"'xargs -I% bash -c %'"'"''
+arith_case 2 env-context-r2-127 'printf '"'"'((x))'"'"' | env -S '"'"'xargs -0 sh -c'"'"''
+arith_case 2 env-context-r2-128 'printf '"'"'let x'"'"' | env -S '"'"'xargs -d, bash -c'"'"''
+arith_case 2 env-context-r2-129 'echo '"'"'((x))'"'"' | xargs env -S '"'"'bash -c'"'"''
+arith_case 2 env-context-r2-130 'echo '"'"'((x))'"'"' | xargs env -S '"'"'a.b=1 bash -c'"'"''
+arith_case 2 env-context-r2-131 'echo '"'"'((x))'"'"' | xargs -I@ env -S '"'"'a.b=1 bash -c @'"'"''
+arith_case 2 env-context-r2-132 'env -S '"'"'a.b=1'"'"' -S '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-context-r2-133 'env -S '"'"'a.b=1 x'"'"' -S '"'"'bash -c ((x))'"'"''
+arith_case 2 env-context-r2-134 'env -S '"'"'bash -c'"'"'{,} '"'"'((x))'"'"''
+arith_case 2 env-context-r2-135 'env -S '"'"'bash -c'"'"' {'"'"'((x))'"'"',}'
+arith_case 2 env-context-r2-136 'env -S'"'"'bash -c'"'"'{,}'
+arith_case 2 env-context-r2-137 'env -S '"'"'a.b=1 bash'"'"' -c{,} '"'"'((x))'"'"''
+arith_case 2 env-context-r2-138 'env -S '"'"'bash -c'"'"'$'"'"''"'"' '"'"'((x))'"'"''
+arith_case 2 env-context-r2-139 'env -S ""'"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-context-r2-140 'env -S '"'"'bash -c'"'"'"" '"'"'((x))'"'"''
+arith_case 2 env-context-r2-141 'env -S '"'"'bash -c'"'"' "" '"'"'((x))'"'"''
+arith_case 2 env-context-r2-142 'env -S '"'"'bash -c ((x))'"'"'""'
+arith_case 2 env-context-r2-143 'env -S '"'"'bash -c (((x)))'"'"''
+arith_case 2 env-context-r2-144 'env -S '"'"'zsh -c /(e:((x)):)'"'"''
+arith_case 2 env-context-r2-145 'env -S '"'"'a.b=1 sh -s'"'"' -- <<<'"'"'((x))'"'"''
+arith_case 2 env-context-r2-146 'env -S '"'"'bash -c (x)'"'"' --'
+arith_case 2 env-context-r2-147 'env -i -S '"'"'bash -c (x)'"'"' --'
+arith_case 2 env-context-r2-148 'env -S{,} '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-context-r2-149 'env -S "bash -c (x)"'
+arith_case 2 env-context-r2-150 'env -S <<'"'"'EOF'"'"'
+bash -c ((x))
+EOF'
+arith_case 2 env-context-r2-163 'env -S $'"'"'bash -s'"'"' <<<'"'"'((x))'"'"''
+arith_case 2 env-context-extra-164 'env -S '"'"'a.b=1 bash'"'"' <<EOF
+((x))
+EOF'
+arith_case 2 env-context-extra-165 'env -S -S '"'"'bash -c ((x))'"'"''
+arith_case 2 env-context-extra-168 'env -S "bash -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-context-extra-174 'echo '"'"'((x))'"'"' | sudo env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-175 'echo '"'"'((x))'"'"' | nice env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-176 'echo '"'"'((x))'"'"' | nice -n 5 env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-177 'echo '"'"'((x))'"'"' | command env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-178 'echo '"'"'((x))'"'"' | builtin env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-179 'echo '"'"'((x))'"'"' | time env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-180 'echo '"'"'((x))'"'"' | stdbuf -o0 env -S '"'"'a.b=1 bash'"'"''
+arith_case 2 env-context-extra-181 'printf '"'"'((x))'"'"' | env -S '"'"'a.b=1 sh'"'"''
+arith_case 2 env-context-extra-182 'printf '"'"'((x))'"'"' | env -S '"'"'a.b=1 zsh'"'"''
+arith_case 2 env-context-extra-183 'printf '"'"'((x))'"'"' | env -S '"'"'a.b=1 dash'"'"''
+arith_case 2 env-context-extra-184 'printf '"'"'((x))'"'"' | env -S '"'"'a.b=1 ksh'"'"''
+
+# Split-string recovery refuses shell re-entry and quote-balancing inputs.
+arith_case 2 env-r3-01 'env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-02 'env -S '"'"'git status'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-03 'env -S '"'"'a b c'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-04 'env -S '"'"'git log -1'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-05 'env -S '"'"'true x'"'"' && bash -c \(\(x\)\) \'"'"''
+arith_case 2 env-r3-06 'bash -c : ; env -S'"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-07 'bash -c : ; env -S $'"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-08 'bash -c : ; env --split-string='"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-09 'bash -c : ; env --split-string '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-10 'bash -c : ; env -iS '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-11 'bash -c : ; sudo env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-12 'printf '"'"'((x))'"'"' | env -S '"'"'bash -s'"'"' ; echo script \'"'"''
+arith_case 2 env-r3-13 'printf '"'"'let x'"'"' | env -S '"'"'bash -s'"'"' ; echo script \'"'"''
+arith_case 2 env-r3-14 'printf '"'"'((x))'"'"' | env -S '"'"'a.b=1 bash'"'"' ; echo script \'"'"''
+arith_case 2 env-r3-15 'echo '"'"'((x))'"'"' | xargs env -S '"'"'bash -c'"'"' ; echo script \'"'"''
+arith_case 2 env-r3-16 'bash -c : ; env -S "true x" ; bash -c \(\(x\)\) ; echo \"'
+arith_case 2 env-r3-17 'eval : ; env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-18 'source /tmp/unused ; env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-19 'echo script ; env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-20 'bash -s </dev/null ; env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-21 'sh -c : ; env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+arith_case 2 env-r3-22 'zsh -c : ; env -S '"'"'true x'"'"' ; bash -c \(\(x\)\) ; echo \'"'"''
+
+# Unproven env split values and deferred command heads fail closed.
+arith_case 2 env-unproven-mixed-pipe 'printf '"'"'((x))'"'"' | env -S ba"sh -s"'
+arith_case 2 env-unproven-mixed-pipe-middle 'printf '"'"'((x))'"'"' | env -S b"ash -s"'
+arith_case 2 env-unproven-mixed-pipe-end 'printf '"'"'((x))'"'"' | env -S bash" -s"'
+arith_case 2 env-unproven-locale-pipe 'printf '"'"'((x))'"'"' | env -S $"bash -s"'
+arith_case 2 env-unproven-mixed-code 'env -S ba"sh -c" '"'"'((x))'"'"''
+arith_case 2 env-unproven-locale-code 'env -S $"bash -c" '"'"'((x))'"'"''
+arith_case 2 env-unproven-xargs-mixed 'echo '"'"'((x))'"'"' | xargs env -S ba"sh -c"'
+arith_case 2 env-unproven-mixed-stdin 'env -S ba"sh -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-unproven-attached-mixed 'env -Sba"sh -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-unproven-long-mixed 'env --split-string=ba"sh -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-unproven-attached-locale 'env -S$"bash -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-unproven-process-input 'cat <(printf '"'"'((x))'"'"' | env -S '"'"'bash -s'"'"')'
+arith_case 2 env-unproven-process-output 'cat >(env -S '"'"'bash -c'"'"' '"'"'((x))'"'"')'
+arith_case 2 env-unproven-brace-options 'env {-S,'"'"'bash -c'"'"'} '"'"'((x))'"'"''
+arith_case 2 env-unproven-brace-code 'env {-S,'"'"'bash -c ((x))'"'"'}'
+arith_case 2 env-unproven-find-exec 'find . -exec env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' '"'"';'"'"''
+arith_case 2 env-unproven-find-execdir 'find . -execdir env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' '"'"';'"'"''
+arith_case 2 env-unproven-find-ok 'find . -ok env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' '"'"';'"'"''
+arith_case 2 env-unproven-find-okdir 'find . -okdir env -S '"'"'bash -c'"'"' '"'"'((x))'"'"' '"'"';'"'"''
+arith_case 2 env-unproven-abbrev-equals 'env --split-strin='"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-unproven-abbrev-short 'env --split='"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-unproven-abbrev-separate 'env --spl '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-unproven-argv-short 'env -a x -S '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-unproven-argv-long 'env --argv0=x -S '"'"'bash -c'"'"' '"'"'((x))'"'"''
+arith_case 2 env-unproven-plain-pipe 'printf '"'"'((x))'"'"' | bash -s'
+arith_case 2 env-unproven-plain-code 'bash -c '"'"'((x))'"'"''
+arith_case 2 env-unproven-plain-xargs 'echo '"'"'((x))'"'"' | xargs bash -c'
+arith_case 2 env-unproven-plain-process 'cat <(printf '"'"'((x))'"'"' | bash -s)'
+arith_case 2 env-unproven-plain-find 'find . -exec bash -c '"'"'((x))'"'"' '"'"';'"'"''
+
+# Every find execution action is a command word, not only the first.
+arith_case 2 find-second-exec-env-split "find . -maxdepth 0 -exec true ';' -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-after-plus "find . -maxdepth 0 -exec true {} + -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-after-or "find . -maxdepth 0 -exec false ';' -o -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-execdir "find . -maxdepth 0 -execdir true ';' -execdir env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-escaped-end "find . -maxdepth 0 -exec true \\; -exec env -S 'bash -c' '((x))' {} +"
+arith_case 2 find-second-exec-mixed-quote "find . -maxdepth 0 -exec true ';' -exec env -S ba\"sh -c\" '((x))' ';'"
+arith_case 2 find-second-exec-brace "find . -maxdepth 0 -exec true ';' -exec env {-S,'bash -c'} '((x))' ';'"
+arith_case 2 find-second-exec-continuation "find . -maxdepth 0 -exec true ';' \\
+ -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-after-group "find . -maxdepth 0 \\( -exec true ';' \\) -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-okdir "find . -maxdepth 0 -ok true ';' -okdir env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-after-comma "find . -maxdepth 0 -exec true ';' , -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-env-abbrev "find . -maxdepth 0 -exec true ';' -exec env --spl 'bash -c' '((x))' ';'"
+arith_case 2 find-second-exec-env-argv "find . -maxdepth 0 -exec true ';' -exec env -a x -S 'bash -c' '((x))' ';'"
+arith_case 0 find-two-plain-actions "find . -maxdepth 0 -exec true ';' -exec ls {} +"
+arith_case 0 find-exec-plain-reader "find . -name '*.sh' -exec ls -l {} ';'"
+
+# A locale string is translated before env splits it, so the git-status
+# control holds only in plain double quotes.
+arith_case 2 env-locale-git-status "env -S \$\"git status\""
+arith_case 2 env-locale-git-status-after-export "export TEXTDOMAIN=t TEXTDOMAINDIR=/tmp/t LC_ALL=en_US.UTF-8
+env -S \$\"git status\""
+arith_case 2 env-locale-git-status-attached "env -S\$\"git status\""
+arith_case 2 env-locale-git-status-long "env --split-string=\$\"git status\""
+arith_case 2 env-locale-git-status-part "env -S \"git\"\$\" status\""
+arith_case 0 env-plain-git-status-attached "env -S\"git status\""
+
+# Option and value in one quoted word, a command word from a variable or a
+# resolver, and GNU tools under a g prefix.
+arith_case 2 env-quoted-option-and-value "env '-S bash -c' '((x))'"
+arith_case 2 env-dquoted-option-dquoted-code 'env "-S bash -c" "((x))"'
+arith_case 2 env-dquoted-option-escaped-let 'env "-S bash -c" let\ x'
+arith_case 2 env-dquoted-option-stdin 'printf '"'"'((x))'"'"' | env "-S bash -s"'
+arith_case 2 env-squoted-option-dquoted-code "env '-S bash -c' \"((x))\""
+arith_case 2 env-ansi-option-dquoted-code "env $'-S bash -c' \"((x))\""
+arith_case 2 env-dquoted-long-option-code 'env "--split-string=bash -c" "((x))"'
+arith_case 2 env-midquote-short-stdin 'env -"S bash -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-midquote-short-code 'env -"S bash -c" "((x))"'
+arith_case 2 env-midquote-bundled-code 'env -i"S bash -c" "((x))"'
+arith_case 2 env-midquote-long-stdin 'env --"split-string=bash -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-midquote-long-name-stdin 'env --split-"string=bash -s" <<<'"'"'((x))'"'"''
+arith_case 2 env-midquote-short-squote 'env -'"'"'S bash -c'"'"' "((x))"'
+arith_case 2 env-quoted-option-value-and-code "env '-S bash -c ((x))'"
+arith_case 2 var-find-exec-env-split "f=find; \$f . -maxdepth 0 -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 var-env-split "E=env; \$E -S 'bash -c' '((x))'"
+arith_case 2 resolved-var-find-exec-env-split "P=\$(command -v find); \$P . -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 resolved-head-find-exec-env-split "\$(command -v find) . -exec env -S 'bash -c' '((x))' ';'"
+arith_case 2 find-exec-genv-split "find . -maxdepth 0 -exec genv -S 'bash -c' '((x))' ';'"
+arith_case 2 genv-split "genv -S 'bash -c' '((x))'"
+arith_case 2 gfind-second-exec-env-split "gfind . -exec true ';' -exec env -S 'bash -c' '((x))' ';'"
+arith_case 0 var-plain-command "C=git; \$C status"
+arith_case 0 resolved-var-plain-command "P=\$(command -v git); \$P status"
+arith_case 0 env-assignment-then-command "env FOO=bar git status"

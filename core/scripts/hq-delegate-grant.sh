@@ -17,6 +17,11 @@
 #   3. read each grant back with hq files acl and match grantee + permission
 #   4. advance manifest status building -> granted, stamping verifiedAt
 #
+# When the new sync engine owns the company vault on this machine, the CLI
+# refuses `hq sync push`. Step 1 is then skipped, and after the grants the
+# helper waits for the engine to upload the dossier and referenced files
+# (lib/delegate-engine.sh) before it advances the status.
+#
 # Direct ACL grants ONLY — this helper never mints a share-session URL
 # (policy hq-delegate-never-inlines-secrets-or-share-urls).
 #
@@ -29,8 +34,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+. "$SCRIPT_DIR/lib/delegate-engine.sh"
 
-usage() { sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 die()   { echo "hq-delegate-grant: $*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
@@ -174,7 +180,7 @@ esac
 if [ "${PRINCIPAL#agt_}" != "$PRINCIPAL" ]; then
   echo "  0. Agent recipient: grants flow through group $GRANT_PRINCIPAL (created if absent, containing exactly $DISPLAY)"
 fi
-echo "  1. Push companies/$COMPANY/projects/$PROJECT/ to the vault (on-conflict keep)"
+echo "  1. Push companies/$COMPANY/projects/$PROJECT/ to the vault (on-conflict keep); where the sync engine owns the vault, pin it in .hq/pins.json and wait for its upload after the grants instead"
 jq -r '.vaultPrefixes[] | "  2. Grant \(.permission) on \(.prefix) — \(.reason // "")"' "$MANIFEST" | tr -d '\r'
 WRITE_PREFIXES="$(jq -r '.vaultPrefixes[] | select(.permission == "write") | .prefix' "$MANIFEST" | tr -d '\r')"
 if [ -n "$WRITE_PREFIXES" ]; then
@@ -195,6 +201,9 @@ fi
 # on the prefix and silently misses the file. Push every referenced
 # company-local knowledge/policy path alongside the dossier.)
 
+ENGINE_OWNED=0
+if hq_delegate_engine_owns_vault "$COMPANY"; then ENGINE_OWNED=1; fi
+
 # Skip the full-folder push when the vault already holds this project: a large
 # project re-walks thousands of unchanged files and can exceed the foreground
 # timeout. Compare the dossier files' checksums local vs vault first; any
@@ -212,14 +221,33 @@ vault_has_project() {
   [ "$compared" -gt 0 ]
 }
 
-if vault_has_project; then
+if [ "$ENGINE_OWNED" -eq 1 ]; then
+  echo "hq-delegate-grant: the sync engine owns the '$COMPANY' vault on this machine — no push; pinning the project and referenced files so the engine uploads them"
+  PIN_PATHS=("projects/$PROJECT/")
+  while IFS= read -r kpath; do
+    [ -n "$kpath" ] && PIN_PATHS+=("$kpath")
+  done < <(jq -r --arg co "$COMPANY" \
+    '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/")) | ltrimstr("companies/" + $co + "/")' \
+    "$MANIFEST" | tr -d '\r')
+  hq_delegate_engine_pin "$HQ_ROOT" "$COMPANY" "${PIN_PATHS[@]}" \
+    || die "could not add the project to $HQ_ROOT/.hq/pins.json for the sync engine"
+elif vault_has_project; then
   echo "hq-delegate-grant: vault already has companies/$COMPANY/projects/$PROJECT/ (dossier checksums match) — skipping full-folder push"
 else
   hq sync push "companies/$COMPANY/projects/$PROJECT/" --company "$COMPANY" --on-conflict keep \
     || die "vault push failed for companies/$COMPANY/projects/$PROJECT/"
+  # on-conflict keep drops the delegator's fresh local edits when the vault copy
+  # differs. The delegator owns the dossier, so push these files again with
+  # overwrite, and fail the step if one cannot be pushed.
+  for dossier_file in prd.json README.md brainstorm.md; do
+    if [ -f "$HQ_ROOT/companies/$COMPANY/projects/$PROJECT/$dossier_file" ]; then
+      hq sync push "companies/$COMPANY/projects/$PROJECT/$dossier_file" --company "$COMPANY" --on-conflict overwrite \
+        || die "vault push failed for dossier file companies/$COMPANY/projects/$PROJECT/$dossier_file"
+    fi
+  done
 fi
 
-jq -r --arg co "$COMPANY" \
+[ "$ENGINE_OWNED" -eq 1 ] || jq -r --arg co "$COMPANY" \
   '((.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' \
   "$MANIFEST" | tr -d '\r' | while IFS= read -r kpath; do
   if [ -e "$HQ_ROOT/$kpath" ]; then
@@ -364,6 +392,27 @@ EOF_CHILDREN
   echo "hq-delegate-grant: verified $PERM on $PFX for $PRINCIPAL"
   i=$((i + 1))
 done
+
+# --- 3b. engine-owned vault: wait for the engine's upload ---------------------
+# The pins above bring the files into the engine's scope; confirm the exact
+# bytes of the dossier and every referenced company file before reporting success.
+
+if [ "$ENGINE_OWNED" -eq 1 ]; then
+  {
+    for f in prd.json README.md brainstorm.md; do
+      [ -f "$HQ_ROOT/companies/$COMPANY/projects/$PROJECT/$f" ] && echo "companies/$COMPANY/projects/$PROJECT/$f"
+    done
+    jq -r --arg co "$COMPANY" \
+      '((.project.dossier // []) + (.knowledge // []) + (.policies // []))[] | select(startswith("companies/" + $co + "/"))' \
+      "$MANIFEST" | tr -d '\r'
+  } | sort -u | while IFS= read -r kpath; do
+    [ -f "$HQ_ROOT/$kpath" ] || continue
+    expected="$(hq_delegate_sha256 < "$HQ_ROOT/$kpath")"
+    hq_delegate_wait_for_cloud "$COMPANY" "${kpath#"companies/$COMPANY/"}" "$expected" \
+      || die "the sync engine has not uploaded $kpath after ${HQ_DELEGATE_ENGINE_WAIT_SECONDS:-180}s; check 'hq sync-core status', then re-run (grants are idempotent)"
+  done
+  echo "hq-delegate-grant: the sync engine uploaded the dossier; vault bytes match"
+fi
 
 # --- 4. advance manifest status ----------------------------------------------
 

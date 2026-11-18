@@ -134,7 +134,7 @@ Details, ignore rules, and conflicts: [hq-sync-model.md](hq-sync-model.md).
 
 | Type | How it signs in | Notes |
 |---|---|---|
-| Person | Cognito via `hq login` / `hq auth login` with `--provider google\|microsoft\|picker` (Google by default; the picker also covers email and password) | The desktop app only accepts a person's sign-in. Chat-app connectors use the person's login via OAuth. |
+| Person | Cognito via `hq login` with `--provider google\|microsoft\|picker` (Google by default; the picker also covers email and password) | The desktop app only accepts a person's sign-in. Chat-app connectors use the person's login via OAuth. |
 | Bot or agent | Own `agt_` machine identity | Local bots, hosted agents, and external bots. External bots sign mints with an Ed25519 host key created at enroll. Outposts use `otp_` identities. |
 | API key | `HQ_API_KEY` from `hq api-keys create` | For CI and automation. Only some commands accept it; `hq bot` refuses it. `--deploy-app` mints a deploy-scoped key. |
 

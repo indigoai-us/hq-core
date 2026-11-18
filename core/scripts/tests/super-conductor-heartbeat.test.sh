@@ -50,7 +50,7 @@ grep -q 'Read /x/state.json' <<<"$out"; check "TICK points at the save file" $?
 reset 3
 out="$(bash "$HB" --interval 1 --link cl-test --once)"
 grep -q '^SUPER-CONDUCTOR TICK ' <<<"$out"; check "wait timeout prints TICK" $?
-grep -q -- 'lanes link wait --link cl-test --timeout 1' "$tmp/calls"; check "wait is bounded by the interval" $?
+grep -q -- 'runners link wait --link cl-test --timeout 1' "$tmp/calls"; check "wait is bounded by the interval" $?
 
 # 4. Report -> REPORT, then a timer TICK (no hq call), then link closed -> exit 0.
 reset 0 gone

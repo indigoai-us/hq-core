@@ -6,7 +6,7 @@ description: Recognize a content pack the person pastes or names (a hqforwork.co
 # Adding a pack from the chat
 
 A pack is a bundle of workers, knowledge and its own bot that HQ installs with
-`hq packages install`. People arrive with one in three ways: they paste a link
+`hq install`. People arrive with one in three ways: they paste a link
 from a pack page, they type the pack's name, or they drop a folder path. You add
 it without them leaving this conversation, and you end by introducing the bot
 the pack brings. This skill only adds that; nothing else about how you run setup
@@ -38,7 +38,7 @@ ordinary conversation ("my co-founder is joining" is not a pack).
 
 ### The catalog
 
-The catalog is what `hq packages list` prints under "Available (curated)": each
+The catalog is what `hq packs list` prints under "Available (curated)": each
 line is an install source like `github:indigoai-us/hq-packages#packages/hq-pack-design-styles`
 with a description. The slug is the last segment without `hq-pack-`; the display
 name is the slug in title case (`design-styles` is "Design Styles") unless the
@@ -72,7 +72,7 @@ conversation unless they bring it up.
 
 Run, from the HQ root:
 
-    hq packages install {slug-or-path} --start-bot
+    hq install {slug-or-path} --start-bot
 
 `{slug-or-path}` is the slug (`sample-kit`), or the local path when the message
 carried one. Quote a path with spaces. Wait for it to finish; it can take a

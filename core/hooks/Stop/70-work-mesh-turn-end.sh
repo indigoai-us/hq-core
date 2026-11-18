@@ -27,11 +27,20 @@ fi
 
 SID="${HQ_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-${CODEX_SESSION_ID:-${CODEX_THREAD_ID:-}}}}}"
 SID="${SID//[[:space:]]/}"
+# master-hook parsed the payload id already (session_id, or Cursor's
+# conversation_id).
+[ -n "$SID" ] || SID="${HQ_HOOK_SESSION_ID:-}"
 if [ -z "$SID" ]; then
   INPUT=""
   IFS= read -r -d '' INPUT || true
   [ -n "$INPUT" ] || INPUT='{}'
-  case "$INPUT" in
+  # The shared payload reader. Cursor sends conversation_id, not session_id.
+  if [ -f "$HQ_ROOT/core/scripts/lib/session-id.sh" ] \
+    && . "$HQ_ROOT/core/scripts/lib/session-id.sh" 2>/dev/null \
+    && command -v session_id_from_payload >/dev/null 2>&1; then
+    SID="$(session_id_from_payload "$INPUT")"
+  fi
+  [ -n "$SID" ] || case "$INPUT" in
     *'"session_id"'*)
       rest="${INPUT#*\"session_id\"}"; rest="${rest#*:}"
       while [ "${rest#"${rest%%[![:space:]]*}"}" != "$rest" ]; do rest="${rest#?}"; done

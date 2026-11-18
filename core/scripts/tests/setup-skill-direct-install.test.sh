@@ -160,4 +160,81 @@ done <<<"$body"
 grep -qF "npm install -g $qmd_pin" <<<"$body" \
   || fail "10: setup must install qmd with the sanctioned pin ($qmd_pin)"
 
+# ── 11. jq is installed on Windows (winget), like gh ────────────────────────
+# master-hook fails closed on PreToolUse when jq is missing, and no installer
+# provisions jq on Windows, so /setup must install it there with winget and
+# keep the brew / apt paths for macOS and Linux.
+grep -qF 'winget install --id jqlang.jq -e --source winget' <<<"$body" \
+  || fail "11: setup must install jq on Windows with winget (jqlang.jq)"
+for mgr in 'brew install jq' 'apt-get install -y jq'; do
+  grep -qF "$mgr" <<<"$body" \
+    || fail "11: jq install path must cover '$mgr'"
+done
+grep -qF 'open a new terminal' <<<"$body" \
+  || fail "11: setup must tell Windows users to open a new terminal after the winget jq install"
+grep -qF 'Install jq (Windows: winget install jqlang.jq; macOS: brew install jq; Debian/Ubuntu: sudo apt-get install jq)' <<<"$body" \
+  || fail "11: setup must show the same jq install line that master-hook prints"
+grep -qF 'master-hook: BLOCKED: required tool jq is missing' <<<"$body" \
+  || fail "11: setup must say what to do when the jq hook block refuses the shell call"
+
+# Execute the documented jq block on a Windows-like PATH: no jq, brew or
+# apt-get; only a fake winget that records its arguments. /usr/bin is left off
+# PATH because current macOS ships /usr/bin/jq.
+jq_snippet="$(awk '
+  /^# jq — required:/ { capture = 1 }
+  capture { print }
+  capture && /^fi$/ { exit }
+' "$SKILL")"
+[[ -n "$jq_snippet" ]] || fail "11: could not extract the jq install block from the setup skill"
+winbin="$TMP/winbin"
+mkdir -p "$winbin"
+printf '#!%s\nprintf "%%s\\n" "$*" > "%s/winget.args"\n' "$(command -v bash)" "$TMP" > "$winbin/winget"
+chmod +x "$winbin/winget"
+PATH="$winbin" "$(command -v bash)" -c "$jq_snippet" \
+  || fail "11: the documented jq install block failed on a Windows-like PATH"
+[[ -f "$TMP/winget.args" ]] || fail "11: the jq install block did not call winget when jq was missing"
+[[ "$(cat "$TMP/winget.args")" == 'install --id jqlang.jq -e --source winget' ]] \
+  || fail "11: unexpected winget arguments for jq: $(cat "$TMP/winget.args")"
+
+# ── 12. jq-missing state: hand the install to the user before anything runs ─
+# With jq missing, master-hook refuses every tool call, so the PATH check and
+# the install block cannot run. The skill must say so before the PATH check.
+blocked_msg='master-hook: BLOCKED: required tool jq is missing'
+install_line='Install jq (Windows: winget install jqlang.jq; macOS: brew install jq; Debian/Ubuntu: sudo apt-get install jq)'
+first_line="$(grep -nF '**First: jq missing blocks every tool call.**' <<<"$body" | head -1 | cut -d: -f1)"
+path_check_line="$(grep -nF 'for t in node npm qmd hq git yq jq; do' <<<"$body" | head -1 | cut -d: -f1)"
+[[ -n "$first_line" && -n "$path_check_line" && "$first_line" -lt "$path_check_line" ]] \
+  || fail "12: the jq-missing instruction must come before the Phase 0a PATH check"
+first_block="$(sed -n "${first_line},${path_check_line}p" <<<"$body")"
+for want in "$blocked_msg" "$install_line" 'including the PATH check below' 'Open a new terminal' 'then run `/setup` again'; do
+  grep -qF "$want" <<<"$first_block" \
+    || fail "12: jq-missing instruction must include: $want"
+done
+
+# ── 13. winget terms are never accepted silently ────────────────────────────
+if grep -qE 'winget install[^`]*--accept-(source|package)-agreements' <<<"$body"; then
+  fail "13: setup must not pass winget accept-agreement flags on the user's behalf"
+fi
+grep -qF "accept winget's terms on the user's behalf" <<<"$body" \
+  || fail "13: setup must say it does not accept winget's terms for the user"
+
+# ── 14. Quoted hook text matches what master-hook prints, byte for byte ─────
+# Run the real dispatcher with jq absent from an isolated PATH (as in
+# master-hook-missing-dependencies.test.sh) and require both quoted strings.
+mh="$TMP/mh"
+mkdir -p "$mh/hq/.claude/hooks" "$mh/hq/core/scripts/lib" "$mh/bin"
+cp "$ROOT/.claude/hooks/master-hook.sh" "$ROOT/.claude/hooks/hook-timeout-probe.sh" "$ROOT/.claude/hooks/hook-gate.sh" "$mh/hq/.claude/hooks/"
+cp "$ROOT/core/scripts/lib/hook-adapter-core.sh" "$mh/hq/core/scripts/lib/"
+for tool in node hq qmd; do ln -s /usr/bin/true "$mh/bin/$tool"; done
+for tool in bash awk cat date env mkdir mktemp mv rm tr sleep; do
+  ln -s "$(command -v "$tool")" "$mh/bin/$tool"
+done
+mh_rc=0
+printf '%s' '{"session_id":"setup-jq","tool_name":"Bash","tool_input":{"command":"true"}}' |
+  env PATH="$mh/bin" HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 \
+    /bin/bash "$mh/hq/.claude/hooks/master-hook.sh" PreToolUse > "$mh/out" 2> "$mh/err" || mh_rc=$?
+[[ "$mh_rc" == 2 ]] || fail "14: master-hook without jq should exit 2, got $mh_rc"
+grep -qF "$blocked_msg" "$mh/err" || fail "14: skill quotes a BLOCKED message master-hook does not print: $(cat "$mh/err")"
+grep -qF "$install_line" "$mh/err" || fail "14: skill's jq install line differs from master-hook's: $(cat "$mh/err")"
+
 echo "PASS: setup-skill-direct-install (direct-install invariant held; picker gone; auth/bootstrap carve-outs, platform-aware installs, and failure reporting present)"

@@ -3,10 +3,11 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 tmp=$(mktemp -d)
+tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 pack="$tmp/pack"
 
-if bash "$repo_root/core/scripts/build-codex-pack.sh" "$repo_root/core/plugin" >"$tmp/source-output.out" 2>&1; then
+if bash "$repo_root/.github/release/build-codex-pack.sh" "$repo_root/core/plugin" >"$tmp/source-output.out" 2>&1; then
   echo 'builder accepted an output directory that contains its source package' >&2
   exit 1
 fi
@@ -16,14 +17,14 @@ test -f "$repo_root/core/plugin/codex/package.yaml"
 unmarked="$tmp/unmarked"
 mkdir -p "$unmarked"
 printf '%s\n' 'keep this user file' > "$unmarked/keep.txt"
-if bash "$repo_root/core/scripts/build-codex-pack.sh" "$unmarked" >"$tmp/unmarked.out" 2>&1; then
+if bash "$repo_root/.github/release/build-codex-pack.sh" "$unmarked" >"$tmp/unmarked.out" 2>&1; then
   echo 'builder accepted a non-empty output directory without its marker' >&2
   exit 1
 fi
 grep -q 'refusing to clean non-empty output without a valid .hq-codex-pack-build marker' "$tmp/unmarked.out"
 grep -q 'keep this user file' "$unmarked/keep.txt"
 
-bash "$repo_root/core/scripts/build-codex-pack.sh" "$pack"
+bash "$repo_root/.github/release/build-codex-pack.sh" "$pack"
 node "$repo_root/core/scripts/validate-agent-runtime-contracts.mjs" --root "$repo_root" --skill-dir "$pack"
 test -f "$pack/.hq-codex-pack-build"
 test ! -e "$pack/scripts/hq"
@@ -204,7 +205,7 @@ NODE
 mkdir -p "$pack/workers/stale"
 printf '%s\n' 'stale build output' > "$pack/workers/stale/worker.yaml"
 printf '%s\n' 'stale hidden file' > "$pack/.stale"
-bash "$repo_root/core/scripts/build-codex-pack.sh" "$pack"
+bash "$repo_root/.github/release/build-codex-pack.sh" "$pack"
 test ! -e "$pack/workers"
 test ! -e "$pack/.stale"
 test -f "$pack/.hq-codex-pack-build"

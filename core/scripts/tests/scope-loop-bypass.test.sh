@@ -17,7 +17,7 @@ mkdir -p "$TMP/.claude/hooks" "$TMP/core/scripts/lib" "$TMP/.codex/hooks" \
   "$TMP/companies/indigo/projects/b" "$TMP/companies/otherco/settings" \
   "$TMP/workspace/sessions/sess-bound" "$TMP/workspace/reports" \
   "$TMP/personal" "$TMP/home/.hq"
-cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
+cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$TMP/.claude/hooks/"
 for f in session-authz.sh session-scope-capability.sh hook-caller-lineage.sh session-id.sh; do
   cp "$ROOT/core/scripts/lib/$f" "$TMP/core/scripts/lib/"
 done
@@ -173,6 +173,50 @@ check 0 'for f in r1.md; do echo "== $f"; cat workspace/reports/$f; done'
 check 0 'for d in companies/indigo/projects/a companies/indigo/projects/b; do ls $d; done'
 check 0 'for d in companies/indigo/projects/a; do cp $d/README.md $d/README.bak; done'
 check 0 'cat companies/indigo/projects/a/README.md companies/indigo/projects/*/README.md'
+
+echo "[allow] interpreter one-liners whose quoted program only looks like a zsh code qualifier"
+check 0 'python3 -c '"'"'import json; d=json.load(open("workspace/reports/r1.md")); print(d.get(e,0))'"'"
+check 0 'python3 -c '"'"'c={}; print({k: c.get(k,0)+1 for k in ["a","b"]})'"'"
+check 0 'python -c '"'"'print({e: 1 for e in range(3)})'"'"
+check 0 'node -e '"'"'const c={}; console.log(Object.keys(c).map(e=>c[e]+1))'"'"
+check 0 'cat workspace/reports/r1.md | python3 -c "import sys; d={}; print(d.get(e,0))"'
+check 0 'python3 -c '"'"'print(1)'"'"' && python3 -c '"'"'x={}; print(x.get(e,0))'"'"
+echo "[block] a real code qualifier next to, or expanding inside, an interpreter one-liner"
+check 2 'python3 -c '"'"'print(1)'"'"'; cp x *(e:REPLY=companies/otherco:)'
+check 2 'python3 -c "print(1)" *(e:REPLY=companies/otherco:)'
+check 2 'python3 -c "import os; os.system($(cp x *(e:REPLY=companies/otherco:)))"'
+echo "[block] interpreter text inside another quoted word does not open a program body"
+check 2 'echo "x python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'echo '"'"'x python3 -c "'"'"' *(e:REPLY=companies/otherco:) '"'"'"'"'"
+check 2 'echo "y python3 -c '"'"'" *(+myfn) "'"'"'"'
+check 2 'echo "x node -e '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'echo "x python -c '"'"'" *(+myfn) "'"'"'"'
+check 2 'true; echo "x;python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'true && echo "x&& python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'echo hi | cat "a| python3 -c '"'"'" *(+myfn) "'"'"'"'
+check 2 'echo "a $(echo " python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'")"'
+check 2 'echo "x \" python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'echo $'"'"'x python3 -c "'"'"' *(e:REPLY=companies/otherco:) '"'"'"'"'"
+check 2 'python3 -c '"'"'print(1)'"'"' "z python3 -c '"'"'" *(+myfn) "'"'"'"'
+echo "[block] a comment, heredoc body or escaped dollar before the fake interpreter text"
+check 2 'true # "
+echo "x python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'true # '"'"'
+echo '"'"'x python3 -c "'"'"' *(e:REPLY=companies/otherco:) '"'"'"'"'"
+check 2 'true; : # it"s
+echo "x python3 -c '"'"'" *(+myfn) "'"'"'"'
+check 2 'cat <<EOF
+"
+EOF
+echo "x python3 -c '"'"'" *(e:REPLY=companies/otherco:) "'"'"'"'
+check 2 'cat <<'"'"'EOF'"'"'
+'"'"'
+EOF
+echo '"'"'x python3 -c "'"'"' *(+myfn) '"'"'"'"'"
+check 2 "$(cat <<'CASE'
+echo \$'a\''"'"x python3 -c '" *(e:REPLY=companies/otherco:) "'"
+CASE
+)"
 
 if [ "$FAILURES" -gt 0 ]; then
   echo "FAILED: $FAILURES case(s)" >&2

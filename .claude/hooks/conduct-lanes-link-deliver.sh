@@ -74,7 +74,7 @@ run_bounded() {
 
 tmp="$(mktemp 2>/dev/null)" || exit 0
 trap 'rm -f "$tmp"' EXIT
-if run_bounded 2 env HQ_NO_SELF_UPDATE=1 HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$root" hq lanes link _deliver --event "$event" < <(printf '%s' "$payload") >"$tmp" 2>/dev/null; then
+if run_bounded 2 env HQ_NO_SELF_UPDATE=1 HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$root" hq runners link _deliver --event "$event" < <(printf '%s' "$payload") >"$tmp" 2>/dev/null; then
   cat "$tmp" 2>/dev/null || true
 fi
 exit 0

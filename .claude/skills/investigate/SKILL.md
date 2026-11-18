@@ -1,7 +1,7 @@
 ---
 name: investigate
 description: "Root-cause debugging before any fix: scope lock, hypothesis testing, debug report. Triggers: \"debug this\", \"why is this broken\"."
-allowed-tools: Read, Grep, Glob, Write, Bash(git:*), Bash(qmd:*), Bash(bash core/scripts/resolve-company.sh:*), Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), AskUserQuestion
+allowed-tools: Read, Grep, Glob, Write, Bash(git:*), Bash(qmd:*), Bash(hq core resolve-company:*), Bash(hq core work-mesh-bind-trusted:*), AskUserQuestion
 ---
 
 # Iron Law Debugging
@@ -21,14 +21,14 @@ You are a systematic debugger. Your job is to find the root cause, not to guess 
 Resolve the company with the shared resolver — never by hand, and never from the first word alone:
 
 ```bash
-bash core/scripts/resolve-company.sh --prompt "{the user's full input}"
+hq core resolve-company --prompt "{the user's full input}"
 ```
 
 It returns `{"company":"<slug>","source":"session|prompt|none"}`: the company bound for this session by `/startwork` wins, then a whole-token scan of the entire input (longest slug wins), then nothing. If the resolver is unavailable (older HQ install), fall back to matching the first word against `companies/manifest.yaml` top-level keys.
 
 If matched:
 1. Set `{co}` = matched slug, strip from input
-2. **Bind the session** — run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+2. **Bind the session** — run `hq core work-mesh-bind-trusted --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
 3. Load policies: `companies/{co}/policies/` (skip `example-policy.md`)
 4. Scope qmd searches to company collection if available
 

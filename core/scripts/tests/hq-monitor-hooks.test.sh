@@ -43,6 +43,14 @@ cp "$START" "$TMP_ROOT/.claude/hooks/hq-monitor-session-start.sh"
 cp "$ADAPTER_CORE" "$TMP_ROOT/core/scripts/lib/hook-adapter-core.sh"
 cp "$ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$TMP_ROOT/.codex/hooks/hq-codex-hook-adapter.sh"
 cp "$ROOT/.grok/hooks/hq-grok-hook-adapter.sh" "$TMP_ROOT/.grok/hooks/hq-grok-hook-adapter.sh"
+# Other registry hooks stay absent and are skipped, except PreToolUse safety
+# guards: a missing one blocks every matching call, so each is an allow stub.
+for safety_script in $(jq -r '.hooks.PreToolUse[]?.hooks[]? | select(.safety == true) | .script' "$REGISTRY" | sort -u); do
+  [ -e "$TMP_ROOT/$safety_script" ] && continue
+  mkdir -p "$(dirname "$TMP_ROOT/$safety_script")"
+  printf '#!/bin/bash\ncat >/dev/null 2>&1 || true\nexit 0\n' > "$TMP_ROOT/$safety_script"
+  chmod +x "$TMP_ROOT/$safety_script"
+done
 
 CLI="$TMP/npm-global/lib/node_modules/@indigoai-us/hq-cli"
 mkdir -p "$CLI/bin" "$TMP/bin"

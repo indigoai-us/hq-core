@@ -117,8 +117,8 @@ runner's code passed through otherwise.
 
 When the runner emits
 `{"type":"scope-materialization-gap", company, count, samplePaths, syncMode}`,
-print the company, count, sample paths, and the two remedies: `hq sync mode all
---company <slug>` or `hq files get companies/<slug>/<path>`. The runner emits
+print the company, count, sample paths, and the two remedies: `hq daemon sync mode set
+<slug> all` or `hq files get companies/<slug>/<path>`. The runner emits
 this event only for files its plan marked `skip-out-of-scope`. A `shared` or
 `custom` pull that lists only its granted prefixes (for example `knowledge/`)
 never enumerates root-level files such as `board.json`, so it can emit no
@@ -388,7 +388,7 @@ exit "$cli_status"
 - **Post-sync workers registry (Step 6b):** after a completed sync, regenerate `core/workers/registry.yaml` from on-disk `worker.yaml` files. A pulled worker must become listable, and a registry row whose directory was not downloaded must not stay discoverable. SessionStart also warns if any `status: active` path is still absent.
 - **Post-pull skill wrappers (Step 6c):** when the runner downloaded or tombstoned files, run the same idempotent `hq reindex` used by the CLI. It surfaces company skill wrappers (`<company>:<skill>`) and converges the other namespaced skills. This is best-effort and does not alter the sync exit code.
 
-- **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq sync mode <all|shared|custom>` and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners always sync as `all` regardless of the stored mode; admins stay grant-scoped for sync; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in hq-cloud `src/sync/pull-scope.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
+- **Selective download (`syncMode`) — access ≠ download.** What a sync *downloads* is governed per-membership by `syncMode`: `all` (full bucket — the default, and what owners get on upgrade), `shared` (only your explicit ACL grants), or `custom` (an explicit prefix list). Set it with `hq daemon sync mode set <company> <all|shared|custom>` (custom takes `--paths <csv>`) and narrow an existing local tree with `hq sync narrow`. This is purely about local footprint — it does **not** change your *access*. Owners always sync as `all` regardless of the stored mode; admins stay grant-scoped for sync; `shared`/`custom` just stop a sync from materializing the whole vault locally. The scope is resolved per company in hq-cloud `src/sync/pull-scope.ts::resolvePullScope` (degrades to `all` on any error so a transient failure never prunes the tree). To reach a file you have access to but didn't download, use `hq files browse`/`cat`/`search`/`get` (see the `hq-files` skill) — no full sync required.
 
 - **Pins keep an on-demand `get` from being pruned.** `hq files get <path>` materializes a path and records it in `<hqRoot>/.hq/pins.json`; `resolvePullScope` unions a company's pins into its `shared`/`custom` pull scope, so a got-file survives subsequent scoped syncs instead of being deleted as an out-of-scope orphan.
 

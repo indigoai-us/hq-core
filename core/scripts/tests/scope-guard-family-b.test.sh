@@ -40,7 +40,7 @@ install_fixture() {
     "$TMP/workspace/build" "$TMP/repos/private/a" "$TMP/home/.hq" "$TMP/.claude/state" \
     "$TMP/.claude/skills/deploy/scripts" "$TMP/text" "$TMP/src"
   cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$TMP/.claude/hooks/"
-  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$TMP/.claude/hooks/"
+  cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/.claude/hooks/block-credential-file-read.sh" "$TMP/.claude/hooks/"
   cp "$ROOT/core/scripts/lib/session-authz.sh" "$ROOT/core/scripts/lib/session-scope-capability.sh" \
     "$ROOT/core/scripts/lib/hook-caller-lineage.sh" "$ROOT/core/scripts/lib/session-id.sh" "$TMP/core/scripts/lib/"

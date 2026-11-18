@@ -6,8 +6,9 @@
 #      the adapter's variables AND the adapter as master-hook's parent process:
 #      the variables alone (inherited, or set by hand) keep the call, as do a
 #      process started under the adapter, HQ_HARNESS other than codex, and an
-#      opt-out of the scope authorizer. Other runtimes and other adapter events
-#      keep the call.
+#      opt-out of the scope authorizer. Other runtimes keep the call, and so
+#      does an adapter SessionStart. An event with no hqd operation
+#      (PostToolUse, UserPromptSubmit, Stop) does not start the shim at all.
 #   2. master-hook hands the shim a deadline of its own start plus the shim
 #      budget (HQ_HQD_SHIM_TIMEOUT_MS, default 3000).
 #   3. With the real shim and a daemon that accepts and never reads, a
@@ -217,12 +218,29 @@ run_case "$FIX" PreToolUse toolu_codex true HQ_CHECKPOINT_RUNTIME=codex
 [ "$(calls toolu_codex "$SHIM_LOG")" = "1" ] || fail "codex-runtime PreToolUse did not call the hqd shim"
 pass "other runtimes keep the hqd call"
 
-# 3. Adapter events other than PreToolUse keep the call (no registry check to repeat).
+# 3. Adapter events other than PreToolUse. SessionStart keeps its call
+# (session.open; there is no registry check to repeat). PostToolUse,
+# UserPromptSubmit and Stop have no hqd operation (the shim sent session.get
+# and discarded the reply), so the shim is not started for them, under the
+# adapter or without it.
 CASE_VIA_ADAPTER=1
+run_case "$FIX" SessionStart toolu_adapter_start true "${ADAPTER_ENV[@]}"
 run_case "$FIX" PostToolUse toolu_adapter_post true "${ADAPTER_ENV[@]}"
 CASE_VIA_ADAPTER=0
-[ "$(calls toolu_adapter_post "$SHIM_LOG")" = "1" ] || fail "adapter PostToolUse lost its hqd call"
-pass "adapter PostToolUse keeps the hqd call"
+[ "$(calls toolu_adapter_start "$SHIM_LOG")" = "1" ] || fail "adapter SessionStart lost its hqd call"
+[ "$(calls toolu_adapter_post "$SHIM_LOG")" = "0" ] \
+  || fail "adapter PostToolUse started the hqd shim (that event has no hqd operation)"
+pass "adapter SessionStart keeps the hqd call; adapter PostToolUse starts no shim"
+for ev in PostToolUse UserPromptSubmit Stop; do
+  run_case "$FIX" "$ev" "toolu_noop_$ev" true
+  [ "$(calls "toolu_noop_$ev" "$SHIM_LOG")" = "0" ] \
+    || fail "$ev started the hqd shim (that event has no hqd operation)"
+done
+run_case "$FIX" SessionStart toolu_claude_start true
+[ "$(calls toolu_claude_start "$SHIM_LOG")" = "1" ] || fail "Claude SessionStart lost its hqd call"
+run_case "$FIX" SessionEnd toolu_claude_end true
+[ "$(calls toolu_claude_end "$SHIM_LOG")" = "1" ] || fail "Claude SessionEnd lost its hqd call"
+pass "PostToolUse, UserPromptSubmit and Stop start no shim; SessionStart and SessionEnd keep the hqd call"
 
 # 4. Deadline handed to the shim: master-hook start + budget.
 run_case "$FIX" PreToolUse toolu_deadline true

@@ -328,6 +328,32 @@ class SweepRun(unittest.TestCase):
         self.assertTrue(syn['lag']['line'].startswith('Signals are behind: newest index is 2026-10-25'))
         self.assertEqual(d['meeting_signals'], [])
 
+    # Regression: a catch-up brief read meetings back to the last brief but
+    # signals for only 24 hours, so older meetings showed "Signals are not yet
+    # generated" although their signals were synced.
+    def test_catch_up_run_reads_signals_for_the_whole_meetings_window(self):
+        with tempfile.TemporaryDirectory() as root:
+            vault = str(Path(root) / 'companies/acme-test')
+            at = '2026-10-22T16:00:00Z'
+            ref = 'sources/meeting-events/evt-old.md'
+            signal(vault, 'signals/decision/s-old.md', 's-old', 'decision', ref, 'Move launch to November', at)
+            index(vault, '2026-10-22', [row('s-old', 'decision', ref, 'signals/decision/s-old.md', at)])
+            index(vault, '2026-10-27', [])
+            write(vault, ref, '---\ntitle: Launch review\n---\n')
+            mtgs = [{'id': 'tr-old', 'title': 'Launch review', 'start': '2026-10-22T15:00:00Z'}]
+            d, _ = self.run_sweep(root, mtgs, ['--catch-up', '--days', '7'])
+        syn = d['synced_signals']
+        self.assertEqual([x['signal_id'] for x in syn['lines']], ['s-old'])
+        self.assertIsNone(syn['meetings_without_signals'])
+        self.assertEqual(len(d['meeting_signals']), 1)
+        self.assertEqual(d['meeting_signals'][0]['decisions'][0]['text'], 'Move launch to November')
+        self.assertLessEqual(d['window']['signals_from'], d['window']['attended_meetings_from'])
+
+    def test_regular_run_keeps_the_24_hour_signal_window(self):
+        now = dt.datetime(2026, 10, 27, 15, 0, tzinfo=dt.timezone.utc)
+        self.assertEqual(sweep.signals_window_hours(now, now - dt.timedelta(hours=24), 24), 24)
+        self.assertEqual(sweep.signals_window_hours(now, now - dt.timedelta(days=5, minutes=30), 24), 121)
+
     def test_personal_mode_skips_synced_signals(self):
         with tempfile.TemporaryDirectory() as root:
             out = Path(root) / 'brief-data.json'
@@ -591,6 +617,108 @@ class GardenIndex(unittest.TestCase):
                 sweep.SYNCED.clear()
         self.assertEqual({x['signal_id'] for x in res['lines']}, {'g-co', 'g-mine', 'g-uid'})
         self.assertEqual({x['company'] for x in res['lines']}, {'acme-test'})
+
+
+class GateStaleNotice(unittest.TestCase):
+    """The sweep carries the signals gate's stale notice into brief-data.json as data."""
+
+    TODAY = '2026-10-27'
+    ENTRY = {'code': 'auth', 'reason': "today's signals run could not sign in to a connected account",
+             'last_good_run': {'date': '2026-10-26', 'finished_at': '2026-10-26T13:05:00Z'}, 'try_now': True,
+             'line': 'Signals are stale: fixture line.', 'try_now_line': 'Press Try now: fixture.',
+             'section_line': 'From the last good signals run on 2026-10-26, not from today.'}
+
+    def gate(self, root, state='failed', companies=None, day=None, kept=None):
+        """Today's brief-gate.json in the gate's shape: this call's notice, plus staleCompanies."""
+        per = {'acme-test': dict(self.ENTRY)} if companies is None else companies
+        stale = state in ('failed', 'waiting')
+        body = {'state': state, 'today': day or self.TODAY,
+                'companies': {co: {'state': 'failed' if stale else 'ready'} for co in per},
+                'staleCompanies': dict(per if stale else {}, **(kept or {}))}
+        if stale:
+            body['signals_stale'] = dict(self.ENTRY, detail='acme-test: signed out', retry='manual',
+                                         next_retry_at=None, companies=per)
+        write(root, f'workspace/signals/runs/{self.TODAY}/brief-gate.json', json.dumps(body))
+
+    def test_failed_gate_gives_the_companys_notice_without_the_gate_detail(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.gate(root)
+            got = bs.gate_stale(root, self.TODAY, 'acme-test')
+        self.assertEqual(got, self.ENTRY)
+
+    def test_waiting_gate_gives_the_notice_too(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.gate(root, state='waiting')
+            self.assertEqual(bs.gate_stale(root, self.TODAY, 'acme-test')['line'], self.ENTRY['line'])
+
+    def test_another_companys_failure_is_not_copied(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.gate(root, companies={'other-co': dict(self.ENTRY, line='Signals are stale: other.')})
+            self.assertIsNone(bs.gate_stale(root, self.TODAY, 'acme-test'))
+
+    def test_no_company_list_gives_the_gate_level_notice(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.gate(root, companies={})
+            self.assertEqual(bs.gate_stale(root, self.TODAY, 'acme-test'), self.ENTRY)
+
+    def test_no_notice_for_other_states_days_or_broken_files(self):
+        for state in ('ready', 'off', 'running', 'error'):
+            with tempfile.TemporaryDirectory() as root:
+                self.gate(root, state=state)
+                self.assertIsNone(bs.gate_stale(root, self.TODAY, 'acme-test'), state)
+        with tempfile.TemporaryDirectory() as root:
+            self.assertIsNone(bs.gate_stale(root, self.TODAY, 'acme-test'))
+            self.gate(root, day='2026-10-26')
+            self.assertIsNone(bs.gate_stale(root, self.TODAY, 'acme-test'))
+            write(root, f'workspace/signals/runs/{self.TODAY}/brief-gate.json', '{"state": "failed"')
+            self.assertIsNone(bs.gate_stale(root, self.TODAY, 'acme-test'))
+            write(root, f'workspace/signals/runs/{self.TODAY}/brief-gate.json',
+                  json.dumps({'state': 'failed', 'today': self.TODAY}))
+            self.assertIsNone(bs.gate_stale(root, self.TODAY, 'acme-test'))
+
+    def test_notice_kept_for_this_company_survives_another_companys_gate(self):
+        for state in ('ready', 'running', 'error', 'failed'):
+            with tempfile.TemporaryDirectory() as root:
+                self.gate(root, state=state, companies={'other-co': dict(self.ENTRY, line='Signals are stale: other.')},
+                          kept={'acme-test': dict(self.ENTRY)})
+                self.assertEqual(bs.gate_stale(root, self.TODAY, 'acme-test'), self.ENTRY, state)
+
+    def test_notices_lists_each_stale_company_of_the_brief(self):
+        company = {'mode': 'company', 'company': 'acme-test', 'signals_stale': dict(self.ENTRY)}
+        self.assertEqual(bs.notices(company), [dict({'company': 'acme-test'}, **self.ENTRY)])
+        person = {'mode': 'person', 'company': None, 'personal': {'signals_stale': dict(self.ENTRY)},
+                  'companies': {'zeta': {'signals_stale': dict(self.ENTRY, code='timed-out')},
+                                'acme-test': {'signals_stale': dict(self.ENTRY)}, 'beta': {'signals_stale': None},
+                                'broken': 'x'}}
+        self.assertEqual([(n['company'], n['code']) for n in bs.notices(person)],
+                         [('acme-test', 'auth'), ('zeta', 'timed-out')])
+        for empty in ({'mode': 'company', 'company': 'acme-test', 'signals_stale': None},
+                      {'mode': 'personal', 'company': None, 'signals_stale': dict(self.ENTRY)},
+                      {'mode': 'company', 'company': 'acme-test', 'signals_stale': {'line': ''}}, None, []):
+            self.assertEqual(bs.notices(empty), [], empty)
+
+    def test_company_sweep_writes_the_notice_and_a_rebuild_after_a_good_run_drops_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            build_today(str(Path(root) / 'companies/acme-test'))
+            self.gate(root)
+            d, _ = SweepRun.run_sweep(self, root, [])
+            self.assertEqual(d['signals_stale'], self.ENTRY)
+            # The other sources are still swept: the brief is built from them.
+            self.assertEqual(d['sources']['synced_signals']['state'], 'ok')
+            self.assertTrue(d['synced_signals']['lines'])
+            # Try now succeeded: the gate is ready, and the rebuilt brief has no notice.
+            self.gate(root, state='ready')
+            import shutil
+            shutil.rmtree(Path(root) / 'workspace/brief')
+            d, _ = SweepRun.run_sweep(self, root, [])
+            self.assertIsNone(d['signals_stale'])
+
+    def test_company_sweep_without_a_gate_file_has_no_notice(self):
+        with tempfile.TemporaryDirectory() as root:
+            build_today(str(Path(root) / 'companies/acme-test'))
+            d, _ = SweepRun.run_sweep(self, root, [])
+        self.assertIsNone(d['signals_stale'])
+        self.assertFalse((Path(root) / 'workspace/signals').exists())
 
 
 if __name__ == '__main__':

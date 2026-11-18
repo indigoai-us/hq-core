@@ -176,19 +176,9 @@ else
       fi
     fi
 
-    if [ "$state" = "retired" ] || [ "$state" = "deleted" ]; then
-      if [ -e "$ROOT/$path" ] || [ -L "$ROOT/$path" ]; then
-        fail "$path" "$state path exists in tree"
-      fi
-      references="$(git -C "$ROOT" grep -l -F -e "$path" -- . ':(exclude)core/scripts/cli-hosted.yaml' 2>/dev/null || true)"
-      if [ -n "$references" ]; then
-        while IFS= read -r reference; do
-          [ -n "$reference" ] && fail "$path" "tracked file $reference references $state path"
-        done <<EOF
-$references
-EOF
-      fi
-    fi
+    # A retired or deleted script is not a row here. It is an entry with state
+    # removed in core/functions.yaml; the function manifest check fails when
+    # the file is back on disk or something still names it.
 
     if [ "$kind" = "hybrid" ] && [ "$state" = "forwarded" ]; then
       if [ ! -f "$ROOT/$path" ] || ! hybrid_has_command "$path" "$command"; then

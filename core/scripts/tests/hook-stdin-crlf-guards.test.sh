@@ -88,7 +88,7 @@ VW="$TMP/vault"
 mkdir -p "$VW/.claude/hooks" "$VW/.hq" "$VW/core/scripts" "$VW/companies/acme/reports/locked"
 cp "$ROOT/core/scripts/hook-lib.sh" "$VW/core/scripts/"
 cp "$ROOT/.claude/hooks/enforce-vault-write-access.sh" "$VW/.claude/hooks/"
-cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$VW/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$VW/.claude/hooks/"
 printf '{}' > "$VW/.claude/settings.local.json"
 cat > "$VW/.hq/vault-access.json" <<'EOF'
 {
@@ -158,7 +158,7 @@ mkdir -p "$SA/.claude/hooks" "$SA/core/scripts/lib" "$SA/.codex/hooks" \
   "$SA/companies/example-co/settings" "$SA/companies/otherco/settings" \
   "$SA/workspace/sessions/sess-bound" "$SA/home/.hq"
 cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$SA/.claude/hooks/"
-cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$SA/.claude/hooks/"
+cp "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" "$ROOT/.claude/hooks/path-fold-lib.sh" "$SA/.claude/hooks/"
 cp "$ROOT/core/scripts/lib/session-authz.sh" "$ROOT/core/scripts/lib/session-scope-capability.sh" \
   "$ROOT/core/scripts/lib/hook-caller-lineage.sh" "$ROOT/core/scripts/lib/session-id.sh" \
   "$SA/core/scripts/lib/"

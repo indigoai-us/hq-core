@@ -192,14 +192,22 @@ const HQ_CLI_ALLOWED = new Map([
   ["help", null],
   ["--help", null],
   ["feedback", null],
-  ["auth", new Set(["status", "refresh"])],
-  ["sync", new Set(["status"])],
+  ["auth", new Set(["refresh"])],
+  // The local sync journal summary is `hq daemon sync status --local`
+  // (US-041); the older top-level `sync` spelling is not admitted.
+  ["daemon", new Set(["sync"])],
   ["files", new Set(["list", "acl", "browse", "search", "shared-with-me"])],
-  ["packages", new Set(["list"])],
+  ["packs", new Set(["list"])],
   ["modules", new Set(["list"])],
   ["members", new Set(["list"])],
   ["groups", new Set(["list", "members"])],
 ]);
+
+function validatePackName(name) {
+  if (typeof name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) || name.includes("..")) {
+    throw new Error("Pack slug must be a plain pack name without options or path components.");
+  }
+}
 
 function validateHqCliArgs(args) {
   requireStringArray(args, "args", "hq_cli");
@@ -208,6 +216,9 @@ function validateHqCliArgs(args) {
   // allowlist below) — a leading passthrough global flag is rejected so it
   // can't shift the real subcommand to args[1] and slip past the cmd gate.
   const cmd = args[0];
+  if (cmd === "daemon" && (args[1] !== "sync" || args[2] !== "status")) {
+    throw new Error("hq_cli permits only hq daemon sync status; other daemon operations require a dedicated tool.");
+  }
   if (typeof cmd === "string" && cmd.startsWith("-") &&
       cmd !== "--version" && cmd !== "--help") {
     throw new Error(
@@ -219,6 +230,7 @@ function validateHqCliArgs(args) {
       `hq_cli only permits a fixed allowlist of read-only HQ subcommands; "${cmd}" is not allowed. ` +
       `Use the dedicated typed tool instead — secrets → hq_secrets_exec, run → hq_run, ` +
       `install/packages → hq_packages, modules → hq_modules, share/files → hq_share / hq_files, ` +
+      `sync journal summary → hq_cli ["daemon", "sync", "status", "--local"], ` +
       `login/logout/onboard/deploy are host-side operations.`,
     );
   }
@@ -741,8 +753,8 @@ const TOOLS = [
     description:
       "Manage HQ packages. Actions: `list` (installed + available), `install` " +
       "(source = bare slug, @scope/name[@ver], git URL[#ref], or local path), " +
-      "`remove` (archives first), `update` (check/apply updates, optionally one " +
-      "slug). Wraps `hq packages <action>` / `hq install` / `hq remove`.",
+      "`remove` (archives first), `update` (report available updates without applying, optionally one " +
+      "slug). Applying updates requires the host. Wraps `hq packs list|update|uninstall` / `hq install`.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -893,7 +905,7 @@ const TOOLS = [
           type: "array",
           items: { type: "string" },
           minItems: 1,
-          description: "Arguments after `hq`, e.g. [\"sync\", \"status\"]. Not a shell string.",
+          description: "Arguments after `hq`, e.g. [\"daemon\", \"sync\", \"status\"]. Not a shell string.",
         },
         stdin: { type: "string", description: "Optional stdin for commands that safely read non-secret body text." },
         cwd: { type: "string", description: "Working directory inside HQ_ROOT. Defaults to HQ_ROOT." },
@@ -1163,7 +1175,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         let args;
         switch (a.action) {
           case "list":
-            args = ["packages", "list"];
+            args = ["packs", "list"];
             break;
           case "install":
             requireArg(a.source, "source", "packages install");
@@ -1174,11 +1186,16 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             break;
           case "remove":
             requireArg(a.slug, "slug", "packages remove");
-            args = ["remove", a.slug];
+            validatePackName(a.slug);
+            args = ["packs", "uninstall", a.slug, "--yes"];
             break;
           case "update":
-            args = ["packages", "update"];
-            if (a.slug) args.push(a.slug);
+            args = ["packs", "update"];
+            if (a.slug !== undefined) {
+              validatePackName(a.slug);
+              args.push(a.slug);
+            }
+            args.push("--check-only");
             break;
           default:
             throw new Error(`Unknown hq_packages action: ${a.action}`);

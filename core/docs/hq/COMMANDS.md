@@ -22,9 +22,10 @@ if none match, the first group whose keywords match a word in its description; o
 | Command | Scope | Description |
 | --- | --- | --- |
 | `/checkpoint` | core | Save a lightweight session checkpoint. |
-| `/conduct` | core | Orchestrator mode: coordinate only; small tasks go to subagents, worker areas to standing hq lanes. Triggers: /conduct, run everything in the background. |
+| `/conduct` | core | Orchestrator mode: coordinate only; worker areas go to standing lanes on subagents or child sessions, small tasks to one-off subagents. Triggers: /conduct, run everything in the background. |
 | `/conduct-join` | core | Join this already-running session to a /conduct session as one of its children, so the conductor can send it instructions and receive its reports. Use when the user says "/conduct-join <link>", "join the conductor", "report to the conduct session", or pastes a link id that starts with "cl-". Also handles "leave" to detach. |
-| `/core:work-mesh` | package | Work Mesh Live — automatic presence via hq mesh daemon; context reconcile/organize; manual session task-status, blocked, and note only. |
+| `/conduct-runners` | core | Advanced mode of /conduct: lanes run as runners (detached hq runners CLI processes) with admission, keep-alive, Outpost, and non-Claude engines. Triggers: /conduct-runners, /conduct --runner runner, overnight lanes. |
+| `/core:work-mesh` | package | Work Mesh Live — automatic presence via hq daemon; context reconcile/organize; manual session task-status, blocked, and note only. |
 | `/daily-brief` | core | Build the user's Daily Brief across personal work and every permitted company. Reads the last brief and the user's brief preferences, sweeps sessions, PRs, CI and DMs (plus synced signals, meeting signals and fleet when a company is bound), writes brief-data.json and brief.json with a launch prompt for every action, and reports status so the desktop app can notify the user. The person's first ready brief adds a welcome edition. Run by the main local bot when the user presses Create brief, or on a schedule. |
 | `/handoff` | core | Preserve session state for a follow-up agent with handoff files and commits. |
 | `/handoff-all` | core | Tell every open Claude Code desktop session to run /handoff, then collect each session's /resumework command. Triggers: \"handoff all sessions\", \"wrap up every session\". |
@@ -39,6 +40,7 @@ if none match, the first group whose keywords match a word in its description; o
 | `/resume-all` | core | Relaunch every session from a /handoff-all batch as a new Claude Code desktop session running its /resumework command. Triggers: \"resume all sessions\", \"bring back the handed-off sessions\". |
 | `/resumework` | core | Resume a specific handoff thread by id. For the latest handoff use /startwork. |
 | `/retro` | core | Run a project or session retrospective and capture reusable lessons. |
+| `/run-project` | core | Execute a project's PRD stories through /execute-task on subagents by default; story lanes and pipeline mode run in advanced mode (/conduct-runners). Interactive mode runs in the parent. |
 | `/startwork` | core | Resolve current HQ context and surface useful next work options. |
 | `/super-conductor` | core | Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything". |
 
@@ -47,6 +49,7 @@ if none match, the first group whose keywords match a word in its description; o
 | Command | Scope | Description |
 | --- | --- | --- |
 | `/designate-team` | core | Mark a company as HQ Pro cloud-backed and sync its team setup. |
+| `/free-disk-space` | core | Reclaim disk from stale linked worktrees, build dirs, allowlisted dev caches, unreachable HQ git objects, and disabled HQ sync mirrors. Dry-run unless --apply; never deletes full clones, .env, or unpushed work. |
 | `/hq-integrations` | core | Use the company's connected external apps (Linear, Notion, Jira, GitHub, Slack, Sentry, Gmail, Google Drive, Asana, ClickUp, Figma, HubSpot, Salesforce, and anything else wired through `hq integrations`) BEFORE reaching for a separate MCP, a web search, or asking the user. Trigger on any request to look up, read, create, update, or search in an external app, including natural phrasings like 'check my Linear tickets', 'open issues assigned to me', 'find the Notion doc about X', 'any new Sentry errors', 'my Jira issues', 'search Slack for', 'create a GitHub issue', 'add a task in Asana'. Check the SessionStart note 'HQ Integrations you can use in company <slug>' or run `hq integrations list --usable` first; only fall back to another path when no usable app covers it. Also covers connecting, sharing, policy, approval, and disconnect flows. |
 | `/hq-pack-cowork:hq-cowork-files` | package | Browse or read HQ vault files from Cowork without a full sync. |
 | `/hq-pack-cowork:hq-cowork-sync` | package | Run bidirectional HQ Sync from Cowork. |
@@ -99,7 +102,6 @@ if none match, the first group whose keywords match a word in its description; o
 | `/review` | core | Pre-landing code review of the git diff; critical issues block the PR. Use before a PR or when asked to review changes. |
 | `/review-plan` | core | Stress-test a plan or PRD in expansion, hold, or reduction mode. |
 | `/run-pipeline` | core | Multi-project pipeline orchestrator — triage, execute, PR, review, deploy with safety gates |
-| `/run-project` | core | Execute a project's PRD stories through HQ worker lanes that survive compaction. Interactive mode runs in the parent. |
 | `/ship` | core | Take PRs through review, merge, deploy, smoke test, and monitoring until every KPI is healthy. Triggers: \"ship this\", \"take this to prod\". |
 | `/tdd` | core | Enforce test-driven development with RED→GREEN→REFACTOR cycle and coverage validation |
 | `/worktree` | core | Create a git worktree under workspace/worktrees/ off the latest origin default branch and route all work through it. |
@@ -158,7 +160,6 @@ if none match, the first group whose keywords match a word in its description; o
 | `/decision-desk` | core | The owner's decision desk for one /super-conductor link. It opens one picker per queued decision, writes the answer back to the link's decision queue, and does nothing else. Use when the user says "/decision-desk <link>", "open the decision desk", or "ask me the conductor's decisions here". |
 | `/decision-queue` | core | Resolve pending user decisions one at a time, one picker per item. The only owner-facing ask path for /super-conductor. |
 | `/domain-modeling` | core | Sharpen a project's domain terms and maintain GLOSSARY.md as its glossary. Triggers: \"what should we call this\", \"domain model\". |
-| `/free-disk-space` | core | Reclaim disk from stale linked worktrees, build dirs, and allowlisted dev caches. Dry-run unless --apply; never deletes full clones, .env, or unpushed work. |
 | `/garden` | core | Audit HQ content for stale, duplicate, or inaccurate information. |
 | `/harness-audit` | core | Score an HQ setup across hooks, context, gates, persistence, search, security, and cost. |
 | `/hq-checkup` | core | Check HQ health and fix what is safe: start the app, back up unsaved work, re-enable safety checks. Reports the rest in plain language. |

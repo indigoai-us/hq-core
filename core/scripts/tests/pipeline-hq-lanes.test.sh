@@ -27,29 +27,29 @@ cat >"$T/bin/hq" <<'EOF'
 set -eu
 printf '%s\n' "$*" >>"$FAKE_HQ_LOG"
 case "$1 $2" in
-  "lanes create")
+  "runners create")
     if [ -n "${CREATE_ERROR:-}" ]; then printf '{"ok":false,"error":"%s"}\n' "$CREATE_ERROR"; exit 0; fi
     worker=""; brief_file=""; while [ $# -gt 0 ]; do case "$1" in --worker) worker="$2"; shift 2;; --brief-file) brief_file="$2"; shift 2;; *) shift;; esac; done
     if [ -z "$brief_file" ]; then printf "error: required option '--brief-file <path>' not specified\\n" >&2; exit 1; fi
     printf '{"ok":true,"lane_id":"lane-%s"}\n' "$worker"
     printf '{"ok":true,"action":"list","lanes":[{"lane_id":"lane-%s","company":{"slug":"indigo"},"project_id":"lane-test","worker":"%s","loop":{"state":"waiting","queue_depth":0}}]}\n' "$worker" "$worker" >"$FAKE_HQ_LIST" ;;
-  "lanes enqueue")
+  "runners enqueue")
     envelope=""; while [ $# -gt 0 ]; do [ "$1" = --envelope ] && { envelope="$2"; shift 2; continue; }; shift; done
     if [ -z "$envelope" ]; then printf "error: required option '--envelope <file>' not specified\\n" >&2; exit 1; fi
     if [ "${ENQUEUE_ERROR:-}" = envelope_already_used ] && ! jq -e '.id | contains(".r")' "$envelope" >/dev/null; then
       id="$(jq -r .id "$envelope")"
-      printf 'hq lanes: envelope id %s was already used in this loop lane\n' "$id" >&2
+      printf 'hq runners: envelope id %s was already used in this loop lane\n' "$id" >&2
       exit 1
     fi
     if [ -n "${ENQUEUE_ERROR:-}" ] && [ "$ENQUEUE_ERROR" != envelope_already_used ]; then printf '{\n  "ok": false,\n  "error": "%s"\n}\n' "$ENQUEUE_ERROR"; exit 0; fi
     cp "$envelope" "$FAKE_HQ_ENQUEUED/$(basename "$envelope")"
     printf '{\n  "ok": true,\n  "action": "enqueue"\n}\n' ;;
-  "lanes interrupt")
+  "runners interrupt")
     story=""; phase=""; while [ $# -gt 0 ]; do case "$1" in --story) story="$2"; shift 2;; --phase) phase="$2"; shift 2;; *) shift;; esac; done
     if [ "${INTERRUPT_MODE:-withdrawn}" = already_picked_up ]; then printf '{"ok":true,"withdrawn":[],"already_picked_up":["%s-%s"]}\n' "$story" "$phase"
     else printf '{"ok":true,"withdrawn":["%s-%s"],"already_picked_up":[]}\n' "$story" "$phase"; fi ;;
-  "lanes stop") printf '{"ok":true,"action":"stop"}\n' ;;
-  "lanes list") cat "${FAKE_HQ_LIST:-/dev/null}" ;;
+  "runners stop") printf '{"ok":true,"action":"stop"}\n' ;;
+  "runners list") cat "${FAKE_HQ_LIST:-/dev/null}" ;;
   *) printf '{"ok":false,"error":"unexpected_call"}\n'; exit 1 ;;
 esac
 EOF
@@ -89,8 +89,8 @@ find "$FAKE_HQ_ENQUEUED" -mindepth 1 -type f -delete
 "$ROOT/core/scripts/pipeline-conductor.sh" classify --prd "$T/prd.json" --state "$T/state" --story B >/dev/null
 "$ROOT/core/scripts/pipeline-conductor.sh" route --prd "$T/prd.json" --state "$T/state" --story A >/dev/null
 "$ROOT/core/scripts/pipeline-conductor.sh" route --prd "$T/prd.json" --state "$T/state" --story B >/dev/null
-[ "$(grep -c '^lanes create ' "$FAKE_HQ_LOG")" = 1 ]
-[ "$(grep -c '^lanes enqueue ' "$FAKE_HQ_LOG")" = 2 ]
+[ "$(grep -c '^runners create ' "$FAKE_HQ_LOG")" = 1 ]
+[ "$(grep -c '^runners enqueue ' "$FAKE_HQ_LOG")" = 2 ]
 brief_file="$(sed -n 's/.*--brief-file \([^ ]*\).*/\1/p' "$FAKE_HQ_LOG" | head -1)"
 case "$brief_file" in /*) ;; *) echo "expected an absolute lane brief path" >&2; exit 1 ;; esac
 [ -f "$brief_file" ]

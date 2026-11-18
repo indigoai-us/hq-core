@@ -51,13 +51,25 @@
 # and shells reading stdin are also blocked when their code (-c / -e text,
 # arguments, heredoc or here-string bodies, or text piped in from the same
 # pipeline) names a credential file. awk programs that use getline or system
-# get the same check.
+# get the same check. So does the environment of an interpreter, or of an awk
+# program that reads ENVIRON: a NAME=value prefix (also after env), an
+# exported value (export, declare -x, local -x, export NAME before or after
+# the assignment, NAME+=, printf -v NAME, every assignment after set -a)
+# that names a credential file, *.env names included
+# (F=/srv/app/.env python3 -c "open(os.environ['F'])").
+# In code, a *.env name counts when a quote closes the string after it
+# ('/srv/app/prod.env'); .envrc always counts.
 # Path forms: ~, ~user, $HOME, ${HOME}, absolute, relative to the cwd (cd and
 # pushd are followed), quoted, after `--`, brace expansion, globs, variables
 # assigned in the same command.
 #
 # Allowed on credential files (no contents reach the transcript):
 #   grep -c / -l / -L / -q, rg --files, the safe commands above,
+#   (except a recursive grep, rg or ag whose file-name filter selects
+#   credential files: grep -rl --include=.env, rg -g '.env', also with
+#   rg --files, ag -G / --file-search-regex. It is blocked with a message,
+#   because hidden or git-ignored files can drop out of its results without
+#   a warning; list them with find <dir> -name .env instead.)
 #   sed -i '/pattern/d' with no backup suffix (in-place delete).
 # Blocked writes: sed -i<suffix> on a credential file, and cp / install /
 # rsync / scp / mv onto a credential name (cp of an allowed .env template
@@ -116,6 +128,24 @@ EOF
     jq -nc --arg m "BLOCKED: $reason" '{decision:"block",reason:$m}' || true
   fi
   exit 2
+}
+
+# Wall-clock budget for the Bash check (feedback_d7a993c8). Each simple
+# command and substitution costs a parse, so a long inline script ran the
+# guard for 54 s, close to its 60 s registry timeout and well past the master
+# hook's time budget. The analysis stops at this budget and blocks, so the
+# guard fails closed with a message that says what to do instead of being
+# killed with no verdict. HQ_CREDENTIAL_GUARD_BUDGET_SECONDS may lower the
+# budget (tests use 1 s); it cannot raise it. SECONDS is reset so an inherited
+# value cannot move the start.
+CG_BUDGET_MAX=20
+CG_BUDGET="${HQ_CREDENTIAL_GUARD_BUDGET_SECONDS:-$CG_BUDGET_MAX}"
+case "$CG_BUDGET" in ''|*[!0-9]*|0) CG_BUDGET=$CG_BUDGET_MAX ;; esac
+[ "$CG_BUDGET" -le "$CG_BUDGET_MAX" ] || CG_BUDGET=$CG_BUDGET_MAX
+SECONDS=0
+cg_budget_check() {
+  [ "$SECONDS" -lt "$CG_BUDGET" ] \
+    || block "the credential guard could not finish checking this long command within ${CG_BUDGET}s. Put the commands in a script file and run that file instead of passing them inline"
 }
 
 H="${HOME:-}"
@@ -1768,6 +1798,9 @@ if ! hq_arith_guard_check "$CMD"; then
   fi
   exit 2
 fi
+# The arithmetic check above runs before any credential analysis; count its
+# time against the same budget so a slow pass there also ends in a block.
+cg_budget_check
 [ -n "$CMD" ] || exit 0
 # CRED_WORD_RE and PREFILTER_RE are defined above the fast path.
 
@@ -1967,6 +2000,13 @@ ALLOW_STRIPPED="$CG_UA"
 CRED_ANY=0
 if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ] || [ "$COMPUTED_PATH" -eq 1 ] || [ "$SPLIT_CRED" -eq 1 ]; then
   CRED_ANY=1
+fi
+# CG_CRED_NAMED: the command itself names a credential word (CRED_ANY without
+# the computed-path trigger, which every $(...) sets). An environment value
+# the guard cannot resolve fails closed only then (env_check).
+CG_CRED_NAMED=0
+if [[ "$ALLOW_STRIPPED" =~ $CRED_WORD_RE ]] || [ "$CWD_IN_CRED" -eq 1 ] || [ "$LINK_HIT" -eq 1 ] || [ "$SPLIT_CRED" -eq 1 ]; then
+  CG_CRED_NAMED=1
 fi
 shopt -u nocasematch
 
@@ -2590,9 +2630,11 @@ SUBST_WRITES=" "
 SUBST_CD=0
 prescan() {
   local text="$1" depth="$2" toks t fl op tx first=1 name="" sub="" last_s="" asg=0
+  cg_budget_check
   [ "$depth" -le 6 ] || { SUBST_IMPURE=1; return; }
   toks=$(printf '%s' "$text" | LC_ALL=C awk "$AWK_PROG") || { SUBST_IMPURE=1; return; }
   while IFS=$'\t' read -r t fl op tx; do
+    [ "$SECONDS" -lt "$CG_BUDGET" ] || cg_budget_check
     fl="${fl#f}"; op="${op#o}"; tx="${tx#x}"
     case "$t" in
       E) SUBST_IMPURE=1 ;;
@@ -2993,6 +3035,17 @@ git_show_stage_var() {
 #   - ls-tree fails or lists nothing.
 # <ref>:<path> is relative to the repository top level, so the listing uses
 # --full-tree and the matched names are joined to the top level, not the cwd.
+# cg_gitz <git args>: runs git (its -z listing) and prints each NUL-ended name
+# on its own line, with git's exit code. Without -z, git prints a name that
+# holds a non-ASCII byte, ", \ or a control character in quotes with octal
+# escapes ("\303\251/.npmrc"), which is_cred_path does not read as .npmrc.
+# A name that holds a newline is split into lines; each line is still checked,
+# and a credential name never needs a newline to match.
+cg_gitz() {
+  git "$@" 2>/dev/null | tr '\000' '\n'
+  return "${PIPESTATUS[0]}"
+}
+
 git_show_tree_safe() {
   local op="$1" gcwd="$2" redirect="${3:-1}" raw="${4:-}" ref path dir pat tf top listing
   [ "$redirect" = 0 ] || return 1
@@ -3016,7 +3069,7 @@ git_show_tree_safe() {
     [ -n "$top" ] && [ -d "$top" ] || return 1
     norm_path "$top/$path" "$top"
     if is_cred_path "$NP"; then return 1; fi
-    listing="$(git -C "$top" ls-files --full-name 2>/dev/null)" || return 1
+    listing="$(cg_gitz -C "$top" ls-files -z --full-name)" || return 1
     while IFS= read -r tf; do
       [ -n "$tf" ] || continue
       case "$tf" in *":$path") ;; *) continue ;; esac
@@ -3038,7 +3091,7 @@ git_show_tree_safe() {
   [ -d "$gcwd" ] || return 1
   top="$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null)" || return 1
   [ -n "$top" ] && [ -d "$top" ] || return 1
-  listing="$(git -C "$gcwd" ls-tree -r --full-tree --name-only "$ref" -- ${dir:+"$dir/"} 2>/dev/null)" || return 1
+  listing="$(cg_gitz -C "$gcwd" ls-tree -r -z --full-tree --name-only "$ref" -- ${dir:+"$dir/"})" || return 1
   [ -n "$listing" ] || return 1
   while IFS= read -r tf; do
     # shellcheck disable=SC2254 # the glob in pat is the match.
@@ -3601,8 +3654,12 @@ is_interpreter() {
 }
 
 # Credential file names as they appear in interpreter code. ".env" must not
-# follow a word character, so process.env and os.environ do not match.
+# follow a word character, so process.env and os.environ do not match. A
+# *.env name (prod.env, app.env) does follow one, so it counts when a quote
+# closes the string right after it ('/srv/app/prod.env'): process.env and
+# settings.env are never followed by a quote (feedback 166f01a7).
 CODE_CRED_RE='(^|[^A-Za-z0-9_.$])\.env([^A-Za-z0-9_]|$)|npmrc|netrc|pypirc|yarnrc|git-credentials|\.aws([^A-Za-z0-9_]|$)|\.ssh([^A-Za-z0-9_]|$)|id_(rsa|dsa|ecdsa|ed25519)([^.A-Za-z0-9_]|$)|\.docker/config|gh/hosts|\.gem/credentials'
+CODE_CRED_RE+='|[A-Za-z0-9_-]\.env\\?["'"'"'`]|\.envrc([^A-Za-z0-9_]|$)'
 
 # subst_code_check <word...> <command>: code that comes from a $(...) or
 # backtick (sh -c "$(cat <<'EOF' ... EOF)", eval "$(...)") runs whatever the
@@ -3624,8 +3681,8 @@ subst_code_check() {
   return 0
 }
 
-# code_check <code text> <command>: block interpreter code that names a
-# credential file.
+# code_check <code text> <command> [reason]: block interpreter code that
+# names a credential file. [reason] replaces the default block message.
 code_check() {
   local t="$1" allowed nc=0 hit=1
   for allowed in .env.example .env.sample .env.template .env.schema .env.dist upstream-pin.env; do
@@ -3639,10 +3696,125 @@ code_check() {
   done
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
-  [[ "$t" =~ $CODE_CRED_RE ]] && hit=0
+  [[ "$t" =~ ${CG_CODE_RE:-$CODE_CRED_RE} ]] && hit=0
   [ "$nc" -eq 1 ] || shopt -u nocasematch
-  [ $hit -eq 0 ] && block "$2 code that names a credential file"
+  [ $hit -eq 0 ] && block "${3:-$2 code that names a credential file}"
   return 0
+}
+
+# Values of variables exported earlier in this command line (export F=...,
+# declare -x F=..., export F after F=...). An interpreter started later sees
+# them in its environment.
+CG_EXPORTED=""
+# Names marked for export before or after their value is set (export F;
+# F=...; local -x F, printf -v F ...; export F), and set -a / set -o
+# allexport, which exports every later assignment. Their current values are
+# checked when an interpreter runs.
+CG_EXPORT_NAMES=" "
+CG_ALLEXPORT=0
+
+# assign_word <NAME=value or NAME+=value>: record the assignment (tilde and
+# known variables expanded). NAME+=value appends to ${NAME}, which stays an
+# unknown reference when NAME was not assigned earlier. Sets EV to the new
+# value and AN to the name.
+AN=""
+assign_word() {
+  local w="$1" v name
+  name="${w%%=*}"
+  v="${w#*=}"
+  case "$v" in "~"|"~/"*) v="$H${v#"~"}" ;; esac
+  case "$name" in
+    *+) name="${name%+}"; v="\${$name}$v" ;;
+  esac
+  expand_vars "$v"
+  set_var "$name" "$EV"
+  AN="$name"
+}
+
+# printf -v NAME ...: the words after the name, kept per name and checked
+# only as an environment value (they never replace NAME for path checks).
+CG_PFV_N=()
+CG_PFV_V=()
+
+# env_values -> ENVV: every value the next command may get in its
+# environment: NAME=value prefixes (passed in), values exported earlier, and
+# the current values of exported names (all names after set -a). Each value
+# is followed by a quote, so a *.env name at its end matches CODE_CRED_RE
+# the way it does at the end of a quoted string in code (prod.env').
+ENVV=""
+env_values() {
+  local i n
+  ENVV="$1 $CG_EXPORTED"
+  for ((i = 0; i < ${#VAR_NAMES[@]}; i++)); do
+    n="${VAR_NAMES[$i]}"
+    if [ "$CG_ALLEXPORT" -eq 1 ]; then ENVV="$ENVV ${VAR_VALS[$i]}'"; continue; fi
+    case "$CG_EXPORT_NAMES" in *" $n "*) ENVV="$ENVV ${VAR_VALS[$i]}'" ;; esac
+  done
+  for ((i = 0; i < ${#CG_PFV_N[@]}; i++)); do
+    n="${CG_PFV_N[$i]}"
+    if [ "$CG_ALLEXPORT" -eq 1 ]; then ENVV="$ENVV ${CG_PFV_V[$i]}'"; continue; fi
+    case "$CG_EXPORT_NAMES" in *" $n "*) ENVV="$ENVV ${CG_PFV_V[$i]}'" ;; esac
+  done
+}
+
+# ENV_CRED_RE: credential file names in an environment value. Same as
+# CODE_CRED_RE except that a bare ~/.ssh or ~/.aws directory does not count:
+# an agent socket (SSH_AUTH_SOCK=~/.ssh/agent.sock), AWS_CONFIG_FILE=
+# ~/.aws/config and GIT_SSH_COMMAND="ssh -i ~/.ssh/deploy" are ordinary.
+# Private key names and ~/.aws/credentials still count.
+ENV_CRED_RE="${CODE_CRED_RE//'|\.aws([^A-Za-z0-9_]|$)|\.ssh([^A-Za-z0-9_]|$)'/}"'|\.aws/credentials'
+
+# env_check <prefix values> <command>: block when the environment the
+# command gets (env_values) names a credential file, or holds a value the
+# guard cannot resolve (another variable, a substitution, ${X:-...}) in a
+# command that names a credential word anywhere (CRED_ANY): fail closed
+# (review C1 of PR 1911).
+env_check() {
+  env_values "$1"
+  case "$ENVV" in
+    *$'\001'*)
+      [ "$CG_CRED_NAMED" -eq 1 ] && block "$2 with an environment value the credential guard cannot resolve, in a command that names a credential file" ;;
+  esac
+  CG_CODE_RE="$ENV_CRED_RE" code_check "$ENVV" "$2" \
+    "$2 with an environment variable that names a credential file"
+  return 0
+}
+
+# shell_env_file <value> <flags>: the value of BASH_ENV or ENV for a shell.
+# A value the guard cannot resolve blocks when the command names a
+# credential word; a literal path is checked as a read operand.
+shell_env_file() {
+  local v="$1"
+  case "$v" in ''|/dev/null) return 0 ;; esac
+  case "$v" in
+    *$'\001'*)
+      [ "$CG_CRED_NAMED" -eq 1 ] && block "a shell started with BASH_ENV or ENV the credential guard cannot resolve, in a command that names a credential file"
+      return 0 ;;
+  esac
+  check_word "$v" "" "$CUR_CWD"
+  return 0
+}
+
+# GLOB_CRED_RE: a file-name filter (grep --include, rg -g / --glob / --iglob,
+# ag -G) that selects credential files: .env, .env*, *.env, .env.local,
+# prod.env, .envrc, .npmrc and the other credential names. *.environment.ts
+# does not match.
+GLOB_CRED_RE='(^|[^a-z0-9_])\.env([^a-z0-9_]|$)|[a-z0-9_*?-]\.env$|\.envrc|npmrc|netrc|pypirc|yarnrc|git-credentials|id_(rsa|dsa|ecdsa|ed25519)'
+
+# glob_names_cred <glob>: 0 when a recursive search's file-name filter selects
+# credential files. A negated rg glob (!*.env) leaves them out and does not
+# count, nor do the allowed templates (.env.example ...).
+glob_names_cred() {
+  local b="${1##*/}"
+  case "$1" in '!'*) return 1 ;; esac
+  lc_word "$b"; b="$LCW"
+  case "$b" in
+    .env.example|.env.sample|.env.template|.env.schema|.env.dist|upstream-pin.env) return 1 ;;
+    .env.*.example|.env.*.sample|.env.*.template) return 1 ;;
+    # *.env.example, app.env.sample: template names only (review false block).
+    *.env.example|*.env.sample|*.env.template|*.env.schema|*.env.dist) return 1 ;;
+  esac
+  [[ "$b" =~ $GLOB_CRED_RE ]]
 }
 
 # fed_git_read <start> <end> <placeholder> <appends> <tool>: the command
@@ -3712,6 +3884,40 @@ fed_git_check() {
   return 0
 }
 
+# cg_split_cmdline <text>: SCW set to the words git makes of alias text
+# (split_cmdline in git's alias.c). Space, tab, newline and carriage return
+# separate words outside quotes; '...' and "..." group and are removed; a
+# backslash outside single quotes keeps the next character as it is. So
+# `"log" -p`, `lo\g -p` and a value holding a newline (log<LF>-p) read as git
+# runs them. An unclosed quote or a trailing backslash makes git refuse the
+# alias; the words read so far are kept.
+cg_split_cmdline() {
+  local s="$1" i n c q="" cur="" have=0
+  SCW=()
+  n=${#s}
+  for ((i = 0; i < n; i++)); do
+    c="${s:i:1}"
+    if [ -z "$q" ]; then
+      case "$c" in
+        ' '|$'\t'|$'\n'|$'\r')
+          [ "$have" = 0 ] || SCW+=("$cur")
+          cur=""; have=0; continue ;;
+        "'"|'"') q="$c"; have=1; continue ;;
+      esac
+    elif [ "$c" = "$q" ]; then
+      q=""; continue
+    fi
+    if [ "$c" = '\' ] && [ "$q" != "'" ]; then
+      i=$((i + 1))
+      [ $i -lt $n ] || break
+      c="${s:i:1}"
+    fi
+    cur="$cur$c"; have=1
+  done
+  [ "$have" = 0 ] || SCW+=("$cur")
+  return 0
+}
+
 # git_alias_value <name> <dir> <c-values>: 0 and GAV set to the alias text
 # when <name> is a git alias: a `-c alias.NAME=VALUE` of this invocation (the
 # newline-separated <c-values>), else `git config --get alias.NAME` read in
@@ -3720,19 +3926,31 @@ fed_git_check() {
 # GIT_CONFIG_KEY_n, --config-env), or passes git config that can define one
 # (-c include.path=..., -c includeIf..., --config-env, GIT_CONFIG_*). Returns
 # 1 for a built-in or no alias.
+#
+# The -c values are passed one per argument (from the 3rd on), so a value
+# that holds a newline (-c $'alias.x=log\n-p') stays one value.
 git_alias_value() {
-  local name="$1" dir="$2" line ln
+  local name="$1" dir="$2" line ln cvs=""
+  shift 2
   GAV=""
   case "$GIT_KNOWN_SUBS" in *" $name "*) return 1 ;; esac
   [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || return 1
   lc_word "alias.$name"; ln="$LCW"
-  while IFS= read -r line; do
+  for line in "$@"; do
+    cvs="$cvs$line"$'\n'
     [[ "$line" == *=* ]] || continue
     lc_word "${line%%=*}"
     [ "$LCW" = "$ln" ] && GAV="${line#*=}"
-  done <<< "$3"
-  [ -n "$GAV" ] && return 0
-  lc_word "$3"
+  done
+  if [ -n "$GAV" ]; then
+    # A -c value is a shell word: a $ or ` in it ($'\x20', $X, $(...)) is
+    # expanded by the shell before git reads the alias, so the text here is
+    # not what git runs (a $(...) or `...` is stored as \001). A shell alias
+    # (!...) is checked as a script.
+    case "$GAV" in '!'*) ;; *'$'*|*'`'*|*$'\001'*) return 2 ;; esac
+    return 0
+  fi
+  lc_word "$cvs"
   case "$LCW" in *include.path*|*includeif.*) return 2 ;; esac
   lc_word "$STRIPPED"
   case "$LCW" in *"$ln"*|*git_config*|*--config-env*) return 2 ;; esac
@@ -3780,24 +3998,25 @@ git_tree_has_cred() {
       for r in "${revs[@]}"; do
         # ls-tree reads no wildcard or pathspec magic; diff-tree against the
         # empty tree lists the same files and does.
-        if [ "$magic" = 1 ] || ! tf="$(git -C "$gcwd" ls-tree -r --full-name --name-only "$r" -- ${paths[@]+"${paths[@]}"} 2>/dev/null)"; then
+        # -z: names are printed as they are, never quoted (cg_gitz).
+        if [ "$magic" = 1 ] || ! tf="$(cg_gitz -C "$gcwd" ls-tree -r -z --full-name --name-only "$r" -- ${paths[@]+"${paths[@]}"})"; then
           [ -n "$et" ] || et="$(git -C "$gcwd" hash-object -t tree /dev/null 2>/dev/null)" || return 0
-          tf="$(git -C "$gcwd" -c diff.relative=false diff-tree -r --name-only --no-commit-id "$et" "$r" -- ${paths[@]+"${paths[@]}"} 2>/dev/null)" || return 0
+          tf="$(cg_gitz -C "$gcwd" -c diff.relative=false diff-tree -r -z --name-only --no-commit-id "$et" "$r" -- ${paths[@]+"${paths[@]}"})" || return 0
         fi
         listing="$listing$tf"$'\n'
       done
       ;;
-    log) listing="$(git -C "$gcwd" -c diff.relative=false log -m --name-only --format= "${revs[@]}" -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    log) listing="$(cg_gitz -C "$gcwd" -c diff.relative=false log -m -z --name-only --format= "${revs[@]}" -- "${paths[@]}")" || return 0 ;;
     any)
-      listing="$(git -C "$gcwd" -c diff.relative=false log --all --reflog -m --name-only --format= -- "${paths[@]}" 2>/dev/null)" || return 0
-      tf="$(git -C "$gcwd" ls-files --full-name -- "${paths[@]}" 2>/dev/null)" || return 0
+      listing="$(cg_gitz -C "$gcwd" -c diff.relative=false log --all --reflog -m -z --name-only --format= -- "${paths[@]}")" || return 0
+      tf="$(cg_gitz -C "$gcwd" ls-files -z --full-name -- "${paths[@]}")" || return 0
       listing="$listing"$'\n'"$tf"
       ;;
-    show) listing="$(git -C "$gcwd" -c diff.relative=false log --no-walk -m --name-only --format= "${revs[@]}" -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
-    diff) listing="$(git --no-optional-locks -C "$gcwd" -c diff.relative=false diff --name-only ${revs[@]+"${revs[@]}"} -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
-    difftree) listing="$(git -C "$gcwd" -c diff.relative=false diff-tree -r -m --name-only --no-commit-id ${revs[@]+"${revs[@]}"} -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
-    diffindex) listing="$(git --no-optional-locks -C "$gcwd" -c diff.relative=false diff-index --name-only ${revs[@]+"${revs[@]}"} -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
-    difffiles) listing="$(git --no-optional-locks -C "$gcwd" -c diff.relative=false diff-files --name-only -- "${paths[@]}" 2>/dev/null)" || return 0 ;;
+    show) listing="$(cg_gitz -C "$gcwd" -c diff.relative=false log --no-walk -m -z --name-only --format= "${revs[@]}" -- "${paths[@]}")" || return 0 ;;
+    diff) listing="$(cg_gitz --no-optional-locks -C "$gcwd" -c diff.relative=false diff -z --name-only ${revs[@]+"${revs[@]}"} -- "${paths[@]}")" || return 0 ;;
+    difftree) listing="$(cg_gitz -C "$gcwd" -c diff.relative=false diff-tree -r -m -z --name-only --no-commit-id ${revs[@]+"${revs[@]}"} -- "${paths[@]}")" || return 0 ;;
+    diffindex) listing="$(cg_gitz --no-optional-locks -C "$gcwd" -c diff.relative=false diff-index -z --name-only ${revs[@]+"${revs[@]}"} -- "${paths[@]}")" || return 0 ;;
+    difffiles) listing="$(cg_gitz --no-optional-locks -C "$gcwd" -c diff.relative=false diff-files -z --name-only -- "${paths[@]}")" || return 0 ;;
     stash)
       # With no stash list, git stash show prints only an error unless it is
       # named a commit that exists (one from git stash create, say). A stash
@@ -3812,7 +4031,7 @@ git_tree_has_cred() {
         done
         [ "$named" = 1 ] || return 1
       fi
-      listing="$(git -C "$gcwd" -c diff.relative=false stash show --name-only ${revs[@]+"${revs[@]}"} 2>/dev/null)" || return 0
+      listing="$(cg_gitz -C "$gcwd" -c diff.relative=false stash show -z --name-only ${revs[@]+"${revs[@]}"})" || return 0
       ;;
   esac
   while IFS= read -r tf; do
@@ -3851,13 +4070,128 @@ gp_short_patch() {
   [ "$sub" != stash ] && case "$w" in -*u*) return 0 ;; esac
   return 1
 }
+# gp_glob_word <word> <flags> <dir>...: GPG empty when the word is not an
+# unquoted glob or brace (or holds a $ or a substitution, read elsewhere, or
+# is <ref>:<path> with a literal ref); "all" for a leading ~, a brace left
+# unexpanded, **, a ( qualifier, a missing directory, or a glob that matches
+# nothing (nullglob drops it, so git may get no pathspec); else "names" with
+# GPG_N the word itself (git reads it as a pathspec when the shell leaves it
+# unexpanded: quoted parts, set -f, GLOBIGNORE) and every file it matches in
+# each <dir> (the shell's cwd may not be the one the guard tracks). The match
+# is a superset of the shell's: dot files and case variants count.
+GPG=""
+GPG_N=()
+gp_glob_word() {
+  local w="$1" fl="$2" x d seen=" "
+  shift 2
+  GPG=""; GPG_N=()
+  # A leading ~ (~, ~+, ~-, ~user) is a directory the shell substitutes.
+  case "$w" in '~'*) GPG=all; return 0 ;; esac
+  case "$fl" in *g*|*b*) ;; *) return 0 ;; esac
+  case "$w" in *'$'*|*$'\001'*) return 0 ;; esac
+  # <ref>:<path> objects of git show (before --, the part before the first
+  # ':' a revision git resolves) are checked by the show branch. Anywhere
+  # else (archive and grep paths included) a
+  # ':' is part of a file name, a glob ([b:], [[:alpha:]]) or pathspec magic
+  # (:(literal,attr:x)...).
+  local rp
+  case "$w" in
+    *:*)
+      rp="${w%%:*}"
+      if [ -n "$rp" ] && [ "${GP_EO:-1}" = 0 ] && [ "${GP_SUB:-}" = show ]; then
+        case "$rp" in
+          *'*'*|*'?'*|*'['*|*']'*|*'{'*|*'('*|-*) ;;
+          *) git -C "${GP_GCWD:-.}" rev-parse --verify -q "$rp^{object}" >/dev/null 2>&1 && return 0 ;;
+        esac
+      fi
+      ;;
+  esac
+  case "$fl" in *b*) GPG=all; return 0 ;; esac
+  case "$w" in *'**'*|*'('*) GPG=all; return 0 ;; esac
+  GPG_N=("$w")
+  for d in "$@"; do
+    [ -n "$d" ] || continue
+    case "$seen" in *" $d "*) continue ;; esac
+    seen="$seen$d "
+    [ -d "$d" ] || { GPG=all; return 0; }
+    while IFS= read -r -d '' x; do
+      GPG_N+=("$x")
+    done < <(cd "$d" 2>/dev/null || exit 0
+      shopt -s dotglob nocaseglob 2>/dev/null
+      shopt -u nullglob failglob 2>/dev/null
+      IFS=
+      # shellcheck disable=SC2086 # the glob in w is the match.
+      for x in $w; do
+        if [ -e "$x" ] || [ -L "$x" ]; then printf '%s\0' "$x"; fi
+      done)
+  done
+  GPG=names
+  if [ ${#GPG_N[@]} -le 1 ]; then
+    # No match: the shell passes the word on, unless nullglob is on (set in
+    # the command in any spelling, or by a sourced file or rc file the guard
+    # cannot read), which drops it and leaves git no pathspec at all.
+    GPG=all
+    return 0
+  fi
+  # Before --, a match may be read as an option (a file named -p) or a
+  # revision (a file named HEAD~1 or A..B): git_pathspec_read blocks on
+  # GPG=opt and takes any commit and any file on GPG=allrev.
+  if [ "${GP_EO:-1}" = 0 ]; then
+    local m i
+    for ((i = 1; i < ${#GPG_N[@]}; i++)); do
+      m="${GPG_N[$i]}"
+      case "$m" in -*) GPG=opt; return 0 ;; esac
+      case "$m" in *..*) GPG=allrev; return 0 ;; esac
+      if git -C "${GP_GCWD:-.}" rev-parse "$m" -- >/dev/null 2>&1; then GPG=allrev; return 0; fi
+    done
+  fi
+  return 0
+}
+
 git_pathspec_read() {
   local sub="$1" st="$2" en="$3" gcwd="$4" redir="$5" j w fl endopts=0 patch=0 nopatch=0 pat=0 skip=0 lr=0 nrev=0 wide=0
   local anyrev=0 anypath=0 objw=0 stdin=0 bfile="" unk=0 cnt="" cntok=1 cntnext=0
   shift 5
-  local ws=() fs=() revs=() paths=()
+  local ws=() fs=() revs=() paths=() gp_k
   for w in "$@"; do ws+=("$w"); fs+=(""); done
-  for ((j = st; j < en; j++)); do ws+=("${CW[$j]}"); fs+=("${CF[$j]}"); done
+  # A brace word is expanded as the shell does ({-p,--} is two words) and
+  # each result loses the b flag. An expansion that does not finish (64
+  # results or more, or a result that still holds {a,b}) blocks: an option
+  # inside it ({-p,HEAD{,}{,}...}) would go unseen.
+  local bx
+  for ((j = st; j < en; j++)); do
+    case "${CF[$j]}" in
+      *b*)
+        expand_braces "${CW[$j]}"
+        if [ ${#BR[@]} -eq 0 ] || [ ${#BR[@]} -ge 64 ]; then
+          block "git $sub with a computed path or revision the credential guard cannot list"
+        fi
+        for bx in "${BR[@]}"; do
+          case "$bx" in *'{'*,*'}'*) block "git $sub with a computed path or revision the credential guard cannot list" ;; esac
+        done
+        for bx in "${BR[@]}"; do ws+=("$bx"); fs+=("${CF[$j]//b/}"); done
+        continue
+        ;;
+    esac
+    ws+=("${CW[$j]}"); fs+=("${CF[$j]}")
+  done
+  # A glob word before -- (-[p], ?p, *patch) becomes an option when a file
+  # of that name exists when the command runs (it may be created earlier in
+  # the same command). Blocked unless its literal start fixes the word: text
+  # that does not start with -, or an option with = (--grep=fix*).
+  local gl
+  for ((j = 0; j < ${#ws[@]}; j++)); do
+    [ "${ws[$j]}" != -- ] || break
+    case "${fs[$j]}" in
+      *g*)
+        gl="${ws[$j]%%[*?[]*}"
+        case "$gl" in
+          -*=*) ;;
+          ''|-*) block "git $sub with a computed path or revision the credential guard cannot list" ;;
+        esac
+        ;;
+    esac
+  done
   case "$sub" in grep) pat=1 ;; format-patch|fast-export) patch=1 ;; difftool) sub='diff' ;; esac
   # log, whatchanged and the diff plumbing print no file contents without a
   # patch option. A reflog walk (log -g, git reflog) reaches commits the
@@ -4022,6 +4356,46 @@ git_pathspec_read() {
       [ $endopts -eq 1 ] || anyrev=1
       continue
     fi
+    # An unquoted glob or brace: the shell expands it to file names before
+    # git reads them (s?b names sub, t?ab a name with a tab), while git would
+    # read the word as a pathspec that matches neither. A glob is expanded
+    # here in the directory git runs in (dot files included, a superset of
+    # the shell's match) and each name is listed; ** and braces count as
+    # every file. A glob that matches nothing reaches git as it is, as in
+    # bash. <ref>:<path> words are left to the show branch.
+    GPG=""; GP_EO="$endopts"; GP_GCWD="$gcwd"; GP_SUB="$sub"
+    case "$sub:$fl" in
+      bundle:*|stash:*) ;;
+      archive:*) [ $nrev -eq 0 ] || gp_glob_word "$w" "$fl" "$CUR_CWD" "${CG_CWD:-}" "$gcwd" ;;
+      *) gp_glob_word "$w" "$fl" "$CUR_CWD" "${CG_CWD:-}" "$gcwd" ;;
+    esac
+    # Before --, the shell can expand a glob word to a revision git lists
+    # without asking whether it is a file: a range (HEAD..oth* with a file
+    # named HEAD..other), a ^ form (o* with a file named other^!), or any
+    # name when the command has a -- after it (o* -- with a file named
+    # other). The file may be created earlier in the same command, so a
+    # match found now proves nothing: such a word counts as every commit and
+    # every file.
+    case "$GPG" in
+      all|names)
+        if [ $endopts -eq 0 ]; then
+          case "$w" in
+            *..*|*'^'*) GPG=allrev ;;
+            *)
+              for ((gp_k = 0; gp_k < ${#ws[@]}; gp_k++)); do
+                [ "${ws[$gp_k]}" != -- ] || { GPG=allrev; break; }
+              done
+              ;;
+          esac
+        fi
+        ;;
+    esac
+    case "$GPG" in
+      opt) block "git $sub with a computed path or revision the credential guard cannot list" ;;
+      allrev) anypath=1; anyrev=1; nrev=1; continue ;;
+      all) anypath=1; continue ;;
+      names) paths+=(${GPG_N[@]+"${GPG_N[@]}"}); wide=1; continue ;;
+    esac
     if [ "$sub" = bundle ]; then
       if [ -z "$bfile" ]; then bfile="$w"; else revs+=("$w"); nrev=1; fi
       continue
@@ -4047,7 +4421,16 @@ git_pathspec_read() {
         case "$w" in *..*) revs+=("$w"); nrev=1; [ "$sub" = log ] && cntok=0; continue ;; esac
         local peel='^{commit}'
         case "$sub" in diff|diff-tree|diff-index) peel='^{tree}' ;; esac
-        if git -C "$gcwd" rev-parse --verify -q "$w$peel" >/dev/null 2>&1; then revs+=("$w"); nrev=1; else paths+=("$w"); [ "$sub" = log ] && cntok=0; fi
+        if git -C "$gcwd" rev-parse --verify -q "$w$peel" >/dev/null 2>&1; then
+          revs+=("$w"); nrev=1
+        elif git -C "$gcwd" rev-parse "$w" -- >/dev/null 2>&1; then
+          # A revision expression --verify does not take: <rev>^@ (its
+          # parents), <rev>^! (the commit alone), <rev>^-<n>, ^<rev>. git
+          # reads it as revisions, not a path, so the listing takes it as is.
+          revs+=("$w"); nrev=1; [ "$sub" = log ] && cntok=0
+        else
+          paths+=("$w"); [ "$sub" = log ] && cntok=0
+        fi
         ;;
     esac
   done
@@ -4083,6 +4466,18 @@ git_pathspec_read() {
       [ "$redir" = 0 ] || block "git $sub patch output in a repository the credential guard cannot list"
       ;;
   esac
+  # The tokenizer turns a tab inside a word into a space and a newline into
+  # \003, so such a path names a different file than git reads (a tracked
+  # 't<TAB>ab/.npmrc' would be listed as 't ab'). A path with \003, or with a
+  # space when the command holds a tab or ANSI-C quoting ($'\t', $'\cI'),
+  # counts as every file.
+  local qp
+  for qp in ${paths[@]+"${paths[@]}"}; do
+    case "$qp" in
+      *$'\003'*) anypath=1 ;;
+      *' '*) case "${CMD:-}" in *$'\t'*|*"\$'"*) anypath=1 ;; esac ;;
+    esac
+  done
   # The user's paths, before a missing pathspec is widened below.
   local upaths=()
   upaths=(${paths[@]+"${paths[@]}"})
@@ -4522,7 +4917,7 @@ check_reader() {
   local argopts pattern_first=0 have_pattern=0 pattern_skipped=0 endopts=0
   local exempt=0 recursive=0 sed_inplace=0 sed_suffix=0 dest_t=0 jq_args=0
   local j w f o rest ch k
-  local ops_t=() ops_f=() scripts=()
+  local ops_t=() ops_f=() scripts=() incs=()
   argopts="$(argopts_for "$cmd")"
   case "$cmd" in
     grep|egrep|fgrep|zgrep|rg|ag|ack|sed|gsed|awk|gawk|mawk|nawk|jq|yq) pattern_first=1 ;;
@@ -4554,7 +4949,8 @@ check_reader() {
           case "$o" in
             --regexp|--expression) scripts+=("${w#*=}") ;;
             --file|--from-file|--ignore-file|--slurpfile|--rawfile) ops_t+=("${w#*=}"); ops_f+=("$f") ;;
-            --target-directory|--output|--suffix|--label|--include|--exclude|--exclude-dir|--glob|--iglob) ;;
+            --include|--glob|--iglob|--file-search-regex) incs+=("${w#*=}") ;;
+            --target-directory|--output|--suffix|--label|--exclude|--exclude-dir) ;;
             --in-place) ;;
             *) case "${w#*=}" in */*|.*|~*) ops_t+=("${w#*=}"); ops_f+=("$f") ;; esac ;;
           esac
@@ -4568,11 +4964,18 @@ check_reader() {
               j=$((j + 3)); continue ;;
           esac
         fi
+        # ag --file-search-regex PATTERN (long form of -G): the filter is
+        # recorded, and the next word keeps its usual checks as a pattern or
+        # operand.
+        if [ "$cmd" = "ag" ] && [ "$o" = "--file-search-regex" ] && [ $((j + 1)) -lt $e ]; then
+          incs+=("${CW[$((j + 1))]}")
+        fi
         if long_takes_arg "$cmd" "$o"; then
           if [ $((j + 1)) -lt $e ]; then
             case "$o" in
               --regexp|--expression) scripts+=("${CW[$((j + 1))]}") ;;
               --file|--from-file|--ignore-file) ops_t+=("${CW[$((j + 1))]}"); ops_f+=("${CF[$((j + 1))]}") ;;
+              --include|--glob|--iglob|--file-search-regex) incs+=("${CW[$((j + 1))]}") ;;
               *) is_pattern_argopt "$cmd" "$o" || check_operand "${CW[$((j + 1))]}" "${CF[$((j + 1))]}" "$cwd" ;;
             esac
           fi
@@ -4626,6 +5029,7 @@ check_reader() {
               f) case "$cmd" in grep|egrep|fgrep|zgrep|rg|sed|gsed|awk|gawk|mawk|nawk|jq|yq) have_pattern=1 ;; esac ;;
               t) [ "$cmd" = "cp" ] || [ "$cmd" = "install" ] && dest_t=1 ;;
             esac
+            case "$cmd:$ch" in rg:g|ag:G) incs+=("$arg") ;; esac
             if is_file_argopt "$cmd" "$ch"; then
               if [ -z "$rest" ]; then ops_t+=("$arg"); ops_f+=("${CF[$((j + 1))]:-}"); else ops_t+=("$arg"); ops_f+=("$f"); fi
             elif ! is_pattern_argopt "$cmd" "$ch"; then
@@ -4659,6 +5063,21 @@ check_reader() {
     ops_t+=("$w"); ops_f+=("$f")
     j=$((j + 1))
   done
+
+  # A recursive search limited to credential file names (grep -rl
+  # --include=.env TOKEN dir, rg -l -g '.env') is refused loudly, -l or not.
+  # Its result cannot be trusted: grep builds and sandboxes that skip hidden
+  # or git-ignored files leave real .env files out without a warning, so an
+  # empty or partial list reads as "not in any env file"; without -l the
+  # matching lines print the secrets (feedback 166f01a7).
+  if [ $recursive -eq 1 ]; then
+    local g
+    for g in ${incs[@]+"${incs[@]}"}; do
+      if glob_names_cred "$g"; then
+        block "recursive $cmd limited to credential files ($g): such a search can skip hidden or git-ignored files such as .env without a warning, so its results look complete when they are not. List the files with find <dir> -name '$g' -type f, then run grep -l PATTERN on each named path."
+      fi
+    done
+  fi
 
   [ $exempt -eq 1 ] && return 0
 
@@ -4721,15 +5140,16 @@ CUR_CWD=""
 analyze_simple() {
   local s="$1" e="$2" depth="$3"
   local j w b
+  # Values the command gets in its environment from NAME=value prefixes
+  # (also after env), checked below when it is an interpreter.
+  local env_text=""
   # assignments and prefixes
   j=$s
   while [ $j -lt $e ]; do
     w="${CW[$j]}"
-    if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-      local val="${w#*=}"
-      case "$val" in "~"|"~/"*) val="$H${val#"~"}" ;; esac
-      expand_vars "$val"
-      set_var "${w%%=*}" "$EV"
+    if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then
+      assign_word "$w"
+      env_text="$env_text $EV'"
       j=$((j + 1)); continue
     fi
     b="${w##*/}"
@@ -4740,12 +5160,30 @@ analyze_simple() {
         j=$((j + 1))
         while [ $j -lt $e ]; do
           w="${CW[$j]}"
+          # env -S / --split-string splits one word into the command and its
+          # environment, which the guard does not parse: fail closed when the
+          # command names a credential word (review C1 of PR 1911).
+          if [ "$b" = "env" ] && [ "$CG_CRED_NAMED" -eq 1 ]; then
+            case "$w" in
+              --split-string|--split-string=*)
+                block "env -S (split string) in a command that names a credential file" ;;
+              --*) ;;
+              -*S*)
+                block "env -S (split string) in a command that names a credential file" ;;
+            esac
+          fi
           if [[ "$w" == -?* ]]; then
             local optc="${w:1:1}"
             if [ ${#w} -eq 2 ] && [ -n "$pa" ] && [[ "$pa" == *"$optc"* ]]; then j=$((j + 2)); else j=$((j + 1)); fi
             continue
           fi
-          if [ "$b" = "env" ] && [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then j=$((j + 1)); continue; fi
+          if [ "$b" = "env" ] && [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            local ev="${w#*=}"
+            case "$ev" in "~"|"~/"*) ev="$H${ev#"~"}" ;; esac
+            expand_vars "$ev"
+            env_text="$env_text $EV'"
+            j=$((j + 1)); continue
+          fi
           break
         done
         if [ "$b" = "timeout" ] || [ "$b" = "gtimeout" ]; then j=$((j + 1)); fi
@@ -4769,14 +5207,23 @@ analyze_simple() {
       case|in)
         return 0 ;;
       export|local|declare|readonly|typeset)
-        local k2
+        local k2 exp=0
+        [ "$b" = "export" ] && exp=1
+        for ((k2 = j + 1; k2 < e; k2++)); do
+          case "$b:${CW[$k2]}" in declare:-*x*|typeset:-*x*|local:-*x*) exp=1 ;; esac
+        done
         for ((k2 = j + 1; k2 < e; k2++)); do
           w="${CW[$k2]}"
-          if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
-            local v2="${w#*=}"
-            case "$v2" in "~"|"~/"*) v2="$H${v2#"~"}" ;; esac
-            expand_vars "$v2"
-            set_var "${w%%=*}" "$EV"
+          if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then
+            assign_word "$w"
+            if [ "$exp" -eq 1 ]; then
+              CG_EXPORTED="$CG_EXPORTED $EV'"
+              CG_EXPORT_NAMES="$CG_EXPORT_NAMES$AN "
+            fi
+          elif [ "$exp" -eq 1 ] && [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            # export F before or after F=/path/.env: F's value (now, or once
+            # it is set later in the command) reaches the environment.
+            CG_EXPORT_NAMES="$CG_EXPORT_NAMES$w "
           fi
         done
         return 0
@@ -4785,6 +5232,50 @@ analyze_simple() {
     break
   done
   [ $j -lt $e ] || return 0
+  # set -a / set -o allexport exports every later assignment. printf -v F
+  # assigns F; its words are kept (CG_PFV_*), so a path in the format or the
+  # arguments is seen when F is exported.
+  case "${CW[$j]}" in
+    set)
+      local k4
+      for ((k4 = j + 1; k4 < e; k4++)); do
+        case "${CW[$k4]}" in
+          --*) ;;
+          -*a*) CG_ALLEXPORT=1 ;;
+          allexport) [ "${CW[$((k4 - 1))]}" = "-o" ] && CG_ALLEXPORT=1 ;;
+        esac
+      done
+      ;;
+    shopt)
+      # shopt -so allexport / shopt -s -o allexport is set -o allexport
+      # (review C1 of PR 1911). An option name from a variable counts too
+      # when the command names a credential word.
+      local k4b so_s=0 so_o=0
+      for ((k4b = j + 1; k4b < e; k4b++)); do
+        case "${CW[$k4b]}" in
+          -*) [[ "${CW[$k4b]}" == *s* ]] && so_s=1; [[ "${CW[$k4b]}" == *o* ]] && so_o=1 ;;
+          allexport) [ "$so_s" -eq 1 ] && [ "$so_o" -eq 1 ] && CG_ALLEXPORT=1 ;;
+          *$'\001'*|*'$'*) [ "$so_o" -eq 1 ] && [ "$CG_CRED_NAMED" -eq 1 ] && CG_ALLEXPORT=1 ;;
+        esac
+      done
+      ;;
+    printf)
+      local k5 pv="" pt="" psep=""
+      for ((k5 = j + 1; k5 < e; k5++)); do
+        if [ -z "$pv" ]; then
+          case "${CW[$k5]}" in
+            -v) pv="${CW[$((k5 + 1))]:-}"; k5=$((k5 + 1)); continue ;;
+            -v?*) pv="${CW[$k5]#-v}"; continue ;;
+          esac
+        fi
+        pt="$pt$psep${CW[$k5]}"; psep=" "
+      done
+      if [ -n "$pv" ] && [[ "$pv" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        expand_vars "$pt"
+        CG_PFV_N+=("$pv"); CG_PFV_V+=("$EV")
+      fi
+      ;;
+  esac
   local in_kind="$STDIN_KIND" in_text="$STDIN_TEXT"
   local a=$((j + 1)) k joined sep
   # A command word held in a variable ($c) or built by a substitution is
@@ -4854,9 +5345,38 @@ analyze_simple() {
       return 0
       ;;
     bash|sh|zsh|dash|ksh)
+      # BASH_ENV and ENV name a file the shell sources before it runs
+      # anything (BASH_ENV=.env bash -xc : prints it), as do --init-file and
+      # --rcfile: each is a read of that file (review C2 of PR 1911).
+      local sk si sv
+      for ((sk = s; sk < a; sk++)); do
+        case "${CW[$sk]}" in
+          BASH_ENV=*|ENV=*)
+            sv="${CW[$sk]#*=}"
+            case "$sv" in "~"|"~/"*) sv="$H${sv#"~"}" ;; esac
+            expand_vars "$sv"
+            shell_env_file "$EV" "${CF[$sk]}"
+            ;;
+        esac
+      done
+      for ((si = 0; si < ${#VAR_NAMES[@]}; si++)); do
+        case "${VAR_NAMES[$si]}" in
+          BASH_ENV|ENV)
+            if [ "$CG_ALLEXPORT" -eq 1 ] || [[ "$CG_EXPORT_NAMES" == *" ${VAR_NAMES[$si]} "* ]]; then
+              shell_env_file "${VAR_VALS[$si]}" ""
+            fi
+            ;;
+        esac
+      done
       for ((k = a; k < e; k++)); do
         w="${CW[$k]}"
         case "$w" in
+          --rcfile|--init-file)
+            k=$((k + 1))
+            [ $k -lt $e ] && check_word "${CW[$k]}" "${CF[$k]}" "$CUR_CWD"
+            continue ;;
+          --rcfile=*|--init-file=*)
+            check_word "${w#*=}" "${CF[$k]}" "$CUR_CWD"; continue ;;
           -*c*)
             if [[ "$w" != --* ]] && [ $((k + 1)) -lt $e ]; then
               subst_code_check "${CW[$((k + 1))]}" "$cmd -c"
@@ -4866,7 +5386,7 @@ analyze_simple() {
             ;;
           # `bash -O dotglob -c ...` / `-o pipefail`: the option name is not
           # the script, so skip it and keep looking for -c (review C2).
-          -O|+O|-o|+o|--rcfile|--init-file) k=$((k + 1)) ;;
+          -O|+O|-o|+o) k=$((k + 1)) ;;
           -*) ;;
           *) check_word "$w" "${CF[$k]}" "$CUR_CWD"; return 0 ;;
         esac
@@ -4926,21 +5446,26 @@ analyze_simple() {
       k=$a
       # g_dir: the directory git reads (a literal -C applies); g_redir: the
       # repository is redirected in a way the listings below cannot follow;
-      # g_cv: the -c values, for -c alias.NAME=VALUE; g_cfgo: -c or
-      # --config-env appeared (log must not use the commit-count shortcut).
-      local g_dir="$CUR_CWD" g_redir=0 g_cv="" g_cfgo=0 k3
+      # g_cv: the -c values, one per element, for -c alias.NAME=VALUE;
+      # g_cfgo: -c or --config-env appeared (log must not use the
+      # commit-count shortcut).
+      local g_dir="$CUR_CWD" g_redir=0 g_cfgo=0 k3
+      local g_cv=()
       while [ $k -lt $e ]; do
         case "${CW[$k]}" in
           -C)
             if [ $((k + 1)) -lt $e ]; then
               resolve_dir "${CW[$((k + 1))]}" "${CF[$((k + 1))]}" "$g_dir"
               if [ -n "$NP" ]; then g_dir="$NP"; else g_redir=1; fi
+              # ~+ and ~- are the shell's $PWD and $OLDPWD, ~user another
+              # home: a directory the guard does not resolve.
+              case "${CW[$((k + 1))]}" in '~'[!/]*) g_redir=1 ;; esac
             fi
             k=$((k + 2)); continue ;;
           -c)
             g_cfgo=1
             if [ $((k + 1)) -lt $e ]; then
-              g_cv="$g_cv${CW[$((k + 1))]}"$'\n'
+              g_cv+=("${CW[$((k + 1))]}")
               gc_key="${CW[$((k + 1))]%%=*}"; gc_val="${CW[$((k + 1))]#*=}"
               # A computed key (protocol.$e.allow) can name any setting.
               case "$gc_key" in
@@ -4967,6 +5492,15 @@ analyze_simple() {
           -*) block "a git option the credential guard does not know, before the git subcommand" ;;
         esac
         break
+      done
+      # A brace or glob word among git's options or as the subcommand
+      # expands to other words ({-c,alias.x=log\ -p} x, {log,-p}, l?g when
+      # a file log exists): the option and alias reads above take it as is.
+      local gb_i
+      for ((gb_i = a; gb_i <= k && gb_i < e; gb_i++)); do
+        case "${CF[$gb_i]}" in
+          *b*|*g*) block "a git option the credential guard does not know, before the git subcommand" ;;
+        esac
       done
       if [ $k -lt $e ] && [ "${CW[$k]}" = config ]; then
         # git config [set] [--global|--file f ...] KEY VALUE
@@ -5013,7 +5547,7 @@ analyze_simple() {
       local g_sub="${CW[$k]}" g_n=0 g_rc g_aw=()
       local g_extra=()
       while :; do
-        g_rc=0; git_alias_value "$g_sub" "$g_dir" "$g_cv" || g_rc=$?
+        g_rc=0; git_alias_value "$g_sub" "$g_dir" ${g_cv[@]+"${g_cv[@]}"} || g_rc=$?
         [ "$g_rc" != 1 ] || break
         [ "$g_rc" != 2 ] || block "git alias $g_sub defined in the same command (the guard cannot read its value)"
         g_n=$((g_n + 1))
@@ -5044,12 +5578,15 @@ analyze_simple() {
             fi
             ;;
         esac
-        read -ra g_aw <<< "$GAV"
+        # Split the alias text as git does: quotes and backslashes are
+        # removed and a newline separates words (cg_split_cmdline).
+        cg_split_cmdline "$GAV"
+        g_aw=(${SCW[@]+"${SCW[@]}"})
         # Leading git options in the alias apply before its subcommand.
         k3=0
         while [ $k3 -lt ${#g_aw[@]} ]; do
           case "${g_aw[$k3]}" in
-            -c) g_cv="$g_cv${g_aw[$((k3 + 1))]:-}"$'\n'; g_cfgo=1; k3=$((k3 + 2)) ;;
+            -c) g_cv+=("${g_aw[$((k3 + 1))]:-}"); g_cfgo=1; k3=$((k3 + 2)) ;;
             -C|--git-dir|--work-tree|--namespace) g_redir=1; k3=$((k3 + 2)) ;;
             --config-env) g_cfgo=1; k3=$((k3 + 2)) ;;
             # Attached form steps one word, same as the -* arm below.
@@ -5202,7 +5739,7 @@ analyze_simple() {
         # then): `git checkout x; ... git show "HEAD:src/$f"` must not pass as
         # the literal text `$f`. A computed <ref>:<path> operand is allowed
         # only through the tree proof; otherwise it blocks.
-        local gs_re='\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]' gs_m gs_guard gs_comp
+        local gs_re='\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]' gs_m gs_guard gs_comp gs_eo=0
         for ((k2 = k + 1; k2 < e; k2++)); do
           gs_w="${CW[$k2]}"
           # The whole object name is a variable read from input: git prints
@@ -5228,7 +5765,22 @@ analyze_simple() {
               ;;
             *)
               case "$gs_w" in
-                *:*$'\001'*|*:*'*'*|*:*'?'*) [ "${CW[$k]}" = show ] && git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" "${CW[$k2]}" && continue ;;
+                *:*$'\001'*|*:*'*'*|*:*'?'*|*:*'['*) [ "${CW[$k]}" = show ] && git_show_tree_safe "$gs_w" "$CUR_CWD" "$gs_redirect" "${CW[$k2]}" && continue ;;
+              esac
+              ;;
+          esac
+          # An unquoted glob object word before -- that the tree proof did not
+          # pass (HEAD:?npmrc, HEAD?.npmrc, H*) can match a cwd file named
+          # HEAD:.npmrc, and the shell then hands git that object name. Option
+          # words (--format=%h:%s*) and paths after -- of git show are not
+          # objects; for cat-file -- only ends the options, and the object
+          # name still follows.
+          if [ "${CW[$k2]}" = -- ] && [ "$g_sub" = show ]; then gs_eo=1; fi
+          case "${CF[$k2]}" in
+            *g*)
+              case "$gs_eo:$gs_w" in
+                1:*|0:-*) ;;
+                *) block "git object revision or path the credential guard cannot prove against the tree git reads" ;;
               esac
               ;;
           esac
@@ -5417,6 +5969,10 @@ analyze_simple() {
     joined=""; sep=""
     for ((k = a; k < e; k++)); do joined="$joined$sep${CW[$k]}"; sep=" "; done
     code_check "$joined" "$cmd"
+    # A credential path handed over in the environment (F=/srv/app/.env
+    # python3 -c "open(os.environ['F'])", env F=..., export F=... earlier in
+    # the command) is opened by code that never names it (feedback 166f01a7).
+    env_check "$env_text" "$cmd"
     subst_code_check "$joined" "$cmd"
     [ -n "$in_kind" ] && code_check "$in_text" "$cmd"
     check_generic "$a" "$e" "$CUR_CWD"
@@ -5514,6 +6070,11 @@ analyze_simple() {
       joined=""; sep=""
       for ((k = a; k < e; k++)); do joined="$joined$sep${CW[$k]}"; sep=" "; done
       if [[ "$joined" =~ getline|system ]]; then code_check "$joined" "$cmd"; fi
+      # ENVIRON["F"] hands a path from the environment to getline or ARGV
+      # (feedback 166f01a7).
+      if [[ "$joined" =~ ENVIRON ]]; then
+        env_check "$env_text" "$cmd"
+      fi
       ;;
   esac
   if is_reader "$cmd"; then
@@ -5532,9 +6093,16 @@ analyze_cmd() {
   if [ "$depth" -gt 6 ]; then
     block "command nesting too deep for the credential guard to check"
   fi
+  # Budget the work before the per-command loop too (review of #1860): on
+  # macOS /bin/bash (3.2) reading 24,000 tokens into arrays and the binding
+  # and substitution passes below took about 20 s before the first check in
+  # that loop ran. Each pass now checks the clock per item, so the block comes
+  # at the budget whichever pass is running.
+  cg_budget_check
   local toks
   toks=$(printf '%s' "$text" | LC_ALL=C awk "$AWK_PROG") \
     || block "credential guard could not parse the command"
+  cg_budget_check
   local T=() F=() O=() X=() HB=()
   # Substitutions that put a \001 into a word, in token order (SUBQK: w or p).
   local SUBQ=() SUBQK=() SUBQ_I=0
@@ -5544,6 +6112,7 @@ analyze_cmd() {
   local t fl op tx hb_next=0 pipe_text=""
   while IFS=$'\t' read -r t fl op tx; do
     [ -n "$t" ] || continue
+    [ "$SECONDS" -lt "$CG_BUDGET" ] || cg_budget_check
     T+=("$t"); F+=("${fl#f}"); O+=("${op#o}"); X+=("${tx#x}")
   done <<< "$toks"
   local i n=${#T[@]}
@@ -5564,6 +6133,7 @@ analyze_cmd() {
   SPLIT_INHERIT_G=0
   local nb_s=0 nb_g=0
   for ((i = 0; i <= n; i++)); do
+    [ "$SECONDS" -lt "$CG_BUDGET" ] || cg_budget_check
     if [ $i -eq $n ] || [ "${T[$i]}" = "O" ]; then
       note_for_bindings "$nb_s" "$i" "$nb_g"
       zword_check "$nb_s" "$i"
@@ -5572,6 +6142,7 @@ analyze_cmd() {
   done
   nb_g=0
   for ((i = 0; i < n; i++)); do
+    [ "$SECONDS" -lt "$CG_BUDGET" ] || cg_budget_check
     [ "${T[$i]}" != "O" ] || nb_g=$((nb_g + 1))
     case "${T[$i]}" in
       E)
@@ -5598,6 +6169,7 @@ analyze_cmd() {
   local starts=() ends=() seps=()
   local cs=0
   for ((i = 0; i <= n; i++)); do
+    [ "$SECONDS" -lt "$CG_BUDGET" ] || cg_budget_check
     if [ $i -eq $n ] || [ "${T[$i]}" = "O" ]; then
       starts+=("$cs"); ends+=("$i")
       if [ $i -lt $n ]; then seps+=("${O[$i]}"); else seps+=(""); fi
@@ -5615,6 +6187,7 @@ analyze_cmd() {
   # C=$(ls d | tail -1)`) could change what a later one lists (review of
   # this change, CRITICAL 1).
   for ((c = 0; c < nc; c++)); do
+    cg_budget_check
     CW=(); CF=()
     local rt=() rf=() rx=()
     for ((i = ${starts[$c]}; i < ${ends[$c]}; i++)); do

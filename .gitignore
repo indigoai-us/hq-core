@@ -160,6 +160,8 @@ companies/*/sessions/
 workspace/.context-warnings/
 workspace/.hook-launch-warnings/
 workspace/.autocommit-warnings/
+# Company skill name cache for the scope guard's Skill check (rebuilt on change)
+workspace/.scope-skill-names/
 
 # Setup-completeness reminder throttle and lock are machine-local runtime state.
 .claude/state/setup-completeness-nag.last

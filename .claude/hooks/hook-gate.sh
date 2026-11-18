@@ -357,9 +357,11 @@ if [ -z "$HQ_ROOT_RESOLVED" ]; then
   if [ "$anywhere_enabled" != "false" ] && [ -n "$self_dir" ] \
     && [ -f "$self_dir/../../core/scripts/resolve-hq-root.sh" ]; then
     HQ_ROOT_RESULT=""
+    # Anchor on this gate's own install. Unanchored, the cwd's nearest HQ
+    # root wins, so a root planted below the cwd would supply hook-lib.sh.
     # shellcheck source=../../core/scripts/resolve-hq-root.sh
     if . "$self_dir/../../core/scripts/resolve-hq-root.sh" --lib \
-      && hq_resolve_root "" "$PWD"; then
+      && hq_resolve_root "$self_dir/../.." "$PWD"; then
       HQ_ROOT_RESOLVED="$HQ_ROOT_RESULT"
     fi
   fi
@@ -532,7 +534,104 @@ hq_setsid_available() {
   command -v setsid >/dev/null 2>&1
 }
 
-if hook_timeout_watchdog_enabled; then
+# One watchdog per hook event. An adapter that sourced hook-adapter-core.sh
+# exports HQAD_DISPATCHER_PID and starts one gate per registry hook, so a
+# watchdog per gate multiplied the processes of every adapter tool call. Gates
+# whose parent is that live dispatcher share one watchdog: the first gate arms
+# it against the dispatcher's pid and records its pid in a claim file, and
+# later gates arm nothing while that watchdog is alive. Each gate writes its
+# hook, pid and start time to "<claim>.active", so the shared watchdog warns
+# about the gate that runs long, at that gate's own warning point, as a
+# per-gate watchdog did. The watchdog only reports; it never changes a hook's
+# output, exit status or decision, and it ends on its own once the dispatcher
+# has exited. Any other gate (started by a harness registration, by a subshell
+# of the adapter, or with no writable claim) keeps its own watchdog.
+hook_timeout_event_dispatcher=""
+case "${HQAD_DISPATCHER_PID:-}" in
+  ''|0|*[!0-9]*) ;;
+  *)
+    if [ "$HQAD_DISPATCHER_PID" = "${PPID:-}" ] \
+      && kill -0 "$HQAD_DISPATCHER_PID" >/dev/null 2>&1; then
+      hook_timeout_event_dispatcher="$HQAD_DISPATCHER_PID"
+    fi
+    ;;
+esac
+
+# Return 0 when the claim file names a live watchdog process. Every redirection
+# sits inside the braces, so a claim removed mid-read prints nothing.
+hook_timeout_event_claim_live() {
+  local claim_pid=""
+  [ -r "$1" ] || return 1
+  { IFS= read -r claim_pid < "$1"; } 2>/dev/null || true
+  case "$claim_pid" in ''|0|*[!0-9]*) return 1 ;; esac
+  kill -0 "$claim_pid" >/dev/null 2>&1
+}
+
+hook_timeout_event_claim=""
+hook_timeout_event_covered=0
+hook_timeout_tab=$'\t'
+hook_timeout_newline='
+'
+if [ -n "$hook_timeout_event_dispatcher" ] && hook_timeout_watchdog_enabled; then
+  hook_timeout_event_dir="$HQ_ROOT_RESOLVED/workspace/.hook-timeout-sentry"
+  [ -d "$hook_timeout_event_dir" ] \
+    || mkdir -p "$hook_timeout_event_dir" >/dev/null 2>&1 || true
+  hook_timeout_event_claim="$hook_timeout_event_dir/gate-event-$hook_timeout_event_dispatcher.pid"
+  # Record this gate first. A gate the shared watchdog cannot follow (a tab or
+  # newline in its id or path, or no writable active file) keeps its own
+  # watchdog. EPOCHSECONDS is trusted only from Bash 5, where it is the live
+  # clock; older Bash would take a stale value from the environment.
+  hook_timeout_event_epoch=""
+  [ "${BASH_VERSINFO[0]:-0}" -lt 5 ] || hook_timeout_event_epoch="${EPOCHSECONDS:-}"
+  case "$HOOK_ID$HOOK_SCRIPT" in
+    *"$hook_timeout_tab"*|*"$hook_timeout_newline"*) hook_timeout_event_claim="" ;;
+    *)
+      { printf '%s\t%s\t%s\t%s\n' "$HOOK_ID" "$HOOK_SCRIPT" "$$" "$hook_timeout_event_epoch" \
+          > "$hook_timeout_event_claim.active"; } 2>/dev/null || hook_timeout_event_claim=""
+      ;;
+  esac
+  if [ -z "$hook_timeout_event_claim" ]; then
+    :
+  elif hook_timeout_event_claim_live "$hook_timeout_event_claim"; then
+    hook_timeout_event_covered=1
+  elif ! { printf '' > "$hook_timeout_event_claim"; } 2>/dev/null; then
+    # No writable claim: later gates could not see a shared watchdog, so this
+    # gate keeps the per-gate watchdog it reaps on exit. printf, not the
+    # special builtin ':', so a failed redirection cannot end the gate when
+    # bash runs in POSIX mode.
+    hook_timeout_event_claim=""
+  fi
+fi
+
+if [ "$hook_timeout_event_covered" -eq 0 ] && [ -n "$hook_timeout_event_claim" ]; then
+  [ -z "${HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE:-}" ] \
+    || { printf '' > "${HQ_HOOK_TIMEOUT_SENTRY_TEST_ARMED_FILE}"; } 2>/dev/null || true
+  # Watches the dispatcher, not this gate, and is not reaped by this gate's
+  # EXIT trap. Its stdio and fds 3-9 are detached so a caller that reads this
+  # gate's output to EOF never waits on it.
+  # --hook-path and --hook-id name this first gate; the watchdog re-reads the
+  # active file and reports whichever gate actually ran long.
+  if hq_setsid_available; then
+    setsid bash "$HOOK_TIMEOUT_WATCHDOG" \
+      --root "$HQ_ROOT_RESOLVED" \
+      --source hook-gate \
+      --hook-path "$HOOK_SCRIPT" \
+      --hook-id "$HOOK_ID" \
+      --parent-pid "$hook_timeout_event_dispatcher" \
+      --claim-file "$hook_timeout_event_claim" \
+      >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- <<<"$HOOK_PAYLOAD" &
+  else
+    bash "$HOOK_TIMEOUT_WATCHDOG" \
+      --root "$HQ_ROOT_RESOLVED" \
+      --source hook-gate \
+      --hook-path "$HOOK_SCRIPT" \
+      --hook-id "$HOOK_ID" \
+      --parent-pid "$hook_timeout_event_dispatcher" \
+      --claim-file "$hook_timeout_event_claim" \
+      >/dev/null 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- <<<"$HOOK_PAYLOAD" &
+  fi
+  { printf '%s\n' "$!" > "$hook_timeout_event_claim"; } 2>/dev/null || true
+elif [ "$hook_timeout_event_covered" -eq 0 ] && hook_timeout_watchdog_enabled; then
   # Test-only arming receipt. It is deliberately written by the foreground
   # gate, rather than the asynchronous helper, so disable coverage does not
   # depend on scheduler timing.

@@ -1,12 +1,19 @@
 version: 1
-hqVersion: "16.0.47"
+hqVersion: "16.0.48"
 agentSessionContractVersion: 1
 # See core/scripts/lib/hq-cli-floor.sh for the checks that enforce this floor.
-requiresHqCli: ">=5.345.193"
+requiresHqCli: ">=5.345.221"
 # Provider adapter contract version (US-500). Must match
 # HQ_ADAPTER_CONTRACT_VERSION in core/scripts/lib/provider-adapter-version.sh.
 adapterContractVersion: "1.0.0"
-updatedAt: "2026-11-11T19:58:47Z"
+# Machine-check collect-only (Q47). With HQ_MACHINE_CHECK=1 and
+# HQ_MACHINE_CHECK_COLLECT_ONLY=1 in the environment, every machine-check
+# script that has a show-once record (setup-completeness-nag, welcome-brief-ready,
+# check-client-health, ensure-hq-desktop) prints its finding but writes no
+# delivery stamp; operational caches and throttles are unchanged. hq-cli's
+# daemon batch sets the second variable only when this key is 1.
+machineCheckCollectOnly: 1
+updatedAt: "2026-11-18T13:43:53Z"
 # hq-core is the minimal scaffold seed. Rich add-ons ship as `@indigoai-us/hq-pack-*`
 # npm packages installed into `core/packages/` via `hq install`. See `core/packages/README.md`.
 rules:

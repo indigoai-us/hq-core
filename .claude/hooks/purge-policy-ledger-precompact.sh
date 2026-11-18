@@ -57,5 +57,14 @@ fi
 
 DIR="$HQ_ROOT/workspace/orchestrator/policy-trigger-state"
 rm -f "$DIR/$SESSION_ID.txt" "$DIR/$SESSION_ID.turn.txt" "$DIR/$SESSION_ID.seen.tsv" "$DIR/$SESSION_ID.full.txt" "$DIR/$SESSION_ID.deferred.tsv" "$DIR/$SESSION_ID.deferred-soft.txt" 2>/dev/null || true
+# Reminders held for delivery (HELD REMINDERS in inject-policy-on-trigger.sh)
+# keep ledger copies that replace the session ledgers when the text is handed
+# out. Purge those copies too, or that hand-out would undo this purge. The held
+# text itself (out) stays: it has not reached the model yet.
+HELD="$DIR/$SESSION_ID.held"
+# A held directory that is a symlink, or that sits in a symlinked state
+# directory, is left alone: removing names under it would delete files in the
+# directory the link points at.
+[ ! -L "$DIR" ] && [ ! -L "$HELD" ] && rm -f "$HELD/$SESSION_ID.txt" "$HELD/$SESSION_ID.turn.txt" "$HELD/$SESSION_ID.seen.tsv" "$HELD/$SESSION_ID.full.txt" "$HELD/$SESSION_ID.deferred.tsv" "$HELD/$SESSION_ID.deferred-soft.txt" "$HELD/$SESSION_ID.footer.txt" 2>/dev/null || true
 
 exit 0

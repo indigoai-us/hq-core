@@ -539,7 +539,7 @@ Reference: [agents-and-bots.md](../../knowledge/public/hq-core/agents-and-bots.m
 
 [hq.computer](https://hq.computer) is the web UI: team and invites, groups and grants, bots, integrations, secrets, vault, billing, and deployments. Most pages have a matching CLI command or skill. Reference: [hq-console.md](../../knowledge/public/hq-core/hq-console.md). Plans and billing: [plans-and-pricing.md](../../knowledge/public/hq-core/plans-and-pricing.md).
 
-Pricing: accounts created from 2026-10-16 18:00 UTC are on the usage card. There is no plan fee; $10 of usage is included every month, and usage past it is billed per meter (sync $0.10 per moved-file leg; gateway call $0.001; HQ MCP call and agent run $0.05 each; storage $2.00 per GB-month; secret $0.50 per secret-month; $5 per company or personal vault per month, waived in the trial). The trial is 30 days, capped at $500 of usage. Deploys, DMs and background AI are free. New hosted boxes are small $100, medium $200, large $400 and xlarge $800 a month. New signups choose "Sign up free" or "Book a setup call"; to run HQ without HQ cloud, see [use HQ free, self-hosted or on-prem](https://docs.hq.computer/hq/guide/use-hq-for-free/). Starter, Workforce and Individual are closed to new signups; existing customers keep their current plans and box prices. Exact numbers: [pricing.json](../../knowledge/public/hq-core/pricing.json).
+Pricing: accounts created from 2026-10-16 18:00 UTC are on the usage card. There is no plan fee; $10 of usage is included every month, and usage past it is billed per meter at the rates in the usage card table in [pricing-and-billing.md](../../knowledge/public/hq-core/pricing-and-billing.md). The trial is 30 days, capped at $500 of usage. Deploys, DMs and background AI are free. New hosted boxes are small $100, medium $200, large $400 and xlarge $800 a month. New signups choose "Sign up free" or "Book a setup call"; to run HQ without HQ cloud, see [use HQ free, self-hosted or on-prem](https://docs.hq.computer/hq/guide/use-hq-for-free/). Starter, Workforce and Individual are closed to new signups; existing customers keep their current plans and box prices. Exact numbers: [pricing.json](../../knowledge/public/hq-core/pricing.json).
 
 ## Deploy
 
@@ -582,11 +582,11 @@ Cloud-backed companies sync to a company vault; the rest of your HQ folder (minu
 The Executive opens lanes under the super-conductor. Each lane ends with an
 outcome state: `done` describes what it delivered, `needs_decision` includes
 the information for one owner decision, and `partial` names the remaining
-steps. A lane calls `hq lanes ask` for a decision; the conductor routes it
+steps. A lane calls `hq runners ask` for a decision; the conductor routes it
 through the decision queue as one picker, and answering re-wakes the lane.
 
 Every child receives `core/settings/executive-standing-rules.md` verbatim.
 `personal/settings/executive-standing-rules.md` in the HQ root replaces that
-default when present; `hq lanes create --signal <signal-id> --rules-file <path>` selects
+default when present; `hq runners create --signal <signal-id> --rules-file <path>` selects
 an explicit rules file. The conductor reads Executive lane reports under
 their child names on its link.

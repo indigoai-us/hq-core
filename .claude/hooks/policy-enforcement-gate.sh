@@ -224,20 +224,36 @@ NODE
 # to rename" names no installed skill; requiring "hq" would leave a receipt
 # that can never be satisfied. The case pattern stays outside $(...) so bash
 # 3.2 does not treat its ")" as the end of the substitution.
+#
+# Each row is "<skill>\t<prompt words that named it>". The words are kept so a
+# later refusal can say what in the prompt set the requirement (feedback_ac1806a1:
+# "share the launch work-broadcast page" required work-broadcast, and the
+# block gave no hint why).
 prompt_named_skills() {
-  local prompt="$1" prompt_skill
+  local prompt="$1" prompt_skill prompt_trigger
   printf '%s\n' "$prompt" | awk '
     {
       line=tolower($0)
-      if (line ~ /(^|[^a-z])(broadcast|post an? update to slack|slack broadcast)([^a-z]|$)/) print "work-broadcast"
+      if (match(line, /(^|[^a-z])(broadcast|post an? update to slack|slack broadcast)([^a-z]|$)/)) {
+        # Widen the match to the whole whitespace-delimited word(s), so
+        # "work-broadcast" is reported rather than "broadcast".
+        s=RSTART; e=RSTART+RLENGTH-1
+        if (substr(line,s,1) !~ /[a-z]/) s++
+        if (substr(line,e,1) !~ /[a-z]/) e--
+        while (s>1 && substr(line,s-1,1) !~ /[[:space:]]/) s--
+        while (e<length(line) && substr(line,e+1,1) !~ /[[:space:]]/) e++
+        t=substr($0,s,e-s+1); gsub(/[[:space:]]+/," ",t); gsub(/^ | $/,"",t)
+        print "work-broadcast\t" t
+      }
       if (match(line, /(use|run|load|read)[[:space:]]+(the[[:space:]]+)?[a-z0-9_-]+[[:space:]]+skill/)) {
-        s=substr(line,RSTART,RLENGTH); sub(/^(use|run|load|read)[[:space:]]+(the[[:space:]]+)?/,"",s); sub(/[[:space:]]+skill.*/,"",s); print s
+        t=substr($0,RSTART,RLENGTH); gsub(/[[:space:]]+/," ",t)
+        s=substr(line,RSTART,RLENGTH); sub(/^(use|run|load|read)[[:space:]]+(the[[:space:]]+)?/,"",s); sub(/[[:space:]]+skill.*/,"",s); print s "\t" t
       }
     }
-  ' | awk 'NF && !seen[$0]++' | while IFS= read -r prompt_skill; do
+  ' | awk -F '\t' 'NF && !seen[$1]++' | while IFS=$'\t' read -r prompt_skill prompt_trigger; do
     case "$prompt_skill" in ''|.|..|*/*) continue ;; esac
     [ -f "$ROOT/.claude/skills/$prompt_skill/SKILL.md" ] || continue
-    printf '%s\n' "$prompt_skill"
+    printf '%s\t%s\n' "$prompt_skill" "$prompt_trigger"
   done
 }
 
@@ -455,13 +471,152 @@ command_is_outbound() {
   printf '%s' "$scan" | grep -Eqi "$pattern"
 }
 
+# command_direct_dm_body <command> — true when the command's only send is one
+# one-to-one `hq [cowork] dm [send] <recipient> ...` to a single person or
+# agent (one email address, or one prs_/agt_ uid). A DM to one person is not a
+# work broadcast (feedback_ac1806a1), so the work-broadcast receipt and
+# delivery contract do not apply to it. Everything else stays a possible
+# broadcast and fails closed: a group (comma list), a channel (bare name, #name,
+# --channel, --thread), an unknown option, a recipient that is not a literal
+# (such as "$TO"), any Slack/broadcast endpoint, a command substitution, a
+# segment that runs other text (sh, eval, xargs, ...), more than one DM send in
+# the command (a fan-out to several people), or any segment whose command word
+# holds a quote, backslash, $, glob or brace character (h\q, h''q, $H), since
+# the shell may turn that word into hq.
+# On success, stdout is the message body when it is a literal: a quoted or
+# plain argument with no $, backtick or backslash, or "$VAR" bound by a literal
+# assignment in an earlier segment of the same command with no other command in
+# between. --details/--prompt values are part of the body. Any other body form
+# prints nothing, so the deterministic delivery gates below still fail closed
+# on it: a --*-file option, --attach (the file is sent but not read here), an
+# unbound or computed variable, more than one positional message word (hq dm
+# takes one message argument), or an unquoted # word (the shell drops the rest
+# of the line as a comment, so those words are never sent).
+command_direct_dm_body() {
+  local command="$1"
+  [ -n "$command" ] || return 1
+  printf '%s' "$command" | node -e '
+    let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+      const no=()=>process.exit(1);
+      if(/\$\(|`|<\(|>\(/.test(s)) no();
+      // Any Slack host or API, webhook or broadcast endpoint anywhere in the
+      // command disqualifies the exemption (for example a curl to
+      // hooks.slack.com before the DM): the command can then reach more than
+      // one person.
+      if(/chat\.postMessage|send-broadcast|\/broadcasts|slack\.com|slack-edge|\/webhooks?\b|\/api\/chat\./i.test(s)) no();
+      const segs=[]; let cur="", quote="", esc=false;
+      for(let i=0;i<s.length;i++){const c=s[i];
+        if(esc){cur+=c;esc=false;continue;}
+        if(c==="\\"&&quote!=="\x27"){cur+=c;esc=true;continue;}
+        if(quote){cur+=c;if(c===quote)quote="";continue;}
+        if(c==="\""||c==="\x27"){quote=c;cur+=c;continue;}
+        if(c===";"||c==="|"||c==="&"||c==="\n"){segs.push(cur);cur="";continue;}
+        cur+=c;}
+      segs.push(cur);
+      const raw=seg=>seg.match(/(?:[^\s"\x27\\]|\\.|"(?:[^"\\]|\\.)*"|\x27[^\x27]*\x27)+/g)||[];
+      const unq=w=>w.replace(/^["\x27]|["\x27]$/g,"");
+      // A literal word: one single-quoted string, one double-quoted string
+      // with no $ ` or backslash, or a bare word with no shell specials.
+      const literal=w=>{
+        let m=w.match(/^\x27([^\x27]*)\x27$/); if(m) return m[1];
+        m=w.match(/^"([^"$`\\]*)"$/); if(m) return m[1];
+        if(/^[^\s"\x27$`\\*?\[\]{}~<>()]+$/.test(w)) return w;
+        return null;
+      };
+      const executes=new Set(["sh","bash","zsh","dash","ksh","fish","eval","xargs","source",".","exec","env","sudo","command","nohup","time","parallel"]);
+      const dmReads=new Set(["inbox","thread","read","channel","history"]);
+      // --audience only tags who sees the message (human, agent, both); the
+      // recipient set is still the one positional, so it cannot widen delivery.
+      const valued=new Set(["--prompt","--details","--at","--in","--audience","--attach","--prompt-file","--details-file"]);
+      const bodyFlags=new Set(["--prompt","--details"]);
+      const fileFlags=new Set(["--prompt-file","--details-file","--attach"]);
+      const flags=new Set(["--no-mentions","--for-human"]);
+      const person=r=>/^[^\s@,#]+@[^\s@,]+\.[^\s@,]+$/.test(r)||/^(prs|agt)_[A-Za-z0-9]+$/.test(r);
+      let vars=new Map(), sends=0, bodies=[], opaque=false;
+      for(const seg of segs){
+        const w=raw(seg);
+        if(!w.length) continue;
+        let i=0; while(i<w.length&&/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i])) i++;
+        if(i===w.length){
+          // A segment made only of assignments sets shell variables.
+          for(const a of w){const k=a.slice(0,a.indexOf("=")), v=literal(a.slice(a.indexOf("=")+1)||"\x27\x27"); if(v===null) vars.delete(k); else vars.set(k,v);}
+          continue;
+        }
+        // A command word the shell rewrites (h\q, h""q, $H, h?) may run hq dm
+        // to a channel, so the whole command stays a possible broadcast.
+        if(/["\x27\\$`*?\[\]{}]/.test(w[i])) no();
+        const name=unq(w[i]).replace(/^.*\//,""), args=w.slice(i+1);
+        if(executes.has(name)) no();
+        let a=0;
+        const isDm=name==="hq"&&(unq(args[a]||"")==="dm"||(unq(args[a]||"")==="cowork"&&unq(args[a+1]||"")==="dm"));
+        if(!isDm){
+          // Any other command may change variables; forget them.
+          if(/(^|[^A-Za-z0-9_])hq\s+(cowork\s+)?dm([^A-Za-z0-9_]|$)/i.test(seg)) no();
+          vars=new Map(); continue;
+        }
+        if(i>0) no(); // prefix assignments: the variable seen by "$VAR" is the outer one
+        if(unq(args[a])==="cowork") a++;
+        a++;
+        if(dmReads.has(unq(args[a]||""))) continue;
+        if(unq(args[a]||"")==="send") a++;
+        let recipient=null, positional=0; const parts=[];
+        for(;a<args.length;a++){
+          const word=args[a], u=unq(word);
+          // An unquoted # word starts a shell comment: nothing after it is sent.
+          if(/^#/.test(word)){ opaque=true; break; }
+          if(/^--(channel|thread)(=|$)/.test(u)) no();
+          const eq=u.match(/^(--[a-z-]+)=([\s\S]*)$/);
+          const flag=eq?eq[1]:u;
+          if(valued.has(flag)){
+            const val=eq?word.slice(word.indexOf("=")+1):args[++a];
+            if(val===undefined) no();
+            if(fileFlags.has(flag)) opaque=true;
+            if(bodyFlags.has(flag)) parts.push(val);
+            continue;
+          }
+          if(flags.has(u)) continue;
+          if(/^-/.test(u)) no();
+          // Output redirection does not change the message; input may.
+          if(/^\d*</.test(word)) { opaque=true; continue; }
+          if(/^\d*>>?$/.test(word)) { a++; continue; }
+          if(/^\d*>/.test(word)) continue;
+          if(recipient===null){ recipient=literal(word); if(recipient===null) no(); continue; }
+          // hq dm takes one message argument; extra words are not sent.
+          if(++positional>1) opaque=true;
+          parts.push(word);
+        }
+        if(recipient===null||!person(recipient)) no();
+        sends++;
+        for(const p of parts){
+          let v=literal(p);
+          if(v===null){const m=p.match(/^"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?$/); v=m&&vars.has(m[1])?vars.get(m[1]):null;}
+          if(v===null) opaque=true; else bodies.push(v);
+        }
+        vars=new Map();
+      }
+      // Exactly one DM send: several one-person DMs in one command fan out.
+      if(sends!==1) no();
+      if(!opaque) process.stdout.write(bodies.join("\n"));
+    });' 2>/dev/null
+}
+
+# jq helper: "<skill> (prompt words "...")" when the prompt set the
+# requirement, "<skill> (required by a matched policy)" when a policy declared
+# it (or nothing else recorded why), and both when both did. Run it with the
+# state JSON as input.
+SKILL_LABEL_JQ='def labeled($root): . as $x | (($root.skillTriggers // {})[$x] // "") as $t | (($root.policySkills // []) | index($x) != null) as $p | $x + (if $t != "" and $p then " (prompt words \"" + $t + "\"; required by a matched policy)" elif $t != "" then " (prompt words \"" + $t + "\")" else " (required by a matched policy)" end); . as $root | '
+
 case "$EVENT" in
   UserPromptSubmit)
     PROMPT="$(extract_prompt)"
     # A receipt is earned only by reading .claude/skills/<name>/SKILL.md (see
     # PostToolUse below). Require only prompt-named skills whose SKILL.md exists.
-    REQUIRED_SKILLS="$(prompt_named_skills "$PROMPT" | jq -Rsc 'split("\n") | map(select(length>0))')"
+    PROMPT_SKILL_ROWS="$(prompt_named_skills "$PROMPT")"
+    REQUIRED_SKILLS="$(printf '%s' "$PROMPT_SKILL_ROWS" | jq -Rsc 'split("\n") | map(sub("\r$";"") | select(length>0) | split("\t")[0])')"
     [ -n "$REQUIRED_SKILLS" ] || REQUIRED_SKILLS='[]'
+    # skill -> the prompt words that required it, quoted back in refusals.
+    SKILL_TRIGGERS="$(printf '%s' "$PROMPT_SKILL_ROWS" | jq -Rsc 'split("\n") | map(sub("\r$";"") | select(length>0) | split("\t") | {key:.[0], value:(.[1] // "")}) | from_entries')"
+    [ -n "$SKILL_TRIGGERS" ] || SKILL_TRIGGERS='{}'
 
     POLICY_SKILLS='[]'
     POLICY_BRIEFS='[]'
@@ -477,7 +632,18 @@ case "$EVENT" in
       | map(select(type=="string" and length>0)) | unique' 2>/dev/null || echo '[]')"
     PROMPT_PATHS='[]'
     DECLARES_BRIEF=0
-    if printf '%s' "$PROMPT" | grep -Eqi '\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b'; then
+    # "attached brief" and "the brief in the attachment" are declarations.
+    # Only the count wording "attachment count(s)" is not: "file and
+    # attachment counts ... the full file" used to match and then fail closed
+    # with an unsatisfiable sentinel, blocking every later Slack post in that
+    # conversation (feedback_c058483f). That phrase is rewritten to "count"
+    # before the declaration test, except "attachment counts as ...", which is
+    # still a declaration; every other use of "attachment" declares.
+    BRIEF_SCAN="$(printf '%s' "$PROMPT" | node -e '
+      let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
+        process.stdout.write(s.replace(/\battachment[\s-]+counts?\b(?![\s-]+as\b)/gi,"count"));
+      });' 2>/dev/null || printf '%s' "$PROMPT")"
+    if printf '%s' "$BRIEF_SCAN" | grep -Eqi '\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b'; then
       DECLARES_BRIEF=1
       # Only a file named in the attachment clause itself is a declared brief:
       # the sentence that says "attached ... brief/file" (or "brief ...
@@ -485,7 +651,7 @@ case "$EVENT" in
       # sentence ends with ":" (a list of attached paths). A file name elsewhere
       # in the prompt, such as pasted Slack text, is only a mention. When the
       # clause names no file, the sentinel below still fails closed.
-      PROMPT_PATHS="$(printf '%s' "$PROMPT" | node -e '
+      PROMPT_PATHS="$(printf '%s' "$BRIEF_SCAN" | node -e '
         let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
           const declares=/\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b/i;
           const pathRe=/[\/A-Za-z0-9_.-]+\.(?:md|txt|pdf|docx)/g;
@@ -555,12 +721,15 @@ case "$EVENT" in
       });' 2>/dev/null)"
     [ -n "$CONFLICTS" ] || CONFLICTS='[]'
 
-    jq -nc --arg prompt "$PROMPT" --argjson skills "$REQUIRED_SKILLS" --argjson briefs "$BRIEFS" --argjson conflicts "$CONFLICTS" \
-      '{prompt:$prompt,requiredSkills:$skills,briefs:$briefs,receipts:{skills:[],briefs:[]},conflicts:$conflicts}' > "$STATE"
+    # policySkills keeps the skills a matched policy declared (required-skill:)
+    # apart from prompt-named ones: the one-person DM exemption below applies
+    # only to a work-broadcast requirement the prompt set.
+    jq -nc --arg prompt "$PROMPT" --argjson skills "$REQUIRED_SKILLS" --argjson policySkills "${POLICY_SKILLS:-[]}" --argjson triggers "$SKILL_TRIGGERS" --argjson briefs "$BRIEFS" --argjson conflicts "$CONFLICTS" \
+      '{prompt:$prompt,requiredSkills:$skills,policySkills:$policySkills,skillTriggers:$triggers,briefs:$briefs,receipts:{skills:[],briefs:[]},conflicts:$conflicts}' > "$STATE"
 
     CONTEXT=""
     if [ "$(jq '.requiredSkills|length' "$STATE")" -gt 0 ] || [ "$(jq '.briefs|length' "$STATE")" -gt 0 ]; then
-      CONTEXT="GOVERNANCE RECEIPTS REQUIRED before any governed outbound action. Required skills: $(jq -r '.requiredSkills|join(", ")' "$STATE"). Declared briefs: $(jq -r '.briefs|join(", ")' "$STATE"). Read each source first; prompt acknowledgement is not a receipt."
+      CONTEXT="GOVERNANCE RECEIPTS REQUIRED before any governed outbound action. Required skills: $(jq -r "$SKILL_LABEL_JQ"'[.requiredSkills[]? | labeled($root)] | join(", ")' "$STATE"). Declared briefs: $(jq -r '.briefs|join(", ")' "$STATE"). Read each source first; prompt acknowledgement is not a receipt."
     fi
     if [ "$(jq '.conflicts|length' "$STATE")" -gt 0 ]; then
       SUMMARY="$(jq -r '.conflicts[] | "- " + .policyId + ": policy says [" + .policy + "] but instruction says [" + .instruction + "]"' "$STATE")"
@@ -673,7 +842,7 @@ case "$EVENT" in
 
   PreToolUse)
     if [ ! -f "$STATE" ] && [ -s "$POLICIES" ]; then
-      jq -nc '{prompt:"",requiredSkills:[],briefs:[],receipts:{skills:[],briefs:[]},conflicts:[]}' > "$STATE"
+      jq -nc '{prompt:"",requiredSkills:[],policySkills:[],briefs:[],receipts:{skills:[],briefs:[]},conflicts:[]}' > "$STATE"
     fi
     [ -f "$STATE" ] || exit 0
 
@@ -685,7 +854,7 @@ case "$EVENT" in
       POLICY_BRIEFS="$(policy_required_values brief)"
       # Nothing to merge is the common case; skip the locked state rewrite.
       if [ "${POLICY_SKILLS:-[]}${POLICY_BRIEFS:-[]}" != "[][]" ] \
-         && ! atomic_update '.requiredSkills = ((.requiredSkills // []) + $skills | unique) | .briefs = ((.briefs // []) + $briefs | unique)' \
+         && ! atomic_update '.requiredSkills = ((.requiredSkills // []) + $skills | unique) | .policySkills = ((.policySkills // []) + $skills | unique) | .briefs = ((.briefs // []) + $briefs | unique)' \
         --argjson skills "${POLICY_SKILLS:-[]}" --argjson briefs "${POLICY_BRIEFS:-[]}"; then
         json_block "POLICY ENFORCEMENT BLOCK: policy requirements could not be refreshed safely; retry the outbound action."
         exit 2
@@ -715,7 +884,34 @@ case "$EVENT" in
       exit 0
     fi
 
-    MISSING_SKILLS="$(jq -r '[.requiredSkills[]? as $x | select((.receipts.skills // []) | index($x) | not) | $x] | join(", ")' "$STATE")"
+    # A one-to-one hq dm is not a work broadcast (feedback_ac1806a1). Its
+    # literal body, when it has one, is still checked by every deterministic
+    # delivery gate below. The exemption covers only a work-broadcast
+    # requirement the prompt set: a matched policy that declares
+    # required-skill: work-broadcast asked for it on this action, so it
+    # still applies to a one-person DM.
+    DIRECT_DM=0
+    DM_BODY=""
+    if [ -n "$CMD" ] && DM_BODY="$(command_direct_dm_body "$CMD")"; then DIRECT_DM=1; else DM_BODY=""; fi
+    POLICY_WB=0
+    if jq -e '(.policySkills // []) | index("work-broadcast") != null' "$STATE" >/dev/null 2>&1; then POLICY_WB=1; fi
+    DM_EXEMPT=0
+    if [ "$DIRECT_DM" -eq 1 ] && [ "$POLICY_WB" -eq 0 ]; then DM_EXEMPT=1; fi
+    BROADCAST_EXEMPT='[]'
+    [ "$DM_EXEMPT" -eq 0 ] || BROADCAST_EXEMPT='["work-broadcast"]'
+    WORK_BROADCAST=0
+    WB_WHY=""
+    if [ "$DM_EXEMPT" -eq 0 ] && jq -e '.requiredSkills | index("work-broadcast") != null' "$STATE" >/dev/null 2>&1; then
+      WORK_BROADCAST=1
+      WB_WHY="$(jq -r "$SKILL_LABEL_JQ"'"work-broadcast" | labeled($root)' "$STATE" 2>/dev/null || printf 'work-broadcast')"
+      if [ "$POLICY_WB" -eq 1 ]; then
+        WB_WHY=" The work-broadcast rule applies because this session requires ${WB_WHY}. A matched policy declares it, so it applies to a DM to one person or agent too."
+      else
+        WB_WHY=" The work-broadcast rule applies because this session requires ${WB_WHY}. A DM to one person or agent (hq dm <email or prs_/agt_ uid> ...) is not a broadcast and is not held to it."
+      fi
+    fi
+
+    MISSING_SKILLS="$(jq -r --argjson exempt "$BROADCAST_EXEMPT" "$SKILL_LABEL_JQ"'[.requiredSkills[]? as $x | select($exempt | index($x) | not) | select((.receipts.skills // []) | index($x) | not) | $x | labeled($root)] | join(", ")' "$STATE")"
     MISSING_BRIEFS="$(jq -r '[.briefs[]? as $x | select((.receipts.briefs // []) | index($x) | not) | $x] | join(", ")' "$STATE")"
     if [ -n "$MISSING_SKILLS$MISSING_BRIEFS" ]; then
       json_block "POLICY ENFORCEMENT BLOCK: outbound action lacks required receipts. Missing skills: ${MISSING_SKILLS:-none}. Missing briefs: ${MISSING_BRIEFS:-none}. Read the exact SKILL.md/brief, then retry."
@@ -723,7 +919,9 @@ case "$EVENT" in
     fi
 
     BODY="$(printf '%s' "$INPUT" | jq -r '[.tool_input.message?,.tool_input.text?,.tool_input.body?,.tool_input.content?,.tool_input.details?,.tool_input.prompt?] | map(select(type=="string" and length>0)) | join("\n")')"
-    if [ -z "$BODY" ] && [ -n "$CMD" ]; then
+    if [ -z "$BODY" ] && [ "$DIRECT_DM" -eq 1 ]; then
+      BODY="$DM_BODY"
+    elif [ -z "$BODY" ] && [ -n "$CMD" ]; then
       BODY="$(printf '%s' "$CMD" | node -e '
         let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
           const assignments=new Map();
@@ -732,16 +930,16 @@ case "$EVENT" in
           for(let i=args.length-1;i>=0;i--){const name=args[i][1];if(assignments.has(name)){process.stdout.write(assignments.get(name));return;}}
         });' 2>/dev/null || true)"
     fi
-    if [ -n "$BODY" ] && jq -e '.requiredSkills | index("work-broadcast") != null' "$STATE" >/dev/null 2>&1; then
+    if [ -n "$BODY" ] && [ "$WORK_BROADCAST" -eq 1 ]; then
       LINES="$(printf '%s\n' "$BODY" | awk 'NF{n++} END{print n+0}')"
       if [ "$LINES" -gt 4 ]; then
-        json_block "POLICY ENFORCEMENT BLOCK: work-broadcast content has $LINES non-empty lines; the delivery contract allows at most 4. Put detail in the linked artifact and retry with the short broadcast."
+        json_block "POLICY ENFORCEMENT BLOCK: work-broadcast content has $LINES non-empty lines; the delivery contract allows at most 4. Put detail in the linked artifact and retry with the short broadcast.$WB_WHY"
         exit 2
       fi
     fi
 
-    if [ -z "$BODY" ] && jq -e '.requiredSkills | index("work-broadcast") != null' "$STATE" >/dev/null 2>&1; then
-      json_block "POLICY ENFORCEMENT BLOCK: work-broadcast content is not mechanically inspectable. Supply the message in a structured tool field or a literal MESSAGE/BODY/TEXT shell assignment, then retry."
+    if [ -z "$BODY" ] && [ "$WORK_BROADCAST" -eq 1 ]; then
+      json_block "POLICY ENFORCEMENT BLOCK: work-broadcast content is not mechanically inspectable. Supply the message in a structured tool field or a literal MESSAGE/BODY/TEXT shell assignment, then retry.$WB_WHY"
       exit 2
     fi
 

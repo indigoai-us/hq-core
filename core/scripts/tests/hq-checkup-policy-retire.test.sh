@@ -11,18 +11,17 @@ CHECKUP="$ROOT/.claude/skills/hq-checkup/hq-checkup.sh"
 FX="$(mktemp -d)"; trap 'rm -rf "$FX"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-mkdir -p "$FX/root/core/scripts" "$FX/home" "$FX/bin"
+mkdir -p "$FX/root/core/scripts/lib" "$FX/home" "$FX/bin"
+cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$FX/root/core/scripts/lib/"
+# The stub hq replays the shape of `hq core policy retire --auto` for a
+# scenario and records the arguments it was called with (US-043: hq-checkup
+# calls hq core policy retire, not core/scripts/policy-retire.sh).
 cat > "$FX/bin/hq" <<'EOF'
 #!/usr/bin/env bash
-[ "${1:-}" = "--version" ] && { echo "9.9.9"; exit 0; }
-exit 1
-EOF
-chmod +x "$FX/bin/hq"
-
-# The stub replays the shape of `hq core policy retire --auto` for a scenario
-# and records the arguments it was called with.
-cat > "$FX/root/core/scripts/policy-retire.sh" <<'EOF'
-#!/usr/bin/env bash
+[ "${1:-}" = "--version" ] && { echo "${STUB_HQ_VERSION:-9.9.9}"; exit 0; }
+[ "${1:-}" = core ] && [ "${2:-}" = --hq-root ] && [ "${4:-}" = policy ] && [ "${5:-}" = retire ] || exit 1
+[ "$3" = "$STUB_ROOT" ] || { echo "stub hq: wrong --hq-root $3" >&2; exit 64; }
+shift 5
 printf '%s\n' "$*" > "$STUB_ARGS"
 case "$STUB_SCENARIO" in
   malformed)
@@ -45,12 +44,13 @@ case "$STUB_SCENARIO" in
     ;;
 esac
 EOF
-chmod +x "$FX/root/core/scripts/policy-retire.sh"
+chmod +x "$FX/bin/hq"
 
 run_checkup() { # scenario mode-flag...
   local scenario="$1"; shift
   env -i PATH="$FX/bin:/usr/bin:/bin" HOME="$FX/home" TMPDIR="$FX" \
-    CLAUDE_PROJECT_DIR="$FX/root" STUB_SCENARIO="$scenario" STUB_ARGS="$FX/args" \
+    CLAUDE_PROJECT_DIR="$FX/root" STUB_ROOT="$FX/root" STUB_SCENARIO="$scenario" STUB_ARGS="$FX/args" \
+    STUB_HQ_VERSION="${STUB_HQ_VERSION:-9.9.9}" \
     bash "$CHECKUP" --quick --json "$@" 2>/dev/null || true
 }
 
@@ -92,5 +92,12 @@ echo "[5] nothing to retire adds no policy items"
 run_checkup clean > "$FX/out.json"
 items "$FX/out.json" YOU | grep -qi 'polic' && fail "clean run produced a policy needs-you item"
 items "$FX/out.json" INFO | grep -qi 'polic' && fail "clean run produced a policy info item"
+
+echo "[6] an hq-cli below the 5.341.3 floor is reported, and policy retire does not run"
+rm -f "$FX/args"
+STUB_HQ_VERSION=5.341.2 run_checkup retired > "$FX/out.json"
+[ ! -e "$FX/args" ] || fail "policy retire ran on an hq-cli below its floor"
+items "$FX/out.json" YOU | grep -q "^Couldn't finish retiring old policies: policy-retire.sh: this script needs hq-cli >= 5.341.3 (found 5.341.2)" \
+  || fail "old hq-cli not reported: $(cat "$FX/out.json")"
 
 echo "PASS: hq-checkup reports malformed policy triggers and retire failures"

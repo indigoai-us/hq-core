@@ -43,13 +43,16 @@ account gets $10 of included usage every month and pays for usage past it.
 
 | Line | Price |
 |---|---|
+<!-- pricing:meters:start -->
 | Sync (moved files, per leg) | $0.10 |
-| Gateway call (integrations and external MCP through HQ) | $0.001 |
-| HQ MCP call | $0.05 |
+| Gateway call (integrations and external MCP through HQ) | $0.10 per 100 calls |
+| HQ MCP call | $0.10 per 100 calls |
 | Agent run | $0.05 |
 | Storage | $2.00 per GB-month |
 | Secret | $0.50 per secret-month |
 | Vault | $5 per vault per month, for each company vault and each personal vault; waived during the trial |
+| Meeting hours | $1.00 per hour |
+<!-- pricing:meters:end -->
 | Included usage | $10 per month |
 | Default spend limit | $100 a month (calendar month, UTC); none for an existing company that has switched and has a card on file |
 | Trial | 30 days, capped at $500 of usage |

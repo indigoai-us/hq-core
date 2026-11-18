@@ -64,7 +64,14 @@ resolve_grantee() {
 }
 
 case "$1 $2" in
-  "sync push")     exit 0 ;;
+  "sync-core status")
+    [ "${HQ_STUB_ENGINE:-0}" = 1 ] || exit 0
+    echo '{"version":1,"vaults":[{"uid":"cmp_acme","kind":"company","slug":"acme","phase":"full"}]}'
+    exit 0 ;;
+  "sync push")
+    [ "${HQ_STUB_ENGINE:-0}" = 1 ] || exit 0
+    echo "Sync is off for acme on this computer, so hq sync push was refused immediately." >&2
+    exit 1 ;;
   "files cat")
     [ -n "${HQ_STUB_CAT_DIR:-}" ] && [ -f "$HQ_STUB_CAT_DIR/${3##*/}" ] && { cat "$HQ_STUB_CAT_DIR/${3##*/}"; exit 0; }
     exit 1 ;;
@@ -218,6 +225,8 @@ reset_acl_state; : > "$INVOKE_LOG"
 HQ_STUB_CAT_DIR="$TMP/vaultcopy" bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "stale-vault run exited non-zero"
 grep -q "^sync push companies/acme/projects/widget/ " "$INVOKE_LOG" \
   || fail "checksum mismatch must still push the project dir"
+grep -q "^sync push companies/acme/projects/widget/prd.json --company acme --on-conflict overwrite" "$INVOKE_LOG" \
+  || fail "dossier files edited locally must be pushed with on-conflict overwrite: $(cat "$INVOKE_LOG")"
 rm -f "$FIXROOT/companies/acme/projects/widget/prd.json"
 
 # Referenced company-local knowledge/policies are pushed too (live finding:
@@ -442,6 +451,42 @@ jq -e '.status == "granted" and .grantPrincipal == "carol@acme.test"
   || fail "prs_ run must record exact person receipts: $(cat "$M")"
 
 # Unknown, ambiguous, and mismatched uids fail before any share.
+# Engine-owned vault: `hq sync push` is refused there, so the grant must not
+# push; it shares first, then waits for the engine's upload of the dossier and
+# referenced company files, and fails without advancing status if it never comes.
+write_manifest "$M" building
+mkdir -p "$FIXROOT/companies/acme/projects/widget" "$TMP/enginecopy"
+echo '{"engine":1}' > "$FIXROOT/companies/acme/projects/widget/prd.json"
+cp "$FIXROOT/companies/acme/projects/widget/prd.json" "$FIXROOT/companies/acme/knowledge/insights/widget-notes.md" \
+  "$FIXROOT/companies/acme/policies/widget-policy.md" "$TMP/enginecopy/"
+reset_acl_state; : > "$INVOKE_LOG"
+mkdir -p "$FIXROOT/.hq"
+echo '{"version":1,"pins":{"other":["keep/"]}}' > "$FIXROOT/.hq/pins.json"
+HQ_STUB_ENGINE=1 HQ_STUB_CAT_DIR="$TMP/enginecopy" HQ_DELEGATE_ENGINE_POLL_SECONDS=0 HQ_DELEGATE_ENGINE_WAIT_SECONDS=1 \
+  bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "engine-owned vault: grant failed although the engine uploaded the files"
+if grep -q '^sync push' "$INVOKE_LOG"; then fail "engine-owned vault: grant ran hq sync push: $(cat "$INVOKE_LOG")"; fi
+[ "$(grep -c '^files share' "$INVOKE_LOG")" -eq 3 ] || fail "engine-owned vault: expected 3 share calls"
+jq -e '.status == "granted"' "$M" >/dev/null || fail "engine-owned vault: status did not advance"
+jq -e '.pins.acme as $p | ["projects/widget/", "knowledge/insights/widget-notes.md", "policies/widget-policy.md"] | all(. as $x | $p | index($x))' \
+  "$FIXROOT/.hq/pins.json" >/dev/null \
+  || fail "engine-owned vault: project and referenced files must be pinned so a shared-mode engine uploads them: $(cat "$FIXROOT/.hq/pins.json" 2>/dev/null)"
+jq -e '.pins.other == ["keep/"]' "$FIXROOT/.hq/pins.json" >/dev/null \
+  || fail "engine-owned vault: pinning must keep other companies' pins"
+write_manifest "$M" building
+rm -f "$TMP/enginecopy/widget-policy.md"
+reset_acl_state; : > "$INVOKE_LOG"
+set +e
+ERR="$(HQ_STUB_ENGINE=1 HQ_STUB_CAT_DIR="$TMP/enginecopy" HQ_DELEGATE_ENGINE_POLL_SECONDS=0 HQ_DELEGATE_ENGINE_WAIT_SECONDS=1 \
+  bash "$GRANT" --manifest "$M" --yes 2>&1 >/dev/null)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "engine-owned vault: grant passed before the engine uploaded a referenced file"
+printf '%s' "$ERR" | grep >/dev/null 'sync engine has not uploaded companies/acme/policies/widget-policy.md' \
+  || fail "engine-owned vault: timeout must name the missing file: $ERR"
+jq -e '.status == "building"' "$M" >/dev/null || fail "engine-owned vault: timed-out grant advanced status"
+rm -f "$FIXROOT/companies/acme/projects/widget/prd.json"
+write_manifest "$M" building
+
 for uid in prs_NOBODY prs_TWIN prs_MALLORY; do
   reset_acl_state
   set_prs_principal "$uid"
@@ -456,4 +501,4 @@ for uid in prs_NOBODY prs_TWIN prs_MALLORY; do
   jq -e '.status == "building" and .vaultPrefixes[0].grantReceipt == null' "$M" >/dev/null || fail "$uid advanced state"
 done
 
-echo "hq-delegate-grant: ok (exact identity, committed errors, replay, false-success rejection, direct grants, agent group, prs_ recipient)"
+echo "hq-delegate-grant: ok (exact identity, committed errors, replay, false-success rejection, direct grants, agent group, prs_ recipient, engine-owned vault)"

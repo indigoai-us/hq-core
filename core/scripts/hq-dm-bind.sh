@@ -13,4 +13,4 @@ if [ ! -f "$SCRIPT_DIR/lib/forwarder.sh" ]; then
 fi
 # shellcheck source=lib/forwarder.sh
 . "$SCRIPT_DIR/lib/forwarder.sh"
-forwarder_exec "hq-dm-bind.sh" "5.309.1" "live" "dm-bind" "false" "$@"
+forwarder_exec "hq-dm-bind.sh" "5.310.0" "live" "dm-bind" "false" "$@"

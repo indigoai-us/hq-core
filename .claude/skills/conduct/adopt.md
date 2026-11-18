@@ -16,7 +16,7 @@ What they share with lanes is the mailbox and the delivery hook.
 ### Open the link
 
 ```bash
-hq lanes link open --engine "{this session's engine}" \
+hq runners link open --engine "{this session's engine}" \
   --host-session "{this session's desktop id, when the host exposes one}"
 # JSON: read `.link` and `.join` from stdout.
 ```
@@ -37,7 +37,7 @@ Then run the waiter in the background, so a report wakes this session when it
 is idle:
 
 ```bash
-hq lanes link wait --timeout 3600
+hq runners link wait --timeout 3600
 ```
 
 The command prints JSON: `pending: true` when a report is ready, or
@@ -49,8 +49,8 @@ remain.
 ### Send an instruction
 
 ```bash
-hq lanes link send --child "{name}" --text "{instruction}"
-hq lanes link send --child all --text-file "{path}"
+hq runners link send --child "{name}" --text "{instruction}"
+hq runners link send --child all --text-file "{path}"
 ```
 
 The response is JSON with `queued: true` and `children` set to the number of
@@ -61,7 +61,7 @@ child receives it as context on its next tool event, a Grok child by an
 interrupted tool call. That reaches a child that is **working**. A child that is
 idle has no tool events, so in the desktop app follow the `send` with one
 session message to the child's `host_session` (from `list`) — `conductor: message
-queued, run hq lanes link inbox` — which starts its next
+queued, run hq runners link inbox` — which starts its next
 turn. An idle terminal session picks the message up on its next turn; tell the
 operator that, rather than implying it landed.
 
@@ -76,7 +76,7 @@ labelled `[from {name} · {state}]`. On a host with no hooks, or when the waiter
 fires, read them directly:
 
 ```bash
-hq lanes link read
+hq runners link read
 ```
 
 Read the report text from the JSON `.messages` field.
@@ -90,7 +90,7 @@ summary, read it with `mcp__ccd_session_mgmt__list_events`.
 ### Status
 
 ```bash
-hq lanes link list
+hq runners link list
 ```
 
 Render one row per child — name, engine, state, note, undelivered count — beside
@@ -108,7 +108,7 @@ Use the `children` array from the JSON response and its `name`, `engine`,
   message quotes the operator's approval for that specific action. Ask the
   operator first, then quote the answer.
 - **The mailbox is the record.** Session messages in the desktop app are
-  wake-ups. Instructions and reports go through `hq lanes link`. Link data is
+  wake-ups. Instructions and reports go through `hq runners link`. Link data is
   stored under `workspace/lanes-links/{link}/` and lasts only as long as its
   sessions.
 - **Unattended sessions cannot be messaged** by the desktop tools. A scheduled or

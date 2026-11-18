@@ -10,9 +10,17 @@
 //
 // Usage:
 //   node core/scripts/super-conductor-sweep-check.mjs targets [--state <file>] [--channels <csv>]
-//       Expanded sweep targets, one per line (sessions, hq_dms, hq_channels,
-//       slack:<workspace>, email:<account>, x, teammates). Channels, workspaces
-//       and accounts come from the owner's prefs unless --channels is given.
+//       Expanded sweep targets, one per line (sessions, subagent_runs,
+//       senior_lanes, hq_dms, hq_channels, slack:<workspace>, email:<account>,
+//       x, teammates). Channels, workspaces and accounts come from the owner's
+//       prefs unless --channels is given. `sessions`, `subagent_runs` and
+//       `senior_lanes` are always swept, in both runner modes. subagent_runs
+//       is the read of each adopted conduct session's
+//       workspace/orchestrator/conduct-subagents/<session-id>/runs.json, the
+//       status source for default-mode subagents, which never appear in
+//       `hq runners link list`. senior_lanes is the read-only read of the lanes
+//       naming this session as senior (the Executive opens them in either
+//       mode) and of their pending questions.
 //   node core/scripts/super-conductor-sweep-check.mjs record --state <file> --target <t>
 //       (--cursor <cursor> | --unavailable <reason> --tried <csv>)
 //       Write one evidence entry. A swept target gets last_swept_at and its
@@ -52,6 +60,8 @@ const RECHECK_MS = 60 * 60 * 1000;
 // unavailable only after each one was tried.
 export const FALLBACKS = {
   sessions: ['ccd_list_sessions', 'hq_lanes_link'],
+  subagent_runs: ['conduct_subagents_runs_json'],
+  senior_lanes: ['hq_lanes_list_senior', 'hq_lanes_questions'],
   hq_dms: ['hq_dm'],
   hq_channels: ['hq_channels'],
   slack: ['hq_integration', 'hq_slack_cli', 'slack_mcp'],
@@ -120,9 +130,9 @@ export function targets(p, channelsCsv) {
   const chans = channelsCsv
     ? channelsCsv.split(',').map((s) => s.trim().replace(/ \(from settings\)$/, '')).filter(Boolean)
     : asList(p.channels);
-  const list = ['sessions'];
+  const list = ['sessions', 'subagent_runs', 'senior_lanes'];
   for (const c of chans) {
-    if (c === 'sessions' || list.includes(c)) continue;
+    if (list.includes(c)) continue;
     if (c === 'slack') {
       const ws = asList(p.slack_workspaces).length ? asList(p.slack_workspaces) : ['default'];
       for (const w of ws) list.push(`slack:${w}`);

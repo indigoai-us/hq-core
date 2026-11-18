@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 . "$SCRIPT_DIR/lib/secret-patterns.sh"
 . "$SCRIPT_DIR/lib/delegate-brainstorm.sh"
+. "$SCRIPT_DIR/lib/delegate-engine.sh"
 die() { echo "hq-delegate-publish: $*" >&2; exit 1; }
 [ "${1:-}" = --manifest ] && [ -f "${2:-}" ] || die 'usage: --manifest <path>'
 MANIFEST="$2"
@@ -102,20 +103,31 @@ atomic_copy "$STAGE/manifest.json" "$MANIFEST"
 # of overwriting concurrent changes merely to make the check pass.
 # Push only the dossier paths, never the whole project folder: a large project
 # re-walks thousands of unchanged files and exceeds the foreground timeout.
-hq sync push "$REL/delegation/$ID/" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
-while IFS= read -r file; do
-  [ -n "$file" ] && [ -e "$file" ] || continue
-  hq sync push "${file#"$HQ_ROOT/"}" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
-done <<EOF
+# When the new sync engine owns the vault, `hq sync push` is refused; the
+# engine uploads the files and the read-back below waits for them.
+ENGINE_OWNED=0
+if hq_delegate_engine_owns_vault "$COMPANY"; then ENGINE_OWNED=1; fi
+if [ "$ENGINE_OWNED" -eq 0 ]; then
+  hq sync push "$REL/delegation/$ID/" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
+  while IFS= read -r file; do
+    [ -n "$file" ] && [ -e "$file" ] || continue
+    hq sync push "${file#"$HQ_ROOT/"}" --company "$COMPANY" --on-conflict keep || die 'final dossier push failed; resume publication'
+  done <<EOF
 $SNAPSHOT_FILES
 EOF
+fi
 cp "$STAGE/hashes" "$STAGE/receipts"
 jq -cn --arg key "$REL/delegation/$ID/manifest.json" --arg value "$(file_hash "$DEST/manifest.json")" '{key:$key,value:$value}' >> "$STAGE/receipts"
 while IFS= read -r row; do
   path="$(printf '%s' "$row" | jq -r '.key')"
   expected="$(printf '%s' "$row" | jq -r '.value')"
   matched=0
+  if [ "$ENGINE_OWNED" -eq 1 ]; then
+    hq_delegate_wait_for_cloud "$COMPANY" "${path#"companies/$COMPANY/"}" "$expected" && matched=1
+    [ "$matched" -eq 1 ] || die "the sync engine has not uploaded $path (or the vault holds other bytes) after ${HQ_DELEGATE_ENGINE_WAIT_SECONDS:-180}s; check 'hq sync-core status', then resume"
+  fi
   for delay in 0 1 2; do
+    [ "$matched" -eq 0 ] || break
     [ "$delay" -eq 0 ] || sleep "$delay"
     if hq files cat "${path#"companies/$COMPANY/"}" --company "$COMPANY" > "$STAGE/remote"; then
       if [ "$(file_hash "$STAGE/remote")" = "$expected" ]; then matched=1; break; fi

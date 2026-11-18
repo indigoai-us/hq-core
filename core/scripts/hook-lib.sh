@@ -344,6 +344,14 @@ hq_shell_strip_standalone_data_heredoc() {
 # `git reset` is git. Redirections are retained as argv tokens so write guards
 # can inspect their targets.
 #
+# An ANSI-C string ($'...') is decoded the way Bash 5 decodes it, so a word
+# spelled with escapes (\x2e, \056, \u002e, \t, \cA, ...) reaches guards as the
+# word Bash runs. Where Bash 3.2 reads an escape differently (it has no \u or
+# \U escape and keeps both as written), the record is printed a second time
+# with the Bash 3.2 reading, so a guard checks both words and blocks if either
+# is protected. A decoded newline, tab or space becomes "?", so it cannot split
+# a record or a target word.
+#
 # hq_shell_simple_commands <command> raw
 # Same split, but each word is printed as it is spelled in the command, with
 # its quotes and backslashes kept. Records, words and embedded newlines line
@@ -356,6 +364,708 @@ hq_shell_strip_standalone_data_heredoc() {
 # simple command stays on one output line. The caller turns \036 back into a
 # newline in each word.
 hq_shell_simple_commands() {
+  local rc=0 lrc=0
+  _hq_shell_simple_commands_lexer "$@" || lrc=$?
+  # Exit 3 from the lexer: the input ended inside a $( or backtick
+  # substitution that it read as commands, so the words after the opener were
+  # read as the inside of that substitution (where a quote can hide a later
+  # command). The flat reading is printed too, as for <<, so such input reads
+  # no looser than before substitutions were modelled. The lexer also exits 3
+  # when it read a # inside a substitution as a comment: /bin/bash 3.2 may end
+  # the substitution at a ) after a # that follows an operator.
+  if [ "$lrc" -eq 3 ]; then
+    _hq_shell_simple_commands_flat "$@" || rc=$?
+    return "$rc"
+  fi
+  rc="$lrc"
+  # Fail closed on heredoc guesses. Whether a << starts a heredoc, and where
+  # its body ends, depends on parse context this lexer does not model in full:
+  # arithmetic after time -p or coproc, redirections before an assignment, a
+  # substitution in the delimiter, a body that ends at EOF) inside $(...), and
+  # more. A wrong guess turns the lines after it into body text, where # and
+  # quotes are data, so a guard could read a different target from the one
+  # Bash runs. So whenever the command holds <<, the records of the flat
+  # reading (no heredoc detection, every line read as shell text) are printed
+  # after the heredoc-aware ones, and a guard blocks if either reading is
+  # protected. Both readings are printed in every mode, so the default, raw
+  # and nl outputs still line up record for record.
+  case "$1" in
+    *'<<'*) _hq_shell_simple_commands_flat "$@" || rc=$? ;;
+  esac
+  return "$rc"
+}
+
+# _hq_shell_simple_commands_lexer: the heredoc-aware reading (see above).
+_hq_shell_simple_commands_lexer() {
+  # A function, alias, PATH, hash or enable change in the same command can
+  # make the `cat`, `gh` or `git` of a message heredoc run something else, as
+  # in `cat() { sh; }; gh pr comment 1 --body "$(cat <<'EOF' ...`. With any of
+  # them in the text, message heredoc bodies are printed like other bodies
+  # (see hd_text_arg).
+  local hq_msg_relax_off=0
+  case "$1" in
+    *'<<'*)
+      local hq_fn_re='[A-Za-z_][A-Za-z0-9_.:-]*[[:space:]]*[(][[:space:]]*[)]'
+      local hq_word_re='(^|[^A-Za-z0-9_-])(function|alias|hash|enable)([^A-Za-z0-9_-]|$)'
+      local hq_path_re='(^|[^A-Za-z0-9_])PATH[+]?='
+      if [[ "$1" =~ $hq_fn_re ]] || [[ "$1" =~ $hq_word_re ]] || [[ "$1" =~ $hq_path_re ]]; then
+        hq_msg_relax_off=1
+      fi
+      # Bash sets $_ to the last argument of the previous command, which for
+      # a message command is the hidden body itself. A later `sh -c "$_"`,
+      # `eval "$_"`, `python3 -c "$_"` and the like would then run it. With
+      # $_ or ${_...} in the text, or a way to reach $_ without naming it
+      # (${!name} indirection, eval of a built string, a declare or typeset
+      # nameref), message heredoc bodies are printed like other bodies.
+      # Bash deletes a backslash-newline before it reads words, also inside
+      # double quotes, so "$\<newline>_" is "$_". The text is matched with
+      # those pairs removed.
+      local hq_bsnl=$'\\\n'
+      local hq_joined="${1//"$hq_bsnl"/}"
+      local hq_last_re='[$]_([^A-Za-z0-9_]|$)|[$][{]_([^A-Za-z0-9_]|$)|[$][{]!'
+      local hq_reach_re='(^|[^A-Za-z0-9_-])(eval|declare|typeset)([^A-Za-z0-9_-]|$)'
+      if [[ "$hq_joined" =~ $hq_last_re ]] || [[ "$hq_joined" =~ $hq_reach_re ]] \
+        || [[ "$hq_joined" =~ $hq_fn_re ]] || [[ "$hq_joined" =~ $hq_word_re ]] || [[ "$hq_joined" =~ $hq_path_re ]]; then
+        hq_msg_relax_off=1
+      fi
+      ;;
+  esac
+  # The handoff script is named by a relative path, so a directory change
+  # earlier in the command (cd, pushd, popd, CDPATH) can make that path run
+  # another file, and BASH_ENV, ENV, SHELLOPTS or BASHOPTS can make the shell
+  # run code before the script reads its arguments. With any of them in the
+  # text, its --summary and --title bodies are printed (see hd_text_arg).
+  local hq_handoff_off=0
+  case "$1" in
+    *'<<'*)
+      local hq_dir_re='(^|[^A-Za-z0-9_-])(cd|pushd|popd)([^A-Za-z0-9_-]|$)'
+      local hq_env_re='(BASH_ENV|SHELLOPTS|BASHOPTS|CDPATH)|(^|[^A-Za-z0-9_])ENV[+]?='
+      if [[ "$1" =~ $hq_dir_re ]] || [[ "$1" =~ $hq_env_re ]]; then
+        hq_handoff_off=1
+      fi
+      ;;
+  esac
+  printf '%s' "$1" | awk -v raw_mode="${2:-}" -v msg_relax_off="$hq_msg_relax_off" -v handoff_off="$hq_handoff_off" '
+    # Append to the current word, and to its Bash 3.2 reading when that differs.
+    function aw(s) { word = word s; if (wamb) aword = aword s }
+    function push_op(s) { if (hd_n > 0 && !hd_body) hd_ok = 0; argc++; argv[argc] = s; aargv[argc] = s; dargv[argc] = s }
+    # A word after which (( starts an arithmetic command.
+    function arith_lead(w) {
+      return w == "{" || w == "!" || w == "then" || w == "do" || w == "else" || w == "elif" || w == "if" || w == "while" || w == "until" || w == "time" || w == "for"
+    }
+    # True when the word being read starts where Bash accepts an assignment:
+    # the start of a command, or after assignments or a reserved word.
+    function assign_pos(    k) {
+      for (k = 1; k <= argc; k++) {
+        # A redirection (an optional fd number, the operator and its target)
+        # can come before an assignment in Bash.
+        if (argv[k] ~ /^[<>]/) { k++; continue }
+        if (argv[k] ~ /^[0-9]+$/ && k < argc && argv[k + 1] ~ /^[<>]/) continue
+        if (argv[k] !~ /^[A-Za-z_][A-Za-z0-9_]*(\[.*\])?\+?=/ && !arith_lead(argv[k])) return 0
+      }
+      return 1
+    }
+    # A ) outside heredoc bodies closes the innermost ( on the paren stack.
+    function paren_close() {
+      if (sq > 0 && sqbase == pdepth) sq = 0
+      if (pdepth > 0) {
+        if (ptype[pdepth] == "s") { sq = psq[pdepth]; pq = ppq[pdepth]; sqbase = psqb[pdepth] }
+        pdepth--
+      }
+    }
+    function push_word(    hw) {
+      hw = 0
+      if (hd_want && (word != "" || rword != "")) { heredoc_word(); hw = 1 }
+      # A word after the heredoc delimiter on its line: not a lone cat.
+      if (!hw && hd_n > 0 && !hd_body && (word != "" || rword != "")) hd_ok = 0
+      # Count case and esac at a command start inside $(, so the ) after a
+      # case pattern does not end the substitution.
+      if (sd > 0 && sk[sd] == "p" && (argc == 0 || cmd_lead(argv[argc]))) {
+        if (word == "case") sc[sd]++
+        else if (word == "esac" && sc[sd] > 0) sc[sd]--
+      }
+      if (word != "" || aword != "") {
+        argc++
+        dargv[argc] = word
+        argv[argc] = (raw_mode == "raw" ? rword : word)
+        aargv[argc] = (raw_mode == "raw" ? rword : (wamb ? aword : word))
+        if (wamb) ramb = 1
+        if (raw_mode == "nl") {
+          gsub(/\n/, sprintf("%c", 30), argv[argc])
+          gsub(/\n/, sprintf("%c", 30), aargv[argc])
+        }
+      }
+      word = ""; rword = ""; aword = ""; wamb = 0
+    }
+    function emit(    j, out, aout) {
+      push_word()
+      if (argc == 0) return
+      if (sd > 0 && sub_cd()) { argc = 0; ramb = 0; return }
+      if (hd_body && hd_text_arg()) {
+        for (j in argv) delete argv[j]
+        for (j in aargv) delete aargv[j]
+        argc = 0; ramb = 0; return
+      }
+      out = argv[1]; aout = aargv[1]
+      for (j = 2; j <= argc; j++) { out = out US argv[j]; aout = aout US aargv[j] }
+      print out
+      # Same record count in every mode, so raw output still lines up.
+      if (ramb) print aout
+      for (j in argv) delete argv[j]
+      for (j in aargv) delete aargv[j]
+      argc = 0; ramb = 0
+    }
+    # A command substitution that Bash runs as its own command list: $( or a
+    # backtick inside double quotes, and a backtick outside quotes (kind b),
+    # or an escaped backtick inside one (kind e, one more level down). The
+    # outer record is set aside, the text inside is read as new commands and
+    # printed as records of its own, and then the outer record goes on with
+    # the substitution text in its word, as it read before. Without this, a
+    # write inside double quotes was never read as a command, and a backtick
+    # at the start of a word was glued to the command name.
+    function sub_push(kind, opener, beg,    j) {
+      sd++; sk[sd] = kind; sop[sd] = opener; sbeg[sd] = beg; stx[sd] = ""
+      sp[sd] = 0; sc[sd] = 0; sa[sd] = 0
+      sargc[sd] = argc
+      for (j = 1; j <= argc; j++) { sargv[sd, j] = argv[j]; saargv[sd, j] = aargv[j]; sdargv[sd, j] = dargv[j] }
+      sword[sd] = word; srword[sd] = rword; saword[sd] = aword; swamb[sd] = wamb
+      sramb[sd] = ramb; squote[sd] = quote; shdepth[sd] = hdepth
+      # Bash reads << as a heredoc again inside a substitution, so the
+      # arithmetic, ${ and [ state outside it is set aside until it ends.
+      saq[sd] = aq; spq[sd] = pq; ssq[sd] = sq; ssqb[sd] = sqbase
+      aq = 0; pq = 0; sq = 0
+      for (j in argv) delete argv[j]
+      for (j in aargv) delete aargv[j]
+      argc = 0; word = ""; rword = ""; aword = ""; wamb = 0; ramb = 0
+      quote = ""; hdepth = 0; fresh = 1
+      bt = (kind != "p")
+    }
+    # End the innermost substitution. atend 0: its closer starts at text
+    # position i. atend 1: the input or a heredoc body ended (the text is
+    # already saved). atend 2: it ends at i with no closer of its own.
+    function sub_pop(atend,    body, closer, add, j) {
+      emit()
+      body = stx[sd]
+      if (atend != 1) body = body substr(text, sbeg[sd], i - sbeg[sd])
+      closer = ""
+      if (atend == 0) closer = (sk[sd] == "p" ? ")" : (sk[sd] == "e" ? "\\`" : "`"))
+      if (sa[sd]) arith--
+      argc = sargc[sd]
+      for (j = 1; j <= argc; j++) {
+        argv[j] = sargv[sd, j]; aargv[j] = saargv[sd, j]; dargv[j] = sdargv[sd, j]
+        delete sargv[sd, j]; delete saargv[sd, j]; delete sdargv[sd, j]
+      }
+      word = sword[sd]; rword = srword[sd]; aword = saword[sd]; wamb = swamb[sd]
+      ramb = sramb[sd]; quote = squote[sd]; hdepth = shdepth[sd]
+      aq = saq[sd]; pq = spq[sd]; sq = ssq[sd]; sqbase = ssqb[sd]
+      add = sop[sd] body closer
+      sd--
+      bt = (sd > 0 && sk[sd] != "p")
+      rword = rword add
+      aw(quote == "\"" ? dq_read(add) : add)
+    }
+    # An unescaped backtick ends an escaped-backtick level and the backtick
+    # substitution around it.
+    function bt_close() {
+      if (sk[sd] == "e") sub_pop(2)
+      sub_pop(0)
+    }
+    # The word text Bash keeps for s inside double quotes: a backslash before
+    # a dollar sign, backtick, double quote, backslash or newline is dropped.
+    function dq_read(s,    out, k, ch, nx) {
+      out = ""
+      for (k = 1; k <= length(s); k++) {
+        ch = substr(s, k, 1); nx = substr(s, k + 1, 1)
+        if (ch == "\\" && (nx == "$" || nx == "`" || nx == "\"" || nx == "\\" || nx == "\n")) { out = out nx; k++ }
+        else out = out ch
+      }
+      return out
+    }
+    # True when the record is cd, pushd or popd. Inside a substitution a cd
+    # changes the directory only there, but guards read records as one flat
+    # list and would apply it to the commands after the substitution, so the
+    # record is not printed. The decision reads the default words, so every
+    # output mode prints the same records.
+    # The command name is found the way block-core-writes-bash finds it
+    # (shell_command_executable_result): assignments, the prefix words, and
+    # options and assignments after env are skipped, so env X=y -i cd is a
+    # cd here too.
+    function sub_cd(    j, w, inenv) {
+      inenv = 0
+      for (j = 1; j <= argc; j++) {
+        w = dargv[j]
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
+        if (inenv && w ~ /^-/) continue
+        if (w == "env") { inenv = 1; continue }
+        inenv = 0
+        if (w == "command" || w == "builtin" || w == "exec" || w == "sudo") continue
+        return w == "cd" || w == "pushd" || w == "popd"
+      }
+      return 0
+    }
+    # True while the lines of a quoted heredoc body are message text that no
+    # shell reads: the body of a lone `cat <<QUOTED` (nothing else on its
+    # line) that is the whole of a double-quoted $( word, given as the value
+    # of a message option: gh pr|issue create|comment|edit|review --body,
+    # -b, --title or -t, or git ... commit|tag -m or --message. Those body
+    # lines are not printed, so a PR body or commit message that quotes a
+    # command is not read as one. Any other heredoc body is still printed;
+    # under bash -c or eval it may run.
+    function hd_text_arg(    n, a, c, v, j) {
+      if (msg_relax_off) return 0
+      if (!hd_q[hd_cur] || !hd_ok || sd == 0 || sd != hd_sd) return 0
+      if (sk[sd] != "p" || squote[sd] != "\"" || sword[sd] != "") return 0
+      n = sargc[sd]
+      a = sdargv[sd, n]; c = sdargv[sd, 1]
+      # The handoff script takes its --summary and --title text as data (it
+      # passes them to jq as --arg values). Only the shipped relative path
+      # counts, run directly or as the first operand of bash or sh with no
+      # shell option before it, so another script of that name elsewhere,
+      # or bash -c, still has its body printed. So does any command that
+      # changes directory or sets a shell startup variable (handoff_off).
+      v = (c == "bash" || c == "sh") ? sdargv[sd, 2] : c
+      if (!handoff_off && (v == "core/scripts/handoff-finalize.sh" || v == "./core/scripts/handoff-finalize.sh") && (a == "--summary" || a == "--title"))
+        return n >= ((c == "bash" || c == "sh") ? 3 : 2)
+      if (n < 3) return 0
+      if (c == "gh") {
+        if (a != "--body" && a != "-b" && a != "--title" && a != "-t") return 0
+        if (sdargv[sd, 2] != "pr" && sdargv[sd, 2] != "issue") return 0
+        v = sdargv[sd, 3]
+        return v == "create" || v == "comment" || v == "edit" || v == "review"
+      }
+      if (c == "git") {
+        if (a != "-m" && a != "--message") return 0
+        for (j = 2; j < n; j++) if (sdargv[sd, j] == "commit" || sdargv[sd, j] == "tag") return 1
+      }
+      return 0
+    }
+    # A reserved word after which the next word starts a command too.
+    function cmd_lead(w) { return w != "for" && arith_lead(w) }
+    # The word after << or <<- names the heredoc delimiter. Any quoting in it
+    # makes the body literal text, as in Bash.
+    function heredoc_word(    d, r) {
+      d = word; r = rword
+      if (hd_dash == 1) {
+        if (r == "-") { hd_dash = 2; return }
+        d = substr(d, 2); r = substr(r, 2)
+      }
+      # <<$(...) : the word was cut at the ( so only the dollar sign is
+      # left. Its body end cannot be known here, so no heredoc is started
+      # and the lines after it are read as shell.
+      if (r == "$") { hd_want = 0; hd_dash = 0; return }
+      hd_n++; hd_delim[hd_n] = d; hd_q[hd_n] = (r != d); hd_tab[hd_n] = (hd_dash > 0)
+      # A lone cat with this one heredoc (see hd_text_arg).
+      hd_ok = (hd_n == 1 && argc == 2 && dargv[1] == "cat" && argv[2] == "<<"); hd_par = 0
+      hd_want = 0; hd_dash = 0
+    }
+    # Add decoded text s (Bash 5) and as (Bash 3.2) to an ANSI-C word. A NUL
+    # byte ends the rest of the string in Bash, so drop and adrop stop the
+    # text for that reading until the closing quote.
+    function ansi_add(s, as, drop, adrop) {
+      ansi_qonly = 0
+      if ((s != as || drop != adrop) && !wamb) { wamb = 1; aword = word; ansi_adrop = ansi_drop }
+      if (!ansi_drop) word = word s
+      if (wamb && !ansi_adrop) aword = aword as
+      if (drop) ansi_drop = 1
+      if (adrop) ansi_adrop = 1
+    }
+    # One decoded byte. A byte that would split the record or the word
+    # (newline, tab, space, and the record and unit separators) becomes "?":
+    # guards read records line by line and split targets on whitespace again,
+    # so a decoded newline or space hid the command or its target. A byte
+    # outside ASCII keeps its escape as written: it cannot spell any ASCII
+    # path name, so the exact byte does not matter to a guard.
+    function ansi_char(v, raw) {
+      if (v == 0) return ""
+      if (v == 9 || v == 10 || v == 32 || v == 30 || v == 31) return "?"
+      if (v >= 128) return raw
+      return sprintf("%c", v)
+    }
+    # An ANSI-C string made of nothing but escaped quotes keeps the shape the
+    # lexer gave it before decoding: the dollar sign and each escape as written
+    # (the strip-exclude helper and its tests read that shape). This is safe
+    # because both readings of such a string, the dollar sign with the escapes
+    # as written and the bare quote Bash runs, are a single path component
+    # made of a quote character. Neither can ever equal ".", "..", ".claude"
+    # or "/", so no guard match depends on which reading it sees.
+    # Any other string that holds an escaped quote is decoded in full, quote
+    # included, so a protected path with an escaped quote in it reads as the
+    # path Bash runs.
+    function ansi_close(    k) {
+      if (!(ansi_hasq && ansi_qonly)) return
+      word = substr(word, 1, ansi_start) "$"
+      for (k = 1; k <= ansi_qn; k++) word = word "\\" "\047"
+      if (wamb) {
+        aword = substr(aword, 1, ansi_start) "$"
+        for (k = 1; k <= ansi_qn; k++) aword = aword "\\" "\047"
+      }
+    }
+    # Decode the backslash escape at text position i inside an ANSI-C string.
+    function ansi_escape(    nc, ch, v, k, max, d, raw, alt, keep) {
+      nc = substr(text, i + 1, 1)
+      i++; rword = rword nc; raw = "\\" nc; v = -1; alt = 0
+      if (nc == "a") v = 7
+      else if (nc == "b") v = 8
+      else if (nc == "e" || nc == "E") v = 27
+      else if (nc == "f") v = 12
+      else if (nc == "n") v = 10
+      else if (nc == "r") v = 13
+      else if (nc == "t") v = 9
+      else if (nc == "v") v = 11
+      else if (nc == "\047") { keep = ansi_qonly; ansi_add(nc, nc, 0, 0); ansi_qonly = keep; ansi_hasq = 1; ansi_qn++; return }
+      else if (nc == "\\" || nc == "\"" || nc == "?") { ansi_add(nc, nc, 0, 0); return }
+      else if (nc ~ /^[0-7]$/) {
+        v = nc + 0
+        for (k = 1; k < 3; k++) {
+          ch = substr(text, i + 1, 1)
+          if (ch !~ /^[0-7]$/) break
+          v = v * 8 + ch; i++; rword = rword ch; raw = raw ch
+        }
+        v = v % 256
+      }
+      else if (nc == "x" || nc == "u" || nc == "U") {
+        max = (nc == "x" ? 2 : (nc == "u" ? 4 : 8)); v = 0
+        for (k = 0; k < max; k++) {
+          ch = substr(text, i + 1, 1)
+          d = (ch == "" ? 0 : index("0123456789abcdef", tolower(ch)))
+          if (d == 0) break
+          v = v * 16 + d - 1; i++; rword = rword ch; raw = raw ch
+        }
+        if (k == 0) { ansi_add(raw, raw, 0, 0); return }
+        # Bash 3.2 has no \u or \U escape: it keeps both as written.
+        if (nc != "x" && v < 128) alt = 1
+        if (nc != "x" && v >= 128) v = 128
+      }
+      else if (nc == "c") {
+        ch = substr(text, i + 1, 1)
+        if (ch == "\047" || !(ch in ORD)) { ansi_add(raw, raw, 0, 0); return }
+        i++; rword = rword ch; raw = raw ch
+        v = (ch == "?" ? 127 : ORD[toupper(ch)] % 32)
+      }
+      else { ansi_add(raw, raw, 0, 0); return }
+      if (alt) ansi_add(ansi_char(v, raw), raw, v == 0, 0)
+      else ansi_add(ansi_char(v, raw), ansi_char(v, raw), v == 0, v == 0)
+    }
+    BEGIN {
+      quote = ""; escaped = 0; word = ""; rword = ""; aword = ""; wamb = 0
+      argc = 0; ramb = 0; bt = 0; fresh = 0; ansi_drop = 0; ansi_adrop = 0; ansi_hasq = 0; ansi_qonly = 0; ansi_qn = 0; ansi_start = 0
+      hd_want = 0; hd_dash = 0; hd_n = 0; hd_cur = 0; hd_body = 0; hdepth = 0; contline = 0
+      aq = 0; qbody = 0; pq = 0; sq = 0; sqbase = 0; dol = 0; pdol = 0; pdepth = 0
+      sd = 0; arith = 0; hd_sd = 0; hd_ok = 0
+      US = sprintf("%c", 31)
+      for (k = 1; k < 128; k++) ORD[sprintf("%c", k)] = k
+    }
+    {
+      # Parse the payload as one stream: quote, escape, and word state carry
+      # over from one input line to the next, because a quoted `bash -c`
+      # program and a heredoc can span newlines; resetting quote state at
+      # each line silently discarded the command before it. Each line is
+      # parsed as it is read, with its newline restored. Joining all lines
+      # into one string first copied the string once per line, which grew
+      # with the square of the command length.
+      text = $0 "\n"
+      n = length(text)
+      # A heredoc body ends at the first line that is exactly its delimiter
+      # (after leading tabs, for <<-). Bash reads the body before it parses
+      # anything in it, so the delimiter line ends the body whatever the body
+      # left open.
+      hd_last = 0
+      if (hd_body) {
+        hd_line = $0
+        if (hd_tab[hd_cur]) sub(/^\t+/, "", hd_line)
+        if (hd_line == hd_delim[hd_cur]) hd_last = 1
+      }
+      # Bash 3.2 does not read a heredoc inside $( as a body: it ends the
+      # substitution at the first ) that its own count does not match, and
+      # the lines after it can then run. Message body lines stay hidden only
+      # while every ( and ) so far is matched and no line holds a character
+      # that can hide one from that count (a single quote, a backtick, a
+      # backslash, or a # before a parenthesis). From the first line that
+      # breaks this, body lines are printed again.
+      # Double quotes are read the way Bash 3.2 counts them: a parenthesis in
+      # a double-quoted span is not counted unless it belongs to a $( in that
+      # span, which Bash 3.2 does match. A line keeps the body hidden only
+      # when each double-quoted span closes on the same line, holds no bare
+      # parenthesis, and holds no quote inside a $( of its own. So JSON text
+      # such as {"cost": "$(date)"} stays hidden, while a quoted ( with a bare
+      # ) on a later line does not: Bash 3.2 ends the substitution at that )
+      # and runs the lines after it.
+      if (hd_body && hd_ok && !hd_last) {
+        hd_line = $0
+        if (index(hd_line, "`") || index(hd_line, "\\") || index(hd_line, "\047") || hd_line ~ /#.*[()]/) hd_ok = 0
+        hd_dq = 0; hd_dqp = 0
+        for (k = 1; hd_ok && k <= length(hd_line); k++) {
+          c = substr(hd_line, k, 1)
+          if (c == "\"") { if (hd_dqp > 0) hd_ok = 0; else hd_dq = !hd_dq; continue }
+          if (hd_dq) {
+            if (c == "$" && substr(hd_line, k + 1, 1) == "(") { hd_dqp++; k++ }
+            else if (c == "(") { if (hd_dqp > 0) hd_dqp++; else hd_ok = 0 }
+            else if (c == ")") { if (hd_dqp > 0) hd_dqp--; else hd_ok = 0 }
+            continue
+          }
+          if (c == "(") hd_par++
+          else if (c == ")" && --hd_par < 0) hd_ok = 0
+        }
+        if (hd_dq || hd_dqp) hd_ok = 0
+      }
+      hd_hide = (hd_body && !hd_last && hd_text_arg())
+      for (i = 1; i <= n; i++) {
+        c = substr(text, i, 1)
+        ws = fresh; fresh = 0
+        pdol = dol; dol = 0
+        if (qbody && c == "\n") { quote = ""; qbody = 0; escaped = 0 }
+        if (escaped) { aw(c); rword = rword c; escaped = 0; continue }
+        # Inside a backtick substitution, Bash finds the closing backtick
+        # before it reads any quote, so an unescaped backtick ends the
+        # substitution even inside a quote that was opened in it.
+        if (quote == "\047") {
+          if (bt && c == "\\" && substr(text, i + 1, 1) == "`") {
+            if (sk[sd] == "e") { sub_pop(0); i++; continue }
+            aw("`"); rword = rword c "`"; i++; continue
+          }
+          if (bt && c == "`") { bt_close(); continue }
+          rword = rword c
+          if (c == "\047") quote = ""; else aw(c)
+          continue
+        }
+        if (quote == "$\047") {
+          # ANSI-C quoting (dollar sign, then a single-quoted string): a
+          # backslash starts an escape, so an escaped quote does not end the
+          # string. Escapes are decoded into the word; the raw word keeps
+          # the string as written. (No quote characters in this comment: the
+          # awk program is a single-quoted shell string.)
+          if (bt && c == "`") { ansi_drop = 0; ansi_adrop = 0; bt_close(); continue }
+          if (sk[sd] == "e" && c == "\\" && substr(text, i + 1, 1) == "`") {
+            ansi_drop = 0; ansi_adrop = 0; sub_pop(0); i++; continue
+          }
+          rword = rword c
+          if (c == "\047") {
+            ansi_close()
+            quote = ""; ansi_drop = 0; ansi_adrop = 0
+            continue
+          }
+          if (c == "\\") ansi_escape(); else ansi_add(c, c, 0, 0)
+          continue
+        }
+        if (quote == "\"") {
+          # Inside double quotes a backslash escapes only $ ` " \ and newline,
+          # as in Bash. Any other backslash stays in the word, so
+          # "C:\Program Files\Git\cmd\git.exe" keeps its path separators.
+          # A backslash-newline is removed (a line continuation).
+          if (c == "\\" && substr(text, i + 1, 1) == "\n") { i++; contline = 1; continue }
+          # $( and a backtick start a command substitution here too.
+          if (bt && c == "`") { bt_close(); continue }
+          if (sk[sd] == "e" && c == "\\" && substr(text, i + 1, 1) == "`") { sub_pop(0); i++; continue }
+          if (c == "`") { sub_push("b", c, i + 1); continue }
+          if (c == "$" && substr(text, i + 1, 1) == "(") {
+            sub_push("p", "$(", i + 2); i++
+            if (substr(text, i + 1, 1) == "(") { sa[sd] = 1; arith++ }
+            continue
+          }
+          rword = rword c
+          if (c == "\"") quote = ""
+          else if (c == "\\") {
+            nc = substr(text, i + 1, 1)
+            if (nc == "$" || nc == "`" || nc == "\"" || nc == "\\" || nc == "\n") escaped = 1
+            else aw(c)
+          }
+          else aw(c)
+          continue
+        }
+        # Heredoc body text is data: quotes and # are ordinary characters in
+        # it, so an apostrophe in the body cannot open a quote that hides the
+        # commands after the heredoc. Its words are still split and shown to
+        # guards. In an unquoted body, $( and backticks still run commands,
+        # so the text inside them is read as shell again.
+        hlit = hd_body && sd == hd_sd && (hd_q[hd_cur] || (hdepth == 0 && !bt))
+        if (hlit) {
+          if (!hd_q[hd_cur] && c == "`") { sub_push("b", c, i + 1); continue }
+          if (!hd_q[hd_cur] && c == "$" && substr(text, i + 1, 1) == "(") {
+            aw(c); rword = rword c; emit(); hdepth = 1; i++; continue
+          }
+          # A quote here holds no state, but it is still dropped from the
+          # word as Bash would drop it, so a quoted path reads the same if
+          # the << was not a heredoc after all (an arithmetic shift).
+          # In a quoted body nothing expands, so a quote still groups the
+          # words inside it, but only to the end of its line (qbody): an
+          # apostrophe cannot reach the commands after the heredoc, and a
+          # quoted string in a python line stays one word with its spaces.
+          # Guards rely on that shape to tell body text from shell words. In
+          # an unquoted body a substitution runs, so a quote there holds no
+          # state.
+          if (c == "\047" || c == "\"") {
+            rword = rword c
+            if (hd_q[hd_cur]) { quote = c; qbody = 1 }
+            continue
+          }
+          if (c == "#" || c == "$") { aw(c); rword = rword c; continue }
+        } else {
+          # A backtick opens or closes a command substitution, and inside one
+          # an escaped backtick opens or closes one more level.
+          if (c == "`") { if (bt) bt_close(); else sub_push("b", c, i + 1); continue }
+          if (bt && c == "\\" && substr(text, i + 1, 1) == "`") {
+            if (sk[sd] == "e") sub_pop(0); else sub_push("e", "\\`", i + 2)
+            i++; continue
+          }
+          # Two dollar signs are the shell PID expansion, read before any
+          # quote. Take them as a pair so a quote right after them stays an
+          # ordinary single quote and never opens an ANSI-C string. An odd
+          # run still ends in one dollar sign that can start one, as in Bash.
+          if (c == "$" && substr(text, i + 1, 1) == "$") {
+            aw("$$"); rword = rword "$$"; i++; continue
+          }
+          # Locale quoting: $"..." is the quoted text without the dollar sign.
+          if (c == "$" && substr(text, i + 1, 1) == "\"") { rword = rword c; continue }
+          if (c == "$" && substr(text, i + 1, 1) == "\047") {
+            quote = "$\047"; rword = rword c "\047"; ansi_drop = 0; ansi_adrop = 0; ansi_hasq = 0; ansi_qonly = 1; ansi_qn = 0; ansi_start = length(word); i++; continue
+          }
+          # An unquoted # at the start of a word begins a comment, as in Bash.
+          # Without this, a quote character inside a trailing comment opened
+          # a quote that swallowed the whole command, so no record was
+          # emitted and guards saw nothing to check. The first word inside a
+          # backtick substitution is a word start too, and there the comment
+          # ends at the closing backtick, not at the end of the line.
+          # Inside a substitution, a # right after a non-blank byte (as in
+          # x;# or x&#) is a comment for Bash 5, but /bin/bash 3.2 ends the
+          # substitution at the next ) and runs what follows. Any comment
+          # inside a substitution is flagged so the caller adds the flat
+          # reading, where # is a word byte (fail closed: a comment after a
+          # blank costs at most a false block).
+          if (c == "#" && ((word == "" && rword == "") || ws)) {
+            if (sd > 0) cmt_amb = 1
+            while (i < n) {
+              nc = substr(text, i + 1, 1)
+              if (nc == "\n" || (bt && nc == "`")) break
+              if (bt && nc == "\\" && substr(text, i + 2, 1) == "`") {
+                if (sk[sd] == "e") break
+                i++
+              }
+              i++
+            }
+            continue
+          }
+          if (c == "\047" || c == "\"") { quote = c; rword = rword c; continue }
+        }
+        # A backslash-newline outside a heredoc body joins the two lines, as
+        # in Bash: neither byte is part of the word, and the dollar-sign and
+        # word-start state before it carry over. The lexer reads one line at
+        # a time and cannot look ahead past the line end, so a << on a line
+        # that was continued starts no heredoc (contline): a construct split
+        # by the continuation, such as a[ or $(( , may make it a shift.
+        if (c == "\\" && !hlit && substr(text, i + 1, 1) == "\n") { i++; dol = pdol; fresh = ws; contline = 1; continue }
+        if (c == "\\") { escaped = 1; rword = rword c; continue }
+        if (c == " " || c == "\t") { push_word(); continue }
+        # Track arithmetic: $(( and (( at a command start open it, and its
+        # parentheses are counted until they close. A << inside it is a
+        # shift, not a heredoc. Parentheses in heredoc body text are data,
+        # so they are not counted.
+        if (!hlit && c == "(") {
+          if (aq > 0) aq++
+          else if (substr(text, i + 1, 1) == "(" && (substr(rword, length(rword)) == "$" || (word == "" && rword == "" && (argc == 0 || arith_lead(argv[argc]))))) aq = 1
+        }
+        else if (!hlit && c == ")" && aq > 0) aq--
+        if (!hlit && hdepth == 0 && c == ")" && sd > 0 && sk[sd] == "p") {
+          # The ) that matches the $( ends it, unless it ends a case pattern.
+          # A ) in heredoc body text is data and ends nothing.
+          push_word()
+          if (sp[sd] == 0 && sc[sd] == 0) { sub_pop(0); continue }
+          if (sp[sd] > 0) { sp[sd]--; if (!hd_body) paren_close() }
+          else if (!hd_body && sq > 0 && sqbase == pdepth) sq = 0
+          emit(); continue
+        }
+        if (!hlit && hdepth == 0 && c == "(" && sd > 0 && sk[sd] == "p") sp[sd]++
+        # Bash also reads << as a shift inside ${...}, inside $[...] and
+        # inside the subscript of name[...] at an assignment spot (with or
+        # without a following =), so none of them starts a heredoc. A wrong
+        # heredoc guess turns the lines after it into body text, where a
+        # trailing comment is read as words and can replace a write target.
+        # An unclosed ${ here is a syntax error that stops Bash before
+        # anything after it runs. A [ in a case pattern is not a subscript,
+        # so a ) that closes no ( opened after the [ ends it.
+        if (!hlit) {
+          if (c == "{" && pdol) pq++
+          else if (c == "}" && pq > 0) pq--
+          else if (c == "[" && (sq > 0 || pdol || (pq == 0 && word == rword && rword ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && assign_pos()))) { if (sq == 0) sqbase = pdepth; sq++ }
+          else if (c == "]" && sq > 0) sq--
+        }
+        # Parentheses outside heredoc bodies are kept on a stack. $( opens a
+        # command substitution, where Bash reads << as a heredoc again, so
+        # the ${ and [ state outside it is saved and cleared until its ).
+        # name=( and name+=( open a compound array assignment, where Bash 5
+        # reads << as part of a subscript and Bash 3.2 stops at a syntax
+        # error, so no heredoc starts directly inside one.
+        if (!hlit && !hd_body && c == "(") {
+          pdepth++; psq[pdepth] = sq; ppq[pdepth] = pq; psqb[pdepth] = sqbase
+          if (pdol && substr(text, i + 1, 1) != "(") { ptype[pdepth] = "s"; sq = 0; pq = 0 }
+          else if (rword ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=$/) ptype[pdepth] = "c"
+          else ptype[pdepth] = "p"
+        }
+        else if (!hlit && !hd_body && c == ")") paren_close()
+        if (c == ";" || c == "|" || c == "&" || c == "\n" || c == "(" || c == ")") {
+          if (c != "\n" && hd_n > 0 && !hd_body) hd_ok = 0
+          if (hdepth > 0) { if (c == "(") hdepth++; else if (c == ")") hdepth-- }
+          emit()
+          if ((c == "|" || c == "&") && substr(text, i + 1, 1) == c) i++
+          if (c == "\n") {
+            contline = 0
+            # A heredoc body starts on the line after its << operator.
+            hd_want = 0; hd_dash = 0
+            if (hd_n > 0 && !hd_body) { hd_body = 1; hd_cur = 1; hdepth = 0; hd_sd = sd }
+          }
+          continue
+        }
+        if (c == ">" || c == "<") {
+          push_word(); push_op(c)
+          # Keep the Bash noclobber-override redirection (>|) with its target.
+          # Treating the pipe byte as a command boundary would otherwise split
+          # `printf x >| target` into two harmless-looking records.
+          if (substr(text, i + 1, 1) == c || (c == ">" && substr(text, i + 1, 1) == "|")) {
+            argv[argc] = argv[argc] substr(text, i + 1, 1); aargv[argc] = argv[argc]; i++
+          }
+          # << (but not the <<< here-string) starts a heredoc; <<- also
+          # strips leading tabs from its body and delimiter lines.
+          if (argv[argc] == "<<" && !hd_body && !aq && !arith && !pq && !sq && !bt && !(pdepth > 0 && ptype[pdepth] == "c") && !contline && !(argc > 1 && argv[argc - 1] ~ /\$\[[^]]*$/) && substr(text, i + 1, 1) != "<") {
+            hd_want = 1; hd_dash = (substr(text, i + 1, 1) == "-")
+          }
+          continue
+        }
+        aw(c); rword = rword c
+        if (!hlit && c == "$") dol = 1
+      }
+      # Keep the text of each open substitution, for the outer word. A body
+      # line of message text (see hd_text_arg) is left out of it too: its
+      # records are not printed, and the same line kept inside the outer
+      # word would reach guards anyway, as one long word per body line.
+      # (hd_hide is set before the line is read, so the << line itself,
+      # which starts the body, is kept.)
+      for (k = 1; k <= sd; k++) { stx[k] = stx[k] (hd_hide ? "" : substr(text, sbeg[k])); sbeg[k] = 1 }
+      if (hd_last) {
+        # Show any words a substitution in the body left open, then drop
+        # every state the body left behind.
+        while (sd > hd_sd) sub_pop(1)
+        emit()
+        quote = ""; qbody = 0; escaped = 0; hdepth = 0; ansi_drop = 0; ansi_adrop = 0; pq = 0; sq = 0
+        bt = (sd > 0 && sk[sd] != "p")
+        hd_cur++
+        if (hd_cur > hd_n) { hd_body = 0; hd_n = 0; hd_cur = 0 }
+      }
+    }
+    # Input that ends inside a quote is a shell syntax error, and input that
+    # ends in a backslash is a literal backslash, but emit what was read so
+    # far either way: guards then still see the words before it.
+    # A substitution still open at the end is closed, so its words and the
+    # outer record are both shown.
+    # Exit 3 tells the caller a substitution was still open at the end, or
+    # that a # inside one may not be a comment under /bin/bash 3.2.
+    END { sub_open = (sd > 0); while (sd > 0) sub_pop(1); emit(); if (sub_open || cmt_amb) exit 3 }
+  '
+}
+
+# _hq_shell_simple_commands_flat: the reading with no heredoc detection, in
+# which every line is shell text. It is the lexer as it was before heredoc
+# bodies and backtick substitutions were modelled, kept unchanged so a wrong
+# heredoc guess in the lexer above can never read looser than it.
+_hq_shell_simple_commands_flat() {
   printf '%s' "$1" | awk -v raw_mode="${2:-}" '
     function push_word() {
       if (word != "") {
@@ -501,6 +1211,7 @@ hq_shell_record_executable() {
   local token
   local -a argv
   HQ_SHELL_EXECUTABLE=""
+  HQ_SHELL_SUDO_CHDIR=""
   [ -n "$1" ] || return 1
   # Fast path: when the first word is not an assignment or a prefix word
   # (env, command, builtin, exec, sudo), it is the executable. This skips the
@@ -533,12 +1244,258 @@ hq_shell_record_executable() {
         done
         continue
         ;;
-      command|builtin|exec|sudo)
+      sudo)
+        # Skip sudo's own options and their values, or `sudo -u nobody cp`
+        # resolves to `-u` instead of `cp`.
+        _hq_sudo_option_end "$((i + 1))" "${argv[@]}"
+        i="$HQ_SUDO_OPTION_END"; HQ_SHELL_SUDO_CHDIR="$HQ_SUDO_CHDIR"; continue ;;
+      command|builtin|exec)
         i=$((i + 1)); continue ;;
       *) HQ_SHELL_EXECUTABLE="$token"; return 0 ;;
     esac
   done
   return 1
+}
+
+# _hq_sudo_option_takes_value <short option letter or long option>
+#   0 when the sudo option reads a value: -a -c -u -g -C -p -r -t -U -D -R -T
+#   and their long forms (sudo's getopt string has a: c: C: D: g: p: r: R: t:
+#   T: U: u:). -h is not listed: its value is optional and only attached
+#   (-hhost); a bare -h is --help and does not read the next word. Callers
+#   end a short-option cluster at h for that reason.
+_hq_sudo_option_takes_value() {
+  case "$1" in
+    a|c|u|g|C|p|r|t|U|D|R|T) return 0 ;;
+    --user|--group|--close-from|--host|--prompt|--role|--type|--other-user) return 0 ;;
+    --chdir|--chroot|--command-timeout|--auth-type|--login-class) return 0 ;;
+  esac
+  return 1
+}
+
+# _hq_sudo_option_end <index> <word>...
+#   <word>... is a simple command's argv and <index> the word right after
+#   `sudo`. Set HQ_SUDO_OPTION_END to the index of the first word after sudo's
+#   own options: combined short flags (-nE), a value attached (-uroot) or in
+#   the next word (-u root, -nu root), long options (--user root,
+#   --user=root, --preserve-env), and `--`, which ends them.
+#   Also set HQ_SUDO_CHDIR to the directory of the last -D/--chdir (empty when
+#   there is none): the command runs there, as `git -C DIR` would.
+HQ_SUDO_OPTION_END=0
+HQ_SUDO_CHDIR=""
+# hq_shell_record_executable copies HQ_SUDO_CHDIR here for the record it
+# resolved (block-hq-root-git-mutation.sh reads it as a git -C anchor).
+# shellcheck disable=SC2034 # Read by guards after this sourced function returns.
+HQ_SHELL_SUDO_CHDIR=""
+_hq_sudo_option_end() {
+  local i="$1" token cluster c n
+  shift
+  local -a w=("$@")
+  n="${#w[@]}"
+  HQ_SUDO_CHDIR=""
+  while [ "$i" -lt "$n" ]; do
+    token="${w[$i]}"
+    case "$token" in
+      --) i=$((i + 1)); break ;;
+      --chdir=*) HQ_SUDO_CHDIR="${token#--chdir=}"; i=$((i + 1)) ;;
+      --*=*) i=$((i + 1)) ;;
+      --?*)
+        i=$((i + 1))
+        if _hq_sudo_option_takes_value "$token"; then
+          [ "$token" != --chdir ] || HQ_SUDO_CHDIR="${w[$i]:-}"
+          i=$((i + 1))
+        fi
+        ;;
+      -?*)
+        cluster="${token#-}"
+        i=$((i + 1))
+        while [ -n "$cluster" ]; do
+          c="${cluster:0:1}"
+          cluster="${cluster:1}"
+          # -h: the rest of the word, if any, is its value; never the next word.
+          [ "$c" != h ] || break
+          if _hq_sudo_option_takes_value "$c"; then
+            if [ -n "$cluster" ]; then
+              [ "$c" != D ] || HQ_SUDO_CHDIR="$cluster"
+            else
+              [ "$c" != D ] || HQ_SUDO_CHDIR="${w[$i]:-}"
+              i=$((i + 1))
+            fi
+            break
+          fi
+        done
+        ;;
+      *) break ;;
+    esac
+  done
+  [ "$i" -le "$n" ] || i="$n"
+  HQ_SUDO_OPTION_END="$i"
+}
+
+# _hq_sudo_options_as_assignments <command>
+#   For block-core-writes-bash.sh, whose command-name lookup is frozen
+#   (merged-write-guard-shadow.test.sh) and skips the word `sudo` but not its
+#   options, so it took `-u` as the command in `sudo -u nobody cp ...`. Set
+#   HQ_SUDO_REWRITE_RESULT to the command with each option word and option
+#   value of a `sudo` in command position replaced by the assignment word
+#   HQ_SUDO_OPTION=1. The guard's lookup skips NAME=value words, so it reaches
+#   the real command, and every other word keeps its place. A `sudo` is in
+#   command position at the start, after ; & | ( or a newline, after `$(` or a
+#   backtick, or after env/command/exec/nohup/time/builtin or NAME=value in
+#   command position. When an option word or value holds anything but
+#   letters, digits and _ . , : / @ + = % -, the command is left as written.
+#   That includes a quoted value (-u "build user", -p 'pw:'): this scan splits
+#   on whitespace and does not track quotes, so the word `sudo` may sit inside
+#   a string or a comment, and a quote after it may close that string. Only
+#   plain words are replaced, one for one, so the quotes and operators of the
+#   command are never changed.
+#   A newline ends the sudo command, so an option at the end of a line never
+#   takes a word of the next line as its value.
+#   -D/--chdir and -R/--chroot get the same HQ_SUDO_OPTION=1 words and nothing
+#   else. They change only the sudo child's directory, never the caller's, so
+#   no `cd` is modelled for them: an injected `cd` changes the guard's cd
+#   tracking for the rest of the command (an outside DIR turns off its
+#   relative-path checks; any non-protected DIR clears a protected cwd set by
+#   an earlier `cd`). A relative target after them is checked against the
+#   caller's directory, as on main.
+#   The command is read line by line and only a line with the word `sudo` is
+#   scanned, so a long script costs no more than its sudo lines.
+HQ_SUDO_REWRITE_RESULT=""
+HQ_SUDO_LINE_RESULT=""
+
+_hq_sudo_options_as_assignments() {
+  local input="$1" line changed=0
+  local -a hq_sudo_lines=()
+  HQ_SUDO_REWRITE_RESULT="$input"
+  case "$input" in *sudo*) ;; *) return 0 ;; esac
+  # The here-string adds one newline, so joining the lines with newlines
+  # gives the input back exactly, with or without a final newline.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *sudo*)
+        # One word that cannot be replaced safely leaves the whole command
+        # as written.
+        _hq_sudo_line_options_as_assignments "$line" || return 0
+        [ "$HQ_SUDO_LINE_RESULT" = "$line" ] || changed=1
+        line="$HQ_SUDO_LINE_RESULT"
+        ;;
+    esac
+    hq_sudo_lines+=("$line")
+  done <<< "$input"
+  [ "$changed" -eq 1 ] || return 0
+  printf -v HQ_SUDO_REWRITE_RESULT '%s\n' "${hq_sudo_lines[@]}"
+  HQ_SUDO_REWRITE_RESULT="${HQ_SUDO_REWRITE_RESULT%$'\n'}"
+}
+
+# _hq_sudo_line_options_as_assignments <one line of a command>
+#   Set HQ_SUDO_LINE_RESULT to the line with the option words and option
+#   values of each `sudo` in command position replaced. Return 1 when a word
+#   that would be replaced holds a character outside the safe set.
+_hq_sudo_line_options_as_assignments() {
+  local input="$1" remaining token after_token separator consumed core
+  local at_cmd=1 in_sudo=0 need_value=0 changed=0 seen_backslash=0 c cluster
+  local ws=$' \t\n\r'
+  local -a hq_sudo_out=()
+  HQ_SUDO_LINE_RESULT="$input"
+  remaining="$input"
+  while [ -n "$remaining" ]; do
+    token="${remaining%%[$ws]*}"
+    after_token="${remaining:${#token}}"
+    separator="${after_token%%[!$ws]*}"
+    consumed=$((${#token} + ${#separator}))
+    remaining="${remaining:$consumed}"
+    if [ -z "$token" ]; then
+      hq_sudo_out+=("$separator")
+      case "$separator" in *$'\n'*) at_cmd=1 ;; esac
+      continue
+    fi
+    if [ "$in_sudo" -eq 1 ]; then
+      if [ "$need_value" -eq 1 ]; then
+        # A quoted value is not rewritten. This scan does not track quotes,
+        # so a quote here may be the end of a string that holds the word
+        # `sudo`, and taking it as the start of a value would swallow the
+        # real commands after that string.
+        case "$token" in *[!A-Za-z0-9_.,:/@+=%-]*) return 1 ;; esac
+        hq_sudo_out+=("HQ_SUDO_OPTION=1" "$separator"); changed=1; need_value=0
+        case "$separator" in *$'\n'*) in_sudo=0; at_cmd=1 ;; esac
+        continue
+      fi
+      case "$token" in
+        --)
+          hq_sudo_out+=("HQ_SUDO_OPTION=1" "$separator"); changed=1; in_sudo=0; at_cmd=1
+          continue
+          ;;
+        -?*)
+          case "$token" in *[!A-Za-z0-9_.,:/@+=%-]*) return 1 ;; esac
+          case "$token" in
+            --*=*) ;;
+            --*)
+              if _hq_sudo_option_takes_value "$token"; then need_value=1; fi
+              ;;
+            *)
+              cluster="${token#-}"
+              while [ -n "$cluster" ]; do
+                c="${cluster:0:1}"; cluster="${cluster:1}"
+                # -h: the rest of the word, if any, is its value; never the next word.
+                [ "$c" != h ] || break
+                if _hq_sudo_option_takes_value "$c"; then
+                  [ -n "$cluster" ] || need_value=1
+                  break
+                fi
+              done
+              ;;
+          esac
+          hq_sudo_out+=("HQ_SUDO_OPTION=1" "$separator"); changed=1
+          # An unquoted newline ends the sudo command. An option still waiting
+          # for its value (`sudo -u` at the end of a line) must not take the
+          # first word of the next line, which is a command of its own.
+          case "$separator" in *$'\n'*) in_sudo=0; need_value=0; at_cmd=1 ;; esac
+          continue
+          ;;
+      esac
+      in_sudo=0; at_cmd=1
+    fi
+    hq_sudo_out+=("$token" "$separator")
+    core="$token"
+    while :; do
+      case "$core" in
+        '$('*) core="${core#\$(}" ;;
+        '`'*) core="${core#\`}" ;;
+        '('*) core="${core#(}" ;;
+        *[\;\&\|]*) core="${core##*[;&|]}" ;;
+        *) break ;;
+      esac
+    done
+    if [ "$core" = sudo ] && { [ "$at_cmd" -eq 1 ] || [ "$core" != "$token" ]; }; then
+      # A backslash may escape the `;`, `&` or `|` cut above (`x\;sudo` is one
+      # plain argument in a shell), so leave the command as written.
+      case "$token" in *\\*) return 1 ;; esac
+      # An earlier word with a backslash may hold an escaped operator
+      # (`x\;`, `\(`, `x\&`) that is a plain argument in a shell, so the
+      # command position read from it cannot be trusted.
+      [ "$seen_backslash" -eq 0 ] || return 1
+      in_sudo=1; need_value=0
+      case "$separator" in *$'\n'*) in_sudo=0; at_cmd=1 ;; esac
+      continue
+    fi
+    case "$token" in *\\*) seen_backslash=1 ;; esac
+    case "$token" in
+      *';'|*'&'|*'|'|*'(') at_cmd=1 ;;
+      # Reserved words start a command only where a command could start;
+      # as plain arguments (`cp evil.sh then sudo ...`) they are words.
+      '!'|'{'|then|do|else|elif|if|while|until) ;;
+      *)
+        if [ "$at_cmd" -eq 1 ] && { [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] \
+          || case "$token" in env|command|exec|nohup|time|builtin) true ;; *) false ;; esac; }; then
+          at_cmd=1
+        else
+          at_cmd=0
+        fi
+        ;;
+    esac
+    case "$separator" in *$'\n'*) at_cmd=1 ;; esac
+  done
+  [ "$changed" -eq 1 ] || return 0
+  printf -v HQ_SUDO_LINE_RESULT "%s" "${hq_sudo_out[@]}"
 }
 
 # hq_crlf_to_lf <varname>...
@@ -619,6 +1576,16 @@ hq_hook_safe_session_key() {
 hq_hook_session_key_from_payload() {
   local payload="$1"
   local key="${HQ_HOOK_SESSION_ID:-}"
+  # The shared payload reader (session_id, then Cursor's conversation_id),
+  # loaded from lib/ next to this file when the caller has not sourced it.
+  if [ -z "$key" ] && ! command -v session_id_from_payload >/dev/null 2>&1 \
+    && [ -f "${BASH_SOURCE[0]%/*}/lib/session-id.sh" ]; then
+    # shellcheck source=lib/session-id.sh
+    . "${BASH_SOURCE[0]%/*}/lib/session-id.sh" 2>/dev/null || true
+  fi
+  if [ -z "$key" ] && command -v session_id_from_payload >/dev/null 2>&1; then
+    key="$(session_id_from_payload "$payload")"
+  fi
   if [ -z "$key" ]; then
     key="$(printf '%s' "$payload" | hq_json_get 'session_id')"
   fi
@@ -1016,8 +1983,14 @@ _hq_writable_mask_apply() {
 #   with a slash is an exact path, or a directory when it ends in a slash.
 #   This stays in Bash so hook hot paths do not spawn a sed process per
 #   configured exclude entry.
+#   block-core-writes-bash.sh parses this function's output, so it also turns
+#   the options of a `sudo` into NAME=value words first (see
+#   _hq_sudo_options_as_assignments) for that guard's frozen command lookup.
+#   That runs before the needle check, so it applies to every command.
 hq_strip_tokens_containing_literals() {
   local input="$1" needle match root
+  _hq_sudo_options_as_assignments "$input"
+  input="$HQ_SUDO_REWRITE_RESULT"
   shift
   HQ_WM_NEEDLES=(); HQ_WM_EXACT=(); HQ_WM_DIRS=(); HQ_WM_SIBLING=()
   match=no

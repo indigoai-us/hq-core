@@ -251,6 +251,111 @@ for spec in 'tenant-1|0' 'tenant-2|2'; do
   fi
 done
 
+# 7. Missing session meta fails closed, and loudly, when there is no lock set.
+NOMETA=nometa-session
+export CODEX_THREAD_ID="$NOMETA"
+export HQ_SESSION_ID="$NOMETA"
+mkdir -p "$ROOT/workspace/sessions/$NOMETA"
+hook_rc=0
+hook_err="$(run_hook '"tenant-0"' T-nometa-empty 2>&1 >/dev/null)" || hook_rc=$?
+if [[ "$hook_rc" -eq 0 ]]; then
+  fail "missing-meta empty-lock hook exited 0 without a mirror"
+fi
+if [[ "$hook_err" != *"session has no company lock"* ]]; then
+  fail "missing-meta empty-lock hook did not say why it refused: $hook_err"
+fi
+if [[ -f "$ROOT/companies/tenant-0/workspace/sessions/T-nometa-empty.json" ]]; then
+  fail "missing-meta empty-lock still mirrored tenant-0"
+fi
+
+# 7b. /handoff --company from a session with no meta and no capability must not
+# finish looking successful: finalize reports the refused mirror (exit 5).
+unbound_rc=0
+unbound_err="$(
+  cd "$ROOT" && env -i CODEX_THREAD_ID="$NOMETA" HQ_SESSION_ID="$NOMETA" \
+    HQ_ROOT="$ROOT" HOME="$HOME" PATH="$PATH" LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    bash core/scripts/handoff-finalize.sh \
+      --company tenant-0 \
+      --title "Handoff: unbound owner" \
+      --summary "no meta and no capability" \
+      --files-touched-json '["companies/tenant-0/note.md"]' \
+      --next-command '' \
+      --slug unbound-owner 2>&1 >/dev/null
+)" || unbound_rc=$?
+if [[ "$unbound_rc" -ne 5 ]]; then
+  fail "--company from an unbound session exited $unbound_rc (want 5): $unbound_err"
+fi
+if [[ "$unbound_err" != *"company mirror failed"* ]]; then
+  fail "--company from an unbound session did not report the mirror failure: $unbound_err"
+fi
+
+# 8. Missing session meta still mirrors when scope-capability includes the owner.
+jq -n --arg sid "$NOMETA" \
+  '{session_id:$sid, agent_id:"", company_slug:"tenant-0", company_slugs:["tenant-0"]}' \
+  > "$ROOT/workspace/sessions/$NOMETA/scope-capability.json"
+hook_rc=0
+run_hook '"tenant-0"' T-nometa || hook_rc=$?
+if [[ "$hook_rc" -ne 0 ]]; then
+  fail "missing-meta hook failed for tenant-0 (rc=$hook_rc)"
+fi
+if [[ ! -f "$ROOT/companies/tenant-0/workspace/sessions/T-nometa.json" ]]; then
+  fail "missing-meta hook did not mirror tenant-0"
+fi
+
+# 9. Missing session meta does not mirror a company outside the lock set.
+hook_rc=0
+run_hook '"tenant-1"' T-nometa-out || hook_rc=$?
+if [[ "$hook_rc" -ne 0 ]]; then
+  fail "missing-meta out-of-lock hook failed (rc=$hook_rc)"
+fi
+if [[ -f "$ROOT/companies/tenant-1/workspace/sessions/T-nometa-out.json" ]]; then
+  fail "missing-meta hook mirrored tenant-1 outside the lock set"
+fi
+
+# 10. A capability that exists but does not match this session is authoritative:
+# meta.yaml must not override the refusal.
+BADCAP=badcap-session
+export CODEX_THREAD_ID="$BADCAP"
+export HQ_SESSION_ID="$BADCAP"
+mkdir -p "$ROOT/workspace/sessions/$BADCAP"
+printf 'company_slug: tenant-0\n' > "$ROOT/workspace/sessions/$BADCAP/meta.yaml"
+jq -n '{session_id:"another-session", agent_id:"", company_slug:"tenant-0", company_slugs:["tenant-0"]}' \
+  > "$ROOT/workspace/sessions/$BADCAP/scope-capability.json"
+hook_rc=0
+hook_err="$(run_hook '"tenant-0"' T-badcap-mismatch 2>&1 >/dev/null)" || hook_rc=$?
+if [[ "$hook_rc" -eq 0 ]]; then
+  fail "mismatched capability fell back to meta.yaml (rc=0)"
+fi
+if [[ "$hook_err" != *"scope capability is invalid"* ]]; then
+  fail "mismatched capability refusal did not say why: $hook_err"
+fi
+if [[ -f "$ROOT/companies/tenant-0/workspace/sessions/T-badcap-mismatch.json" ]]; then
+  fail "mismatched capability still mirrored tenant-0 via meta.yaml"
+fi
+
+# 11. A malformed capability does not fall back to meta.yaml either.
+printf '{not json\n' > "$ROOT/workspace/sessions/$BADCAP/scope-capability.json"
+hook_rc=0
+run_hook '"tenant-0"' T-badcap-malformed 2>/dev/null || hook_rc=$?
+if [[ "$hook_rc" -eq 0 ]]; then
+  fail "malformed capability fell back to meta.yaml (rc=0)"
+fi
+if [[ -f "$ROOT/companies/tenant-0/workspace/sessions/T-badcap-malformed.json" ]]; then
+  fail "malformed capability still mirrored tenant-0 via meta.yaml"
+fi
+
+# 12. With no capability file, meta.yaml company_slug is still the lock set.
+rm -f "$ROOT/workspace/sessions/$BADCAP/scope-capability.json"
+hook_rc=0
+run_hook '"tenant-0"' T-badcap-meta-only || hook_rc=$?
+if [[ "$hook_rc" -ne 0 ]]; then
+  fail "meta-only session hook failed (rc=$hook_rc)"
+fi
+if [[ ! -f "$ROOT/companies/tenant-0/workspace/sessions/T-badcap-meta-only.json" ]]; then
+  fail "meta-only session did not mirror tenant-0"
+fi
+
 if [[ "$failures" -gt 0 ]]; then
   echo "Failed $failures handoff isolation assertions" >&2
   exit 1

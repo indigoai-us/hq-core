@@ -1,0 +1,1 @@
+The scope authorizer now checks paths read from stdin. A Bash command that opens a value set by `read` or `mapfile`, or a file that `xargs` passes to a program, is refused when the session has no company bound or the command reaches companies/ outside the bound scope. Printing or testing such a value stays allowed.

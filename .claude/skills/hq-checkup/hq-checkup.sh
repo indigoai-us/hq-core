@@ -356,13 +356,20 @@ fi
 # reported here because they cannot load until someone fixes the trigger.
 # Stderr is read, not discarded: a retire failure or a broken trigger is
 # something the person needs to see.
-POLICY_RETIRE="$HQ_ROOT/core/scripts/policy-retire.sh"
-if [ -x "$POLICY_RETIRE" ]; then
+# hq core policy retire needs hq-cli >= 5.341.3; an older hq fails with the
+# floor message on stderr, which is reported below like any retire failure.
+policy_retire() {
+  # shellcheck source=../../../core/scripts/lib/hq-cli-floor.sh
+  . "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh" &&
+    hq_cli_floor_check policy-retire.sh 5.341.3 &&
+    hq core --hq-root "$HQ_ROOT" policy retire "$@"
+}
+if command -v hq >/dev/null 2>&1 && [ -f "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh" ]; then
   _ret_err="$(mktemp "${TMPDIR:-/tmp}/hq-checkup-policy-retire.XXXXXX")"
   if [ "$FIX" = 1 ]; then
-    _ret_out="$(HQ_ROOT="$HQ_ROOT" bash "$POLICY_RETIRE" --auto 2>"$_ret_err")"
+    _ret_out="$(policy_retire --auto 2>"$_ret_err")"
   else
-    _ret_out="$(HQ_ROOT="$HQ_ROOT" bash "$POLICY_RETIRE" --auto --dry-run 2>"$_ret_err")"
+    _ret_out="$(policy_retire --auto --dry-run 2>"$_ret_err")"
   fi
   _ret_rc=$?
   _ret="$(printf '%s\n' "$_ret_out" | tail -1)"
@@ -378,7 +385,7 @@ if [ -x "$POLICY_RETIRE" ]; then
   _ret_other="$(grep -v 'has a malformed when: trigger' "$_ret_err" 2>/dev/null | grep -v '^[[:space:]]*$' | head -1 | tr '\t' ' ')"
   if [ "$_ret_rc" -ne 0 ] || [ -n "$_ret_other" ]; then
     say YOU "Couldn't finish retiring old policies${_ret_other:+: ${_ret_other}}" \
-      "Run: bash core/scripts/policy-retire.sh --auto --dry-run    (to see why)"
+      "Run: hq core policy retire --auto --dry-run    (to see why)"
   fi
   rm -f "$_ret_err"
 fi

@@ -24,6 +24,7 @@ mkdir -p "$TMP/home" "$TMP/spool" "$TMP/seq" \
   "$HQ/companies/indigo" "$HQ/companies/holler" "$HQ/workspace/sessions/$PARENT"
 cp "$HOOK" "$HQ/core/hooks/SessionStart/"
 cp "$ROOT/core/scripts/lib/work-mesh-enqueue.sh" "$HQ/core/scripts/lib/"
+cp "$ROOT/core/scripts/lib/epochrealtime.sh" "$HQ/core/scripts/lib/"
 cp "$ROOT/core/scripts/lib/session-auto-bind.sh" "$HQ/core/scripts/lib/"
 printf 'session_id: %s\ncompany_slug: indigo\n' "$PARENT" > "$HQ/workspace/sessions/$PARENT/meta.yaml"
 

@@ -57,9 +57,9 @@ fi
 version="$(sed -nE 's/^([0-9]+)\.([0-9]+)\.([0-9]+).*$/\1 \2 \3/p' "$tmp/version" | head -1)"
 set -- $version
 [ "$#" -eq 3 ] || exit 0
-[ "$1" -gt 5 ] || { [ "$1" -eq 5 ] && { [ "$2" -gt 345 ] || { [ "$2" -eq 345 ] && [ "$3" -ge 63 ]; }; }; } || exit 0
+[ "$1" -gt 5 ] || { [ "$1" -eq 5 ] && { [ "$2" -gt 345 ] || { [ "$2" -eq 345 ] && [ "$3" -ge 210 ]; }; }; } || exit 0
 
-if run_bounded 2 env HQ_NO_SELF_UPDATE=1 HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$root" "$hq_bin" lanes session-start < <(printf '%s' "$payload") >"$tmp/stdout" 2>/dev/null; then
+if run_bounded 2 env HQ_NO_SELF_UPDATE=1 HQ_NO_UPDATE_CHECK=1 HQ_ROOT="$root" "$hq_bin" runners session-start < <(printf '%s' "$payload") >"$tmp/stdout" 2>/dev/null; then
   cat "$tmp/stdout" 2>/dev/null || true
 fi
 exit 0

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SKILLS="${HQ_ORCH_SKILLS_DIR:-$ROOT/.claude/skills}"
 EXEC_TASK="$SKILLS/execute-task/SKILL.md"
 RUN_PROJECT="$SKILLS/run-project/SKILL.md"
-CONDUCT="$SKILLS/conduct/dispatch.md"
+CONDUCT="$SKILLS/conduct-runners/dispatch.md"
 PASS=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { PASS=$((PASS + 1)); echo "  ok — $1"; }
@@ -14,7 +14,7 @@ trap 'rm -rf "$TMP"' EXIT
 [ -f "$EXEC_TASK" ] || fail "missing $EXEC_TASK"
 [ -f "$RUN_PROJECT" ] || fail "missing $RUN_PROJECT"
 [ -f "$CONDUCT" ] || fail "missing $CONDUCT"
-echo "plain /conduct: every session pin reaches lanes create"
+echo "plain /conduct: every session pin reaches runners create"
 for pin in '--provider' 'conduct_engine' '--model' 'conduct_child_model' '--effort' 'conduct_child_effort'; do
   grep -Fq -- "$pin" "$CONDUCT" || fail "plain /conduct lane create is missing session pin reference '$pin'"
 done
@@ -30,16 +30,16 @@ echo "execute-task: every worker phase uses the bound story lane"
 if grep -Fq 'spawn a sub-agent via the Task tool' "$EXEC_TASK"; then
   fail "execute-task still describes Task-based phase dispatch"
 fi
-for needle in 'hq lanes create' '--company "{company}"' '--project "{project}"' '--story "{task.id}"' '--worker "{worker.id}"' '--brief-file' '--senior "session:{session-id}"' '--json'; do
+for needle in 'hq runners create' '--company "{company}"' '--project "{project}"' '--story "{task.id}"' '--worker "{worker.id}"' '--brief-file' '--senior "session:{session-id}"' '--json'; do
   grep -Fq -- "$needle" "$EXEC_TASK" || fail "execute-task lane dispatch missing '$needle'"
 done
 grep -qi 'only when the selected worker profile' "$EXEC_FLAT" || fail "provider/model/effort flags must remain conditional on worker pins"
 ok "create carries company, project, story, worker, brief, and invoking senior"
 echo "execute-task: live follow-up and terminal results use HQ lanes"
-grep -Fq 'hq lanes message' "$EXEC_TASK" || fail "live lane follow-up must use lanes message"
-grep -Fq 'hq lanes wait' "$EXEC_TASK" || fail "phase must wait through HQ lanes"
+grep -Fq 'hq runners message' "$EXEC_TASK" || fail "live lane follow-up must use lanes message"
+grep -Fq 'hq runners wait' "$EXEC_TASK" || fail "phase must wait through HQ lanes"
 grep -qi 'policy-required detached watcher' "$EXEC_TASK" || fail "phase must arm and verify the detached lane watcher"
-grep -Fq 'hq lanes list --json' "$EXEC_TASK" || fail "phase result must use lanes list"
+grep -Fq 'hq runners list --json' "$EXEC_TASK" || fail "phase result must use runners list"
 grep -Fq 'last_envelope.ref' "$EXEC_TASK" || fail "phase must read the lane envelope"
 grep -qi 'handoffs.jsonl' "$EXEC_FLAT" || fail "phase handoff file must remain durable"
 grep -q 'from_worker.*to_worker.*timestamp' "$EXEC_FLAT" || fail "handoff format fields must remain documented"
@@ -54,16 +54,16 @@ if grep -Fq 'commits them on your behalf' "$EXEC_TASK"; then
 fi
 ok "review and quality gates remain"
 echo "interactive run-project: each story uses the worker lane mapping"
-grep -Fq 'hq lanes create' "$RUN_INTERACTIVE" || fail "story loop must create worker lanes"
-grep -Fq 'hq lanes message' "$RUN_INTERACTIVE" || fail "live story lane must accept follow-up via message"
-grep -Fq 'hq lanes wait' "$RUN_INTERACTIVE" || fail "story loop must wait through HQ lanes"
-grep -Fq 'hq lanes list --json' "$RUN_INTERACTIVE" || fail "story results must be read from lanes list"
-grep -Fq 'hq lanes list --json --senior "session:$(jq -r .session_id' "$RUN_PROJECT" \
+grep -Fq 'hq runners create' "$RUN_INTERACTIVE" || fail "story loop must create worker lanes"
+grep -Fq 'hq runners message' "$RUN_INTERACTIVE" || fail "live story lane must accept follow-up via message"
+grep -Fq 'hq runners wait' "$RUN_INTERACTIVE" || fail "story loop must wait through HQ lanes"
+grep -Fq 'hq runners list --json' "$RUN_INTERACTIVE" || fail "story results must be read from runners list"
+grep -Fq 'hq runners list --json --senior "session:$(jq -r .session_id' "$RUN_PROJECT" \
   || fail "resumed story lanes must be listed under the original senior session"
 grep -Fq '/execute-task {project}/{story-id}' "$RUN_INTERACTIVE" || fail "story brief must run execute-task"
 grep -Fq 'session:{session-id}' "$RUN_INTERACTIVE" || fail "invoking session must be lane senior"
 grep -Fq 'capacity refusal leaves the story queued' "$RUN_FLAT" || fail "admission refusal must keep story queued"
-grep -Fq 'hq lanes story' "$RUN_INTERACTIVE" || fail "status updates must use board/lane story path"
+grep -Fq 'hq runners story' "$RUN_INTERACTIVE" || fail "status updates must use board/lane story path"
 grep -Fq 'Do not add status fields to local `prd.json`' "$RUN_INTERACTIVE" || fail "must not add local PRD status writes"
 ok "story dispatch, result validation, status path, and admission handling are documented"
 echo "owned files do not call legacy conduct helpers"
@@ -84,13 +84,13 @@ cat > "$TMP/bin/hq" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$HQ_TEST_CAPTURE"
 case "$*" in
-  'lanes create'*) printf '%s\n' '{"ok":true,"lane_id":"lane-test-001","state":"queued"}' ;;
+  'runners create'*) printf '%s\n' '{"ok":true,"lane_id":"lane-test-001","state":"queued"}' ;;
   *) printf '%s\n' '{"ok":true}' ;;
 esac
 FAKE
 chmod +x "$TMP/bin/hq"
 export HQ_TEST_CAPTURE="$TMP/argv.log"
-PATH="$TMP/bin:$PATH" hq lanes create --company indigo --project hq-work --story CL-6e --worker backend-dev --brief-file /tmp/phase.md --senior session:session-test --json > "$TMP/result.json"
+PATH="$TMP/bin:$PATH" hq runners create --company indigo --project hq-work --story CL-6e --worker backend-dev --brief-file /tmp/phase.md --senior session:session-test --json > "$TMP/result.json"
 grep -Fq -- '--company indigo --project hq-work --story CL-6e --worker backend-dev' "$HQ_TEST_CAPTURE" || fail "fake hq did not capture the lane mapping"
 grep -Fq '"lane_id":"lane-test-001"' "$TMP/result.json" || fail "fake hq did not return canned JSON"
 ok "the fixture records argv and returns canned JSON without calling real hq"
@@ -111,7 +111,7 @@ grep -qi 'one loop lane per confirmed worker-table row, plus the regression-gate
   || fail "the pipeline bound must name rows + gate without a retired local cap"
 grep -qi 'driver that routes phases is a detached script, not a lane, and takes no lane slot' "$TMP/head.flat" \
   || fail "the header must say the driver takes no lane slot"
-grep -qi 'one `hq lanes` loop lane' "$PIPE_FLAT" \
+grep -qi 'one `hq runners` loop lane' "$PIPE_FLAT" \
   || fail "pipeline mode must allocate one loop lane per worker"
 grep -qi 'The CLI applies lane capacity and company admission' "$PIPE_FLAT" \
   || fail "pipeline lane admission must use hq-cli capacity controls"
@@ -119,23 +119,23 @@ grep -qi 'admission or capacity error code, the story stays queued and the drive
   || fail "pipeline capacity refusals must leave work queued for the next tick"
 grep -qi 'The driver itself is not a lane' "$PIPE_FLAT" \
   || fail "the detached driver must not consume a lane slot"
-ok "pipeline mode delegates lane capacity to hq lanes and retries admission refusals"
+ok "pipeline mode delegates lane capacity to hq runners and retries admission refusals"
 
 grep -q 'report.md' "$PIPE_FLAT" && grep -qi 'per-story report lines' "$PIPE_FLAT" \
   || fail "the parent must relay the conductor's per-story report lines"
 grep -q '/decision-queue' "$PIPE_FLAT" \
   && grep -q 'workspace/sessions/<id>/decisions.jsonl' "$PIPE_FLAT" \
-  && grep -q 'hq lanes questions list' "$PIPE_FLAT" \
+  && grep -q 'hq runners questions list' "$PIPE_FLAT" \
   || fail "decision items and lane questions must reach the decision queue"
 ok "conductor report lines and decision items are relayed"
 
 grep -qi 'After a parent compaction, recover from disk' "$PIPE_FLAT" \
   && grep -q '{state}/stories/' "$PIPE_FLAT" \
   && grep -q '{state}/driver/' "$PIPE_FLAT" \
-  && grep -q 'hq lanes list --json' "$PIPE_FLAT" \
+  && grep -q 'hq runners list --json' "$PIPE_FLAT" \
   && grep -q '{state}/lanes.json' "$PIPE_FLAT" \
-  || fail "the parent must rebuild run state from its files and mapped hq lanes after compaction"
-ok "compaction recovery reads the conductor's state dir and mapped hq lanes"
+  || fail "the parent must rebuild run state from its files and mapped hq runners after compaction"
+ok "compaction recovery reads the conductor's state dir and mapped hq runners"
 
 grep -q 'driver stops each lane id' "$PIPE_FLAT" \
   && grep -q 'clears the mapping after confirmation' "$PIPE_FLAT" \

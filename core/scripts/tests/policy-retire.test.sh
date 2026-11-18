@@ -9,15 +9,18 @@ mkdir -p "$FX/personal/policies" "$FX/core/policies" "$FX/companies/acme/policie
 pol() { printf -- '---\nid: %s\ntitle: t\nenforcement: hard\nversion: 2\nwhen: always\non: [SessionStart]\n---\n\n## Rule\n\n%s rule.\n' "$2" "$2" > "$1"; }
 pol "$FX/personal/policies/p1.md" p1; pol "$FX/core/policies/c1.md" c1; pol "$FX/companies/acme/policies/a1.md" a1
 echo "[1] retire by slug writes status + reason, keeps body"
-env -u HQ_ROOT CLAUDE_PROJECT_DIR="$FX" HQ_SESSION_ID=sess-r "$ROOT/core/scripts/policy-retire.sh" p1 --reason "never fired in 120 days" >/dev/null || fail "retire rc"
+env -u HQ_ROOT CLAUDE_PROJECT_DIR="$FX" HQ_SESSION_ID=sess-r "$ROOT/core/scripts/policy-retire.sh" p1 --reason "never fired in 120 days" --evidence "block-log:2026-11-01#p1" >/dev/null || fail "retire rc"
 grep -q '^status: retired' "$FX/personal/policies/p1.md" || fail "status missing"
 grep -q '^retired_reason: "never fired in 120 days"' "$FX/personal/policies/p1.md" || fail "reason missing"
+grep -q '^retired_evidence: "block-log:2026-11-01#p1"' "$FX/personal/policies/p1.md" || fail "evidence missing"
 grep -q '^retired_by: sess-r' "$FX/personal/policies/p1.md" || fail "by missing"
 grep -q '^p1 rule.' "$FX/personal/policies/p1.md" || fail "body lost"
 [ "$(grep -c '^version: 2' "$FX/personal/policies/p1.md")" = 1 ] || fail "other frontmatter lost"
 echo "[2] company slug resolves; --reason required; unknown slug -> 3"
-HQ_ROOT="$FX" hq core --hq-root "$FX" policy retire a1 --reason x >/dev/null || fail "company retire"
+HQ_ROOT="$FX" hq core --hq-root "$FX" policy retire a1 --reason x --evidence "block-log:2026-11-01#a1" >/dev/null || fail "company retire"
 rc=0; hq core --hq-root "$FX" policy retire c1 >/dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || fail "reason required rc $rc"
+rc=0; hq core --hq-root "$FX" policy retire c1 --reason x >/dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || fail "evidence required rc $rc"
+grep -q '^status: retired' "$FX/core/policies/c1.md" && fail "retired without evidence"
 rc=0; hq core --hq-root "$FX" policy retire nope --reason x >/dev/null 2>&1 || rc=$?; [ "$rc" = 3 ] || fail "unknown rc $rc"
 echo "[3] --restore removes the retired fields"
 hq core --hq-root "$FX" policy retire p1 --restore >/dev/null || fail "restore rc"
@@ -25,11 +28,11 @@ grep -q '^status:\|^retired_' "$FX/personal/policies/p1.md" && fail "retired fie
 grep -q '^p1 rule.' "$FX/personal/policies/p1.md" || fail "body lost on restore"
 echo "[3b] canonical policy validation refuses malformed and duplicate triggers before a retirement write"
 printf -- '---\nid: malformed\ntitle: t\nenforcement: hard\nwhen: git push\non: [SessionStart]\n---\n\n## Rule\n\nMalformed rule.\n' > "$FX/personal/policies/malformed.md"
-rc=0; hq core --hq-root "$FX" policy retire malformed --reason test >/dev/null 2>&1 || rc=$?
+rc=0; hq core --hq-root "$FX" policy retire malformed --reason test --evidence "block-log:2026-11-01#malformed" >/dev/null 2>&1 || rc=$?
 [ "$rc" != 0 ] || fail "malformed trigger was retired"
 grep -q '^status: retired' "$FX/personal/policies/malformed.md" && fail "malformed policy was modified"
 printf -- '---\nid: duplicate-when\ntitle: t\nenforcement: hard\nwhen: git\nwhen: git push\non: [SessionStart]\n---\n\n## Rule\n\nDuplicate when rule.\n' > "$FX/personal/policies/duplicate-when.md"
-rc=0; hq core --hq-root "$FX" policy retire duplicate-when --reason test >/dev/null 2>&1 || rc=$?
+rc=0; hq core --hq-root "$FX" policy retire duplicate-when --reason test --evidence "block-log:2026-11-01#duplicate-when" >/dev/null 2>&1 || rc=$?
 [ "$rc" != 0 ] || fail "duplicate when trigger was retired"
 grep -q '^status: retired' "$FX/personal/policies/duplicate-when.md" && fail "duplicate-when policy was modified"
 echo "[4] --from-report batch: dry run then --yes"

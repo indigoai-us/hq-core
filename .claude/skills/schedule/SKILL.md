@@ -1,7 +1,7 @@
 ---
 name: schedule
 description: "Schedule recurring Claude/Codex agent jobs on the user's Outpost — structured checklist requirements, dm alert profile, status-aware list from hq-pro. Alias: /job (deprecated)."
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash, Bash(bash core/scripts/jobs-schedule-parse.sh:*), Bash(bash core/scripts/jobs-validate.sh:*), Bash(hq:*), AskUserQuestion
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash, Bash(hq core jobs schedule-parse:*), Bash(bash core/scripts/jobs-schedule-parse.sh:*), Bash(hq core jobs validate:*), Bash(hq:*), AskUserQuestion
 ---
 
 # /schedule — Outpost recurring agent jobs
@@ -14,8 +14,8 @@ cron/launchd/systemd on the calling laptop.
 prefer `/schedule`.
 
 Schema: `core/knowledge/public/hq-core/outpost-jobs-spec.md`  
-Validate before every write: `bash core/scripts/jobs-validate.sh <file>`  
-NL → cron: `bash core/scripts/jobs-schedule-parse.sh [--tz IANA] "<text>"`
+Validate before every write: `hq core jobs validate <file>`  
+NL → cron: `hq core jobs schedule-parse [--tz IANA] "<text>"`
 
 ## Commands
 
@@ -203,7 +203,7 @@ requirements:
 ### 5. Validate → sync
 
 ```bash
-bash core/scripts/jobs-validate.sh personal/jobs/{id}.yaml   # or company path
+hq core jobs validate personal/jobs/{id}.yaml   # or company path
 # on success:
 hq sync push --personal --on-conflict overwrite -- personal/jobs personal/settings/schedule-alerts.yaml
 ```
@@ -239,18 +239,19 @@ Never hide a registry job because status failed.
 
 ## `/schedule probe [id]`
 
-- Prefer remote: when `core/scripts/hq-job-probe.sh` exists on the Outpost,
-  run via `hq outposts exec -- …`. Do not invent a local "ready".
-- If probe script missing (US-008 not on box yet): show the job's requirements
+- Prefer remote: run `hq core job probe` on the Outpost via
+  `hq outposts exec -- …`. Do not invent a local "ready".
+- If the Outpost's hq has no `hq core job probe`: show the job's requirements
   checklist and next actions (share secrets / device login on Outpost) without
   marking ready.
 - After a successful remote probe, refresh status GET for display.
 
 ## `/schedule run-now <id>`
 
-- When `hq-job-run.sh` is on the box, `hq outposts exec` a one-shot.
-- If runner missing: say reconciler/runner not installed yet; do not fake a
-  local run.
+- `hq outposts exec` a one-shot `hq core job run --job-id <id>` on the box
+  (the native runner the scheduled units start).
+- If the box's hq has no `hq core job run`: say the runner is not installed
+  yet; do not fake a local run.
 
 ## Deprecated `/job`
 
@@ -261,7 +262,8 @@ this skill.
 
 - Spec: `core/knowledge/public/hq-core/outpost-jobs-spec.md`
 - PRD: `companies/indigo/projects/outpost-scheduled-jobs/prd.json` (US-003)
-- Validator: `core/scripts/jobs-validate.sh`
-- Parser: `core/scripts/jobs-schedule-parse.sh`
+- Validator: `hq core jobs validate`
+- Parser: `hq core jobs schedule-parse`
 - Status: hq-pro `GET /outpost/jobs/status` (US-009)
-- Probe: `core/scripts/hq-job-probe.sh` (US-008 — peer)
+- Probe: `hq core job probe` (US-008 — peer)
+- Runner: `hq core job run` (scheduled units start it)

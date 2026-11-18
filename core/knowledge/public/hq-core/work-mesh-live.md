@@ -11,16 +11,21 @@ relates_to: [policies/hq-project-work-mesh-reporting.md]
 Every interactive and agent session is captured through three hq-cli families.
 The pack-owned `listen` / `watch` daemon is retired (hq-pack-work-mesh 0.2.0).
 
-## `hq mesh daemon`
+## The daemon's `mesh` service
 
-Resident process: install once per machine.
+`hq daemon` runs the resident Work Mesh process as its `mesh` service: install
+once per machine.
 
-| Verb | Purpose |
+| Command | Purpose |
 |---|---|
-| `install` | LaunchAgent `ai.getindigo.hq-mesh-daemon` or systemd `hq-mesh-daemon.service` |
-| `status` / `doctor` | Installed/loaded, MQTT, spool depth, held/dead-letter |
-| `uninstall` | Remove the user service |
-| `run` | Foreground single-instance process |
+| `hq daemon install` | Install the daemon; takes over an older standalone LaunchAgent `ai.getindigo.hq-mesh-daemon` or systemd `hq-mesh-daemon.service` |
+| `hq daemon status` | Each service's state, `mesh` included |
+| `hq mesh daemon doctor` | MQTT, spool depth, held/dead-letter, outbox and flush health |
+| `hq daemon disable mesh` | Stop running Work Mesh on this machine |
+| `hq daemon restart mesh` | Restart the Work Mesh service |
+
+The `hq mesh daemon` verbs (`install`, `status`, `doctor`, `uninstall`, `run`)
+are retiring and still run for one release.
 
 Legacy LaunchAgent `ai.getindigo.hq-work-mesh-listen` is unloaded by pack
 `apply.sh` on upgrade and must not be reinstalled.

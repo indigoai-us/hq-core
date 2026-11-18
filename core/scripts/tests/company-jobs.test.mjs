@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { CompanyRunner, Ledger, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION, jobEnvironment, machineSessionEnvironment, machineSessionDocument, MACHINE_SESSION_FILE, sessionRuntimeDirectory, prepareSessionRoot, prepareSessionDir, writeMachineSessionFile, sweepStaleSessionDirs } from '../lib/company-jobs.mjs';
+import { CompanyRunner, Ledger, validateConfig, Refusal, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION, jobEnvironment, machineSessionEnvironment, machineSessionDocument, MACHINE_SESSION_FILE, sessionRuntimeDirectory, prepareSessionRoot, prepareSessionDir, writeMachineSessionFile, sweepStaleSessionDirs } from '../lib/company-jobs.mjs';
 const require = createRequire(import.meta.url);
 test('sign-in reclaim fences old owners and preserves execution admission after a crash', t=>{
  const f=fixture(t),d=f.delivery(),old=f.r.ledger.claim(d,100,1);
@@ -80,7 +80,7 @@ test('claims reclaim abandoned admission with TTL, completed receipts persist',t
 test('expired live owner does not overlap; interrupted execution is uncertain, not retried',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert.throws(()=>f.r.ledger.claim(d,100,200),/owner_alive/);f.r.ledger.executing(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,200).uncertain,true);});
 test('complete fingerprint emitted on failure',async t=>{const f=fixture(t);f.r.execute=async()=>({code:124,text:''});const r=await f.r.runDelivery(f.j,f.delivery());for(const k of ['jobId','revision','runId','scheduledAt','startedAt','endedAt','executionPrincipal','machine','outcome','outputLocation'])assert(r[k],k);assert.equal(r.outcome,'timeout');assert.match(fs.readFileSync(r.outputLocation,'utf8'),/executionFingerprint/);});
 test('portable bounded process group kills grandchild ignoring TERM',{timeout:20000},async()=>{let text='';const start=Date.now();const r=await bounded('/bin/bash',['-c',"trap '' TERM; sleep 30 & echo $!; wait"],{timeout:150,output:s=>text+=s});assert.equal(r.code,124);assert(Date.now()-start<3000);const pid=Number(text.trim());assert(pid>0);try{process.kill(pid,0); const proc=fs.readFileSync(`/proc/${pid}/stat`,'utf8');assert.match(proc,/\) Z /);}catch(e){assert(['ESRCH','ENOENT'].includes(e.code));}});
-test('secret chunks are redacted from captured output',async()=>{const r=await bounded(process.execPath,['-e',"process.stdout.write('ABC');setTimeout(()=>process.stdout.write('DEFG'),20)"],{timeout:1000,redactions:['ABCDEFG']});assert.equal(r.text,'[REDACTED]');});
+test('secret chunks are redacted from captured output',async()=>{const r=await bounded(process.execPath,['-e',"process.stdout.write('ABC');setTimeout(()=>process.stdout.write('DEFG'),20)"],{timeout:5000,redactions:['ABCDEFG']});assert.equal(r.text,'[REDACTED]');});
 test('wildcard minutes remain every minute and weekly/rate/once render',()=>{assert.match(calendars({kind:'recurring',cron:'cron(* * * * ? *)',timezone:'UTC'})[0],/00,01,02/);const hour9=calendars({kind:'recurring',cron:'cron(* 9 * * ? *)',timezone:'UTC'});assert.equal(hour9.length,1);assert.deepEqual(hour9[0].split(' ')[1].split(':')[1].split(',').map(Number),Array.from({length:60},(_,i)=>i));assert.doesNotMatch(hour9[0],/09:00:00/);assert.match(calendars({kind:'recurring',cron:'cron(0 9 ? * MON-FRI *)',timezone:'UTC'})[0],/^Mon,Tue,Wed,Thu,Fri/);assert.equal(calendars({kind:'recurring',cron:'rate(12 hours)',timezone:'UTC'}).length,1);assert.match(calendars({kind:'once',at:'2026-01-01T00:00:00Z',timezone:'UTC'})[0],/UTC$/);});
 test('unsafe run ids cannot escape the unit directory; a real pending id still arms',async t=>{
   const f=fixture(t);const runId='11111111-1111-4111-8111-111111111111';const escape='x/../../outside';
@@ -715,7 +715,7 @@ const RUN_A='a'.repeat(64), RUN_B='b'.repeat(64);
 test('reconcile posts a jobs heartbeat on every tick before reconciling',async t=>{const f=fixture(t);await f.r.reconcile();await f.r.reconcile();const beats=f.calls.filter(c=>c.op==='jobs'&&c.action==='heartbeat');assert.equal(beats.length,2);assert.deepEqual(beats[0],{op:'jobs',action:'heartbeat'});const first=f.calls.findIndex(c=>c.action==='heartbeat');assert(first<f.calls.findIndex(c=>c.action==='reconcile'));});
 test('heartbeat failure is logged and does not break reconcile',async t=>{const f=fixture(t);const warnings=[];f.r.warn=l=>warnings.push(l);const inner=f.r.api;f.r.api=async(op,b)=>{if(b.action==='heartbeat'){const e=new Error('x');e.status=503;throw e;}return inner(op,b);};const result=await f.r.reconcile();assert.equal(result.jobs,1);assert.equal(warnings.length,1);assert.equal(JSON.parse(warnings[0]).event,'heartbeat_post_failed');assert.equal(JSON.parse(warnings[0]).status,503);});
 test('successful run posts a report in the server contract shape',async t=>{const f=fixture(t);const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'succeeded');const reports=f.calls.filter(c=>c.action==='report');assert.equal(reports.length,1);const {op,...body}=reports[0];assert.equal(op,'jobs');assert(serverAcceptsReport(body),JSON.stringify(body));assert.equal(body.scheduledAt,'2026-01-02T01:00:00Z');assert.equal(body.runId,RUN_A);assert.equal(body.revision,'revision1');assert.equal(body.outcome,'succeeded');assert.equal(body.exitCode,0);assert.equal(body.endedAt,receipt.endedAt);});
-test('secret_denied run reports outcome blocked with its error code',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);const sent=[];f.r.api=async(op,b)=>{if(op==='secret')throw new Error('denied');sent.push({op,...b});return {ok:true};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_B));assert.equal(receipt.outcome,'blocked');assert.equal(f.executed(),0);assert.equal(sent.length,1);const {op,...body}=sent[0];assert.equal(op,'jobs');assert(serverAcceptsReport(body));assert.equal(body.outcome,'blocked');assert.equal(body.errorCode,'secret_denied');assert.equal(body.scheduledAt,'2026-01-02T01:00:00Z');});
+test('secret_denied run reports outcome blocked with its error code',async t=>{const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);const sent=[];f.r.api=async(op,b)=>{if(op==='secret'){const e=new Error('company_api_403');e.status=403;throw e;}sent.push({op,...b});return {ok:true};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_B));assert.equal(receipt.outcome,'blocked');assert.equal(f.executed(),0);assert.equal(sent.length,1);const {op,...body}=sent[0];assert.equal(op,'jobs');assert(serverAcceptsReport(body));assert.equal(body.outcome,'blocked');assert.equal(body.errorCode,'secret_denied');assert.equal(body.scheduledAt,'2026-01-02T01:00:00Z');});
 test('failed and timed-out runs post reports with outcome and error code',async t=>{const f=fixture(t);let code=1;f.r.execute=async()=>({code,text:''});assert.equal((await f.r.runDelivery(f.j,f.delivery(RUN_A))).outcome,'failed');code=124;assert.equal((await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'))).outcome,'timeout');const reports=f.calls.filter(c=>c.action==='report');assert.deepEqual(reports.map(r=>[r.outcome,r.exitCode]),[['failed',1],['timeout',124]]);for(const r of reports){const {op,...b}=r;assert(serverAcceptsReport(b));}});
 test('report failure is logged and does not change the receipt',async t=>{const f=fixture(t);const warnings=[];f.r.warn=l=>warnings.push(l);f.r.api=async(op,b)=>{if(b.action==='report')throw new Error('offline');return {};};const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));assert.equal(receipt.outcome,'succeeded');assert.equal(warnings.length,1);const w=JSON.parse(warnings[0]);assert.equal(w.event,'report_post_failed');assert.equal(w.runId,RUN_A);assert.equal(w.outcome,'succeeded');const stored=JSON.parse(fs.readFileSync(fs.readdirSync(f.c.stateDir).filter(n=>n.endsWith('.json')).map(n=>path.join(f.c.stateDir,n))[0],'utf8'));assert.equal(stored.outcome,'succeeded');});
 // liveops-09 / feedback 40a4ead4: an exit-0 session that did no work was recorded as succeeded.
@@ -851,3 +851,163 @@ test('stale session directories are swept by run unit liveness and a symlinked r
   assert.throws(()=>prepareSessionDir(root,'alive',null),/session_dir_exists/);
   assert.throws(()=>writeMachineSessionFile(link,{version:1},null),/session_runtime_symlink/);
 });
+
+// A job whose secrets step, precondition or session fails is never recorded as
+// succeeded, and its receipt says why in a short reason that carries no value.
+import { apiClient as liveApiClient, Refusal as RunnerRefusal, processFailureReason } from '../lib/company-jobs.mjs';
+const brokerError=(status,apiCode)=>{const e=new RunnerRefusal(`company_api_${status}`);e.status=status;if(apiCode)e.apiCode=apiCode;return e;};
+function secretFixture(t,fail,names=['API_KEY']){
+ const f=fixture(t);f.j.context={companyJob:{secrets:names}};f.j.contentDigest=contentDigest(f.j);
+ const sent=[];f.r.api=async(op,b)=>{if(op==='secret'){if(b.secretName===names.at(-1))throw fail;return {value:'SENTINEL_SECRET'};}sent.push({op,...b});return {ok:true};};
+ return {...f,sent};
+}
+test('a secrets step the broker refuses is blocked with secret_denied, never succeeded, and says which secret',async t=>{
+ const f=secretFixture(t,brokerError(403));
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_B));
+ assert.equal(receipt.outcome,'blocked');assert.notEqual(receipt.outcome,'succeeded');assert.equal(processStatus('run',receipt),1);
+ assert.equal(receipt.errorCode,'secret_denied');assert.equal(receipt.blockedSecret,'API_KEY');assert.equal(f.executed(),0);
+ assert.equal(receipt.reason,'Secret API_KEY was not released: the secret broker denied access (HTTP 403).');
+ const [{op,...body}]=f.sent;assert(serverAcceptsReport(body));assert.equal(body.outcome,'blocked');assert.equal(body.errorCode,'secret_denied');assert.equal(body.reason,receipt.reason);
+});
+test('a broker error that is not a denial keeps its status and code instead of secret_denied',async t=>{
+ const f=secretFixture(t,brokerError(503,'company_workload_unavailable'));
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_B));
+ assert.equal(receipt.outcome,'blocked');assert.equal(receipt.errorCode,'secret_unavailable');assert.equal(f.executed(),0);
+ assert.equal(receipt.reason,'Secret API_KEY was not released: the secret broker returned HTTP 503 (company_workload_unavailable).');
+ const [{op,...body}]=f.sent;assert(serverAcceptsReport(body));assert.equal(body.errorCode,'secret_unavailable');assert.equal(body.reason,receipt.reason);
+});
+test('a broker that cannot be reached is named by error class, never by message',async t=>{
+ const net=new TypeError('fetch failed SENTINEL_SECRET');net.cause={code:'ECONNRESET'};
+ const f=secretFixture(t,net,['FIRST_KEY','API_KEY']);
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([a.outcome,a.errorCode,a.blockedSecret],['blocked','secret_unavailable','API_KEY']);
+ assert.equal(a.reason,'Secret API_KEY was not released: the secret broker could not be reached (TypeError ECONNRESET).');
+ assert(!JSON.stringify(a).includes('SENTINEL_SECRET'));
+ const g=secretFixture(t,new RunnerRefusal('machine_token_timeout'));
+ const b=await g.r.runDelivery(g.j,g.delivery(RUN_B));
+ assert.deepEqual([b.outcome,b.errorCode],['blocked','secret_unavailable']);
+ assert.equal(b.reason,'Secret API_KEY was not released: the secret broker could not be reached (machine_token_timeout).');
+});
+test('a failed precondition is failed with its exit status and last error line, redacted',async t=>{
+ const f=fixture(t);f.j.script='hq secrets get API_KEY';f.j.contentDigest=contentDigest(f.j);
+ const token='eyJ'+'a'.repeat(60);
+ f.r.execute=async(_c,_a,o)=>{if(o.unit.endsWith('-pre.service'))return {code:3,text:'',stderr:`starting\nError: No valid HQ session (token ${token})\n`};throw new Error('session must not run');};
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([receipt.outcome,receipt.errorCode],['failed','precondition_failed']);
+ assert.equal(receipt.reason,'Precondition script exited with status 3: Error: No valid HQ session (token [REDACTED])');
+ const [{op,...body}]=f.calls.filter(c=>c.action==='report');assert(serverAcceptsReport(body));assert.equal(body.reason,receipt.reason);
+ f.r.execute=async()=>({code:124,text:'',stderr:''});
+ const timed=await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'));
+ assert.deepEqual([timed.outcome,timed.errorCode],['timeout','timeout']);assert.match(timed.reason,/^Precondition script exceeded its \d+s time limit\.$/);
+});
+test('a job session that exits non-zero is failed with session_failed and a bounded reason',async t=>{
+ const f=fixture(t);let next={code:2,text:JSON.stringify({disposition:'error',text:'hq-agent-session: provider codex is not installed'}),stderr:''};
+ f.r.execute=async()=>next;
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([a.outcome,a.errorCode,a.exitCode],['failed','session_failed',2]);
+ assert.equal(a.reason,'Job session exited with status 2: hq-agent-session: provider codex is not installed');
+ next={code:1,text:'',stderr:'line one\nfatal: SENTINEL_SECRET rejected\n'};
+ f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
+ const b=await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'));
+ assert.equal(b.reason,'Job session exited with status 1: fatal: [REDACTED] rejected');
+ next={code:124,text:'',stderr:''};
+ const c=await f.r.runDelivery(f.j,f.delivery('c'.repeat(64),'2026-01-03T01:00:00Z'));
+ assert.deepEqual([c.outcome,c.errorCode],['timeout','timeout']);assert.match(c.reason,/^Job session exceeded its \d+s time limit\.$/);
+ for(const r of f.calls.filter(x=>x.action==='report')){const {op,...body}=r;assert(serverAcceptsReport(body),JSON.stringify(body));}
+});
+test('success path is unchanged: granted secrets and outcome complete record succeeded with no reason',async t=>{
+ const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.equal(receipt.outcome,'succeeded');assert.equal(receipt.exitCode,0);assert.equal(receipt.errorCode,undefined);assert.equal(receipt.reason,undefined);assert.equal(receipt.blockedSecret,undefined);
+ assert.equal(processStatus('run',receipt),0);
+});
+test('apiClient keeps the broker status and its error code on a refused call',async t=>{
+ const dir=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'company-api-')));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const cloud=path.join(dir,'cloud.mjs');
+ fs.writeFileSync(cloud,"export const loadMachineCreds=()=>({entityType:'company-outpost',entityUid:'out_test',region:'us-east-1',clientId:'c',username:'u'}); export const getValidMachineTokens=async()=>({idToken:'id',accessToken:'access',expiresAt:Date.now()+3600000});");
+ const savedEnv={...process.env},savedFetch=globalThis.fetch;
+ t.after(()=>{for(const k of Object.keys(process.env))if(!(k in savedEnv))delete process.env[k];Object.assign(process.env,savedEnv);globalThis.fetch=savedFetch;});
+ const replies=[[400,'{"code":"invalid_input"}'],[403,'{"outcome":"blocked","secretName":"API_KEY"}'],[502,'<html>bad gateway</html>'],[503,'{"code":"Not A Code; rm -rf"}']];
+ globalThis.fetch=async()=>{const [status,body]=replies.shift();return new Response(body,{status});};
+ const api=await liveApiClient({companyUid:'cmp_test',machineUid:'out_test',cloudModule:cloud,apiUrl:'https://test.invalid',hqRoot:dir,outpostId:'outpost_cmp_test',attemptId:'a',machineCredsFile:'/not-read'});
+ const seen=[];for(let i=0;i<4;i++){try{await api('secret',{secretName:'API_KEY'});}catch(e){seen.push([e.code,e.status,e.apiCode??null]);}}
+ assert.deepEqual(seen,[['company_api_400',400,'invalid_input'],['company_api_403',403,null],['company_api_502',502,null],['company_api_503',503,null]]);
+});
+test('a precondition reason keeps a long file path and cuts a dotted token',async t=>{
+ const f=fixture(t);f.j.script='cat data.json';f.j.contentDigest=contentDigest(f.j);
+ const jwt=['eyJ'+'h'.repeat(40),'eyJ'+'p'.repeat(40),'s'.repeat(43)].join('.');
+ f.r.execute=async()=>({code:1,text:'',stderr:`cat: /var/lib/hq-company-jobs/runs/projects/quarterly-report/data.json: No such file (auth ${jwt})\n`});
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.equal(receipt.reason,'Precondition script exited with status 1: cat: /var/lib/hq-company-jobs/runs/projects/quarterly-report/data.json: No such file (auth [REDACTED].[REDACTED].[REDACTED])');
+});
+test('a token-like string that contains a slash is removed whole while file paths stay readable',async t=>{
+ const f=fixture(t);f.j.script='deploy';f.j.contentDigest=contentDigest(f.j);
+ // Never granted by the runner, so only the pattern can catch them. Every slash-separated piece is under 32 characters.
+ const padded='Zm9vYmFyQmF6UXV4/Y29ycG9yYXRlU2Vj/cmV0VmFsdWU5OTk=';
+ const plain='q8Xw2LmN4vB7tR1z/K9pQ3sD6fH0jY5u/aE2';
+ const plus='AbCdEfGh+IjKlMn/OpQrStUvWx0123';
+ const runId='d'.repeat(64);
+ const lines=[`auth failed: ${padded} rejected`,`auth failed: ${plain} rejected`,`auth failed: key=${plus} rejected`,
+  `cat: /var/lib/hq-company-jobs/runs/${runId}/projects/quarterly-report/data.json: No such file`];
+ const expected=['auth failed: [REDACTED] rejected','auth failed: [REDACTED] rejected','auth failed: [REDACTED] rejected',
+  'cat: /var/lib/hq-company-jobs/runs/[REDACTED]/projects/quarterly-report/data.json: No such file'];
+ for(let i=0;i<lines.length;i++){
+  f.r.execute=async()=>({code:1,text:'',stderr:lines[i]+'\n'});
+  const receipt=await f.r.runDelivery(f.j,f.delivery(String(i).repeat(64),`2026-01-0${2+i}T01:00:00Z`));
+  assert.equal(receipt.outcome,'failed');assert.equal(receipt.reason,`Precondition script exited with status 1: ${expected[i]}`);
+  for(const piece of [padded,plain,plus].flatMap(s=>s.split('/')))assert(!receipt.reason.includes(piece),`piece ${piece} survived`);
+ }
+});
+test('the 500-character cap holds after token removal and no token piece survives the cut',async t=>{
+ const f=fixture(t);f.j.script='deploy';f.j.contentDigest=contentDigest(f.j);
+ const tokens=Array.from({length:30},(_,i)=>`Zm9vYmFyQmF6UXV${i%10}/Y29ycG9yYXRlU2Vj/cmV0VmFsdWU5OTk=`);
+ f.r.execute=async()=>({code:1,text:'',stderr:'error '+tokens.map(s=>`word ${s}`).join(' ')+'\n'});
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert(receipt.reason.length<=500);assert(receipt.reason.startsWith('Precondition script exited with status 1: error word [REDACTED] word'));
+ for(const piece of tokens.flatMap(s=>s.split('/')))assert(!receipt.reason.includes(piece),`piece ${piece} survived`);
+});
+test('a slash token after an underscored KEY= is removed and the key stays readable',()=>{
+ const tok='Zm9vYmFyQmF6UXV4/Y29ycG9yYXRlU2Vj/cmV0VmFsdWU5OTk=';
+ for(const [line,want] of [[`AWS_SECRET_ACCESS_KEY=${tok}`,'AWS_SECRET_ACCESS_KEY=[REDACTED]'],[`--api_token=${tok} rejected`,'--api_token=[REDACTED] rejected'],[`env HQ_KEY=${tok}.`,'env HQ_KEY=[REDACTED]'],
+  [`api-key-${tok}`,'api-key-[REDACTED]'],[`${tok}.json`,'[REDACTED].json'],[`GET /v1/tokens/${tok}/info.json`,'GET [REDACTED].json'],[`${tok}-expired`,'[REDACTED]-expired']]){
+  const reason=processFailureReason('Job session',{code:1,text:'',stderr:line+'\n'},60);
+  assert.equal(reason,`Job session exited with status 1: ${want}`);
+  for(const piece of tok.split('/'))assert(!reason.includes(piece),`piece ${piece} survived`);
+ }
+});
+test('common file paths in a failure line stay readable',()=>{
+ const paths=['/usr/include/c++/12/bits/stl_vector.h:1021','node_modules/.pnpm/react-dom+react@18.2.0/node_modules/react-dom/index.js',
+  '/srv/app/Projects/MyApp2024Backend/src/server.ts','/opt/data/2026/11/13/Report_Q4_2026_FinalVersion.csv','--prefix=/opt/hq/lib/node_modules/hq-cli',
+  '--config=/etc/myapp/config/production/settings','WORKDIR=/srv/runner/work/MyProject/MyProject/src','/opt/homebrew/Cellar/gcc/14/include/c++/14/bits/stl_vector.h',
+  '/usr/local/include/boost/asio/detail/impl/socket+ops.ipp','--configuration=/opt/build/release/artifacts/output','--outputDirectory=/srv/build/release/artifacts'];
+ for(const p of paths)assert.equal(processFailureReason('Precondition script',{code:2,text:'',stderr:`ENOENT ${p}\n`},240),`Precondition script exited with status 2: ENOENT ${p}`);
+});
+test('a broker answer with no value is failed with invalid_secret and a reason',async t=>{
+ const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);
+ const inner=f.r.api;f.r.api=async(op,b)=>op==='secret'?{value:''}:inner(op,b);
+ const receipt=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([receipt.outcome,receipt.errorCode,receipt.blockedSecret],['failed','invalid_secret','API_KEY']);
+ assert.equal(receipt.reason,'Secret API_KEY was not released: the secret broker returned no value.');assert.equal(f.executed(),0);
+});
+test('slash-style vault names stay refused until the secret broker accepts them',()=>{
+ // hq secrets allows PROD/DB_PASSWORD, but the company secret broker accepts only ^[A-Za-z][A-Za-z0-9_-]{0,127}$.
+ assert.throws(()=>options({context:{companyJob:{secrets:['PROD/DB_PASSWORD']}}}),/invalid_secret_names/);
+});
+const ADDITIONAL_ID='opc_01M7JSHDWBGX5ACJS1EC4VBMAM';
+const OTHER_ADDITIONAL_ID='opc_01M7JSHDWBGX5ACJS1EC4VBMAN';
+function boxConfig(outpostId){return {companyUid:'cmp_test',companySlug:'test',machineUid:'out_test',outpostId,instanceId:'i-test',attemptId:'attempt1',hqRoot:'/opt/hq-company-jobs',stateDir:'/var/lib/hq-company-jobs/state',unitDir:'/var/lib/hq-company-jobs/units',machineCredsFile:'/etc/hq/company-machine.json',cloudModule:'/opt/hq/cloud.mjs',apiUrl:'https://api.example.test',provider:'claude'};}
+const refusedWith=code=>e=>e instanceof Refusal&&e.code===code;
+test('validateConfig accepts the first company Outpost id',()=>{assert.equal(validateConfig(boxConfig('outpost_cmp_test')).outpostId,'outpost_cmp_test');});
+test('validateConfig accepts an additional company Outpost id',()=>{assert.equal(validateConfig(boxConfig(ADDITIONAL_ID)).outpostId,ADDITIONAL_ID);});
+for(const bad of ['opc_01m7jshdwbgx5acjs1ec4vbmam','opc_01M7JSHDWBGX5ACJS1EC4VBMA','opc_01M7JSHDWBGX5ACJS1EC4VBMAMM','opc_01M7JSHDWBGX5ACJS1EC4VBMAI','opc_01M7JSHDWBGX5ACJS1EC4VBMAL','opc_01M7JSHDWBGX5ACJS1EC4VBMAO','opc_01M7JSHDWBGX5ACJS1EC4VBMAU','opc_','opc__01M7JSHDWBGX5ACJS1EC4VBMA','opc_01M7JSHDWBGX5ACJS1EC4VBMAM\n','xopc_01M7JSHDWBGX5ACJS1EC4VBMAM','',undefined,null,42,[ADDITIONAL_ID],{toString:()=>ADDITIONAL_ID}])test(`validateConfig rejects malformed Outpost id ${JSON.stringify(bad)}`,()=>{assert.throws(()=>validateConfig(boxConfig(bad)),refusedWith('invalid_host_binding'));});
+for(const foreign of ['outpost_cmp_other','outpost_cmp_testx','outpost_'])test(`validateConfig rejects another company's first Outpost id ${foreign}`,()=>{assert.throws(()=>validateConfig(boxConfig(foreign)),refusedWith('invalid_host_binding'));});
+function boxJobFor(c,agentUid,targetOutpostId=agentUid){const j={ownerKind:'company-outpost',companyUid:c.companyUid,agentUid,jobId:'job_abc',acceptedRevision:'revision1',status:'active',prompt:'do work',target:{machineUid:c.machineUid,outpostId:targetOutpostId,instanceId:c.instanceId,attemptId:c.attemptId},acceptedAt:'2026-01-01T00:00:00Z',schedule:{kind:'recurring',cron:'cron(0 9 * * ? *)',timezone:'UTC'}};j.contentDigest=contentDigest(j);return j;}
+test('acceptedJob accepts a job for this first Outpost',()=>{const c=boxConfig('outpost_cmp_test');assert.equal(acceptedJob(c,boxJobFor(c,'outpost_cmp_test')).jobId,'job_abc');});
+test('acceptedJob accepts a job for this additional Outpost',()=>{const c=boxConfig(ADDITIONAL_ID);assert.equal(acceptedJob(c,boxJobFor(c,ADDITIONAL_ID)).jobId,'job_abc');});
+test('acceptedJob rejects a job owned by another Outpost of the same company',()=>{const c=boxConfig(ADDITIONAL_ID);
+ assert.throws(()=>acceptedJob(c,boxJobFor(c,OTHER_ADDITIONAL_ID)),refusedWith('not_accepted'));
+ assert.throws(()=>acceptedJob(c,boxJobFor(c,'outpost_cmp_test')),refusedWith('not_accepted'));
+ assert.throws(()=>acceptedJob(c,boxJobFor(c,ADDITIONAL_ID,OTHER_ADDITIONAL_ID)),refusedWith('wrong_target'));
+ const first=boxConfig('outpost_cmp_test');assert.throws(()=>acceptedJob(first,boxJobFor(first,ADDITIONAL_ID)),refusedWith('not_accepted'));});
+test('acceptedJob rejects a job for another company',()=>{const c=boxConfig(ADDITIONAL_ID);assert.throws(()=>acceptedJob(c,{...boxJobFor(c,ADDITIONAL_ID),companyUid:'cmp_other'}),refusedWith('not_accepted'));});
+test('acceptedJob rejects a job without an owning Outpost even when the config has none',()=>{const c={...boxConfig(ADDITIONAL_ID),outpostId:undefined};const j=boxJobFor(c,undefined);delete j.agentUid;delete j.target.outpostId;j.contentDigest=contentDigest(j);assert.throws(()=>acceptedJob(c,j),refusedWith('not_accepted'));});

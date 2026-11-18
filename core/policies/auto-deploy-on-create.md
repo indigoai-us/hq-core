@@ -57,7 +57,7 @@ An artifact is deployable if ANY of these are true:
 - **Non-web artifacts** — JSON, CSV, YAML exports are not deployable
 - **User preference set to non-`hq-deploy`** — see User Preferences below
 - **Artifacts that fail size/complexity guardrails** — see Guardrails below
-- **No identity session** — if the user isn't signed in, the skill first tries to trigger an agent-spawned browser login (`npx hq auth login`); only if that fails does it fall back to serving only the localhost preview and upselling. See Identity Gate below.
+- **No identity session** — if the user isn't signed in, the skill first tries to trigger an agent-spawned browser login (`npx hq login`); only if that fails does it fall back to serving only the localhost preview and upselling. See Identity Gate below.
 
 ### Identity Gate
 
@@ -74,13 +74,13 @@ Expected schema: `{ accessToken, idToken, refreshToken, expiresAt, tokenType }`.
 When there is no usable session, the skill runs — exactly once per session, tracked via `/tmp/hq-deploy-login-attempted-<deploy-user-key>`. The filename-safe deploy user key comes from `${USER:-${USERNAME:-unknown}}`, with characters outside `[[:alnum:]_.-]` replaced by `_`:
 
 ```bash
-npx -y --package=@indigoai-us/hq-cli hq auth login &
+npx -y --package=@indigoai-us/hq-cli hq login &
 LOGIN_PID=$!
 ( sleep 180 && kill "$LOGIN_PID" 2>/dev/null ) &
 wait "$LOGIN_PID" 2>/dev/null || true
 ```
 
-(Portable kill-after-180s pattern — `timeout` isn't on macOS by default.) `hq auth login` (shipped in `@indigoai-us/hq-cli` ≥5.5) opens Cognito's Hosted UI in the user's default browser, waits for the OAuth callback on a localhost loopback server, and writes tokens to `~/.hq/cognito-tokens.json`. After the spawn returns, the skill re-reads the session file. If tokens appear, the deploy proceeds on the same turn — the user signed in via a browser popup and never saw a terminal.
+(Portable kill-after-180s pattern — `timeout` isn't on macOS by default.) `hq login` (shipped in `@indigoai-us/hq-cli` ≥5.5) opens Cognito's Hosted UI in the user's default browser, waits for the OAuth callback on a localhost loopback server, and writes tokens to `~/.hq/cognito-tokens.json`. After the spawn returns, the skill re-reads the session file. If tokens appear, the deploy proceeds on the same turn — the user signed in via a browser popup and never saw a terminal.
 
 Before spawning, the skill must announce what's happening so the browser popup isn't unexpected:
 > Opening HQ sign-in in your browser — one moment...

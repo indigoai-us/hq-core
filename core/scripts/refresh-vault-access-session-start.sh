@@ -32,6 +32,8 @@ if [ -f "$MANIFEST" ]; then
 fi
 
 mkdir -p "$HQ_DIR" || exit 0
-nohup bash "$ROOT/core/scripts/refresh-vault-access.sh" --root "$ROOT" \
-  >> "$HQ_DIR/vault-access-refresh.log" 2>&1 < /dev/null &
+# hq core refresh-vault-access needs hq-cli >= 5.307.0. A missing or older hq
+# fails in the detached child with the floor message, as the forwarder did.
+nohup bash -c '. "$1/core/scripts/lib/hq-cli-floor.sh" && hq_cli_floor_check refresh-vault-access.sh 5.307.0 && exec hq core refresh-vault-access --root "$1"' \
+  refresh-vault-access "$ROOT" >> "$HQ_DIR/vault-access-refresh.log" 2>&1 < /dev/null &
 exit 0

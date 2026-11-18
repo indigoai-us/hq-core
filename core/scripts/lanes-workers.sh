@@ -3,14 +3,24 @@
 # lanes-workers.sh — the mechanical parts of `/conduct --workers`: role lanes
 # pinned to one engine, model and effort for the session, per-role brief
 # templates, the CI check after a lane opens a PR, and the QA trigger.
+# Role lanes on runners belong to /conduct-runners, the advanced mode of
+# /conduct. This script never calls `hq runners` (or its old `hq lanes` alias).
 #
 # Usage:
 #   bash core/scripts/lanes-workers.sh setup --workers <r1,r2,...> \
-#        [--engine claude|codex|grok] [--model <m>] [--effort <f>] [--session-id <id>]
+#        [--engine claude|codex|grok] [--model <m>] [--effort <f>] \
+#        [--runner subagent|runner] [--session-id <id>]
 #     Validates the role list and persists conduct_lane_roles, conduct_engine,
 #     conduct_child_model and conduct_child_effort in session meta. Omitted
-#     engine/model/effort keep their current session value. Prints the result
-#     as JSON; "engine": null means the conductor still has to resolve one.
+#     engine/model/effort keep their current session value. The runner comes
+#     from conduct-runner-resolve.sh (legacy mixed and lane read as runner).
+#     Under subagent (the default) each role is recorded as a pending standing
+#     subagent lane in workspace/orchestrator/conduct-subagents/<sid>/runs.json
+#     (backing "subagent"); the conductor starts it with the Agent tool. Under
+#     runner no runs.json row is written: the lanes are listed with backing
+#     "runner" for /conduct-runners to open with conduct-standing.sh send.
+#     Prints the result as JSON; "engine": null means the conductor still has
+#     to resolve one.
 #
 #   bash core/scripts/lanes-workers.sh roles [--session-id <id>]
 #     Prints the session's role lanes and pins as JSON.
@@ -45,7 +55,7 @@ set -euo pipefail
 ROOT="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
 ROLES_DIR="$ROOT/.claude/skills/conduct/roles"
 
-usage() { sed -n '3,46p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,51p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "lanes-workers: $*" >&2; exit 1; }
 need_val() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
 
@@ -72,14 +82,70 @@ print_roles() {
       effort:(if $effort=="" then null else $effort end)}'
 }
 
+# Prints subagent or runner for this session, through conduct-runner-resolve.sh.
+resolve_runner() {
+  local resolver="$ROOT/core/scripts/conduct-runner-resolve.sh"
+  [ -f "$resolver" ] || { [ -z "$1" ] || [ "$1" = subagent ] || die "setup: no runner resolver for --runner $1"; printf subagent; return; }
+  local out
+  if [ -n "$1" ]; then
+    out="$(sh "$resolver" --root "$ROOT" --session-id "$SID" --runner "$1")" || die "setup: cannot resolve the conduct runner"
+  else
+    out="$(sh "$resolver" --root "$ROOT" --session-id "$SID")" || die "setup: cannot resolve the conduct runner"
+  fi
+  case "$out" in subagent|runner) printf '%s' "$out" ;; *) die "setup: unexpected conduct runner: $out" ;; esac
+}
+
+# Prints a JSON object mapping each role in the comma list to its brief
+# template, falling back to generic.md like `template` (null when neither
+# exists).
+role_templates() {
+  local role out='{}' rel=".claude/skills/conduct/roles" t old_ifs="$IFS"
+  IFS=','
+  # shellcheck disable=SC2086
+  set -- $1
+  IFS="$old_ifs"
+  for role in "$@"; do
+    if [ -f "$ROLES_DIR/$role.md" ]; then t="$rel/$role.md"
+    elif [ -f "$ROLES_DIR/generic.md" ]; then t="$rel/generic.md"
+    else t=""; fi
+    out="$(jq -c --arg r "$role" --arg t "$t" '. + {($r): (if $t=="" then null else $t end)}' <<<"$out")"
+  done
+  printf '%s' "$out"
+}
+
+# Writes one pending standing-subagent row per role into runs.json, replacing
+# an earlier row for the same role. Temp file and mv, so readers never see a
+# partial file.
+record_subagent_lanes() {
+  local dir="$ROOT/workspace/orchestrator/conduct-subagents/$SID" file tmp now
+  file="$dir/runs.json"
+  mkdir -p "$dir"
+  now="$(date -u +%s)"
+  tmp="$(mktemp "$dir/.runs.json.XXXXXX")"
+  if [ -s "$file" ]; then cat "$file"; else echo '{"runs":[]}'; fi \
+    | jq --arg roles "$1" --argjson now "$now" --argjson tmpl "$2" '
+        ($roles|split(",")) as $r
+        | (if type=="object" and (.runs|type)=="array" then . else {runs:[]} end)
+        | .runs |= (map(select(((.lane.role? // null) as $x | $r | index($x)) | not))
+            + ($r | map({agent_id:null, worker:., task:("standing " + . + " lane"),
+                state:"pending", runner:"subagent", since:$now,
+                lane:{lane_id:("role-" + .), role:., worker:., standing:true,
+                  backing:"subagent", subagent_type:"general-purpose",
+                  template:$tmpl[.],
+                  last_task:null, state:"pending"}})))' > "$tmp" \
+    || { rm -f "$tmp"; die "setup: cannot update $file"; }
+  mv "$tmp" "$file"
+}
+
 cmd_setup() {
-  local workers="" engine="" model="" effort="" role seen="," clean=""
+  local workers="" engine="" model="" effort="" runner="" role seen="," clean=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --workers) need_val "$@"; workers="$2"; shift 2 ;;
       --engine) need_val "$@"; engine="$2"; shift 2 ;;
       --model) need_val "$@"; model="$2"; shift 2 ;;
       --effort) need_val "$@"; effort="$2"; shift 2 ;;
+      --runner) need_val "$@"; runner="$2"; shift 2 ;;
       --session-id) need_val "$@"; SID="$2"; shift 2 ;;
       *) die "setup: unknown option: $1" ;;
     esac
@@ -103,6 +169,7 @@ cmd_setup() {
   case "$model" in *[[:space:]]*) die "setup: invalid model name: $model" ;; esac
   case "$effort" in *[!a-z]*) die "setup: invalid effort: $effort" ;; esac
   resolve_sid
+  runner="$(resolve_runner "$runner")"
   sset conduct_lane_roles "$clean"
   # Codex SessionStart may have supplied automatic engine/model/effort pins.
   # Explicit role-lane flags take precedence. When the user switches away from
@@ -123,7 +190,19 @@ cmd_setup() {
   [ -z "$engine" ] || sset conduct_engine "$engine"
   [ -z "$model" ] || sset conduct_child_model "$model"
   [ -z "$effort" ] || sset conduct_child_effort "$effort"
-  print_roles
+  local backing=subagent tmpl
+  tmpl="$(role_templates "$clean")"
+  if [ "$runner" = subagent ]; then
+    record_subagent_lanes "$clean" "$tmpl"
+  else
+    backing=runner
+  fi
+  print_roles | jq -c --arg runner "$runner" --arg backing "$backing" --arg roles "$clean" --argjson tmpl "$tmpl" '
+    . + {runner:$runner,
+         lanes:($roles|split(",")|map({lane_id:(if $backing=="subagent" then "role-" + . else null end),
+           role:., standing:true, backing:$backing,
+           template:$tmpl[.]}))}
+    + (if $backing=="runner" then {note:"runner lanes: /conduct-runners opens each with conduct-standing.sh send"} else {} end)'
 }
 
 cmd_roles() {

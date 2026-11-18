@@ -1,7 +1,7 @@
 ---
 name: brainstorm
 description: Compare approaches to best-in-class prior art, merge existing work, verify cruft removal, and recommend the most durable design before PRD work.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(bash core/scripts/work-mesh-live-bind-trusted.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch, Bash(bash core/scripts/read-policy-frontmatter.sh:*), Bash(bash core/scripts/board-project-id.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(hq core work-mesh-bind-trusted:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(hq core register-project:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/board-project-id.sh:*)
 ---
 
 # Brainstorm - Structured Exploration
@@ -31,7 +31,7 @@ As soon as Step 0 resolves `{co}`, and before any other tool call that touches p
 `.claude/skills/_shared/work-mesh-live-bind.md` (US-011):
 
 ```bash
-bash core/scripts/work-mesh-live-bind-trusted.sh \
+hq core work-mesh-bind-trusted \
   --company "{co}" --project "{project}" --task "{task}"
 ```
 
@@ -46,8 +46,8 @@ Check if the **first word** of the user's input matches a company slug in `compa
 
 1. **Set `{co}`** = matched slug. Strip from input — remaining text is the description
 2. **Announce:** "Anchored on **{co}**"
-3. **Bind the session** — run `bash core/scripts/work-mesh-live-bind-trusted.sh --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
-4. **Load policies (frontmatter-only)** — Collect the eligible files for the resolved company, except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `bash core/scripts/read-policy-frontmatter.sh {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally Read the `## Rule` section with a targeted range
+3. **Bind the session** — run `hq core work-mesh-bind-trusted --company "{co}"` now, before any read under `companies/{co}/`. The scope guard blocks company paths until the session is bound to `{co}`.
+4. **Load policies (frontmatter-only)** — Collect the eligible files for the resolved company, except `example-policy.md`, preserve their order, and split the stable file order into consecutive chunks of at most 40 files. For each chunk, run `hq core policy frontmatter {file1} {file2} ...` once with each path as a separate argument. Keep each call under 30 KB of output. The first output block belongs to the chunk’s first file argument; each later block belongs to the path named by its preceding `# --- policy-file: <path> ---` separator. Note `enforcement: hard` titles. For hard-enforcement policies only, additionally Read the `## Rule` section with a targeted range
 5. **Scope qmd searches** — If company has `qmd_collections` in manifest, use `-c {collection}`
 
 **If no match** -- full input is the description text. Company resolved later.

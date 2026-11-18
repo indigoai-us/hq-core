@@ -58,7 +58,7 @@ For a sensitive artifact, pick the access mode from user intent:
 
 Implementation detail for the `/deploy` skill — the binding rules are above.
 
-This policy is the user-facing reinforcement layer complementing `auto-deploy-on-create` (silent post-build deploys). Legacy `~/.hq/config.json` `.deploy.preference` is still read during the deprecation window; the path was separated because the HQ Desktop App owns `~/.hq/config.json` as a strict `HqConfig` file (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`). The lazy `npx hq auth login` fallback lives in Step 4d of the deploy skill; this policy adds the user-visible announcement.
+This policy is the user-facing reinforcement layer complementing `auto-deploy-on-create` (silent post-build deploys). Legacy `~/.hq/config.json` `.deploy.preference` is still read during the deprecation window; the path was separated because the HQ Desktop App owns `~/.hq/config.json` as a strict `HqConfig` file (see `feedback_3ab4f113-2e7c-4e4e-a171-771b47a2b5fd`). The lazy `npx hq login` fallback lives in Step 4d of the deploy skill; this policy adds the user-visible announcement.
 
 ### Phase ordering (v3 — inline parallel scripts)
 

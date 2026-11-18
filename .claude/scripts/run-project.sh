@@ -59,7 +59,15 @@ ORCH_DIR="$HQ_ROOT/workspace/orchestrator"
 REGRESSION_INTERVAL=3
 SESSION_ID="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 RUN_START_EPOCH=$(date +%s)
-AUDIT_SCRIPT="$HQ_ROOT/core/scripts/audit-log.sh"
+# hq core audit-log needs hq-cli >= 5.307.0. Callers ignore its status, as
+# they did when it ran core/scripts/audit-log.sh.
+audit_log() {
+  [[ -f "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh" ]] || return 127
+  # shellcheck source=core/scripts/lib/hq-cli-floor.sh
+  . "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh" &&
+    hq_cli_floor_check audit-log.sh 5.307.0 &&
+    hq core --hq-root "$HQ_ROOT" audit-log "$@"
+}
 DETECT_CODEX="$HQ_ROOT/core/scripts/lib/detect-codex.sh"
 
 if [[ -f "$DETECT_CODEX" ]]; then
@@ -119,6 +127,24 @@ provision_worktree() {
   if ! (cd "$wt_path" && "$package_manager" "${install_args[@]}"); then
     log_err "Worktree bootstrap failed: $package_manager install did not complete in $wt_path"
     return 1
+  fi
+}
+
+# wt_backend_add <repo> <git-worktree-add args...> — create a worktree through
+# core/scripts/worktree-backend.sh (git or twig, per core/settings/worktrees.yaml,
+# falling back to plain git), or plain git when the helper is absent.
+# Accepts the two shapes used here: "-b <branch> <path> <base>" and
+# "<path> <existing-branch>".
+wt_backend_add() {
+  local repo="$1"; shift
+  local helper="${HQ_ROOT:-}/core/scripts/worktree-backend.sh"
+  if [[ -z "${HQ_ROOT:-}" || ! -f "$helper" ]]; then
+    git -C "$repo" worktree add "$@"; return $?
+  fi
+  if [[ "$1" == "-b" ]]; then
+    HQ_ROOT="$HQ_ROOT" bash "$helper" add --repo "$repo" --path "$3" --new-branch "$2" --base "$4"
+  else
+    HQ_ROOT="$HQ_ROOT" bash "$helper" add --repo "$repo" --path "$1" --branch "$2"
   fi
 }
 
@@ -196,12 +222,12 @@ ensure_worktree() {
   # Create the worktree
   log_info "Creating worktree: $wt_path (branch: $branch_name)"
   if git -C "$repo_path" show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
-    git -C "$repo_path" worktree add "$wt_path" "$branch_name" 2>&1 || {
+    wt_backend_add "$repo_path" "$wt_path" "$branch_name" 2>&1 || {
       log_err "Failed to create worktree"
       return 1
     }
   else
-    git -C "$repo_path" worktree add -b "$branch_name" "$wt_path" "$base_branch" 2>&1 || {
+    wt_backend_add "$repo_path" -b "$branch_name" "$wt_path" "$base_branch" 2>&1 || {
       log_err "Failed to create worktree with new branch"
       return 1
     }
@@ -246,12 +272,12 @@ ensure_missing_repo_worktree() {
 
   log_info "Target repoPath ${target_repo} does not exist — creating worktree from ${source_repo}"
   if git -C "$source_repo" show-ref --verify --quiet "refs/heads/$branch_name" 2>/dev/null; then
-    git -C "$source_repo" worktree add "$target_repo" "$branch_name" 2>&1 || {
+    wt_backend_add "$source_repo" "$target_repo" "$branch_name" 2>&1 || {
       log_err "Failed to create worktree at $target_repo"
       return 1
     }
   else
-    git -C "$source_repo" worktree add -b "$branch_name" "$target_repo" "$base_branch" 2>&1 || {
+    wt_backend_add "$source_repo" -b "$branch_name" "$target_repo" "$base_branch" 2>&1 || {
       log_err "Failed to create worktree at $target_repo with new branch $branch_name"
       return 1
     }
@@ -343,7 +369,15 @@ cleanup_on_signal() {
 }
 
 # --- repo-run-registry integration (added by HQ repo-run-coordination) ---
-REPO_RUN_REGISTRY="$HQ_ROOT/core/scripts/repo-run-registry.sh"
+# hq core repo-run-registry needs hq-cli >= 5.316.0. Registration is
+# best effort: without a usable hq the run is not registered.
+repo_run_registry() {
+  [[ -f "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh" ]] || return 127
+  # shellcheck source=core/scripts/lib/hq-cli-floor.sh
+  . "$HQ_ROOT/core/scripts/lib/hq-cli-floor.sh" &&
+    hq_cli_floor_check repo-run-registry.sh 5.316.0 &&
+    hq core --hq-root "$HQ_ROOT" repo-run-registry "$@"
+}
 REPO_RUN_ID=""
 HEARTBEAT_PID=""
 
@@ -364,10 +398,11 @@ _repo_run_parent_pid() {
 
 repo_run_register_for_repo() {
   local repo="$1"
-  [[ -z "$repo" || ! -x "$REPO_RUN_REGISTRY" ]] && return 0
+  [[ -z "$repo" ]] && return 0
+  command -v hq >/dev/null 2>&1 || return 0
   local parent_pid
   parent_pid=$(_repo_run_parent_pid)
-  REPO_RUN_ID=$("$REPO_RUN_REGISTRY" register \
+  REPO_RUN_ID=$(repo_run_registry register \
     --pid "$parent_pid" \
     --session-id "$SESSION_ID" \
     --command "/run-project" \
@@ -380,7 +415,7 @@ repo_run_register_for_repo() {
   (
     while true; do
       sleep 60
-      "$REPO_RUN_REGISTRY" heartbeat --run-id "$REPO_RUN_ID" >/dev/null 2>&1 || break
+      repo_run_registry heartbeat --run-id "$REPO_RUN_ID" >/dev/null 2>&1 || break
     done
   ) &
   HEARTBEAT_PID=$!
@@ -389,8 +424,8 @@ repo_run_register_for_repo() {
 
 repo_run_cleanup_registry() {
   [[ -n "${HEARTBEAT_PID:-}" ]] && kill "$HEARTBEAT_PID" 2>/dev/null || true
-  if [[ -n "${REPO_RUN_ID:-}" && -x "${REPO_RUN_REGISTRY:-}" ]]; then
-    "$REPO_RUN_REGISTRY" deregister --run-id "$REPO_RUN_ID" >/dev/null 2>&1 || true
+  if [[ -n "${REPO_RUN_ID:-}" ]]; then
+    repo_run_registry deregister --run-id "$REPO_RUN_ID" >/dev/null 2>&1 || true
   fi
 }
 # --- end repo-run-registry integration ---
@@ -870,7 +905,7 @@ if [[ "$DRY_RUN" != true && -f "$STATE_FILE" ]]; then
     [[ $_stale_count -gt 0 ]] && log_info "Cleaned $_stale_count stale current_tasks entries from prior run"
   fi
 
-  "$AUDIT_SCRIPT" append --event project_started --project "$PROJECT" \
+  audit_log append --event project_started --project "$PROJECT" \
     ${COMPANY:+--company "$COMPANY"} \
     --action "Resuming project: $TOTAL stories, $COMPLETED completed (resume=true)" \
     --result success \
@@ -895,7 +930,7 @@ elif [[ "$DRY_RUN" != true ]]; then
 EOF
   echo "[$(ts)] Project started: $PROJECT ($TOTAL stories, $COMPLETED already completed)" >> "$PROGRESS_FILE"
   log_info "Initialized new project state"
-  "$AUDIT_SCRIPT" append --event project_started --project "$PROJECT" \
+  audit_log append --event project_started --project "$PROJECT" \
     ${COMPANY:+--company "$COMPANY"} \
     --action "Project started: $TOTAL stories total, resume=false" \
     --result success \
@@ -2522,14 +2557,14 @@ Rules:
 
   if [[ $exit_code -eq 0 ]]; then
     log_ok "Doc sweep completed — see $output_file"
-    "$AUDIT_SCRIPT" append --event doc_sweep_completed --project "$project" \
+    audit_log append --event doc_sweep_completed --project "$project" \
       ${company:+--company "$company"} \
       --action "Doc sweep: 4 layers scanned" \
       --result success \
       --session-id "$SESSION_ID" || true
   else
     log_warn "Doc sweep failed (exit=$exit_code) — non-blocking, see $stderr_file"
-    "$AUDIT_SCRIPT" append --event doc_sweep_failed --project "$project" \
+    audit_log append --event doc_sweep_failed --project "$project" \
       ${company:+--company "$company"} \
       --action "Doc sweep failed" \
       --result fail \
@@ -3377,7 +3412,7 @@ ensure_story_worktree() {
   git -C "$base_repo" branch -D "$story_branch" 2>/dev/null || true
 
   # Create worktree with unique per-story branch
-  git -C "$base_repo" worktree add -b "$story_branch" "$wt_path" "$start_point" 2>/dev/null || {
+  wt_backend_add "$base_repo" -b "$story_branch" "$wt_path" "$start_point" >/dev/null 2>&1 || {
     log_err "Failed to create story worktree for $story_id at $wt_path"
     return 1
   }
@@ -3488,7 +3523,7 @@ process_swarm_completion() {
     story_title=$(get_story_title "$story_id")
     echo "[$(ts)] $story_id: $story_title — completed in swarm (${duration}s) [$commit_sha]" >> "$PROGRESS_FILE"
 
-    "$AUDIT_SCRIPT" append --event story_completed --project "$PROJECT" \
+    audit_log append --event story_completed --project "$PROJECT" \
       ${COMPANY:+--company "$COMPANY"} \
       --story-id "$story_id" \
       --action "$(get_story_title "$story_id") (swarm)" \
@@ -3520,7 +3555,7 @@ process_swarm_completion() {
       echo "[$(ts)] $story_id: FAILED in swarm (attempt ${retry_count}) — will retry next batch" >> "$PROGRESS_FILE"
     fi
 
-    "$AUDIT_SCRIPT" append --event story_failed --project "$PROJECT" \
+    audit_log append --event story_failed --project "$PROJECT" \
       ${COMPANY:+--company "$COMPANY"} \
       --story-id "$story_id" \
       --result fail \
@@ -3826,7 +3861,7 @@ if [[ "$SWARM_MODE" == true ]]; then
       pre_story_sha=$(get_pre_story_sha)
       capture_pre_story_anchors "$STORY_ID"
 
-      "$AUDIT_SCRIPT" append --event story_dispatched --project "$PROJECT" \
+      audit_log append --event story_dispatched --project "$PROJECT" \
         ${COMPANY:+--company "$COMPANY"} \
         --story-id "$STORY_ID" \
         --action "Dispatching $STORY_ID: $STORY_TITLE" \
@@ -3868,7 +3903,7 @@ if [[ "$SWARM_MODE" == true ]]; then
         release_checkout "$STORY_ID"
         echo "[$(ts)] $STORY_ID: $STORY_TITLE — completed (${duration}s) [$commit_sha] ($COMPLETED/$TOTAL)" >> "$PROGRESS_FILE"
 
-        "$AUDIT_SCRIPT" append --event story_completed --project "$PROJECT" \
+        audit_log append --event story_completed --project "$PROJECT" \
           ${COMPANY:+--company "$COMPANY"} \
           --story-id "$STORY_ID" --action "$STORY_TITLE" \
           --result success --duration-ms $(( duration * 1000 )) \
@@ -3889,7 +3924,7 @@ if [[ "$SWARM_MODE" == true ]]; then
         release_checkout "$STORY_ID"
         echo "[$(ts)] $STORY_ID: FAILED — queued for retry ($COMPLETED/$TOTAL)" >> "$PROGRESS_FILE"
 
-        "$AUDIT_SCRIPT" append --event story_failed --project "$PROJECT" \
+        audit_log append --event story_failed --project "$PROJECT" \
           ${COMPANY:+--company "$COMPANY"} \
           --story-id "$STORY_ID" --action "$STORY_TITLE" \
           --result fail --duration-ms $(( duration * 1000 )) \
@@ -3938,7 +3973,7 @@ if [[ "$SWARM_MODE" == true ]]; then
       # Add to state
       update_state_add_task "$cand_id" "" "$wt_path"
 
-      "$AUDIT_SCRIPT" append --event story_dispatched --project "$PROJECT" \
+      audit_log append --event story_dispatched --project "$PROJECT" \
         ${COMPANY:+--company "$COMPANY"} \
         --story-id "$cand_id" \
         --action "Dispatching $cand_id (swarm): $cand_title" \
@@ -4064,7 +4099,7 @@ else
       # than stale data from a previous run/session.
       update_state_current "$STORY_ID"
 
-      "$AUDIT_SCRIPT" append --event story_dispatched --project "$PROJECT" \
+      audit_log append --event story_dispatched --project "$PROJECT" \
         ${COMPANY:+--company "$COMPANY"} \
         --story-id "$STORY_ID" \
         --action "Dispatching $STORY_ID (attempt $attempt): $STORY_TITLE" \
@@ -4110,7 +4145,7 @@ else
         release_checkout "$STORY_ID"
         echo "[$(ts)] $STORY_ID: $STORY_TITLE — completed (${duration}s) [$commit_sha] ($COMPLETED/$TOTAL)" >> "$PROGRESS_FILE"
 
-        "$AUDIT_SCRIPT" append --event story_completed --project "$PROJECT" \
+        audit_log append --event story_completed --project "$PROJECT" \
           ${COMPANY:+--company "$COMPANY"} \
           --story-id "$STORY_ID" \
           --action "$STORY_TITLE" \
@@ -4138,7 +4173,7 @@ else
             update_state_failed "$STORY_ID" "passes not set after attempt $attempt"
             release_checkout "$STORY_ID"
             echo "[$(ts)] $STORY_ID: FAILED — queued for retry ($COMPLETED/$TOTAL)" >> "$PROGRESS_FILE"
-            "$AUDIT_SCRIPT" append --event story_failed --project "$PROJECT" \
+            audit_log append --event story_failed --project "$PROJECT" \
               ${COMPANY:+--company "$COMPANY"} \
               --story-id "$STORY_ID" \
               --action "$STORY_TITLE" \
@@ -4152,7 +4187,7 @@ else
             release_checkout "$STORY_ID"
             jq --arg ts "$(ts)" '.status = "paused" | .updated_at = $ts' "$STATE_FILE" > "$STATE_FILE.tmp" \
               && mv "$STATE_FILE.tmp" "$STATE_FILE"
-            "$AUDIT_SCRIPT" append --event story_failed --project "$PROJECT" \
+            audit_log append --event story_failed --project "$PROJECT" \
               ${COMPANY:+--company "$COMPANY"} \
               --story-id "$STORY_ID" \
               --action "$STORY_TITLE" \
@@ -4211,7 +4246,7 @@ if [[ ${#retry_queue[@]} -gt 0 ]]; then
     pre_story_sha=$(get_pre_story_sha)
     capture_pre_story_anchors "$story_id"
 
-    "$AUDIT_SCRIPT" append --event story_dispatched --project "$PROJECT" \
+    audit_log append --event story_dispatched --project "$PROJECT" \
       ${COMPANY:+--company "$COMPANY"} \
       --story-id "$story_id" \
       --action "Dispatching $story_id (retry): $title" \
@@ -4240,7 +4275,7 @@ if [[ ${#retry_queue[@]} -gt 0 ]]; then
       echo "[$(ts)] $story_id: $title — completed on retry [$commit_sha] ($COMPLETED/$TOTAL)" >> "$PROGRESS_FILE"
       log_ok "$story_id completed on retry [$commit_sha]"
       completed_this_run=$((completed_this_run + 1))
-      "$AUDIT_SCRIPT" append --event story_completed --project "$PROJECT" \
+      audit_log append --event story_completed --project "$PROJECT" \
         ${COMPANY:+--company "$COMPANY"} \
         --story-id "$story_id" \
         --action "$title (retry)" \
@@ -4250,7 +4285,7 @@ if [[ ${#retry_queue[@]} -gt 0 ]]; then
     else
       log_err "$story_id failed on retry"
       echo "[$(ts)] $story_id: FAILED on retry" >> "$PROGRESS_FILE"
-      "$AUDIT_SCRIPT" append --event story_failed --project "$PROJECT" \
+      audit_log append --event story_failed --project "$PROJECT" \
         ${COMPANY:+--company "$COMPANY"} \
         --story-id "$story_id" \
         --action "$title (retry)" \
@@ -4327,7 +4362,7 @@ if [[ "$REMAINING" -eq 0 ]]; then
 
   run_end_epoch=$(date +%s)
   run_duration=$(( run_end_epoch - RUN_START_EPOCH ))
-  "$AUDIT_SCRIPT" append --event project_completed --project "$PROJECT" \
+  audit_log append --event project_completed --project "$PROJECT" \
     ${COMPANY:+--company "$COMPANY"} \
     --action "Project completed: $TOTAL total, $COMPLETED completed, $failed_count failed" \
     --result success \

@@ -344,18 +344,18 @@ SESSION_RESULT=""
 load_monitor_cache
 # CACHE_HIT_MUST_SKIP_MONITOR_CHECK
 if [ "$CACHE_HIT" -eq 0 ]; then
-  run_hq lanes monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json
+  run_hq runners monitor-check --session "$SESSION_ID" --engine "$ENGINE" --json
   if [ "$HQ_RC" -eq 124 ]; then
     # MONITOR_TIMEOUT_MUST_STAY_QUIET
     exit 0
   fi
   if [ "$HQ_RC" -ne 0 ] && [ "$HQ_RC" -ne 2 ]; then
     # MONITOR_CHECK_ERROR_MUST_STAY_STDERR_ONLY
-    report_hq_error "hq lanes monitor-check --session returned exit $HQ_RC"
+    report_hq_error "hq runners monitor-check --session returned exit $HQ_RC"
     exit 1
   fi
   if [ -n "$HQ_STDERR" ]; then
-    report_hq_error "hq lanes monitor-check --session wrote stderr"
+    report_hq_error "hq runners monitor-check --session wrote stderr"
     exit 1
   fi
   SESSION_RESULT="$HQ_STDOUT"
@@ -365,7 +365,7 @@ else
 fi
 
 if ! monitor_result_is_valid; then
-  report_hq_error "hq lanes monitor-check returned malformed or mismatched JSON"
+  report_hq_error "hq runners monitor-check returned malformed or mismatched JSON"
   exit 1
 fi
 
@@ -406,39 +406,39 @@ fi
 if [ "$CACHE_HIT" -eq 1 ]; then
   REMINDER="$CACHE_CACHED_REMINDER"
 else
-  run_hq lanes monitor-check --reminder
+  run_hq runners monitor-check --reminder
   if [ "$HQ_RC" -eq 124 ]; then
     # REMINDER_TIMEOUT_MUST_STAY_QUIET
     exit 0
   fi
   if [ "$HQ_RC" -ne 0 ]; then
-    report_hq_error "hq lanes monitor-check --reminder returned exit $HQ_RC"
+    report_hq_error "hq runners monitor-check --reminder returned exit $HQ_RC"
     exit 1
   fi
   if [ -n "$HQ_STDERR" ] || [ -z "$HQ_STDOUT" ]; then
-    report_hq_error "hq lanes monitor-check --reminder did not return clean reminder text"
+    report_hq_error "hq runners monitor-check --reminder did not return clean reminder text"
     exit 1
   fi
   REMINDER="$HQ_STDOUT"
 fi
 if [ -z "$REMINDER" ]; then
-  report_hq_error "hq lanes monitor-check cache returned no clean reminder text"
+  report_hq_error "hq runners monitor-check cache returned no clean reminder text"
   exit 1
 fi
 # NEW_LANE_MUST_RECOMMEND_NEW_ID
 MONITOR_CALLS="$(printf '%s' "$SESSION_RESULT" | jq -r --argjson new "$NEW_UNCOVERED_IDS" '
   .monitor_calls[]
   | . as $call
-  | ($call.command | sub("^hq lanes watch "; "") | split(" ")) as $ids
+  | ($call.command | sub("^hq (runners|lanes) watch "; "") | split(" ")) as $ids
   | ($ids | map(select(. as $id | ($new | index($id)) != null))) as $selected
   | select(($selected | length) > 0)
-  | ("hq lanes watch " + ($selected | join(" "))) as $command
+  | ("hq runners watch " + ($selected | join(" "))) as $command
   | ("Monitor(command=" + ($command | @json)
     + ", timeout_ms=" + ($call.timeout_ms | tostring)
     + ", persistent=" + ($call.persistent | tostring) + ")")
 ' 2>/dev/null || true)"
 if [ -z "$MONITOR_CALLS" ]; then
-  report_hq_error "hq lanes monitor-check returned no exact Monitor call for new uncovered lanes"
+  report_hq_error "hq runners monitor-check returned no exact Monitor call for new uncovered lanes"
   exit 1
 fi
 

@@ -1,0 +1,22 @@
+# Session-pinned policy index. Default off.
+#
+# The injector keeps today's reminder unless this is turned on for one person.
+# Copy this file to personal/settings/policy-session-index.yaml and set
+# enabled: true. HQ_POLICY_SESSION_INDEX=1 (or 0) overrides the file.
+#
+# every_turns: re-emit the stored index every N user turns.
+# cap: soft entries past this count collapse. Hard rules stay.
+# recent_turns: on compaction, soft rules that have not triggered inside this
+# window collapse. Hard rules stay.
+# sweep_days: index files older than this are removed at SessionEnd (any
+# session's), which covers a session that crashed before its own SessionEnd.
+#
+# Must-fire (binding text pushed on trigger, once until compaction): a policy with
+# mustfire: true in its frontmatter; mustfire: false opts out. Otherwise a
+# hard policy whose tags or slug name secrets, security, destructive work,
+# push/merge, production, or tenant isolation.
+enabled: false
+every_turns: 25
+cap: 40
+recent_turns: 25
+sweep_days: 7

@@ -22,11 +22,6 @@ for skill in "$ROOT"/.claude/skills/*/SKILL.md; do
       core/scripts/migrate-board-v2.ts)
         allowlisted=$((allowlisted + 1))
         ;;
-      # /run-pipeline's missing runner is a separate issue; keep its references
-      # visible here without broadening this PR beyond prd-to-beads.
-      core/scripts/run-pipeline.sh)
-        allowlisted=$((allowlisted + 1))
-        ;;
       *)
         printf 'FAIL: %s references missing %s\n' "${skill#"$ROOT"/}" "$script_ref" >&2
         missing=$((missing + 1))

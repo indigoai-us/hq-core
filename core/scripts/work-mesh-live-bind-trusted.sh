@@ -250,7 +250,7 @@ else
       if [ "$daemon_status_rc" -eq 0 ] && command -v jq >/dev/null 2>&1 && \
         jq -e '(.ok == true) and (.running == false) and (.message | type == "string" and contains("installed ("))' \
           "$daemon_status_file" >/dev/null 2>&1; then
-        printf '%s\n' 'Work Mesh daemon is installed but not loaded; start it with: hq mesh daemon install' >&2
+        printf '%s\n' 'Work Mesh daemon is installed but not loaded; start it with: hq daemon install' >&2
       fi
       rm -f "$daemon_status_file" 2>/dev/null || true
     fi

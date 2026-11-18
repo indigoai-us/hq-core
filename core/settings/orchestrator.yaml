@@ -81,12 +81,12 @@ repo_coordination:
 # =============================================================================
 # /conduct as the session default
 # =============================================================================
-# When enabled, every fresh session opens in /conduct mode: each task is
-# dispatched to a detached worker lane and the parent session stays free to
-# accept and route new messages. Enforced by hq-cli's `hq lanes session-start`
-# command at SessionStart.
+# When enabled, every fresh session opens in /conduct mode: each task goes to
+# a lane (a standing role worker) or a background subagent, and the parent
+# session stays free to accept and route new messages. hq-cli's
+# `hq runners session-start` command reads this block at SessionStart.
 # Claude and Grok have no selected-model hook payload, so /conduct asks which
-# engine to use unless one is named. For Codex, hq lanes session-start records
+# engine to use unless one is named. For Codex, hq runners session-start records
 # the selected model and effort in session metadata with
 # conduct_default_source: codex-session. If the payload has no usable model, it
 # records the Codex engine with conduct_default_source: codex-fallback; the
@@ -99,14 +99,23 @@ repo_coordination:
 # Leave the mode mid-session with `/conduct off`.
 conduct:
   default_enabled: true
-  # Which worker runs a task (owner decision 2026-10-22, "Workers stay open").
-  #   mixed    (default) standing worker lanes, kept open with keep-alive, for
-  #            ongoing areas and tasks that match an HQ worker or --workers
-  #            role; background subagents for small bounded tasks; no project
-  #            work inline in the conductor.
-  #   subagent background subagents for everything; lanes only for work that
-  #            outlives the session or a non-Claude engine.
-  #   lane     hq lanes worker lanes for everything.
-  # A lane capacity refusal runs the task as a subagent under every runner.
-  # Per-session override: /conduct --runner mixed|subagent|lane.
-  runner: mixed
+  # What a lane runs on. A lane is a standing worker with a defined role that
+  # the conductor keeps open and feeds follow-up tasks, in both modes.
+  #   subagent (default) lanes are standing role workers on resumable Agent
+  #            subagents, with conduct child desktop sessions for areas;
+  #            small bounded tasks run as one-off subagents. Zero runner
+  #            records: no `hq runners create`, admission, throttle or Outpost
+  #            pickup.
+  #   runner   advanced. Lanes run as detached runners through
+  #            /conduct-runners, with admission, Outpost placement and
+  #            non-Claude engines.
+  # The old values `mixed` and `lane` are read as `runner` for one release,
+  # with one warning line.
+  # The runner is read by hq runners session-start and by the five
+  # skills that dispatch work: conduct, super-conductor, overnight,
+  # run-project and execute-task. They resolve it with
+  # core/scripts/conduct-runner-resolve.sh: --runner flag, then the session
+  # pin conduct_runner, then personal/settings/orchestrator.yaml, then this
+  # file, then subagent.
+  # Per-session override: /conduct --runner subagent|runner.
+  runner: subagent

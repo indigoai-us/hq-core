@@ -155,12 +155,47 @@ run_hook Bash true '{"command":"git status --short"}' cmp_sessionfalse123 us020-
 unset TEST_NODE_MARKER
 pass 'flag snapshot is session-scoped and PreToolUse does not recheck it'
 
+# master-hook pipes the payload with printf '%s' (no trailing newline). The
+# wrappers' line loop dropped that only line, so the refresh parsed an empty
+# string and printed "input invalid (SyntaxError)" on every SessionStart.
+echo '[1b] payloads without a trailing newline (as master-hook pipes them)'
+: > "$LOG"
+nl_err="$TMP/no-newline-refresh.err"
+printf '{"session_id":"%s"}' us020-nonl | env -u HQ_CLI_BIN PATH="$TMP/bin:$PATH" HQ_FLAGS_API_URL=https://flags.invalid \
+  HQ_COMPANY_UID=cmp_nonl123 HQ_TEST_FLAG_MODE=true CLAUDE_PROJECT_DIR="$FAKE" \
+  bash "$REFRESH" >/dev/null 2>"$nl_err" || fail 'refresh without a trailing newline exited non-zero'
+! grep -q 'input invalid' "$nl_err" || fail "refresh without a trailing newline could not parse its input: $(cat "$nl_err")"
+[ -f "$FAKE/workspace/orchestrator/hook-state/merged-write-guard-shadow/us020-nonl.enabled" ] \
+  || fail 'refresh without a trailing newline wrote no session marker'
+nl_payload="$(jq -nc --arg cwd "$FAKE" '{session_id:"us020-nonl",hook_event_name:"PreToolUse",tool_name:"Bash",cwd:$cwd,tool_input:{command:"git status --short"}}')"
+printf '%s' "$nl_payload" | env PATH="$TMP/bin:$PATH" HQ_COMPANY_UID=cmp_nonl123 HQ_TEST_FLAG_MODE=true \
+  CLAUDE_PROJECT_DIR="$FAKE" bash "$HOOK" >/dev/null 2>"$TMP/no-newline-hook.err" \
+  || fail 'PreToolUse without a trailing newline exited non-zero'
+[ -s "$LOG" ] || fail 'PreToolUse without a trailing newline recorded nothing'
+pass 'refresh and PreToolUse read a payload with no trailing newline'
+
 jq -e '.hooks.PreToolUse[] | select(.matcher == "Bash|Edit|Write|MultiEdit|apply_patch") | .hooks[] | select(.id == "merged-write-guard-shadow" and .gated == true and .script == ".claude/hooks/merged-write-guard-shadow.sh" and (has("prefilter")|not))' "$REGISTRY" >/dev/null || fail "missing session-scoped merged PreToolUse registry entry"
 jq -e '.hooks.SessionStart[] | .hooks[] | select(.id == "merged-write-guard-shadow-refresh" and .script == ".claude/hooks/merged-write-guard-shadow-refresh.sh" and .gated == true)' "$REGISTRY" >/dev/null || fail "missing SessionStart hq-flags refresh"
 . "$ROOT/core/scripts/tests/lib/review-base.sh"
 bash "$ROOT/core/scripts/tests/review-base.test.sh"
 BASE_COMMIT="$(hq_test_review_base "$ROOT")" || fail "could not resolve review base"
-git -C "$ROOT" diff --quiet "$BASE_COMMIT" HEAD -- .claude/hooks/block-core-writes-bash.sh .claude/hooks/block-core-writes.sh core/hooks/PreToolUse/10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh || fail "legacy guard source changed in reviewed commit"
+git -C "$ROOT" diff --quiet "$BASE_COMMIT" HEAD -- core/hooks/PreToolUse/10-Edit,Write,MultiEdit--block-repo-edits-use-worktree.sh || fail "legacy guard source changed in reviewed commit"
+# PR 1972 re-pin: the two core write guards now refuse hook input that jq cannot
+# parse cleanly (exit 2) instead of reading partial output. Pin their new bytes
+# exactly; any further change to either file must re-pin here with a reason.
+legacy_sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
+[ "$(legacy_sha256 "$ROOT/.claude/hooks/block-core-writes-bash.sh")" = 0b4ce070ef18595bd8ee794e2f364720854170a63eb0eb5999e135ada4d1b497 ] \
+  || fail "legacy guard source changed: .claude/hooks/block-core-writes-bash.sh no longer matches the PR 1972 pin"
+# US-022 re-pin of block-core-writes.sh: a package link whose absolute target
+# and the HQ root differ only in long versus 8.3 spelling is compared in long
+# form on Git Bash (block-core-writes-package-mount-83.test.sh). Second US-022
+# re-pin: file_path and the HQ root are rewritten in long form on Git Bash when
+# either holds an 8.3 name (block-core-writes-scope-83.test.sh). Third US-022
+# re-pin: only a path holding an 8.3 name is looked up and a failed lookup
+# refuses the write, and Git Bash compares paths case-insensitively
+# (block-core-writes-case-windows.test.sh).
+[ "$(legacy_sha256 "$ROOT/.claude/hooks/block-core-writes.sh")" = a39061417bf31cf251c661ebc3e5bc87ee1bb2424a0552d2aeb266eec3d29fcc ] \
+  || fail "legacy guard source changed: .claude/hooks/block-core-writes.sh no longer matches the US-022 pin"
 
 
 : > "$LOG"

@@ -471,6 +471,236 @@ rm -rf "$TMP/workspace/to-locked" "$TMP/companies/wild/to-locked" "$TMP/workspac
 rm -f "$TMP/workspace/to-locked" "$TMP/companies/wild/to-locked" "$TMP/workspace/to-open"
 write_manifest
 
+# --- sed -i reads the file operands, not the word sed ----
+# cwd inside a read-only company folder: the edited file is outside the vault.
+RO="$A/private"
+runc 0 "$RO" "sed -i 's/a/b/' /tmp/skipwip/q4.sql"            'sed -i file outside vault from read-only cwd allowed'
+runc 0 "$RO" "sed -i 's/a/b/;s/c/d/' /tmp/skipwip/q4.sql"     'sed -i script with semicolon allowed'
+runc 0 "$RO" "sed -i 's/a|b/c/' /tmp/skipwip/q4.sql"          'sed -i script with pipe allowed'
+runc 0 "$RO" "sed -i 's/a/b\\&c/' /tmp/skipwip/q4.sql"        'sed -i script with ampersand allowed'
+runc 0 "$RO" "sed -i '' 's/a/b/' /tmp/skipwip/q4.sql"         'sed -i empty suffix word allowed'
+runc 0 "$RO" "sed -i.bak 's/a/b/' /tmp/skipwip/q4.sql"        'sed -i.bak allowed'
+runc 0 "$RO" "sed --in-place=.bak 's/a/b/' /tmp/skipwip/q4.sql" 'sed --in-place=SUF allowed'
+runc 0 "$RO" "sed -E -i 's/a/b/' /tmp/skipwip/q4.sql"         'sed -E -i allowed'
+runc 0 "$RO" "sed -Ei 's/a/b/' /tmp/skipwip/q4.sql"           'sed -Ei cluster allowed'
+runc 0 "$RO" "sed -i -e 's/a/b/' -e '/x/d' /tmp/skipwip/q4.sql" 'sed -i with two -e scripts allowed'
+runc 0 "$RO" "sed -i -f /tmp/s.sed /tmp/skipwip/q4.sql"       'sed -i -f script file allowed'
+runc 0 "$RO" "sed -i -l 5 's/a/b/' /tmp/skipwip/q4.sql"       'sed -i -l N allowed'
+runc 0 "$RO" "sed -i 's/a/b/' /tmp/a /tmp/b"                  'sed -i two files outside vault allowed'
+# The same forms against a read-only vault file stay blocked.
+runc 2 "$RO" "sed -i 's/a/b/' x.md"                           'sed -i vault file from read-only cwd blocked'
+runc 2 "$RO" "sed -i 's/a/b/;s/c/d/' x.md"                    'sed -i semicolon script on vault file blocked'
+runc 2 "$RO" "sed -i 's/a|b/c/' x.md"                         'sed -i pipe script on vault file blocked'
+runc 2 "$RO" "sed -i '' 's/a/b/' x.md"                        'sed -i empty suffix on vault file blocked'
+runc 2 "$RO" "sed -i.bak 's/a/b/' x.md"                       'sed -i.bak on vault file blocked'
+runc 2 "$RO" "sed --in-place=.bak 's/a/b/' x.md"              'sed --in-place=SUF on vault file blocked'
+runc 2 "$RO" "sed -E -i 's/a/b/' x.md"                        'sed -E -i on vault file blocked'
+runc 2 "$RO" "sed -Ei 's/a/b/' x.md"                          'sed -Ei cluster on vault file blocked'
+runc 2 "$RO" "sed -i -e 's/a/b/' -e '/x/d' x.md"              'sed -i two -e scripts on vault file blocked'
+runc 2 "$RO" "sed -i -f /tmp/s.sed x.md"                      'sed -i -f on vault file blocked'
+runc 2 "$RO" "sed -i -l 5 's/a/b/' x.md"                      'sed -i -l N on vault file blocked'
+runc 2 "$TMP" "sed -i 's/a/b/;s/c/d/' companies/acme/private/a.md" 'sed -i semicolon script on vault file from HQ root blocked'
+runc 2 "$TMP" "sed -n -i 's/a/b/' companies/acme/private/a.md" 'sed -n -i on vault file from HQ root blocked'
+runc 2 "$TMP" "sed -i 's/a/b/' /tmp/ok.sql companies/acme/private/a.md" 'sed -i one vault file among several blocked'
+runc 0 "$RO" "sed 's/a/b/' x.md"                              'sed without -i on vault file allowed'
+runc 0 "$RO" "sed -n -e 's/a/b/p' x.md"                       'sed -n -e read allowed'
+
+# A quote inside a sed or awk argument must not hide a later write from the guard.
+runc 2 "$TMP" "sed -n \"/it's/p\" /tmp/x; rm companies/acme/private/a.md" 'sed with apostrophe in double quotes then rm blocked'
+runc 2 "$TMP" "sed -n \"/it's/p\" /tmp/x; echo ok > companies/acme/private/a.md" 'sed with apostrophe in double quotes then redirect blocked'
+runc 2 "$TMP" "sed -n \"/it's/p\" /tmp/x | tee companies/acme/private/a.md" 'sed with apostrophe in double quotes then tee blocked'
+runc 2 "$TMP" "sed -n \"/it's/p\" /tmp/x && mv /tmp/y companies/acme/private/a.md" 'sed with apostrophe in double quotes then mv blocked'
+runc 2 "$TMP" "sed -n \"/it's/p\" /tmp/x; cp /tmp/y companies/acme/private/a.md" 'sed with apostrophe in double quotes then cp blocked'
+runc 2 "$TMP" "awk \"/it's/\" /tmp/x; rm companies/acme/private/a.md" 'awk with apostrophe in double quotes then rm blocked'
+runc 2 "$TMP" "sed -i \"s/it's/x/\" /tmp/x; rm companies/acme/private/a.md" 'sed -i with apostrophe in double quotes then rm blocked'
+runc 2 "$TMP" "sed -n p /tmp/x \\'; echo ok > companies/acme/private/a.md" 'escaped apostrophe argument then redirect blocked'
+runc 2 "$TMP" "sed -n p \$'it\\'s' /tmp/x; echo ok > companies/acme/private/a.md" 'dollar-quoted apostrophe argument then redirect blocked'
+runc 2 "$TMP" "sed -n \"/it's/p\" /tmp/x; sed -i 's/a/b/' companies/acme/private/a.md" 'sed read then sed -i on vault file blocked'
+runc 2 "$A/private" "sed -n \"/it's/p\" /tmp/x; rm a.md" 'sed apostrophe then relative rm in read-only cwd blocked'
+runc 2 "$TMP" $'sed -n "/it\'s/p" /tmp/x\nrm companies/acme/private/a.md' 'sed apostrophe then rm on the next line blocked'
+runc 2 "$TMP" $'# sed won\'t help here\nrm companies/acme/private/a.md' 'apostrophe in a comment then rm blocked'
+runc 2 "$TMP" $'cat > /tmp/notes.txt <<\'EOF\'\nuse sed if it\'s needed\nEOF\nrm companies/acme/private/a.md' 'apostrophe in a heredoc body then rm blocked'
+runc 2 "$TMP" $'echo done # sed can\'t\necho ok > companies/acme/private/a.md' 'apostrophe in a trailing comment then redirect blocked'
+runc 2 "$TMP" "grep x /tmp/f | sed \"s/'//g\"; rm companies/acme/private/a.md" 'sed apostrophe filter in a pipe then rm blocked'
+# Newly blocked in-place forms on a vault file, and an awk and a perl case.
+runc 2 "$TMP" "sed -s -i 's/a/b/' companies/acme/private/a.md" 'sed -s -i on vault file blocked'
+runc 2 "$TMP" "sed -ni 's/a/b/' companies/acme/private/a.md" 'sed -ni on vault file blocked'
+runc 2 "$TMP" "sed 's/a/b/' companies/acme/private/a.md -i" 'sed with -i after the file blocked'
+runc 2 "$TMP" "sed -e 's/a/b/' companies/acme/private/a.md --in-place" 'sed with --in-place after the file blocked'
+runc 2 "$TMP" "sed -i -- 's/a/b/' companies/acme/private/a.md" 'sed -i -- on vault file blocked'
+runc 2 "$A/private" "sed -i 's/a/b/' -- -x.md" 'sed -i -- dash-named file in read-only cwd blocked'
+runc 2 "$TMP" "gsed -i 's/a/b/' companies/acme/private/a.md" 'gsed -i on vault file blocked'
+runc 2 "$TMP" "awk -i inplace '{print}' companies/acme/private/a.md" 'awk -i inplace on vault file blocked'
+runc 2 "$TMP" "awk -i inplace '{print \"a;b\"}' companies/acme/private/a.md" 'awk -i inplace with semicolon program on vault file blocked'
+runc 2 "$TMP" "awk -v x=1 -i inplace '{print}' companies/acme/private/a.md" 'awk -v then -i inplace on vault file blocked'
+runc 0 "$A/private" "awk -i inplace '{print \"a;b\"}' /tmp/q.sql" 'awk -i inplace semicolon program on file outside vault allowed'
+# An option that supplies the awk program (-e, -f, -E, --source, --file, --exec)
+# leaves every positional a file, so the first of two operands is a target.
+runc 2 "$TMP" "awk -i inplace -e '{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -e with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -e'{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace attached -e with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -f prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace -f with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --source='{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace --source= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --file prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace --file with vault file first of two operands blocked'
+runc 0 "$TMP" "awk -i inplace -e '{print}' /tmp/a /tmp/b" 'awk -i inplace -e on files outside vault allowed'
+# gawk -W source=, -Wsource=, and unique long-option prefixes (--sour=, --fil=)
+# also supply the program, so the first operand is a file.
+runc 2 "$TMP" "awk -i inplace -W source='{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -W source= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -Wsource='{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace attached -Wsource= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -W sour='{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -W abbreviated source= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -W file=prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace -W file= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -W exec=prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace -W exec= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -W \$'source={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -W ANSI-C source= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -W\$'source={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace attached -W ANSI-C source= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --\$'source={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace ANSI-C --source= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --sour='{print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace --sour= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --fil=prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace --fil= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --file=prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace --file= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace --exec=prog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace --exec= with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -fprog.awk companies/acme/private/a.md /tmp/a" 'awk -i inplace attached -f with vault file first of two operands blocked'
+runc 2 "$TMP" "awk -i inplace -W posix '{print}' companies/acme/private/a.md" 'awk -i inplace -W posix with program operand still checks vault file'
+runc 0 "$TMP" "awk -i inplace -W source='{print}' /tmp/a /tmp/b" 'awk -i inplace -W source= on files outside vault allowed'
+runc 0 "$TMP" "awk -i inplace -W \$'source={print}' /tmp/a /tmp/b" 'awk -i inplace -W ANSI-C source= on files outside vault allowed'
+runc 0 "$TMP" "awk -i inplace -W\"\$'source={print}'\" companies/acme/private/a.md /tmp/a" 'awk -i inplace keeps ANSI-C marker literal inside double quotes'
+# Escapes inside $'...' are decoded before the option name is read.
+runc 2 "$TMP" "awk -i inplace -W \$'sour\\x63e={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -W ANSI-C hex-escaped source= with vault file first blocked'
+runc 2 "$TMP" "awk -i inplace \$'--sour\\x63e={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace ANSI-C hex-escaped --source= with vault file first blocked'
+runc 2 "$TMP" "awk -i inplace -W \$'sour\\143e={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -W ANSI-C octal-escaped source= with vault file first blocked'
+runc 2 "$TMP" "awk -i inplace -W \$'sour\\u0063e={print}' companies/acme/private/a.md /tmp/a" 'awk -i inplace -W ANSI-C \u-escaped source= with vault file first blocked'
+runc 2 "$TMP" "sed \$'-\\x69' 's/a/b/' companies/acme/private/a.md" 'sed ANSI-C hex-escaped -i on vault file blocked'
+runc 0 "$TMP" "sed \$'-\\x69' 's/a/b/' /tmp/a" 'sed ANSI-C hex-escaped -i on file outside vault allowed'
+runc 2 "$TMP" "perl -pi -e 's/a/b/' companies/acme/private/a.md" 'perl -pi on vault file blocked'
+runc 2 "$TMP" "perl -i.bak -pe 's/a/b/' companies/acme/private/a.md" 'perl -i.bak on vault file blocked'
+runc 0 "$A/private" "perl -pi -e 's/a/b/;s/c/d/' /tmp/q.sql" 'perl -pi on file outside vault allowed'
+
+# A perl, ruby, sed or awk word with no in-place flag is not the write op:
+# a later cp, mv or touch in the same command is still checked.
+runc 2 "$TMP" "ruby -run -e cp -- /tmp/x companies/acme/private/a.md" 'ruby -run -e cp into vault file blocked'
+runc 2 "$TMP" "ruby -run -e mv -- /tmp/x companies/acme/private/a.md" 'ruby -run -e mv into vault file blocked'
+runc 2 "$TMP" "ruby -run -e touch -- companies/acme/private/a.md" 'ruby -run -e touch on vault file blocked'
+runc 2 "$TMP" "perl -MExtUtils::Command -e cp /tmp/x companies/acme/private/a.md" 'perl ExtUtils cp into vault file blocked'
+runc 2 "$TMP" "perl -MExtUtils::Command -e touch companies/acme/private/a.md" 'perl ExtUtils touch on vault file blocked'
+runc 2 "$TMP" "gawk -f x.awk cp /tmp/x companies/acme/private/a.md" 'gawk without inplace then cp words still checked'
+# After --, a dash-named file in a fragment cut from a ; script is a file.
+runc 2 "$A/private" "sed -i '' -- 's/a;b/c/' -a.md" 'sed -i empty suffix -- cut script then dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "sed -i 's/a;b/c/' -- -a.md" 'sed -i cut script -- dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "awk -i inplace -- '{print \"a;b\"}' -a.md" 'awk -i inplace -- cut program then dash-named file in read-only cwd blocked'
+# BSD sed and gawk stop reading options at the script, so a dash-named
+# word after a cut script is a file even with no --, and a quoted or cut
+# dash-named name after -- is a file too.
+runc 2 "$A/private" "sed -i '' 's/a;b/c/' -a.md" 'BSD sed cut script then dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "sed -i '' 's/a;b/c/' /tmp/x -a.md" 'BSD sed cut script then outside file and dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "awk -i inplace '{print \"a;b\"}' -a.md" 'awk cut program then dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "awk -i inplace '{print \"a;b\"}' /tmp/x -a.md" 'awk cut program then outside file and dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "sed -i 's/a;b/c/' -- \"-a.md\"" 'sed cut script -- quoted dash-named file in read-only cwd blocked'
+runc 2 "$A/private" "sed -i 's/a;b/c/' -- '-a;b.md'" 'sed cut script -- dash-named file holding semicolon in read-only cwd blocked'
+runc 2 "$A/private" "sed -i '' -- 's/a;b/Z/' '-q;r.md'" 'BSD sed -- cut script then dash-named file holding semicolon in read-only cwd blocked'
+runc 0 "$A/private" "sed -i -e 's/a;b/d/' -n -e 's/x;y/z/' /tmp/q.sql" 'sed option words after a cut script on file outside vault allowed'
+# A $'...' script holding ; still leaves its file operands checked.
+runc 2 "$A/private" "sed -i \$'s/a;b/c/' a.md" 'sed -i ANSI-C script with semicolon in read-only cwd blocked'
+runc 2 "$A/private" "awk -i inplace \$'{print \"a;b\"}' a.md" 'awk -i inplace ANSI-C program with semicolon in read-only cwd blocked'
+# gawk -L takes no separate argument, so the program is the next word.
+runc 2 "$TMP" "awk -i inplace -L '{print}' companies/acme/private/a.md /tmp/x" 'awk -i inplace -L then program with vault file first of two operands blocked'
+runc 2 "$TMP" "sed -i 's/a;b;c/d/' companies/acme/private/a.md" 'sed -i multi-semicolon script on vault file blocked'
+runc 2 "$TMP" "sed -i -e 's/a;b/d/' -e 's/x;y/z/' companies/acme/private/a.md" 'sed -i two scripts with semicolons on vault file blocked'
+runc 0 "$A/private" "sed -i -e 's/a;b/d/' -e 's/x;y/z/' /tmp/q.sql" 'sed -i two scripts with semicolons on file outside vault allowed'
+runc 2 "$TMP" $'sed -i \'s/a\nb/\' companies/acme/private/a.md' 'sed -i script spanning lines on vault file blocked'
+runc 2 "$TMP" "sed -i 's/a;b/d/'; rm companies/acme/private/a.md" 'sed -i cut script then rm blocked'
+# A quoted file name holding ; | or & is cut by the splitter. The cut name is
+# a file operand, not the script, so it is still checked.
+runc 2 "$TMP" "sed -i 's/a/b/' \"companies/acme/private/Q&A.md\"" 'sed -i quoted vault file name with ampersand blocked'
+runc 2 "$TMP" "sed -i 's/a/b/' 'companies/acme/private/a;b.md'" 'sed -i quoted vault file name with semicolon blocked'
+runc 2 "$TMP" "sed -i 's/a/b/' \"companies/acme/private/a|b.md\"" 'sed -i quoted vault file name with pipe blocked'
+runc 2 "$TMP" "sed -i 's/a/b/' /tmp/ok.sql \"companies/acme/private/Q&A.md\"" 'sed -i quoted vault name with ampersand after another file blocked'
+runc 2 "$TMP" "sed -i 's/a;b/c/' \"companies/acme/private/Q&A.md\"" 'sed -i cut script then quoted vault name with ampersand blocked'
+runc 2 "$TMP" "awk -i inplace '{print}' \"companies/acme/private/Q&A.md\"" 'awk -i inplace quoted vault file name with ampersand blocked'
+runc 2 "$TMP" "perl -pi -e 's/a/b/' \"companies/acme/private/Q&A.md\"" 'perl -pi quoted vault file name with ampersand blocked'
+runc 2 "$A/private" "sed -i 's/a/b/' \"Q&A.md\"" 'sed -i quoted relative name with ampersand in read-only cwd blocked'
+runc 2 "$A/private" "awk -i inplace '{print}' 'a;b.md'" 'awk -i inplace quoted relative name with semicolon in read-only cwd blocked'
+runc 0 "$A/private" "sed -i 's/a/b/' \"/tmp/Q&A.sql\"" 'sed -i quoted outside-vault name with ampersand allowed'
+runc 0 "$TMP" "sed -i 's/a/b/' \"companies/acme/reports/Q&A.md\"" 'sed -i quoted writable vault name with ampersand allowed'
+# The part before the cut can name a writable folder; the whole name is checked.
+runc 2 "$TMP" "sed -i 's/a/b/' \"companies/acme/reports/x&/../locked/a.md\"" 'sed -i cut name checked whole once its quote closes'
+runc 2 "$TMP" "sed -i 's/a/b/' 'companies/acme/reports/x;y|/../locked/a.md'" 'sed -i name cut twice checked whole'
+runc 2 "$TMP" "sed -i 's/a;b/c/' \"companies/acme/reports/x&/../locked/a.md\"" 'sed -i cut script then cut name checked whole'
+runc 2 "$TMP" "awk -i inplace '{print}' \"companies/acme/reports/x&/../locked/a.md\"" 'awk -i inplace cut name checked whole'
+runc 0 "$A/private" "sed -i -e 's/a;b/c/' -ne 's/x;y/z/' /tmp/q.sql" 'sed -i cut -e script then -ne script outside vault allowed'
+runc 0 "$A/private" "perl -pi -e 's/a;b/c/' -e 's/x;y/z/' /tmp/q.sql" 'perl -pi two cut -e scripts outside vault allowed'
+runc 2 "$TMP" "sed -i -e 's/a;b/c/' -s \"companies/acme/private/Q&A.md\"" 'sed -i cut -e script then option then quoted vault name blocked'
+
+# F1: \' inside $'...' is an escaped quote, so it does not end the word. A
+# backslash outside quotes, and \" inside "...", escape the next character too.
+runc 2 "$TMP" "rm \$'a\\'b' companies/acme/private/a.md" 'rm after ANSI-C word holding escaped quote on vault file blocked'
+runc 2 "$TMP" "echo \$'\\'' > companies/acme/private/a.md 'z'" 'redirect after ANSI-C escaped quote into vault file blocked'
+runc 2 "$TMP" "tee \$'\\'' companies/acme/private/a.md 'z'" 'tee after ANSI-C escaped quote on vault file blocked'
+runc 2 "$TMP" "echo \\' > companies/acme/private/a.md \\'" 'redirect between unquoted escaped quotes into vault file blocked'
+runc 2 "$TMP" "echo \"a\\\"\" > companies/acme/private/a.md \"b\"" 'redirect after double-quoted escaped quote into vault file blocked'
+runc 0 "$TMP" "echo \$'it\\'s' > /tmp/x" 'ANSI-C escaped quote with redirect outside vault allowed'
+runc 0 "$TMP" "echo \$'\\'' > companies/acme/reports/a.md 'z'" 'ANSI-C escaped quote with redirect into writable vault file allowed'
+runc 0 "$TMP" "rm \$'a\\'b' /tmp/a" 'rm after ANSI-C escaped quote outside vault allowed'
+# F2: a quoted in-place flag still marks the command as an in-place edit.
+runc 2 "$TMP" "sed '-i' 's/a/b/' companies/acme/private/a.md" 'sed single-quoted -i on vault file blocked'
+runc 2 "$TMP" "sed \"-i\" 's/a/b/' companies/acme/private/a.md" 'sed double-quoted -i on vault file blocked'
+runc 2 "$TMP" "sed -'i' 's/a/b/' companies/acme/private/a.md" 'sed partly quoted -i on vault file blocked'
+runc 2 "$TMP" "sed \$'-i' 's/a/b/' companies/acme/private/a.md" 'sed ANSI-C -i without escape on vault file blocked'
+runc 2 "$TMP" "awk -i 'inplace' '{print}' companies/acme/private/a.md" 'awk -i quoted inplace on vault file blocked'
+runc 2 "$TMP" "awk -i \"in\"place '{print}' companies/acme/private/a.md" 'awk -i partly quoted inplace on vault file blocked'
+runc 2 "$TMP" "perl -p\$'i' -e 's/a/b/' companies/acme/private/a.md" 'perl -p with ANSI-C i on vault file blocked'
+runc 2 "$TMP" "perl '-pi' -e 's/a/b/' companies/acme/private/a.md" 'perl quoted -pi on vault file blocked'
+runc 0 "$TMP" "sed '-n' 's/a/b/p' companies/acme/private/a.md" 'sed quoted -n read of vault file allowed'
+runc 0 "$TMP" "sed '-i' 's/a/b/' /tmp/a" 'sed quoted -i on file outside vault allowed'
+# F3: a companies/ prefix written with $'...' escapes is still a vault path.
+runc 2 "$TMP" "sed -i 's/a/b/' \$'\\x63ompanies/acme/private/a.md'" 'sed -i on hex-escaped companies prefix blocked'
+runc 2 "$TMP" "sed -i 's/a/b/' \$'companies\\x2facme/private/a.md'" 'sed -i on hex-escaped slash after companies blocked'
+runc 2 "$TMP" "cp /tmp/x \$'\\x63ompanies/acme/private/a.md'" 'cp onto hex-escaped companies prefix blocked'
+runc 2 "$TMP" "echo x > \$'\\x63ompanies/acme/private/a.md'" 'redirect onto hex-escaped companies prefix blocked'
+runc 2 "$TMP" "rm \$'\\143ompanies/acme/private/a.md'" 'rm on octal-escaped companies prefix blocked'
+runc 2 "$TMP" "rm \$'\\u0063ompanies/acme/private/a.md'" 'rm on \u-escaped companies prefix blocked'
+runc 0 "$TMP" "cat \$'\\x63ompanies/acme/private/a.md'" 'cat of hex-escaped companies prefix allowed'
+runc 0 "$TMP" "cp /tmp/x \$'\\x63ompanies/acme/reports/a.md'" 'cp onto hex-escaped writable vault path allowed'
+runc 0 "$TMP" "printf \$'a\\tb\\n' > /tmp/x" 'ANSI-C escapes with redirect outside vault allowed'
+
+# A quoted command name is the same command to bash.
+runc 2 "$TMP" "'rm' companies/acme/private/a.md" 'quoted rm command name on vault file blocked'
+runc 2 "$TMP" "r\"m\" companies/acme/private/a.md" 'partly quoted rm command name on vault file blocked'
+
+# $$ is the PID parameter, so $$' opens a plain quote, not an ANSI-C string.
+runc 2 "$TMP" "rm \$\$'\\' companies/acme/private/a.md #'" 'rm after PID then plain quote on vault file blocked'
+runc 2 "$TMP" "echo \$\$'\\' > companies/acme/private/a.md #'" 'redirect after PID then plain quote into vault file blocked'
+runc 2 "$TMP" $'rm $$\'\\\' companies/acme/private/a.md\ntrue \'' 'rm after PID then plain quote closed on next line blocked'
+runc 2 "$TMP" "rm \$\$\$\$'\\' companies/acme/private/a.md #'" 'rm after two PIDs then plain quote on vault file blocked'
+runc 2 "$TMP" "rm \$\$\$'\\'' companies/acme/private/a.md" 'rm after PID then ANSI-C escaped quote on vault file blocked'
+# A quoted word that names a write op is a search term unless it is the command.
+runc 0 "$TMP" "grep -rn \"install\" companies/acme/private/" 'grep for quoted install in read-only vault folder allowed'
+runc 0 "$TMP" "grep -n 'rm' companies/acme/private/a.md" 'grep for quoted rm in read-only vault file allowed'
+runc 0 "$TMP" "git log -S \"rm\" -- companies/acme/private" 'git log -S quoted rm on read-only vault folder allowed'
+runc 0 "$A/private" "grep -rn 'install' ." 'grep for quoted install in read-only cwd allowed'
+runc 2 "$TMP" "env 'rm' companies/acme/private/a.md" 'quoted rm after env on vault file blocked'
+runc 2 "$TMP" "X=1 'rm' companies/acme/private/a.md" 'quoted rm after an assignment on vault file blocked'
+runc 2 "$TMP" "/bin/'rm' companies/acme/private/a.md" 'quoted rm after a path on vault file blocked'
+runc 2 "$TMP" "rm compan\$'\\x69'es/acme/private/a.md" 'rm on prefix split across an ANSI-C escape blocked'
+# Long segments: a $'...' token is checked when its decoded text names a vault
+# path, and a plain escape such as $'\t' is not read as a relative target.
+PZ_LONG="$(printf 'x%.0s' $(seq 1 6000))"
+runc 0 "$A/private" "grep \$'\\t' a.md $PZ_LONG" 'long read-only segment with ANSI-C tab in read-only cwd allowed'
+runc 2 "$TMP" "rm \$'\\x63ompanies/acme/private/a.md' $PZ_LONG" 'long segment rm on hex-escaped companies prefix blocked'
+
+# A literal $' earlier in the command does not hide an escaped prefix.
+runc 2 "$TMP" "rm '\$' \$'\\x63ompanies/acme/private/a.md'" 'rm after quoted dollar on hex-escaped companies prefix blocked'
+runc 2 "$TMP" "echo '\$' > \$'\\x63ompanies/acme/private/a.md'" 'redirect after quoted dollar onto hex-escaped companies prefix blocked'
+runc 2 "$TMP" "rm \"\$'\" \$'\\x63ompanies/acme/private/a.md'" 'rm after double-quoted ANSI-C marker on hex-escaped companies prefix blocked'
+# A quoted op after a shell keyword, a launcher with arguments, a leading
+# redirect or find -exec is still in command position.
+runc 2 "$TMP" "if true; then 'rm' companies/acme/private/a.md; fi" 'quoted rm after then on vault file blocked'
+runc 2 "$TMP" "for f in x; do 'rm' companies/acme/private/a.md; done" 'quoted rm after do on vault file blocked'
+runc 2 "$TMP" "timeout 5 'rm' companies/acme/private/a.md" 'quoted rm after timeout on vault file blocked'
+runc 2 "$TMP" "stdbuf -o0 'rm' companies/acme/private/a.md" 'quoted rm after stdbuf on vault file blocked'
+runc 2 "$TMP" "2>/dev/null 'rm' companies/acme/private/a.md" 'quoted rm after leading redirect on vault file blocked'
+runc 2 "$TMP" "find /tmp -exec 'rm' companies/acme/private/a.md \\;" 'find -exec quoted rm naming a vault file blocked'
+# A search behind a launcher word is still a search.
+runc 0 "$TMP" "time grep -rn \"install\" companies/acme/private" 'time grep for quoted install in read-only vault folder allowed'
+runc 0 "$TMP" "env LC_ALL=C grep -n 'rm' companies/acme/private/a.md" 'env grep for quoted rm in read-only vault file allowed'
+runc 0 "$TMP" "if grep -q 'rm' companies/acme/private/a.md; then echo y; fi" 'if grep for quoted rm in read-only vault file allowed'
+
 echo "PASS=$PASS FAIL=$FAIL (hook shell: $HOOK_BASH)"
 [[ "$FAIL" -eq 0 ]] || exit 1
 if [[ "$HOOK_BASH" == "bash" && -x /bin/bash && "$(uname -s)" == "Darwin" ]]; then

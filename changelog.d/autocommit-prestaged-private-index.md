@@ -1,0 +1,1 @@
+Autosave no longer skips every edit on the machine when the HQ git index already has unrelated staged paths. It saves the edited file through a private index seeded from HEAD and leaves the staged set untouched. It still holds while a merge, cherry-pick, revert or rebase is stopped in the HQ root.

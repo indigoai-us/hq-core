@@ -61,7 +61,7 @@ matching `hq` subcommand.
 
 | Tool name | Wraps | Notes |
 |---|---|---|
-| `hq_packages` | `hq packages` / `hq install` / `hq remove` | `action`: list / install / remove / update. |
+| `hq_packages` | `hq packs list/update/uninstall` / `hq install` | `action`: list / install / remove / update. Update uses `--check-only` and reports availability for the host to apply. Uninstall uses `--yes` after the typed remove action. Update/remove accept plain pack names only. |
 | `hq_modules` | `hq modules <action>` | `action`: list / add / sync / update. |
 
 ### Meeting intelligence (read-only)
@@ -160,7 +160,7 @@ This matches the resolver used by `hq-sync` and the HQ Desktop App.
 - Host-only browser flows (`hq login` / `logout` / `auth` / `onboard`) are
   intentionally not wrapped — `hq_whoami` covers session status. Auth is
   managed on the host with `hq login`.
-  `hq_cli` only permits `hq auth status` and `hq auth refresh`.
+  `hq_cli` permits `hq whoami` and `hq auth refresh` for identity checks.
 
 ## Testing
 
