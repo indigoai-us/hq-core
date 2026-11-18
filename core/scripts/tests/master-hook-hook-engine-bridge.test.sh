@@ -33,6 +33,11 @@
 #   [m] on Windows the bridge call alone carries MSYS2_ENV_CONV_EXCL with PWD
 #       and HQ_ROOT: not the plan call, other hooks or the bash fallback, an
 #       existing value is kept, and other platforms never get it
+#   [n] on Windows (OSTYPE msys, cygwin or win32, or uname MINGW/MSYS/CYGWIN)
+#       the store-off ports inject-policy-on-trigger, policy-enforcement-gate
+#       and image-context-guard are never bridged: their bash hooks run as
+#       with the flag off and their plan lines are not exported; other ports
+#       bridge unchanged; on darwin and linux nothing changes
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
@@ -640,6 +645,121 @@ reset_excl
 run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=linux-gnu MSYS2_ENV_CONV_EXCL=FOO
 expect_excl "OSTYPE=linux-gnu with a value" "$EXCL_LOG" bridge FOO
 rm -f "$EXCL_LOG" "$HOOK_EXCL_LOG"
+reset_logs
+
+echo "[n] Windows: the store-off ports run on bash, other ports bridge unchanged"
+STORE_OFF_IDS="inject-policy-on-trigger policy-enforcement-gate image-context-guard"
+cp "$FIX/.claude/hooks/hook-registry.json" "$TMP/registry.orig"
+# Each store-off fixture hook logs "<id> args=..." to ran.log. The scripts get
+# a storeoff- prefix so no script-name special case in master-hook applies;
+# bridging is decided by the registry id alone.
+for sid in $STORE_OFF_IDS; do
+  cat > "$FIX/.claude/hooks/storeoff-$sid.sh" <<HOOK
+#!/usr/bin/env bash
+cat >/dev/null
+here="\$(cd "\$(dirname "\$0")" && pwd)"
+printf '$sid args=%s\n' "\$*" >> "\$here/ran.log"
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"bash-hook:$sid"}}\n'
+exit 0
+HOOK
+  chmod +x "$FIX/.claude/hooks/storeoff-$sid.sh"
+done
+jq -nc --arg t "$HOOK_TIMEOUT" --arg port "$HOOK_ID" --arg plain "$PLAIN_ID" '
+  ($t | tonumber) as $tt
+  | def h($id; $s): {id: $id, script: $s, timeout: $tt, gated: false, runner: "exec", args: ["PreToolUse"]};
+  {hooks: {PreToolUse: [{matcher: "Bash", hooks: [
+    h("inject-policy-on-trigger"; ".claude/hooks/storeoff-inject-policy-on-trigger.sh"),
+    h("policy-enforcement-gate"; ".claude/hooks/storeoff-policy-enforcement-gate.sh"),
+    h("image-context-guard"; ".claude/hooks/storeoff-image-context-guard.sh"),
+    h($port; ".claude/hooks/\($port).sh"),
+    h($plain; ".claude/hooks/\($plain).sh")
+  ]}]}}' > "$FIX/.claude/hooks/hook-registry.json"
+UNAME_BIN="$TMP/uname-bin"
+mkdir -p "$UNAME_BIN"
+cat > "$UNAME_BIN/uname" <<'UNAME'
+#!/bin/sh
+printf '%s\n' "${FAKE_UNAME_S:-Linux}"
+UNAME
+chmod +x "$UNAME_BIN/uname"
+storeoff_plan() { # <mode>: the three store-off ports and fixture-port in <mode>
+  printf '%s\t%s\n' inject-policy-on-trigger "$1" policy-enforcement-gate "$1" image-context-guard "$1" "$HOOK_ID" "$1" > "$PLAN"
+}
+storeoff_ran() { # <count>: every store-off bash hook ran <count> times
+  local sid
+  for sid in $STORE_OFF_IDS; do
+    [ "$(ran_count "$FIX" "$sid")" = "$1" ] || return 1
+  done
+}
+storeoff_bridged() { # <count>: bridge calls naming store-off ids
+  [ -f "$CALLS" ] || { echo 0; return; }
+  grep -cE '^bridge (inject-policy-on-trigger|policy-enforcement-gate|image-context-guard) ' "$CALLS" || true
+}
+port_bridged() {
+  [ -f "$CALLS" ] || { echo 0; return; }
+  grep -c "^bridge $HOOK_ID " "$CALLS" || true
+}
+windows_case() { # <label> [ENV=VALUE ...]
+  local label="$1"; shift
+  reset_logs
+  rm -f "$FIX/.claude/hooks/env.log"
+  snapshot_with_port
+  storeoff_plan on
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" "$@"
+  if [ "$RC" = "0" ] && storeoff_ran 1 && [ "$(storeoff_bridged)" = "0" ] \
+    && [ "$(port_bridged)" = "1" ] && [ "$(ran_count "$FIX" port)" = "0" ] && [ "$(ran_count "$FIX" plain)" = "1" ] \
+    && out_has "bash-hook:policy-enforcement-gate" && out_has "bridged:$HOOK_ID:on"; then
+    ok "$label: store-off ports ran on bash, $HOOK_ID bridged"
+  else
+    bad "$label: rc=$RC storeoff-bridged=$(storeoff_bridged) port-bridged=$(port_bridged) ran=$(tr '\n' ';' < "$FIX/.claude/hooks/ran.log" 2>/dev/null)"
+  fi
+  [ "$(env_line)" = "env bin=$STUB plan=$HOOK_ID|on" ] \
+    && ok "$label: store-off lines not exported" || bad "$label: env $(env_line)"
+}
+for ostype in msys cygwin win32; do
+  windows_case "OSTYPE=$ostype" OSTYPE="$ostype"
+done
+for uname_s in MINGW64_NT-10.0-19045 MSYS_NT-10.0-19045 CYGWIN_NT-10.0-19045; do
+  windows_case "uname $uname_s" OSTYPE=linux-gnu PATH="$UNAME_BIN:$PATH" FAKE_UNAME_S="$uname_s"
+done
+# Shadow mode on Windows: same bash path, no bridge call for the three.
+reset_logs
+snapshot_with_port
+storeoff_plan shadow
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys
+[ "$RC" = "0" ] && storeoff_ran 1 && [ "$(storeoff_bridged)" = "0" ] && [ "$(port_bridged)" = "1" ] \
+  && ok "msys shadow: store-off ports ran once on bash, not bridged" \
+  || bad "msys shadow: rc=$RC storeoff-bridged=$(storeoff_bridged) ran=$(tr '\n' ';' < "$FIX/.claude/hooks/ran.log" 2>/dev/null)"
+# A plan of only store-off lines on Windows: exactly the flag-off path.
+reset_logs
+rm -f "$FIX/.claude/hooks/env.log"
+snapshot_with_port
+printf '%s\t%s\n' policy-enforcement-gate on image-context-guard on > "$PLAN"
+run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE=msys
+[ "$RC" = "0" ] && [ "$(bridge_calls)" = "0" ] && storeoff_ran 1 && [ "$(ran_count "$FIX" port)" = "1" ] \
+  && [ "$(env_line)" = "env bin=<unset> plan=<unset>" ] \
+  && ok "msys, store-off-only plan: no bridge, nothing exported" \
+  || bad "msys store-off-only plan: rc=$RC bridge=$(bridge_calls) env=$(env_line)"
+# darwin and linux: every listed port bridges, as before.
+for ostype in "" darwin25 linux-gnu; do
+  reset_logs
+  rm -f "$FIX/.claude/hooks/env.log"
+  snapshot_with_port
+  storeoff_plan on
+  if [ -n "$ostype" ]; then
+    run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" OSTYPE="$ostype" PATH="$UNAME_BIN:$PATH" FAKE_UNAME_S=Darwin
+  else
+    run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+  fi
+  if [ "$RC" = "0" ] && storeoff_ran 0 && [ "$(storeoff_bridged)" = "3" ] && [ "$(port_bridged)" = "1" ]; then
+    ok "OSTYPE=${ostype:-native}: all four ports bridged, unchanged"
+  else
+    bad "OSTYPE=${ostype:-native}: rc=$RC storeoff-bridged=$(storeoff_bridged) ran=$(tr '\n' ';' < "$FIX/.claude/hooks/ran.log" 2>/dev/null)"
+  fi
+  [ "$(env_line)" = "env bin=$STUB plan=inject-policy-on-trigger|on;policy-enforcement-gate|on;image-context-guard|on;$HOOK_ID|on" ] \
+    && ok "OSTYPE=${ostype:-native}: whole plan exported" || bad "OSTYPE=${ostype:-native}: env $(env_line)"
+done
+cp "$TMP/registry.orig" "$FIX/.claude/hooks/hook-registry.json"
+rm -f "$FIX/.claude/hooks/env.log"
 reset_logs
 
 if [ "$fail" -eq 0 ]; then
