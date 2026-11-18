@@ -2338,6 +2338,39 @@ master_hook_engine_bridge_run() {
   esac
   run_child "$@"
 }
+# Windows: the store-off ports (inject-policy-on-trigger, policy-enforcement-gate,
+# image-context-guard) are never bridged, whatever the plan says, so an older
+# engine on Windows cannot answer for them. Their lines are dropped from the
+# plan and those hooks run on bash exactly as with their flag off. Every other
+# line is kept unchanged. Windows is OSTYPE msys, cygwin or win32, or uname
+# reporting MINGW, MSYS or CYGWIN; uname is started only when the plan names
+# one of the three and OSTYPE did not already decide. On macOS and Linux the
+# plan is printed as it came.
+master_hook_engine_windows_plan() { # <plan> -> plan on stdout
+  local plan="$1" line="" id="" out="" windows=0
+  case "$plan" in
+    *inject-policy-on-trigger*|*policy-enforcement-gate*|*image-context-guard*) ;;
+    *) printf '%s' "$plan"; return 0 ;;
+  esac
+  case "${OSTYPE:-}" in
+    msys*|cygwin*|win32*) windows=1 ;;
+    *)
+      case "$(uname -s 2>/dev/null)" in
+        MINGW*|MSYS*|CYGWIN*) windows=1 ;;
+      esac
+      ;;
+  esac
+  [ "$windows" -eq 1 ] || { printf '%s' "$plan"; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    id="${line%$'\r'}"
+    id="${id%%$'\t'*}"
+    case "$id" in
+      inject-policy-on-trigger|policy-enforcement-gate|image-context-guard) continue ;;
+    esac
+    out="${out:+$out$'\n'}$line"
+  done <<< "$plan"
+  printf '%s' "$out"
+}
 master_hook_engine_bridge_plan() {
   local home="${HOME:-}" bin="" pointer="" snapshot="" line="" found=0 plan="" plan_rc=0 saved_input=""
   HOOK_ENGINE_BRIDGE_RESOLVED=1
@@ -2385,6 +2418,8 @@ master_hook_engine_bridge_plan() {
   INPUT="$saved_input"
   saved_input=""
   [ "$plan_rc" -eq 0 ] || return 0
+  [ -n "$plan" ] || return 0
+  plan="$(master_hook_engine_windows_plan "$plan")"
   [ -n "$plan" ] || return 0
   HOOK_ENGINE_BRIDGE_BIN="$bin"
   HOOK_ENGINE_BRIDGE_PLAN="$plan"

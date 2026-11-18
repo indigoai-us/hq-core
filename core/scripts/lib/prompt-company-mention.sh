@@ -158,11 +158,40 @@ prompt_company_mention_is_scheduled_task() {
   return 1
 }
 
+# Print the task text of a scheduled-task prompt ($1). The Claude desktop
+# scheduler builds the prompt as: the <scheduled-task name=".." file="..">
+# line, a fixed "This is an automated run of a scheduled task. ..." paragraph,
+# optional <watching-report> and <run-history> blocks (earlier output, which
+# the prompt itself marks as fetched data), an optional
+# 'Invoke the skill "<name>" using the Skill tool, ...' line, then the task.
+# Everything before the task is dropped, so the task's own first line is the
+# cue line and earlier runs' output is never evidence. A prompt without those
+# parts passes through unchanged.
+prompt_company_mention_scheduled_task_body() {
+  printf '%s\n' "${1:-}" | awk '
+    NR == 1 { sub(/^[[:space:]]*<scheduled-task[^>]*>/, "") }
+    { sub(/<\/scheduled-task>[[:space:]]*$/, "") }
+    intask { print; next }
+    skip != "" { if (index($0, "</" skip ">")) skip = ""; next }
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*<(watching-report|run-history)>/ {
+      t = $0; sub(/^[[:space:]]*</, "", t); sub(/>.*$/, "", t)
+      if (!index($0, "</" t ">")) skip = t
+      next
+    }
+    /^[[:space:]]*This is an automated run of a scheduled task\./ { next }
+    /^[[:space:]]*Invoke the skill "[^"]*" using the Skill tool, then follow the remaining instructions\./ { next }
+    { intask = 1; print }
+  '
+}
+
 # Print the one company a scheduled-task run points to, or nothing. $1 is the
 # HQ root, $2 the session cwd, $3 the prompt. Evidence: a cwd under
-# companies/<slug>/, companies/<slug> paths in the task text, and a cue in the
-# task's first line (same rules as above). Every piece of evidence must name
-# the same single real company; none, or two companies, yields nothing.
+# companies/<slug>/, a companies/<slug> path in the wrapper line (the task
+# file) or the task text, and a cue in the task's first line (same rules as
+# above). The task text excludes the scheduler's preamble and data blocks
+# (prompt_company_mention_scheduled_task_body). Every piece of evidence must
+# name the same single real company; none, or two companies, yields nothing.
 prompt_company_mention_scheduled_task_resolve() {
   local root="${1:-}" cwd="${2:-}" prompt="${3:-}" cands="" s d body real=$'\n' uniq=$'\n' n=0
   [ -n "$root" ] && [ -n "$prompt" ] || return 0
@@ -173,9 +202,10 @@ prompt_company_mention_scheduled_task_resolve() {
       esac
     done
   fi
-  cands="$cands$(printf '%s\n' "$prompt" | grep -oE '(^|[^A-Za-z0-9_.-])companies/[A-Za-z0-9][A-Za-z0-9_-]*' 2>/dev/null \
+  body="$(prompt_company_mention_scheduled_task_body "$prompt")"
+  cands="$cands$( { printf '%s\n' "$prompt" | grep -m1 '<scheduled-task'; printf '%s\n' "$body"; } \
+    | grep -oE '(^|[^A-Za-z0-9_.-])companies/[A-Za-z0-9][A-Za-z0-9_-]*' 2>/dev/null \
     | sed -E 's#^.*companies/##')"$'\n'
-  body="$(printf '%s\n' "$prompt" | sed -E '1s/^[[:space:]]*<scheduled-task[^>]*>//; s#</scheduled-task>##')"
   cands="$cands$(prompt_company_mention_resolve "$root" "$(prompt_company_mention_scan_text "$body")")"$'\n'
   # Exact, real (non-symlink) company dirs only, as the session binder requires.
   for d in "$root"/companies/*; do
