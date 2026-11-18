@@ -2339,17 +2339,18 @@ master_hook_engine_bridge_run() {
   run_child "$@"
 }
 # Windows: the store-off ports (inject-policy-on-trigger, policy-enforcement-gate,
-# image-context-guard) are never bridged, whatever the plan says, so an older
-# engine on Windows cannot answer for them. Their lines are dropped from the
-# plan and those hooks run on bash exactly as with their flag off. Every other
+# image-context-guard) and the injector's fact helper (derive-trigger-facts)
+# are never bridged, whatever the plan says, so an older engine on Windows
+# cannot answer for them. Their lines are dropped from the plan and those hooks
+# and the helper run on bash exactly as with their flag off. Every other
 # line is kept unchanged. Windows is OSTYPE msys, cygwin or win32, or uname
 # reporting MINGW, MSYS or CYGWIN; uname is started only when the plan names
-# one of the three and OSTYPE did not already decide. On macOS and Linux the
+# one of the four and OSTYPE did not already decide. On macOS and Linux the
 # plan is printed as it came.
 master_hook_engine_windows_plan() { # <plan> -> plan on stdout
   local plan="$1" line="" id="" out="" windows=0
   case "$plan" in
-    *inject-policy-on-trigger*|*policy-enforcement-gate*|*image-context-guard*) ;;
+    *inject-policy-on-trigger*|*policy-enforcement-gate*|*image-context-guard*|*derive-trigger-facts*) ;;
     *) printf '%s' "$plan"; return 0 ;;
   esac
   case "${OSTYPE:-}" in
@@ -2365,7 +2366,7 @@ master_hook_engine_windows_plan() { # <plan> -> plan on stdout
     id="${line%$'\r'}"
     id="${id%%$'\t'*}"
     case "$id" in
-      inject-policy-on-trigger|policy-enforcement-gate|image-context-guard) continue ;;
+      inject-policy-on-trigger|policy-enforcement-gate|image-context-guard|derive-trigger-facts) continue ;;
     esac
     out="${out:+$out$'\n'}$line"
   done <<< "$plan"

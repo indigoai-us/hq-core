@@ -9,6 +9,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TWINS, compareVersions, installFloor, rewriteLine, scanFile } from '../ci/rewrite-core-callers.mjs';
+import * as rewriter from '../ci/rewrite-core-callers.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../ci/rewrite-core-callers.mjs', import.meta.url));
 
@@ -106,6 +107,53 @@ test('--check fails when a direct call needs more than the install floor', () =>
     const result = spawnSync(process.execPath, [SCRIPT, '--check', '--root', root], { encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /hq core pipeline conductor needs hq-cli 5\.345\.119, above requiresHqCli 5\.300\.0/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// US-043 c3: the journal and schedule skills run `hq core session-journal` and
+// `hq core job probe`; both commands need a floor so --check covers them.
+// First releases (hq-cli tags, matched to npm gitHead): job probe 5.296.0
+// (absent in 5.295.0), session-journal 5.317.0 (absent in 5.316.0).
+test('commands the shipped skills run directly carry a minCli', () => {
+  assert.equal(TWINS['hq-job-probe.sh'].minCli, '5.296.0');
+  assert.equal(TWINS['session-journal.sh'].minCli, '5.317.0');
+});
+
+test('a direct hq core call of a twin with no minCli is found', () => {
+  assert.equal(typeof rewriter.callsWithoutFloor, 'function');
+  const { callsWithoutFloor } = rewriter;
+  assert.deepEqual(callsWithoutFloor('hq core session-title list\n', 'x.md'), [{ line: 1, command: 'session-title' }]);
+  // --hq-root before the command, repeated spaces, the longer command wins.
+  assert.deepEqual(callsWithoutFloor('x="$(hq core --hq-root "$R" session-title-config get)"', 'x.sh'), [{ line: 1, command: 'session-title-config' }]);
+  assert.deepEqual(callsWithoutFloor('run `hq core  job   remediate` now', 'x.md'), [{ line: 1, command: 'job remediate' }]);
+  assert.deepEqual(callsWithoutFloor('then run hq core worktree-gc.', 'x.md'), [{ line: 1, command: 'worktree-gc' }]);
+  // Floored commands, shell comments and longer words are not reported.
+  assert.deepEqual(callsWithoutFloor('hq core session-journal list\nhq core job probe x\n', 'x.md'), []);
+  assert.deepEqual(callsWithoutFloor('# hq core worktree-gc\n', 'x.sh'), []);
+  assert.deepEqual(callsWithoutFloor('uhq core worktree-gc\n', 'x.md'), []);
+});
+
+test('--check fails when a caller runs a twin command that has no minCli', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rewrite-core-callers-unfloored-'));
+  try {
+    const put = (file, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    };
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.221"\n');
+    put('core/scripts/tests/demo.test.sh', 'hq core worktree-gc\n');
+    execFileSync('git', ['-C', root, 'init', '-q']);
+    execFileSync('git', ['-C', root, 'add', '.']);
+    const check = () => spawnSync(process.execPath, [SCRIPT, '--check', '--root', root], { encoding: 'utf8' });
+    // A test file is out of scope.
+    assert.equal(check().status, 0);
+    put('.claude/skills/demo/SKILL.md', 'Run:\n\n```bash\nhq core --hq-root "$HQ_ROOT" worktree-gc --dry-run\n```\n');
+    execFileSync('git', ['-C', root, 'add', '.']);
+    const result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /\.claude\/skills\/demo\/SKILL\.md:4 runs hq core worktree-gc, which has no minCli in TWINS/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

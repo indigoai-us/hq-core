@@ -31,6 +31,8 @@ import { fileURLToPath } from "node:url";
 // behaviour fix. --check requires each one to be at or below core/core.yaml
 // requiresHqCli, the install floor setup, doctor and /update-hq enforce, so
 // a skill that runs `hq core <command>` never meets an hq-cli without it.
+// --check also fails when a caller runs `hq core <command>` for a twin with no
+// minCli, so no direct call goes unchecked against the floor.
 export const TWINS = Object.freeze({
   "archive-old-threads.sh": { command: "archive-old-threads", root: "live", minCli: "5.78.0" },
   "audit-log.sh": { command: "audit-log", root: "live", minCli: "5.307.0" },
@@ -57,7 +59,7 @@ export const TWINS = Object.freeze({
   "hq-delegate-verify.sh": { command: "delegate verify", root: "live", minCli: "5.292.0" },
   "hq-dm-bind.sh": { command: "dm-bind", root: "live", minCli: "5.310.0" },
   "hq-job-notify.sh": { command: "job notify", root: "live", minCli: "5.342.14" },
-  "hq-job-probe.sh": { command: "job probe", root: "live" },
+  "hq-job-probe.sh": { command: "job probe", root: "live", minCli: "5.296.0" },
   "hq-job-remediate.sh": { command: "job remediate", root: "live" },
   "hq-job-run.sh": { command: "job run", root: "live", minCli: "5.296.0" },
   "hq-pin.sh": { command: "pin", root: "live", minCli: "5.307.0" },
@@ -95,7 +97,7 @@ export const TWINS = Object.freeze({
   "resolve-company.sh": { command: "resolve-company", root: "live", minCli: "5.308.0" },
   "resume-thread-lock.sh": { command: "resume-thread-lock", root: "live", minCli: "5.287.0" },
   "scan-packages.sh": { command: "scan-packages", root: "live", minCli: "5.78.0" },
-  "session-journal.sh": { command: "session-journal", root: "live" },
+  "session-journal.sh": { command: "session-journal", root: "live", minCli: "5.317.0" },
   "session-project.sh": { command: "session-project", root: "live" },
   "session-title-config.sh": { command: "session-title-config", root: "live" },
   "session-title.sh": { command: "session-title", root: "live" },
@@ -342,10 +344,14 @@ function main(argv) {
   const rootIndex = argv.indexOf("--root");
   const root = resolve(rootIndex >= 0 ? argv[rootIndex + 1] : fileURLToPath(new URL("../../..", import.meta.url)));
   let left = 0;
+  const unfloored = [];
   for (const file of trackedFiles(root)) {
     const path = join(root, file);
     let text;
     try { text = readFileSync(path, "utf8"); } catch { continue; }
+    if (mode === "--check") {
+      for (const call of callsWithoutFloor(text, file)) unfloored.push({ file, ...call });
+    }
     const result = scanFile(text, file);
     for (const row of result.rows) {
       if (mode === "--list") {
@@ -359,6 +365,12 @@ function main(argv) {
     process.stderr.write(`rewrite-core-callers: ${left} caller line(s) still run a twinned helper by path; run --apply\n`);
     return 1;
   }
+  if (mode === "--check" && unfloored.length) {
+    for (const call of unfloored) {
+      process.stderr.write(`rewrite-core-callers: ${call.file}:${call.line} runs hq core ${call.command}, which has no minCli in TWINS\n`);
+    }
+    return 1;
+  }
   if (mode === "--check") {
     const floor = installFloor(root);
     if (floor) {
@@ -370,6 +382,34 @@ function main(argv) {
     }
   }
   return 0;
+}
+
+// An `hq core [--hq-root <root>] <command>` call, with the command words
+// separated by spaces. Longer commands are tried first so `session-title` does
+// not claim `session-title-config`.
+const CALL_COMMANDS = [...new Set(Object.values(TWINS).map((twin) => twin.command))]
+  .sort((a, b) => b.length - a.length);
+const HQ_CORE_CALL = new RegExp(
+  String.raw`(?:^|[\s;&|(\x60"'])hq\s+core(?:\s+--hq-root(?:=\S+|\s+\S+))?\s+(${CALL_COMMANDS.map((command) => command.replace(/[-]/g, "\\-").replace(/ /g, "\\s+")).join("|")})(?=$|[\s;&|)\x60:"'.,])`,
+  "g",
+);
+
+/**
+ * Twin commands that `text` runs through `hq core` but that have no minCli in
+ * TWINS. Returns [{ line, command }]. Shell comments are not calls.
+ */
+export function callsWithoutFloor(text, file = "") {
+  const shell = isShell(file);
+  const unfloored = new Set(Object.values(TWINS).filter((twin) => !twin.minCli).map((twin) => twin.command));
+  const found = [];
+  text.split("\n").forEach((source, index) => {
+    if (shell && /^\s*#/.test(source)) return;
+    for (const match of source.matchAll(HQ_CORE_CALL)) {
+      const command = match[1].replace(/\s+/g, " ");
+      if (unfloored.has(command)) found.push({ line: index + 1, command });
+    }
+  });
+  return found;
 }
 
 /** core/core.yaml requiresHqCli without the >= prefix, or "" when absent. */

@@ -27,6 +27,9 @@
 #   [j] a payload over the input-file limit keeps the shell helper
 #   [k] no bridge output file is left behind
 #   [l] a capture file that cannot be written keeps the shell helper
+#   [m] Windows (OSTYPE msys, cygwin, win32): the helper stays on bash with a
+#       plan that says on or shadow; hq-hook is never called on the injector
+#       path, PostToolUse included
 set -uo pipefail
 
 TEST_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
@@ -286,6 +289,32 @@ chmod 755 "$STATE_DIR"
 [ "$RC" = "0" ] && [ "$(count "$ENGINE_LOG")" = "0" ] && [ "$(count "$HELPER_LOG")" -ge 1 ] && out_has 'shell-probe' \
   && ok "read-only hook-state: shell helper answered, engine not started" \
   || bad "read-only hook-state: rc=$RC engine=$(count "$ENGINE_LOG") helper=$(count "$HELPER_LOG") out=$(head -c 300 "$TMP/out")"
+
+echo "[m] Windows: the fact helper stays on bash, hq-hook never called"
+for ostype in msys cygwin win32; do
+  reset
+  run OSTYPE="$ostype" HQ_HOOK_BRIDGE_BIN="$ENGINE" HQ_HOOK_BRIDGE_PLAN="$(plan_on)"
+  [ "$RC" = "0" ] && [ ! -e "$ENGINE_LOG" ] && [ "$(count "$HELPER_LOG")" = "1" ] \
+    && out_has 'shell-probe' && ! out_has 'engine-probe' \
+    && ok "OSTYPE=$ostype, plan on: no hq-hook call, shell helper answered" \
+    || bad "OSTYPE=$ostype plan on: rc=$RC engine=$(cat "$ENGINE_LOG" 2>/dev/null) helper=$(count "$HELPER_LOG")"
+done
+reset
+run OSTYPE=msys HQ_HOOK_BRIDGE_BIN="$ENGINE" HQ_HOOK_BRIDGE_PLAN="$(plan_shadow)"
+[ "$RC" = "0" ] && [ ! -e "$ENGINE_LOG" ] && [ "$(count "$HELPER_LOG")" = "1" ] && out_has 'shell-probe' \
+  && ok "OSTYPE=msys, plan shadow: no hq-hook call, shell helper answered" \
+  || bad "OSTYPE=msys plan shadow: rc=$RC engine=$(cat "$ENGINE_LOG" 2>/dev/null) helper=$(count "$HELPER_LOG")"
+reset
+RUN_EVENT=PostToolUse run OSTYPE=msys HQ_HOOK_BRIDGE_BIN="$ENGINE" HQ_HOOK_BRIDGE_PLAN="$(plan_on)"
+[ "$RC" = "0" ] && [ ! -e "$ENGINE_LOG" ] && [ "$(count "$HELPER_LOG")" -ge 1 ] \
+  && ok "OSTYPE=msys PostToolUse, plan on: no hq-hook call" \
+  || bad "OSTYPE=msys PostToolUse: rc=$RC engine=$(cat "$ENGINE_LOG" 2>/dev/null) helper=$(count "$HELPER_LOG")"
+# Control in the same run: off Windows the same plan still bridges.
+reset
+run OSTYPE=darwin25 HQ_HOOK_BRIDGE_BIN="$ENGINE" HQ_HOOK_BRIDGE_PLAN="$(plan_on)"
+[ "$(count "$ENGINE_LOG")" = "1" ] && [ "$(count "$HELPER_LOG")" = "0" ] && out_has 'engine-probe' \
+  && ok "OSTYPE=darwin25, plan on: engine answers, unchanged" \
+  || bad "OSTYPE=darwin25: engine=$(count "$ENGINE_LOG") helper=$(count "$HELPER_LOG")"
 
 echo "[k] bridge output files are removed at exit"
 leftover="$(find "$FIX/workspace" -name '.policy-trigger-bridge.*' | head -3)"
