@@ -101,7 +101,7 @@ fi
 fallback_ok() {
   [ "$cli_rc" -ne 0 ] || return 1
   if [ "$cli_rc" -eq 127 ] && ! command -v "$HQ_BIN" >/dev/null 2>&1; then return 0; fi
-  grep -Eq '^Unknown arg: (--company|--deficiencies-json)[[:space:]]*$' "$tmp/cli.err" && return 0
+  grep -Eq '^Unknown arg: (--company|--deficiencies-json|--learnings-json-file)[[:space:]]*$' "$tmp/cli.err" && return 0
   grep -Eq "^error: unknown command '(core|handoff|run)'" "$tmp/cli.err" && return 0
   return 1
 }

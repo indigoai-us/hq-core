@@ -211,6 +211,24 @@ has_line "core/scripts/handoff-finalize.sh() { sh; }; core/scripts/handoff-final
   'a function named like the handoff script prints the body'
 has_line "hash -p /bin/sh bash; bash core/scripts/handoff-finalize.sh $HF_BODY" "$CP_HOOK" \
   'hash -p on bash prints the handoff body'
+# US-029: the native `hq core handoff finalize` takes --summary and --title
+# text as data, by exact command match only.
+HQF_TITLE_BODY="--title \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\""
+no_line "hq core handoff finalize $HF_BODY" "$CP_HOOK" \
+  'an hq core handoff finalize --summary body is hidden'
+no_line "hq core handoff finalize --slug s $HQF_TITLE_BODY" "$CP_HOOK" \
+  'an hq core handoff finalize --title body after other options is hidden'
+for look in 'hq core handoff run' 'hq core handoff post' 'hq core handoff finalized' 'hq core finalize handoff' \
+            'hq handoff finalize' 'hq core handoff --x finalize' 'hqx core handoff finalize' './hq core handoff finalize' \
+            '/tmp/hq core handoff finalize' 'bash hq core handoff finalize' 'command hq core handoff finalize'; do
+  has_line "$look $HF_BODY" "$CP_HOOK" "a lookalike [$look] has its body printed"
+done
+has_line "hq core handoff finalize --message \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\"" "$CP_HOOK" \
+  'an hq core handoff finalize option other than --summary or --title prints the body'
+for pre in 'cd /tmp; ' 'BASH_ENV=/tmp/x ' 'hq() { sh; }; ' 'alias hq=sh; ' 'PATH=/tmp/evil:$PATH; ' 'hash -p /bin/sh hq; '; do
+  has_line "${pre}hq core handoff finalize $HF_BODY" "$CP_HOOK" \
+    "an hq core handoff finalize body after '$pre' is printed"
+done
 # A hidden body line is left out of the outer word of the heredoc-aware
 # reading too. Default output keeps a newline inside a word, so the line would
 # otherwise reach guards as a record of its own. (The flat reading printed
@@ -303,6 +321,24 @@ if command -v jq >/dev/null 2>&1; then
     guard 0 "$msg $LAST_BODY" "a plain $msg heredoc stays allowed"
     guard 0 "$msg $LAST_BODY; echo \$__x \$_a" "$msg heredoc with \$_-prefixed names stays allowed"
   done
+  # US-029: hq core handoff finalize --summary/--title text is data; a
+  # protected path in any other argument, or a lookalike command, still blocks.
+  guard 0 "hq core handoff finalize --summary \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\"" \
+    'an hq core handoff finalize --summary that quotes a protected-path write is allowed'
+  guard 0 "hq core handoff finalize --title \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\"" \
+    'an hq core handoff finalize --title that quotes a protected-path write is allowed'
+  guard 2 "hq core handoff finalize --summary \"\$(cat <<'EOF'${NL}ok${NL}EOF${NL})\"; cp evil.sh $H/x.sh" \
+    'a protected-path write after an hq core handoff finalize summary is blocked'
+  guard 2 "hq core handoff finalize --summary \"\$(cp evil.sh $H/x.sh)\"" \
+    'a protected-path write run inside an hq core handoff finalize summary is blocked'
+  guard 2 "hq core handoff finalize --title t --summary s \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\"" \
+    'a heredoc in a positional argument of hq core handoff finalize is blocked'
+  for look in 'hq core handoff run' 'hq core handoff finalized' 'hq handoff finalize' 'hqx core handoff finalize' './hq core handoff finalize'; do
+    guard 2 "$look --summary \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\"" \
+      "a lookalike [$look] summary heredoc is blocked"
+  done
+  guard 2 "hq() { sh; }; hq core handoff finalize --summary \"\$(cat <<'EOF'${NL}cp evil.sh .claude/hooks/x.sh${NL}EOF${NL})\"" \
+    'an hq core handoff finalize summary behind an hq function is blocked'
 else
   echo "SKIP: guard cases (jq not available)"
 fi

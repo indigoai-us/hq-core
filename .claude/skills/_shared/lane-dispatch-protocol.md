@@ -67,8 +67,16 @@ explicit flag overrides its matching session pin. When no account pin or
 `--account` flag is set, pass `--account auto`. This rule applies to every
 skill that builds `hq runners create`, including `/execute-task` and
 `/run-project`.
-Repeating create for the same worker under the same
-senior continues that worker's thread. When the lane is still live, use
+
+Where the lane runs follows `core/policies/hq-lane-outpost-choice.md`: ask the
+user once which Outpost to use (their Outposts, Auto, or This machine) unless
+the request or the `lane_placement` session value already says, then pass
+`--outpost <id>` (with the lane's `--company` for a company Outpost),
+`--placement auto`, or `--placement local`. Unattended runs never ask and
+never pick a company Outpost on their own.
+
+Repeating create for the same worker under the same senior continues that
+worker's thread. When the lane is still live, use
 `hq runners message <lane> --text <instruction>`.
 
 The detached lane launcher captures its owner PID and start time with

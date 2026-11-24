@@ -392,6 +392,7 @@ while IFS= read -r line; do
     "runs-on: ${aws_guard}fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '\"ubuntu-24.04-arm\"') || 'ubuntu-24.04-arm' }}") ;;
     "runs-on: ${guard}fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '\"ubuntu-latest\"') || 'ubuntu-latest' }}") ;;
     "runs-on: ${guard}matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '\"ubuntu-latest\"') || matrix.os }}") ;;
+    "runs-on: ${aws_guard}matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '\"ubuntu-latest\"') || matrix.os }}") ;;
     "runs-on: ${guard}fromJSON(vars.HQ_STAGING_RUNNER_WINDOWS || '\"windows-latest\"') || 'windows-latest' }}") ;;
     *) fail "runner variable used outside the guarded staging runs-on form: $line" ;;
   esac
@@ -503,14 +504,16 @@ for name in sorted(os.listdir(wf_dir)):
                 # Escape hatches: HQ_AWS_RUNNERS=off on any event, or the
                 # ci-hosted-runners label on a PR, sends staging jobs to the
                 # hosted label even with the runner variable set. Any other
-                # switch value keeps the variable's runner.
+                # switch value keeps the variable's runner. A matrix job's
+                # macOS and Windows legs keep their hosted label either way.
+                want_on = want_self if linux else hosted
                 hatch_cases = [
                     ("pull_request", True, None, hosted),
                     ("pull_request", False, "off", hosted),
                     ("push", False, "off", hosted),
                     ("workflow_dispatch", False, "off", hosted),
-                    ("pull_request", False, "on", want_self),
-                    ("push", False, "on", want_self),
+                    ("pull_request", False, "on", want_on),
+                    ("push", False, "on", want_on),
                 ]
                 for event, label, switch, want in hatch_cases:
                     got = evaluate(expr, context(STAGING, event, False, value, var, os_label, label, switch))

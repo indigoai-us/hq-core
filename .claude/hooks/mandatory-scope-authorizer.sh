@@ -1423,7 +1423,7 @@ scope_shell_variable_values() {
 
 scope_candidate_is_inert_text() {
   local candidate="${1:-}" command_text="${2:-}" prefix="${3:-}" suffix="${4:-}"
-  local segment="" masked_segment="" output_re redirection_re data_option_re backtick text_option_re command_head pr_wrapper_re
+  local segment="" masked_segment="" output_re redirection_re data_option_re backtick text_option_re="" command_head pr_wrapper_re
   [ -n "$candidate" ] || return 1
   backtick=$'\140'
   # Only a standalone echo/printf is inert. A pipe, redirect, command
@@ -1453,6 +1453,8 @@ scope_candidate_is_inert_text() {
     'hq mesh '* )
       if [[ "$command_head" =~ ^hq[[:space:]]+mesh[[:space:]]+[^[:space:]]+[[:space:]]+note([[:space:]]|$) ]]; then
         text_option_re="$data_option_re"
+      else
+        text_option_re=""
       fi
       ;;
     'gh pr create '*|'gh pr comment '*|'gh pr edit '*|'gh issue create '*|'gh issue comment '*|'gh issue edit '*)
@@ -2791,6 +2793,365 @@ scope_resolve_absolute_path() {
   printf '%s' "$SCOPE_CASE_TEXT"
 }
 
+# Windows path spellings. On a Windows host (Git Bash, MSYS, Cygwin) a tool
+# opens a drive path (C:\x, C:/x), a UNC path (\\host\share\x) and a long-path
+# form (\\?\C:\x, \\?\UNC\host\share\x) as absolute paths, and reads a
+# backslash as a separator. The checks compare paths in the shell's own
+# spelling (/c/x; /cygdrive/c/x on Cygwin), so a path is rewritten to that
+# spelling before it is classified. Off Windows none of this runs: a colon or
+# a backslash stays an ordinary character of a file name.
+SCOPE_WIN_HOST=0
+case "${OSTYPE:-}" in msys*|cygwin*|win32*) SCOPE_WIN_HOST=1 ;; esac
+# The folder the shell mounts drives under: none on Git Bash and MSYS (drive
+# C is /c), /cygdrive on Cygwin. OSTYPE does not tell them apart (Git Bash
+# can report cygwin), so scope_win_set_drives reads it from the spelling of
+# the HQ root once that is known. When the root is not spelled under a drive
+# mount, HQ_SCOPE_DRIVE_PREFIX may name the folder drives are mounted under
+# (a changed cygdrive prefix; the tests use it to place a drive inside a temp
+# folder); it is used only when the HQ root is spelled under it.
+SCOPE_WIN_DRIVES=""
+scope_win_set_drives() {
+  local pre
+  [ "$SCOPE_WIN_HOST" -eq 1 ] || return 0
+  SCOPE_WIN_DRIVES=""
+  case "$HQ_ROOT" in
+    /cygdrive/[A-Za-z]|/cygdrive/[A-Za-z]/*) SCOPE_WIN_DRIVES="/cygdrive"; return 0 ;;
+    /[A-Za-z]|/[A-Za-z]/*) return 0 ;;
+  esac
+  case "${HQ_SCOPE_DRIVE_PREFIX-}" in
+    /*)
+      pre="${HQ_SCOPE_DRIVE_PREFIX%/}"
+      case "$HQ_ROOT" in
+        "$pre"/[A-Za-z]|"$pre"/[A-Za-z]/*) SCOPE_WIN_DRIVES="$pre"; return 0 ;;
+      esac
+      ;;
+  esac
+  if [ -z "${MSYSTEM:-}" ] && [ -d /cygdrive ]; then SCOPE_WIN_DRIVES="/cygdrive"; fi
+}
+SCOPE_WIN_REFUSAL='this Windows path form (a device path, a drive letter with no slash after the colon, or a short 8.3 name for companies or a company folder) cannot be classified; spell the full path, such as C:\folder\file'
+
+# scope_win_drive_letter <letter>: SCOPE_WIN_LETTER is the letter in lower case.
+scope_win_drive_letter() {
+  local up=ABCDEFGHIJKLMNOPQRSTUVWXYZ lo=abcdefghijklmnopqrstuvwxyz head
+  SCOPE_WIN_LETTER="${1:-}"
+  head="${up%%"$SCOPE_WIN_LETTER"*}"
+  [ "${#head}" -ge 26 ] || SCOPE_WIN_LETTER="${lo:${#head}:1}"
+}
+
+# scope_win_path <path>: SCOPE_WIN_PATH is <path> in the shell's spelling.
+# Backslashes become slashes; C:\x, C:/x, \\?\C:\x and \\.\C:\x become /c/x;
+# \\?\UNC\host\share\x becomes //host/share/x; an administrative share
+# (\\host\c$\x) becomes /c/x. Returns 1 for a form with no such spelling:
+# another device path, or a drive-relative C:name. Off Windows the path is
+# returned unchanged.
+scope_win_path() {
+  local p="${1:-}" rest
+  SCOPE_WIN_PATH="$p"
+  [ "$SCOPE_WIN_HOST" -eq 1 ] || return 0
+  case "$p" in
+    *'\'*|[A-Za-z]:*|//*) ;;
+    *)
+      scope_win_segments "$p"
+      return
+      ;;
+  esac
+  p="${p//\\//}"
+  case "$p" in
+    //[?.]/[Uu][Nn][Cc]/*) p="//${p:8}" ;;
+    //[?.]/[A-Za-z]:|//[?.]/[A-Za-z]:/*) p="${p:4}" ;;
+    //[?.]|//[?.]/*) return 1 ;;
+  esac
+  case "$p" in
+    //[!/]*/[A-Za-z]\$|//[!/]*/[A-Za-z]\$/*)
+      rest="${p#//*/}"
+      case "$rest" in
+        [A-Za-z]\$|[A-Za-z]\$/*) p="${rest:0:1}:${rest:2}" ;;
+      esac
+      ;;
+  esac
+  case "$p" in
+    [A-Za-z]:|[A-Za-z]:/*)
+      scope_win_drive_letter "${p:0:1}"
+      rest="${p:2}"
+      while [ "${rest:0:1}" = / ]; do rest="${rest:1}"; done
+      p="$SCOPE_WIN_DRIVES/$SCOPE_WIN_LETTER${rest:+/$rest}"
+      ;;
+    [A-Za-z]:*) return 1 ;;
+  esac
+  scope_win_segments "$p"
+}
+
+# scope_win_segments <path>: Windows only. SCOPE_WIN_PATH is <path> with
+# the trailing periods and spaces Windows drops from a name removed
+# (companies\otherco.\x opens companies\otherco\x). Returns 1 for a short
+# 8.3 name of companies/ (COMPAN~1) or of a folder in it (OTHERC~1): only
+# the file system knows which folder such a name opens.
+scope_win_segments() {
+  local p="${1:-}" lead="" rest seg prev="" out="" sep="" last=0
+  SCOPE_WIN_PATH="$p"
+  case "$p" in *[.\ ]/*|*[.\ ]|*'~'[0-9]*) ;; *) return 0 ;; esac
+  case "$p" in
+    //*) lead="//"; rest="${p#//}" ;;
+    /*) lead="/"; rest="${p#/}" ;;
+    *) rest="$p" ;;
+  esac
+  while [ "$last" -eq 0 ]; do
+    case "$rest" in
+      */*) seg="${rest%%/*}"; rest="${rest#*/}" ;;
+      *) seg="$rest"; last=1 ;;
+    esac
+    case "$seg" in
+      ''|.|..) ;;
+      *[!.\ ]*)
+        while :; do
+          case "$seg" in *[.\ ]) seg="${seg%?}" ;; *) break ;; esac
+        done
+        ;;
+    esac
+    case "$seg" in [Cc][Oo][Mm][Pp][Aa][Nn]'~'[0-9]*) return 1 ;; esac
+    case "$prev" in
+      [Cc][Oo][Mm][Pp][Aa][Nn][Ii][Ee][Ss])
+        case "$seg" in *'~'[0-9]*) return 1 ;; esac
+        ;;
+    esac
+    prev="$seg"
+    out="$out$sep$seg"
+    sep=/
+  done
+  SCOPE_WIN_PATH="$lead$out"
+}
+
+# scope_win_field <path>: scope_win_path for a path field of a tool call. A
+# form with no shell spelling is refused; a rewritten path is case-folded
+# like the rest of the payload. Result in SCOPE_WIN_PATH.
+scope_win_field() {
+  SCOPE_WIN_PATH="${1:-}"
+  [ "$SCOPE_WIN_HOST" -eq 1 ] || return 0
+  scope_win_path "${1:-}" || scope_block_rel "${1:-}" "$SCOPE_WIN_REFUSAL"
+  [ "$SCOPE_WIN_PATH" != "${1:-}" ] || return 0
+  scope_case_fold_text "$SCOPE_WIN_PATH"
+  SCOPE_WIN_PATH="$SCOPE_CASE_TEXT"
+}
+
+# scope_win_drive_root <path>: SCOPE_WIN_ROOT is the root of the drive that
+# <path> (in the shell's spelling) is on, or empty when it names no drive.
+scope_win_drive_root() {
+  local p="${1:-}" rest
+  SCOPE_WIN_ROOT=""
+  case "$p" in
+    "$SCOPE_WIN_DRIVES"/[A-Za-z]|"$SCOPE_WIN_DRIVES"/[A-Za-z]/*) ;;
+    *) return 0 ;;
+  esac
+  rest="${p#"$SCOPE_WIN_DRIVES"/}"
+  SCOPE_WIN_ROOT="$SCOPE_WIN_DRIVES/${rest:0:1}"
+}
+
+# scope_win_check_drive_root_readings <path> <file|search>: Windows only. A
+# path that starts with one slash (\folder\x, /folder/x) is opened at the root
+# of the current drive, so it is also checked there, for the drive of the
+# payload cwd and the drive of the HQ root.
+scope_win_check_drive_root_readings() {
+  local p="${1:-}" kind="${2:-file}" base alt seen=""
+  [ "$SCOPE_WIN_HOST" -eq 1 ] || return 0
+  case "$p" in //*) return 0 ;; /*) ;; *) return 0 ;; esac
+  for base in "${PAYLOAD_CWD:-}" "$HQ_ROOT"; do
+    scope_win_drive_root "$base"
+    [ -n "$SCOPE_WIN_ROOT" ] || continue
+    [ "$SCOPE_WIN_ROOT" != "$seen" ] || continue
+    seen="$SCOPE_WIN_ROOT"
+    alt="$SCOPE_WIN_ROOT$p"
+    if [ "$kind" = search ]; then
+      case "${PAYLOAD_CWD:-}" in "$HQ_ROOT"|'') ;; *) scope_check_cwd_abs "$alt" ;; esac
+      scope_check_recursive_search_root "$alt"
+      scope_check_tool_open_path "$alt" search
+    else
+      [ "$TOOL" = Read ] || scope_check_skill_cache_path "$alt"
+      scope_check_raw "$alt"
+      scope_check_tool_open_path "$alt"
+    fi
+  done
+}
+
+# scope_win_command_copy <command>: Windows only. SCOPE_WIN_CMD is the Bash
+# command with its Windows path spellings rewritten to the shell's spelling,
+# or empty when the command has none. A drive word (C:\x, C:/x) becomes /c/x;
+# a backslash before a name character becomes a slash; a word that starts
+# with one backslash is placed at the root of the current drive; a word that
+# starts with two is a UNC path, with \\?\ and \\.\ prefixes and
+# administrative shares read as in scope_win_path. A backslash before a
+# quote, a space, `$` or a shell operator is an escape and is kept. The
+# caller checks the copy in addition to the command as written. Returns 1
+# for a device path that has no shell spelling.
+scope_win_command_copy() {
+  local t="${1:-}" out="" rest chunk run n lit next prev letter before tail root steps=0
+  local adm_re sn_re
+  SCOPE_WIN_CMD=""
+  [ "$SCOPE_WIN_HOST" -eq 1 ] || return 0
+  case "$t" in
+    *'\'*|*[A-Za-z]:/*|*'~'[0-9]*|*//*[A-Za-z]'$'*) ;;
+    *[A-Za-z0-9_~\'\"{,}-].[!A-Za-z0-9_~-]*|*[A-Za-z0-9_~\'\"{,}-].) ;;
+    *) return 0 ;;
+  esac
+  scope_win_drive_root "${PAYLOAD_CWD:-}"
+  [ -n "$SCOPE_WIN_ROOT" ] || scope_win_drive_root "$HQ_ROOT"
+  root="$SCOPE_WIN_ROOT"
+  scope_c_locale_enter
+  rest="$t"
+  while [ -n "$rest" ]; do
+    steps=$((steps + 1))
+    [ $((steps % 512)) -ne 0 ] || scope_enforce_check_budget
+    chunk="${rest%%[\\:]*}"
+    out+="$chunk"
+    rest="${rest:${#chunk}}"
+    [ -n "$rest" ] || break
+    if [ "${rest:0:1}" = : ]; then
+      rest="${rest:1}"
+      letter=""
+      before=""
+      [ "${#out}" -lt 1 ] || letter="${out:$((${#out} - 1)):1}"
+      [ "${#out}" -lt 2 ] || before="${out:$((${#out} - 2)):1}"
+      case "$letter" in
+        [A-Za-z])
+          case "$before" in
+            [A-Za-z0-9_]) ;;
+            *)
+              case "$rest" in
+                [\\/]*)
+                  run="${rest%%[!\\/]*}"
+                  rest="${rest:${#run}}"
+                  scope_win_drive_letter "$letter"
+                  out="${out%?}$SCOPE_WIN_DRIVES/$SCOPE_WIN_LETTER/"
+                  continue
+                  ;;
+              esac
+              ;;
+          esac
+          ;;
+      esac
+      out+=":"
+      continue
+    fi
+    run="${rest%%[!\\]*}"
+    n="${#run}"
+    rest="${rest:$n}"
+    next="${rest:0:1}"
+    case "$next" in
+      ''|' '|$'\t'|$'\n'|$'\r'|\'|\"|'`'|'$'|';'|'&'|'|'|'<'|'>'|'('|')')
+        out+="$run"
+        continue
+        ;;
+    esac
+    prev=""
+    [ "${#out}" -lt 1 ] || prev="${out:$((${#out} - 1)):1}"
+    case "$prev" in
+      ''|' '|$'\t'|$'\n'|\'|\"|'='|'('|'<'|'>'|';'|'|'|'&')
+        # Start of a word. Inside single quotes each backslash is itself;
+        # elsewhere two spell one.
+        lit="$n"
+        [ "$prev" = "'" ] || lit=$(((n + 1) / 2))
+        if [ "$lit" -ge 2 ]; then
+          tail=""
+          case "$rest" in
+            [?.]'\'*)
+              tail="${rest:1}"
+              run="${tail%%[!\\]*}"
+              n="${#run}"
+              [ "$prev" = "'" ] || n=$(((n + 1) / 2))
+              tail="${tail:${#run}}"
+              [ "$n" -eq 1 ] || tail=""
+              ;;
+          esac
+          case "$tail" in
+            [Uu][Nn][Cc]'\'*)
+              tail="${tail:3}"
+              rest="${tail#"${tail%%[!\\]*}"}"
+              out+="//"
+              ;;
+            [A-Za-z]:*) rest="$tail" ;;
+            [A-Za-z{]*)
+              scope_c_locale_leave
+              return 1
+              ;;
+            *) out+="//" ;;
+          esac
+        else
+          out+="$root/"
+        fi
+        ;;
+      *) out+="/" ;;
+    esac
+  done
+  scope_c_locale_leave
+  # An administrative share (//host/c$/x) is drive C of that host.
+  # No empty alternative: some regex libraries refuse one.
+  adm_re='^((.*[^A-Za-z0-9_.:/-])?)//[^/[:space:]]+/([A-Za-z])[\\]?[$]((/.*|[^A-Za-z0-9_].*)?)$'
+  steps=0
+  while [[ "$out" =~ $adm_re ]]; do
+    steps=$((steps + 1))
+    # More shares than this cannot all be rewritten in time: refuse.
+    [ "$steps" -le 64 ] || return 1
+    scope_win_drive_letter "${BASH_REMATCH[3]}"
+    tail="${BASH_REMATCH[4]}"
+    case "$tail" in /*) ;; *) tail="/$tail" ;; esac
+    out="${BASH_REMATCH[1]}$SCOPE_WIN_DRIVES/$SCOPE_WIN_LETTER$tail"
+  done
+  # A short 8.3 name for companies/ or a company folder names a folder the
+  # text cannot tell (scope_win_segments).
+  sn_re='(^|[^A-Za-z0-9_])[Cc][Oo][Mm][Pp][Aa][Nn]~[0-9]|[Cc][Oo][Mm][Pp][Aa][Nn][Ii][Ee][Ss]/[^/[:space:]]*~[0-9]'
+  [[ ! "$out" =~ $sn_re ]] || return 1
+  scope_win_strip_dots "$out"
+  out="$SCOPE_WIN_DOTS"
+  [ "$out" != "$t" ] || return 0
+  scope_case_fold_text "$out"
+  SCOPE_WIN_CMD="$SCOPE_CASE_TEXT"
+}
+
+# scope_win_strip_dots <text>: Windows only. SCOPE_WIN_DOTS is <text> with
+# the trailing periods Windows drops from a name removed.
+scope_win_strip_dots() {
+  local out="${1:-}" rest chunk run prev next before steps=0
+  # Windows drops a trailing period from a name (otherco./x opens otherco/x).
+  # One pass, left to right: a run of periods after a name character (quotes
+  # in between are skipped: otherco'.') and before a slash, a blank, a shell
+  # operator, a quote, an escape, a brace-list comma or brace, a `$` or the
+  # end is dropped. The quotes stay, so the checks still dequote the word.
+  case "$out" in
+    *[A-Za-z0-9_~\'\"{,}-].*)
+      scope_c_locale_enter
+      rest="$out"
+      out=""
+      steps=0
+      while [ -n "$rest" ]; do
+        steps=$((steps + 1))
+        [ $((steps % 512)) -ne 0 ] || scope_enforce_check_budget
+        chunk="${rest%%.*}"
+        out+="$chunk"
+        rest="${rest:${#chunk}}"
+        [ -n "$rest" ] || break
+        run="${rest%%[!.]*}"
+        rest="${rest:${#run}}"
+        before="$out"
+        while :; do
+          case "$before" in *[\'\"{,}]) before="${before%?}" ;; *) break ;; esac
+        done
+        prev=""
+        [ "${#before}" -lt 1 ] || prev="${before:$((${#before} - 1)):1}"
+        next="${rest:0:1}"
+        case "$prev" in
+          [A-Za-z0-9_~-])
+            case "$next" in
+              ''|/|' '|$'\t'|$'\n'|$'\r'|';'|'|'|'&'|')'|'<'|'>'|\'|\"|'\'|','|'}'|'{'|'$') continue ;;
+            esac
+            ;;
+        esac
+        out+="$run"
+      done
+      scope_c_locale_leave
+      ;;
+  esac
+  SCOPE_WIN_DOTS="$out"
+}
+
 # Strip the whitespace that the host trims from a file-tool path before it
 # opens it (JavaScript String.prototype.trim: ASCII space, tab, LF, VT, FF,
 # CR, and U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F,
@@ -2830,7 +3191,10 @@ scope_tool_open_path() {
   p="$SCOPE_TRIMMED"
   SCOPE_OPEN_PATH=""
   [ -n "$p" ] || return 0
-  case "${OSTYPE:-}" in msys*|cygwin*|win32*) p="${p//\\//}" ;; esac
+  if [ "$SCOPE_WIN_HOST" -eq 1 ]; then
+    scope_win_path "$p" || scope_block_rel "$p" "$SCOPE_WIN_REFUSAL"
+    p="$SCOPE_WIN_PATH"
+  fi
   case "$p" in
     '~') p="${HOME:-/}" ;;
     '~/'*) p="${HOME:-}/${p#'~/'}" ;;
@@ -2866,6 +3230,18 @@ scope_tool_open_path() {
 # other checks saw (see scope_tool_open_path).
 scope_check_tool_open_path() {
   local raw="${1:-}" kind="${2:-file}" chk
+  if [ "$SCOPE_WIN_HOST" -eq 1 ]; then
+    # A Windows spelling the caller did not rewrite is checked rewritten.
+    scope_win_path "$raw" || scope_block_rel "$raw" "$SCOPE_WIN_REFUSAL"
+    if [ "$SCOPE_WIN_PATH" != "$raw" ]; then
+      raw="$SCOPE_WIN_PATH"
+      if [ "$kind" = search ]; then
+        scope_check_recursive_search_root "$raw"
+      else
+        scope_check_raw "$raw"
+      fi
+    fi
+  fi
   # Common case first, with no work: no `~`, no `.` or `..` segment, no
   # empty segment and no backslash next to `..`. The checks already run on
   # the HQ-root and cwd joins cover such a path as it is opened.
@@ -3137,6 +3513,15 @@ case "$TOOL" in
     INPUT="$SCOPE_CASE_TEXT"
     ;;
 esac
+if [ "$SCOPE_WIN_HOST" -eq 1 ]; then
+  scope_win_set_drives
+  # The host spells the working directory as a drive or UNC path.
+  if ! scope_win_path "$PAYLOAD_CWD"; then
+    printf '%s\n' 'BLOCKED: Cross-company scope check. The working directory is spelled in a Windows form the guard cannot classify.' >&2
+    exit 2
+  fi
+  PAYLOAD_CWD="$SCOPE_WIN_PATH"
+fi
 scope_case_fold_text "$PAYLOAD_CWD"
 PAYLOAD_CWD="$SCOPE_CASE_TEXT"
 
@@ -6105,6 +6490,19 @@ scope_check_cwd_value() {
   scope_cwd_phys
   cwd="$SCOPE_CWD_PHYS"
   [ -n "$cwd" ] || return 0
+  # Windows: //name with no share after it is a host, not a file or a folder
+  # (cmd's //c switch is the usual one). Each file test of it below makes the
+  # shell look the host up on the network, seconds per test, and none can
+  # match: the companies/ folder and the HQ root are never a bare host. A
+  # share, a further slash, a `$`, a glob or an expansion still gets the
+  # full checks.
+  if [ "$SCOPE_WIN_HOST" -eq 1 ]; then
+    case "${val%/}" in
+      //) ;;
+      //*[!A-Za-z0-9._-]*) ;;
+      //*) return 0 ;;
+    esac
+  fi
   case "$val" in
     '~+'|'~+/'*) scope_check_cwd_abs "$cwd${val#'~+'}"; return 0 ;;
     '~-'|'~-/'*) scope_block_rel "$val" "~- names the previous directory, which the guard cannot follow" ;;
@@ -8931,6 +9329,18 @@ scope_check_prose_substitutions() {
           esac
         fi
         ;;
+      gh\ *)
+        # Covers every `gh` command (e.g. `gh pr list`, `gh api`, `gh run list`),
+        # not only `gh run`: a single-quoted `-q`/`--jq` field/index selector
+        # (such as `'.[0].databaseId'` or `'.[0].number'`) names no file, so its
+        # brackets do not count as globbing here; the rest of the substitution
+        # body is still checked for globs, escaping, and tenant paths as usual.
+        local prose_jq_re
+        prose_jq_re='(^|[[:space:]])(-q|--jq)[[:space:]]+'"'"'([.][]A-Za-z0-9_.[]+)'"'"'([[:space:]]|$)'
+        if [[ "$check_body" =~ $prose_jq_re ]]; then
+          check_body="${check_body/"${BASH_REMATCH[0]}"/ }"
+        fi
+        ;;
     esac
     case "$check_body" in
       *\\*|*'{'*|*'}'*|*'*'*|*'?'*|*'['*|*$'\140'*|*'$('*)
@@ -10355,6 +10765,22 @@ scope_remote_position() {
           [A-Za-z0-9]*/[A-Za-z0-9_.-]*)
             case "${word%%/*}" in *[!A-Za-z0-9_.\"\'-]*) return 1 ;; esac
             return 0 ;;
+        esac
+      fi
+      # `gh run <verb> <run-id>`: the first operand right after
+      # watch|view|rerun|cancel|delete is a GitHub Actions run ID, never a
+      # local path. Local roots and path-looking words stay checked; any
+      # substitution body inside the operand is still scanned via
+      # scope_check_prose_substitutions.
+      if [ "$(scope_remote_word "$((head_index + 1))")" = run ] \
+        && [ "$index" -eq "$((head_index + 3))" ]; then
+        case "$(scope_remote_word "$((head_index + 2))")" in
+          watch|view|rerun|cancel|delete)
+            case "${word#[\"\']}" in
+              companies/*|repos/*|workspace/*|core/*|personal/*|.*|/*|'~'*) return 1 ;;
+              *) return 0 ;;
+            esac
+            ;;
         esac
       fi
       return 1
@@ -14479,6 +14905,8 @@ case "$TOOL" in
     # The host trims the path before it opens it.
     scope_trim_tool_path "$scope_tool_path"
     scope_tool_path="$SCOPE_TRIMMED"
+    scope_win_field "$scope_tool_path"
+    scope_tool_path="$SCOPE_WIN_PATH"
     # The payload was not folded for file tools; fold only the path.
     scope_case_fold_text "$scope_tool_path"
     scope_tool_path="$SCOPE_CASE_TEXT"
@@ -14492,6 +14920,7 @@ case "$TOOL" in
     esac
     # The path the tool really opens: `~` expanded, `..` removed as text.
     scope_check_tool_open_path "$scope_tool_path"
+    scope_win_check_drive_root_readings "$scope_tool_path" file
     ;;
   Skill)
     # The Skill tool has Claude Code read a skill's SKILL.md itself, so no
@@ -14658,6 +15087,8 @@ case "$TOOL" in
     scope_tool_path="$(printf '%s' "$INPUT" | jq -r '.tool_input.notebook_path // empty')"
     scope_trim_tool_path "$scope_tool_path"
     scope_tool_path="$SCOPE_TRIMMED"
+    scope_win_field "$scope_tool_path"
+    scope_tool_path="$SCOPE_WIN_PATH"
     scope_case_fold_text "$scope_tool_path"
     scope_tool_path="$SCOPE_CASE_TEXT"
     scope_check_skill_cache_path "$scope_tool_path"
@@ -14667,16 +15098,21 @@ case "$TOOL" in
       *) case "${PAYLOAD_CWD:-}" in "$HQ_ROOT"|'') ;; /*) scope_check_cwd_abs "${PAYLOAD_CWD%/}/$scope_tool_path" ;; esac ;;
     esac
     scope_check_tool_open_path "$scope_tool_path"
+    scope_win_check_drive_root_readings "$scope_tool_path" file
     ;;
   Grep|Glob)
     scope_search_root="$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty')"
     scope_trim_tool_path "$scope_search_root"
     scope_search_root="$SCOPE_TRIMMED"
+    scope_win_field "$scope_search_root"
+    scope_search_root="$SCOPE_WIN_PATH"
     # The root the tool really searches: `~` expanded, `..` removed as text.
     [ -z "$scope_search_root" ] || scope_check_tool_open_path "$scope_search_root" search
     scope_search_root_is_implicit=0
     if [ -z "$scope_search_root" ]; then
       scope_search_root="$(printf '%s' "$INPUT" | jq -r '.cwd // empty')"
+      scope_win_field "$scope_search_root"
+      scope_search_root="$SCOPE_WIN_PATH"
       scope_search_root_is_implicit=1
     fi
     scope_search_root_rel="$(scope_resolve_payload_path "$scope_search_root")"
@@ -14702,8 +15138,12 @@ case "$TOOL" in
     else
       scope_check_recursive_search_root "$scope_search_root"
     fi
+    [ "$scope_search_root_is_implicit" -eq 1 ] || scope_win_check_drive_root_readings "$scope_search_root" search
     if [ "$TOOL" = "Glob" ]; then
       scope_pattern="$(printf '%s' "$INPUT" | jq -r '.tool_input.pattern // empty')"
+      # On Windows the pattern separates folders with either slash.
+      scope_win_field "$scope_pattern"
+      scope_pattern="$SCOPE_WIN_PATH"
       scope_prefix="$(scope_glob_static_prefix "$scope_pattern")"
       # The tool starts its search at the last `/` before the first glob
       # character, so a partial segment (`companies/be*`, `compan{ies}`) is
@@ -14735,6 +15175,7 @@ case "$TOOL" in
         scope_check_recursive_search_root "$scope_pattern_root"
         # The base folder the tool searches, with `..` removed as text.
         scope_check_tool_open_path "$scope_pattern_root" search
+        case "$scope_prefix" in /*) scope_win_check_drive_root_readings "$scope_pattern_root" search ;; esac
       fi
     fi
     ;;
@@ -14752,6 +15193,10 @@ case "$TOOL" in
         hq_crlf_to_lf cmd
         ;;
     esac
+    # The checks on the command text are a function: on Windows they run on
+    # the command as written and on a copy with its Windows path spellings
+    # rewritten (scope_win_command_copy). Elsewhere they run once, as before.
+    scope_bash_tool_checks() {
     scope_arith_raw="$cmd"
     # ANSI-C ($'\x63ompanies') and locale ($"companies") quoting spell the
     # same words; check the decoded spelling (feedback_ef130236).
@@ -15513,6 +15958,113 @@ case "$TOOL" in
     # splits the qualifier group apart.
     scope_qual_text="$scope_scan_cmd"
     [ -n "$scope_interp_bodies" ] && scope_qual_text="$scope_interp_outside"
+    # A quoted heredoc body written to a file (e.g. `cat <<'EOF' > script.py`
+    # followed by `python3 script.py`) is literal text to the shell — neither
+    # bash nor zsh performs glob expansion inside a quoted heredoc body. Drop
+    # such bodies from scope_qual_text ONLY when the surrounding command has no
+    # extra lines other than allow-listed interpreter calls (`python3`, `python`,
+    # or `node`) directly targeting a written `<dest>` file. Any other command
+    # (absolute shell path, `chmod +x`/`$PWD` exec, `python3 -c`, etc.) keeps
+    # the full body in scope_qual_text. Path/company checks on scope_scan_cmd
+    # still scan the full body unchanged.
+    case "$scope_qual_text" in
+      *'<<'*)
+        if ! scope_has_shell_pipe_continuation "$scope_qual_text"; then
+          scope_qh_out=""
+          scope_qh_in=0
+          scope_qh_delim=""
+          scope_qh_tabs=0
+          scope_qh_dropped=0
+          scope_qh_dests=""
+          scope_qh_extra=""
+          scope_qh_bad=0
+          while IFS= read -r scope_qh_line || [ -n "$scope_qh_line" ]; do
+            if [ "$scope_qh_in" -eq 1 ]; then
+              scope_qh_term="$scope_qh_line"
+              if [ "$scope_qh_tabs" -eq 1 ]; then
+                while [[ "$scope_qh_term" == $'\t'* ]]; do scope_qh_term="${scope_qh_term#$'\t'}"; done
+              fi
+              if [ "$scope_qh_term" = "$scope_qh_delim" ]; then
+                scope_qh_in=0
+                scope_qh_delim=""
+                scope_qh_tabs=0
+                scope_qh_out+="$scope_qh_line"$'\n'
+              fi
+              continue
+            fi
+            scope_qh_out+="$scope_qh_line"$'\n'
+            case "$scope_qh_line" in
+              *'<<'*'<<'*|*'\|'*|*'|'*|*'`'*|*'$('*|*'('*)
+                scope_qh_bad=1
+                continue
+                ;;
+            esac
+            if scope_heredoc_output_writer "$scope_qh_line"; then
+              scope_qh_dest="${BASH_REMATCH[0]}"
+              scope_qh_dest="${scope_qh_dest#"${scope_qh_dest%%[![:space:]]*}"}"
+              scope_qh_dest="${scope_qh_dest#>>}"; scope_qh_dest="${scope_qh_dest#1>}"; scope_qh_dest="${scope_qh_dest#>}"
+              scope_qh_dest="${scope_qh_dest#"${scope_qh_dest%%[![:space:]]*}"}"
+              scope_qh_dest="${scope_qh_dest#[\'\"]}"; scope_qh_dest="${scope_qh_dest%[\'\"]}"
+              scope_qh_tail="${scope_qh_line#*<<}"
+              scope_qh_tabs=0
+              case "$scope_qh_tail" in -*) scope_qh_tabs=1; scope_qh_tail="${scope_qh_tail#-}" ;; esac
+              while [[ "$scope_qh_tail" == [[:space:]]* ]]; do scope_qh_tail="${scope_qh_tail:1}"; done
+              scope_qh_delim=""
+              case "$scope_qh_tail" in
+                \'*) scope_qh_tail="${scope_qh_tail#\'}"; scope_qh_delim="${scope_qh_tail%%\'*}" ;;
+                \"*) scope_qh_tail="${scope_qh_tail#\"}"; scope_qh_delim="${scope_qh_tail%%\"*}" ;;
+              esac
+              case "$scope_qh_delim" in
+                ""|*[!A-Za-z0-9._-]*) scope_qh_delim=""; scope_qh_tabs=0; scope_qh_bad=1 ;;
+                *)
+                  if [ -z "$scope_qh_dest" ]; then
+                    scope_qh_bad=1
+                  else
+                    scope_qh_in=1
+                    scope_qh_dropped=1
+                    scope_qh_dests+="$scope_qh_dest"$'\n'
+                  fi
+                  ;;
+              esac
+            else
+              scope_qh_trim="${scope_qh_line#"${scope_qh_line%%[![:space:]]*}"}"
+              [ -z "$scope_qh_trim" ] || scope_qh_extra+="$scope_qh_trim"$'\n'
+            fi
+          done <<< "$scope_qual_text"
+          if [ "$scope_qh_in" -eq 0 ] && [ "$scope_qh_dropped" -eq 1 ] && [ "$scope_qh_bad" -eq 0 ]; then
+            scope_qh_allow=1
+            scope_qh_run_re='^(python[3]?|node)[[:space:]]+([^[:space:];&|`$()]+)[[:space:]]*$'
+            while IFS= read -r scope_qh_ext; do
+              [ -n "$scope_qh_ext" ] || continue
+              if [[ "$scope_qh_ext" =~ $scope_qh_run_re ]]; then
+                scope_qh_arg="${BASH_REMATCH[2]}"
+                case "$scope_qh_arg" in
+                  \'*\') scope_qh_arg="${scope_qh_arg#\'}"; scope_qh_arg="${scope_qh_arg%\'}" ;;
+                  \"*\") scope_qh_arg="${scope_qh_arg#\"}"; scope_qh_arg="${scope_qh_arg%\"}" ;;
+                esac
+                case "$scope_qh_arg" in *[\'\"]*) scope_qh_allow=0; break ;; esac
+                scope_qh_matched=0
+                while IFS= read -r scope_qh_dest; do
+                  [ -n "$scope_qh_dest" ] || continue
+                  if [ "$scope_qh_arg" = "$scope_qh_dest" ]; then
+                    scope_qh_matched=1
+                    break
+                  fi
+                done <<< "$scope_qh_dests"
+                if [ "$scope_qh_matched" -eq 0 ]; then
+                  scope_qh_allow=0
+                  break
+                fi
+              else
+                scope_qh_allow=0
+                break
+              fi
+            done <<< "$scope_qh_extra"
+            [ "$scope_qh_allow" -eq 1 ] && scope_qual_text="$scope_qh_out"
+          fi
+        fi
+        ;;
+    esac
     # The quoted program argument of an interpreter one-liner (`py* -c
     # '...'`, `node -e '...'`) is literal text to zsh: no globbing happens
     # inside quotes, so `.get(e,0)` or a dict comprehension in it is not a
@@ -15831,6 +16383,45 @@ case "$TOOL" in
         fi
       fi
     done <<< "$scope_segments"
+    return 0
+    }
+    if [ "$SCOPE_WIN_HOST" -eq 1 ]; then
+      # Rewrite the decoded spelling: $'\x5c' is a backslash when it runs.
+      scope_win_src="$cmd"
+      case "$cmd" in
+        *"\$'"*|*'$"'*) scope_decode_dollar_quotes "$cmd"; scope_win_src="$SCOPE_DECODED_CMD" ;;
+      esac
+      scope_win_command_copy "$scope_win_src" || scope_block_rel "(a Windows path form in the command)" "$SCOPE_WIN_REFUSAL"
+      scope_win_copies=("$SCOPE_WIN_CMD")
+      # A backslash inside a word is an escape to the shell (other\co is
+      # otherco) but a separator in the copy, so trailing periods are also
+      # dropped from the text with its backslashes as written.
+      case "$scope_win_src" in
+        *'\'*)
+          scope_win_strip_dots "$scope_win_src"
+          if [ "$SCOPE_WIN_DOTS" != "$scope_win_src" ]; then
+            scope_case_fold_text "$SCOPE_WIN_DOTS"
+            [ "$SCOPE_CASE_TEXT" = "$SCOPE_WIN_CMD" ] || scope_win_copies+=("$SCOPE_CASE_TEXT")
+          fi
+          ;;
+      esac
+      for scope_win_copy in "${scope_win_copies[@]}"; do
+        [ -n "$scope_win_copy" ] || continue
+        # A subshell, so the copy cannot change what the checks on the
+        # command as written see. The copy can only add a refusal.
+        set +e
+        ( set -e; cmd="$scope_win_copy"; SCOPE_WIN_CMD=""; scope_bash_tool_checks; exit 0 )
+        scope_win_rc=$?
+        set -e
+        if [ "$scope_win_rc" -ne 0 ]; then
+          if [ "$scope_win_rc" -ne 2 ]; then
+            printf '%s\n' 'BLOCKED: Cross-company scope check. The command could not be checked with its Windows path spellings rewritten.' >&2
+          fi
+          exit 2
+        fi
+      done
+    fi
+    scope_bash_tool_checks
     ;;
 esac
 

@@ -206,8 +206,11 @@ hq_augment_path() {
   # Directories found only because they hold jq are appended to the END of
   # PATH, so the inherited node/hq/qmd keep their priority and nothing the
   # user chose is shadowed.
-  local jq_only=0 need_jq=0
-  command -v jq >/dev/null 2>&1 || need_jq=1
+  local jq_only=0 need_jq=0 had_jq=1
+  if ! command -v jq >/dev/null 2>&1; then
+    need_jq=1
+    had_jq=0
+  fi
   if command -v node >/dev/null 2>&1 \
     && command -v hq >/dev/null 2>&1 \
     && command -v qmd >/dev/null 2>&1; then
@@ -327,9 +330,20 @@ hq_augment_path() {
     if [ "$jq_only" != 1 ] \
       && { [ -x "$dir/node" ] || [ -x "$dir/hq" ] || [ -x "$dir/qmd" ] \
         || [ -x "$dir/node.exe" ] || [ -x "$dir/hq.exe" ] || [ -x "$dir/qmd.exe" ]; }; then
-      prefix="${prefix:+$prefix:}$dir"
+      # Adding a folder for node/hq/qmd must never change which jq resolves:
+      # if jq already resolved on the inherited PATH and this folder also holds
+      # jq, append it after the inherited PATH instead of prepending.
+      if [ "$had_jq" = 1 ] && { [ -x "$dir/jq" ] || [ -x "$dir/jq.exe" ]; }; then
+        suffix="${suffix:+$suffix:}$dir"
+      else
+        prefix="${prefix:+$prefix:}$dir"
+        if [ "$need_jq" = 1 ] && { [ -x "$dir/jq" ] || [ -x "$dir/jq.exe" ]; }; then
+          need_jq=0
+        fi
+      fi
     elif [ "$need_jq" = 1 ] && { [ -x "$dir/jq" ] || [ -x "$dir/jq.exe" ]; }; then
       suffix="${suffix:+$suffix:}$dir"
+      need_jq=0
     fi
   done
   [ -n "$prefix" ] && export PATH="$prefix:$PATH"

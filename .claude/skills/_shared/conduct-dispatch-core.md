@@ -37,7 +37,8 @@ follow-up tasks. Both runners have lanes; they differ in what backs them:
   subagent. Follow `.claude/skills/conduct/dispatch.md`. No runner record is
   written: no admission, throttle, or Outpost pickup.
 - `runner` (advanced): a lane runs as a detached runner, with admission,
-  throttles, Outpost placement, and non-Claude engines. Hand off to
+  throttles, Outpost placement (the user chooses it, see
+  `core/policies/hq-lane-outpost-choice.md`), and non-Claude engines. Hand off to
   `/conduct-runners` and follow `.claude/skills/conduct-runners/dispatch.md`.
 
 Steps 2 and 4 (worker choice and the brief) are the same for both

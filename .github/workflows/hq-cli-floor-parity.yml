@@ -19,7 +19,7 @@ jobs:
   hq-cli-floor-parity:
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     name: hq CLI floor (${{ matrix.os }})
-    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || matrix.os }}
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-latest"') || matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false

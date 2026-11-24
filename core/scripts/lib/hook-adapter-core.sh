@@ -1202,14 +1202,17 @@ hqad_classify_command() {
 #   args:    [<Event>, "--hq-root", <root>, "--runtime", "claude"]
 #         or ["run", "--host", "claude", <Event>, "--hq-root", <root>, ...]
 # The engine runs the same fan-out as master-hook.sh, so Codex and Grok must
-# still run master-hook.sh for it. Emit `master<TAB><Event>` only when the
-# command has the pinned layout <home>/.hq/bin/hq-hook/<semver>/<binary> (or
-# the "stable" alias symlink resolving to a pinned <semver> directory under the
-# same .hq/bin/hq-hook parent, with binary names as hq-cli's resolve.ts installs
-# them) and --hq-root names this HQ root. Any other exec entry emits nothing,
-# as before. The event argument must name the settings slot the entry sits in,
-# so a PreToolUse entry cannot dispatch as another event and skip the PreToolUse
-# guards.
+# still run master-hook.sh for it. Emit `master<TAB><Event>` when the command
+# has the pinned layout <home>/.hq/bin/hq-hook/<semver|stable>/<binary> (with
+# binary names as hq-cli's resolve.ts installs them) and --hq-root names this
+# HQ root. Any other exec entry emits nothing, as before. When a "stable"
+# entry cannot be resolved to a pinned <semver> directory under the same
+# .hq/bin/hq-hook parent, or when argument parsing hits an unparsed flag/host
+# form (--host or --hq-root with no value, or `run --host <non-claude>`),
+# still emit `master<TAB><Event>` with a WARN on stderr so guards are never
+# dropped silently. The event argument (when present) must name the settings
+# slot the entry sits in, so a PreToolUse entry cannot dispatch as another
+# event and skip the PreToolUse guards.
 #
 # When <home> is not this process's HOME the entry still counts, with a
 # warning on stderr (see the end of hqad_classify_exec). "This HOME" follows

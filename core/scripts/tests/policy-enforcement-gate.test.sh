@@ -196,6 +196,19 @@ mv "$TMP/state-reset.json" "$STATE"
 run_hook PostToolUse "$REDIRECTED_READ" >/dev/null || true
 jq -e '.receipts.briefs == []' "$STATE" >/dev/null || fail "redirection target incorrectly counted as a brief read"
 pass "does not count a brief named only as a redirection target"
+
+# Codex sends the shell command as tool_input.cmd, not tool_input.command.
+# A plain read through it earns the receipt; a wrapper whose first word is not
+# a read command still does not.
+for wrapped in "bash -lc 'cat brief.md'" "sh -c 'cat brief.md'" "echo cat brief.md" "cat brief.md || true"; do
+  CODEX_WRAPPED="$(jq -nc --arg sid "$SID" --arg cmd "$wrapped" '{session_id:$sid,tool_name:"exec_command",tool_input:{cmd:$cmd},tool_response:{}}')"
+  run_hook PostToolUse "$CODEX_WRAPPED" >/dev/null || true
+  jq -e '.receipts.briefs == []' "$STATE" >/dev/null || fail "Codex cmd [$wrapped] incorrectly counted as a brief read"
+done
+CODEX_READ="$(jq -nc --arg sid "$SID" --arg cmd 'cat brief.md' '{session_id:$sid,tool_name:"exec_command",tool_input:{cmd:$cmd},tool_response:{}}')"
+run_hook PostToolUse "$CODEX_READ" >/dev/null
+jq -e '.receipts.briefs == ["brief.md"]' "$STATE" >/dev/null || fail "Codex tool_input.cmd read did not produce a receipt"
+pass "a Codex tool_input.cmd read earns the receipt; wrappers do not"
 run_hook PostToolUse "$READ_BRIEF" >/dev/null
 
 SKILL_PROMPT="$(jq -nc --arg sid "skill-extraction" '{session_id:$sid,prompt:"Use the security-review skill before sending this email."}')"

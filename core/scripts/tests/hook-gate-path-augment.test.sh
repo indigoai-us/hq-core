@@ -220,7 +220,7 @@ grep -qxF "$ONPATH9/node" "$TMP/probe.out" \
   || fail "node on the inherited PATH must keep resolving first (got: $(cat "$TMP/probe.out"))"
 path9="$(grep '^PATH=' "$TMP/probe.out")"
 case "${path9#PATH=}" in
-  *":$H9/.local/bin") ;;
+  "$UTILS:$ONPATH9:$H9/.local/bin") ;;
   *) fail "a folder added only for jq must go at the END of PATH (got: $path9)" ;;
 esac
 pass "jq recovered from ~/.local/bin; inherited node/hq/qmd unchanged"
@@ -247,21 +247,39 @@ env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR -u 
   PATH="$UTILS" \
   bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err10"
 set -e
-printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_uname" > "$UTILS/uname"; chmod +x "$UTILS/uname"
-grep -q PROBE_HOOK_RAN "$TMP/err10" || fail "probe hook did not run for winget fixture (stderr: $(cat "$TMP/err10"))"
+grep -q PROBE_HOOK_RAN "$TMP/err10" || fail "probe hook did not run for winget Links fixture (stderr: $(cat "$TMP/err10"))"
 path10="$(grep '^PATH=' "$TMP/probe.out")"
 case ":${path10#PATH=}:" in
   *":$WG10/Links:"*) ;;
   *) fail "WinGet Links not added to PATH (got: $path10)" ;;
 esac
 case ":${path10#PATH=}:" in
-  *":$PKG10:"*) ;;
-  *) fail "winget jqlang.jq package folder not added to PATH (got: $path10)" ;;
+  *":$PKG10:"*) fail "stopped after first jq folder: package folder should not be added when Links already provides jq (got: $path10)" ;;
 esac
 case ":${path10#PATH=}:" in
   *"Other.Tool_x"*) fail "a winget package folder without jq.exe was added (got: $path10)" ;;
 esac
-pass "winget Links and jqlang.jq package folder added; unrelated package folder skipped"
+# When WinGet could not create a Links shim, the jqlang.jq package folder is added.
+rm -f "$WG10/Links/jq.exe"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR -u APPDATA -u USERPROFILE \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H10" \
+  LOCALAPPDATA="$LAD10" \
+  PATH="$UTILS" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err10b"
+set -e
+printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_uname" > "$UTILS/uname"; chmod +x "$UTILS/uname"
+grep -q PROBE_HOOK_RAN "$TMP/err10b" || fail "probe hook did not run for winget package fixture (stderr: $(cat "$TMP/err10b"))"
+path10b="$(grep '^PATH=' "$TMP/probe.out")"
+case ":${path10b#PATH=}:" in
+  *":$PKG10:"*) ;;
+  *) fail "winget jqlang.jq package folder not added to PATH when Links lacks jq.exe (got: $path10b)" ;;
+esac
+case ":${path10b#PATH=}:" in
+  *"Other.Tool_x"*) fail "a winget package folder without jq.exe was added (got: $path10b)" ;;
+esac
+pass "winget Links and jqlang.jq package folder added; stops at first jq folder; unrelated package folder skipped"
 
 # ---------------------------------------------------------------------------
 echo "[11] MINGW, node/hq/qmd already on PATH: winget jq folder is appended at the END"

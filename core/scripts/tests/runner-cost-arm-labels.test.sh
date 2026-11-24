@@ -60,16 +60,12 @@ expected_platform_jobs = {
     "shell-smoke-macos": "macos-latest",
     "shell-smoke-windows": "windows-latest",
     "codex-windows-hook-launcher": "windows-latest",
-    # These jobs need passwordless sudo, which the self-hosted fleet lacks.
-    "knowledge-repo-glob-shells": "ubuntu-24.04-arm",
+    # This job needs passwordless sudo (real systemd), which the self-hosted
+    # fleet lacks.
     "company-jobs": "ubuntu-24.04-arm",
     # These jobs read repository secrets, which stay on GitHub-hosted runners.
     "denylist-scan": "ubuntu-24.04-arm",
     "codex-pii-rubric": "ubuntu-24.04-arm",
-    # Results-only gates (no checkout) stay hosted so they do not wait for a
-    # self-hosted instance to boot after their shards finish.
-    "autosave-failure-visibility": "ubuntu-24.04-arm",
-    "core-write-protection": "ubuntu-24.04-arm",
 }
 errors = []
 for job, runner in jobs.items():

@@ -674,8 +674,10 @@ ghd_stages() { # name args...: 1 = blocked
       if ghd_feature_on secretScan; then bash "$HQ_ROOT/core/scripts/commit-secret-scan.sh" gate || return 1; fi ;;
     commit-msg)
       # Fails open: the trailer is never worth a failed commit.
+      # Stdout stays discarded (the trailer is written to the message file).
+      # Stderr is kept so a probe timeout can warn; other skips stay quiet.
       if ghd_feature_on fingerprint && [ -f "$HQ_ROOT/core/scripts/hq-fingerprint-hooks.sh" ]; then
-        bash "$HQ_ROOT/core/scripts/hq-fingerprint-hooks.sh" hook commit-msg "$@" >/dev/null 2>&1 </dev/null
+        bash "$HQ_ROOT/core/scripts/hq-fingerprint-hooks.sh" hook commit-msg "$@" >/dev/null </dev/null
       fi ;;
     pre-push)
       # HQ-root marker and size backstop on every push (core/scripts/push-guard.sh).

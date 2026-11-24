@@ -19,71 +19,80 @@ Accepts one of:
 
 ## Step 0: Resolve PR
 
-```
-If no PR number/URL given:
-  branch=$(git branch --show-current)
-  gh pr list --head "$branch" --json number,url --jq '.[0]'
+```bash
+# If no PR number/URL given:
+branch=$(git branch --show-current)
+gh pr list --head "$branch" --json number,url --jq '.[0]'
+
+# Resolve exact head SHA, draft/mergeable state, and repo auto-merge support:
+gh pr view {pr_number} -R {repo} --json number,title,headRefName,baseRefName,headRefOid,isDraft,mergeable,reviewDecision
+gh api repos/{repo} --jq '{allow_auto_merge, delete_branch_on_merge}'
 ```
 
-Extract: `repo`, `pr_number`, `branch`, `base_branch`.
+Extract: `repo`, `pr_number`, `branch`, `base_branch`, `head_sha`, `allow_auto_merge`. Anchor every `gh` call with `-R {repo}`.
 
 Display:
 ```
 Landing PR #{number}: {title}
-Branch: {branch} → {base}
+Branch: {branch} → {base} (head {head_sha[:8]})
 ```
 
-## Step 1: Monitor CI
+## Step 1: Resolve Reviews Before or Alongside CI
 
-Poll CI checks every 30s (max 10 minutes):
+Check reviews and review threads immediately so a clean PR never waits past green CI:
 
 ```bash
-gh pr checks {pr_number} --repo {repo}
+gh pr view {pr_number} -R {repo} --json reviews,comments,reviewRequests,reviewThreads
 ```
 
 **Outcomes:**
-- All pass → proceed to Step 2
-- Any fail → read the failing check's logs, diagnose, and attempt fix. Push fix, re-poll
-- Timeout (10min) → report status and ask user whether to continue waiting or merge anyway
-
-Display check status on each poll (only changed states).
-
-## Step 2: Resolve Reviews
-
-```bash
-gh pr view {pr_number} --repo {repo} --json reviews,comments,reviewRequests
-```
-
-**Outcomes:**
-- No reviews/comments, no review requests → proceed to Step 3
-- Pending review requests → notify user, ask whether to wait or proceed
+- Independent review clean (0 unresolved CRITICAL findings, no changes requested, all review threads resolved) → proceed to Step 2
 - Review comments exist → read each comment, assess if actionable:
-  - Codex/bot suggestions: evaluate and apply if valid, push fix
+  - Bot/automated suggestions: evaluate and apply if valid, push fix, update `head_sha`
   - Human comments: summarize for user, ask for guidance
   - Approved with no blocking comments → proceed
-- Changes requested → summarize feedback, attempt fixes if code-related, push, re-request review
+- Changes requested → summarize feedback, attempt fixes if code-related, push, re-request review, update `head_sha`
 
-After resolving, re-check CI (fixes may have broken something).
+## Step 2: Arm Auto-Merge or Watch CI
 
-## Step 3: Merge
+Never busy-wait in a foreground poll loop with a short timeout (a 10-minute foreground cap drops PRs whose CI takes longer).
 
-Determine merge strategy:
-- Default: `--squash` (clean single commit)
-- If branch has meaningful commit history user wants preserved: `--merge`
-- If user specified: use their preference
+Check policy gates before arming or merging:
+- **Standing clean-low-risk rule**: a PR with 0 CRITICAL findings, LOW merge-effect risk, no hold, and green required checks does not need an extra confirmation prompt.
+- **Explicit go required**: MEDIUM or HIGH risk, unresolved CRITICALs, holds, releases/publishes, or deploy-freeze windows.
+- **Production-on-merge deploy spacing**: for repos that auto-deploy on merge to main, verify the previous production deploy is not failing, and respect any repo-specific deploy serialization or spacing rule before arming or merging.
+
+### Path A: GitHub Auto-Merge (preferred when `allow_auto_merge: true`)
+
+If the PR is ready (not draft), reviews and policy gates are satisfied, and the ruleset's approval requirement is already met (either `required_approving_review_count: 0` or a valid non-author approval is on the PR):
 
 ```bash
-gh pr merge {pr_number} --repo {repo} --squash --delete-branch
+gh pr merge {pr_number} -R {repo} --auto --squash --delete-branch --match-head-commit {head_sha}
 ```
 
-**If branch protection blocks merge:**
-- Check if `--admin` is available (user has admin rights)
-- If yes: use `--admin` flag
-- If no: report the blocking requirement and ask user
+Use `--merge` instead of `--squash` only if the user requested it or the repo preserves branch commit history.
 
-Verify merge:
+Verify auto-merge is armed, then wait in the background (or monitor `gh pr checks {pr_number} -R {repo} --watch`) until state is `MERGED` or a check fails:
+- If any required check fails → inspect logs (`gh run view {run_id} -R {repo} --log-failed`), fix at root cause, push, re-review if needed, and re-arm on the new `head_sha`.
+
+### Path B: Background CI Watch + Direct Merge (when `--auto` cannot fire)
+
+Use this path only when `allow_auto_merge` is `false`, or when a ruleset requires a review approval that is satisfied via an authorized bypass (GitHub auto-merge does not invoke ruleset bypass actors):
+
+1. Watch checks in the background (never a 10-minute foreground sleep loop):
+   ```bash
+   gh pr checks {pr_number} -R {repo} --watch
+   ```
+2. Once every required check is green on `{head_sha}`, merge pinned to that exact commit:
+   ```bash
+   gh pr merge {pr_number} -R {repo} --squash --delete-branch --match-head-commit {head_sha}
+   ```
+   Add `--admin` only when the user has authorized admin bypass and **only** for a review-only gate — never to bypass failing or pending required checks.
+
+## Step 3: Verify Merge
+
 ```bash
-gh pr view {pr_number} --repo {repo} --json state,mergedAt,mergeCommit
+gh pr view {pr_number} -R {repo} --json state,mergedAt,mergeCommit
 ```
 
 ## Step 4: Monitor Production
@@ -140,7 +149,9 @@ If production verification reveals issues, flag immediately and offer to investi
 ## Rules
 
 - Never force-push during landing — the PR branch is shared state
-- Never skip CI checks without explicit user approval
+- Always pin merges with `--match-head-commit {head_sha}` and explicit `-R {repo}` so unreviewed pushes cannot merge
+- Prefer `gh pr merge --auto` over foreground polling whenever repo rulesets and deploy spacing permit
+- Never skip or bypass failing required CI checks without explicit user approval
 - Always verify merge succeeded before reporting completion
 - If production monitoring reveals a regression, prioritize flagging over completing the skill
-- Respect repo-specific merge policies ({PRODUCT}: `bun run pr:create` for creation, but `gh pr merge` for merging is fine)
+- Respect repo-specific merge, review, and deploy-spacing policies

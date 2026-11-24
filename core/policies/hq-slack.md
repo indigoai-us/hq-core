@@ -2,7 +2,7 @@
 id: hq-slack
 title: Slack platform rules (consolidated)
 when: slack
-on: [PreToolUse, UserPromptSubmit]
+on: [PreToolUse, PostToolUse, UserPromptSubmit]
 enforcement: hard
 version: 1
 created: 2026-04-29

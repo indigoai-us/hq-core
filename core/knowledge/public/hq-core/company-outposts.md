@@ -191,14 +191,31 @@ Files that already synced stay in the company vault.
 
 ## Lanes and runners
 
-`hq runners create` (alias `hq lanes`) accepts `--company <company> --outpost
-<opc_id>`. Lanes placed on a company Outpost do not start yet. Lanes on a
+Before starting a lane, ask the user where it runs, as
+`core/policies/hq-lane-outpost-choice.md` describes. The choices map to these flags on
+`hq runners create` (alias `hq lanes`):
+
+| Choice | Flag |
+|---|---|
+| A personal Outpost | `--outpost <id>` |
+| A company Outpost | `--company <company> --outpost <opc_id>` |
+| Auto (whatever has room) | `--placement auto` |
+| This machine | `--placement local` |
+
+`--placement auto` sits behind a feature gate and can be refused; then
+offer a named Outpost or this machine. Pass `--placement local` for this
+machine so the choice is explicit. A lane started by another lane with no
+placement flag takes the parent's `--default-placement`. Offer only personal
+Outposts and the lane's own company's Outposts. `--loop` and
+`--remote-control` lanes run only on this machine.
+
+`--outpost` takes the Outpost id from `hq outposts list --json` or
+`hq outposts list --company <company> --json`, not the Outpost name. Lanes on a
 company Outpost are refused until the server marks that Outpost ready for
 lanes in the company Outpost list; a refused lane prints that the Outpost "is
 not set up for lanes yet" and dispatches nothing. `--placement auto` skips
-company Outposts that are not marked ready. Run lanes on a personal Outpost or
-on the local machine for now. To run recurring company work on a company Outpost, use
-a scheduled job. `/outpost-host` (serve an app from the box) runs only in a
+company Outposts that are not marked ready. To run recurring company work on a
+company Outpost, use a scheduled job. `/outpost-host` (serve an app from the box) runs only in a
 session on the box itself.
 
 ## Known limits today
@@ -207,7 +224,8 @@ session on the box itself.
   its result into the company folder, or post through a company app such as
   Slack when that app is usable.
 - Changes made on the box reach other devices on the next sync cycle.
-- Lanes placed on a company Outpost do not start yet (see above).
+- A lane on a company Outpost is refused until the server marks that Outpost
+  ready for lanes (see above).
 - The sign-in hint in `status` leaves out `--outpost`. Add it when the company
   has more than one Outpost.
 - `hq outposts pull` works with personal Outpost ids only.

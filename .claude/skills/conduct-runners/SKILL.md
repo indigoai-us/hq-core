@@ -13,8 +13,8 @@ project work itself, and every worker gets the same brief, done criteria, and
 verification step. The difference is where a lane runs. Here a lane is a
 standing worker with a role that runs on a runner: a detached `hq runners`
 process under hq-cli admission, per-machine throttles, provider order, Outpost
-placement, and the Stop-gate contract. Background subagents still take small
-bounded tasks.
+placement (the user picks it: `core/policies/hq-lane-outpost-choice.md`), and
+the Stop-gate contract. Background subagents still take small bounded tasks.
 
 Default `/conduct` keeps lanes on resumable subagents and child sessions
 (`.claude/skills/conduct/SKILL.md`). Use this mode for overnight or away work,

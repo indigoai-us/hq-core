@@ -127,6 +127,7 @@ NEXT_STEPS_JSON="[]"
 FILES_TOUCHED_JSON="[]"
 FILES_TOUCHED_JSON_FILE=""
 LEARNINGS_JSON="[]"
+LEARNINGS_JSON_FILE=""
 DEFICIENCIES_JSON_FILE=""
 DEFICIENCIES_JSON_GIVEN=0
 TAGS_JSON='["handoff"]'
@@ -144,6 +145,7 @@ while [[ $# -gt 0 ]]; do
     --files-touched-json) FILES_TOUCHED_JSON="$2"; shift 2 ;;
     --files-touched-json-file) FILES_TOUCHED_JSON_FILE="$2"; shift 2 ;;
     --learnings-json) LEARNINGS_JSON="$2"; shift 2 ;;
+    --learnings-json-file) LEARNINGS_JSON_FILE="$2"; shift 2 ;;
     --deficiencies-json) DEFICIENCIES_JSON_GIVEN=1; DEFICIENCIES_JSON_FILE="$2"; shift 2 ;;
     --tags-json) TAGS_JSON="$2"; shift 2 ;;
     --slug) SLUG="$2"; shift 2 ;;
@@ -162,9 +164,20 @@ validate_json_arg() {
   fi
 }
 validate_json_arg --next-steps-json "$NEXT_STEPS_JSON"
-validate_json_arg --learnings-json "$LEARNINGS_JSON"
 validate_json_arg --tags-json "$TAGS_JSON"
 # The file form takes precedence, so do not reject an unused inline value.
+if [[ -z "$LEARNINGS_JSON_FILE" ]]; then
+  validate_json_arg --learnings-json "$LEARNINGS_JSON"
+else
+  if [[ ! -f "$LEARNINGS_JSON_FILE" ]]; then
+    echo "handoff-finalize: --learnings-json-file not found: $LEARNINGS_JSON_FILE" >&2
+    exit 3
+  fi
+  if ! jq -e -s 'length == 1' "$LEARNINGS_JSON_FILE" >/dev/null 2>&1; then
+    printf 'handoff-finalize: --learnings-json-file is not valid JSON (expected one JSON value). Nothing was written.\n' >&2
+    exit 2
+  fi
+fi
 if [[ -z "$FILES_TOUCHED_JSON_FILE" ]]; then
   validate_json_arg --files-touched-json "$FILES_TOUCHED_JSON"
 fi
@@ -225,6 +238,19 @@ if [[ -n "$FILES_TOUCHED_JSON_FILE" ]]; then
 else
   new_tmp FILES_TOUCHED_FILE
   printf '%s' "$FILES_TOUCHED_JSON" > "$FILES_TOUCHED_FILE"
+fi
+
+# --learnings-json-file <path> wins over inline --learnings-json; materialize
+# inline JSON to a temp file so the thread emitter always reads off-argv.
+if [[ -n "$LEARNINGS_JSON_FILE" ]]; then
+  LEARNINGS_FILE="$LEARNINGS_JSON_FILE"
+  case "$LEARNINGS_FILE" in
+    /*) : ;;
+    *) LEARNINGS_FILE="$PWD/$LEARNINGS_FILE" ;;
+  esac
+else
+  new_tmp LEARNINGS_FILE
+  printf '%s' "$LEARNINGS_JSON" > "$LEARNINGS_FILE"
 fi
 
 # -------- changeset path extraction / validation --------
@@ -687,7 +713,7 @@ jq -n \
   --arg title "$TITLE" \
   --argjson next_steps "$NEXT_STEPS_NORMALIZED_JSON" \
   --slurpfile files_touched "$FILES_TOUCHED_FILE" \
-  --argjson learnings "$LEARNINGS_JSON" \
+  --slurpfile learnings "$LEARNINGS_FILE" \
   --argjson deficiencies "$DEFICIENCIES_JSON" \
   --argjson system_info "$SYSTEM_INFO_JSON" \
   --argjson tags "$TAGS_JSON" \
@@ -708,7 +734,7 @@ jq -n \
     conversation_summary: $summary,
     next_steps: $next_steps,
     files_touched: ($files_touched[0] // []),
-    learnings: $learnings,
+    learnings: ($learnings[0] // []),
     deficiencies: $deficiencies,
     system_info: $system_info,
     metadata: { title: $title, tags: $tags, company: $companies, company_slugs: $company_slugs }

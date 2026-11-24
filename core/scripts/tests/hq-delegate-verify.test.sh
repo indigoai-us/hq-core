@@ -115,6 +115,8 @@ case "$1 $2" in
       elif [ "${HQ_STUB_NOTES_UNPARSEABLE:-0}" = "1" ]; then
         # A row the table check cannot parse (an ACL label it does not know).
         echo "companies/acme/knowledge/insights/notes.md  400  2026-09-11T00:00:00.000Z some-future-label"
+      elif [ -n "${HQ_STUB_NOTES_ROW:-}" ]; then
+        echo "$HQ_STUB_NOTES_ROW"
       else
         echo "companies/acme/knowledge/insights/notes.md  400  2026-09-11T00:00:00.000Z shared-with-you"
       fi
@@ -438,6 +440,19 @@ RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "a name that is only a prefix of a real folder must fail: $OUT"
 unset HQ_STUB_FOLDER_LISTING
+
+# --- 12. last-field parse must keep a present file with a 5-digit size.
+#     Taking the timestamp with sub(/^.* +/) is wrong on mawk (shortest
+#     match leaves size plus timestamp, so the date check fails).
+if grep -E 'sub\(/\^\.\* \+/, "", (modified|size)\)' "$HELPER" >/dev/null; then
+  fail "listing_has_exact_key must not take the last field with sub(/^.* +/)"
+fi
+write_manifest granted
+export HQ_STUB_NOTES_ROW="companies/acme/knowledge/insights/notes.md  46032  2026-11-23T13:49:17.000Z shared-with-you"
+OUT="$(HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" 2>&1)" \
+  || fail "a present file with a 5-digit size must pass the probe: $OUT"
+jq -e '.status == "verified"' "$M" >/dev/null || fail "5-digit size row must advance to verified"
+unset HQ_STUB_NOTES_ROW
 
 # --- 6. probe from 'building' refuses ----------------------------------------
 

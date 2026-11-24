@@ -163,5 +163,135 @@ run_case 'a shlex-quoted python -c beside a backtick substitution is not dropped
 run_case 'a shlex-quoted python -c inside a substitution is not dropped' Bash "x=\$(python3 -c 'print('\"'\"'a'\"'\"')'); ls workspace/*(+fn)" 2
 run_case 'a company path in a shlex-quoted python -c is still refused' Bash "python3 -c 'print(open('\"'\"'companies/otherco/skills/pdf/SKILL.md'\"'\"').read())'" 2
 
+echo "[a quoted heredoc writing a script for python/node is literal text, not a zsh glob qualifier]"
+hd_write_run="$(cat <<'HD_END'
+cat <<'PYEOF' > workspace/proj/ad_detail.py
+result = get(time_range=rng, fields=F, limit=200)
+PYEOF
+python3 workspace/proj/ad_detail.py
+HD_END
+)"
+hd_tab_run="$(cat <<'HD_END'
+cat <<-"PYEOF" > workspace/proj/ad_detail.py
+	result = get(time_range=rng, fields=F, limit=200)
+	PYEOF
+python3 workspace/proj/ad_detail.py
+HD_END
+)"
+hd_otherco="$(cat <<'HD_END'
+cat <<'PYEOF' > workspace/proj/ad_detail.py
+print(open("companies/otherco/skills/pdf/SKILL.md").read())
+PYEOF
+python3 workspace/proj/ad_detail.py
+HD_END
+)"
+hd_zsh_run="$(cat <<'HD_END'
+cat <<'SHEOF' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=companies/otherco:)
+SHEOF
+zsh workspace/proj/run.sh
+HD_END
+)"
+hd_direct_exec="$(cat <<'HD_END'
+cat <<'SHEOF' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=companies/otherco:)
+SHEOF
+./workspace/proj/run.sh
+HD_END
+)"
+hd_outside_qual="$(cat <<'HD_END'
+cat <<'PYEOF' > workspace/proj/ad_detail.py
+x = 1
+PYEOF
+ls workspace/*(e:REPLY=companies/otherco:)
+HD_END
+)"
+hd_unquoted="$(cat <<'HD_END'
+cat <<PYEOF > workspace/proj/ad_detail.py
+result = get(time_range=rng, fields=F, limit=200)
+PYEOF
+python3 workspace/proj/ad_detail.py
+HD_END
+)"
+hd_abs_shell="$(cat <<'HD_END'
+cat <<'SHEOF' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+SHEOF
+/bin/zsh workspace/proj/run.sh
+HD_END
+)"
+hd_no_dot_exec="$(cat <<'HD_END'
+cat <<'SHEOF' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+SHEOF
+chmod +x workspace/proj/run.sh; workspace/proj/run.sh
+HD_END
+)"
+hd_abs_exec="$(cat <<HD_END
+cat <<'SHEOF' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+SHEOF
+"$TMP/workspace/proj/run.sh"
+HD_END
+)"
+hd_quoted_shell="$(cat <<'HD_END'
+cat <<'SHEOF' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+SHEOF
+python3 -c 'import os; os.system("zsh workspace/proj/run.sh")'
+HD_END
+)"
+hd_procsub_in="$(cat <<'HD_END'
+cat <<'A' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+A
+cat <<'B' > workspace/proj/x.py <(zsh workspace/proj/run.sh)
+x
+B
+HD_END
+)"
+hd_procsub_out="$(cat <<'HD_END'
+cat <<'A' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+A
+cat <<'B' > workspace/proj/x.py >(zsh workspace/proj/run.sh)
+x
+B
+HD_END
+)"
+hd_backtick_writer="$(cat <<'HD_END'
+cat <<'A' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+A
+cat <<'B' > workspace/proj/x.py `zsh workspace/proj/run.sh`
+x
+B
+HD_END
+)"
+hd_cmdsub_writer="$(cat <<'HD_END'
+cat <<'A' > workspace/proj/run.sh
+ls workspace/*(e:REPLY=x:)
+A
+cat <<'B' > workspace/proj/x.py $(zsh workspace/proj/run.sh)
+x
+B
+HD_END
+)"
+run_case 'quoted heredoc writing Python with t(time_range=rng,...) + python3 passes' Bash "$hd_write_run" 0
+run_case 'tab-stripped double-quoted heredoc writing Python + python3 passes' Bash "$hd_tab_run" 0
+run_case 'cross-company path inside quoted heredoc Python + python3 is still refused' Bash "$hd_otherco" 2
+run_case 'quoted heredoc executed by zsh with glob qualifier is still refused' Bash "$hd_zsh_run" 2
+run_case 'quoted heredoc executed directly via ./ with glob qualifier is still refused' Bash "$hd_direct_exec" 2
+run_case 'zsh glob qualifier outside quoted heredoc is still refused' Bash "$hd_outside_qual" 2
+run_case 'unquoted heredoc with qualifier-like text + python3 is still refused' Bash "$hd_unquoted" 2
+run_case 'quoted heredoc executed by absolute /bin/zsh path is still refused' Bash "$hd_abs_shell" 2
+run_case 'quoted heredoc executed via chmod +x without ./ is still refused' Bash "$hd_no_dot_exec" 2
+run_case 'quoted heredoc executed via absolute path without ./ is still refused' Bash "$hd_abs_exec" 2
+run_case 'quoted heredoc executed via python3 -c os.system(zsh) is still refused' Bash "$hd_quoted_shell" 2
+run_case 'quoted heredoc followed by <(zsh ...) on second writer line is still refused' Bash "$hd_procsub_in" 2
+run_case 'quoted heredoc followed by >(zsh ...) on second writer line is still refused' Bash "$hd_procsub_out" 2
+run_case 'quoted heredoc followed by backtick zsh on second writer line is still refused' Bash "$hd_backtick_writer" 2
+run_case 'quoted heredoc followed by $(zsh ...) on second writer line is still refused' Bash "$hd_cmdsub_writer" 2
+
 echo "Checks: $checks; failures: $failures"
 [ "$failures" -eq 0 ]

@@ -138,7 +138,7 @@ if [ -n "$rejected" ]; then
 fi
 grep -q '^cli-run ' "$LOG" || fail "the wrapper did not try hq core handoff run first"
 grep -Fq 'finalize' "$LOG" || fail "the fallback did not run handoff-finalize.sh"
-for flag in --company --deficiencies-json --files-touched-json-file --title --slug; do
+for flag in --company --deficiencies-json --files-touched-json-file --learnings-json-file --title --slug; do
   grep '^finalize' "$LOG" | grep -Fq "[$flag]" || fail "the fallback dropped $flag"
 done
 grep '^finalize' "$LOG" | grep -Fq '[--learnings-file]' && fail "the fallback passed the run-only --learnings-file to finalize"
@@ -148,6 +148,8 @@ grep -q '^post workspace/threads/T-shell.json x$' "$LOG" || fail "the post did n
 jq -e '.post.launched == true and .autofile == "skipped: no hq-core deficiencies" and .builder_route == "route: public (no staging checkout)" and .builder_brief == null and .knowledge_commit.code == 0' "$out" >/dev/null \
   || fail "fallback payload is not in the hq core handoff run shape: $(cat "$out")"
 [ ! -e "$hq_root/workspace/threads/.handoff-tmp/.handoff-changeset-x-x.json" ] || fail "Step 3 left the changeset file behind"
+[ -f "$hq_root/x" ] || fail "Step 3 removed the Step 2 learnings file needed by Step 4.5"
+grep '^finalize' "$LOG" | grep -Fq '[--learnings-json-file] [x]' || fail "Step 3 did not pass the Step 2 learnings file path to --learnings-json-file"
 pass "the skill's Step 3 writes a thread on hq-cli 5.345.231 and keeps --company and --deficiencies-json"
 
 run_wrapper() {
@@ -199,7 +201,7 @@ grep -Eq '^(knowledge|finalize)' "$LOG" && fail "helpers ran after a CLI exit 0 
 pass "a CLI exit 0 with no thread fails with exit 1 and runs no helper"
 
 # 5b. Fallback cases: each rejected flag alone, and a CLI with no `handoff run`.
-for flag in --company --deficiencies-json; do
+for flag in --company --deficiencies-json --learnings-json-file; do
   run_wrapper bash core/scripts/handoff-run.sh "${base_args[@]}" "$flag" v
   [ "$wrc" -eq 0 ] || { cat "$TMP/w.err" >&2; fail "Unknown arg $flag exited $wrc, want a fallback"; }
   jq -e --arg f "$flag" '.thread_path == "workspace/threads/T-shell.json" and .cli_fallback.code == 2 and .cli_fallback.reason == ("Unknown arg: " + $f)' "$TMP/w.out" >/dev/null \

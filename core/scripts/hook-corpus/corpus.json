@@ -1,7 +1,7 @@
 {
   "schema_version": "hq-hook-corpus.v1",
   "version": 1,
-  "registry_sha256": "f743a85517084d6ce150e7fef88529de1107b23031149c534d7c5ec02ae2e1a2",
+  "registry_sha256": "538b0296414c0a31c1eae2ad621e99150c0261512f2ee207548b9f1c75f4aa2f",
   "policies": [
     {
       "path": "core/policies/ai-velocity-time-sense.md",
@@ -430,6 +430,12 @@
       "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {
+      "path": "core/policies/hq-lane-outpost-choice.md",
+      "trigger_sha256": "567026e87bf48878f8c677c65f83549a43177837fc1119164c27393697c439cb",
+      "when": "outpost || outposts || placement || ((lane || lanes || runner || runners) && (remote || cloud || machine))",
+      "on": "[UserPromptSubmit, AssistantIntent, PreToolUse]"
+    },
+    {
       "path": "core/policies/hq-linear-reference.md",
       "trigger_sha256": "edb07f842b645c8e850fea2a256ab174f976a33f695c44f652cd05de1ad42d84",
       "when": "linear && !linear",
@@ -725,9 +731,9 @@
     },
     {
       "path": "core/policies/hq-secure-link-render-as-markdown.md",
-      "trigger_sha256": "3fa1b5be5d903d969925997c7c3efea560f8fdae986ed05c7622404f1137fe91",
-      "when": "secret || credential || credentials || password || passphrase || token || apikey || api_key",
-      "on": "[UserPromptSubmit, AssistantIntent, PreToolUse]"
+      "trigger_sha256": "d4140f626efe789641f53169a55fb3f1f99b01161cc5df122b39f666ea1eabc1",
+      "when": "secret || secrets || generate-link || generate_link || credential || credentials || password || passphrase || token || apikey || api_key",
+      "on": "[UserPromptSubmit, AssistantIntent, PreToolUse, PostToolUse]"
     },
     {
       "path": "core/policies/hq-session-resume-git-status-reverify.md",
@@ -755,9 +761,9 @@
     },
     {
       "path": "core/policies/hq-slack.md",
-      "trigger_sha256": "40be4fa628dfcb595710c737c5f42fa0e8deb789fd453f5521670032c19db976",
+      "trigger_sha256": "9e0cab0e9db36f25c49f8efe440f141082a199705aae498289ead7dde8595543",
       "when": "slack",
-      "on": "[PreToolUse, UserPromptSubmit]"
+      "on": "[PreToolUse, PostToolUse, UserPromptSubmit]"
     },
     {
       "path": "core/policies/hq-soft-timeouts-warn-dont-kill.md",
@@ -32841,7 +32847,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -32893,7 +32899,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -32946,7 +32952,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -32998,7 +33004,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -33051,7 +33057,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -33103,7 +33109,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -33156,7 +33162,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",
@@ -33207,7 +33213,7 @@
         "hooks": {
           "PostToolUse": [
             {
-              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+              "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
               "hooks": [
                 {
                   "id": "inject-policy-on-trigger",

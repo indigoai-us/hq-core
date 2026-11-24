@@ -626,6 +626,15 @@ _hq_shell_simple_commands_lexer() {
       v = (c == "bash" || c == "sh") ? sdargv[sd, 2] : c
       if (!handoff_off && (v == "core/scripts/handoff-finalize.sh" || v == "./core/scripts/handoff-finalize.sh") && (a == "--summary" || a == "--title"))
         return n >= ((c == "bash" || c == "sh") ? 3 : 2)
+      # US-029 (owner decision 2026-11-23): `hq core handoff finalize`, the
+      # native replacement for that script, takes the same --summary and
+      # --title text as data. Only that exact command counts: the word hq,
+      # then core, handoff and finalize as the next three words. Other hq
+      # commands, other handoff subcommands and other options still have
+      # their bodies printed, as does any command that changes directory or
+      # sets a shell startup variable (handoff_off).
+      if (!handoff_off && c == "hq" && sdargv[sd, 2] == "core" && sdargv[sd, 3] == "handoff" && sdargv[sd, 4] == "finalize" && (a == "--summary" || a == "--title"))
+        return n >= 5
       if (n < 3) return 0
       if (c == "gh") {
         if (a != "--body" && a != "-b" && a != "--title" && a != "-t") return 0

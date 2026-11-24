@@ -173,22 +173,23 @@ REF_BROWSE_CACHE="$(mktemp -d)"
 listing_has_exact_key() {
   local listing="$1" expected="$2"
   printf '%s\n' "$listing" | awk -v expected="$expected" '
-    function exact_key(row, expected, modified, size) {
+    function exact_key(row, expected, n, f, i, key, size, modified) {
       gsub(/\033\[[0-9;]*m/, "", row)
       sub(/[[:space:]]+$/, "", row)
       if (row !~ / +(shared-with-you|creator access — creator-only|role-bypass|personal-vault|private folder — children are creator-only)$/) return 0
       sub(/ +(shared-with-you|creator access — creator-only|role-bypass|personal-vault|private folder — children are creator-only)$/, "", row)
-      modified = row
-      sub(/^.* +/, "", modified)
+      # split() last two fields. mawk treats .* as shortest match, so
+      # sub(/^.* +/, ...) leaves "size  timestamp" and every present file
+      # looks missing.
+      n = split(row, f, / +/)
+      if (n < 3) return 0
+      modified = f[n]
       if (modified != "—" && modified !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]\.[0-9][0-9][0-9]Z$/) return 0
-      sub(/ +[^[:space:]]+$/, "", row)
-      sub(/[[:space:]]+$/, "", row)
-      size = row
-      sub(/^.* +/, "", size)
+      size = f[n - 1]
       if (size !~ /^[0-9]+$/) return 0
-      sub(/ +[0-9]+$/, "", row)
-      sub(/[[:space:]]+$/, "", row)
-      return row == expected
+      key = f[1]
+      for (i = 2; i <= n - 2; i++) key = key " " f[i]
+      return key == expected
     }
     NR > 2 && exact_key($0, expected) { found = 1 }
     END { exit found ? 0 : 1 }

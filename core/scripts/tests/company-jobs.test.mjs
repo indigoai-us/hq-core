@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
-import { CompanyRunner, Ledger, validateConfig, Refusal, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION, jobEnvironment, machineSessionEnvironment, machineSessionDocument, MACHINE_SESSION_FILE, sessionRuntimeDirectory, prepareSessionRoot, prepareSessionDir, writeMachineSessionFile, sweepStaleSessionDirs } from '../lib/company-jobs.mjs';
+import { CompanyRunner, Ledger, validateConfig, Refusal, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, usageLimitRefusal, JOB_OUTCOME_INSTRUCTION, jobEnvironment, machineSessionEnvironment, machineSessionDocument, MACHINE_SESSION_FILE, sessionRuntimeDirectory, prepareSessionRoot, prepareSessionDir, writeMachineSessionFile, sweepStaleSessionDirs } from '../lib/company-jobs.mjs';
 const require = createRequire(import.meta.url);
 test('sign-in reclaim fences old owners and preserves execution admission after a crash', t=>{
  const f=fixture(t),d=f.delivery(),old=f.r.ledger.claim(d,100,1);
@@ -955,6 +955,162 @@ test('a job session that exits non-zero is failed with session_failed and a boun
  const c=await f.r.runDelivery(f.j,f.delivery('c'.repeat(64),'2026-01-03T01:00:00Z'));
  assert.deepEqual([c.outcome,c.errorCode],['timeout','timeout']);assert.match(c.reason,/^Job session exceeded its \d+s time limit\.$/);
  for(const r of f.calls.filter(x=>x.action==='report')){const {op,...body}=r;assert(serverAcceptsReport(body),JSON.stringify(body));}
+});
+// Company Outpost "main", 2026-11-23: claude exited 1 with only this line on stdout.
+const providerFailed=line=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text:`hq-agent-session: provider failed (exit 1): ${line}`,artifacts:[]}),stderr:''});
+const reportFor=(f,runId)=>{const r=f.calls.filter(c=>c.action==='report'&&c.runId===runId).at(-1);const {op,...body}=r;return body;};
+test('a provider usage limit is usage_limit, keeps the reset time and says when the job runs again',async t=>{
+ const f=fixture(t);f.r.c.provider='claude';f.r.providerSignIn=async()=>null;f.r.execute=async()=>providerFailed("You've hit your weekly limit · resets 12am (UTC)");
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([a.outcome,a.errorCode,a.exitCode,a.usageLimitKind,a.usageLimitReset],['failed','usage_limit',1,'usage','12am (UTC)']);
+ assert.equal(a.reason,"Claude usage limit reached: You've hit your weekly limit · resets 12am (UTC). The limit resets 12am (UTC); the job runs again at its next scheduled time after the reset. To run sooner, add usage to the Outpost's Claude account.");
+ const body=reportFor(f,RUN_A);assert(serverAcceptsReport(body),JSON.stringify(body));
+ assert.equal(body.errorCode,'usage_limit');assert.match(body.errorCode,/^[a-z0-9_]{1,80}$/);assert.equal(body.reason,a.reason);
+ assert.equal(processStatus('run',a),1);
+});
+test('a provider spend limit asks for a higher spend limit and never waits for a reset',async t=>{
+ const f=fixture(t);f.r.c.provider='claude';f.r.providerSignIn=async()=>null;f.r.execute=async()=>providerFailed("You’ve hit your monthly spend limit · resets 12am (UTC)");
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([a.outcome,a.errorCode,a.usageLimitKind,a.usageLimitReset],['failed','usage_limit','spend',undefined]);
+ assert.match(a.reason,/^Claude spend limit reached: .*Raise the spend limit for the Outpost's Claude account, then run the job again\./);
+ assert.doesNotMatch(a.reason,/https?:|runs again at its next scheduled time/);
+ assert.equal(reportFor(f,RUN_A).errorCode,'usage_limit');
+});
+test('another service limit line, a quoted copy or a rate limit stays session_failed',async t=>{
+ const lines=[
+  "You've hit your Mailchimp contact limit · resets Dec 1",
+  'Usage limit exceeded for the Tavily search API',
+  "You've hit your GitHub Actions spending limit",
+  "You've reached your API rate limit. Try again in 30 seconds",
+  'The digest says "You\'ve hit your weekly limit · resets 12am (UTC)"',
+  "Error: job step failed after You've hit your weekly limit",
+  "You've hit your plan limit · resets Dec 1",
+  "You've hit your monthly limit · resets Dec 1 (Mailchimp)",
+  'daily limit exceeded: Google Sheets API quota',
+  "You've hit your weekly limit · resets Dec 1 (Mailchimp)",
+  "Usage limit reached for the Tavily search API",
+  "Spending cap reached on the SendGrid plan",
+ ];
+ const f=fixture(t);let i=0;
+ for(const line of lines){
+  f.r.execute=async()=>providerFailed(line);
+  const runId=(i%16).toString(16).repeat(64);const day=String(i+2).padStart(2,'0');i++;
+  const a=await f.r.runDelivery(f.j,f.delivery(runId,`2026-01-${day}T01:00:00Z`));
+  assert.deepEqual([a.outcome,a.errorCode,a.usageLimitKind],['failed','session_failed',undefined],line);
+  assert.equal(reportFor(f,runId).errorCode,'session_failed',line);
+ }
+ // The limit sentence anywhere outside the provider-failure text is not read.
+ f.r.execute=async()=>({code:1,text:'',stderr:"You've hit your weekly limit · resets 12am (UTC)\n"});
+ const b=await f.r.runDelivery(f.j,f.delivery('f'.repeat(64),'2026-01-25T01:00:00Z'));
+ assert.equal(b.errorCode,'session_failed');
+});
+test('usageLimitRefusal reads the Claude and Codex refusal sentences and their resets',()=>{
+ assert.deepEqual(usageLimitRefusal("hq-agent-session: provider failed (exit 1): You've hit your session limit · resets 3pm (UTC)"),{kind:'usage',line:"You've hit your session limit · resets 3pm (UTC)",resetsAt:'3pm (UTC)'});
+ assert.equal(usageLimitRefusal('hq-agent-session: provider failed (exit 1): Claude AI usage limit reached|999999999').resetsAt,'2001-09-09T01:46:39.000Z');
+ assert.equal(usageLimitRefusal('hq-agent-session: provider failed (exit 1): usage limit reached').kind,'usage');
+ const codex=usageLimitRefusal("hq-agent-session: provider failed (exit 1): ERROR: You've hit your usage limit. Upgrade to Pro (https://openai.com/chatgpt/pricing), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:15 PM.");
+ assert.equal(codex.kind,'usage');assert.equal(codex.resetsAt,'3:15 PM');assert.doesNotMatch(codex.line,/https?:/);
+ assert.equal(codex.line,"ERROR: You've hit your usage limit. Upgrade to Pro ([link]), visit [link] to purchase more credits or try again at 3:15 PM.");
+ assert.equal(usageLimitRefusal('hq-agent-session: provider failed (exit 1): Spending cap reached').kind,'spend');
+ assert.equal(usageLimitRefusal("You've hit your weekly limit · resets 12am (UTC)"),null);
+ assert.equal(usageLimitRefusal('hq-agent-session: provider failed (exit 1)'),null);
+ assert.equal(usageLimitRefusal(undefined),null);
+});
+// The real hq-agent-session text builder, so the shell filter and this classifier are tested together.
+const SESSION_SH=new URL('../hq-agent-session.sh',import.meta.url).pathname;
+function realFailureText(t,provider,{stdout='',stderr=''}){
+ const rd=fs.mkdtempSync(path.join(os.tmpdir(),'cj-provider-'));t.after(()=>fs.rmSync(rd,{recursive:true,force:true}));
+ fs.writeFileSync(path.join(rd,'provider.stdout'),stdout);fs.writeFileSync(path.join(rd,'provider.stderr'),stderr);
+ const fns='session_failure_strip_controls session_failure_utf8_cut session_failure_scrub_links session_provider_limit_sentence session_claude_cli_error_line session_provider_limit_from_stderr session_provider_failure_text';
+ const script=`set -euo pipefail\nfor fn in ${fns}; do eval "$(sed -n "/^$fn() {/,/^}/p" "$1")"; done\nsession_provider_failure_text "$2" 1 "$3"`;
+ const r=spawnSync('bash',['-c',script,'bash',SESSION_SH,rd,provider],{encoding:'utf8'});
+ assert.equal(r.status,0,r.stderr);return r.stdout;
+}
+test('every Claude limit sentence on stdout passes hq-agent-session and is classified usage_limit',async t=>{
+ const cases=[
+  ['usage limit reached','usage',undefined],
+  ['Usage limit reached','usage',undefined],
+  ['Claude usage limit reached. Your limit will reset at 5pm.','usage','5pm'],
+  ['Claude AI usage limit reached|999999999','usage','2001-09-09T01:46:39.000Z'],
+  ['5-hour limit reached ∙ resets 2am','usage','2am'],
+  ['Weekly limit reached ∙ resets Monday 9am','usage','Monday 9am'],
+  ['Session limit reached ∙ resets 3pm (Asia/Dhaka)','usage','3pm (Asia/Dhaka)'],
+  ["You're out of extra usage · resets 7pm (UTC)",'usage','7pm (UTC)'],
+  ['You’ve hit your weekly limit · resets 12am (UTC)','usage','12am (UTC)'],
+  ["You've hit your session limit · resets 3pm (UTC)",'usage','3pm (UTC)'],
+  ['Spending cap reached','spend',undefined],
+  ['You’ve hit your monthly spend limit.','spend',undefined],
+ ];
+ const f=fixture(t);f.r.c.provider='claude';f.r.providerSignIn=async()=>null;let i=0;
+ for(const [line,kind,reset] of cases){
+  const text=realFailureText(t,'claude',{stdout:line+'\n'});
+  assert.equal(text,`hq-agent-session: provider failed (exit 1): ${line}`,line);
+  f.r.execute=async()=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text,artifacts:[]}),stderr:''});
+  const runId=(i%16).toString(16).repeat(64);const day=String(i+2).padStart(2,'0');i++;
+  const a=await f.r.runDelivery(f.j,f.delivery(runId,`2026-01-${day}T01:00:00Z`));
+  assert.deepEqual([a.errorCode,a.usageLimitKind,a.usageLimitReset],['usage_limit',kind,reset],line);
+ }
+});
+test('a Codex refusal after its stderr banner and prompt echo is classified usage_limit with the reset',async t=>{
+ const echo=Array.from({length:120},(_,n)=>`Line ${n} of the prompt. A user wrote: "You've hit your weekly limit" in the thread.`).join('\n');
+ const stderr=['OpenAI Codex v0.171.0 (research preview)','--------','workdir: /opt/hq-company-jobs/companies/acme','model: gpt-5.2-codex','provider: openai','approval: never','sandbox: workspace-write','reasoning effort: medium','--------','user',echo,'Execution fingerprint:','{"jobId":"job_test","runId":"r1"}',"ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:15 PM.",''].join('\n');
+ assert(stderr.length>4096);
+ const text=realFailureText(t,'codex',{stderr});
+ const f=fixture(t);
+ f.r.execute=async()=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text,artifacts:[]}),stderr:''});
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([a.errorCode,a.usageLimitKind,a.usageLimitReset],['usage_limit','usage','3:15 PM']);
+ assert.equal(a.reason,"Codex usage limit reached: ERROR: You've hit your usage limit. Upgrade to Pro ([link]), visit [link] to purchase more credits or try again at 3:15 PM. The limit resets 3:15 PM; the job runs again at its next scheduled time after the reset. To run sooner, add usage to the Outpost's Codex account.");
+ // A codex run that fails for another reason, with the sentence only quoted in the prompt echo, stays session_failed.
+ const other=realFailureText(t,'codex',{stderr:stderr.replace(/ERROR: You've hit[^\n]*/,'ERROR: stream disconnected before completion')});
+ f.r.execute=async()=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text:other,artifacts:[]}),stderr:''});
+ const b=await f.r.runDelivery(f.j,f.delivery(RUN_B,'2026-01-02T17:00:00Z'));
+ assert.equal(b.errorCode,'session_failed');
+});
+test('Codex "try again later" is usage_limit with no reset, and a capitalised "Try again at" keeps the reset',()=>{
+ const pf=line=>`hq-agent-session: provider failed (exit 1): ${line}`;
+ assert.deepEqual(usageLimitRefusal(pf("ERROR: You've hit your usage limit. Try again later.")),{kind:'usage',line:"ERROR: You've hit your usage limit. Try again later."});
+ const plus=usageLimitRefusal(pf("ERROR: You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again later."));
+ assert.equal(plus?.kind,'usage');assert.equal(plus.resetsAt,undefined);
+ assert.equal(usageLimitRefusal(pf("ERROR: You've hit your usage limit. To get more access now, send a request to your admin or try again later."))?.kind,'usage');
+ assert.equal(usageLimitRefusal(pf("You've hit your usage limit. Try again at Nov 24th, 2026 3:15 PM."))?.resetsAt,'Nov 24th, 2026 3:15 PM');
+ assert.equal(usageLimitRefusal(pf("You've hit your usage limit. Try again later for the Mailchimp import.")),null);
+});
+test('an other-service limit-like line on stderr stays session_failed and keeps the original stderr text',async t=>{
+ const text=realFailureText(t,'codex',{stderr:"starting job\nYou've reached your Mailchimp contact limit\n"});
+ const f=fixture(t);
+ f.r.execute=async()=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text,artifacts:[]}),stderr:''});
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.equal(a.errorCode,'session_failed');
+ assert.equal(a.reason,"Job session exited with status 1: hq-agent-session: provider failed (exit 1): starting job You've reached your Mailchimp contact limit");
+});
+test('Codex compaction and switch-model limit lines are usage_limit',async t=>{
+ const pf=line=>`hq-agent-session: provider failed (exit 1): ${line}`;
+ const compact=usageLimitRefusal(pf('Error running remote compact task: You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 12th, 2026 7:20 AM.'));
+ assert.deepEqual([compact?.kind,compact?.resetsAt],['usage','Nov 12th, 2026 7:20 AM']);
+ assert.equal(usageLimitRefusal(pf('ERROR: Error running remote compact task: You’ve hit your usage limit. Try again later.'))?.kind,'usage');
+ assert.equal(usageLimitRefusal(pf('Error running remote compact task: You’ve hit your Mailchimp contact limit.')),null);
+ const later=usageLimitRefusal(pf("You've hit your usage limit for gpt-5.2-codex. Switch to another model now, or try again later."));
+ assert.deepEqual([later?.kind,later?.resetsAt],['usage',undefined]);
+ const at=usageLimitRefusal(pf("ERROR: You've hit your usage limit for gpt-5.2-codex. Switch to another model now, or try again at 3:15 PM."));
+ assert.deepEqual([at?.kind,at?.resetsAt],['usage','3:15 PM']);
+ // End to end through the real shell text builder.
+ const text=realFailureText(t,'codex',{stderr:'OpenAI Codex v0.171.0 (research preview)\nuser\nrun the sync\nError running remote compact task: You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 12th, 2026 7:20 AM.\n'});
+ const f=fixture(t);
+ f.r.execute=async()=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text,artifacts:[]}),stderr:''});
+ const a=await f.r.runDelivery(f.j,f.delivery(RUN_A));
+ assert.deepEqual([a.errorCode,a.usageLimitReset],['usage_limit','Nov 12th, 2026 7:20 AM']);
+});
+test('in the two-part layout only the cleaned limit line is matched, never the start of stderr',async t=>{
+ const f=fixture(t);let i=0;
+ for(const stderr of ["Usage limit reached\nYou've hit your Mailchimp contact limit\n","ERROR: You've hit your usage limit.\nYou've reached your Brave Search usage limit\n"]){
+  const text=realFailureText(t,'codex',{stderr});
+  assert(text.includes('\n'),text);
+  f.r.execute=async()=>({code:1,text:JSON.stringify({contractVersion:1,disposition:'error',text,artifacts:[]}),stderr:''});
+  const runId=(i+10).toString(16).repeat(64);const day=String(i+2).padStart(2,'0');i++;
+  const a=await f.r.runDelivery(f.j,f.delivery(runId,`2026-01-${day}T01:00:00Z`));
+  assert.deepEqual([a.errorCode,a.usageLimitKind],['session_failed',undefined],stderr);
+ }
 });
 test('success path is unchanged: granted secrets and outcome complete record succeeded with no reason',async t=>{
  const f=fixture(t);f.j.context={companyJob:{secrets:['API_KEY']}};f.j.contentDigest=contentDigest(f.j);

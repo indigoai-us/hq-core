@@ -26,7 +26,7 @@ pass() { echo "  ok: $1"; }
 PLAIN="hq-agent-session: provider failed (exit 1)"
 
 # ── helper: session_provider_failure_text ───────────────────────────────────
-for fn in session_failure_strip_controls session_failure_utf8_cut session_claude_cli_error_line session_provider_failure_text; do
+for fn in session_failure_strip_controls session_failure_utf8_cut session_failure_scrub_links session_provider_limit_sentence session_claude_cli_error_line session_provider_limit_from_stderr session_provider_failure_text; do
   eval "$(sed -n '/^'"$fn"'() {/,/^}/p' "$SESSION_SH")"
   command -v "$fn" >/dev/null 2>&1 || fail "$fn not found in hq-agent-session.sh"
 done
@@ -48,6 +48,119 @@ got="$(session_provider_failure_text "$RD" 1 claude)"
 [ "$got" = "$PLAIN: You've hit your session limit · resets 3pm (UTC)" ] \
   || fail "claude: usage-limit line must be kept (got: $got)"
 pass "claude: usage-limit line is kept"
+
+# Company Outpost "main", 2026-11-23: the claude CLI exited 1 with this one
+# line on stdout and an empty stderr.
+reset_rd
+printf "You've hit your weekly limit \xc2\xb7 resets 12am (UTC)\n" > "$RD/provider.stdout"
+got="$(session_provider_failure_text "$RD" 1 claude)"
+[ "$got" = "$PLAIN: You've hit your weekly limit · resets 12am (UTC)" ] \
+  || fail "claude: weekly-limit line on stdout must be kept (got: $got)"
+pass "claude: weekly-limit line on stdout with empty stderr is kept"
+
+reset_rd
+printf "You've hit your monthly spend limit \xc2\xb7 raise it at https://claude.ai/settings/usage?org=abc \xc2\xb7 key AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\n" > "$RD/provider.stdout"
+got="$(session_provider_failure_text "$RD" 1 claude)"
+[ "$got" = "$PLAIN: You've hit your monthly spend limit · raise it at [link] · key [REDACTED]" ] \
+  || fail "claude: URLs and token-like strings must be stripped from the stdout line (got: $got)"
+pass "claude: URLs and token-like strings are stripped from the stdout line"
+
+reset_rd
+printf 'API Error: 500 reading /opt/hq-company-jobs/companies/acme/projects/a-very-long-project-directory-name/report-2026-11.json for AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\n' > "$RD/provider.stdout"
+got="$(session_provider_failure_text "$RD" 1 claude)"
+[ "$got" = "$PLAIN: API Error: 500 reading /opt/hq-company-jobs/companies/acme/projects/a-very-long-project-directory-name/report-2026-11.json for [REDACTED]" ] \
+  || fail "claude: path text must be kept and only the token redacted (got: $got)"
+pass "claude: path text is kept and only a token-like string is redacted"
+
+while IFS= read -r limit_line; do
+  reset_rd
+  printf '%s\n' "$limit_line" > "$RD/provider.stdout"
+  got="$(session_provider_failure_text "$RD" 1 claude)"
+  [ "$got" = "$PLAIN: $limit_line" ] || fail "claude: limit line must be kept: $limit_line (got: $got)"
+done <<'LINES'
+usage limit reached
+Usage limit reached
+Claude usage limit reached. Your limit will reset at 5pm.
+5-hour limit reached ∙ resets 2am
+Weekly limit reached ∙ resets Monday 9am
+Session limit reached ∙ resets 3pm (Asia/Dhaka)
+Spending cap reached
+You're out of extra usage · resets 7pm (UTC)
+You’ve hit your weekly limit · resets 12am (UTC)
+You’ve hit your monthly spend limit.
+LINES
+pass "claude: every provider limit sentence on stdout is kept"
+
+# codex writes its banner and the prompt echo to stderr before the refusal.
+reset_rd
+{
+  printf 'OpenAI Codex v0.171.0 (research preview)\n--------\nworkdir: /opt/hq-company-jobs/companies/acme\nmodel: gpt-5.2-codex\nprovider: openai\napproval: never\nsandbox: workspace-write\n--------\nuser\n'
+  for _ in $(seq 1 120); do printf 'Summarise the thread. A user wrote: "You have hit your weekly limit" yesterday.\n'; done
+  printf '{"jobId":"job_test","runId":"r1"}\n'
+  printf "ERROR: You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:15 PM.\n"
+} > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "${got%%$'\n'*}" = "$PLAIN: ERROR: You've hit your usage limit. Upgrade to Pro ([link]), visit [link] to purchase more credits or try again at 3:15 PM." ] \
+  || fail "codex: the refusal after the banner and prompt echo must be kept (got: ${got:0:300})"
+case "$got" in
+  *$'\n'"OpenAI Codex v0.171.0"*) ;;
+  *) fail "codex: the start of stderr must follow the refusal line (got: ${got:0:300})" ;;
+esac
+pass "codex: the refusal at the end of a long stderr is kept, links replaced"
+
+reset_rd
+{
+  printf 'OpenAI Codex v0.171.0 (research preview)\nuser\n'
+  printf "You've hit your weekly limit · resets 12am (UTC)\n"
+  printf 'more prompt text\nstill more prompt text\nERROR: stream disconnected before completion\n'
+} > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+case "$got" in "$PLAIN: OpenAI Codex v0.171.0"*) ;; *) fail "codex: a limit line outside the last three lines must not be picked (got: ${got:0:200})" ;; esac
+pass "codex: a limit line earlier in stderr keeps the plain stderr reason"
+
+# A nested tool printed a limit line, then codex failed for another reason.
+reset_rd
+printf 'OpenAI Codex v0.171.0 (research preview)\nuser\nrun the sync\nexec: sync-tool --all\nUsage limit reached.\nERROR: stream disconnected before completion\n' > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "$got" = "$PLAIN: OpenAI Codex v0.171.0 (research preview) user run the sync exec: sync-tool --all Usage limit reached. ERROR: stream disconnected before completion" ] \
+  || fail "codex: a limit line followed by a later ERROR line must keep the old stderr text (got: ${got:0:300})"
+pass "codex: a limit line followed by a later ERROR line keeps the old stderr text"
+
+reset_rd
+printf "OpenAI Codex v0.171.0 (research preview)\nuser\nrun the sync\nERROR: You've hit your usage limit. Try again later.\n\ntokens used\n1,234\n" > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "${got%%$'\n'*}" = "$PLAIN: ERROR: You've hit your usage limit. Try again later." ] \
+  || fail "codex: a limit line followed only by the tokens-used trailer must be kept (got: ${got:0:300})"
+pass "codex: a limit line followed only by the tokens-used trailer is kept"
+
+# An other-service line that looks like a limit must not replace the start of stderr.
+reset_rd
+printf "starting job\nYou've reached your Mailchimp contact limit\n" > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "$got" = "$PLAIN: You've reached your Mailchimp contact limit"$'\n'"starting job" ] \
+  || fail "stderr: the start of stderr must be kept after a limit-like line (got: $got)"
+pass "stderr: the original stderr text is kept after a limit-like line"
+
+# Codex prints a limit hit during compaction behind a known prefix.
+reset_rd
+printf "OpenAI Codex v0.171.0 (research preview)\nuser\nrun the sync\nError running remote compact task: You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 12th, 2026 7:20 AM.\n" > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "${got%%$'\n'*}" = "$PLAIN: Error running remote compact task: You’ve hit your usage limit. Visit [link] to purchase more credits or try again at Nov 12th, 2026 7:20 AM." ] \
+  || fail "codex: a compaction limit line must be kept (got: ${got:0:300})"
+pass "codex: a compaction limit line behind its prefix is kept"
+
+# The cleaned limit line is not repeated raw in the stderr text after it.
+reset_rd
+printf "OpenAI Codex v0.171.0 (research preview)\nERROR: You've hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again later.\n" > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "$got" = "$PLAIN: ERROR: You've hit your usage limit. Visit [link] to purchase more credits or try again later."$'\n'"OpenAI Codex v0.171.0 (research preview)" ] \
+  || fail "codex: the raw limit line must not be repeated after the cleaned one (got: $got)"
+reset_rd
+printf "ERROR: You've hit your usage limit. Try again later.\n" > "$RD/provider.stderr"
+got="$(session_provider_failure_text "$RD" 1 codex)"
+[ "$got" = "$PLAIN: ERROR: You've hit your usage limit. Try again later." ] \
+  || fail "codex: a stderr of only the limit line must give that line once (got: $got)"
+pass "codex: the raw limit line is not repeated after the cleaned one"
 
 reset_rd
 printf 'Here is the answer: Acme Corp owes 4,200 to Jane Doe\n' > "$RD/provider.stdout"
@@ -231,5 +344,23 @@ disposition="$(jq -r '.disposition' "$TMP/engine.out" 2>/dev/null || true)"
 [ "$text" = "$PLAIN: Failed to authenticate. API Error: 401 Invalid bearer token" ] \
   || fail "session text must carry the claude CLI error (got: $text; stderr: $(tail -c 300 "$TMP/engine.err"))"
 pass "claude session reply carries the CLI's stdout error"
+
+# The incident shape end to end: weekly limit on stdout, nothing on stderr.
+cat > "$STUB/claude" <<'STUBEOF'
+#!/usr/bin/env bash
+printf "You've hit your weekly limit \xc2\xb7 resets 12am (UTC)\n"
+exit 1
+STUBEOF
+chmod +x "$STUB/claude"
+set +e
+( cd "$FIXTURE" && PATH="$STUB:$PATH" HQ_AGENT_WORKDIR="$FIXTURE" \
+  bash core/scripts/hq-agent-session.sh < "$REQ" > "$TMP/engine.out" 2> "$TMP/engine.err" )
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "usage-limited provider must exit the session with 1 (got $rc)"
+text="$(jq -r '.text' "$TMP/engine.out" 2>/dev/null || true)"
+[ "$text" = "$PLAIN: You've hit your weekly limit · resets 12am (UTC)" ] \
+  || fail "session text must carry the weekly-limit line (got: $text; stderr: $(tail -c 300 "$TMP/engine.err"))"
+pass "claude session reply carries the weekly-limit line from stdout"
 
 echo "hq-agent-session-provider-failure: all passed"

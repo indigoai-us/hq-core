@@ -222,18 +222,44 @@ strip_desktop_environment_note() {
   printf '%s\n' "$1" | awk 'skip { skip--; next } /^When starting an HQ session[ ,]/ { skip=2; next } NF { if (blank) print ""; print; blank=0; next } { blank=1 }'
 }
 
-# Owner-facing lead line is new candidate output. Strip it (and the blank
-# line after it) so base/candidate parity still holds.
+# The owner-facing lead paragraph is new candidate output. Strip it (every
+# line up to and including the first blank line) so base/candidate parity
+# still holds whether the base prints one owner line or a multi-line notice.
 strip_owner_notice() {
   printf '%s\n' "$1" | awk '
     NR==1 && $0 ~ /^This chat was opened inside HQ/ { skip=1; next }
     skip && NF==0 { skip=0; next }
+    skip { next }
     { print }
   '
 }
 
+# Regression: a one-line and a multi-line owner notice normalize to the same
+# operator text, and text without a notice is left alone.
+owner_one_line=$'This chat was opened inside HQ. Close it.\n\nBLOCKED: HQ is running from a git worktree.'
+owner_multi_line=$'This chat was opened inside HQ. Nothing ran.\nHow to fix it:\n  1. Open a new chat.\n\nBLOCKED: HQ is running from a git worktree.'
+owner_free=$'BLOCKED: HQ is running from a git worktree.'
+if [ "$(strip_owner_notice "$owner_one_line")" = "$owner_free" ] \
+  && [ "$(strip_owner_notice "$owner_multi_line")" = "$owner_free" ] \
+  && [ "$(strip_owner_notice "$owner_free")" = "$owner_free" ]; then
+  PASS=$((PASS + 1)); echo 'ok: one-line and multi-line owner notices normalize away'
+else
+  FAIL=$((FAIL + 1)); echo 'FAIL [owner notice normalization]: owner paragraph not stripped exactly' >&2
+fi
+
 normalize_block_text() {
   strip_desktop_environment_note "$(strip_owner_notice "$1")"
+}
+
+# Parity checks below must compare real operator text. If normalization ever
+# drops everything (for example a notice with no blank line after it), fail
+# instead of letting empty base and candidate text compare equal.
+require_operator_text() {
+  if [[ "$2" == *"BLOCKED: HQ is running from a git worktree."* && "$2" == *"WHY THIS IS BLOCKED"* ]]; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL [$1]: normalized text lost the operator detail" >&2
+  fi
 }
 
 # Regression: a base that already prints the note must normalize to the same
@@ -258,6 +284,8 @@ HOOK="$ROOT/.claude/hooks/block-hq-worktree-session.sh"
 TEST_SESSION_ID=c153-multi-worktree \
   run 2 "$HQ" "$HQWT_LAST" UserPromptSubmit 'candidate denies cwd in the last of several HQ worktrees'
 candidate_multi_worktree_stderr="$(normalize_block_text "$LAST_STDERR")"
+require_operator_text 'multi-worktree base text' "$base_multi_worktree_stderr"
+require_operator_text 'multi-worktree candidate text' "$candidate_multi_worktree_stderr"
 [ "$LAST_STDOUT" = "$base_multi_worktree_stdout" ] \
   && [ "$candidate_multi_worktree_stderr" = "$base_multi_worktree_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate both deny the multi-worktree session'; } \
@@ -281,6 +309,8 @@ TEST_SESSION_ID=c153-cdpath \
   TEST_RUN_CWD="$TMP" CDPATH="$TMP" \
   run 2 hq-worktree-two hq-worktree-two UserPromptSubmit 'candidate denies relative path with CDPATH'
 candidate_cdpath_stderr="$(normalize_block_text "$LAST_STDERR")"
+require_operator_text 'CDPATH base text' "$base_cdpath_stderr"
+require_operator_text 'CDPATH candidate text' "$candidate_cdpath_stderr"
 [ "$LAST_STDOUT" = "$base_cdpath_stdout" ] \
   && [ "$candidate_cdpath_stderr" = "$base_cdpath_stderr" ] \
   && { PASS=$((PASS + 1)); echo 'ok: base and candidate keep relative path output clean with CDPATH'; } \
@@ -338,6 +368,59 @@ if [[ "$LAST_STDERR" != *"This chat was opened inside HQ's locked system folder"
 else
   PASS=$((PASS + 1))
 fi
+
+# Regression: an owner who deleted and reinstalled HQ still got this block,
+# because the old owner line only said to open a new chat. The new chat opened
+# in a worktree again. The owner paragraph must name the canonical folder,
+# the Local environment choice, and that reinstalling HQ does not change it,
+# and must come before the operator detail.
+assert_owner_way_out() {
+  local label="$1" text="$2" canonical="$3" owner
+  owner="$(printf '%s\n' "$text" | awk '
+    /^This chat was opened inside HQ/ { on=1 }
+    on && NF==0 { exit }
+    on { print }
+  ')"
+  local missing=""
+  [[ "$owner" == *"set the environment to Local (Choose Environment > Local). Do not pick Worktree."* ]] \
+    || missing="$missing local-step"
+  [[ "$owner" == *"deleting and reinstalling HQ does not change it"* ]] || missing="$missing reinstall-note"
+  [[ "$owner" != *"sidebar group"* ]] || missing="$missing stale-sidebar-advice"
+  if [ -n "$canonical" ]; then
+    [[ "$owner" == *"with your HQ folder selected: $canonical"* ]] || missing="$missing canonical-folder"
+  else
+    [[ "$owner" == *"with your main HQ folder selected."* ]] || missing="$missing folder-fallback"
+  fi
+  if [ -z "$missing" ]; then
+    PASS=$((PASS + 1)); echo "ok: $label owner paragraph gives the way out"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL [$label owner way out]: missing$missing" >&2
+    printf 'owner paragraph: <%s>\n' "$owner" >&2
+  fi
+}
+HQ_CANON="$(cd -P -- "$HQ" && pwd)"
+run 2 "$HQWT" "$HQWT" UserPromptSubmit 'owner way out on a blocked prompt'
+assert_owner_way_out UserPromptSubmit "$LAST_STDERR" "$HQ_CANON"
+run 2 "$HQWT" "$HQWT" PreToolUse 'owner way out on a blocked tool call'
+assert_owner_way_out PreToolUse "$LAST_STDERR" "$HQ_CANON"
+run 2 "$HQ" "$HQWT" UserPromptSubmit 'owner way out when only cwd is the worktree'
+assert_owner_way_out 'cwd UserPromptSubmit' "$LAST_STDERR" "$HQ_CANON"
+run 0 "$HQWT" "$HQWT" SessionStart 'owner way out in the SessionStart banner'
+assert_owner_way_out SessionStart "$LAST_STDOUT" "$HQ_CANON"
+if [[ "$LAST_STDOUT" == *"<hq-worktree-block>"$'\n'"This chat was opened inside HQ"* ]]; then
+  PASS=$((PASS + 1)); echo 'ok: SessionStart banner leads with the owner paragraph'
+else
+  FAIL=$((FAIL + 1)); echo 'FAIL [SessionStart owner order]: owner paragraph is not first' >&2
+fi
+run 2 "$HQWT" "$HQWT" UserPromptSubmit 'blocked prompt leads with the owner paragraph'
+if [[ "$(printf '%s\n' "$LAST_STDERR" | head -n 1)" == "This chat was opened inside HQ"* ]]; then
+  PASS=$((PASS + 1)); echo 'ok: blocked prompt leads with the owner paragraph'
+else
+  FAIL=$((FAIL + 1)); echo 'FAIL [UserPromptSubmit owner order]: owner paragraph is not first' >&2
+fi
+run 2 "$HQ_SEPARATE_WT" "$HQ_SEPARATE_WT" UserPromptSubmit \
+  'owner way out when the canonical path is unknown'
+assert_owner_way_out 'separate git dir' "$LAST_STDERR" ""
 
 # --- Must stay silent: the normal HQ flows ----------------------------------
 run 0 "$HQ" "$HQ"           UserPromptSubmit 'canonical HQ checkout allowed'

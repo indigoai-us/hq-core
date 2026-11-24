@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(hq core handoff open-steps:*), Bash(hq core handoff run:*), Bash(bash core/scripts/handoff-run.sh:*), Bash(hq core handoff archive-decision:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash .claude/skills/_shared/journal.sh:*), Bash(hq core handoff open-steps:*), Bash(hq core handoff run:*), Bash(bash core/scripts/handoff-run.sh:*), Bash(hq core handoff archive-decision:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -92,7 +92,7 @@ companies they name — with `core/scripts/ontology-candidate.sh`, source ref
 Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened earlier in this session by `/brainstorm`, `/deep-plan`, or `/prd`, close it now so its frontmatter records `status: closed` + a one-line summary.
 
 ```bash
-.claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis of session, ≤120 chars}"
+bash .claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis of session, ≤120 chars}"
 ```
 
 Pass the resolved project directory that owns this session's journal. The helper is fail-soft (no-op if no owned active journal pointer exists). The summary should mirror what you write into `--summary` for `hq core handoff run`. Helper clears only this session's pointer on success.
@@ -133,11 +133,11 @@ bash core/scripts/handoff-run.sh \
   --message "{user's handoff message, or echo of the summary}" \
   --next-steps-json '[{"...json array of next steps..."}]' \
   --files-touched-json-file "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json" \
-  --learnings-json '{learnings_json from Step 2}' \
+  --learnings-json-file "{learnings_file path from Step 2}" \
   --deficiencies-json "{deficiencies_file from Step 2b}" \
   --tags-json '["handoff","{co}","{topic}"]' \
   --slug "{short-hyphenated-slug}" || rc=$?
-rm -f "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"   # clean up on both success and failure
+rm -f "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"   # clean up on both success and failure; keep the Step 2 learnings file for Step 4.5
 [ "$rc" -eq 0 ] || { echo "hq core handoff run failed (rc=$rc)" >&2; exit "$rc"; }
 ```
 
