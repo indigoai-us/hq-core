@@ -1,0 +1,44 @@
+name: hq CLI global install cache
+description: >-
+  Restore or save the npm global install of the pinned hq CLI on Linux runners,
+  so core/scripts/ci/install-pinned-hq-cli.sh reuses it instead of running
+  npm install -g (about 30 s per job). The installer reuses a restored copy only
+  when `hq --version` matches the selected pin; any other case installs as before.
+  Pull requests only restore. Saves happen on non-PR runs on main (the nightly
+  schedule and workflow_dispatch), so PRs read a cache seeded from main.
+inputs:
+  mode:
+    description: restore (before the install step) or save (after it)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Resolve hq CLI cache inputs
+      id: inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${{ inputs.mode }}" in restore|save) ;; *) echo "unknown mode: ${{ inputs.mode }}" >&2; exit 64 ;; esac
+        version="$(bash core/scripts/ci/install-pinned-hq-cli.sh --resolve-only)"
+        {
+          printf 'version=%s\n' "$version"
+          printf 'node=%s\n' "$(node --version)"
+          printf 'npm_prefix=%s\n' "$(npm prefix -g)"
+          printf 'npm_root=%s\n' "$(npm root -g)"
+        } >> "$GITHUB_OUTPUT"
+    - name: Restore hq CLI global install
+      if: ${{ inputs.mode == 'restore' }}
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ steps.inputs.outputs.npm_root }}/@indigoai-us/hq-cli
+          ${{ steps.inputs.outputs.npm_prefix }}/bin/hq
+        key: hq-cli-global-${{ runner.os }}-${{ runner.arch }}-node${{ steps.inputs.outputs.node }}-${{ steps.inputs.outputs.version }}-${{ hashFiles('core/scripts/ci/install-pinned-hq-cli.sh') }}
+    - name: Save hq CLI global install
+      if: ${{ inputs.mode == 'save' && github.event_name != 'pull_request' }}
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ steps.inputs.outputs.npm_root }}/@indigoai-us/hq-cli
+          ${{ steps.inputs.outputs.npm_prefix }}/bin/hq
+        key: hq-cli-global-${{ runner.os }}-${{ runner.arch }}-node${{ steps.inputs.outputs.node }}-${{ steps.inputs.outputs.version }}-${{ hashFiles('core/scripts/ci/install-pinned-hq-cli.sh') }}

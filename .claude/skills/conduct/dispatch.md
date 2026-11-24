@@ -24,7 +24,9 @@ Route each task to the first match:
 3. One-off subagent: a small bounded task with no matching worker (a lookup,
    a check, a draft) runs as a background subagent and is not kept open.
 4. Child session: ongoing work with no matching worker that needs its own
-   session goes to a conduct child session.
+   session goes to a conduct child session. From the HQ root, start it in the
+   HQ root (`use_worktree: false`, no `cwd`), even for repo work; its brief
+   tells it to create its own worktree inside the repo.
 
 `bash core/scripts/conduct-standing.sh route --kind <answer|status|lookup|small|ongoing>
 [--worker <id> --company <slug>] [--outlives] [--engine <e>] [--host <claude|codex>] [--runner <r>]`

@@ -27,7 +27,6 @@ SESSION_VARS = ("HQ_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID",
 REQUEST_GAP_SECS = 0.5          # at most 2 network requests per second
 DESC_CHARS = 300
 THIN_WORDS = 50
-MAX_LIST_PAGES = 100
 FETCH_MAX_BYTES = 5 * 1024 * 1024
 FETCH_TIMEOUT_SECS = 15
 STEP_TIMEOUT_SECS = 120
@@ -36,7 +35,6 @@ SCAN_MAX_DIRS = 50000
 INDEX_PEEK_BYTES = 64 * 1024
 SKIP_SCAN = {"node_modules", ".git", "deploys", "worktrees", "threads", "sessions", "__pycache__",
              ".next", ".turbo", ".cache", "lanes-links", "orchestrator"}
-CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]+={0,2}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
 SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 TYPE_WORDS = (
@@ -51,7 +49,6 @@ TYPE_WORDS = (
     ("tool", ("tool", "calculator", "dashboard", "tracker")),
     ("explainer", ("explainer", "guide", "docs", "playbook", "how")),
 )
-EXPECT_PAGE = '(.apps | type == "array") and ((.nextCursor == null) or (.nextCursor | type == "string" and length > 0))'
 
 
 def load_module(name, filename):
@@ -200,18 +197,29 @@ def jwt_sub(token):
         return ""
 
 
+HQ_CLI_FLOOR = "5.345.246"
+
+
+def check_gate_fields(apps):
+    """Fail closed when the hq CLI predates the gate fields in `hq deploy list`."""
+    for app in apps:
+        if "ownerId" not in app or "passwordProtected" not in app:
+            raise Fail("hq_cli_too_old", "upgrade hq-cli to %s or newer" % HQ_CLI_FLOOR)
+    return apps
+
+
 def list_apps(opts, company, env, pacer):
-    """(apps, owner id). Every page of GET /api/apps; fails closed."""
+    """(apps, owner id). Every app via `hq deploy list --json`; fails closed."""
     stub = os.environ.get("HQ_DEPLOY_BACKFILL_APPS_FILE")
     if stub:
         with open(stub, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return list(data.get("apps") or []), os.environ.get("HQ_DEPLOY_BACKFILL_OWNER", "")
+        apps = [a for a in data.get("apps") or [] if isinstance(a, dict)]
+        return check_gate_fields(apps), os.environ.get("HQ_DEPLOY_BACKFILL_OWNER", "")
     ident = run_json(["bash", os.path.join(DEPLOY_SCRIPTS, "identity-resolve.sh")], env)
     if ident.get("status") != "ok" or not ident.get("jwt"):
         raise Fail("login_required", "sign in with /hq-login, then run this again")
     owner = jwt_sub(ident["jwt"])
-    req_env = dict(env, HQ_DEPLOY_JWT=ident["jwt"])
     api = opts.get("--api") or ""
     if not api:
         # The deploy skill's own chain: HQ_DEPLOY_API, the manifest, then the public default.
@@ -221,29 +229,27 @@ def list_apps(opts, company, env, pacer):
     api = api.rstrip("/")
     if not re.match(r"^https://[A-Za-z0-9.-]+(:[0-9]+)?$", api):
         raise Fail("list_failed", "could not resolve the deploy API")
-    apps, cursor, seen = [], "", set()
-    for _ in range(MAX_LIST_PAGES):
-        url = api + "/api/apps?limit=100" + ("&cursor=" + cursor if cursor else "")
-        pacer.wait()
-        proc = subprocess.run(["bash", os.path.join(DEPLOY_SCRIPTS, "deploy-api-request.sh"),
-                               "--stage", "record-existing-list", "--method", "GET", "--url", url,
-                               "--header", "X-Org-Slug: " + company, "--expect", EXPECT_PAGE],
-                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=req_env,
-                              timeout=60, check=False)
-        if proc.returncode != 0:
-            raise Fail("list_failed", "the app list request failed")
-        try:
-            page = json.loads(proc.stdout.decode("utf-8", "replace"))
-        except ValueError:
-            raise Fail("list_failed", "the app list was not JSON")
-        apps.extend(a for a in page.get("apps") or [] if isinstance(a, dict))
-        cursor = page.get("nextCursor") or ""
-        if not cursor:
-            return apps, owner
-        if not CURSOR_RE.match(cursor) or cursor in seen:
-            raise Fail("list_failed", "unexpected or repeated list cursor")
-        seen.add(cursor)
-    raise Fail("list_failed", "more than %d pages of apps" % MAX_LIST_PAGES)
+    if not shutil.which("hq", path=env.get("PATH")):
+        raise Fail("hq_cli_missing", "install @indigoai-us/hq-cli and run hq login")
+    # `hq deploy list` signs in itself, follows every nextCursor page and exits
+    # non-zero with no output on any bad page.
+    pacer.wait()
+    try:
+        proc = subprocess.run(["hq", "deploy", "list", "--company", company, "--json"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              env=dict(env, HQ_DEPLOY_API_URL=api), timeout=300, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Fail("list_failed", "the app list request failed")
+    if proc.returncode != 0:
+        raise Fail("list_failed", "the app list request failed")
+    try:
+        data = json.loads(proc.stdout.decode("utf-8", "replace"))
+    except ValueError:
+        raise Fail("list_failed", "the app list was not JSON")
+    if not isinstance(data, dict) or not isinstance(data.get("apps"), list):
+        raise Fail("list_failed", "the app list had no apps array")
+    apps = [a for a in data["apps"] if isinstance(a, dict)]
+    return check_gate_fields(apps), owner
 
 
 def record_header(path):

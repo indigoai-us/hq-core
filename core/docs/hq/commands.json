@@ -81,7 +81,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/brainstorm/SKILL.md",
-      "hash": "sha256:47fe4ed4f863f1438d505e031e7eb73a2022b5e0239e7e42b8439c73590b25e9",
+      "hash": "sha256:63cb725cc0c3a1120a8232eba1d8d3f33a461530aa915601c8f62b6548512da0",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -302,7 +302,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/daily-brief/SKILL.md",
-      "hash": "sha256:b205b64b5599d64086438c351c23a5662178a4487f0f47622a6c22cd934ed8d9",
+      "hash": "sha256:c10004e58ecbeef94bf4eee6b4f0e21833b045456ceeca421e6245b3d58662c3",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -370,7 +370,7 @@
       "skillUid": null,
       "group": "share",
       "source": ".claude/skills/delegate/SKILL.md",
-      "hash": "sha256:52dd3f00f045c70e741bb8ce4762bec631d33ff3f8b0504858f0db5a42513ec3",
+      "hash": "sha256:adecdf87f54d8da5f16abc478f1c57d6b2b156297e05cc0e6443f3da250c8097",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -387,7 +387,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/deploy/SKILL.md",
-      "hash": "sha256:da248bcabfed30c06624516eeb8bf5917f0e5b8b5fa96279ba7685c680de2622",
+      "hash": "sha256:394607ee1aafc265810b996d1a219e5cb54e03290a9357fcb194c3362c953859",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -642,7 +642,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/handoff/SKILL.md",
-      "hash": "sha256:53c40d0b9f6309196bfe77a6119a91fd603fba5057bc2e0d6439dd15908ffe9a",
+      "hash": "sha256:b262ab32c1cf52aa8c25ee3c0a21744b62d0afdc95c9a9d4e721687ef0960f09",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -880,7 +880,7 @@
       "skillUid": null,
       "group": "other",
       "source": ".claude/skills/hq-secrets/SKILL.md",
-      "hash": "sha256:44045b096b1f155b7d3e9f6d20f33de8cb705c12f94d995a8839d9352c41bcba",
+      "hash": "sha256:93c6e94e348a981883db18bac751970be4ec75ba806314b471f41a494f43c340",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -919,7 +919,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/hq-sync/SKILL.md",
-      "hash": "sha256:af5192860da91000a6ef4845c68e16d9743bf69229c883c36aa2b61cec7c0cf2",
+      "hash": "sha256:3d6d461889a0735b03f5742e6301844b2e901ab7ad08bde6b626c6d9f8effc90",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1388,7 +1388,7 @@
       "skillUid": null,
       "group": "plan",
       "source": ".claude/skills/prd/SKILL.md",
-      "hash": "sha256:b510094b73fbbd3f01c7bcd69c6b29a6af8d996daa2aee0264f1f796c455961d",
+      "hash": "sha256:11bb145bf5853895b49804ccda50d50ea31cbbd6401439c67b222219d723679c",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1405,7 +1405,7 @@
       "skillUid": null,
       "group": "ship",
       "source": ".claude/skills/project-summary/SKILL.md",
-      "hash": "sha256:d71bfb1432653beb66fdca2702eed6421431de4ee5ea5a738776b8ac284c628e",
+      "hash": "sha256:de1b5bd03ba3fe07ba12ca7ce87037cf1797b6d69763c465189c6ce3e3b773f6",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1508,6 +1508,23 @@
       "group": "sync",
       "source": ".claude/skills/resolve-conflicts/SKILL.md",
       "hash": "sha256:a2ae59675a29d7dbc847535b2822f321bcf8d5e1b86618441b03f92c383cb830",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
+      "name": "restart-sessions",
+      "description": "Bring Claude desktop sessions over from another Claude account on the same Mac, with groups, presets and connectors. Triggers: \\\"my sessions are gone after switching accounts\\\", \\\"bring my sessions over\\\", \\\"get my sessions from the other account\\\", \\\"restart my sessions on this account\\\".",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/restart-sessions",
+      "skillUid": null,
+      "group": "session state",
+      "source": ".claude/skills/restart-sessions/SKILL.md",
+      "hash": "sha256:2a9c3bc4c39b5bfc1288085a8600fad24787fcb74431fa0c3c5c20366fbc3d04",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1660,7 +1677,7 @@
       "skillUid": null,
       "group": "share",
       "source": ".claude/skills/schedule/SKILL.md",
-      "hash": "sha256:27244663dd897251ba8a6853b5a19e65fcac91ed64ebf6d0367ae0d6ba0c8960",
+      "hash": "sha256:05eb8c4d3a28e4d12e9c5dda7789bb61e4e2242e03b3914471feb869037b1245",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1805,7 +1822,7 @@
     },
     {
       "name": "super-conductor",
-      "description": "Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says \"/super-conductor\", \"/conduct-all\" (deprecated alias), \"manage all my sessions\", \"watch everything while I'm away\", \"going to bed, manage open sessions and the team\", or \"conduct everything\".",
+      "description": "Run one of several named super-conductors. Each conductor has its own profile (scope, when it may start sessions, which running sessions it adopts, check cadence, channels and stats to sweep, decision desk or its own window, where child sessions ask, and areas it must not watch), its own conduct link, heartbeat, save file and decision queue, so several can run side by side without overlap. Startup reuses a saved conductor by name or sets one up through a short questionnaire. It adopts the open Claude Code desktop sessions in its scope, watches team comms for requests, resolves collisions, and keeps a persistent heartbeat until told to stop. Use when the user says \"/super-conductor\", \"/super-conductor <name>\", \"/conduct-all\" (deprecated alias), \"start a new conductor\", \"manage all my sessions\", \"watch everything while I'm away\", \"going to bed, manage open sessions and the team\", or \"conduct everything\".",
       "scope": "core",
       "tags": [],
       "searchTerms": [],
@@ -1813,7 +1830,7 @@
       "skillUid": null,
       "group": "session state",
       "source": ".claude/skills/super-conductor/SKILL.md",
-      "hash": "sha256:42b41fa0005f57edb0d35a074534318e9a02c115512a2c402babde82e70e200b",
+      "hash": "sha256:7f612f8b93927137ecac8184b635ba11f9bc51a77264905edcfcd1f5c1376a44",
       "duplicates": {
         "exact": [],
         "drifted": [],
@@ -1906,6 +1923,23 @@
       }
     },
     {
+      "name": "tui-monitor",
+      "description": "Build a live read-only terminal monitor (TUI) for machines or services. Stdlib Python, ssh collector, nothing installed remotely. Scaffolds a working template.",
+      "scope": "core",
+      "tags": [],
+      "searchTerms": [],
+      "invoke": "/tui-monitor",
+      "skillUid": null,
+      "group": "other",
+      "source": ".claude/skills/tui-monitor/SKILL.md",
+      "hash": "sha256:fb9e5f11b9fd1cbbffec6eb7a0ea30c6b26970f5eb9a0c2d6d603044905df21b",
+      "duplicates": {
+        "exact": [],
+        "drifted": [],
+        "near": []
+      }
+    },
+    {
       "name": "tutorial",
       "description": "Run hands-on HQ workflow lessons.",
       "scope": "core",
@@ -1932,7 +1966,7 @@
       "skillUid": null,
       "group": "sync",
       "source": ".claude/skills/update-hq/SKILL.md",
-      "hash": "sha256:02e34901191b7a417833782658d288420e4b0d178488d365c53eb15e1248eefc",
+      "hash": "sha256:f14016bc5e3043e9f8f7c79485acbfdb7d0986fea40b6eb76a774de3faaa8d4e",
       "duplicates": {
         "exact": [],
         "drifted": [],

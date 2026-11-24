@@ -614,11 +614,15 @@ main() {
     printf '%s' '{"commands":[],"skills":[],"hooks":[],"policies":[],"agents":[],"settings":[]}' > "$tmpd/tree.json"
   fi
 
-  # Merge MCP sources (desktop config + repo-root .mcp.json)
-  local mcp_desktop mcp_repo
-  mcp_desktop="$(ensure_json_array "$(emit_mcp_servers)")"
-  mcp_repo="$(ensure_json_array "$(emit_repo_mcp_json)")"
-  jq -n --argjson a "$mcp_desktop" --argjson b "$mcp_repo" '$a + $b' > "$tmpd/mcp.json"
+  # Merge MCP sources (desktop config + repo-root .mcp.json). File-backed
+  # like the tree object: --argjson puts both arrays on jq's argv and
+  # exceeds ARG_MAX on a large --scope.
+  ensure_json_array "$(emit_mcp_servers)" > "$tmpd/mcp_desktop.json"
+  ensure_json_array "$(emit_repo_mcp_json)" > "$tmpd/mcp_repo.json"
+  jq -n \
+    --slurpfile a "$tmpd/mcp_desktop.json" \
+    --slurpfile b "$tmpd/mcp_repo.json" \
+    '$a[0] + $b[0]' > "$tmpd/mcp.json"
 
   # Merge settings fragments (global files + per-.claude)
   local globals

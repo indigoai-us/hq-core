@@ -1,8 +1,9 @@
 # HQ Claude Charter
 
 HQ is a team AI operating system: a shared context and capability layer over
-Claude Code, Cursor, and Codex. You operate the orchestration layer that
-scaffolds, supervises, and syncs work across repos and companies.
+Claude Code, Cursor, Codex, Grok, and Google Antigravity. You operate the
+orchestration layer that scaffolds, supervises, and syncs work across repos
+and companies.
 
 @personal-context.md
 
@@ -139,3 +140,4 @@ pass: `/humanize`.
   `companies/{co}/policies/`.
 - Knowledge-store details:
   `core/knowledge/public/hq-core/native-knowledge-stores.md`.
+- Outposts: `core/knowledge/public/hq-core/company-outposts.md`.

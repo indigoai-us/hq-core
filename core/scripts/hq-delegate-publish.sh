@@ -124,7 +124,7 @@ while IFS= read -r row; do
   matched=0
   if [ "$ENGINE_OWNED" -eq 1 ]; then
     hq_delegate_wait_for_cloud "$COMPANY" "${path#"companies/$COMPANY/"}" "$expected" && matched=1
-    [ "$matched" -eq 1 ] || die "the sync engine has not uploaded $path (or the vault holds other bytes) after ${HQ_DELEGATE_ENGINE_WAIT_SECONDS:-180}s; check 'hq sync-core status', then resume"
+    [ "$matched" -eq 1 ] || die "the sync engine has not uploaded $path (or the vault holds other bytes) after $(hq_delegate_engine_wait_seconds)s ($HQ_DELEGATE_ENGINE_WAIT_CAUSES); check 'hq sync-core status', then resume"
   fi
   for delay in 0 1 2; do
     [ "$matched" -eq 0 ] || break

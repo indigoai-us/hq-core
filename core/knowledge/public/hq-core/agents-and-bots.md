@@ -224,7 +224,8 @@ flag `agents.turn-cost-capture` is the only gate, and it defaults off.
 | `hq bot jobs <name>` (local bot on the HQ Fleet Runtime) | The Fleet Runtime's job store in the bot's profile on this computer, in this computer's time zone. Jobs run while the bot's Fleet gateway runs. Jobs from an older `jobs.json` move into it when the bot starts |
 | `hq agents jobs list\|pause\|cancel` (hosted agents) | hq-pro-agents job records on a cloud schedule. Pause sets the schedule to DISABLED; cancel deletes the schedule and the record |
 | HqFleet cron on a v2 box | Runtime-native cron on the box clock (no per-job timezone). `hq-agents-v2-import-jobs` migrates an agent's hq-pro jobs onto it and pauses the originals |
-| Outpost jobs (`/schedule`) | systemd user timers on a user's Outpost; see [outpost-jobs-spec.md](outpost-jobs-spec.md) |
+| Outpost jobs (`/schedule`) | systemd user timers on a user's personal Outpost; see [outpost-jobs-spec.md](outpost-jobs-spec.md) |
+| Company Outpost jobs (`hq outposts jobs`) | Accepted job revisions in hq-pro, run by root system timers on the company's Outpost; see [company-outposts.md](company-outposts.md) |
 
 ### Built-in hot-signal-sync job (local bots)
 

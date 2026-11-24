@@ -40,7 +40,6 @@ BIN="$TMP/bin"
 mkdir -p "$HQ/personal/jobs" "$HQ/companies/indigo/jobs" "$HQ/companies/indigo/projects/outpost-scheduled-jobs"
 mkdir -p "$HOME_DIR" "$UNIT_DIR" "$CACHE" "$BIN" "$HOME_DIR/.hq/jobs/reconcile"
 mkdir -p "$HQ/core/scripts"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$HQ/core/scripts/hq-job-run.sh"
 for blocked_binary in aws sst pulumi systemctl hq curl; do
   cat >"$BIN/$blocked_binary" <<'STUB'
 #!/usr/bin/env bash
@@ -49,6 +48,17 @@ exit 97
 STUB
   chmod +x "$BIN/$blocked_binary"
 done
+# The shell body refuses without an hq that has `hq core job run` (5.296.0+),
+# because every unit it writes starts that command. Answer --version with a
+# release below the native-reconcile floor so the shell body still runs;
+# every other hq call stays blocked.
+cat >"$BIN/hq" <<'STUB'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then echo "5.296.0"; exit 0; fi
+printf 'unexpected external binary: %s\n' "${0##*/}" >&2
+exit 97
+STUB
+chmod +x "$BIN/hq"
 export HOME="$HOME_DIR"
 export HQ_ROOT="$HQ"
 export PATH="$BIN:$PATH"
@@ -317,9 +327,9 @@ timer_calendar="$(awk '
   END { exit !found }
 ' "$UNIT_DIR/hq-job-daily-inbox-digest.timer" \
   || fail "#927 timezone characterization must not contain an unsupported Timezone= directive"
-grep -q 'hq-job-run.sh' "$UNIT_DIR/hq-job-daily-inbox-digest.service" || fail "service must ExecStart hq-job-run.sh"
-grep -Fq "ExecStart=$HQ/core/scripts/hq-job-run.sh" "$UNIT_DIR/hq-job-daily-inbox-digest.service" \
-  || fail "service runner must use the selected HQ root"
+grep -Fxq "ExecStart=/usr/bin/env hq core --hq-root \"$HQ\" job run --job-id daily-inbox-digest" \
+  "$UNIT_DIR/hq-job-daily-inbox-digest.service" \
+  || fail "service must run the selected job and HQ root through the native CLI"
 pass "ready personal job materializes service+timer, root path, and #927 timezone rendering"
 
 # A job without a declared timezone uses the generated OnCalendar expression unchanged.
@@ -387,6 +397,7 @@ WHOAMI_BIN="$TMP/whoami-bin"
 mkdir -p "$WHOAMI_BIN"
 cat >"$WHOAMI_BIN/hq" <<'STUB'
 #!/usr/bin/env bash
+if [ "$*" = "--version" ]; then echo "5.296.0"; exit 0; fi
 if [ "$*" = "whoami --json" ]; then
   printf '%s\n' '{"tokenSource":"machine","email":null,"sub":null,"delegatedEmail":"delegated@example.com","delegatedSub":"14c81468-c081-70b8-ca57-d29b4d522d44"}'
   exit 0
@@ -449,5 +460,93 @@ bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$TMP/out6.json" 2>"$TMP/err
 [ ! -f "$UNIT_DIR/hq-job-daily-inbox-digest.timer" ] || fail "blocked job should stop/remove timer"
 grep -q 'non-ready\|readiness=blocked' "$TMP/err6.txt" || fail "expected blocked skip log"
 pass "blocked readiness stops timer"
+
+# 9) US-044: the job-run refusal finds hq the way the units do. Units get
+# unit_service_path_value's PATH, which falls back to `npm prefix -g`/bin when
+# hq is not on PATH, so the refusal checks that same hq.
+NPM_CASE="$TMP/npm-case"
+NPM_TOOLS="$NPM_CASE/tools"
+NPM_STUB="$NPM_CASE/npm-stub"
+mkdir -p "$NPM_TOOLS" "$NPM_STUB"
+for tool in awk basename bash cat chmod cp cut date dirname env find flock grep head id install jq ln mkdir mktemp mv node realpath rm sed sha256sum shasum sort stat tee touch tr wc yq; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  if [ -n "$tool_path" ] && [ -x "$tool_path" ]; then
+    ln -s "$tool_path" "$NPM_TOOLS/$tool"
+  fi
+done
+for blocked_binary in aws sst pulumi systemctl curl; do
+  ln -s "$BIN/$blocked_binary" "$NPM_TOOLS/$blocked_binary"
+done
+cat >"$NPM_STUB/npm" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "prefix" ] && [ "${2:-}" = "-g" ] || exit 2
+printf '%s\n' "$STUB_NPM_PREFIX"
+STUB
+chmod +x "$NPM_STUB/npm"
+NPM_CASE_PATH="$NPM_STUB:$NPM_TOOLS"
+if PATH="$NPM_CASE_PATH" command -v hq >/dev/null 2>&1; then
+  fail "fixture error: hq resolves on the npm-case PATH: $(PATH="$NPM_CASE_PATH" command -v hq)"
+fi
+
+make_prefix_hq() {
+  local prefix="$1" version="$2"
+  mkdir -p "$prefix/bin"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then echo "%s"; exit 0; fi\n' "$version"
+    printf 'printf '\''unexpected external binary: %%s\\n'\'' "${0##*/}" >&2\n'
+    printf 'exit 97\n'
+  } >"$prefix/bin/hq"
+  chmod +x "$prefix/bin/hq"
+}
+
+run_npm_case() {
+  local label="$1" prefix="$2"
+  mkdir -p "$NPM_CASE/units-$label" "$NPM_CASE/state-$label"
+  set +e
+  PATH="$NPM_CASE_PATH" STUB_NPM_PREFIX="$prefix" XDG_CACHE_HOME="$NPM_CASE/cache-$label" \
+    HQ_JOB_UNIT_DIR="$NPM_CASE/units-$label" HQ_JOB_RECONCILE_STATE="$NPM_CASE/state-$label" \
+    bash "$RECON" --hq-root "$HQ" --no-probe --dry-run >"$NPM_CASE/$label.out" 2>"$NPM_CASE/$label.err"
+  NPM_RC=$?
+  set -e
+}
+
+jq -nc '{job_id:"daily-inbox-digest",readiness:"ready",updated_at:"2026-08-23T21:00:00Z",source:"test"}' \
+  >"$CACHE/daily-inbox-digest.json"
+REFUSAL="^outpost-jobs-reconcile: job units run 'hq core job run', which needs hq-cli >= 5.296.0 on PATH; no units written"
+
+# 9a) hq only under the npm global prefix, new enough: units are written and
+# their PATH resolves that hq.
+make_prefix_hq "$NPM_CASE/prefix-new" "5.296.0"
+run_npm_case new "$NPM_CASE/prefix-new"
+[ "$NPM_RC" -eq 0 ] || fail "npm-prefix hq 5.296.0: reconcile failed ($NPM_RC): $(cat "$NPM_CASE/new.err")"
+NPM_SERVICE="$NPM_CASE/units-new/hq-job-daily-inbox-digest.service"
+[ -f "$NPM_SERVICE" ] || fail "npm-prefix hq 5.296.0: service unit missing"
+[ -f "$NPM_CASE/units-new/hq-job-daily-inbox-digest.timer" ] || fail "npm-prefix hq 5.296.0: timer unit missing"
+npm_unit_path="$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$NPM_SERVICE" | sed 's/%%/%/g')"
+[ -n "$npm_unit_path" ] || fail "npm-prefix hq 5.296.0: service unit has no PATH"
+npm_expected_hq="$(cd "$NPM_CASE/prefix-new/bin" && pwd -P)/hq"
+npm_resolved_hq="$(/usr/bin/env -i PATH="$npm_unit_path" /bin/bash -c 'command -v hq' 2>/dev/null || true)"
+[ "$npm_resolved_hq" = "$npm_expected_hq" ] \
+  || fail "npm-prefix hq 5.296.0: unit PATH resolves '$npm_resolved_hq', expected '$npm_expected_hq'"
+pass "hq only under npm prefix -g at 5.296.0: units written and their PATH starts that hq"
+
+# 9b) hq only under the npm global prefix, below 5.296.0: refused, no units.
+make_prefix_hq "$NPM_CASE/prefix-old" "5.295.9"
+run_npm_case old "$NPM_CASE/prefix-old"
+[ "$NPM_RC" -eq 2 ] || fail "npm-prefix hq 5.295.9: expected exit 2, got $NPM_RC: $(cat "$NPM_CASE/old.err")"
+grep -q "$REFUSAL" "$NPM_CASE/old.err" || fail "npm-prefix hq 5.295.9: refusal not printed: $(cat "$NPM_CASE/old.err")"
+grep -q "found 5.295.9" "$NPM_CASE/old.err" \
+  || fail "npm-prefix hq 5.295.9: the floor check did not read the npm-prefix hq: $(cat "$NPM_CASE/old.err")"
+[ -z "$(ls -A "$NPM_CASE/units-old")" ] || fail "npm-prefix hq 5.295.9: units written: $(ls -A "$NPM_CASE/units-old")"
+pass "hq only under npm prefix -g at 5.295.9: refused with exit 2 and no units"
+
+# 9c) no hq on PATH or under the npm global prefix: refused, no units.
+mkdir -p "$NPM_CASE/prefix-empty"
+run_npm_case none "$NPM_CASE/prefix-empty"
+[ "$NPM_RC" -eq 2 ] || fail "no hq anywhere: expected exit 2, got $NPM_RC: $(cat "$NPM_CASE/none.err")"
+grep -q "$REFUSAL" "$NPM_CASE/none.err" || fail "no hq anywhere: refusal not printed: $(cat "$NPM_CASE/none.err")"
+[ -z "$(ls -A "$NPM_CASE/units-none")" ] || fail "no hq anywhere: units written: $(ls -A "$NPM_CASE/units-none")"
+pass "no hq on PATH or under npm prefix -g: refused with exit 2 and no units"
 
 echo "ALL PASSED (outpost-jobs-reconcile)"

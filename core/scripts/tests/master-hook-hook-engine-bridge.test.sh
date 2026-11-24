@@ -526,16 +526,19 @@ for fault in 1 70 127 timeout; do
     fi
   fi
 done
-# Same faults in shadow mode: the engine would have returned bash's result
-# itself; when it cannot, bash still runs and still blocks.
-reset_logs
-snapshot_with_port
-printf '%s\t%s\n' "$BLOCK_ID" shadow > "$PLAN"
-printf '1\n' > "$ENGINE/bridge-rc"
-run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
-[ "$RC" = "2" ] && grep -q "BLOCKED: fixture-block" "$TMP/err" && [ "$(ran_count "$FIX" block)" = "1" ] \
-  && ok "shadow with engine exit 1: block landed" \
-  || bad "shadow engine fault: rc=$RC ran=$(ran_count "$FIX" block) err=$(head -c 300 "$TMP/err")"
+# Engine faults in shadow mode (70 fault, 75 hand-back, 101 panic; all before
+# bash starts): the engine could not return bash's result, so bash runs and
+# still blocks. Other shadow exits are the script's own (section [o]).
+for fault in 70 75 101; do
+  reset_logs
+  snapshot_with_port
+  printf '%s\t%s\n' "$BLOCK_ID" shadow > "$PLAN"
+  printf '%s\n' "$fault" > "$ENGINE/bridge-rc"
+  run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB"
+  [ "$RC" = "2" ] && grep -q "BLOCKED: fixture-block" "$TMP/err" && [ "$(ran_count "$FIX" block)" = "1" ] \
+    && ok "shadow with engine exit $fault: bash ran and its block landed" \
+    || bad "shadow engine $fault: rc=$RC ran=$(ran_count "$FIX" block) err=$(head -c 300 "$TMP/err")"
+done
 # A verdict from the engine is kept as is: exit 2 blocks without running bash.
 reset_logs
 snapshot_with_port
@@ -781,6 +784,47 @@ for ostype in "" darwin25 linux-gnu; do
 done
 cp "$TMP/registry.orig" "$FIX/.claude/hooks/hook-registry.json"
 rm -f "$FIX/.claude/hooks/env.log"
+reset_logs
+
+echo "[o] shadow: the script's own exit (1, 127, 141) is kept; bash does not run twice"
+EXIT_ID="fixture-exit"
+cat > "$FIX/.claude/hooks/$EXIT_ID.sh" <<'HOOK'
+#!/usr/bin/env bash
+cat >/dev/null
+here="$(cd "$(dirname "$0")" && pwd)"
+printf 'exit args=%s\n' "$*" >> "$here/ran.log"
+exit "$(cat "$here/exit-rc")"
+HOOK
+chmod +x "$FIX/.claude/hooks/$EXIT_ID.sh"
+cp "$FIX/.claude/hooks/hook-registry.json" "$TMP/registry.orig"
+jq -nc --arg id "$EXIT_ID" --arg s ".claude/hooks/$EXIT_ID.sh" --argjson t "$HOOK_TIMEOUT" '
+  {hooks: {PreToolUse: [{matcher: "Bash", hooks: [
+    {id: $id, script: $s, timeout: $t, gated: false, runner: "exec", args: ["PreToolUse"]}
+  ]}]}}' > "$FIX/.claude/hooks/hook-registry.json"
+for par in 0 1; do
+  for code in 1 127 141; do
+    reset_logs
+    snapshot_with_port
+    printf '%s\n' "$code" > "$FIX/.claude/hooks/exit-rc"
+    printf '%s\t%s\n' "$EXIT_ID" shadow > "$PLAN"
+    run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" HQ_HOOK_PARALLEL="$par"
+    [ "$(ran_count "$FIX" exit)" = "1" ] && [ "$(bridge_calls)" = "1" ] \
+      && ok "parallel=$par shadow, script exit $code: one bridge call, bash ran once" \
+      || bad "parallel=$par shadow exit $code: ran=$(ran_count "$FIX" exit) calls=$(bridge_calls) rc=$RC"
+    # In `on` mode the same exit is still no verdict: bash runs once after it.
+    reset_logs
+    snapshot_with_port
+    printf '%s\n' "$code" > "$FIX/.claude/hooks/exit-rc"
+    printf '%s\n' "$code" > "$ENGINE/bridge-rc"
+    printf '%s\t%s\n' "$EXIT_ID" on > "$PLAN"
+    run "$FIX" HQ_HOOK_ENGINE_BIN="$STUB" HQ_HOOK_PARALLEL="$par"
+    [ "$(ran_count "$FIX" exit)" = "1" ] \
+      && ok "parallel=$par on, engine exit $code: no verdict, bash ran once" \
+      || bad "parallel=$par on exit $code: ran=$(ran_count "$FIX" exit) rc=$RC"
+  done
+done
+rm -f "$FIX/.claude/hooks/exit-rc"
+cp "$TMP/registry.orig" "$FIX/.claude/hooks/hook-registry.json"
 reset_logs
 
 if [ "$fail" -eq 0 ]; then

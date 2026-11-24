@@ -165,5 +165,29 @@ cmp -s "$PLANS" "$TMP/snap-plans"; check "missing plans markers leaves plans unc
 cmp -s "$SKILL" "$TMP/snap-skill"; check "missing plans markers leaves skill unchanged" 0 $?
 cmp -s "$JSON" "$TMP/snap-json"; check "missing plans markers leaves pricing.json unchanged" 0 $?
 
+cp "$TMP/plans.orig" "$PLANS"
+cp "$TMP/md.orig" "$MD"
+bash "$SCRIPT" --from-file "$FIXTURE" >/dev/null 2>&1
+check "refresh from a feed without disk tiers exits 0" 0 $?
+grep -F 'Company Outpost disk' "$MD" >/dev/null
+check "a feed without disk tiers prints no disk section" 1 $?
+
+DISK_FEED="$TMP/disk-feed.json"
+jq '.addOns.outpost.diskTiers = [
+  {"diskGb": 50, "monthlyUsd": 15, "lookupKey": "hq_pro_outpost_disk_50gb_monthly_v2"},
+  {"diskGb": 100, "monthlyUsd": 30, "lookupKey": "hq_pro_outpost_disk_100gb_monthly_v2"},
+  {"diskGb": 200, "monthlyUsd": 60, "lookupKey": "hq_pro_outpost_disk_200gb_monthly_v2"},
+  {"diskGb": 500, "monthlyUsd": 150, "lookupKey": "hq_pro_outpost_disk_500gb_monthly_v2"}
+]' "$FIXTURE" >"$DISK_FEED"
+bash "$SCRIPT" --from-file "$DISK_FEED" >/dev/null 2>&1
+check "refresh from a feed with disk tiers exits 0" 0 $?
+exact "billing names the company Outpost disk section" '### Company Outpost disk (per Outpost, per month)' "$MD"
+exact "billing explains how the disk tier is chosen" 'A company Outpost that syncs the company files bills its box size plus the smallest disk tier that fits the company vault and 20 GB of headroom. The disk is charged once the Outpost confirms it is running. A company Outpost without company file sync gets a 30 GB disk at no charge.' "$MD"
+exact "billing lists the 50 GB tier" '| 50 GB | $15 |' "$MD"
+exact "billing lists the 100 GB tier" '| 100 GB | $30 |' "$MD"
+exact "billing lists the 200 GB tier" '| 200 GB | $60 |' "$MD"
+exact "billing lists the 500 GB tier" '| 500 GB | $150 |' "$MD"
+cmp_outside "$TMP/md.orig" "$MD" "$NUM_START" "$NUM_END" "disk tiers stay inside the numbers markers"
+
 echo "$pass passed"
 exit $fail

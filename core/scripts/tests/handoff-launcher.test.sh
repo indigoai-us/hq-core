@@ -87,9 +87,29 @@ done
 [ ! -e "$TMP/node-script" ] || fail "Linux/Darwin used the Windows hidden launcher"
 pass "Linux and Darwin retain nohup with stdin detached and argv preserved"
 
-for source in "$SKILL" "$POST"; do
-  grep -q -- '--handoff' "$source" || fail "$source does not use the platform-aware handoff launcher"
-done
-pass "handoff skill and post script use the shared platform-aware launcher"
+grep -q -- '--handoff' "$POST" || fail "$POST does not use the platform-aware handoff launcher"
+# The skill no longer launches the post itself: `hq core handoff run` starts it
+# detached through the CLI's platform-aware launcher after finalize succeeds.
+grep -Fq 'bash core/scripts/handoff-run.sh \' "$SKILL" || fail "$SKILL does not start the post through hq core handoff run (via handoff-run.sh)"
+grep -Fq -- '--handoff' "$ROOT/core/scripts/handoff-run.sh" || fail "handoff-run.sh fallback does not use the platform-aware handoff launcher"
+! grep -Eq 'hq core handoff post|core/scripts/handoff-post\.sh"? ' "$SKILL" || fail "$SKILL launches the post outside hq core handoff run"
+# The skill's commands live in fenced code blocks; prose may name the option.
+# Match --no-post as a whole word anywhere on a line in those blocks, so it is
+# caught first, mid-line, or last on its line (with or without a trailing `\`).
+skips_post() {
+  awk '/^[[:space:]]*```/ { fenced = !fenced; next } fenced' "$1" \
+    | grep -E -- '(^|[^[:alnum:]_-])--no-post([^[:alnum:]_-]|$)' >/dev/null
+}
+cat > "$TMP/skip-post-last.md" <<'FIXTURE'
+Prose may mention `--no-post` without tripping the check.
+
+```bash
+hq core handoff run \
+  --files-touched-json-file "workspace/threads/.handoff-tmp/x.json" --no-post
+```
+FIXTURE
+skips_post "$TMP/skip-post-last.md" || fail "skip check missed --no-post placed last on its line"
+! skips_post "$SKILL" || fail "$SKILL skips the post in its hq core handoff run call"
+pass "post script uses the shared platform-aware launcher; the skill starts the post through hq core handoff run"
 
 echo "handoff launcher: all passed"

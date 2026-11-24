@@ -130,7 +130,7 @@ case "$mode" in
     exit 2
     ;;
   active-b)
-    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-b"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-b"],"monitor_calls":[{"command":"hq lanes watch lane-b","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
+    printf '%s\n' '{"ok":false,"action":"monitor-check","session_id":"senior-1","engine":"claude","active_lane_ids":["lane-b"],"covered_lane_ids":[],"uncovered_lane_ids":["lane-b"],"monitor_calls":[{"command":"hq runners watch lane-b","timeout_ms":1800000,"persistent":true}]}' | emit_check_json
     exit 2
     ;;
   reminder-timeout)

@@ -1,0 +1,7 @@
+# Copy to ~/.config/tuimon/hosts. One ssh target per line; # starts a comment.
+# A target is anything ssh accepts: a Host alias from your ssh config, a host
+# name, or user@host. Each must already work with `ssh -o BatchMode=yes <target> true`
+# (key-based login, host key accepted). Nothing is installed on these machines.
+#
+# build-box
+# 203.0.113.10

@@ -51,6 +51,9 @@ case "${HQ_HARNESS:-}" in
   codex|grok)
     HQAD_DISPATCHER_PID=$$
     export HQAD_DISPATCHER_PID
+    # Same as master-hook.sh: a bridge plan inherited from a parent event
+    # must not leak into this one, where the kill switch or flags may differ.
+    unset HQ_HOOK_BRIDGE_PLAN HQ_HOOK_BRIDGE_BIN
     ;;
 esac
 
@@ -672,6 +675,19 @@ hqad_launch_registered_hook() {
   hqad_event_watchdog_child_start "$script" "$event"
   HQAD_CHILD_TIMED_OUT=0
   HQAD_CHILD_RC=""
+  # The policy injector goes through the hq-hook engine when its port flag is
+  # on, with the same flag, pin and bridge decision master-hook.sh makes for
+  # Claude Code. No verdict from the engine runs the bash hook below.
+  if hqad_engine_bridge "$root" "$event" "$payload" "$hook_id" "$script" "$@"; then
+    status="$HQ_HOOK_ENGINE_BRIDGE_RC"
+    HQAD_CHILD_RC="$status"
+    # shellcheck disable=SC2034 # read by adapters after this function returns
+    HQ_HOOK_LAST_STATUS="$status"
+    # shellcheck disable=SC2034
+    HQ_HOOK_LAST_CAUSE=""
+    hqad_event_watchdog_child_end
+    return "$status"
+  fi
   local cap=""
   if [ "${HQAD_HOOK_MODE:-}" = "advisory" ]; then
     hqad_advisory_cap_seconds "$root" "$event" "$hook_id"
@@ -725,15 +741,7 @@ hqad_advisory_cap_seconds() {
     . "$root/core/scripts/lib/advisory-cap.sh" 2>/dev/null || return 0
   fi
   hq_advisory_cap_enabled || return 0
-  if [ "$HQAD_CAP_TIMEOUTS_EVENT" != "$event" ]; then
-    HQAD_CAP_TIMEOUTS_EVENT="$event"
-    HQAD_CAP_TIMEOUTS="$(jq -r --arg ev "$event" '
-      (.hooks[$ev] // [])[]? | objects
-      | (.hooks // [])[]? | objects
-      | select((.id | type) == "string")
-      | "\(.id)\t\(if (.timeout | type) == "number" then (.timeout | floor) else "" end)\t\(if .safety == true or .fail_closed == true then 1 else 0 end)"
-    ' < "$root/.claude/hooks/hook-registry.json" 2>/dev/null || true)"
-  fi
+  hqad_registry_timeouts_load "$root" "$event"
   local guard=0
   while IFS=$'\t' read -r line t guard; do
     [ "$line" = "$id" ] && break
@@ -746,6 +754,287 @@ HQAD_CAP_ROWS
   [ "$guard" = "1" ] && return 0
   case "$t" in ''|*[!0-9]*|0*) t=30 ;; esac
   HQAD_CAP_SECONDS="$t"
+}
+
+# hqad_registry_timeouts_load <root> <event>: fills HQAD_CAP_TIMEOUTS with
+# "<id>\t<timeout>\t<guard>" rows for the event, one jq read per event.
+hqad_registry_timeouts_load() {
+  local root="$1" event="$2"
+  if [ "$HQAD_CAP_TIMEOUTS_EVENT" != "$event" ]; then
+    HQAD_CAP_TIMEOUTS_EVENT="$event"
+    HQAD_CAP_TIMEOUTS="$(jq -r --arg ev "$event" '
+      (.hooks[$ev] // [])[]? | objects
+      | (.hooks // [])[]? | objects
+      | select((.id | type) == "string")
+      | "\(.id)\t\(if (.timeout | type) == "number" then (.timeout | floor) else "" end)\t\(if .safety == true or .fail_closed == true then 1 else 0 end)"
+    ' < "$root/.claude/hooks/hook-registry.json" 2>/dev/null || true)"
+  fi
+}
+
+# hq-hook engine bridge (hq_hook_engine_*): the decision the Codex and Grok
+# adapters make before running a bridged registry hook. Plain function and
+# variable definitions; nothing here runs when the file is sourced, so
+# master-hook.sh, which also sources this file, is unaffected.
+#
+# Claude Code dispatches registry hooks through master-hook.sh, which asks the
+# hq-cli `hq-hook` engine for a bridge plan and runs a planned hook through
+# `hq-hook bridge`. The Codex and Grok adapters dispatch registry hooks
+# themselves (master-hook skips its registry pass for HQ_HARNESS codex|grok),
+# so the per-hook flag hook-engine-port-<id> had no effect there. These
+# functions make the same decision master-hook.sh makes, in the same order:
+#   1. kill switch: HQ_HOOK_ENGINE=off (any case) or ~/.hq/hook-engine.off;
+#   2. binary: HQ_HOOK_ENGINE_BIN when executable, else the absolute path on
+#      the first line of ~/.hq/bin/hq-hook/current;
+#   3. a bounded runner exists (perl or coreutils timeout); without one a hung
+#      engine cannot be stopped, so the bridge stays off;
+#   4. pre-gate: some ${XDG_CACHE_HOME:-~/.cache}/hq/flags/snapshot-*.json
+#      line holds a hook-engine-port- flag set to true, "on" or "shadow";
+#   5. `hq-hook bridge-plan --min-version 0.3.1 --schema 1` (empty stdin,
+#      killed at HQ_HOOK_ENGINE_PLAN_TIMEOUT, default 5 s) prints
+#      "<hook-id><TAB><shadow|on>" lines. The engine owns the pin check: a
+#      port whose pinned bash script differs is left out of the plan, or its
+#      `bridge` call exits without a verdict.
+# Steps 1-4 are builtins and file tests, so with the flag off no process
+# starts and the bash hook runs exactly as before.
+#
+# A planned hook runs as
+#   hq-hook bridge <id> --mode <m> --event <event> --timeout <t> --host <codex|grok> --script <abs> -- <args>
+# with the payload on stdin, under the same bound <t>. --host names the
+# adapter (HQ_HARNESS), so the engine applies its adapter-host guard; an
+# engine that does not know --host exits 70, which is no verdict. Exit 0 or 2 is the
+# verdict and its stdout and stderr are the hook's. Any other exit (engine
+# fault 70, decline 75, crash, 127, timeout 124) is no verdict: nothing the
+# engine printed is kept and the caller runs the bash hook, as master-hook
+# does.
+#
+# master-hook.sh sources this file but still runs its own copy of steps 1-5
+# (master_hook_engine_bridge_*); core/scripts/tests/hook-adapter-engine-bridge.test.sh checks that
+# the pre-gate here and in master-hook.sh agree on the same snapshot lines.
+
+HQ_HOOK_ENGINE_BRIDGE_LIB_MIN_VERSION="0.3.1"
+HQ_HOOK_ENGINE_BRIDGE_LIB_SCHEMA="1"
+
+# Same pre-gate test as master_hook_engine_port_enabled in master-hook.sh.
+hq_hook_engine_port_enabled() { # <line>
+  local rest="$1" id="" after=""
+  while :; do
+    case "$rest" in
+      *'"hook-engine-port-'*) rest="${rest#*\"hook-engine-port-}" ;;
+      *) return 1 ;;
+    esac
+    id="${rest%%\"*}"
+    [ "$id" != "$rest" ] || return 1
+    case "$id" in
+      ''|*[!a-z0-9-]*) continue ;;
+    esac
+    after="${rest#"$id"\"}"
+    after="${after#"${after%%[![:space:]]*}"}"
+    case "$after" in
+      :*) after="${after#:}" ;;
+      *) continue ;;
+    esac
+    after="${after#"${after%%[![:space:]]*}"}"
+    case "$after" in
+      true*|'"on"'*|'"shadow"'*) return 0 ;;
+    esac
+  done
+}
+
+# Which bounded runner is available: perl, timeout, or empty (none).
+hq_hook_engine_runner() {
+  HQ_HOOK_ENGINE_RUNNER=""
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) command -v timeout >/dev/null 2>&1 && HQ_HOOK_ENGINE_RUNNER=timeout ;;
+    *)
+      if command -v perl >/dev/null 2>&1 && [ -n "${HQ_ADVISORY_CAP_PERL:-}" ]; then HQ_HOOK_ENGINE_RUNNER=perl
+      elif command -v timeout >/dev/null 2>&1; then HQ_HOOK_ENGINE_RUNNER=timeout
+      fi
+      ;;
+  esac
+  [ -n "$HQ_HOOK_ENGINE_RUNNER" ]
+}
+
+# hq_hook_engine_run_bounded <seconds> <argv...>: argv under a hard cap, with
+# this shell's stdin. Exits 124 on expiry, 125 when there is no runner.
+hq_hook_engine_run_bounded() {
+  local t="$1" grace="2"
+  shift
+  case "$t" in ''|*[!0-9]*|0*) return 125 ;; esac
+  ! command -v hq_advisory_cap_kill_after >/dev/null 2>&1 || grace="$(hq_advisory_cap_kill_after)"
+  case "$HQ_HOOK_ENGINE_RUNNER" in
+    perl)
+      # Same as advisory-cap.sh: the lib restores the caller's locale in the
+      # child; a partial copy without the lib still bounds the engine.
+      # shellcheck source=perl-child-locale.sh
+      command -v hq_perl_spawn >/dev/null 2>&1 \
+        || . "$(dirname "${BASH_SOURCE[0]}")/perl-child-locale.sh" 2>/dev/null \
+        || hq_perl_spawn() { local p="$1"; shift; LC_ALL=C "${HQ_PERL_BIN:-perl}" -e "$p" "$@"; }
+      hq_perl_spawn "$HQ_ADVISORY_CAP_PERL" "$t" "$grace" "$@"
+      ;;
+    timeout) timeout -k "$grace" "$t" "$@" ;;
+    *) return 125 ;;
+  esac
+}
+
+# Same MSYS2 environment handling as master_hook_engine_bridge_run: on
+# Windows the bridge call alone keeps PWD and HQ_ROOT literal.
+hq_hook_engine_bridge_exec() { # <seconds> <argv...>
+  case "${OSTYPE:-}" in
+    msys*|cygwin*)
+      local MSYS2_ENV_CONV_EXCL="PWD;HQ_ROOT${MSYS2_ENV_CONV_EXCL:+;$MSYS2_ENV_CONV_EXCL}"
+      export MSYS2_ENV_CONV_EXCL
+      ;;
+  esac
+  hq_hook_engine_run_bounded "$@"
+}
+
+# hq_hook_engine_bridge_plan: resolves the plan once per process. Sets
+# HQ_HOOK_ENGINE_BRIDGE_BIN and HQ_HOOK_ENGINE_BRIDGE_PLAN (both empty when
+# the bridge is off) and, like master-hook, exports HQ_HOOK_BRIDGE_BIN and
+# HQ_HOOK_BRIDGE_PLAN for the helpers hooks call.
+HQ_HOOK_ENGINE_BRIDGE_RESOLVED=0
+HQ_HOOK_ENGINE_BRIDGE_BIN=""
+HQ_HOOK_ENGINE_BRIDGE_PLAN=""
+HQ_HOOK_ENGINE_RUNNER=""
+hq_hook_engine_bridge_plan() {
+  local home="${HOME:-}" bin="" pointer="" snapshot="" line="" found=0 plan="" plan_rc=0 t
+  [ "$HQ_HOOK_ENGINE_BRIDGE_RESOLVED" -eq 0 ] || return 0
+  HQ_HOOK_ENGINE_BRIDGE_RESOLVED=1
+  case "${HQ_HOOK_ENGINE:-}" in
+    [Oo][Ff][Ff]) return 0 ;;
+  esac
+  [ ! -e "$home/.hq/hook-engine.off" ] || return 0
+  if [ -n "${HQ_HOOK_ENGINE_BIN:-}" ] && [ -x "${HQ_HOOK_ENGINE_BIN}" ]; then
+    bin="$HQ_HOOK_ENGINE_BIN"
+  elif [ -f "$home/.hq/bin/hq-hook/current" ]; then
+    IFS= read -r pointer < "$home/.hq/bin/hq-hook/current" || true
+    pointer="${pointer%$'\r'}"
+    case "$pointer" in
+      /*|[A-Za-z]:[/\\]*) [ -f "$pointer" ] && [ -x "$pointer" ] && bin="$pointer" ;;
+    esac
+  fi
+  [ -n "$bin" ] || return 0
+  hq_hook_engine_runner || return 0
+  for snapshot in "${XDG_CACHE_HOME:-$home/.cache}"/hq/flags/snapshot-*.json; do
+    [ -f "$snapshot" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        *hook-engine-port-*)
+          if hq_hook_engine_port_enabled "$line"; then found=1; break; fi
+          ;;
+      esac
+    done < "$snapshot"
+    [ "$found" -eq 0 ] || break
+  done
+  [ "$found" -eq 1 ] || return 0
+  t="${HQ_HOOK_ENGINE_PLAN_TIMEOUT:-5}"
+  case "$t" in ''|*[!0-9]*|0*) t=5 ;; esac
+  plan="$(hq_hook_engine_run_bounded "$t" "$bin" bridge-plan \
+    --min-version "$HQ_HOOK_ENGINE_BRIDGE_LIB_MIN_VERSION" \
+    --schema "$HQ_HOOK_ENGINE_BRIDGE_LIB_SCHEMA" < /dev/null 2>/dev/null)" || plan_rc=$?
+  [ "$plan_rc" -eq 0 ] || return 0
+  [ -n "$plan" ] || return 0
+  HQ_HOOK_ENGINE_BRIDGE_BIN="$bin"
+  HQ_HOOK_ENGINE_BRIDGE_PLAN="$plan"
+  export HQ_HOOK_BRIDGE_BIN="$bin" HQ_HOOK_BRIDGE_PLAN="$plan"
+}
+
+# hq_hook_engine_bridge_mode <hook-id>: sets HQ_HOOK_ENGINE_BRIDGE_MODE to
+# shadow, on, or empty (bash runs).
+HQ_HOOK_ENGINE_BRIDGE_MODE=""
+hq_hook_engine_bridge_mode() {
+  local id="$1" line="" mode=""
+  HQ_HOOK_ENGINE_BRIDGE_MODE=""
+  hq_hook_engine_bridge_plan
+  [ -n "$HQ_HOOK_ENGINE_BRIDGE_PLAN" ] || return 0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [ "${line%%$'\t'*}" = "$id" ] || continue
+    mode="${line#*$'\t'}"
+    case "$mode" in
+      shadow|on) HQ_HOOK_ENGINE_BRIDGE_MODE="$mode" ;;
+    esac
+    return 0
+  done <<HQ_HOOK_ENGINE_PLAN_LINES
+$HQ_HOOK_ENGINE_BRIDGE_PLAN
+HQ_HOOK_ENGINE_PLAN_LINES
+}
+
+# hq_hook_engine_bridge_try <host> <event> <payload> <hook-id> <script> <timeout> [args...]
+# Returns 0 when the engine gave a verdict: its stdout and stderr have been
+# printed and HQ_HOOK_ENGINE_BRIDGE_RC holds 0 or 2. Returns 1 when the bash
+# hook must run (bridge off, hook not planned, no timeout, or no verdict);
+# nothing has been printed then.
+HQ_HOOK_ENGINE_BRIDGE_RC=""
+hq_hook_engine_bridge_try() {
+  local host="$1" event="$2" payload="$3" id="$4" script="$5" t="$6" out="" err="" rc=0
+  shift 6
+  HQ_HOOK_ENGINE_BRIDGE_RC=""
+  case "$host" in
+    codex|grok) ;;
+    *) return 1 ;;
+  esac
+  hq_hook_engine_bridge_mode "$id"
+  [ -n "$HQ_HOOK_ENGINE_BRIDGE_MODE" ] || return 1
+  case "$t" in ''|*[!0-9]*|0*) return 1 ;; esac
+  # Output is held in files so a verdict's bytes pass through unchanged and a
+  # fault leaves nothing behind. No temp file means no bridge.
+  out="$(mktemp "${TMPDIR:-/tmp}/hq-hook-bridge.XXXXXX" 2>/dev/null)" || return 1
+  err="$(mktemp "${TMPDIR:-/tmp}/hq-hook-bridge.XXXXXX" 2>/dev/null)" || { rm -f "$out"; return 1; }
+  [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hook-adapter: bridge %s (%s)\n' "$id" "$HQ_HOOK_ENGINE_BRIDGE_MODE" >&2
+  hq_hook_engine_bridge_exec "$t" "$HQ_HOOK_ENGINE_BRIDGE_BIN" \
+    bridge "$id" --mode "$HQ_HOOK_ENGINE_BRIDGE_MODE" --event "$event" --timeout "$t" --host "$host" \
+    --script "$script" -- "$@" < <(printf '%s' "$payload") >"$out" 2>"$err" || rc=$?
+  case "$rc" in
+    0|2)
+      cat "$out" 2>/dev/null || true
+      cat "$err" >&2 2>/dev/null || true
+      rm -f "$out" "$err" 2>/dev/null || true
+      HQ_HOOK_ENGINE_BRIDGE_RC="$rc"
+      return 0
+      ;;
+  esac
+  rm -f "$out" "$err" 2>/dev/null || true
+  [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hook-adapter: bridge %s exited %s without a verdict; running bash\n' "$id" "$rc" >&2
+  return 1
+}
+
+# Hook ids the adapters route through the hq-hook engine bridge. Only the
+# policy injector for now: hook-engine-port-inject-policy-on-trigger.
+HQAD_ENGINE_BRIDGE_IDS=" inject-policy-on-trigger "
+
+# hqad_engine_bridge <root> <event> <payload> <hook-id> <script> [args...]
+# Returns 0 when the engine answered for the hook (output printed, status in
+# HQ_HOOK_ENGINE_BRIDGE_RC). Returns 1, having printed nothing, whenever the
+# bash hook must run: another hook id, HQ_HARNESS not codex or grok, no
+# registry timeout for the hook on this event, the flag off, the kill switch, no engine, no plan line (pin mismatch), or an engine
+# exit other than 0 and 2.
+hqad_engine_bridge() {
+  local root="$1" event="$2" payload="$3" id="$4" script="$5" line t="" guard
+  shift 5
+  case "$HQAD_ENGINE_BRIDGE_IDS" in
+    *" $id "*) ;;
+    *) return 1 ;;
+  esac
+  case "${HQ_HARNESS:-}" in
+    codex|grok) ;;
+    *) return 1 ;;
+  esac
+  if [ -z "${HQ_ADVISORY_CAP_PERL:-}" ] && [ -f "$root/core/scripts/lib/advisory-cap.sh" ]; then
+    . "$root/core/scripts/lib/advisory-cap.sh" 2>/dev/null || true
+  fi
+  # Builtins and file tests first, so the flag off starts no process.
+  hq_hook_engine_bridge_plan
+  [ -n "$HQ_HOOK_ENGINE_BRIDGE_PLAN" ] || return 1
+  hqad_registry_timeouts_load "$root" "$event"
+  while IFS=$'\t' read -r line t guard; do
+    [ "$line" = "$id" ] && break
+    t=""
+  done <<HQAD_BRIDGE_ROWS
+$HQAD_CAP_TIMEOUTS
+HQAD_BRIDGE_ROWS
+  case "$t" in ''|*[!0-9]*|0*) return 1 ;; esac
+  hq_hook_engine_bridge_try "$HQ_HARNESS" "$event" "$payload" "$id" "$script" "$t" "$@"
 }
 
 # hqad_is_safety_hook <root> <event> <hook-id>
@@ -909,15 +1198,18 @@ hqad_classify_command() {
 # With the hook-engine-launcher flag on, the update healer and `hq reindex`
 # (hq-cli 1992) register the pinned native engine in place of the
 # master-hook.sh line:
-#   command: $HOME/.hq/bin/hq-hook/<semver>/<binary>
+#   command: $HOME/.hq/bin/hq-hook/<semver|stable>/<binary>
 #   args:    [<Event>, "--hq-root", <root>, "--runtime", "claude"]
+#         or ["run", "--host", "claude", <Event>, "--hq-root", <root>, ...]
 # The engine runs the same fan-out as master-hook.sh, so Codex and Grok must
 # still run master-hook.sh for it. Emit `master<TAB><Event>` only when the
-# command has the pinned layout <home>/.hq/bin/hq-hook/<semver>/<binary>
-# (binary names as hq-cli's resolve.ts installs them) and --hq-root names
-# this HQ root. Any other exec entry emits nothing, as before. The event
-# argument must name the settings slot the entry sits in, so a PreToolUse
-# entry cannot dispatch as another event and skip the PreToolUse guards.
+# command has the pinned layout <home>/.hq/bin/hq-hook/<semver>/<binary> (or
+# the "stable" alias symlink resolving to a pinned <semver> directory under the
+# same .hq/bin/hq-hook parent, with binary names as hq-cli's resolve.ts installs
+# them) and --hq-root names this HQ root. Any other exec entry emits nothing,
+# as before. The event argument must name the settings slot the entry sits in,
+# so a PreToolUse entry cannot dispatch as another event and skip the PreToolUse
+# guards.
 #
 # When <home> is not this process's HOME the entry still counts, with a
 # warning on stderr (see the end of hqad_classify_exec). "This HOME" follows
@@ -942,15 +1234,77 @@ hqad_exec_home_matches() { # <prefix>
 }
 
 hqad_classify_exec() {
-  [ "$#" -ge 5 ] || return 0
-  local slot="$1" command="$2" event="$3" flag="$4" root="$5"
-  [ "$flag" = "--hq-root" ] && [ -n "$root" ] && [ -n "$HQ_ROOT" ] || return 0
-  case "$event" in '' | *[!A-Za-z]*) return 0 ;; esac
-  [ "$event" = "$slot" ] || return 0
+  [ "$#" -ge 3 ] || return 0
+  local slot="$1" command="$2"
+  shift 2
+  case "$slot" in '' | *[!A-Za-z]*) return 0 ;; esac
+  [ -n "$HQ_ROOT" ] || return 0
+  local is_run=0 host="" event="" root="" arg="" arg_warn="" missing_flag_val=0
+  if [ "${1:-}" = "run" ]; then
+    is_run=1
+    shift
+  fi
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    shift
+    case "$arg" in
+      --host)
+        if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
+          host="$1"
+          shift
+        else
+          missing_flag_val=1
+          [ -n "$arg_warn" ] || arg_warn="missing value for --host"
+        fi
+        ;;
+      --host=*)
+        host="${arg#--host=}"
+        ;;
+      --hq-root)
+        if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
+          root="$1"
+          shift
+        else
+          missing_flag_val=1
+          [ -n "$arg_warn" ] || arg_warn="missing value for --hq-root"
+        fi
+        ;;
+      --hq-root=*)
+        root="${arg#--hq-root=}"
+        ;;
+      --runtime | --budget-ms)
+        [ "$#" -gt 0 ] && [[ "$1" != -* ]] && shift
+        ;;
+      -*)
+        ;;
+      *)
+        if [ -z "$event" ]; then
+          event="$arg"
+        fi
+        ;;
+    esac
+  done
+  if [ "$is_run" -eq 1 ] && [ "$host" != "claude" ]; then
+    [ -n "$arg_warn" ] || arg_warn="unexpected --host '${host}' for run"
+  fi
+  if [ "$missing_flag_val" -eq 0 ]; then
+    [ -n "$root" ] || return 0
+    case "$event" in '' | *[!A-Za-z]*) return 0 ;; esac
+    [ "$event" = "$slot" ] || return 0
+  else
+    if [ -n "$event" ]; then
+      case "$event" in *[!A-Za-z]*) return 0 ;; esac
+      [ "$event" = "$slot" ] || return 0
+    else
+      event="$slot"
+    fi
+  fi
   # The CLI writes native paths on Windows; compare in Git Bash's form.
   if command -v cygpath >/dev/null 2>&1; then
     case "$command" in [A-Za-z]:[\\/]* | [\\/][\\/]*) command="$(cygpath -u "$command" 2>/dev/null)" || return 0 ;; esac
-    case "$root" in [A-Za-z]:[\\/]* | [\\/][\\/]*) root="$(cygpath -u "$root" 2>/dev/null)" || return 0 ;; esac
+    if [ -n "$root" ]; then
+      case "$root" in [A-Za-z]:[\\/]* | [\\/][\\/]*) root="$(cygpath -u "$root" 2>/dev/null)" || return 0 ;; esac
+    fi
   fi
   case "$command" in
     /*) ;;
@@ -963,20 +1317,53 @@ hqad_classify_exec() {
   local rel="${command#"$prefix"/.hq/bin/hq-hook/}"
   local version="${rel%%/*}" binary="${rel#*/}"
   [ "$version" != "$rel" ] || return 0
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 0
+  local stable_unresolved=0
+  if [ "$version" = "stable" ]; then
+    local hook_parent="$prefix/.hq/bin/hq-hook" resolved_parent="" resolved_stable="" resolved_version=""
+    if resolved_parent="$(cd "$hook_parent" 2>/dev/null && pwd -P)" \
+      && resolved_stable="$(cd "$hook_parent/stable" 2>/dev/null && pwd -P)"; then
+      case "$resolved_stable" in
+        "$resolved_parent"/*)
+          resolved_version="${resolved_stable#"$resolved_parent"/}"
+          case "$resolved_version" in
+            */*) stable_unresolved=1 ;;
+            *)
+              [[ "$resolved_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || stable_unresolved=1
+              ;;
+          esac
+          ;;
+        *) stable_unresolved=1 ;;
+      esac
+    else
+      stable_unresolved=1
+    fi
+  else
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 0
+  fi
   case "$binary" in
     hq-hook | hq-hook.exe | hq-hook.app/Contents/MacOS/hq-hook) ;;
     *) return 0 ;;
   esac
-  local want got
-  want="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P)" || return 0
-  got="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
-  [ -n "$want" ] && { [ "$got" = "$want" ] || [ "$root" -ef "$HQ_ROOT" ]; } || return 0
+  if [ -n "$root" ] || [ "$missing_flag_val" -eq 0 ]; then
+    local want got
+    want="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P)" || return 0
+    got="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
+    [ -n "$want" ] && { [ "$got" = "$want" ] || [ "$root" -ef "$HQ_ROOT" ]; } || return 0
+  fi
   # The adapters never run the named binary: a master record runs this HQ
   # root's own master-hook.sh. So a pinned engine under another home (sudo, a
-  # sandbox or devcontainer, a fleet runtime, a HOME/USERPROFILE split) still
-  # counts as master. Dropping it would drop every personal, pack and company
-  # guard, because the release settings register them only through this entry.
+  # sandbox or devcontainer, a fleet runtime, a HOME/USERPROFILE split), an
+  # unresolved stable alias, or an unparsed run/flag form still counts as
+  # master. Dropping it would drop every personal, pack and company guard,
+  # because the release settings register them only through this entry.
+  if [ -n "$arg_warn" ]; then
+    printf 'WARN: hqad: %s %s engine %s %s; running master-hook.sh for it anyway.\n' \
+      "$slot" "$event" "$command" "$arg_warn" >&2
+  fi
+  if [ "$stable_unresolved" -eq 1 ]; then
+    printf 'WARN: hqad: %s %s engine %s stable alias could not be resolved to a pinned semver directory; running master-hook.sh for it anyway.\n' \
+      "$slot" "$event" "$command" >&2
+  fi
   if ! hqad_exec_home_matches "$prefix"; then
     printf 'WARN: hqad: %s %s engine %s is not under this HOME; running master-hook.sh for it anyway.\n' \
       "$slot" "$event" "$command" >&2

@@ -6,10 +6,10 @@
 #
 #   comments-watch.sh watch --app <id> (--org <slug> | --personal) --cursor-file <path> [--label <name>] [--interval <sec>=300] [--once]
 #
-# Every request goes through deploy-api-request.sh, so failures are reported on
-# stderr without auth headers. The identity comes from $HQ_DEPLOY_JWT when set
-# (never refreshed), else identity-resolve.sh, called before every poll so a
-# long-running watcher survives token refresh.
+# Every poll runs `hq deploy comments list <app> (--company <slug>|--personal)
+# --json`. The hq CLI signs in through `hq login` (refreshing as needed), sends
+# the scope header, checks the response and never prints tokens. The API base
+# comes from resolve-deploy-api.sh and is passed as HQ_DEPLOY_API_URL.
 #
 # The owner route takes no filters, so the cursor file holds a JSON array of
 # every comment id already seen. The first run with no cursor records the
@@ -29,8 +29,6 @@ _src="${BASH_SOURCE[0]}"
 _dir="${_src%/*}"
 [ "$_dir" = "$_src" ] && _dir="."
 SCRIPT_DIR="$(cd "$_dir" && pwd)"
-REQUEST="$SCRIPT_DIR/deploy-api-request.sh"
-IDENTITY_RESOLVER="${HQ_DEPLOY_IDENTITY_RESOLVER:-$SCRIPT_DIR/identity-resolve.sh}"
 HEARTBEAT_SEC="${HQ_SITE_EVENTS_HEARTBEAT_SEC:-1800}"
 MIN_INTERVAL=30
 
@@ -75,36 +73,26 @@ if [ "$PERSONAL" -eq 0 ] && [ -z "$ORG" ]; then fail bad_args "--org <slug> or -
 [[ "$INTERVAL" =~ ^[0-9]+$ ]] && [ "$INTERVAL" -ge "$MIN_INTERVAL" ] || fail bad_args "--interval must be a whole number of seconds, at least $MIN_INTERVAL" 64
 [ -n "$CURSOR_FILE" ] || fail bad_args "--cursor-file is required so a restart resumes where it stopped" 64
 mkdir -p "$(dirname "$CURSOR_FILE")" || fail bad_args "cannot create the cursor file's directory" 64
+# Arguments are checked first, so a bad call exits 64 even where hq is missing.
+command -v hq >/dev/null 2>&1 || { echo '{"ok":false,"reason":"missing_dependency","dep":"hq"}'; exit 1; }
 
 API="$("$SCRIPT_DIR/resolve-deploy-api.sh")"
 if [ "$PERSONAL" -eq 1 ]; then
-  SCOPE=personal; CONTEXT=(--header "X-HQ-Deploy-Scope: personal"); ORG_ARG=-
+  SCOPE_ARGS=(--personal)
 else
-  SCOPE=company; CONTEXT=(--header "X-Org-Slug: $ORG"); ORG_ARG="$ORG"
+  SCOPE_ARGS=(--company "$ORG")
 fi
 LABEL="${LABEL:-$APP}"
 
-# An explicit $HQ_DEPLOY_JWT wins (it is not refreshed). Otherwise resolve on
-# every poll; the resolver serves its cache and refreshes near expiry.
-resolve_jwt() {
-  if [ -n "${HQ_DEPLOY_JWT:-}" ]; then JWT="$HQ_DEPLOY_JWT"; return 0; fi
-  JWT="$("$IDENTITY_RESOLVER" 2>/dev/null | jq -r 'select(.status == "ok") | .jwt // empty' 2>/dev/null)"
-  [ -n "$JWT" ]
-}
-
-api() {
-  local stage="$1"; shift
-  HQ_DEPLOY_JWT="$JWT" "$REQUEST" --stage "$stage" --org "$ORG_ARG" --scope "$SCOPE" "${CONTEXT[@]}" "$@"
-}
-
-# Prints the owner listing, or nothing on failure. A 403 COMMENTS_DISABLED is
-# reported as an empty listing with commentsEnabled false.
+# Prints the owner listing ({commentsEnabled, comments}), or nothing on
+# failure. A COMMENTS_DISABLED refusal is reported as an empty listing with
+# commentsEnabled false.
 poll() {
   local body="" err
   err="$(mktemp)" || return 0
-  if resolve_jwt; then
-    body="$(api comments-poll --method GET --url "$API/api/apps/$APP/manage/comments" \
-      --expect '.comments | type == "array"' 2>"$err")" || body=""
+  body="$(HQ_DEPLOY_API_URL="$API" hq deploy comments list "$APP" "${SCOPE_ARGS[@]}" --json 2>"$err")" || body=""
+  if [ -n "$body" ] && ! jq -e '.comments | type == "array"' >/dev/null 2>&1 <<<"$body"; then
+    body=""
   fi
   if [ -z "$body" ] && grep -q 'COMMENTS_DISABLED' "$err" 2>/dev/null; then
     body='{"commentsEnabled":false,"comments":[]}'

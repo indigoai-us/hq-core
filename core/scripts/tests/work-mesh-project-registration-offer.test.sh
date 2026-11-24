@@ -137,13 +137,13 @@ PRD="$ROOT/.claude/skills/prd/SKILL.md"
 FINALIZE="$ROOT/.claude/skills/_shared/prd-finalize.md"
 step_line() { grep -n -F "$2" "$1" | head -1 | cut -d: -f1; }
 
-b_reg="$(step_line "$BRAINSTORM" 'register-project.sh --board {co} {board-project-id}')"
+b_reg="$(step_line "$BRAINSTORM" 'hq core register-project --board {co} {board-project-id}')"
 b_research="$(step_line "$BRAINSTORM" '## Step 2: HQ Research')"
 [ -n "$b_reg" ] && [ -n "$b_research" ] && [ "$b_reg" -lt "$b_research" ] \
   || fail "/brainstorm must register the project before Step 2 research (register at $b_reg, research at $b_research)"
 echo "PASS: /brainstorm registers the project before research and the interview"
 
-p_reg="$(step_line "$PRD" 'register-project.sh --board {co} {board-project-id}')"
+p_reg="$(step_line "$PRD" 'hq core register-project --board {co} {board-project-id}')"
 p_interview="$(step_line "$PRD" '## Step 4: Discovery Interview')"
 [ -n "$p_reg" ] && [ -n "$p_interview" ] && [ "$p_reg" -lt "$p_interview" ] \
   || fail "/prd must register the project before the Step 4 interview (register at $p_reg, interview at $p_interview)"

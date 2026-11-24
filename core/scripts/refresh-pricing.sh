@@ -108,6 +108,16 @@ jq -r '
     (.usage.boxes[] | "| \(.size) | \(.instanceType) | \(.monthlyUsd | usd) |"),
     ""
   end),
+  (if ((.addOns.outpost.diskTiers // []) | length) == 0 then empty else
+    "### Company Outpost disk (per Outpost, per \(.interval))",
+    "",
+    "A company Outpost that syncs the company files bills its box size plus the smallest disk tier that fits the company vault and 20 GB of headroom. The disk is charged once the Outpost confirms it is running. A company Outpost without company file sync gets a 30 GB disk at no charge.",
+    "",
+    "| Disk | Price |",
+    "|---|---|",
+    (.addOns.outpost.diskTiers[] | "| \(.diskGb) GB | \(.monthlyUsd | usd) |"),
+    ""
+  end),
   (if .signup == null then empty else
     "### Signup",
     "",

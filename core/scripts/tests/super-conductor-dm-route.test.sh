@@ -161,7 +161,8 @@ need 'super-conductor-dm-route.mjs filter-dms' 'pipes the hq_dms sweep through f
 need 'super-conductor\.<company>\.yaml' 'documents the per-company settings overlay'
 need 'primary: true' 'documents the primary conductor flag'
 need '/conduct-join leave' 'documents /conduct-join leave when a child moves between links'
-need '[Oo]ne conductor per company set' 'states one conductor per company set'
+need 'Conductors are told apart by name, not by company' 'states conductors are named, not one per company'
+need 'one conductor per company: one session bound to' 'keeps one conductor per company for owners with several companies'
 need 'super-conductor-prefs.mjs --company <slug>' 'documents --company on the prefs helper'
 
 [[ "$fail" -eq 0 ]] || exit 1

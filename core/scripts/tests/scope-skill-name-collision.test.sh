@@ -335,6 +335,70 @@ mv "$TMP/.claude/skills" "$TMP/.claude/skills-real"
 ln -s skills-real "$TMP/.claude/skills"
 run_case 'linked .claude/skills keeps the name rule' Skill 'brainstorm' 2
 
+# `hq install-global` links user-level aliases with one `hq-` prefix: core
+# `hq-<name>` -> .claude/skills/<name>, and `hq-personal:<name>` ->
+# .claude/skills/personal:<name> (feedback ca21d932). The alias of an overlay
+# mirror is the overlay's, so neither spelling is refused, in an unbound
+# session or one locked to another company. An alias of a mirror of the
+# company named personal stays refused.
+install_global_aliases() {
+  ln -s "$TMP/.claude/skills/brainstorm" "$TMP/claude-config/skills/hq-brainstorm"
+  ln -s "$TMP/.claude/skills/personal:brainstorm" "$TMP/claude-config/skills/hq-personal:brainstorm"
+  ln -s "$TMP/.claude/skills/personal:copied" "$TMP/claude-config/skills/hq-personal:copied"
+  ln -s "$TMP/.claude/skills/personal:ledger" "$TMP/claude-config/skills/hq-personal:ledger"
+}
+for bound in '' ownco; do
+  install_fixture "$bound"
+  install_global_aliases
+  # No company carries `brainstorm` except through these aliases.
+  rm -rf "$TMP/companies/otherco/.claude/skills/brainstorm"
+  echo "[bound='${bound:-none}': user-level hq-personal: aliases of overlay mirrors load]"
+  run_case 'hq-personal: alias of an overlay mirror loads' Skill 'hq-personal:brainstorm' 0
+  run_case 'hq-personal: alias of a copied overlay mirror loads' Skill 'hq-personal:copied' 0
+  run_case 'core hq- alias beside an hq-personal: alias loads' Skill 'hq-brainstorm' 0
+  run_case 'bare name beside an hq-personal: alias loads' Skill 'brainstorm' 0
+  run_case 'hq-personal: alias is readable' Read "$TMP/claude-config/skills/hq-personal:brainstorm/SKILL.md" 0
+  echo "[bound='${bound:-none}': aliases of the company named personal stay refused]"
+  run_case 'hq-personal: alias of a company mirror is refused' Skill 'hq-personal:ledger' 2
+  assert_stderr 'refusal names the company named personal' 'Target company: personal'
+  run_case 'bare name of that company mirror is refused' Skill 'ledger' 2
+  run_case 'hq-personal: alias of a company mirror is not readable' Read "$TMP/claude-config/skills/hq-personal:ledger/SKILL.md" 2
+  run_case 'case-variant hq-personal: request is refused' Skill 'HQ-PERSONAL:brainstorm' 2
+  run_case 'another company stays refused beside the aliases' Skill 'otherco:signals' 2
+done
+
+install_fixture ''
+install_global_aliases
+echo '[hq-personal: aliases that are not the overlay are refused]'
+rm -f "$TMP/claude-config/skills/hq-personal:brainstorm"
+ln -s "$TMP/companies/personal/skills/ledger" "$TMP/claude-config/skills/hq-personal:brainstorm"
+run_case 'alias linking into the company folder is refused' Skill 'hq-personal:brainstorm' 2
+rm -f "$TMP/claude-config/skills/hq-personal:brainstorm"
+ln -s "$TMP/.claude/skills/personal:ledger" "$TMP/claude-config/skills/hq-personal:brainstorm"
+run_case 'alias of another name linking to a company mirror is refused' Skill 'hq-personal:brainstorm' 2
+rm -f "$TMP/claude-config/skills/hq-personal:brainstorm"
+mkdir -p "$TMP/claude-config/skills/hq-personal:brainstorm"
+printf 'company body\n' > "$TMP/claude-config/skills/hq-personal:brainstorm/SKILL.md"
+run_case 'copied alias that differs from the overlay is refused' Skill 'hq-personal:brainstorm' 2
+cp "$TMP/personal/skills/brainstorm/SKILL.md" "$TMP/claude-config/skills/hq-personal:brainstorm/SKILL.md"
+run_case 'copied alias identical to the overlay loads' Skill 'hq-personal:brainstorm' 0
+run_case 'copied alias identical to the overlay is readable' Read "$TMP/claude-config/skills/hq-personal:brainstorm/SKILL.md" 0
+# Files beside the copied SKILL.md that link into a company stay unreadable.
+ln -s "$TMP/companies/otherco/skills/signals/SKILL.md" "$TMP/claude-config/skills/hq-personal:brainstorm/ref.md"
+ln -s "$TMP/companies/otherco/skills/signals" "$TMP/claude-config/skills/hq-personal:brainstorm/sub"
+run_case 'company link beside a copied alias is not readable' Read "$TMP/claude-config/skills/hq-personal:brainstorm/ref.md" 2
+run_case 'company folder link beside a copied alias is not readable' Read "$TMP/claude-config/skills/hq-personal:brainstorm/sub/SKILL.md" 2
+rm -rf "$TMP/claude-config/skills/hq-personal:brainstorm"
+ln -s "$TMP/.claude/skills/personal:brainstorm" "$TMP/claude-config/skills/hq-personal:brainstorm"
+skill_md "$TMP/.claude/skills/hq-personal:brainstorm" brainstorm
+run_case 'an HQ hq-personal: folder of the same name keeps the rule' Skill 'hq-personal:brainstorm' 2
+rm -rf "$TMP/.claude/skills/hq-personal:brainstorm"
+# A stub planted in personal/skills does not turn a company mirror's alias
+# into the overlay's.
+mkdir -p "$TMP/personal/skills/ledger"
+printf 'stub planted in the overlay\n' > "$TMP/personal/skills/ledger/SKILL.md"
+run_case 'stub overlay does not unlock a company mirror alias' Skill 'hq-personal:ledger' 2
+
 install_fixture 'otherco'
 echo '[bound to the company: its own skills and the core skills load]'
 run_case 'bound company loads the core name' Skill 'brainstorm' 0

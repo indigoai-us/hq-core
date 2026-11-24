@@ -174,6 +174,26 @@ MESH_PROJECT="$PROJECT"
 if [ "$STAGE" = prd ]; then
   MESH_PROJECT="$(jq -r --arg p "$PROJECT" '.metadata.workMeshProjectId // .metadata.projectId // $p' "$PRD_ABS" 2>/dev/null || printf '%s' "$PROJECT")"
 fi
+# Without an explicit metadata id, resolve the board of record: the board.json
+# entry's mesh_project_id, then a suffixed cache slug (<project>-<12 hex>) in
+# the company's Work Mesh cache.
+if [ "$MESH_PROJECT" = "$PROJECT" ]; then
+  BOARD_MESH="$(jq -r --arg p "$PROJECT" --arg path "${PRD_PATH:-}" '[.projects[]? | select(.id == $p or .mesh_project_id == $p or (($path != "") and (.prd_path == $path)))] | first | (.mesh_project_id // empty)' "$BOARD" 2>/dev/null | tr -d '\r' || true)"
+  if [ -n "$BOARD_MESH" ]; then
+    MESH_PROJECT="$BOARD_MESH"
+  else
+    CO_UID="$(tr -d '[:space:]' < "$HQ_ROOT/companies/$COMPANY/.company-uid" 2>/dev/null || true)"
+    if [ -n "$CO_UID" ]; then
+      for f in "${HQ_WORK_MESH_CACHE_DIR:-$HOME/.hq/work-mesh/cache/projects}/$CO_UID/$PROJECT"-????????????.json; do
+        [ -f "$f" ] || continue
+        cand="$(basename "$f" .json)"
+        case "${cand#"$PROJECT"-}" in *[!0-9a-f]*) continue ;; esac
+        MESH_PROJECT="$cand"
+        break
+      done
+    fi
+  fi
+fi
 # Silently tolerated when unavailable (local/offline installs no-op).
 
 if command -v hq >/dev/null 2>&1; then

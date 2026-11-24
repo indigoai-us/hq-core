@@ -1,0 +1,1 @@
+Run scheduled personal jobs through the CLI and keep the former shell runner as a test reference. The shell reconcile fallback now refuses, and writes no units, when hq is missing or older than 5.296.0. core/scripts/hq-job-run.sh stays for one release as a forwarder to hq core job run, so units written by older reconciles keep working until the next reconcile.

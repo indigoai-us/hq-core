@@ -1,7 +1,7 @@
 ---
 name: brainstorm
 description: Compare approaches to best-in-class prior art, merge existing work, verify cruft removal, and recommend the most durable design before PRD work.
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(hq core work-mesh-bind-trusted:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(hq core register-project:*), Bash(bash core/scripts/register-project.sh:*), Bash, AskUserQuestion, WebSearch, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/board-project-id.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Task, Bash(hq core work-mesh-bind-trusted:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(hq core register-project:*), Bash, AskUserQuestion, WebSearch, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/board-project-id.sh:*)
 ---
 
 # Brainstorm - Structured Exploration
@@ -124,7 +124,7 @@ bash core/scripts/work-mesh-project-registration-offer.sh --check {co} {board-pr
 
 - `register` → run the registration and verify its one output line:
   ```bash
-  bash core/scripts/register-project.sh --board {co} {board-project-id}
+  hq core register-project --board {co} {board-project-id}
   ```
   The verify line is `registered {co}/{board-project-id} thread=<id> channel=<id>`.
   If the script exits non-zero or prints anything else, say "registration
@@ -448,7 +448,7 @@ Write updated `board.json`.
 
 If Step 1.5 ended with "registration incomplete", or Step 1.5 was skipped
 because the company was unknown at the time, run the registration check and
-`register-project.sh --board` now exactly as in Step 1.5. A registration that
+`hq core register-project --board` now exactly as in Step 1.5. A registration that
 still fails is reported as "registration incomplete" in Step 7.
 
 ## Step 6.4: Open Session Journal

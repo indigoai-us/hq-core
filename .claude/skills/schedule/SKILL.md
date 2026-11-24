@@ -40,9 +40,12 @@ Args arrive in `$ARGUMENTS`.
    on the calling machine.
 3. **Validate before write.** Always run `jobs-validate.sh` on the target file;
    abort the write if it fails.
-4. **No Outpost → no file.** If `hq outposts list` shows no box (or fails
-   auth), explain in plain language and offer provisioning
-   (`hq outposts provision --yes` / console). **Do not write** a job YAML.
+4. **No Outpost → no file.** Check the Outpost that will run the job: for a
+   company job, `hq outposts list --company <co>`; for a personal job,
+   `hq outposts list`. If there is none (or auth fails), explain in plain
+   language and offer to create one (quote first, then
+   `hq outposts provision --company <co> --yes` after the user agrees; a
+   personal one only when the user asks for it). **Do not write** a job YAML.
 5. **Structured checklist is primary.** Requirements come from AskUserQuestion
    (or equivalent one-question prompts), not free-form LLM inference. An
    optional "suggest from prompt" assist may pre-fill options but **never**
@@ -56,6 +59,12 @@ Args arrive in `$ARGUMENTS`.
    ```
    For company-scoped jobs also push `companies/<co>/jobs` (or
    `hq sync push --company <co> -- …`).
+8. **Company Outposts register jobs through the CLI.** A job on a company
+   Outpost runs only after `hq outposts jobs register --company <co>
+   [--outpost <name|id>] --prompt … --cron … --timezone …` accepts it. A YAML
+   file alone schedules nothing. Confirm the job id and next run in
+   `hq outposts status --company <co>`. See
+   `core/knowledge/public/hq-core/company-outposts.md`.
 
 ## Resolve HQ root + scripts
 
@@ -124,7 +133,8 @@ updated_at: "2026-08-23T18:00:00Z"   # now UTC ISO-8601
 ### 0. Preconditions
 
 - Auth: `hq whoami` works (else `/hq-login`).
-- Outpost: `hq outposts list` has ≥1 row. Else CTA + stop (no file).
+- Outpost: `hq outposts list --company <co>` (company job) or `hq outposts list`
+  (personal job) has ≥1 row. Else CTA + stop (no file).
 - Owner email: from `hq whoami`.
 
 ### 1. Parse schedule from `$ARGUMENTS`

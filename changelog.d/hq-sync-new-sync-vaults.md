@@ -1,0 +1,1 @@
+`/hq-sync` now lists the vaults the new sync engine owns on this computer under "Handled by the new sync" (the runner's `company-skipped` events with reason `new-sync`) and points to `hq sync-core status`. A run where the new sync owns every vault exits 0 with no `all-complete` event; it no longer prints "Sync finished without a final status".

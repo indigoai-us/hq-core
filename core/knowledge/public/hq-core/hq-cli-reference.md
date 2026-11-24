@@ -330,19 +330,28 @@ rule, never the value.
 | `hq agent mcp` | Serve HQ as a stdio MCP server for the bot framework (whoami, search, files, secrets-exec, dm, inbox, work-mesh) |
 | `hq agent inbox` | List this agent's pending HQ messages (mirrored by the kit), or mark them handled |
 | `hq agent inbox done` | Mark inbox items handled and ack them on the server |
-| `hq outposts` | Manage your personal HQ Outposts (EC2 boxes) |
-| `hq outposts provision` (alias: `create`) | Provision a new Outpost (billed by size: $100 small, $200 medium, $400 large, $800 xlarge a month; requires --yes) |
-| `hq outposts list` | List every Outpost you own |
-| `hq outposts status` | Show live detail for one Outpost |
+| `hq outposts` | Manage personal and company HQ Outposts (EC2 boxes). Company-scoped by default; see [company-outposts.md](company-outposts.md) |
+| `hq outposts provision` (alias: `create`) | Provision a new company (`--company <slug>`) or personal (`--personal`) Outpost. Without `--yes` and without a terminal it prints the quote (machine, disk sized to the vault, total) and creates nothing |
+| `hq outposts request-access` | Ask the owners and admins of a company for access to one of its Outposts |
+| `hq outposts request` | Ask the owners and admins of a company for a new company Outpost |
+| `hq outposts requests` | List Outpost requests: owners and admins see every request, members see their own |
+| `hq outposts approve` | Approve an Outpost request (owners and admins); shows who asked, what for and the price first |
+| `hq outposts decline` | Decline an Outpost request (owners and admins) |
+| `hq outposts access list\|grant\|revoke` | See and change who may use a company Outpost (owners and admins). A grant gives full control, including root |
+| `hq outposts list` | List every Outpost you own, or a company's Outposts with `--company` |
+| `hq outposts status` | Show live detail for one Outpost; with `--company`, its sign-in state, jobs and each job's run status |
+| `hq outposts jobs register\|edit\|pause\|resume\|delete\|run-now\|runs` | Manage scheduled jobs on a company Outpost |
 | `hq outposts exec` | Run a shell command on an Outpost and print its output (use -- before flags meant for the remote command). |
 | `hq outposts exec-stage` | Stage a file for an asynchronous Outpost command |
 | `hq outposts exec-submit` | Submit an asynchronous shell command to an Outpost (returns immediately with commandId; shell budget defaults to 48h) |
 | `hq outposts exec-result` | Fetch the result of an asynchronous Outpost command |
+| `hq outposts pull` | Download one file from a personal Outpost through a short-lived download link |
 | `hq outposts terminal` | Open an interactive terminal on an Outpost — a real TTY over SSM Session Manager (no SSH, no local AWS credentials). |
-| `hq outposts codex-enable` | Enable (or retry) |
+| `hq outposts refresh-config` | Re-apply the server's job runner configuration to a company Outpost (owner or admin) |
+| `hq outposts codex-enable` | Enable (or retry) Codex on a personal Outpost |
 | `hq outposts login` | Request a fresh login URL for an Outpost |
 | `hq outposts login-code` | Submit the Claude sign-in code for an Outpost that is awaiting login |
-| `hq outposts destroy` | Tear down (permanently destroy) an Outpost |
+| `hq outposts destroy` | Tear down (permanently destroy) an Outpost; requires `--yes` |
 | `hq report` | Publish and manage a channel report owned by this bot. |
 | `hq report get` | (no description in catalog) |
 | `hq report publish` | (no description in catalog) |
@@ -474,7 +483,7 @@ rule, never the value.
 
 ## Billing
 
-The `hq billing upgrade`, `hq billing sponsor`, `hq db provision` and `hq outposts provision` rows follow the help text of hq-cli 5.345.210; the CLI help names no price for Outpost sizes, so that row adds the prices from [pricing.json](pricing.json). HQ Workforce ($500/mo) and the $50 Individual plan are legacy plans, closed to new signups from 2026-10-16 18:00 UTC and kept for existing customers. Existing $80 Outposts keep $80. New signups are on the usage card; see [plans-and-pricing.md](plans-and-pricing.md) and [pricing.json](pricing.json).
+The `hq billing upgrade`, `hq billing sponsor` and `hq db provision` rows follow the help text of hq-cli 5.345.210. The `hq outposts` rows follow hq-cli 5.345.241; a company Outpost's price comes from the quote `hq outposts provision` prints, and personal Outpost size prices are in [pricing.json](pricing.json). HQ Workforce ($500/mo) and the $50 Individual plan are legacy plans, closed to new signups from 2026-10-16 18:00 UTC and kept for existing customers. Existing $80 Outposts keep $80. New signups are on the usage card; see [plans-and-pricing.md](plans-and-pricing.md) and [pricing.json](pricing.json).
 
 | Command | Description |
 |---|---|
@@ -519,7 +528,7 @@ These roots are registered with `hidden: true` and are not a stable public surfa
 | Command | Description |
 |---|---|
 | `hq core` | HQ scaffold scripts hosted by the CLI (core; not a stable surface) (subcommands omitted) |
-| `hq runners` | Create, supervise, and steer worker lanes; routed decision queue (subcommands omitted). `hq lanes` is its deprecated alias. |
+| `hq runners` | Create, supervise, and steer worker lanes through the routed decision queue (subcommands omitted). Use this spelling in scripts. `hq lanes` remains available as a deprecated alias. |
 | `hq daemon` | Run all of this machine's HQ background services under one supervisor |
 | `hq daemon install` | Detect this machine's type, install the daemon, and start its default services |
 | `hq daemon uninstall` | Stop the daemon and remove its OS unit |

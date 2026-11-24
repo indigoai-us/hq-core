@@ -204,6 +204,7 @@ functions:
   - {"id": "core delegate publish", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core delegate repo", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core delegate resolve", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core delegate run", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core delegate secrets", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core delegate send", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core delegate transfer", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -216,9 +217,14 @@ functions:
   - {"id": "core generate-workers-registry", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core git-pack-extension-check", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core handoff archive-decision", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core handoff autofile", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core handoff builder-route", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff finalize", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff open-steps", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core handoff pointer-company", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff post", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core handoff run", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff-knowledge-commit", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff-sync-prefetch", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core handoff-sync-publish", "kind": "command", "owner": "src/commands/core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -314,12 +320,14 @@ functions:
   - {"id": "daemon login", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon logs", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon migrate", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "daemon pause", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon pin-hq-cloud", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon remote-control-pools", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon remote-control-pools configure", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon remote-control-pools show", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon remote-control-pools validate", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon restart", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "daemon resume", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon run", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon service", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "daemon service codex-remote-control", "kind": "command", "owner": "src/commands/daemon.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -374,6 +382,7 @@ functions:
   - {"id": "deploy comments", "kind": "command", "owner": "src/commands/deploy-comments.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy comments list", "kind": "command", "owner": "src/commands/deploy-comments.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy comments read", "kind": "command", "owner": "src/commands/deploy-comments.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "deploy create", "kind": "command", "owner": "src/commands/deploy-mutations.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy domains", "kind": "command", "owner": "src/commands/deploy-domains.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy domains add", "kind": "command", "owner": "src/commands/deploy-domains.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy domains base", "kind": "command", "owner": "src/commands/deploy-domains.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -395,7 +404,12 @@ functions:
   - {"id": "deploy domains renew resume", "kind": "command", "owner": "src/commands/deploy-domains.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy domains search", "kind": "command", "owner": "src/commands/deploy-domains.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy domains show", "kind": "command", "owner": "src/commands/deploy-domains.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "deploy inspect", "kind": "command", "owner": "src/commands/deploy-mutations.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "deploy list", "kind": "command", "owner": "src/commands/deploy-comments.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "deploy password-gate", "kind": "command", "owner": "src/commands/deploy-mutations.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "deploy private-gate", "kind": "command", "owner": "src/commands/deploy-mutations.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "deploy takedown", "kind": "command", "owner": "src/commands/deploy-mutations.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "deploy upload", "kind": "command", "owner": "src/commands/deploy-mutations.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "dm", "kind": "command", "owner": "src/commands/dm.ts", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "dm accept", "kind": "command", "owner": "src/commands/dm.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "dm attachment", "kind": "command", "owner": "src/commands/dm.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -605,7 +619,13 @@ functions:
   - {"id": "onboard join", "kind": "command", "owner": "src/commands/onboard.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "onboard resume", "kind": "command", "owner": "src/commands/onboard.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts access", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts access grant", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts access list", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts access revoke", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts approve", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts codex-enable", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts decline", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts destroy", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts exec", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "outposts exec-result", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -627,6 +647,9 @@ functions:
   - {"id": "outposts pull", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts refresh-config", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts replica-sync", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts request", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts request-access", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "outposts requests", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts self-deploy", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts session-host", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "outposts status", "kind": "command", "owner": "src/commands/outposts.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -682,6 +705,7 @@ functions:
   - {"id": "runners accounts list", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "runners accounts login", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "runners accounts set-home", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "runners accounts set-owner", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "runners admit", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "runners approve", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "runners approve-target", "kind": "command", "owner": "src/commands/lanes.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -858,6 +882,7 @@ functions:
   - {"id": "sync release-held", "kind": "command", "owner": "src/commands/sync-held.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "sync status", "kind": "command", "owner": "src/commands/cloud.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "sync-core", "kind": "command", "owner": "src/commands/sync-core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "sync-core config", "kind": "command", "owner": "src/commands/sync-core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "sync-core reconcile", "kind": "command", "owner": "src/commands/sync-core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "sync-core status", "kind": "command", "owner": "src/commands/sync-core.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "team-sync", "kind": "command", "owner": "src/commands/team-sync.ts", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -891,28 +916,43 @@ functions:
   - {"id": "machine-check-registration", "kind": "daemon", "owner": "src/lib/daemon/machine-check-registration.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "machine-checks", "kind": "daemon", "owner": "src/lib/daemon/machine-checks.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "migrate legacy units (migrate.ts, legacy.ts)", "kind": "daemon", "owner": "src/lib/daemon/migrate.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module background-qos", "kind": "daemon", "owner": "src/lib/daemon/background-qos.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module command-call", "kind": "daemon", "owner": "src/lib/daemon/command-call.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module config", "kind": "daemon", "owner": "src/lib/daemon/config.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module exit-cause", "kind": "daemon", "owner": "src/lib/daemon/exit-cause.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module flag", "kind": "daemon", "owner": "src/lib/daemon/flag.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests", "kind": "daemon", "owner": "src/lib/daemon/hook-requests.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests-acl-suggest", "kind": "daemon", "owner": "src/lib/daemon/hook-requests-acl-suggest.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests-codex-settings", "kind": "daemon", "owner": "src/lib/daemon/hook-requests-codex-settings.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests-conduct-link", "kind": "daemon", "owner": "src/lib/daemon/hook-requests-conduct-link.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests-fleet-session-start", "kind": "daemon", "owner": "src/lib/daemon/hook-requests-fleet-session-start.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests-mesh", "kind": "daemon", "owner": "src/lib/daemon/hook-requests-mesh.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module hook-requests-mesh-tool-writes", "kind": "daemon", "owner": "src/lib/daemon/hook-requests-mesh-tool-writes.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module hq-child-bootstrap", "kind": "daemon", "owner": "src/lib/daemon/hq-child-bootstrap.mts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module hq-child-bootstrap-stage", "kind": "daemon", "owner": "src/lib/daemon/hq-child-bootstrap-stage.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module hq-cloud", "kind": "daemon", "owner": "src/lib/daemon/hq-cloud.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module kill-switch-flags", "kind": "daemon", "owner": "src/lib/daemon/kill-switch-flags.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module lanes-monitor-state", "kind": "daemon", "owner": "src/lib/daemon/lanes-monitor-state.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module lanes-reconcile-guard", "kind": "daemon", "owner": "src/lib/daemon/lanes-reconcile-guard.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module lanes-reconcile-loader", "kind": "daemon", "owner": "src/lib/daemon/lanes-reconcile-loader.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module lanes-reconcile-status", "kind": "daemon", "owner": "src/lib/daemon/lanes-reconcile-status.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module lanes-reconcile-watcher", "kind": "daemon", "owner": "src/lib/daemon/lanes-reconcile-watcher.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module legacy", "kind": "daemon", "owner": "src/lib/daemon/legacy.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module machine-login", "kind": "daemon", "owner": "src/lib/daemon/machine-login.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module machine-token-identity", "kind": "daemon", "owner": "src/lib/daemon/machine-token-identity.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module mcp-endpoint", "kind": "daemon", "owner": "src/lib/daemon/mcp-endpoint.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module merge-sections", "kind": "daemon", "owner": "src/lib/daemon/merge-sections.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module mesh-owner", "kind": "daemon", "owner": "src/lib/daemon/mesh-owner.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module native-notice-ledger", "kind": "daemon", "owner": "src/lib/daemon/native-notice-ledger.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module paths", "kind": "daemon", "owner": "src/lib/daemon/paths.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module remote-control-forwarder", "kind": "daemon", "owner": "src/lib/daemon/remote-control-forwarder.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module remote-control-pools", "kind": "daemon", "owner": "src/lib/daemon/remote-control-pools.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module resolver", "kind": "daemon", "owner": "src/lib/daemon/resolver.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module run", "kind": "daemon", "owner": "src/lib/daemon/run.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module search-index-worker-v1", "kind": "daemon", "owner": "src/lib/daemon/search-index-worker-v1.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module selfcheck", "kind": "daemon", "owner": "src/lib/daemon/selfcheck.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module session-registry", "kind": "daemon", "owner": "src/lib/daemon/session-registry.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module shared-flag-reads", "kind": "daemon", "owner": "src/lib/daemon/shared-flag-reads.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module stop-autosave", "kind": "daemon", "owner": "src/lib/daemon/stop-autosave.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module stop-autosave-lock", "kind": "daemon", "owner": "src/lib/daemon/stop-autosave-lock.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module stop-diagnostics", "kind": "daemon", "owner": "src/lib/daemon/stop-diagnostics.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
@@ -920,6 +960,7 @@ functions:
   - {"id": "module stop-jobs", "kind": "daemon", "owner": "src/lib/daemon/stop-jobs.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module sync-runner", "kind": "daemon", "owner": "src/lib/daemon/sync-runner.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module tools", "kind": "daemon", "owner": "src/lib/daemon/tools.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "module whoami-cache", "kind": "daemon", "owner": "src/lib/daemon/whoami-cache.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "module windows-pipe-host", "kind": "daemon", "owner": "src/lib/daemon/windows-pipe-host.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "op auth.login / auth.status", "kind": "daemon", "owner": "src/lib/daemon/protocol.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "op health", "kind": "daemon", "owner": "src/lib/daemon/server.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
@@ -937,6 +978,7 @@ functions:
   - {"id": "op session.get", "kind": "daemon", "owner": "src/lib/daemon/server.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "op session.open", "kind": "daemon", "owner": "src/lib/daemon/protocol.ts", "runtimes": ["all"], "hot_path": "session", "state": "live"}
   - {"id": "op shutdown", "kind": "daemon", "owner": "src/lib/daemon/server.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
+  - {"id": "op skill.command", "kind": "daemon", "owner": "src/lib/daemon/ops/skill-command.ts", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "plist refresh (plist-refresh.ts)", "kind": "daemon", "owner": "src/lib/daemon/plist-refresh.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "protocol FIFO tail (protocol-tail.ts)", "kind": "daemon", "owner": "src/lib/daemon/protocol-tail.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
   - {"id": "remote-control pools (pool, pool-forwarder, pools:config units)", "kind": "daemon", "owner": "src/lib/daemon/remote-control.ts", "runtimes": ["all"], "hot_path": "background", "state": "live"}
@@ -1167,10 +1209,12 @@ functions:
   - {"id": "core/scripts/ci/grouped-check-summary.sh", "kind": "script", "owner": "core/scripts/ci/grouped-check-summary.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/install-pinned-hq-cli.sh", "kind": "script", "owner": "core/scripts/ci/install-pinned-hq-cli.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/install-shellcheck.sh", "kind": "script", "owner": "core/scripts/ci/install-shellcheck.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/ci/native-pin-check.sh", "kind": "script", "owner": "core/scripts/ci/native-pin-check.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/resolve-hook-perf-base.sh", "kind": "script", "owner": "core/scripts/ci/resolve-hook-perf-base.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/rewrite-core-callers.mjs", "kind": "script", "owner": "core/scripts/ci/rewrite-core-callers.mjs", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/run-shell-smoke-timeout-tests.sh", "kind": "script", "owner": "core/scripts/ci/run-shell-smoke-timeout-tests.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/should-run-macos-shell-smoke.sh", "kind": "script", "owner": "core/scripts/ci/should-run-macos-shell-smoke.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/ci/should-run-provider-adapter-contract.sh", "kind": "script", "owner": "core/scripts/ci/should-run-provider-adapter-contract.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/should-run-resumework-timing.sh", "kind": "script", "owner": "core/scripts/ci/should-run-resumework-timing.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/should-run-windows-shell-smoke.sh", "kind": "script", "owner": "core/scripts/ci/should-run-windows-shell-smoke.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/ci/yq-linux-asset.sh", "kind": "script", "owner": "core/scripts/ci/yq-linux-asset.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -1218,6 +1262,7 @@ functions:
   - {"id": "core/scripts/handoff-open-steps.sh", "kind": "script", "owner": "core/scripts/handoff-open-steps.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/handoff-pointer-company.sh", "kind": "script", "owner": "core/scripts/handoff-pointer-company.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/handoff-post.sh", "kind": "script", "owner": "core/scripts/handoff-post.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
+  - {"id": "core/scripts/handoff-run.sh", "kind": "script", "owner": "core/scripts/handoff-run.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/handoff-sync-prefetch.sh", "kind": "script", "owner": "core/scripts/handoff-sync-prefetch.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/handoff-sync-publish.sh", "kind": "script", "owner": "core/scripts/handoff-sync-publish.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/hook-lib.sh", "kind": "script", "owner": "core/scripts/hook-lib.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
@@ -1245,7 +1290,7 @@ functions:
   - {"id": "core/scripts/hq-job-notify.sh", "kind": "script", "owner": "hq core job notify", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/hq-job-probe.sh", "kind": "script", "owner": "core/scripts/hq-job-probe.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/hq-job-remediate.sh", "kind": "script", "owner": "core/scripts/hq-job-remediate.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
-  - {"id": "core/scripts/hq-job-run.sh", "kind": "script", "owner": "core/scripts/hq-job-run.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/hq-job-run.sh", "kind": "script", "owner": "hq core job run", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/hq-pin.sh", "kind": "script", "owner": "hq core pin", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/hq-pr-create.sh", "kind": "script", "owner": "core/scripts/hq-pr-create.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/hq-root-git-reinit.sh", "kind": "script", "owner": "core/scripts/hq-root-git-reinit.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
@@ -1289,6 +1334,7 @@ functions:
   - {"id": "core/scripts/lib/hook-stop-async.sh", "kind": "script", "owner": "core/scripts/lib/hook-stop-async.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/lib/hq-cli-capability.sh", "kind": "script", "owner": "core/scripts/lib/hq-cli-capability.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/lib/hq-cli-floor.sh", "kind": "script", "owner": "core/scripts/lib/hq-cli-floor.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
+  - {"id": "core/scripts/lib/hq-core-source.sh", "kind": "script", "owner": "core/scripts/lib/hq-core-source.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/lib/hq-root-markers.sh", "kind": "script", "owner": "core/scripts/lib/hq-root-markers.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/lib/lanes-senior-monitor.sh", "kind": "script", "owner": "core/scripts/lib/lanes-senior-monitor.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/lib/perl-child-locale.sh", "kind": "script", "owner": "core/scripts/lib/perl-child-locale.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
@@ -1383,15 +1429,15 @@ functions:
   - {"id": "core/scripts/qmd-reindex-bg.sh", "kind": "script", "owner": "core/scripts/qmd-reindex-bg.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/read-policy-frontmatter.sh", "kind": "script", "owner": "hq core policy frontmatter", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/rebuild-all-indexes.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
-  - {"id": "core/scripts/rebuild-companies-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/rebuild-companies-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "removed", "replaced_by": "hq core rebuild-index companies. Nothing in HQ calls this forwarder.", "released_sha256": ["c1395967b4aff98b3938950a7f053c6b03efa0421006d606781352ce4a6f1f31", "f349c47906b227493df6f5ccae16727e36df38c932f40ce8b6d74c058b4370b2", "d9913620b7ce192efaa17ba3b397684a790f0c2f91e6451bc48e484b0c7330eb", "27a92774c188209a5d7766a57332222afdfe047a00e093051e566a320180a03a", "e7bf6f6f96bcdfa3cf6564577946ee02f8143a430eeaab6a05660ba21965d6a6", "f32dd04d5273cb7628ea5bd68c5976ee7303fd29ed877b61a87495e1a8e82c25", "49f8aebad1411c2b8b12ee34fcd9d4f35fb5127435de86eb1dcc1386c50c8d53"], "allowed_refs": ["core/scripts/ci/rewrite-core-callers.mjs"]}
   - {"id": "core/scripts/rebuild-company-knowledge-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/rebuild-orchestrator-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
-  - {"id": "core/scripts/rebuild-projects-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
-  - {"id": "core/scripts/rebuild-public-knowledge-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
-  - {"id": "core/scripts/rebuild-reports-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/rebuild-projects-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "removed", "replaced_by": "hq core rebuild-index projects. Nothing in HQ calls this forwarder.", "released_sha256": ["6450cf0802a205caf8e8558c4f9284239928580e501a319d6a34ea3c1c81a32c", "e6907e3091964951d86f8797e2a089fc49731c9fe1e8fe2a8ac2a1d68a99be28", "e1466e27ad409fc53c77dac6a6c04ef9a70f22826da6066bd7669b789a2a6152", "37d5fcf20b961d5dca725bdee72d68fab9cace597aa310e169c25e431b7eaaa7", "b2e2535f1fbe3cc267fad9ac6cce325da2d80432b23e863f8ac66d0d398ea47c", "8a6269822d859ac82ac23ec11dd1f40e74adbe80db78cbb51e3fb669b28e8cdf", "139a5d6e3e8ddec6c41b767cec83d6d9d990802f10dc098a7c434a62ca634736", "0381edad08d734dd51816b2eb85568d5849db64e3e1ffb40d3ab74dbcb6ae437"], "allowed_refs": ["core/scripts/ci/rewrite-core-callers.mjs"]}
+  - {"id": "core/scripts/rebuild-public-knowledge-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "removed", "replaced_by": "hq core rebuild-index public-knowledge. Nothing in HQ calls this forwarder.", "released_sha256": ["cb171682d283cfd903842e6655cc37f22c9b4b1b49f9453898e05b3f8743c04b", "94c63676f25b9c0f6cc8e0b01ff99ceb6cb203668b6c27696edb832aa0b421ce", "2b8202053acf74fa019410a15f8698054649cb894476c82f20bea215b0cfafa9", "e28473ee66ef83090b24b007d11abe8d5983d0e22b10f9023bf3e4b391f269ce", "edeb44cbb20ad98a51d5537d3ac5afe3d552da32a8c3aeeb6d746454708d42b5", "0aa72aef2516e83f7968a8473b43d830233c7873cb1d1b298f1014a0482f0ccb", "369c25e654d4debd13435718f8c9d793a8a1cc946b93f7d47b154851d03fa58e"], "allowed_refs": ["core/scripts/ci/rewrite-core-callers.mjs"]}
+  - {"id": "core/scripts/rebuild-reports-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "removed", "replaced_by": "hq core rebuild-index reports. Nothing in HQ calls this forwarder.", "released_sha256": ["ff6bf2105844da280165016253349fa141023ed6f3eb9d12b14aaa6d8636a639", "6ff953003769dd43502fd6b8380caccb35498261ca61fc8b9f64a8ea1be245d9", "6b4cd08a4187aeb50fd0c357dff898386531e04dbe99e1239ab5ced05e866f08", "f35a3da01d6d981ff25ce52ac1028f780b7bf520c75b838e2897ca7bd35e786d", "0cfadfe38f14b673c0f475fc2ba635b01e5a5257e25c4fd79235296664bba3bc", "bdfba333535813c11aa84891bb8024922460afbdd0eb5782c17d181e2516d8b7"], "allowed_refs": ["core/scripts/ci/rewrite-core-callers.mjs"]}
   - {"id": "core/scripts/rebuild-social-drafts-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/rebuild-threads-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
-  - {"id": "core/scripts/rebuild-workers-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/rebuild-workers-index.sh", "kind": "script", "owner": "hq core rebuild-index", "runtimes": ["all"], "hot_path": "cold", "state": "removed", "replaced_by": "hq core rebuild-index workers. Nothing in HQ calls this forwarder.", "released_sha256": ["3138f09dfa084e64497a6b4387b86efdf5e5e5c46813d4804d0b48f5e3a9c1b3", "d0a09be90c845669b8434ce3266f5f78b226bbea0ecd5b62e14caa2bbea7e1a4", "f7cb0f43e9b5bdeb53662a3c994a12aea1d943665edba43c32b945e0eaf74c28", "47e948413ee37767511cee8de3775b2a0e4cf5a4f6a4becfbf18258f9fd23cfa", "0c8c2cd73ffec680e0a27e5bc73b12987f66ca528a5b0fd81498e5bb1b442c0c", "d9642fb5bcd299b7bde381fbb157b39d27041e1922fdb4c7564976061886f6eb", "375f8e09e63ac4f2061159a2a0632773fe036717a0a4669d23706e83ecf7d69d", "2cb1fa987e70b82d42f7d514bbe96cd36976d6cceb696c6c9538363960bed62e"], "allowed_refs": ["core/scripts/ci/rewrite-core-callers.mjs"]}
   - {"id": "core/scripts/refresh-pricing.sh", "kind": "script", "owner": "core/scripts/refresh-pricing.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/refresh-vault-access-session-start.sh", "kind": "script", "owner": "core/scripts/refresh-vault-access-session-start.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/refresh-vault-access.sh", "kind": "script", "owner": "hq core refresh-vault-access", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
@@ -1435,6 +1481,7 @@ functions:
   - {"id": "core/scripts/startwork-context.sh", "kind": "script", "owner": "core/scripts/startwork-context.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/startwork-prefetch.sh", "kind": "script", "owner": "core/scripts/startwork-prefetch.sh", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/super-conductor-decisions.mjs", "kind": "script", "owner": "core/scripts/super-conductor-decisions.mjs", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
+  - {"id": "core/scripts/super-conductor-registry.mjs", "kind": "script", "owner": "core/scripts/super-conductor-registry.mjs", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/super-conductor-heartbeat.sh", "kind": "script", "owner": "core/scripts/super-conductor-heartbeat.sh", "runtimes": ["all"], "hot_path": "cold", "state": "live"}
   - {"id": "core/scripts/super-conductor-merge-gate.mjs", "kind": "script", "owner": "core/scripts/super-conductor-merge-gate.mjs", "runtimes": ["all"], "hot_path": "hook-helper", "state": "live"}
   - {"id": "core/scripts/super-conductor-message-watch.mjs", "kind": "script", "owner": "core/scripts/super-conductor-message-watch.mjs", "runtimes": ["all"], "hot_path": "cold", "state": "live"}

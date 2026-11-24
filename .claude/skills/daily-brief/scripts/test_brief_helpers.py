@@ -203,6 +203,457 @@ def test_run_bounded_times_out():
     assert to is False and rc == 0 and out.strip() == 'True'  # stdin is /dev/null, never a prompt
 
 
+def _fake_sync(rc, err=''):
+    seen = {}
+
+    def fake_run(cmd, budget_s, cwd=None):
+        seen['cmd'], seen['budget'] = cmd, budget_s
+        return rc, '', err, False
+    return seen, fake_run
+
+
+def test_check_sync_stops_itself_before_the_budget():
+    """hq sync now gets --max-runtime under the hard budget, and the CLI's own
+    watchdog exit (124) is recorded as took-too-long, not as a failure."""
+    seen, fake = _fake_sync(124, 'sync stopped: still running after the --max-runtime limit')
+    saved, hk.run_bounded = hk.run_bounded, fake
+    try:
+        rec = hk.check_sync('acme', '/tmp/hq', 360)
+    finally:
+        hk.run_bounded = saved
+    cmd = seen['cmd']
+    assert '--max-runtime' in cmd, cmd
+    limit = int(cmd[cmd.index('--max-runtime') + 1])
+    assert 0 < limit <= seen['budget'] - 10, (limit, seen['budget'])  # CLI report (<=10s) ends before the kill
+    assert '--lock-timeout' in cmd and cmd[cmd.index('--lock-timeout') + 1] == '0', cmd
+    assert rec['status'] == 'skipped (took too long)' and rec['error'] is None, rec
+
+
+def test_check_sync_other_exit_codes_still_fail():
+    """Only the watchdog's 124 reads as took-too-long; any other error exit stays failed."""
+    seen, fake = _fake_sync(1, 'Sync failed: remote listing returned 503')
+    saved, hk.run_bounded = hk.run_bounded, fake
+    try:
+        rec = hk.check_sync('acme', '/tmp/hq', 360)
+    finally:
+        hk.run_bounded = saved
+    assert rec['status'].startswith('failed: ') and 'took too long' not in rec['status'], rec
+    assert rec['ok'] is False and rec['error'], rec
+
+
+def test_sync_command_short_budget_has_no_max_runtime():
+    """A --budget too short to leave the report margin gets no --max-runtime
+    (never a 1-second limit); the hard kill is the only stop."""
+    for budget in (1, 5, 20, 39):
+        cmd = hk.sync_command('acme', '/tmp/hq', budget)
+        assert '--max-runtime' not in cmd, (budget, cmd)
+    cmd = hk.sync_command('acme', '/tmp/hq', 40)
+    assert cmd[cmd.index('--max-runtime') + 1] == '20', cmd
+
+
+def test_skill_budget_table_matches_script():
+    """The SKILL.md housekeeping table states the script's budgets and sync flag."""
+    with open(os.path.join(HERE, '..', 'SKILL.md'), encoding='utf-8') as f:
+        skill = f.read()
+    for name, budget in hk.BUDGETS_S.items():
+        row = next(l for l in skill.splitlines() if l.startswith('| `' + name + '`'))
+        assert row.rstrip().endswith('| ' + str(budget) + 's |'), (name, row)
+    sync_row = next(l for l in skill.splitlines() if l.startswith('| `hq_sync`'))
+    assert '--max-runtime ' + str(hk.BUDGETS_S['hq_sync'] - hk.SYNC_RUNTIME_MARGIN_S) in sync_row, sync_row
+
+
+def _run_housekeeping(root, run_dir, slow_sync, extra=()):
+    """main() with fake checks: doctor finds 2, the worktree scan is clean, the
+    sync is `slow_sync`."""
+    import io, contextlib
+    saved = hk.check_doctor, hk.check_sync, hk.check_worktrees
+    hk.check_doctor = lambda *a: hk.task_record('hq_doctor', found=2, summary='Health check: 2 failing')
+    hk.check_sync = slow_sync
+    hk.check_worktrees = lambda *a: hk.task_record('worktree_scan', summary='Worktree scan: 0 worktrees')
+    argv = sys.argv
+    sys.argv = ['housekeeping.py', '--company', 'acme', '--hq-root', root, '--run-dir', run_dir] + list(extra)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            hk.main()
+    finally:
+        sys.argv = argv
+        hk.check_doctor, hk.check_sync, hk.check_worktrees = saved
+
+
+def _wait_for_tasks(path, names, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with open(path) as f:
+                if set(names) <= set(json.load(f).get('tasks', {})):
+                    return True
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.02)
+    return False
+
+
+def _run_dir(root):
+    run_dir = os.path.join(root, 'workspace', 'brief', 'brief-' + _ts('20261016', '090000'))
+    os.makedirs(run_dir)
+    return run_dir
+
+
+def test_housekeeping_writes_each_check_as_it_finishes():
+    """A finished check is in housekeeping.json while the sync is still
+    running; the final write marks it done. status.json is never written."""
+    seen = {}
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        hk_path, st_path = os.path.join(run_dir, 'housekeeping.json'), os.path.join(run_dir, 'status.json')
+
+        def slow_sync(*a):
+            assert _wait_for_tasks(hk_path, ['hq_doctor', 'worktree_scan'])
+            with open(hk_path) as f:
+                seen['hk'] = json.load(f)
+            return hk.task_record('hq_sync', summary='Sync: up to date')
+
+        _run_housekeeping(root, run_dir, slow_sync)
+        early = seen['hk']
+        assert set(early['tasks']) == {'hq_doctor', 'worktree_scan'} and early['pending'] == ['hq_sync'], early
+        assert early['state'] == 'running', early
+        assert 'Sync still running' in early['headline'] and 'so far' in early['headline'], early['headline']
+        with open(hk_path) as f:
+            final = json.load(f)
+        assert set(final['tasks']) == {'hq_doctor', 'hq_sync', 'worktree_scan'} and final['pending'] == [], final
+        assert final['state'] == 'done', final
+        assert final['headline'] == '2 of 3 checks ran clean. Health check found 2 things.', final['headline']
+        assert not os.path.exists(st_path)
+
+
+def test_housekeeping_never_clobbers_files_it_does_not_own():
+    """status.json, rewritten by the brief writer while the sync runs, is left
+    exactly as the writer left it. The writer's proposals are copied into
+    housekeeping.json, the proposals file itself is never written, and an
+    unreadable proposals file keeps the last good copy."""
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        hk_path = os.path.join(run_dir, 'housekeeping.json')
+        st_path = os.path.join(run_dir, 'status.json')
+        prop_path = os.path.join(run_dir, 'housekeeping.proposals.json')
+        _write_json(st_path, {'run_id': 'r', 'state': 'running', 'activity': [{'label': 'Writing'}]})
+        writer_status = {'run_id': 'r', 'state': 'ready', 'progress': 1.0, 'activity': [{'label': 'Ready'}]}
+        proposal = {'id': 'p1', 'title': 'Remove 3 idle worktrees', 'prompt': 'Remove them after checking'}
+
+        def slow_sync(*a):
+            assert _wait_for_tasks(hk_path, ['hq_doctor', 'worktree_scan'])
+            # the writer finishes the brief while the sync still runs
+            _write_json(st_path, '{"run_id": "r", "state": "rea')  # mid-write, not valid JSON yet
+            _write_json(prop_path, {'proposals': [proposal]})
+            return hk.task_record('hq_sync', summary='Sync: up to date')
+
+        _run_housekeeping(root, run_dir, slow_sync)
+        with open(st_path) as f:
+            assert f.read() == '{"run_id": "r", "state": "rea'  # untouched, even half-written
+        _write_json(st_path, writer_status)
+        with open(hk_path) as f:
+            d = json.load(f)
+        assert d['proposals'] == [proposal] and d['state'] == 'done', d
+        with open(prop_path) as f:
+            assert json.load(f) == {'proposals': [proposal]}
+        with open(st_path) as f:
+            assert json.load(f) == writer_status
+
+        # an unreadable proposals file: the last good copy stays
+        _write_json(prop_path, '{not json')
+        _run_housekeeping(root, run_dir, lambda *a: hk.task_record('hq_sync', summary='Sync: up to date'))
+        with open(hk_path) as f:
+            assert json.load(f)['proposals'] == [proposal]
+
+
+def test_housekeeping_leaves_an_unreadable_own_file_alone():
+    """A housekeeping file that exists but cannot be parsed is never replaced."""
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        hk_path = os.path.join(run_dir, 'housekeeping.json')
+        _write_json(hk_path, '{"tasks": {"hq_doctor": ')
+        saved = hk.READ_WAIT_S
+        hk.READ_WAIT_S = 0.01
+        try:
+            _run_housekeeping(root, run_dir, lambda *a: hk.task_record('hq_sync', summary='Sync: up to date'))
+        finally:
+            hk.READ_WAIT_S = saved
+        with open(hk_path) as f:
+            assert f.read() == '{"tasks": {"hq_doctor": '
+        assert hk.write_owned_json(hk_path, lambda d: d.update(x=1)) is False
+        assert hk.read_json(os.path.join(run_dir, 'missing.json')) == (True, {})
+
+
+def test_housekeeping_out_writes_one_file_per_section():
+    """Person mode: each section's run writes straight to its own --out file in
+    the run dir, including the late sync; nothing goes to housekeeping.json."""
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        out = os.path.join(run_dir, 'housekeeping-acme.json')
+        late = {}
+
+        def slow_sync(*a):
+            assert _wait_for_tasks(out, ['hq_doctor', 'worktree_scan'])
+            with open(out) as f:
+                late['before'] = json.load(f)
+            return hk.task_record('hq_sync', summary='Sync: up to date')
+
+        _run_housekeeping(root, run_dir, slow_sync, ['--out', out])
+        assert late['before']['pending'] == ['hq_sync'], late
+        with open(out) as f:
+            d = json.load(f)
+        assert d['tasks']['hq_sync']['status'] == 'ran clean' and d['pending'] == [], d
+        assert not os.path.exists(os.path.join(run_dir, 'housekeeping.json'))
+        assert hk.proposals_path(out) == os.path.join(run_dir, 'housekeeping-acme.proposals.json')
+        assert hk.resolve_out(run_dir, 'housekeeping-personal.json') == os.path.join(run_dir, 'housekeeping-personal.json')
+        assert hk.resolve_out(run_dir, None) == os.path.join(run_dir, 'housekeeping.json')
+        assert hk.resolve_out(run_dir, os.path.join(root, 'housekeeping.json')) is None  # outside the run dir
+        assert hk.resolve_out(run_dir, os.path.join(run_dir, 'sub', 'housekeeping.json')) is None
+
+
+def test_housekeeping_out_names():
+    """--out is housekeeping.json or housekeeping-<section>.json in lower case
+    only, never a symlink, and never a proposals file, whatever the section is
+    called."""
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        for good in ('housekeeping.json', 'housekeeping-acme.json', 'housekeeping-personal.json',
+                     'housekeeping-big_box-2.json', 'housekeeping-acme-proposals.json'):
+            assert hk.resolve_out(run_dir, good) == os.path.join(run_dir, good), good
+        for bad in ('status.json', 'Status.json', 'STATUS.JSON', 'brief.json', 'Brief.json', 'brief-data.json',
+                    'Housekeeping.json', 'Housekeeping-Acme.json', 'housekeeping-Acme.json', 'HOUSEKEEPING.JSON',
+                    'page.json', 'housekeeping.proposals.json', 'housekeeping-acme.proposals.json',
+                    'Housekeeping.Proposals.json', 'housekeeping.txt', 'housekeeping-.json', 'housekeeping--x.json',
+                    'housekeeping-a b.json', 'housekeeping-../x.json', 'housekeepingx.json', 'housekeeping.json.lock'):
+            assert hk.resolve_out(run_dir, bad) is None, bad
+        # a section whose slug ends in -proposals gets its own file, never another section's proposals file
+        a, b = hk.resolve_out(run_dir, 'housekeeping-acme.json'), hk.resolve_out(run_dir, 'housekeeping-acme-proposals.json')
+        assert hk.proposals_path(a) != b and hk.proposals_path(b) not in (a, b), (a, b)
+        # symlinks are refused as --out, and never read or replaced
+        target = os.path.join(root, 'elsewhere.json')
+        _write_json(target, {'keep': True})
+        link = os.path.join(run_dir, 'housekeeping-link.json')
+        os.symlink(target, link)
+        assert hk.resolve_out(run_dir, 'housekeeping-link.json') is None
+        assert hk.read_json(link) == (False, None)
+        import io, contextlib
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert hk.write_owned_json(link, lambda d: d.update(x=1)) is False
+        with open(target) as f:
+            assert json.load(f) == {'keep': True}
+
+
+class _NoFlock:
+    """Stands in for the fcntl module where flock is not supported."""
+    LOCK_EX, LOCK_NB, LOCK_UN = 2, 4, 8
+
+    @staticmethod
+    def flock(fd, op):
+        import errno as _e
+        raise OSError(_e.ENOTSUP if hasattr(_e, 'ENOTSUP') else _e.EINVAL, 'Operation not supported')
+
+
+def test_housekeeping_runs_without_a_working_lock():
+    """flock raising (unsupported filesystem), or a lock file that cannot be
+    opened (a planted symlink): the checks still write housekeeping.json; the
+    merge, which only writes under the lock, exits 2 and writes nothing; the
+    next check write copies the proposals in."""
+    import io, contextlib
+    proposal = {'id': 'p1', 'title': 'Remove 3 idle worktrees', 'prompt': 'Remove them after checking'}
+    for case in ('flock-raises', 'lock-is-a-symlink'):
+        with tempfile.TemporaryDirectory() as root:
+            run_dir = _run_dir(root)
+            hk_path = os.path.join(run_dir, 'housekeeping.json')
+            saved_fcntl, saved_warned = hk.fcntl, set(hk._warned)
+            hk._warned.clear()
+            if case == 'flock-raises':
+                if hk.fcntl is None:
+                    continue  # Windows: no fcntl to patch; msvcrt errors take the same branch
+                hk.fcntl = _NoFlock
+            else:
+                os.symlink(os.path.join(root, 'nowhere'), hk_path + '.lock')
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    _run_housekeeping(root, run_dir, lambda *a: hk.task_record('hq_sync', summary='Sync: up to date'))
+                    with open(hk_path) as f:
+                        d = json.load(f)
+                    assert d['state'] == 'done' and set(d['tasks']) == {'hq_doctor', 'hq_sync', 'worktree_scan'}, (case, d)
+                    assert hk._warned & {'lock', 'open'}, (case, hk._warned)  # the run warned (its stderr is captured)
+                    hk._warned.clear()
+                    _write_json(os.path.join(run_dir, 'housekeeping.proposals.json'), {'proposals': [proposal]})
+                    with open(hk_path) as f:
+                        before = f.read()
+                    assert hk.merge_proposals(hk_path) == hk.MERGE_SKIPPED == 2, case
+                    with open(hk_path) as f:
+                        assert f.read() == before, case  # nothing written without the lock
+                    assert hk._warned & {'lock', 'open'}, case
+                    # a later check write (still unlocked) copies the proposals in
+                    _run_housekeeping(root, run_dir, lambda *a: hk.task_record('hq_sync', summary='Sync: up to date'))
+            finally:
+                hk.fcntl = saved_fcntl
+                hk._warned.clear()
+                hk._warned.update(saved_warned)
+            with open(hk_path) as f:
+                assert json.load(f)['proposals'] == [proposal], case
+            assert err.getvalue().count('merge skipped') == 1, (case, err.getvalue())
+            assert err.getvalue().count('without a lock') == 1, (case, err.getvalue())  # warned once
+            if case == 'lock-is-a-symlink':
+                assert not os.path.exists(os.path.join(root, 'nowhere'))  # the link target was never created
+
+
+def test_merge_skips_when_another_process_holds_the_lock():
+    """A lock held by another process: the merge gives up within its deadline,
+    exits 2 and writes nothing. The check loop's own writes go on."""
+    import subprocess, io, contextlib
+    if hk.fcntl is None:
+        return  # the holder below uses flock; the msvcrt path shares the same retry loop
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        hk_path = os.path.join(run_dir, 'housekeeping.json')
+        _write_json(hk_path, {'tasks': {}, 'proposals': []})
+        _write_json(os.path.join(run_dir, 'housekeeping.proposals.json'), {'proposals': [{'id': 'p', 'title': 't', 'prompt': 'x'}]})
+        holder = subprocess.Popen(
+            [sys.executable, '-I', '-c',
+             'import fcntl, os, sys, time\n'
+             'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n'
+             'fcntl.flock(fd, fcntl.LOCK_EX)\n'
+             'print("held", flush=True)\n'
+             'time.sleep(30)\n', hk_path + '.lock'],
+            stdout=subprocess.PIPE, text=True)
+        try:
+            assert holder.stdout.readline().strip() == 'held'
+            saved = hk.MERGE_LOCK_WAIT_S
+            hk.MERGE_LOCK_WAIT_S = 1.0
+            err = io.StringIO()
+            try:
+                t0 = time.monotonic()
+                with contextlib.redirect_stderr(err):
+                    rc = _merge(run_dir)
+                took = time.monotonic() - t0
+            finally:
+                hk.MERGE_LOCK_WAIT_S = saved
+            assert rc == hk.MERGE_SKIPPED == 2 and 0.9 <= took < 3, (rc, took)
+            with open(hk_path) as f:
+                assert json.load(f)['proposals'] == []  # nothing written
+            # the default deadline is the bounded 5s the writer waits at most
+            assert hk.MERGE_LOCK_WAIT_S == 5.0 and hk.LOOP_LOCK_WAIT_S <= 5.0
+        finally:
+            holder.kill()
+            holder.wait()
+
+
+def _merge(run_dir, extra=()):
+    import io, contextlib
+    argv = sys.argv
+    sys.argv = ['housekeeping.py', '--merge-proposals', '--run-dir', run_dir] + list(extra)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return hk.main()
+    finally:
+        sys.argv = argv
+
+
+def test_merge_proposals_after_the_script_finished():
+    """Proposals saved after every check has ended reach housekeeping.json
+    through --merge-proposals, with the check results kept."""
+    proposal = {'id': 'p1', 'title': 'Remove 3 idle worktrees', 'prompt': 'Remove them after checking'}
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        _run_housekeeping(root, run_dir, lambda *a: hk.task_record('hq_sync', summary='Sync: up to date'))
+        hk_path = os.path.join(run_dir, 'housekeeping.json')
+        with open(hk_path) as f:
+            assert json.load(f)['proposals'] == []
+        _write_json(os.path.join(run_dir, 'housekeeping.proposals.json'), {'proposals': [proposal]})
+        assert _merge(run_dir) == 0
+        with open(hk_path) as f:
+            d = json.load(f)
+        assert d['proposals'] == [proposal], d
+        assert set(d['tasks']) == {'hq_doctor', 'hq_sync', 'worktree_scan'} and d['state'] == 'done', d
+        # a section file works the same way
+        out = os.path.join(run_dir, 'housekeeping-acme.json')
+        _run_housekeeping(root, run_dir, lambda *a: hk.task_record('hq_sync', summary='Sync: up to date'), ['--out', out])
+        _write_json(os.path.join(run_dir, 'housekeeping-acme.proposals.json'), {'proposals': [proposal]})
+        assert _merge(run_dir, ['--out', 'housekeeping-acme.json']) == 0
+        with open(out) as f:
+            assert json.load(f)['proposals'] == [proposal]
+        # an unreadable proposals file merges nothing and says so
+        _write_json(os.path.join(run_dir, 'housekeeping.proposals.json'), '{not json')
+        saved, hk.READ_WAIT_S = hk.READ_WAIT_S, 0.01
+        try:
+            assert _merge(run_dir) == 1
+        finally:
+            hk.READ_WAIT_S = saved
+        with open(hk_path) as f:
+            assert json.load(f)['proposals'] == [proposal]
+
+
+def test_merge_proposals_during_a_run_loses_nothing():
+    """Merges racing the check loop's writes, under the shared lock: the final
+    file has every check result and the last proposals."""
+    import threading
+    with tempfile.TemporaryDirectory() as root:
+        run_dir = _run_dir(root)
+        hk_path = os.path.join(run_dir, 'housekeeping.json')
+        prop_path = os.path.join(run_dir, 'housekeeping.proposals.json')
+        stop, merged, errors = threading.Event(), [], []
+
+        def merger():
+            n = 0
+            while not stop.is_set():
+                n += 1
+                _write_json(prop_path + '.tmp', {'proposals': [{'id': f'p{n}', 'title': 't', 'prompt': 'x'}]})
+                os.replace(prop_path + '.tmp', prop_path)
+                try:
+                    rc = hk.merge_proposals(hk_path)
+                except Exception as e:  # recorded, so a crash fails the test
+                    errors.append(e)
+                    return
+                merged.append((n, rc))
+
+        def slow_sync(*a):
+            assert _wait_for_tasks(hk_path, ['hq_doctor', 'worktree_scan'])
+            th = threading.Thread(target=merger)
+            seen['th'] = th
+            th.start()
+            deadline = time.monotonic() + 5
+            while len(merged) < 30 and time.monotonic() < deadline:
+                time.sleep(0.005)
+            seen['during'] = len(merged)
+            return hk.task_record('hq_sync', summary='Sync: up to date')
+
+        seen = {}
+        import io, contextlib
+        saved = hk.check_doctor, hk.check_sync, hk.check_worktrees
+        hk.check_doctor = lambda *a: hk.task_record('hq_doctor', found=2, summary='Health check: 2 failing')
+        hk.check_sync = slow_sync
+        hk.check_worktrees = lambda *a: hk.task_record('worktree_scan', summary='Worktree scan: 0 worktrees')
+        argv = sys.argv
+        sys.argv = ['housekeeping.py', '--company', 'acme', '--hq-root', root, '--run-dir', run_dir]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                hk.main()
+                stop.set()
+                seen['th'].join(10)  # the merger must be done before the temp dir goes
+                assert not seen['th'].is_alive()
+                last = merged[-1][0] if merged else None
+                assert hk.merge_proposals(hk_path) == 0  # the writer's final merge
+        finally:
+            stop.set()
+            if seen.get('th'):
+                seen['th'].join(10)
+            sys.argv = argv
+            hk.check_doctor, hk.check_sync, hk.check_worktrees = saved
+        assert not errors and seen['during'] >= 30, (errors, seen)
+        assert all(rc == 0 for _, rc in merged), merged
+        with open(hk_path) as f:
+            d = json.load(f)
+        with open(prop_path) as f:
+            want = json.load(f)['proposals']
+        assert set(d['tasks']) == {'hq_doctor', 'hq_sync', 'worktree_scan'} and d['state'] == 'done', d
+        assert d['proposals'] == want and last is not None, (d['proposals'], want)
+
+
 def test_brief_reset_state():
     with tempfile.TemporaryDirectory() as ws:
         os.makedirs(os.path.join(ws, 'brief', 'brief-' + _ts('20261010', '142540')))
@@ -280,10 +731,10 @@ def test_housekeeping_skips_company_checks_without_a_company():
             tasks = json.load(f)['tasks']
         assert tasks['hq_doctor']['skipped_reason'] == 'needs a company' and tasks['hq_sync']['ok'] is False
         assert 'skipped_reason' not in tasks['worktree_scan'], tasks['worktree_scan']
-        with open(os.path.join(run_dir, 'status.json')) as f:
-            st = json.load(f)
-        assert st['housekeeping']['checks']['hq_sync'] == 'skipped (needs a company)', st
-        assert st['activity'][0]['label'] == 'Housekeeping'
+        with open(os.path.join(run_dir, 'housekeeping.json')) as f:
+            d = json.load(f)
+        assert d['state'] == 'done' and d['pending'] == [], d
+        assert not os.path.exists(os.path.join(run_dir, 'status.json'))  # the brief writer owns status.json
 
 
 def test_titles_and_products():

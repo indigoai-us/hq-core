@@ -9,7 +9,7 @@ export HQ_JOB_RECONCILE_SHELL=1
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RECON="$ROOT/core/scripts/outpost-jobs-reconcile.sh"
-RUNNER="$ROOT/core/scripts/hq-job-run.sh"
+RUNNER="$ROOT/core/scripts/tests/fixtures/legacy-job-run.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "  ok: $*"; }

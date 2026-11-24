@@ -345,6 +345,54 @@ emit_and_exit() {
   exit "${SESSION_EXIT_CODE:-1}"
 }
 
+session_failure_strip_controls() {
+  local esc bel
+  esc="$(printf '\033')"
+  bel="$(printf '\007')"
+  LC_ALL=C sed \
+    -e "s#${esc}\\[[0-9;?]*[ -/]*[@-~]##g" \
+    -e "s#${esc}\\][^${bel}${esc}]*${bel}##g" \
+    -e "s#${esc}\\][^${bel}${esc}]*${esc}\\\\##g" \
+    | LC_ALL=C tr -d '\000-\011\013-\037\177'
+}
+
+session_failure_utf8_cut() {
+  local bytes="${1:-300}"
+  head -c "$bytes" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
+}
+
+session_claude_cli_error_line() {
+  case "${1:-}" in
+    "API Error"*|"Error: "*|"Failed to authenticate"*|"Invalid API key"*|"Invalid auth token"*|"Not logged in"*|"OAuth token"*|"Credit balance is too low"*|"Claude AI usage limit reached"*|"You've hit your"*" limit"*|"You've hit your limit"*|"Prompt is too long"*|"Request rejected"*) return 0 ;;
+  esac
+  return 1
+}
+
+session_provider_failure_text() {
+  local rd="${1:-}" rc="${2:-1}" provider="${3:-}" detail="" line="" size lines
+  if [ -s "$rd/provider.stderr" ]; then
+    detail="$(head -c 4096 "$rd/provider.stderr" | session_failure_strip_controls | tr '\n' ' ' | session_failure_utf8_cut 500)"
+  elif [ "$provider" = "claude" ] && [ -s "$rd/provider.stdout" ]; then
+    size="$(wc -c < "$rd/provider.stdout" | tr -d '[:space:]')"
+    lines=99
+    if [ "${size:-1025}" -le 1024 ]; then
+      lines="$(session_failure_strip_controls < "$rd/provider.stdout" | awk 'NF { n++ } END { print n + 0 }')"
+      line="$(session_failure_strip_controls < "$rd/provider.stdout" | awk 'NF { last = $0 } END { print last }')"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+    if [ "${lines:-99}" -le 2 ] && session_claude_cli_error_line "$line"; then
+      detail="$(printf '%s' "$line" | session_failure_utf8_cut 300)"
+    fi
+  fi
+  detail="${detail#"${detail%%[![:space:]]*}"}"
+  detail="${detail%"${detail##*[![:space:]]}"}"
+  if [ -n "$detail" ]; then
+    printf 'hq-agent-session: provider failed (exit %s): %s' "$rc" "$detail"
+  else
+    printf 'hq-agent-session: provider failed (exit %s)' "$rc"
+  fi
+}
+
 # Provider stdout with last-message fallback (codex-cli 0.145.0, AE incident
 # 2026-07-28): newer codex builds can stream the final answer to stderr and
 # leave stdout empty, which read as "no reply" and became a task-failed post
@@ -863,8 +911,7 @@ main() {
 
   if [ "$prov_rc" -ne 0 ] && [ "${HQ_AGENT_SESSION_RENDER_ONLY:-0}" != "1" ]; then
     session_finalize_writes "$root" "$project_dir" "$SESSION_RUN_START_EPOCH"
-    SESSION_TEXT="hq-agent-session: provider failed (exit $prov_rc)"
-    [ -s "$run_dir/provider.stderr" ] && SESSION_TEXT="$SESSION_TEXT: $(head -c 500 "$run_dir/provider.stderr" | tr '\n' ' ')"
+    SESSION_TEXT="$(session_provider_failure_text "$run_dir" "$prov_rc" "$provider")"
     fail 1 error "$SESSION_TEXT"
   fi
 

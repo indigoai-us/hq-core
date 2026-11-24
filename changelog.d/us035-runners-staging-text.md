@@ -1,0 +1,1 @@
+- Use `hq runners` in the migration guide and current monitor examples. The guide documents the spelling used by older CLI releases.

@@ -21,14 +21,12 @@ STATIC_SECTION="$(awk '
 
 printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F 'if [ "$DEPLOY_TYPE" = "app" ]; then' \
   || fail "app upload is not selected from DEPLOY_TYPE"
-printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F -- '--url "$API/api/apps/$APP_ID/deploy"' \
-  || fail "app upload does not use the type=app route"
-printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F -- "--form-string 'type=app'" \
-  || fail "app upload does not submit type=app as a multipart field"
-printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F -- '--form-file "file=$TARBALL_PATH"' \
-  || fail "app upload does not send the tarball as a multipart file"
+# hq deploy upload-app sends the multipart type=app deploy to the app route
+# (POST /api/apps/:id/deploy) and checks the receipt itself.
+printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F -- 'hq_deploy upload-app "$APP_ID" "$TARBALL_PATH" "${HQ_SCOPE_ARGS[@]}"' \
+  || fail "app upload does not use hq deploy upload-app with the tarball and scope"
 printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F '.statusUrl' \
-  || fail "app upload does not validate the app route response shape"
+  || fail "app upload does not check the receipt shape"
 printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -F 'LIVE_URL="${APP_URL:-https://${APP_SUBDOMAIN}.${HQ_DEPLOY_DOMAIN:-indigo-hq.com}}"' \
   || fail "app upload does not use the API-returned app URL"
 
@@ -43,19 +41,21 @@ FIND_APP_CODE="$(awk '
 [ -n "$FIND_APP_CODE" ] || fail "could not extract the Find or create the app block"
 
 # find_app_url <apps_json> <create_response> <reread_response> [HQ_DEPLOY_DOMAIN]
-# Runs the real block with a stub deploy_request; prints APP_URL.
+# Runs the real block with a stub hq_deploy (create, app-info); prints APP_URL.
 find_app_url() {
   APPS_JSON="$1" CREATE_RESPONSE="$2" REREAD_RESPONSE="$3" HQ_DEPLOY_DOMAIN="${4:-}" \
     FIND_APP_CODE="$FIND_APP_CODE" bash -c '
     set -euo pipefail
     [ -n "$HQ_DEPLOY_DOMAIN" ] || unset HQ_DEPLOY_DOMAIN
-    deploy_request() {
+    hq_deploy() {
       case "$1" in
-        app-creation) printf "%s" "$CREATE_RESPONSE" ;;
-        app-url-read) printf "%s" "$REREAD_RESPONSE" ;;
-        *) echo "unexpected stage $1" >&2; return 1 ;;
+        create) printf "%s" "$CREATE_RESPONSE" ;;
+        app-info) [ -n "$REREAD_RESPONSE" ] || return 1; printf "%s" "$REREAD_RESPONSE" ;;
+        *) echo "unexpected hq deploy $1" >&2; return 1 ;;
       esac
     }
+    HQ_SCOPE_ARGS=(--company acme)
+    deploy_request() { echo "unexpected deploy_request $1" >&2; return 1; }
     ROUTE_MODE=false APP_NAME=report DEPLOY_TYPE=static API=https://api.hq.work
     eval "$FIND_APP_CODE"
     printf "%s\n" "$APP_URL"'
@@ -104,10 +104,11 @@ grep -Fq 'indigo-hq.com links keep working' "$SKILL" || fail "missing the note t
 if printf '%s\n' "$APP_UPLOAD_CODE" | grep >/dev/null -E '/api/deploys|deploy-completion|presignedUrl'; then
   fail "app upload still uses the static presigned deploy flow"
 fi
-printf '%s\n' "$STATIC_SECTION" | grep >/dev/null -F -- '--url "$API/api/deploys"' \
-  || fail "static uploads no longer use the presigned deploy route"
-grep -Fq 's3-upload --no-auth --method PUT' <<<"$STATIC_SECTION" \
-  || fail "static uploads no longer PUT the presigned artifact"
+grep -Fq 'hq_deploy upload "$APP_SUBDOMAIN" "$TARBALL_PATH" "${HQ_SCOPE_ARGS[@]}" --manifest-org --json' <<<"$STATIC_SECTION" \
+  || fail "static uploads do not use hq deploy upload (the presigned deploy flow)"
+if grep -Eq 'deploy_request (deploy-creation|s3-upload|deploy-completion)' <<<"$STATIC_SECTION"; then
+  fail "static uploads still call the presigned deploy routes directly"
+fi
 grep -Fq 'guardrails-check.sh "$OUTPUT_DIR" "$GUARDRAILS_API_DIR"' "$SKILL" \
   || fail "Phase B does not include root api/ handlers in the app artifact"
 

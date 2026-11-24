@@ -35,6 +35,7 @@ contributes:
     - publish-docs
     - quality-gate
     - recover-session
+    - restart-sessions
     - review-plan
     - ship
     - strategize

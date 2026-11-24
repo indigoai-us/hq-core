@@ -2,6 +2,28 @@
 
 Newest release first.
 
+Runner examples use `hq runners`, introduced in hq-cli 5.345.210. Releases
+before that use the original `hq lanes` spelling for the same subcommands.
+
+## Release: v16.0.51-beta.13
+
+- No action needed. `/super-conductor` runs named conductors. Each one has a
+  profile at `personal/settings/super-conductors/<name>.yaml`, managed by the
+  new `core/scripts/super-conductor-registry.mjs` (list, show, questions,
+  resolve, create, set/add/remove, bind, render-prefs, route, claim/release,
+  validate, delete). Startup reuses a saved conductor by name or asks a short
+  questionnaire. Each conductor gets its own link, heartbeat, save file,
+  queue and rendered prefs file (`SC_PREFS_FILE`), and a session is held by
+  at most one conductor (`workspace/reports/conduct/super-conductor-claims.json`).
+  Two conductors may share a company when their scopes differ. With no saved
+  profile the skill behaves as before.
+- No action needed. Two per-conductor decision settings, both off by default:
+  `decisions.mode: own_queue` (the conductor asks in its own window instead of
+  starting a desk) and `decisions.child_asks: stay_in_window` (an adopted
+  session's own questions stay in its window until they wait
+  `child_ask_escalate_minutes` of work time).
+- New policy `hq-multiple-named-super-conductors`.
+
 ## Release: v16.0.46-beta.40
 
 - No action needed. `/project-summary` renders a visual, broadcast-style page
@@ -126,7 +148,7 @@ Newest release first.
   `core/scripts/handoff-archive-decision.sh`. The session stays open when a
   follow-up still needs a recovery command, when the handoff files are
   missing, when its linked worktree has uncommitted changes, when its branch
-  has an open PR, when it has background work (hq lanes, hq monitors, or
+  has an open PR, when it has background work (hq runners, hq monitors, or
   background tasks), when it has an ask waiting on you, when one of those
   checks cannot run, or outside the desktop app. New `/handoff-and-archive`
   shortcut runs `/handoff --archive` in one command.
@@ -313,13 +335,13 @@ Newest release first.
   login and are never refused for lane capacity. Lanes are still used when
   the work must outlive the session (self-resuming lead lanes, `--loop`,
   `--remote-control`, `--outpost`, overnight work), for non-Claude engines,
-  or when you ask for them. When `hq lanes create` refuses for capacity
+  or when you ask for them. When `hq runners create` refuses for capacity
   (`no_account_with_room`), conduct runs the same brief as a subagent instead
   of queuing it. Pin a runner with `/conduct --runner lane|subagent` or set
   `conduct.runner` in `personal/settings/orchestrator.yaml`.
 - Lanes spend paid Claude extra usage only when you pin
   `conduct_allow_extra_usage=1`; conduct then passes `--allow-extra-usage`
-  to `hq lanes create` (needs the hq-cli release with that flag).
+  to `hq runners create` (needs the hq-cli release with that flag).
 
 ## Release: v16.0.24-beta.6
 
@@ -481,10 +503,10 @@ Newest release first.
 ## Release: v16.0.19-beta.14
 
 - hq-cli `5.345.85` and newer can find and stop legacy conduct pool lanes that
-  an older core left running. `hq lanes orphans` lists a
+  an older core left running. `hq runners orphans` lists a
   `workflow-runner.mjs --loop` pool lane whose session has ended, marked
-  `legacy: true`, and `hq lanes reap --legacy` reports the same lanes. To stop
-  them, run `hq lanes reap --legacy --stop --reason "<why>"`. It signals a
+  `legacy: true`, and `hq runners reap --legacy` reports the same lanes. To stop
+  them, run `hq runners reap --legacy --stop --reason "<why>"`. It signals a
   process only after checking that the process's start time and command line
   still match the pool record and that its owning session has ended. The
   session-start orphan sweep reports these lanes and never stops them. This
@@ -541,7 +563,7 @@ Newest release first.
 
 - The legacy conduct runtime is removed. `/conduct`, `/conduct-join`,
   `/super-conductor`, `/overnight`, `/execute-task`, `/run-project`, and pipeline
-  mode now use `hq lanes`. The core's release replacement roots include `.claude`
+  mode now use `hq runners`. The core's release replacement roots include `.claude`
   and `core`, so `/update-hq` removes these release-owned scripts and hooks when
   installing this version; local edits preserved as drift may need manual review.
   Finish or stop any active pool lanes from an older core before updating: let
@@ -549,12 +571,12 @@ Newest release first.
   `bash core/scripts/conduct-reap.sh --apply --kill` on the old core to stop
   lanes whose session has ended. After the scripts are replaced, this release
   cannot reap those processes; hq-cli `5.345.85` or newer can, with
-  `hq lanes reap --legacy` (see the newer release above). Existing pool lanes
-  are not adopted into `hq lanes`.
+  `hq runners reap --legacy` (see the newer release above). Existing pool lanes
+  are not adopted into `hq runners`.
 
 ## Release: v16.0.0-beta.61
 
-- `/conduct` now starts workers with `hq lanes create`, keeps the invoking
+- `/conduct` now starts workers with `hq runners create`, keeps the invoking
   session as senior, and uses hq-cli for admission, capacity, state, messages,
   questions, and results. Update hq-cli to `5.345.67` or newer before using the
   new dispatch path. `/conduct --workers` still creates one lane per role and
@@ -569,10 +591,10 @@ Newest release first.
 
 ## Release: v16.0.0-beta.60
 
-### Session links use hq lanes link
+### Session links use hq runners link
 
-Session-link skills now use `hq lanes link` instead of the conduct link shell
-script. `hq lanes link` needs hq-cli `5.345.63` or newer, and the core floor is
+Session-link skills now use `hq runners link` instead of the conduct link shell
+script. `hq runners link` needs hq-cli `5.345.63` or newer, and the core floor is
 already `5.345.67`, so update hq-cli before using `/conduct adopt`,
 `/conduct-join`, `/super-conductor`, or `/overnight`. Link data now lives under
 `workspace/lanes-links/` and lasts only as long as its sessions; existing
@@ -581,32 +603,32 @@ already `5.345.67`, so update hq-cli before using `/conduct adopt`,
 ## Release: v16.0.0-beta.53
 
 - `/execute-task` phases and interactive `/run-project` stories use
-  `hq lanes create`. Each lane carries the active company, project, story, worker,
+  `hq runners create`. Each lane carries the active company, project, story, worker,
   brief, and invoking session as senior. Send follow-up work to a live lane with
-  `hq lanes message`, then read the result from its envelope.
+  `hq runners message`, then read the result from its envelope.
 - Update hq-cli to 5.345.67 or newer before using these skills. `core/core.yaml`
   enforces this minimum version.
 
 ## Release: v16.0.0-beta.54
 
-- Pipeline mode uses `hq lanes` loop lanes and requires hq-cli 5.345.65 or later.
+- Pipeline mode uses `hq runners` loop lanes and requires hq-cli 5.345.65 or later.
   Pipeline runs already in flight on the old `conduct-pool` path finish there.
 
 ## Release: v16.0.0-beta.31
 
-### Conduct hooks use hq lanes in CL-6b
+### Conduct hooks use hq runners in CL-6b
 
-The SessionStart conductor block now comes from `hq lanes session-start`. The
+The SessionStart conductor block now comes from `hq runners session-start`. The
 hook drains the event payload and its compatibility gate remains hq-cli
 `5.345.63` or newer. If the CLI is missing, below that gate, fails, or exceeds
 the two-second timeout, the hook exits without stdout or stderr. The core now
 requires hq-cli `5.345.67` or newer; that is the release where
-`hq lanes session-start` records the Codex session's selected model and effort
+`hq runners session-start` records the Codex session's selected model and effort
 in session metadata. hq-cli still applies conduct precedence and the
 `HQ_DISABLED_HOOKS=auto-conduct` off switch.
 
 PostToolUse, Stop, and SubagentStop deliver linked-session messages through
-`hq lanes link _deliver --event`. The CLI returns the hook output for each
+`hq runners link _deliver --event`. The CLI returns the hook output for each
 engine. The `conduct-lane-inbox.sh` and `40-conduct-reap.sh` registrations stay
 in place for conduct-pool lanes started before this upgrade. CL-7 removes them.
 

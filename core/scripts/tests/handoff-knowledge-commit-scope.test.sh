@@ -12,11 +12,29 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
 
 step_one="$(sed -n '/^### 1\./,/^### 2\./p' "$SKILL")"
-[[ "$step_one" == *"handoff-knowledge-commit.sh"* ]] || fail 'Step 1 invokes the scoped knowledge commit helper'
-[[ "$step_one" == *'--files-touched-json-file'* ]] || fail 'Step 1 passes the session changeset to the helper'
-! grep -Fq 'git add -A' <<<"$step_one" || fail 'Step 1 does not stage whole repositories'
-! grep -Fq 'for knowledge_path in' <<<"$step_one" || fail 'Step 1 does not walk all knowledge repositories'
+step_three="$(sed -n '/^### 3\./,/^### 4\./p' "$SKILL")"
+# The knowledge commit runs inside `hq core handoff run` (Step 3),
+# which commits the Step 1 changeset before finalize and stops on failure.
+[[ "$step_one" == *'.handoff-changeset-{slug}-{stamp}.json'* ]] || fail 'Step 1 writes the session changeset file'
+# Step 3 runs it through core/scripts/handoff-run.sh, which calls the CLI first
+# and falls back to the helpers only when the CLI writes no thread.
+[[ "$step_three" == *'bash core/scripts/handoff-run.sh \'* ]] || fail 'Step 3 calls hq core handoff run through handoff-run.sh'
+grep -Fq '"$HQ_BIN" core handoff run "$@"' "$ROOT/core/scripts/handoff-run.sh" || fail 'handoff-run.sh calls hq core handoff run with every argument'
+[[ "$step_three" == *'--files-touched-json-file "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"'* ]] || fail 'Step 3 passes the Step 1 changeset to hq core handoff run'
+[[ "$step_three" == *'the scoped personal/core knowledge commit for the Step 1 changeset'* ]] || fail 'Step 3 says the run commits knowledge from the changeset first'
+step_three_code="$(awk '/^```/{inside=!inside; next} inside' <<<"$step_three")"
+! grep -Fq 'git add -A' <<<"$step_one$step_three_code" || fail 'Steps 1 and 3 do not stage whole repositories'
+! grep -Fq 'for knowledge_path in' <<<"$step_one$step_three_code" || fail 'Steps 1 and 3 do not walk all knowledge repositories'
 ok 'handoff skill routes knowledge commits through the session changeset'
+
+# /handoff calls the hq-cli commands, not the handoff-*.sh helpers.
+for script in handoff-knowledge-commit.sh handoff-finalize.sh handoff-autofile.sh handoff-builder-route.sh handoff-archive-decision.sh hq-detach.sh; do
+  ! grep -Eq "(bash )?core/scripts/${script//./\\.}( |\"|$)" < <(grep -v '^  "core/scripts/handoff-finalize.sh",$' "$SKILL") \
+    || fail "handoff skill still invokes core/scripts/$script"
+done
+grep -Fq 'hq core handoff archive-decision --root "$PWD" --cwd "$PWD"' "$SKILL" || fail 'Step 7 calls hq core handoff archive-decision'
+grep -Fq 'Bash(hq core handoff run:*)' "$SKILL" || fail 'allowed-tools lists hq core handoff run'
+ok 'handoff skill calls hq core handoff run and archive-decision'
 
 [ -f "$HELPER" ] || fail 'scoped knowledge commit helper exists'
 fixture_root="$TMP/hq"

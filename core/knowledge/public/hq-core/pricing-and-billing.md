@@ -213,7 +213,7 @@ checks.
 ## Current numbers
 
 <!-- pricing:numbers:start -->
-_Generated from pricing.json (statement generated 2026-11-18T10:27:15.287Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
+_Generated from pricing.json (statement generated 2026-11-19T14:01:56.348Z). Do not edit by hand; run core/scripts/refresh-pricing.sh._
 
 ### Usage card (new signups from 2026-10-16, card version 2026-11-13)
 
@@ -242,6 +242,17 @@ _Generated from pricing.json (statement generated 2026-11-18T10:27:15.287Z). Do 
 | medium | t3.medium | $200 |
 | large | t3.large | $400 |
 | xlarge | t3.xlarge | $800 |
+
+### Company Outpost disk (per Outpost, per month)
+
+A company Outpost that syncs the company files bills its box size plus the smallest disk tier that fits the company vault and 20 GB of headroom. The disk is charged once the Outpost confirms it is running. A company Outpost without company file sync gets a 30 GB disk at no charge.
+
+| Disk | Price |
+|---|---|
+| 50 GB | $15 |
+| 100 GB | $30 |
+| 200 GB | $60 |
+| 500 GB | $150 |
 
 ### Signup
 

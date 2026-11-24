@@ -29,7 +29,7 @@ fail() { echo "FAIL: $1" >&2; FAIL=$((FAIL + 1)); }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq unavailable" >&2; exit 0; }
 
 TASK_TMP="$(mktemp -d)"
-trap 'rm -rf "$TASK_TMP"' EXIT
+trap 'chmod -R u+rwx "$TASK_TMP" 2>/dev/null || true; rm -rf "$TASK_TMP"' EXIT
 TASK_TMP="$(cd "$TASK_TMP" && pwd -P)"
 export HOME="$TASK_TMP/home" USERPROFILE="$TASK_TMP/home"
 mkdir -p "$HOME" "$TASK_TMP/bin"
@@ -403,6 +403,207 @@ for name in 'meta $(touch PWNED-dollar) root' 'meta `touch PWNED-tick` root'; do
     fail "root '$name' lost its records: $records"
   fi
 done
+
+# --------------------------------------------------------------------------
+# 4. New-core run --host claude form, flexible args, and stable alias.
+# --------------------------------------------------------------------------
+echo "[new-core run --host claude form and stable alias]"
+STABLE_ROOT="$TASK_TMP/stable-root"
+make_fixture "$STABLE_ROOT"
+STABLE_ROOT_NATIVE="$(native "$(cd "$STABLE_ROOT" && pwd -P)")"
+mkdir -p "$HOME/.hq/bin/hq-hook/9.9.9/hq-hook.app/Contents/MacOS"
+
+expect_master_stable_warned() { # <label> <command> <args-json>
+  local errf="$TASK_TMP/exec-stable-warn.txt" got
+  got="$(exec_master_records "$2" "$3" 2>/dev/null)"
+  ( set +u; . "$BYPASS/core/scripts/lib/hook-adapter-core.sh"
+    HQ_ROOT="$BYPASS" hqad_iter_settings PreToolUse Bash '{}' >/dev/null 2>"$errf" )
+  if [ "$got" = "$(printf 'master\tPreToolUse')" ] \
+    && grep -q 'WARN:.*stable alias could not be resolved' "$errf"; then
+    pass "accepts $1, with WARN"
+  else
+    fail "$1: records '$got', stderr '$(cat "$errf")'"
+  fi
+}
+
+# 4a. Unconditional tests (run on all platforms, including Windows without symlinks).
+for ev in Stop PreCompact SubagentStop SessionEnd; do
+  args_live="$(jq -cn --arg ev "$ev" --arg r "$STABLE_ROOT_NATIVE" '["run", "--host", "claude", $ev, "--hq-root", $r]')"
+  args_global="$(jq -cn --arg ev "$ev" --arg r "$STABLE_ROOT_NATIVE" '["run", "--host", "claude", $ev, "--hq-root", $r, "--global"]')"
+  for label_args in "live|$args_live" "live+global|$args_global"; do
+    lbl="${label_args%%|*}"
+    ajson="${label_args#*|}"
+    jq -n --arg ev "$ev" --arg c "$HQ_TEST_PIN_NATIVE" --argjson a "$ajson" \
+      '{hooks:{($ev):[{hooks:[{type:"command",command:$c,timeout:300,args:$a}]}]}}' \
+      > "$STABLE_ROOT/.claude/settings.json"
+    got="$( ( set +u; . "$STABLE_ROOT/core/scripts/lib/hook-adapter-core.sh"
+      HQ_ROOT="$STABLE_ROOT" hqad_iter_settings "$ev" "" '{}' 2>/dev/null | grep '^master' ) )"
+    if [ "$got" = "$(printf 'master\t%s' "$ev")" ]; then
+      pass "classifies $ev ($lbl) with pinned semver + run --host claude"
+    else
+      fail "failed to classify $ev ($lbl) with pinned semver: got '$got'"
+    fi
+  done
+done
+
+# Argument-order and flag flexibility (must not fail silently).
+expect_master "--hq-root before event (run form)" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "--hq-root", $r, "PreToolUse"]')"
+expect_master "--hq-root before event (legacy form)" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["--hq-root", $r, "PreToolUse", "--runtime", "claude"]')"
+expect_master "extra flag alongside run --host claude" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "--verbose", "PreToolUse", "--hq-root", $r, "--global"]')"
+expect_master "--host=claude equals form" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host=claude", "PreToolUse", "--hq-root", $r]')"
+
+expect_master_arg_warned() { # <label> <command> <args-json> <warn-regex>
+  local errf="$TASK_TMP/exec-arg-warn.txt" got
+  got="$(exec_master_records "$2" "$3" 2>/dev/null)"
+  ( set +u; . "$BYPASS/core/scripts/lib/hook-adapter-core.sh"
+    HQ_ROOT="$BYPASS" hqad_iter_settings PreToolUse Bash '{}' >/dev/null 2>"$errf" )
+  if [ "$got" = "$(printf 'master\tPreToolUse')" ] \
+    && grep -qE "WARN:.*$4" "$errf"; then
+    pass "accepts $1, with WARN"
+  else
+    fail "$1: records '$got', stderr '$(cat "$errf")'"
+  fi
+}
+
+# Negative checks for mismatched slot/event and unrelated non-semver directories.
+expect_none "run --host claude with mismatched slot/event" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "Stop", "--hq-root", $r]')"
+expect_none "unrelated non-semver directory with run --host claude" "$HOME/.hq/bin/hq-hook/custom/hq-hook" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+
+# Unparsed run/flag forms must still emit master + WARN (never drop guards silently).
+expect_master_arg_warned "--host with no value" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "PreToolUse", "--hq-root", $r, "--host"]')" \
+  'missing value for --host'
+expect_master_arg_warned "--hq-root with no value" "$PIN" \
+  '["run", "--host", "claude", "PreToolUse", "--hq-root"]' \
+  'missing value for --hq-root'
+expect_master_arg_warned "run --host grok (non-claude host)" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "grok", "PreToolUse", "--hq-root", $r]')" \
+  "unexpected --host 'grok' for run"
+expect_master_arg_warned "run --host=grok (non-claude host equals form)" "$PIN" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host=grok", "PreToolUse", "--hq-root", $r]')" \
+  "unexpected --host 'grok' for run"
+
+# Unresolved stable alias must still emit master + WARN (never drop guards silently).
+# Non-symlink unresolved cases run unconditionally on every platform.
+rm -rf "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+expect_master_stable_warned "missing stable link" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable/hq-hook" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+
+mkdir -p "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+expect_master_stable_warned "stable plain directory (not semver)" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable/hq-hook" \
+  "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+
+UNREADABLE_HOME="$TASK_TMP/unreadable-home"
+mkdir -p "$UNREADABLE_HOME/.hq/bin/hq-hook/9.9.9"
+chmod 000 "$UNREADABLE_HOME"
+if ! (cd "$UNREADABLE_HOME" 2>/dev/null); then
+  expect_master_stable_warned "stable under unreadable engine home" "$UNREADABLE_HOME/.hq/bin/hq-hook/stable/hq-hook" \
+    "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+else
+  echo "NOT-APPLICABLE: unreadable engine home chmod 000 check (privileged user or Windows ACLs)"
+fi
+chmod 700 "$UNREADABLE_HOME"
+
+# 4b. Symlink-specific stable alias tests.
+rm -rf "$HOME/.hq/bin/hq-hook/stable"
+ln -s "$HOME/.hq/bin/hq-hook/9.9.9" "$HOME/.hq/bin/hq-hook/stable" 2>/dev/null || true
+
+if [ -L "$HOME/.hq/bin/hq-hook/stable" ]; then
+  STABLE_APP="$HOME/.hq/bin/hq-hook/stable/hq-hook.app/Contents/MacOS/hq-hook"
+  STABLE_BIN="$HOME/.hq/bin/hq-hook/stable/hq-hook"
+
+  for ev in Stop PreCompact SubagentStop SessionEnd; do
+    args_live="$(jq -cn --arg ev "$ev" --arg r "$STABLE_ROOT_NATIVE" '["run", "--host", "claude", $ev, "--hq-root", $r]')"
+    args_global="$(jq -cn --arg ev "$ev" --arg r "$STABLE_ROOT_NATIVE" '["run", "--host", "claude", $ev, "--hq-root", $r, "--global"]')"
+
+    for label_args in "live|$args_live" "live+global|$args_global"; do
+      lbl="${label_args%%|*}"
+      ajson="${label_args#*|}"
+      jq -n --arg ev "$ev" --arg c "$STABLE_APP" --argjson a "$ajson" \
+        '{hooks:{($ev):[{hooks:[{type:"command",command:$c,timeout:300,args:$a}]}]}}' \
+        > "$STABLE_ROOT/.claude/settings.json"
+      errf="$TASK_TMP/stable-ok-err.txt"
+      got="$( ( set +u; . "$STABLE_ROOT/core/scripts/lib/hook-adapter-core.sh"
+        HQ_ROOT="$STABLE_ROOT" hqad_iter_settings "$ev" "" '{}' 2>"$errf" | grep '^master' ) )"
+      if [ "$got" = "$(printf 'master\t%s' "$ev")" ] && ! grep -q 'stable alias could not be resolved' "$errf"; then
+        pass "classifies $ev ($lbl) with stable app binary + run --host claude (no stable WARN)"
+      else
+        fail "failed to classify $ev ($lbl): got '$got', stderr '$(cat "$errf")'"
+      fi
+    done
+  done
+
+  # End-to-end Codex and Grok adapter dispatch with live stable + run --host + --global
+  # across Stop, PreCompact, SubagentStop, SessionEnd: master-hook.sh must run.
+  MASTER_LOG="$TASK_TMP/stable-master.log"
+  cat > "$STABLE_ROOT/.claude/hooks/master-hook.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s %s\n' "\${HQ_HARNESS:-unknown}" "\$1" >> "$MASTER_LOG"
+exit 0
+EOF
+  chmod +x "$STABLE_ROOT/.claude/hooks/master-hook.sh"
+  jq -n --arg c "$STABLE_APP" --arg r "$STABLE_ROOT_NATIVE" '{
+    hooks: {
+      Stop: [{hooks:[{type:"command",command:$c,timeout:300,args:["run","--host","claude","Stop","--hq-root",$r,"--global"]}]}],
+      PreCompact: [{hooks:[{type:"command",command:$c,timeout:300,args:["run","--host","claude","PreCompact","--hq-root",$r]}]}],
+      SubagentStop: [{hooks:[{type:"command",command:$c,timeout:300,args:["run","--host","claude","SubagentStop","--hq-root",$r]}]}],
+      SessionEnd: [{hooks:[{type:"command",command:$c,timeout:300,args:["run","--host","claude","SessionEnd","--hq-root",$r]}]}]
+    }
+  }' > "$STABLE_ROOT/.claude/settings.json"
+
+  for ev in Stop PreCompact SubagentStop SessionEnd; do
+    : > "$MASTER_LOG"
+    codex_payload="$(jq -cn --arg ev "$ev" --arg cwd "$STABLE_ROOT" '{hook_event_name:$ev,session_id:"s-stable",cwd:$cwd}')"
+    printf '%s' "$codex_payload" | (cd "$STABLE_ROOT" && CLAUDE_PROJECT_DIR="$STABLE_ROOT" HQ_ROOT="$STABLE_ROOT" \
+      bash "$STABLE_ROOT/.codex/hooks/hq-codex-hook-adapter.sh" "$ev" >/dev/null 2>&1) || true
+    if grep -qx "codex $ev" "$MASTER_LOG" 2>/dev/null; then
+      pass "codex adapter runs master-hook.sh for $ev with stable + run --host claude"
+    else
+      fail "codex adapter skipped master-hook.sh for $ev (log: $(cat "$MASTER_LOG" 2>/dev/null))"
+    fi
+
+    : > "$MASTER_LOG"
+    grok_payload="$(jq -cn --arg ev "$ev" --arg cwd "$STABLE_ROOT" '{hookEventName:$ev,sessionId:"s-stable",cwd:$cwd}')"
+    printf '%s' "$grok_payload" | (cd "$STABLE_ROOT" && CLAUDE_PROJECT_DIR="$STABLE_ROOT" GROK_WORKSPACE_ROOT="$STABLE_ROOT" HQ_ROOT="$STABLE_ROOT" \
+      bash "$STABLE_ROOT/.grok/hooks/hq-grok-hook-adapter.sh" "$ev" >/dev/null 2>&1) || true
+    if grep -qx "grok $ev" "$MASTER_LOG" 2>/dev/null; then
+      pass "grok adapter runs master-hook.sh for $ev with stable + run --host claude"
+    else
+      fail "grok adapter skipped master-hook.sh for $ev (log: $(cat "$MASTER_LOG" 2>/dev/null))"
+    fi
+  done
+
+  expect_master "stable alias + run --host claude on PreToolUse" "$STABLE_BIN" \
+    "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+
+  # Unresolved symlink stable cases must still emit master + WARN (never drop guards silently).
+  mkdir -p "$TASK_TMP/outside-hook/9.9.9"
+  rm -rf "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+  ln -s "$TASK_TMP/outside-hook/9.9.9" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+  expect_master_stable_warned "stable symlink escaping .hq/bin/hq-hook" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable/hq-hook" \
+    "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+
+  mkdir -p "$TASK_TMP/other-home/.hq/bin/hq-hook/latest"
+  rm -rf "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+  ln -s "$TASK_TMP/other-home/.hq/bin/hq-hook/latest" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+  expect_master_stable_warned "stable symlink targeting non-semver dir" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable/hq-hook" \
+    "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+
+  rm -rf "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+  ln -s "$TASK_TMP/other-home/.hq/bin/hq-hook/9.9.8-missing" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable"
+  expect_master_stable_warned "dangling stable symlink" "$TASK_TMP/other-home/.hq/bin/hq-hook/stable/hq-hook" \
+    "$(jq -cn --arg r "$BYPASS_ROOT" '["run", "--host", "claude", "PreToolUse", "--hq-root", $r]')"
+elif command -v cygpath >/dev/null 2>&1; then
+  echo "NOT-APPLICABLE: symlink-only stable alias tests (Windows without symlink privilege)"
+else
+  fail "ln -s failed to create stable symlink on Unix"
+fi
 
 if [ "$FAIL" -ne 0 ]; then
   echo "hook-adapter-exec-form: $FAIL failure(s)" >&2

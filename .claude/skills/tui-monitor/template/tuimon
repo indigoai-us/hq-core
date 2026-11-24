@@ -1,0 +1,7 @@
+#!/bin/bash
+# tuimon: live terminal monitor. See tuimon.py --help.
+# Resolves its own folder, so it works from any working directory.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+py=/usr/bin/python3
+[ -x "$py" ] || py="$(command -v python3)"
+exec "$py" "$here/tuimon.py" "$@"

@@ -19,7 +19,7 @@ grep -Fq 'p50_ms=' <<<"$WINDOWS_JOB" \
   || fail 'benchmark step must print per-Bash-call p50'
 grep -Fq 'p95_ms=' <<<"$WINDOWS_JOB" \
   || fail 'benchmark step must print per-Bash-call p95'
-grep -Fq 'actions/upload-artifact@v4' <<<"$WINDOWS_JOB" \
+grep -Fq 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' <<<"$WINDOWS_JOB" \
   || fail 'shell-smoke-windows must upload the raw benchmark result'
 grep -Fq 'if: ${{ !cancelled() }}' <<<"$WINDOWS_JOB" \
   || fail 'benchmark artifact upload must respect workflow cancellation'

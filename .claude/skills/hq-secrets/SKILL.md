@@ -275,6 +275,8 @@ To onboard a new hire, add them to the group — they inherit all group-level se
 
 11. **Never delegate capability-link minting + rendering to a subagent.** `hq secrets generate-link` (and any `share-session` / capability URL) MUST be run and rendered in the **parent turn that talks to the human** — one Markdown inline link, per `core/policies/hq-secure-link-render-as-markdown.md`. A Task subagent does NOT receive the SessionStart-injected policies (from `inject-policy-on-trigger.sh`), so it has no knowledge of the markdown-render / persistence rules and will dump bare token URLs. If a workflow step needs a credential, return control to the parent and mint there — do not generate the link inside a subagent. (Backstop: the `enforce-capability-link-render` Stop hook blocks a parent turn that emits a bare capability URL, but it cannot see inside a subagent — prevention is this rule.)
 
+12. **Write a script file when the scope hook blocks inline shell.** The Bash scope hook cannot resolve `$VAR`, `$(...)`, backticks, globs, or heredocs in path operands and blocks the call. For multi-step work such as repeated AWS calls under `hq secrets exec`, Write the commands to a script file with literal absolute paths, then run it as a single command: `hq secrets exec --only NAME -- bash /abs/path/script.sh`. Keep secret values out of the script text; the child reads them from the injected env.
+
 ## Honest Guardrail Framing
 
 The `hq run` and `hq secrets exec` commands both make the safe path the easy path: secrets are injected as env vars into a child process, and the CLI itself never prints values. The `get` command redacts values by default.

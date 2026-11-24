@@ -100,6 +100,8 @@ printf 'API_KEY=%s\n' "$CANARY" > "$PROJ/.env"
 printf 'API_KEY=%s\n' "$CANARY" > "$PROJ/.env.local"
 printf 'API_KEY=%s\n' "$CANARY" > "$PROJ/.envrc"
 printf 'API_KEY=changeme\n' > "$PROJ/.env.example"
+printf 'API_KEY=changeme\n' > "$PROJ/config.example.env"
+printf 'API_KEY=changeme\n' > "$PROJ/example.env"
 printf 'hello\n' > "$PROJ/README.md"
 printf 'registry=https://registry.example.invalid/\n' > "$PROJ/notes.txt"
 
@@ -348,6 +350,10 @@ bash_case 2 "variable assigned from cat stays unknown" 'F=$(cat notes.txt); cat 
 bash_case 2 "assignment prefix before an impure command" 'F=$(ls notes.txt) eval "cat ~/.npmrc"'
 bash_case 0 "cat README" "cat README.md"
 bash_case 0 "cat .env.example" "cat .env.example"
+read_case 0 "config.example.env" "$PROJ/config.example.env"
+read_case 0 "example.env" "$PROJ/example.env"
+bash_case 0 "cat config.example.env" "cat config.example.env"
+bash_case 0 "cat example.env" "cat example.env"
 bash_case 0 "cat config/upstream-pin.env (non-secret pin file)" "cat config/upstream-pin.env"
 bash_case 2 "cat config/other-pin.env still blocked" "cat config/other-pin.env"
 bash_case 2 "cat config/xupstream-pin.env still blocked" "cat config/xupstream-pin.env"
@@ -2148,6 +2154,18 @@ bash_case 0 "control: diff" "git diff" "$GREPO"
 bash_case 0 "control: grep foo" "git grep foo" "$GREPO"
 bash_case 0 "control: grep foo HEAD -- src" "git grep foo HEAD -- src" "$GREPO"
 bash_case 0 "control: archive HEAD src | tar" "git archive HEAD src | tar -xO" "$GREPO"
+# A tracked config.example.env is a template, not a secret.
+TREPO="$TMP/examplerepo"
+mkdir -p "$TREPO"
+git -C "$TREPO" init -q 2>/dev/null
+printf 'API_KEY=changeme\n' > "$TREPO/config.example.env"
+git -C "$TREPO" add -A >/dev/null 2>&1
+git -C "$TREPO" -c user.email=t@example.invalid -c user.name=t commit -q -m fixture >/dev/null 2>&1
+bash_case 0 "grep in a repo that only tracks config.example.env" "git grep changeme" "$TREPO"
+bash_case 0 "diff in a repo that only tracks config.example.env" "git diff" "$TREPO"
+bash_case 0 "log -p in a repo that only tracks config.example.env" "git log -p" "$TREPO"
+bash_case 0 "archive HEAD in a repo that only tracks config.example.env" "git archive HEAD | tar -t" "$TREPO"
+bash_case 2 "archive HEAD still blocks when a real .env is tracked" "git archive HEAD | tar -t" "$GREPO"
 bash_case 0 "control: grep -r API_KEY ." "grep -r API_KEY ." "$GREPO"
 
 # [24k] Commit 1 adds cfg/.env; commit 2 changes only src/a.ts. A count of 1

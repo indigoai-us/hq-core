@@ -3097,6 +3097,20 @@ physical_root="$(scope_resolve_absolute_path "$HQ_ROOT" 2>/dev/null || true)"
 unset SCOPE_CASE_FOLDS SCOPE_CASE_ROOT_PAT
 [ -f "$HQ_ROOT/core/scripts/lib/session-authz.sh" ] || exit 0
 
+SCOPE_SESSION_ROOT="$HQ_ROOT"
+if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -n "$self_dir" ] \
+  && ! [ "$CLAUDE_PROJECT_DIR" -ef "$HQ_ROOT" ] \
+  && [ "$CLAUDE_PROJECT_DIR/.claude/hooks" -ef "$self_dir" ] \
+  && [ "$CLAUDE_PROJECT_DIR/core" -ef "$HQ_ROOT/core" ] \
+  && [ "$CLAUDE_PROJECT_DIR/companies" -ef "$HQ_ROOT/companies" ] \
+  && { { [ ! -e "$HQ_ROOT/.codex" ] && [ ! -e "$CLAUDE_PROJECT_DIR/.codex" ] && [ ! -L "$CLAUDE_PROJECT_DIR/.codex" ]; } \
+    || [ "$CLAUDE_PROJECT_DIR/.codex" -ef "$HQ_ROOT/.codex" ]; } \
+  && [ -d "$CLAUDE_PROJECT_DIR/workspace" ]; then
+  scope_project_root="$(cd "$CLAUDE_PROJECT_DIR" 2>/dev/null && pwd -P || true)"
+  [ -z "$scope_project_root" ] || SCOPE_SESSION_ROOT="$scope_project_root"
+  unset scope_project_root
+fi
+
 LIB_DIR="$HQ_ROOT/core/scripts/lib"
 SCOPE_SOURCING="core/scripts/lib (session helpers)"
 # shellcheck source=../../core/scripts/lib/session-authz.sh
@@ -3291,11 +3305,11 @@ COMMAND_CWD="$PAYLOAD_CWD"
 scope_read_bound_company() {
   local sid="${1:-}" aid="${2:-}" co=""
   [ -n "$sid" ] || return 0
-  co="$(session_scope_read "$HQ_ROOT" "$sid" "$aid")"
+  co="$(session_scope_read "$SCOPE_SESSION_ROOT" "$sid" "$aid")"
   [ -n "$co" ] || scope_load_caller_parent_session
   if [ -z "$co" ] && [ "$CALLER_KIND" = "main" ] && [ -z "$SCOPE_CALLER_PARENT_SID" ] \
     && [ "$SCOPE_CALLER_REPORTS_PARENT" -eq 0 ]; then
-    local meta="$HQ_ROOT/workspace/sessions/$sid/meta.yaml"
+    local meta="$SCOPE_SESSION_ROOT/workspace/sessions/$sid/meta.yaml"
     if [ -f "$meta" ]; then
       co="$(awk '
         $1 == "company_slug:" {
@@ -3313,9 +3327,9 @@ scope_read_bound_company() {
 scope_read_bound_companies() {
   local sid="${1:-}" aid="${2:-}" cap=""
   [ -n "$sid" ] || return 0
-  cap="$(session_scope_capability_path "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true)"
+  cap="$(session_scope_capability_path "$SCOPE_SESSION_ROOT" "$sid" "$aid" 2>/dev/null || true)"
   if [ -n "$cap" ] && [ -f "$cap" ]; then
-    session_scope_read_companies "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true
+    session_scope_read_companies "$SCOPE_SESSION_ROOT" "$sid" "$aid" 2>/dev/null || true
   elif [ -z "$aid" ]; then
     scope_read_bound_company "$sid" "$aid"
   fi
@@ -3327,7 +3341,7 @@ scope_read_bound_companies() {
 scope_read_bound_scope() {
   local sid="${1:-}" aid="${2:-}" cap="" info="" primary="" has_set="" companies=""
   [ -n "$sid" ] || return 0
-  cap="$(session_scope_capability_path "$HQ_ROOT" "$sid" "$aid" 2>/dev/null || true)"
+  cap="$(session_scope_capability_path "$SCOPE_SESSION_ROOT" "$sid" "$aid" 2>/dev/null || true)"
   if [ -n "$cap" ] && [ -f "$cap" ]; then
     info="$(jq -ser --arg sid "$sid" --arg aid "$aid" '
       # A capability file must contain exactly one complete object.
@@ -3365,7 +3379,7 @@ scope_load_bound_company() {
   # minted here on first use from the parent's main-thread capability only.
   # No parent capability means no inheritance and the deny stands.
   if [ -z "$BOUND_CO" ] && [ "$CALLER_KIND" = "subagent" ] && [ -n "$CALLER_AGENT_ID" ] \
-    && session_scope_inherit_parent "$HQ_ROOT" "$SESSION_ID" "$CALLER_AGENT_ID"; then
+    && session_scope_inherit_parent "$SCOPE_SESSION_ROOT" "$SESSION_ID" "$CALLER_AGENT_ID"; then
     scope_apply_bound_scope
   fi
   # SessionStart bind can land in the same turn as the first company path.
@@ -3380,7 +3394,7 @@ scope_load_bound_company() {
   if [ -z "$BOUND_CO" ]; then
     scope_load_caller_parent_session
     if [ -n "$SCOPE_CALLER_PARENT_SID" ] \
-      && session_scope_inherit_parent_session "$HQ_ROOT" "$SESSION_ID" "$CALLER_AGENT_ID" "$SCOPE_CALLER_PARENT_SID"; then
+      && session_scope_inherit_parent_session "$SCOPE_SESSION_ROOT" "$SESSION_ID" "$CALLER_AGENT_ID" "$SCOPE_CALLER_PARENT_SID"; then
       scope_apply_bound_scope
     fi
   fi
@@ -3597,8 +3611,53 @@ scope_personal_overlay_skill() { # <name after the personal: prefix>
   [ -d "$HQ_ROOT/.claude/skills" ] && [ ! -L "$HQ_ROOT/.claude/skills" ] || return 1
   scope_skill_entry_is_overlay "$HQ_ROOT/.claude/skills/personal:${1:-}" "${1:-}"
 }
+# `hq install-global` gives every shared HQ skill a user-level alias with one
+# `hq-` prefix, so the overlay mirror `.claude/skills/personal:<name>` also
+# answers to `hq-personal:<name>` from the user-level skills folder: a link to
+# that mirror (feedback ca21d932). Such an alias is the overlay's, not a copy
+# of a skill of the company named `personal`, when it is one of:
+#   - a link whose folder is the HQ mirror `.claude/skills/personal:<name>`
+#     (same device and inode) and that mirror is the overlay's
+#     (scope_personal_overlay_skill), or
+#   - a real folder whose own SKILL.md is the overlay's
+#     (scope_skill_entry_is_overlay: linked to it, or a byte-identical copy).
+# The user-level skills folder has to be a real folder, and the HQ skills
+# folder must not hold an `hq-personal:<name>` entry of its own (Claude Code
+# could load that one instead). A link to a company mirror, a copy of a
+# company skill, or a stub in personal/skills does not pass, because the
+# overlay check compares the SKILL.md the alias resolves to.
+scope_user_overlay_alias() { # <name after the hq-personal: prefix>
+  local name="${1:-}" user_skills="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/skills" e
+  scope_personal_overlay_source "$name" || return 1
+  [ -d "$HQ_ROOT/.claude/skills" ] && [ ! -L "$HQ_ROOT/.claude/skills" ] || return 1
+  e="$HQ_ROOT/.claude/skills/hq-personal:$name"
+  [ ! -e "$e" ] && [ ! -L "$e" ] || return 1
+  [ -d "$user_skills" ] && [ ! -L "$user_skills" ] || return 1
+  e="$user_skills/hq-personal:$name"
+  if [ -L "$e" ]; then
+    [ -d "$e" ] && [ "$e" -ef "$HQ_ROOT/.claude/skills/personal:$name" ] || return 1
+    scope_personal_overlay_skill "$name"
+    return
+  fi
+  scope_skill_entry_is_overlay "$e" "$name"
+}
+# The same, for a requested Skill name: the alias folder must also be listed
+# under exactly this spelling, since Claude Code registers a skill under its
+# folder name and a case-insensitive disk passes the tests above for another
+# case.
+scope_user_overlay_alias_named() { # <name after the hq-personal: prefix>
+  local name="${1:-}" user_skills="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/skills" f
+  scope_user_overlay_alias "$name" || return 1
+  for f in "$user_skills"/hq-personal:"${name:0:1}"*; do
+    [ "$f" != "$user_skills/hq-personal:$name" ] || return 0
+  done
+  return 1
+}
 scope_skill_mirror_companies() {
-  local path="${1:-}" rest seg cand co lc out=" " norm="" pre hq_skills
+  local path="${1:-}" rest seg cand co lc out=" " norm="" pre hq_skills user_level
+  local user_conf="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}" user_conf_rel=""
+  # A user config folder inside the HQ root also arrives as an HQ-relative path.
+  case "$user_conf" in "$HQ_ROOT"/?*) user_conf_rel="/${user_conf#"$HQ_ROOT"/}" ;; esac
   SCOPE_SKILL_MIRROR_COS=""
   path="/${path//\\//}"
   # shellcheck disable=SC2254
@@ -3617,9 +3676,14 @@ scope_skill_mirror_companies() {
       rest="${rest#*/$SCOPE_SKILLS_SEG_PAT}"
       seg="${rest%%/*}"
       hq_skills=0
+      user_level=0
       case "$pre" in
         /.claude|"$HQ_ROOT/.claude") hq_skills=1 ;;
-        '') [ "$SCOPE_SKILL_MIRROR_DIR" != "$HQ_ROOT/.claude/skills" ] || hq_skills=1 ;;
+        "$user_conf"|"${user_conf_rel:-$user_conf}") user_level=1 ;;
+        '')
+          [ "$SCOPE_SKILL_MIRROR_DIR" != "$HQ_ROOT/.claude/skills" ] || hq_skills=1
+          [ "$SCOPE_SKILL_MIRROR_DIR" != "$user_conf/skills" ] || user_level=1
+          ;;
       esac
       for cand in "$seg" "${seg#[Hh][Qq]-}"; do
         case "$cand" in *:*) cand="${cand%%:*}" ;; *) continue ;; esac
@@ -3635,6 +3699,11 @@ scope_skill_mirror_companies() {
           # name), not a user-level one or any other folder called skills.
           if [ "${lc:-$cand}" = personal ] && [ "${seg%%:*}" = "$cand" ] && [ "$hq_skills" -eq 1 ] \
             && scope_personal_overlay_skill "${seg#*:}"; then continue; fi
+          # The user-level alias `hq-personal:<name>` of that mirror
+          # (scope_user_overlay_alias). Only that exact spelling, and only an
+          # entry of the user-level skills folder.
+          if [ "${lc:-$cand}" = personal ] && [ "${seg%%:*}" = hq-personal ] && [ "$user_level" -eq 1 ] \
+            && scope_user_overlay_alias "${seg#*:}"; then continue; fi
           case "$out" in *" $co "*) ;; *) out+="$co " ;; esac
         done
       done
@@ -4336,6 +4405,11 @@ scope_skill_noncompany_folder() { # <requested name>
   local name="${1:-}" d e f exact found=0 res rel
   local user_skills="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/skills"
   case "$name" in ''|.*|*[!A-Za-z0-9._:-]*) return 1 ;; esac
+  # The user-level `hq-personal:<name>` alias of a personal-overlay skill
+  # (scope_user_overlay_alias_named) is the folder a call for this name loads.
+  case "$name" in
+    hq-personal:*) scope_user_overlay_alias_named "${name#hq-personal:}" && return 0 ;;
+  esac
   SCOPE_SKILL_MIRROR_DIR="$HQ_ROOT/.claude/skills"
   scope_skill_mirror_companies "skills/$name/SKILL.md"
   SCOPE_SKILL_MIRROR_DIR=""
@@ -4461,6 +4535,7 @@ scope_print_rewrite_hint() {
   case "$rel" in
     *'$('*|*"$backtick"*)
       printf '%s\n' "How to rewrite: a command substitution's output cannot be checked. Run the inner command first, then use the literal path it printed. To write file content that contains backticks or \$( ) (for example markdown code spans in a brief), use the Write tool instead of a Bash heredoc." >&2
+      printf '%s\n' "Blocked inline forms: \$(...) or backticks in a path operand, a loop over a path variable with no literal value, and jq or python one-liners whose quoting hides the path. Scratch-script pattern: write the command to a file with the Write tool (for example workspace/scratch/run.sh) using literal absolute paths, then run it with bash on that file." >&2
       # Inside double quotes the local shell runs $(...) before ssh or
       # `hq outposts exec` sends the command, so the substitution reads local
       # paths. Single quotes send it unexpanded to run on the remote host.
@@ -4470,7 +4545,7 @@ scope_print_rewrite_hint() {
       fi
       ;;
     *'$'*)
-      printf '%s\n' "How to rewrite: the guard follows a variable only when the same command gives it a literal value, as in VAR=/abs/path; cmd \"\$VAR/x\" or for x in a b c; do cmd dir/\$x; done. \$HOME is resolved automatically. Otherwise spell the path literally." >&2
+      printf '%s\n' "How to rewrite: the guard follows a variable only when the same command gives it a literal value, as in VAR=/abs/path; cmd \"\$VAR/x\" or for x in a b c; do cmd dir/\$x; done. \$HOME is resolved automatically. Otherwise spell the path literally. If the loop or jq/python one-liner is still blocked, write it to a scratch script file with the Write tool (literal absolute paths) and run bash on that file." >&2
       ;;
   esac
 }
@@ -14526,6 +14601,11 @@ case "$TOOL" in
             # Only the plain `personal:<name>` spelling of the whole request.
             if [ "$scope_skill_co" = personal ] && [ "$scope_skill_piece" = personal ] \
               && [ "${scope_skill_name%%:*}" = personal ] && scope_personal_overlay_skill "${scope_skill_name#*:}"; then continue; fi
+            # `hq-personal:<name>` is the overlay skill too when it is the
+            # user-level alias `hq install-global` lays out for that mirror
+            # (scope_user_overlay_alias_named). Only that exact spelling.
+            if [ "$scope_skill_co" = personal ] && [ "$scope_skill_piece" = hq-personal ] \
+              && [ "${scope_skill_name%%:*}" = hq-personal ] && scope_user_overlay_alias_named "${scope_skill_name#*:}"; then continue; fi
             if ! scope_rel_allowed "companies/$scope_skill_co"; then
               scope_skill_refuse "$scope_skill_co" "the name starts with the company prefix $scope_skill_co:"
             fi
@@ -15312,6 +15392,121 @@ case "$TOOL" in
       probe="${probe//\\\$/}"
       [[ "$probe" =~ $scope_zsh_modifier_re ]]
     }
+    # Sets SCOPE_RAW_ENTRY_STATE to the quote state (0 none, 1 single,
+    # 2 double, -1 unknown) at the start of raw record <n>. The split prints
+    # one record per line, so a quoted word that spans lines continues in
+    # the next record inside its quote. Walks only the quote characters of
+    # the earlier records, once per command (records are visited in order).
+    # A backslash outside single quotes, or an ANSI-C `$'...'` string, makes
+    # the state unknown.
+    SCOPE_RAW_ENTRY_UPTO=0
+    SCOPE_RAW_ENTRY_STATE=0
+    scope_raw_record_entry_state() {
+      local n="$1" rec quotes i ch
+      if [ "$n" -lt "$SCOPE_RAW_ENTRY_UPTO" ]; then
+        SCOPE_RAW_ENTRY_UPTO=0
+        SCOPE_RAW_ENTRY_STATE=0
+      fi
+      while [ "$SCOPE_RAW_ENTRY_UPTO" -lt "$n" ]; do
+        rec="${scope_raw_records[$SCOPE_RAW_ENTRY_UPTO]:-}"
+        SCOPE_RAW_ENTRY_UPTO=$((SCOPE_RAW_ENTRY_UPTO + 1))
+        [ "$SCOPE_RAW_ENTRY_STATE" -ge 0 ] || continue
+        # `$'...'` lets a backslash escape a quote, which this walk does not
+        # follow.
+        case "$rec" in *"\$'"*) SCOPE_RAW_ENTRY_STATE=-1; continue ;; esac
+        if [ "${#rec}" -lt 1024 ]; then
+          quotes="${rec//[!\'\"\\]/}"
+        else
+          quotes="$(printf '%s' "$rec" | LC_ALL=C tr -cd "\"'\\\\")"
+        fi
+        for ((i = 0; i < ${#quotes}; i++)); do
+          ch="${quotes:i:1}"
+          case "$SCOPE_RAW_ENTRY_STATE:$ch" in
+            0:"'") SCOPE_RAW_ENTRY_STATE=1 ;;
+            0:'"') SCOPE_RAW_ENTRY_STATE=2 ;;
+            1:"'"|2:'"') SCOPE_RAW_ENTRY_STATE=0 ;;
+            0:\\|2:\\) SCOPE_RAW_ENTRY_STATE=-1; break ;;
+          esac
+        done
+      done
+    }
+    # <token> <index>: the split token holds a `$`, and the raw spelling of
+    # the same word (0-based token index in the current record) puts every
+    # `$` inside single quotes. Strict on purpose: no raw spelling, a raw
+    # word count that differs from the split, a backtick anywhere or a
+    # backslash outside single quotes in the raw word, a first word that
+    # continues a quoted word from the line before, a quote left open by a
+    # word that is not the last of its line,
+    # or a raw word whose quote-stripped text is not the token all return 1
+    # and keep the normal check. A `$` outside quotes or inside double
+    # quotes is an expansion.
+    scope_token_dollars_all_single_quoted() {
+      local tok="$1" raw ch state=0 i stripped="" prior
+      case "$tok" in *'$'*) ;; *) return 1 ;; esac
+      # A word handed to something that parses it again as shell or program
+      # text (`eval 'cat $X'`, `bash <<< '...'`, `trap '...' EXIT`, a git
+      # alias, any interpreter) expands its single-quoted dollars on that
+      # second pass. No list of such parsers is complete, so only an
+      # allow-list of trusted commands that print or send their arguments as
+      # data qualifies, and only for words after the command name.
+      [ "${scope_head_untrusted:-1}" -eq 0 ] || return 1
+      case "${SCOPE_REC_HEAD:-}" in
+        echo|printf|slack-call|slack-thread-reply|curl|grep|egrep|fgrep) ;;
+        *) return 1 ;;
+      esac
+      [ "$2" -gt "${SCOPE_HEAD_INDEX:-0}" ] || return 1
+      case "$scope_scan_cmd" in *"'"*) ;; *) return 1 ;; esac
+      if [ "${SCOPE_RAW_BUILT:-0}" -eq 0 ]; then
+        SCOPE_RAW_BUILT=1
+        local raw_rec
+        while IFS= read -r raw_rec; do
+          scope_raw_records[${#scope_raw_records[@]}]="$raw_rec"
+        done <<< "$(hq_shell_simple_commands "$scope_scan_cmd" raw)"
+        if [ "$scope_record_index" -lt "${#scope_raw_records[@]}" ]; then
+          IFS=$'\037' read -r -a scope_raw_tokens <<< "${scope_raw_records[$scope_record_index]}"
+        fi
+      fi
+      # `printf -v 'a[$(cmd)]'` evaluates the subscript of the target name.
+      if [ "${SCOPE_REC_HEAD:-}" = printf ]; then
+        for prior in "${scope_tokens[@]}"; do
+          case "$prior" in -v*) return 1 ;; esac
+        done
+      fi
+      for ((i = 0; i < $2; i++)); do
+        prior="${scope_tokens[$i]##*/}"
+        case "$prior" in
+          eval|source|.|exec|command|builtin|xargs|sudo|doas|su|env|nohup|time|timeout|nice|watch|ssh|script) return 1 ;;
+          bash|sh|zsh|dash|ksh|mksh|fish|csh|tcsh|busybox|python*|node|nodejs|deno|bun|perl|ruby|php|osascript|awk|gawk|jq|make) return 1 ;;
+        esac
+      done
+      [ "${#scope_raw_tokens[@]}" -gt 0 ] || return 1
+      [ "$2" -lt "${#scope_raw_tokens[@]}" ] || return 1
+      [ "${#scope_raw_tokens[@]}" -eq "${#scope_tokens[@]}" ] || return 1
+      raw="${scope_raw_tokens[$2]}"
+      case "$raw" in *$'\140'*) return 1 ;; esac
+      # A first word that continues a quoted word from the line before has
+      # no command of its own to judge, so it keeps the normal check.
+      if [ "$2" -eq 0 ]; then
+        scope_raw_record_entry_state "$scope_record_index"
+        [ "$SCOPE_RAW_ENTRY_STATE" -eq 0 ] || return 1
+      fi
+      case "$raw" in *"'"*) ;; *) return 1 ;; esac
+      for ((i = 0; i < ${#raw}; i++)); do
+        ch="${raw:i:1}"
+        case "$state:$ch" in
+          0:"'") state=1 ;;
+          0:'"') state=2 ;;
+          1:"'") state=0 ;;
+          2:'"') state=0 ;;
+          0:'$'|2:'$'|0:\\|2:\\) return 1 ;;
+          *) stripped+="$ch" ;;
+        esac
+      done
+      if [ "$state" -ne 0 ] && [ "$2" -ne $((${#scope_raw_tokens[@]} - 1)) ]; then
+        return 1
+      fi
+      [ "$stripped" = "$tok" ]
+    }
     # zsh glob qualifiers that run code (`*(e:REPLY=...:)`, `x(.e'...')`,
     # `*(+fn)`) replace each match with any word, so nothing about the
     # pattern bounds the result. Checked on the raw text: the tokenizer
@@ -15324,16 +15519,21 @@ case "$TOOL" in
     # qualifier. Such an argument is dropped before the qualifier check only
     # when all of these hold:
     # - the text has no `#`, `<<` or `$'` (comments, heredoc bodies and
-    #   ANSI-C strings change where quotes start);
+    #   ANSI-C strings change where quotes start), and no backtick or `$(`
+    #   (an unclosed substitution makes the tokenizer print every record a
+    #   second time from its flat reading, so one removal per record would
+    #   no longer line up with one word in the text);
     # - the tokenizer reads `py*`/`node` as the command word of a simple
     #   command, `-c`/`-e` as its first argument, and the program as one
-    #   whole single-quoted word, or one double-quoted word with no `$`,
-    #   backtick or backslash;
+    #   whole single-quoted word, one single-quoted word whose apostrophes
+    #   are spelled `'"'"'` (the form shlex.quote writes, so the word is
+    #   single-quoted pieces joined by a double-quoted `'` and nothing else),
+    #   or one double-quoted word with no `$`, backtick or backslash;
     # - once every such `py* -c <program>` is removed, no quote or backslash
     #   is left anywhere in the text. A quote left over means some other
     #   quoted word could hold interpreter-looking text, so nothing is dropped.
     case "$scope_qual_text" in
-      *'#'*|*'<<'*|*"\$'"*) ;;
+      *'#'*|*'<<'*|*"\$'"*|*$'\140'*|*'$('*) ;;
       *\'*|*\"*)
         # The tokenizer prints one record per line, so a program argument
         # that spans lines never came back as one word. A line break is read
@@ -15343,7 +15543,7 @@ case "$TOOL" in
         # matches across it inside a group, so the flattened text is checked
         # at least as strictly as the original.
         scope_interp_strip="${scope_qual_text//$'\n'/;}"
-        scope_interp_word_re="^('[^']*'|\"[^\"\$\`\\\\]*\")$"
+        scope_interp_word_re="^('[^']*'(\"'\"'[^']*')*|\"[^\"\$\`\\\\]*\")$"
         while IFS= read -r scope_interp_rec; do
           [ -n "$scope_interp_rec" ] || continue
           IFS=$'\037' read -r -a scope_interp_w <<< "$scope_interp_rec"
@@ -15380,8 +15580,15 @@ case "$TOOL" in
     # with its escaped dollars removed, still shows one.
     scope_raw_records=()
     scope_record_index=-1
+    SCOPE_RAW_ENTRY_UPTO=0
+    SCOPE_RAW_ENTRY_STATE=0
+    # The same raw split also shows whether a `$` sat inside single quotes
+    # (scope_token_dollars_all_single_quoted). That check builds it on first
+    # use, so commands that never reach it do not pay for a second split.
+    SCOPE_RAW_BUILT=0
     case "$scope_scan_cmd" in
       *'\$'*)
+        SCOPE_RAW_BUILT=1
         while IFS= read -r scope_record; do
           scope_raw_records[${#scope_raw_records[@]}]="$scope_record"
         done <<< "$(hq_shell_simple_commands "$scope_scan_cmd" raw)"
@@ -15566,6 +15773,16 @@ case "$TOOL" in
         if [ "$scope_head_untrusted" -eq 0 ] && scope_token_is_nofile_substitution "$scope_token_index"; then
           scope_check_prose_substitutions
           continue
+        fi
+        # A `$` the shell reads inside single quotes is a literal character.
+        # The split drops the quotes, so a word spelled in several quoted
+        # pieces (`'a/b'"x"'c$5'`, or a JSON body passed through shlex.quote
+        # with an apostrophe in it) reached the path checks as `a/bxc$5`, an
+        # unset positional parameter, and was refused. When the raw spelling
+        # shows every `$` inside single quotes, read the word with those
+        # dollars as plain text.
+        if scope_token_dollars_all_single_quoted "$scope_token" "$scope_token_index"; then
+          scope_token="${scope_token//\$/_}"
         fi
         # `$((tot/10))` is a number, never a path: its `/` is division. Check
         # the word with each simple arithmetic expansion read as a number, so

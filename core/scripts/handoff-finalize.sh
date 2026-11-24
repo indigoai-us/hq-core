@@ -72,8 +72,12 @@
 # emails, or tokens.
 #
 # Exit codes: 0 ok · 2 bad argument · 3 changeset file missing · 4 handoff not
-# durable (commit refused or paths unstageable) · 5 mirror failed · 6 jq is
-# not installed (checked before anything is written).
+# durable (commit refused or paths unstageable) · 5 company mirror refused
+# (--company in an unbound session, or the mirror hook failed) · 6 jq is not
+# installed (checked before anything is written). A company mirror miss or
+# failure still writes the canonical thread and handoff.json pointer
+# (feedback_0ee565a1, feedback_4140f6ba, feedback_1039db92), then exits 5 so
+# the caller does not treat the refused mirror as success.
 
 set -euo pipefail
 
@@ -714,18 +718,29 @@ jq -n \
 # does not pass through editor PostToolUse hooks. Replay the installed mirror
 # hook with Bash: hooks are source files and do not require an executable bit.
 MIRROR_HOOK="$HQ_ROOT/.claude/hooks/mirror-thread-to-company.sh"
+# Do not exit before writing handoff.json. A --company handoff in a session
+# with no company lock used to stop at exit 5 here, leaving the pointer on
+# the previous session (feedback_0ee565a1, feedback_4140f6ba, feedback_1039db92).
+# Warn, keep going, then exit 5 after the pointer is written.
+COMPANY_MIRROR_FAILED=0
 if [[ -f "$MIRROR_HOOK" ]]; then
   jq -n --arg file_path "$HQ_ROOT/$THREAD_PATH" \
     '{tool_name:"Write", tool_input:{file_path:$file_path}}' | \
     bash "$MIRROR_HOOK" >/dev/null 2>&1 || {
       if [[ "$MIRROR_COMPANIES_JSON" != '[]' ]]; then
+        COMPANY_MIRROR_FAILED=1
         echo "handoff-finalize: company mirror failed; canonical thread retained" >&2
-        exit 5
+        if [[ -n "$OWNER_COMPANY" ]] && ! owner_in_locked_set "$OWNER_COMPANY"; then
+          echo "handoff-finalize: session has no company lock for $OWNER_COMPANY; run core/scripts/hq-session.sh add company $OWNER_COMPANY, then re-run /handoff to mirror" >&2
+        fi
       fi
     }
 elif [[ "$MIRROR_COMPANIES_JSON" != '[]' ]]; then
+  COMPANY_MIRROR_FAILED=1
   echo "handoff-finalize: company mirror hook missing; canonical thread retained" >&2
-  exit 5
+  if [[ -n "$OWNER_COMPANY" ]] && ! owner_in_locked_set "$OWNER_COMPANY"; then
+    echo "handoff-finalize: session has no company lock for $OWNER_COMPANY; run core/scripts/hq-session.sh add company $OWNER_COMPANY, then re-run /handoff to mirror" >&2
+  fi
 fi
 while IFS= read -r company; do
   [[ -n "$company" ]] || continue
@@ -1576,4 +1591,7 @@ case "$HQ_COMMIT_STATUS" in
     exit 4
     ;;
 esac
+if [[ "${COMPANY_MIRROR_FAILED:-0}" -eq 1 ]]; then
+  exit 5
+fi
 exit 0

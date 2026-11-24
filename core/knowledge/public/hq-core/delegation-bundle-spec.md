@@ -30,7 +30,7 @@ file is refused.
 | Field | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | number | Always `1` for this spec. |
-| `delegationId` | string | `dlg-<UTCstamp>-<project>` — also the bundle directory name. |
+| `delegationId` | string | `dlg-<UTCstamp>-<random6hex>-<project>` — also the bundle directory name. |
 | `createdAt` | string | ISO-8601 UTC creation time. |
 | `mode` | `"transfer"` \| `"share"` | `transfer` reassigns ownership (board, PRD, work mesh); `share` grants access but leaves ownership with the delegator. |
 | `from` | object | Sender identity from `hq whoami --json`; a missing or expired identity blocks bundle creation. |

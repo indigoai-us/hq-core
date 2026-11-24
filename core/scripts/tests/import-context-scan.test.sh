@@ -170,4 +170,47 @@ jq -r '.discovery.errors[]' "$TMP_ROOT/t6.json" | grep -q "claude-export" \
   || fail "T6: discovery.errors must name the claude-export failure"
 ok "missing claude-export path: recorded as discovery error, never a silent zero"
 
+# ── Test 7: large MCP merge → no jq ARG_MAX overflow ────────────────────────
+# Desktop config + many repo-root .mcp.json files used to be merged with
+# jq --argjson, which dies with "Argument list too long" before report.json
+# is written. Merge must be file-backed (--slurpfile).
+M="$TMP_ROOT/mcp-large"
+mkdir -p "$M/Library/Application Support/Claude"
+long_line='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+{
+  printf '{\n  "mcpServers": {\n'
+  for i in $(seq 1 40); do
+    printf '    "srv-%s": { "command": "npx", "args": ["%s"] }%s\n' "$i" "$long_line" "$( [ "$i" -eq 40 ] || echo ',' )"
+  done
+  printf '  }\n}\n'
+} > "$M/Library/Application Support/Claude/claude_desktop_config.json"
+for i in $(seq 1 180); do
+  mkdir -p "$M/proj-$i"
+  {
+    printf '{\n  "mcpServers": {\n    "p-%s": { "command": "npx", "args": [' "$i"
+    for _ in $(seq 1 40); do printf '"%s",' "$long_line"; done
+    printf '"end"] }\n  }\n}\n'
+  } > "$M/proj-$i/.mcp.json"
+done
+
+set +e
+HOME="$M" bash "$SCAN" \
+  --hq-root="$SRC_ROOT" \
+  --no-default-scopes \
+  --scope="$M" \
+  --output="$TMP_ROOT/t7.json" \
+  2>"$TMP_ROOT/t7.err"
+scan_status=$?
+set -e
+
+[ "$scan_status" -eq 0 ] || fail "T7: large MCP scan exited $scan_status: $(sed -n '1p' "$TMP_ROOT/t7.err")"
+[ -f "$TMP_ROOT/t7.json" ] || fail "T7: report.json was not written"
+jq -e '.categories' "$TMP_ROOT/t7.json" >/dev/null 2>&1 || fail "T7: report is not valid JSON"
+mcp_n="$(count "$TMP_ROOT/t7.json" mcp_servers)"
+[ "$mcp_n" = "181" ] || fail "T7: expected 181 mcp_servers (1 desktop + 180 repo), got $mcp_n"
+if grep -q 'Argument list too long' "$TMP_ROOT/t7.err"; then
+  fail "T7: MCP merge must not hit ARG_MAX"
+fi
+ok "large MCP merge: 181 servers without jq ARG_MAX overflow"
+
 echo "PASS: $PASS import-context scanner assertion group(s) green"

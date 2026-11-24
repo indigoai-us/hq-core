@@ -56,16 +56,23 @@ fi
 #   KEY="… "        — trailing space(s)/tab(s) inside quotes
 #   KEY="…<CR>"     — trailing CR inside quotes
 # We test each non-comment line; the KEY regex matches KEY or KEY_NAME style.
+# awk reads all of its input and reports the first violation at the end. It
+# must not exit early: printf writes one line at a time, so an early exit can
+# close the pipe while printf is still writing, and under pipefail the hook
+# would then die of SIGPIPE (exit 141, no output) instead of blocking.
 VIOLATION=$(printf '%s\n' "$CONTENT" | awk '
+  # after the first violation, read the rest without checking it
+  found != "" { next }
   # skip blank lines and comments
   /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
   # only look at KEY="..." lines
   /^[[:space:]]*[A-Z_][A-Z0-9_]*=".*"[[:space:]]*$/ {
     # literal backslash-n inside quotes
-    if ($0 ~ /=".*\\n.*"[[:space:]]*$/) { print "literal_backslash_n"; exit }
+    if ($0 ~ /=".*\\n.*"[[:space:]]*$/) { found = "literal_backslash_n"; next }
     # trailing whitespace or CR inside closing quote: quote preceded by space/tab/CR
-    if ($0 ~ /=".*[ \t\r]"[[:space:]]*$/) { print "trailing_whitespace"; exit }
+    if ($0 ~ /=".*[ \t\r]"[[:space:]]*$/) { found = "trailing_whitespace"; next }
   }
+  END { if (found != "") print found }
 ')
 
 if [ -n "$VIOLATION" ]; then

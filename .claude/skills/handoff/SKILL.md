@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(hq core handoff open-steps:*), Bash(bash core/scripts/handoff-knowledge-commit.sh:*), Bash(core/scripts/handoff-finalize.sh:*), Bash(bash core/scripts/hq-detach.sh:*), Bash(bash core/scripts/handoff-autofile.sh:*), Bash(bash core/scripts/handoff-builder-route.sh:*), Bash(bash core/scripts/handoff-archive-decision.sh:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(hq core handoff open-steps:*), Bash(hq core handoff run:*), Bash(bash core/scripts/handoff-run.sh:*), Bash(hq core handoff archive-decision:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -16,19 +16,21 @@ Write a thread file + `handoff.json` with minimal foreground token cost. Keep sh
 
 ## Process
 
-### 1. Commit only session-scoped personal/core knowledge changes
+### 1. Write the session changeset (personal/core knowledge commits use it)
 
-Before saving knowledge, write the exact relative paths intentionally changed by this session into a unique JSON changeset file. Do not scan repository status to expand this list. Use the same changeset file in Step 3.
+Write the exact relative paths intentionally changed by this session into a unique JSON changeset file. Do not scan repository status to expand this list. Step 3 passes this file to `hq core handoff run`, which first commits only these session-scoped personal/core knowledge changes, then finalizes with the same file.
 
-Write every temp path in this skill out literally in each Bash call. The credential guard cannot resolve shell variables (`"$CHANGESET_TMP"`), command substitution (`$(mktemp ...)`), or globs in path operands, so it blocks those commands and forces a rewrite. Pick the changeset path once as `workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json`, where `{stamp}` is the output of `date -u +%Y%m%dT%H%M%SZ` (the stamp keeps concurrent sessions with the same slug apart), and keep it as `{changeset_file}`. Run `mkdir -p workspace/threads/.handoff-tmp`, write the JSON array to `{changeset_file}` with the `Write` tool, then run:
+Write every temp path in this skill out literally in each Bash call. The credential guard cannot resolve shell variables (`"$CHANGESET_TMP"`), command substitution (`$(mktemp ...)`), or globs in path operands, so it blocks those commands and forces a rewrite. Pick the changeset path once as `workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json`, where `{stamp}` is the output of `date -u +%Y%m%dT%H%M%SZ` (the stamp keeps concurrent sessions with the same slug apart), and keep it as `{changeset_file}`. Run `mkdir -p workspace/threads/.handoff-tmp`, write the JSON array to `{changeset_file}` with the `Write` tool, then check that it is a JSON array (nothing is committed in this step):
 
 ```bash
-bash core/scripts/handoff-knowledge-commit.sh --files-touched-json-file "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"
+jq -e 'type == "array"' "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json" >/dev/null
 ```
+
+A non-zero exit means the file is not a JSON array: rewrite it before Step 3.
 
 The file holds a JSON array such as `["core/knowledge/public/<repo>/<file-you-changed>"]`.
 
-Include only files this session intentionally changed. List files, not folders: an entry with a trailing slash, an absolute path, or a `..` segment fails the whole changeset, and the helper prints the offending entries. The helper commits only listed files inside personal/core knowledge repositories and the bound company's knowledge repository, and leaves unrelated staged or dirty files untouched. It reads the bound company from `HQ_ACTIVE_COMPANY`, or, when that is empty because the company was bound mid-session, from the session lock's primary company only (`company_slug`; the other members of a multi-company lock are never used). The lock is read only when the session id comes from the environment, and that id is passed to `hq-session.sh` explicitly; `workspace/sessions/.current` is never used, because it can name another live session. The company must be a real `companies/<slug>` directory with an exact-case entry in `companies/manifest.yaml` (this applies to `HQ_ACTIVE_COMPANY` too), otherwise it is treated as unbound. The helper never touches another company's knowledge. A bound company's knowledge that is a plain synced directory (the usual case) syncs through its vault and is not committed. With no bound company it prints `SKIPPED-COMPANY-KNOWLEDGE: <reason>` (no bound company, no session id in the environment, session lock unreadable, or company not registered); keep that line for the Step 6 report. This step behaves the same under Claude, Codex, and Grok.
+Include only files this session intentionally changed. List files, not folders: an entry with a trailing slash, an absolute path, or a `..` segment fails the whole changeset, and the knowledge commit prints the offending entries and stops the handoff before finalize. The knowledge commit in Step 3 commits only listed files inside personal/core knowledge repositories and the bound company's knowledge repository, and leaves unrelated staged or dirty files untouched. It reads the bound company from `HQ_ACTIVE_COMPANY`, or, when that is empty because the company was bound mid-session, from the session lock's primary company only (`company_slug`; the other members of a multi-company lock are never used). The lock is read only when the session id comes from the environment, and that id is passed to `hq-session.sh` explicitly; `workspace/sessions/.current` is never used, because it can name another live session. The company must be a real `companies/<slug>` directory with an exact-case entry in `companies/manifest.yaml` (this applies to `HQ_ACTIVE_COMPANY` too), otherwise it is treated as unbound. The helper never touches another company's knowledge. A bound company's knowledge that is a plain synced directory (the usual case) syncs through its vault and is not committed. With no bound company its output (`knowledge_commit.result` in the Step 3 JSON) is `SKIPPED-COMPANY-KNOWLEDGE: <reason>` (no bound company, no session id in the environment, session lock unreadable, or company not registered); keep that line for the Step 6 report. This step behaves the same under Claude, Codex, and Grok.
 
 ### 2. Collect learnings (do NOT invoke /learn)
 
@@ -42,7 +44,7 @@ Format:
 ]
 ```
 
-Choose one concrete learnings file path, such as `/tmp/handoff-learnings-{short-slug}.json`, write the array there, and retain the same serialized array as `{learnings_json}`. Reuse the exact path in Steps 4 and 4.5. Empty array is fine. **Do not call `/learn` here — Step 4.5 dispatches it after the learning array is durable.**
+Choose one concrete learnings file path, such as `/tmp/handoff-learnings-{short-slug}.json`, write the array there, and retain the same serialized array as `{learnings_json}`. Reuse the exact path in Steps 3 and 4.5. Empty array is fine. **Do not call `/learn` here — Step 4.5 dispatches it after the learning array is durable.**
 
 #### 2b. Collect environment deficiencies (from memory only)
 
@@ -80,7 +82,7 @@ Write one item per real problem into a `deficiencies[]` array:
 If the bound company has `signals_capture` or `ontology_capture` on
 (`core/scripts/knowledge-prefs.sh get {co} <field>`), follow
 `.claude/skills/_shared/session-close-capture.md`: from the summary you are
-about to pass to `handoff-finalize.sh`, write up to 15 candidates — decisions,
+about to pass to `hq core handoff run`, write up to 15 candidates — decisions,
 commitments, risks, open questions, action items, and the people / projects /
 companies they name — with `core/scripts/ontology-candidate.sh`, source ref
 `handoff:{thread_id}`. Both switches off: skip silently. Fail-soft.
@@ -93,11 +95,23 @@ Spec: `core/knowledge/public/hq-core/journal-spec.md`. If a journal was opened e
 .claude/skills/_shared/journal.sh close "{project_dir}" "{one-line synthesis of session, ≤120 chars}"
 ```
 
-Pass the resolved project directory that owns this session's journal. The helper is fail-soft (no-op if no owned active journal pointer exists). The summary should mirror what you write into `--summary` for `handoff-finalize.sh`. Helper clears only this session's pointer on success.
+Pass the resolved project directory that owns this session's journal. The helper is fail-soft (no-op if no owned active journal pointer exists). The summary should mirror what you write into `--summary` for `hq core handoff run`. Helper clears only this session's pointer on success.
 
-### 3. Call handoff-finalize.sh (synchronous, one tool call)
+### 3. Run `hq core handoff run` (synchronous, one tool call)
 
-`core/scripts/handoff-finalize.sh` handles everything that must be durable before session end:
+Call it through `bash core/scripts/handoff-run.sh`, which takes the same arguments. The wrapper runs `hq core handoff run` with every argument first and passes its output and exit code through. hq-cli 5.345.231 rejects `--company` and `--deficiencies-json` with `Unknown arg` before any thread is written, and dropping them is not an option there: its finalize would derive the owner company from the touched paths and store no deficiencies. When the CLI exits without writing a thread, the wrapper finishes the same steps with the `core/scripts` helpers, which accept both flags, and adds `cli_fallback` (the CLI's exit code and first error line) to the JSON. Report `cli_fallback` in Step 6 when it is present.
+
+`hq core handoff run` runs the mechanical part of the handoff in one process, in this order, and stops at the first step that fails:
+
+1. the scoped personal/core knowledge commit for the Step 1 changeset;
+2. finalize (all arguments other than the four below pass through to it unchanged);
+3. the detached post (Step 4);
+4. auto-file of hq-core deficiencies (see "Auto-file hq-core deficiencies");
+5. the builder route check (see "Builder route").
+
+Its own options: `--files-touched-json-file <path>` (required; used by both the knowledge commit and finalize), `--learnings-file <path>` (passed to the post), and `--no-post`, `--no-autofile`, `--no-builder-route` to skip a step. Archiving is not part of it (Step 7).
+
+Finalize handles everything that must be durable before session end:
 - Receives the same explicit session changeset used by the knowledge commit helper (Step 1)
 - Writes thread file + `handoff.json` + `workspace/threads/{thread}.changeset.json`
 - Regenerates thread INDEX + recent.md + orchestrator INDEX via dedicated bash scripts (`rebuild-threads-index.sh`, `rebuild-orchestrator-index.sh`) — zero Claude context
@@ -111,7 +125,8 @@ Reuse the `{changeset_file}` prepared in Step 1 and pass its literal path — ne
 
 ```bash
 rc=0
-core/scripts/handoff-finalize.sh \
+bash core/scripts/handoff-run.sh \
+  --learnings-file "{learnings_file path from Step 2}" \
   --company "{co}" \
   --title "Handoff: {one-line title}" \
   --summary "{one-paragraph summary of what changed}" \
@@ -123,7 +138,7 @@ core/scripts/handoff-finalize.sh \
   --tags-json '["handoff","{co}","{topic}"]' \
   --slug "{short-hyphenated-slug}" || rc=$?
 rm -f "workspace/threads/.handoff-tmp/.handoff-changeset-{slug}-{stamp}.json"   # clean up on both success and failure
-[ "$rc" -eq 0 ] || { echo "handoff-finalize failed (rc=$rc)" >&2; exit "$rc"; }
+[ "$rc" -eq 0 ] || { echo "hq core handoff run failed (rc=$rc)" >&2; exit "$rc"; }
 ```
 
 After finalization succeeds, update this predecessor session's title with
@@ -146,7 +161,7 @@ hq core handoff open-steps list                    # what is still open across r
 hq core handoff open-steps close <step-id> --note "<what closed it>"
 ```
 
-The script also copies the next-step command to the user's clipboard (fail-soft; pbcopy/wl-copy/xclip). Default is `/resumework {thread_id}`. If a different command is the right continuation, pass it explicitly via `--next-command "{command}"`.
+Finalize also copies the next-step command to the user's clipboard (fail-soft; pbcopy/wl-copy/xclip). Default is `/resumework {thread_id}`. If a different command is the right continuation, pass it explicitly via `--next-command "{command}"`.
 
 The inline `--files-touched-json '[...]'` flag still works for small changesets and older callers, but the file form above is the default because it is the only one that survives a large untracked tree on Windows.
 
@@ -162,7 +177,7 @@ The inline `--files-touched-json '[...]'` flag still works for small changesets 
 
 Do not compensate for noisy root `git status` by passing broad parent directories unless the whole directory is intentionally in scope.
 
-The script emits a single JSON line to stdout:
+The command emits a single JSON line to stdout: the finalize payload plus `knowledge_commit`, `post`, `autofile`, `builder_route` and `builder_brief`:
 ```json
 {"thread_id":"T-...","thread_path":"workspace/threads/T-...json",
  "changeset_path":"workspace/threads/T-...changeset.json",
@@ -171,25 +186,26 @@ The script emits a single JSON line to stdout:
  "committed_paths":["..."],"stage_failures":[],"skipped_paths":[],
  "baseline_noise_count":123,
  "indexes_regen":true,"qmd_pid":"12345","git_bg_errors":"",
- "next_command":"/resumework T-...","clipboard_copied":true}
+ "next_command":"/resumework T-...","clipboard_copied":true,
+ "knowledge_commit":{"code":0,"result":"..."},
+ "post":{"launched":true,"skipped":false,"error":null},
+ "autofile":"skipped: no hq-core deficiencies",
+ "builder_route":"route: public (no staging checkout)","builder_brief":null}
 ```
+
+When the knowledge commit fails, the command exits with its code, prints its message on stderr and nothing on stdout, and finalize does not run: tell the user the handoff did not complete and surface the message. A missing `--files-touched-json-file` exits 2.
 
 `qmd_pid` may be a worker PID on laptops, or the tokens `skipped-agent` / `skipped` (or empty when HOME is unset / helper missing). Busy and dedupe are quiet inside the worker after a PID was already printed; they must never be reported as a successful agent reindex.
 
-**Capture `thread_path` from the result** — you need it for Step 4. Keep `changeset_path`, `committed_paths`, `skipped_paths`, and `baseline_noise_count` for the final report.
+**Capture `thread_path` from the result** — you need it for Steps 4.5 and 7. Keep `changeset_path`, `committed_paths`, `skipped_paths`, and `baseline_noise_count` for the final report.
 
-`hq_commit_status` says why `hq_committed` is what it is: `committed`, `nothing-to-commit`, `failed` (git refused the commit), or `stage-failed` (`git add` rejected paths — the shape a held `.git/index.lock` takes, where no commit is even attempted). Both failure states exit **4** after printing the payload, with git's message in `hq_commit_error` and the unstageable paths in `stage_failures`. Treat exit 4 as a hard stop — the thread files exist on disk but are uncommitted, so tell the user the handoff did not complete, surface the git error, and do not proceed to Step 4.
+`hq_commit_status` says why `hq_committed` is what it is: `committed`, `nothing-to-commit`, `failed` (git refused the commit), or `stage-failed` (`git add` rejected paths — the shape a held `.git/index.lock` takes, where no commit is even attempted). Both failure states exit **4** after printing the payload, with git's message in `hq_commit_error` and the unstageable paths in `stage_failures`; the post, auto-file and builder route steps do not run. Treat exit 4 as a hard stop — the thread files exist on disk but are uncommitted, so tell the user the handoff did not complete, surface the git error, and do not proceed to Step 4.
 
-### 4. Launch handoff-post.sh detached (mechanical cleanup only)
+### 4. Detached post (started by Step 3; mechanical cleanup only)
 
-```bash
-bash core/scripts/hq-detach.sh --handoff --pidfile /tmp/handoff-post.pid --logfile /tmp/handoff-post.log -- \
-  hq core handoff post \
-  "{thread_path from Step 3}" \
-  "{learnings_file path from Step 2}"
-```
+`hq core handoff run` starts the post detached right after finalize succeeds, with the thread path and the `--learnings-file` path. Do not start it again. `post.launched` is `true` when it started; `post.error` holds the reason when it did not (report it in Step 6; the handoff itself is already durable).
 
-`handoff-post.sh` runs detached and:
+The post runs detached and:
 1. Archives threads older than 60 days into `workspace/threads/archive/YYYY-MM/` (gated once per 24h)
 2. Regenerates INDEX files again (captures any archive moves)
 3. Records eligible learn/doc-release work as pending until the handoff reports dispatch proof
@@ -199,7 +215,7 @@ Logs land at `/tmp/handoff-post.log` and `/tmp/qmd-handoff.log`. If the session 
 
 ### 4.5 Dispatch runtime-appropriate model follow-ups
 
-Only begin this step after `handoff-finalize.sh` succeeds: `{learnings_json}` is now stored in `{thread_path}` and is recoverable even if every execution route fails. Do **not** call `claude -p` or `codex exec`, and do **not** run model work from `handoff-post.sh`.
+Only begin this step after `hq core handoff run` succeeds: `{learnings_json}` is now stored in `{thread_path}` and is recoverable even if every execution route fails. Do **not** call `claude -p` or `codex exec`, and do **not** run model work from the post.
 
 Run applicable follow-ups sequentially in this order: `/learn` first, then `/document-release`; wait for each result before starting the next. Before dispatch, tell the user a rough expected duration for the applicable work by estimating each follow-up and adding the estimates. Label it as an estimate, not a promise.
 
@@ -231,13 +247,7 @@ For synchronous fallback, invoke `Skill` with `/learn {learnings_json}` or `/doc
 
 #### Auto-file hq-core deficiencies
 
-After the follow-ups, run once in the foreground:
-
-```bash
-bash core/scripts/handoff-autofile.sh --thread "{thread_path}" --root "$PWD"
-```
-
-Keep its single output line as `{autofile_result}`. The script files at most one `hq feedback bug` report per handoff and only on public installs:
+Step 3 already ran auto-file once (skip it there with `--no-autofile`). Keep the `autofile` field of the Step 3 JSON as `{autofile_result}`. A non-zero auto-file exit stops `hq core handoff run` with that code after printing the JSON; report `{autofile_result}` and continue with the follow-ups. Auto-file files at most one `hq feedback bug` report per handoff and only on public installs:
 
 - Builder machines never file. A builder machine has `repos/private/hq-core-staging` and a successful `git push --dry-run` there (same test as the builder route below); a staging folder that cannot push files like a public install.
 - Only `kind: "hq-core"` deficiencies go in. The body has one section per item (lever, severity, summary, evidence, proposed fix) plus the thread's `system_info` block. The title is the highest-severity summary.
@@ -246,19 +256,13 @@ Keep its single output line as `{autofile_result}`. The script files at most one
 - `HQ_HANDOFF_AUTOFILE=0` disables filing. Items still stay in the thread and the report.
 - The body is scanned with `core/scripts/lib/secret-patterns.sh` before submit. A match aborts the submit.
 
-Results: `filed: <id>`, `skipped: <reason>`, `aborted: <reason>`, or `failed: <reason>`. Do not retry a failed or aborted submit in this step.
+Results: `filed: <id>`, `skipped: <reason>`, `aborted: <reason>`, or `failed: <reason>`. Do not retry a failed or aborted submit.
 
 #### Builder route: draft hq-core fixes as a staging PR
 
-Run this only after `handoff-finalize.sh` succeeded. Run once in the foreground:
+Step 3 already ran the builder route check once, after finalize succeeded (skip it there with `--no-builder-route`). Act on it after the follow-ups. The `builder_route` field of the Step 3 JSON is `route: builder` or `route: public (<reason>)`. The builder test passes only when `repos/private/hq-core-staging` is a git repo and `git push --dry-run` to its origin succeeds. On the public route, the auto-file step above already covered hq-core items; set `{builder_pr_result}` to `none (<reason>)` and stop here. `HQ_HANDOFF_BUILDER_ROUTE=0` forces the public route.
 
-```bash
-bash core/scripts/handoff-builder-route.sh --root "$PWD" --thread "{thread_path}"
-```
-
-The first line is `route: builder` or `route: public (<reason>)`. The builder test passes only when `repos/private/hq-core-staging` is a git repo and `git push --dry-run` to its origin succeeds. On the public route, the auto-file step above already covered hq-core items; set `{builder_pr_result}` to `none (<reason>)` and stop here. `HQ_HANDOFF_BUILDER_ROUTE=0` forces the public route.
-
-On the builder route the second line is `brief: <path>` or `brief: none (<reason>)`. With no brief, set `{builder_pr_result}` to `none (<reason>)`. With a brief, dispatch one visible fix agent through the same routes as the follow-ups above: Codex `spawn_agent` then `wait_agent`, else Claude `Task`/`Agent`. Never use `claude -p` or a hidden background process. If neither visible route exists, do not run the fixes in this parent; set `{builder_pr_result}` to `none (no visible agent dispatch available)`.
+On the builder route the `builder_brief` field is `brief: <path>` or `brief: none (<reason>)`. With no brief, set `{builder_pr_result}` to `none (<reason>)`. With a brief, dispatch one visible fix agent through the same routes as the follow-ups above: Codex `spawn_agent` then `wait_agent`, else Claude `Task`/`Agent`. Never use `claude -p` or a hidden background process. If neither visible route exists, do not run the fixes in this parent; set `{builder_pr_result}` to `none (no visible agent dispatch available)`.
 
 Give the agent this prompt, with the brief path filled in:
 
@@ -303,7 +307,7 @@ When trusted context is absent (for example, a routed natural-language or progra
 - Deficiencies with `kind: "local-setup"`: list them under a `Your setup` heading, one line each with the plain summary and, when `proposed_fix` is a command, the exact command to run.
 - Deficiencies with `kind: "repo"`: route each to `/learn` with repo scope (`"scope": "repo:{repo}"`) through the same Step 4.5 follow-up as learnings; do not list them in chat.
 - Deficiencies with `kind: "hq-core"`: add one plain line with `{autofile_result}` from Step 4.5, showing the filed feedback id or the reason nothing was filed (for example `Reported 2 HQ problems to the HQ team (feedback fb_123).` or `HQ problems noted, not reported: auto-filing is off.`). When there are zero hq-core items, still add one plain line that nothing was filed (for example `No HQ problems to report.`). On the builder route, add one more plain line with `{builder_pr_result}`: the PR link (for example `Drafted fixes for review: <url>`) or the reason no PR was opened.
-- Step 1 printed `SKIPPED-COMPANY-KNOWLEDGE:`: add one plain sentence that no company was bound, so company knowledge was not saved by this handoff.
+- Step 1 printed `SKIPPED-COMPANY-KNOWLEDGE:` (the knowledge commit of the Step 1 changeset, reported in `knowledge_commit.result` of the Step 3 JSON): add one plain sentence that no company was bound, so company knowledge was not saved by this handoff.
 - `git_bg_errors` non-empty: add one plain sentence that one knowledge folder did not save, and they can ask you to retry. No raw git dump.
 
 If any eligible follow-up is still uncompleted after the synchronous Skill fallback, put this warning first (Auto-Clarity — the person must run a command). In the default style, lead with one plain sentence that something still needs finishing, then the recovery commands. Include the document-release recovery entry and its `Run exactly:` line only when the same installed-skill check above passed. If the skill is absent, record `document-release: skipped (skill not installed)` and omit the document-release recovery entry and command:
@@ -330,7 +334,7 @@ Skipped paths: {skipped_paths count, if any}
 Baseline noise: {baseline_noise_count} unrelated/baseline status entries
 
 Background work dispatched:
-  - handoff-post.sh PID {from /tmp/handoff-post.pid} → /tmp/handoff-post.log
+  - handoff post ({post.launched}) → /tmp/handoff-post.log
   - /learn → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending}
   - /document-release → {Codex spawn_agent | Claude Task/Agent | synchronous Skill | durably pending | document-release: skipped (skill not installed)}
   - qmd helper (`skipped-agent` | `skipped` | worker pid) → /tmp/qmd-handoff.log
@@ -354,19 +358,19 @@ If recovery is still needed in operator mode, put the same `WARN: Follow-up reco
 
 Run this last, after the Step 6 report is written in full. Archiving ends the conversation at once, so nothing may come after it. When `/handoff-all` asked for an `HQ-RESUME:` line, write that line before this step.
 
-Skip the step silently when `handoff-finalize.sh` failed, or when the `archive_session` tool (`mcp__ccd_session_mgmt__archive_session`) is not available, as in the terminal CLI, Codex, and Grok. Otherwise decide once.
+Skip the step silently when `hq core handoff run` failed, or when the `archive_session` tool (`mcp__ccd_session_mgmt__archive_session`) is not available, as in the terminal CLI, Codex, and Grok. Otherwise decide once.
 
 Never paste the user's message into a shell command. Create an empty file with `mktemp workspace/threads/.handoff-tmp/archive-args.XXXXXX`, write the user's handoff message (the optional message at the top of this skill) into it with the `Write` tool, exactly as typed, and pass the path as `--args-file`. An empty message is an empty file. Then run:
 
 ```bash
-bash core/scripts/handoff-archive-decision.sh --root "$PWD" --cwd "$PWD" \
+hq core handoff archive-decision --root "$PWD" --cwd "$PWD" \
   --thread "{thread_path from Step 3}" --args-file "{args file}"
 rm -f "{args file}"
 ```
 
 Add `--repo-dir "{dir}"` for each other repo checkout this session committed or pushed in, so its branch is checked for open PRs. Add `--recovery-pending` when the Step 6 report includes the `WARN: Follow-up recovery required` block. Add `--background-running` when any background task, background Bash command, or subagent started in this session is still running.
 
-The script reads `--archive` / `--no-archive` from the message, then `HQ_HANDOFF_ARCHIVE`, then `auto_archive` in `personal/settings/handoff.yaml` and `core/settings/handoff.yaml` (default off). `--archive` counts only as a leading flag, so "don't --archive" never archives. A wanted archive is refused when recovery is pending; when the thread file, its changeset, or the `handoff.json` pointer is missing; when the session's linked worktree has uncommitted changes, since archiving deletes that worktree; when a checked branch has an open PR; when the session has background work (`--background-running`, an active hq lane with this session as senior, or a running hq monitor aimed at it); or when the session has an ask waiting on the owner in `workspace/reports/conduct/`. A check that cannot run refuses with "could not verify".
+The command reads `--archive` / `--no-archive` from the message, then `HQ_HANDOFF_ARCHIVE`, then `auto_archive` in `personal/settings/handoff.yaml` and `core/settings/handoff.yaml` (default off). `--archive` counts only as a leading flag, so "don't --archive" never archives. A wanted archive is refused when recovery is pending; when the thread file, its changeset, or the `handoff.json` pointer is missing; when the session's linked worktree has uncommitted changes, since archiving deletes that worktree; when a checked branch has an open PR; when the session has background work (`--background-running`, an active hq lane with this session as senior, or a running hq monitor aimed at it); or when the session has an ask waiting on the owner in `workspace/reports/conduct/`. A check that cannot run refuses with "could not verify".
 
 - `archive: yes` → add one plain sentence to the end of the report saying the session is being archived and can be reopened from the Archived list. Then call `archive_session` with `session_id: "self"` and `reason: "Handoff complete"`. If the tool returns an error (the session is pinned, still working, or the user declined), say in one plain sentence that the session stayed open.
 - `archive: no (off…)` → do nothing and say nothing.
@@ -385,11 +389,11 @@ Fresh context = no accumulated noise, clean slate for complex tasks, follows Ral
 - **Use visible dispatch first, then synchronous Skill only as a last fallback** — `spawn_agent` is preferred in Codex; `Task`/`Agent` is preferred in Claude Code. The parent may invoke `Skill` only after finalization and only when visible dispatch is unavailable or unconfirmed.
 - **Never call `claude -p` from handoff** — unconfirmed follow-up work remains durable in the handoff thread and must emit the Step 6 recovery warning, never silently skip.
 - **Do not Read INDEX.md files** — they're regenerated by bash scripts that pipe metadata through `jq -s`. Reading them into Claude's context defeats the whole point.
-- **Always use `handoff-finalize.sh` for thread + commit + INDEX regen** — don't narrate individual steps, don't inline jq commands.
+- **Always use `hq core handoff run` for knowledge commit + thread + commit + INDEX regen + post** — don't narrate individual steps, don't inline jq commands.
 - **Changeset owns scope** — when HQ root status is noisy, scope comes from `--files-touched-json` and the generated changeset, not from whole-repo `git status`.
 - **Context diet** — this skill should emit <15K tokens of tool output on a typical session. If you find yourself Reading more than 3 files, stop and rethink.
 - **Session handoffs execute directly** — skip any planning-mode detour.
-- **Commit flow:** personal/core knowledge repos commit only the explicit session changeset through `handoff-knowledge-commit.sh` (Step 1), company knowledge syncs through its vault, and `handoff-finalize.sh` commits the HQ changes using explicit paths. Never `git add -A` from this skill.
+- **Commit flow:** personal/core knowledge repos commit only the explicit session changeset (the knowledge commit inside `hq core handoff run`, from the Step 1 file), company knowledge syncs through its vault, and finalize commits the HQ changes using explicit paths. Never `git add -A` from this skill.
 
 ## See also
 

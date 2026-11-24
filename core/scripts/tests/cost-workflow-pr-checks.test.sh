@@ -44,7 +44,7 @@ grep -Fq '!cancelled()' <<< "$WINDOWS_JOB" \
 if grep -Fq 'always()' <<< "$WINDOWS_JOB"; then
   fail 'Windows shell-smoke must not override workflow cancellation'
 fi
-WINDOWS_NODE_SETUP="$(sed -n '/      - uses: actions\/setup-node@v4/,/      - name: Install pinned hq CLI for forwarded scaffold scripts/p' <<< "$WINDOWS_JOB")"
+WINDOWS_NODE_SETUP="$(sed -n '/      - uses: actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/,/      - name: Install pinned hq CLI for forwarded scaffold scripts/p' <<< "$WINDOWS_JOB")"
 grep -Fq '          cache: npm' <<< "$WINDOWS_NODE_SETUP" \
   || fail 'Windows shell-smoke must cache npm package downloads before installing the pinned CLI'
 grep -Fq '            core/core.yaml' <<< "$WINDOWS_NODE_SETUP" \

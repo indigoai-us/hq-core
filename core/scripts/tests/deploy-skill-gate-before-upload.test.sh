@@ -16,12 +16,11 @@ pass() { echo "  ok: $*"; }
 line_of() { grep -n -F -- "$1" "$SKILL" | head -1 | cut -d: -f1; }
 
 # 1. App list reads every page.
-grep -Fq 'APPS_JSON=$(HQ_DEPLOY_JWT="$JWT" .claude/skills/deploy/scripts/list-apps.sh --api "$API"' "$SKILL" \
-  || fail "APPS_JSON is not built from list-apps.sh (all pages)"
+grep -Fq 'APPS_JSON=$(hq_deploy list "${HQ_SCOPE_ARGS[@]}" --json) || exit 1' "$SKILL" \
+  || fail "APPS_JSON is not built from hq deploy list (all pages, fails closed)"
 if grep -Eq 'deploy_request app-list --method GET --url "\$API/api/apps"' "$SKILL"; then
   fail "a single-page GET /api/apps lookup is still present"
 fi
-[ -x "$ROOT/.claude/skills/deploy/scripts/list-apps.sh" ] || fail "list-apps.sh missing or not executable"
 pass "app lookup reads every page"
 
 # 2. The gate section comes before every upload section.
@@ -44,9 +43,9 @@ pass "existing apps wait for the edge before upload"
 
 # 4. Post-upload verification fails closed with a takedown.
 VERIFY="$(awk '/^#### Auth-gate verify/ {on=1} /^### C.4/ {on=0} on' "$SKILL")"
-grep -Fq 'deploy_request app-takedown --method PATCH --url "$API/api/apps/$APP_ID"' <<<"$VERIFY" \
+grep -Fq 'hq_deploy takedown "$APP_ID" "${HQ_SCOPE_ARGS[@]}" --json' <<<"$VERIFY" \
   || fail "auth-gate verify does not take the app down on failure"
-grep -Fq '"active": false' <<<"$VERIFY" || fail "takedown does not deactivate the app"
+grep -Fq '{"active": false}' <<<"$VERIFY" || fail "takedown is not documented as deactivating the app"
 grep -Fq 'take_down_and_fail' <<<"$VERIFY" || fail "verify failure does not call take_down_and_fail"
 grep -Fq "do not auto-delete the deploy" <<<"$VERIFY" && fail "stale 'do not auto-delete' guidance remains"
 pass "unproven gate after upload takes the app down"

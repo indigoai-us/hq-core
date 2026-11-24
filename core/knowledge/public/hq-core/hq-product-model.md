@@ -37,7 +37,7 @@ details.
 The HQ folder holds `core/` (release-shipped scaffold), `companies/` (one
 folder per company), `personal/`, `repos/`, and `workspace/`. Skills, policies,
 knowledge, and workers are files in it. Supported coding hosts are Claude
-Code, Codex, Cursor, and Grok. The CLI converges hook trust for Claude Code,
+Code, Codex, Cursor, Grok, and Google Antigravity. The CLI converges hook trust for Claude Code,
 Codex, and Grok (`hq reindex`), and its updater covers Claude, Codex, and
 Grok. Directory map: [INDEX.md](../../../docs/hq/INDEX.md).
 
@@ -157,7 +157,7 @@ Billing is live through Stripe and `hq billing`. The live price source is
 
 | Task | Use |
 |---|---|
-| Code, write, or run skills against HQ context | A coding host in the HQ folder (Claude Code, Codex, Cursor, Grok), or the desktop Launch menu |
+| Code, write, or run skills against HQ context | A coding host in the HQ folder (Claude Code, Codex, Cursor, Grok, Google Antigravity), or the desktop Launch menu |
 | Message a teammate or bot | Desktop app, or `hq dm` / `/dm` |
 | Set up HQ on a new machine | Desktop app onboarding, or `/setup` in a coding host |
 | Invite a teammate | `/new-hire`, or console `/team/invites` |

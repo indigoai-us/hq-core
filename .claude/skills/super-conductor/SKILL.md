@@ -1,11 +1,17 @@
 ---
 name: super-conductor
-description: Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
-allowed-tools: Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(sh core/scripts/conduct-runner-resolve.sh:*), Bash(hq runners link:*), Bash(hq runners list:*), Bash(hq runners show:*), Bash(hq runners stop:*), Bash(hq runners reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <link>" -- bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Bash(node core/scripts/super-conductor-open-asks.mjs:*), Bash(node core/scripts/super-conductor-state.mjs:*), Bash(node core/scripts/super-conductor-requests.mjs:*), Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(node core/scripts/super-conductor-triage.mjs:*), mcp__ccd_session__start_session, Bash(hq runners questions:*), Bash(hq mesh story:*), Agent, Bash(node core/scripts/lib/super-conductor-scope.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
-argument-hint: "[off | status | interval <1m|5m|10m|seconds> | channels <hq_dms,slack,email,x> | <note for the team>]"
+description: Run one of several named super-conductors. Each conductor has its own profile (scope, when it may start sessions, which running sessions it adopts, check cadence, channels and stats to sweep, decision desk or its own window, where child sessions ask, and areas it must not watch), its own conduct link, heartbeat, save file and decision queue, so several can run side by side without overlap. Startup reuses a saved conductor by name or sets one up through a short questionnaire. It adopts the open Claude Code desktop sessions in its scope, watches team comms for requests, resolves collisions, and keeps a persistent heartbeat until told to stop. Use when the user says "/super-conductor", "/super-conductor <name>", "/conduct-all" (deprecated alias), "start a new conductor", "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything".
+allowed-tools: Bash(bash core/scripts/decision-queue.sh:*), Bash(hq decide:*), Bash(sh core/scripts/conduct-runner-resolve.sh:*), Bash(hq runners link:*), Bash(hq runners list:*), Bash(hq runners show:*), Bash(hq runners stop:*), Bash(hq runners reap:*), Bash(bash core/scripts/hq-session.sh:*), Bash(node core/scripts/super-conductor-registry.mjs:*), Bash(SC_PREFS_FILE=*), Bash(hq dm:*), Bash(hq channels:*), Bash(hq integrations:*), Bash(hq monitor:*), Bash(hq monitor start --persistent --json --target "session:claude:$CLAUDE_CODE_SESSION_ID" --description "super-conductor heartbeat <name> <link>" -- env SC_PREFS_FILE=<absolute prefs file from render-prefs> bash core/scripts/super-conductor-heartbeat.sh:*), Bash(bash core/scripts/super-conductor-heartbeat.sh:*), Bash(hq mesh check:*), Bash(gh search prs:*), Bash(pgrep:*), Bash(ls:*), Bash(cat:*), Bash(tail:*), Bash(python3:*), Bash(node core/scripts/super-conductor-prefs.mjs:*), Bash(node core/scripts/super-conductor-sweep-check.mjs:*), Bash(node core/scripts/super-conductor-open-asks.mjs:*), Bash(node core/scripts/super-conductor-state.mjs:*), Bash(node core/scripts/super-conductor-requests.mjs:*), Bash(node core/scripts/super-conductor-decisions.mjs:*), Bash(node core/scripts/super-conductor-triage.mjs:*), mcp__ccd_session__start_session, Bash(hq runners questions:*), Bash(hq mesh story:*), Agent, Bash(node core/scripts/lib/super-conductor-scope.mjs:*), Read, Write, AskUserQuestion, ScheduleWakeup, mcp__ccd_session_mgmt__list_sessions, mcp__ccd_session_mgmt__send_message, mcp__ccd_session_mgmt__list_events, mcp__ccd_session_mgmt__get_session, mcp__ccd_session_mgmt__set_session_title, mcp__visualize__show_widget, mcp__visualize__read_me
+argument-hint: "[<name> | new | list | off | status | interval <1m|5m|10m|seconds> | channels <hq_dms,slack,email,x> | <note for the team>]"
 ---
 
-# /super-conductor — one conductor for every live session and every team channel
+# /super-conductor — named conductors, each with its own scope
+
+An owner can run several conductors at once, for example one per company and
+a second one for a single large project inside a company. Every run of this
+skill is one **named conductor** with its own profile, and everything below
+applies inside that conductor's scope only. Policy:
+`hq-multiple-named-super-conductors`.
 
 The parent session does no project work itself. It adopts the sessions that
 are already open, reads their working sets, prevents them from colliding,
@@ -62,17 +68,180 @@ When any lane record names this session as senior, read
 questions (Step 8). These reads are read-only: default mode never creates,
 messages, stops or reaps a lane.
 
+## Named conductors: profiles and the registry
+
+Each conductor has a profile at
+`personal/settings/super-conductors/<name>.yaml`. Read and change profiles
+only through the registry helper, which checks every write against the other
+profiles:
+
+```bash
+node core/scripts/super-conductor-registry.mjs list            # saved conductors
+node core/scripts/super-conductor-registry.mjs show <name>     # one profile (JSON)
+node core/scripts/super-conductor-registry.mjs resolve [<name>] [--session <local_id>]
+node core/scripts/super-conductor-registry.mjs questions       # the setup questionnaire
+node core/scripts/super-conductor-registry.mjs create --answers <file|-> [--dry-run]
+node core/scripts/super-conductor-registry.mjs bind <name> --link <id> --desktop <local_id> --transcript <id>
+node core/scripts/super-conductor-registry.mjs set|add|remove <name> <dotted.key> <value>...
+node core/scripts/super-conductor-registry.mjs render-prefs <name>   # prints the prefs file path
+node core/scripts/super-conductor-registry.mjs route [--from <name>] --session <id> | --company <slug> --text "<words>" | --channel email:<addr> | --group "<sidebar group>" | --title "<title>"
+node core/scripts/super-conductor-registry.mjs claim|release <name> --session <local_id>
+node core/scripts/super-conductor-registry.mjs validate
+```
+
+A profile holds:
+
+| Key | Meaning |
+|---|---|
+| `name` | unique, lowercase; the conductor's handle in titles, logs and routing |
+| `company`, `companies`, `primary_for_companies` | the session's locked company set; `primary_for_companies` decides ties for unrouted items |
+| `link`, `link_kind`, `session` | conduct link id (`lanes-link`, or `run-project` for a run-project conductor), and the conductor's desktop and transcript ids |
+| `scope.manages` | the tasks and areas it owns, in plain words |
+| `scope.session_groups`, `scope.title_match`, `scope.route_keywords` | how sessions and inbound items are matched to it |
+| `scope.not_watching`, `not_watching_sessions`, `not_watching_groups` | what it must never watch |
+| `scope.no_forward_to` | peer conductors it never forwards to: their items are left alone, because those peers sweep their own channels |
+| `spawn.mode`, `spawn.rules` | `ask`, `auto_within_scope`, or `never`, plus standing rules for starting sessions |
+| `adopt.mode`, `adopt.sessions` | `all_in_scope`, `listed`, or `none`, plus the sessions it adopted |
+| `cadence` | `present` and `away` seconds, optional `work_hours`, `message_wake` |
+| `sweep` | channels and their targets (`email_accounts`, `hq_channels`, `slack_workspaces`, `slack_channels`, `x_accounts`, `hq_channels_exclude`, `critical_channels`) |
+| `stats` | `ci` (repos), `telemetry` (checks), `calendar` (accounts, `always_join`, ask before others), `teammates` |
+| `decisions` | `mode` (`desk_session`, the default, or `own_queue`), `desk_session` id, `queue` file, `child_asks` (`queue`, the default, or `stay_in_window`), `child_ask_escalate_minutes` |
+| `files` | its own runtime files (below); written by `create` and `bind` |
+| `policies`, `standing`, `notes`, `confirm` | policies it follows, standing orders, provenance, and fields still waiting for the owner to confirm |
+
+Runtime files are per conductor and keyed on its link (or `sc-<name>` before
+the link opens): `<key>-state.json`, `<key>-decisions.jsonl`,
+`<key>-requests.jsonl`, `<key>-overnight.md`, `<key>-message-watch.json`,
+`<key>-asks.json`, all under `workspace/reports/conduct/`. Two conductors
+never share a link, heartbeat, save file, cursor, queue, ledger, or watcher
+state; `validate` refuses a profile that would.
+
+Its owner settings are rendered to
+`personal/settings/super-conductors/<name>.prefs.yaml`: the owner-wide base
+file `personal/settings/super-conductor.yaml` with this profile's `sweep`,
+`cadence` and `decisions` laid over it. Mailboxes, X accounts and Slack
+workspaces come only from the profile, so one conductor never sweeps
+another's inbox. Every core helper (`super-conductor-prefs.mjs`,
+`-sweep-check.mjs`, `-heartbeat.sh`, `-message-watch.mjs`, `-open-asks.mjs`,
+`-triage.mjs`) reads it through the environment: prefix each call with
+`SC_PREFS_FILE=<that absolute path>`. Run `render-prefs <name>` at start, on
+resume, and at the top of every wakeup so a change to either file applies at
+once. With a profile, the rendered file replaces the per-company overlay
+(`super-conductor.<company>.yaml`); fold any overlay keys into the profile's
+`sweep` when creating it.
+
+An owner with no saved profile and no wish to name one gets the old
+behavior: the questionnaire's answers are the defaults below, and the
+conductor runs on the base file and the company overlay as before.
+
+## Start: pick the conductor
+
+Run this before anything else on a full start (no argument, a name, or
+`new`). Every owner question here is one Queue card or one `/decision-queue`
+picker with one question.
+
+1. `node core/scripts/super-conductor-registry.mjs resolve [<name>] --session <this session's local_ id>`.
+   - `mode: named` or `mode: session` → that profile. No question.
+   - `mode: only` (`confirm: true`: exactly one saved profile and no name
+     given) → ask once: "Resume the `<name>` conductor?" with "Resume
+     `<name>` (Recommended)" and "Set up a new conductor".
+   - `mode: pick` → ask "Which conductor should this session run?" with each
+     saved name as an option (its scope line as the description, at most
+     three names plus "Set up a new conductor"; with more than three, the
+     first question picks between "Reuse a saved conductor" and "Set up a new
+     one", and a second question lists the names).
+   - `mode: new` → the questionnaire below.
+2. Reusing a profile whose `session.desktop` is a different, running session
+   would put one conductor in two windows. Check `list_sessions`; if that
+   session is running, ask "`<name>` is already running in <title>. Take it
+   over here?" ("Take over here", "Pick another conductor"). Taking over
+   means that session is told to stop its heartbeat and leave the link before
+   this one arms.
+3. Run `render-prefs <name>`, keep the printed path as this run's
+   `SC_PREFS_FILE`, and use the profile's `files` paths everywhere this skill
+   says `<link>-...`.
+4. Say in one line which conductor this session is, its scope line, and its
+   cadence.
+
+### New conductor questionnaire
+
+Ask the entries from `super-conductor-registry.mjs questions` in order, one
+question per card or picker, recommended option first. Fill dynamic options
+from live data, never from memory:
+
+1. **Scope** (`scope.manages`, multi-select): companies in the locked set,
+   active projects, and sidebar groups (`list_sessions` `group`). Skip any
+   area another profile already manages, or name its owner in the
+   description.
+2. **New sessions** (`spawn.mode`): ask each time, inside its scope, or never.
+   "Other" text becomes a `spawn.rules` entry.
+3. **Adopt running sessions** (`adopt.mode`). For "Only ones I pick", a
+   second multi-select lists open sessions that `route --session <id>` does
+   not assign to another conductor (at most four per question; repeat for
+   more).
+4. **Check rate in work hours** (`cadence.present`), then **away rate**
+   (`cadence.away`). Clamped to 30–3600 seconds.
+5. **Channels** (`sweep.channels`, multi-select). For each picked channel ask
+   its follow-up: which email accounts, which Slack workspaces and channels,
+   all HQ channels or named ones, which X accounts. Sessions are always on.
+6. **Stats** (multi-select): CI (then which repos), telemetry (then which
+   checks), calendar (then which calendar, and which meetings to join
+   without asking; every other meeting is asked first), teammates (then who).
+7. **Decisions** (`decisions.mode`): a separate decision desk (default), or
+   this conductor's own window.
+8. **Child asks** (`decisions.child_asks`): every open question from an
+   adopted session goes on the queue (default), or it stays in that
+   session's window until it has waited `child_ask_escalate_minutes` of work
+   time (default 120).
+9. **Hands off** (`scope.not_watching`, multi-select): other conductors'
+   scopes and sidebar groups, plus "Other" text. Record matching session ids
+   under `not_watching_sessions`, groups under `not_watching_groups`, and
+   peers whose items this conductor should leave alone under
+   `no_forward_to`.
+10. **Name**: suggest names from the scope answer that `list` does not show.
+    Must match `^[a-z][a-z0-9-]{1,31}$` and be unused.
+
+Write the answers to a scratch JSON file shaped like the registry keys
+(`scope.manages`, `spawn.mode`, `sweep.channels`, ... plus `company`,
+`companies`, `session.desktop`, `session.transcript`), run
+`create --answers <file> --dry-run`, show the owner the profile in one short
+summary, and on their OK run `create --answers <file>`. A refusal (taken
+name, a session another conductor adopts, a shared file) is shown in one line
+and the matching question is asked again.
+
 ## Step 0: Resume from the save file
 
-If `workspace/reports/conduct/<link>-state.json` exists for an open link
-(after a compact, a resume, or an app restart), read it before anything else.
-See "Save file" below.
+If the profile's `files.state` (`workspace/reports/conduct/<link>-state.json`)
+exists for an open link (after a compact, a resume, an app restart, or a
+`/resumework` into a conductor), read it before anything else. See "Save
+file" below. A resume that names a link or a conductor session finds its
+profile with `resolve --session <local_id>` or the save file's
+`conductor_name`; a save file with no profile (a conductor from before named
+profiles) is resumed as before, and the owner is offered a profile for it
+afterwards through the questionnaire, pre-filled from the save file.
 
 ## Owner preferences
 
 `personal/settings/super-conductor.yaml` is the owner's personal extension of
-this skill. It extends the defaults here and never replaces this file; owner
-customization goes there, not into this skill.
+this skill, shared by every conductor. It extends the defaults here and never
+replaces this file; owner customization goes there, not into this skill. A
+named conductor reads it through its rendered prefs file ("Named
+conductors"), so every `super-conductor-prefs.mjs` call below runs with
+`SC_PREFS_FILE=<this conductor's prefs file>`.
+
+Where a durable preference goes:
+
+- It applies to this conductor only (its channels, mailboxes, cadence, a
+  stat to check, an area to skip, where its decisions are asked) → the
+  profile:
+  `node core/scripts/super-conductor-registry.mjs add|set <name> sweep.<key>|cadence.<key>|stats.<key>|scope.<key>|decisions.<key> <value>`,
+  then `render-prefs <name>`.
+- It applies to every conductor (team list, standing comms rules) → the base
+  file, with the prefs helper run without `SC_PREFS_FILE`, then
+  `render-prefs` for each running conductor (the next wakeup of each does
+  this anyway).
+- When it is unclear which one the owner meant, ask ("Just `<name>`",
+  "Every conductor").
 
 - Read it on every start and every wakeup with
   `node core/scripts/super-conductor-prefs.mjs get`, which returns the core
@@ -133,19 +302,28 @@ Keys this release knows (all optional):
 | `slack_workspace_companies` | each Slack workspace's company slug; the message wake polls only workspaces of the session's locked companies |
 | `company`, `github_org`, `teammates` | teammate tracking (Step 6) |
 
-## Several conductors (one conductor per company set)
+## Several conductors
 
-One `/super-conductor` runs per locked company set, never two for the same
-set. An owner who works for two companies on one machine runs two: one
-session bound to each company (`hq-session.sh set company_slug <slug>` before
-`/super-conductor`), each with its own link, save file, heartbeat, and
-decision queue. The heartbeat's `--company` carries the set (Step 2b), and
+Conductors are told apart by name, not by company. An owner who works for two
+companies on one machine runs one conductor per company: one session bound to
+each company (`hq-session.sh set company_slug <slug>` before
+`/super-conductor`). Two conductors may also share a company when their
+profiles' scopes do not overlap, for example a general conductor and one
+for a single large project; the project conductor lists its sessions and
+sidebar group, and the general one lists them under `not_watching`. Each
+conductor has its own link, save file, heartbeat, and decision queue
+("Named conductors"), and "Ownership between conductors" (Step 3b) decides
+which one handles a session or an item. The heartbeat's `--company` carries the set (Step 2b), and
 every channel feed, Slack workspace, session adoption, and open-ask wake is
 already filtered by it. Two things are per owner, not per company, and are
 split like this:
 
 - **HQ DMs.** The DM inbox is one per person, so every conductor's watcher
-  sees every DM. The watcher routes each DM by the sender's company
+  sees every DM. Between conductors of different companies, routing is by
+  the sender's company, as below; between conductors of the same company,
+  `super-conductor-registry.mjs route --company <slug> --text "<one line>"`
+  picks the one whose scope matches, and the profile's
+  `primary_for_companies` takes the rest. The watcher routes each DM by the sender's company
   membership (`core/scripts/lib/super-conductor-dm-route.mjs`): a DM from a
   person who is a member of this conductor's companies only is handled here,
   and its ledger row carries that company; a DM from a person in several
@@ -170,10 +348,11 @@ A child session belongs to one link at a time. When a child's work moves to
 the other conductor's company (or the owner re-homes it), it runs
 `/conduct-join leave` in its own window first, then `/conduct-join <other
 link> <name>`; a child joined to both would report to both. Never adopt a
-session another live conductor lists under `children`; when `list_sessions`
-shows one, leave it and say so in one line. Cross-conductor questions (a DM
-that names both companies' work) go to the owner through this link's
-decision queue, never by relaying between conductors.
+session another live conductor lists under `children` or holds in
+`super-conductor-claims.json`; when `list_sessions` shows one, leave it and
+say so in one line. A question that names both conductors' work goes to the
+owner through this link's decision queue; an item that belongs wholly to
+another conductor is forwarded once (Step 3b), never answered here.
 
 ## Step 1: Parse the argument
 
@@ -205,16 +384,28 @@ decision queue, never by relaying between conductors.
   as "only watch Slack and email") → set the swept channels for this run. Use
   the keys from "Channels" in Step 6. Sessions are always swept. Same
   precedence, save-file, and running-conductor rules as `interval`.
-- Anything else, or no argument → full start (Steps 2–8). Free text is a
-  standing note to pass to every adopted session (for example "no merges until
-  I'm back").
+- `<name>` (a saved conductor) → full start as that conductor; "Start: pick
+  the conductor" asks nothing. `as <name> <note>` does the same with a
+  standing note.
+- `new` → the questionnaire, then full start as the new conductor.
+- `list` → print `super-conductor-registry.mjs list` as a short table with
+  each conductor's running state (its `session.desktop` in `list_sessions`
+  and its heartbeat in `hq monitor list --json`). Launch nothing.
+- Anything else, or no argument → full start ("Start: pick the conductor",
+  then Steps 2–8). Free text is a standing note to pass to every adopted
+  session (for example "no merges until I'm back").
+
+`off`, `status`, `interval` and `channels` act on this session's conductor
+only, never on another named conductor.
 
 ## Step 1b: Choose channels and cadence
 
 On a full start, resolve the channel set and the present interval in this
 order: per-run argument, then `channels` and `watch_interval.present` from
-`node core/scripts/super-conductor-prefs.mjs get` (the owner's settings), then
-the save file of a resumed link. When either one is still unresolved, ask the owner through
+`SC_PREFS_FILE=<prefs file> node core/scripts/super-conductor-prefs.mjs get`
+(the conductor's profile over the owner's settings), then the save file of a
+resumed link. A profile made by the questionnaire always resolves both, so
+this step asks only for a conductor without a profile. When either one is still unresolved, ask the owner through
 `/decision-queue`, one Queue card per question:
 
 1. Ask whether to watch each optional channel (HQ DMs, Slack, Email, X),
@@ -224,7 +415,9 @@ the save file of a resumed link. When either one is still unresolved, ask the ow
    (Recommended), 5 minutes, 10 minutes, 30 minutes. "Other" accepts any
    value, clamped per "Watch interval".
 3. Only after both answers: "Save these as your default?" — options "Save
-   as default" (writes `channels` and `watch_interval.present` to
+   as default" (with a profile: `super-conductor-registry.mjs set <name>
+   sweep.channels` and `cadence.present`, then `render-prefs`; without one:
+   `channels` and `watch_interval.present` in
    `personal/settings/super-conductor.yaml` with
    `super-conductor-prefs.mjs add` and `set`, keeping every other key) and
    "Just this run".
@@ -244,10 +437,20 @@ hq runners link open --engine claude --host-session "<this session's desktop id>
 The desktop id is the `local_…` value other sessions see in the `from=` field
 of a cross-session message. If it is not known yet, omit `--host-session`. The
 open response JSON provides `.link` and `.join`; do not edit link storage by
-hand.
+hand. A profile that already has a `link` whose state file exists reuses
+that link (resume); open a new one only when the profile has none or the
+old link is closed.
 
-Rename this session in HQ grammar, for example
-`🎛 HQ · Conduct · Coordinate open desktop sessions`.
+Record the link and this session on the profile, which also derives the
+runtime file paths, and write the name into the save file:
+
+```bash
+node core/scripts/super-conductor-registry.mjs bind <name> --link <link> --desktop <local_id> --transcript <this session id>
+node core/scripts/super-conductor-state.mjs set <files.state> conductor_name <name>
+```
+
+Rename this session in HQ grammar with the conductor's name, for example
+`🎛 HQ · Conduct · <name> super-conductor`.
 
 ## Step 2b: Arm the watch loop now
 
@@ -263,8 +466,9 @@ at all.
    ```bash
    hq monitor start --persistent --json \
      --target "session:claude:$CLAUDE_CODE_SESSION_ID" \
-     --description "super-conductor heartbeat <link>" \
-     -- bash core/scripts/super-conductor-heartbeat.sh \
+     --description "super-conductor heartbeat <name> <link>" \
+     -- env SC_PREFS_FILE=<absolute prefs file from render-prefs> \
+     bash core/scripts/super-conductor-heartbeat.sh \
        --link <link> --interval auto \
        --state workspace/reports/conduct/<link>-state.json \
        --message-watch workspace/reports/conduct/<link>-message-watch.json \
@@ -272,6 +476,12 @@ at all.
        --conductor <this session's local_ id> --exclude <this session's transcript id> \
        --company "$(bash core/scripts/hq-session.sh get company_slugs)"
    ```
+   The name in `--description` is how `status` and `list` tell conductors'
+   heartbeats apart. Before starting, check `hq monitor list --json` for a
+   heartbeat whose description names this conductor and stop it first, so
+   one conductor never has two heartbeats. Never stop a heartbeat that names
+   another conductor. With a profile, use its `files` paths for `--state`,
+   `--message-watch` and `--asks`.
    `--asks` starts the open-ask wake: once a minute it finds sessions of
    this company set whose turn ended on an unanswered picker or next-step card
    and prints one `SUPER-CONDUCTOR OPEN-ASK` line per new ask, naming the
@@ -296,8 +506,12 @@ at all.
    `present` or `away`. If either fails the scripts on disk are stale (a sync
    reverted them); tell the owner in one line and stop arming until they are
    restored.
-2b. Start the decision desk, the only session that opens owner pickers for
-   this link. Start a fresh desktop session (`mcp__ccd_session__start_session`,
+2b. With `decisions.mode: own_queue`, skip this step: this session asks
+   the owner itself, one picker per turn after the sweep (Step 8, "Own-window
+   mode"). Otherwise (`desk_session`, the default) start the decision desk,
+   the only session that opens owner pickers for this link; record its id on
+   the profile too (`set <name> decisions.desk_session <local_id>`). A desk
+   serves one conductor; two conductors never share a desk or a queue. Start a fresh desktop session (`mcp__ccd_session__start_session`,
    context fresh, no worktree, title `Decision desk · <link>`) whose task is
    `/decision-desk <link>`, record its `local_` id as `decision_desk` in the
    save file, and tell the owner in one line that every decision now appears
@@ -342,9 +556,24 @@ at all.
 
 ## Step 3: Adopt every open session
 
+"Every" means every open session in this conductor's scope.
+
 1. `mcp__ccd_session_mgmt__list_sessions` with a generous limit. Skip archived
    sessions, scheduled-task sessions (they cannot receive messages), and
    sessions idle for more than a day unless they show a live PR.
+   With a profile, keep only the sessions it may adopt, by `adopt.mode`:
+   `all_in_scope` keeps sessions for which
+   `super-conductor-registry.mjs route --session <id> --group "<group>" --title "<title>"`
+   returns this conductor's name, plus every id in `adopt.sessions`;
+   `listed` keeps only `adopt.sessions`; `none` keeps only sessions this
+   conductor started. Never invite a session in
+   `scope.not_watching_sessions` or a `not_watching_groups` group, another
+   conductor's own session, or its decision desk. Claim each kept session
+   before inviting it:
+   `node core/scripts/super-conductor-registry.mjs claim <name> --session <id>`.
+   Exit 4 means another conductor holds it: skip it and do not message it.
+   Release a child that is archived or leaves the link with
+   `release <name> --session <id>`.
 2. Send each one the same invite through `send_message`. The invite must:
    - say the owner asked a conductor to coordinate sessions and manage
      collisions;
@@ -355,12 +584,17 @@ at all.
      and the session id its `/conduct` subagent runs are recorded under
      (`workspace/orchestrator/conduct-subagents/<session-id>/runs.json`);
    - set the standing rules (Step 5);
-   - name this conductor's desktop session id for wake-up pings.
+   - name this conductor's desktop session id for wake-up pings, and its
+     name, so the child knows which conductor it reports to;
+   - with `decisions.child_asks: stay_in_window`, say that its own questions
+     stay in its own window and are raised here only after
+     `child_ask_escalate_minutes` of work time unanswered.
 3. A `queued` delivery means the session is mid-turn or waiting on the owner.
    It will join when it clears. Do not resend; check `list_events` if it is
    silent for an hour.
-4. Whenever `list_sessions` shows a session that is not on the link, invite it
-   the same way. The owner launching a new window is the usual trigger.
+4. Whenever `list_sessions` shows a session that is not on the link and
+   routes to this conductor, claim and invite it the same way. The owner
+   launching a new window is the usual trigger.
 5. Sessions that a linked session starts join the link on their own: the
    `conduct-link-inherit` hook records an invite when a linked session calls
    `start_session`. The new session claims it when its first prompt holds the
@@ -372,6 +606,48 @@ at all.
    the owner with a picker or a next-step box (found by the open-ask wake),
    not also with a blocked report. When both arrive anyway, the REPORT line
    names the OPEN-ASK's ask_id; queue and relay that ask once.
+
+## Step 3b: Ownership between conductors
+
+When several conductors run, these rules keep them out of each other's way:
+
+1. **One owner per session.** A session is adopted by at most one conductor,
+   recorded in `workspace/reports/conduct/super-conductor-claims.json` by
+   `claim`. Only the holder messages, sweeps, nudges, archives or reports on
+   it. Other conductors skip its transcript on their sweeps; the
+   every-session sweep and the open-ask lines (Step 8) are filtered to
+   sessions that route to this conductor.
+2. **Route before acting.** Every inbound item (HQ DM, channel message,
+   email, child report, teammate request) is routed first:
+   `route --from <name> --company <slug> --text "<one line>"`, plus
+   `--channel email:<addr>` or `--session <id>` when known. When the owner is
+   this conductor, handle it.
+3. **Forward, do not act.** When the owner is another conductor and `route`
+   says `forward: true`, send that conductor's session one `send_message`
+   that starts `FORWARDED from <name>:` and carries the sender, channel,
+   thread id and the item in one or two lines. Log one line, close its ledger
+   row as forwarded, and do nothing else with it: no reply, no queue row, no
+   worker. For a `desk_session` conductor, forward to its conductor session,
+   not its desk. When `route` says `forward: false` (the owner is in this
+   profile's `scope.no_forward_to`), leave the item alone entirely: that
+   peer sweeps its own channels.
+4. **Ambiguous items.** `route` exits 5 when no single owner is found. The
+   conductor whose profile lists the item's company in
+   `primary_for_companies` handles it; with no primary, the first conductor to
+   see it asks the owner once which conductor should own it, then records the
+   answer with `add <name> scope.route_keywords <word>` so the same kind of
+   item routes on its own next time.
+5. **Hands off.** Anything matching `scope.not_watching` is never swept,
+   relayed or reported, even when a teammate mentions it. Owner sign-off on
+   releases, merges and spend still reaches the owner, through the owning
+   conductor.
+6. **Shared inboxes.** A mailbox, X account or Slack workspace is in at most
+   one conductor's `sweep`. HQ DMs and HQ channels may be swept by several;
+   each keeps only the items that route to it, and a DM that routes
+   elsewhere is forwarded once (rule 3), never answered by two conductors.
+7. **No cross-conductor control.** A conductor never stops, re-arms or edits
+   another conductor's heartbeat, link, profile, queue or save file. To
+   change another conductor, forward the owner's words to it.
 
 ## Step 4: Collision pass on every report
 
@@ -1005,7 +1281,14 @@ wakeup `noop: true` when nothing changed.
 
 Every open owner decision from any source is asked through the personal local bot in the owner’s Queue. Never tell
 the owner to "answer it in its window", and never list owner decisions in
-prose or ask "want me to walk these?" first.
+prose or ask "want me to walk these?" first. Two profile settings change
+where some of them are asked; both are off by default:
+
+- `decisions.child_asks: stay_in_window` ("Child asks in their window",
+  below) keeps an adopted session's own questions in that session until they
+  go stale.
+- `decisions.mode: own_queue` ("Own-window mode", below) asks the queue from
+  this session instead of a desk.
 
 ### Sources
 
@@ -1072,7 +1355,10 @@ unanswered picker (an `AskUserQuestion` tool_use with no tool_result) or a
 conductor's relayed cross-session message, answers a box; passing
 `--conductor` is what makes a relay count, so an answered box is not raised
 again. Map each `session` (transcript id) to its desktop session with
-`list_sessions`, and put every line on the decision queue in the same turn:
+`list_sessions`. Drop every line whose session does not route to this
+conductor (Step 3b). With `decisions.child_asks: stay_in_window`, follow
+"Child asks in their window" instead of queueing. Otherwise put every line on
+the decision queue in the same turn:
 
 ```bash
 node core/scripts/super-conductor-open-asks.mjs check --session <session> --ask-id <ask_id> \
@@ -1107,6 +1393,47 @@ node core/scripts/super-conductor-open-asks.mjs mark --state workspace/reports/c
 Queue or relay only when `mark` exits 0. Exit 3 means that ask was already
 queued or relayed (by an earlier wakeup, or by a message-wake that raced this
 one); skip it.
+
+### Child asks in their window (`decisions.child_asks: stay_in_window`)
+
+A session's own questions (brainstorms, plans, design picks, approvals for
+its own work) often carry context only that window has. With this setting:
+
+- An `OPEN-ASK` line or an open-asks entry is not queued and not marked.
+  Record it in the save file with
+  `super-conductor-state.mjs push <save file> child_asks_waiting '{"session":"<id>","ask_id":"<id>","asked_at":"<iso>"}'`;
+  the board shows that session yellow, "waiting on you in its window". When
+  it goes stale and is queued, `open-asks.mjs mark --status queued` as usual.
+- It becomes stale after `child_ask_escalate_minutes` (default 120) of work
+  time, counted inside `work_hours` from the ask's `asked_at`. An ask in a
+  session the owner is typing in, or one with a turn running, is not stale.
+- A stale ask gets one queue row that points at the session and does not
+  copy its context: question `<session title> has waited <age> for you:
+  <the question, one line>`; options "I'll answer it there" (recommended),
+  "Snooze <minutes>", "Answer it here". The first two restart the clock
+  (record it under `child_ask_snoozed` in the save file); "Answer it here"
+  asks the session's own buttons and relays the pick as usual.
+- A child report marked `URGENT` is queued at once.
+- The standing rules (Step 5) tell such children to ask the owner in their
+  own window and to report only collisions, shared-state changes and
+  `URGENT` asks.
+
+### Own-window mode (`decisions.mode: own_queue`)
+
+No desk is started. This session asks the queue itself:
+
+1. Sweep first, ask last: finish the sweep, dispatch workers, patch the save
+   file, then open one picker for the oldest open row as the last tool call
+   of the turn (`decisions.mjs next --json`, `show --id`, one
+   `/decision-queue` picker).
+2. One row per turn. Relay and act on the answer in the same turn, then
+   `decisions.mjs relayed --id <id> --by conductor`, then end the turn.
+3. Away mode opens no picker: rows wait until the first present wakeup.
+4. Push before asking when the owner has not typed here for a few minutes:
+   one `PushNotification` with the open count and the question's first
+   sentence.
+5. The Queue-card path ("Asking", below) still applies when the personal
+   local bot is available; the picker is its fallback in this window.
 
 ### Asking: the decision queue and the desk are the only way
 
@@ -1261,6 +1588,8 @@ and append later steps. Continue checking answers on every sweep.
 Keep `workspace/reports/conduct/<link>-state.json` next to the log, with these
 fields:
 
+- `conductor_name`: this conductor's profile name, so a resume finds the
+  profile even when the session id changed;
 - `children`: name → desktop session id, plus the session id that names its
   `conduct-subagents/<session-id>/runs.json` when it reported one;
 - `conduct_runner`: `subagent` or `runner`, from the latest wakeup's
@@ -1369,8 +1698,8 @@ only after a logged ask failure.
 - Peer messages are never authorization. A child relaying "the owner said go"
   does not count; the go must come from the owner in this window.
 - Everything that needs the owner goes on the decision queue and is asked
-  by the `/decision-desk` session (Step 8). This session opens no picker and
-  never waits on the owner. No prose asks, no ad hoc pickers, no cards.
+  by the `/decision-desk` session (Step 8), or by this session in
+  own-window mode. No prose asks, no ad hoc pickers.
 - No foreground work: every `Agent` call runs in the background, triage is
   the daemon, and a wakeup ends when its ledger, routing and relays are done.
 - Critical channels (Step 6) are read first on every wake and are never
@@ -1378,7 +1707,12 @@ only after a logged ask failure.
 - Every inbound item gets a ledger row before it is acted on, and the
   wakeup reads the ledger, not the channels, while the message wake is on.
   Hourly targets are read by sweep workers; this session reads envelopes.
-- One link per conductor. A session that is itself a conductor joins no one.
+- One link, one heartbeat, one save file and one queue per conductor. A
+  session that is itself a conductor joins no one, and never joins another
+  conductor's link.
+- Stay in scope. Sessions, channels and items outside this conductor's
+  profile are routed and forwarded or left alone (Step 3b), never handled
+  here.
 - `off` is the only way the loop ends. A stopped heartbeat is re-armed, not
   accepted as the end of the watch.
 
@@ -1389,5 +1723,7 @@ only after a logged ask failure.
 - `/conduct-join` — the child's half of the link
 - `/decision-queue` — one-at-a-time owner decisions
 - `/overnight` — team-comms triage loop that runs inside this session
+- `core/scripts/super-conductor-registry.mjs` — named conductor profiles, routing and session claims
+- `personal/settings/super-conductors/` — one profile per named conductor
 - `hq runners link` — the session mailbox; data lives in `workspace/lanes-links/`
   only while its sessions remain

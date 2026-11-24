@@ -67,6 +67,48 @@ run_finalize() {
   )
 }
 
+# --company without a session lock used to exit 5 after writing the thread
+# and before handoff.json, so /resumework kept the previous session.
+test_company_flag_without_lock_still_writes_pointer() {
+  local repo="$TMP_ROOT/unbound-company" err out thread_id
+  scaffold_repo "$repo"
+  mkdir -p "$repo/companies/acme"
+  printf '%s\n' '{"old":true,"last_thread":"T-old"}' > "$repo/workspace/threads/handoff.json"
+  mkdir -p "$repo/.claude/hooks"
+  cat > "$repo/.claude/hooks/mirror-thread-to-company.sh" <<'HOOK'
+#!/usr/bin/env bash
+echo "session has no company lock" >&2
+exit 1
+HOOK
+  err="$TMP_ROOT/unbound-company.err"
+  rc=0
+  out="$(
+    cd "$repo"
+    HQ_ROOT="$repo" HOME="$repo/home" PATH="$TEST_BIN:/usr/bin:/bin" \
+      bash core/scripts/handoff-finalize.sh \
+        --title "Handoff: unbound company" \
+        --summary "pointer must land even if company mirror fails" \
+        --message "pointer must land even if company mirror fails" \
+        --next-steps-json '[]' \
+        --files-touched-json '[]' \
+        --learnings-json '[]' \
+        --tags-json '["handoff"]' \
+        --slug "unbound-company" \
+        --company acme \
+        --next-command '' 2>"$err"
+  )" || rc=$?
+  [[ "$rc" -eq 5 ]] || fail "finalize with --company and no lock exited $rc (want 5) stderr=$(cat "$err")"
+  thread_id="$(jq -r '.thread_id' <<<"$out")"
+  [[ -f "$repo/workspace/threads/$thread_id.json" ]] || fail "thread file missing after unbound --company"
+  [[ "$(jq -r '.last_thread' "$repo/workspace/threads/handoff.json")" == "$thread_id" ]] \
+    || fail "handoff.json pointer was not updated: $(cat "$repo/workspace/threads/handoff.json")"
+  grep -q "company mirror failed" "$err" || grep -q "canonical thread retained" "$err" \
+    || fail "expected a mirror-failure warning, got $(cat "$err")"
+  grep -q "hq-session.sh add company acme" "$err" \
+    || fail "expected lock hint, got $(cat "$err")"
+  pass "--company without a session lock still writes handoff.json"
+}
+
 test_linked_worktree_copies_thread_and_updates_main_pointer() {
   local main_repo="$TMP_ROOT/worktree-main" linked_repo="$TMP_ROOT/worktree-linked"
   scaffold_repo "$main_repo"
@@ -316,7 +358,8 @@ case "${1:-all}" in
   reconcile) test_clean_worktree_reconciles_only_matching_handoff_mirrors ;;
   unique) test_same_second_same_slug_gets_unique_ids ;;
   newer) test_older_finalize_does_not_overwrite_newer_pointer ;;
-  all) test_linked_worktree_copies_thread_and_updates_main_pointer; test_pointer_is_atomically_replaced_in_its_directory; test_clean_worktree_reconciles_only_matching_handoff_mirrors; test_same_second_same_slug_gets_unique_ids; test_older_finalize_does_not_overwrite_newer_pointer ;;
+  unbound-company) test_company_flag_without_lock_still_writes_pointer ;;
+  all) test_linked_worktree_copies_thread_and_updates_main_pointer; test_pointer_is_atomically_replaced_in_its_directory; test_clean_worktree_reconciles_only_matching_handoff_mirrors; test_same_second_same_slug_gets_unique_ids; test_older_finalize_does_not_overwrite_newer_pointer; test_company_flag_without_lock_still_writes_pointer ;;
   *) fail "unknown test selector: $1" ;;
 esac
 echo "PASS: handoff-finalize-pointer"

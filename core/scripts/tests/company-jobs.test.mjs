@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createRequire } from 'node:module';
 import { CompanyRunner, Ledger, validateConfig, Refusal, calendars, occurrencesSince, contentDigest, acceptedJob, options, bounded, machineEnvironment, serviceTimeoutSeconds, transientCommand, runLockTtlMs, refreshMachineTokens, processStatus, jobRunUnitsActive, writeServiceEnvironment, secretRuntimeDirectory, prepareServiceMaterial, releaseSecretsAfterActive, runnerUnitAlive, serviceUnitActive, secretSourcesReady, sweepStaleSecretDirs, MACHINE_TOKEN_BUDGET_MS, COMPANY_API_BUDGET_MS, classifySessionResponse, JOB_OUTCOME_INSTRUCTION, jobEnvironment, machineSessionEnvironment, machineSessionDocument, MACHINE_SESSION_FILE, sessionRuntimeDirectory, prepareSessionRoot, prepareSessionDir, writeMachineSessionFile, sweepStaleSessionDirs } from '../lib/company-jobs.mjs';
 const require = createRequire(import.meta.url);
@@ -79,7 +80,48 @@ test('runtime secrets company scope, rotation, no persisted values and denial',a
 test('claims reclaim abandoned admission with TTL, completed receipts persist',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,199),null);assert(f.r.ledger.claim(d,100,200));});
 test('expired live owner does not overlap; interrupted execution is uncertain, not retried',t=>{const f=fixture(t),d=f.delivery();const key=f.r.ledger.claim(d,100,100);assert.throws(()=>f.r.ledger.claim(d,100,200),/owner_alive/);f.r.ledger.executing(key);f.r.ledger.db.prepare('UPDATE runs SET owner=?').run(2147483647);assert.equal(f.r.ledger.claim(d,100,200).uncertain,true);});
 test('complete fingerprint emitted on failure',async t=>{const f=fixture(t);f.r.execute=async()=>({code:124,text:''});const r=await f.r.runDelivery(f.j,f.delivery());for(const k of ['jobId','revision','runId','scheduledAt','startedAt','endedAt','executionPrincipal','machine','outcome','outputLocation'])assert(r[k],k);assert.equal(r.outcome,'timeout');assert.match(fs.readFileSync(r.outputLocation,'utf8'),/executionFingerprint/);});
-test('portable bounded process group kills grandchild ignoring TERM',{timeout:20000},async()=>{let text='';const start=Date.now();const r=await bounded('/bin/bash',['-c',"trap '' TERM; sleep 30 & echo $!; wait"],{timeout:150,output:s=>text+=s});assert.equal(r.code,124);assert(Date.now()-start<3000);const pid=Number(text.trim());assert(pid>0);try{process.kill(pid,0); const proc=fs.readFileSync(`/proc/${pid}/stat`,'utf8');assert.match(proc,/\) Z /);}catch(e){assert(['ESRCH','ENOENT'].includes(e.code));}});
+function fixtureProcessExited(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error.code === 'ESRCH') return true;
+    throw error;
+  }
+  if (process.platform === 'linux') {
+    try {
+      return /\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+    } catch (error) {
+      if (error.code === 'ENOENT') return true;
+      throw error;
+    }
+  }
+  const status = spawnSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  if (status.error) throw status.error;
+  if (status.status === 1 && !status.stdout.trim() && !status.stderr.trim()) return true;
+  assert.equal(status.status, 0, 'could not read the test grandchild process state');
+  return status.stdout.trimStart().startsWith('Z');
+}
+
+test('portable bounded process group kills grandchild ignoring TERM', { timeout: 20000 }, async () => {
+  let text = '';
+  const deadline = performance.now() + 3000;
+  const result = await bounded('/bin/bash', ['-c', "trap '' TERM; sleep 30 & echo $!; wait"], {
+    timeout: 150,
+    output: chunk => { text += chunk; },
+  });
+  assert.equal(result.code, 124);
+  assert(performance.now() < deadline, 'bounded runner exceeded the elapsed-time limit');
+  const pid = Number(text.trim());
+  assert(Number.isInteger(pid) && pid > 1);
+
+  // Linux can close the stdio pipes before it publishes the final exit state.
+  let exited = fixtureProcessExited(pid);
+  while (!exited && performance.now() < deadline) {
+    await delay(5);
+    exited = fixtureProcessExited(pid);
+  }
+  assert(exited && performance.now() < deadline, 'grandchild is still live at the elapsed-time limit');
+});
 test('secret chunks are redacted from captured output',async()=>{const r=await bounded(process.execPath,['-e',"process.stdout.write('ABC');setTimeout(()=>process.stdout.write('DEFG'),20)"],{timeout:5000,redactions:['ABCDEFG']});assert.equal(r.text,'[REDACTED]');});
 test('wildcard minutes remain every minute and weekly/rate/once render',()=>{assert.match(calendars({kind:'recurring',cron:'cron(* * * * ? *)',timezone:'UTC'})[0],/00,01,02/);const hour9=calendars({kind:'recurring',cron:'cron(* 9 * * ? *)',timezone:'UTC'});assert.equal(hour9.length,1);assert.deepEqual(hour9[0].split(' ')[1].split(':')[1].split(',').map(Number),Array.from({length:60},(_,i)=>i));assert.doesNotMatch(hour9[0],/09:00:00/);assert.match(calendars({kind:'recurring',cron:'cron(0 9 ? * MON-FRI *)',timezone:'UTC'})[0],/^Mon,Tue,Wed,Thu,Fri/);assert.equal(calendars({kind:'recurring',cron:'rate(12 hours)',timezone:'UTC'}).length,1);assert.match(calendars({kind:'once',at:'2026-01-01T00:00:00Z',timezone:'UTC'})[0],/UTC$/);});
 test('unsafe run ids cannot escape the unit directory; a real pending id still arms',async t=>{
@@ -363,7 +405,6 @@ test('an ec2-user owned core/scripts/lib is refused',()=>{
   assert.equal(installer.includes("root+'/core/scripts/lib/company-jobs.mjs'"),true);
   assert.equal(installer.includes("root+'/core/scripts/hq-agent-session.sh'"),true);
   assert.equal(installer.includes("root+'/core/scripts/outpost-jobs-reconcile.sh'"),true);
-  assert.equal(installer.includes("root+'/core/scripts/hq-job-run.sh'"),true);
   assert.equal(installer.includes("root+'/core/scripts/company-job-with-credentials.sh'"),true);
   assert.match(installer,/config\.secretRuntimeDir = '\/run\/hq-company-jobs'/);
   assert.equal(installer.includes('fs.realpathSync(nodeBinary)'),true);

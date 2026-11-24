@@ -274,8 +274,11 @@ bash .claude/skills/project-summary/scripts/deploy-summary.sh \
 
 It is idempotent (stable app name to stable URL), gates to the project's company when a
 `cloud_uid` resolves from `companies/manifest.yaml`, and uses a password gate only for
-personal / no-company projects. A company deck is deployed into that company's org
-(`X-Org-Slug: {co}` on every call). If the company has no `cloud_uid` or its gate cannot be
+personal / no-company projects. Every hq-deploy call goes through the hq CLI (`hq deploy list`,
+`create`, `inspect`, `access`, `password-gate`, `upload`, `takedown`), so the script needs `hq`
+on PATH and an `hq login` session (`ERR: hq_cli_missing` otherwise). A company deck is deployed
+into that company's org (`--company {co}` on every call); a personal deck uses `--personal`.
+If the company has no `cloud_uid` or its gate cannot be
 proven, the script exits with `ERR: company_uid_unresolved` or
 `ERR: company_gate_unverified` and uploads nothing. Report that error and do not retry
 without `{co}`. Parse its `KEY=VALUE` output and report:
@@ -284,7 +287,7 @@ without `{co}`. Parse its `KEY=VALUE` output and report:
 - Deck, company-gated to `Brainstorm deck is live (members only): {LIVE}`
 - Password-gated to `… is live: {LIVE}, password: {PASSWORD} (copied to clipboard)`
 
-**Non-fatal:** if the script exits non-zero (e.g. `ERR: no_identity`), do NOT fail the caller.
+**Non-fatal:** if the script exits non-zero (e.g. `ERR: hq_cli_missing`), do NOT fail the caller.
 Report `skipped, {reason}` and continue. The calling skill must never be blocked by this deploy.
 
 ## Rules

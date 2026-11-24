@@ -53,6 +53,11 @@
 # rewrite a Cursor session supplies its id through hq-session.sh --session-id;
 # hq-session.sh prints that hint when a Cursor write has no identity.
 #
+# Google Antigravity is absent for the same reason: its docs name no
+# session-id variable for agent shells. On macOS its shells carry
+# __CFBundleIdentifier=com.google.antigravity (an app id, not a session id),
+# and hq-session.sh prints the --session-id / HQ_SESSION_ID hint there too.
+#
 # HOOK PAYLOADS
 #
 # Hook scripts read the id from the JSON payload on stdin, not the environment.
@@ -86,15 +91,107 @@ session_id_is_valid() {
 #   stray value in one host cannot wedge every helper.
 session_id_from_env() {
   local var val
-  for var in HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID \
-             CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID \
-             HQ_FLEET_SESSION_ID; do
+  for var in $SESSION_ID_ENV_VARS; do
     val="${!var:-}"
     val="$(printf '%s' "$val" | tr -d '[:space:]')"
     if session_id_is_valid "$val"; then
       printf '%s' "$val"
       return 0
     fi
+  done
+  return 0
+}
+
+# SESSION_ID_ENV_VARS — the variables session_id_from_env reads, in order.
+SESSION_ID_ENV_VARS="HQ_SESSION_ID CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CODEX_SESSION_ID CODEX_THREAD_ID GROK_SESSION_ID HQ_FLEET_SESSION_ID"
+
+# session_id_env_distinct
+#   Print one "VAR=id" line for each variable whose valid id differs from every
+#   earlier one. One line means the environment names one session; two or more
+#   means it names several, for example a stale HQ_SESSION_ID inherited from the
+#   shell that launched the app next to the host's own CLAUDE_CODE_SESSION_ID.
+#   Two variables of one harness (CLAUDE_CODE_SESSION_ID and the legacy
+#   CLAUDE_SESSION_ID; CODEX_SESSION_ID and the thread-scoped CODEX_THREAD_ID)
+#   count once: the later one is read only when the earlier is unset.
+#   HQ_FLEET_SESSION_ID is a fallback by design (a Fleet job that runs a harness
+#   carries both, and they differ), so it is read only when nothing else is set.
+#   No subshells: master-hook calls this on every hook event.
+session_id_env_distinct() {
+  local var val seen=' ' have_claude=0 have_codex=0
+  for var in $SESSION_ID_ENV_VARS; do
+    val="${!var:-}"
+    val="${val//[[:space:]]/}"
+    session_id_is_valid "$val" || continue
+    case "$var" in
+      CLAUDE_CODE_SESSION_ID|CLAUDE_SESSION_ID)
+        [ "$have_claude" = 0 ] || continue; have_claude=1 ;;
+      CODEX_SESSION_ID|CODEX_THREAD_ID)
+        [ "$have_codex" = 0 ] || continue; have_codex=1 ;;
+      HQ_FLEET_SESSION_ID)
+        [ "$seen" = ' ' ] || continue ;;
+    esac
+    case "$seen" in *" $val "*) continue ;; esac
+    seen="$seen$val "
+    printf '%s=%s\n' "$var" "$val"
+  done
+  return 0
+}
+
+# Hook-observed environment ids.
+#
+# The scope guard keys on the hook payload's session id. Shell commands get the
+# id from their environment instead, and the two can disagree: a host can keep
+# exporting the id a process started with after the conversation moved on to a
+# new id (clear, resume), and a process started from inside another session can
+# inherit that session's id. Hooks run in the same environment as the shell
+# commands, so master-hook sees both values. When the environment names exactly
+# one id E, every hook event touches
+#   workspace/sessions/.env-ids/<E>/<payload-id>
+# The entry named E itself means a conversation that really is E fired a hook.
+# An entry with another name means a conversation using E's environment is not
+# E. These files live outside workspace/sessions/<E>/ so a hook never creates or
+# changes another session's record.
+#
+# hq-session.sh refuses an environment-resolved write to E when an entry with
+# another name was touched within SESSION_ID_ENV_ALIAS_TTL_MIN minutes (default
+# 360) and more recently than the entry named E. Two conversations sharing E's
+# environment cannot be told apart from a shell, so the latest one to fire a
+# hook decides, and a write that might belong to the other is refused rather
+# than guessed.
+SESSION_ID_ENV_ALIAS_TTL_MIN="${SESSION_ID_ENV_ALIAS_TTL_MIN:-360}"
+
+# session_id_record_env_alias <root> <payload-id>
+#   One directory test and one builtin redirect in the common case; mkdir forks
+#   only the first time an environment id is seen.
+session_id_record_env_alias() {
+  local root="${1:-}" payload="${2:-}" lines env_id dir
+  [ -n "$root" ] && session_id_is_valid "$payload" || return 0
+  lines="$(session_id_env_distinct)"
+  case "$lines" in ''|*$'\n'*) return 0 ;; esac
+  env_id="${lines#*=}"
+  dir="$root/workspace/sessions/.env-ids/$env_id"
+  [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 0
+  : > "$dir/$payload" 2>/dev/null || true
+  return 0
+}
+
+# session_id_live_env_aliases <root> <env-id>
+#   Print the payload ids other than <env-id> that fired a hook from <env-id>'s
+#   environment within the TTL and after the last hook of <env-id> itself.
+session_id_live_env_aliases() {
+  local root="${1:-}" env_id="${2:-}" dir ttl
+  session_id_is_valid "$env_id" || return 0
+  dir="$root/workspace/sessions/.env-ids/$env_id"
+  [ -d "$dir" ] || return 0
+  ttl="$SESSION_ID_ENV_ALIAS_TTL_MIN"
+  case "$ttl" in ''|*[!0-9]*) ttl=360 ;; esac
+  if [ -f "$dir/$env_id" ]; then
+    find "$dir" -mindepth 1 -maxdepth 1 -type f -mmin "-$ttl" -newer "$dir/$env_id" 2>/dev/null
+  else
+    find "$dir" -mindepth 1 -maxdepth 1 -type f -mmin "-$ttl" 2>/dev/null
+  fi | while IFS= read -r f; do
+    f="${f##*/}"
+    [ "$f" != "$env_id" ] && session_id_is_valid "$f" && printf '%s\n' "$f"
   done
   return 0
 }

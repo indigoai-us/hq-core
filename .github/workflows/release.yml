@@ -2,6 +2,7 @@ name: Release
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
   push:
@@ -27,6 +28,9 @@ concurrency:
 jobs:
   runtime-assets:
     name: Build hq-anywhere release artifacts
+    # Draft pull requests skip this build (ready_for_review starts it). Tag
+    # pushes and manual runs are not pull_request events, so they always run.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || 'ubuntu-latest' }}
     steps:
       - name: Checkout

@@ -1,0 +1,1 @@
+Fixed (hooks): the policy enforcement gate no longer treats identifier text such as `broadcast_inbox_message` as a work-broadcast request. Underscore stays inside the word, so tool names do not trip the 4-line outbound cap; `Slack broadcast` and `work-broadcast` still do. Regression: `core/scripts/tests/policy-enforcement-gate.test.sh`.
