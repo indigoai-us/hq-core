@@ -67,6 +67,7 @@ the user:
 - `{"type":"progress", path, bytes, message?}` → quiet (just count)
 - `{"type":"conflict", path, direction, resolution}` → "⚠️ Conflict: {path} ({direction}) — {resolution}"
 - `{"type":"complete", company, filesDownloaded, filesUploaded, conflicts, ...}` → "✓ {company}: {filesDownloaded}↓ {filesUploaded}↑ {conflicts}⚠"
+- `{"type":"company-skipped", company, reason:"new-sync"}` → "{company} is handled by the new sync" (`personal` is the personal vault). The new sync engine owns that vault on this computer, so the runner left it alone; this is not an error and not an incomplete sync. `hq sync-core status` shows whether the new sync is running and current.
 - `{"type":"all-complete", companiesAttempted, conflictPaths, errors, partial, transient, companies}` → final summary. `partial` and `companies[].status` are the canonical completeness signals — see Step 4.
 - `{"type":"conflicts-remaining", count, samplePaths}` → emitted once after
   `all-complete` when the post-sync ledger prune preserved conflict rows a
@@ -303,10 +304,22 @@ if [ -n "$setup_event" ]; then
   fi
 fi
 
+# Step 5b2: vaults the new sync engine owns on this computer. The runner leaves
+# them out (`company-skipped`, reason `new-sync`) because the new sync handles
+# them. That is not a failure, so say which ones they are and how to check.
+new_sync_vaults=""
+if command -v hq_sync_new_sync_vaults >/dev/null 2>&1; then
+  new_sync_vaults="$(hq_sync_new_sync_vaults "$output_file" || true)"
+  hq_sync_report_new_sync_vaults "$output_file" || true
+fi
+
 # Step 5c: neither event. Say so — a run that reports nothing is not a success,
 # and silently treating it as one is how a broken sync passes for a clean one.
+# A run that exited 0 with every vault handled by the new sync has no
+# all-complete event and is not incomplete.
 if [ -z "${final_event:-}" ] && [ -z "${setup_event:-}" ] \
-  && [ "$cli_status" != "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}" ]; then
+  && [ "$cli_status" != "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}" ] \
+  && ! { [ -n "$new_sync_vaults" ] && [ "$cli_status" = "0" ]; }; then
   echo ""
   echo "=== Sync finished without a final status ==="
   echo "The runner emitted neither all-complete nor setup-needed (exit"

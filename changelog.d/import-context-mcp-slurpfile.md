@@ -1,0 +1,1 @@
+Fixed (`/import-context`): `scan.sh` merges desktop and repo MCP catalogs with `jq --slurpfile` instead of `--argjson`, so a large `--scope` no longer dies with `Argument list too long` before writing `report.json`. Regression: `core/scripts/tests/import-context-scan.test.sh` (wired in pr-checks).

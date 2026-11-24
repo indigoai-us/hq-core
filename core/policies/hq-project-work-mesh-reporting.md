@@ -5,9 +5,9 @@ when: project || prd || run-project || execute-task || startwork
 on: [UserPromptSubmit, AssistantIntent, PreToolUse]
 enforcement: hard
 public: true
-version: 3
+version: 4
 created: 2026-07-05
-updated: 2026-09-03
+updated: 2026-11-22
 source: work-mesh-live US-010
 tags: [projects, collaboration, work-mesh, mqtt, hq-pro]
 ---
@@ -58,6 +58,9 @@ If additionalContext instructs a Work Mesh clarification:
   pages of 3 options plus a "More options" entry; keep the option ids unchanged.
 - Codex: ask once via `request_user_input` with the same options, then organize.
 - Grok: run `hq mesh context organize` (no hook can put a question to you).
+- Google Antigravity: HQ hooks are not wired yet, so no clarification arrives
+  by hook. Report state by hand with `hq mesh session task-status|blocked|note
+  --enqueue` and run `hq mesh context organize` when you need to file work.
 
 For create options, append `--create-project '<approved project title>'` or
 `--create-task '<approved task title>'` to organize. Reuse an approved title, or

@@ -5,9 +5,9 @@ when: /startwork || repo || worktree
 on: [UserPromptSubmit, SessionStart]
 enforcement: hard
 tier: 1
-version: 3
+version: 4
 created: 2026-04-03
-updated: 2026-08-22
+updated: 2026-11-21
 source: user-correction
 public: true
 ---
@@ -17,6 +17,8 @@ public: true
 NEVER create a git worktree or new branch in HQ when starting work on a project repo. HQ must stay on `main` at all times. All branching and worktree creation happens inside the target repo itself. Each repo has its own branching strategy independent of HQ.
 
 When `/startwork` resolves to a repo context, `cd` into that repo and work there directly. Do not use `EnterWorktree` on the HQ repository.
+
+From the HQ root, start every new session in the HQ root, even for repo work: `start_session` with `use_worktree: false` and no `cwd`. The new session creates its own worktree inside the target repo (`git -C repos/<public|private>/<repo> worktree add ...`). Never start a session with `cwd` set to a repo folder.
 
 ## Rationale
 
@@ -32,12 +34,17 @@ PreToolUse (exit 2 — every tool call is refused), so an ordinary session
 started from an HQ worktree can do no work at all.
 
 The same hook also refuses, on PreToolUse, a session-spawn call from the HQ
-root that would start the new session in a linked HQ worktree: any
-`spawn_task` chip, and `start_session` with `use_worktree: true` and no
-`cwd` under `repos/` or outside HQ. Without this, the user accepts the chip
-and gets a session that is blocked on its first prompt (feedback_ddf0470d).
-Start such sessions with `use_worktree: false`, or point `cwd` at a source
-repo under `repos/`.
+root that would start the new session in a linked HQ worktree (any
+`spawn_task` chip, and `start_session` with `use_worktree: true` and no `cwd`
+outside HQ) or in a repo folder (a `cwd` under `repos/` or
+`workspace/worktrees/`).
+
+From the HQ root, start every new session in the HQ root, even for repo work:
+`start_session` with `use_worktree: false` and no `cwd`. The brief tells the
+new session to create its own worktree inside the repo with
+`git -C repos/<public|private>/<repo> worktree add -b <branch> workspace/worktrees/<repo>/<name> origin/<base>`.
+Never set `cwd` to a repo folder: the desktop app then asks the user to trust
+that repository.
 
 Task subagents launched from the canonical HQ checkout with
 `isolation: "worktree"` are intentionally exempt. Claude identifies hook calls

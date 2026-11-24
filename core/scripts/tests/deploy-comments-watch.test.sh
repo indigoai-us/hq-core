@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Regression: comments-watch.sh seeds without replaying the backlog, reports each
 # new comment once, survives restarts, reports outages and a disabled thread, and
-# never prints the bearer token. The real deploy-api-request.sh runs; only curl
-# is stubbed.
+# never prints a token. Every poll goes through `hq deploy comments list`; a fake
+# `hq` on PATH stands in for the CLI.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -16,24 +16,21 @@ trap 'rm -rf "$TMP"' EXIT
 TOKEN='token-secret-should-not-leak'
 mkdir -p "$TMP/bin"
 
-cat > "$TMP/bin/curl" <<'STUB'
+cat > "$TMP/bin/hq" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-body_file=""; url=""; method=GET; headers=""
-for ((i = 1; i <= $#; i++)); do
-  arg="${!i}"
-  case "$arg" in
-    -o) next=$((i + 1)); body_file="${!next}" ;;
-    -X) next=$((i + 1)); method="${!next}" ;;
-    -H) next=$((i + 1)); headers="$headers|${!next}" ;;
-    http://*|https://*) url="$arg" ;;
-  esac
-done
-printf '%s %s %s\n' "$method" "$url" "$headers" >> "$MOCK_DIR/calls"
-cp "$MOCK_DIR/response" "$body_file"
-cat "$MOCK_DIR/status"
+printf 'API=%s ARGS=%s\n' "${HQ_DEPLOY_API_URL:-}" "$*" >> "$MOCK_DIR/calls"
+status="$(cat "$MOCK_DIR/status")"
+if [ "$status" = 200 ]; then
+  cat "$MOCK_DIR/response"
+  printf '\n'
+  exit 0
+fi
+code="$(jq -r '.error.code // "HTTP"' "$MOCK_DIR/response")"
+echo "Could not read deploy comments (HTTP $status, $code)." >&2
+exit 1
 STUB
-chmod +x "$TMP/bin/curl"
+chmod +x "$TMP/bin/hq"
 
 comment() { # id createdAt body
   printf '{"id":"%s","body":"%s","author":{"email":"viewer@example.com","name":"Viewer"},"anchor":{"mode":"text","quote":"intro"},"status":"open","deployId":"dep-1","createdAt":"%s"}' "$1" "$3" "$2"
@@ -56,8 +53,8 @@ respond 200 "{\"commentsEnabled\":true,\"comments\":[$C1,$C2]}"
 out="$(watch_once)" || fail "seeding run failed: $out"
 [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] || fail "seeding run printed more than the armed line: $out"
 printf '%s' "$out" | jq -e '.type == "armed" and .app == "Launch page" and .seeded == 2' >/dev/null || fail "armed line wrong: $out"
-grep -Fq 'GET http://api.test/api/apps/app-1/manage/comments' "$TMP/calls" || fail "did not poll the owner comments route"
-grep -Fq 'X-Org-Slug: acme' "$TMP/calls" || fail "did not send the org header"
+grep -Fq 'API=http://api.test ARGS=deploy comments list app-1 --company acme --json' "$TMP/calls" \
+  || fail "did not poll through hq deploy comments list with the company scope"
 pass "first run seeds the backlog without replaying it"
 
 # A new comment is reported once with author, body, anchor and deploy.
@@ -110,5 +107,6 @@ bad="$("$SRC" watch --app app-1 --org acme --cursor-file "$TMP/x" --interval 10 
 set -e
 [ "$code" = 64 ] || fail "interval under 30s exited $code: $bad"
 printf "%s" "$bad" | grep >/dev/null -F "at least 30" || fail "interval under 30s was accepted: $bad"
-! grep -rFq "$TOKEN" "$TMP/stderr" "$TMP/state" || fail "token leaked"
+! grep -rFq "$TOKEN" "$TMP/stderr" "$TMP/state" "$TMP/calls" || fail "token leaked"
+! grep -Fq "HQ_DEPLOY_JWT" "$SRC" || fail "comments-watch.sh still reads HQ_DEPLOY_JWT"
 pass "short intervals are rejected and the token never leaks"

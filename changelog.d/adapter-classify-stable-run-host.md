@@ -1,0 +1,1 @@
+- Updated hook adapter settings classification to recognize pinned stable alias and run-host exec entries across lifecycle events.

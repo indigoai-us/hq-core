@@ -15,10 +15,14 @@ set -eu
 case "$1 $2" in
   'sync-core status')
     [ "${HQ_TEST_ENGINE:-0}" = 1 ] || { echo "unknown command 'sync-core'" >&2; exit 1; }
-    echo '{"version":1,"vaults":[{"uid":"cmp_acme","kind":"company","slug":"acme","phase":"full"}]}' ;;
+    if [ "${HQ_TEST_ENGINE_HELD:-0}" = 1 ]; then
+      echo '{"version":1,"vaults":[{"uid":"cmp_acme","kind":"company","slug":"acme","phase":"full"}],"held":[{"uid":"cmp_acme","reason":"hqinclude-unsupported"}]}'
+    else
+      echo '{"version":1,"vaults":[{"uid":"cmp_acme","kind":"company","slug":"acme","phase":"full"}]}'
+    fi ;;
   'sync push')
     echo "$3" >> "$HQ_TEST_CLOUD.pushes"
-    if [ "${HQ_TEST_ENGINE:-0}" = 1 ]; then
+    if [ "${HQ_TEST_ENGINE:-0}" = 1 ] && [ "${HQ_TEST_ENGINE_HELD:-0}" = 0 ]; then
       echo "Sync is off for acme on this computer, so hq sync push was refused immediately." >&2
       exit 1
     fi
@@ -29,6 +33,7 @@ case "$1 $2" in
       echo '{"metadata":{"owner":"old@example.test"}}' > "$HQ_TEST_CLOUD/projects/widget/prd.json"
     fi ;;
   'files cat')
+    [ "$3" != "${HQ_TEST_CAT_FAIL:-}" ] || exit 1
     if [ "${HQ_TEST_ENGINE:-0}" = 1 ] && [ "${HQ_TEST_ENGINE_NO_UPLOAD:-0}" = 0 ]; then
       mkdir -p "$HQ_TEST_CLOUD/projects"
       cp -R "$HQ_ROOT/companies/acme/projects/widget" "$HQ_TEST_CLOUD/projects/"
@@ -86,9 +91,32 @@ if HQ_TEST_ENGINE=1 HQ_TEST_ENGINE_NO_UPLOAD=1 bash "$ROOT/core/scripts/hq-deleg
 fi
 grep -q 'sync engine has not uploaded' "$TMP/engine.err" || fail 'engine-owned vault: timeout message does not name the engine'
 jq -e '.publication == null' "$M" >/dev/null || fail 'engine-owned vault: timed-out publish received a receipt'
+# A failed `hq files cat` of an empty file prints nothing, whose hash equals
+# the empty file's hash; it must not count as the engine's upload. The message
+# prints the parsed wait (00 -> 0) and the likely causes.
+rm -rf "$HQ_TEST_CLOUD" "$PROJ/delegation"
+mkdir -p "$HQ_TEST_CLOUD"
+reset_manifest
+: > "$PROJ/README.md"
+if HQ_TEST_ENGINE=1 HQ_TEST_CAT_FAIL=projects/widget/README.md HQ_DELEGATE_ENGINE_WAIT_SECONDS=00 \
+  bash "$ROOT/core/scripts/hq-delegate-publish.sh" --manifest "$M" >/dev/null 2>"$TMP/engine.err"; then
+  fail 'engine-owned vault: a failed read of an empty file counted as the upload'
+fi
+grep -q 'has not uploaded companies/acme/projects/widget/README.md (or the vault holds other bytes) after 0s (the engine skips a file an ignore rule matches, a symlink, or a path this machine is not granted)' "$TMP/engine.err" \
+  || fail 'engine-owned vault: failure message lacks the parsed wait or the likely causes'
+jq -e '.publication == null' "$M" >/dev/null || fail 'engine-owned vault: failed read received a receipt'
+echo 'marker' > "$PROJ/README.md"
+# A full vault the rollout holds is not engine-owned (the CLI sync gate's
+# rule), so publish keeps the push path.
+rm -rf "$HQ_TEST_CLOUD" "$HQ_TEST_CLOUD.pushes" "$PROJ/delegation"
+mkdir -p "$HQ_TEST_CLOUD"
+reset_manifest
+HQ_TEST_ENGINE=1 HQ_TEST_ENGINE_HELD=1 HQ_TEST_ENGINE_NO_UPLOAD=1 bash "$ROOT/core/scripts/hq-delegate-publish.sh" --manifest "$M" >/dev/null \
+  || fail 'held vault: publication failed'
+grep -qx 'companies/acme/projects/widget/prd.json' "$HQ_TEST_CLOUD.pushes" || fail 'held vault: publish did not push'
 unset HQ_DELEGATE_ENGINE_POLL_SECONDS HQ_DELEGATE_ENGINE_WAIT_SECONDS
 
-echo 'hq-delegate-publish: ok (final owner and dossier, exact bytes, stable replay, stale/read/write failures gated, engine-owned vault waits instead of pushing)'
+echo 'hq-delegate-publish: ok (final owner and dossier, exact bytes, stable replay, stale/read/write failures gated, engine-owned vault waits instead of pushing, failed reads never match, held vault pushes)'
 for unsafe in 'https://example.test/share-session/test-capability' '-----BEGIN RSA PRIVATE KEY-----'; do
   reset_manifest
   before="$(sha256sum "$PROJ/delegation/dlg-test/BRIEF.md")"

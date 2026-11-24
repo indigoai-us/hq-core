@@ -5,11 +5,14 @@
 # on staging release tags, nothing on a branch push.
 #
 # Pins the contract:
-#   - pr-checks triggers are exactly pull_request, workflow_dispatch, one
-#     nightly schedule and push for stable v* tags only, never v*-* pre-release
-#     tags (no branches, no paths).
+#   - pr-checks triggers are exactly pull_request, merge_group
+#     (checks_requested only; inert until a merge queue is enabled),
+#     workflow_dispatch, one nightly schedule and push for stable v* tags only,
+#     never v*-* pre-release tags (no branches, no paths).
 #   - Job reachability, evaluated from each job's `if:` for every event:
 #       * the 16 required-on-schedule checks run on ready PRs, dispatch and the schedule;
+#       * a required check split into <name>-N shards is an always() gate over
+#         them, and each shard runs on ready PRs, dispatch and the schedule;
 #       * every other Linux job runs only on ready PRs and dispatch;
 #       * shell-smoke-macos, shell-smoke-windows and codex-windows-hook-launcher
 #         run only on dispatch, the schedule and staging release tags, never
@@ -119,8 +122,10 @@ failures = []
 triggers = workflow.get(True, workflow.get("on"))
 if not isinstance(triggers, dict):
     raise SystemExit("FAIL: pr-checks on: must be a mapping")
-if sorted(triggers) != ["pull_request", "push", "schedule", "workflow_dispatch"]:
-    failures.append(f"pr-checks triggers must be exactly pull_request, push, schedule, workflow_dispatch; got {sorted(triggers)}")
+if sorted(triggers) != ["merge_group", "pull_request", "push", "schedule", "workflow_dispatch"]:
+    failures.append(f"pr-checks triggers must be exactly merge_group, pull_request, push, schedule, workflow_dispatch; got {sorted(triggers)}")
+if triggers.get("merge_group") != {"types": ["checks_requested"]}:
+    failures.append(f"pr-checks merge_group must be types: [checks_requested] only; got {triggers.get('merge_group')}")
 if triggers.get("push") != {"tags": ["v*", "!v*-*"]}:
     failures.append(f"pr-checks push must be stable v* tags only (tags: ['v*', '!v*-*']), with no branches or paths; got {triggers.get('push')}")
 
@@ -163,6 +168,36 @@ for name in REQUIRED | SMOKE:
         failures.append(f"job {name} is missing (do not rename or remove it)")
     elif jobs[name].get("name", name) != name:
         failures.append(f"job {name} must keep its check name")
+
+# A required check split into parallel shards stays the required gate: it
+# `needs` its `<name>-N` shard jobs and passes only when all of them passed.
+# Each shard runs wherever the gate runs, the nightly schedule included.
+REQUIRED_SHARDS = set()
+for name in REQUIRED:
+    needs = (jobs.get(name) or {}).get("needs") or []
+    if isinstance(needs, str):
+        needs = [needs]
+    shards = {n for n in needs if re.fullmatch(re.escape(name) + r"-\d+", str(n))}
+    for shard in sorted(shards):
+        if shard not in jobs:
+            failures.append(f"required gate {name} needs missing shard {shard}")
+    if shards and "always()" not in str(jobs[name].get("if", "")):
+        failures.append(f"required gate {name} must run with always() so a failed shard reds it")
+    REQUIRED_SHARDS |= shards
+
+# An always() aggregate gate decides pass/fail from its legs' results. Each job
+# in its needs must be read as needs.<leg>.result, or a failed leg that the
+# script never reads leaves the gate green.
+for name, job in jobs.items():
+    needs = job.get("needs") or []
+    if isinstance(needs, str):
+        needs = [needs]
+    if not needs or "always()" not in str(job.get("if", "")):
+        continue
+    script = "\n".join(str(step.get("run", "")) for step in job.get("steps", []))
+    for leg in needs:
+        if f"needs.{leg}.result" not in script:
+            failures.append(f"aggregate gate {name} never checks needs.{leg}.result")
 
 EVENTS = {
     "pr_ready": {"event_name": "pull_request", "draft": False, "ref": "refs/pull/1/merge"},
@@ -262,7 +297,7 @@ for name, job in jobs.items():
         failures.append(f"{name} must not run on the hq-core copy of the nightly schedule")
     if reach["push_tag"] and name not in SMOKE | {"denylist-scan"}:
         failures.append(f"{name} must not run on release tags")
-    if name in REQUIRED:
+    if name in REQUIRED or name in REQUIRED_SHARDS:
         for ev in ("pr_ready", "dispatch", "schedule"):
             if not reach[ev]:
                 failures.append(f"required check {name} must run on {ev}")
@@ -285,7 +320,8 @@ if failures:
         print(f"FAIL: {message}", file=sys.stderr)
     raise SystemExit(1)
 print(f"PASS: pr-checks reachability ({len(REQUIRED)} required, {len(SMOKE)} smoke, "
-      f"{len(jobs) - len(REQUIRED) - len(SMOKE)} PR/dispatch-only jobs)")
+      f"{len(REQUIRED_SHARDS)} required shards, "
+      f"{len(jobs) - len(REQUIRED) - len(REQUIRED_SHARDS) - len(SMOKE)} PR/dispatch-only jobs)")
 PY
 
 # --- smoke path gates are kept and fail open on the schedule and tags -------
@@ -346,11 +382,14 @@ grep -A1 -F '|| [ "${{ github.event_name }}" = "push" ]; then' <<< "$CODEX_FILTE
 # HQ_*_RUNNER* variables only in the guarded staging runs-on form: staging
 # repo only, never a fork PR, and a GitHub-hosted Linux fallback.
 guard="\${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && "
+# The Linux ARM jobs (the AWS runner pool) also honor two escape hatches: the
+# HQ_AWS_RUNNERS variable set to off, and the ci-hosted-runners PR label.
+aws_guard="\${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && "
 runner_lines="$(grep -RhE 'HQ_[A-Z0-9_]*RUNNER' "$ROOT/.github/workflows" | sed -E 's/^ +//')"
 [[ -n "$runner_lines" ]] || fail 'expected staging runs-on lines that read the runner variables'
 while IFS= read -r line; do
   case "$line" in
-    "runs-on: ${guard}fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '\"ubuntu-24.04-arm\"') || 'ubuntu-24.04-arm' }}") ;;
+    "runs-on: ${aws_guard}fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '\"ubuntu-24.04-arm\"') || 'ubuntu-24.04-arm' }}") ;;
     "runs-on: ${guard}fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '\"ubuntu-latest\"') || 'ubuntu-latest' }}") ;;
     "runs-on: ${guard}matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '\"ubuntu-latest\"') || matrix.os }}") ;;
     "runs-on: ${guard}fromJSON(vars.HQ_STAGING_RUNNER_WINDOWS || '\"windows-latest\"') || 'windows-latest' }}") ;;
@@ -377,7 +416,9 @@ def evaluate(expr, ctx):
     body = expr.strip()
     if not (body.startswith("${{") and body.endswith("}}")):
         raise SystemExit(f"FAIL: runs-on is not a single expression: {expr}")
-    body = body[3:-2]
+    body = body[3:-2].replace(
+        "contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners')",
+        "pr_has_ci_hosted_runners_label")
     out, pos = [], 0
     while pos < len(body):
         m = TOKEN.match(body, pos)
@@ -402,12 +443,15 @@ def evaluate(expr, ctx):
     return eval("".join(out), {"from_json": json.loads, "__builtins__": {}})
 
 
-def context(repo, event, fork, var_value, var_name, matrix_os):
+def context(repo, event, fork, var_value, var_name, matrix_os, hosted_label=False, aws_switch=None):
     ctx = {
         "github.repository": repo,
         "github.event_name": event,
         "matrix.os": matrix_os,
+        "pr_has_ci_hosted_runners_label": hosted_label and event == "pull_request",
     }
+    if aws_switch is not None:
+        ctx["vars.HQ_AWS_RUNNERS"] = aws_switch
     if event == "pull_request":
         ctx["github.event.pull_request.head.repo.full_name"] = (
             "someone/hq-core-staging" if fork else repo)
@@ -453,6 +497,27 @@ for name in sorted(os.listdir(wf_dir)):
                     if got != want:
                         failures.append(
                             f"{name}: {repo} {event} fork={fork} {var}={key} matrix.os={os_label}: "
+                            f"expected {want!r}, got {got!r}")
+                if "HQ_AWS_RUNNERS" not in expr:
+                    continue
+                # Escape hatches: HQ_AWS_RUNNERS=off on any event, or the
+                # ci-hosted-runners label on a PR, sends staging jobs to the
+                # hosted label even with the runner variable set. Any other
+                # switch value keeps the variable's runner.
+                hatch_cases = [
+                    ("pull_request", True, None, hosted),
+                    ("pull_request", False, "off", hosted),
+                    ("push", False, "off", hosted),
+                    ("workflow_dispatch", False, "off", hosted),
+                    ("pull_request", False, "on", want_self),
+                    ("push", False, "on", want_self),
+                ]
+                for event, label, switch, want in hatch_cases:
+                    got = evaluate(expr, context(STAGING, event, False, value, var, os_label, label, switch))
+                    checked += 1
+                    if got != want:
+                        failures.append(
+                            f"{name}: hatch {event} label={label} HQ_AWS_RUNNERS={switch} {var}={key}: "
                             f"expected {want!r}, got {got!r}")
 if not checked:
     failures.append("no guarded runs-on lines were evaluated")

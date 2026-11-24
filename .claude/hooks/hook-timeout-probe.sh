@@ -86,13 +86,15 @@ hook_timeout_owner_alive() {
 }
 
 # Millisecond clock source, chosen once per shell by hook_timeout_clock_init:
-# "date" (GNU date %N), "perl" (Time::HiRes) or "seconds". Empty means not
-# chosen yet, and every read probes as before. Bash 3.2 (the system Bash on
-# macOS) has no EPOCHREALTIME and BSD date prints a literal N for %N, so an
-# unchosen read started a `date` that could never succeed and then a `perl`.
-# With the debug-phase `date +%s` reads that was about ten processes per
-# dispatched child, half of every event's processes (feedback_25b10339,
-# feedback_33222c70). Never taken from the environment.
+# "realtime" (EPOCHREALTIME), "date" (GNU date %3N) or "seconds". Empty means
+# not chosen yet. Bash 3.2 (the system Bash on macOS) has no EPOCHREALTIME and
+# BSD date cannot print %3N, so a millisecond reading there costs one process
+# per read. The dispatcher reads the clock twice per child, and the old "perl"
+# (Time::HiRes) source made that dozens of perl launches per event, hundreds
+# per minute with several sessions open, a launch rate linked to macOS watchdog
+# panics (feedback_0f247c64; earlier feedback_25b10339, feedback_33222c70).
+# Such shells now use the process-free "seconds" clock: timings keep whole
+# seconds, and no read starts a process. Never taken from the environment.
 HOOK_TIMEOUT_CLOCK=""
 # Epoch seconds without a process on Bash 3.2: one wall-clock reading and the
 # SECONDS value at that moment. Bash derives SECONDS from time(0), so the sum
@@ -123,10 +125,10 @@ hook_timeout_epoch_seconds() {
 }
 
 # hook_timeout_clock_init: choose the millisecond clock once for this shell
-# and seed the epoch-seconds base from the same reading. Costs at most one
-# `date` and one `perl` on Bash 3.2 and nothing when EPOCHREALTIME exists.
+# and seed the epoch-seconds base from the same reading. Costs one `date` on
+# Bash 3.2 and nothing when EPOCHREALTIME exists. Never starts perl.
 hook_timeout_clock_init() {
-  local now=""
+  local now="" base=""
   [ -z "$HOOK_TIMEOUT_CLOCK" ] || return 0
   if [ -n "${EPOCHREALTIME:-}" ]; then
     HOOK_TIMEOUT_CLOCK='realtime'
@@ -135,23 +137,17 @@ hook_timeout_clock_init() {
   now="$(date +%s%3N 2>/dev/null || true)"
   if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
     HOOK_TIMEOUT_CLOCK='date'
-  elif command -v perl >/dev/null 2>&1; then
-    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
-    if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
-      HOOK_TIMEOUT_CLOCK='perl'
-    else
-      now=""
-    fi
-  else
-    now=""
-  fi
-  if [ -n "$now" ]; then
-    if [ -z "$HOOK_TIMEOUT_EPOCH_BASE" ] && [ -z "${EPOCHSECONDS:-}" ]; then
-      HOOK_TIMEOUT_EPOCH_BASE=$((now / 1000))
-      HOOK_TIMEOUT_EPOCH_BASE_SECONDS="$SECONDS"
-    fi
+    base=$((now / 1000))
   else
     HOOK_TIMEOUT_CLOCK='seconds'
+    # BSD date prints the seconds followed by a literal "3N" (or "%3N"), so
+    # the same reading seeds the epoch base and no `date +%s` follows.
+    base="${now%%[!0-9]*}"
+    [[ "$base" =~ ^[0-9]{9,10}$ ]] || base=""
+  fi
+  if [ -n "$base" ] && [ -z "$HOOK_TIMEOUT_EPOCH_BASE" ] && [ -z "${EPOCHSECONDS:-}" ]; then
+    HOOK_TIMEOUT_EPOCH_BASE="$base"
+    HOOK_TIMEOUT_EPOCH_BASE_SECONDS="$SECONDS"
   fi
 }
 
@@ -167,26 +163,19 @@ hook_timeout_now_ms() {
       return 0
     fi
   fi
-  case "$HOOK_TIMEOUT_CLOCK" in
-    perl|seconds) ;;
-    *)
-      now="$(date +%s%3N 2>/dev/null || true)"
-      if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
-        printf '%s' "$now"
-        return 0
-      fi
-      ;;
-  esac
-  if [ "$HOOK_TIMEOUT_CLOCK" = seconds ] && hook_timeout_epoch_seconds; then
-    printf '%s000' "$HOOK_TIMEOUT_EPOCH_SECONDS"
-    return 0
-  fi
-  if command -v perl >/dev/null 2>&1; then
-    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
-    if [[ "$now" =~ ^[0-9]+$ ]]; then
+  # An unchosen clock is chosen here, in this shell (a caller in $( ) keeps
+  # the choice only for this read). No branch starts perl (feedback_0f247c64).
+  [ -n "$HOOK_TIMEOUT_CLOCK" ] || hook_timeout_clock_init
+  if [ "$HOOK_TIMEOUT_CLOCK" = date ]; then
+    now="$(date +%s%3N 2>/dev/null || true)"
+    if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
       printf '%s' "$now"
       return 0
     fi
+  fi
+  if hook_timeout_epoch_seconds; then
+    printf '%s000' "$HOOK_TIMEOUT_EPOCH_SECONDS"
+    return 0
   fi
   now="$(date +%s 2>/dev/null || printf '0')"
   [[ "$now" =~ ^[0-9]+$ ]] || now=0

@@ -89,10 +89,44 @@ EVENT="${1:-}"
 # start_session call asking for its own worktree, launched from the HQ root
 # creates a new session in a linked worktree of HQ. This guard then blocks that
 # session on its first prompt, after the user has already accepted the chip.
-# Refuse the spawn up front instead, with what to do. A spawn aimed at a source
-# repo under repos/, outside HQ, at another host (cloud/ssh/preset), or
-# explicitly in this checkout (use_worktree: false) is allowed. Offers without
-# a brief and starts of an already-checked proposal create nothing new here.
+# Refuse the spawn up front instead, with what to do. A spawn outside HQ, at
+# another host (cloud/ssh/preset), or explicitly in this checkout
+# (use_worktree: false) is allowed. Offers without a brief and starts of an
+# already-checked proposal create nothing new here.
+#
+# A spawn from the HQ root whose cwd is a source repo under repos/, or a repo
+# worktree under workspace/worktrees/, is refused too (spawn_cwd_is_hq_repo). New sessions start in the HQ root even for repo
+# work, and the new session cuts its own worktree inside the repo with
+# `git -C repos/<...> worktree add`. A session started in a repo folder makes
+# the desktop app ask the user to trust that repository.
+
+# Prints the resolved cwd and succeeds when a spawn from the HQ root names a
+# cwd inside a source repo under repos/ or a repo worktree under
+# workspace/worktrees/, and the session starts on this machine.
+spawn_cwd_is_hq_repo() {
+  local root="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}" fields cwd target host preset
+  [ -n "$root" ] || return 1
+  case "$root" in */repos/*) return 1 ;; esac
+  load_input
+  [ -n "$INPUT" ] || return 1
+  fields="$(printf '%s' "$INPUT" | jq -r '.tool_input // {} | [
+      (.cwd // ""), (.target // ""), (.host // ""), (.preset // "") ]
+      | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' 2>/dev/null)" || return 1
+  IFS=$'\x1f' read -r cwd target host preset <<<"$fields"
+  [ -n "$cwd" ] || return 1
+  case "$target" in cloud|ssh) return 1 ;; esac
+  [ -n "$host" ] || [ -n "$preset" ] && return 1
+  case "$cwd" in
+    "~"*) cwd="$HOME${cwd#\~}" ;;
+    /*) ;;
+    *) cwd="$root/${cwd#./}" ;;
+  esac
+  case "$cwd" in
+    "$root"/repos/*|"$root"/workspace/worktrees/*) printf '%s' "$cwd"; return 0 ;;
+  esac
+  return 1
+}
+
 spawn_target_is_hq_worktree() {
   local tool="$1" root="${CLAUDE_PROJECT_DIR:-${HQ_ROOT:-}}" fields use_wt cwd target host preset context prompt proposal
   # Only a session rooted at HQ itself forks HQ; a source-repo session's own
@@ -135,6 +169,25 @@ if [ "$EVENT" = "PreToolUse" ]; then
   SPAWN_TOOL="$(payload_field tool_name)"
   case "$SPAWN_TOOL" in
     spawn_task|*__spawn_task|start_session|*__start_session)
+      if SPAWN_REPO_CWD="$(spawn_cwd_is_hq_repo)"; then
+        cat >&2 <<MSG
+BLOCKED: this would start a new session inside a source repo folder:
+  $SPAWN_REPO_CWD
+
+From the HQ root, start new sessions in the HQ root, even for repo work.
+A session started in a repo folder makes the desktop app ask the user to
+trust that repository, and the new session loses HQ's context.
+
+Instead:
+  - drop cwd and call start_session with use_worktree: false, so the new
+    session starts in the HQ root
+  - in the brief, tell the new session to make its own worktree in the repo:
+      git -C repos/<public|private>/<repo> worktree add -b <branch> \\
+        workspace/worktrees/<repo>/<name> origin/<base>
+  - or do the work here, or in a background Task subagent
+MSG
+        exit 2
+      fi
       if spawn_target_is_hq_worktree "$SPAWN_TOOL"; then
         cat >&2 <<'MSG'
 BLOCKED: this would start an HQ session in a linked git worktree.
@@ -145,9 +198,12 @@ HQ itself, and HQ's worktree guard blocks such a session on its first prompt
 then get a session that cannot run.
 
 Instead:
-  - start the session in this checkout: start_session with use_worktree: false
-  - for code work in a source repo, set cwd to the repo under repos/ (its own
-    worktree there is fine)
+  - start the session in the HQ root: start_session with use_worktree: false
+    and no cwd. Do this for repo work too; do not set cwd to a repo folder.
+  - for code work in a source repo, tell the new session in its brief to make
+    its own worktree inside the repo:
+      git -C repos/<public|private>/<repo> worktree add -b <branch> \
+        workspace/worktrees/<repo>/<name> origin/<base>
   - or do the work here, or in a background Task subagent
 
 Do not offer a spawn_task chip from the HQ root: it always uses a worktree.

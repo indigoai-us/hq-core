@@ -18,10 +18,10 @@ fail() {
 pass() { printf 'PASS: %s\n' "$1"; }
 
 ACTUAL_CORE_FLOOR="$(awk -F '[:\"]' '$1 == "requiresHqCli" { gsub(/[[:space:]]/, "", $3); print $3 }' "$ROOT/core/core.yaml")"
-if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.221" ]; then
-  pass 'core CLI floor ships every owning command the core skills call (and check-function-manifest.mjs)'
+if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.234" ]; then
+  pass 'core CLI floor includes native delegation and the deploy commands used by core skills'
 else
-  fail "core CLI floor is >=5.345.221, the first hq-cli with every owning command the core skills call instead of the US-041 duplicates (hq daemon sync mode list, hq daemon sync status --local, hq whoami --check, hq packs update --registry); it also ships scripts/check-function-manifest.mjs (5.345.217) and reads HQ_MACHINE_SESSION_FILE (5.345.193): got $ACTUAL_CORE_FLOOR"
+  fail "core CLI floor must be >=5.345.234 for native delegation and pickup. It also includes the deploy commands and upload --manifest-org required at 5.345.232. Got $ACTUAL_CORE_FLOOR"
 fi
 POLICY_MIN_CLI="$(awk '
   /^  - path: core\/scripts\/read-policy-frontmatter\.sh$/ { found=1; next }
@@ -484,7 +484,7 @@ expect_guard_failure "$TREE" 5.277.0 "$CATALOG" 1 \
 
 WINDOWS_JOB="$(sed -n '/^  shell-smoke-windows:$/,/^  shell-smoke-macos:$/p' "$ROOT/.github/workflows/pr-checks.yml" | sed '$d')"
 RESOLVE_STEP_LINE="$(grep -n 'name: Resolve Windows hq CLI cache inputs' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
-CACHE_STEP_LINE="$(grep -n 'uses: actions/cache@v4' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
+CACHE_STEP_LINE="$(grep -n 'uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
 INSTALL_STEP_LINE="$(grep -n 'name: Install pinned hq CLI for forwarded scaffold scripts' <<<"$WINDOWS_JOB" | cut -d: -f1 || true)"
 if [ -n "$RESOLVE_STEP_LINE" ] && [ -n "$CACHE_STEP_LINE" ] && [ -n "$INSTALL_STEP_LINE" ] \
   && [ "$RESOLVE_STEP_LINE" -lt "$CACHE_STEP_LINE" ] && [ "$CACHE_STEP_LINE" -lt "$INSTALL_STEP_LINE" ] \

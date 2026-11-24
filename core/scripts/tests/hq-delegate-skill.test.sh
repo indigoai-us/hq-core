@@ -1,28 +1,5 @@
 #!/usr/bin/env bash
-# Regression: the /delegate skill must wire the eight tested helpers into a
-# single unattended flow — structural contract on SKILL.md, plus the shipped
-# helper scripts it references must exist and be runnable.
-#
-# Guards:
-#   1. Skill exists with scoped frontmatter (name, description,
-#      allowed-tools including AskUserQuestion for the resolution picker).
-#   2. Every hq-delegate-*.sh helper is referenced AND exists on disk.
-#   3. Ambiguous resolution (exit 3) is handled with a structured picker;
-#      not-found stops; never sends blind.
-#   4. No-confirmation contract: invoking /delegate IS the authorization. The
-#      gated helpers are still run WITHOUT --yes first so the skill can state
-#      the plan, and that plan collection precedes execution with --yes — but
-#      no approval gate sits between them.
-#   5. The skill asks nothing except for missing inputs it cannot resolve
-#      (ambiguous recipient, unresolvable company/project), and it keeps the
-#      bundle on failure so a re-run resumes.
-#   6. Failure path: report the failing step, never claim partial success;
-#      probe failure means no DM.
-#   7. Dry-run documented as fully inert.
-#   8. Humanize pass wired for the DM headline; success report is one plain
-#      sentence.
-#   9. Both hard policies are stated: no share-session URLs, no secret
-#      values.
+# Structural contract for the native /delegate route and its outcome handling.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -31,82 +8,74 @@ SKILL="$ROOT/.claude/skills/delegate/SKILL.md"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 [ -f "$SKILL" ] || fail "missing delegate skill: $SKILL"
-
-# 1. frontmatter
 grep -q '^name: delegate$' "$SKILL" || fail "frontmatter must declare name: delegate"
 grep -q '^description: ' "$SKILL" || fail "frontmatter must carry a description"
 grep -q '^allowed-tools: .*AskUserQuestion' "$SKILL" \
   || fail "allowed-tools must include AskUserQuestion (resolution picker)"
 
-# 2. every helper referenced (US-043: through its hq core delegate twin) and
-#    the helper still shipped until US-044 deletes it
+# shellcheck source=../lib/hq-cli-floor.sh
+. "$ROOT/core/scripts/lib/hq-cli-floor.sh"
+required="$(hq_cli_floor_required "$ROOT")" || fail "staging must declare its CLI floor"
+case "$required" in
+  '>='*) hq_cli_version_ge "${required#>=}" 5.345.234 \
+    || fail "staging must require hq-cli 5.345.234 or newer" ;;
+  *) fail "staging CLI floor must use a minimum-version constraint" ;;
+esac
+# 5.345.241 is the first hq-cli whose native secrets step checks every name
+# exists before sharing, reads prd.json metadata.secrets before the repo
+# schema, and shares agent and person uids through grantPrincipal (US-029).
+grep -Fq 'hq_cli_floor_check delegate 5.345.241' "$SKILL" \
+  || fail "the skill must check the 5.345.241 CLI floor before delegation"
+grep -Fq 'Upgrade hq-cli to 5.345.241 or newer' "$SKILL" \
+  || fail "older installs need an upgrade message"
+grep -Fq 'hq core delegate run --company <co> --project <project> --to "<recipient>" [--share] [--no-secrets] [--dry-run]' "$SKILL" \
+  || fail "the one-process delegate flow must preserve company, principal and user flags"
+FLOOR_LINE="$(grep -nF 'hq_cli_floor_check delegate 5.345.241' "$SKILL" | cut -d: -f1)"
+RUN_LINE="$(grep -nF 'hq core delegate run --company' "$SKILL" | cut -d: -f1)"
+[ "$FLOOR_LINE" -lt "$RUN_LINE" ] || fail "the version check must precede delegation"
+if grep -Eq 'hq-delegate-.*\.sh|Legacy fallback|identified old-CLI failure' "$SKILL"; then
+  fail "the skill must have only the native route"
+fi
+
+# Kept helpers still serve existing callers and keep their syntax coverage.
 for helper in hq-delegate-resolve hq-delegate-bundle hq-delegate-grant \
   hq-delegate-repo hq-delegate-secrets hq-delegate-transfer \
-  hq-delegate-verify hq-delegate-send; do
-  grep -q "hq core delegate ${helper#hq-delegate-}" "$SKILL" \
-    || fail "skill must run hq core delegate ${helper#hq-delegate-}"
-  [ -f "$ROOT/core/scripts/$helper.sh" ] \
-    || fail "referenced helper missing from tree: core/scripts/$helper.sh"
-  bash -n "$ROOT/core/scripts/$helper.sh" \
-    || fail "helper does not parse: core/scripts/$helper.sh"
+  hq-delegate-verify hq-delegate-send hq-delegate-pickup; do
+  [ -f "$ROOT/core/scripts/$helper.sh" ] || fail "retained helper missing: $helper"
+  bash -n "$ROOT/core/scripts/$helper.sh" || fail "helper does not parse: $helper"
 done
 
-# 3. resolution outcomes
-grep -q 'Exit 3' "$SKILL" || fail "skill must handle the ambiguous (exit 3) outcome"
-grep -q 'Exit 4' "$SKILL" || fail "skill must handle the not-found (exit 4) outcome"
+grep -Fq 'Exit 3 with `status: ambiguous`' "$SKILL" || fail "handle ambiguous resolution"
+grep -Fq 'with the chosen exact principal' "$SKILL" || fail "rerun only for the selected identity"
+grep -Fq 'Exit 4 with `failedStep: resolve`' "$SKILL" || fail "scope not-found handling to resolution"
 grep -qi 'never send blind' "$SKILL" || fail "skill must state it never sends blind"
 grep -qi 'single-company' "$SKILL" || fail "skill must state resolution is single-company"
 
-# 4. no-confirmation contract: plan (no --yes) collected, then --yes, no gate
-grep -q 'WITHOUT `--yes`' "$SKILL" || fail "plan collection must run helpers without --yes"
-grep -qi 'There is no confirmation step' "$SKILL" \
-  || fail "skill must state there is no confirmation step"
-grep -qi 'is the authorization' "$SKILL" \
-  || fail "skill must state the invocation is the authorization"
-grep -qi 'Never ask for permission' "$SKILL" \
-  || fail "rules must forbid asking for permission"
-# ordering: the "collect the plan" section must appear before "--yes" execution
-PLAN_LINE="$(grep -n 'Collect the plan' "$SKILL" | head -1 | cut -d: -f1)"
-EXEC_LINE="$(grep -n -- '--manifest <manifest> --yes' "$SKILL" | head -1 | cut -d: -f1)"
-[ -n "$PLAN_LINE" ] && [ -n "$EXEC_LINE" ] && [ "$PLAN_LINE" -lt "$EXEC_LINE" ] \
-  || fail "plan collection must precede --yes execution"
-
-# 4b. the removed approval gate must not creep back in
-grep -qi 'Proceed\*\* / \*\*Cancel\|Proceed without secrets\|Offer \*\*Proceed' "$SKILL" \
-  && fail "skill must not offer a Proceed/Cancel approval picker"
-grep -qi 'one structured confirmation' "$SKILL" \
-  && fail "skill must not promise a confirmation before mutation"
-
-# 5. the only permitted questions are missing inputs; bundle survives failure
-grep -qi 'ambiguous recipient' "$SKILL" \
-  || fail "skill must name the ambiguous-recipient question as a permitted ask"
-grep -qi 'Never delete' "$SKILL" \
-  || fail "skill must keep the bundle on failure so a re-run resumes"
-grep -qi 'secrets the project needs\|Always hand over the required secrets' "$SKILL" \
-  || fail "skill must always hand over the required secrets"
-
-# 6. failure semantics
-grep -qi 'never claim partial success' "$SKILL" || fail "skill must never claim partial success"
+grep -Fq 'Exit 0 with `status: sent` or `status: already-sent`' "$SKILL" \
+  || fail "new and resumed sends must both reach pickup"
+for action in '--ack' '--check' '--status'; do
+  grep -Fq -- "hq core delegate pickup --manifest <manifest> $action" "$SKILL" \
+    || fail "native pickup must retain $action"
+done
+grep -Fq 'hq core delegate send --manifest <manifest> --reconcile <eventId>' "$SKILL" \
+  || fail "uncertain sends need a native reconciliation path"
 grep -qi 'failed probe means no DM' "$SKILL" || fail "probe failure must block the DM"
-grep -qi 'resumes instead of re-granting' "$SKILL" || fail "re-run must resume, not re-grant"
+grep -qi 'never claim partial success' "$SKILL" || fail "skill must report partial failure accurately"
+grep -qi 'Never delete' "$SKILL" || fail "skill must keep the bundle on failure"
+grep -qi 'resumes instead of re-granting' "$SKILL" || fail "a partial run must resume"
 
-# 7. dry run inert
-grep -q -- '--dry-run' "$SKILL" || fail "skill must document --dry-run"
-grep -qi 'Nothing is pushed, granted' "$SKILL" \
-  || fail "dry run must be documented as fully inert"
+grep -Fq 'Exit 0 with `status: dry-run`' "$SKILL" || fail "handle a successful dry run"
+grep -qi 'Nothing is pushed, granted' "$SKILL" || fail "dry run must be inert"
+grep -qi 'is the authorization' "$SKILL" || fail "invocation must authorize the native workflow"
+grep -qi 'Never ask for permission' "$SKILL" || fail "rules must forbid asking for permission"
+if grep -qi 'Proceed\*\* / \*\*Cancel\|Proceed without secrets\|Offer \*\*Proceed\|one structured confirmation' "$SKILL"; then
+  fail "skill must not offer a second approval gate"
+fi
 
-# 8. humanize + plain report
-grep -q 'humanize-before-send.md' "$SKILL" || fail "DM headline must go through the humanize pass"
+grep -q 'humanize-before-send.md' "$SKILL" || fail "a custom DM headline still needs the humanize pass"
 grep -qi 'One plain sentence' "$SKILL" || fail "success report must be one plain sentence"
+grep -q 'hq-delegate-never-inlines-secrets-or-share-urls' "$SKILL" || fail "skill must cite the delegation policy"
+grep -qi 'Names only' "$SKILL" || fail "secret values must never move"
+grep -qi 'Always hand over the required secrets' "$SKILL" || fail "the default must grant required secret names"
 
-# 9. hard policies
-grep -q 'share-session' "$SKILL" || fail "skill must forbid share-session URLs"
-grep -q 'hq-delegate-never-inlines-secrets-or-share-urls' "$SKILL" \
-  || fail "skill must cite the delegation policy"
-grep -qi 'Names only' "$SKILL" || fail "skill must state secret values never move"
-
-# 10. verify helper may outlast the foreground limit
-grep -q 'run_in_background: true' "$SKILL" \
-  || fail "skill must tell the agent to run hq-delegate-verify.sh in the background"
-
-echo "hq-delegate-skill: ok (frontmatter scoped, all 8 helpers shipped+referenced, picker/stop resolution, no approval gate, secrets always granted, inert dry-run, fail-closed semantics)"
+echo "hq-delegate-skill: ok (native flow, CLI floor, scoped resolution, resume, pickup and inert dry run)"

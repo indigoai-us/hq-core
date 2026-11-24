@@ -8,7 +8,7 @@
 #
 # Runner event contract: repos/private/hq-cloud/src/bin/sync-runner.ts.
 #   stdout: setup-needed, fanout-plan, plan, progress, complete, all-complete,
-#           conflicts-remaining
+#           conflicts-remaining, company-skipped
 #   stderr: error, auth-error
 #
 # Runner exit codes: 0 protocol completed, 1 argv/pre-sync failure,
@@ -247,6 +247,40 @@ hq_sync_report_conflicts_remaining() {
     echo "  hq sync doctor --reconcile-conflicts --hq-root $hq_root"
   fi
 
+  return 0
+}
+
+# hq_sync_new_sync_vaults <output_file>
+# Prints, one per line, each vault the runner left out because the new sync
+# engine owns it on this machine (`company-skipped` with reason `new-sync`;
+# `personal` is the personal vault). Prints nothing when there is none.
+hq_sync_new_sync_vaults() {
+  local output_file="${1:-}"
+  [ -n "$output_file" ] && [ -f "$output_file" ] || return 0
+  grep -E '^\{"type":"company-skipped"' "$output_file" 2>/dev/null \
+    | jq -r 'select(.reason == "new-sync") | .company // empty' 2>/dev/null \
+    | sort -u || true
+}
+
+# hq_sync_report_new_sync_vaults <output_file>
+# Says which vaults the new sync handles, so a run that left them out does not
+# read as a failed or incomplete sync. It does not claim the engine is running:
+# it points to `hq sync-core status` for that.
+hq_sync_report_new_sync_vaults() {
+  local vaults
+  vaults="$(hq_sync_new_sync_vaults "${1:-}")"
+  [ -n "$vaults" ] || return 0
+  echo ""
+  echo "=== Handled by the new sync ==="
+  echo "The new sync handles these on this computer, so /hq-sync left them alone:"
+  local vault
+  while IFS= read -r vault; do
+    [ -n "$vault" ] || continue
+    if [ "$vault" = "personal" ]; then echo "  - your personal vault"; else echo "  - $vault"; fi
+  done <<EOF
+$vaults
+EOF
+  echo "To check that the new sync is running and current: hq sync-core status"
   return 0
 }
 

@@ -1,12 +1,33 @@
 #!/usr/bin/env python3
 """Daily Brief housekeeping checks, each under a hard time budget.
 
-Runs the every-run checks non-interactively and in parallel, then writes
-`housekeeping.json` and a one-line summary into `status.json.housekeeping`.
+Runs the every-run checks non-interactively and in parallel. As each check
+ends, its record is written into the housekeeping file (`pending` lists the
+checks still running), so a slow check never holds back the ones that finished.
 
 Usage:
   python3 -I housekeeping.py [--company <slug>] --hq-root "$PWD" \
-    --run-dir workspace/brief/<run_id> [--budget SECONDS]   (overrides BUDGETS_S)
+    --run-dir workspace/brief/<run_id> [--out <file in the run dir>] \
+    [--budget SECONDS]   (overrides BUDGETS_S)
+  python3 -I housekeeping.py --merge-proposals --run-dir workspace/brief/<run_id> [--out <file>]
+
+Files:
+  --out (default <run-dir>/housekeeping.json)  written only by this script, always
+                                                under an exclusive lock on <out>.lock
+  <out stem>.proposals.json                     written only by the brief writer;
+                                                copied into --out on every write and
+                                                by --merge-proposals
+  status.json                                   never touched here
+--out is housekeeping.json or housekeeping-<section>.json (lower case letters,
+digits, - and _). The proposals file's extra dot means no --out name can ever
+be a proposals file.
+
+The lock is taken without blocking and retried until a deadline. The check
+loop writes without it, after one warning on stderr, when the lock file cannot
+be opened, locking is not supported there, or the lock stays held past the
+deadline. --merge-proposals only ever writes under the lock: when it cannot
+hold it, for any of those reasons, it exits 2 ("merge skipped") and writes
+nothing, and the loop's next write copies the proposals in.
 
 Without --company the health check and sync are recorded as skipped (both
 need a company); the worktree scan still runs.
@@ -25,14 +46,30 @@ Rules:
   through redact() before it is stored.
 - Nothing is deleted, killed or removed here. Destructive cleanup stays a
   proposal the user launches.
+- A file that exists but cannot be parsed is never replaced: the write is
+  skipped and retried on the next check.
 """
-import argparse, datetime as dt, json, os, re, signal, subprocess, sys, time
-from concurrent.futures import ThreadPoolExecutor
+import argparse, datetime as dt, errno, json, os, re, signal, subprocess, sys, time
+from contextlib import contextmanager
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-DEFAULT_BUDGET_S = 20
-# hq doctor --json can take 12-18s alone and over 20s when the worktree scan
-# runs beside it, so it gets more room.
-BUDGETS_S = {'hq_doctor': 40, 'hq_sync': 30, 'worktree_scan': DEFAULT_BUDGET_S}
+DEFAULT_BUDGET_S = 60
+# Each budget covers what the check takes on a large HQ tree on a loaded
+# machine. Each check's record is written as soon as it ends, so a long
+# budget never holds back the other checks or brief.json.
+BUDGETS_S = {'hq_doctor': 150, 'hq_sync': 480, 'worktree_scan': DEFAULT_BUDGET_S}
+# `hq sync now --max-runtime` stops the sync itself (exit 124) after recording
+# a failed pass, which is safer than a SIGTERM/SIGKILL in the middle of a
+# transfer. It is set this far under the hard budget so the CLI's own report
+# (bounded to 10s) finishes first; run_bounded's kill stays as the backstop.
+# A budget too short to leave that margin gets no --max-runtime: the kill alone.
+SYNC_RUNTIME_MARGIN_S = 20
+SYNC_WATCHDOG_EXIT = 124
 STALE_WORKTREE_DAYS = 7
 NEEDS_COMPANY = 'needs a company'
 # Checks that run against one company; without --company they are skipped.
@@ -79,11 +116,13 @@ def skipped_record(name, reason=NEEDS_COMPANY):
     return task_record(name, skipped=reason)
 
 
-def headline(tasks):
-    """One line for the app: '2 of 3 checks ran clean. Health check found 28 things.'"""
+def headline(tasks, pending=()):
+    """One line for the app: '2 of 3 checks ran clean. Health check found 28 things.'
+    With checks still running: '1 of 3 checks ran clean so far. Sync still running.'"""
     clean = [n for n, t in tasks.items() if t['status'] == 'ran clean']
     rest = [f"{LABELS.get(n, n)} {t['status']}" for n, t in tasks.items() if t['status'] != 'ran clean']
-    line = f'{len(clean)} of {len(tasks)} checks ran clean.'
+    rest += [f"{LABELS.get(n, n)} still running" for n in pending]
+    line = f"{len(clean)} of {len(tasks) + len(pending)} checks ran clean{' so far' if pending else ''}."
     return line + (' ' + '; '.join(rest) + '.' if rest else '')
 
 
@@ -231,18 +270,29 @@ def check_doctor(company, root, budget):
     return task_record('hq_doctor', found=n, summary=summary, duration_s=time.monotonic() - t0)
 
 
+def sync_command(company, root, budget):
+    """`hq sync now` for housekeeping. --max-runtime only when the budget leaves
+    SYNC_RUNTIME_MARGIN_S for the CLI's own report before the hard kill."""
+    cmd = ['hq', 'sync', 'now', '--company', company, '--hq-root', root,
+           '--on-conflict', 'abort', '--lock-timeout', '0']
+    max_runtime = int(budget) - SYNC_RUNTIME_MARGIN_S
+    if max_runtime >= SYNC_RUNTIME_MARGIN_S:
+        cmd += ['--max-runtime', str(max_runtime)]
+    return cmd + ['--message', 'daily-brief housekeeping']
+
+
 def check_sync(company, root, budget):
     # --on-conflict abort: never prompt, never overwrite; --lock-timeout 0: never
     # wait on another HQ operation (the HQ Sync app often holds the lock).
+    # --max-runtime: the CLI stops itself cleanly before the hard budget.
     t0 = time.monotonic()
-    cmd = ['hq', 'sync', 'now', '--company', company, '--hq-root', root,
-           '--on-conflict', 'abort', '--lock-timeout', '0', '--message', 'daily-brief housekeeping']
+    cmd = sync_command(company, root, budget)
     try:
         rc, out, err, to = run_bounded(cmd, budget, cwd=root)
     except FileNotFoundError:
         return task_record('hq_sync', error='hq is not installed')
     d = time.monotonic() - t0
-    if to:
+    if to or rc == SYNC_WATCHDOG_EXIT:
         return task_record('hq_sync', timed_out=True, duration_s=d)
     if rc != 0:
         text = (err or out or '').strip().splitlines()
@@ -325,16 +375,188 @@ def _now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
 
 
-def _merge_json(path, fn):
+READ_TRIES, READ_WAIT_S = 3, 0.1
+OUT_NAME = re.compile(r'^housekeeping(-[a-z0-9][a-z0-9_-]*)?\.json$')
+_NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
+
+
+LOOP_LOCK_WAIT_S = 2.0   # the check loop's writes
+MERGE_LOCK_WAIT_S = 5.0  # --merge-proposals
+LOCK_RETRY_S = 0.05
+MERGE_SKIPPED = 2
+# errno values that mean "someone else holds it" rather than "cannot lock here"
+_BUSY = {errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES, getattr(errno, 'EDEADLK', -1), getattr(errno, 'EDEADLOCK', -1)}
+_warned = set()
+
+
+class LockTimeout(Exception):
+    """The lock is held by another process past the deadline."""
+
+
+def _warn_once(key, text):
+    if key not in _warned:
+        _warned.add(key)
+        print(f'housekeeping: {text}', file=sys.stderr)
+
+
+def _try_lock(fd):
+    if fcntl:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        os.lseek(fd, 0, 0)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+
+def _unlock(fd):
+    if fcntl:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        os.lseek(fd, 0, 0)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def out_lock(out_path, wait_s=LOOP_LOCK_WAIT_S, on_timeout='raise'):
+    """Exclusive lock on <out>.lock, shared by the check loop and
+    --merge-proposals. Non-blocking, retried until `wait_s`. When the lock file
+    cannot be opened or locking is unsupported, warn once and go on unlocked.
+    When another process holds it past the deadline: raise LockTimeout
+    (on_timeout='raise') or warn once and go on unlocked ('unlocked')."""
     try:
-        d = json.load(open(path)) if os.path.exists(path) else {}
-    except Exception:
-        d = {}
+        fd = os.open(out_path + '.lock', os.O_RDWR | os.O_CREAT | _NOFOLLOW, 0o600)
+    except OSError as e:
+        _warn_once('open', f'cannot open the lock file ({e.strerror or e}); writing without a lock')
+        yield False
+        return
+    locked = False
+    try:
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                _try_lock(fd)
+                locked = True
+                break
+            except OSError as e:
+                if e.errno not in _BUSY:
+                    _warn_once('lock', f'file locking is not available here ({e.strerror or e}); writing without a lock')
+                    break
+                if time.monotonic() >= deadline:
+                    if on_timeout == 'raise':
+                        raise LockTimeout(out_path) from None
+                    _warn_once('busy', 'the lock is still held by another process; writing without it')
+                    break
+                time.sleep(LOCK_RETRY_S)
+        yield locked
+    finally:
+        try:
+            if locked:
+                _unlock(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+
+def read_json(path, tries=READ_TRIES, wait=READ_WAIT_S):
+    """(ok, data). A missing file is (True, {}). A symlink, or a file that stays
+    unreadable or is not a JSON object after `tries` reads, is (False, None)."""
+    for i in range(tries):
+        if os.path.islink(path):
+            return False, None
+        if not os.path.exists(path):
+            return True, {}
+        try:
+            with open(path, encoding='utf-8') as f:
+                d = json.load(f)
+            if isinstance(d, dict):
+                return True, d
+        except (OSError, ValueError):
+            pass
+        if i < tries - 1:
+            time.sleep(wait)
+    return False, None
+
+
+def write_owned_json(path, fn):
+    """Read, update and atomically replace a file this script owns. Returns
+    False, leaving the file untouched, when it exists but cannot be parsed."""
+    ok, d = read_json(path)
+    if not ok:
+        print(f'housekeeping: {os.path.basename(path)} is not a readable JSON file; left as it is', file=sys.stderr)
+        return False
     fn(d)
-    tmp = path + '.tmp'
-    with open(tmp, 'w') as f:
+    tmp = f'{path}.{os.getpid()}.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW, 0o644)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
         json.dump(d, f, indent=1, default=str)
+    if os.path.islink(path):  # replaced by a link since the read: leave it
+        os.unlink(tmp)
+        return False
     os.replace(tmp, path)
+    return True
+
+
+def proposals_path(out_path):
+    """The writer-owned proposals file beside a housekeeping file:
+    housekeeping-acme.json -> housekeeping-acme.proposals.json."""
+    return out_path[:-len('.json')] + '.proposals.json'
+
+
+def resolve_out(run_dir, out):
+    """--out as an absolute path directly in the run dir, or None unless its
+    name is housekeeping.json or housekeeping-<section>.json in lower case,
+    and it is not a symlink."""
+    if not out:
+        path = os.path.join(run_dir, 'housekeeping.json')
+    elif os.path.dirname(out) == '':
+        path = os.path.join(run_dir, out)  # a bare file name is taken inside the run dir
+    else:
+        path = os.path.abspath(out)
+    if os.path.dirname(path) != run_dir or not OUT_NAME.match(os.path.basename(path)):
+        return None
+    if os.path.islink(path):
+        return None
+    return path
+
+
+def copy_proposals(d, prop_path):
+    """Copy the writer's proposals into d. An unreadable proposals file keeps
+    what d already has. Returns False when it could not be read."""
+    ok, prop = read_json(prop_path)
+    if ok and isinstance(prop.get('proposals'), list):
+        d['proposals'] = prop['proposals']
+    d.setdefault('proposals', [])
+    return ok
+
+
+def merge_proposals(hk_path, wait_s=MERGE_LOCK_WAIT_S):
+    """--merge-proposals: under the lock, re-read both files and copy the
+    proposals into the housekeeping file. 0 on success, 1 when either file
+    could not be read, 2 ("merge skipped") when it could not hold the lock:
+    held by another process past `wait_s`, unsupported, or the lock file could
+    not be opened. Nothing is written unless it returns 0."""
+    prop_path = proposals_path(hk_path)
+    try:
+        with out_lock(hk_path, wait_s, on_timeout='raise') as locked:
+            if not locked:
+                print('housekeeping: merge skipped: no lock on this file system; a later check write copies the proposals',
+                      file=sys.stderr)
+                return MERGE_SKIPPED
+            ok, prop = read_json(prop_path)
+            if not ok:
+                print(f'housekeeping: {os.path.basename(prop_path)} is not a readable JSON file; nothing merged', file=sys.stderr)
+                return 1
+
+            def f(d):
+                copy_proposals(d, prop_path)
+                d['updated_at'] = _now()
+            return 0 if write_owned_json(hk_path, f) else 1
+    except LockTimeout:
+        print('housekeeping: merge skipped: the housekeeping file is locked by another process', file=sys.stderr)
+        return MERGE_SKIPPED
+    except OSError as e:
+        print(f'housekeeping: merge failed ({e.strerror or e}); nothing merged', file=sys.stderr)
+        return 1
 
 
 def main():
@@ -342,24 +564,22 @@ def main():
     ap.add_argument('--company', default=None, help='company slug; without it doctor and sync are skipped')
     ap.add_argument('--hq-root', default=os.getcwd())
     ap.add_argument('--run-dir', required=True)
+    ap.add_argument('--out', default=None,
+                    help='housekeeping file in the run dir (default housekeeping.json)')
     ap.add_argument('--budget', type=float, default=None, help='hard seconds per check (default: BUDGETS_S)')
     ap.add_argument('--only', default='hq_doctor,hq_sync,worktree_scan')
+    ap.add_argument('--merge-proposals', action='store_true',
+                    help='only copy the writer\'s proposals file into the housekeeping file, then exit')
     a = ap.parse_args()
     root = os.path.abspath(a.hq_root)
     run_dir = os.path.abspath(a.run_dir)
     run_id = os.path.basename(run_dir.rstrip(os.sep))
-    status_path = os.path.join(run_dir, 'status.json')
-    hk_path = os.path.join(run_dir, 'housekeeping.json')
-
-    def act(label, state, detail=None):
-        def f(s):
-            s.setdefault('activity', []).append({'at': _now(), 'label': label, 'state': state, **({'detail': detail} if detail else {})})
-            s['activity'] = s['activity'][-12:]
-            s['housekeeping'] = {**(s.get('housekeeping') or {}), 'state': 'running' if state == 'running' else 'done', 'updated_at': _now()}
-            s['updated_at'] = _now()
-        _merge_json(status_path, f)
-
-    act('Housekeeping', 'running', 'Health check, sync and worktree scan' if a.company else 'Worktree scan')
+    hk_path = resolve_out(run_dir, a.out)
+    if hk_path is None:
+        ap.error('--out must be housekeeping.json or housekeeping-<section>.json (lower case) directly in --run-dir, not a symlink')
+    prop_path = proposals_path(hk_path)
+    if a.merge_proposals:
+        return merge_proposals(hk_path, MERGE_LOCK_WAIT_S)
     b = lambda n: a.budget or BUDGETS_S.get(n, DEFAULT_BUDGET_S)
     checks = {'hq_doctor': lambda: check_doctor(a.company, root, b('hq_doctor')),
               'hq_sync': lambda: check_sync(a.company, root, b('hq_sync')),
@@ -369,34 +589,45 @@ def main():
     if not a.company:
         skipped = {n: skipped_record(n) for n in wanted if n in COMPANY_CHECKS}
         wanted = [n for n in wanted if n not in COMPANY_CHECKS]
+    reset = brief_reset_state(os.path.join(root, 'workspace'), run_id)
+    notes = [reset['note']] if reset['note'] else []
+    tasks = dict(skipped)
+
+    def write(pending):
+        """Write what has finished so far. Called after every check, so the
+        brief can use early checks while a slow one runs. The writer's
+        proposals are copied in read-only; a proposals file that cannot be
+        parsed keeps the last copy."""
+        line = headline(tasks, pending)
+
+        def hk(d):
+            d['run_id'] = run_id
+            d['state'] = 'running' if pending else 'done'
+            d['tasks'] = {**(d.get('tasks') or {}), **tasks}
+            d['pending'] = list(pending)
+            d['notes'] = list(dict.fromkeys((d.get('notes') or []) + notes))
+            d['headline'] = line
+            copy_proposals(d, prop_path)
+            d['updated_at'] = _now()
+        try:
+            with out_lock(hk_path, LOOP_LOCK_WAIT_S, on_timeout='unlocked'):
+                write_owned_json(hk_path, hk)
+        except OSError as e:  # one failed write never stops the checks; the next write retries
+            _warn_once('write', f'could not write {os.path.basename(hk_path)} ({e.strerror or e})')
+        return line
+
     with ThreadPoolExecutor(max_workers=len(wanted) or 1) as ex:
-        futs = {n: ex.submit(checks[n]) for n in wanted}
-        tasks = dict(skipped)
-        for n, f in futs.items():
+        futs = {ex.submit(checks[n]): n for n in wanted}
+        pending = list(wanted)
+        line = write(pending)  # every check pending: the files exist from the start
+        for f in as_completed(futs):
+            n = futs[f]
             try:
                 tasks[n] = f.result()
             except Exception as e:  # recorded, never raised past the brief
                 tasks[n] = task_record(n, error=str(e))
-    reset = brief_reset_state(os.path.join(root, 'workspace'), run_id)
-    notes = [reset['note']] if reset['note'] else []
-    line = headline(tasks)
-
-    def hk(d):
-        d['run_id'] = run_id
-        d['tasks'] = {**(d.get('tasks') or {}), **tasks}
-        d['notes'] = list(dict.fromkeys((d.get('notes') or []) + notes))
-        d['headline'] = line
-        d.setdefault('proposals', [])
-        d['updated_at'] = _now()
-    _merge_json(hk_path, hk)
-
-    def st(s):
-        s['housekeeping'] = {**(s.get('housekeeping') or {}), 'state': 'done', 'headline': line,
-                             'checks': {n: t['status'] for n, t in tasks.items()}, 'updated_at': _now()}
-        if s.get('activity') and s['activity'][-1].get('label') == 'Housekeeping':
-            s['activity'][-1].update({'at': _now(), 'state': 'done', 'detail': line})
-        s['updated_at'] = _now()
-    _merge_json(status_path, st)
+            pending.remove(n)
+            line = write(pending)
     # Statuses only; command output never reaches stdout.
     print(json.dumps({'housekeeping': hk_path, 'headline': line,
                       'checks': {n: t['status'] for n, t in tasks.items()}, 'notes': notes}))

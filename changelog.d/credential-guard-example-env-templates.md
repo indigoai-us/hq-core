@@ -1,0 +1,1 @@
+Fixed (hooks): treat config.example.env and other *.example.env template names as non-secret, so git grep, git diff, git archive and git log -p still run in a repo that tracks them. Real *.env files stay blocked. Tests in credential-read-guard.test.sh.

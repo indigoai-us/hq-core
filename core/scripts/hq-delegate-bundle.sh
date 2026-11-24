@@ -93,7 +93,10 @@ esac
 # --- identity ----------------------------------------------------------------
 
 CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-DELEGATION_ID="dlg-$(date -u +%Y%m%d-%H%M%S)-$PROJECT"
+# A short random token keeps two bundles built in the same second apart.
+DELEGATION_SUFFIX="$(LC_ALL=C od -An -N3 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+[ -n "$DELEGATION_SUFFIX" ] || DELEGATION_SUFFIX="$(printf '%06x' "$(( ($$ * 7919 + RANDOM) % 16777216 ))")"
+DELEGATION_ID="dlg-$(date -u +%Y%m%d-%H%M%S)-$DELEGATION_SUFFIX-$PROJECT"
 WHOAMI_JSON="$(hq whoami --json)" || die "could not read sender identity; update hq-cli if --json is unsupported"
 printf '%s' "$WHOAMI_JSON" | jq -e '.authenticated != false and ((.email // .personUid // .agentUid // "") | length > 0)' >/dev/null \
   || die "sender identity is missing or expired; run hq login"

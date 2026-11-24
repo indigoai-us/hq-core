@@ -111,6 +111,25 @@ perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => IO::Socket::UNIX::SOCK
 run_shim "$TMP/hqd-stale/hqd.sock" "$WRITE_OTHERCO" PreToolUse
 if [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then pass "stale hqd socket without marker: company write still fails closed"
 else fail "stale hqd socket without marker: company write still fails closed" "rc=$RC err=$ERR"; fi
+# One shim call starts perl once (feedback_0f247c64). A separate module probe
+# doubled every call's perl launches; on macOS a high exec rate is linked to
+# watchdog panics.
+mkdir -p "$TMP/perl-count"
+REAL_PERL=$(command -v perl)
+cat > "$TMP/perl-count/perl" <<PERL_COUNT
+#!/bin/sh
+printf 'x\n' >> "$TMP/perl-count/log"
+exec "$REAL_PERL" "\$@"
+PERL_COUNT
+chmod +x "$TMP/perl-count/perl"
+: >"$TMP/perl-count/log"
+printf '%s' "$WRITE_OTHERCO" | env PATH="$TMP/perl-count:$PATH" HQ_HQD_SOCKET="$TMP/hqd-stale/hqd.sock" \
+  sh "$SHIM" PreToolUse >"$TMP/out" 2>"$TMP/err"
+RC=$?; ERR=$(cat "$TMP/err")
+PERL_STARTS=$(wc -l <"$TMP/perl-count/log" | tr -d ' ')
+if [ "$PERL_STARTS" -eq 1 ] && [ "$RC" -eq 2 ] && [ "$ERR" = "$CONNECT_FAIL" ]; then
+  pass "one shim call starts perl once"
+else fail "one shim call starts perl once" "perl_starts=$PERL_STARTS rc=$RC err=$ERR"; fi
 # The marker alone (daemon says hqd should run, socket gone): fail closed.
 mkdir -p "$TMP/hqd-marker"
 : >"$TMP/hqd-marker/hqd.enabled"
@@ -436,9 +455,9 @@ if [ "$RC" -eq 75 ] && [ "$el" -lt 1500 ]; then pass "perl stalled in a module l
 else fail "perl stalled in a module load, master-hook mode" "rc=$RC elapsed=${el}ms err=$ERR"; fi
 stop_stub
 
-# A client module that fails to load after the probe passed: the client perl
-# exits 76. master-hook mode falls back (75); otherwise the answer is the one
-# for a perl that died (company write fails closed).
+# A client module that fails to load: the client perl exits 76 before it
+# reads the payload. master-hook mode falls back (75); otherwise the answer is
+# the one for no usable perl (company write fails closed).
 mkdir -p "$TMP/nolib/JSON"
 printf 'package JSON::PP; die "JSON::PP unavailable\\n" if $ENV{HQD_SHIM_SOCKET}; 1;\n' >"$TMP/nolib/JSON/PP.pm"
 PERL5LIB="$TMP/nolib" run_shim "$NOSOCK" "$WRITE_OTHERCO" PreToolUse
@@ -490,12 +509,14 @@ if [ "$RC" -eq 0 ] && [ -z "$ERR" ]; then pass "huge timeout value: capped, no o
 else fail "huge timeout value" "rc=$RC err=$ERR"; fi
 stop_stub
 
-# Perl that passes the module probe but then dies (exit 255): a PreToolUse on a
-# companies/ path must still fail closed; a non-company call is allowed.
+# A client perl that starts (prints its started marker) and then dies (exit
+# 255): a PreToolUse on a companies/ path must still fail closed; a
+# non-company call is allowed. A perl that never starts the client is covered
+# by the "unavailable Perl modules" cases above.
 mkdir -p "$TMP/perl-dies"
 cat > "$TMP/perl-dies/perl" <<'PERL_DIES'
 #!/bin/sh
-case "$1" in -MJSON::PP) exit 0 ;; esac
+printf '%s' '@@hqd-shim-started@@'
 exit 255
 PERL_DIES
 chmod +x "$TMP/perl-dies/perl"

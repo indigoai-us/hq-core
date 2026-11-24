@@ -145,5 +145,23 @@ run_case 'a multi-line program with an escaped quote is not dropped' Bash "$py_m
 run_case 'a company path in a multi-line python -c is still refused' Bash "python3 -c \"import os
 print(open('companies/otherco/skills/pdf/SKILL.md').read())\"" 2
 
+echo "[a python -c program quoted by shlex.quote is program text, not a glob qualifier]"
+# A sandboxed agent runs terminal('python3 -c ' + shlex.quote(code)). Each
+# apostrophe in the code becomes '"'"', so the program is several quoted
+# pieces. print(r.stdout+r.stderr) in it used to read as the zsh (+fn) qualifier.
+sq_prog="python3 -c 'import subprocess
+r=subprocess.run(['\"'\"'hq'\"'\"','\"'\"'x'\"'\"'],capture_output=True,text=True)
+print(r.stdout+r.stderr)
+'"
+run_case 'shlex-quoted multi-line python -c with print(r.stdout+r.stderr) passes' Bash "$sq_prog" 0
+run_case 'shlex-quoted single-line python -c with the same call passes' Bash "python3 -c 'r=run('\"'\"'x'\"'\"');print(r.stdout+r.stderr);x=1'" 0
+run_case 'a qualifier after a shlex-quoted python -c is still refused' Bash "$sq_prog; ls workspace/*(+fn)" 2
+run_case 'a qualifier on the line after a shlex-quoted python -c is still refused' Bash "python3 -c 'print('\"'\"'a'\"'\"')'
+ls workspace/*(e:REPLY=companies/otherco:)" 2
+run_case 'a double-quoted variable piece keeps the program from being dropped' Bash "python3 -c 'print(r.stdout+r.stderr)'\"\$X\"'x'; ls workspace/*(+fn)" 2
+run_case 'a shlex-quoted python -c beside a backtick substitution is not dropped' Bash "python3 -c 'print('\"'\"'a'\"'\"')'; echo \`true\`; ls workspace/*(+fn)" 2
+run_case 'a shlex-quoted python -c inside a substitution is not dropped' Bash "x=\$(python3 -c 'print('\"'\"'a'\"'\"')'); ls workspace/*(+fn)" 2
+run_case 'a company path in a shlex-quoted python -c is still refused' Bash "python3 -c 'print(open('\"'\"'companies/otherco/skills/pdf/SKILL.md'\"'\"').read())'" 2
+
 echo "Checks: $checks; failures: $failures"
 [ "$failures" -eq 0 ]

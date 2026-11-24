@@ -112,8 +112,14 @@ case "$1 $2" in
     # `foo/*` stays `foo/*`.
     kids='[]'
     [ "$pfx" = "projects/widget/*" ] && [ -n "${HQ_STUB_CHILDREN:-}" ] && kids="$HQ_STUB_CHILDREN"
-    jq -cn --arg p "$pfx" --argjson rows "$rows" --argjson kids "$kids" '
-      {prefix:$p,direct:$rows,inherited:[],children:$kids,
+    # Rules with no grants appear only in .masking (hq-pro /acl/tree).
+    masking='[]'
+    [ "$pfx" = "projects/widget/*" ] && [ -n "${HQ_STUB_MASKING:-}" ] && masking="$HQ_STUB_MASKING"
+    truncated=false
+    [ "$pfx" = "projects/widget/*" ] && [ -n "${HQ_STUB_MASKING_TRUNCATED:-}" ] && truncated=true
+    jq -cn --arg p "$pfx" --argjson rows "$rows" --argjson kids "$kids" --argjson masking "$masking" --argjson truncated "$truncated" '
+      {prefix:$p,direct:$rows,inherited:[],children:$kids,masking:$masking}
+      + (if $truncated then {maskingTruncated:true} else {} end) + {
        directRow:(if ($rows|length)>0 then {creatorUid:"prs_FIXTURE",open:false,createdAt:"fixture",updatedAt:"fixture"} else null end),
        effectivePermission:null,identities:{},schemaVersion:1,companyUid:"cmp_acme",exists:(($rows|length)>0)}'
     exit 0 ;;
@@ -319,6 +325,52 @@ TMP_M="$(mktemp)"; jq '.mode = "share"' "$M" > "$TMP_M" && mv "$TMP_M" "$M"
 HQ_STUB_CHILDREN='[{"sourcePrefix":"projects/widget/design/*","granteeType":"company-wide","permission":"read"}]' \
   bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "non-transfer run exited non-zero"
 if grep -q '^files share projects/widget/design/' "$INVOKE_LOG"; then fail "only transfer mode may touch more specific rules"; fi
+
+# --- 1b-4. transfer mode: rules with no grants (listed only as masking) ------
+# hq-pro's ACL tree lists only rules that carry grants as children. A
+# descendant rule with no grants still overrides the project grant for the
+# keys it covers, and appears only in .masking.
+reset_acl_state
+write_manifest "$M" building
+: > "$INVOKE_LOG"
+HQ_STUB_MASKING='[{"path":"projects/widget/design","open":false,"creatorUid":"prs_FIXTURE","grantees":[]},{"path":"projects/widget/notes/","open":false,"creatorUid":"prs_FIXTURE","grantees":[]},{"path":"projects/elsewhere/*","open":false,"creatorUid":"prs_FIXTURE","grantees":[]}]' \
+  bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "transfer with masking rules exited non-zero"
+for rule in 'projects/widget/design' 'projects/widget/notes/'; do
+  grep -qxF "files share $rule --with alice@acme.test --permission write --company acme" "$INVOKE_LOG" \
+    || fail "transfer must grant write on the grant-less overriding rule $rule"
+done
+if grep -q '^files share projects/elsewhere/' "$INVOKE_LOG"; then fail "a masking rule outside the project prefix must be ignored"; fi
+grep -qxF 'person prs_ALICE write' "$ACL_STATE/projects_widget_design" || fail "the grant-less rule must hold the write grant after transfer"
+
+# a truncated masking list stops the grant
+reset_acl_state
+write_manifest "$M" building
+: > "$INVOKE_LOG"
+if HQ_STUB_MASKING='[{"path":"projects/widget/design","open":false,"creatorUid":"prs_FIXTURE","grantees":[]}]' HQ_STUB_MASKING_TRUNCATED=1 \
+  bash "$GRANT" --manifest "$M" --yes >"$TMP/trunc.out" 2>&1; then
+  fail "a truncated masking list must stop the grant"
+fi
+grep -q 'lists too many overriding rules to check' "$TMP/trunc.out" || fail "truncated masking must say why it stopped"
+if grep -q '^files share projects/widget/design' "$INVOKE_LOG"; then fail "no narrower rule may be shared when the list is truncated"; fi
+jq -e '.status == "building"' "$M" >/dev/null || fail "a stopped grant must not advance the manifest"
+
+# a rule the recipient already holds at a higher permission is left alone
+reset_acl_state
+write_manifest "$M" building
+: > "$INVOKE_LOG"
+HQ_STUB_CHILDREN='[{"sourcePrefix":"projects/widget/design/*","granteeType":"person","granteeId":"prs_ALICE","permission":"admin"}]' \
+  bash "$GRANT" --manifest "$M" --yes >"$TMP/held.out" 2>&1 || fail "transfer over an already-held rule exited non-zero"
+if grep -q '^files share projects/widget/design/' "$INVOKE_LOG"; then fail "a rule held at admin must not be re-shared at write"; fi
+grep -q 'already holds write or higher on more specific rule projects/widget/design/\*' "$TMP/held.out" || fail "the skip must be reported"
+
+# an exact-path rule under the project (no trailing /*) gets the grant
+reset_acl_state
+write_manifest "$M" building
+: > "$INVOKE_LOG"
+HQ_STUB_CHILDREN='[{"sourcePrefix":"projects/widget/notes.md","granteeType":"person","granteeId":"prs_OTHER","permission":"read"}]' \
+  bash "$GRANT" --manifest "$M" --yes >/dev/null 2>&1 || fail "transfer with an exact-path rule exited non-zero"
+grep -qxF 'files share projects/widget/notes.md --with alice@acme.test --permission write --company acme' "$INVOKE_LOG" \
+  || fail "transfer must grant write on the exact-path rule projects/widget/notes.md"
 
 # --- 1c. pending (unresolved) email stays email-keyed and verifies -----------
 

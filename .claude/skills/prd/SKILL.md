@@ -1,7 +1,7 @@
 ---
 name: prd
 description: "Create an execution-ready PRD (prd.json + README.md) with a light interview. For deep research use /deep-plan."
-allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(hq core policy frontmatter:*), Bash(npx:*), Bash, Bash(hq core work-mesh-bind-trusted:*), Bash(hq core resolve-company:*), Bash(hq core register-project:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/board-project-id.sh:*)
+allowed-tools: Read, Write, Edit, Grep, Glob, Task, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(date:*), Bash(stat:*), Bash(hq core policy frontmatter:*), Bash(npx:*), Bash, Bash(hq core work-mesh-bind-trusted:*), Bash(hq core resolve-company:*), Bash(hq core register-project:*), Bash(bash core/scripts/work-mesh-project-registration-offer.sh:*), Bash(.claude/skills/_shared/journal.sh:*), AskUserQuestion, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/board-project-id.sh:*)
 ---
 
 # PRD — Project Planning & PRD Generation
@@ -191,7 +191,7 @@ projects with no company board.
    ```
    On `register`:
    ```bash
-   bash core/scripts/register-project.sh --board {co} {board-project-id}
+   hq core register-project --board {co} {board-project-id}
    ```
    Verify the one output line `registered {co}/{board-project-id} thread=<id> channel=<id>`.
    On any other output or a non-zero exit, say "registration incomplete" once

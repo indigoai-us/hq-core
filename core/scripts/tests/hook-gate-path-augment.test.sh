@@ -28,6 +28,8 @@ cat >/dev/null
   command -v node || echo "NO_NODE"
   command -v hq   || echo "NO_HQ"
   command -v qmd  || echo "NO_QMD"
+  command -v jq   || echo "NO_JQ"
+  echo "PATH=$PATH"
 } > "$PROBE_OUT" 2>&1
 echo "PROBE_HOOK_RAN" >&2
 exit 0
@@ -194,6 +196,153 @@ grep -q PROBE_HOOK_RAN "$TMP/err" || fail "probe hook did not run for npm-global
 grep -qxF "$H8/.npm-global/bin/hq" "$TMP/probe.out" \
   || fail "hq not resolved from ~/.npm-global/bin (got: $(cat "$TMP/probe.out"))"
 pass "~/.npm-global/bin discovered ahead of ~/.local/bin"
+
+# ---------------------------------------------------------------------------
+echo "[9] jq off PATH is recovered even when node/hq/qmd already resolve"
+# T5 281: master-hook.sh fails closed on PreToolUse when jq is missing after
+# hq_augment_path. The fast path returned as soon as node/hq/qmd resolved and
+# directories were admitted only for node/hq/qmd, so a jq in ~/.local/bin was
+# never found and every tool call was blocked.
+H9="$TMP/home-jq-local"; mkdir -p "$H9/.local/bin"
+printf '#!/bin/bash\necho jq-from-local\n' > "$H9/.local/bin/jq"; chmod +x "$H9/.local/bin/jq"
+ONPATH9="$TMP/onpath9"; make_tools "$ONPATH9"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H9" \
+  PATH="$UTILS:$ONPATH9" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err9"
+set -e
+grep -q PROBE_HOOK_RAN "$TMP/err9" || fail "probe hook did not run for jq fixture (stderr: $(cat "$TMP/err9"))"
+grep -qxF "$H9/.local/bin/jq" "$TMP/probe.out" \
+  || fail "jq not resolved from ~/.local/bin when node/hq/qmd were already on PATH (got: $(cat "$TMP/probe.out"))"
+grep -qxF "$ONPATH9/node" "$TMP/probe.out" \
+  || fail "node on the inherited PATH must keep resolving first (got: $(cat "$TMP/probe.out"))"
+path9="$(grep '^PATH=' "$TMP/probe.out")"
+case "${path9#PATH=}" in
+  *":$H9/.local/bin") ;;
+  *) fail "a folder added only for jq must go at the END of PATH (got: $path9)" ;;
+esac
+pass "jq recovered from ~/.local/bin; inherited node/hq/qmd unchanged"
+
+# ---------------------------------------------------------------------------
+echo "[10] Windows winget Links and package folders holding jq.exe are added under MINGW"
+# The missing-jq message tells Windows users to run winget install jqlang.jq.
+# winget links the portable jq.exe into %LOCALAPPDATA%\Microsoft\WinGet\Links,
+# or puts its package folder on the user PATH when it cannot link. A session
+# opened before the install inherits neither.
+H10="$TMP/home-winget"; LAD10="$H10/AppData/Local"
+WG10="$LAD10/Microsoft/WinGet"
+PKG10="$WG10/Packages/jqlang.jq_Microsoft.Winget.Source_8wekyb3d8bbwe"
+mkdir -p "$WG10/Links" "$PKG10" "$WG10/Packages/Other.Tool_x"
+printf '#!/bin/bash\necho jq\n' > "$WG10/Links/jq.exe"
+printf '#!/bin/bash\necho jq\n' > "$PKG10/jq.exe"
+chmod +x "$WG10/Links/jq.exe" "$PKG10/jq.exe"
+printf '#!/bin/bash\necho MINGW64_NT-10.0\n' > "$UTILS/uname"; chmod +x "$UTILS/uname"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR -u APPDATA -u USERPROFILE \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H10" \
+  LOCALAPPDATA="$LAD10" \
+  PATH="$UTILS" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err10"
+set -e
+printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_uname" > "$UTILS/uname"; chmod +x "$UTILS/uname"
+grep -q PROBE_HOOK_RAN "$TMP/err10" || fail "probe hook did not run for winget fixture (stderr: $(cat "$TMP/err10"))"
+path10="$(grep '^PATH=' "$TMP/probe.out")"
+case ":${path10#PATH=}:" in
+  *":$WG10/Links:"*) ;;
+  *) fail "WinGet Links not added to PATH (got: $path10)" ;;
+esac
+case ":${path10#PATH=}:" in
+  *":$PKG10:"*) ;;
+  *) fail "winget jqlang.jq package folder not added to PATH (got: $path10)" ;;
+esac
+case ":${path10#PATH=}:" in
+  *"Other.Tool_x"*) fail "a winget package folder without jq.exe was added (got: $path10)" ;;
+esac
+pass "winget Links and jqlang.jq package folder added; unrelated package folder skipped"
+
+# ---------------------------------------------------------------------------
+echo "[11] MINGW, node/hq/qmd already on PATH: winget jq folder is appended at the END"
+# The Windows case the jq recovery exists for: node and hq work, the user ran
+# winget install jqlang.jq in an already-open session. Only jq is missing, so
+# the WinGet Links folder must be appended and the inherited node keep winning.
+H11="$TMP/home-winget-jqonly"; WG11="$H11/AppData/Local/Microsoft/WinGet"
+mkdir -p "$WG11/Links"
+printf '#!/bin/bash\necho jq\n' > "$WG11/Links/jq.exe"; chmod +x "$WG11/Links/jq.exe"
+ONPATH11="$TMP/onpath11"; make_tools "$ONPATH11"
+printf '#!/bin/bash\necho MINGW64_NT-10.0\n' > "$UTILS/uname"; chmod +x "$UTILS/uname"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR -u APPDATA -u USERPROFILE \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H11" \
+  LOCALAPPDATA="$H11/AppData/Local" \
+  PATH="$UTILS:$ONPATH11" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err11"
+set -e
+printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_uname" > "$UTILS/uname"; chmod +x "$UTILS/uname"
+grep -q PROBE_HOOK_RAN "$TMP/err11" || fail "probe hook did not run for winget jq-only fixture (stderr: $(cat "$TMP/err11"))"
+grep -qxF "$ONPATH11/node" "$TMP/probe.out" \
+  || fail "inherited node must keep resolving first (got: $(cat "$TMP/probe.out"))"
+path11="$(grep '^PATH=' "$TMP/probe.out")"
+case "${path11#PATH=}" in
+  "$UTILS:$ONPATH11:$WG11/Links") ;;
+  *) fail "WinGet Links must be appended after the inherited PATH and nothing else added (got: $path11)" ;;
+esac
+pass "winget Links appended at the end; inherited node/hq/qmd keep priority"
+
+# ---------------------------------------------------------------------------
+echo "[12] jq already resolves: a folder holding only jq is not added"
+# When node is missing the recovery prepends folders that hold node/hq/qmd.
+# A folder that holds only jq must not be admitted while jq already resolves,
+# or its other binaries would shadow the user's.
+H12="$TMP/home-jq-resolves"; mkdir -p "$H12/.local/bin"
+printf '#!/bin/bash\necho jq\n' > "$H12/.local/bin/jq"; chmod +x "$H12/.local/bin/jq"
+make_tools "$H12/.volta/bin"
+JQ12="$TMP/jq12"; mkdir -p "$JQ12"
+printf '#!/bin/bash\necho jq\n' > "$JQ12/jq"; chmod +x "$JQ12/jq"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H12" \
+  PATH="$UTILS:$JQ12" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err12"
+set -e
+grep -q PROBE_HOOK_RAN "$TMP/err12" || fail "probe hook did not run for jq-resolves fixture (stderr: $(cat "$TMP/err12"))"
+grep -qxF "$H12/.volta/bin/node" "$TMP/probe.out" \
+  || fail "node not recovered from ~/.volta/bin (got: $(cat "$TMP/probe.out"))"
+grep -qxF "$JQ12/jq" "$TMP/probe.out" \
+  || fail "the inherited jq must keep resolving (got: $(cat "$TMP/probe.out"))"
+case "$(grep '^PATH=' "$TMP/probe.out")" in
+  *"$H12/.local/bin"*) fail "a jq-only folder was added while jq already resolved (got: $(grep '^PATH=' "$TMP/probe.out"))" ;;
+esac
+pass "jq-only folder skipped while jq resolves; node folder still prepended"
+
+# ---------------------------------------------------------------------------
+echo "[13] failglob in the shell does not abort recovery when winget has no Packages folder"
+H13="$TMP/home-failglob"; WG13="$H13/AppData/Local/Microsoft/WinGet"
+mkdir -p "$WG13/Links"
+printf '#!/bin/bash\necho jq\n' > "$WG13/Links/jq.exe"; chmod +x "$WG13/Links/jq.exe"
+printf 'shopt -s failglob\n' > "$TMP/failglob.env"
+printf '#!/bin/bash\necho MINGW64_NT-10.0\n' > "$UTILS/uname"; chmod +x "$UTILS/uname"
+set +e
+env -u NVM_DIR -u FNM_DIR -u VOLTA_HOME -u ASDF_DATA_DIR -u HQ_TOOLCHAIN_DIR -u APPDATA -u USERPROFILE \
+  BASH_ENV="$TMP/failglob.env" \
+  PROBE_OUT="$TMP/probe.out" \
+  HOME="$H13" \
+  LOCALAPPDATA="$H13/AppData/Local" \
+  PATH="$UTILS" \
+  bash "$GATE" detect-secrets "$TMP/probe-hook.sh" <<<'{}' 2>"$TMP/err13"
+set -e
+printf '#!/bin/bash\nexec "%s" "$@"\n' "$real_uname" > "$UTILS/uname"; chmod +x "$UTILS/uname"
+grep -q PROBE_HOOK_RAN "$TMP/err13" || fail "probe hook did not run under failglob (stderr: $(cat "$TMP/err13"))"
+grep -q "no match" "$TMP/err13" && fail "failglob aborted the winget probe (stderr: $(cat "$TMP/err13"))"
+case ":$(grep '^PATH=' "$TMP/probe.out" | sed 's/^PATH=//'):" in
+  *":$WG13/Links:"*) ;;
+  *) fail "WinGet Links not added under failglob (got: $(grep '^PATH=' "$TMP/probe.out"))" ;;
+esac
+pass "failglob set, no Packages folder: recovery completes and adds WinGet Links"
 
 echo "ALL PASS: hook-gate-path-augment"
 

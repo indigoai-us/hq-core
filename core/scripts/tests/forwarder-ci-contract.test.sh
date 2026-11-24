@@ -61,6 +61,11 @@ NON_EXECUTING_REFERENCE_ALLOWLIST = {
     # handoff-post-company-scope.test.sh, which pr-checks already runs with
     # the pinned CLI install. The analyzer only sees direct workflow commands.
     ("core/scripts/tests/handoff-thread-isolation.test.sh", "qmd-reindex-bg.sh"),
+    # US-044: the former shell job runner, kept as a test fixture. It runs only
+    # from hq-job-run, hq-job-run-approval-mode, personal-job-oncalendar,
+    # outpost-job-failure-alerts and hq-job-alerts tests, which pr-checks runs
+    # in outpost-instance-token-argv after the pinned hq CLI install.
+    ("core/scripts/tests/fixtures/legacy-job-run.sh", "hq-job-notify.sh"),
     # Copies worktree.sh into a throwaway HQ root and runs it against a stub
     # `hq` that only records --source; it never reaches the real CLI.
     ("core/scripts/tests/worktree-relative-source.test.sh", "worktree.sh"),
@@ -84,6 +89,8 @@ ANALYZER_METADATA_ALLOWLIST = {
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "rebuild-orchestrator-index.sh"),
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "rebuild-threads-index.sh"),
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "qmd-reindex-bg.sh"),
+    # Named by the legacy-job-run.sh fixture entry above.
+    ("core/scripts/tests/forwarder-ci-contract.test.sh", "hq-job-notify.sh"),
     # Named in references_forwarder()'s docstring as the worked example of the
     # suffix false positive it exists to prevent. Prose, not execution.
     ("core/scripts/tests/forwarder-ci-contract.test.sh", "worktree.sh"),
@@ -234,13 +241,37 @@ for job_name, job in jobs.items():
             jobs_with_hq_install.add(job_name)
 
 failures: list[str] = []
-for job_name in (
+
+
+def install_check_targets(names):
+    """A required job split into shards is an aggregate gate: it `needs` its
+    `<name>-N` shards and runs no setup-node itself. Check each shard instead."""
+    for job_name in names:
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            continue
+        needs = job.get("needs") or []
+        if isinstance(needs, str):
+            needs = [needs]
+        has_setup_node = any(
+            isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/setup-node@")
+            for step in job.get("steps", [])
+        )
+        shards = [n for n in needs if re.fullmatch(re.escape(job_name) + r"-\d+", str(n))]
+        if shards and not has_setup_node:
+            for shard in shards:
+                yield shard, jobs.get(shard)
+        else:
+            yield job_name, job
+
+
+for job_name, job in install_check_targets((
     "core-write-protection",
     "personal-policy-overlay",
     "prefer-native-capabilities",
-):
-    job = jobs.get(job_name)
+)):
     if not isinstance(job, dict):
+        failures.append(f"job {job_name} is missing")
         continue
     steps = job.get("steps", [])
     setup_node_indexes = [
@@ -402,7 +433,7 @@ SH
 jobs:
   core-write-protection:
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
       - run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - run: bash core/scripts/ci/install-pinned-hq-cli.sh
   fixture:
@@ -443,7 +474,7 @@ YAML
 jobs:
   linux-checks-1:
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: "[installer] Install the pinned hq CLI"
         run: bash core/scripts/ci/install-pinned-hq-cli.sh
       - name: "[fixture] CLI-required fixture"

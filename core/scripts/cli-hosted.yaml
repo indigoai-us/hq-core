@@ -174,6 +174,20 @@ entries:
     path_operands: options:--hq-root,--log-path
     note: |
       Native job-notify passed the current Windows, macOS and Linux parity matrix; core-native-jobs remains the rollback switch.
+  - path: core/scripts/hq-job-run.sh
+    command: job run
+    kind: hybrid
+    root: live
+    interpreter: bash
+    min_cli: 5.296.0
+    state: forwarded
+    path_operands: none
+    note: |
+      US-044: one-release forwarder. systemd units written by older reconciles
+      still start this path; it execs hq core job run with the unit's
+      arguments until the next reconcile rewrites the unit. Remove the file
+      and this row in the following release, and list the path as removed in
+      core/functions.yaml.
   - path: core/scripts/hq-pin.sh
     command: pin
     kind: generated
@@ -268,18 +282,6 @@ entries:
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
       keeps the scaffold to configuration rather than code.
-  - path: core/scripts/rebuild-companies-index.sh
-    command: rebuild-index companies
-    kind: generated
-    root: live
-    interpreter: bash
-    min_cli: 5.345.188
-    state: forwarded
-    path_operands: none
-    note: |
-      Why the implementation moved: it is a cold, explicitly-invoked operation where
-      process startup is immaterial, so hosting it in the CLI costs nothing and
-      keeps the scaffold to configuration rather than code.
   - path: core/scripts/rebuild-company-knowledge-index.sh
     command: rebuild-index company-knowledge
     kind: generated
@@ -304,42 +306,6 @@ entries:
       Why the implementation moved: it is a cold, explicitly-invoked operation where
       process startup is immaterial, so hosting it in the CLI costs nothing and
       keeps the scaffold to configuration rather than code.
-  - path: core/scripts/rebuild-projects-index.sh
-    command: rebuild-index projects
-    kind: generated
-    root: live
-    interpreter: bash
-    min_cli: 5.345.188
-    state: forwarded
-    path_operands: none
-    note: |
-      Why the implementation moved: it is a cold, explicitly-invoked operation where
-      process startup is immaterial, so hosting it in the CLI costs nothing and
-      keeps the scaffold to configuration rather than code.
-  - path: core/scripts/rebuild-public-knowledge-index.sh
-    command: rebuild-index public-knowledge
-    kind: generated
-    root: live
-    interpreter: bash
-    min_cli: 5.78.0
-    state: forwarded
-    path_operands: none
-    note: |
-      Why the implementation moved: it is a cold, explicitly-invoked operation where
-      process startup is immaterial, so hosting it in the CLI costs nothing and
-      keeps the scaffold to configuration rather than code.
-  - path: core/scripts/rebuild-reports-index.sh
-    command: rebuild-index reports
-    kind: generated
-    root: live
-    interpreter: bash
-    min_cli: 5.78.0
-    state: forwarded
-    path_operands: none
-    note: |
-      Why the implementation moved: it is a cold, explicitly-invoked operation where
-      process startup is immaterial, so hosting it in the CLI costs nothing and
-      keeps the scaffold to configuration rather than code.
   - path: core/scripts/rebuild-social-drafts-index.sh
     command: rebuild-index social-drafts
     kind: generated
@@ -354,18 +320,6 @@ entries:
       keeps the scaffold to configuration rather than code.
   - path: core/scripts/rebuild-threads-index.sh
     command: rebuild-index threads
-    kind: generated
-    root: live
-    interpreter: bash
-    min_cli: 5.78.0
-    state: forwarded
-    path_operands: none
-    note: |
-      Why the implementation moved: it is a cold, explicitly-invoked operation where
-      process startup is immaterial, so hosting it in the CLI costs nothing and
-      keeps the scaffold to configuration rather than code.
-  - path: core/scripts/rebuild-workers-index.sh
-    command: rebuild-index workers
     kind: generated
     root: live
     interpreter: bash

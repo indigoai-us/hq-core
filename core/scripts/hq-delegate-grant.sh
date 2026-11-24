@@ -348,20 +348,39 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
   done
   [ "$landed" -eq 1 ] || die "grant outcome unconfirmed for $PRINCIPAL on $PFX; retain this manifest and resume"
   # Full-transfer mode: a more specific rule under the project prefix (for
-  # example projects/<name>/design/*) outranks the root grant, so the recipient
-  # would keep the narrower permission there. Grant the same permission on every
-  # such rule and verify each one.
+  # example projects/<name>/design/* or projects/<name>/design) outranks the
+  # root grant, so the recipient would keep the narrower permission there, or
+  # have none at all. Grant the same permission on every such rule and verify
+  # each one. The ACL tree lists rules that carry grants as .children and
+  # rules with no grants only as .masking, so both are read; a truncated
+  # masking list stops the grant rather than leave an unseen rule ungranted.
+  # A rule the recipient already holds at this permission or higher is left
+  # as it is. Only rules under the project prefix are considered, so the
+  # outside-project check below is defensive.
   if [ "$MODE" = "transfer" ]; then
     case "$PFX" in "projects/$PROJECT/"*)
-      CHILD_PATTERNS="$(printf '%s' "$AFTER" | jq -r --arg root "$ACL_PATTERN" '
-        [(.children // [])[] | .sourcePrefix | select(type == "string")
-         | select(startswith($root[:-1]) and endswith("/*") and . != $root)] | unique | .[]' | tr -d '\r')"
+      if printf '%s' "$AFTER" | jq -e '.maskingTruncated == true' >/dev/null 2>&1; then
+        die "the ACL tree for $PFX lists too many overriding rules to check; grant them by hand, then resume"
+      fi
+      CHILD_RULES="$(printf '%s' "$AFTER" | jq -r --arg pfx "$PFX" --arg root "$ACL_PATTERN" \
+        --arg id "$EXPECTED_ID" --arg type "$EXPECTED_TYPE" --arg perm "$PERM" '
+        def rank: if . == "admin" then 3 elif . == "write" then 2 elif . == "read" then 1 else 0 end;
+        def holds: .granteeType == $type and .granteeId == $id and (((.permission // "") | rank) >= ($perm | rank));
+        def under: type == "string" and startswith($pfx) and . != $root;
+        ( [ (.children // [])[] | select(.sourcePrefix | under) | {p: .sourcePrefix, held: holds} ]
+          + [ (.masking // [])[] | select(.path | under) | {p: .path, held: ((.grantees // []) | any(holds))} ] )
+        | group_by(.p) | map({p: .[0].p, held: any(.[]; .held)}) | .[]
+        | (if .held then "held" else "grant" end) + "\t" + .p' | tr -d '\r')"
       # One rule per line, read whole: a folder name with a space or a glob
       # character must stay one pattern. Word-splitting it would grant on a
       # path outside the project. fd 3 keeps the hq calls off the list.
-      while IFS= read -r CHILD <&3; do
+      while IFS="$(printf '\t')" read -r CHILD_STATE CHILD <&3; do
         [ -n "$CHILD" ] || continue
         case "$CHILD" in "projects/$PROJECT/"*) ;; *) die "more specific rule $CHILD is outside projects/$PROJECT/" ;; esac
+        if [ "$CHILD_STATE" = held ]; then
+          echo "hq-delegate-grant: $PRINCIPAL already holds $PERM or higher on more specific rule $CHILD"
+          continue
+        fi
         CHILD_RC=0
         hq files share "$CHILD" --with "$GRANT_PRINCIPAL" --permission "$PERM" --company "$COMPANY" || CHILD_RC=$?
         [ "$CHILD_RC" -eq 0 ] || echo "hq-delegate-grant: share reported an error on $CHILD; checking exact grant" >&2
@@ -378,7 +397,7 @@ while [ "$i" -lt "$PREFIX_COUNT" ]; do
         [ "$child_landed" -eq 1 ] || die "grant outcome unconfirmed for $PRINCIPAL on more specific rule $CHILD; retain this manifest and resume"
         echo "hq-delegate-grant: verified $PERM on more specific rule $CHILD for $PRINCIPAL"
       done 3<<EOF_CHILDREN
-$CHILD_PATTERNS
+$CHILD_RULES
 EOF_CHILDREN
       ;;
     esac
@@ -409,7 +428,7 @@ if [ "$ENGINE_OWNED" -eq 1 ]; then
     [ -f "$HQ_ROOT/$kpath" ] || continue
     expected="$(hq_delegate_sha256 < "$HQ_ROOT/$kpath")"
     hq_delegate_wait_for_cloud "$COMPANY" "${kpath#"companies/$COMPANY/"}" "$expected" \
-      || die "the sync engine has not uploaded $kpath after ${HQ_DELEGATE_ENGINE_WAIT_SECONDS:-180}s; check 'hq sync-core status', then re-run (grants are idempotent)"
+      || die "the sync engine has not uploaded $kpath after $(hq_delegate_engine_wait_seconds)s ($HQ_DELEGATE_ENGINE_WAIT_CAUSES); check 'hq sync-core status', then re-run (grants are idempotent)"
   done
   echo "hq-delegate-grant: the sync engine uploaded the dossier; vault bytes match"
 fi

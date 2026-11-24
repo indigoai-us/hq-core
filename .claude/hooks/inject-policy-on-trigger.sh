@@ -381,6 +381,29 @@ if [ "$EVENT" = "UserPromptSubmit" ]; then
   esac
 fi
 
+# feedback_89d676df: a numbered-option reply such as "3" still ran keyword
+# matching (and AssistantIntent look-back), so unrelated policies like
+# pricing fired. Skip keyword facts for empty, numeric, or yes/no/ok
+# replies; `when: always` still matches. Do not treat every 1-2 character
+# prompt as an option reply (inject-policy-output-ceiling uses prompt "x").
+policy_prompt_is_short_reply() {
+  local p="$1"
+  p="${p#"${p%%[![:space:]]*}"}"
+  p="${p%"${p##*[![:space:]]}"}"
+  [ -z "$p" ] && return 0
+  case "$p" in
+    *.) p="${p%.}" ;;
+  esac
+  case "$p" in
+    *[!0-9]*) ;;
+    *) return 0 ;;
+  esac
+  case "$p" in
+    yes|YES|Yes|y|Y|no|NO|No|n|N|ok|OK|Ok|okay|OKAY|Okay) return 0 ;;
+  esac
+  return 1
+}
+
 # HELD REMINDERS. The Grok adapter (HQ_HARNESS=grok) sets
 # HQ_POLICY_REMINDER_DELIVERABLE=0 on an event whose hook output Grok does not
 # hand to the model (every event but PostToolUse). The reminder for such an event is not
@@ -1882,6 +1905,10 @@ if [ -n "$JQ" ] && [ -f "$HELPERS/eval-trigger.sh" ] && [ -f "$HELPERS/derive-tr
     else
       FACTS="$(run_derive_trigger_facts "$EVENT")" || true
       INTENT_FACTS="$(run_derive_trigger_facts AssistantIntent)" || true
+    fi
+    if [ "$EVENT" = "UserPromptSubmit" ] && policy_prompt_is_short_reply "$PROMPT"; then
+      FACTS="always"
+      INTENT_FACTS=""
     fi
   elif [ -n "$TOOL_TEXT" ]; then
     # A text tool's payload carries no tool_response, so the output-derived

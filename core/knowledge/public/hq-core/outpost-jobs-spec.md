@@ -246,15 +246,15 @@ Fixtures / suite: `core/scripts/tests/fixtures/jobs-probe/`,
 ## Reconcile + runner (US-004)
 
 `core/scripts/outpost-jobs-reconcile.sh` materializes disposable systemd **user**
-units from the synced registry. `core/scripts/hq-job-run.sh` is the oneshot
-executor each timer starts.
+units from the synced registry. Each timer starts `hq core job run` as a
+oneshot service.
 
 ### Units
 
 - Paths: `~/.config/systemd/user/hq-job-{id}.service` + `.timer`
 - Timer: `OnCalendar=` (from 5-field cron, with an optional IANA zone suffix),
   `Persistent=true`, `RandomizedDelaySec` (default 60)
-- Service: `ExecStart=…/hq-job-run.sh --hq-root … --job-id {id}`
+- Service: `ExecStart=/usr/bin/env hq core --hq-root … job run --job-id {id}`
 - Disabled / deleted / non-`ready` jobs: units removed and timers stopped
 - Idempotent: second reconcile with no registry/status change is a noop
 - Company jobs: only when `owner` matches this Outpost's identity (creator box)
@@ -313,7 +313,7 @@ Fixtures / suites: `core/scripts/tests/hq-job-run.test.sh`,
 
 ## Remediation alerts (US-006)
 
-After each run, `hq-job-run.sh` classifies the outcome, attempts bounded
+After each run, `hq core job run` classifies the outcome, attempts bounded
 self-remediation, writes run telemetry (including `failure_class`) to hq-pro,
 then notifies via `hq-job-notify.sh`. Alerts never go to the original
 `/schedule` create session/thread.

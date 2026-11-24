@@ -478,6 +478,12 @@
       "on": "[PreToolUse, UserPromptSubmit, AssistantIntent]"
     },
     {
+      "path": "core/policies/hq-multiple-named-super-conductors.md",
+      "trigger_sha256": "f62f4c00d3e103a19bd8a84ce890bc10550c1352024584339cfe01d69d7b33d8",
+      "when": "super-conductor || superconductor || conduct-all || (conductor && (adopt || sweep || heartbeat || scope || route || forward))",
+      "on": "[UserPromptSubmit, AssistantIntent]"
+    },
+    {
       "path": "core/policies/hq-never-ask-user-to-run-commands.md",
       "trigger_sha256": "2f212be57f39df8ac6a56fcc575bc3ca7f9f51fc3c0636b305aa889f8b79f12b",
       "when": "terminal || command || cli || run || login || sign-in || signin || authorize || mcp || generate-link || install",
@@ -775,6 +781,12 @@
       "path": "core/policies/hq-subagent-granularity-ambiguity.md",
       "trigger_sha256": "4adc1e6793b61651b8cfccf0bd6a81ab542e5ca39f30981e517b135aa59a201c",
       "when": "subagent || subagents || sub-agent || sub-agents",
+      "on": "[UserPromptSubmit, AssistantIntent]"
+    },
+    {
+      "path": "core/policies/hq-suggest-outpost-uses.md",
+      "trigger_sha256": "5c05c3bf16e3644133903f6498ce96eb919d4072d47307682fc08020edf32f48",
+      "when": "outpost || outposts",
       "on": "[UserPromptSubmit, AssistantIntent]"
     },
     {

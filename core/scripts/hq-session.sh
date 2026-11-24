@@ -20,7 +20,9 @@
 #
 # "Current session" is resolved by core/scripts/lib/session-id.sh: the session id
 # exported into this process wins, and workspace/sessions/.current is only a
-# read-only diagnostic fallback. Writes require explicit or harness identity.
+# read-only diagnostic fallback. Writes require explicit or harness identity:
+# exactly one session id in the environment, and not one the hooks have seen
+# replaced by a newer id (see session_id_record_env_alias in lib/session-id.sh).
 # .current is a single global pointer rewritten by every hook event, so
 # with concurrent sessions it can name someone else's session — trusting it made
 # `set company_slug` write to the wrong session's meta.yaml while the calling
@@ -32,7 +34,7 @@ set -euo pipefail
 # before CLI forwarding as older CLI-hosted bundles also contain that fallback.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/session-id.sh"
 hq_session_require_write_identity() {
-  local explicit='' id=''
+  local explicit='' id='' distinct='' aliases='' root=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --session-id) explicit="${2:-}"; [ "$#" -ge 2 ] || return 1; shift 2 ;;
@@ -42,7 +44,27 @@ hq_session_require_write_identity() {
   done
   case "${1:-}" in
     set|add|remove)
-      if [ -n "$explicit" ]; then id="$explicit"; else id="$(session_id_from_env)"; fi
+      if [ -n "$explicit" ]; then
+        session_id_is_valid "$explicit" && return 0
+        echo "hq-session: invalid --session-id: '$explicit'" >&2
+        return 1
+      fi
+      # A write resolved from the environment must name exactly one session,
+      # and one the hooks have not seen replaced by another id. When either
+      # check fails the caller cannot be identified: refuse and name the ids
+      # instead of picking one.
+      distinct="$(session_id_env_distinct)"
+      case "$distinct" in
+        *$'\n'*)
+          {
+            echo 'hq-session: refusing to write: the environment names more than one session, so the calling session is unknown:'
+            printf '%s\n' "$distinct" | sed 's/^/  /'
+            echo 'hq-session: pass --session-id <id> with the id the scope hook reports for this session.'
+          } >&2
+          return 1
+          ;;
+      esac
+      id="${distinct#*=}"
       if ! session_id_is_valid "$id"; then
         echo 'hq-session: metadata write requires caller session identity; pass --session-id <id> from the scope hook or run from an identified harness. workspace/sessions/.current is read-only diagnostic fallback.' >&2
         # Cursor marks agent shells with CURSOR_AGENT (and its terminals with
@@ -51,12 +73,37 @@ hq_session_require_write_identity() {
         if [ -n "${CURSOR_AGENT:-}${CURSOR_TRACE_ID:-}" ]; then
           echo 'hq-session: Cursor does not export a session id to shell commands. Take a fresh id from uuidgen, keep that same id for this whole chat, and never use CURSOR_TRACE_ID (every chat in the window shares it). Begin each shell command in this chat with export HQ_SESSION_ID=<id>; or pass --session-id <id> on every set/add/remove call.' >&2
         fi
+        # Google Antigravity documents no session-id variable for agent shells.
+        # macOS marks processes the app starts with its bundle id, which is
+        # enough to recognize the host and print the same remedy.
+        if [ "${__CFBundleIdentifier:-}" = 'com.google.antigravity' ]; then
+          echo 'hq-session: Google Antigravity does not export a session id to shell commands. Take a fresh id from uuidgen, keep that same id for this whole conversation, and begin each shell command with export HQ_SESSION_ID=<id>; or pass --session-id <id> on every set/add/remove call.' >&2
+        fi
         return 1
       fi
+      root="${HQ_ROOT:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+      aliases="$(session_id_live_env_aliases "$root" "$id")"
+      if [ -n "$aliases" ]; then
+        {
+          echo "hq-session: refusing to write: ${distinct%%=*}=$id is stale. Hooks running in this environment report a different session id:"
+          printf '%s\n' "$aliases" | sed 's/^/  /'
+          echo 'hq-session: pass --session-id <id> with the id the scope hook reports for this session.'
+        } >&2
+        return 1
+      fi
+      HQ_SESSION_WRITE_ID="$id"
+      echo "hq-session: writing to session $id (from ${distinct%%=*})" >&2
       ;;
   esac
 }
+# On success HQ_SESSION_WRITE_ID holds the environment-resolved id. Forward it
+# as --session-id so a CLI-hosted copy, which may still fall back to .current or
+# read a shorter variable list, writes the same record.
+HQ_SESSION_WRITE_ID=''
 hq_session_require_write_identity "$@" || exit 1
+if [ -n "$HQ_SESSION_WRITE_ID" ]; then
+  set -- --session-id "$HQ_SESSION_WRITE_ID" "$@"
+fi
 
 # Prefer the CLI-hosted implementation only when it advertises the exact-company
 # directory check. Older CLI bundles may recognize hq-session but still accept
@@ -92,11 +139,12 @@ if [ "${HQ_HQ_SESSION_NO_CLI:-}" != "1" ]; then
       *hq-session*)
         case "$__hs_caps" in
           *exact-company-directory-match-v1*)
-            # The CLI walks up from the cwd to find the HQ root and fails
-            # ("Could not find your HQ installation") when this script is run
-            # from outside the tree. Hand it the root this script lives in
-            # unless the caller already named one.
-            if [ -z "${HQ_ROOT:-}" ] && [ -z "${CLAUDE_PROJECT_DIR:-}" ]; then
+            # The CLI walks up from the cwd, then HQ_ROOT, then
+            # CLAUDE_PROJECT_DIR. A session scratch CLAUDE_PROJECT_DIR is not
+            # the HQ tree, so add company <slug> looks for companies/ under
+            # the scratch dir and rejects the real directory name. Pin HQ_ROOT
+            # to this script's tree unless the caller already named one.
+            if [ -z "${HQ_ROOT:-}" ]; then
               HQ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
               export HQ_ROOT
             fi

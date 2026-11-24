@@ -28,6 +28,18 @@ json_block() {
   jq -nc --arg reason "$1" '{decision:"block",reason:$reason}'
 }
 
+# grep_text <grep-flags> <regex> <text>: grep's own exit status for <text>.
+# `printf '%s' "$text" | grep -q ...` under `set -o pipefail` is not that:
+# grep -q exits at its first match, and when printf has not finished writing
+# (a text larger than the pipe buffer, or a second write that loses a race)
+# printf dies of SIGPIPE and the pipeline's status is 141, which reads as "no
+# match". A forbidden pattern was then missed and a required one reported
+# missing. grep sees the same bytes as before; only the status source changed.
+grep_text() {
+  printf '%s' "$3" | grep "$1" "$2"
+  return "${PIPESTATUS[1]}"
+}
+
 # Pass stamp for the second PreToolUse Bash run. master-hook runs this gate
 # from the registry, then inject-policy-on-trigger.sh runs it again after it
 # persists the command's own policy matches. When the action is not outbound
@@ -234,7 +246,10 @@ prompt_named_skills() {
   printf '%s\n' "$prompt" | awk '
     {
       line=tolower($0)
-      if (match(line, /(^|[^a-z])(broadcast|post an? update to slack|slack broadcast)([^a-z]|$)/)) {
+      # Underscore is part of an identifier, not a word boundary, so a tool
+      # name such as broadcast_inbox_message does not require work-broadcast.
+      # Hyphen still bounds, so work-broadcast matches.
+      if (match(line, /(^|[^a-z0-9_])(broadcast|post an? update to slack|slack broadcast)([^a-z0-9_]|$)/)) {
         # Widen the match to the whole whitespace-delimited word(s), so
         # "work-broadcast" is reported rather than "broadcast".
         s=RSTART; e=RSTART+RLENGTH-1
@@ -444,7 +459,7 @@ command_is_outbound() {
   local command="$1" pattern scan
   pattern='(^|[^[:alnum:]_])hq[[:space:]]+(cowork[[:space:]]+)?dm([^[:alnum:]_]|$)|chat\.postMessage|send-broadcast|slack\.com/api/chat\.postMessage|/broadcasts'
   [ -n "$command" ] || return 1
-  printf '%s' "$command" | grep -Eqi "$pattern" || return 1
+  grep_text -Eqi "$pattern" "$command" || return 1
   scan="$(printf '%s' "$command" | node -e '
     let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
       if(/\$\(|`|<\(|>\(/.test(s)){process.stdout.write(s);return;}
@@ -468,7 +483,7 @@ command_is_outbound() {
       const kept=parsed.filter(p=>!(viewers.has(p.name)&&!(p.name==="rg"&&p.args.some(a=>/^--pre(=|$)/.test(a))))&&!isDmRead(p));
       process.stdout.write(kept.map(p=>p.seg).join("\n"));
     });' 2>/dev/null)" || scan="$command"
-  printf '%s' "$scan" | grep -Eqi "$pattern"
+  grep_text -Eqi "$pattern" "$scan"
 }
 
 # command_direct_dm_body <command> — true when the command's only send is one
@@ -643,7 +658,7 @@ case "$EVENT" in
       let s=""; process.stdin.on("data",c=>s+=c).on("end",()=>{
         process.stdout.write(s.replace(/\battachment[\s-]+counts?\b(?![\s-]+as\b)/gi,"count"));
       });' 2>/dev/null || printf '%s' "$PROMPT")"
-    if printf '%s' "$BRIEF_SCAN" | grep -Eqi '\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b'; then
+    if grep_text -Eqi '\b(attached|attachment)\b.{0,40}\b(brief|spec|document|file)\b|\b(brief|spec)\b.{0,40}\b(attached|attachment)\b' "$BRIEF_SCAN"; then
       DECLARES_BRIEF=1
       # Only a file named in the attachment clause itself is a declared brief:
       # the sentence that says "attached ... brief/file" (or "brief ...
@@ -804,8 +819,8 @@ case "$EVENT" in
     case "$TOOL" in
       Read|Grep|read_file|read_text_file) CANDIDATE="$PATH_USED"; CANDIDATE_KIND="path" ;;
       Bash|Shell|exec_command|run_terminal_command)
-        if [ -n "$CMD" ] && ! printf '%s' "$CMD" | grep -Fq '||' \
-           && printf '%s' "$CMD" | grep -Eq '^[[:space:]]*(cat|sed|head|tail|less|rg|grep)[[:space:]]'; then
+        if [ -n "$CMD" ] && ! grep_text -Fq '||' "$CMD" \
+           && grep_text -Eq '^[[:space:]]*(cat|sed|head|tail|less|rg|grep)[[:space:]]' "$CMD"; then
           CANDIDATE="$CMD"
           CANDIDATE_KIND="command"
         fi
@@ -968,11 +983,11 @@ case "$EVENT" in
             exit 2
           fi
         fi
-        if [ -n "$forbid" ] && printf '%s' "$BODY" | grep -Eq "$forbid" 2>/dev/null; then
+        if [ -n "$forbid" ] && grep_text -Eq "$forbid" "$BODY" 2>/dev/null; then
           json_block "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate $id (forbidden pattern)."
           exit 2
         fi
-        if [ -n "$require" ] && ! printf '%s' "$BODY" | grep -Eq "$require" 2>/dev/null; then
+        if [ -n "$require" ] && ! grep_text -Eq "$require" "$BODY" 2>/dev/null; then
           json_block "POLICY ENFORCEMENT BLOCK: outbound content violates deterministic gate $id (required pattern missing)."
           exit 2
         fi

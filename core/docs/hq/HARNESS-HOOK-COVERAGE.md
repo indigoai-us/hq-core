@@ -81,3 +81,16 @@ deny.
    installed user bridge picks up new events.
 5. **Fail closed.** If `settings.json` is missing or unparseable, adapters fall
    back to a hardcoded critical-guard set rather than running zero guards.
+
+## Google Antigravity
+
+Antigravity has its own hooks API (`SessionStart`, `PreToolUse`,
+`PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`; registered in
+`.agents/hooks.json` or `~/.gemini/config/hooks.json`; see
+https://antigravity.google/docs/hooks). HQ does not register an adapter for it
+yet, so none of the hooks in `.claude/settings.json` run in an Antigravity
+session: no policy reminders, no scope or secret guards, and no automatic Work
+Mesh presence. Until the adapter ships, `.agents/rules/hq.md` (always on) tells
+the agent to read the charter's imported files and the company policies itself
+and to report Work Mesh state by hand. `check-hq-hooks.sh --require-ledger`
+reports `NOT OBSERVED` for an Antigravity session, which is accurate.

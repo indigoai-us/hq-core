@@ -83,13 +83,13 @@ build_hq() {
 APPS="$T/apps.json"
 cat > "$APPS" <<EOF
 {"apps":[
- {"id":"a1","name":"old-app","subdomain":"old-app","url":"https://old-app.example.test","type":"static","accessMode":"public","ownerId":"me"},
- {"id":"a2","name":"site-a","subdomain":"site-a","url":"https://site-a.example.test","type":"static","accessMode":"company","ownerId":"me"},
- {"id":"a3","name":"Promo deck","subdomain":"promo-deck","url":"https://promo-deck.example.test","type":"static","accessMode":"company","ownerId":"me"},
- {"id":"a4","name":"pub-page","subdomain":"pub-page","url":"http://127.0.0.1:$PORT/pub","type":"static","accessMode":"public","ownerId":"me"},
- {"id":"a5","name":"signin-page","subdomain":"signin-page","url":"http://127.0.0.1:$PORT/signin","type":"static","accessMode":"public","ownerId":"me"},
+ {"id":"a1","name":"old-app","subdomain":"old-app","url":"https://old-app.example.test","type":"static","accessMode":"public","passwordProtected":false,"ownerId":"me"},
+ {"id":"a2","name":"site-a","subdomain":"site-a","url":"https://site-a.example.test","type":"static","accessMode":"company","passwordProtected":false,"ownerId":"me"},
+ {"id":"a3","name":"Promo deck","subdomain":"promo-deck","url":"https://promo-deck.example.test","type":"static","accessMode":"company","passwordProtected":false,"ownerId":"me"},
+ {"id":"a4","name":"pub-page","subdomain":"pub-page","url":"http://127.0.0.1:$PORT/pub","type":"static","accessMode":"public","passwordProtected":false,"ownerId":"me"},
+ {"id":"a5","name":"signin-page","subdomain":"signin-page","url":"http://127.0.0.1:$PORT/signin","type":"static","accessMode":"public","passwordProtected":false,"ownerId":"me"},
  {"id":"a6","name":"board-notes","subdomain":"board-notes","url":"https://board-notes.example.test","type":"static","accessMode":"password","passwordProtected":true,"ownerId":"me"},
- {"id":"a7","name":"someone-else","subdomain":"someone-else","url":"https://someone-else.example.test","type":"static","accessMode":"public","ownerId":"them"}
+ {"id":"a7","name":"someone-else","subdomain":"someone-else","url":"https://someone-else.example.test","type":"static","accessMode":"public","passwordProtected":false,"ownerId":"them"}
 ]}
 EOF
 H="$T/hq"
@@ -192,6 +192,15 @@ R="$H/companies/bravo/deploys/promo-deck.md"
   && pass "--set-caption replaces the description and marks it generated in the frontmatter" || fail "set-caption: $RES"
 OUT="$(run --company bravo --set-caption companies/bravo/projects/web/deploys/old-app.md --caption "x")"; RC=$?; RES="$(last "$OUT")"
 [ "$RC" = 64 ] && [ "$(field "$RES" reason)" = not_a_backfill_record ] && pass "--set-caption refuses records it did not write" || fail "set-caption guard: $RES"
+
+echo "--- an hq CLI without the gate fields fails closed"
+OLD_APPS="$T/apps-old-cli.json"
+printf '%s\n' '{"apps":[{"id":"a1","name":"old-app","subdomain":"old-app","url":"https://old-app.example.test","type":"static","accessMode":"public"}]}' > "$OLD_APPS"
+OUT="$(cd "$H" && HQ_ROOT="" HQ_DEPLOY_BACKFILL_APPS_FILE="$OLD_APPS" HQ_DEPLOY_BACKFILL_OWNER=me "$CMD" --company bravo)"; RC=$?; RES="$(last "$OUT")"
+[ "$RC" != 0 ] && [ "$(field "$RES" reason)" = hq_cli_too_old ] && pass "apps without ownerId/passwordProtected stop with hq_cli_too_old" || fail "old cli (rc=$RC): $RES"
+grep -Fq '"hq", "deploy", "list", "--company", company, "--json"' "$ROOT/.claude/skills/deploy/scripts/deploy-record-backfill.py" \
+  && ! grep -Fq 'deploy-api-request' "$ROOT/.claude/skills/deploy/scripts/deploy-record-backfill.py" \
+  && pass "the app list comes from hq deploy list" || fail "backfill does not list apps through hq deploy list"
 
 echo "--- SKILL.md exposes /deploy record-existing"
 grep -Fq '/deploy record-existing' "$SKILL" && grep -Fq '.claude/skills/deploy/scripts/deploy-record-backfill.sh --company' "$SKILL" \

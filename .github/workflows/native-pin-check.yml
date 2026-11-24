@@ -1,0 +1,101 @@
+name: native-pin-check
+
+# Fails a pull request that changes a file the hq-hook engine (hq-cli
+# crates/hq-hook) answers natively, unless the pull request says what happens
+# to the pin. The engine answers a hook natively only when the installed
+# file's SHA-256 is one hq-cli pins; a change here without a matching hq-cli
+# pin sends every install on the new core back to bash for that hook.
+#
+# The check reads the pins from hq-cli main (crates/hq-hook/core-pins.json and
+# the pin tables in crates/hq-hook/src) through a read-only hq-audit-bot
+# installation token. See core/scripts/ci/native-pin-check.sh for the rule and
+# the acknowledgement lines it accepts:
+#
+#   Native-pin: pending hq-cli#<number>
+#   Native-pin: bash-fallback <reason>
+#
+# It runs on draft pull requests too, so the author learns before review. The
+# `edited` type re-runs it when the acknowledgement is added to the body.
+# hq-core (the promotion target) skips the job: the pins follow staging.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-pin-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  native-pin-check:
+    if: github.repository == 'indigoai-us/hq-core-staging'
+    name: native-pin-check
+    # Reads repository secrets, so it stays on a GitHub-hosted runner.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Self-test the check
+        run: bash core/scripts/tests/native-pin-check.test.sh
+      # The App credentials reach only the next two steps, never a step that
+      # runs a script from the pull request.
+      - name: Fail if App credentials are missing
+        env:
+          HAS_APP_ID: ${{ secrets.HQ_AUDIT_BOT_APP_ID != '' }}
+          HAS_APP_KEY: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY != '' }}
+        if: env.HAS_APP_ID != 'true' || env.HAS_APP_KEY != 'true'
+        run: |
+          echo "::error title=native-pin-check::HQ_AUDIT_BOT_APP_ID or HQ_AUDIT_BOT_PRIVATE_KEY is not available to this run (a fork pull request gets no secrets), so the hq-cli pin list cannot be read."
+          exit 1
+      - name: Mint a read-only token for hq-cli
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        with:
+          app-id: ${{ secrets.HQ_AUDIT_BOT_APP_ID }}
+          private-key: ${{ secrets.HQ_AUDIT_BOT_PRIVATE_KEY }}
+          owner: indigoai-us
+          repositories: hq-cli
+          permission-contents: read
+      - name: Fetch the hq-cli pin list (main)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/hq-cli"
+          # git asks gh for the token on every fetch, including the blob
+          # fetches the partial clone makes during checkout.
+          gh auth setup-git
+          git clone --depth 1 --branch main --filter=blob:none --no-checkout --quiet \
+            https://github.com/indigoai-us/hq-cli.git "$dest"
+          git -C "$dest" sparse-checkout set --no-cone /crates/hq-hook/core-pins.json /crates/hq-hook/src/
+          git -C "$dest" checkout --quiet main
+          test -f "$dest/crates/hq-hook/core-pins.json"
+          echo "hq-cli main $(git -C "$dest" rev-parse --short=12 HEAD)"
+      - name: Check changed files against the pins
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.txt"
+          # HEAD is the pull_request merge commit and HEAD^1 is main as it is
+          # now. Comparing the two judges what the merge would change, so a
+          # stale branch cannot hide an edit to bytes main pinned later.
+          merge_sha="$(git rev-parse HEAD)"
+          base_sha="$(git rev-parse HEAD^1)"
+          if [ "$(git rev-parse --verify --quiet HEAD^2 || true)" != "$PR_HEAD_SHA" ]; then
+            echo "::error title=native-pin-check::the checkout is not the merge of the pull request head $PR_HEAD_SHA"
+            exit 1
+          fi
+          bash core/scripts/ci/native-pin-check.sh \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "$base_sha" \
+            --head "$merge_sha" \
+            --pins "$RUNNER_TEMP/hq-cli" \
+            --pr-body-file "$RUNNER_TEMP/pr-body.txt"

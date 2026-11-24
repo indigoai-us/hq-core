@@ -139,21 +139,24 @@ const HELD_HELPERS = {
   "handoff-finalize.sh": "the PreToolUse scope guard (core/scripts/hook-lib.sh hd_text_arg) reads --summary/--title as data only for the shipped relative path; moving callers needs a PreToolUse change during the native PreToolUse hold",
 };
 
-// Helper modes that the hq-cli twin on main does not accept yet. A call that
-// uses one stays on the helper: `hq core` would exit 1 with a usage or
-// unknown-argument error where the helper works.
-const HELD_MODES = [
-  {
-    helper: "register-project.sh",
-    regex: /\s--board(?=\s|$)/,
-    reason: "hq core register-project on hq-cli main has no --board mode (it accepts only the older --brainstorm spelling and exits 1 with its usage)",
-  },
-  {
-    helper: "hq-delegate-send.sh",
-    regex: /\s--reconcile(?=\s|$)/,
-    reason: "hq core delegate send on hq-cli main rejects --reconcile (unknown argument, exit 1)",
-  },
-];
+// Helper modes newer than their command. A caller line that runs the command
+// with the flag needs this hq-cli, and --check holds it to the install floor.
+// hq-cli #3005 added --board and #3006 added --reconcile; 5.345.228 is the
+// first npm release with both (5.345.227 was never published, 5.345.226 has
+// neither).
+export const MODE_FLOORS = Object.freeze([
+  { command: "register-project", flag: "--board", minCli: "5.345.228" },
+  { command: "delegate send", flag: "--reconcile", minCli: "5.345.228" },
+]);
+
+// `hq core` commands with no single helper twin, so they are not in TWINS.
+// A caller line that runs one needs this hq-cli, and --check holds it to the
+// install floor. hq-cli #2839 added handoff run and handoff archive-decision;
+// 5.345.228 is the first release with both (5.345.226 has neither).
+export const COMMAND_FLOORS = Object.freeze([
+  { command: "handoff run", minCli: "5.345.228" },
+  { command: "handoff archive-decision", minCli: "5.345.228" },
+]);
 
 // In a skill or doc an agent runs the line through the Bash tool, so the
 // PreToolUse credential guard sees it. That guard blocks an `hq` call whose
@@ -191,8 +194,6 @@ function heldReason(file, helper, line = "") {
     if (held.prefixes.some((prefix) => file.startsWith(prefix))) return held.reason;
   }
   if (isShell(file) && FALLBACK_MARK.test(line)) return FALLBACK_REASON;
-  const mode = HELD_MODES.find((held) => held.helper === helper && held.regex.test(line));
-  if (mode) return mode.reason;
   return HELD_HELPERS[helper];
 }
 
@@ -303,12 +304,12 @@ export function scanFile(text, file = "") {
   const shell = isShell(file);
   const rows = [];
   const lines = text.split("\n");
-  // Helpers with a call held for its own line (a mode the twin lacks, or a
-  // guarded substitution) keep their allowed-tools entry in this file.
+  // Helpers with a call held for its own line (a guarded substitution) keep
+  // their allowed-tools entry in this file.
   const keepPermission = new Set();
   for (const source of lines) {
     for (const hit of rewriteLine(source, { file, shell }).hits) {
-      if (hit.action === "held" && (hit.reason === SUBST_REASON || HELD_MODES.some((held) => held.reason === hit.reason))) {
+      if (hit.action === "held" && hit.reason === SUBST_REASON) {
         keepPermission.add(hit.helper);
       }
     }
@@ -379,6 +380,16 @@ function main(argv) {
         process.stderr.write(`rewrite-core-callers: hq core ${twin.command} needs hq-cli ${twin.minCli}, above requiresHqCli ${floor}\n`);
       }
       if (above.length) return 1;
+      const modes = callsAboveFloor(root, floor, modeCalls);
+      for (const call of modes) {
+        process.stderr.write(`rewrite-core-callers: ${call.file}:${call.line} runs hq core ${call.command} ${call.flag}, which needs hq-cli ${call.minCli}, above requiresHqCli ${floor}\n`);
+      }
+      if (modes.length) return 1;
+      const commands = callsAboveFloor(root, floor, commandCalls);
+      for (const call of commands) {
+        process.stderr.write(`rewrite-core-callers: ${call.file}:${call.line} runs hq core ${call.command}, which needs hq-cli ${call.minCli}, above requiresHqCli ${floor}\n`);
+      }
+      if (commands.length) return 1;
     }
   }
   return 0;
@@ -427,6 +438,68 @@ export function compareVersions(left, right) {
     if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
   }
   return 0;
+}
+
+const MODE_CALLS = MODE_FLOORS.map((mode) => ({
+  ...mode,
+  call: new RegExp(String.raw`(?:^|[\s;&|(\x60"'])hq\s+core(?:\s+--hq-root(?:=\S+|\s+\S+))?\s+${mode.command.replace(/ /g, "\\s+")}(?=$|[\s;&|)\x60"'])(?<rest>.*)$`),
+  word: new RegExp(String.raw`(?:^|\s)${mode.flag}(?=$|[\s=;&|)\x60"'])`),
+}));
+
+/**
+ * Lines of `text` that run `hq core <command> ... <flag>` for a mode in
+ * MODE_FLOORS. Returns [{ line, command, flag, minCli }]. Shell comments are
+ * not calls.
+ */
+export function modeCalls(text, file = "") {
+  const shell = isShell(file);
+  const found = [];
+  text.split("\n").forEach((source, index) => {
+    if (shell && /^\s*#/.test(source)) return;
+    for (const mode of MODE_CALLS) {
+      const match = mode.call.exec(source);
+      if (match && mode.word.test(match.groups.rest)) {
+        found.push({ line: index + 1, command: mode.command, flag: mode.flag, minCli: mode.minCli });
+      }
+    }
+  });
+  return found;
+}
+
+const COMMAND_CALLS = COMMAND_FLOORS.map((entry) => ({
+  ...entry,
+  call: new RegExp(String.raw`(?:^|[\s;&|(\x60"'])hq\s+core(?:\s+--hq-root(?:=\S+|\s+\S+))?\s+${entry.command.replace(/ /g, "\\s+")}(?=$|[\s;&|)\x60"'.,])`),
+}));
+
+/**
+ * Lines of `text` that run `hq core <command>` for a command in
+ * COMMAND_FLOORS. Returns [{ line, command, minCli }]. Shell comments and
+ * allowed-tools patterns (`Bash(hq core <command>:*)`) are not calls.
+ */
+export function commandCalls(text, file = "") {
+  const shell = isShell(file);
+  const found = [];
+  text.split("\n").forEach((source, index) => {
+    if (shell && /^\s*#/.test(source)) return;
+    for (const entry of COMMAND_CALLS) {
+      if (entry.call.test(source)) {
+        found.push({ line: index + 1, command: entry.command, minCli: entry.minCli });
+      }
+    }
+  });
+  return found;
+}
+
+function callsAboveFloor(root, floor, finder) {
+  const found = [];
+  for (const file of trackedFiles(root)) {
+    let text;
+    try { text = readFileSync(join(root, file), "utf8"); } catch { continue; }
+    for (const call of finder(text, file)) {
+      if (compareVersions(call.minCli, floor) > 0) found.push({ file, ...call });
+    }
+  }
+  return found;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

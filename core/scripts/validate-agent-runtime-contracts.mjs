@@ -103,14 +103,6 @@ const INTENTIONALLY_APPROVAL_GATED_COMMANDS = new Map([
     "Command-substitution password handling remains approval-gated.",
   ],
   [
-    ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/deploy-api-request.sh",
-    "The invocation begins with a runtime credential assignment and remains approval-gated.",
-  ],
-  [
-    ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/site-events.sh",
-    "The enable call begins with a runtime credential assignment and remains approval-gated.",
-  ],
-  [
     ".claude/skills/deploy/SKILL.md::path:.claude/skills/deploy/scripts/comments-watch.sh",
     "The watcher is launched through hq monitor start with a runtime-built description, which cannot use a path-only literal prefix.",
   ],

@@ -134,4 +134,28 @@ printf '%s\n' "$got" | grep >/dev/null -F 'acme-gtm-depletions-changes-load' \
   || fail "empty dir not reported"
 pass "missing worker.yaml is missing"
 
+echo "[6] JSON-style quotes and backslashes preserve worker identity and path"
+R6="$TMP/r6"
+present='core/workers/public/back\slash"quote'
+legacy='core/workers/public/legacy'
+mkdir -p "$R6/$present" "$R6/$legacy"
+printf 'worker:\n  id: present\n' > "$R6/$present/worker.yaml"
+printf 'worker:\n  id: legacy\n' > "$R6/$legacy/worker.yaml"
+cat > "$R6/core/workers/registry.yaml" <<'YAML'
+workers:
+  - id: "present"
+    path: "core/workers/public/back\\slash\"quote/"
+    status: "active"
+  - id: "missing\\id\"quote"
+    path: "core/workers/public/missing\\path\"quote/"
+    status: "active"
+  - id: 'legacy'
+    path: '  core/workers/public/legacy/  '
+    status: 'active'
+YAML
+got="$(hq_workers_registry_missing "$R6")"
+want="$(printf '%s\t%s' 'missing\id"quote' 'core/workers/public/missing\path"quote')"
+[ "$got" = "$want" ] || fail "expected exactly the decoded missing worker; got $got"
+pass "JSON-quoted registry fields retain their original characters"
+
 echo "workers-registry-missing tests: ok"

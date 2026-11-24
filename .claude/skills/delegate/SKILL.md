@@ -1,7 +1,7 @@
 ---
 name: delegate
 description: "Hand a project to a person or fleet agent: grants, dossier, ownership transfer, and a pickup DM."
-allowed-tools: Read, AskUserQuestion, Skill, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(hq core delegate resolve:*), Bash(hq core delegate bundle:*), Bash(hq core delegate grant:*), Bash(hq core delegate repo:*), Bash(hq core delegate secrets:*), Bash(hq core delegate transfer:*), Bash(hq core delegate verify:*), Bash(hq core delegate send:*), Bash(bash core/scripts/hq-delegate-send.sh:*), Bash(hq core delegate pickup:*), Bash(rm:*)
+allowed-tools: Read, AskUserQuestion, Bash(hq:*), Bash(bash core/scripts/hq-session.sh:*), Bash(source core/scripts/lib/hq-cli-floor.sh:*), Bash(hq_cli_floor_check:*)
 ---
 
 # /delegate — one-command project handoff
@@ -13,9 +13,18 @@ recipient. Work Mesh ownership counts as confirmed only when the server returns
 a receipt naming the recipient; otherwise it stays unconfirmed. Sender-side
 checks prove publication, not recipient access; record actual pickup separately.
 
-Requires HQ CLI 5.109.7 or newer, with `whoami --json`, `files acl --json`, and
-`people resolve --membership-only`. If those options are unsupported, update
-the CLI before retrying; never fall back to parsing display tables.
+Requires hq-cli 5.345.241 or newer. That release is the first whose secrets
+step checks that every secret name exists before sharing any, reads prd.json
+`metadata.secrets` before the repo-wide schema, and shares agent and person
+uids through the grant step's principal. Check the installed version before
+resolving or changing anything.
+
+```bash
+source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check delegate 5.345.241
+```
+
+If the check fails, stop. Upgrade hq-cli to 5.345.241 or newer with
+`npm install -g @indigoai-us/hq-cli@latest`, then retry.
 
 ## Usage
 
@@ -35,9 +44,8 @@ the CLI before retrying; never fall back to parsing display tables.
 - `--company <slug>` — defaults to the session's bound company
   (`bash core/scripts/hq-session.sh get company_slug`).
 
-The heavy lifting lives in tested helpers; this skill orchestrates them
-and reports what they did. Do not reimplement their logic inline.
-Invoking `/delegate` is the authorization — the skill asks the user nothing.
+Invoking `/delegate` is the authorization for this workflow. The only
+questions are missing company or project context and an ambiguous recipient.
 
 ## Process
 
@@ -56,163 +64,45 @@ A brainstorm-stage delegation hands over `brainstorm.md`, every note under
 "brainstorm stage, no PRD yet" and name `/prd <project>` as the next step; the
 transfer updates the board's `status: exploring` entry (matched by
 `brainstorm_path`) and writes `owner` / `delegated_from` / `delegated_at` into
-the brainstorm.md frontmatter instead of PRD metadata. Every later step reads
-the stage from the manifest (`project.stage`), so nothing below changes.
+the brainstorm.md frontmatter instead of PRD metadata. The native command
+applies the transfer for the manifest's `project.stage`.
 
-### 2. Resolve the recipient — confirm before anything else
+### 2. Run the native delegation
 
-```bash
-hq core delegate resolve --company <co> --to "<recipient>"
-```
-
-- **Exit 0** — JSON `{kind, principal, displayName}`. Continue.
-- **Exit 3 (ambiguous)** — the output carries `matches[]`. Present the
-  candidates as a single structured picker (AskUserQuestion; decision-queue
-  pattern, one question). Never guess, never send blind. Re-run nothing —
-  use the chosen principal directly.
-- **Exit 4 (not found / no email)** — STOP. Relay the helper's message: no
-  teammate or fleet agent by that name in this company; the user can pass an
-  exact email, `prs_…`, or `agt_…` instead.
-
-Resolution is single-company and tenancy-safe; never look across companies.
-
-### 3. Dry run (when `--dry-run`)
+Use one command in the resolved company and project. Forward `--share`,
+`--no-secrets` and `--dry-run` only when the user supplied them. Resolution is
+single-company.
 
 ```bash
-hq core delegate verify --dry-run --company <co> --project <project> --to <principal> [--mode share]
+hq core delegate run --company <co> --project <project> --to "<recipient>" [--share] [--no-secrets] [--dry-run]
 ```
 
-Print the plan verbatim and stop. Nothing is pushed, granted, transferred, or
-sent, and nothing lands under `workspace/delegations/`.
+The command resolves the recipient, resumes or bundles, grants access, checks
+repository access, grants required secret names, transfers ownership, verifies
+publication and sends once. It stops at the first failure and reports its step.
+For a supplied custom DM headline, use the light DM pass in
+`core/knowledge/public/hq-core/humanize-before-send.md` before forwarding
+`--headline`. Preserve generated commands, recipients and flags.
 
-### 4. Freeze session state
+- Exit 0 with `status: sent` or `status: already-sent`. Keep the returned
+  manifest and any existing send or pickup receipt. Verify pickup and report
+  the recorded state.
+- Exit 0 with `status: dry-run`. Print the plan from stderr and stop.
+  Nothing is pushed, granted, transferred or sent. No manifest is created.
+- Exit 3 with `status: ambiguous`. Show `matches[]` in one structured picker.
+  Rerun with the chosen exact principal.
+- Exit 4 with `failedStep: resolve`. Report the unresolved recipient and stop.
+- For every other nonzero exit, report `failedStep` when present and the
+  supplied recovery guidance. If the command returns plain stderr, report
+  that failure. A failed probe means no DM. Never claim partial success.
 
-Before building the bundle, checkpoint the session so nothing in flight is
-lost to the handoff:
+Never delete the manifest on failure. Repeat the same command once the cause
+is fixed so it resumes instead of re-granting. When the manifest remains at
+`sending`, check DM history and reconcile a verified send receipt before
+retrying. Use `hq core delegate send --manifest <manifest> --reconcile <eventId>`.
+Keep the original state when delivery is still uncertain.
 
-```bash
-hq core checkpoint --summary "Delegating <project> to <displayName>" || true
-```
-
-If checkpointing is unavailable in this runtime, note it and continue — the
-delegation itself does not depend on it.
-
-### 5. Build the bundle
-
-```bash
-hq core delegate bundle build --company <co> --project <project> \
-  --to <principal> --to-kind <kind> --to-name "<displayName>" [--mode share]
-```
-
-Prints the `delegationId`; the manifest is
-`workspace/delegations/<delegationId>/manifest.json`. The builder fails closed
-if its own output matches a secret pattern — if it does, stop and report,
-never work around it.
-
-### 6. Collect the plan (no mutations yet)
-
-Run the three gated helpers WITHOUT `--yes`. Each prints its plan and exits 2;
-none of them touches anything. This is how the skill learns the vault prefixes,
-the secret names, and whether the branch needs pushing — it is not a gate, and
-nothing waits on the user here:
-
-```bash
-hq core delegate grant --manifest <manifest>          # vault grants incl. write escalation
-hq core delegate repo --manifest <manifest>           # exit 2 only when a local-only branch needs pushing
-hq core delegate secrets --manifest <manifest>        # secret NAMES that will be granted (only skipped when the user typed --no-secrets)
-```
-
-### 7. State the plan, then proceed — no confirmation
-
-There is no confirmation step.
-The invocation is the authorization for everything the flow does: the user
-typed `/delegate` with a recipient, and that is the whole approval. Do NOT present a
-Proceed/Cancel picker, do NOT offer alternatives or a reduced variant, and do
-NOT raise the vault write grant, the credential handover, the branch push, or
-the DM as questions. Nothing here waits on the user.
-
-State — do not ask — what is about to happen, in one compact full-prose block:
-
-- the recipient as resolved: display name + principal, and whether they are a
-  person or a fleet agent
-- the mode: full ownership transfer, or share (ownership stays)
-- every vault prefix with its permission — noting plainly that **write** lets
-  the recipient upload, overwrite, and delete under the project prefix, and
-  that access persists until manually revoked
-- every secret name being granted (read), and where the names came from
-  (the secrets helper prints `Source:` — the project's `.env.schema`, then
-  `prd.json` `metadata.secrets`, then the repo's `.env.schema` as the
-  widest fallback; every name is checked against the company vault before
-  any share runs) — this always happens, values never
-  move, and the recipient consumes them via `hq run` / `hq secrets exec`
-- the repo and branch, including "the branch exists only locally and will be
-  pushed" when the repo helper said so
-- that a DM goes to the recipient once everything verifies
-
-Then go straight to step 8 in the same turn. `--dry-run` is the preview path
-for anyone who wants the plan without the mutation, and `--no-secrets` is the
-credential opt-out; both are the user's to type and neither is ever suggested
-mid-run.
-
-AskUserQuestion survives for exactly two things, and neither is a permission
-prompt: an ambiguous recipient (step 2, exit 3) and a company or project that
-could not be resolved (step 1). Those are missing inputs — the skill cannot
-name a recipient it cannot resolve. Everything else proceeds unasked.
-
-### 8. Execute, in order, stopping at the first failure
-
-```bash
-hq core delegate grant --manifest <manifest> --yes
-hq core delegate repo --manifest <manifest> --yes        # when the project has a repo
-hq core delegate secrets --manifest <manifest> --yes     # always, unless the user typed --no-secrets
-hq core delegate transfer --manifest <manifest>          # skipped automatically in share mode; runs hq mesh project reassign
-hq core delegate verify --manifest <manifest>            # reachability probe — gates the send
-```
-
-The verify helper can run longer than the foreground command limit on a large
-project. Run it with `run_in_background: true` and wait for its exit status
-instead of running it in the foreground and retrying after a timeout.
-
-Verification invokes `core/scripts/hq-delegate-publish.sh` to publish the final
-PRD, brief, manifest, and journal. It compares canonical cloud bytes with local
-checksums before allowing the send. Conflicts or stale canonical files fail
-verification; resolve them through HQ sync and reuse the same manifest.
-
-If any step fails: report **which step** in plain language with the specific
-fix from its stderr, send nothing, and never claim partial success. The
-manifest keeps its last successful status, so re-running `/delegate` for the
-same project resumes instead of re-granting. Never delete
-`workspace/delegations/<delegationId>/` on failure — that record is what makes
-the resume work.
-
-### 9. Send
-
-Draft the DM headline, then run the channel-aware humanize pass on it per
-`core/knowledge/public/hq-core/humanize-before-send.md` (channel `dm`,
-intensity `light`) — plain and factual, no hype. Never rewrite the generated
-command lines, recipients, or flags. Then:
-
-```bash
-hq core delegate send --manifest <manifest> --send --headline "<humanized headline>"
-```
-
-One DM, prompt and brief attached from files. The helper refuses to send
-unless the probe passed.
-
-If a DM call fails or returns no event receipt, status stays `sending`.
-Inspect HQ DM history and reconcile the actual event before retrying. Never
-reset that status merely to resend; the previous call may have delivered.
-
-Always deliver the handoff DM through `hq-delegate-send.sh`. If a DM already
-went out some other way (manifest still `granted`, `verified`, or `sending`,
-and `hq-delegate-pickup.sh --check` refuses with exit 2), record it instead of
-re-sending:
-
-```bash
-bash core/scripts/hq-delegate-send.sh --manifest <manifest> --reconcile <eventId>
-```
-
-### 10. Close the loop: receipt or FAILED
+### 3. Verify pickup
 
 "Sent" is a send receipt, not a delivery receipt. The delegation is not done
 until the recipient demonstrably has it. Record the receipt the moment there is
@@ -229,7 +119,7 @@ why (no acknowledgement, no commit by the recipient) so the delegator can
 re-send with a direct ask or hand it to someone else. `/startwork` should run
 `--check` on any manifest still at `sent`.
 
-### 11. Report
+### 4. Report
 
 Read `workMeshOwnership` from the manifest:
 
@@ -254,7 +144,7 @@ no jargon. Example:
    grants only (policy `hq-delegate-never-inlines-secrets-or-share-urls`).
    If a step suggests the browser share flow, that is the wrong path.
 2. **Never let a secret value into any artifact, DM, or output.** Names only;
-   the helpers fail closed on secret-shaped content — respect the failure,
+   the command fails closed on secret-shaped content. Respect the failure and
    never work around it.
 3. **Never ask for permission.** The invocation is the authorization. No
    confirmation picker, no "want me to proceed?", no offered alternatives, no
@@ -268,8 +158,7 @@ no jargon. Example:
    option, never a per-secret prompt. The only opt-out is the user typing
    `--no-secrets`; if they do, say plainly in the report that the recipient
    has no credential access and will have to ask for it.
-5. **Never send blind.** The recipient must come from
-   `hq-delegate-resolve.sh` output or be an exact principal the user typed.
+5. **Never send blind.** The native command resolves the recipient in the selected company.
    On ambiguity, use the picker; on not-found, stop.
 6. **A failed probe means no DM.** A delegation that cannot be picked up
    fails in front of the delegator — that is the feature working, not a step
@@ -285,5 +174,4 @@ no jargon. Example:
 - `/new-agent` — provisioning a fleet agent (the verified-probe pattern this
   skill's verification step follows)
 - `core/knowledge/public/hq-core/delegation-bundle-spec.md` — the manifest
-  contract every helper reads
-
+  contract the native command reads

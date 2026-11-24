@@ -717,6 +717,23 @@ grep -Eq $'^uppercase-trigger\tcore\t.*UPPERCASE_TRIGGER_MARKER' <<<"$OUT29" \
   || fail "uppercase trigger identifier did not match lowercase derived fact: $OUT29"
 ok "inline trigger evaluator matches uppercase identifiers"
 
+# ── Case 30: short/option replies skip keyword matching (feedback_89d676df) ─
+rm -rf "$ROOT"
+setup_tree
+write_policy "$ROOT/core/policies/pricing-keyword.md" \
+  "pricing-keyword" "pricing" "[UserPromptSubmit]" "soft" "PRICING_KEYWORD_MARKER"
+write_policy "$ROOT/core/policies/always-on.md" \
+  "always-on" "always" "[UserPromptSubmit]" "soft" "ALWAYS_ON_MARKER"
+OUT30A="$(run_hook "$ROOT" "UserPromptSubmit" "3" HQ_POLICY_EMIT=tsv)"
+printf '%s\n' "$OUT30A" | grep -q PRICING_KEYWORD_MARKER \
+  && fail "numeric reply 3 matched pricing keyword: $OUT30A"
+grep -Eq $'^always-on\tcore\t.*ALWAYS_ON_MARKER' <<<"$OUT30A" \
+  || fail "numeric reply 3 dropped when:always: $OUT30A"
+OUT30B="$(run_hook "$ROOT" "UserPromptSubmit" "please quote pricing for the team plan" HQ_POLICY_EMIT=tsv)"
+grep -Eq $'^pricing-keyword\tcore\t.*PRICING_KEYWORD_MARKER' <<<"$OUT30B" \
+  || fail "long pricing prompt did not match: $OUT30B"
+ok "short option replies skip keyword matching and keep when:always"
+
 timeout 60s bash "$HQ_SRC/.claude/hooks/tests/inject-policy-on-trigger-match-process-budget.test.sh"
 
 # Disabled enforcement gate must disable both the PreToolUse scan and the

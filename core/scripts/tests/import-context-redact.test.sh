@@ -263,6 +263,11 @@ if grep -Fq 'Preflight step 3 resolves scope paths' "$SKILL" && ! grep -Fq 'Veri
 else
   bad 'skill self-exclusion wording still assigns the realpath abort to scan.sh'
 fi
+if grep -E -- '--argjson[[:space:]]+a[[:space:]]+"\$mcp' "$SCAN"; then
+  bad 'MCP merge still passes catalogs through jq --argjson'
+else
+  ok 'MCP merge does not pass catalogs through jq --argjson'
+fi
 
 printf '\nResult: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [[ $FAIL -gt 0 ]]; then exit 1; fi

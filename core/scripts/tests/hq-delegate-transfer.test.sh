@@ -210,6 +210,51 @@ MESH_REASSIGN_MODE=threadnotfound PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HE
 jq -e '.workMeshOwnership == "not-registered"' "$M" >/dev/null \
   || fail "PROJECT_THREAD_NOT_FOUND must mark workMeshOwnership not-registered (got $(jq -r .workMeshOwnership "$M"))"
 
+# --- 3e. no metadata id -> board mesh_project_id is the board of record -----
+# Regression: a PRD without metadata.workMeshProjectId made reassign target the
+# bare slug while the board of record was a suffixed id, so ownership stayed
+# unconfirmed.
+
+make_fixture "$FIX"
+jq '(.projects[] | select(.id == "ac-proj-7")) += {"mesh_project_id": "widget-0a1b2c3d4e5f"}' \
+  "$FIX/companies/acme/board.json" > "$TMP/b" && mv "$TMP/b" "$FIX/companies/acme/board.json"
+write_manifest "$M" transfer
+: > "$MESH_STUB_LOG"
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
+  || fail "transfer (board mesh id) exited non-zero"
+grep -q -- 'mesh project reassign widget-0a1b2c3d4e5f --company acme ' "$MESH_STUB_LOG" \
+  || fail "reassign must target the board entry's mesh_project_id: $(cat "$MESH_STUB_LOG")"
+
+# --- 3f. no metadata id, no board mesh id -> suffixed cache slug ------------
+
+make_fixture "$FIX"
+printf 'cmp_acme1\n' > "$FIX/companies/acme/.company-uid"
+CACHE="$TMP/mesh-cache"
+rm -rf "$CACHE"; mkdir -p "$CACHE/cmp_acme1"
+echo '{}' > "$CACHE/cmp_acme1/widget.json"
+echo '{}' > "$CACHE/cmp_acme1/widget-8c8711986479.json"
+echo '{}' > "$CACHE/cmp_acme1/widget-notahexslug.json"
+write_manifest "$M" transfer
+: > "$MESH_STUB_LOG"
+HQ_WORK_MESH_CACHE_DIR="$CACHE" PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>"$TMP/transfer.err" \
+  || fail "transfer (cache slug) exited non-zero"
+grep -q -- 'mesh project reassign widget-8c8711986479 --company acme ' "$MESH_STUB_LOG" \
+  || fail "reassign must target the suffixed cache slug: $(cat "$MESH_STUB_LOG")"
+
+# --- 3g. explicit metadata id still wins over board and cache ---------------
+
+make_fixture "$FIX"
+jq '.metadata.workMeshProjectId = "widget-explicit"' "$FIX/companies/acme/projects/widget/prd.json" > "$TMP/p" \
+  && mv "$TMP/p" "$FIX/companies/acme/projects/widget/prd.json"
+jq '(.projects[] | select(.id == "ac-proj-7")) += {"mesh_project_id": "widget-0a1b2c3d4e5f"}' \
+  "$FIX/companies/acme/board.json" > "$TMP/b" && mv "$TMP/b" "$FIX/companies/acme/board.json"
+write_manifest "$M" transfer
+: > "$MESH_STUB_LOG"
+PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \
+  || fail "transfer (explicit metadata id) exited non-zero"
+grep -q -- 'mesh project reassign widget-explicit --company acme ' "$MESH_STUB_LOG" \
+  || fail "metadata.workMeshProjectId must win: $(cat "$MESH_STUB_LOG")"
+
 make_fixture "$FIX"
 write_manifest "$M" transfer
 PATH="$FIX/bin:$PATH" HQ_ROOT="$FIX" bash "$HELPER" --manifest "$M" >/dev/null 2>&1 \

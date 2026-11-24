@@ -37,12 +37,13 @@ if none match, the first group whose keywords match a word in its description; o
 | `/overnight` | core | Overnight team-comms mode inside a running /super-conductor session. On the conductor's heartbeat (at the away interval) it reads the HQ DM inbox and the active company's DM channels, answers information requests from HQ knowledge, routes work requests to the conducted child that owns them, queues anything only the owner can decide, checks that every teammate who asked for something got an answer or a route, and logs it all to the link's overnight report. Use when the user says "/overnight", "watch the team overnight", "handle team DMs while I sleep", "overnight mode", or "triage the inbox until morning". |
 | `/pin` | core | Anchor this session to one goal — the message, target, or outcome it keeps working toward across loops, wakeups, compactions, and hand-offs — and check progress against it. |
 | `/recover-session` | core | Recover sessions that hit context limits without a handoff. |
+| `/restart-sessions` | core | Bring Claude desktop sessions over from another Claude account on the same Mac, with groups, presets and connectors. Triggers: \"my sessions are gone after switching accounts\", \"bring my sessions over\", \"get my sessions from the other account\", \"restart my sessions on this account\". |
 | `/resume-all` | core | Relaunch every session from a /handoff-all batch as a new Claude Code desktop session running its /resumework command. Triggers: \"resume all sessions\", \"bring back the handed-off sessions\". |
 | `/resumework` | core | Resume a specific handoff thread by id. For the latest handoff use /startwork. |
 | `/retro` | core | Run a project or session retrospective and capture reusable lessons. |
 | `/run-project` | core | Execute a project's PRD stories through /execute-task on subagents by default; story lanes and pipeline mode run in advanced mode (/conduct-runners). Interactive mode runs in the parent. |
 | `/startwork` | core | Resolve current HQ context and surface useful next work options. |
-| `/super-conductor` | core | Become the standing conductor for everything live. Adopt every open Claude Code desktop session onto one conduct link, watch team comms (HQ DM inbox and DM channels) for requests, resolve collisions between sessions, and keep a persistent heartbeat that wakes it on a chosen interval (1, 5, 10 minutes, ...) to sweep the channels the owner picked (sessions, HQ DMs, Slack, email, X) until told to stop. Use when the user says "/super-conductor", "/conduct-all" (deprecated alias), "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything". |
+| `/super-conductor` | core | Run one of several named super-conductors. Each conductor has its own profile (scope, when it may start sessions, which running sessions it adopts, check cadence, channels and stats to sweep, decision desk or its own window, where child sessions ask, and areas it must not watch), its own conduct link, heartbeat, save file and decision queue, so several can run side by side without overlap. Startup reuses a saved conductor by name or sets one up through a short questionnaire. It adopts the open Claude Code desktop sessions in its scope, watches team comms for requests, resolves collisions, and keeps a persistent heartbeat until told to stop. Use when the user says "/super-conductor", "/super-conductor <name>", "/conduct-all" (deprecated alias), "start a new conductor", "manage all my sessions", "watch everything while I'm away", "going to bed, manage open sessions and the team", or "conduct everything". |
 
 ## Sync
 
@@ -177,6 +178,7 @@ if none match, the first group whose keywords match a word in its description; o
 | `/run` | core | Run or list HQ workers, preferring isolated Codex subagents when available. |
 | `/search` | core | Search HQ content and indexed repos with qmd, falling back to grep. |
 | `/setup` | core | Run the HQ Starter Kit setup wizard. |
+| `/tui-monitor` | core | Build a live read-only terminal monitor (TUI) for machines or services. Stdlib Python, ssh collector, nothing installed remotely. Scaffolds a working template. |
 | `/tutorial` | core | Run hands-on HQ workflow lessons. |
 
 ## Duplicate findings

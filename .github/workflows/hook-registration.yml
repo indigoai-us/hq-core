@@ -9,11 +9,16 @@ on:
   # asks Corey's conductor for a dispatch. Outside staging the matrix is
   # unchanged.
   workflow_dispatch:
+  # Nightly on staging: the Codex adapter timeout-fit test waits out real
+  # Codex hook timeouts, so it runs here and never on pull requests.
+  schedule:
+    - cron: '41 6 * * *'
   pull_request:
     paths:
       - '.claude/settings.json'
       - '.claude/hooks/**'
       - '.codex/hooks/**'
+      - '.codex/config.toml'
       - '.grok/hooks/**'
       - 'core/scripts/restore-hook-settings.sh'
       - 'core/scripts/remove-stray-gate-hooks.sh'
@@ -24,6 +29,8 @@ on:
       - 'core/scripts/tests/restore-hook-engine.test.sh'
       - 'core/scripts/tests/hook-adapter-exec-form.test.sh'
       - 'core/scripts/tests/hook-adapter-jq-crlf.test.sh'
+      - 'core/scripts/tests/codex-adapter-native-steps-aside.test.sh'
+      - 'core/scripts/tests/codex-adapter-native-timeout-fit.test.sh'
       - '.github/workflows/hook-registration.yml'
 permissions:
   contents: read
@@ -35,6 +42,7 @@ concurrency:
 
 jobs:
   restore:
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && matrix.os == 'ubuntu-latest' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX || '"ubuntu-latest"') || matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -58,3 +66,22 @@ jobs:
           bash core/scripts/tests/restore-hook-engine.test.sh
           bash core/scripts/tests/hook-adapter-exec-form.test.sh
           bash core/scripts/tests/hook-adapter-jq-crlf.test.sh
+          bash core/scripts/tests/codex-adapter-native-steps-aside.test.sh
+
+  # Real elapsed time against each Codex hook timeout (about a minute), so it
+  # is nightly on staging or dispatched by hand, never on a pull request. It
+  # runs on the self-hosted Linux ARM pool, like pr-checks; the hosted label is
+  # only the fallback when that pool is switched off. Linux only: the adapter never stands
+  # aside on Windows. Pull requests check the wait caps from the adapter's
+  # trace in codex-adapter-native-steps-aside.test.sh.
+  codex-timeout-fit:
+    if: ${{ (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Codex adapter answers inside every Codex hook timeout
+        shell: bash
+        run: |
+          export HOME="$(mktemp -d)"
+          bash core/scripts/tests/codex-adapter-native-timeout-fit.test.sh

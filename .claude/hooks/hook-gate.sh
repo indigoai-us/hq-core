@@ -198,12 +198,21 @@ hq_highest_node_version() {
 }
 
 hq_augment_path() {
-  # Fast path: if node, hq, and qmd already resolve, do nothing (Homebrew and
-  # correctly-configured setups pay ~zero).
+  # Fast path: if node, hq, qmd and jq already resolve, do nothing (Homebrew
+  # and correctly-configured setups pay ~zero). jq is part of the check because
+  # master-hook.sh fails closed on PreToolUse when jq is missing after this
+  # recovery: a jq installed outside the inherited PATH (winget, scoop,
+  # ~/.local/bin) must still be found, or every tool call is blocked.
+  # Directories found only because they hold jq are appended to the END of
+  # PATH, so the inherited node/hq/qmd keep their priority and nothing the
+  # user chose is shadowed.
+  local jq_only=0 need_jq=0
+  command -v jq >/dev/null 2>&1 || need_jq=1
   if command -v node >/dev/null 2>&1 \
     && command -v hq >/dev/null 2>&1 \
     && command -v qmd >/dev/null 2>&1; then
-    return 0
+    [ "$need_jq" = 1 ] || return 0
+    jq_only=1
   fi
 
   local home="${HOME:-}"
@@ -270,6 +279,32 @@ hq_augment_path() {
         esac
         candidates+=("$_up/scoop/shims")
       fi
+      # winget, which the master-hook missing-jq message recommends. Portable
+      # packages such as jqlang.jq are linked into WinGet\Links; when winget
+      # cannot create that link it puts the package folder itself on the user
+      # PATH. Either change reaches only shells started after the install, so
+      # a Claude Code session that was already open never sees jq.
+      if [ -n "${LOCALAPPDATA:-}" ]; then
+        local _lad _lad_drive _wg_pkg
+        _lad="${LOCALAPPDATA//\\//}"
+        case "$_lad" in
+          [A-Za-z]:*)
+            # Git Bash spells drives in lowercase (/c/...). Matching that keeps
+            # the "already on PATH" check below from adding a second copy.
+            _lad_drive="${_lad:0:1}"
+            [ "${BASH_VERSINFO[0]:-3}" -ge 4 ] && _lad_drive="${_lad_drive,,}"
+            _lad="/${_lad_drive}${_lad:2}"
+            ;;
+        esac
+        candidates+=("$_lad/Microsoft/WinGet/Links")
+        # Checked first so a shell with failglob set does not abort on a
+        # machine that has no winget packages folder.
+        if [ -d "$_lad/Microsoft/WinGet/Packages" ]; then
+          for _wg_pkg in "$_lad"/Microsoft/WinGet/Packages/jqlang.jq_*; do
+            [ -d "$_wg_pkg" ] && candidates+=("$_wg_pkg")
+          done
+        fi
+      fi
       candidates+=("/c/ProgramData/chocolatey/bin" "/c/ProgramData/scoop/shims")
       ;;
   esac
@@ -278,19 +313,27 @@ hq_augment_path() {
 
   # Accumulate a prefix of dirs that (a) aren't already on PATH and (b) actually
   # contain one of our tools, preserving priority order.
-  local prefix="" dir
+  local prefix="" suffix="" dir
   for dir in "${candidates[@]}"; do
     [ -n "$dir" ] || continue
     case ":$PATH:" in
       *":$dir:"*) continue ;;
     esac
     [ -d "$dir" ] || continue
-    if [ -x "$dir/node" ] || [ -x "$dir/hq" ] || [ -x "$dir/qmd" ] \
-      || [ -x "$dir/node.exe" ] || [ -x "$dir/hq.exe" ] || [ -x "$dir/qmd.exe" ]; then
+    # node/hq/qmd folders go in front so the user's version manager wins. A
+    # folder admitted only for jq goes at the END, and only while jq is
+    # missing, so a jq-only folder such as /usr/local/bin never shadows
+    # binaries the user already has on PATH.
+    if [ "$jq_only" != 1 ] \
+      && { [ -x "$dir/node" ] || [ -x "$dir/hq" ] || [ -x "$dir/qmd" ] \
+        || [ -x "$dir/node.exe" ] || [ -x "$dir/hq.exe" ] || [ -x "$dir/qmd.exe" ]; }; then
       prefix="${prefix:+$prefix:}$dir"
+    elif [ "$need_jq" = 1 ] && { [ -x "$dir/jq" ] || [ -x "$dir/jq.exe" ]; }; then
+      suffix="${suffix:+$suffix:}$dir"
     fi
   done
   [ -n "$prefix" ] && export PATH="$prefix:$PATH"
+  [ -n "$suffix" ] && export PATH="$PATH:$suffix"
   return 0
 }
 

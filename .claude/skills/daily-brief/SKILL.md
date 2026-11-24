@@ -31,7 +31,8 @@ Briefs are manually triggered, so several can exist per day. Each run gets its o
 | `brief-data.json` | Step 3 | Raw normalized sweep output |
 | `brief.json` | Step 4 | Synthesized items with prompts, read by the generator, plus the optional `page` the card design draws (Step 4b) |
 | `page-draft.json` | Step 4b | The page frame and card candidates from `brief_page.py skeleton`; a working file, not read by the app |
-| `housekeeping.json` | Step 5 | Cleanup results and proposed cleanup actions |
+| `housekeeping.json` | Step 5, by `housekeeping.py` only | Cleanup check results, plus a copy of the proposals |
+| `housekeeping.proposals.json` | Step 5, by you only | Proposed cleanup actions |
 
 When a run finishes, ready or failed, append one line to `workspace/brief/index.jsonl`. The desktop app's history navigator reads this file:
 
@@ -326,7 +327,7 @@ For zero memberships or a failed membership lookup, include this getting-started
 
 ## Step 4. Synthesize brief.json
 
-First start housekeeping in the background (Step 5's command), so it runs while you write. Then turn `brief-data.json` and the prefs into these items. The reader is the person the brief is for, who may not be a developer. Every list holds **at most 5 items**, and only things that truly need them.
+First start housekeeping in the background (Step 5's command), so it runs while you write. Never wait for it: when you write `brief.json`, use whatever `housekeeping.json` holds at that moment. Then turn `brief-data.json` and the prefs into these items. The reader is the person the brief is for, who may not be a developer. Every list holds **at most 5 items**, and only things that truly need them.
 
 For `mode: person`, apply the synthesis below separately to `personal` and each `companies.<slug>` section. Preserve those sections in `brief.json`, copy `not_included`, and keep every item’s company. Run `brief_rank.py --check` on the aggregate; inspect every section report and require no `isolation_problems` and no `welcome_problems`. Company PRs remain in their company sections, rather than being dropped from the person brief. Use only the previous person run for carry-over, matching both company and item identity. Record `mode: person` in the ready index entry.
 
@@ -343,7 +344,7 @@ The writing step must never go quiet. Before each section, append an activity en
 | Writing priorities | 0.91 |
 | Housekeeping | 0.95 |
 
-Mark the previous entry `done` with a plain detail ("4 decisions") when the next one starts. If a section takes longer than 30 seconds, update its `detail` ("3 of 5 written"). The Housekeeping entry is the one `housekeeping.py` writes; if it has not finished, add the entry yourself as `running` and let the script complete it. Read the clock in the same command that writes each entry.
+Mark the previous entry `done` with a plain detail ("4 decisions") when the next one starts. If a section takes longer than 30 seconds, update its `detail` ("3 of 5 written"). You write every activity entry, the Housekeeping one too: the script never writes `status.json`. Add the Housekeeping entry as `running` when you start the script, and each time you write `status.json` afterwards set its `detail` from the `headline` in `housekeeping.json`, and its state to `done` once that file's `state` is `done`. Read the clock in the same command that writes each entry.
 
 ### Item fields
 
@@ -527,24 +528,24 @@ After `attach`, run `brief_rank.py --check` once more. If `signals_notice_proble
 
 ## Step 5. Housekeeping
 
-Housekeeping runs every time, through one script. Start it in the background at the beginning of Step 4 so it runs while you write; it never blocks `brief.json`. Do not run the checks by hand, and do not skip the script.
+Housekeeping runs every time, through one script. Start it in the background at the beginning of Step 4 so it runs while you write. It never blocks `brief.json`: never wait for it, and above all never wait for the sync, the slowest check. Do not run the checks by hand, and do not skip the script.
 
 ```bash
 python3 -I .claude/skills/daily-brief/scripts/housekeeping.py \
   --company <company> --hq-root "$PWD" --run-dir workspace/brief/<run_id>
 ```
 
-In person mode, run housekeeping separately for personal and each included company, writing into separate temporary run directories and copying each result into its matching section. This keeps company worktree paths within their own section. Never run company housekeeping for an excluded company. On an explicit personal brief, leave `--company` off. The doctor and sync checks need a company, so the script records both as `skipped` with the reason `needs a company` and runs only the worktree scan.
+In person mode, run housekeeping once for personal and once for each included company, all with the real `--run-dir` and each with its own `--out`: `--out workspace/brief/<run_id>/housekeeping-personal.json`, and `--company <slug> --out workspace/brief/<run_id>/housekeeping-company-<slug>.json` for each company (the `company-` prefix keeps a company slug from ever matching `personal`). `--out` accepts only lower-case `housekeeping.json` or `housekeeping-<section>.json` (letters, digits, `-` and `_`) directly in the run dir. Each run writes straight to its own file, a sync that ends after the brief is ready included. Do not copy results anywhere; read each file when you write that section. This keeps company worktree paths within their own section. Never run company housekeeping for an excluded company. On an explicit personal brief, leave `--company` off. The doctor and sync checks need a company, so the script records both as `skipped` with the reason `needs a company` and runs only the worktree scan.
 
 The script runs the every-run checks in parallel, each under a hard time budget, with stdin closed and every prompt pre-answered:
 
 | Check | Command | Budget |
 |---|---|---|
-| `hq_doctor` | `hq doctor --json --company <company>`. Exit 1 only means some checks fail; the run still counts as finished | 40s |
-| `hq_sync` | `hq sync now --company <company> --on-conflict abort --lock-timeout 0`. Never prompts, never overwrites, never waits on the HQ Sync app's lock | 30s |
-| `worktree_scan` | read-only `git status` and `git log -1` in each `workspace/worktrees` checkout | 20s |
+| `hq_doctor` | `hq doctor --json --company <company>`. Exit 1 only means some checks fail; the run still counts as finished | 150s |
+| `hq_sync` | `hq sync now --company <company> --on-conflict abort --lock-timeout 0 --max-runtime 460`. Never prompts, never overwrites, never waits on the HQ Sync app's lock, and stops itself (exit 124) before the budget | 480s |
+| `worktree_scan` | read-only `git status` and `git log -1` in each `workspace/worktrees` checkout | 60s |
 
-A check that reaches its budget is stopped (SIGTERM, then SIGKILL) and recorded as skipped. Every task ends with exactly one status: `ran clean`, `found N things`, `skipped (took too long)` or `failed: <reason>`. The script writes `housekeeping.json` (`tasks`, `notes`, `headline`, `proposals`) and `status.json.housekeeping`, completes the "Housekeeping" activity entry, and never prints command output or secrets. Use its `headline` as the Housekeeping card's line, unchanged. Never write "did not finish" or "not run" for a check the script reported otherwise.
+The script writes each check's record into `housekeeping.json` (or its `--out` file) as soon as that check ends, with `state: running`, `pending` listing the checks still running and a headline that says so ("1 of 3 checks ran clean so far. Sync still running."); after the last check, `state` is `done`. The health check and the worktree scan usually land within the first minutes; the sync can run on after `brief.json` is written, and the script then updates only its own file. The script is that file's only writer: never edit it. It never writes `status.json`, `brief.json` or the proposals file, and it never replaces a file it cannot parse. A check that reaches its budget is stopped (SIGTERM, then SIGKILL) and recorded as skipped; a sync that its own `--max-runtime` ended is recorded the same way. Every task ends with exactly one status: `ran clean`, `found N things`, `skipped (took too long)` or `failed: <reason>`. The script writes `housekeeping.json` (`state`, `tasks`, `pending`, `notes`, `headline`, `proposals`) and never prints command output or secrets. Use the `headline` it holds when you write `brief.json` as the Housekeeping card's line, unchanged, even when it still names a running check. Never write "did not finish" or "not run" for a check the script reported otherwise.
 
 The script also adds the deliberate-reset note when it applies ("Brief history was reset on purpose; the old briefs are backed up in workspace/brief-backup-…"). That one line in `notes` is the only place a reset appears.
 
@@ -552,7 +553,15 @@ The script also adds the deliberate-reset note when it applies ("Brief history w
 
 Housekeeping never deletes files, kills processes, removes worktrees or files bugs.
 
-**Proposals.** Anything destructive or outward-facing becomes an item in `housekeeping.json.proposals` with a launch prompt. Add proposals to the file the script wrote and keep its `tasks`, `notes` and `headline`. The brief shows these on a Housekeeping card, and the user starts each one:
+**Proposals.** Anything destructive or outward-facing becomes a proposal with a launch prompt. Write them to `housekeeping.proposals.json` beside the housekeeping file, as `{"proposals": [...]}` (in person mode, `housekeeping-<section>.proposals.json` beside each section's file, e.g. `housekeeping-company-acme.proposals.json`). You are that file's only writer; write it to a temporary file and rename it into place. Never put proposals in `housekeeping.json`. Right after saving the proposals file, run the merge once (add the same `--out` in person mode):
+
+```bash
+python3 -I .claude/skills/daily-brief/scripts/housekeeping.py --merge-proposals --run-dir workspace/brief/<run_id>
+# person mode, once per section, with that section's --out:
+python3 -I .claude/skills/daily-brief/scripts/housekeeping.py --merge-proposals --run-dir workspace/brief/<run_id> --out workspace/brief/<run_id>/housekeeping-company-<slug>.json
+```
+
+It copies the proposals into the housekeeping file only while it holds the lock the checks use, so it is safe while a check is still running, and the checks copy them in again on every later write. It waits at most 5 seconds for the lock. Exit 1 means one of the two files could not be read and nothing was written: fix the proposals file and run it again. Exit 2 means `merge skipped`: it could not hold the lock (another process held it, or this file system does not support locking) and wrote nothing. Run the merge once more; if it exits 2 again, go on without it, because a later write by the checks still copies the proposals in. Never retry more than once. Build them from the checks that have finished; a check still in `pending` gets no proposal in this brief. The brief shows these on a Housekeeping card, and the user starts each one:
 - Hand off and archive stale sessions.
 - Quit orphan processes. List the PID, command, memory and why each looks orphaned. Never include the user's own apps or HQ.app.
 - Remove idle worktrees listed in `tasks.worktree_scan.detail.stale_paths`, after confirming each is merged and has no unpushed commits.
@@ -563,7 +572,7 @@ Each proposal states, in plain words, what it frees or fixes and its risk.
 
 ## Step 6. Finish
 
-- Write status `state: ready`, `progress: 1.0`, as soon as `brief.json` is written and Step 4b's `attach` has run (it never blocks: a failed page is simply left out). Housekeeping updates `status.json.housekeeping` afterwards without changing `state`.
+- Write status `state: ready`, `progress: 1.0`, as soon as `brief.json` is written and Step 4b's `attach` has run (it never blocks: a failed page is simply left out). Nothing writes `status.json` after that; a sync that ends later updates only the housekeeping file.
 - Append the run to `workspace/brief/index.jsonl`.
 - Print one line: `BRIEF READY <run_id> <path to brief.json>`. The desktop app watches `status.json` and shows the notification.
 - When `brief.json.signals_notices` is not empty (the brief was built with stale signals), end with the stale reply from Step 0: after the `BRIEF READY` line, one line per stale company (each entry's `line`, the same sentence as the gate's `signals_stale.line`, then its `try_now_line`, both as given), then the `hq-block` fence with "Try now", last. This follows the file, not the path Step 0 took, so the reply and the page always agree. A brief with an empty `signals_notices` has no such reply. A stale brief is still a `ready` run: status, index line and `BRIEF READY` are written as for any brief.

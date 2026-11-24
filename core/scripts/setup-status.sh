@@ -160,7 +160,8 @@ fi
 prior_footprint=false
 if [ -f "$ROOT/companies/manifest.yaml" ] && [ -n "${HOME:-}" ]; then
   for dir in "$HOME/.claude/plans" "$HOME/.claude/commands" "$HOME/.claude/skills" \
-    "$HOME/.claude/projects" "$HOME/.claude/agents" "$HOME/.codex/sessions" "$HOME/.grok/sessions"; do
+    "$HOME/.claude/projects" "$HOME/.claude/agents" "$HOME/.codex/sessions" "$HOME/.grok/sessions" \
+    "$HOME/.gemini/antigravity/conversations" "$HOME/.gemini/antigravity/brain"; do
     if [ -d "$dir" ] && find "$dir" -mindepth 1 -maxdepth 2 -print -quit 2>/dev/null | grep -q .; then
       prior_footprint=true
       break

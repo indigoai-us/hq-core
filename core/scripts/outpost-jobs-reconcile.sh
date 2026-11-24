@@ -48,14 +48,14 @@ fi
 HQ_ROOT="${HQ_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 # US-043: an hq-cli whose `hq core jobs reconcile` writes units that start the
-# native runner (`hq core job run`) does the whole reconcile. With an older or
-# missing hq the shell body below runs, and its units start hq-job-run.sh,
-# which stays on disk until US-044 removes both. HQ_JOB_RECONCILE_SHELL=1 keeps
-# the shell body for its own tests.
-# PENDING: hq-cli#2871 merged as 2184f4c85 after v5.345.223 was cut, so the
-# first release that contains it is 5.345.224 or later. Correct this before
-# it merges if that release is not 5.345.224.
+# native runner (`hq core job run`) does the whole reconcile; 5.345.224 is the
+# first release that carries hq-cli#2871. With an older or missing hq the shell
+# body below runs. Its units also start `hq core job run`, so it refuses unless
+# the hq its units will start (on PATH, or under `npm prefix -g`) is at
+# HQ_JOB_RUN_MIN_CLI or later (the release that added `hq core job run`). HQ_JOB_RECONCILE_SHELL=1 keeps the shell body for its own
+# tests.
 HQ_JOB_RECONCILE_NATIVE_MIN_CLI=5.345.224
+HQ_JOB_RUN_MIN_CLI=5.296.0
 if [ "${HQ_JOB_RECONCILE_SHELL:-0}" != 1 ] && [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ] && command -v hq >/dev/null 2>&1; then
   # shellcheck source=lib/hq-cli-floor.sh
   . "$SCRIPT_DIR/lib/hq-cli-floor.sh"
@@ -124,15 +124,94 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# The shell script is also bundled inside hq-cli. Its own SCRIPT_DIR then
-# points into the npm package, while job units must always target the live
-# scaffold forwarder so they survive CLI upgrades and Node switches.
-RUNNER="$HQ_ROOT/core/scripts/hq-job-run.sh"
+# Unit PATH helpers. unit_service_path_value is the PATH written into each
+# service unit: the reconcile PATH plus the directory of the hq it resolves,
+# falling back to `npm prefix -g`/bin when hq is not on PATH. The refusal below
+# and write_service_unit both use it, so they agree on which hq a unit starts.
+
+normalize_service_path() {
+  local remaining="$1" entry existing normalized="" has_more seen entry_count=0 index
+  local -a entries=()
+  while :; do
+    if [[ "$remaining" == *:* ]]; then
+      entry="${remaining%%:*}"
+      remaining="${remaining#*:}"
+      has_more=1
+    else
+      entry="$remaining"
+      remaining=""
+      has_more=0
+    fi
+    case "$entry" in
+      /*)
+        seen=0
+        for ((index = 0; index < entry_count; index++)); do
+          existing="${entries[index]}"
+          if [ "$existing" = "$entry" ]; then
+            seen=1
+            break
+          fi
+        done
+        if [ "$seen" -eq 0 ]; then
+          entries+=("$entry")
+          entry_count=$((entry_count + 1))
+        fi
+        ;;
+    esac
+    [ "$has_more" -eq 1 ] || break
+  done
+  if [ "$entry_count" -gt 0 ]; then
+    local IFS=:
+    normalized="${entries[*]}"
+  fi
+  printf '%s' "$normalized"
+}
+
+unit_service_path_value() {
+  local service_path hq_bin npm_prefix hq_bin_dir
+  service_path="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  service_path="$(normalize_service_path "$service_path")"
+  hq_bin=""
+  if [ -n "$service_path" ]; then
+    hq_bin="$(PATH="$service_path" type -P hq 2>/dev/null || true)"
+  fi
+  if [ -z "$hq_bin" ] && PATH="$service_path" command -v npm >/dev/null 2>&1; then
+    npm_prefix="$(PATH="$service_path" npm prefix -g 2>/dev/null || true)"
+    if [ -n "$npm_prefix" ] && [ -x "$npm_prefix/bin/hq" ]; then
+      hq_bin="$npm_prefix/bin/hq"
+    fi
+  fi
+  if [ -n "$hq_bin" ] && [ -x "$hq_bin" ]; then
+    hq_bin_dir="$(cd "$(dirname "$hq_bin")" 2>/dev/null && pwd -P || true)"
+    if [ -n "$hq_bin_dir" ]; then
+      case ":$service_path:" in
+        *":$hq_bin_dir:"*) ;;
+        *) service_path="$hq_bin_dir:$service_path" ;;
+      esac
+    fi
+  fi
+  printf '%s' "$service_path"
+}
+
+# Every unit below starts `hq core job run`. Refuse here instead of writing
+# units that fail when their timer fires. The check runs with the PATH the
+# units get, so it tests the same hq binary they will start. --probe-only
+# writes no units.
+if [ "$PROBE_ONLY" != 1 ]; then
+  HQ_JOB_RUN_MISSING="job units run 'hq core job run', which needs hq-cli >= $HQ_JOB_RUN_MIN_CLI on PATH; no units written. Install or upgrade with: npm install -g @indigoai-us/hq-cli@latest"
+  HQ_JOB_UNIT_PATH="$(unit_service_path_value)"
+  if [ -f "$SCRIPT_DIR/lib/hq-cli-floor.sh" ]; then
+    # shellcheck source=lib/hq-cli-floor.sh
+    . "$SCRIPT_DIR/lib/hq-cli-floor.sh"
+    ( PATH="$HQ_JOB_UNIT_PATH"; hq_cli_floor_check outpost-jobs-reconcile.sh "$HQ_JOB_RUN_MIN_CLI" ) || die "$HQ_JOB_RUN_MISSING"
+  elif ! ( PATH="$HQ_JOB_UNIT_PATH"; command -v hq >/dev/null 2>&1 ); then
+    die "$HQ_JOB_RUN_MISSING"
+  fi
+fi
 
 command -v yq >/dev/null 2>&1 || die "yq is required (mikefarah/yq)"
 command -v jq >/dev/null 2>&1 || die "jq is required"
 [ -x "$VALIDATE" ] || [ -f "$VALIDATE" ] || die "missing jobs-validate.sh"
-[ -f "$RUNNER" ] || die "missing hq-job-run.sh"
 [ -f "$PROBE" ] || die "missing hq-job-probe.sh"
 
 UNIT_DIR="${HQ_JOB_UNIT_DIR:-${HOME}/.config/systemd/user}"
@@ -587,70 +666,6 @@ cron_to_oncalendar() {
 unit_service_path() { printf '%s/hq-job-%s.service' "$UNIT_DIR" "$1"; }
 unit_timer_path() { printf '%s/hq-job-%s.timer' "$UNIT_DIR" "$1"; }
 
-normalize_service_path() {
-  local remaining="$1" entry existing normalized="" has_more seen entry_count=0 index
-  local -a entries=()
-  while :; do
-    if [[ "$remaining" == *:* ]]; then
-      entry="${remaining%%:*}"
-      remaining="${remaining#*:}"
-      has_more=1
-    else
-      entry="$remaining"
-      remaining=""
-      has_more=0
-    fi
-    case "$entry" in
-      /*)
-        seen=0
-        for ((index = 0; index < entry_count; index++)); do
-          existing="${entries[index]}"
-          if [ "$existing" = "$entry" ]; then
-            seen=1
-            break
-          fi
-        done
-        if [ "$seen" -eq 0 ]; then
-          entries+=("$entry")
-          entry_count=$((entry_count + 1))
-        fi
-        ;;
-    esac
-    [ "$has_more" -eq 1 ] || break
-  done
-  if [ "$entry_count" -gt 0 ]; then
-    local IFS=:
-    normalized="${entries[*]}"
-  fi
-  printf '%s' "$normalized"
-}
-
-unit_service_path_value() {
-  local service_path hq_bin npm_prefix hq_bin_dir
-  service_path="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
-  service_path="$(normalize_service_path "$service_path")"
-  hq_bin=""
-  if [ -n "$service_path" ]; then
-    hq_bin="$(PATH="$service_path" type -P hq 2>/dev/null || true)"
-  fi
-  if [ -z "$hq_bin" ] && PATH="$service_path" command -v npm >/dev/null 2>&1; then
-    npm_prefix="$(PATH="$service_path" npm prefix -g 2>/dev/null || true)"
-    if [ -n "$npm_prefix" ] && [ -x "$npm_prefix/bin/hq" ]; then
-      hq_bin="$npm_prefix/bin/hq"
-    fi
-  fi
-  if [ -n "$hq_bin" ] && [ -x "$hq_bin" ]; then
-    hq_bin_dir="$(cd "$(dirname "$hq_bin")" 2>/dev/null && pwd -P || true)"
-    if [ -n "$hq_bin_dir" ]; then
-      case ":$service_path:" in
-        *":$hq_bin_dir:"*) ;;
-        *) service_path="$hq_bin_dir:$service_path" ;;
-      esac
-    fi
-  fi
-  printf '%s' "$service_path"
-}
-
 systemd_quote() {
   local value="$1"
   value="${value//%/%%}"
@@ -666,14 +681,6 @@ write_service_unit() {
   local id="$1" path service_path
   path="$(unit_service_path "$id")"
   service_path="$(unit_service_path_value)"
-  local runner_abs
-  # Keep the selected root verbatim so ExecStart names the same root as
-  # --hq-root and HQ_ROOT below. Re-deriving it through cd/pwd collapses
-  # a doubled slash (macOS TMPDIR ends in "/") and the paths then disagree.
-  case "$RUNNER" in
-    /*) runner_abs="$RUNNER" ;;
-    *) runner_abs="$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER")" ;;
-  esac
   cat >"$path" <<EOF
 # Generated by outpost-jobs-reconcile.sh — disposable derived state. Do not edit.
 [Unit]
@@ -687,7 +694,7 @@ Type=oneshot
 Environment=HQ_ROOT=${HQ_ROOT}
 Environment=$(systemd_quote "PATH=$service_path")
 Environment=HQ_SYNC_UNATTENDED=1
-ExecStart=${runner_abs} --hq-root ${HQ_ROOT} --job-id ${id}
+ExecStart=/usr/bin/env hq core --hq-root $(systemd_quote "$HQ_ROOT") job run --job-id ${id}
 Nice=10
 
 [Install]

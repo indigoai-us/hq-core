@@ -1,0 +1,5 @@
+interface:
+  display_name: >-
+    Restart Sessions
+  short_description: >-
+    Bring desktop sessions over from another Claude account

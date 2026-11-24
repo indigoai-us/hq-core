@@ -1,0 +1,3 @@
+interface:
+  display_name: "TUI Monitor"
+  short_description: "Build a live, read-only terminal monitor from a working template."

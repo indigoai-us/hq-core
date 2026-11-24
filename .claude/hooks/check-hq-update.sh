@@ -9,7 +9,9 @@
 #      Detached so it never blocks session start; 6h cooldown stamp so it
 #      doesn't relaunch every session.
 #   2. hq-core release: compares local hqVersion (core/core.yaml) to the latest
-#      GitHub release of indigoai-us/hq-core. If a newer release is available,
+#      release of hq-core (indigoai-us/hq-core on GitHub unless HQ_CORE_SOURCE
+#      or ~/.hq/core-source.json names another source; see
+#      core/scripts/lib/hq-core-source.sh). If a newer release is available,
 #      emits a banner instructing Claude to spawn a sub-agent task running
 #      /update-hq in a fresh session.
 #
@@ -467,22 +469,43 @@ write_network_attempt_stamp() {
 }
 
 if [ "$USE_CACHE" -eq 0 ]; then
-  command -v gh >/dev/null 2>&1 || exit 0
+  # The release source comes from HQ_CORE_SOURCE (env, then
+  # ~/.hq/core-source.json), defaulting to GitHub. gh and its login are used
+  # only when the API host is api.github.com; any other host gets a plain
+  # curl request with no credentials.
+  # shellcheck source=../../core/scripts/lib/hq-core-source.sh
+  . "${BASH_SOURCE[0]%/*}/../../core/scripts/lib/hq-core-source.sh" 2>/dev/null || exit 0
+  hq_core_source_load 2>/dev/null
   NETWORK_ATTEMPT_STAMP="$(network_attempt_stamp_path)" || exit 0
-  if network_attempt_stamp_should_skip "$NETWORK_ATTEMPT_STAMP"; then exit 0; fi
-  bounded_gh_command 2 gh auth status >/dev/null 2>&1 || {
-    write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
-    exit 0
-  }
+  if hq_core_source_api_is_github; then
+    command -v gh >/dev/null 2>&1 || exit 0
+    if network_attempt_stamp_should_skip "$NETWORK_ATTEMPT_STAMP"; then exit 0; fi
+    bounded_gh_command 2 gh auth status >/dev/null 2>&1 || {
+      write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
+      exit 0
+    }
 
-  RAW_TAG=$(bounded_gh_command 2 gh release view -R indigoai-us/hq-core --json tagName -q .tagName 2>/dev/null) || {
-    write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
-    exit 0
-  }
+    RAW_TAG=$(bounded_gh_command 2 gh release view -R "$HQ_CORE_SOURCE_REPO" --json tagName -q .tagName 2>/dev/null) || {
+      write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
+      exit 0
+    }
+  else
+    command -v curl >/dev/null 2>&1 || exit 0
+    if network_attempt_stamp_should_skip "$NETWORK_ATTEMPT_STAMP"; then exit 0; fi
+    RELEASE_JSON=$(HQ_CORE_SOURCE_CURL_TIMEOUT=2 hq_core_source_api_get "repos/$HQ_CORE_SOURCE_REPO/releases/latest" 2>/dev/null) || {
+      write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"
+      exit 0
+    }
+    RAW_TAG=""
+    if [[ "$RELEASE_JSON" =~ \"tag_name\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
+      RAW_TAG="${BASH_REMATCH[1]}"
+    fi
+  fi
   [ -n "$RAW_TAG" ] || { write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"; exit 0; }
 
   LATEST_VERSION=$(echo "$RAW_TAG" | sed -E 's/^v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
-  [ -n "$LATEST_VERSION" ] || { write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"; exit 0; }
+  # The tag may come from a configured non-GitHub host; accept only X.Y.Z.
+  [[ "$LATEST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { write_network_attempt_stamp "$NETWORK_ATTEMPT_STAMP"; exit 0; }
 
   mkdir -p "$CACHE_DIR"
   printf '{"latest":"%s","checkedAt":"%s"}\n' \

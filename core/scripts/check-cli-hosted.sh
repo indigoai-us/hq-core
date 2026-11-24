@@ -111,7 +111,9 @@ is_explicitly_allowed_cli_source() {
     # The CI installer probes for the hidden core group before running tests.
     core/scripts/ci/install-pinned-hq-cli.sh) return 0 ;;
     # Handoff scripts make operational CLI calls that are not scaffold entrypoints.
-    core/scripts/handoff-finalize.sh|core/scripts/handoff-post.sh) return 0 ;;
+    # handoff-run.sh calls `hq core handoff run` and, on its helper fallback,
+    # `hq core handoff post`; both are operational calls, not forwarders.
+    core/scripts/handoff-finalize.sh|core/scripts/handoff-post.sh|core/scripts/handoff-run.sh) return 0 ;;
     # Settings healer queries an optional offline capability; it does not forward
     # its implementation to the CLI and retains bash when the probe is absent.
     core/scripts/restore-hook-settings.sh) return 0 ;;

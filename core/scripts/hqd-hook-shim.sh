@@ -169,8 +169,10 @@ no_perl_fallback() {
   esac
   exit 0
 }
-if ! command -v perl >/dev/null 2>&1 \
-  || ! LC_ALL=C perl -MJSON::PP -MTime::HiRes -MSocket -MErrno -MFcntl -e 1 >/dev/null 2>&1; then
+# The module check lives in the client's BEGIN block (exit 76 below), so a
+# working perl starts once per event, not twice. Each perl start counts on a
+# Mac where process launches are expensive (feedback_0f247c64).
+if ! command -v perl >/dev/null 2>&1; then
   no_perl_fallback
 fi
 
@@ -178,6 +180,9 @@ fi
 out=$(printf '%s' "$payload" | HQD_SHIM_EVENT="$event" HQD_SHIM_RUNTIME="$runtime" \
   HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" HQD_SHIM_BACKOFF_MS="$backoff" \
   HQD_SHIM_DEADLINE_MS="$deadline" LC_ALL=C perl -e '
+# Started marker, flushed at once: the shell tells a perl that never ran this
+# program (broken binary, exec failure) from one that died mid-request.
+BEGIN { $| = 1; print q{@@hqd-shim-started@@}; $| = 0; }
 # Budget first, before any module loads, so the hard timer below covers them.
 # The effective budget is the configured one (SessionEnd: at most 1000 ms),
 # cut to the time left before the caller deadline when one is given.
@@ -428,12 +433,15 @@ if ($event eq "SessionStart") {
 exit 0;
 ')
 rc=$?
-# 76: a client module failed to load although the probe passed. The daemon
-# was not consulted; master-hook falls back, other callers get the same
-# answer as for a perl that died.
-if [ "$rc" = 76 ]; then
-  [ "${HQ_HQD_SHIM_REPORT_UNREACHABLE:-0}" != 1 ] || exit 75
-  rc=255
+client_started=0
+case "$out" in
+  '@@hqd-shim-started@@'*) client_started=1; out=${out#@@hqd-shim-started@@} ;;
+esac
+# 76: a core module the client needs failed to load (the client checks them
+# before it reads the payload). No marker: the perl on PATH never ran the
+# client. Either way the daemon was not consulted: same answer as no perl.
+if [ "$rc" = 76 ] || { [ "$client_started" = 0 ] && [ "$rc" != 142 ]; }; then
+  no_perl_fallback
 fi
 
 case "$rc" in

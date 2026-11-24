@@ -16,13 +16,20 @@
 #   .env .env.* .envrc *.env
 #     allowed: .env.example .env.sample .env.template .env.schema .env.dist,
 #     upstream-pin.env (non-secret pin file, exact basename),
-#     .env.<name>.example|sample|template, *.d.ts and *.md
+#     .env.<name>.example|sample|template, example.env, *.example.env,
+#     *.sample.env, *.template.env, *.schema.env, *.dist.env, *.d.ts and *.md
 #   backup and editor copies of all of the above: name~ name.bak name.orig
 #   name.old name.swp name.swo name.save name.tmp name.N name.bak.* and the
 #   vim swap form .name.swp
 #
 # Read tool: .tool_input.file_path is normalized (~, $HOME, ${HOME},
 # relative to the payload cwd, `.`/`..`) and symlinks are resolved.
+# On Windows (Git Bash, MSYS, Cygwin) a backslash is also a separator:
+# every path and cwd is folded to slashes, a \\?\ or \\.\ prefix is
+# removed, trailing dots and spaces on a segment are removed, and a drive
+# path (C:\x, C:/x) is checked as the MSYS path /c/x. A drive-relative path
+# (C:x) is also checked against the cwd. On any other host a backslash stays
+# a literal character.
 #
 # Bash: the command is tokenized (quotes, escapes, $(...), backticks, <(...),
 # heredocs, redirects) and each simple command is checked. Deny by default:
@@ -155,6 +162,39 @@ H="${HOME:-}"
 while case "$H" in *//*) true ;; *) false ;; esac; do H="${H%%//*}/${H#*//}"; done
 [ "$H" = "/" ] || H="${H%/}"
 
+# 1 when this hook runs under Git Bash, MSYS or Cygwin, where a backslash is
+# a directory separator. On macOS and Linux it is a literal byte and the
+# Windows folding below is skipped.
+CG_WIN_HOST=0
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*) CG_WIN_HOST=1 ;;
+esac
+if [ "$CG_WIN_HOST" = 0 ]; then
+  case "${MSYSTEM:-}" in
+    MINGW*|MSYS*|CYGWIN*|UCRT*|CLANG*) CG_WIN_HOST=1 ;;
+  esac
+fi
+# Prefix of a drive in the shell's own spelling: /c on Git Bash and MSYS,
+# /cygdrive/c on Cygwin.
+CG_WIN_DRIVE_ROOT=""
+case "${OSTYPE:-}" in cygwin*) CG_WIN_DRIVE_ROOT="/cygdrive" ;; esac
+case "${MSYSTEM:-}" in CYGWIN*) CG_WIN_DRIVE_ROOT="/cygdrive" ;; esac
+# A word that starts with a drive letter and a colon (C:x, 'C:/x').
+CG_WIN_DRIVE_WORD_RE='(^|[^A-Za-z0-9_])[A-Za-z]:'
+# cg_win_drive_word <text>: 0 when the text has a drive word, also after
+# quotes are removed, so C"":x, "C":x, 'C':x, C":"x and C$'':x count. Only
+# called on Windows, where bash is 4 or later.
+cg_win_drive_word() {
+  local t="$1"
+  [[ "$t" =~ $CG_WIN_DRIVE_WORD_RE ]] && return 0
+  case "$t" in *[\"\']*) ;; *) return 1 ;; esac
+  t="${t//\$\'/}"
+  t="${t//\$\"/}"
+  t="${t//\'/}"
+  t="${t//\"/}"
+  [[ "$t" =~ $CG_WIN_DRIVE_WORD_RE ]]
+}
+
 # lc_word <word> -> LCW, the word in lower case. ${1,,} needs bash 4; with
 # bash 3.2 (macOS /bin/bash), or for any character outside plain ASCII
 # letters, digits and ._+@:/=,%~- , tr is used as before.
@@ -194,6 +234,8 @@ is_env_name() {
     # Per-environment templates (.env.local.example), TypeScript declarations
     # (.env.d.ts) and docs (.env.md) hold no values.
     .env.*.example|.env.*.sample|.env.*.template|*.d.ts|*.md) r=1 ;;
+    # Template files whose last suffix is .env (config.example.env).
+    example.env|*.example.env|*.sample.env|*.template.env|*.schema.env|*.dist.env) r=1 ;;
     .env|.env.*|.envrc|*.env) r=0 ;;
   esac
   [ "$nc" -eq 1 ] || shopt -u nocasematch
@@ -322,10 +364,184 @@ is_cred_dir() {
   return $r
 }
 
-# norm_path <path> <cwd> -> NP (absolute, lexical . / .. / // cleanup).
+# cg_win_fold <path> -> CG_WIN_P. Windows only. Backslashes become slashes,
+# a \\?\ \\?\UNC\ or \\.\ prefix is removed, and trailing dots and spaces
+# are removed from each segment (Windows opens .npmrc. as .npmrc). An NTFS
+# stream suffix (name::$DATA, name:$DATA, name:s:$DATA, dir::$INDEX_ALLOCATION)
+# is removed, since it opens the file or directory itself. A drive
+# path becomes the shell's spelling: C:/x and C: become /c/x and /c
+# (/cygdrive/c/x on Cygwin). A
+# drive-relative C:x becomes /c/x; cg_drive_relative also checks it against
+# the cwd. An administrative share //host/c$/x becomes /c/x. "." and ".."
+# are kept for norm_path.
+CG_WIN_P=""
+cg_win_fold() {
+  local p="$1" seg rest d
+  local out=()
+  p="${p//\\//}"
+  case "$p" in
+    //[?.]/[Uu][Nn][Cc]/*) p="//${p:8}" ;;
+    //[?.]/*) p="${p:4}" ;;
+  esac
+  # An administrative share (//host/c$/x) opens drive C of that host. The
+  # host may be this machine under any name, so it is checked as C:/x.
+  case "$p" in
+    //[!/]*/[A-Za-z]\$|//[!/]*/[A-Za-z]\$/*)
+      rest="${p#//*/}"
+      case "$rest" in
+        [A-Za-z]\$|[A-Za-z]\$/*) p="${rest:0:1}:${rest:2}" ;;
+      esac
+      ;;
+  esac
+  case "$p" in
+    [A-Za-z]:*)
+      lc_word "${p:0:1}"
+      d="$LCW"
+      rest="${p:2}"
+      rest="${rest#/}"
+      if [ -n "$rest" ]; then p="${CG_WIN_DRIVE_ROOT:-}/$d/$rest"; else p="${CG_WIN_DRIVE_ROOT:-}/$d"; fi
+      ;;
+  esac
+  rest="$p/"
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    rest="${rest#*/}"
+    case "$seg" in
+      ''|'.'|'..') out+=("$seg"); continue ;;
+      *[!.\ ]*) ;;
+      *) out+=('.'); continue ;;
+    esac
+    case "$seg" in
+      *::\$*|*:[!:]*:\$*|*:\$[Dd][Aa][Tt][Aa]*|*:\$[Ii][Nn][Dd][Ee][Xx]_*|*:\$[Ii]30*)
+        seg="${seg%%:*}"
+        [ -n "$seg" ] || continue
+        ;;
+    esac
+    while [ -n "$seg" ]; do
+      case "$seg" in
+        '.'|'..') break ;;
+        *' '|*.) seg="${seg%?}" ;;
+        *) break ;;
+      esac
+    done
+    [ -n "$seg" ] || continue
+    out+=("$seg")
+  done
+  local IFS=/
+  CG_WIN_P="${out[*]}"
+}
+
+# cg_drive_relative <path> <cwd>: Windows only. C:x (no separator after the
+# colon) is x in the current directory of drive C. Check x against the cwd;
+# norm_path checks the /c/x spelling.
+cg_drive_relative() {
+  [ "${CG_WIN_HOST:-0}" = 1 ] || return 0
+  local p="${1//\\//}" cwd="$2" rest
+  case "$p" in
+    [A-Za-z]:/*|[A-Za-z]:) return 0 ;;
+    [A-Za-z]:*) ;;
+    *) return 0 ;;
+  esac
+  rest="${p:2}"
+  norm_path "$rest" "$cwd"
+  cg_check_np
+}
+
+# cg_win_root_rel <path> <cwd> -> CG_ALT. Windows only. A path with one
+# leading backslash (\Users\me), or one leading slash and a backslash later
+# (/Users\me), starts at the root of the current drive, so
+# Windows programs and the MSYS runtime read it as C:\Users\me when the cwd
+# is on C:. norm_path reads it as the MSYS root (/Users/me); CG_ALT is the
+# drive reading (/c/Users/me), with drive C when the cwd is not on a drive.
+# Empty for any other path.
+CG_ALT=""
+cg_win_root_rel() {
+  CG_ALT=""
+  [ "${CG_WIN_HOST:-0}" = 1 ] || return 0
+  case "$1" in
+    '\\'*|'\/'*) return 0 ;;
+    '\'*) ;;
+    /[!/]*'\'*) ;;
+    *) return 0 ;;
+  esac
+  local d=c rest
+  cg_win_fold "$2"
+  case "$CG_WIN_P" in
+    "${CG_WIN_DRIVE_ROOT:-}"/[A-Za-z]|"${CG_WIN_DRIVE_ROOT:-}"/[A-Za-z]/*)
+      rest="${CG_WIN_P#"${CG_WIN_DRIVE_ROOT:-}"/}"
+      d="${rest%%/*}"
+      ;;
+  esac
+  norm_path "$d:$1" "$2"
+  # A drive path is a Windows path, so ".." stops at the drive root.
+  CG_ALT="${NP_W:-$NP}"
+}
+
+# cg_root_relative <path> <cwd>: check the drive reading of a root-relative
+# Windows path (see cg_win_root_rel).
+cg_root_relative() {
+  cg_win_root_rel "$1" "$2"
+  [ -z "$CG_ALT" ] || check_abs "$CG_ALT"
+}
+
+# cg_check_path <path> <cwd>: normalize and check one path. On Windows a
+# drive-relative or root-relative spelling is checked both ways.
+cg_check_path() {
+  cg_drive_relative "$1" "$2"
+  cg_root_relative "$1" "$2"
+  norm_path "$1" "$2"
+  cg_check_np
+}
+
+# cg_win_scan_cmd <command> <cwd>: Windows only. The shell parser below
+# treats an unquoted backslash as an escape and drops it, so
+# C:\work\.ssh\id_rsa reaches the operand checks as C:work.sshid_rsa.
+# Check each unquoted word that holds a backslash as a path as well. Quoted
+# text keeps its backslashes and is checked by the operand checks.
+cg_win_scan_cmd() {
+  [ "${CG_WIN_HOST:-0}" = 1 ] || return 0
+  local rest="$1" cwd="$2" chunk q w nf=0
+  case "$rest" in *\\*) ;; *) return 0 ;; esac
+  case "$-" in *f*) nf=1 ;; esac
+  local words=()
+  while [ -n "$rest" ]; do
+    chunk="${rest%%[\"\']*}"
+    case "$chunk" in
+      *\\*)
+        local IFS=$' \t\n;|&()<>`'
+        set -f
+        # shellcheck disable=SC2206 # word splitting on IFS is the point.
+        words=($chunk)
+        [ "$nf" = 1 ] || set +f
+        unset IFS
+        for w in ${words[@]+"${words[@]}"}; do
+          case "$w" in *\\*) cg_check_path "$w" "$cwd" ;; esac
+        done
+        ;;
+    esac
+    [ "${#chunk}" -lt "${#rest}" ] || break
+    rest="${rest:${#chunk}}"
+    q="${rest:0:1}"
+    rest="${rest:1}"
+    case "$rest" in
+      *"$q"*) rest="${rest#*"$q"}" ;;
+      *) break ;;
+    esac
+  done
+}
+
+# norm_path <path> <cwd> -> NP (absolute, lexical . / .. / // cleanup), and
+# NP_W on Windows (see below).
 NP=""
+NP_W=""
 norm_path() {
   local p="$1" cwd="$2" u rest
+  if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+    cg_win_fold "$p"
+    p="$CG_WIN_P"
+    cg_win_fold "$cwd"
+    cwd="$CG_WIN_P"
+  fi
   case "$p" in
     "~") p="$H" ;;
     "~/"*) p="$H/${p#"~/"}" ;;
@@ -340,23 +556,140 @@ norm_path() {
     /*) ;;
     *) p="$cwd/$p" ;;
   esac
-  local seg out=() rest_p="$p/"
+  # On Windows ".." stops at the drive root (C:\..\Users is C:\Users), while
+  # the MSYS runtime walks a POSIX path past its mount (/c/../c/Users is
+  # /c/Users). NP is the MSYS reading. NP_W is the Windows reading when it
+  # differs and is empty otherwise. keep is the number of leading segments
+  # that spell the drive (/c, /cygdrive/c).
+  local keep=0 clamped=0
+  NP_W=""
+  if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+    case "$p" in
+      "${CG_WIN_DRIVE_ROOT:-}"/[A-Za-z]|"${CG_WIN_DRIVE_ROOT:-}"/[A-Za-z]/*)
+        keep=1
+        [ -z "${CG_WIN_DRIVE_ROOT:-}" ] || keep=2
+        ;;
+    esac
+  fi
+  local seg out=() outw=() rest_p="$p/"
   while [ -n "$rest_p" ]; do
     seg="${rest_p%%/*}"
     rest_p="${rest_p#*/}"
     case "$seg" in
       ''|.) ;;
-      ..) [ ${#out[@]} -gt 0 ] && unset "out[$((${#out[@]} - 1))]" ;;
-      *) out+=("$seg") ;;
+      ..)
+        [ ${#out[@]} -gt 0 ] && unset "out[$((${#out[@]} - 1))]"
+        if [ "$keep" -gt 0 ]; then
+          if [ ${#outw[@]} -gt "$keep" ]; then
+            unset "outw[$((${#outw[@]} - 1))]"
+          else
+            clamped=1
+          fi
+        fi
+        ;;
+      *) out+=("$seg"); [ "$keep" -eq 0 ] || outw+=("$seg") ;;
     esac
   done
+  local IFS=/
   if [ ${#out[@]} -eq 0 ]; then
     NP="/"
   else
-    local IFS=/
     NP="/${out[*]}"
   fi
+  if [ "$clamped" = 1 ]; then
+    NP_W="/${outw[*]}"
+    [ "$NP_W" != "$NP" ] || NP_W=""
+  fi
 }
+
+# cg_check_np: check_abs on NP and, on Windows, on NP_W (see norm_path).
+cg_check_np() {
+  local n="$NP" w="$NP_W"
+  [ -z "$w" ] || check_abs "$w"
+  check_abs "$n"
+}
+
+# cg_win_readings <path> <cwd> -> CG_RDS: Windows only. The readings of one
+# word other than norm_path's NP and NP_W: the drive-root reading of a
+# root-relative path (cg_win_root_rel) and the cwd readings of a
+# drive-relative C:x (cg_drive_relative). Empty off Windows.
+CG_RDS=()
+cg_win_readings() {
+  CG_RDS=()
+  [ "${CG_WIN_HOST:-0}" = 1 ] || return 0
+  cg_win_root_rel "$1" "$2"
+  [ -z "$CG_ALT" ] || CG_RDS+=("$CG_ALT")
+  local p="${1//\\//}"
+  case "$p" in
+    [A-Za-z]:/*|[A-Za-z]:) ;;
+    [A-Za-z]:*)
+      norm_path "${p:2}" "$2"
+      CG_RDS+=("$NP")
+      [ -z "$NP_W" ] || CG_RDS+=("$NP_W")
+      ;;
+  esac
+  cg_win_slash_alt "$1" "$2"
+  [ -z "$CG_ALT2" ] || CG_RDS+=("$CG_ALT2")
+}
+
+# cg_win_file_url <text after file:> -> CG_FU. Windows only (callers check
+# CG_WIN_HOST). curl on Windows opens a file URL as a drive or UNC path:
+# file:///C:/x, file:///C|/x, file://localhost/C:/x, file://127.0.0.1/C:/x
+# and the one-slash file:/C:/x are C:/x, and so is file://C:/x (curl reads
+# a drive letter after file:// as the path, not a host); file://host/share/x
+# with any other host is the UNC path //host/share/x, which cg_win_fold
+# reads (an administrative share //host/c$/x is C:/x). Text with no slash
+# after file: is returned unchanged.
+CG_FU=""
+cg_win_file_url() {
+  local r="$1" h p
+  case "$r" in
+    //*)
+      r="${r:2}"
+      # A '|' in a case pattern must be quoted; [:|] would open a class.
+      case "$r" in
+        [A-Za-z]: | [A-Za-z]:[/\\]* | [A-Za-z]'|' | [A-Za-z]'|'[/\\]*) r="/$r" ;;
+      esac
+      case "$r" in
+        */*) h="${r%%/*}"; p="/${r#*/}" ;;
+        *) h="$r"; p="" ;;
+      esac
+      case "$h" in
+        '' | [Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt] | 127.0.0.1) r="$p" ;;
+        *) r="//$h$p" ;;
+      esac
+      ;;
+  esac
+  case "$r" in
+    /[A-Za-z]:*) r="${r:1}" ;;
+    /[A-Za-z]'|'*) r="${r:1:1}:${r:3}" ;;
+  esac
+  CG_FU="$r"
+}
+
+# cg_win_slash_alt <path> <cwd> -> CG_ALT2. Windows only. A native Windows
+# program given /x without MSYS path conversion (Cygwin, MSYS_NO_PATHCONV)
+# opens it at the root of the cwd's drive (C:\x). The MSYS reading stays
+# NP; this reading is only checked, never used as the shell's cwd. A /x
+# with a backslash is handled by cg_win_root_rel. Empty otherwise.
+CG_ALT2=""
+cg_win_slash_alt() {
+  CG_ALT2=""
+  [ "${CG_WIN_HOST:-0}" = 1 ] || return 0
+  case "$1" in
+    *\\*) return 0 ;;
+    /[!/]*) ;;
+    *) return 0 ;;
+  esac
+  cg_win_root_rel "\\${1#/}" "$2"
+  CG_ALT2="$CG_ALT"
+}
+
+if [ "$CG_WIN_HOST" = 1 ]; then
+  case "$H" in
+    *\\*|[A-Za-z]:*) norm_path "$H" "/"; H="$NP" ;;
+  esac
+fi
 
 
 # ---------------------------------------------------------------- fast path
@@ -1530,6 +1863,16 @@ cg_fast_allow() {
   shopt -u nocasematch
   local cwd="$CG_CWD"
   [ -n "$cwd" ] || cwd="$PWD"
+  # On Windows a backslash or a drive letter in the command or Read path can
+  # name a credential path the checks below do not see; the full check
+  # decides those. The cwd is folded to the spelling norm_path uses.
+  if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+    case "$CG_CMD$CG_FILE" in *\\*) return 1 ;; esac
+    case "$CG_FILE" in [A-Za-z]:*) return 1 ;; esac
+    cg_win_drive_word "$CG_CMD" && return 1
+    norm_path "$cwd" "/"
+    cwd="$NP"
+  fi
   case "$CG_TOOL" in
     Bash)
       [ -n "$CG_CMD" ] || return 0
@@ -1593,10 +1936,23 @@ cg_fast_allow() {
       IFS="$old_ifs"
       for lw in ${arr[@]+"${arr[@]}"}; do
         lw="${lw#@}"
+        if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+          case "$lw" in [Ff][Ii][Ll][Ee]:*) cg_win_file_url "${lw:5}"; lw="$CG_FU" ;; esac
+        fi
         case "$lw" in file://*|FILE://*) lw="${lw#*://}" ;; *://*) continue ;; esac
         case "$lw" in *=*) lw="${lw#*=}" ;; esac
         [ -n "$lw" ] || continue
-        case "$lw" in /*) ;; *) lw="$cwd/$lw" ;; esac
+        if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+          cg_win_slash_alt "$lw" "$cwd"
+          if [ -n "$CG_ALT2" ] && { [ -L "$CG_ALT2" ] || [ -e "$CG_ALT2" ]; }; then
+            return 1
+          fi
+          norm_path "$lw" "$cwd"
+          [ -z "$NP_W" ] || return 1
+          lw="$NP"
+        else
+          case "$lw" in /*) ;; *) lw="$cwd/$lw" ;; esac
+        fi
         if [ -L "$lw" ] || { [[ "$lw" == "$cwd"/*/* ]] && [ -e "$lw" ]; }; then
           return 1
         fi
@@ -1605,7 +1961,13 @@ cg_fast_allow() {
       ;;
     Read)
       [ -n "$CG_FILE" ] || return 0
+      # On Windows a slash-first path is also read at the root of the
+      # cwd's drive (see the Read check below).
+      if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+        case "$CG_FILE" in /[!/]*) return 1 ;; esac
+      fi
       norm_path "$CG_FILE" "$cwd"
+      [ -z "$NP_W" ] || return 1
       case "$NP" in *'~'*) return 1 ;; esac
       is_cred_path "$NP" && return 1
       local q="$NP"
@@ -1743,6 +2105,13 @@ case "$TOOL" in
 esac
 
 [ -n "$PAYLOAD_CWD" ] || PAYLOAD_CWD="$PWD"
+# On Windows the cwd arrives as C:\work\proj. Fold it once to the
+# spelling norm_path uses (/c/work/proj), so the cwd checks below and
+# the link resolution see the directory the command runs in.
+if [ "$CG_WIN_HOST" = 1 ]; then
+  norm_path "$PAYLOAD_CWD" "/"
+  PAYLOAD_CWD="$NP"
+fi
 
 REALPATH_BIN=$(command -v realpath 2>/dev/null || true)
 
@@ -1782,8 +2151,14 @@ check_abs() {
 if [ "$TOOL" = "Read" ]; then
   FP="$VAL"
   [ -n "$FP" ] || exit 0
-  norm_path "$FP" "$PAYLOAD_CWD"
-  check_abs "$NP"
+  # On Windows the Read tool (Node) opens /x at the root of the cwd's
+  # drive (C:\x), so that reading is checked too.
+  if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+    case "$FP" in
+      /[!/]*) cg_root_relative "\\${FP#/}" "$PAYLOAD_CWD" ;;
+    esac
+  fi
+  cg_check_path "$FP" "$PAYLOAD_CWD"
   exit 0
 fi
 
@@ -1802,6 +2177,7 @@ fi
 # time against the same budget so a slow pass there also ends in a block.
 cg_budget_check
 [ -n "$CMD" ] || exit 0
+cg_win_scan_cmd "$CMD" "$PAYLOAD_CWD"
 # CRED_WORD_RE and PREFILTER_RE are defined above the fast path.
 
 # Same value as ${CMD//[\"\'\\]/}, which is quadratic in bash 3.2 and took
@@ -1947,6 +2323,14 @@ if [ -z "$REALPATH_BIN" ]; then
   # full analysis, and check_abs blocks an operand that passes through a link.
   LINK_HIT=1
 fi
+# On Windows the word list below loses backslashes (STRIPPED drops them) and
+# reads C:lnk as a name under the cwd, so a neutral link named that way
+# would be missed. Those commands get the full analysis.
+CG_WIN_FULL=0
+if [ "$CG_WIN_HOST" = 1 ]; then
+  case "$CMD" in *\\*) CG_WIN_FULL=1 ;; esac
+  cg_win_drive_word "$CMD" && CG_WIN_FULL=1
+fi
 if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$REALPATH_BIN" ]; then
   shopt -u nocasematch
   LINK_CANDS=()
@@ -1962,10 +2346,26 @@ if [ "$CWD_IN_CRED" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]] && [ -n "$RE
   IFS="$_cg_old_ifs"
   for lw in ${_cg_words[@]+"${_cg_words[@]}"}; do
     lw="${lw#@}"
+    if [ "$CG_WIN_HOST" = 1 ]; then
+      case "$lw" in [Ff][Ii][Ll][Ee]:*) cg_win_file_url "${lw:5}"; lw="$CG_FU" ;; esac
+    fi
     case "$lw" in file://*|FILE://*) lw="${lw#*://}" ;; *://*) continue ;; esac
     case "$lw" in *=*) lw="${lw#*=}" ;; esac
     [ -n "$lw" ] || continue
-    case "$lw" in /*) ;; *) lw="$PAYLOAD_CWD/$lw" ;; esac
+    if [ "$CG_WIN_HOST" = 1 ]; then
+      # The Windows ".." and native drive-root readings name other files.
+      cg_win_slash_alt "$lw" "$PAYLOAD_CWD"
+      _cg_lx="$CG_ALT2"
+      norm_path "$lw" "$PAYLOAD_CWD"
+      lw="$NP"
+      for _cg_ly in "$NP_W" "$_cg_lx"; do
+        if [ -n "$_cg_ly" ] && { [ -L "$_cg_ly" ] || [ -e "$_cg_ly" ]; }; then
+          LINK_CANDS+=("$_cg_ly")
+        fi
+      done
+    else
+      case "$lw" in /*) ;; *) lw="$PAYLOAD_CWD/$lw" ;; esac
+    fi
     if [ -L "$lw" ] || { [[ "$lw" == "$PAYLOAD_CWD"/*/* ]] && [ -e "$lw" ]; }; then
       LINK_CANDS+=("$lw")
     fi
@@ -1984,7 +2384,7 @@ fi
 # command (git -c alias.x='!cat id^x' x).
 GITCFG=0
 if [[ "$CMD" =~ git|GIT ]] && [[ "$CMD" =~ $CG_GITCFG_RE ]]; then GITCFG=1; fi
-if [ "$GITCFG" -eq 0 ] && [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$GIT_ALIAS_CAND" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
+if [ "$GITCFG" -eq 0 ] && [ "$COMPUTED_PATH" -eq 0 ] && [ "$ZMARK" -eq 0 ] && [ "$GIT_ALIAS_CAND" -eq 0 ] && [ "$SPLIT_CRED" -eq 0 ] && [ "$CWD_IN_CRED" -eq 0 ] && [ "$LINK_HIT" -eq 0 ] && [ "$CG_WIN_FULL" -eq 0 ] && ! [[ "$STRIPPED" =~ $PREFILTER_RE ]]; then
   shopt -u nocasematch
   exit 0
 fi
@@ -3433,15 +3833,48 @@ check_word() {
         ;;
       *)
         norm_path "$cand" "$cwd"
+        local np_w="$NP_W"
         case "$flags" in
           *g*)
-            check_pattern "$NP" 0 0 1
+            # On Windows the shell expands the pattern with Windows rules
+            # (C:/../x/* is C:/x/*), so every reading of the word is
+            # expanded and checked.
+            local gp_list=("$NP") gp
+            if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+              [ -z "$np_w" ] || gp_list+=("$np_w")
+              cg_win_readings "$cand" "$cwd"
+              [ ${#CG_RDS[@]} -eq 0 ] || gp_list+=("${CG_RDS[@]}")
+            fi
+            for gp in "${gp_list[@]}"; do
+              cg_glob_check "$gp"
+            done
+            ;;
+          *)
+            local np_m="$NP"
+            [ -z "$np_w" ] || check_abs "$np_w"
+            check_abs "$np_m"
+            cg_drive_relative "$cand" "$cwd"
+            cg_root_relative "$cand" "$cwd"
+            cg_win_slash_alt "$cand" "$cwd"
+            [ -z "$CG_ALT2" ] || check_abs "$CG_ALT2"
+            ;;
+        esac
+        ;;
+    esac
+  done
+}
+
+# cg_glob_check <pattern>: check an absolute glob pattern and each of its
+# matches (and their link targets) as check_word does for one reading.
+cg_glob_check() {
+            local pat_g="$1"
+            check_pattern "$pat_g" 0 0 1
             local matches=() mm cnt=0 rps=() ri
             local old_ifs="$IFS"
             shopt -s nullglob
             IFS=
             # shellcheck disable=SC2206 # glob expansion is the point.
-            matches=($NP)
+            matches=($pat_g)
             IFS="$old_ifs"
             shopt -u nullglob
             # The cap bounds hook time, not safety: every match is still
@@ -3480,20 +3913,80 @@ check_word() {
             else
               for mm in ${matches[@]+"${matches[@]}"}; do check_abs "$mm"; done
             fi
-            ;;
-          *) check_abs "$NP" ;;
-        esac
-        ;;
-    esac
-  done
 }
 
 # resolve_dir <text> <flags> <cwd> -> NP or empty (for cd / recursive targets).
+# On Windows a drive-relative C:x (no separator after the colon) has two
+# readings. The MSYS and Cygwin runtime, which runs cd, pushd and the MSYS
+# tools, reads it as C:\x, which is NP. A native Windows program reads it as
+# x in the current directory of drive C; unless the cwd is on another drive,
+# that is x under the cwd, which is NP_ALT. A root-relative \x is read
+# from the root of the cwd's drive; NP_ALT holds that reading and
+# NP_ALT_ROOT is 1. NP_ALT is empty otherwise. RD_EXTRA lists every reading
+# other than NP (NP_ALT and the Windows ".." readings) for the checks;
+# RD_NP_W is the Windows ".." reading of NP itself. RD_CHECK is RD_EXTRA
+# plus the native drive-root reading of a slash-first /x (cg_win_slash_alt),
+# for the name and directory checks only; cd and git -C use RD_EXTRA.
+NP_ALT=""
+NP_ALT_ROOT=0
+RD_EXTRA=()
+RD_NP_W=""
+RD_CHECK=()
 resolve_dir() {
-  local text="$1" flags="$2"
+  local text="$1" flags="$2" dr d nc=0
+  NP_ALT=""
+  NP_ALT_ROOT=0
+  RD_EXTRA=()
+  RD_NP_W=""
+  RD_CHECK=()
   case "$flags" in *v*) expand_vars "$text"; text="$EV" ;; esac
   case "$text" in *$'\001'*) NP=""; return ;; esac
+  if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+    dr="${text//\\//}"
+    case "$dr" in
+      [A-Za-z]:/*|[A-Za-z]:) ;;
+      [A-Za-z]:*)
+        lc_word "${dr:0:1}"
+        d="$LCW"
+        cg_win_fold "$3"
+        shopt -q nocasematch && nc=1
+        shopt -s nocasematch
+        case "$CG_WIN_P" in
+          "${CG_WIN_DRIVE_ROOT:-}/$d"|"${CG_WIN_DRIVE_ROOT:-}/$d"/*) d="" ;;
+          "${CG_WIN_DRIVE_ROOT:-}"/[a-z]|"${CG_WIN_DRIVE_ROOT:-}"/[a-z]/*) ;;
+          *) d="" ;;
+        esac
+        [ "$nc" -eq 1 ] || shopt -u nocasematch
+        if [ -z "$d" ]; then
+          norm_path "${dr:2}" "$3"
+          NP_ALT="$NP"
+        fi
+        ;;
+    esac
+  fi
+  if [ -z "$NP_ALT" ]; then
+    cg_win_root_rel "$text" "$3"
+    NP_ALT="$CG_ALT"
+    [ -z "$NP_ALT" ] || NP_ALT_ROOT=1
+  fi
+  local alt_w=""
+  if [ -n "$NP_ALT" ] && [ "$NP_ALT_ROOT" = 0 ]; then
+    # The cwd reading of a drive-relative C:x is the native program's, so
+    # ".." stops at the drive root there.
+    norm_path "${dr:2}" "$3"
+    alt_w="$NP_W"
+  fi
+  cg_win_slash_alt "$text" "$3"
+  local alt_s="$CG_ALT2"
   norm_path "$text" "$3"
+  RD_NP_W="$NP_W"
+  [ "$NP_ALT" != "$NP" ] || NP_ALT=""
+  RD_EXTRA=()
+  [ -z "$NP_ALT" ] || RD_EXTRA+=("$NP_ALT")
+  [ -z "$alt_w" ] || RD_EXTRA+=("$alt_w")
+  [ -z "$NP_W" ] || RD_EXTRA+=("$NP_W")
+  [ ${#RD_EXTRA[@]} -eq 0 ] || RD_CHECK=("${RD_EXTRA[@]}")
+  [ -z "$alt_s" ] || [ "$alt_s" = "$NP" ] || RD_CHECK+=("$alt_s")
 }
 
 # Per-tool option tables (short options that take an argument).
@@ -3813,6 +4306,7 @@ glob_names_cred() {
     .env.*.example|.env.*.sample|.env.*.template) return 1 ;;
     # *.env.example, app.env.sample: template names only (review false block).
     *.env.example|*.env.sample|*.env.template|*.env.schema|*.env.dist) return 1 ;;
+    example.env|*.example.env|*.sample.env|*.template.env|*.schema.env|*.dist.env) return 1 ;;
   esac
   [[ "$b" =~ $GLOB_CRED_RE ]]
 }
@@ -4585,7 +5079,13 @@ check_operand() {
   # segment, and no zsh glob mark: a folder named a: makes a://../i#d_rsa
   # a path that zsh expands (git diff --no-index /dev/null a://../i#d_rsa).
   case "$w" in
-    file://*) w="${w:7}" ;;
+    file:*)
+      if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+        cg_win_file_url "${w:5}"; w="$CG_FU"
+      else
+        case "$w" in file://*) w="${w:7}" ;; esac
+      fi
+      ;;
     [a-z]*://[!/]*)
       case "$f" in
         *z*) ;;
@@ -4614,17 +5114,21 @@ check_operand() {
     check_word "${BASH_REMATCH[1]#@}" "$f" "$cwd"
   fi
   resolve_dir "$w" "$f" "$cwd"
-  if [ -n "$NP" ]; then
-    if is_secret_dir "$NP"; then
-      block "a command reading a credential directory ($(show_path "$NP"))"
+  # On Windows NP_ALT is the cwd reading of a drive-relative C:x (see
+  # resolve_dir); it gets the same name and link checks as NP.
+  local np_dir
+  for np_dir in ${RD_CHECK[@]+"${RD_CHECK[@]}"} "$NP"; do
+    [ -n "$np_dir" ] || continue
+    if is_secret_dir "$np_dir"; then
+      block "a command reading a credential directory ($(show_path "$np_dir"))"
     fi
-    if [ -n "$REALPATH_BIN" ] && [ -L "$NP" ] && [ -d "$NP" ]; then
-      rp=$("$REALPATH_BIN" "$NP" 2>/dev/null) || rp=""
+    if [ -n "$REALPATH_BIN" ] && [ -L "$np_dir" ] && [ -d "$np_dir" ]; then
+      rp=$("$REALPATH_BIN" "$np_dir" 2>/dev/null) || rp=""
       if [ -n "$rp" ] && is_secret_dir "$rp"; then
-        block "a command reading a credential directory ($(show_path "$NP") -> $(show_path "$rp"))"
+        block "a command reading a credential directory ($(show_path "$np_dir") -> $(show_path "$rp"))"
       fi
     fi
-  fi
+  done
 }
 
 # check_generic <start> <end> <cwd>: every operand and option value.
@@ -4728,14 +5232,24 @@ cred_sources() {
         ;;
     esac
     norm_path "$cand" "$cwd"
-    matches=("$NP")
+    local cs_rd=("$NP") cs_r cs_m
+    if [ "${CG_WIN_HOST:-0}" = 1 ]; then
+      [ -z "$NP_W" ] || cs_rd+=("$NP_W")
+      cg_win_readings "$cand" "$cwd"
+      [ ${#CG_RDS[@]} -eq 0 ] || cs_rd+=("${CG_RDS[@]}")
+    fi
+    matches=("${cs_rd[@]}")
     case "$fl" in
       *g*)
+        matches=()
         local old_ifs="$IFS"
         shopt -s nullglob
         IFS=
-        # shellcheck disable=SC2206 # glob expansion is the point.
-        matches=($NP)
+        for cs_r in "${cs_rd[@]}"; do
+          # shellcheck disable=SC2206 # glob expansion is the point.
+          cs_m=($cs_r)
+          [ ${#cs_m[@]} -eq 0 ] || matches+=("${cs_m[@]}")
+        done
         IFS="$old_ifs"
         shopt -u nullglob
         ;;
@@ -5107,6 +5621,12 @@ check_reader() {
     for ((k = 0; k < n_ops; k++)); do
       any_target=1
       resolve_dir "${ops_t[$k]}" "${ops_f[$k]}" "$cwd"
+      local rd_x
+      for rd_x in ${RD_CHECK[@]+"${RD_CHECK[@]}"}; do
+        if is_cred_dir "$rd_x"; then
+          block "recursive read of a directory that holds credentials ($(show_path "$rd_x"))"
+        fi
+      done
       if [ -n "$NP" ] && is_cred_dir "$NP"; then
         block "recursive read of a directory that holds credentials ($(show_path "$NP"))"
       fi
@@ -5333,6 +5853,13 @@ analyze_simple() {
       for ((k = a; k < e; k++)); do
         case "${CW[$k]}" in -?*) continue ;; esac
         target="${CW[$k]}"; resolve_dir "$target" "${CF[$k]}" "$CUR_CWD"
+        [ ${#RD_EXTRA[@]} -eq 0 ] || CWD_UNCERTAIN=1
+        [ "$NP_ALT_ROOT" = 0 ] || [ -z "$NP_ALT" ] || NP="$NP_ALT"
+        # A Windows-form target is opened with Windows rules, so ".." stops
+        # at the drive root (cd 'C:\..' is C:\).
+        case "$target" in
+          *\\*|[A-Za-z]:*) [ -z "$RD_NP_W" ] || [ "$NP_ALT_ROOT" = 1 ] || NP="$RD_NP_W" ;;
+        esac
         # An unresolved or history target (cd -, cd $X) leaves the working
         # directory unknown, so substitutions with relative paths are no
         # longer computed (eval_subst).
@@ -5457,6 +5984,7 @@ analyze_simple() {
             if [ $((k + 1)) -lt $e ]; then
               resolve_dir "${CW[$((k + 1))]}" "${CF[$((k + 1))]}" "$g_dir"
               if [ -n "$NP" ]; then g_dir="$NP"; else g_redir=1; fi
+              [ ${#RD_EXTRA[@]} -eq 0 ] || g_redir=1
               # ~+ and ~- are the shell's $PWD and $OLDPWD, ~user another
               # home: a directory the guard does not resolve.
               case "${CW[$((k + 1))]}" in '~'[!/]*) g_redir=1 ;; esac
@@ -5928,6 +6456,12 @@ analyze_simple() {
       for ((k = a; k < e; k++)); do
         case "${CW[$k]}" in -*) continue ;; esac
         resolve_dir "${CW[$k]}" "${CF[$k]}" "$CUR_CWD"
+        local rd_x
+        for rd_x in ${RD_CHECK[@]+"${RD_CHECK[@]}"}; do
+          if is_cred_dir "$rd_x"; then
+            block "archiving a directory that holds credentials ($(show_path "$rd_x"))"
+          fi
+        done
         if [ -n "$NP" ] && is_cred_dir "$NP"; then
           block "archiving a directory that holds credentials ($(show_path "$NP"))"
         fi

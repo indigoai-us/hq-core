@@ -21,6 +21,9 @@ HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN=0
 readonly HQ_CODEX_ADAPTER_LAUNCH_FAIL_OPEN
 
 INPUT="$(cat 2>/dev/null || echo '{}')"
+# The payload exactly as Codex sent it (trailing newlines dropped), before the
+# session stamp below changes it: the native-answer mark is keyed on it.
+HQ_CODEX_RAW_INPUT="$INPUT"
 
 # jq.exe on Windows writes CRLF line ends in -r output. Strip CR only there,
 # so other hosts pass values through unchanged.
@@ -116,6 +119,148 @@ if [ -z "$HQ_ROOT" ] || [ ! -d "$HOOK_DIR" ] || [ ! -f "$GATE" ]; then
       "file is missing under HQ_ROOT")"
     [ -n "$warning" ] && printf '%s\n' "$warning" >&2
   fi
+  exit 0
+fi
+
+# Native answer (hq-core-rust US-021 c4). With core.next on, `hq reindex`
+# switches a Codex event to the native engine through the user-scope
+# hooks.json. Inside an HQ root Codex still runs this adapter from the tracked
+# .codex/config.toml for the same event, at the same time and with the same
+# payload. Both used to run the whole event, and the two policy injectors
+# shared one session ledger, so the model got two partial sets of reminders
+# and every other hook of the event ran twice.
+#
+# The engine now marks each Codex event it answers, just before its answer
+# goes out (hq-cli `host::answered`): a file in
+# ${HQ_HOOK_STATE_DIR:-~/.hq/state/hq-hook}/codex-answered/ named
+#   sha256("hq-codex-answered-v2\n<root>\n<session>\n<Event>\n" + sha256hex(payload))
+# where <root> is the HQ root's real path (the engine's --hq-root with every
+# link resolved; here `pwd -P` of HQ_ROOT), so an answer for one HQ root
+# never makes another root's adapter stand aside, <session> is the payload's first session field (the ones read below,
+# in that order) and payload is the exact text Codex sent, trailing newlines
+# dropped. The adapter stands aside (exit 0, no output) only when that mark,
+# written in the last MARK_MAX_AGE seconds, appears within
+# HQ_CODEX_NATIVE_WAIT_MS. It consumes the mark. Nothing else is read to
+# decide, and no hooks.json is inspected. An engine that is not registered,
+# not trusted, turned off in Codex, crashed, timed out or gave no verdict
+# writes no mark, so the adapter answers as before: it never fails open.
+#
+# The wait defaults to 4000 ms. Measured on a Mac Studio (release engine, 20
+# runs per event, time from start to mark): SessionStart 1560 ms median,
+# 2620 ms max; UserPromptSubmit 25 ms median, 370 ms on a cold first run;
+# PostToolUse and Stop under 25 ms. Codex runs both hooks at once and waits
+# for both, so when the engine answers the wait costs about one 20 ms poll.
+# It is paid in full only when the engine writes no mark. A mark later than
+# the wait means both answer, as before this change, never neither. Each
+# event's wait is also capped to fit its Codex timeout (codex_native_wait_cap_ms
+# below); SessionEnd waits at most 300 ms.
+#
+# The wait runs only for an event the engine has answered on this account in
+# the last week (its `event-<Event>` hint beside the marks), so events left
+# on the shell, and machines without the engine, pay nothing.
+#
+# It answers as before, with no wait, when:
+# - it was started with arguments: the engine's own hand-back to this adapter
+#   (kill switch, `bash adapter <Event>`) passes the event, Codex passes none;
+# - a kill switch is set (HQ_CORE_NEXT or HQ_HOOK_ENGINE off, or
+#   ~/.hq/state/core-next.off, ~/.hq/hook-engine.off): the engine then hands
+#   the event back;
+# - on Windows (msys/cygwin), where reindex keeps shell registrations;
+# - HQ_CODEX_NATIVE_STEP_ASIDE=0.
+HQ_CODEX_NATIVE_MARK_MAX_AGE=10
+HQ_CODEX_NATIVE_HINT_MAX_AGE=604800
+codex_sha256() {
+  local out
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum 2>/dev/null)" || return 1
+  elif command -v openssl >/dev/null 2>&1; then
+    out="$(openssl dgst -sha256 -r 2>/dev/null)" || return 1
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 2>/dev/null)" || return 1
+  else
+    return 1
+  fi
+  out="${out%% *}"
+  [[ "$out" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$out"
+}
+# The longest wait for each event. Codex kills a hook at the event's timeout
+# in .codex/config.toml, and a killed adapter leaves the event unanswered, so
+# the wait plus the adapter's own answer must end at least 1 s before it:
+#   cap = timeout - 1 s margin - the shell answer's budget.
+# Events with timeout = 30: 30 s - 1 s - 19 s budget = 10 s cap. The slowest
+# shell answer measured on a Mac Studio fixture was SessionStart at 10 s.
+# SessionEnd has timeout = 3: 3 s - 1 s - 1.7 s budget (2.5 times the 670 ms
+# the shell answer took on the Mac Studio) = 300 ms cap. The engine marks
+# SessionEnd within 18 ms there, so 300 ms still catches it.
+# core/scripts/tests/codex-adapter-native-steps-aside.test.sh checks this table
+# against the timeouts in .codex/config.toml.
+codex_native_wait_cap_ms() { # <event>
+  case "$1" in
+    SessionEnd) printf '300' ;;
+    *) printf '10000' ;;
+  esac
+}
+codex_native_answered() { # <event> <argc> <raw payload>
+  local event="$1" argc="$2" raw="$3" value state marks hint now stamp sid digest key mark root_real
+  local wait_ms cap_ms
+  [ "$argc" -eq 0 ] || return 1
+  [ -n "$event" ] || return 1
+  case "$event" in *[!A-Za-z]*) return 1 ;; esac
+  [ "${HQ_CODEX_NATIVE_STEP_ASIDE:-1}" != "0" ] || return 1
+  case "${OSTYPE:-}" in msys* | cygwin* | win32*) return 1 ;; esac
+  for value in "${HQ_CORE_NEXT:-}" "${HQ_HOOK_ENGINE:-}"; do
+    case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+      off | 0 | false | no) return 1 ;;
+    esac
+  done
+  if [ -n "${HOME:-}" ]; then
+    [ -e "$HOME/.hq/state/core-next.off" ] && return 1
+    [ -e "$HOME/.hq/hook-engine.off" ] && return 1
+  fi
+  state="${HQ_HOOK_STATE_DIR:-}"
+  [ -n "$state" ] || state="${HOME:+$HOME/.hq/state/hq-hook}"
+  case "$state" in /*) ;; *) return 1 ;; esac
+  marks="$state/codex-answered"
+  hint="$marks/event-$event"
+  [ -f "$hint" ] && [ ! -L "$hint" ] || return 1
+  now="$(date +%s 2>/dev/null)" || return 1
+  stamp="$(head -c 32 "$hint" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$stamp" ] && [ $((now - stamp)) -le "$HQ_CODEX_NATIVE_HINT_MAX_AGE" ] || return 1
+  sid="$(printf '%s' "$raw" | jq -r '[.session_id, .sessionId, .conversation_id, .conversationId, .thread_id, .threadId] | map(select(type == "string" and . != "")) | .[0] // ""' 2>/dev/null)" || sid=""
+  # This adapter's HQ root, every link resolved, as the engine's canonical
+  # --hq-root: a mark for another HQ root never matches (review R13).
+  root_real="$(cd "$HQ_ROOT" 2>/dev/null && pwd -P)" || return 1
+  case "$root_real" in /*) ;; *) return 1 ;; esac
+  digest="$(printf '%s' "$raw" | codex_sha256)" || return 1
+  key="$(printf 'hq-codex-answered-v2\n%s\n%s\n%s\n%s' "$root_real" "$sid" "$event" "$digest" | codex_sha256)" || return 1
+  mark="$marks/$key"
+  wait_ms="${HQ_CODEX_NATIVE_WAIT_MS:-4000}"
+  case "$wait_ms" in '' | *[!0-9]*) wait_ms=4000 ;; esac
+  cap_ms="$(codex_native_wait_cap_ms "$event")"
+  [ "$wait_ms" -le "$cap_ms" ] || wait_ms="$cap_ms"
+  # Poll on a real clock: a shell loop that counts its sleeps runs long,
+  # since each round also pays for starting `sleep` (a 10 s count took 17.9 s
+  # on a Mac Studio). Without perl there is one look and no wait.
+  if [ ! -f "$mark" ] && [ "$wait_ms" -gt 0 ] && command -v perl >/dev/null 2>&1; then
+    [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hq-codex-hook-adapter: %s waiting up to %s ms for the native mark\n' "$event" "$wait_ms" >&2
+    LC_ALL=C perl -MTime::HiRes=time,sleep -e '
+      my ($file, $ms) = @ARGV;
+      my $end = time + $ms / 1000;
+      until (-f $file) { exit 1 if time >= $end; sleep 0.02; }
+      exit 0;' "$mark" "$wait_ms" 2>/dev/null || return 1
+  fi
+  [ -f "$mark" ] && [ ! -L "$mark" ] || return 1
+  now="$(date +%s 2>/dev/null)" || return 1
+  stamp="$(head -c 32 "$mark" 2>/dev/null | tr -dc '0-9')"
+  if [ -n "$stamp" ] && [ $((now - stamp)) -le "$HQ_CODEX_NATIVE_MARK_MAX_AGE" ] && [ $((stamp - now)) -le 2 ]; then
+    rm -f "$mark" 2>/dev/null
+    return 0
+  fi
+  return 1
+}
+if codex_native_answered "$HOOK_EVENT" "$#" "$HQ_CODEX_RAW_INPUT"; then
+  [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'hq-codex-hook-adapter: %s was answered by the native engine; standing aside\n' "$HOOK_EVENT" >&2
   exit 0
 fi
 

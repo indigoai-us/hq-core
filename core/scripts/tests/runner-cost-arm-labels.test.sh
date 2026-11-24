@@ -35,12 +35,15 @@ if not jobs or any(runner is None for runner in jobs.values()):
 
 # Staging Linux jobs run on self-hosted runners when the Linux ARM repository
 # variable is set. Without the variable, and always for fork PRs and for
-# hq-core, the job
-# uses the hosted label.
+# hq-core, the job uses the hosted label. Two escape hatches send same-repo
+# jobs back to the hosted label without a code change: the HQ_AWS_RUNNERS
+# variable set to off (org or repo), and the ci-hosted-runners PR label.
 STAGING_SAME_REPO = (
     "github.repository == 'indigoai-us/hq-core-staging' && "
     "(github.event_name != 'pull_request' || "
-    "github.event.pull_request.head.repo.full_name == github.repository)"
+    "(github.event.pull_request.head.repo.full_name == github.repository && "
+    "!contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && "
+    "vars.HQ_AWS_RUNNERS != 'off'"
 )
 
 
@@ -60,6 +63,13 @@ expected_platform_jobs = {
     # These jobs need passwordless sudo, which the self-hosted fleet lacks.
     "knowledge-repo-glob-shells": "ubuntu-24.04-arm",
     "company-jobs": "ubuntu-24.04-arm",
+    # These jobs read repository secrets, which stay on GitHub-hosted runners.
+    "denylist-scan": "ubuntu-24.04-arm",
+    "codex-pii-rubric": "ubuntu-24.04-arm",
+    # Results-only gates (no checkout) stay hosted so they do not wait for a
+    # self-hosted instance to boot after their shards finish.
+    "autosave-failure-visibility": "ubuntu-24.04-arm",
+    "core-write-protection": "ubuntu-24.04-arm",
 }
 errors = []
 for job, runner in jobs.items():

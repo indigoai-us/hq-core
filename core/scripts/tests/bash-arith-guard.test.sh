@@ -17,7 +17,7 @@ arith_case() {
 . "$ROOT/core/scripts/tests/bash-arith-guard.cases.sh"
 # Arithmetic-only: an expansion as the whole bash -c program has no arithmetic
 # to check. The full hook stack still refuses it (mandatory scope authorizer:
-# unset variable in a -c program); mandatory-scope-authorizer.test.sh asserts that.
+# unset variable in a -c program); mandatory-scope-authorizer-feedback-shapes.test.sh asserts that.
 arith_case 0 env-split-review-087 'bash -c "$CMD"'
 
 # Nested substitutions are scanned once per level. Each decision must finish

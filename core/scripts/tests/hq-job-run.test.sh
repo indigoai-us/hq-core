@@ -5,7 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-RUN="$ROOT/core/scripts/hq-job-run.sh"
+RUN="$ROOT/core/scripts/tests/fixtures/legacy-job-run.sh"
 CLASSIFY_SOURCE="${HQ_JOB_RUN_TEST_SOURCE:-$RUN}"
 
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not available"; exit 0; }

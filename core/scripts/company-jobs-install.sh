@@ -38,7 +38,6 @@ assertReleasedCode([
   root+'/core/scripts/lib/released-code-owner.cjs',
   root+'/core/scripts/hq-agent-session.sh',
   root+'/core/scripts/outpost-jobs-reconcile.sh',
-  root+'/core/scripts/hq-job-run.sh',
   root+'/core/scripts/company-job-with-credentials.sh',
   root+'/core/scripts/lib/company-signin.mjs',
   root+'/core/scripts/lib/company-service-restart.mjs',
@@ -46,7 +45,7 @@ assertReleasedCode([
   fs.realpathSync(nodeBinary),
 ]);
 PATHS
-for script in lib/company-jobs.mjs lib/company-signin.mjs lib/company-service-restart.mjs hq-agent-session.sh outpost-jobs-reconcile.sh hq-job-run.sh company-job-with-credentials.sh; do
+for script in lib/company-jobs.mjs lib/company-signin.mjs lib/company-service-restart.mjs hq-agent-session.sh outpost-jobs-reconcile.sh company-job-with-credentials.sh; do
   [ -s "$ROOT/core/scripts/$script" ] || { echo "release missing $script" >&2; exit 2; }
 done
 [ -r "$CREDS" ] || { echo 'company machine credentials not provisioned' >&2; exit 2; }

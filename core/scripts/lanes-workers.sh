@@ -4,7 +4,7 @@
 # pinned to one engine, model and effort for the session, per-role brief
 # templates, the CI check after a lane opens a PR, and the QA trigger.
 # Role lanes on runners belong to /conduct-runners, the advanced mode of
-# /conduct. This script never calls `hq runners` (or its old `hq lanes` alias).
+# /conduct. This script never calls `hq runners` or its deprecated alias.
 #
 # Usage:
 #   bash core/scripts/lanes-workers.sh setup --workers <r1,r2,...> \

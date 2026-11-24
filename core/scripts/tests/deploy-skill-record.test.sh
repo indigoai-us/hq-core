@@ -30,9 +30,9 @@ trap 'chmod -R u+w "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT
 TMP_REAL="$(cd "$TMP" && pwd -P)"
 
 echo "--- SKILL.md wires the step after the upload and before C.5"
-complete="$(line_of '--url "$API/api/deploys/$DEPLOY_ID/complete"')"
+complete="$(line_of 'UPLOAD_JSON=$(hq_deploy upload "$APP_SUBDOMAIN" "$TARBALL_PATH"')"
 snapshot="$(line_of 'ROUTE_RECORD_JSON=$(.claude/skills/deploy/scripts/route-host.sh record')"
-app_up="$(line_of 'deploy_request app-deploy --method POST')"
+app_up="$(line_of 'APP_DEPLOY_RESPONSE=$(hq_deploy upload-app')"
 step="$(line_of '### C.4.5 — Record the deploy')"
 c5="$(line_of '### C.5 — Present the link')"
 gate="$(line_of '#### Auth-gate verify')"
@@ -84,6 +84,7 @@ printf '<html></html>\n' > "$SANDBOX/site/index.html"
 cat > "$SANDBOX/.claude/skills/deploy/scripts/deploy-record-step.sh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$STEP_LOG"
+prev=""; for a in "$@"; do [ "$prev" = --app-json ] && cp "$a" "$STEP_LOG.app"; prev="$a"; done
 case "${STEP_MODE:-ok}" in
   ok) echo '{"ok":true,"record":"/x/r.md","home":"/x","resolution":"session","copied":true,"access_mode":"public","words":12}' ;;
   fail) echo '{"ok":false,"stage":"home","reason":"home_not_writable"}'; exit 1 ;;
@@ -92,16 +93,30 @@ esac
 STUB
 chmod +x "$SANDBOX/.claude/skills/deploy/scripts/deploy-record-step.sh"
 printf '%s\n' "$BLOCK" > "$SANDBOX/block.sh"
-# run_block <upload_ok> <app_read ok|fail> <step mode>: prints RECORD_LINE.
+# run_block <upload_ok> <app_read ok|fail> <step mode> [policy ok|fail] [scope]:
+# prints RECORD_LINE. The app is re-read with a stub hq_deploy (app-info, and
+# access get for a company app); $SANDBOX/hq.log records each call.
 run_block() {
   (
     cd "$SANDBOX" || exit 9
     set -euo pipefail
     export STEP_LOG="$SANDBOX/step.log" STEP_MODE="$3"
-    rm -f "$STEP_LOG"
-    deploy_request() {
-      if [ "$APP_READ" = "ok" ]; then echo '{"id":"app-1","subdomain":"demo","accessMode":"public"}'; else return 1; fi
+    rm -f "$STEP_LOG" "$STEP_LOG.app" "$SANDBOX/hq.log"
+    deploy_request() { echo "deploy_request $*" >>"$SANDBOX/hq.log"; return 1; }
+    hq_deploy() {
+      printf '%s\n' "$*" >>"$SANDBOX/hq.log"
+      case "$1" in
+        app-info)
+          [ "$APP_READ" = "ok" ] || return 1
+          echo '{"id":"app-1","subdomain":"demo","accessMode":"public","passwordProtected":false,"privateMode":false}' ;;
+        access)
+          [ "$POLICY_READ" = "ok" ] || return 1
+          echo '{"company":"bravo","app":"app-1","policy":{"mode":"company","companyUid":"cmp_1"}}' ;;
+        *) return 1 ;;
+      esac
     }
+    POLICY_READ="${4:-ok}" DEPLOY_SCOPE="${5:-company}"
+    if [ "$DEPLOY_SCOPE" = personal ]; then HQ_SCOPE_ARGS=(--personal); else HQ_SCOPE_ARGS=(--company bravo); fi
     APP_READ="$2" API="https://api.example.test" APP_ID="app-1" LIVE_URL="https://demo.example.test"
     DEPLOY_TYPE=static ACCESS_MODE=public ORG_SLUG=bravo DEPLOY_ID=dep-1 ROUTE_URL_PATH=""
     RECORD_SOURCE="$SANDBOX/site" DEPLOY_DESCRIPTION="A demo page." DEPLOY_CONTENT_TYPE=demo-site
@@ -127,6 +142,20 @@ OUT="$(run_block true ok silent)"; RC=$?
 OUT="$(run_block true fail ok)"; RC=$?
 [ "$RC" = 0 ] && [ "$OUT" = "RECORD_LINE=The searchable record for this deploy was not written (the app or its source could not be read)." ] \
   && [ ! -e "$SANDBOX/step.log" ] && pass "an unreadable app skips the step with one plain line" || fail "app-read fail (rc=$RC): $OUT"
+OUT="$(run_block true ok ok)"; RC=$?
+grep -qx 'app-info app-1 --company bravo --json' "$SANDBOX/hq.log" && grep -qx 'access get app-1 --company bravo --json' "$SANDBOX/hq.log" \
+  && ! grep -q deploy_request "$SANDBOX/hq.log" && pass "the app is re-read with hq deploy app-info and access get" \
+  || fail "re-read calls: $(tr '\n' ';' < "$SANDBOX/hq.log")"
+[ "$(jq -r '.accessPolicy.mode' "$SANDBOX/step.log.app" 2>/dev/null)" = company ] \
+  && [ "$(jq -r '.passwordProtected' "$SANDBOX/step.log.app" 2>/dev/null)" = false ] \
+  && pass "the step gets the saved policy mode with the app's gate fields" || fail "app json: $(cat "$SANDBOX/step.log.app" 2>/dev/null)"
+OUT="$(run_block true ok ok fail)"; RC=$?
+[ "$RC" = 0 ] && [ "$OUT" = "RECORD_LINE=The searchable record for this deploy was not written (the app or its source could not be read)." ] \
+  && [ ! -e "$SANDBOX/step.log" ] && pass "an unreadable access policy skips the step (fail closed)" || fail "policy fail (rc=$RC): $OUT"
+OUT="$(run_block true ok ok ok personal)"; RC=$?
+[ "$RC" = 0 ] && grep -qx 'app-info app-1 --personal --json' "$SANDBOX/hq.log" && ! grep -q '^access' "$SANDBOX/hq.log" \
+  && [ "$(jq -r 'has("accessPolicy")' "$SANDBOX/step.log.app" 2>/dev/null)" = false ] \
+  && pass "a personal app is read with --personal and no policy call" || fail "personal (rc=$RC): $(tr '\n' ';' < "$SANDBOX/hq.log")"
 
 echo "--- deploy-record-step.sh end to end"
 H="$TMP_REAL/hq"

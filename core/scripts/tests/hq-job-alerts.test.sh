@@ -14,7 +14,7 @@ REAL_HQ="$(command -v hq 2>/dev/null || true)"
 export REAL_HQ
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-RUN="$ROOT/core/scripts/hq-job-run.sh"
+RUN="$ROOT/core/scripts/tests/fixtures/legacy-job-run.sh"
 
 command -v yq >/dev/null 2>&1 || { echo "SKIP: yq not available"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available"; exit 0; }

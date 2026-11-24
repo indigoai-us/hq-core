@@ -187,32 +187,134 @@ test('--apply rewrites tracked callers, --check passes after it, out-of-scope fi
   }
 });
 
-// Review of #2012: hq-cli main's twins reject these helper modes (hq 5.345.223:
-// `hq core register-project --board a b` prints its usage and exits 1;
-// `hq core delegate send --reconcile x` exits 1 with "unknown argument").
-// Calls that use them stay on the helper; other calls of the same helper move.
-test('helper modes the twin lacks stay on the helper', () => {
-  for (const [line, helper] of [
-    ['  bash core/scripts/register-project.sh --board {co} {board-project-id}', 'register-project.sh'],
-    ['bash core/scripts/hq-delegate-send.sh --manifest <manifest> --reconcile <eventId>', 'hq-delegate-send.sh'],
+// Review of #2012 held these helper modes because hq 5.345.223 rejected them
+// (`hq core register-project --board a b` printed its usage, `hq core delegate
+// send --reconcile x` said "unknown argument"). hq-cli #3005 and #3006 added
+// both; 5.345.228 is the first npm release with them (5.345.227 was never
+// published, 5.345.226 lacks them). The calls now move, and --check holds the
+// install floor to that release for every caller line that uses a mode.
+test('helper modes the twin gained in 5.345.228 move to hq core', () => {
+  for (const [line, moved] of [
+    ['  bash core/scripts/register-project.sh --board {co} {board-project-id}', '  hq core register-project --board {co} {board-project-id}'],
+    ['bash core/scripts/hq-delegate-send.sh --manifest <manifest> --reconcile <eventId>', 'hq core delegate send --manifest <manifest> --reconcile <eventId>'],
   ]) {
     const result = rewriteLine(line, { file: '.claude/skills/demo/SKILL.md' });
-    assert.equal(result.line, line);
-    assert.deepEqual(result.hits.map((hit) => [hit.helper, hit.action]), [[helper, 'held']]);
+    assert.equal(result.line, moved);
+    assert.deepEqual(result.hits.map((hit) => hit.action), ['rewrite']);
   }
-  assert.equal(
-    rewriteLine('bash core/scripts/register-project.sh {co} {project}').line,
-    'hq core register-project {co} {project}',
+  const floor = installFloor(fileURLToPath(new URL('../../..', import.meta.url)));
+  assert.ok(compareVersions('5.345.228', floor) <= 0, `install floor ${floor} is below 5.345.228`);
+  // The allowed-tools entry moves with the call.
+  const { text } = scanFile([
+    'allowed-tools: Bash(bash core/scripts/register-project.sh:*)',
+    '  bash core/scripts/register-project.sh --board {co} {id}',
+  ].join('\n'), '.claude/skills/demo/SKILL.md');
+  assert.equal(text, 'allowed-tools: Bash(hq core register-project:*)\n  hq core register-project --board {co} {id}');
+});
+
+test('a direct hq core call of a newer helper mode is found', async () => {
+  const { MODE_FLOORS, modeCalls } = await import('../ci/rewrite-core-callers.mjs');
+  assert.deepEqual(MODE_FLOORS.map((mode) => [mode.command, mode.flag, mode.minCli]), [
+    ['register-project', '--board', '5.345.228'],
+    ['delegate send', '--reconcile', '5.345.228'],
+  ]);
+  assert.deepEqual(modeCalls('  hq core register-project --board {co} {id}\n', 'x.md'), [{ line: 1, command: 'register-project', flag: '--board', minCli: '5.345.228' }]);
+  assert.deepEqual(modeCalls('ok\nx="$(hq core --hq-root "$R" delegate  send --manifest m --reconcile e)"', 'x.sh'), [{ line: 2, command: 'delegate send', flag: '--reconcile', minCli: '5.345.228' }]);
+  // No flag, a longer word, a permission pattern and a shell comment are not mode calls.
+  for (const [line, file] of [
+    ['hq core register-project acme demo', 'x.md'],
+    ['hq core register-project acme --boardroom', 'x.md'],
+    ['allowed-tools: Bash(hq core register-project:*)', 'x.md'],
+    ['# hq core register-project --board a b', 'x.sh'],
+  ]) {
+    assert.deepEqual(modeCalls(line, file), [], line);
+  }
+});
+
+test('--check fails when a caller runs a helper mode newer than the install floor', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rewrite-core-callers-mode-'));
+  try {
+    const put = (file, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    };
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.221"\n');
+    put('.claude/skills/demo/SKILL.md', 'Run:\n\n```bash\nhq core register-project {co} {name}\n```\n');
+    execFileSync('git', ['-C', root, 'init', '-q']);
+    execFileSync('git', ['-C', root, 'add', '.']);
+    const check = () => spawnSync(process.execPath, [SCRIPT, '--check', '--root', root], { encoding: 'utf8' });
+    // The command alone is below the floor.
+    assert.equal(check().status, 0);
+    put('.claude/skills/demo/SKILL.md', 'Run:\n\n```bash\nhq core register-project --board {co} {id}\n```\n');
+    let result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /\.claude\/skills\/demo\/SKILL\.md:4 runs hq core register-project --board, which needs hq-cli 5\.345\.228, above requiresHqCli 5\.345\.221/);
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.228"\n');
+    result = check();
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// US-029: /handoff runs `hq core handoff run` and `hq core handoff archive-decision`.
+// Neither has a single helper twin, so COMMAND_FLOORS holds their first
+// release (hq-cli #2839, tag v5.345.228; absent in 5.345.226) and --check
+// fails when the install floor is below it.
+test('hq core commands without a helper twin carry a floor', async () => {
+  const { COMMAND_FLOORS, commandCalls } = await import('../ci/rewrite-core-callers.mjs');
+  assert.ok(Array.isArray(COMMAND_FLOORS), 'COMMAND_FLOORS is exported');
+  assert.deepEqual(COMMAND_FLOORS.map((entry) => [entry.command, entry.minCli]), [
+    ['handoff run', '5.345.228'],
+    ['handoff archive-decision', '5.345.228'],
+  ]);
+  assert.deepEqual(commandCalls('hq core handoff run \\\n  --thread x\n', 'x.md'), [{ line: 1, command: 'handoff run', minCli: '5.345.228' }]);
+  assert.deepEqual(
+    commandCalls('ok\nx="$(hq core --hq-root "$R" handoff  archive-decision --root "$PWD")"', 'x.sh'),
+    [{ line: 2, command: 'handoff archive-decision', minCli: '5.345.228' }],
   );
-  assert.equal(
-    rewriteLine('bash core/scripts/hq-delegate-send.sh --manifest <manifest> --send').line,
-    'hq core delegate send --manifest <manifest> --send',
-  );
-  // A word that only starts with the flag does not hold the call.
-  assert.equal(
-    rewriteLine('bash core/scripts/register-project.sh acme --boardroom').line,
-    'hq core register-project acme --boardroom',
-  );
+  assert.deepEqual(commandCalls('Only after `hq core handoff run` succeeds.', 'x.md'), [{ line: 1, command: 'handoff run', minCli: '5.345.228' }]);
+  // Permission patterns, shell comments, longer words and other handoff commands are not calls.
+  for (const [line, file] of [
+    ['allowed-tools: Bash(hq core handoff run:*), Bash(hq core handoff archive-decision:*)', 'x.md'],
+    ['# hq core handoff run', 'x.sh'],
+    ['hq core handoff runner', 'x.md'],
+    ['hq core handoff open-steps list', 'x.md'],
+    ['uhq core handoff run', 'x.md'],
+  ]) {
+    assert.deepEqual(commandCalls(line, file), [], line);
+  }
+  const floor = installFloor(fileURLToPath(new URL('../../..', import.meta.url)));
+  for (const entry of COMMAND_FLOORS) {
+    assert.ok(compareVersions(entry.minCli, floor) <= 0, `hq core ${entry.command} ${entry.minCli} > install floor ${floor}`);
+  }
+});
+
+test('--check fails when a caller runs a handoff command newer than the install floor', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rewrite-core-callers-command-'));
+  try {
+    const put = (file, text) => {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), text);
+    };
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.221"\n');
+    put('.claude/skills/handoff/SKILL.md', 'allowed-tools: Bash(hq core handoff run:*)\n\n```bash\nhq core handoff open-steps list\n```\n');
+    execFileSync('git', ['-C', root, 'init', '-q']);
+    execFileSync('git', ['-C', root, 'add', '.']);
+    const check = () => spawnSync(process.execPath, [SCRIPT, '--check', '--root', root], { encoding: 'utf8' });
+    // A permission pattern alone and an older handoff command pass.
+    assert.equal(check().status, 0);
+    put('.claude/skills/handoff/SKILL.md', 'Run:\n\n```bash\nhq core handoff run \\\n  --thread x\nhq core handoff archive-decision --root "$PWD"\n```\n');
+    let result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /\.claude\/skills\/handoff\/SKILL\.md:4 runs hq core handoff run, which needs hq-cli 5\.345\.228, above requiresHqCli 5\.345\.221/);
+    assert.match(result.stderr, /\.claude\/skills\/handoff\/SKILL\.md:6 runs hq core handoff archive-decision, which needs hq-cli 5\.345\.228, above requiresHqCli 5\.345\.221/);
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.228"\n');
+    result = check();
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('a skill call with a variable operand stays on the helper', () => {
@@ -256,35 +358,5 @@ test('a marked shell fallback stays on the helper', () => {
   assert.equal(
     rewriteLine('    bash "$ROOT/core/scripts/work-mesh-live-bind-trusted.sh" "$@"', { file, shell: true }).line,
     '    hq core --hq-root "$ROOT" work-mesh-bind-trusted "$@"',
-  );
-});
-
-test('a file with a held helper-mode call keeps the helper permission', () => {
-  const file = '.claude/skills/demo/SKILL.md';
-  const text = [
-    'allowed-tools: Bash(hq core register-project:*), Bash(bash core/scripts/register-project.sh:*), Bash(bash core/scripts/hq-delegate-send.sh:*)',
-    '  bash core/scripts/register-project.sh --board {co} {id}',
-    'bash core/scripts/register-project.sh {co} {name}',
-    'bash core/scripts/hq-delegate-send.sh --manifest <m> --send',
-  ].join('\n');
-  const { text: out, rows } = scanFile(text, file);
-  const lines = out.split('\n');
-  // register-project has a held --board call here, so its permission stays;
-  // hq-delegate-send has no held call, so its permission moves.
-  assert.equal(
-    lines[0],
-    'allowed-tools: Bash(hq core register-project:*), Bash(bash core/scripts/register-project.sh:*), Bash(hq core delegate send:*)',
-  );
-  assert.equal(lines[1], '  bash core/scripts/register-project.sh --board {co} {id}');
-  assert.equal(lines[2], 'hq core register-project {co} {name}');
-  assert.equal(lines[3], 'hq core delegate send --manifest <m> --send');
-  assert.deepEqual(
-    rows.filter((row) => row.action === 'held').map((row) => [row.line, row.helper]),
-    [[1, 'register-project.sh'], [2, 'register-project.sh']],
-  );
-  // Outside a file with a held call the permission still moves.
-  assert.equal(
-    rewriteLine('allowed-tools: Bash(bash core/scripts/register-project.sh:*)', { file }).line,
-    'allowed-tools: Bash(hq core register-project:*)',
   );
 });

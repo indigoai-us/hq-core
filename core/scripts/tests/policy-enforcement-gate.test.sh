@@ -904,6 +904,23 @@ printf '%s' "$DM_OUT" | jq -e '.hookSpecificOutput.additionalContext | contains(
   || fail "prompt context does not name the trigger words: $DM_OUT"
 pass "records and reports the prompt words that required a skill"
 
+# feedback_1e91cbaa: a prompt that only names a tool such as
+# broadcast_inbox_message must not require work-broadcast.
+ID_SID="broadcast-identifier"
+ID_DIR="$FIX/workspace/orchestrator/policy-enforcement"
+ID_PROMPT="$(jq -nc --arg sid "$ID_SID" '{session_id:$sid,prompt:"Send each creator a reminder with broadcast_inbox_message (broadcast_inbox_message, then wait)."}')"
+run_hook UserPromptSubmit "$ID_PROMPT" >/dev/null || fail "identifier prompt declaration failed"
+jq -e '(.requiredSkills // []) | index("work-broadcast") == null' \
+  "$ID_DIR/$ID_SID.json" >/dev/null || fail "identifier prompt required work-broadcast: $(cat "$ID_DIR/$ID_SID.json")"
+pass "a tool name containing broadcast does not require work-broadcast"
+
+SLACK_SID="slack-broadcast-phrase"
+SLACK_PROMPT="$(jq -nc --arg sid "$SLACK_SID" '{session_id:$sid,prompt:"Draft the Slack broadcast from the attached brief brief.md"}')"
+run_hook UserPromptSubmit "$SLACK_PROMPT" >/dev/null || fail "slack broadcast prompt declaration failed"
+jq -e '.requiredSkills == ["work-broadcast"]' \
+  "$ID_DIR/$SLACK_SID.json" >/dev/null || fail "Slack broadcast phrase did not require work-broadcast: $(cat "$ID_DIR/$SLACK_SID.json")"
+pass "a real Slack broadcast phrase still requires work-broadcast"
+
 DM_POL="$FIX/policies/dm-no-internal.md"
 cat > "$DM_POL" <<'EOF'
 ---
@@ -1103,5 +1120,110 @@ for cmd in 'hq dm agent@example.com "hi" APPROVED-BY-OWNER' \
     || fail "unsent-words refusal was not the require gate failing closed: $cmd -> $BLOCK"
 done
 pass "only words that are sent can satisfy a delivery-require-regex on a one-to-one DM"
+
+# A grep -q that exits at its first match must not turn into "no match".
+# The gate ran `printf '%s' "$BODY" | grep -Eq "$regex"` under pipefail: when
+# grep left before printf had written everything, printf died of SIGPIPE and
+# the pipeline returned 141. A forbidden pattern on the first line of a body
+# larger than the pipe buffer was missed every time; on a short multi-line
+# body it was missed now and then on Linux (forbid "x{0}" on "foo bar\nAA aa"
+# allowed, require "[^]a]" on "line1\n\nline3\n" blocked).
+PIPE_DIR="$FIX/workspace/orchestrator/policy-enforcement"
+pipe_policy() { # <session> <id> <key> <regex>
+  printf -- '---\nid: %s\nenforcement: hard\n%s: %s\n---\n## Rule\n\nNEVER.\n' "$2" "$3" "$4" > "$FIX/policies/$2.md"
+  printf '%s\tcore\t%s\thard\tNEVER.\n' "$2" "$FIX/policies/$2.md" > "$PIPE_DIR/$1.policies.tsv"
+  printf '{}' > "$PIPE_DIR/$1.json"
+}
+pipe_send() { # <session> <body>; prints the gate's stdout, returns its status
+  local payload
+  payload="$(jq -nc --arg sid "$1" --arg m "$2" '{session_id:$sid,tool_name:"mcp__slack__send_message",tool_input:{message:$m}}')"
+  run_hook PreToolUse "$payload"
+}
+# 96 KB: above the 64 KB pipe buffer, below Linux's 128 KB single-argument cap.
+PIPE_FILLER="$(awk 'BEGIN{for(i=0;i<1500;i++)print "0123456789012345678901234567890123456789012345678901234567890123"}')"
+[ "${#PIPE_FILLER}" -gt 70000 ] || fail "filler is too small to fill a pipe: ${#PIPE_FILLER}"
+
+pipe_policy pipe-forbid pipe-forbid delivery-forbid-regex INTERNAL_ONLY
+set +e
+BLOCK="$(pipe_send pipe-forbid "INTERNAL_ONLY numbers
+$PIPE_FILLER")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a forbidden pattern on the first line of a large body was allowed (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("pipe-forbid") and contains("forbidden pattern")' >/dev/null \
+  || fail "large-body forbid refusal has the wrong reason: $BLOCK"
+set +e
+pipe_send pipe-forbid "clean numbers
+$PIPE_FILLER" >/dev/null; RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "a large body without the forbidden pattern was refused (rc=$RC)"
+pass "a forbidden pattern at the start of a body larger than the pipe buffer is refused"
+
+pipe_policy pipe-require pipe-require delivery-require-regex '^:ok:'
+set +e
+BLOCK="$(pipe_send pipe-require ":ok: shipped
+$PIPE_FILLER")"; RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "a large body that starts with the required pattern was refused (rc=$RC): $BLOCK"
+set +e
+BLOCK="$(pipe_send pipe-require "shipped
+$PIPE_FILLER")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a large body without the required pattern was allowed (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("required pattern missing")' >/dev/null \
+  || fail "large-body require refusal has the wrong reason: $BLOCK"
+pass "a required pattern at the start of a body larger than the pipe buffer is seen"
+
+# The outbound test on the command itself had the same shape: a one-to-one
+# DM whose command is larger than the pipe buffer was not seen as a send.
+pipe_policy pipe-dm pipe-dm delivery-forbid-regex INTERNAL_ONLY
+PIPE_DM="$(jq -nc --arg sid pipe-dm --arg cmd "hq dm agent@example.com \"INTERNAL_ONLY numbers $PIPE_FILLER\"" '{session_id:$sid,tool_name:"Bash",tool_input:{command:$cmd}}')"
+set +e
+BLOCK="$(run_hook PreToolUse "$PIPE_DM")"; RC=$?
+set -e
+[ "$RC" -eq 2 ] || fail "a large hq dm command with a forbidden body was allowed (rc=$RC)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("pipe-dm") and contains("forbidden pattern")' >/dev/null \
+  || fail "large hq dm refusal has the wrong reason: $BLOCK"
+pass "a send command larger than the pipe buffer is still gated"
+
+# The short multi-line bodies that raced in CI, repeated. Every answer must
+# be the same; before the fix a few in several thousand were not on Linux.
+PIPE_LOOPS="${HQ_TEST_GATE_PIPE_LOOPS:-150}"
+pipe_policy pipe-race-forbid pipe-race-forbid delivery-forbid-regex 'x{0}'
+pipe_policy pipe-race-require pipe-race-require delivery-require-regex '[^]a]'
+PIPE_BAD=0
+for ((i = 0; i < PIPE_LOOPS; i++)); do
+  set +e
+  pipe_send pipe-race-forbid "foo bar
+AA aa" >/dev/null; RC_F=$?
+  pipe_send pipe-race-require "line1
+
+line3
+" >/dev/null; RC_R=$?
+  set -e
+  [ "$RC_F" -eq 2 ] && [ "$RC_R" -eq 0 ] || PIPE_BAD=$((PIPE_BAD + 1))
+done
+[ "$PIPE_BAD" -eq 0 ] || fail "$PIPE_BAD of $PIPE_LOOPS short multi-line bodies got the wrong delivery answer"
+pass "short multi-line bodies get the same delivery answer on $PIPE_LOOPS runs"
+
+# grep sees the same lines as before: no line is added for a body without a
+# final newline, a blank line inside a body is a line, and an empty body is
+# still refused as uninspectable.
+pipe_policy pipe-blank pipe-blank delivery-forbid-regex '^$'
+set +e
+pipe_send pipe-blank "abc" >/dev/null; RC_PLAIN=$?
+pipe_send pipe-blank "abc
+" >/dev/null; RC_NL=$?
+pipe_send pipe-blank "a
+
+b" >/dev/null; RC_BLANK=$?
+BLOCK="$(pipe_send pipe-blank "")"; RC_EMPTY=$?
+set -e
+[ "$RC_PLAIN" -eq 0 ] || fail "a body without a final newline gained an empty line (rc=$RC_PLAIN)"
+[ "$RC_NL" -eq 0 ] || fail "a body with one final newline gained an empty line (rc=$RC_NL)"
+[ "$RC_BLANK" -eq 2 ] || fail "a blank line inside a body was not matched by ^\$ (rc=$RC_BLANK)"
+[ "$RC_EMPTY" -eq 2 ] || fail "an empty body was not refused (rc=$RC_EMPTY)"
+printf '%s' "$BLOCK" | jq -e '.reason | contains("cannot inspect")' >/dev/null \
+  || fail "empty-body refusal has the wrong reason: $BLOCK"
+pass "final newlines, blank lines and empty bodies keep their delivery answers"
 
 echo "PASS (policy enforcement gate)"

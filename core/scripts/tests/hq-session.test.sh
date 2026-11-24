@@ -307,7 +307,7 @@ if [ "${1:-}" = "core" ] && [ "${2:-}" = "--help" ]; then
   exit 0
 fi
 if [ "${1:-}" = "core" ] && [ "${2:-}" = "hq-session" ]; then
-  : > "$HQ_CLI_DELEGATION_MARKER"
+  printf '%s\n' "${HQ_ROOT:-}" > "$HQ_CLI_DELEGATION_MARKER"
   exit 0
 fi
 exit 91
@@ -332,6 +332,18 @@ env -u HQ_HQ_SESSION_NO_CLI \
   "$HS" --session-id sess-cli-capable get company_slug >/dev/null
 [ -e "$TMP/new-cli-called" ] || fail "CLI with the exact-directory capability was not used"
 pass "wrapper delegates when the installed CLI advertises the exact-directory capability"
+
+mkdir -p "$TMP/scratch-not-hq"
+env -u HQ_HQ_SESSION_NO_CLI -u HQ_ROOT \
+  CLAUDE_PROJECT_DIR="$TMP/scratch-not-hq" \
+  PATH="$TMP/old-cli-bin:$PATH" \
+  HQ_CLI_CAPS_CACHE="$TMP/scratch-cli-caps" \
+  HQ_CLI_CAPS_TEXT='exact-company-directory-match-v1 hq-session' \
+  HQ_CLI_DELEGATION_MARKER="$TMP/scratch-cli-root" \
+  "$HS" --session-id sess-cli-capable get company_slug >/dev/null
+assert_eq "$(cat "$TMP/scratch-cli-root")" "$TMP" \
+  "wrapper pins HQ_ROOT to the in-tree HQ when CLAUDE_PROJECT_DIR is a scratch dir"
+pass "wrapper does not let a scratch CLAUDE_PROJECT_DIR hide companies/"
 
 # 6a. Cloud company IDs may be opaque case-sensitive values rather than slugs.
 #     The binding accepts the safe ASCII identifier and preserves it exactly.

@@ -11,7 +11,7 @@ export REAL_HQ
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RECON="$ROOT/core/scripts/outpost-jobs-reconcile.sh"
-RUN="$ROOT/core/scripts/hq-job-run.sh"
+RUN="$ROOT/core/scripts/tests/fixtures/legacy-job-run.sh"
 NOTIFY="$ROOT/core/scripts/hq-job-notify.sh"
 FIXTURE="$ROOT/core/scripts/tests/fixtures/jobs/valid/personal-daily-digest.yaml"
 
@@ -82,8 +82,6 @@ create_generated_unit() {
   local unit_dir="$TMP/${job_id}-units" cache_dir="$TMP/${job_id}-cache"
   mkdir -p "$hq_root/personal/jobs" "$hq_root/core/scripts" "$home_dir" "$unit_dir" "$cache_dir" \
     "$home_dir/.hq/jobs/reconcile"
-  printf '#!/usr/bin/env bash\nexit 0\n' >"$hq_root/core/scripts/hq-job-run.sh"
-  chmod +x "$hq_root/core/scripts/hq-job-run.sh"
   cat >"$NPM_BIN/npm" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail

@@ -1,7 +1,7 @@
 ---
 name: update-hq
 description: Upgrade HQ from the latest hq-core release.
-allowed-tools: Read, Bash, Bash(HQ_ROOT={hq-root} hq core migrate-policy-triggers:*), Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/remove-stray-gate-hooks.sh:*), Bash(bash core/scripts/remove-retired-core-hooks.sh:*), Bash(bash core/scripts/remove-installed-test-files.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), AskUserQuestion
+allowed-tools: Read, Bash, Bash(HQ_ROOT={hq-root} hq core migrate-policy-triggers:*), Bash(bash core/scripts/check-hq-hooks.sh:*), Bash(bash core/scripts/restore-hook-settings.sh:*), Bash(bash core/scripts/remove-stray-gate-hooks.sh:*), Bash(bash core/scripts/remove-retired-core-hooks.sh:*), Bash(bash core/scripts/remove-installed-test-files.sh:*), Bash(bash core/scripts/update-hq-install-offer.sh:*), Bash(bash core/scripts/normalize-eol-lf.sh:*), Bash(bash core/scripts/lib/hq-core-source.sh:*), AskUserQuestion
 ---
 
 # /update-hq — HQ Upgrade
@@ -52,14 +52,25 @@ Surface the plan in plain terms: the target release, how many paths are clean vs
 If the user passed `--check` / `--dry-run`, **stop here** — report the plan and write nothing.
 
 Before an applying run, check the incoming release's `core/core.yaml` from the
-exact source repository and ref shown by the plan. The default source is
-`indigoai-us/hq-core`; `--staging` selects `indigoai-us/hq-core-staging`, and
-`--source` or `--ref` overrides those defaults. Read only the metadata file:
+exact source repository and ref shown by the plan. The source address comes
+from `HQ_CORE_SOURCE` (env var, else `~/.hq/core-source.json`), which defaults
+to `indigoai-us/hq-core` on GitHub, with `indigoai-us/hq-core-staging` as the
+staging repo. `--staging` selects the staging repo, and `--source` or `--ref`
+overrides those defaults. Read only the metadata file through the shared
+resolver, passing `--staging` or `--source <owner>/<repo>` when the user did:
 
 ```bash
-gh api -H 'Accept: application/vnd.github.raw+json' \
-  "repos/<owner>/<repo>/contents/core/core.yaml?ref=<target-ref>"
+bash core/scripts/lib/hq-core-source.sh core-yaml --ref <target-ref> [--staging | --source <owner>/<repo>]
 ```
+
+The resolver uses `gh api` when the source is GitHub and a plain request with
+no GitHub credentials for any other host.
+
+If `bash core/scripts/lib/hq-core-source.sh print` shows a source other than
+the defaults, compare it with the source named in the `hq rescue --check` plan.
+An `hq` CLI without `HQ_CORE_SOURCE` support plans from the GitHub default. If
+the plan's source differs from the configured one, stop, tell the user to update
+the `hq` CLI, and do not apply.
 
 If the metadata file cannot be read from the planned source and ref, stop and
 report that failure; do not apply the release.

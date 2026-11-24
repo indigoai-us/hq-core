@@ -133,10 +133,12 @@ master_now_ms() {
     fi
   fi
   # HOOK_TIMEOUT_CLOCK (hook-timeout-probe.sh, chosen once at startup) skips
-  # the `date +%s%3N` that BSD date can never answer, so a read on Bash 3.2
-  # starts one process instead of two (feedback_25b10339).
+  # the `date +%s%3N` that BSD date can never answer (feedback_25b10339). On
+  # Bash 3.2 the "seconds" clock answers without starting a process; perl is
+  # never used for the clock, since two reads per child made dozens of perl
+  # launches per event (feedback_0f247c64).
   case "${HOOK_TIMEOUT_CLOCK:-}" in
-    perl|seconds) ;;
+    seconds) ;;
     *)
       now="$(date +%s%3N 2>/dev/null || true)"
       if [[ "$now" =~ ^[0-9]+$ ]] && [ "${#now}" -gt 10 ]; then
@@ -146,19 +148,11 @@ master_now_ms() {
       fi
       ;;
   esac
-  if [ "${HOOK_TIMEOUT_CLOCK:-}" = seconds ] && command -v hook_timeout_epoch_seconds >/dev/null 2>&1 \
+  if command -v hook_timeout_epoch_seconds >/dev/null 2>&1 \
     && hook_timeout_epoch_seconds; then
     MASTER_NOW_MS="${HOOK_TIMEOUT_EPOCH_SECONDS}000"
     printf '%s' "$MASTER_NOW_MS"
     return 0
-  fi
-  if command -v perl >/dev/null 2>&1; then
-    now="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
-    if [[ "$now" =~ ^[0-9]+$ ]]; then
-      MASTER_NOW_MS="$now"
-      printf '%s' "$MASTER_NOW_MS"
-      return 0
-    fi
   fi
   now="$(date +%s 2>/dev/null || printf '0')"
   [[ "$now" =~ ^[0-9]+$ ]] || now=0
@@ -174,20 +168,13 @@ master_timing_precision() {
   local candidate=""
   [ -n "${EPOCHREALTIME:-}" ] && { printf 'ms'; return; }
   case "${HOOK_TIMEOUT_CLOCK:-}" in
-    realtime|date|perl) printf 'ms'; return ;;
+    realtime|date) printf 'ms'; return ;;
     seconds) printf 's'; return ;;
   esac
   candidate="$(date +%s%3N 2>/dev/null || true)"
   if [[ "$candidate" =~ ^[0-9]+$ ]] && [ "${#candidate}" -gt 10 ]; then
     printf 'ms'
     return
-  fi
-  if command -v perl >/dev/null 2>&1; then
-    candidate="$(LC_ALL=C perl -MTime::HiRes=time -e 'printf "%.0f", time() * 1000' 2>/dev/null || true)"
-    if [[ "$candidate" =~ ^[0-9]+$ ]]; then
-      printf 'ms'
-      return
-    fi
   fi
   printf 's'
 }
@@ -877,6 +864,12 @@ if [ -n "$SESSION_ID" ]; then
       "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$META_FILE"
   fi
   printf '%s\n' "$SESSION_ID" > "$SESSIONS_DIR/.current"
+  # Shell commands resolve their session from this same environment. When it
+  # names a different id than the payload, record it so hq-session.sh refuses
+  # writes to the stale id instead of binding the wrong session record.
+  if command -v session_id_record_env_alias >/dev/null 2>&1; then
+    session_id_record_env_alias "$REPO_ROOT" "$SESSION_ID" || true
+  fi
   ACTIVE_COMPANY="$(awk '$1 == "company_slug:" { sub(/^[^:]+:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$META_FILE")"
   ACTIVE_COMPANIES="$ACTIVE_COMPANY"
 fi
@@ -1591,11 +1584,19 @@ if [ -f "$REPO_ROOT/core/scripts/lib/advisory-cap.sh" ] \
   master_advisory_cap_loaded=1
 fi
 
-# Per-child timeout runner. Prefers coreutils timeout (Linux, Git Bash), then
-# perl alarm (macOS); otherwise runs unbounded under the master budget.
+# Per-child timeout runner. Prefers coreutils timeout (Linux, Git Bash), or
+# Homebrew coreutils' gtimeout (macOS), then perl alarm (stock macOS);
+# otherwise runs unbounded under the master budget. gtimeout is the same GNU
+# program under its Homebrew name, so a Mac with coreutils installed but not
+# on the gnubin PATH no longer starts perl for every child (feedback_0f247c64).
 child_timeout_cmd=""
+child_timeout_bin=""
 if command -v timeout >/dev/null 2>&1; then
   child_timeout_cmd="timeout"
+  child_timeout_bin="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  child_timeout_cmd="timeout"
+  child_timeout_bin="gtimeout"
 elif command -v perl >/dev/null 2>&1; then
   child_timeout_cmd="perl"
 fi
@@ -1718,8 +1719,8 @@ run_child() { # <timeout-seconds> <runner-mode> <script-path> <completion-marker
   # Safety guards set child_kill_after so a guard that ignores SIGTERM is sent
   # SIGKILL. GNU timeout signals its whole process group, so the guard's own
   # children (jq, git, node) go with it.
-  local timeout_bin=(timeout)
-  [ -z "${child_kill_after:-}" ] || timeout_bin=(timeout -k "$child_kill_after")
+  local timeout_bin=("${child_timeout_bin:-timeout}")
+  [ -z "${child_kill_after:-}" ] || timeout_bin=("${child_timeout_bin:-timeout}" -k "$child_kill_after")
   case "$child_timeout_cmd" in
     timeout)
       if [ -n "${child_kill_after:-}" ]; then
@@ -2429,6 +2430,28 @@ master_hook_engine_bridge_plan() {
   # Registry dispatch below matches only hook ids, so a helper line never
   # bridges a hook.
   export HQ_HOOK_BRIDGE_BIN="$bin" HQ_HOOK_BRIDGE_PLAN="$plan"
+}
+
+# master_hook_engine_no_verdict <mode> <rc>: 0 when the engine gave no verdict
+# and the bash hook must run (same rule as hq-agents-v2#349's
+# v2_engine_no_verdict). 0 (allow or context) and 2 (block) are verdicts.
+#   on: the port answers in-process, so every other exit is no verdict.
+#   shadow: the engine runs the port, then the bash script itself, and exits
+#     with the script's own status. Only 70 (engine fault), 75 (hand-back:
+#     script not pinned or port declined, bash not run) and 101 (panic in the
+#     port, before bash starts) are no verdict. Any other exit (1, 124, 126,
+#     127, 128+) is the script's own answer; running bash again would run the
+#     hook twice. That status still goes through the timeout and fail-closed
+#     handling a bash run gets.
+master_hook_engine_no_verdict() { # <mode> <rc>
+  case "$2" in
+    0|2) return 1 ;;
+  esac
+  [ "$1" = "shadow" ] || return 0
+  case "$2" in
+    70|75|101) return 0 ;;
+  esac
+  return 1
 }
 
 master_hook_engine_bridge_mode() { # <hook-id> -> HOOK_ENGINE_BRIDGE_MODE (shadow, on, or empty)
@@ -3664,9 +3687,10 @@ par_reg_exec() { # <path> <timeout> <runner> <args> <id>: registry child with br
       bridge "$rid" --mode "$HOOK_ENGINE_BRIDGE_MODE" --event "$EVENT" --timeout "$t" \
       --script "$path" -- $args)" || rc=$?
     run_child_journal_path=""
-    case "$rc" in
-      0|2) printf '%s' "$out"; return "$rc" ;;
-    esac
+    if ! master_hook_engine_no_verdict "$HOOK_ENGINE_BRIDGE_MODE" "$rc"; then
+      printf '%s' "$out"
+      return "$rc"
+    fi
     [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s exited %s without a verdict; running bash\n' "$rid" "$rc" >&2
     rc=0
     if [ -n "$child_completion_marker" ]; then
@@ -4033,9 +4057,10 @@ if [ "$registry_dispatch" -eq 1 ] && command -v hq_hook_profile_allows >/dev/nul
       # block is never lost to an engine fault. In shadow mode the engine runs
       # the native port before the bash script, so a fault happens before bash
       # started and this fallback is the hook's only run for the event.
-      case "$rc" in
-        0|2) ;;
-        *)
+      # In shadow mode only 70, 75 and 101 are no verdict (see
+      # master_hook_engine_no_verdict): any other exit is the bash script's
+      # own, from the run the engine made, and is kept as that run's result.
+      if master_hook_engine_no_verdict "$HOOK_ENGINE_BRIDGE_MODE" "$rc"; then
           [ -z "${HQ_HOOK_TRACE:-}" ] || printf 'master-hook: bridge %s exited %s without a verdict; running bash\n' "$rid" "$rc" >&2
           rc=0
           master_child_started_ms=""
@@ -4047,8 +4072,7 @@ if [ "$registry_dispatch" -eq 1 ] && command -v hq_hook_profile_allows >/dev/nul
           prepare_child_completion_marker
           # shellcheck disable=SC2086 # args are space-separated literals from the registry.
           out="$(run_child "$child_timeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?
-          ;;
-      esac
+      fi
     else
       # shellcheck disable=SC2086 # args are space-separated literals from the registry.
       out="$(run_child "$child_timeout" "$rrunner" "$REPO_ROOT/$rscript" "$child_completion_marker" $rargs)" || rc=$?

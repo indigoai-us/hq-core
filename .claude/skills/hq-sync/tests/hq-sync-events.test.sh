@@ -281,5 +281,72 @@ grep -qF 'hq_sync_report_scope_gaps "$output_file"' "$SKILL_MD" \
   || fail "(f) SKILL.md should call hq_sync_report_scope_gaps"
 ok "no gap events prints nothing, and SKILL.md calls the reporter"
 
+# ---------------------------------------------------------------------------
+# (g) vaults the new sync engine owns are reported as handled, not as a failed
+#     or incomplete sync.
+# ---------------------------------------------------------------------------
+mixed="$TMP/new-sync-mixed.ndjson"
+cat > "$mixed" <<'NDJSON'
+{"type":"company-skipped","company":"indigo","reason":"new-sync"}
+{"type":"company-skipped","company":"paused","reason":"skip-companies"}
+{"type":"company-skipped","company":"personal","reason":"new-sync"}
+{"type":"fanout-plan","companies":[{"slug":"acme"}]}
+{"type":"all-complete","companiesAttempted":1,"filesDownloaded":0,"bytesDownloaded":0,"filesUploaded":0,"bytesUploaded":0,"conflictPaths":[],"errors":[],"transient":[],"partial":false,"companies":[{"company":"acme","status":"complete","filesDownloaded":0,"bytesDownloaded":0,"filesUploaded":0,"bytesUploaded":0}]}
+NDJSON
+[ "$(hq_sync_new_sync_vaults "$mixed" | tr '\n' ' ')" = "indigo personal " ] \
+  || fail "(g) expected indigo and personal as new-sync vaults; got: $(hq_sync_new_sync_vaults "$mixed")"
+ns_out="$(hq_sync_report_new_sync_vaults "$mixed")"
+printf '%s' "$ns_out" | grep -q "=== Handled by the new sync ===" \
+  || fail "(g) expected the new-sync header; got: $ns_out"
+printf '%s' "$ns_out" | grep -q "^  - indigo$" || fail "(g) expected indigo listed"
+printf '%s' "$ns_out" | grep -q "^  - your personal vault$" || fail "(g) expected the personal vault listed"
+printf '%s' "$ns_out" | grep -q "hq sync-core status" || fail "(g) expected the status command"
+if printf '%s' "$ns_out" | grep -qiE "up to date|in the background"; then
+  fail "(g) the block must not claim the new sync is running or current"
+fi
+if printf '%s' "$ns_out" | grep -q "paused"; then
+  fail "(g) a company paused by its switch is not handled by the new sync"
+fi
+if printf '%s' "$ns_out" | grep -qiE "error|failed|incomplete|did not finish"; then
+  fail "(g) the new-sync block must not read as a failure; got: $ns_out"
+fi
+ok "new-sync vaults are listed as handled, paused companies are not"
+
+[ -z "$(hq_sync_report_new_sync_vaults "$clean")" ] \
+  || fail "(g) a run without new-sync skips must print nothing"
+[ -z "$(hq_sync_new_sync_vaults "$TMP/does-not-exist.ndjson")" ] \
+  || fail "(g) a missing output file must print nothing"
+ok "no new-sync skips prints nothing"
+
+# Step 5c, transcribed from SKILL.md: a run where the new sync owns every vault
+# exits 0 with no all-complete event and must not print the no-final-status block.
+all_new="$TMP/new-sync-all.ndjson"
+cat > "$all_new" <<'NDJSON'
+{"type":"company-skipped","company":"indigo","reason":"new-sync"}
+{"type":"company-skipped","company":"personal","reason":"new-sync"}
+NDJSON
+step_5c() {
+  local output_file="$1" cli_status="$2" final_event="" setup_event="" new_sync_vaults
+  new_sync_vaults="$(hq_sync_new_sync_vaults "$output_file" || true)"
+  if [ -z "${final_event:-}" ] && [ -z "${setup_event:-}" ] \
+    && [ "$cli_status" != "${HQ_SYNC_RUNNER_LOCKED_EXIT:-17}" ] \
+    && ! { [ -n "$new_sync_vaults" ] && [ "$cli_status" = "0" ]; }; then
+    echo "=== Sync finished without a final status ==="
+  fi
+}
+[ -z "$(step_5c "$all_new" 0)" ] \
+  || fail "(g) every vault on the new sync with exit 0 must not print the no-final-status block"
+[ -n "$(step_5c "$all_new" 1)" ] \
+  || fail "(g) a failing runner must still print the no-final-status block"
+paused_only="$TMP/paused-only.ndjson"
+printf '%s\n' '{"type":"company-skipped","company":"paused","reason":"skip-companies"}' > "$paused_only"
+[ -n "$(step_5c "$paused_only" 0)" ] \
+  || fail "(g) a run with no new-sync vault keeps the no-final-status block"
+grep -qF '&& ! { [ -n "$new_sync_vaults" ] && [ "$cli_status" = "0" ]; }; then' "$SKILL_MD" \
+  || fail "(g) SKILL.md Step 5c should skip the no-final-status block when the new sync owns every vault"
+grep -qF 'hq_sync_report_new_sync_vaults "$output_file"' "$SKILL_MD" \
+  || fail "(g) SKILL.md should call hq_sync_report_new_sync_vaults"
+ok "SKILL.md reports new-sync vaults and skips the no-final-status block for them"
+
 echo ""
 echo "PASS ($pass assertions)"

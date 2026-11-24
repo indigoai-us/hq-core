@@ -349,4 +349,25 @@ grep -q 'never-uploaded.md' "$TMP/warn.err" || fail "missing knowledge entry mus
 grep -q 'offloaded placeholder.*offloaded.md' "$TMP/warn.err" || fail "offloaded placeholder must be warned about: $(cat "$TMP/warn.err")"
 if grep -q 'WARNING.*widget-notes.md' "$TMP/warn.err"; then fail "present knowledge entry must not warn"; fi
 
+# --- same-second builds get distinct delegation ids ---------------------------
+# Regression: the id was dlg-<second>-<project>, so two builds of one project in
+# the same second collided on the bundle directory (ENOTEMPTY on rename).
+
+HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project widget \
+  --to alice@acme.test --to-name "Alice" >"$TMP/race1.out" 2>"$TMP/race1.err" &
+RACE1=$!
+HQ_ROOT="$FIX" bash "$BUILDER" build --company acme --project widget \
+  --to alice@acme.test --to-name "Alice" >"$TMP/race2.out" 2>"$TMP/race2.err" &
+RACE2=$!
+wait "$RACE1" || fail "first concurrent build failed: $(cat "$TMP/race1.err")"
+wait "$RACE2" || fail "second concurrent build failed: $(cat "$TMP/race2.err")"
+RID1="$(head -1 "$TMP/race1.out")"
+RID2="$(head -1 "$TMP/race2.out")"
+[ "$RID1" != "$RID2" ] || fail "concurrent builds must get distinct delegation ids (both $RID1)"
+for rid in "$RID1" "$RID2"; do
+  grep -Eq '^dlg-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}-widget$' <<<"$rid" \
+    || fail "delegation id must be dlg-<stamp>-<6 hex>-<project>: '$rid'"
+  [ -f "$FIX/workspace/delegations/$rid/manifest.json" ] || fail "bundle missing for $rid"
+done
+
 echo "hq-delegate-bundle: ok (schema valid; prefixes folder-form + bucket-relative; fail-closed on neither source and secret match; brainstorm stage builds from brainstorm.md with dossier + /plan brief; prd path unchanged; big folders build with dependency dirs skipped and a 200-entry cap; pattern lib superset of hook)"

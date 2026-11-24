@@ -464,14 +464,53 @@ fi
 run_spawn 2 spawn_task '{"title":"t","prompt":"p"}' 'bare spawn_task from HQ root blocked'
 run_spawn 2 mcp__ccd_session__start_session '{"initiation":"own_initiative","title":"t","prompt":"p","use_worktree":true}' \
   'start_session use_worktree:true from HQ root blocked'
+# The refusal names the HQ-root path as the only way to start the session and
+# no longer steers the agent to a repo folder (a repo cwd makes the desktop
+# app ask the user to trust that repository).
+if [[ "$LAST_STDERR" != *"start the session in the HQ root: start_session with use_worktree: false"* \
+   || "$LAST_STDERR" != *"worktree add"* ]]; then
+  FAIL=$((FAIL + 1)); echo 'FAIL [spawn guidance]: refusal does not name the HQ-root path and the in-repo worktree step' >&2
+else
+  PASS=$((PASS + 1))
+fi
+if [[ "$LAST_STDERR" == *"set cwd to the repo"* ]]; then
+  FAIL=$((FAIL + 1)); echo 'FAIL [spawn guidance]: refusal still tells the agent to set cwd to a repo folder' >&2
+else
+  PASS=$((PASS + 1))
+fi
+
+# --- From the HQ root, a new session never starts in a repo folder ----------
+# New sessions start in the HQ root even for repo work; the new session makes
+# its own worktree inside the repo. A cwd under repos/ is refused whatever
+# use_worktree says, and the refusal names the HQ-root path.
+run_spawn 2 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":true,\"cwd\":\"$APP\"}" \
+  'start_session worktree with cwd in a source repo under repos/ blocked'
+if [[ "$LAST_STDERR" != *"inside a source repo folder"* || "$LAST_STDERR" != *"$APP"* \
+   || "$LAST_STDERR" != *"use_worktree: false"* || "$LAST_STDERR" != *"worktree add"* ]]; then
+  FAIL=$((FAIL + 1)); echo 'FAIL [repo cwd guidance]: refusal does not name the repo folder, the HQ-root path and the in-repo worktree step' >&2
+else
+  PASS=$((PASS + 1))
+fi
+run_spawn 2 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":false,\"cwd\":\"$APP\"}" \
+  'start_session plain checkout with cwd in a source repo blocked'
+run_spawn 2 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"cwd\":\"$APPWT\"}" \
+  'start_session with cwd in a repo worktree under workspace/worktrees blocked'
+run_spawn 2 mcp__ccd_session__start_session '{"initiation":"user_asked","title":"t","prompt":"p","cwd":"repos/private/app"}' \
+  'start_session with a relative repos/ cwd blocked'
+run_spawn 2 mcp__ccd_session__spawn_task "{\"title\":\"t\",\"prompt\":\"p\",\"cwd\":\"$APP\"}" \
+  'spawn_task with cwd in a source repo blocked'
+run_spawn 0 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"target\":\"cloud\",\"cwd\":\"$APP\"}" \
+  'start_session cloud target with a repo cwd allowed'
+run_spawn 0 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":false,\"cwd\":\"$HQ\"}" \
+  'start_session plain checkout with cwd set to the HQ root allowed'
+run_spawn 0 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":true,\"cwd\":\"$APP\"}" \
+  'source-repo session may start a worktree session of its own repo' "$APP"
 run_spawn 2 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":true,\"cwd\":\"$HQ/workspace\"}" \
   'start_session worktree with cwd inside HQ (not repos/) blocked'
 run_spawn 0 mcp__ccd_session__start_session '{"initiation":"own_initiative","title":"t","prompt":"p","use_worktree":false}' \
   'start_session use_worktree:false allowed'
 run_spawn 0 mcp__ccd_session__start_session '{"initiation":"own_initiative","title":"t","prompt":"p"}' \
   'start_session without use_worktree allowed (plain checkout keeps its folder)'
-run_spawn 0 mcp__ccd_session__start_session "{\"initiation\":\"user_asked\",\"title\":\"t\",\"prompt\":\"p\",\"use_worktree\":true,\"cwd\":\"$APP\"}" \
-  'start_session worktree of a source repo under repos/ allowed'
 run_spawn 0 mcp__ccd_session__start_session '{"initiation":"user_asked","title":"t","prompt":"p","use_worktree":true,"cwd":"/tmp/elsewhere"}' \
   'start_session worktree outside HQ allowed'
 run_spawn 0 mcp__ccd_session__start_session '{"initiation":"user_asked","title":"t","prompt":"p","target":"cloud"}' \
