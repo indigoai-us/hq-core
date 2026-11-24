@@ -1,0 +1,1 @@
+- Add `--learnings-json-file <path>` to `core/scripts/handoff-finalize.sh` (with fallback support in `core/scripts/handoff-run.sh` and usage in `.claude/skills/handoff/SKILL.md`) so non-empty learnings JSON arrays stay off the command line, and invoke `_shared/journal.sh` via `bash` in the handoff skill.

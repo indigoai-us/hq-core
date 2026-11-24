@@ -119,8 +119,12 @@ blocked by retired, superseded, or pending-question state; run them in
    set, for every `/conduct` lane. A user flag overrides the matching session
    pin. When neither a `conduct_child_account` pin nor a user `--account` flag
    is set, pass `--account auto` so hq-cli picks the account with the most room
-   from the shared pool. A repeated create for the same worker and
-   senior continues its prior lane thread. If the lane is live, send follow-up work with
+   from the shared pool. Add the placement flag (`--outpost <id>`, with the
+   lane's `--company` for a company Outpost, `--placement auto`, or
+   `--placement local`) chosen under
+   `core/policies/hq-lane-outpost-choice.md`; never pick an Outpost silently.
+   A repeated create for the same worker and senior continues its prior lane
+   thread. If the lane is live, send follow-up work with
    `hq runners message <lane> --text <instruction>`.
 4. Parse the JSON response. An admission or capacity refusal, including
    `no_account_with_room` from `--account auto`, moves the task to a subagent

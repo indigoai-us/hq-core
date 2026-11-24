@@ -2,8 +2,8 @@
 id: hq-secure-link-render-as-markdown
 enforcement: hard
 public: true
-when: secret || credential || credentials || password || passphrase || token || apikey || api_key
-on: [UserPromptSubmit, AssistantIntent, PreToolUse]
+when: secret || secrets || generate-link || generate_link || credential || credentials || password || passphrase || token || apikey || api_key
+on: [UserPromptSubmit, AssistantIntent, PreToolUse, PostToolUse]
 tags: [security, hq-cli, vault, capabilities, secrets, ux]
 created: 2026-05-18
 provenance: user-directive

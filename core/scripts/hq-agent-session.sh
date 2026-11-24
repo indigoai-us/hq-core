@@ -361,17 +361,91 @@ session_failure_utf8_cut() {
   head -c "$bytes" | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
 }
 
+# A CLI error line can carry a link ("raise it at https://...") or a token-like
+# string. Neither belongs in a run reason: each URL becomes [link], and a run of
+# 32 or more token characters that is not part of a path (no "/" next to it)
+# becomes [REDACTED]. Path text is kept as written.
+session_failure_scrub_links() {
+  local tok='[A-Za-z0-9+_=.-]{32,}' edge='[^A-Za-z0-9+/_=.-]'
+  LC_ALL=C sed -E \
+    -e 's#[A-Za-z][A-Za-z0-9+.-]*://[^][:space:]|()<>"]*#[link]#g' \
+    -e "s#(^|${edge})${tok}(${edge}|\$)#\\1[REDACTED]\\2#g" \
+    -e "s#(^|${edge})${tok}(${edge}|\$)#\\1[REDACTED]\\2#g" \
+    -e 's#[[:space:]]{2,}# #g' \
+    -e 's#[[:space:]]+$##'
+}
+
+# The opening words of a provider's usage, session or spend limit refusal. This
+# is a loose first filter that decides which line to keep; company-jobs matches
+# the exact sentences before it treats a run as usage-limited.
+session_provider_limit_sentence() {
+  case "${1:-}" in
+    "You've hit your"*" limit"*|"You’ve hit your"*" limit"*|"You've reached your"*" limit"*|"You’ve reached your"*" limit"*) return 0 ;;
+    "You're out of"*" usage"*|"You’re out of"*" usage"*) return 0 ;;
+    "Claude AI usage limit reached"*|"Claude usage limit reached"*|"Usage limit reached"*|"usage limit reached"*) return 0 ;;
+    "Session limit reached"*|"Weekly limit reached"*|"5-hour limit reached"*|"Spending cap reached"*) return 0 ;;
+  esac
+  return 1
+}
+
 session_claude_cli_error_line() {
   case "${1:-}" in
-    "API Error"*|"Error: "*|"Failed to authenticate"*|"Invalid API key"*|"Invalid auth token"*|"Not logged in"*|"OAuth token"*|"Credit balance is too low"*|"Claude AI usage limit reached"*|"You've hit your"*" limit"*|"You've hit your limit"*|"Prompt is too long"*|"Request rejected"*) return 0 ;;
+    "API Error"*|"Error: "*|"Failed to authenticate"*|"Invalid API key"*|"Invalid auth token"*|"Not logged in"*|"OAuth token"*|"Credit balance is too low"*|"Prompt is too long"*|"Request rejected"*) return 0 ;;
   esac
+  session_provider_limit_sentence "${1:-}"
+}
+
+# The provider limit line that ends stderr, or nothing. Codex writes its banner
+# and the prompt echo to stderr before the refusal, so the refusal is read from
+# the end of the file. It counts only when it is the last non-empty line, or
+# when every non-empty line after it is a known Codex trailer ("tokens used"
+# and its count). A tool's limit line followed by a later error does not count.
+session_provider_limit_from_stderr() {
+  local file="${1:-}" line bare
+  [ -s "$file" ] || return 1
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    case "$line" in
+      "tokens used"*) continue ;;
+      *[!0-9,]*) ;;
+      *) continue ;;
+    esac
+    bare="${line#ERROR: }"
+    bare="${bare#Error: }"
+    # Codex reports a limit hit while compacting behind this prefix.
+    bare="${bare#Error running remote compact task: }"
+    if session_provider_limit_sentence "$bare"; then
+      printf '%s' "$line"
+      return 0
+    fi
+    return 1
+  done <<EOF
+$(tail -c 4096 "$file" | session_failure_strip_controls | awk 'NF { l[++n] = $0 } END { for (i = n; i > n - 5 && i > 0; i--) print l[i] }')
+EOF
   return 1
 }
 
 session_provider_failure_text() {
   local rd="${1:-}" rc="${2:-1}" provider="${3:-}" detail="" line="" size lines
   if [ -s "$rd/provider.stderr" ]; then
-    detail="$(head -c 4096 "$rd/provider.stderr" | session_failure_strip_controls | tr '\n' ' ' | session_failure_utf8_cut 500)"
+    # A limit line that ends stderr goes first, cleaned, on its own line. The
+    # start of stderr follows on the last line without that raw line, so a run
+    # that is not usage-limited can rebuild its original reason from the two.
+    if line="$(session_provider_limit_from_stderr "$rd/provider.stderr")"; then
+      detail="$(head -c 4096 "$rd/provider.stderr" | session_failure_strip_controls \
+        | HQ_SESSION_LIMIT_LINE="$line" awk '{ t = $0; sub(/^[[:space:]]+/, "", t); sub(/[[:space:]]+$/, "", t); if (t != ENVIRON["HQ_SESSION_LIMIT_LINE"]) print }' \
+        | tr '\n' ' ' | session_failure_utf8_cut 500)"
+      detail="${detail%"${detail##*[![:space:]]}"}"
+      line="$(printf '%s' "$line" | session_failure_scrub_links | session_failure_utf8_cut 300)"
+      if [ -n "$detail" ]; then
+        detail="$line"$'\n'"$detail"
+      else
+        detail="$line"
+      fi
+    else
+      detail="$(head -c 4096 "$rd/provider.stderr" | session_failure_strip_controls | tr '\n' ' ' | session_failure_utf8_cut 500)"
+    fi
   elif [ "$provider" = "claude" ] && [ -s "$rd/provider.stdout" ]; then
     size="$(wc -c < "$rd/provider.stdout" | tr -d '[:space:]')"
     lines=99
@@ -381,7 +455,7 @@ session_provider_failure_text() {
       line="${line#"${line%%[![:space:]]*}"}"
     fi
     if [ "${lines:-99}" -le 2 ] && session_claude_cli_error_line "$line"; then
-      detail="$(printf '%s' "$line" | session_failure_utf8_cut 300)"
+      detail="$(printf '%s' "$line" | session_failure_scrub_links | session_failure_utf8_cut 300)"
     fi
   fi
   detail="${detail#"${detail%%[![:space:]]*}"}"

@@ -507,6 +507,8 @@ jobs:
         run: bash core/scripts/tests/scope-authorizer-file-tool-fold-path.test.sh
       - name: Scope authorizer reads the session binding from a linked HQ root (company Outpost shell user)
         run: bash core/scripts/tests/scope-authorizer-linked-root.test.sh
+      - name: Scope authorizer reads Windows drive, UNC and backslash path spellings as the shell spelling
+        run: bash core/scripts/tests/mandatory-scope-authorizer-windows-paths.test.sh
       - name: Scope authorizer checks long heredoc, python and Edit payloads well inside the hook cap
         run: bash core/scripts/tests/mandatory-scope-authorizer-bash32-payload.test.sh
       - name: Scope authorizer never refuses a core, pack, personal or user-level skill for sharing a company skill name
@@ -716,8 +718,9 @@ jobs:
       - autosave-failure-visibility-handoff-2
       - autosave-failure-visibility-qmd-reindex
     if: ${{ always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
-    # A results-only gate (no checkout): it stays on the hosted runner so it does not wait for an AWS instance to boot.
-    runs-on: ubuntu-24.04-arm
+    # A results-only gate (no checkout). It runs on the AWS pool like its legs; the warm org-arm64 runners keep the
+    # boot wait short.
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     timeout-minutes: 30
     steps:
       - name: Every autosave-failure-visibility leg passed
@@ -753,14 +756,14 @@ jobs:
     # knowledge-repo-loop-zsh-unmatched-glob: the checkpoint and cleanup
     # snippets must not let zsh NOMATCH abort on an empty knowledge directory.
     name: knowledge-repo-glob-shells
-    # Stays on the GitHub-hosted image: this test needs passwordless sudo
-    # (apt or systemd), which the self-hosted pool does not grant.
-    runs-on: ubuntu-24.04-arm
+    # The AWS runner image bakes zsh (hq-github-runners org-arm64 packages),
+    # so the sudo apt-get fallback below runs only on the hosted fallback.
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install zsh for NOMATCH regression coverage
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: command -v zsh >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y zsh)
       - name: Knowledge repository glob expansion is shell-safe
         run: bash core/scripts/tests/knowledge-repo-glob-shells.test.sh
 
@@ -1275,8 +1278,9 @@ jobs:
       - core-write-protection-2
       - core-write-protection-3
     if: ${{ always() && ((github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) || (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging')) }}
-    # A results-only gate (no checkout): it stays on the hosted runner so it does not wait for an AWS instance to boot.
-    runs-on: ubuntu-24.04-arm
+    # A results-only gate (no checkout). It runs on the AWS pool like its legs; the warm org-arm64 runners keep the
+    # boot wait short.
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
     timeout-minutes: 62
     steps:
       - name: Every shard passed
@@ -1645,6 +1649,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer-bash32-payload.test.sh
+      - name: Scope authorizer Windows path spellings under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/mandatory-scope-authorizer-windows-paths.test.sh
       - name: Quoted file URI scope under stock macOS Bash
         run: /bin/bash core/scripts/tests/scope-file-uri.test.sh
       - name: Scope-guard hotfix ledger shapes under stock macOS Bash

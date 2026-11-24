@@ -757,7 +757,8 @@ case "$EVENT" in
     [ -f "$STATE" ] || exit 0
     TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
     PATH_USED="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.path // .tool_input.target_file // empty')"
-    CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
+    # Codex exec_command sends the shell command as tool_input.cmd.
+    CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // .tool_input.cmd // empty')"
     SUCCESS="$(printf '%s' "$INPUT" | jq -r '
       if (.tool_response.is_error? == true or .tool_response.error? != null or
           .tool_response.success? == false or ((.tool_response.exit_code? // 0) != 0))

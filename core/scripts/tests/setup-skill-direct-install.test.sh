@@ -230,8 +230,10 @@ for tool in bash awk cat date env mkdir mktemp mv rm tr sleep; do
   ln -s "$(command -v "$tool")" "$mh/bin/$tool"
 done
 mh_rc=0
+# Unset HOME so hq_augment_path does not probe host /usr/local/bin,
+# /opt/homebrew/bin, or $HOME/.local/bin and recover a host jq.
 printf '%s' '{"session_id":"setup-jq","tool_name":"Bash","tool_input":{"command":"true"}}' |
-  env PATH="$mh/bin" HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 \
+  env -u HOME PATH="$mh/bin" HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 \
     /bin/bash "$mh/hq/.claude/hooks/master-hook.sh" PreToolUse > "$mh/out" 2> "$mh/err" || mh_rc=$?
 [[ "$mh_rc" == 2 ]] || fail "14: master-hook without jq should exit 2, got $mh_rc"
 grep -qF "$blocked_msg" "$mh/err" || fail "14: skill quotes a BLOCKED message master-hook does not print: $(cat "$mh/err")"

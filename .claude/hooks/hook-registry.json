@@ -1146,7 +1146,7 @@
         ]
       },
       {
-        "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read",
+        "matcher": "Agent|Task|Write|Edit|MultiEdit|NotebookEdit|Read|mcp__.*",
         "hooks": [
           {
             "id": "inject-policy-on-trigger",

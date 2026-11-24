@@ -24,18 +24,27 @@
 #                        does this when the setting is false).
 #   hook commit-msg <file>
 #                        the stage itself (called by the dispatcher). Never
-#                        fails a commit and prints nothing; when it adds no
-#                        trailer for a reason other than scope, it appends one
-#                        line to ~/.hq/fingerprint-hook.log (kept under 1 MB,
-#                        one older copy in fingerprint-hook.log.1).
+#                        fails a commit. A probe timeout prints one warning
+#                        on stderr (from the hook branch, after the stage's
+#                        own output is discarded); other skips are quiet.
+#                        When it adds no
+#                        trailer for a reason other than scope, it also
+#                        appends one line to ~/.hq/fingerprint-hook.log
+#                        (kept under 1 MB, one older copy in
+#                        fingerprint-hook.log.1).
 #
 # Speed: `enabled: false` stops the stage first. A commit made outside an
 # agent session (no HQ_SESSION_ID, CLAUDE_CODE_SESSION_ID, ...) gets no
 # trailer and starts nothing. An hq CLI older than HQ_FINGERPRINT_MIN_HQ_CLI
 # (core/scripts/lib/hq-cli-capability.sh) is skipped without being started.
-# A newer one is probed once; a failed probe is cached per hq binary for a day
-# in ~/.hq/fingerprint-capability.cache. The result for this agent session,
-# a fingerprint or "none", is kept in
+# A newer one is probed once; a failed probe other than a timeout is cached
+# per hq binary for a day in ~/.hq/fingerprint-capability.cache. A timeout
+# is not cached there and is not stored as session "none". It starts a short
+# per-session backoff instead (HQ_FINGERPRINT_TIMEOUT_BACKOFF_SECS, default
+# 300, in workspace/sessions/<session id>/fingerprint-timeout.backoff): commits
+# in that window skip the probe, so a hanging CLI does not add the time limit
+# to every commit, and the first commit after it probes again. The result for
+# this agent session, a fingerprint or "none", is kept in
 # workspace/sessions/<session id>/fingerprint-trailer.cache, the same v2 file
 # core/scripts/lib/fingerprint.sh reads and writes.
 #
@@ -43,6 +52,7 @@
 # Env: HQ_ROOT (default: this script's HQ), HQ_FINGERPRINT_BIN (override the
 # hq command, for tests; skips the capability cache),
 # HQ_FINGERPRINT_TIMEOUT_TENTHS (default 20 = 2 s),
+# HQ_FINGERPRINT_TIMEOUT_BACKOFF_SECS (default 300; 0 turns the backoff off),
 # HQ_FINGERPRINT_CAPABILITY_CACHE, HQ_FINGERPRINT_CAPABILITY_TTL_SECS,
 # HQ_SECRET_SCAN_HOOKS_DIR (default ~/.hq/git-hooks).
 #
@@ -217,8 +227,42 @@ session_cache_write() { # file key result (value:<fp> or none)
   return 0
 }
 
+# After a probe timeout, skip the probe for a few minutes in this session.
+# Two lines: the session cache key (a new CLI version or override misses) and
+# the epoch second the backoff started.
+backoff_secs() {
+  local b="${HQ_FINGERPRINT_TIMEOUT_BACKOFF_SECS:-300}"
+  case "$b" in ''|*[!0-9]*) b=300 ;; esac
+  printf '%s' "$b"
+}
+
+backoff_active() { # file key
+  local key="" stamp="" now secs
+  secs="$(backoff_secs)"
+  [ "$secs" -gt 0 ] || return 1
+  [ -f "$1" ] || return 1
+  { IFS= read -r key; IFS= read -r stamp; } <"$1" 2>/dev/null
+  [ "$key" = "$2" ] || return 1
+  case "$stamp" in ''|*[!0-9]*) return 1 ;; esac
+  now="$(date +%s)"
+  [ "$stamp" -le "$now" ] && [ $((now - stamp)) -lt "$secs" ]
+}
+
+backoff_write() { # file key
+  local tmp="$1.$$"
+  [ "$(backoff_secs)" -gt 0 ] || return 0
+  mkdir -p "${1%/*}" 2>/dev/null || return 0
+  printf '%s\n' "$2" "$(date +%s)" >"$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  return 0
+}
+
+# Set by stage_commit_msg; the hook branch prints it on stderr after the
+# stage's own stdout and stderr have been discarded.
+STAGE_WARNING=""
+
 stage_commit_msg() { # msgfile
-  local msg="${1:-}" gd out rc fp="" cap_key="" sc_file="" sc_key="" cached
+  local msg="${1:-}" gd out rc fp="" cap_key="" sc_file="" sc_key="" cached bo_file=""
   # Kill switch first: enabled: false means no work at all.
   [ "$(setting enabled true)" = "true" ] || return 0
   [ -n "$msg" ] && [ -f "$msg" ] || { log_skip "no message file"; return 0; }
@@ -228,6 +272,7 @@ stage_commit_msg() { # msgfile
   # scope check (the stub already only calls in for repos under the HQ root).
   hq_cap_session_id || return 0
   sc_file="$HQ_ROOT/workspace/sessions/$HQ_CAP_SID/fingerprint-trailer.cache"
+  bo_file="$HQ_ROOT/workspace/sessions/$HQ_CAP_SID/fingerprint-timeout.backoff"
 
   # An hq CLI older than the floor has no `hq fingerprint`: stop without
   # starting it. A newer one known (within a day) to fail the probe stops the
@@ -260,6 +305,11 @@ stage_commit_msg() { # msgfile
     fp="$cached"
   fi
 
+  if [ -z "$fp" ] && backoff_active "$bo_file" "$sc_key"; then
+    log_skip "fingerprint command timed out recently; probe skipped until the backoff ends"
+    return 0
+  fi
+
   if [ -z "$fp" ]; then
     out="$(mktemp "${TMPDIR:-/tmp}/hq-fingerprint.XXXXXX")" || { log_skip "no temp file"; return 0; }
     run_fingerprint "$out"
@@ -268,8 +318,14 @@ stage_commit_msg() { # msgfile
       rm -f "$out"
       case "$rc" in
         3) log_skip "hq CLI not found"; return 0 ;;
-        124) log_skip "fingerprint command timed out"
-             [ -n "$cap_key" ] && hq_cap_cache_write "$cap_key" timeout ;;
+        124)
+          # A timeout is not a capability result. Caching it for a day (or as
+          # session "none") would drop the trailer from every later commit.
+          # A short backoff keeps a hanging CLI from slowing every commit.
+          log_skip "fingerprint command timed out"
+          backoff_write "$bo_file" "$sc_key"
+          STAGE_WARNING="hq-fingerprint-hooks: fingerprint command timed out; this commit has no HQ-Fingerprint trailer (retrying in $(backoff_secs)s)"
+          return 0 ;;
         *) log_skip "fingerprint command failed (exit $rc)"
            [ -n "$cap_key" ] && hq_cap_cache_write "$cap_key" "exit$rc" ;;
       esac
@@ -291,7 +347,7 @@ stage_commit_msg() { # msgfile
       session_cache_write "$sc_file" "$sc_key" none
       return 0
     fi
-    rm -f "$out"
+    rm -f "$out" "$bo_file" 2>/dev/null
     [ -n "$cap_key" ] && hq_cap_cache_write "$cap_key" capable
     session_cache_write "$sc_file" "$sc_key" "value:$fp"
   fi
@@ -354,7 +410,8 @@ case "${1:-status}" in
   hook)
     [ "${2:-}" = "commit-msg" ] || die "usage: $(basename "$0") hook commit-msg <message-file>"
     stage_commit_msg "${3:-}" >/dev/null 2>&1
+    [ -n "$STAGE_WARNING" ] && printf '%s\n' "$STAGE_WARNING" >&2
     exit 0 ;;
-  -h|--help) sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "usage: $(basename "$0") status | enable [--replace] | disable [--dry-run] | hook commit-msg <file>" ;;
 esac

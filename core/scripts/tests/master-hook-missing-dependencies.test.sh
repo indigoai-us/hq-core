@@ -17,8 +17,10 @@ done
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 run_case() {
   local event="$1" missing="$2" want="$3" rc=0 started=$SECONDS
+  # Unset HOME so hq_augment_path does not probe host /usr/local/bin,
+  # /opt/homebrew/bin, or $HOME/.local/bin and recover a host jq.
   printf '%s' '{"session_id":"missing-dependency","tool_name":"Bash","tool_input":{"command":"true"}}' |
-    env PATH="$TMP/bin" HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 \
+    env -u HOME PATH="$TMP/bin" HQ_HOOK_TIMEOUT_SENTRY=0 HQ_HOOK_DEDUPE=0 \
       /bin/bash "$TMP/hq/.claude/hooks/master-hook.sh" "$event" > "$TMP/out" 2> "$TMP/err" || rc=$?
   printf '%s missing %s: exit=%s stdout=%s stderr=%s\n' "$event" "$missing" "$rc" "$(cat "$TMP/out")" "$(cat "$TMP/err")"
   [ "$rc" = "$want" ] || fail "$event expected $want, got $rc"

@@ -5054,6 +5054,16 @@ gs_read_bound() {
 # CG_URL_MULTI_RE: a command line with more than one command, a subshell,
 # a substitution or a redirect, or an option that changes the directory.
 CG_URL_MULTI_RE=$'[;&|()<>`\n]|[$][(]|(^|[[:space:]])(-C|--git-dir|--work-tree|--prefix)([=[:space:]]|$)'
+# Directory creators that can make a scheme-named folder (https:) before a
+# later URL word in the same command line.
+CG_URL_DIRCREATE_RE='(^|[[:space:];|&])(ln|mkdir|install)[[:space:]]'
+# CG_CURL_NOVAL_RE, CG_WGET_NOVAL_RE: options of curl and wget that take no
+# value. A word after one of these, after a non-option word or after -- is a
+# positional URL operand. A word after any other option may be that option's
+# value (curl -T f, -K f, wget --post-file f, -i f), which the tool can read
+# as a local file, so it keeps the path rule.
+CG_CURL_NOVAL_RE='^(-[0-46aBfgGiIjJklLMnNOpqRsSvVZ#]+|--(silent|show-error|location|location-trusted|fail|fail-with-body|fail-early|head|include|insecure|verbose|compressed|globoff|get|http0[.]9|http1[.]0|http1[.]1|http2|http2-prior-knowledge|http3|http3-only|remote-name|remote-name-all|remote-header-name|remote-time|progress-bar|create-dirs|ipv4|ipv6|raw|ssl-reqd|tcp-nodelay|tcp-fastopen|append|list-only|disable|disable-eprt|disable-epsv|digest|basic|ntlm|anyauth|negotiate|path-as-is|styled-output|no-[a-z0-9-]+))$'
+CG_WGET_NOVAL_RE='^(-(n[vcdHp]|[46bcdEFhHkKmNpqrSvVx])+|--(quiet|verbose|debug|continue|recursive|mirror|timestamping|server-response|spider|page-requisites|convert-links|adjust-extension|span-hosts|inet4-only|inet6-only|content-disposition|show-progress|force-directories|protocol-directories|trust-server-names|backup-converted|force-html|background|ignore-case|keep-session-cookies|retry-connrefused|no-[a-z0-9-]+))$'
 
 # fed_cmd <start> <end> <depth>: the command that xargs, find -exec or
 # parallel runs gets the same analysis as a command line (xargs sh -c
@@ -5069,10 +5079,11 @@ fed_cmd() {
   return 0
 }
 
-# check_operand <word> <flags> <cwd>: an operand of a command that is not on
-# the safe list.
+# check_operand <word> <flags> <cwd> [url_ok]: an operand of a command that
+# is not on the safe list. url_ok=1 marks a positional URL operand of curl or
+# wget (see check_generic); option values never get it.
 check_operand() {
-  local w="$1" f="$2" cwd="$3" rp nc=0 skip=0
+  local w="$1" f="$2" cwd="$3" url_ok="${4:-0}" rp nc=0 skip=0
   shopt -q nocasematch && nc=1
   shopt -s nocasematch
   # A URL operand is not a file, but only a URL with a host and no ..
@@ -5097,8 +5108,20 @@ check_operand() {
               # The folder can also be made earlier in the same command line
               # (ln -s .. https: && ...) or sit in another directory (git -C),
               # so the word stays a URL only in a single simple command that
-              # changes no directory.
-              [ -e "$cwd/${w%%:*}:" ] || [ -e "${w%%:*}:" ] || [[ "$STRIPPED" =~ $CG_URL_MULTI_RE ]] || skip=1 ;;
+              # changes no directory. A positional URL operand of curl or
+              # wget (url_ok=1) is fetched, never read as a path, so it stays a
+              # URL in a multi-command line too (`for id in ...; do curl
+              # https://host?v=$id; done`, feedback_27e97d5d), unless the line
+              # also runs ln, mkdir or install. Option values (curl -T, -K,
+              # wget --post-file) do not get url_ok and keep the rule above.
+              if [ -e "$cwd/${w%%:*}:" ] || [ -e "${w%%:*}:" ]; then
+                :
+              elif [[ "$STRIPPED" =~ $CG_URL_MULTI_RE ]] \
+                && { [ "$url_ok" != 1 ] || [[ "$STRIPPED" =~ $CG_URL_DIRCREATE_RE ]]; }; then
+                :
+              else
+                skip=1
+              fi ;;
           esac
           ;;
       esac
@@ -5131,21 +5154,38 @@ check_operand() {
   done
 }
 
-# check_generic <start> <end> <cwd>: every operand and option value.
+# check_generic <start> <end> <cwd> [cmd]: every operand and option value.
+# For curl and wget, an operand is a positional URL (url_ok=1) when it follows
+# --, a non-option word, an option with its value attached (--x=v) or an
+# option that takes no value; any other option's next word may be its value.
 check_generic() {
-  local s="$1" e="$2" cwd="$3" j w f endopts=0
+  local s="$1" e="$2" cwd="$3" cmd="${4:-}" j w f endopts=0 noval_re="" pos=1
+  case "$cmd" in
+    curl) noval_re="$CG_CURL_NOVAL_RE" ;;
+    wget) noval_re="$CG_WGET_NOVAL_RE" ;;
+  esac
   for ((j = s; j < e; j++)); do
     w="${CW[$j]}"; f="${CF[$j]}"
-    if [ $endopts -eq 0 ] && [ "$w" = "--" ]; then endopts=1; continue; fi
+    if [ $endopts -eq 0 ] && [ "$w" = "--" ]; then endopts=1; pos=1; continue; fi
     if [ $endopts -eq 0 ] && [[ "$w" == -?* ]]; then
       if [[ "$w" == --*=* ]]; then
         check_operand "${w#*=}" "$f" "$cwd"
-      elif [[ "$w" != --* ]] && [ ${#w} -gt 2 ]; then
-        check_operand "${w:2}" "$f" "$cwd"
+        pos=1
+      else
+        if [[ "$w" != --* ]] && [ ${#w} -gt 2 ]; then
+          check_operand "${w:2}" "$f" "$cwd"
+        fi
+        pos=0
+        if [ -n "$noval_re" ] && [[ "$w" =~ $noval_re ]]; then pos=1; fi
       fi
       continue
     fi
-    check_operand "$w" "$f" "$cwd"
+    if [ -n "$noval_re" ] && [ $pos -eq 1 ]; then
+      check_operand "$w" "$f" "$cwd" 1
+    else
+      check_operand "$w" "$f" "$cwd"
+    fi
+    pos=1
   done
 }
 
@@ -6569,6 +6609,10 @@ analyze_simple() {
             if [ "$cmd" = gh ] && [ "$sub1" = pr ] && [ "$tk" -eq $((a + 2)) ]; then
               case "$sub2" in checks|view|status|merge|diff|ready|close|reopen|checkout) continue ;; esac
             fi
+            # gh run <verb> <run-id>: the word right after the verb.
+            if [ "$cmd" = gh ] && [ "$sub1" = run ] && [ "$tk" -eq $((a + 2)) ]; then
+              case "$sub2" in watch|view|rerun|cancel|delete) continue ;; esac
+            fi
             ;;
           esac
         fi
@@ -6614,7 +6658,7 @@ analyze_simple() {
   if is_reader "$cmd"; then
     check_reader "$cmd" "$a" "$e" "$CUR_CWD"
   else
-    check_generic "$a" "$e" "$CUR_CWD"
+    check_generic "$a" "$e" "$CUR_CWD" "$cmd"
   fi
   return 0
 }

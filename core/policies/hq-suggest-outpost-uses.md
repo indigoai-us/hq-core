@@ -63,6 +63,9 @@ has been tested end to end on a company Outpost yet:
 | Morning summary of open pull requests and failing checks | GitHub usable and shared with the company. Not yet tested end to end on a company Outpost |
 | Weekly digest of new and changed files in the company vault | File sync on. Not yet tested end to end on a company Outpost |
 
+Starting a lane on an Outpost is a separate choice: follow
+`core/policies/hq-lane-outpost-choice.md`.
+
 Keep company isolation: use only the active company's sessions, files, apps and
 Outpost. Never propose a job that reads another company's data.
 

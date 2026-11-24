@@ -39,8 +39,11 @@ grep -q 'Claude Code:.*`Task` or `Agent`' "$SKILL" \
   || fail "Claude Task/Agent dispatch route missing"
 grep -q 'Skill.*synchronously' "$SKILL" \
   || fail "synchronous Skill fallback missing"
-grep -q -- '--learnings-json.*{learnings_json from Step 2}' "$SKILL" \
-  || fail "handoff-finalize does not receive collected learnings"
+grep -q -- '--learnings-json-file "{learnings_file path from Step 2}"' "$SKILL" \
+  || fail "handoff-finalize does not receive the Step 2 learnings file"
+if sed -n '/^### 3\./,/^### 4\./p' "$SKILL" | grep -q 'rm -f.*learnings_file'; then
+  fail "Step 3 removes the Step 2 learnings file before Step 4.5"
+fi
 grep -q 'WARN: Follow-up recovery required' "$SKILL" \
   || fail "forced-dispatch-failure recovery warning missing"
 grep -q 'Run exactly: /learn {learnings_json}' "$SKILL" \
@@ -128,7 +131,7 @@ JSON
     --message "runtime follow-ups" \
     --next-steps-json '[]' \
     --files-touched-json '["companies/acme/knowledge/release-note.md"]' \
-    --learnings-json "$learnings" \
+    --learnings-json-file "$TMP_ROOT/learnings.json" \
     --tags-json '["test"]' \
     --slug "runtime-followups")
 

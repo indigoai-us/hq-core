@@ -6,7 +6,9 @@
 #       Print the next free `<prefix>-proj-<NNN>` id: one more than the
 #       HIGHEST number already used with that prefix anywhere in the board,
 #       never "last entry + 1" (entries are not kept in id order). Zero-padded
-#       to 3 digits. The prefix defaults to the one most entries use.
+#       to 3 digits. The prefix defaults to the one most entries use; on a
+#       board with no such ids yet (or no board), to the company's `prefix:`
+#       in companies/manifest.yaml, starting at <prefix>-proj-001.
 #   board-project-id.sh check <company>
 #       Exit 1 and list every duplicate project id and every entry with an
 #       empty title; exit 0 when the board is clean. Run it after writing
@@ -52,18 +54,42 @@ fi
 
 board="$ROOT/companies/$company/board.json"
 
+# The company's `prefix:` in companies/manifest.yaml (set by /newcompany), or
+# nothing when the manifest has no usable one. Read with awk so jq stays the
+# only dependency: the company is a two-space key under the top-level
+# `companies:` map and prefix a four-space field under it.
+manifest_prefix() {
+  local manifest="$ROOT/companies/manifest.yaml" value
+  [ -f "$manifest" ] || return 0
+  value="$(awk -v slug="$company" '
+    /^[^[:space:]#]/ { in_companies = ($0 ~ /^companies:[[:space:]]*$/); in_company = 0; next }
+    !in_companies { next }
+    /^  [^[:space:]#]/ { key = $0; sub(/^  /, "", key); sub(/:[[:space:]]*$/, "", key); in_company = (key == slug); next }
+    in_company && /^    prefix:/ {
+      v = $0; sub(/^    prefix:[[:space:]]*/, "", v); sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
+      gsub(/^["\047]|["\047]$/, "", v); print v; exit
+    }
+  ' "$manifest" 2>/dev/null | tr -d '\r')" || return 0
+  printf '%s' "$value" | grep -Eq '^[a-z0-9]+$' && printf '%s' "$value"
+  return 0
+}
+
 case "$mode" in
   next)
     if [ ! -f "$board" ]; then
-      [ -n "$prefix" ] || die "no board at companies/$company/board.json; pass --prefix"
+      [ -n "$prefix" ] || prefix="$(manifest_prefix)"
+      [ -n "$prefix" ] || die "no board at companies/$company/board.json and no prefix for $company in companies/manifest.yaml; pass --prefix"
       printf '%s-proj-001\n' "$prefix"
       exit 0
     fi
     jq -e . "$board" >/dev/null 2>&1 || die "could not read companies/$company/board.json"
-    # With no --prefix the prefix comes from existing ids. Say so plainly when
-    # there are none, instead of the generic read error below.
+    # With no --prefix the prefix comes from existing ids, then from the
+    # company's manifest prefix (a board with no numbered ids yet starts at
+    # <prefix>-proj-001). Say so plainly when neither gives one, instead of the
+    # generic read error below.
     if [ -z "$prefix" ] && ! jq -e '[.projects[]? | .id? | strings | select(test("^[a-z0-9]+-proj-[0-9]+$"))] | length > 0' "$board" >/dev/null 2>&1; then
-      die "no <prefix>-proj-<NNN> ids in companies/$company/board.json; pass --prefix <p>"
+      prefix="$(manifest_prefix)"
+      [ -n "$prefix" ] || die "no <prefix>-proj-<NNN> ids in companies/$company/board.json and no prefix for $company in companies/manifest.yaml; pass --prefix <p>"
     fi
     jq -r --arg prefix "$prefix" '
       [ .projects[]? | .id? | strings

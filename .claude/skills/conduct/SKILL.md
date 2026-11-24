@@ -53,11 +53,11 @@ for a lane. See "Default routing" in `dispatch.md`.
 
 ### Advanced mode: /conduct-runners
 
-`/conduct-runners` is the advanced mode. There a lane runs as a runner: a
-detached CLI process with admission, throttles, Outpost placement, keep-alive
-across sessions, and non-Claude engines. Use it for overnight or away work,
-`--loop`, `--remote-control`, `--outpost`, or a non-Claude engine. A Codex
-host stays in default mode on `spawn_agent` / `wait_agent`.
+`/conduct-runners` is the advanced mode: a lane runs as a detached CLI process
+with admission, throttles, Outpost placement (`hq-lane-outpost-choice` policy),
+keep-alive, and non-Claude engines. Use it for overnight or away work, `--loop`,
+`--remote-control`, `--outpost`, or a non-Claude engine. A Codex host stays in
+default mode on `spawn_agent` / `wait_agent`.
 
 The runner comes from `sh core/scripts/conduct-runner-resolve.sh`: a
 `--runner` flag, then the `conduct_runner` session pin, then `conduct.runner`

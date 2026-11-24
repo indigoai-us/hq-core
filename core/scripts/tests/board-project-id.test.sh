@@ -57,6 +57,54 @@ rc=0; err="$(HQ_ROOT="$TMP" bash "$SCRIPT" next noprefix 2>&1)" || rc=$?
 [ "$rc" -eq 2 ] || fail "next on malformed board should exit 2, got $rc"
 case "$err" in *"could not read"*) ;; *) fail "malformed board message: $err" ;; esac
 
+echo "[3b] next: a board with no prefixed ids starts at the manifest prefix"
+mkdir -p "$TMP/companies/newco" "$TMP/companies/hyph" "$TMP/companies/nopfx"
+printf '{"projects":[]}\n' > "$TMP/companies/newco/board.json"
+printf '{"projects":[{"id":"proj-usage","title":"Usage"}]}\n' > "$TMP/companies/hyph/board.json"
+printf '{"projects":[]}\n' > "$TMP/companies/nopfx/board.json"
+cat > "$TMP/companies/manifest.yaml" <<'YAML'
+owner_summary: test
+companies:
+  newco:
+    name: New Co
+    prefix: nwc
+    repos: []
+  hyph:
+    prefix: "acm-2" # not a usable id prefix
+  nopfx:
+    name: No Prefix
+  other:
+    prefix: oth
+YAML
+out="$(HQ_ROOT="$TMP" bash "$SCRIPT" next newco)"
+[ "$out" = "nwc-proj-001" ] || fail "next newco (empty board, manifest prefix): $out"
+# A board with only slug ids also starts at the manifest prefix.
+printf '{"projects":[{"id":"proj-usage","title":"Usage"}]}\n' > "$TMP/companies/newco/board.json"
+out="$(HQ_ROOT="$TMP" bash "$SCRIPT" next newco)"
+[ "$out" = "nwc-proj-001" ] || fail "next newco (slug ids only): $out"
+# --prefix still wins over the manifest; existing ids still win over the manifest.
+out="$(HQ_ROOT="$TMP" bash "$SCRIPT" next newco --prefix zz)"
+[ "$out" = "zz-proj-001" ] || fail "next newco --prefix zz: $out"
+printf '{"projects":[{"id":"nn-proj-004","title":"Four"}]}\n' > "$TMP/companies/newco/board.json"
+out="$(HQ_ROOT="$TMP" bash "$SCRIPT" next newco)"
+[ "$out" = "nn-proj-005" ] || fail "next newco (existing ids win): $out"
+# No board file at all also uses the manifest prefix.
+rm -f "$TMP/companies/newco/board.json"
+out="$(HQ_ROOT="$TMP" bash "$SCRIPT" next newco)"
+[ "$out" = "nwc-proj-001" ] || fail "next newco (no board): $out"
+# A manifest prefix that is not [a-z0-9]+, or none at all, still exits 2 with --prefix advice.
+for co in hyph nopfx; do
+  rc=0; err="$(HQ_ROOT="$TMP" bash "$SCRIPT" next "$co" 2>&1)" || rc=$?
+  [ "$rc" -eq 2 ] || fail "next $co should exit 2, got $rc: $err"
+  case "$err" in *"pass --prefix"*) ;; *) fail "next $co did not say to pass --prefix: $err" ;; esac
+done
+# A malformed board still reports a read error even when the manifest has a prefix.
+printf '{not json\n' > "$TMP/companies/newco/board.json"
+rc=0; err="$(HQ_ROOT="$TMP" bash "$SCRIPT" next newco 2>&1)" || rc=$?
+[ "$rc" -eq 2 ] || fail "next on malformed newco board should exit 2, got $rc"
+case "$err" in *"could not read"*) ;; *) fail "malformed newco board message: $err" ;; esac
+rm -f "$TMP/companies/manifest.yaml"
+
 echo "[4] check: a clean board passes"
 HQ_ROOT="$TMP" bash "$SCRIPT" check clean || fail "clean board should pass"
 

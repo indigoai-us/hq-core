@@ -113,6 +113,26 @@ check 'Read file path fires its policy' "$(has "$TMP/read" read-path-rule)"
 check 'Read file contents do not fire' "$(lacks "$TMP/read" read-output-rule)"
 check 'Read hands only the path to the fact helper' "$([ "$(cat "$TMP/log/command")" = /work/tapir/guide.md ] && echo 1 || echo 0)"
 
+# MCP tools (feedback_aac7431a): PostToolUse scans the underscore-split tool
+# name and bounded string input fields, never tool_response, so MCP calls such
+# as mcp__hq__hq_secrets_generate_link fire hq-secure-link-render-as-markdown
+# before the link is shown.
+cp "$ROOT/core/policies/hq-secure-link-render-as-markdown.md" "$TMP/core/policies/"
+run_hook "$TMP/mcp-sec" "$(payload s-mcp-sec PostToolUse mcp__hq__hq_secrets_generate_link '{"name":"STRIPE_KEY","company":"acme"}' 'https://hq.example/secrets-input/tok')"
+check 'MCP generate_link fires hq-secure-link-render-as-markdown on PostToolUse' "$(has "$TMP/mcp-sec" hq-secure-link-render-as-markdown)"
+check 'MCP PostToolUse emits additionalContext envelope' "$(jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' "$TMP/mcp-sec" >/dev/null 2>&1 && echo 1 || echo 0)"
+check 'MCP PostToolUse drops tool_response from fact helper payload' "$(grep -qx absent "$TMP/log/response" && echo 1 || echo 0)"
+run_hook "$TMP/mcp-other" "$(payload s-mcp-other PostToolUse mcp__other__list_items '{"limit":10}' 'manatee secret token')"
+check 'unrelated MCP tool does not fire from tool_response' "$(lacks "$TMP/mcp-other" read-output-rule)"
+check 'unrelated MCP tool does not fire secure-link policy from tool_response' "$(lacks "$TMP/mcp-other" hq-secure-link-render-as-markdown)"
+run_hook "$TMP/mcp-pre" "$(payload s-mcp-pre PreToolUse mcp__hq__hq_secrets_generate_link '{"name":"STRIPE_KEY","company":"acme"}')"
+check 'MCP PreToolUse stays skipped' "$([ ! -s "$TMP/mcp-pre" ] && echo 1 || echo 0)"
+# Also verify Slack MCP send_message (feedback_73b24d4b) fires hq-slack on PostToolUse.
+cp "$ROOT/core/policies/hq-slack.md" "$TMP/core/policies/"
+run_hook "$TMP/mcp-slack" "$(payload s-mcp-slack PostToolUse mcp__slack__slack_send_message '{"channel":"C123","text":"hello"}' '{"ok":true}')"
+check 'MCP slack_send_message fires hq-slack on PostToolUse' "$(has "$TMP/mcp-slack" hq-slack)"
+check 'MCP slack_send_message drops tool_response from fact helper payload' "$(grep -qx absent "$TMP/log/response" && echo 1 || echo 0)"
+
 # No match: a text tool whose text names no policy word prints nothing.
 run_hook "$TMP/nomatch" "$(payload s-nomatch PostToolUse Write '{"file_path":"/work/plain.txt","content":"nothing relevant here"}')"
 check 'no-match Write prints nothing' "$([ ! -s "$TMP/nomatch" ] && echo 1 || echo 0)"
@@ -142,7 +162,7 @@ check 'malformed tool_input exits 0 with no output' "$([ ! -s "$TMP/malformed" ]
 # Registry: the injector is dispatched exactly once on PostToolUse for every
 # text tool, and Bash still resolves to exactly one injector row (a second
 # matching row would run the injector twice per Bash call).
-for tool in Bash Agent Task Write Edit MultiEdit NotebookEdit Read; do
+for tool in Bash Agent Task Write Edit MultiEdit NotebookEdit Read mcp__hq__hq_secrets_generate_link mcp__slack__slack_send_message; do
   wired="$(jq -r --arg t "$tool" '[.hooks.PostToolUse[] | select((.matcher // "") as $m | $m == "" or $m == "*" or ($t | test("^(" + $m + ")$"))) | .hooks[] | select(.id == "inject-policy-on-trigger")] | length' "$REGISTRY")"
   check "registry dispatches the injector exactly once on PostToolUse $tool (got $wired)" "$([ "$wired" -eq 1 ] && echo 1 || echo 0)"
 done
@@ -179,6 +199,10 @@ run_master "$TMP/mh-agent" Agent '{"description":"audit","prompt":"Check the man
 check 'master-hook runs the injector when the Agent prompt holds a policy word' "$(has "$TMP/mh-agent" 'run inject-policy-on-trigger')"
 run_master "$TMP/mh-bash-out" Bash '{"command":"echo done"}' 'manatee'
 check 'master-hook still tests Bash output for policy words' "$(has "$TMP/mh-bash-out" 'run inject-policy-on-trigger')"
+run_master "$TMP/mh-mcp-name" mcp__hq__hq_manatee_action '{"company":"acme"}' 'plain'
+check 'master-hook runs the injector when an MCP tool name holds a policy word' "$(has "$TMP/mh-mcp-name" 'run inject-policy-on-trigger')"
+run_master "$TMP/mh-mcp-out" mcp__other__list_items '{"company":"acme"}' 'manatee'
+check 'master-hook skips the injector when only an MCP tool_response holds a policy word' "$(has "$TMP/mh-mcp-out" 'skip inject-policy-on-trigger (policy-vocab)')"
 
 # A row with both policy_vocab and re keeps the full-text prefilter: a Read
 # whose policy word appears only in the tool output still runs the injector.

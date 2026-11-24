@@ -59,8 +59,7 @@ actual repo names, URLs, workflow names, KPI probes) before touching anything.
 
 ## Step 0: Resolve Scope + Ordering
 
-1. Resolve each PR ref → `{repo, number, title, branch, base}`. Anchor every
-   `gh` call with `-R owner/repo`.
+1. Resolve each PR ref → `{repo, number, title, branch, base, head_sha}` and inspect repo merge capability (`gh api repos/{repo} --jq '{allow_auto_merge, delete_branch_on_merge}'`) plus whether the repo provides a batch-train executor (e.g. `scripts/ci/batch-train.py`). Anchor every `gh` call with `-R owner/repo`.
 2. Resolve the owning company; load company policy constraints via
    frontmatter-only scan of `companies/{co}/policies/` (digests are retired —
    SessionStart uses `inject-policy-on-trigger`) and the manifest infra fields
@@ -82,8 +81,10 @@ actual repo names, URLs, workflow names, KPI probes) before touching anything.
 5. Derive or confirm the KPI checklist. Each KPI must name its probe (command,
    URL, query, or workflow) — a KPI without a probe is not a KPI.
 6. Present the plan (PRs, order, deploy mechanisms, KPIs, done criteria) and
-   get an explicit go. Landing + deploying is irreversible-adjacent; this gate
-   is mandatory.
+   get an explicit go whenever any PR is MEDIUM/HIGH risk, cuts a release, or
+   triggers a production deploy without standing authorization. Clean, LOW-risk
+   merges covered by a standing auto-merge policy do not need an extra merge
+   prompt.
 
 ## Step 1: REVIEW (pre-merge gate)
 
@@ -100,17 +101,36 @@ in the smoke policy.)
 
 ## Step 2: LAND
 
-For each PR in the Step 0 order, reuse `/land` semantics:
+Reuse `/land` semantics, pinning every merge to the exact reviewed `head_sha`:
 
-1. Wait for CI green — use a background Monitor on
-   `gh pr checks {n} -R {repo}` (see Background Monitors below). Fix failures
-   at root cause; no skipped/loosened tests, ever.
-2. Resolve outstanding review threads (bot suggestions applied if valid; human
-   comments summarized to the user).
-3. Merge: `gh pr merge {n} -R {repo} --squash --delete-branch` (respect repo
-   merge policy). Verify state `MERGED` and record the merge commit.
-4. Between PRs: pull main, re-check the next PR's `mergeable` (earlier merges
-   can create conflicts), and re-verify contract ordering still holds.
+1. **Same-repo multi-PR batches (batch train preferred):** When landing two or
+   more independent ready PRs into the same repo that ships a batch-train
+   executor (such as `scripts/ci/batch-train.py`), run them through a single
+   train pinned as `{n}@{head_sha}` instead of merging one by one:
+   ```bash
+   python3 scripts/ci/batch-train.py --repo {repo} --prs {n1}@{sha1},{n2}@{sha2}
+   ```
+   For production-on-merge repos that require serialized deploys, pass
+   `--one-at-a-time --deploy-check '<cmd>' --deploy-wait '<cmd>'`.
+2. **Single PR or ordered cross-repo PRs (auto-merge preferred):** Once Step 1
+   review is clean and review threads are resolved:
+   - Check deploy spacing (do not arm a PR into a known failed prod deploy, and
+     do not arm a consumer PR before its producer's deploy is live when the
+     consumer depends on the new contract).
+   - If `allow_auto_merge` is `true` and the ruleset's approval requirement is
+     already satisfied, arm auto-merge immediately instead of waiting past green:
+     ```bash
+     gh pr merge {n} -R {repo} --auto --squash --delete-branch --match-head-commit {head_sha}
+     ```
+   - Watch in the background (`gh pr checks {n} -R {repo} --watch`) until
+     `MERGED` or failure. Fix CI failures at root cause; no skipped or loosened
+     tests.
+   - If `--auto` cannot fire (e.g. disabled or authorized review-only bypass),
+     wait for green checks via a background Monitor, then merge with
+     `gh pr merge {n} -R {repo} --squash --delete-branch --match-head-commit {head_sha}`.
+3. Verify state `MERGED` and record each merge commit. Between ordered PRs,
+   re-check the next PR's `mergeable` state and confirm contract ordering still
+   holds.
 
 ## Step 3: DEPLOY (watch to completion)
 

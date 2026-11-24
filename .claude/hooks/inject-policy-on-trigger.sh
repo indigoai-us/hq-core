@@ -271,6 +271,10 @@ if [ -n "$JQ" ]; then
              [($in.notebook_path | str | .[0:$field_limit]), ($in.new_source | str | .[0:$text_limit])]
            elif $t == "Read" then
              [($in.file_path | str | .[0:$field_limit])]
+           elif ($t | startswith("mcp__")) then
+             [($t | gsub("_+"; " ") | .[0:$field_limit]),
+              ([$in | to_entries[] | select(.value | type == "string") | (.value | .[0:$field_limit])]
+               | join("\n") | .[0:$text_limit])]
            else [] end)
         | map(select(. != "") | nonul) | join("\n");
       (try (if .hook_event_name == "PostToolUse" then tool_text else "" end) catch "") as $tool_text

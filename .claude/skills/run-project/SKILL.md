@@ -311,7 +311,11 @@ For each approved incomplete story:
 
    Replace `--account auto` with `--account {id}` only when a
    `conduct_child_account` session pin or a user `--account` flag names an
-   account. A `no_account_with_room` refusal leaves the story queued; report
+   account. Add the placement the user chose under
+   `core/policies/hq-lane-outpost-choice.md` (`--outpost <id>`
+   for a personal or this company's Outpost, `--placement auto`, or
+   `--placement local`).
+   A `no_account_with_room` refusal leaves the story queued; report
    the soonest reset from `next_reset` in one line and never pick an account by
    hand. The brief tells the lane to run `/execute-task {project}/{story-id}` and
    includes `RETURN CONTRACT: json`, applicable policies, the target repo, and

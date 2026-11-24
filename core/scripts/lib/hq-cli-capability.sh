@@ -13,9 +13,10 @@
 #
 # One line per hq binary: <schema>\t<key>\t<result>\t<epoch seconds>
 #   key     resolved path|mtime|version, so an upgrade or reinstall misses
-#   result  capable, or a negative: exit<N> (no such command), timeout,
-#           nooutput (exit 0 without a "fingerprint" key), below-floor
-#           (version older than HQ_FINGERPRINT_MIN_HQ_CLI, never started)
+#   result  capable, or a negative: exit<N> (no such command), nooutput
+#           (exit 0 without a "fingerprint" key), below-floor (version
+#           older than HQ_FINGERPRINT_MIN_HQ_CLI, never started). A probe
+#           timeout is not stored here.
 # Entries older than HQ_FINGERPRINT_CAPABILITY_TTL_SECS (default 86400) are
 # ignored; 0 turns the cache off.
 #

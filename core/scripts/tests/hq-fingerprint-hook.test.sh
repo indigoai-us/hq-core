@@ -79,7 +79,8 @@ ok() { if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "ok   $1"; else fail=$((f
 rnd() { LC_ALL=C tr -dc "$1" </dev/urandom | head -c "$2"; }
 # The trailer is cached per agent session; a new stub answer starts clean.
 SC="$ROOT/workspace/sessions/test-session/fingerprint-trailer.cache"
-fresh() { rm -f "$ROOT"/workspace/sessions/*/fingerprint-trailer.cache; }
+BO="$ROOT/workspace/sessions/test-session/fingerprint-timeout.backoff"
+fresh() { rm -f "$ROOT"/workspace/sessions/*/fingerprint-trailer.cache "$ROOT"/workspace/sessions/*/fingerprint-timeout.backoff; }
 newfp() { fresh; printf 'hqfp1:%s' "$(rnd 'a-z2-7' 26)" >"$T/fp-value"; cat "$T/fp-value"; }
 mode() { fresh; echo "$1" >"$T/fp-mode"; }
 spawns() { if [ -f "$T/spawns" ]; then wc -l <"$T/spawns" | tr -d ' '; else echo 0; fi; }
@@ -208,6 +209,67 @@ sleep 0.2
 ok "wrapper timeout: the wrapper's child is stopped" yes "$st"
 [ -n "$cpid" ] && kill "$cpid" 2>/dev/null
 mode ok
+
+# A timeout must not store session "none" or a 24h machine negative, or later
+# commits silently lose the trailer for the rest of the day. It warns on the
+# commit's stderr and backs off for a few minutes, then probes again.
+mode sleep; newfp >/dev/null
+n=$((n+1)); echo "$n" >"$in1/f.txt"; git -C "$in1" add f.txt
+git -C "$in1" commit -q -m "change $n" >/dev/null 2>"$T/commit-err" || true
+grep -q "timed out" "$LOG" 2>/dev/null && st=yes || st=no
+ok "timeout: logged" yes "$st"
+grep -q "hq-fingerprint-hooks: fingerprint command timed out; this commit has no HQ-Fingerprint trailer" "$T/commit-err" && st=yes || st="no ($(cat "$T/commit-err"))"
+ok "timeout: warning printed on the commit's stderr" yes "$st"
+[ -f "$SC" ] && st=yes || st=no
+ok "timeout: no session none cache" no "$st"
+fp_retry="$(printf 'hqfp1:%s' "$(rnd 'a-z2-7' 26)")"
+printf '%s' "$fp_retry" >"$T/fp-value"
+echo sleep >"$T/fp-mode"
+s0="$(spawns)"; c0="$(commits "$in1")"
+t0="$(date +%s)"
+n=$((n+1)); echo "$n" >"$in1/f.txt"; git -C "$in1" add f.txt
+git -C "$in1" commit -q -m "change $n" >/dev/null 2>"$T/commit-err" || true
+t1="$(date +%s)"
+ok "timeout backoff: commit still made" $((c0 + 1)) "$(commits "$in1")"
+ok "timeout backoff: hq not started again" "$s0" "$(spawns)"
+[ $((t1 - t0)) -lt 2 ] && st=yes || st="no ($((t1 - t0))s)"
+ok "timeout backoff: commit does not wait for the time limit" yes "$st"
+ok "timeout backoff: no trailer" "" "$(trailer "$in1")"
+[ -s "$T/commit-err" ] && st="no ($(cat "$T/commit-err"))" || st=yes
+ok "timeout backoff: no warning on every commit" yes "$st"
+grep -q "probe skipped until the backoff ends" "$LOG" 2>/dev/null && st=yes || st=no
+ok "timeout backoff: logged" yes "$st"
+# Backoff over (stamp older than the window): the next commit probes again.
+printf '%s\n%s\n' "bin:$T/stub-hq" "$(( $(date +%s) - 301 ))" >"$BO"
+echo ok >"$T/fp-mode"
+commit "$in1"
+ok "timeout: first commit after the backoff gets a trailer" "$fp_retry" "$(trailer "$in1")"
+[ -f "$BO" ] && st=yes || st=no
+ok "timeout: a good probe clears the backoff" no "$st"
+
+mkdir -p "$T/pkg/bin"
+printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$T/stub-hq" >"$T/pkg/bin/hq"
+chmod +x "$T/pkg/bin/hq"
+printf '{\n  "name": "@indigoai-us/hq-cli",\n  "version": "5.345.200"\n}\n' >"$T/pkg/package.json"
+export HQ_FINGERPRINT_CAPABILITY_CACHE="$T/cap.cache"
+unset HQ_FINGERPRINT_BIN
+SAVED_PATH="$PATH"
+PATH="$T/pkg/bin:$PATH"
+export PATH
+fresh
+mode sleep
+commit "$in1"
+if [ -f "$T/cap.cache" ] && grep -q $'\ttimeout\t' "$T/cap.cache"; then st=yes; else st=no; fi
+ok "timeout: no 24h machine capability timeout entry" no "$st"
+fp_path="$(newfp)"
+echo ok >"$T/fp-mode"
+commit "$in1"
+ok "timeout: later PATH probe still stamps a trailer" "$fp_path" "$(trailer "$in1")"
+export HQ_FINGERPRINT_BIN="$T/stub-hq"
+# Later cases run with the original PATH and the default capability cache.
+PATH="$SAVED_PATH"
+export PATH
+unset HQ_FINGERPRINT_CAPABILITY_CACHE
 
 # --- empty messages: git aborts the commit as usual, never a trailer-only commit
 newfp >/dev/null

@@ -205,15 +205,93 @@ function lastLine(text) {
   const lines = typeof text === 'string' ? text.split(/\r?\n/).map(line => line.trim()).filter(Boolean) : [];
   return lines.at(-1) ?? '';
 }
+// hq-agent-session puts a provider limit line it found at the end of stderr first, then the
+// start of stderr without that line. When the run is not usage-limited, join them back in
+// stderr order so the reason reads as it did before: prefix, start of stderr, limit line.
+function sessionFailureDetail(text) {
+  const m = /^(hq-agent-session: provider failed \(exit \d+\): )(.*)$/s.exec(text.trim());
+  if (!m || !m[2].includes('\n')) return lastLine(text);
+  const [first, ...rest] = m[2].split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  return m[1] + [...rest, first].join(' ');
+}
 export function processFailureReason(label, result, budgetSeconds, secrets = []) {
   if (result?.code === 124) return `${label} exceeded its ${budgetSeconds}s time limit.`;
   let detail = '';
-  try { const reply = JSON.parse(result?.text ?? ''); if (typeof reply?.text === 'string') detail = lastLine(reply.text); } catch { /* not a session reply */ }
+  try { const reply = JSON.parse(result?.text ?? ''); if (typeof reply?.text === 'string') detail = sessionFailureDetail(reply.text); } catch { /* not a session reply */ }
   if (!detail) detail = lastLine(result?.stderr) || lastLine(result?.text);
   const head = `${label} exited with status ${result?.code}`;
   if (!detail) return `${head}.`;
   for (const value of secrets) if (typeof value === 'string' && value.length >= 4) detail = detail.split(value).join('[REDACTED]');
   return boundReason(`${head}: ${scrubTokens(detail)}`, secrets);
+}
+// Provider usage and spend limits. hq-agent-session reports a failed provider as
+// "hq-agent-session: provider failed (exit N): <detail>", where detail is the provider's
+// limit line (found at the end of stderr, or as claude's one stdout error line) or its
+// stderr. Only that detail is read. Each of its last three lines is matched on its own,
+// and a line counts only when the whole line is one of the provider CLIs' own refusal
+// sentences below, with nothing before it but "Error:" / "ERROR:" and nothing after it
+// but a reset time. A quoted copy, a mid-line copy or another service's limit line
+// ("You've hit your Mailchimp contact limit", "daily limit exceeded: ... API quota")
+// stays session_failed.
+const PROVIDER_FAILURE = /^hq-agent-session: provider failed \(exit \d+\): (.+)$/s;
+const APOS = "['’]";
+// "12am", "Monday 9am", "Nov 24th, 2026 3:15 PM", optionally "(UTC)" / "(Asia/Dhaka)".
+const TIME = "[0-9A-Za-z:,. ]{1,40}?(?: \\((?:[A-Z]{2,5}|UTC[+-]\\d{1,2}|[A-Za-z]+(?:/[A-Za-z_+-]+)+)\\))?";
+const CLAUDE_RESET = `(?:\\s*[·∙|]\\s*resets? (?:at |on )?${TIME})?`;
+const END = "[.!]?\\s*$";
+const CODEX_MORE = "(?: (?:Switch to another model now,|To get more access now, send a request to your admin|Upgrade to Plus to continue using Codex \\(\\[link\\]\\),|Upgrade to Pro \\(\\[link\\]\\), visit \\[link\\] to purchase more credits|Visit \\[link\\] to purchase more credits))?";
+// "... or try again at 3:15 PM.", "Try again in 2 days.", or with no time "Try again later."
+const CODEX_RETRY = `(?: (?:or )?[Tt]ry again (?:(?:at|in) ${TIME}|later))?`;
+const LIMIT_SENTENCES = [
+  // Claude Code
+  `You${APOS}ve hit your (?:(?:session|weekly|5-hour|usage|monthly spend|spend) )?limit${CLAUDE_RESET}${END}`,
+  `Claude (?:AI )?usage limit reached(?:\\|\\d{9,11}|\\. Your limit will reset at ${TIME}|${CLAUDE_RESET})${END}`,
+  `(?:[Uu]sage|[Ss]ession|[Ww]eekly|5-hour) limit reached${CLAUDE_RESET}${END}`,
+  `Spending cap reached${CLAUDE_RESET}${END}`,
+  `You${APOS}re out of (?:extra |included )?usage${CLAUDE_RESET}${END}`,
+  // Codex CLI
+  `You${APOS}ve hit your usage limit(?: for [\\w.-]+)?\\.${CODEX_MORE}${CODEX_RETRY}${END}`,
+  `(?:Usage limit reached\\. )?You${APOS}ve reached your usage limit\\.(?: Increase your limits to continue using codex\\.)?${END}`,
+];
+// Codex reports a limit hit while compacting behind "Error running remote compact task: ".
+const LIMIT_LINE = new RegExp(`^(?:(?:API )?Error: |ERROR: )?(?:Error running remote compact task: )?(?:${LIMIT_SENTENCES.join('|')})`);
+const LIMIT_LINE_MAX = 240;
+const SPEND_LIMIT = /\bspend limit\b|^(?:(?:API )?Error: |ERROR: )?Spending cap reached\b/;
+const LIMIT_RESET = new RegExp(`(?:\\bresets?(?: at| on)?|\\breset at|\\b[Tt]ry again (?:at|in)) (${TIME})(?:\\s*[·∙|]|${END})`);
+// The older Claude CLI wrote "Claude AI usage limit reached|<epoch seconds>".
+const LIMIT_RESET_EPOCH = /usage limit reached\|(\d{9,11})\s*$/;
+// Same shape as hq-agent-session's scrub: each URL becomes [link].
+const withLinks = text => text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s\]|()<>"]*/gi, '[link]');
+function limitLine(raw) {
+  const line = withLinks(raw.replace(/\r/g, '')).trim();
+  if (!line || line.length > LIMIT_LINE_MAX || !LIMIT_LINE.test(line)) return null;
+  if (SPEND_LIMIT.test(line)) return {kind:'spend', line};
+  let resetsAt;
+  const epoch = LIMIT_RESET_EPOCH.exec(line);
+  if (epoch) resetsAt = new Date(Number(epoch[1]) * 1000).toISOString();
+  else resetsAt = LIMIT_RESET.exec(line)?.[1]?.trim().slice(0, 60) || undefined;
+  return {kind:'usage', line, ...(resetsAt ? {resetsAt} : {})};
+}
+// The provider's usage or spend limit refusal, or null. A spend limit never carries a reset:
+// it lifts when someone raises it, not at a window's reset.
+export function usageLimitRefusal(sessionText) {
+  const failure = typeof sessionText === 'string' ? PROVIDER_FAILURE.exec(sessionText.trim()) : null;
+  if (!failure) return null;
+  // One line: stderr or claude's stdout error line. Two lines: hq-agent-session's cleaned
+  // limit line, then the start of stderr. Only the limit line is matched; a provider-looking
+  // sentence at the start of stderr is not the provider's last word.
+  const [first] = failure[1].split('\n').filter(line => line.trim());
+  return first ? limitLine(first) : null;
+}
+const PROVIDER_NAMES = {claude:'Claude', codex:'Codex', grok:'Grok'};
+export function usageLimitReason(refusal, provider, secrets = []) {
+  const who = PROVIDER_NAMES[provider] ?? 'Provider';
+  const said = scrubTokens(refusal.line).replace(/[.!\s]+$/, '');
+  if (refusal.kind === 'spend') {
+    return boundReason(`${who} spend limit reached: ${said}. Raise the spend limit for the Outpost's ${who} account, then run the job again. Waiting does not clear a spend limit.`, secrets);
+  }
+  const when = refusal.resetsAt ? `The limit resets ${refusal.resetsAt}` : 'The limit resets at a time the provider did not give';
+  return boundReason(`${who} usage limit reached: ${said}. ${when}; the job runs again at its next scheduled time after the reset. To run sooner, add usage to the Outpost's ${who} account.`, secrets);
 }
 // The secret broker's answer, by class: a 403 is a denial; any other status, a token
 // failure or a network error is the broker being unavailable. No error message is kept.
@@ -1040,7 +1118,10 @@ export class CompanyRunner {
       if(signin)for(const value of Object.values(signin.env))if(!values.includes(value))values.push(value);
       const result=await this.execute('/bin/bash',[path.join(this.c.hqRoot,'core/scripts/hq-agent-session.sh')],launch({unit:`hq-company-job-run-${d.runId}.service`,input:JSON.stringify(request),timeout:jobMs,runtimeSec:Math.max(1,Math.ceil(jobMs/1000)),...(signin?{env:{...env,...signin.env},secretNames:[...Object.keys(granted),...Object.keys(signin.env)],redactions:values}:{})}));
       receipt.exitCode=result.code;receipt.outcome=result.code===0?'succeeded':result.code===124?'timeout':'failed';
-      if(result.code!==0){receipt.errorCode=result.code===124?'timeout':'session_failed';receipt.reason=processFailureReason('Job session',result,Math.ceil(jobMs/1000),values);}
+      if(result.code!==0){receipt.errorCode=result.code===124?'timeout':'session_failed';receipt.reason=processFailureReason('Job session',result,Math.ceil(jobMs/1000),values);
+        // A provider usage or spend limit is not a broken job: name it, keep the reset, say what to do.
+        let limit=null;if(result.code!==124){try{const reply=JSON.parse(result.text);if(reply?.disposition==='error')limit=usageLimitRefusal(reply.text);}catch{/* not a session reply */}}
+        if(limit){receipt.errorCode='usage_limit';receipt.usageLimitKind=limit.kind;if(limit.resetsAt)receipt.usageLimitReset=boundReason(limit.resetsAt,values);receipt.reason=usageLimitReason(limit,this.c.provider,values);}}
       if(result.code===0){
         let response;try{response=JSON.parse(result.text);}catch{throw new Refusal('invalid_session_response');}
         // Exit 0 only says the session process ended cleanly. A run counts as

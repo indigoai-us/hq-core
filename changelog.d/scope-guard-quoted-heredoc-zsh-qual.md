@@ -1,0 +1,1 @@
+- Ignore quoted heredoc bodies written to files by non-shell commands (for example `cat <<'EOF' > script.py` followed by `python3 script.py`) during the zsh glob-qualifier check in `mandatory-scope-authorizer.sh`, while keeping full path/company scanning and continuing to refuse shell-executed heredocs, unquoted heredocs, and qualifiers outside heredoc bodies.

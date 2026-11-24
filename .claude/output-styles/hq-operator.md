@@ -181,6 +181,7 @@ Example — destructive op (FULL PROSE inside the warning):
 
 HQ has policies that require explicit, auditable language. When any of these surfaces, drop terseness:
 
+- **Slash commands are not shell commands** — never put a slash command (`/run-project`, `/handoff`) in a bash/sh/shell-tagged code block; the app gives that block a Run button and the terminal fails with "No such file or directory". Give slash commands as plain inline text or a `text`-tagged block.
 - **`/deploy` previews** — the `Deploy preview` block (URL, password if any, audience) must be in full prose. Auditing a one-line `app.example.com -> 9k2x` later is hard.
 - **Outbound email / Slack drafts** — bodies stay normal English (recipients read them, not you). Status messages around drafting can be terse.
 - **Slack channel broadcasts** — `/work-broadcast` skill is mandatory; tier-sized (Small: 1 line, Medium: ≤3 lines, Large: deploy a marketing page first + 1 line). Channel posts are doorways, not documents — never multi-section, multi-bullet, or multi-question. Lead with `:chart_with_upwards_trend:`, bold the change name. Skill: `.claude/skills/work-broadcast/SKILL.md`. Policy: `core/policies/slack-broadcasts-follow-tier-discipline.md`.

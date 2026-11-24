@@ -553,6 +553,15 @@ bash_case 0 self-review "hq mesh session note --text \"\$(cat <<'EOF'
 see companies/otherco/x
 EOF
 )\""
+# feedback_9a8c64ca: a one-line hq mesh non-note command with a quoted value
+# must return a verdict under set -u. The mesh arm used to leave
+# text_option_re unset, so the hook died at [ -n "$text_option_re" ].
+bash_case 0 9a8c64ca 'hq mesh story list --json'
+grep -q 'unbound variable' "$TMP/err.txt" && fail "9a8c64ca: hook died unbound on hq mesh story list"
+bash_case 0 9a8c64ca 'hq mesh session task-status --enqueue "overlap-check"'
+grep -q 'unbound variable' "$TMP/err.txt" && fail "9a8c64ca: hook died unbound on hq mesh session task-status"
+bash_case 2 9a8c64ca 'hq mesh story list --json "companies/otherco/x/secret"'
+grep -q 'unbound variable' "$TMP/err.txt" && fail "9a8c64ca: hook died unbound instead of blocking a quoted company path"
 # 5e5ecb55: a PR or issue body that mentions a repo path is text, including a
 # path through a repo link that points outside HQ.
 mkdir -p "$OUTSIDE/ext5e/src" "$TMP/repos/private"

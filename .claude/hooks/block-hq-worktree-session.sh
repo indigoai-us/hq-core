@@ -421,11 +421,28 @@ else
   WHERE="This Claude session's working directory is a linked git worktree cut from the HQ repository."
 fi
 
-# First line owners read. Keep operator detail below it unchanged.
-OWNER_NOTICE="This chat was opened inside HQ's locked system folder (.claude/worktrees), so nothing you type here will run. Close this chat and open a new one from the company's sidebar group. Nothing you typed was wrong."
+# First paragraph owners read: the exact way out in the Claude app. Keep
+# operator detail below it unchanged. The paragraph ends at its first blank
+# line; nothing inside it may be blank.
+#
+# Deleting and reinstalling HQ does not clear this block: the Worktree/Local
+# environment is chosen in the Claude app, outside the HQ folder, so the next
+# new chat can open in a worktree again until the owner picks Local.
+OWNER_NOTICE="This chat was opened inside HQ's locked system folder (.claude/worktrees), so nothing you type here will run. Nothing you typed was wrong."
 
 owner_notice() {
+  local folder_step
+  if [ -n "$CANONICAL" ]; then
+    folder_step="  1. In the Claude app, start a new chat in the Code tab with your HQ folder selected: $CANONICAL"
+  else
+    folder_step="  1. In the Claude app, start a new chat in the Code tab with your main HQ folder selected."
+  fi
   printf '%s\n' "$OWNER_NOTICE"
+  printf '%s\n' "How to fix it:"
+  printf '%s\n' "$folder_step"
+  printf '%s\n' "  2. Before you send the first message, set the environment to Local (Choose Environment > Local). Do not pick Worktree."
+  printf '%s\n' "  3. Send your message there. You can archive this chat."
+  printf '%s\n' "The Local or Worktree choice is made in the Claude app, not in HQ, so deleting and reinstalling HQ does not change it."
 }
 
 message() {
