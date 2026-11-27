@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Nightly only: each case waits out a real 1 s perl alarm and checks that the OS killed the hook's whole process group, so it does not run on pull requests.
 # master-hook-perl-timeout-process-group.test.sh
 #
 # Pins that master-hook.sh's perl timeout fallback (macOS without coreutils
@@ -113,25 +114,28 @@ run_master() { # -> sets RC ELAPSED_MS
   RC=0
   printf '%s' "$PAYLOAD" \
     | env PATH="$PERL_PATH" HOME="${HOME:-/tmp}" HQ_HOOK_TIMEOUT_SENTRY=0 \
-        HQ_MASTER_CHILD_TIMEOUT=2 CLAUDE_PROJECT_DIR="$FIX" \
+        HQ_MASTER_CHILD_TIMEOUT=1 HQ_MASTER_BLOCKING_CHILD_TIMEOUT=1 CLAUDE_PROJECT_DIR="$FIX" \
         "$BASH_BIN" "$FIX/.claude/hooks/master-hook.sh" PreToolUse \
         >"$TMP/out" 2>"$TMP/err" || RC=$?
   ended="$(now_ms)"
   ELAPSED_MS=$((ended - started))
 }
 
-# 2 s child timeout + master overhead. The unbounded runner takes >= 20 s.
+# 1 s child timeout + master overhead. The unbounded runner takes >= 20 s.
 BUDGET_MS=12000
 
 assert_bounded() { # <label> <pidfile>
   local label="$1" pidfile="$2" pid
   [ "$ELAPSED_MS" -lt "$BUDGET_MS" ] \
-    || fail "$label: master-hook took ${ELAPSED_MS}ms with a 2s child timeout (budget ${BUDGET_MS}ms); stderr=$(cat "$TMP/err")"
+    || fail "$label: master-hook took ${ELAPSED_MS}ms with a 1s child timeout (budget ${BUDGET_MS}ms); stderr=$(cat "$TMP/err")"
   ! grep -q 'slow hook finished' "$TMP/out" \
     || fail "$label: timed-out hook ran to completion"
   [ -s "$pidfile" ] || fail "$label: hook never started (no pid file); stderr=$(cat "$TMP/err")"
   pid="$(cat "$pidfile")"
-  sleep 1
+  for _ in $(seq 1 40); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.05
+  done
   if kill -0 "$pid" 2>/dev/null; then
     fail "$label: child pid $pid survived the timeout"
   fi
@@ -140,14 +144,14 @@ assert_bounded() { # <label> <pidfile>
 
 # ── 1. Registry hook, exec runner ──────────────────────────────────────────
 jq -n '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[
-  {id:"slow-exec",script:".claude/hooks/slow-exec.sh",timeout:2,gated:false}
+  {id:"slow-exec",script:".claude/hooks/slow-exec.sh",timeout:1,gated:false}
 ]}]}}' > "$FIX/.claude/hooks/hook-registry.json"
 run_master
 assert_bounded "registry exec runner" "$TMP/exec.pid"
 
 # ── 2. Registry hook, source runner ────────────────────────────────────────
 jq -n '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[
-  {id:"slow-source",script:".claude/hooks/slow-source.sh",timeout:2,gated:false,runner:"source"}
+  {id:"slow-source",script:".claude/hooks/slow-source.sh",timeout:1,gated:false,runner:"source"}
 ]}]}}' > "$FIX/.claude/hooks/hook-registry.json"
 rm -rf "$FIX/workspace/orchestrator/hook-state/registry-rows"
 run_master

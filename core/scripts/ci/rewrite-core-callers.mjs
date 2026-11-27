@@ -44,19 +44,6 @@ export const TWINS = Object.freeze({
   "eval-trigger.sh": { command: "eval-trigger", root: "cwd", minCli: "5.341.3" },
   "generate-workers-registry.sh": { command: "generate-workers-registry", root: "live", minCli: "5.89.0" },
   "git-pack-extension-check.sh": { command: "git-pack-extension-check", root: "cwd", minCli: "5.307.0" },
-  "handoff-finalize.sh": { command: "handoff finalize", root: "live" },
-  "handoff-open-steps.sh": { command: "handoff open-steps", root: "live", minCli: "5.290.0" },
-  "handoff-post.sh": { command: "handoff post", root: "live", minCli: "5.290.0" },
-  "hq-delegate-bundle.sh": { command: "delegate bundle", root: "live", minCli: "5.292.0" },
-  "hq-delegate-grant.sh": { command: "delegate grant", root: "live", minCli: "5.292.0" },
-  "hq-delegate-pickup.sh": { command: "delegate pickup", root: "cwd", minCli: "5.277.0" },
-  "hq-delegate-publish.sh": { command: "delegate publish", root: "live" },
-  "hq-delegate-repo.sh": { command: "delegate repo", root: "live", minCli: "5.277.0" },
-  "hq-delegate-resolve.sh": { command: "delegate resolve", root: "live", minCli: "5.277.0" },
-  "hq-delegate-secrets.sh": { command: "delegate secrets", root: "live", minCli: "5.277.0" },
-  "hq-delegate-send.sh": { command: "delegate send", root: "live", minCli: "5.292.0" },
-  "hq-delegate-transfer.sh": { command: "delegate transfer", root: "live", minCli: "5.277.0" },
-  "hq-delegate-verify.sh": { command: "delegate verify", root: "live", minCli: "5.292.0" },
   "hq-dm-bind.sh": { command: "dm-bind", root: "live", minCli: "5.310.0" },
   "hq-job-notify.sh": { command: "job notify", root: "live", minCli: "5.342.14" },
   "hq-job-probe.sh": { command: "job probe", root: "live", minCli: "5.296.0" },
@@ -135,28 +122,63 @@ const NOT_A_CALL = {
 const LEFT = {
   "core/scripts/codex-preflight.sh": "dead path: HQ_ROOT there is core/, so the helper path never exists and the repo check always skips; moving it to hq core would switch on a check that has never run",
 };
-const HELD_HELPERS = {
-  "handoff-finalize.sh": "the PreToolUse scope guard (core/scripts/hook-lib.sh hd_text_arg) reads --summary/--title as data only for the shipped relative path; moving callers needs a PreToolUse change during the native PreToolUse hold",
-};
+const HELD_HELPERS = {};
 
 // Helper modes newer than their command. A caller line that runs the command
-// with the flag needs this hq-cli, and --check holds it to the install floor.
-// hq-cli #3005 added --board and #3006 added --reconcile; 5.345.228 is the
-// first npm release with both (5.345.227 was never published, 5.345.226 has
-// neither).
+// with the flag needs this hq-cli, and --check holds it to the install floor
+// (or a per-file hq_cli_floor_check guard at or above minCli).
+// hq-cli #3005 added --board (5.345.228); delegate scripts were deleted in
+// US-029 with a 5.345.263 floor across all retired handoff and delegate
+// commands.
 export const MODE_FLOORS = Object.freeze([
   { command: "register-project", flag: "--board", minCli: "5.345.228" },
-  { command: "delegate send", flag: "--reconcile", minCli: "5.345.228" },
+  { command: "delegate send", flag: "--reconcile", minCli: "5.345.263" },
 ]);
 
-// `hq core` commands with no single helper twin, so they are not in TWINS.
-// A caller line that runs one needs this hq-cli, and --check holds it to the
-// install floor. hq-cli #2839 added handoff run and handoff archive-decision;
-// 5.345.228 is the first release with both (5.345.226 has neither).
+// `hq core` commands whose retired bash scripts were deleted (or with no
+// single helper twin, so they are not in TWINS). A caller line that runs one
+// needs this hq-cli, and --check holds it to the install floor (core/core.yaml
+// requiresHqCli) or an in-file `hq_cli_floor_check <name> <version>` at or
+// above minCli placed before any runnable call.
+// US-029: hq-cli 5.345.263 is the first published release containing #4073
+// (native handoff post single-company ownership check) and #4006
+// (handoff post local-only company check for company.yaml cloud: false and
+// companies/manifest.yaml cloud_uid) alongside #3989 (bound-company knowledge
+// step and local-clock thread ids), #3994 (native continuity sync publish
+// without a live-root script), #3996 (native prefetch newer-local-pointer
+// guard), and the delegate parity fixes (#3915/#3933/#3980 and Windows locking).
 export const COMMAND_FLOORS = Object.freeze([
-  { command: "handoff run", minCli: "5.345.228" },
-  { command: "handoff archive-decision", minCli: "5.345.228" },
+  { command: "handoff run", minCli: "5.345.263" },
+  { command: "handoff finalize", minCli: "5.345.263" },
+  { command: "handoff post", minCli: "5.345.263" },
+  { command: "handoff open-steps", minCli: "5.345.263" },
+  { command: "handoff archive-decision", minCli: "5.345.263" },
+  { command: "handoff pointer-company", minCli: "5.345.263" },
+  { command: "handoff builder-route", minCli: "5.345.263" },
+  { command: "handoff autofile", minCli: "5.345.263" },
+  { command: "handoff-knowledge-commit", minCli: "5.345.263" },
+  { command: "handoff-sync-prefetch", minCli: "5.345.263" },
+  { command: "handoff-sync-publish", minCli: "5.345.263" },
+  { command: "delegate run", minCli: "5.345.263" },
+  { command: "delegate bundle", minCli: "5.345.263" },
+  { command: "delegate grant", minCli: "5.345.263" },
+  { command: "delegate pickup", minCli: "5.345.263" },
+  { command: "delegate publish", minCli: "5.345.263" },
+  { command: "delegate repo", minCli: "5.345.263" },
+  { command: "delegate resolve", minCli: "5.345.263" },
+  { command: "delegate secrets", minCli: "5.345.263" },
+  { command: "delegate send", minCli: "5.345.263" },
+  { command: "delegate transfer", minCli: "5.345.263" },
+  { command: "delegate verify", minCli: "5.345.263" },
 ]);
+
+// Skill docs that only name a COMMAND_FLOORS command in prose or delegate to
+// another skill that enforces the per-skill floor check (no Bash execution of
+// the named command in the file itself).
+const DELEGATED_OR_PROSE_COMMAND_REFS = Object.freeze({
+  ".claude/skills/handoff-and-archive/SKILL.md": new Set(["handoff archive-decision"]),
+  ".claude/skills/document-release/SKILL.md": new Set(["handoff post"]),
+});
 
 // In a skill or doc an agent runs the line through the Bash tool, so the
 // PreToolUse credential guard sees it. That guard blocks an `hq` call whose
@@ -471,6 +493,55 @@ const COMMAND_CALLS = COMMAND_FLOORS.map((entry) => ({
   call: new RegExp(String.raw`(?:^|[\s;&|(\x60"'])hq\s+core(?:\s+--hq-root(?:=\S+|\s+\S+))?\s+${entry.command.replace(/ /g, "\\s+")}(?=$|[\s;&|)\x60"'.,])`),
 }));
 
+const SKILL_FLOOR_CHECK = /\bhq_cli_floor_check\s+\S+\s+['"]?(?:>=)?([0-9]+\.[0-9]+\.[0-9]+)['"]?/g;
+
+/**
+ * Find every `hq_cli_floor_check <name> <version>` in `text`.
+ * Returns [{ line, version }]. Shell comments are ignored.
+ */
+export function skillFloorChecks(text, file = "") {
+  const shell = isShell(file);
+  const checks = [];
+  text.split("\n").forEach((source, index) => {
+    if (shell && /^\s*#/.test(source)) return;
+    for (const match of source.matchAll(SKILL_FLOOR_CHECK)) {
+      checks.push({ line: index + 1, version: match[1] });
+    }
+  });
+  return checks;
+}
+
+/** Compute 1-based line numbers that lie inside fenced code blocks in Markdown. */
+function fencedLineNumbers(text, file = "") {
+  const fenced = new Set();
+  if (!/\.md$/.test(file)) return fenced;
+  let inside = false;
+  text.split("\n").forEach((source, index) => {
+    if (/^\s*```/.test(source)) {
+      inside = !inside;
+      return;
+    }
+    if (inside) fenced.add(index + 1);
+  });
+  return fenced;
+}
+
+/**
+ * Highest per-file `hq_cli_floor_check` version that guards `lineNumber`.
+ * For runnable code (shell scripts, JS, or Markdown fenced blocks), the floor
+ * check must appear on an earlier line; for non-fenced Markdown prose that
+ * introduces or references the command, any floor check in the file suffices.
+ */
+export function effectiveSkillFloor(text, file, lineNumber, fencedLines = fencedLineNumbers(text, file)) {
+  const mustPrecede = !/\.md$/.test(file) || fencedLines.has(lineNumber);
+  let highest = "";
+  for (const check of skillFloorChecks(text, file)) {
+    if (mustPrecede && check.line > lineNumber) continue;
+    if (!highest || compareVersions(check.version, highest) > 0) highest = check.version;
+  }
+  return highest;
+}
+
 /**
  * Lines of `text` that run `hq core <command>` for a command in
  * COMMAND_FLOORS. Returns [{ line, command, minCli }]. Shell comments and
@@ -495,8 +566,13 @@ function callsAboveFloor(root, floor, finder) {
   for (const file of trackedFiles(root)) {
     let text;
     try { text = readFileSync(join(root, file), "utf8"); } catch { continue; }
+    const fenced = fencedLineNumbers(text, file);
+    const proseAllowed = DELEGATED_OR_PROSE_COMMAND_REFS[file];
     for (const call of finder(text, file)) {
-      if (compareVersions(call.minCli, floor) > 0) found.push({ file, ...call });
+      if (proseAllowed && proseAllowed.has(call.command) && !fenced.has(call.line)) continue;
+      const skillFloor = effectiveSkillFloor(text, file, call.line, fenced);
+      const effective = skillFloor && compareVersions(skillFloor, floor) > 0 ? skillFloor : floor;
+      if (compareVersions(call.minCli, effective) > 0) found.push({ file, ...call });
     }
   }
   return found;

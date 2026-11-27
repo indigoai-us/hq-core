@@ -8,7 +8,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
-HELPER="$ROOT/core/scripts/handoff-knowledge-commit.sh"
 JOURNAL="$ROOT/core/scripts/session-journal.sh"
 HOOK="$ROOT/.claude/hooks/load-journal-index-on-start.sh"
 SKILL="$ROOT/.claude/skills/handoff/SKILL.md"
@@ -21,41 +20,7 @@ ok() { echo "ok: $*"; }
 
 unset HQ_ACTIVE_COMPANY CLAUDE_PROJECT_DIR
 
-# ---- /handoff Step 1: knowledge commits ------------------------------------
-fixture="$TMP/hq"
-mkdir -p "$fixture/companies"
-printf 'companies:\n  alpha:\n    name: Alpha\n  beta:\n    name: Beta\n' > "$fixture/companies/manifest.yaml"
-for co in alpha beta; do
-  repo="$fixture/companies/$co/knowledge"
-  mkdir -p "$repo"
-  git -C "$repo" init -q
-  git -C "$repo" config user.name 'Scope Test'
-  git -C "$repo" config user.email 'scope-test@example.invalid'
-  printf 'base\n' > "$repo/base.md"
-  git -C "$repo" add -- base.md
-  git -C "$repo" commit -q -m base
-  printf 'session edit\n' > "$repo/notes.md"
-done
-alpha_head="$(git -C "$fixture/companies/alpha/knowledge" rev-parse HEAD)"
-beta_head="$(git -C "$fixture/companies/beta/knowledge" rev-parse HEAD)"
-printf '["companies/alpha/knowledge/notes.md","companies/beta/knowledge/notes.md"]\n' > "$TMP/changeset.json"
-
-unbound_out="$(bash "$HELPER" --root "$fixture" --files-touched-json-file "$TMP/changeset.json")"
-[[ "$unbound_out" == *'SKIPPED-COMPANY-KNOWLEDGE: no bound company'* ]] || fail "unbound handoff reports the company skip (got: $unbound_out)"
-[ "$(git -C "$fixture/companies/alpha/knowledge" rev-parse HEAD)" = "$alpha_head" ] || fail 'unbound handoff left alpha uncommitted'
-[ "$(git -C "$fixture/companies/beta/knowledge" rev-parse HEAD)" = "$beta_head" ] || fail 'unbound handoff left beta uncommitted'
-ok 'unbound handoff skips every company knowledge repository and says so'
-
-bound_out="$(HQ_ACTIVE_COMPANY=alpha bash "$HELPER" --root "$fixture" --files-touched-json-file "$TMP/changeset.json")"
-[[ "$bound_out" != *'SKIPPED-COMPANY-KNOWLEDGE'* ]] || fail 'bound handoff does not report a company skip'
-[[ "$bound_out" != *'beta'* ]] || fail "bound handoff output never names the other company (got: $bound_out)"
-[ "$(git -C "$fixture/companies/alpha/knowledge" rev-parse HEAD)" != "$alpha_head" ] || fail 'bound company knowledge was committed'
-committed="$(git -C "$fixture/companies/alpha/knowledge" show --pretty=format: --name-only HEAD | sed '/^$/d')"
-[ "$committed" = 'notes.md' ] || fail "bound commit holds only the session file (got: $committed)"
-[ "$(git -C "$fixture/companies/beta/knowledge" rev-parse HEAD)" = "$beta_head" ] || fail 'other company knowledge was not committed'
-[ -n "$(git -C "$fixture/companies/beta/knowledge" status --porcelain -- notes.md)" ] || fail 'other company dirty file is preserved'
-ok 'handoff bound to alpha commits only alpha knowledge'
-
+# ---- /handoff Step 1: skill documents company scope ------------------------
 step_one="$(sed -n '/^### 1\./,/^### 2\./p' "$SKILL")"
 [[ "$step_one" == *'HQ_ACTIVE_COMPANY'* ]] || fail 'Step 1 names the bound-company source'
 [[ "$step_one" == *'SKIPPED-COMPANY-KNOWLEDGE:'* ]] || fail 'Step 1 documents the unbound skip line'

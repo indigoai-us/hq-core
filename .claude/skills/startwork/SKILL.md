@@ -1,7 +1,7 @@
 ---
 name: startwork
 description: Resolve current HQ context and surface useful next work options.
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(hq core resume-thread-lock:*), Bash(hq core work-mesh-bind-trusted:*), Bash(hq core resolve-company:*), Bash, AskUserQuestion, Bash(hq core policy frontmatter:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/startwork-context.sh:*)
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(core/scripts/hq-session.sh:*), Bash(hq:*), Bash(source core/scripts/lib/hq-cli-floor.sh:*), Bash(hq_cli_floor_check:*), Bash(hq core resume-thread-lock:*), Bash(hq core work-mesh-bind-trusted:*), Bash(hq core resolve-company:*), Bash, AskUserQuestion, Bash(hq core policy frontmatter:*), Bash(hq core handoff-sync-prefetch:*), Bash(bash core/scripts/startwork-context.sh:*)
 ---
 
 # Start Work Session
@@ -141,8 +141,16 @@ When a task id becomes available later, §2.4 adds it to the session.
 
 1. **Prefetch cross-device state (fail-soft).** Before reading `handoff.json`, pull the session continuity pointer from the personal vault so a `/handoff` run on another machine is visible on this one. The workspace tree is otherwise machine-local; only `workspace/threads/handoff.json` plus the referenced thread file are carved into the personal vault (hq-cloud-sync `computeContinuityPointerPaths`). Without this pull a fresh session on a second device sees stale state.
 
+   Requires hq-cli 5.345.263 or newer so native `hq core handoff-sync-prefetch` keeps a newer local `handoff.json` pointer when a vault pull lands an older or invalid copy. Check the installed version before prefetching:
+
    ```bash
-   bash core/scripts/handoff-sync-prefetch.sh
+   source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check startwork 5.345.263
+   ```
+
+   If the check fails, stop. Upgrade hq-cli to 5.345.263 or newer with `npm install -g @indigoai-us/hq-cli@latest`, then retry.
+
+   ```bash
+   hq core handoff-sync-prefetch
    ```
 
    The helper is fail-soft: missing-CLI, offline, logged-out, or lock-held hosts return within the timeout and leave the local pointer untouched. Treat its output as advisory — never block the entry gate on its exit status.

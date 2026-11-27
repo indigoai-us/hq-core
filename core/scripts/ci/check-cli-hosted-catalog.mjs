@@ -114,8 +114,6 @@ for (const row of rows) {
 }
 
 const allowedSources = [
-  "core/scripts/handoff-finalize.sh",
-  "core/scripts/handoff-post.sh",
   "core/scripts/generate-forwarders.sh",
   "core/scripts/check-cli-hosted.sh",
   "core/scripts/ci/install-pinned-hq-cli.sh",

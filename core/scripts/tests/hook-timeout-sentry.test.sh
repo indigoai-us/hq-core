@@ -659,6 +659,75 @@ probe_assert_eq 'root storage process probe runs once per cache key' 1 "$(wc -l 
 pass 'load, cwd, and storage diagnostics return bounded fixture values'
 fi
 
+child_timeout_real_time_section() {
+  echo "[17] child timeout emits one completion event with the timeout exit code"
+  R17="$(make_root child-timeout)"
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    MINGW*|MSYS*|CYGWIN*) ;;
+    *)
+      # Exercise the macOS-style Perl alarm timeout shim even when GNU timeout
+      # exists on the test host. Its SIGALRM status must map to the hook contract.
+      cat > "$R17/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+# Real timeout accepts -k DURATION (master-hook.sh passes it for safety
+# guards). Accept and drop it; this alarm-only fallback sends no follow-up KILL.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -k) shift 2 ;;
+    --kill-after=*|--foreground|--preserve-status) shift ;;
+    *) break ;;
+  esac
+done
+seconds="${1%s}"
+shift
+exec perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
+EOF
+      chmod +x "$R17/bin/timeout"
+      ;;
+  esac
+  mkdir -p "$R17/core/hooks/PreToolUse"
+  printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'sleep 2' \
+    > "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
+  chmod +x "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
+  set +e
+  env \
+    BASH_ENV= \
+    PATH="$R17/bin:$PATH" \
+    HQ_TEST_HQ_ARGS="$R17/hq.args" \
+    HQ_TEST_HQ_STDIN="$R17/hq.stdin" \
+    HQ_TEST_HQ_ACK="$R17/hq.ack" \
+    HQ_HOOK_TIMEOUT_SENTRY=0 \
+    HQ_MASTER_CHILD_TIMEOUT=1 \
+    HQ_MASTER_BLOCKING_CHILD_TIMEOUT=1 \
+    timeout 15s bash "$R17/.claude/hooks/master-hook.sh" PreToolUse \
+    >"$R17/out" 2>"$R17/err" <<<"$(payload_for_event PreToolUse child-timeout-session)"
+  child_timeout_rc=$?
+  set -e
+  [ "$child_timeout_rc" -eq 124 ] || fail "child timeout changed its declared timeout exit: $child_timeout_rc"
+  [ "$(event_count "$R17")" = "1" ] || fail "child timeout should emit one completion event"
+  jq -e --arg hook_path "$R17/core/hooks/PreToolUse/10-timeout-child.sh" '
+    .type == "hook_timeout_exceeded"
+    and (.fingerprint | startswith("hook-timeout:PreToolUse:"))
+    and .metadata.hook_path == $hook_path
+    and .metadata.hook_script == "10-timeout-child.sh"
+    and .metadata.exit_code == 124
+    and .metadata.declared_timeout_ms == 1000
+    and .metadata.watchdog_timeout_ms == 1000
+    and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
+    and (.metadata.final_elapsed_ms | type == "number" and . >= 900)
+    and (.metadata.hook_sequence | type == "array" and length <= 20)
+  ' < <(sed '/^---EVENT---$/,$d' "$R17/hq.stdin") >/dev/null \
+    || fail "child timeout event omitted final duration or exit code"
+  [ ! -s "$R17/err" ] || fail "child timeout instrumentation changed master stderr"
+  pass "declared child timeout is reported with its measured completion details"
+}
+
+if [ "${HQ_SENTRY_CHILD_TIMEOUT_REAL_TIME:-0}" = 1 ]; then
+  child_timeout_real_time_section
+  echo "ALL PASS: hook-timeout-sentry child timeout"
+  exit 0
+fi
+
 echo "[1] fast gate hook leaves no watcher and sends no warning"
 R1="$(make_root fast)"
 set_timeout "$R1" 'hook-gate.sh" detect-secrets ' 2
@@ -1742,65 +1811,6 @@ if awk -F '\t' 'NF == 5 && $3 == "running" { found = 1 } END { exit(found ? 0 : 
 fi
 pass "late finish is emitted once with final duration, exit code, and the top-three slowest hooks"
 
-echo "[17] child timeout emits one completion event with the timeout exit code"
-R17="$(make_root child-timeout)"
-case "$(uname -s 2>/dev/null || printf unknown)" in
-  MINGW*|MSYS*|CYGWIN*) ;;
-  *)
-    # Exercise the macOS-style Perl alarm timeout shim even when GNU timeout
-    # exists on the test host. Its SIGALRM status must map to the hook contract.
-    cat > "$R17/bin/timeout" <<'EOF'
-#!/usr/bin/env bash
-# Real timeout accepts -k DURATION (master-hook.sh passes it for safety
-# guards). Accept and drop it; this alarm-only fallback sends no follow-up KILL.
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -k) shift 2 ;;
-    --kill-after=*|--foreground|--preserve-status) shift ;;
-    *) break ;;
-  esac
-done
-seconds="${1%s}"
-shift
-exec perl -e 'alarm shift; exec @ARGV or exit 127' "$seconds" "$@"
-EOF
-    chmod +x "$R17/bin/timeout"
-    ;;
-esac
-mkdir -p "$R17/core/hooks/PreToolUse"
-printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' 'sleep 2' \
-  > "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
-chmod +x "$R17/core/hooks/PreToolUse/10-timeout-child.sh"
-set +e
-env \
-  BASH_ENV= \
-  PATH="$R17/bin:$PATH" \
-  HQ_TEST_HQ_ARGS="$R17/hq.args" \
-  HQ_TEST_HQ_STDIN="$R17/hq.stdin" \
-  HQ_TEST_HQ_ACK="$R17/hq.ack" \
-  HQ_HOOK_TIMEOUT_SENTRY=0 \
-  HQ_MASTER_CHILD_TIMEOUT=1 \
-  timeout 15s bash "$R17/.claude/hooks/master-hook.sh" PreToolUse \
-  >"$R17/out" 2>"$R17/err" <<<"$(payload_for_event PreToolUse child-timeout-session)"
-child_timeout_rc=$?
-set -e
-[ "$child_timeout_rc" -eq 124 ] || fail "child timeout changed its declared timeout exit: $child_timeout_rc"
-[ "$(event_count "$R17")" = "1" ] || fail "child timeout should emit one completion event"
-jq -e --arg hook_path "$R17/core/hooks/PreToolUse/10-timeout-child.sh" '
-  .type == "hook_timeout_exceeded"
-  and (.fingerprint | startswith("hook-timeout:PreToolUse:"))
-  and .metadata.hook_path == $hook_path
-  and .metadata.hook_script == "10-timeout-child.sh"
-  and .metadata.exit_code == 124
-  and .metadata.declared_timeout_ms == 1000
-  and .metadata.watchdog_timeout_ms == 1000
-  and (.metadata.timing_precision == "ms" or .metadata.timing_precision == "s")
-  and (.metadata.final_elapsed_ms | type == "number" and . >= 900)
-  and (.metadata.hook_sequence | type == "array" and length <= 20)
-' < <(sed '/^---EVENT---$/,$d' "$R17/hq.stdin") >/dev/null \
-  || fail "child timeout event omitted final duration or exit code"
-[ ! -s "$R17/err" ] || fail "child timeout instrumentation changed master stderr"
-pass "declared child timeout is reported with its measured completion details"
 dispatch_timestamp_reads="$(awk '
   index($0, "child_started_ms=\"$MASTER_NOW_MS\"") { count++ }
   index($0, "child_ended_ms=\"$MASTER_NOW_MS\"") { count++ }
@@ -1825,6 +1835,7 @@ env \
   HQ_TEST_HQ_ACK="$R17_STATUS/hq.ack" \
   HQ_HOOK_TIMEOUT_SENTRY=0 \
   HQ_MASTER_CHILD_TIMEOUT=1 \
+  HQ_MASTER_BLOCKING_CHILD_TIMEOUT=1 \
   timeout 15s bash "$R17_STATUS/.claude/hooks/master-hook.sh" PreToolUse \
   >"$R17_STATUS/out" 2>"$R17_STATUS/err" <<<"$(payload_for_event PreToolUse child-status-124-session)"
 status_124_rc=$?

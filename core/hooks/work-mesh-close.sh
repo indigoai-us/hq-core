@@ -8,7 +8,7 @@
 #                companies, spool a close 'attempt', spawn the detached bg
 #                reconcile+copy, and return <1s. Fired by the SessionEnd leaf
 #                (core/hooks/SessionEnd/35-work-mesh-close.sh) and, detached,
-#                by core/scripts/handoff-post.sh. /checkpoint is deliberately
+#                by hq core handoff post. /checkpoint is deliberately
 #                NOT wired — the sweep covers anything a checkpoint misses.
 #   sweep        Foreground sweep. Cheap-exit / cooldown / live-lock skip, else
 #                spawn the detached bg sweep and return <1s. Fired by leftover

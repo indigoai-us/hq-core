@@ -45,7 +45,7 @@ if count == 0 or count > limit:
         f"resumework hook count: Process has {count} Bash tool-call blocks; limit is {limit}"
     )
 required = (
-    "handoff-sync-prefetch.sh",
+    "hq core handoff-sync-prefetch",
     "resumework-resolve.sh",
     # US-043: open-steps runs the hq core twin. The lock calls stay on the
     # helper: they pass $thread_id, set from a substitution, and the

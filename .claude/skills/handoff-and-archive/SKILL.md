@@ -19,8 +19,8 @@ session is archived after the handoff is saved and reported.
    already contains `--no-archive`, drop that flag. Running this command
    means the user wants the session archived.
 2. Follow the handoff skill exactly, including its Step 7. Step 7 decides
-   with `core/scripts/handoff-archive-decision.sh` and archives the session
-   through `archive_session` only when that script prints `archive: yes`.
+   with `hq core handoff archive-decision` and archives the session
+   through `archive_session` only when that command prints `archive: yes`.
 3. If the `Skill` tool is not available (for example in Codex), read
    `.claude/skills/handoff/SKILL.md` and follow it with `--archive` as the
    handoff arguments.

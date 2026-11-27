@@ -9,7 +9,7 @@
 # artifacts (delegation manifests, briefs, pickup prompts, DM payloads) are
 # scanned against before they are written to disk or transmitted. Mirrors the
 # runtime PreToolUse hook at .claude/hooks/detect-secrets.sh — a regression
-# test (core/scripts/tests/hq-delegate-bundle.test.sh) asserts this list stays
+# test (core/scripts/tests/hq-delegate-skill.test.sh) asserts this list stays
 # a superset of the hook's, so the two cannot silently drift.
 #
 # Entries are "<extended-regex>:<human name>". The regex part may not contain

@@ -1,7 +1,7 @@
 ---
 name: discover
 description: "Pull a repo into HQ and turn parallel exploration into company knowledge and policies. Triggers: \"discover this repo\", \"ingest <repo>\"."
-allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion, Agent
+allowed-tools: Read, Write, Edit, Bash, Bash(source core/scripts/lib/hq-cli-floor.sh:*), Bash(hq_cli_floor_check:*), Glob, Grep, AskUserQuestion, Agent
 ---
 
 # Discover
@@ -46,12 +46,20 @@ Optional flags: `--company <slug>`, `--private`, `--no-policies`.
 
 ## Phase 2 — Register (auto-detect company; never ask if any tier resolves)
 
+Before invoking `hq core handoff pointer-company`, verify hq-cli 5.345.263 or newer is installed:
+
+```bash
+source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check discover 5.345.263
+```
+
+If the check fails, stop and upgrade hq-cli to 5.345.263 or newer with `npm install -g @indigoai-us/hq-cli@latest`.
+
 Resolve owning company in priority order:
 
 | Tier | Source | Win condition |
 |---|---|---|
 | 1 | `--company <slug>` flag | Always wins if present |
-| 2 | Active session: `bash core/scripts/handoff-pointer-company.sh` (reads `workspace/threads/handoff.json` `.company`, accepting a string, a one-element array, or the linked thread's `metadata.company` for older pointers), or `$HQ_ACTIVE_COMPANY` | Use if non-empty and present in `companies/manifest.yaml` |
+| 2 | Active session: `hq core handoff pointer-company` (reads `workspace/threads/handoff.json` `.company`, accepting a string, a one-element array, or the linked thread's `metadata.company` for older pointers), or `$HQ_ACTIVE_COMPANY` | Use if non-empty and present in `companies/manifest.yaml` |
 | 3 | GitHub org match: owner login → `companies/{co}.github_org` in manifest | Single match auto-uses; multiple → AskUserQuestion |
 | 4 | Path heuristic: target lives under `companies/<co>/repos/...` | Infer that company |
 | 5 | Standalone | Knowledge writes to `core/knowledge/public/repos/<name>/`; manifest gets `unaffiliated_repos[]` append |

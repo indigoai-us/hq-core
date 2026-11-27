@@ -1,7 +1,7 @@
 ---
 name: retro
 description: Run a project or session retrospective and capture reusable lessons.
-allowed-tools: Read, Write, Glob, Grep, Bash(git:*), Bash(qmd:*), Bash(bash core/scripts/handoff-builder-route.sh:*), Bash(bash core/scripts/handoff-autofile.sh:*), Bash(bash core/scripts/retro-merge-deficiencies.sh:*), AskUserQuestion
+allowed-tools: Read, Write, Glob, Grep, Bash(git:*), Bash(qmd:*), Bash(source core/scripts/lib/hq-cli-floor.sh:*), Bash(hq_cli_floor_check:*), Bash(hq core handoff builder-route:*), Bash(hq core handoff autofile:*), Bash(bash core/scripts/retro-merge-deficiencies.sh:*), AskUserQuestion
 ---
 
 # Retrospective
@@ -303,13 +303,13 @@ Write "None found." when the merged array is empty.
 qmd update 2>/dev/null || true
 ```
 
-**SESSION mode, hq-core deficiencies.** When `{retro_thread_file}` has any `kind: "hq-core"` item, offer to file them (ask; never file without a yes). Reuse the `/handoff` scripts with `{retro_thread_file}` as the thread:
+**SESSION mode, hq-core deficiencies.** When `{retro_thread_file}` has any `kind: "hq-core"` item, offer to file them (ask; never file without a yes). Check that hq-cli 5.345.263 or newer is installed (`source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check retro 5.345.263`; if the check fails, stop and upgrade with `npm install -g @indigoai-us/hq-cli@latest`), then reuse the `/handoff` commands with `{retro_thread_file}` as the thread:
 
 ```bash
-bash core/scripts/handoff-builder-route.sh --root "$PWD" --thread "{retro_thread_file}"
+hq core handoff builder-route --root "$PWD" --thread "{retro_thread_file}"
 ```
 
-- `route: public (...)`: offer `/hq-bug`. On yes, run `bash core/scripts/handoff-autofile.sh --thread "{retro_thread_file}" --root "$PWD"`. It files one `hq feedback bug` report, applies the 7-day dedupe ledger and the secret scan, and prints one `filed:` / `skipped:` / `aborted:` / `failed:` line. Keep it as `{file_result}`.
+- `route: public (...)`: offer `/hq-bug`. On yes, run `hq core handoff autofile --thread "{retro_thread_file}" --root "$PWD"`. It files one `hq feedback bug` report, applies the 7-day dedupe ledger and the secret scan, and prints one `filed:` / `skipped:` / `aborted:` / `failed:` line. Keep it as `{file_result}`.
 - `route: builder` with `brief: <path>`: offer a staging PR. On yes, dispatch one visible fix agent with that brief exactly as `/handoff` Step 4.5 "Builder route" does (same prompt, never merge, never push to main). Keep its `pr:` line as `{file_result}`.
 - `brief: none (...)`, no hq-core items, or the user declines: `{file_result}` is `none (<reason>)`.
 

@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="${HQ_TEST_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 DETACH="$ROOT/core/scripts/hq-detach.sh"
 SKILL="$ROOT/.claude/skills/handoff/SKILL.md"
-POST="$ROOT/core/scripts/handoff-post.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -87,11 +86,9 @@ done
 [ ! -e "$TMP/node-script" ] || fail "Linux/Darwin used the Windows hidden launcher"
 pass "Linux and Darwin retain nohup with stdin detached and argv preserved"
 
-grep -q -- '--handoff' "$POST" || fail "$POST does not use the platform-aware handoff launcher"
 # The skill no longer launches the post itself: `hq core handoff run` starts it
 # detached through the CLI's platform-aware launcher after finalize succeeds.
-grep -Fq 'bash core/scripts/handoff-run.sh \' "$SKILL" || fail "$SKILL does not start the post through hq core handoff run (via handoff-run.sh)"
-grep -Fq -- '--handoff' "$ROOT/core/scripts/handoff-run.sh" || fail "handoff-run.sh fallback does not use the platform-aware handoff launcher"
+grep -Fq 'hq core handoff run \' "$SKILL" || fail "$SKILL does not start the post through hq core handoff run"
 ! grep -Eq 'hq core handoff post|core/scripts/handoff-post\.sh"? ' "$SKILL" || fail "$SKILL launches the post outside hq core handoff run"
 # The skill's commands live in fenced code blocks; prose may name the option.
 # Match --no-post as a whole word anywhere on a line in those blocks, so it is

@@ -27,9 +27,15 @@ bash() {
         *) return 98 ;;
       esac
       ;;
-    core/scripts/handoff-open-steps.sh) printf '%s\n' list >> "$CALLS" ;;
     *) return 99 ;;
   esac
+}
+hq() {
+  if [ "${1:-}" = core ] && [ "${2:-}" = handoff ] && [ "${3:-}" = open-steps ] && [ "${4:-}" = list ]; then
+    printf '%s\n' list >> "$CALLS"
+    return 0
+  fi
+  return 99
 }
 FIXTURE
 cat "$TMP/snippet.sh" >> "$TMP/run.sh"

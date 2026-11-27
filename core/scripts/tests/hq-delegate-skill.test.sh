@@ -17,33 +17,64 @@ grep -q '^allowed-tools: .*AskUserQuestion' "$SKILL" \
 . "$ROOT/core/scripts/lib/hq-cli-floor.sh"
 required="$(hq_cli_floor_required "$ROOT")" || fail "staging must declare its CLI floor"
 case "$required" in
-  '>='*) hq_cli_version_ge "${required#>=}" 5.345.234 \
-    || fail "staging must require hq-cli 5.345.234 or newer" ;;
+  '>='*) hq_cli_version_ge "${required#>=}" 5.345.263 \
+    || fail "staging must require hq-cli 5.345.263 or newer" ;;
   *) fail "staging CLI floor must use a minimum-version constraint" ;;
 esac
-# 5.345.241 is the first hq-cli whose native secrets step checks every name
-# exists before sharing, reads prd.json metadata.secrets before the repo
-# schema, and shares agent and person uids through grantPrincipal (US-029).
-grep -Fq 'hq_cli_floor_check delegate 5.345.241' "$SKILL" \
-  || fail "the skill must check the 5.345.241 CLI floor before delegation"
-grep -Fq 'Upgrade hq-cli to 5.345.241 or newer' "$SKILL" \
+# 5.345.263 is the unified US-029 floor for all retired handoff and delegate
+# scripts (matching #3915/#3980 delegate parity, Windows locking, #3989/#3994/#3996, and #4006).
+grep -Fq 'hq_cli_floor_check delegate 5.345.263' "$SKILL" \
+  || fail "the skill must check the 5.345.263 CLI floor before delegation"
+grep -Fq 'Upgrade hq-cli to 5.345.263 or newer' "$SKILL" \
   || fail "older installs need an upgrade message"
 grep -Fq 'hq core delegate run --company <co> --project <project> --to "<recipient>" [--share] [--no-secrets] [--dry-run]' "$SKILL" \
   || fail "the one-process delegate flow must preserve company, principal and user flags"
-FLOOR_LINE="$(grep -nF 'hq_cli_floor_check delegate 5.345.241' "$SKILL" | cut -d: -f1)"
+FLOOR_LINE="$(grep -nF 'hq_cli_floor_check delegate 5.345.263' "$SKILL" | cut -d: -f1)"
 RUN_LINE="$(grep -nF 'hq core delegate run --company' "$SKILL" | cut -d: -f1)"
 [ "$FLOOR_LINE" -lt "$RUN_LINE" ] || fail "the version check must precede delegation"
 if grep -Eq 'hq-delegate-.*\.sh|Legacy fallback|identified old-CLI failure' "$SKILL"; then
   fail "the skill must have only the native route"
 fi
 
-# Kept helpers still serve existing callers and keep their syntax coverage.
+# US-029: all ten bash delegate scripts and their two helper libraries are deleted.
 for helper in hq-delegate-resolve hq-delegate-bundle hq-delegate-grant \
-  hq-delegate-repo hq-delegate-secrets hq-delegate-transfer \
-  hq-delegate-verify hq-delegate-send hq-delegate-pickup; do
-  [ -f "$ROOT/core/scripts/$helper.sh" ] || fail "retained helper missing: $helper"
-  bash -n "$ROOT/core/scripts/$helper.sh" || fail "helper does not parse: $helper"
+  hq-delegate-publish hq-delegate-repo hq-delegate-secrets \
+  hq-delegate-transfer hq-delegate-verify hq-delegate-send \
+  hq-delegate-pickup lib/delegate-brainstorm lib/delegate-engine; do
+  [ ! -e "$ROOT/core/scripts/$helper.sh" ] || fail "retired helper still present: $helper.sh"
 done
+
+# Verify the floor helper rejects an older CLI with a clear upgrade error and accepts 5.345.263.
+TMP_FLOOR="$(mktemp -d)"
+trap 'rm -rf "$TMP_FLOOR"' EXIT
+mkdir -p "$TMP_FLOOR/bin"
+cat > "$TMP_FLOOR/bin/hq" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$HQ_MOCK_VER"
+SH
+chmod +x "$TMP_FLOOR/bin/hq"
+old_rc=0
+old_err="$(PATH="$TMP_FLOOR/bin:$PATH" XDG_CACHE_HOME="$TMP_FLOOR/cache" HQ_MOCK_VER=5.345.262 \
+  bash -c 'source "$1" && hq_cli_floor_check delegate 5.345.263' _ "$ROOT/core/scripts/lib/hq-cli-floor.sh" 2>&1)" || old_rc=$?
+[ "$old_rc" -eq 127 ] || fail "floor check must exit 127 on 5.345.262 (got $old_rc)"
+grep -Fq 'delegate: this skill needs hq-cli >= 5.345.263 (found 5.345.262)' <<<"$old_err" \
+  || fail "floor check must report required and found versions with skill label (got: $old_err)"
+grep -Fq 'npm install -g @indigoai-us/hq-cli@latest' <<<"$old_err" \
+  || fail "floor check must include the upgrade command (got: $old_err)"
+PATH="$TMP_FLOOR/bin:$PATH" XDG_CACHE_HOME="$TMP_FLOOR/cache" HQ_MOCK_VER=5.345.263 \
+  bash -c 'source "$1" && hq_cli_floor_check delegate 5.345.263' _ "$ROOT/core/scripts/lib/hq-cli-floor.sh" \
+  || fail "floor check must pass on 5.345.263"
+
+# Shared secret-pattern library stays a superset of the runtime detect-secrets hook.
+HOOK="$ROOT/.claude/hooks/detect-secrets.sh"
+LIB="$ROOT/core/scripts/lib/secret-patterns.sh"
+[ -f "$LIB" ] || fail "missing shared secret-pattern lib: $LIB"
+if [ -f "$HOOK" ]; then
+  while IFS= read -r entry; do
+    grep -qF "$entry" "$LIB" \
+      || fail "secret-patterns.sh drifted: hook pattern $entry missing from lib"
+  done < <(grep -oE '^  "[^"]+"' "$HOOK" | sed 's/^  //')
+fi
 
 grep -Fq 'Exit 3 with `status: ambiguous`' "$SKILL" || fail "handle ambiguous resolution"
 grep -Fq 'with the chosen exact principal' "$SKILL" || fail "rerun only for the selected identity"

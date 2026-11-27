@@ -419,58 +419,5 @@ autosave "$STUBS/hq-count" notes-nosid.md ""
 check_eq "autosave without a session id keeps the old message" \
   "$(git -C "$HQ" log -1 --format=%B)|$(runs)" "autosave(hq): notes-nosid.md|0"
 
-# 9. handoff-finalize commit: explicit trailer only when the dispatcher is absent.
-scaffold_handoff_repo() { # dir
-  local repo="$1"
-  mkdir -p "$repo/core/scripts/lib" "$repo/workspace/baseline" "$repo/workspace/threads" "$repo/workspace/orchestrator"
-  cp "$SRC_ROOT/core/scripts/handoff-finalize.sh" "$repo/core/scripts/handoff-finalize.sh"
-  cp "$SRC_ROOT/core/scripts/hq-status-summary.sh" "$repo/core/scripts/hq-status-summary.sh"
-  cp "$SRC_ROOT/core/scripts/lib/session-id.sh" "$SRC_ROOT/core/scripts/lib/forwarder.sh" \
-    "$SRC_ROOT/core/scripts/lib/hq-cli-floor.sh" "$LIB" "$repo/core/scripts/lib/"
-  printf '#!/usr/bin/env bash\nmkdir -p workspace/threads\necho "# Threads" > workspace/threads/INDEX.md\n' \
-    >"$repo/core/scripts/rebuild-threads-index.sh"
-  printf '#!/usr/bin/env bash\nmkdir -p workspace/orchestrator\necho "# Orchestrator" > workspace/orchestrator/INDEX.md\n' \
-    >"$repo/core/scripts/rebuild-orchestrator-index.sh"
-  chmod +x "$repo/core/scripts/"*.sh
-  printf '%s\n' '{"categories":[{"name":"baseline","patterns":["companies/*","workspace/*","repos/*","core/settings/*",".hq/*"]}]}' \
-    >"$repo/workspace/baseline/hq-local-baseline.json"
-  git -C "$repo" init -q
-  git -C "$repo" config user.email "fingerprint-test@example.com"
-  git -C "$repo" config user.name "Fingerprint Test"
-  echo base >"$repo/tracked.txt"
-  git -C "$repo" add -A
-  git -C "$repo" commit -q -m base
-}
-
-finalize() { # repo bin slug
-  echo "$3" >"$1/tracked.txt"
-  (cd "$1" && HQ_ROOT="$1" HQ_SESSION_ID="fp-handoff-$3" HQ_FINGERPRINT_BIN="$2" bash core/scripts/handoff-finalize.sh \
-    --title "Handoff: $3" --summary "$3" --message "$3" \
-    --files-touched-json '["tracked.txt"]' --slug "$3") >/dev/null
-}
-
-HO="$TMP_PARENT/handoff"
-scaffold_handoff_repo "$HO"
-finalize "$HO" "$STUBS/hq-value" no-dispatcher
-check_eq "handoff commit without dispatcher carries the trailer" \
-  "$(git -C "$HO" log -1 --format='%(trailers:key=HQ-Fingerprint,valueonly)' | sed '/^$/d')" "$FP"
-
-finalize "$HO" "$STUBS/hq-null" null-fingerprint
-check_eq "handoff commit with null fingerprint keeps the old subject" \
-  "$(git -C "$HO" log -1 --format=%s)" "$(git -C "$HO" log -1 --format=%B | sed '/^$/d')"
-case "$(git -C "$HO" log -1 --format=%B)" in
-  "checkpoint: handoff "*) ok "handoff commit with null fingerprint is the pre-change format" ;;
-  *) not_ok "unexpected handoff message: $(git -C "$HO" log -1 --format=%B)" ;;
-esac
-
-# A fake dispatcher: global core.hooksPath set, no commit-msg hook in it. The
-# finalizer must not add the trailer itself, so the commit has none.
-mkdir -p "$HOME/.hq/git-hooks"
-git config --global core.hooksPath "$HOME/.hq/git-hooks"
-finalize "$HO" "$STUBS/hq-value" with-dispatcher
-check_eq "handoff commit with dispatcher present has no explicit trailer" \
-  "$(git -C "$HO" log -1 --format='%(trailers:key=HQ-Fingerprint,valueonly)' | sed '/^$/d')" ""
-git config --global --unset core.hooksPath
-
 echo "fingerprint-explicit-trailer: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

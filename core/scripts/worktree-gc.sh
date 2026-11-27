@@ -46,7 +46,7 @@
 #   --apply      actually remove safe worktrees (default: dry-run, no changes)
 #   --dry-run    classify only, make no changes (the default; explicit for clarity)
 #   --gated      no-op if a GC run already happened in the last 24h (for cadence
-#                callers like handoff-post.sh); writes a marker on each real run
+#                callers like `hq core handoff post`); writes a marker on each real run
 #   --json       emit a machine-readable summary + per-worktree records on stdout
 #
 # Exit code is 0 whenever the scan completed (even with per-worktree skips).

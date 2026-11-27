@@ -73,7 +73,7 @@ skipped — it never aborts the run.
 
 ### Cadence
 
-`handoff-post.sh` runs `worktree-gc.sh --apply --gated` detached on every
+`hq core handoff post` (invoked by `hq core handoff run`) runs `worktree-gc.sh --apply --gated` detached on every
 `/handoff`; `--gated` caps real runs to once per 24h and never blocks handoff.
 
 ### Run it manually

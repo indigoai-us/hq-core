@@ -7,7 +7,7 @@
 # when it inherits LC_ALL or LANG set to C.utf8 (not installed on macOS; the
 # installed name is C.UTF-8). A perl call that has not pinned the locale then
 # fails, and at the PreToolUse shim that turns into exit 2 on every hook.
-# handoff-open-steps.sh (PR #1769) and the call sites fixed with this guard run perl as `LC_ALL=C perl ...`.
+# Call sites fixed with this guard (originally triggered by PR #1769, now native in `hq core handoff open-steps`) run perl as `LC_ALL=C perl ...`.
 #
 # What counts as a perl call: a command-position `perl` (or "$perl_bin"-style
 # variable) followed by an option or quoted argument. `command -v perl`,

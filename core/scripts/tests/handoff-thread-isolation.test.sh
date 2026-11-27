@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
-# Offline regression: 11 synthetic tenants, real writers, no HQ services.
-# A handoff changeset that names many companies must not copy the full record
-# into each tenant or attempt a workspace push for each.
+# Offline regression: 11 synthetic tenants, real mirror hook and native
+# `hq core handoff finalize` / `hq core handoff post`, no HQ services.
+# A multi-company metadata array or changeset must not broadcast full records
+# across tenants or push any tenant workspace, while single-owner strings,
+# one-element arrays, locked multi-company sets, and digit-first slugs stay
+# strictly scoped.
 
 set -euo pipefail
 
 SRC_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REPO_ROOT="$(cd "$SRC_ROOT/.." && pwd)"
-TMP_ROOT=$(mktemp -d)
-trap 'rm -rf "$TMP_ROOT"' EXIT
+TMP_ROOT="$(cd "$(mktemp -d)" && pwd -P)"
+cleanup() {
+  local attempt=0
+  while [[ -d "$TMP_ROOT" && "$attempt" -lt 10 ]]; do
+    rm -rf "$TMP_ROOT" 2>/dev/null && break || true
+    sleep 0.05
+    attempt=$((attempt + 1))
+  done
+}
+trap cleanup EXIT
+
+# shellcheck source=../lib/hq-cli-floor.sh
+source "$SRC_ROOT/scripts/lib/hq-cli-floor.sh"
 
 failures=0
 fail() {
@@ -16,12 +30,18 @@ fail() {
   failures=$((failures + 1))
 }
 
+REAL_HQ="$(command -v hq 2>/dev/null || true)"
+REAL_NODE="$(command -v node 2>/dev/null || true)"
+REAL_HQ_VER=""
+if [[ -n "$REAL_HQ" ]]; then
+  REAL_HQ_VER="$(HQ_NO_UPDATE_CHECK=1 "$REAL_HQ" --version 2>/dev/null | head -n1 | tr -d '[:space:]' || true)"
+fi
+
 ROOT="$TMP_ROOT/repo"
 mkdir -p "$ROOT/core/scripts/lib" "$ROOT/.claude/hooks" "$ROOT/workspace/threads" \
   "$ROOT/bin" "$ROOT/home" "$ROOT/logs"
-cp "$SRC_ROOT/scripts/handoff-finalize.sh" "$ROOT/core/scripts/handoff-finalize.sh"
-cp "$SRC_ROOT/scripts/handoff-post.sh" "$ROOT/core/scripts/handoff-post.sh"
 cp "$SRC_ROOT/scripts/lib/session-id.sh" "$ROOT/core/scripts/lib/session-id.sh"
+cp "$SRC_ROOT/scripts/lib/session-scope-capability.sh" "$ROOT/core/scripts/lib/session-scope-capability.sh"
 cp "$REPO_ROOT/.claude/hooks/mirror-thread-to-company.sh" "$ROOT/.claude/hooks/mirror-thread-to-company.sh"
 cat > "$ROOT/core/scripts/qmd-reindex-bg.sh" <<'SH'
 #!/bin/sh
@@ -35,7 +55,7 @@ for i in $(seq 0 10); do
 done
 
 for tenant in "${tenants[@]}"; do
-  mkdir -p "$ROOT/companies/$tenant"
+  mkdir -p "$ROOT/companies/$tenant/workspace"
   printf 'synthetic\n' > "$ROOT/companies/$tenant/note.md"
   printf 'slug: %s\ncloud: true\n' "$tenant" > "$ROOT/companies/$tenant/company.yaml"
 done
@@ -81,6 +101,7 @@ run_hook() {
     > "$path"
   jq -n --arg file_path "$path" '{tool_name:"Write", tool_input:{file_path:$file_path}}' | \
     env PATH="$PATH" HOME="$HOME" HQ_ROOT="$HQ_ROOT" CODEX_THREAD_ID="${CODEX_THREAD_ID:-}" \
+      HQ_SESSION_ID="${HQ_SESSION_ID:-}" \
       bash "$ROOT/.claude/hooks/mirror-thread-to-company.sh"
 }
 
@@ -151,106 +172,6 @@ fi
 export CODEX_THREAD_ID="$SESSION"
 export HQ_SESSION_ID="$SESSION"
 
-# 3. Finalizer with 11 company paths must not stamp recipients from the changeset.
-: > "$ROOT/hq-calls.log"
-paths_json="$(printf '%s\n' "${tenants[@]}" | jq -R . | jq -s -c 'map("companies/" + . + "/note.md")')"
-fin_rc=0
-fin_out="$(
-  cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_SESSION_ID="$SESSION" \
-    HQ_ROOT="$ROOT" HOME="$HOME" PATH="$PATH" LC_ALL=C \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-    bash core/scripts/handoff-finalize.sh \
-      --company tenant-0 \
-      --title "Handoff: isolation" \
-      --summary "Synthetic 11-tenant changeset" \
-      --files-touched-json "$paths_json" \
-      --next-command '' \
-      --slug isolation
-)" || fin_rc=$?
-if [[ "$fin_rc" -ne 0 ]]; then
-  fail "finalizer exited $fin_rc on a multi-company changeset: $fin_out"
-fi
-thread_path="$(jq -r '.thread_path' <<<"$fin_out")"
-thread_id="$(jq -r '.thread_id' <<<"$fin_out")"
-if [[ "$(jq -c '.metadata.company' "$ROOT/$thread_path")" != '[]' ]]; then
-  fail "finalizer derived recipients from the changeset: $(jq -c '.metadata.company' "$ROOT/$thread_path")"
-fi
-if [[ "$(jq -c '.mirror_companies' <<<"$fin_out")" != '[]' ]]; then
-  fail "finalizer mirrored a multi-company changeset: $(jq -c '.mirror_companies' <<<"$fin_out")"
-fi
-if [[ -e "$ROOT/companies/tenant-0/workspace/sessions/${thread_id}.json" ]]; then
-  fail "finalizer copied the 11-tenant handoff into tenant-0"
-fi
-
-# 4. Post must refuse an 11-company metadata array and must not push any tenant.
-legacy_post="$ROOT/workspace/threads/T-post-legacy.json"
-jq -n --argjson company "$(printf '%s\n' "${tenants[@]}" | jq -R . | jq -s -c .)" \
-  '{thread_id:"T-post-legacy", type:"handoff", files_touched:[], metadata:{company:$company}}' \
-  > "$legacy_post"
-: > "$ROOT/hq-calls.log"
-post_rc=0
-cd "$ROOT"
-HANDOFF_LOG_DIR="$ROOT/logs" HQ_ROOT="$ROOT" PATH="$PATH" HOME="$HOME" \
-  bash core/scripts/handoff-post.sh "$legacy_post" "" \
-  && post_rc=0 || post_rc=$?
-if [[ "$post_rc" -eq 0 ]]; then
-  fail "handoff-post accepted 11-company ownership"
-fi
-if grep -E 'sync push' "$ROOT/hq-calls.log" >/dev/null 2>&1; then
-  fail "handoff-post attempted tenant pushes: $(cat "$ROOT/hq-calls.log")"
-fi
-if grep -Fq 'workspace-sync: refused invalid or ambiguous ownership' "$ROOT/logs/handoff-post.log"; then
-  :
-else
-  fail "handoff-post did not log the ownership refusal"
-fi
-
-# 5. Invalid --company is rejected without tenant writes.
-before_mirrors="$(mirrors)"
-bad_rc=0
-cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_ROOT="$ROOT" HOME="$HOME" PATH="$PATH" \
-  bash core/scripts/handoff-finalize.sh \
-    --company 'Not A Slug' \
-    --title "Handoff: bad owner" \
-    --summary "invalid" \
-    --files-touched-json '["companies/tenant-0/note.md"]' \
-    --next-command '' \
-    --slug bad-owner \
-  && bad_rc=0 || bad_rc=$?
-if [[ "$bad_rc" -eq 0 ]]; then
-  fail "finalizer accepted an invalid --company slug"
-fi
-if [[ "$(mirrors)" -ne "$before_mirrors" ]]; then
-  fail "invalid --company still wrote tenant mirrors"
-fi
-
-# 6. --company accepts any company in the session's locked set, not only the
-# first-bound one, and still rejects a company outside the set.
-cp "$SRC_ROOT/scripts/lib/session-scope-capability.sh" "$ROOT/core/scripts/lib/session-scope-capability.sh"
-jq -n --arg sid "$SESSION" \
-  '{session_id:$sid, agent_id:"", company_slug:"tenant-0", company_slugs:["tenant-0","tenant-1"]}' \
-  > "$ROOT/workspace/sessions/$SESSION/scope-capability.json"
-for spec in 'tenant-1|0' 'tenant-2|2'; do
-  owner="${spec%%|*}"
-  want_rc="${spec#*|}"
-  set_rc=0
-  (
-    cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_SESSION_ID="$SESSION" \
-      HQ_ROOT="$ROOT" HOME="$HOME" PATH="$PATH" LC_ALL=C \
-      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-      bash core/scripts/handoff-finalize.sh \
-        --company "$owner" \
-        --title "Handoff: locked set $owner" \
-        --summary "locked set membership" \
-        --files-touched-json "[\"companies/$owner/note.md\"]" \
-        --next-command '' \
-        --slug "locked-set-$owner"
-  ) >/dev/null 2>&1 || set_rc=$?
-  if [[ "$set_rc" -ne "$want_rc" ]]; then
-    fail "--company $owner exited $set_rc with locked set tenant-0,tenant-1 (want $want_rc)"
-  fi
-done
-
 # 7. Missing session meta fails closed, and loudly, when there is no lock set.
 NOMETA=nometa-session
 export CODEX_THREAD_ID="$NOMETA"
@@ -266,28 +187,6 @@ if [[ "$hook_err" != *"session has no company lock"* ]]; then
 fi
 if [[ -f "$ROOT/companies/tenant-0/workspace/sessions/T-nometa-empty.json" ]]; then
   fail "missing-meta empty-lock still mirrored tenant-0"
-fi
-
-# 7b. /handoff --company from a session with no meta and no capability must not
-# finish looking successful: finalize reports the refused mirror (exit 5).
-unbound_rc=0
-unbound_err="$(
-  cd "$ROOT" && env -i CODEX_THREAD_ID="$NOMETA" HQ_SESSION_ID="$NOMETA" \
-    HQ_ROOT="$ROOT" HOME="$HOME" PATH="$PATH" LC_ALL=C \
-    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-    bash core/scripts/handoff-finalize.sh \
-      --company tenant-0 \
-      --title "Handoff: unbound owner" \
-      --summary "no meta and no capability" \
-      --files-touched-json '["companies/tenant-0/note.md"]' \
-      --next-command '' \
-      --slug unbound-owner 2>&1 >/dev/null
-)" || unbound_rc=$?
-if [[ "$unbound_rc" -ne 5 ]]; then
-  fail "--company from an unbound session exited $unbound_rc (want 5): $unbound_err"
-fi
-if [[ "$unbound_err" != *"company mirror failed"* ]]; then
-  fail "--company from an unbound session did not report the mirror failure: $unbound_err"
 fi
 
 # 8. Missing session meta still mirrors when scope-capability includes the owner.
@@ -356,9 +255,162 @@ if [[ ! -f "$ROOT/companies/tenant-0/workspace/sessions/T-badcap-meta-only.json"
   fail "meta-only session did not mirror tenant-0"
 fi
 
-if [[ "$failures" -gt 0 ]]; then
+# Native `hq core handoff finalize` and `hq core handoff post` tenant-isolation
+# assertions (3, 4, 5, 6, 7b). Requires hq-cli >= 5.345.263 (US-029 floor with
+# native `--company`, mirror-hook execution, locked-set enforcement, #4006, and #4073).
+native_ran=0
+if [[ -n "$REAL_HQ" && -n "$REAL_NODE" && -n "$REAL_HQ_VER" ]] && hq_cli_version_ge "$REAL_HQ_VER" 5.345.263; then
+  native_ran=1
+  export CODEX_THREAD_ID="$SESSION"
+  export HQ_SESSION_ID="$SESSION"
+  NODE_DIR="$(dirname "$REAL_NODE")"
+  NATIVE_PATH="$ROOT/bin:$NODE_DIR:/usr/bin:/bin"
+
+  # 3. Native finalizer with 11 company paths must not stamp recipients from
+  # the changeset or mirror into tenant-0.
+  : > "$ROOT/hq-calls.log"
+  paths_json="$(printf '%s\n' "${tenants[@]}" | jq -R . | jq -s -c 'map("companies/" + . + "/note.md")')"
+  fin_rc=0
+  fin_out="$(
+    cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_SESSION_ID="$SESSION" \
+      HQ_ROOT="$ROOT" HOME="$HOME" PATH="$NATIVE_PATH" LC_ALL=C \
+      HQ_NO_UPDATE_CHECK=1 HQ_HANDOFF_PUBLISH=0 \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      "$REAL_HQ" core --hq-root "$ROOT" handoff finalize \
+        --company tenant-0 \
+        --title "Handoff: isolation" \
+        --summary "Synthetic 11-tenant changeset" \
+        --files-touched-json "$paths_json" \
+        --next-command '' \
+        --slug isolation
+  )" || fin_rc=$?
+  if [[ "$fin_rc" -ne 0 ]]; then
+    fail "native finalizer exited $fin_rc on a multi-company changeset: $fin_out"
+  else
+    thread_path="$(jq -r '.thread_path' <<<"$fin_out")"
+    thread_id="$(jq -r '.thread_id' <<<"$fin_out")"
+    if [[ "$(jq -c '.metadata.company' "$ROOT/$thread_path")" != '[]' ]]; then
+      fail "native finalizer derived recipients from the changeset: $(jq -c '.metadata.company' "$ROOT/$thread_path")"
+    fi
+    if [[ "$(jq -c '.mirror_companies' <<<"$fin_out")" != '[]' ]]; then
+      fail "native finalizer mirrored a multi-company changeset: $(jq -c '.mirror_companies' <<<"$fin_out")"
+    fi
+    if [[ -e "$ROOT/companies/tenant-0/workspace/sessions/${thread_id}.json" ]]; then
+      fail "native finalizer copied the 11-tenant handoff into tenant-0"
+    fi
+  fi
+
+  # 4. Native post with an 11-company metadata array must not mirror or push
+  # any tenant workspace (the mirror hook refuses ambiguous ownership, so no
+  # tenant mirror exists and zero `hq sync push` calls run).
+  legacy_post="$ROOT/workspace/threads/T-post-legacy.json"
+  jq -n --argjson company "$(printf '%s\n' "${tenants[@]}" | jq -R . | jq -s -c .)" \
+    '{thread_id:"T-post-legacy", type:"handoff", files_touched:[], metadata:{company:$company}}' \
+    > "$legacy_post"
+  : > "$ROOT/hq-calls.log"
+  before_post_mirrors="$(mirrors)"
+  (
+    cd "$ROOT" && env -i HANDOFF_LOG_DIR="$ROOT/logs" HQ_ROOT="$ROOT" HOME="$HOME" \
+      PATH="$NATIVE_PATH" LC_ALL=C HQ_NO_UPDATE_CHECK=1 HQ_NATIVE_HANDOFF_POST_CHILD=1 \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      "$REAL_HQ" core --hq-root "$ROOT" handoff post "$legacy_post" ""
+  ) >/dev/null 2>&1 || true
+  if grep -E 'sync push' "$ROOT/hq-calls.log" >/dev/null 2>&1; then
+    fail "native handoff post attempted tenant pushes on 11-company metadata: $(cat "$ROOT/hq-calls.log")"
+  fi
+  if [[ "$(mirrors)" -ne "$before_post_mirrors" ]]; then
+    fail "native handoff post created tenant mirrors for 11-company metadata"
+  fi
+  if ! grep -Fq 'workspace-sync: skipped (thread mirror missing for tenant-0)' "$ROOT/logs/handoff-post.log"; then
+    fail "native handoff post did not record missing-mirror skip after refusal: $(cat "$ROOT/logs/handoff-post.log")"
+  fi
+
+  # 5. Invalid --company is rejected without tenant writes.
+  before_mirrors="$(mirrors)"
+  bad_rc=0
+  (
+    cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_SESSION_ID="$SESSION" \
+      HQ_ROOT="$ROOT" HOME="$HOME" PATH="$NATIVE_PATH" LC_ALL=C \
+      HQ_NO_UPDATE_CHECK=1 HQ_HANDOFF_PUBLISH=0 \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      "$REAL_HQ" core --hq-root "$ROOT" handoff finalize \
+        --company 'Not A Slug' \
+        --title "Handoff: bad owner" \
+        --summary "invalid" \
+        --files-touched-json '["companies/tenant-0/note.md"]' \
+        --next-command '' \
+        --slug bad-owner
+  ) >/dev/null 2>&1 || bad_rc=$?
+  if [[ "$bad_rc" -eq 0 ]]; then
+    fail "native finalizer accepted an invalid --company slug"
+  fi
+  if [[ "$(mirrors)" -ne "$before_mirrors" ]]; then
+    fail "invalid --company still wrote tenant mirrors"
+  fi
+
+  # 6. --company accepts any company in the session's locked set, not only the
+  # first-bound one, and rejects a company outside the set.
+  jq -n --arg sid "$SESSION" \
+    '{session_id:$sid, agent_id:"", company_slug:"tenant-0", company_slugs:["tenant-0","tenant-1"]}' \
+    > "$ROOT/workspace/sessions/$SESSION/scope-capability.json"
+  for spec in 'tenant-1|0' 'tenant-2|2'; do
+    owner="${spec%%|*}"
+    want_rc="${spec#*|}"
+    set_rc=0
+    (
+      cd "$ROOT" && env -i CODEX_THREAD_ID="$SESSION" HQ_SESSION_ID="$SESSION" \
+        HQ_ROOT="$ROOT" HOME="$HOME" PATH="$NATIVE_PATH" LC_ALL=C \
+        HQ_NO_UPDATE_CHECK=1 HQ_HANDOFF_PUBLISH=0 \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        "$REAL_HQ" core --hq-root "$ROOT" handoff finalize \
+          --company "$owner" \
+          --title "Handoff: locked set $owner" \
+          --summary "locked set membership" \
+          --files-touched-json "[\"companies/$owner/note.md\"]" \
+          --next-command '' \
+          --slug "locked-set-$owner"
+    ) >/dev/null 2>&1 || set_rc=$?
+    if [[ "$set_rc" -ne "$want_rc" ]]; then
+      fail "--company $owner exited $set_rc with locked set tenant-0,tenant-1 (want $want_rc)"
+    fi
+  done
+
+  # 7b. --company from a session with no meta and no capability must not finish
+  # looking successful: finalize reports the refused mirror (exit 5).
+  UNBOUND=unbound-finalize-session
+  mkdir -p "$ROOT/workspace/sessions/$UNBOUND"
+  unbound_rc=0
+  unbound_err="$(
+    cd "$ROOT" && env -i CODEX_THREAD_ID="$UNBOUND" HQ_SESSION_ID="$UNBOUND" \
+      HQ_ROOT="$ROOT" HOME="$HOME" PATH="$NATIVE_PATH" LC_ALL=C \
+      HQ_NO_UPDATE_CHECK=1 HQ_HANDOFF_PUBLISH=0 \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      "$REAL_HQ" core --hq-root "$ROOT" handoff finalize \
+        --company tenant-0 \
+        --title "Handoff: unbound owner" \
+        --summary "no meta and no capability" \
+        --files-touched-json '["companies/tenant-0/note.md"]' \
+        --next-command '' \
+        --slug unbound-owner 2>&1 >/dev/null
+  )" || unbound_rc=$?
+  if [[ "$unbound_rc" -ne 5 ]]; then
+    fail "--company from an unbound session exited $unbound_rc (want 5): $unbound_err"
+  fi
+  if [[ "$unbound_err" != *"company mirror failed"* ]]; then
+    fail "--company from an unbound session did not report the mirror failure: $unbound_err"
+  fi
+elif [[ "${HQ_REQUIRE_NATIVE_HANDOFF_ISOLATION:-0}" == "1" ]]; then
+  fail "HQ_REQUIRE_NATIVE_HANDOFF_ISOLATION=1 but installed hq (${REAL_HQ_VER:-missing}) is below 5.345.263"
+else
+  echo "NOTE: native finalize/post tenant assertions deferred (installed hq ${REAL_HQ_VER:-missing} < 5.345.263; covered in hq-cli core-handoff.test.ts and core-handoff-helper-parity.test.ts)"
+fi
+
+if [[ "$failures" -ne 0 ]]; then
   echo "Failed $failures handoff isolation assertions" >&2
   exit 1
 fi
-
-echo "Passed handoff thread isolation checks"
+if [[ "$native_ran" -eq 1 ]]; then
+  echo "handoff-thread-isolation: ok (mirror hook + native finalize/post isolate tenants and accept digit-first slugs)"
+else
+  echo "handoff-thread-isolation: ok (mirror hook 1-12 isolate tenants and accept digit-first slugs; native finalize/post deferred on hq ${REAL_HQ_VER:-missing})"
+fi

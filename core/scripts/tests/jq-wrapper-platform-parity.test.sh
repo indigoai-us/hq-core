@@ -54,8 +54,6 @@ JQ
 chmod +x "$TMP/bin/jq"
 
 assets=(
-  hq-delegate-grant.sh
-  hq-delegate-send.sh
   hq-job-probe.sh
   jobs-validate.sh
 )

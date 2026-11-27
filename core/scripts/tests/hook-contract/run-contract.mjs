@@ -9,12 +9,13 @@ import { isDeepStrictEqual } from 'node:util';
 const here = dirname(fileURLToPath(import.meta.url));
 const source = resolve(here, '../../../..');
 const args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== '--engine') {
-  console.error('Usage: run-contract.sh --engine <cmd>');
+const realTime = args.length === 4 && args[2] === '--suite' && args[3] === 'real-time';
+if ((args.length !== 2 && !realTime) || args[0] !== '--engine') {
+  console.error('Usage: run-contract.sh --engine <cmd> [--suite real-time]');
   process.exit(2);
 }
 const engine = args[1];
-const suite = JSON.parse(readFileSync(join(here, 'cases.json'), 'utf8'));
+const suite = JSON.parse(readFileSync(join(here, realTime ? 'cases-real-time.json' : 'cases.json'), 'utf8'));
 if (suite.schema_version !== 'hq-hook-contract.v1' || !suite.cases?.length) throw new Error('Invalid or empty contract suite');
 const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 const expand = (value, root) => {
@@ -68,7 +69,8 @@ for (const test of suite.cases) {
     // changing a golden result. The engine command is trusted developer input.
     Object.assign(env, { HOME: shellRoot + '/home', BASH_ENV: '/dev/null', HQ_ROOT: shellRoot,
       HQ_HOOK_TIMEOUT_SENTRY: '0', HQ_HOOK_DEDUPE: '0', HQ_FLAG_HQ_ANYWHERE_RUNTIME: 'false',
-      HQ_MASTER_CHILD_TIMEOUT: String(item.childTimeout || 10), HQ_HARNESS: 'claude' });
+      HQ_MASTER_CHILD_TIMEOUT: String(item.childTimeout || 10), HQ_MASTER_BLOCKING_CHILD_TIMEOUT: String(item.blockingChildTimeout || item.childTimeout || 10),
+      HQ_HARNESS: 'claude' });
     const result = spawnSync('bash', ['-c', `exec ${engine} ${quote(item.event)}`], {
       cwd: root, env, input: JSON.stringify({ session_id: 'synthetic-contract', cwd: shellRoot,
         hook_event_name: item.event, tool_name: 'Bash', tool_input: { command: 'true' } }),

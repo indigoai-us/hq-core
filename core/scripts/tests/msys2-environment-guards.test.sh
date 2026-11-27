@@ -23,7 +23,7 @@ case_guard_matches() {
   eval "case \"\$key\" in $pattern) return 0 ;; *) return 1 ;; esac"
 }
 
-for name in hq-delegate-grant.sh hq-delegate-send.sh hq-job-probe.sh jobs-validate.sh; do
+for name in hq-job-probe.sh jobs-validate.sh; do
   script="$SCRIPTS/$name"
   for key in "darwin:MINGW64" "darwin:MINGW32" "darwin:UCRT64" "darwin:CLANG64" "darwin:CLANGARM64" "cygwin:MSYS" "msys:"; do
     if ! case_guard_matches "$script" "$key"; then

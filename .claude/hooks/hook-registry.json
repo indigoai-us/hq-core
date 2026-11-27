@@ -140,6 +140,19 @@
         ]
       },
       {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "id": "mandatory-scope-authorizer",
+            "script": ".claude/hooks/mandatory-scope-authorizer.sh",
+            "timeout": 30,
+            "gated": true,
+            "runner": "source",
+            "safety": true
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
