@@ -580,6 +580,282 @@ if [ "$RC" -eq 0 ] && printf '%s' "$ERR" | grep -q 'company is required'; then p
 else fail "daemon error on other writes" "rc=$RC err=$ERR"; fi
 stop_stub
 
+# hqd cannot read the HQ folder (macOS privacy refusal under ~/Documents): the
+# shim runs the HQ root's scope authorizer in its own process. A fake HQ root
+# holds a copy of the shim and a stub authorizer that records its input.
+FAKE_HQ="$TMP/fake-hq"
+mkdir -p "$FAKE_HQ/core/scripts" "$FAKE_HQ/.claude/hooks"
+cp "$SHIM" "$HERE/hq-anywhere-runtime-flag.cjs" "$HERE"/hqd-hook-flag-cache*.sh "$FAKE_HQ/core/scripts/"
+FAKE_SHIM="$FAKE_HQ/core/scripts/hqd-hook-shim.sh"
+FAKE_AUTH="$FAKE_HQ/.claude/hooks/mandatory-scope-authorizer.sh"
+FAKE_TRIGGER="$FAKE_HQ/.claude/hooks/inject-policy-on-trigger.sh"
+# stub_authorizer <exit-code> [stderr line] [stdout line]: records its stdin,
+# cwd and any HQ_HOOK_* / HQ_SCOPE_FOLD_COPY it was given.
+stub_authorizer() {
+  printf '#!/bin/sh\ncat >"%s"\npwd -P >"%s"\nenv | grep -E "^(HQ_HOOK_|HQ_SCOPE_FOLD_COPY)" >"%s"\n[ ! -f "%s" ] || cat "%s"\n[ -z "%s" ] || printf "%%s\\n" "%s" >&2\nexit %s\n' \
+    "$TMP/auth-in" "$TMP/auth-cwd" "$TMP/auth-env" "$TMP/auth-stdout" "$TMP/auth-stdout" "${2:-}" "${2:-}" "$1" >"$FAKE_AUTH"
+  rm -f "$TMP/auth-in" "$TMP/auth-cwd" "$TMP/auth-env" "$TMP/auth-stdout"
+  [ -z "${3:-}" ] || printf '%s\n' "$3" >"$TMP/auth-stdout"
+}
+# run_fake_shim <socket> <payload> [args...] -> $RC, $OUT, $ERR
+run_fake_shim() {
+  _sock="$1"; _payload="$2"; shift 2
+  printf '%s' "$_payload" | HQ_HQD_SOCKET="$_sock" sh "$FAKE_SHIM" "$@" >"$TMP/out" 2>"$TMP/err"
+  RC=$?
+  OUT=$(cat "$TMP/out")
+  ERR=$(cat "$TMP/err")
+}
+LS_OTHERCO='{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"ls companies/otherco"}}'
+EPERM_REPLY=$(printf '{"id":1,"ok":false,"error":{"code":"internal","message":"EPERM: operation not permitted, open '\''%s/workspace/sessions/s1/meta.yaml'\''"}}' "$FAKE_HQ")
+
+start_stub "$SOCK" "$EPERM_REPLY"
+stub_authorizer 0
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && grep -q '"ls companies/otherco"' "$TMP/auth-in" 2>/dev/null \
+  && [ "$(cat "$TMP/auth-cwd" 2>/dev/null)" = "$(cd "$FAKE_HQ" && pwd -P)" ]; then
+  pass "daemon EPERM: local scope authorizer decides (allow) with the original payload"
+else fail "daemon EPERM: local authorizer allows" "rc=$RC err=$ERR in=$(cat "$TMP/auth-in" 2>/dev/null)"; fi
+
+stub_authorizer 2 'BLOCKED: stub cross-company'
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'BLOCKED: stub cross-company'; then pass "daemon EPERM: local scope authorizer block is kept"
+else fail "daemon EPERM: local authorizer blocks" "rc=$RC err=$ERR"; fi
+
+stub_authorizer 0
+run_fake_shim "$SOCK" "$READ_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -s "$TMP/auth-in" ]; then pass "daemon EPERM: reads are checked locally too"
+else fail "daemon EPERM: reads checked locally" "rc=$RC err=$ERR"; fi
+
+stub_authorizer 0
+# A prefix assignment on a function call persists in POSIX sh, so unset it.
+HQ_HQD_SHIM_REPORT_UNREACHABLE=1 run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_REPORT_UNREACHABLE
+if [ "$RC" -eq 0 ] && [ -s "$TMP/auth-in" ]; then pass "daemon EPERM, master-hook mode: local authorizer decides instead of falling back"
+else fail "daemon EPERM, master-hook mode: local authorizer decides" "rc=$RC err=$ERR"; fi
+
+# The scripts trust HQ_HOOK_* over the payload, and HQ_SCOPE_FOLD_COPY relaxes
+# the check: a value the caller exported must not reach the local run.
+stub_authorizer 0
+export HQ_HOOK_TOOL_NAME=TodoWrite HQ_HOOK_SESSION_ID=other HQ_SCOPE_FOLD_COPY=1
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+unset HQ_HOOK_TOOL_NAME HQ_HOOK_SESSION_ID HQ_SCOPE_FOLD_COPY
+if [ "$RC" -eq 0 ] && [ -f "$TMP/auth-env" ] && [ ! -s "$TMP/auth-env" ]; then pass "daemon EPERM: caller HQ_HOOK_* and HQ_SCOPE_FOLD_COPY do not reach the local authorizer"
+else fail "daemon EPERM: hook env stripped" "rc=$RC env=$(cat "$TMP/auth-env" 2>/dev/null)"; fi
+
+stub_authorizer 0 '' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"stub json deny"}}'
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'stub json deny'; then pass "daemon EPERM: a JSON deny from the local authorizer blocks"
+else fail "daemon EPERM: JSON deny blocks" "rc=$RC out=$OUT err=$ERR"; fi
+
+stub_authorizer 0
+printf '#!/bin/sh\ncat >/dev/null\nprintf "%%s\\n" "{\\"hookSpecificOutput\\":{\\"hookEventName\\":\\"PreToolUse\\",\\"additionalContext\\":\\"stub policy context\\"}}"\n' >"$FAKE_TRIGGER"
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+rm -f "$FAKE_TRIGGER"
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '"additionalContext":"stub policy context"' && printf '%s' "$OUT" | grep -q '"hookEventName":"PreToolUse"'; then
+  pass "daemon EPERM: the local policy trigger supplies the policy context"
+else fail "daemon EPERM: local policy trigger context" "rc=$RC out=$OUT err=$ERR"; fi
+
+stub_authorizer 0
+run_fake_shim "$SOCK" "$START" SessionStart
+if [ "$RC" -eq 0 ] && [ ! -f "$TMP/auth-in" ]; then pass "daemon EPERM on SessionStart: no local scope check"
+else fail "daemon EPERM on SessionStart: no local scope check" "rc=$RC err=$ERR"; fi
+
+stub_authorizer 1 'boom'
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'failing closed'; then pass "daemon EPERM: authorizer error fails closed"
+else fail "daemon EPERM: authorizer error fails closed" "rc=$RC err=$ERR"; fi
+
+rm -f "$FAKE_AUTH"
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'could not check this call'; then pass "daemon EPERM, no local authorizer: company tool call fails closed"
+else fail "daemon EPERM, no local authorizer: fails closed" "rc=$RC err=$ERR"; fi
+# Same answer as any other daemon error: only a call that may write a company
+# path is refused; a Read tool call is not.
+run_fake_shim "$SOCK" "$READ_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && printf '%s' "$ERR" | grep -q 'could not check this call'; then pass "daemon EPERM, no local authorizer: Read is allowed and reported, as before"
+else fail "daemon EPERM, no local authorizer: Read allowed" "rc=$RC err=$ERR"; fi
+HQ_HQD_SHIM_REPORT_UNREACHABLE=1 run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+unset HQ_HQD_SHIM_REPORT_UNREACHABLE
+if [ "$RC" -eq 75 ]; then pass "daemon EPERM, no local authorizer, master-hook mode: reports 75"
+else fail "daemon EPERM, no local authorizer, master-hook mode: reports 75" "rc=$RC err=$ERR"; fi
+
+# Interaction with #2073 ("stop the perl launch storm"): on an EPERM allow with
+# empty authorizer and empty trigger output, the shim must still start perl only
+# once (no extra hook_json perl launches).
+stub_authorizer 0
+printf '#!/bin/sh\ncat >/dev/null\nexit 0\n' >"$FAKE_TRIGGER"
+: >"$TMP/perl-count/log"
+printf '%s' "$LS_OTHERCO" | env PATH="$TMP/perl-count:$PATH" HQ_HQD_SOCKET="$SOCK" \
+  sh "$FAKE_SHIM" PreToolUse >"$TMP/out" 2>"$TMP/err"
+RC=$?; ERR=$(cat "$TMP/err")
+PERL_STARTS=$(wc -l <"$TMP/perl-count/log" | tr -d ' ')
+rm -f "$FAKE_TRIGGER"
+if [ "$PERL_STARTS" -eq 1 ] && [ "$RC" -eq 0 ] && [ -s "$TMP/auth-in" ]; then
+  pass "daemon EPERM fallback with empty authorizer/trigger output starts perl once"
+else fail "daemon EPERM fallback starts perl once" "perl_starts=$PERL_STARTS rc=$RC err=$ERR"; fi
+stop_stub
+
+# EPERM path through a symlink pointing to the HQ root still matches the HQ root.
+ln -s "$FAKE_HQ" "$TMP/fake-hq-link"
+EPERM_SYMLINK_ROOT=$(printf '{"id":1,"ok":false,"error":{"code":"internal","message":"EPERM: operation not permitted, open '\''%s/workspace/sessions/s1/meta.yaml'\''"}}' "$TMP/fake-hq-link")
+start_stub "$SOCK" "$EPERM_SYMLINK_ROOT"
+stub_authorizer 0
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -s "$TMP/auth-in" ]; then pass "daemon EPERM via symlinked HQ root: local scope authorizer decides"
+else fail "daemon EPERM via symlinked HQ root" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# Raw EPERM fallback requires code "internal" and a path under this HQ root.
+# Unrelated paths, sibling prefixes, .. escapes, symlink escapes, non-internal
+# codes, and pathless EPERM messages must NOT trigger the local fallback.
+mkdir -p "$TMP/outside-hq"
+ln -s "$TMP/outside-hq" "$FAKE_HQ/escape-link"
+for _case in \
+  "outside HQ root|internal|EPERM: operation not permitted, open '/x/daemon-state/meta.yaml'" \
+  "sibling prefix|internal|EPERM: operation not permitted, open '${FAKE_HQ}-other/workspace/sessions/s1/meta.yaml'" \
+  "dot-dot escape|internal|EPERM: operation not permitted, open '${FAKE_HQ}/../other/meta.yaml'" \
+  "symlink escape|internal|EPERM: operation not permitted, open '${FAKE_HQ}/escape-link/meta.yaml'" \
+  "non-internal code|bad_args|EPERM: operation not permitted, open '${FAKE_HQ}/workspace/sessions/s1/meta.yaml'" \
+  "pathless EPERM|internal|EPERM: operation not permitted"
+do
+  _label=${_case%%|*}
+  _rest=${_case#*|}
+  _code=${_rest%%|*}
+  _msg=${_rest#*|}
+  _reply=$(printf '{"id":1,"ok":false,"error":{"code":"%s","message":"%s"}}' "$_code" "$_msg")
+  start_stub "$SOCK" "$_reply"
+  stub_authorizer 0
+  run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+  if [ "$RC" -eq 2 ] && [ ! -f "$TMP/auth-in" ] && printf '%s' "$ERR" | grep -q 'HQ policy check failed'; then
+    pass "daemon EPERM ($_label): does not run local authorizer, company call fails closed"
+  else
+    fail "daemon EPERM ($_label): fails closed without local authorizer" "rc=$RC auth_ran=$([ -f "$TMP/auth-in" ] && echo yes || echo no) err=$ERR"
+  fi
+  if [ "$_label" = "outside HQ root" ]; then
+    stub_authorizer 0
+    run_fake_shim "$SOCK" "$WRITE_OTHER" PreToolUse
+    if [ "$RC" -eq 0 ] && [ ! -f "$TMP/auth-in" ] && printf '%s' "$ERR" | grep -q 'HQ daemon: policy.check failed'; then
+      pass "daemon EPERM (outside HQ root): non-company call allows and reports without local authorizer"
+    else
+      fail "daemon EPERM (outside HQ root): non-company call" "rc=$RC auth_ran=$([ -f "$TMP/auth-in" ] && echo yes || echo no) err=$ERR"
+    fi
+  fi
+  stop_stub
+done
+rm -f "$FAKE_HQ/escape-link"
+
+start_stub "$SOCK" '{"id":1,"ok":false,"error":{"code":"hq_root_unreadable","message":"hqd cannot read the HQ folder"}}'
+stub_authorizer 0
+run_fake_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -s "$TMP/auth-in" ]; then pass "daemon hq_root_unreadable code: local scope authorizer decides"
+else fail "daemon hq_root_unreadable: local authorizer decides" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# hqd answers anywhere_disabled when the live HQ Anywhere flag is off while the
+# shim's flag cache still says on. That is not a verdict on the call: the local
+# scope authorizer decides, so a bound-company write or a read-only command in
+# a company folder goes through, and a cross-company one is still refused.
+start_stub "$SOCK" '{"id":1,"ok":false,"error":{"code":"anywhere_disabled","message":"HQ Anywhere is disabled by the hq-anywhere-runtime flag."}}'
+stub_authorizer 0
+run_fake_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 0 ] && [ -s "$TMP/auth-in" ] && [ -z "$ERR" ]; then pass "anywhere_disabled: company write is decided by the local authorizer (allow)"
+else fail "anywhere_disabled: company write decided locally (allow)" "rc=$RC out=$OUT err=$ERR"; fi
+BASH_GREP_CO='{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"/tmp/HQ","tool_name":"Bash","tool_input":{"command":"cd companies/otherco/notes && grep draft file.md"}}'
+stub_authorizer 0
+run_fake_shim "$SOCK" "$BASH_GREP_CO" PreToolUse
+if [ "$RC" -eq 0 ] && grep -q 'grep draft' "$TMP/auth-in" 2>/dev/null; then pass "anywhere_disabled: bash in a company folder is decided by the local authorizer"
+else fail "anywhere_disabled: bash in a company folder decided locally" "rc=$RC out=$OUT err=$ERR"; fi
+stub_authorizer 2 'BLOCKED: stub cross-company'
+run_fake_shim "$SOCK" "$WRITE_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'BLOCKED: stub cross-company'; then pass "anywhere_disabled: a cross-company write is still blocked by the local authorizer"
+else fail "anywhere_disabled: cross-company write still blocked" "rc=$RC err=$ERR"; fi
+stub_authorizer 0
+run_fake_shim "$SOCK" "$START" SessionStart
+if [ "$RC" -eq 0 ] && [ -z "$ERR" ] && [ ! -f "$TMP/auth-in" ]; then pass "anywhere_disabled on SessionStart: quiet, no local scope check"
+else fail "anywhere_disabled on SessionStart: quiet" "rc=$RC err=$ERR"; fi
+stop_stub
+
+start_stub "$SOCK" '{"id":1,"ok":false,"error":{"code":"bad_args","message":"company is required"}}'
+run_shim "$SOCK" "$LS_OTHERCO" PreToolUse
+if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'refusing a tool call that may touch a companies/ path'; then pass "other daemon errors still fail closed, worded as a tool call (not a write)"
+else fail "other daemon errors fail closed with tool-call wording" "rc=$RC err=$ERR"; fi
+stop_stub
+
+# The same fallback with the REAL scope authorizer (not a stub): a fixture HQ
+# root holds a copy of the shim, the repo's mandatory-scope-authorizer.sh and
+# the helpers it sources, a manifest with two companies and session s1 bound
+# to indigo. When hqd declines (EPERM, hq_root_unreadable, anywhere_disabled),
+# a call into another company must stay blocked and an ordinary call must pass.
+REAL_HQ="$TMP/real-scope-hq"
+mkdir -p "$REAL_HQ/core/scripts/lib" "$REAL_HQ/.claude/hooks" \
+  "$REAL_HQ/workspace/sessions/s1" "$REAL_HQ/workspace/output" \
+  "$REAL_HQ/companies/indigo/settings" "$REAL_HQ/companies/otherco/settings"
+cp "$SHIM" "$HERE/hq-anywhere-runtime-flag.cjs" "$HERE"/hqd-hook-flag-cache*.sh "$HERE/hook-lib.sh" "$REAL_HQ/core/scripts/"
+for lib in session-authz session-scope-capability session-id hook-caller-lineage; do
+  cp "$HERE/lib/$lib.sh" "$REAL_HQ/core/scripts/lib/"
+done
+cp "$ROOT/.claude/hooks/mandatory-scope-authorizer.sh" "$ROOT/.claude/hooks/bash-arith-subst-guard-lib.sh" \
+  "$ROOT/.claude/hooks/path-fold-lib.sh" "$REAL_HQ/.claude/hooks/"
+printf 'companies:\n  indigo:\n    name: Indigo\n  otherco:\n    name: Other\n' >"$REAL_HQ/companies/manifest.yaml"
+printf 'company_slug: indigo\n' >"$REAL_HQ/workspace/sessions/s1/meta.yaml"
+printf '{"session_id":"s1","company_slug":"indigo","minted_at":"2026-10-22T00:00:00Z"}\n' >"$REAL_HQ/workspace/sessions/s1/scope-capability.json"
+printf 'own\n' >"$REAL_HQ/companies/indigo/settings/README.md"
+printf 'foreign\n' >"$REAL_HQ/companies/otherco/settings/README.md"
+printf 'notes\n' >"$REAL_HQ/workspace/output/notes.md"
+REAL_HQ_P=$(cd "$REAL_HQ" && pwd -P)
+REAL_SHIM="$REAL_HQ/core/scripts/hqd-hook-shim.sh"
+# real_payload <tool> <input-json> -> payload with cwd at the fixture root
+real_payload() {
+  printf '{"session_id":"s1","hook_event_name":"PreToolUse","cwd":"%s","tool_name":"%s","tool_input":%s}' "$REAL_HQ_P" "$1" "$2"
+}
+# run_real_shim <socket> <payload> -> $RC, $OUT, $ERR
+run_real_shim() {
+  printf '%s' "$2" | HQ_HQD_SOCKET="$1" sh "$REAL_SHIM" PreToolUse >"$TMP/out" 2>"$TMP/err"
+  RC=$?
+  OUT=$(cat "$TMP/out")
+  ERR=$(cat "$TMP/err")
+}
+# real_case <block|allow> <name> <payload>: block is exit 2 with the
+# authorizer's own BLOCKED message (not a fail-closed error from the shim);
+# allow is exit 0 with no missing-file error.
+real_case() {
+  run_real_shim "$SOCK" "$3"
+  if [ "$1" = block ]; then
+    if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'BLOCKED' \
+      && ! printf '%s' "$ERR" | grep -q 'failing closed\|No such file or directory'; then pass "$2"
+    else fail "$2" "rc=$RC err=$ERR"; fi
+  else
+    if [ "$RC" -eq 0 ] && ! printf '%s' "$ERR" | grep -q 'BLOCKED\|failing closed\|No such file or directory'; then pass "$2"
+    else fail "$2" "rc=$RC out=$OUT err=$ERR"; fi
+  fi
+}
+R_READ_OTHERCO=$(real_payload Read '{"file_path":"companies/otherco/settings/README.md"}')
+R_BASH_OTHERCO=$(real_payload Bash '{"command":"cat companies/otherco/settings/README.md"}')
+R_WRITE_OTHERCO=$(real_payload Write '{"file_path":"companies/otherco/settings/x.md","content":"hi"}')
+R_READ_OWN=$(real_payload Read '{"file_path":"companies/indigo/settings/README.md"}')
+R_READ_PLAIN=$(real_payload Read '{"file_path":"workspace/output/notes.md"}')
+R_BASH_PLAIN=$(real_payload Bash '{"command":"ls workspace/output"}')
+R_WRITE_PLAIN=$(real_payload Write '{"file_path":"workspace/output/new.md","content":"hi"}')
+
+REAL_EPERM_REPLY=$(printf '{"id":1,"ok":false,"error":{"code":"internal","message":"EPERM: operation not permitted, open '\''%s/workspace/sessions/s1/meta.yaml'\''"}}' "$REAL_HQ_P")
+start_stub "$SOCK" "$REAL_EPERM_REPLY"
+real_case block "real authorizer, daemon EPERM: Read of another company's file stays blocked" "$R_READ_OTHERCO"
+real_case block "real authorizer, daemon EPERM: Bash cat of another company's file stays blocked" "$R_BASH_OTHERCO"
+real_case allow "real authorizer, daemon EPERM: Read of a non-company path is allowed" "$R_READ_PLAIN"
+real_case allow "real authorizer, daemon EPERM: Bash ls of a non-company path is allowed" "$R_BASH_PLAIN"
+real_case allow "real authorizer, daemon EPERM: Read in the bound company is allowed" "$R_READ_OWN"
+stop_stub
+
+start_stub "$SOCK" '{"id":1,"ok":false,"error":{"code":"hq_root_unreadable","message":"hqd cannot read the HQ folder"}}'
+real_case block "real authorizer, hq_root_unreadable: Read of another company's file stays blocked" "$R_READ_OTHERCO"
+real_case allow "real authorizer, hq_root_unreadable: Read of a non-company path is allowed" "$R_READ_PLAIN"
+stop_stub
+
+start_stub "$SOCK" '{"id":1,"ok":false,"error":{"code":"anywhere_disabled","message":"HQ Anywhere is disabled by the hq-anywhere-runtime flag."}}'
+real_case block "real authorizer, anywhere_disabled: Write into another company stays blocked" "$R_WRITE_OTHERCO"
+real_case allow "real authorizer, anywhere_disabled: Write to a non-company path is allowed" "$R_WRITE_PLAIN"
+stop_stub
+
 start_stub "$SOCK" '{"id":1,"ok":true,"result":{"runtime":"claude","sessionId":"s1","cwd":"/tmp/foreign-repo","company":"indigo"}}'
 run_shim "$SOCK" "$START" SessionStart
 if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'bound to company: indigo' && grep -q '"op":"session.open"' "$TMP/req"; then

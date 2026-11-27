@@ -254,7 +254,7 @@ try {
   const prefetchLog = path.posix.join(homePosix, 'handoff-sync-prefetch.log');
   process.stdout.write(`measuring the skill's network prefetch helper (${sampleCount} samples)\n`);
   for (let i = 0; i < sampleCount; i += 1) {
-    const sample = measure(() => runBash(['core/scripts/handoff-sync-prefetch.sh', '--hq-root', rootPosix, '--timeout', '2', '--log', prefetchLog], { timeout: 10000 }));
+    const sample = measure(() => runBash(['-c', 'hq core handoff-sync-prefetch --hq-root "$1" --timeout 2 --log "$2"', '_', rootPosix, prefetchLog], { timeout: 10000 }));
     if (sample.value.status !== 0) fail(`prefetch returned nonzero: ${sample.value.stderr}`);
     const status = (sample.value.stdout.trim() || 'no-status').replace(/[\r\n\t ]+/g, '_');
     prefetchStatuses.push(status);

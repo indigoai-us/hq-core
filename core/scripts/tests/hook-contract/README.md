@@ -16,6 +16,11 @@ receives the event name as its last argument. An alternative engine should use
 HQ_ROOT to discover the fixture hooks. Each case has its own HOME and an
 allowlisted environment. Nothing runs against the developer's real hooks.
 
+`cases-real-time.json` holds the cases that wait out a real per-child timeout.
+They run nightly (`hook-registration.yml`, job `hook-timeout-real-time`) and on
+manual dispatch, never on pull requests:
+`run-contract.sh --engine '<cmd>' --suite real-time`.
+
 `cases.json` is language neutral. `$FIXTURE` expands to the absolute fixture
 root; `{"$repeat":"x","count":70000,"suffix":"\n"}` represents a large string.
 JSON assertions compare the complete object; text assertions compare exact

@@ -1,0 +1,1 @@
+- Document the native hook engine (`hq-hook`), per-event `master-hook` switching via `core.next` and `hq reindex`, local kill switches (`HQ_CORE_NEXT=off`, `~/.hq/state/core-next.off`, `HQ_HOOK_ENGINE=off`, `~/.hq/hook-engine.off`), and rollback steps in `HARNESS-HOOK-COVERAGE.md`, `HOOKS-NOT-FIRING.md`, and `hq-cli-reference.md`.

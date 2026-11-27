@@ -153,15 +153,40 @@ either value, then rerun the `--require-ledger` check; a `NOT OBSERVED` result
 on an SDK host means use the desktop app, the terminal CLI, or host-side
 enforcement for safety-critical work.
 
-## A registry hook runs through the hq-hook engine
+## Hooks running through the `hq-hook` native engine
 
-`master-hook.sh` runs a registry hook through the hq-cli `hq-hook` binary
-instead of its bash script when the per-hook flag `hook-engine-port-<id>` is
-`shadow` or `on` and the binary is installed (`HQ_HOOK_ENGINE_BIN` or the
-`~/.hq/bin/hq-hook/current` pointer). `HQ_HOOK_TRACE=1` prints
-`master-hook: bridge <id> (<mode>)` for each bridged hook. To rule the engine
-out, set `HQ_HOOK_ENGINE=off` or create `~/.hq/hook-engine.off`; both restore
-the bash script for every hook on this machine.
+HQ can run hooks through the compiled `hq-hook` binary in two modes:
+
+- **Per-hook bridge mode:** `master-hook.sh` runs an individual registry hook
+  through `hq-hook` when `hook-engine-port-<id>` is `shadow` or `on` and the
+  binary is installed (`HQ_HOOK_ENGINE_BIN` or `~/.hq/bin/hq-hook/current`).
+  `HQ_HOOK_TRACE=1` prints `master-hook: bridge <id> (<mode>)` for each bridged
+  hook.
+- **Direct native registration (`core.next`):** When `core.next` is enabled and
+  an event's evaluators and `master-hook:<Event>` are claimed, `hq reindex`
+  registers `~/.hq/bin/hq-hook/stable/hq-hook run --host <host> <Event>`
+  directly for that event.
+
+To inspect which core each host and event calls—and whether a kill switch is
+active—run:
+
+```bash
+hq doctor
+hq doctor --only hook-engine
+```
+
+To bypass the native engine immediately without changing host config files:
+
+- Set `HQ_CORE_NEXT=off` (`0`, `false`, or `no`) or create
+  `~/.hq/state/core-next.off` to hand direct `core.next` registrations back to
+  the shell dispatcher (`master-hook.sh` or the host adapter).
+- Set `HQ_HOOK_ENGINE=off` or create `~/.hq/hook-engine.off` to bypass the
+  native engine across both direct registrations and per-hook bridging.
+
+To rewrite host configuration files back to the shell dispatcher completely
+(for example, if the `hq-hook` binary cannot start), disable `core.next` and
+run `hq reindex`. If the pinned binary itself is damaged, stop running hook
+processes and run `hq core hook-engine-path --repair`.
 
 ## Windows: core files unreadable (`Permission denied`)
 

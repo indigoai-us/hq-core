@@ -574,6 +574,13 @@ is_tool_event() {
   esac
 }
 
+master_event_can_block() {
+  case "$1" in
+    PostToolUse|PostToolUseFailure|PostCompact|Notification|SessionEnd|SubagentStart|PermissionDenied) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 parse_matcher() {
   local stem="${1%.sh}"
   local full="${2:-}"
@@ -4204,6 +4211,7 @@ for hook in ${hooks[@]+"${hooks[@]}"}; do
   fi
 
   master_child_timeout="${HQ_MASTER_CHILD_TIMEOUT:-120}"
+  master_event_can_block "$EVENT" && master_child_timeout="${HQ_MASTER_BLOCKING_CHILD_TIMEOUT:-120}"
   if [ "$MASTER_STOP_EVENT" -eq 1 ]; then
     # Directory Stop hooks run one after another at the end of every turn;
     # 120 s each let one hung personal or company hook hold the turn for

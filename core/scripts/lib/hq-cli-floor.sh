@@ -305,9 +305,15 @@ hq_cli_version_ge() {
 
 # Return 0 when hq satisfies the floor; otherwise print the required message and return 127.
 hq_cli_floor_check() {
-  local script_name="$1" required="$2" minimum have compare_status
+  local caller_name="$1" required="$2" caller_kind="${3:-}" minimum have compare_status
+  if [ -z "$caller_kind" ]; then
+    case "$caller_name" in
+      *.sh|*.bash|*.mjs|*.cjs|*.js|*.py|*.ts|*.ps1|*.cmd|*/*) caller_kind="script" ;;
+      *) caller_kind="skill" ;;
+    esac
+  fi
   if ! command -v hq >/dev/null 2>&1; then
-    printf '%s: requires the hq CLI — this script\047s implementation now ships with it.\n' "$script_name" >&2
+    printf '%s: requires the hq CLI — this %s\047s implementation now ships with it.\n' "$caller_name" "$caller_kind" >&2
     printf 'Install it with: npm install -g @indigoai-us/hq-cli\n' >&2
     return 127
   fi
@@ -317,13 +323,13 @@ hq_cli_floor_check() {
     *) minimum="$required" ;;
   esac
   if ! _hq_cli_floor_parse_semver "$minimum"; then
-    printf '%s: requiresHqCli has unsupported value %s; expected >=X.Y.Z.\n' "$script_name" "$required" >&2
+    printf '%s: requiresHqCli has unsupported value %s; expected >=X.Y.Z.\n' "$caller_name" "$required" >&2
     return 64
   fi
 
   have="$( _hq_cli_floor_installed_version )" || have=""
   if [ -z "$have" ]; then
-    printf '%s: could not read hq --version; required hq-cli >= %s.\n' "$script_name" "$minimum" >&2
+    printf '%s: could not read hq --version; required hq-cli >= %s.\n' "$caller_name" "$minimum" >&2
     return 126
   fi
   if hq_cli_version_ge "$have" "$minimum"; then
@@ -332,11 +338,11 @@ hq_cli_floor_check() {
     compare_status=$?
   fi
   if [ "$compare_status" -gt 1 ]; then
-    printf '%s: hq --version returned invalid SemVer %s; required hq-cli >= %s.\n' "$script_name" "$have" "$minimum" >&2
+    printf '%s: hq --version returned invalid SemVer %s; required hq-cli >= %s.\n' "$caller_name" "$have" "$minimum" >&2
     return 126
   fi
 
-  printf '%s: this script needs hq-cli >= %s (found %s); upgrade with: %s\n' \
-    "$script_name" "$minimum" "$have" "$HQ_CLI_FLOOR_UPGRADE_COMMAND" >&2
+  printf '%s: this %s needs hq-cli >= %s (found %s); upgrade with: %s\n' \
+    "$caller_name" "$caller_kind" "$minimum" "$have" "$HQ_CLI_FLOOR_UPGRADE_COMMAND" >&2
   return 127
 }

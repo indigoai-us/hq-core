@@ -408,8 +408,6 @@ jobs:
             core/scripts/tests/release-pr-auto-merge.test.sh \
             core/scripts/hq-job-notify.sh \
             core/scripts/outpost-jobs-reconcile.sh \
-            core/scripts/handoff-finalize.sh \
-            core/scripts/handoff-run.sh \
             core/scripts/tests/handoff-run-cli-compat.test.sh \
             core/scripts/hq-job-probe.sh \
             core/scripts/tests/hq-job-run.test.sh \
@@ -423,22 +421,8 @@ jobs:
             core/scripts/tests/fixtures/company-jobs-install.sh \
             core/scripts/tests/company-jobs-account.test.sh \
             core/scripts/tests/outpost-job-failure-alerts.test.sh \
-            core/scripts/tests/handoff-finalize-pointer.test.sh \
-            core/scripts/tests/handoff-finalize-deficiencies.test.sh \
-            core/scripts/tests/handoff-finalize-no-jq.test.sh \
-            core/scripts/tests/handoff-finalize-media-filter.test.sh \
-            core/scripts/tests/handoff-finalize-index-lock-retry.test.sh \
-            core/scripts/tests/handoff-finalize-logical-root.test.sh \
-            core/scripts/tests/handoff-finalize-json-args.test.sh \
+            core/scripts/tests/clean-worktree-reconcile-handoff.test.sh \
             core/scripts/tests/handoff-company-digit-slug.test.sh \
-            core/scripts/handoff-autofile.sh \
-            core/scripts/tests/handoff-autofile.test.sh \
-            core/scripts/handoff-builder-route.sh \
-            core/scripts/tests/handoff-builder-route.test.sh \
-            core/scripts/handoff-archive-decision.sh \
-            core/scripts/tests/handoff-archive-decision.test.sh \
-            core/scripts/handoff-sync-prefetch.sh \
-            core/scripts/tests/handoff-sync-prefetch-pointer-regress.test.sh \
             core/scripts/retro-merge-deficiencies.sh \
             core/scripts/tests/retro-merge-deficiencies.test.sh \
             core/scripts/tests/agent-runtime-skill-metadata.test.sh \
@@ -464,8 +448,6 @@ jobs:
             core/scripts/lib/lanes-senior-monitor.sh \
             core/scripts/tests/lanes-senior-monitor-fast-exit.test.sh \
             core/scripts/tests/lanes-senior-monitor-stop-gate.test.sh \
-            core/scripts/tests/handoff-post-hq-root.test.sh \
-            core/scripts/tests/lib/handoff-post-test-helpers.sh \
             .claude/hooks/hook-gate.sh \
             .claude/hooks/check-claude-desktop-bridge-health.sh \
             .claude/skills/deploy/scripts/tests/guardrails-tar-failure.test.sh \
@@ -509,6 +491,8 @@ jobs:
         run: bash core/scripts/tests/scope-authorizer-linked-root.test.sh
       - name: Scope authorizer reads Windows drive, UNC and backslash path spellings as the shell spelling
         run: bash core/scripts/tests/mandatory-scope-authorizer-windows-paths.test.sh
+      - name: Scope authorizer checks PowerShell tool calls and refuses paths it cannot read from the command text
+        run: bash core/scripts/tests/mandatory-scope-authorizer-powershell-tool.test.sh
       - name: Scope authorizer checks long heredoc, python and Edit payloads well inside the hook cap
         run: bash core/scripts/tests/mandatory-scope-authorizer-bash32-payload.test.sh
       - name: Scope authorizer never refuses a core, pack, personal or user-level skill for sharing a company skill name
@@ -604,40 +588,14 @@ jobs:
         run: bash core/scripts/tests/git-hooks-quoted-root.test.sh
       - name: Hook-bypassing HQ commits carry the HQ-Fingerprint trailer explicitly
         run: bash core/scripts/tests/fingerprint-explicit-trailer.test.sh
-      - name: Handoff finalizer never reports a failed commit as success
-        run: bash core/scripts/tests/handoff-finalize-commit-status.test.sh
-      - name: Handoff commit holds only its own paths and skips nested knowledge repos
-        run: bash core/scripts/tests/handoff-finalize-commit-scope.test.sh
-      - name: Handoff Step 3 writes a thread when hq core handoff run rejects its flags
+      - name: Handoff skills call native hq core handoff commands behind the CLI version check
         run: bash core/scripts/tests/handoff-run-cli-compat.test.sh
-      - name: Handoff finalizer checks jq and JSON arguments before writing anything
-        run: |
-          bash core/scripts/tests/handoff-finalize-no-jq.test.sh
-          bash core/scripts/tests/handoff-finalize-json-args.test.sh
-      - name: Handoff finalizer counts alias-root company paths toward scope
-        run: bash core/scripts/tests/handoff-finalize-logical-root.test.sh
-      - name: Handoff scripts accept company slugs that start with a digit
+      - name: Resumework resolve accepts company slugs that start with a digit
         run: bash core/scripts/tests/handoff-company-digit-slug.test.sh
-      - name: Handoff auto-files hq-core deficiencies once per handoff
-        run: bash core/scripts/tests/handoff-autofile.test.sh
-      - name: Handoff builder route decides builder vs public from the staging repo
-        run: bash core/scripts/tests/handoff-builder-route.test.sh
-      - name: Handoff decides whether to archive its own desktop session
-        run: bash core/scripts/tests/handoff-archive-decision.test.sh
-      - name: Handoff prefetch keeps the newer local pointer over an older pulled copy
-        run: bash core/scripts/tests/handoff-sync-prefetch-pointer-regress.test.sh
       - name: Retro merges thread deficiencies with its own lever findings
         run: bash core/scripts/tests/retro-merge-deficiencies.test.sh
-      - name: Handoff knowledge-commit changeset error names the offending entry
-        run: bash core/scripts/tests/handoff-knowledge-commit-changeset-error.test.sh
       - name: Handoff follow-ups stay pending without dispatch proof
         run: bash core/scripts/tests/handoff-followups-runtime.test.sh
-      - name: Handoff document-release dispatch requires an installed skill
-        run: bash core/scripts/tests/handoff-post-document-release-skill.test.sh
-      - name: Handoff post never launches Claude CLI jobs
-        run: bash core/scripts/tests/handoff-post-no-claude.test.sh
-      - name: Handoff post ignores the caller's HQ_ROOT
-        run: bash core/scripts/tests/handoff-post-hq-root.test.sh
 
   autosave-failure-visibility-handoff-2:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
@@ -665,26 +623,21 @@ jobs:
         run: bash core/scripts/tests/git-icon-file-check.test.sh
       - name: Pre-push HQ-root guard refuses pushes that add an HQ root copy
         run: bash core/scripts/tests/push-guard.test.sh
-      - name: Handoff pointer is atomic and worktree-resumable
-        run: bash core/scripts/tests/handoff-finalize-pointer.test.sh
-      - name: Handoff paths cannot escape into another company
-        run: bash core/scripts/tests/handoff-finalize-path-escape.test.sh
-      - name: Handoff finalizer keeps swept-in media and oversize files out of commits
-        run: bash core/scripts/tests/handoff-finalize-media-filter.test.sh
-      - name: Handoff finalizer stores deficiencies and system_info
-        run: bash core/scripts/tests/handoff-finalize-deficiencies.test.sh
-      - name: Handoff finalizer surfaces and classifies git add errors
-        run: bash core/scripts/tests/handoff-finalize-stage-error.test.sh
-      - name: Handoff finalizer waits out a held index.lock and scopes directory changesets
-        run: bash core/scripts/tests/handoff-finalize-index-lock-retry.test.sh
-      - name: Handoff finalizer smoke
-        run: bash core/scripts/tests/handoff-finalize-smoke.sh
-      - name: Handoff finalizer accepts a large file-backed changeset
-        run: bash core/scripts/tests/handoff-finalize-large-changeset.test.sh
-      - name: Handoff post keeps company sync and document-release scope
-        run: bash core/scripts/tests/handoff-post-company-scope.test.sh
-      - name: Handoff post resolves cloud companies from the manifest
-        run: bash core/scripts/tests/handoff-post-cloud-manifest.test.sh
+      - name: Clean-worktree reconciles only byte-identical handoff mirrors
+        run: bash core/scripts/tests/clean-worktree-reconcile-handoff.test.sh
+      - name: Handoff mirror hook and native finalize/post isolate tenants and accept digit-first slugs
+        env:
+          HQ_REQUIRE_NATIVE_HANDOFF_ISOLATION: '1'
+        run: |
+          set -euo pipefail
+          source core/scripts/lib/hq-cli-floor.sh
+          ver="$(HQ_NO_UPDATE_CHECK=1 hq --version | head -n1 | tr -d '[:space:]')"
+          if ! hq_cli_version_ge "$ver" 5.345.263; then
+            native_prefix="${RUNNER_TEMP:-/tmp}/hq-cli-handoff-isolation"
+            npm_config_prefix="$native_prefix" bash core/scripts/ci/install-pinned-hq-cli.sh --version 5.345.263
+            export PATH="$native_prefix/bin:$PATH"
+          fi
+          bash core/scripts/tests/handoff-thread-isolation.test.sh
 
   autosave-failure-visibility-qmd-reindex:
     if: ${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false)) }}
@@ -925,6 +878,8 @@ jobs:
         run: bash core/scripts/tests/credential-read-guard-time-budget.test.sh
       - name: fail_closed PreToolUse guard blocks on timeout; redaction survives sibling exits
         run: bash core/scripts/tests/master-hook-fail-closed-timeout.test.sh
+      - name: HQ_MASTER_CHILD_TIMEOUT cuts only folder hooks that cannot block
+        run: bash core/scripts/tests/master-hook-blocking-child-timeout.test.sh
       - name: Policy enforcement gate receipts, draft approval and send blocks
         run: bash core/scripts/tests/policy-enforcement-gate.test.sh
       - name: Policy enforcement gate UserPromptSubmit path parses and runs
@@ -1329,8 +1284,6 @@ jobs:
         env:
           RESUMEWORK_TIMING_RUNS: '20'
         run: bash core/scripts/tests/resumework-timing.test.sh
-      - name: Handoff listing stat and elapsed scaling benchmark
-        run: bash core/scripts/tests/handoff-open-steps-stat-scaling-bench.sh
 
   shell-smoke-windows:
     name: shell-smoke-windows
@@ -1454,8 +1407,6 @@ jobs:
           RESUMEWORK_TIMING_RUNS: '20'
           RESUMEWORK_HOOK_BUDGET_MS: '70000'
         run: bash core/scripts/tests/resumework-timing.test.sh
-      - name: Handoff listing stat and elapsed scaling benchmark
-        run: bash core/scripts/tests/handoff-open-steps-stat-scaling-bench.sh
       - name: portable-lib
         run: bash core/scripts/tests/portable-lib.test.sh
       - name: Git Bash forwarder preserves slash arguments and path arguments
@@ -1653,6 +1604,10 @@ jobs:
         env:
           BASH_BIN: /bin/bash
         run: /bin/bash core/scripts/tests/mandatory-scope-authorizer-windows-paths.test.sh
+      - name: Scope authorizer PowerShell tool checks under stock macOS Bash
+        env:
+          BASH_BIN: /bin/bash
+        run: /bin/bash core/scripts/tests/mandatory-scope-authorizer-powershell-tool.test.sh
       - name: Quoted file URI scope under stock macOS Bash
         run: /bin/bash core/scripts/tests/scope-file-uri.test.sh
       - name: Scope-guard hotfix ledger shapes under stock macOS Bash
@@ -1679,12 +1634,6 @@ jobs:
         run: /bin/bash core/scripts/tests/credential-read-guard-windows-backslash.test.sh
       - name: Arithmetic guard decision corpus under stock macOS Bash
         run: /bin/bash core/scripts/tests/bash-arith-guard.test.sh
-      - name: Handoff finalizer git add error classification under stock macOS Bash
-        run: /bin/bash core/scripts/tests/handoff-finalize-stage-error.test.sh
-      - name: Handoff finalizer index.lock retry under stock macOS Bash
-        run: /bin/bash core/scripts/tests/handoff-finalize-index-lock-retry.test.sh
-      - name: Handoff post manifest cloud resolution under stock macOS Bash
-        run: /bin/bash core/scripts/tests/handoff-post-cloud-manifest.test.sh
       - name: Native plan sync session scoping under stock macOS Bash
         run: /bin/bash core/scripts/tests/native-plan-session-project.test.sh
       - name: Session project pointer scoping under stock macOS Bash
@@ -1706,6 +1655,8 @@ jobs:
         run: /bin/bash core/scripts/tests/redact-credential-output.test.sh
       - name: fail_closed guard timeout under stock macOS Bash
         run: /bin/bash core/scripts/tests/master-hook-fail-closed-timeout.test.sh
+      - name: HQ_MASTER_CHILD_TIMEOUT scope under stock macOS Bash
+        run: PATH="/bin:$PATH" /bin/bash core/scripts/tests/master-hook-blocking-child-timeout.test.sh
       - name: Policy enforcement gate UserPromptSubmit under stock macOS Bash 3.2
         run: /bin/bash core/scripts/tests/policy-enforcement-gate-bash32.test.sh
       - name: exec-bit index
@@ -3022,12 +2973,8 @@ jobs:
           core/scripts/lint-shell-portability.sh
           core/scripts/rebuild-threads-index.sh
           core/scripts/tests/rebuild-threads-index.test.sh
-          core/scripts/handoff-post.sh
           core/scripts/skill-installed.sh
-          core/scripts/tests/handoff-post-document-release-skill.test.sh
           core/scripts/tests/handoff-followups-runtime.test.sh
-          core/scripts/tests/handoff-post-no-claude.test.sh
-          core/scripts/tests/handoff-post-company-scope.test.sh
           core/scripts/setup.sh
           core/scripts/check-hq-hooks.sh
           core/scripts/lib/hq-cli-floor.sh
@@ -3555,53 +3502,9 @@ jobs:
       run: |
         git reset -q --hard
         git clean -qffdx
-    - name: "[hq-delegate] Bundle builder (schema, prefix conventions, fail-closed secret scan)"
-      id: t_hq_delegate__1
-      if: "${{ !cancelled() }}"
-      run: bash core/scripts/tests/hq-delegate-bundle.test.sh
-    - name: "[hq-delegate] Recipient resolution (person/agent, tenancy-safe)"
-      id: t_hq_delegate__2
-      if: "${{ !cancelled() && steps.t_hq_delegate__1.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-resolve.test.sh
-    - name: "[hq-delegate] Vault grants (direct-only, verified read-back)"
-      id: t_hq_delegate__3
-      if: "${{ !cancelled() && steps.t_hq_delegate__2.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-grant.test.sh
-    - name: "[hq-delegate] Vault grant status handles jq CRLF output"
-      id: t_hq_delegate__4
-      if: "${{ !cancelled() && steps.t_hq_delegate__3.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-grant-crlf-status.test.sh
-    - name: "[hq-delegate] Repo/branch handover (anchored push, dirty work surfaced)"
-      id: t_hq_delegate__5
-      if: "${{ !cancelled() && steps.t_hq_delegate__4.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-repo.test.sh
-    - name: "[hq-delegate] Secrets by name only (sentinel no-value-leak)"
-      id: t_hq_delegate__6
-      if: "${{ !cancelled() && steps.t_hq_delegate__5.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-secrets.test.sh
-    - name: "[hq-delegate] Ownership transfer (board/PRD/mesh/journal, idempotent)"
-      id: t_hq_delegate__7
-      if: "${{ !cancelled() && steps.t_hq_delegate__6.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-transfer.test.sh
-    - name: "[hq-delegate] /delegate brainstorm-stage projects (no prd.json yet)"
-      id: t_hq_delegate__8
-      if: "${{ !cancelled() && steps.t_hq_delegate__7.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-brainstorm.test.sh
-    - name: "[hq-delegate] Pickup prompt + single-DM delivery (verify-gated)"
-      id: t_hq_delegate__9
-      if: "${{ !cancelled() && steps.t_hq_delegate__8.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-send.test.sh
-    - name: "[hq-delegate] Reachability probe + inert dry run"
-      id: t_hq_delegate__10
-      if: "${{ !cancelled() && steps.t_hq_delegate__9.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-verify.test.sh
-    - name: "[hq-delegate] Final dossier publication and canonical content verification"
-      id: t_hq_delegate__11
-      if: "${{ !cancelled() && steps.t_hq_delegate__10.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-publish.test.sh
     - name: "[hq-delegate] /delegate skill structural contract"
       id: t_hq_delegate__12
-      if: "${{ !cancelled() && steps.t_hq_delegate__11.outcome == 'success' }}"
+      if: "${{ !cancelled() }}"
       run: bash core/scripts/tests/hq-delegate-skill.test.sh
     - name: "[hq-delegate] /delegate script references resolve"
       id: t_hq_delegate__13
@@ -4123,25 +4026,9 @@ jobs:
       id: t_secret_and_policy_hooks__31
       if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__30.outcome == 'success' }}"
       run: bash core/scripts/tests/verify-story-deliverables.test.sh
-    - name: "[secret-and-policy-hooks] Delegation pickup receipt / FAILED state"
-      id: t_secret_and_policy_hooks__32
-      if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__31.outcome == 'success' }}"
-      run: bash core/scripts/tests/hq-delegate-pickup.test.sh
-    - name: "[secret-and-policy-hooks] Handoff next-step ids and closure"
-      id: t_secret_and_policy_hooks__33
-      if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__32.outcome == 'success' }}"
-      run: bash core/scripts/tests/handoff-open-steps.test.sh
-    - name: "[secret-and-policy-hooks] Handoff listing avoids per-thread stat subprocesses"
-      id: t_secret_and_policy_hooks__34
-      if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__33.outcome == 'success' }}"
-      run: bash core/scripts/tests/handoff-open-steps-stat-scaling.test.sh
-    - name: "[secret-and-policy-hooks] Handoff benchmark fails when measurement setup fails"
-      id: t_secret_and_policy_hooks__35
-      if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__34.outcome == 'success' }}"
-      run: bash core/scripts/tests/handoff-open-steps-stat-scaling-bench.test.sh
     - name: "[secret-and-policy-hooks] Policy delivery benchmark (live + scenarios)"
       id: t_secret_and_policy_hooks__36
-      if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__35.outcome == 'success' }}"
+      if: "${{ !cancelled() && steps.t_secret_and_policy_hooks__31.outcome == 'success' }}"
       run: bash core/scripts/tests/policy-benchmark.test.sh
     - name: "[secret-and-policy-hooks] Live runtime smoke (skips when no runtime CLI is installed on the runner)"
       id: t_secret_and_policy_hooks__37

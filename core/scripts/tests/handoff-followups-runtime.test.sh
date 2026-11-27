@@ -2,16 +2,13 @@
 # Regression coverage for durable, cross-runtime handoff follow-ups.
 #
 # Agent/Task/Skill dispatch is an instruction-surface contract, so the runtime
-# selection and failure warning are verified structurally. The durable handoff
-# and detached post-script behavior are exercised in an isolated repository.
+# selection, installed-skill gate, and failure warning are verified structurally.
+# Native handoff finalize/post runtime behavior is covered in hq-cli.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SKILL="$ROOT/.claude/skills/handoff/SKILL.md"
-source "$ROOT/core/scripts/tests/lib/handoff-post-test-helpers.sh"
-TMP_ROOT=$(mktemp -d)
-trap 'rm -rf "$TMP_ROOT"' EXIT
 
 fail() {
   echo "FAIL: $*" >&2
@@ -40,7 +37,7 @@ grep -q 'Claude Code:.*`Task` or `Agent`' "$SKILL" \
 grep -q 'Skill.*synchronously' "$SKILL" \
   || fail "synchronous Skill fallback missing"
 grep -q -- '--learnings-json-file "{learnings_file path from Step 2}"' "$SKILL" \
-  || fail "handoff-finalize does not receive the Step 2 learnings file"
+  || fail "handoff run does not receive the Step 2 learnings file"
 if sed -n '/^### 3\./,/^### 4\./p' "$SKILL" | grep -q 'rm -f.*learnings_file'; then
   fail "Step 3 removes the Step 2 learnings file before Step 4.5"
 fi
@@ -52,104 +49,17 @@ grep -q 'Run exactly: /document-release {thread_path}' "$SKILL" \
   || fail "manual document-release recovery command missing"
 grep -q 'skill-installed.sh document-release' "$SKILL" \
   || fail "document-release follow-up does not check the installed skill catalog"
+grep -q 'document-release: skipped (skill not installed)' "$SKILL" \
+  || fail "missing document-release skill skip label absent"
 grep -q 'Only when document-release is installed' "$SKILL" \
   || fail "document-release dispatch and recovery must require the installed skill"
+grep -q 'omit the document-release recovery entry and command' "$SKILL" \
+  || fail "missing skill must suppress its Run exactly recovery command"
 grep -q 'Run applicable follow-ups sequentially in this order: `/learn` first, then `/document-release`; wait for each result before starting the next' "$SKILL" \
   || fail "handoff follow-ups must run one at a time in a documented order"
 grep -q 'tell the user a rough expected duration for the applicable work' "$SKILL" \
   || fail "handoff must show a rough expected duration before dispatch"
 grep -qi 'label it as an estimate, not a promise' "$SKILL" \
   || fail "handoff duration must be labeled as an estimate"
-
-mkdir -p "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/workspace/baseline" \
-  "$TMP_ROOT/repo/workspace/threads" "$TMP_ROOT/repo/workspace/orchestrator" \
-  "$TMP_ROOT/repo/core/scripts/lib" "$TMP_ROOT/repo/.claude/skills/document-release" \
-  "$TMP_ROOT/logs"
-cp "$ROOT/core/scripts/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
-cp "$ROOT/core/scripts/lib/session-id.sh" "$TMP_ROOT/repo/core/scripts/lib/session-id.sh"
-cp "$ROOT/core/scripts/handoff-post.sh" "$TMP_ROOT/repo/core/scripts/handoff-post.sh"
-cp "$ROOT/core/scripts/skill-installed.sh" "$TMP_ROOT/repo/core/scripts/skill-installed.sh"
-cp "$ROOT/core/scripts/lib/session-skill-catalog.sh" "$TMP_ROOT/repo/core/scripts/lib/session-skill-catalog.sh"
-cp "$ROOT/core/scripts/hq-status-summary.sh" "$TMP_ROOT/repo/core/scripts/hq-status-summary.sh"
-cp "$ROOT/core/scripts/lib/forwarder.sh" "$TMP_ROOT/repo/core/scripts/lib/forwarder.sh"
-cp "$ROOT/core/scripts/lib/hq-cli-floor.sh" "$TMP_ROOT/repo/core/scripts/lib/hq-cli-floor.sh"
-cat > "$TMP_ROOT/repo/.claude/skills/document-release/SKILL.md" <<'MD'
----
-name: document-release
-description: Fixture release documentation skill.
----
-MD
-# Keep the fixture finalizer's legacy fixed /tmp paths inside this test's temp root.
-sed \
-  -e "s|/tmp/handoff-git-bg.pid|$TMP_ROOT/handoff-git-bg.pid|g" \
-  -e "s|/tmp/handoff-git-bg.log|$TMP_ROOT/handoff-git-bg.log|g" \
-  -e "s|/tmp/qmd-handoff.log|$TMP_ROOT/qmd-handoff.log|g" \
-  "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh" > "$TMP_ROOT/handoff-finalize.sh"
-mv "$TMP_ROOT/handoff-finalize.sh" "$TMP_ROOT/repo/core/scripts/handoff-finalize.sh"
-cat > "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-chmod +x "$TMP_ROOT/repo/core/scripts/qmd-reindex-bg.sh"
-
-cat > "$TMP_ROOT/repo/core/scripts/archive-old-threads.sh" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-cat > "$TMP_ROOT/repo/core/scripts/rebuild-threads-index.sh" <<'SH'
-#!/usr/bin/env bash
-mkdir -p workspace/threads
-echo "# Threads" > workspace/threads/INDEX.md
-echo "- recent" > workspace/threads/recent.md
-SH
-cat > "$TMP_ROOT/repo/core/scripts/rebuild-orchestrator-index.sh" <<'SH'
-#!/usr/bin/env bash
-mkdir -p workspace/orchestrator
-echo "# Orchestrator" > workspace/orchestrator/INDEX.md
-SH
-chmod +x "$TMP_ROOT/repo/core/scripts/"*.sh
-
-cat > "$TMP_ROOT/repo/workspace/baseline/hq-local-baseline.json" <<'JSON'
-{"categories":[{"name":"baseline","patterns":["workspace/*"]}]}
-JSON
-
-(
-  cd "$TMP_ROOT/repo"
-  git init -q
-  git config user.email test@example.com
-  git config user.name "Handoff Follow-ups Test"
-  mkdir -p companies/acme/knowledge
-  echo "release candidate" > companies/acme/knowledge/release-note.md
-  git add core/scripts workspace/baseline companies
-  git commit -qm "base"
-
-  learnings='[{"type":"rule","content":"ALWAYS: retain handoff learnings before dispatch","scope":"global","source":"test"}]'
-  printf '%s\n' "$learnings" > "$TMP_ROOT/learnings.json"
-  out=$(HQ_ROOT="$TMP_ROOT/repo" PATH=/usr/bin:/bin bash core/scripts/handoff-finalize.sh \
-    --title "Handoff: runtime follow-ups" \
-    --summary "Exercise durable pending follow-ups" \
-    --message "runtime follow-ups" \
-    --next-steps-json '[]' \
-    --files-touched-json '["companies/acme/knowledge/release-note.md"]' \
-    --learnings-json-file "$TMP_ROOT/learnings.json" \
-    --tags-json '["test"]' \
-    --slug "runtime-followups")
-
-  thread_path=$(jq -r '.thread_path' <<<"$out")
-  [[ -f "$thread_path" ]] || fail "finalizer did not write a durable thread"
-  jq -e --argjson expected "$learnings" '.learnings == $expected' "$thread_path" >/dev/null \
-    || fail "collected learnings were not made durable before dispatch"
-
-  handoff_post_test_run "$TMP_ROOT/repo" "$thread_path" "$TMP_ROOT/learnings.json" \
-    HQ_ACTIVE_COMPANY=acme HANDOFF_LOG_DIR="$TMP_ROOT/logs" PATH=/usr/bin:/bin
-)
-
-grep -q 'learn: eligible and pending runtime dispatch.*no dispatch proof' "$TMP_ROOT/logs/handoff-post.log" \
-  || fail "unproved learn dispatch was not marked pending"
-grep -q 'document-release: eligible and pending runtime dispatch.*no dispatch proof' "$TMP_ROOT/logs/handoff-post.log" \
-  || fail "unproved document-release dispatch was not marked pending"
-if grep -qi 'delegated' "$TMP_ROOT/logs/handoff-post.log"; then
-  fail "post-script falsely claimed delegation after forced no-dispatch runtime"
-fi
 
 echo "handoff follow-ups runtime: ok"

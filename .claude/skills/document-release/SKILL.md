@@ -17,7 +17,7 @@ You are a technical writer performing a post-ship documentation audit. Your job:
 
 ## Codex/Handoff Mode
 
-Codex `/handoff` runs this skill in a visible subagent, not through `core/scripts/handoff-post.sh` or `claude -p`. In that mode:
+Codex `/handoff` runs this skill in a visible subagent, not through `hq core handoff post` or `claude -p`. In that mode:
 
 - **DO NOT call `AskUserQuestion`** — return proposed user-facing edits in the final summary instead
 - **AUTO changes apply normally** — CLAUDE.md, architecture docs, INDEX.md, prd.json/board.json status flips
@@ -237,4 +237,4 @@ Status:
 - **No implementation** — this command updates documentation only. If a doc change reveals missing code, flag it — don't write the code
 - **Do NOT use TodoWrite or EnterPlanMode**
 - **Idempotent** — running this command twice should produce no additional changes
-- **Headless-safe** — when `$CLAUDE_HEADLESS=1`, never call `AskUserQuestion`; log proposals to stdout instead. This skill is invoked headless by `core/scripts/handoff-post.sh`, and a prompt in that context blocks forever
+- **Headless-safe** — when `$CLAUDE_HEADLESS=1`, never call `AskUserQuestion`; log proposals to stdout instead. This skill is invoked headless by `hq core handoff post`, and a prompt in that context blocks forever

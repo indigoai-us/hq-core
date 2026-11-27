@@ -134,8 +134,7 @@ expect_allow "unrelated tool ignored"        "$(jq -nc '{tool_name:"Read", tool_
 # not add it to the list; fragment the literal in that file instead.
 EXPECTED_SELF_BLOCKING="core/hook-tests/detect-secrets.yaml
 core/scripts/tests/derive-trigger-facts-synthetic.test.sh
-core/scripts/tests/fixtures/jobs/invalid/inline-secret-in-requirements.yaml
-core/scripts/tests/hq-delegate-publish.test.sh"
+core/scripts/tests/fixtures/jobs/invalid/inline-secret-in-requirements.yaml"
 
 # Coarse prefilter (a superset of the real patterns) keeps this to a handful of
 # hook invocations instead of one per tracked file; the hook itself is the

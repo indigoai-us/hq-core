@@ -15,7 +15,7 @@
 #               one company's deficiencies never reach another's retro.
 # --out         where to write a synthetic thread file
 #               ({thread_id, deficiencies, system_info}) that
-#               handoff-autofile.sh and handoff-builder-route.sh accept via
+#               `hq core handoff autofile` and `hq core handoff builder-route` accept via
 #               --thread. system_info is taken from the newest thread that
 #               has one. Without --out the merged array goes to stdout.
 #

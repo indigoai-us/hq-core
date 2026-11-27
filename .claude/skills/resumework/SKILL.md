@@ -1,7 +1,7 @@
 ---
 name: resumework
 description: "Resume a specific handoff thread by id. For the latest handoff use /startwork."
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(bash core/scripts/handoff-sync-prefetch.sh:*), Bash(bash core/scripts/resumework-resolve.sh:*), Bash(session_id="$(bash core/scripts/hq-session.sh:*), Bash(lock_json="$(bash core/scripts/resume-thread-lock.sh:*), Bash(if bash core/scripts/resume-thread-lock.sh:*), Bash(hq core handoff open-steps:*), Bash, AskUserQuestion
+allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(qmd:*), Bash(ls:*), Bash(find:*), Bash(jq:*), Bash(cat:*), Bash(core/scripts/hq-session.sh:*), Bash(source core/scripts/lib/hq-cli-floor.sh:*), Bash(hq_cli_floor_check:*), Bash(bash core/scripts/resume-thread-lock.sh:*), Bash(hq core handoff-sync-prefetch:*), Bash(bash core/scripts/resumework-resolve.sh:*), Bash(session_id="$(bash core/scripts/hq-session.sh:*), Bash(lock_json="$(bash core/scripts/resume-thread-lock.sh:*), Bash(if bash core/scripts/resume-thread-lock.sh:*), Bash(hq core handoff open-steps:*), Bash, AskUserQuestion
 ---
 
 # Resume Work From a Thread
@@ -15,6 +15,14 @@ Targeted resume. Unlike `/startwork` (which peeks at `handoff.json` for the *lat
 - A `/handoff` report gave you a thread id (`T-YYYYMMDD-HHMMSS-slug`) and you want to pick that work back up later.
 - You want to resume a session that is **not** the most recent handoff (so `/startwork`'s "Resume last session" would load the wrong one).
 - You're continuing real work — not auditing a crashed session. For a post-mortem of a wedged session, use `/recover-session` instead.
+
+Requires hq-cli 5.345.263 or newer so native `hq core handoff-sync-prefetch` keeps a newer local `handoff.json` pointer when a vault pull lands an older or invalid copy. Check the installed version before prefetching or resolving a thread:
+
+```bash
+source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check resumework 5.345.263
+```
+
+If the check fails, stop. Upgrade hq-cli to 5.345.263 or newer with `npm install -g @indigoai-us/hq-cli@latest`, then retry.
 
 ## Process
 
@@ -31,7 +39,7 @@ The argument is a thread id, with or without the `.json` suffix, and may be a pa
 It never searches another company. With no company bound, only step 1 runs. If the vault step reports an error (logged out, offline), say so and suggest `/hq-login` or `/hq-sync`.
 
 ```bash
-bash core/scripts/handoff-sync-prefetch.sh || true
+hq core handoff-sync-prefetch || true
 
 arg="$ARGUMENTS"                       # e.g. T-20260625-084414-files-acl-grant-timeout
 id="${arg%.json}"; id="${id##*/}"      # strip .json and any leading path

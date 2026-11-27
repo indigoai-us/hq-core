@@ -82,6 +82,35 @@ deny.
 5. **Fail closed.** If `settings.json` is missing or unparseable, adapters fall
    back to a hardcoded critical-guard set rather than running zero guards.
 
+## Native hook engine (`hq-hook`)
+
+When the `core.next` flag is enabled and the compiled `hq-hook` binary is
+installed under `~/.hq/bin/hq-hook/stable/`, `hq reindex` can switch supported
+hook events per host from shell wrappers to direct engine calls:
+
+```text
+~/.hq/bin/hq-hook/stable/hq-hook run --host <claude|codex|grok> <Event> --hq-root <root>
+```
+
+- **Per-event switching.** `hq reindex` queries `hq-hook capabilities --json`
+  and switches an event only when every required evaluator—including
+  `master-hook:<Event>` and any host adapter work—is claimed for that host and
+  the workspace's hook files match the engine's pinned revisions. Unclaimed
+  events or customized roots stay on the shell dispatcher automatically.
+- **Custom folder hooks.** Personal, pack, and company hooks under
+  `personal/hooks/`, `core/packages/*/hooks/`, and `companies/*/hooks/`
+  continue to run as external commands after the native evaluators, keeping the
+  same order, stdin bytes, and timeout limits.
+- **Kill switches and switching back.** To bypass the native engine immediately
+  without reindexing, set `HQ_CORE_NEXT=off` (or create
+  `~/.hq/state/core-next.off`) for direct registrations, or set
+  `HQ_HOOK_ENGINE=off` (or create `~/.hq/hook-engine.off`) to disable the
+  engine across both direct registrations and per-hook bridging. In either case
+  `hq-hook` hands the event back to `master-hook.sh` or the host adapter. To
+  rewrite host configuration files back to the shell dispatcher, turn
+  `core.next` off and run `hq reindex`. Run `hq doctor` to inspect which core
+  each host and event currently calls.
+
 ## Google Antigravity
 
 Antigravity has its own hooks API (`SessionStart`, `PreToolUse`,

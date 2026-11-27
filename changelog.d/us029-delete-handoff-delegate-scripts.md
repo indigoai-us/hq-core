@@ -1,0 +1,1 @@
+Changed (US-029): raised `requiresHqCli` in `core/core.yaml` to `>=5.345.263`, deleted the retired bash handoff (`handoff-*.sh`) and delegate (`hq-delegate-*.sh`, `lib/delegate-*.sh`) scripts, and switched remaining skill callers to the native `hq core handoff` and `hq core delegate` commands with a `5.345.263` per-skill CLI version check.

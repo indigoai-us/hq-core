@@ -5,6 +5,15 @@ Newest release first.
 Runner examples use `hq runners`, introduced in hq-cli 5.345.210. Releases
 before that use the original `hq lanes` spelling for the same subcommands.
 
+## Release: v16.0.53-beta.4
+
+- Upgrade required: this release needs `hq-cli` `5.345.263` or newer
+  (`requiresHqCli: ">=5.345.263"`). `/update-hq` upgrades the CLI before
+  applying the release; for manual updates, run
+  `npm install -g @indigoai-us/hq-cli@latest`. The retired `handoff-*.sh`,
+  `hq-delegate-*.sh`, and `lib/delegate-*.sh` scripts are removed in favor of
+  the native `hq core handoff` and `hq core delegate` commands.
+
 ## Release: v16.0.51-beta.13
 
 - No action needed. `/super-conductor` runs named conductors. Each one has a

@@ -1,0 +1,64 @@
+{
+  "nightly_only": "These cases wait out a real per-child timeout (1 s limit) in whatever engine runs them, including native hq-hook, so they run nightly and never on pull requests.",
+  "schema_version": "hq-hook-contract.v1",
+  "cases": [
+    {
+      "id": "per-child-timeout-continues",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "too late",
+          "exit": 0,
+          "sleep": 3
+        },
+        {
+          "output": "survivor",
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 124,
+        "text": "survivor\n"
+      },
+      "childTimeout": 1
+    },
+    {
+      "id": "blocking-event-child-keeps-the-blocking-limit",
+      "event": "PreToolUse",
+      "children": [
+        {
+          "output": "slow guard finished",
+          "exit": 0,
+          "sleep": 1.5
+        }
+      ],
+      "expected": {
+        "exit": 0,
+        "text": "slow guard finished\n"
+      },
+      "childTimeout": 1,
+      "blockingChildTimeout": 10
+    },
+    {
+      "id": "non-blocking-event-child-keeps-the-child-timeout",
+      "event": "PostToolUse",
+      "children": [
+        {
+          "output": "too late",
+          "exit": 0,
+          "sleep": 3
+        },
+        {
+          "output": "survivor",
+          "exit": 0
+        }
+      ],
+      "expected": {
+        "exit": 124,
+        "text": "survivor\n"
+      },
+      "childTimeout": 1,
+      "blockingChildTimeout": 10
+    }
+  ]
+}

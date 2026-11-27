@@ -68,13 +68,10 @@ test('unbalanced quotes, prose, comments and data are left alone', () => {
   assert.equal(rewriteLine('# bash core/scripts/hq-pin.sh check').line, '# hq core pin check');
 });
 
-test('hooks and the handoff-finalize helper are listed as held, not rewritten', () => {
+test('hooks are listed as held, not rewritten', () => {
   const hook = rewriteLine('  bash core/scripts/worktree.sh --name x', { file: '.claude/hooks/block-on-active-run.sh', shell: true });
   assert.equal(hook.line, '  bash core/scripts/worktree.sh --name x');
   assert.equal(hook.hits[0].action, 'held');
-  const handoff = rewriteLine('bash core/scripts/handoff-finalize.sh --summary x', { file: '.claude/skills/handoff/SKILL.md' });
-  assert.equal(handoff.line, 'bash core/scripts/handoff-finalize.sh --summary x');
-  assert.equal(handoff.hits[0].action, 'held');
 });
 
 test('helper paths kept in a variable are reported for a hand fix', () => {
@@ -196,7 +193,6 @@ test('--apply rewrites tracked callers, --check passes after it, out-of-scope fi
 test('helper modes the twin gained in 5.345.228 move to hq core', () => {
   for (const [line, moved] of [
     ['  bash core/scripts/register-project.sh --board {co} {board-project-id}', '  hq core register-project --board {co} {board-project-id}'],
-    ['bash core/scripts/hq-delegate-send.sh --manifest <manifest> --reconcile <eventId>', 'hq core delegate send --manifest <manifest> --reconcile <eventId>'],
   ]) {
     const result = rewriteLine(line, { file: '.claude/skills/demo/SKILL.md' });
     assert.equal(result.line, moved);
@@ -216,10 +212,10 @@ test('a direct hq core call of a newer helper mode is found', async () => {
   const { MODE_FLOORS, modeCalls } = await import('../ci/rewrite-core-callers.mjs');
   assert.deepEqual(MODE_FLOORS.map((mode) => [mode.command, mode.flag, mode.minCli]), [
     ['register-project', '--board', '5.345.228'],
-    ['delegate send', '--reconcile', '5.345.228'],
+    ['delegate send', '--reconcile', '5.345.263'],
   ]);
   assert.deepEqual(modeCalls('  hq core register-project --board {co} {id}\n', 'x.md'), [{ line: 1, command: 'register-project', flag: '--board', minCli: '5.345.228' }]);
-  assert.deepEqual(modeCalls('ok\nx="$(hq core --hq-root "$R" delegate  send --manifest m --reconcile e)"', 'x.sh'), [{ line: 2, command: 'delegate send', flag: '--reconcile', minCli: '5.345.228' }]);
+  assert.deepEqual(modeCalls('ok\nx="$(hq core --hq-root "$R" delegate  send --manifest m --reconcile e)"', 'x.sh'), [{ line: 2, command: 'delegate send', flag: '--reconcile', minCli: '5.345.263' }]);
   // No flag, a longer word, a permission pattern and a shell comment are not mode calls.
   for (const [line, file] of [
     ['hq core register-project acme demo', 'x.md'],
@@ -257,59 +253,90 @@ test('--check fails when a caller runs a helper mode newer than the install floo
   }
 });
 
-// US-029: /handoff runs `hq core handoff run` and `hq core handoff archive-decision`.
-// Neither has a single helper twin, so COMMAND_FLOORS holds their first
-// release (hq-cli #2839, tag v5.345.228; absent in 5.345.226) and --check
-// fails when the install floor is below it.
+// US-029: every handoff and delegate command whose bash script was deleted
+// carries a 5.345.263 floor in COMMAND_FLOORS, and --check fails when a caller
+// runs one above the install floor without a preceding per-skill floor check.
 test('hq core commands without a helper twin carry a floor', async () => {
   const { COMMAND_FLOORS, commandCalls } = await import('../ci/rewrite-core-callers.mjs');
   assert.ok(Array.isArray(COMMAND_FLOORS), 'COMMAND_FLOORS is exported');
   assert.deepEqual(COMMAND_FLOORS.map((entry) => [entry.command, entry.minCli]), [
-    ['handoff run', '5.345.228'],
-    ['handoff archive-decision', '5.345.228'],
+    ['handoff run', '5.345.263'],
+    ['handoff finalize', '5.345.263'],
+    ['handoff post', '5.345.263'],
+    ['handoff open-steps', '5.345.263'],
+    ['handoff archive-decision', '5.345.263'],
+    ['handoff pointer-company', '5.345.263'],
+    ['handoff builder-route', '5.345.263'],
+    ['handoff autofile', '5.345.263'],
+    ['handoff-knowledge-commit', '5.345.263'],
+    ['handoff-sync-prefetch', '5.345.263'],
+    ['handoff-sync-publish', '5.345.263'],
+    ['delegate run', '5.345.263'],
+    ['delegate bundle', '5.345.263'],
+    ['delegate grant', '5.345.263'],
+    ['delegate pickup', '5.345.263'],
+    ['delegate publish', '5.345.263'],
+    ['delegate repo', '5.345.263'],
+    ['delegate resolve', '5.345.263'],
+    ['delegate secrets', '5.345.263'],
+    ['delegate send', '5.345.263'],
+    ['delegate transfer', '5.345.263'],
+    ['delegate verify', '5.345.263'],
   ]);
-  assert.deepEqual(commandCalls('hq core handoff run \\\n  --thread x\n', 'x.md'), [{ line: 1, command: 'handoff run', minCli: '5.345.228' }]);
+  assert.deepEqual(commandCalls('hq core handoff run \\\n  --thread x\n', 'x.md'), [{ line: 1, command: 'handoff run', minCli: '5.345.263' }]);
   assert.deepEqual(
     commandCalls('ok\nx="$(hq core --hq-root "$R" handoff  archive-decision --root "$PWD")"', 'x.sh'),
-    [{ line: 2, command: 'handoff archive-decision', minCli: '5.345.228' }],
+    [{ line: 2, command: 'handoff archive-decision', minCli: '5.345.263' }],
   );
-  assert.deepEqual(commandCalls('Only after `hq core handoff run` succeeds.', 'x.md'), [{ line: 1, command: 'handoff run', minCli: '5.345.228' }]);
-  // Permission patterns, shell comments, longer words and other handoff commands are not calls.
+  assert.deepEqual(commandCalls('Only after `hq core handoff run` succeeds.', 'x.md'), [{ line: 1, command: 'handoff run', minCli: '5.345.263' }]);
+  // Permission patterns, shell comments, and longer words are not calls.
   for (const [line, file] of [
     ['allowed-tools: Bash(hq core handoff run:*), Bash(hq core handoff archive-decision:*)', 'x.md'],
     ['# hq core handoff run', 'x.sh'],
     ['hq core handoff runner', 'x.md'],
-    ['hq core handoff open-steps list', 'x.md'],
     ['uhq core handoff run', 'x.md'],
   ]) {
     assert.deepEqual(commandCalls(line, file), [], line);
   }
-  const floor = installFloor(fileURLToPath(new URL('../../..', import.meta.url)));
-  for (const entry of COMMAND_FLOORS) {
-    assert.ok(compareVersions(entry.minCli, floor) <= 0, `hq core ${entry.command} ${entry.minCli} > install floor ${floor}`);
-  }
 });
 
-test('--check fails when a caller runs a handoff command newer than the install floor', () => {
+test('--check fails when a caller runs a handoff command newer than the install floor without a per-skill floor check', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rewrite-core-callers-command-'));
   try {
     const put = (file, text) => {
       fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
       fs.writeFileSync(path.join(root, file), text);
     };
-    put('core/core.yaml', 'requiresHqCli: ">=5.345.221"\n');
-    put('.claude/skills/handoff/SKILL.md', 'allowed-tools: Bash(hq core handoff run:*)\n\n```bash\nhq core handoff open-steps list\n```\n');
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.234"\n');
+    put('.claude/skills/handoff/SKILL.md', 'allowed-tools: Bash(hq core handoff run:*)\n\n```bash\nhq core archive-old-threads\n```\n');
     execFileSync('git', ['-C', root, 'init', '-q']);
     execFileSync('git', ['-C', root, 'add', '.']);
     const check = () => spawnSync(process.execPath, [SCRIPT, '--check', '--root', root], { encoding: 'utf8' });
-    // A permission pattern alone and an older handoff command pass.
+    // A permission pattern alone and an older command pass.
     assert.equal(check().status, 0);
+    // Without a per-skill floor check, 5.345.263 commands fail against 5.345.234.
     put('.claude/skills/handoff/SKILL.md', 'Run:\n\n```bash\nhq core handoff run \\\n  --thread x\nhq core handoff archive-decision --root "$PWD"\n```\n');
     let result = check();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /\.claude\/skills\/handoff\/SKILL\.md:4 runs hq core handoff run, which needs hq-cli 5\.345\.228, above requiresHqCli 5\.345\.221/);
-    assert.match(result.stderr, /\.claude\/skills\/handoff\/SKILL\.md:6 runs hq core handoff archive-decision, which needs hq-cli 5\.345\.228, above requiresHqCli 5\.345\.221/);
-    put('core/core.yaml', 'requiresHqCli: ">=5.345.228"\n');
+    assert.match(result.stderr, /\.claude\/skills\/handoff\/SKILL\.md:4 runs hq core handoff run, which needs hq-cli 5\.345\.263, above requiresHqCli 5\.345\.234/);
+    assert.match(result.stderr, /\.claude\/skills\/handoff\/SKILL\.md:6 runs hq core handoff archive-decision, which needs hq-cli 5\.345\.263, above requiresHqCli 5\.345\.234/);
+    // A per-skill floor check below 5.345.263 still fails.
+    put('.claude/skills/handoff/SKILL.md', '```bash\nsource core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check handoff 5.345.259\n```\n\n```bash\nhq core handoff run\n```\n');
+    result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /handoff run, which needs hq-cli 5\.345\.263/);
+    // A per-skill floor check placed AFTER the runnable call still fails.
+    put('.claude/skills/handoff/SKILL.md', '```bash\nhq core handoff run\n```\n\n```bash\nsource core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check handoff 5.345.263\n```\n');
+    result = check();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /handoff run, which needs hq-cli 5\.345\.263/);
+    // A per-skill 5.345.263 floor check placed BEFORE the runnable call passes.
+    put('.claude/skills/handoff/SKILL.md', '```bash\nsource core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check handoff 5.345.263\n```\n\n```bash\nhq core handoff run\nhq core handoff archive-decision --root "$PWD"\n```\n');
+    result = check();
+    assert.equal(result.status, 0, result.stderr);
+    // Raising requiresHqCli to 5.345.263 also satisfies the check without a per-skill guard.
+    put('.claude/skills/handoff/SKILL.md', 'Run:\n\n```bash\nhq core handoff run \\\n  --thread x\n```\n');
+    put('core/core.yaml', 'requiresHqCli: ">=5.345.263"\n');
     result = check();
     assert.equal(result.status, 0, result.stderr);
   } finally {

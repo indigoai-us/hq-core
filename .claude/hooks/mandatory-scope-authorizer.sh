@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hq-core: public
 # Mandatory company-scope authorizer — blocks cross-company filesystem access.
-# PreToolUse for Read, Grep, Glob, Bash, and (since 2026-09-07) Write, Edit,
+# PreToolUse for Read, Grep, Glob, Bash, PowerShell, and (since 2026-09-07) Write, Edit,
 # MultiEdit, NotebookEdit. Reads were guarded from the start; file mutations
 # through the editing tools were not, so a bound session could write into
 # another tenant's folder with the Write tool while the same path was blocked
@@ -2501,7 +2501,7 @@ scope_check_bash_glob_candidate() {
 }
 
 case "$TOOL" in
-  Read|Grep|Glob|Bash|Write|Edit|MultiEdit|NotebookEdit|Skill) ;;
+  Read|Grep|Glob|Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Skill) ;;
   *) exit 0 ;;
 esac
 
@@ -14896,6 +14896,984 @@ scope_inline_expansions_scan() {
   return 0
 }
 
+# >>> PowerShell tool checks
+# PowerShell tool. The command is PowerShell, not bash: a backtick is the
+# escape character, a quote is doubled to spell itself, here-strings are
+# @'...'@ and @"..."@, a parameter may carry its value after a colon
+# (-Path:C:\x), a path may be provider-qualified (FileSystem::C:\x), and a
+# backslash separates folders on every host. The Bash checks would misread
+# all of that, so this tool has its own, smaller check.
+#
+#   1. A command that runs or decodes text the guard cannot see is refused
+#      (-EncodedCommand, Invoke-Expression, [scriptblock]::Create, base64,
+#      character codes and escapes that spell a character by its code).
+#   2. Every word that can be a path is dequoted and checked like a file-tool
+#      path, from the payload cwd, from every literal Set-Location target and
+#      from every company folder the command names. Text inside a quoted
+#      string (a nested command line) is split and checked the same way.
+#   3. A wildcard, a recursive or whole-folder command, a listing piped into
+#      another command, a folder alias or a climb through an object's parent
+#      is refused when it starts at companies/, the HQ root or a folder above
+#      it while another company's folder exists.
+#   4. A command that holds something with no static value (a variable, a
+#      subexpression, string building, Join-Path, a splat, inline code for
+#      another interpreter) is refused when it names companies/ or the
+#      folder of a company the session may not open, or runs inside
+#      companies/. One that spells companies across quotes or operators is
+#      refused too.
+#
+# What this does not see: a path that comes from data the command does not
+# show, and a path whose every piece is assembled by code (in PowerShell or
+# in a nested interpreter) so that neither companies nor the company folder
+# name appears in the text. A command with variables that names no company
+# path is otherwise allowed.
+#
+# Everything here uses builtins; the only processes are the ones the shared
+# path checks start for each path word.
+
+SCOPE_PS_WORDS=()
+SCOPE_PS_SEGS=()
+SCOPE_PS_OPQ=()
+SCOPE_PS_OPAQUE=0
+SCOPE_PS_RESOLVE=1
+SCOPE_PS_HAS_CD=0
+SCOPE_PS_REC=0
+SCOPE_PS_BULK=0
+SCOPE_PS_PATHS=0
+SCOPE_PS_IN_CD=0
+SCOPE_PS_IN_ENUM=0
+SCOPE_PS_ENUM_REACH=0
+SCOPE_PS_ENUM_ROOTS=0
+SCOPE_PS_OPERANDS=0
+SCOPE_PS_BASES=()
+SCOPE_PS_FILTER_ARG=0
+SCOPE_PS_PWD_OK=0
+SCOPE_PS_GLOB=0
+SCOPE_PS_PSNAME=0
+SCOPE_PS_CD_TARGET=""
+SCOPE_PS_ENC_WORD_RE='^[-/]e(c|n|nc|nco|ncod|ncode|ncoded|ncodedc|ncodedco|ncodedcom|ncodedcomm|ncodedcomma|ncodedcomman|ncodedcommand)?$'
+
+scope_ps_refuse() { # <reason>
+  scope_block_rel "companies/(PowerShell command)" "$1"
+}
+
+# scope_ps_flatten <text>: SCOPE_PS_FLAT is <text> without the characters
+# that can sit between two pieces of one name (quotes, backticks, `+`,
+# blanks, brackets, commas, `$`, and the `\` and `^` a nested shell drops).
+scope_ps_flatten() {
+  local t="${1:-}"
+  if [ "${#t}" -lt 1024 ]; then
+    t="${t//[\"\'\`+(),\$\{\}^\\]/}"
+    t="${t//[[:space:]]/}"
+  else
+    t="$(printf '%sx' "$t" | LC_ALL=C tr -d '"'"'"'`+(),${}^\\ \t\n\r')"
+    t="${t%x}"
+  fi
+  SCOPE_PS_FLAT="$t"
+}
+
+# scope_ps_reach <absolute path>: SCOPE_PS_REACH is 2 for a path inside
+# companies/, 1 for companies/ itself, the HQ root or a folder above it
+# (SCOPE_PS_DEPTH: folders from there down to companies/), else 0. Compared
+# as text, letter case ignored.
+scope_ps_reach() {
+  local p="${1:-}" c="$HQ_ROOT/companies" rest
+  SCOPE_PS_REACH=0
+  SCOPE_PS_DEPTH=0
+  while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+  [ -n "$p" ] || return 0
+  shopt -s nocasematch
+  if [[ "$p" == "$c" ]]; then
+    SCOPE_PS_REACH=1
+  elif [[ "$p/" == "$c/"* ]]; then
+    SCOPE_PS_REACH=2
+  elif [ "$p" = / ] || [[ "$c/" == "$p/"* ]]; then
+    SCOPE_PS_REACH=1
+    rest="${c:${#p}}"
+    rest="${rest#/}"
+    SCOPE_PS_DEPTH=1
+    while [ "$rest" != "${rest#*/}" ]; do
+      rest="${rest#*/}"
+      SCOPE_PS_DEPTH=$((SCOPE_PS_DEPTH + 1))
+    done
+  fi
+  shopt -u nocasematch
+}
+
+# scope_ps_lex <command>: split the command into words with PowerShell
+# quoting removed. SCOPE_PS_WORDS holds the words, SCOPE_PS_SEGS the number
+# of the simple command each belongs to, SCOPE_PS_OPQ 1 for a word that
+# holds something with no static value. SCOPE_PS_OPAQUE is 1 when any word
+# does.
+scope_ps_lex() {
+  local rest="${1:-}" cur="" started=0 opq=0 soft=0 seg=0 carry="" ch c2 chunk body name q term keep n steps=0
+  local item_re='^[$]_([.][A-Za-z_][A-Za-z0-9_]*)*$'
+  local tick=$'\140' nl=$'\n'
+  local special=$'[ \t\n\'"`$;|&(){},=<>@]'
+  SCOPE_PS_WORDS=()
+  SCOPE_PS_SEGS=()
+  SCOPE_PS_OPQ=()
+  scope_ps_push() {
+    # The pipeline item, alone or with members ($_, $_.FullName), is a value
+    # an earlier command of the pipeline produced: its word is not checked,
+    # and it does not make the command unresolved. With anything else in the
+    # word it does.
+    if [ "$soft" -eq 1 ] && [[ ! "$cur" =~ $item_re ]]; then
+      SCOPE_PS_OPAQUE=1
+    fi
+    soft=0
+    if [ "$started" -eq 1 ]; then
+      n="${#SCOPE_PS_WORDS[@]}"
+      SCOPE_PS_WORDS[n]="$cur"
+      SCOPE_PS_SEGS[n]="$seg"
+      SCOPE_PS_OPQ[n]="$opq"
+      if [ -n "$carry" ]; then
+        # A backtick at the end of a line may join two lines into one word.
+        n="${#SCOPE_PS_WORDS[@]}"
+        SCOPE_PS_WORDS[n]="$carry$cur"
+        SCOPE_PS_SEGS[n]="$seg"
+        SCOPE_PS_OPQ[n]="$opq"
+      fi
+    fi
+    carry=""
+    cur=""
+    started=0
+    opq=0
+  }
+  scope_ps_opaque() {
+    opq=1
+    SCOPE_PS_OPAQUE=1
+  }
+  # A `$` was read; <rest> starts after it.
+  scope_ps_dollar() {
+    case "$rest" in
+      '('*)
+        scope_ps_opaque
+        cur+='$'
+        return 0
+        ;;
+      '{'*)
+        name="${rest#?}"
+        case "$name" in
+          *'}'*) name="${name%%\}*}"; rest="${rest:$((${#name} + 2))}" ;;
+          *) rest="" ;;
+        esac
+        ;;
+      [A-Za-z_?]*)
+        name="${rest%%[!A-Za-z0-9_:?]*}"
+        rest="${rest:${#name}}"
+        ;;
+      *)
+        cur+='$'
+        return 0
+        ;;
+    esac
+    case "$name" in
+      _|[Pp][Ss][Ii][Tt][Ee][Mm])
+        opq=1
+        soft=1
+        cur+='$_'
+        return 0
+        ;;
+    esac
+    # A member or an index after the name is an expression.
+    case "$rest" in .[A-Za-z_]*|'['*) scope_ps_opaque ;; esac
+    if [ "$SCOPE_PS_RESOLVE" -ne 1 ]; then
+      scope_ps_opaque
+      cur+="\$$name"
+      return 0
+    fi
+    shopt -s nocasematch
+    case "$name" in
+      home|env:userprofile)
+        if [ -n "${HOME:-}" ]; then cur+="$HOME"; else scope_ps_opaque; cur+="\$$name"; fi
+        ;;
+      pwd)
+        if [ "$SCOPE_PS_PWD_OK" -eq 1 ] && [ -n "${PAYLOAD_CWD:-}" ]; then
+          cur+="$PAYLOAD_CWD"
+        else
+          scope_ps_opaque
+          cur+="\$$name"
+        fi
+        ;;
+      null|true|false|pid|'?'|lastexitcode|psversiontable|erroractionpreference|progresspreference|verbosepreference|warningpreference|debugpreference|informationpreference|confirmpreference|whatifpreference)
+        cur+="_"
+        ;;
+      *)
+        scope_ps_opaque
+        cur+="\$$name"
+        ;;
+    esac
+    shopt -u nocasematch
+  }
+  while [ -n "$rest" ]; do
+    steps=$((steps + 1))
+    [ $((steps % 512)) -ne 0 ] || scope_enforce_check_budget
+    # shellcheck disable=SC2295
+    chunk="${rest%%$special*}"
+    if [ -n "$chunk" ]; then
+      cur+="$chunk"
+      started=1
+      rest="${rest:${#chunk}}"
+      continue
+    fi
+    ch="${rest:0:1}"
+    rest="${rest:1}"
+    case "$ch" in
+      ' '|$'\t'|','|'='|'<'|'>') scope_ps_push ;;
+      "$nl"|';'|'|'|'&'|'('|')'|'{'|'}')
+        scope_ps_push
+        seg=$((seg + 1))
+        ;;
+      "'")
+        started=1
+        while :; do
+          case "$rest" in
+            *"'"*) ;;
+            *) body="$rest"; rest=""; cur+="$body"; break ;;
+          esac
+          body="${rest%%\'*}"
+          cur+="$body"
+          rest="${rest:$((${#body} + 1))}"
+          # A nested shell would expand this.
+          case "$body" in *'$'[A-Za-z_\{\(]*|*'%'[A-Za-z_]*'%'*) scope_ps_opaque ;; esac
+          if [ "${rest:0:1}" = "'" ]; then
+            cur+="'"
+            rest="${rest:1}"
+          else
+            break
+          fi
+        done
+        ;;
+      '"')
+        started=1
+        while [ -n "$rest" ]; do
+          body="${rest%%[\"\`\$]*}"
+          cur+="$body"
+          rest="${rest:${#body}}"
+          [ -n "$rest" ] || break
+          c2="${rest:0:1}"
+          rest="${rest:1}"
+          case "$c2" in
+            '"')
+              if [ "${rest:0:1}" = '"' ]; then
+                cur+='"'
+                rest="${rest:1}"
+              else
+                break
+              fi
+              ;;
+            "$tick")
+              cur+="${rest:0:1}"
+              rest="${rest:1}"
+              ;;
+            '$') scope_ps_dollar ;;
+          esac
+        done
+        ;;
+      "$tick")
+        c2="${rest:0:1}"
+        rest="${rest:1}"
+        if [ "$c2" = "$nl" ]; then
+          keep=""
+          [ "$started" -eq 0 ] || keep="$cur"
+          scope_ps_push
+          carry="$keep"
+        else
+          cur+="$c2"
+          started=1
+        fi
+        ;;
+      '$')
+        started=1
+        scope_ps_dollar
+        ;;
+      '@')
+        case "$rest" in
+          "'$nl"*|"\"$nl"*)
+            # Here-string: text up to a line that starts with the closer.
+            q="${rest:0:1}"
+            rest="${rest:2}"
+            started=1
+            term="$nl$q@"
+            case "$rest" in
+              *"$term"*) body="${rest%%"$term"*}"; rest="${rest:$((${#body} + 3))}" ;;
+              *) body="$rest"; rest="" ;;
+            esac
+            cur+="$body"
+            case "$body" in *'$'[A-Za-z_\{\(]*|*'%'[A-Za-z_]*'%'*) scope_ps_opaque ;; esac
+            ;;
+          [A-Za-z_]*)
+            # A splat (@params) at the start of a word.
+            [ "$started" -eq 1 ] || scope_ps_opaque
+            cur+='@'
+            started=1
+            ;;
+          *)
+            cur+='@'
+            started=1
+            ;;
+        esac
+        ;;
+    esac
+  done
+  scope_ps_push
+}
+
+# scope_ps_head_kind <word>: SCOPE_PS_KIND for the first word of a simple
+# command: cd, enum (prints folder entries), pure (formats or filters
+# objects it is given), none (not a command name) or other.
+scope_ps_head_kind() {
+  local h="${1:-}"
+  SCOPE_PS_CD_TARGET=""
+  # cd.. and cd\ are functions PowerShell defines.
+  case "$h" in
+    [Cc][Dd]..) SCOPE_PS_KIND=cd; SCOPE_PS_CD_TARGET=".."; return 0 ;;
+    [Cc][Dd]'\'|[Cc][Dd]/) SCOPE_PS_KIND=cd; SCOPE_PS_CD_TARGET="/"; return 0 ;;
+  esac
+  h="${h##*[/\\]}"
+  shopt -s nocasematch
+  h="${h%.[Ee][Xx][Ee]}"
+  case "$h" in
+    ''|'$'*|-*|[0-9]*|'['*|.*|@*|'!'*) SCOPE_PS_KIND=none ;;
+    cd|chdir|sl|set-location|pushd|push-location|popd|pop-location) SCOPE_PS_KIND=cd ;;
+    get-childitem|gci|ls|dir|get-item|gi|resolve-path|rvpa|forfiles|tree) SCOPE_PS_KIND=enum ;;
+    select-object|select|sort-object|sort|format-table|ft|format-list|fl|format-wide|fw|measure-object|measure|out-string|out-host|out-null|group-object|group|where-object|where|'?'|write-host|write-output|echo|convertto-json|if|else|elseif|try|catch|finally|return|param|function|while|do) SCOPE_PS_KIND=pure ;;
+    *) SCOPE_PS_KIND=other ;;
+  esac
+  shopt -u nocasematch
+}
+
+# scope_ps_chain <path>: the checks a file-tool path gets, from the current
+# base (PAYLOAD_CWD and COMMAND_CWD).
+scope_ps_chain() {
+  local p="${1:-}"
+  [ -n "$p" ] || return 0
+  scope_block_if_names_owner_roots "$p" path
+  scope_check_skill_cache_path "$p" bash
+  scope_check_raw "$p"
+  case "$p" in
+    '~'*) ;;
+    /*) scope_check_cwd_abs "$p" ;;
+    *) case "${PAYLOAD_CWD:-}" in /*) scope_check_cwd_abs "${PAYLOAD_CWD%/}/$p" ;; esac ;;
+  esac
+  scope_check_tool_open_path "$p"
+  scope_win_check_drive_root_readings "$p" file
+}
+
+# scope_ps_path_word <word>: SCOPE_PS_PATH is the path the word spells in
+# the shell's spelling, or empty when the word cannot be a path.
+scope_ps_path_word() {
+  local p="${1:-}" pre lead
+  SCOPE_PS_PATH=""
+  SCOPE_PS_GLOB=0
+  case "$p" in
+    -*:?*) p="${p#*:}" ;;
+    -*[./\\~]*)
+      pre="${p%%[./\\~]*}"
+      p="${p#"$pre"}"
+      ;;
+    -*) return 0 ;;
+  esac
+  [ -n "$p" ] || return 0
+  shopt -s nocasematch
+  case "$p" in
+    microsoft.powershell.core\\filesystem::*) p="${p#*::}" ;;
+    filesystem::*) p="${p#*::}" ;;
+  esac
+  case "$p" in
+    file:*%[0-9a-f][0-9a-f]*)
+      shopt -u nocasematch
+      scope_ps_refuse "a file: address with percent-encoded characters cannot be read; spell the path itself"
+      ;;
+    file:///[a-z]:*) p="${p:8}" ;;
+    file://*) p="${p:7}" ;;
+  esac
+  shopt -u nocasematch
+  case "$p" in
+    [A-Za-z][A-Za-z0-9+.-]*://*) return 0 ;;
+    '['*']'|'['*']::'*) case "$p" in */*|*'\'*) ;; *) return 0 ;; esac ;;
+  esac
+  # One bracket pair and nothing else ([y/n], [1/3]) matches one character.
+  case "$p" in
+    '['*']'*']'*|'['*'['*) ;;
+    '['*']') return 0 ;;
+  esac
+  # A switch such as /c or /s, not the root of a drive.
+  case "$p" in /[A-Za-z?]) return 0 ;; esac
+  scope_trim_tool_path "$p"
+  p="$SCOPE_TRIMMED"
+  [ -n "$p" ] || return 0
+  lead=0
+  case "$p" in
+    */*|*'\'*|[A-Za-z]:*|'~'*|.|..|*[*?[]*) lead=1 ;;
+    [Cc][Oo][Mm][Pp][Aa][Nn]*) lead=1 ;;
+  esac
+  # A bare name that is a link in the working folder opens its target.
+  if [ "$lead" -eq 0 ] && [ -L "${PAYLOAD_CWD:-.}/$p" ]; then lead=1; fi
+  if [ "$lead" -eq 0 ]; then
+    # A bare name is an entry of the working folder: in companies/ it is a
+    # company folder. (Inside a company it stays in that company unless it
+    # is a link, which is read above.)
+    scope_tool_open_path .
+    scope_ps_reach "$SCOPE_OPEN_PATH"
+    if [ "$SCOPE_PS_REACH" -eq 1 ] && [ "$SCOPE_PS_DEPTH" -eq 0 ]; then
+      lead=1
+    fi
+  fi
+  [ "$lead" -eq 1 ] || return 0
+  if [ "$SCOPE_WIN_HOST" -eq 1 ]; then
+    scope_win_field "$p"
+    p="$SCOPE_WIN_PATH"
+  else
+    # PowerShell reads a backslash as a separator on every host.
+    p="${p//\\//}"
+  fi
+  scope_case_fold_text "$p"
+  SCOPE_PS_PATH="$SCOPE_CASE_TEXT"
+  # A wildcard: `*`, `?`, or a bracket pair inside one segment. A bracket
+  # that closes in a later segment ([1/3], [y/n]) is ordinary text.
+  case "$SCOPE_PS_PATH" in
+    *[*?]*) SCOPE_PS_GLOB=1 ;;
+    *'['*)
+      pre="$SCOPE_PS_PATH"
+      while :; do
+        case "${pre%%/*}" in *'['*']'*) SCOPE_PS_GLOB=1; break ;; esac
+        [ "$pre" != "${pre#*/}" ] || break
+        pre="${pre#*/}"
+      done
+      ;;
+  esac
+}
+
+# scope_ps_check_word <word> <opaque 0|1>: check one candidate word from the
+# current base.
+scope_ps_check_word() {
+  local w="${1:-}" p dir tail n rest pre cpath thead trest k reach_tail
+  [ -n "$w" ] || return 0
+  # -EncodedCommand as its own word, however it was quoted or listed.
+  if [ "$SCOPE_PS_PSNAME" -eq 1 ]; then
+    shopt -s nocasematch
+    if [[ "${w//^/}" =~ $SCOPE_PS_ENC_WORD_RE ]]; then
+      shopt -u nocasematch
+      scope_ps_refuse "an encoded PowerShell command (-EncodedCommand) cannot be read; pass the command as plain text"
+    fi
+    shopt -u nocasematch
+  fi
+  # A path behind a one-character prefix (curl -d @../x).
+  case "$w" in
+    [@+!%#][./\\~]*) scope_ps_check_word "${w:1}" ;;
+  esac
+  # A companies/ path after a prefix the guard does not know (/I:companies\x)
+  # is checked from the name on.
+  pre="${w%%[Cc][Oo][Mm][Pp][Aa][Nn]*}"
+  if [ "$pre" != "$w" ] && [ -n "$pre" ]; then
+    case "$pre" in
+      */|*'\') ;;
+      *) scope_ps_check_word "${w:${#pre}}" ;;
+    esac
+  fi
+  # A path after a prefix and a colon (HEAD:../x, /out:..\\x).
+  case "$w" in
+    [A-Za-z]:*) ;;
+    ?*:*[/\\]*)
+      pre="${w#*:}"
+      scope_ps_check_word "$pre"
+      # A drive the command named itself (XX:/a/b) may be rooted anywhere.
+      while :; do
+        case "$pre" in /*|'\'*) pre="${pre:1}" ;; *) break ;; esac
+      done
+      [ "$pre" = "${w#*:}" ] || scope_ps_check_word "$pre"
+      ;;
+  esac
+  # A bare name of an existing entry is an operand of its command.
+  case "$w" in
+    -*|*/*|*'\'*) ;;
+    *)
+      if [ "$SCOPE_PS_IN_CD" -eq 0 ] && [ -e "${PAYLOAD_CWD:-.}/$w" ]; then
+        SCOPE_PS_OPERANDS=1
+        [ "$SCOPE_PS_IN_ENUM" -eq 0 ] || SCOPE_PS_ENUM_ROOTS=1
+      fi
+      ;;
+  esac
+  scope_ps_path_word "$w"
+  p="$SCOPE_PS_PATH"
+  [ -n "$p" ] || return 0
+  SCOPE_PS_PATHS=$((SCOPE_PS_PATHS + 1))
+  if [ "$SCOPE_PS_PATHS" -gt 96 ]; then
+    scope_ps_refuse "the command has more path words than the guard checks in one call; split it into shorter commands"
+  fi
+  scope_enforce_check_budget
+  pre=lit
+  [ "$SCOPE_PS_GLOB" -eq 0 ] || pre=glob
+  case "$pre" in
+    glob)
+      # A name pattern with no folder part that is the value of a filter
+      # parameter (-Filter *.md, -q '.[].n') is matched against names, not
+      # opened as a path.
+      case "$p" in
+        */*) ;;
+        *) [ "$SCOPE_PS_FILTER_ARG" -eq 0 ] || return 0 ;;
+      esac
+      pre="${p%%[*?[]*}"
+      case "$pre" in
+        /*/*|?*/*) dir="${pre%/*}"; tail="${p:$((${#dir} + 1))}" ;;
+        /*) dir="/"; tail="${p#/}" ;;
+        *) dir="."; tail="$p" ;;
+      esac
+      case "/$tail/" in
+        */../*) scope_ps_refuse "a wildcard path climbs with .. after the wildcard; spell the path without it" ;;
+      esac
+      n=1
+      rest="$tail"
+      while [ "$rest" != "${rest#*/}" ]; do
+        rest="${rest#*/}"
+        [ -z "$rest" ] || n=$((n + 1))
+      done
+      case "$tail" in *'**'*) n=99 ;; esac
+      [ "$dir" = . ] || scope_ps_chain "$dir"
+      scope_tool_open_path "$dir"
+      scope_ps_reach "$SCOPE_OPEN_PATH"
+      if [ "$SCOPE_PS_REACH" -eq 1 ] && scope_has_foreign_companies; then
+        # A bare name with brackets only (.[].n, a[0]) is judged below by
+        # whether it can match companies/.
+        rest=1
+        case "$p" in */*|*[*?]*) ;; *) rest=0 ;; esac
+        # The pattern descends into companies/ only when its leading
+        # segments can match the folders from here down to it.
+        reach_tail=0
+        cpath="$HQ_ROOT/companies"
+        cpath="${cpath:${#SCOPE_OPEN_PATH}}"
+        cpath="${cpath#/}"
+        thead=""
+        trest="$tail"
+        k=0
+        while [ "$k" -lt "$SCOPE_PS_DEPTH" ]; do
+          thead="$thead${thead:+/}${trest%%/*}"
+          case "$trest" in */*) trest="${trest#*/}" ;; *) trest="" ;; esac
+          k=$((k + 1))
+        done
+        shopt -s nocasematch
+        # shellcheck disable=SC2053
+        if [ "$n" -eq 99 ] || [ "$SCOPE_PS_DEPTH" -eq 0 ] || [[ "$cpath" == $thead ]]; then reach_tail=1; fi
+        shopt -u nocasematch
+        if [ "$rest" -eq 1 ] && { { [ "$n" -gt "$SCOPE_PS_DEPTH" ] && [ "$reach_tail" -eq 1 ]; } || [ "$SCOPE_PS_REC" -eq 1 ] || [ "$SCOPE_PS_HAS_CD" -eq 1 ]; }; then
+          scope_ps_refuse "a wildcard that starts at companies/, the HQ root or a folder above it can match other companies' folders; name companies/<your-company>/... instead"
+        fi
+        # The pattern can match the companies/ folder itself.
+        rest="$HQ_ROOT/companies"
+        rest="${rest:${#SCOPE_OPEN_PATH}}"
+        rest="${rest#/}"
+        shopt -s nocasematch
+        # shellcheck disable=SC2053
+        if [[ "$rest" == $tail ]] && { [ "$SCOPE_PS_BULK" -eq 1 ] || [ "$SCOPE_PS_IN_ENUM" -eq 1 ] || [ "$SCOPE_PS_HAS_CD" -eq 1 ] || [ "$tail" != '*' ]; }; then
+          shopt -u nocasematch
+          scope_ps_refuse "a wildcard that can match the companies/ folder; name companies/<your-company>/... instead"
+        fi
+        shopt -u nocasematch
+      fi
+      [ "$SCOPE_PS_IN_ENUM" -eq 0 ] || SCOPE_PS_ENUM_ROOTS=1
+      if [ "$SCOPE_PS_IN_ENUM" -eq 1 ] && [ "$SCOPE_PS_REACH" -eq 1 ]; then SCOPE_PS_ENUM_REACH=1; fi
+      ;;
+    *)
+      scope_ps_chain "$p"
+      scope_tool_open_path "$p"
+      scope_ps_reach "$SCOPE_OPEN_PATH"
+      if [ "$SCOPE_PS_IN_CD" -eq 0 ]; then
+        SCOPE_PS_OPERANDS=1
+        if [ "$SCOPE_PS_REACH" -eq 1 ] && [ "$SCOPE_PS_BULK" -eq 1 ] && scope_has_foreign_companies; then
+          scope_ps_refuse "the command copies, moves, deletes, archives, walks or gives another name to whole folders and names the HQ root or a folder above it, which holds other companies; name the folders you need instead"
+        fi
+        if [ "$SCOPE_PS_IN_ENUM" -eq 1 ]; then
+          SCOPE_PS_ENUM_ROOTS=1
+          [ "$SCOPE_PS_REACH" -ne 1 ] || SCOPE_PS_ENUM_REACH=1
+        fi
+      fi
+      ;;
+  esac
+}
+
+# scope_ps_check_candidates <word>: the word as one path, and, when it holds
+# blanks, quotes or operators (a nested command line), each piece of it.
+scope_ps_check_candidates() {
+  local w="${1:-}" part base
+  local -a parts=()
+  local tick=$'\140'
+  for base in "${SCOPE_PS_BASES[@]}"; do
+    PAYLOAD_CWD="$base"
+    COMMAND_CWD="$base"
+    scope_ps_check_word "$w"
+    case "$w" in
+      *[$' \t\n;|&(){},=<>\'"']*)
+        parts=()
+        IFS=$' \t\n;|&(){},=<>\'"' read -r -d '' -a parts <<< "$w" || true
+        for part in ${parts[@]+"${parts[@]}"}; do
+          part="${part//$tick/}"
+          [ -n "$part" ] || continue
+          scope_ps_check_word "$part"
+        done
+        ;;
+    esac
+    # One absolute path reads the same from every base.
+    case "$w" in
+      *[$' \t\n;|&(){},=<>\'"']*) ;;
+      /*|[A-Za-z]:[/\\]*|'\\'*) break ;;
+    esac
+  done
+}
+
+scope_powershell_tool_checks() {
+  local cmd="${1:-}" t flat i w seg prev_seg kind seg_kind base tgt n part is_head after_cd
+  local -a parts=()
+  local hard_re psname_re enc_re cd_re noresolve_re build_re rec_re bulk_re
+  local pwd_re alias_re member_re interp_re interp_esc_re code_re code_esc_re inline_interp=0 saw_cd=0
+  local has_consumer=0 has_flow=0 has_enum=0
+  local orig_cwd="${PAYLOAD_CWD:-}"
+  local sq="'" dq='"' uni
+  local tick=$'\140'
+
+  if [ "${#cmd}" -gt 16384 ]; then
+    scope_ps_refuse "the command is longer than the guard checks in one call (16 KiB); put the logic in a script file or split it into shorter commands"
+  fi
+  # PowerShell reads the curly quotes and the long dashes as the plain ones.
+  cmd="${cmd//$'\xe2\x80\x98'/$sq}"
+  cmd="${cmd//$'\xe2\x80\x99'/$sq}"
+  cmd="${cmd//$'\xe2\x80\x9a'/$sq}"
+  cmd="${cmd//$'\xe2\x80\x9b'/$sq}"
+  cmd="${cmd//$'\xe2\x80\x9c'/$dq}"
+  cmd="${cmd//$'\xe2\x80\x9d'/$dq}"
+  cmd="${cmd//$'\xe2\x80\x9e'/$dq}"
+  cmd="${cmd//$'\xe2\x80\x93'/-}"
+  cmd="${cmd//$'\xe2\x80\x94'/-}"
+  cmd="${cmd//$'\xe2\x80\x95'/-}"
+  # PowerShell reads these as blanks between words.
+  cmd="${cmd//$'\v'/ }"
+  cmd="${cmd//$'\f'/ }"
+  case "$cmd" in
+    *$'\xc2'*|*$'\xe1'*|*$'\xe2'*|*$'\xe3'*)
+      for uni in $'\xc2\xa0' $'\xc2\x85' $'\xe1\x9a\x80' $'\xe2\x80\x80' $'\xe2\x80\x81' $'\xe2\x80\x82' \
+        $'\xe2\x80\x83' $'\xe2\x80\x84' $'\xe2\x80\x85' $'\xe2\x80\x86' $'\xe2\x80\x87' $'\xe2\x80\x88' \
+        $'\xe2\x80\x89' $'\xe2\x80\x8a' $'\xe2\x80\xa8' $'\xe2\x80\xa9' $'\xe2\x80\xaf' $'\xe2\x81\x9f' $'\xe3\x80\x80'; do
+        cmd="${cmd//$uni/ }"
+      done
+      ;;
+  esac
+  # `u{63} spells a character by its code point (PowerShell 6 and later).
+  case "$cmd" in
+    *"$tick"[uU]'{'*)
+      scope_ps_refuse "the command spells a character by its code point (a backtick, u and braces), which the guard does not decode; write the character itself"
+      ;;
+  esac
+  t="${cmd//$tick/}"
+
+  scope_block_if_names_owner_roots "$cmd"
+  scope_check_skill_cache_text "$cmd"
+  case "${COMMAND_CWD:-}" in
+    "$HQ_ROOT"|'') ;;
+    /*) scope_check_raw "$COMMAND_CWD" ;;
+  esac
+
+  hard_re='(^|[^a-z0-9_-])(invoke-expression|iex)([^a-z0-9_-]|$)|scriptblock\][[:space:]]*::[[:space:]]*create|newscriptblock|invokescript|addscript|expandstring|invokecommand[[:space:]]*\.|frombase64|(^|[^a-z0-9_])char[[:space:]]*(\[[[:space:]]*\][[:space:]]*)?\]|tochararray|urldecode|htmldecode|unescapedatastring|getstring[[:space:]]*\(|::[[:space:]]*reverse|-bxor|convert\][[:space:]]*::|encoding\][[:space:]]*::|::[[:space:]]*unescape'
+  psname_re='powershell|pwsh'
+  enc_re='(^|[[:space:]])[-/]e(c|n|nc|nco|ncod|ncode|ncoded|ncodedc|ncodedco|ncodedcom|ncodedcomm|ncodedcomma|ncodedcomman|ncodedcommand)?([[:space:]:]|$)'
+  cd_re='(^|[;|&({[:space:]])(cd|chdir|sl|set-location|pushd|push-location|popd|pop-location)([[:space:];)}]|$)|currentdirectory'
+  noresolve_re='set-variable|new-variable|set-item|new-item|setenvironmentvariable|variable:|(^|[^$a-z0-9_{])env:|\$\{?(global:|script:|local:|private:)?(home|pwd|null|true|false|pid|lastexitcode|psversiontable|[a-z]+preference|env:userprofile)[]})[:space:],]*[-+*/%?]*='
+  build_re='(^|[^a-z0-9_])-[ci]?(join|replace|split)([^a-z0-9_]|$)|(^|[^a-z0-9_-])-f[[:space:]]*(['"'"'"($@0-9]|$)|\.[[:space:]]*(replace|substring|insert|remove|trim|trimstart|trimend|padleft|padright|tolower|toupper|format|normalize)[[:space:]]*\(|::[[:space:]]*(join|concat|format|combine)|join-path|resolve-path|convert-path|split-path|['"'"'")][[:space:]]*\+|\+[[:space:]]*['"'"'"($]|%[a-z_][a-z0-9_()]*%'
+  rec_re='(^|[[:space:]])-(r|re|rec|recu|recur|recurs|recurse|depth)([[:space:]:]|$)|(^|[[:space:]])/(s|e|r|mir)([[:space:]]|$)|compress-archive|createfromdirectory|alldirectories|(^|[^a-z0-9_.-])(tar|robocopy|xcopy|tree|7z|7za|zip|rclone|rsync|scp|rg|ag|find|fd|fdfind|du|ncdu)(\.exe)?([[:space:]]|$)|os\.walk|rglob|recursive'
+  bulk_re='copy-item|move-item|rename-item|remove-item|(^|[;|&({[:space:]])(cp|cpi|copy|mv|mi|move|ren|rni|rm|ri|del|erase|rd|rmdir)([[:space:]]|$)|::[[:space:]]*(copy|move|delete)|enumerat|getfiles|getdirectories|getfilesystementries|select-string|(^|[^a-z0-9_.-])(sls|findstr|grep)(\.exe)?([[:space:]]|$)|git(\.exe)?[[:space:]].*(grep|archive|clean)|new-psdrive|(^|[^a-z0-9_.-])(ndr|mount|subst|mklink)(\.exe)?([[:space:]]|$)|net(\.exe)?[[:space:]]+use|symboliclink|junction|hardlink'
+
+  # Anything that can change the working folder, read loosely: $PWD is
+  # resolved only when none of it appears.
+  pwd_re='cd|chdir|location|pushd|popd|currentdirectory|(^|[^a-z0-9_])sl([^a-z0-9_]|$)'
+  alias_re='new-psdrive|(^|[^a-z0-9_.-])(ndr|mount|subst)(\.exe)?([[:space:]]|$)|net(\.exe)?[[:space:]]+use'
+  member_re='\.[[:space:]]*(parent|directory|root|psparentpath|psdrive|directoryname)([^a-z0-9_]|$)'
+  interp_re='(^|[^a-z0-9_.-])(bash|sh|zsh|wsl|cmd|python[0-9.]*|py|node|ruby|perl|php|pwsh|powershell)(\.exe)?[[:space:]]+([^;|&]*[[:space:]])?(-c|-e|-lc|-ec|/c|/k|-command|--eval|-r|-)([[:space:]]|$)'
+  code_re='(^|[^a-z0-9_.-])(bash|sh|zsh|wsl|python[0-9.]*|py|node|ruby|perl|php)(\.exe)?[[:space:]]|convertfrom-json|convertfrom-stringdata'
+  code_esc_re='\\x[0-9a-f][0-9a-f]|\\u[0-9a-f][0-9a-f][0-9a-f][0-9a-f]|\\u\{|\\[0-7][0-7][0-7]'
+  interp_esc_re='[$]'"'"'|chr[[:space:]]*\(|fromcharcode|bytes\.fromhex|unhexlify|codecs\.|base64|atob[[:space:]]*\('
+
+  shopt -s nocasematch
+  SCOPE_PS_PWD_OK=1
+  SCOPE_PS_PSNAME=0
+  if [[ "$t" =~ $pwd_re ]]; then SCOPE_PS_PWD_OK=0; fi
+  if [[ "$t" =~ $psname_re ]]; then SCOPE_PS_PSNAME=1; fi
+  if [[ "$t" =~ $interp_re ]]; then inline_interp=1; fi
+  if [ "$inline_interp" -eq 1 ] && [[ "$t" =~ $interp_esc_re ]]; then
+    shopt -u nocasematch
+    scope_ps_refuse "the command gives another interpreter inline code that spells characters by code or decodes text, which the guard does not read; write the path itself"
+  fi
+  if [[ "$t" =~ $code_re ]] && [[ "$t" =~ $code_esc_re ]]; then
+    shopt -u nocasematch
+    scope_ps_refuse "the command holds an escape that spells a character by its code (a backslash with x, u or octal digits) for another interpreter or a JSON reader, which the guard does not decode; write the character itself"
+  fi
+  if [[ "$t" =~ $member_re ]] && scope_has_foreign_companies; then
+    shopt -u nocasematch
+    scope_ps_refuse "the command climbs from a folder through an object member (Parent, Directory, Root), which the guard does not follow; name the folder you need instead"
+  fi
+  shopt -s nocasematch
+  if [[ "$t" =~ $hard_re ]]; then
+    shopt -u nocasematch
+    scope_ps_refuse "the command runs or decodes text the guard cannot read (Invoke-Expression, a script block built from a string, base64, character codes); write the command out in plain text"
+  fi
+  if [[ "$t" =~ $psname_re ]] && [[ "$t" =~ $enc_re ]]; then
+    shopt -u nocasematch
+    scope_ps_refuse "an encoded PowerShell command (-EncodedCommand) cannot be read; pass the command as plain text"
+  fi
+  SCOPE_PS_HAS_CD=0
+  SCOPE_PS_RESOLVE=1
+  SCOPE_PS_OPAQUE=0
+  SCOPE_PS_REC=0
+  SCOPE_PS_BULK=0
+  if [[ "$t" =~ $cd_re ]]; then SCOPE_PS_HAS_CD=1; fi
+  if [[ "$t" =~ $noresolve_re ]]; then SCOPE_PS_RESOLVE=0; fi
+  if [[ "$t" =~ $build_re ]]; then SCOPE_PS_OPAQUE=1; fi
+  if [[ "$t" =~ $alias_re ]]; then saw_cd=2; fi
+  if [[ "$t" =~ $rec_re ]]; then SCOPE_PS_REC=1; SCOPE_PS_BULK=1; fi
+  if [[ "$t" =~ $bulk_re ]]; then SCOPE_PS_BULK=1; fi
+  shopt -u nocasematch
+  case "$t" in *'|'*|*'('*) has_flow=1 ;; esac
+
+  # companies spelled across quotes, operators or blanks: drop every intact
+  # spelling, then look for one in what is left once those are removed.
+  flat="${t//[Cc][Oo][Mm][Pp][Aa][Nn]/$'\001'}"
+  scope_ps_flatten "$flat"
+  case "$SCOPE_PS_FLAT" in
+    *[Cc][Oo][Mm][Pp][Aa][Nn]*)
+      scope_ps_refuse "the command spells companies across quotes, operators or blanks; spell each company path as one literal string"
+      ;;
+  esac
+
+  scope_ps_lex "$cmd"
+
+  # Bases: the payload cwd, each literal Set-Location target (also inside a
+  # quoted command line), and each company folder the command names: a
+  # program may be started in any of them (-C, -WorkingDirectory), and a
+  # relative path is then read from there.
+  base="${orig_cwd:-$HQ_ROOT}"
+  SCOPE_PS_BASES=("$base")
+  scope_ps_add_base() { # <absolute path>
+    local b
+    [ -n "${1:-}" ] || return 0
+    for b in "${SCOPE_PS_BASES[@]}"; do
+      [ "$b" != "$1" ] || return 0
+    done
+    SCOPE_PS_BASES[${#SCOPE_PS_BASES[@]}]="$1"
+    if [ "${#SCOPE_PS_BASES[@]}" -gt 8 ]; then
+      scope_ps_refuse "the command names more folders to work in than the guard follows; run the steps as separate commands"
+    fi
+  }
+  # scope_ps_base_word <word> <cd 0|1>: a cd target moves the base; a company
+  # folder is added as one.
+  scope_ps_base_word() {
+    local bw="${1:-}"
+    case "$bw" in ''|-*|*[*?[]*) return 0 ;; esac
+    PAYLOAD_CWD="$base"
+    if [ "${2:-0}" -eq 1 ]; then
+      [ "$SCOPE_WIN_HOST" -eq 1 ] || bw="${bw//\\//}"
+      scope_tool_open_path "$bw"
+      if [ -n "$SCOPE_OPEN_PATH" ]; then
+        base="$SCOPE_OPEN_PATH"
+        scope_ps_add_base "$base"
+      fi
+      return 0
+    fi
+    case "$bw" in */*|*'\'*|[A-Za-z]:*|'~'*|..) ;; *) return 0 ;; esac
+    scope_ps_path_word "$bw"
+    [ -n "$SCOPE_PS_PATH" ] || return 0
+    scope_tool_open_path "$SCOPE_PS_PATH"
+    [ -n "$SCOPE_OPEN_PATH" ] || return 0
+    scope_ps_reach "$SCOPE_OPEN_PATH"
+    if [ "$SCOPE_PS_REACH" -ge 1 ] && [ "$SCOPE_PS_DEPTH" -eq 0 ] && [ -d "$SCOPE_OPEN_PATH" ]; then
+      scope_ps_add_base "$SCOPE_OPEN_PATH"
+    fi
+  }
+  prev_seg=-1
+  seg_kind=other
+  i=0
+  n="${#SCOPE_PS_WORDS[@]}"
+  while [ "$i" -lt "$n" ]; do
+    w="${SCOPE_PS_WORDS[$i]}"
+    seg="${SCOPE_PS_SEGS[$i]}"
+    is_head=0
+    if [ "$seg" != "$prev_seg" ]; then
+      prev_seg="$seg"
+      scope_ps_head_kind "$w"
+      seg_kind="$SCOPE_PS_KIND"
+      is_head=1
+      if [ "$seg_kind" = cd ]; then
+        SCOPE_PS_HAS_CD=1
+        [ -z "$SCOPE_PS_CD_TARGET" ] || scope_ps_base_word "$SCOPE_PS_CD_TARGET" 1
+      fi
+    fi
+    if [ "${SCOPE_PS_OPQ[$i]}" -eq 0 ]; then
+      case "$w" in
+        *[$' \t\n;|&(){},=<>\'"']*)
+          # A quoted command line: follow a cd inside it.
+          parts=()
+          IFS=$' \t\n;|&(){},=<>\'"' read -r -d '' -a parts <<< "$w" || true
+          after_cd=0
+          for part in ${parts[@]+"${parts[@]}"}; do
+            [ -n "$part" ] || continue
+            if [ "$after_cd" -eq 1 ]; then
+              case "$part" in
+                -*|/[A-Za-z]) continue ;;
+              esac
+              scope_ps_base_word "$part" 1
+              after_cd=0
+              continue
+            fi
+            scope_ps_head_kind "$part"
+            if [ "$SCOPE_PS_KIND" = cd ]; then
+              SCOPE_PS_HAS_CD=1
+              if [ -n "$SCOPE_PS_CD_TARGET" ]; then
+                scope_ps_base_word "$SCOPE_PS_CD_TARGET" 1
+              else
+                after_cd=1
+              fi
+            else
+              scope_ps_base_word "$part" 0
+            fi
+          done
+          ;;
+        *)
+          if [ "$is_head" -eq 0 ] && [ "$seg_kind" = cd ]; then
+            scope_ps_base_word "$w" 1
+          else
+            scope_ps_base_word "$w" 0
+          fi
+          ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  PAYLOAD_CWD="$orig_cwd"
+
+  # Every word, from every base.
+  SCOPE_PS_PATHS=0
+  SCOPE_PS_OPERANDS=0
+  SCOPE_PS_ENUM_REACH=0
+  prev_seg=-1
+  seg_kind=other
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    w="${SCOPE_PS_WORDS[$i]}"
+    seg="${SCOPE_PS_SEGS[$i]}"
+    if [ "$seg" != "$prev_seg" ]; then
+      # An enum command with no folder word lists the working folder.
+      if [ "$seg_kind" = enum ] && [ "$SCOPE_PS_ENUM_ROOTS" -eq 0 ]; then
+        for base in "${SCOPE_PS_BASES[@]}"; do
+          scope_ps_reach "$base"
+          [ "$SCOPE_PS_REACH" -ne 1 ] || SCOPE_PS_ENUM_REACH=1
+        done
+      fi
+      prev_seg="$seg"
+      scope_ps_head_kind "$w"
+      seg_kind="$SCOPE_PS_KIND"
+      SCOPE_PS_ENUM_ROOTS=0
+      case "$seg_kind" in
+        enum) has_enum=1 ;;
+        other) has_consumer=1 ;;
+      esac
+    fi
+    SCOPE_PS_IN_CD=0
+    SCOPE_PS_IN_ENUM=0
+    SCOPE_PS_FILTER_ARG=0
+    if [ "$i" -gt 0 ] && [ "${SCOPE_PS_SEGS[$((i - 1))]}" = "$seg" ]; then
+      shopt -s nocasematch
+      case "${SCOPE_PS_WORDS[$((i - 1))]}" in
+        -filter|-fi|-include|-exclude|-pattern|-like|-notlike|-match|-notmatch|-clike|-ilike|-name|-q|--jq|-g|--glob|--include|--exclude|--iglob|-iname) SCOPE_PS_FILTER_ARG=1 ;;
+      esac
+      shopt -u nocasematch
+    fi
+    [ "$seg_kind" != cd ] || SCOPE_PS_IN_CD=1
+    [ "$seg_kind" != enum ] || SCOPE_PS_IN_ENUM=1
+    if [ "${SCOPE_PS_OPQ[$i]}" -eq 0 ]; then
+      scope_ps_check_candidates "$w"
+    fi
+    i=$((i + 1))
+  done
+  if [ "$seg_kind" = enum ] && [ "$SCOPE_PS_ENUM_ROOTS" -eq 0 ]; then
+    for base in "${SCOPE_PS_BASES[@]}"; do
+      scope_ps_reach "$base"
+      [ "$SCOPE_PS_REACH" -ne 1 ] || SCOPE_PS_ENUM_REACH=1
+    done
+  fi
+  PAYLOAD_CWD="$orig_cwd"
+  COMMAND_CWD="$orig_cwd"
+  [ -n "$COMMAND_CWD" ] || COMMAND_CWD="$HQ_ROOT"
+
+  if [ "$saw_cd" -eq 2 ] && scope_has_foreign_companies; then
+    case "$t" in
+      *'('*|*'$'*|*'%'*)
+        scope_ps_refuse "the command gives a folder another name (a drive or a mapped path) from a value the guard cannot read; give the folder as a literal path"
+        ;;
+    esac
+  fi
+  if scope_has_foreign_companies; then
+    # A recursive command with no folder word walks the working folder.
+    if [ "$SCOPE_PS_REC" -eq 1 ] && [ "$SCOPE_PS_OPERANDS" -eq 0 ]; then
+      for base in "${SCOPE_PS_BASES[@]}"; do
+        scope_ps_reach "$base"
+        if [ "$SCOPE_PS_REACH" -eq 1 ]; then
+          scope_ps_refuse "a recursive command with no folder named walks the working folder, which is companies/, the HQ root or a folder above it; name the folders you need instead"
+        fi
+      done
+    fi
+    # A listing of such a folder handed to another command.
+    if [ "$has_enum" -eq 1 ] && [ "$SCOPE_PS_ENUM_REACH" -eq 1 ] && [ "$has_flow" -eq 1 ] && [ "$has_consumer" -eq 1 ]; then
+      scope_ps_refuse "the command lists companies/, the HQ root or a folder above it and hands the entries to another command; name the folders you need instead"
+    fi
+  fi
+
+  # The folder name of a company this session may not open, in a command
+  # that can build a path around it: the companies part may be misspelled
+  # and repaired by a string operation, or escaped for a nested interpreter.
+  if [ "$SCOPE_PS_OPAQUE" -eq 1 ] || [ "$inline_interp" -eq 1 ]; then
+    scope_ps_flatten "$t"
+    for base in "$HQ_ROOT"/companies/*/; do
+      [ -d "$base" ] || continue
+      base="${base%/}"
+      base="${base##*/}"
+      case "$base" in _*|?|??) continue ;; esac
+      ! scope_rel_allowed "companies/$base" || continue
+      shopt -s nocasematch
+      if [[ "$SCOPE_PS_FLAT" == *"$base"* ]]; then
+        shopt -u nocasematch
+        scope_ps_refuse "the command names the folder of another company ($base) and uses a variable, an expression, a string operation or inline code for another interpreter, which the guard cannot resolve; spell each path as one literal string"
+      fi
+      shopt -u nocasematch
+    done
+  fi
+
+  # Something with no static value, in a command that can reach companies/.
+  if [ "$SCOPE_PS_OPAQUE" -eq 1 ]; then
+    scope_ps_flatten "$t"
+    case "$SCOPE_PS_FLAT" in
+      *[Cc][Oo][Mm][Pp][Aa][Nn]*)
+        scope_ps_refuse "the command names companies/ and also uses a variable, an expression or a string operation the guard cannot resolve; spell each company path as one literal string and keep variables out of the command"
+        ;;
+    esac
+    if [ "${#t}" -lt 1024 ]; then
+      flat="${t//[^A-Za-z]/}"
+    else
+      flat="$(printf '%s' "$t" | LC_ALL=C tr -cd 'A-Za-z')"
+    fi
+    case "$flat" in
+      *[Cc][Oo][Mm][Pp][Aa][Nn][Ii][Ee][Ss]*)
+        scope_ps_refuse "the command spells companies with other characters in between and uses a variable, an expression or a string operation the guard cannot resolve; spell each path as one literal string"
+        ;;
+    esac
+    for base in "${SCOPE_PS_BASES[@]}"; do
+      scope_ps_reach "$base"
+      if [ "$SCOPE_PS_REACH" -eq 2 ] || { [ "$SCOPE_PS_REACH" -eq 1 ] && [ "$SCOPE_PS_DEPTH" -eq 0 ]; }; then
+        scope_ps_refuse "the command runs inside companies/ and uses a variable, an expression or a string operation the guard cannot resolve; spell each path as one literal string"
+      fi
+    done
+  fi
+  return 0
+}
+
+# <<< PowerShell tool checks
 case "$TOOL" in
   Read|Write|Edit|MultiEdit)
     # One jq for the path. A second parse put read-workspace and write-personal
@@ -15179,6 +16157,23 @@ case "$TOOL" in
       fi
     fi
     ;;
+  # >>> PowerShell tool case
+  PowerShell)
+    # Every string field of the call except the description is read as
+    # command text, so a field this guard does not know is still checked.
+    cmd="$(printf '%s' "$INPUT" | jq -r '
+      .tool_input
+      | if type == "object" then
+          [to_entries[] | select(.key != "description") | .value
+           | if type == "string" then . elif type == "array" or type == "object" then ([.. | strings] | join("\n")) else empty end]
+          | join("\n")
+        elif type == "string" then .
+        else "" end')"
+    cmd="${cmd//$'\r'/$'\n'}"
+    [ -n "$cmd" ] || exit 0
+    scope_powershell_tool_checks "$cmd"
+    ;;
+  # <<< PowerShell tool case
   Bash)
     cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
     [ -n "$cmd" ] || exit 0

@@ -541,6 +541,19 @@ These roots are registered with `hidden: true` and are not a stable public surfa
 | `hq daemon disable` | Turn default services off for this machine |
 | `hq daemon pin-hq-cloud` | Pin hq-cloud to an exact version, or clear the pin |
 | `hq daemon migrate` | List the older HQ background units the daemon would take over; --apply takes them over |
+## Native hook engine (`hq-hook`)
+
+`hq-cli` ships the compiled `hq-hook` engine under `~/.hq/bin/hq-hook/<version>/` with a `stable` link. When `core.next` is enabled, `hq reindex` switches supported host events (`Claude Code`, `Codex`, `Grok Build`) per event to `hq-hook run --host <host> <Event> --hq-root <root>` once every required evaluator and `master-hook:<Event>` is claimed.
+
+| Command or switch | Purpose |
+|---|---|
+| `hq reindex` | Reconcile host hook registrations for Claude Code, Codex, and Grok Build; switches covered events to `hq-hook` when `core.next` is enabled, or restores shell registrations when `core.next` is off |
+| `hq doctor` | Report, per host and per event, which core each registration calls and whether a kill switch is active |
+| `hq doctor --only hook-engine` | Verify the pinned `hq-hook` binary installation |
+| `hq core hook-engine-path [--repair]` | Print the resolved `hq-hook` executable path without network access, or rebuild a damaged pinned copy |
+| `HQ_CORE_NEXT=off` or `~/.hq/state/core-next.off` | Immediately route direct `core.next` hook registrations back to the shell dispatcher without reindexing |
+| `HQ_HOOK_ENGINE=off` or `~/.hq/hook-engine.off` | Immediately bypass `hq-hook` across both direct registrations and per-hook bridging |
+
 ## Sources
 
 - `indigoai-us/hq-cli@dfe49a4` — `src/command-catalog.generated.ts`,

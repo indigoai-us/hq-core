@@ -446,6 +446,7 @@ run_master_phase_case() {
     "HQ_TEST_JQ_DELAYED=$root/jq-delayed" \
     "HQ_TEST_MASTER_PATH=$root/.claude/hooks/master-hook.sh" \
     ${child_timeout:+"HQ_MASTER_CHILD_TIMEOUT=$child_timeout"} \
+    ${child_timeout:+"HQ_MASTER_BLOCKING_CHILD_TIMEOUT=$child_timeout"} \
     -- bash "$root/.claude/hooks/master-hook.sh" SessionStart \
     > "$root/out" 2> "$root/err" \
     <<<"$payload"
@@ -1246,11 +1247,27 @@ master_contract_event() {
   sentry=1
   child_timeout=1
   prepare_master_phase_fixture "$root" "$with_children"
-  # A real timed child makes master-hook build a late-finish event on every
-  # platform. The prior phase-delay fixture depended on whether its short
-  # watchdog record survived until dispatch returned.
+  cat > "$root/bin/timeout" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" != -k ] || shift 2
+limit="${1%s}"
+shift
+child_seconds=3
+for arg in "$@"; do
+  case "$arg" in
+    */core/hooks/SessionStart/10-slow-json.sh)
+      if [ "$child_seconds" -gt "$limit" ]; then
+        "$arg" >/dev/null
+        exit 124
+      fi
+      ;;
+  esac
+done
+exec "$@"
+STUB
+  chmod +x "$root/bin/timeout"
   printf '%s\n' '#!/usr/bin/env bash' 'cat > "${HQ_TEST_CAPTURED_INPUT:?}"' \
-    'printf "first\\n" >> "${HQ_TEST_ORDER:?}"' 'sleep 3' \
+    'printf "first\\n" >> "${HQ_TEST_ORDER:?}"' \
     'printf "%s\\n" '\''{"hookSpecificOutput":{"additionalContext":"C179_PHASE_DELAY"}}'\''' \
     > "$root/core/hooks/SessionStart/10-slow-json.sh"
   printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null' \

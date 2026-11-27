@@ -14,7 +14,7 @@ source: user-correction
 
 ## Rule
 
-When the HQ root has a large untracked baseline, NEVER treat whole-repo `git status` output as the session scope. The durable scope for `/handoff` is the session changeset: `files_touched_json`, the generated `workspace/threads/<thread>.changeset.json`, and the explicit paths staged by `core/scripts/handoff-finalize.sh`.
+When the HQ root has a large untracked baseline, NEVER treat whole-repo `git status` output as the session scope. The durable scope for `/handoff` is the session changeset: `files_touched_json`, the generated `workspace/threads/<thread>.changeset.json`, and the explicit paths staged by `hq core handoff finalize` (invoked by `hq core handoff run`).
 
 Handoff output should summarize drift by category (tracked changes, session-touched untracked files, baseline noise, ignored files), not dump the entire status listing. If a needed file is not in `files_touched_json`, add it there deliberately instead of widening to `git add -A`.
 

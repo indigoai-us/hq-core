@@ -13,17 +13,17 @@ recipient. Work Mesh ownership counts as confirmed only when the server returns
 a receipt naming the recipient; otherwise it stays unconfirmed. Sender-side
 checks prove publication, not recipient access; record actual pickup separately.
 
-Requires hq-cli 5.345.241 or newer. That release is the first whose secrets
-step checks that every secret name exists before sharing any, reads prd.json
-`metadata.secrets` before the repo-wide schema, and shares agent and person
-uids through the grant step's principal. Check the installed version before
-resolving or changing anything.
+Requires hq-cli 5.345.263 or newer. That release is the first build whose
+native `hq core delegate` flow matches the retired shell helpers (bundle,
+grant, publish, send, transfer, verify, secrets safeguards, and Windows Git
+Bash / manifest lock handling) alongside the retired handoff script floor. Check
+the installed version before resolving or changing anything.
 
 ```bash
-source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check delegate 5.345.241
+source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check delegate 5.345.263
 ```
 
-If the check fails, stop. Upgrade hq-cli to 5.345.241 or newer with
+If the check fails, stop. Upgrade hq-cli to 5.345.263 or newer with
 `npm install -g @indigoai-us/hq-cli@latest`, then retry.
 
 ## Usage

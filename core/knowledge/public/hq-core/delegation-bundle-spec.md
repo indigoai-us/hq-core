@@ -15,7 +15,7 @@ grant step, the verification probe, and the pickup prompt are all generated
 from it. Nothing downstream may invent a path, prefix, or secret name that is
 not in the manifest, and nothing in the manifest may be silently skipped.
 
-Builder: `core/scripts/hq-delegate-bundle.sh build --company <slug>
+Builder: `hq core delegate bundle build --company <slug>
 --project <name> --to <principal> [--to-kind person|agent] [--to-name <name>]
 [--mode transfer|share]`. Prints the `delegationId` on stdout.
 
@@ -34,7 +34,7 @@ file is refused.
 | `createdAt` | string | ISO-8601 UTC creation time. |
 | `mode` | `"transfer"` \| `"share"` | `transfer` reassigns ownership (board, PRD, work mesh); `share` grants access but leaves ownership with the delegator. |
 | `from` | object | Sender identity from `hq whoami --json`; a missing or expired identity blocks bundle creation. |
-| `to` | object | `{kind, principal, displayName}` — `kind` is `person` or `agent`; `principal` is a **confirmed** email, `prs_…`, or `agt_…` (resolved by `hq-delegate-resolve.sh`, never a guessed name). |
+| `to` | object | `{kind, principal, displayName}` — `kind` is `person` or `agent`; `principal` is a **confirmed** email, `prs_…`, or `agt_…` (resolved by `hq core delegate resolve`, never a guessed name). |
 | `company` | string | Company slug. Delegation never crosses a company boundary. |
 | `project` | object | `{name, stage, prdPath, sourcePath, boardId[, dossier]}` — `stage` is `"prd"` or `"brainstorm"`; `prdPath` is HQ-root-relative or `null` at brainstorm stage; `sourcePath` is the file the brief was built from; `boardId` is the `companies/<co>/board.json` project id or `null`; `dossier` (brainstorm stage only) lists the files the publish step ships. See "Project stages". |
 | `vaultPrefixes` | array | What gets granted — see below. |

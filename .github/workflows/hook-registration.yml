@@ -85,3 +85,29 @@ jobs:
         run: |
           export HOME="$(mktemp -d)"
           bash core/scripts/tests/codex-adapter-native-timeout-fit.test.sh
+
+  hook-timeout-real-time:
+    if: ${{ (github.event_name == 'schedule' && github.repository == 'indigoai-us/hq-core-staging') || github.event_name == 'workflow_dispatch' }}
+    runs-on: ${{ github.repository == 'indigoai-us/hq-core-staging' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted-runners'))) && vars.HQ_AWS_RUNNERS != 'off' && fromJSON(vars.HQ_STAGING_RUNNER_LINUX_ARM || '"ubuntu-24.04-arm"') || 'ubuntu-24.04-arm' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Perl timeout fallback bounds the hook's whole process group
+        shell: bash
+        run: |
+          export HOME="$(mktemp -d)"
+          bash core/scripts/tests/master-hook-perl-timeout-process-group.test.sh
+      - name: A cut child timeout reports its exit code and measured elapsed time
+        shell: bash
+        run: |
+          export HOME="$(mktemp -d)"
+          bash core/scripts/tests/hook-timeout-sentry-child-timeout.test.sh
+      - name: Golden dispatcher contract, real-time cases (sequential and parallel)
+        shell: bash
+        run: |
+          export HOME="$(mktemp -d)"
+          bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh' --suite real-time
+          HQ_HOOK_PARALLEL=1 bash core/scripts/tests/hook-contract/run-contract.sh --engine 'bash .claude/hooks/master-hook.sh' --suite real-time

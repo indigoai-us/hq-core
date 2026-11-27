@@ -50,17 +50,6 @@ NON_EXECUTING_REFERENCE_ALLOWLIST = {
     # startwork-context.test.sh only compares the printed worktree.sh command
     # text from `startwork-context.sh edit-target`; it never runs worktree.sh.
     ("core/scripts/tests/startwork-context.test.sh", "worktree.sh"),
-    ("core/scripts/tests/handoff-post-no-claude.test.sh", "archive-old-threads.sh"),
-    ("core/scripts/tests/handoff-post-no-claude.test.sh", "rebuild-orchestrator-index.sh"),
-    ("core/scripts/tests/handoff-post-no-claude.test.sh", "rebuild-threads-index.sh"),
-    ("core/scripts/tests/handoff-followups-runtime.test.sh", "archive-old-threads.sh"),
-    ("core/scripts/tests/handoff-followups-runtime.test.sh", "hq-status-summary.sh"),
-    ("core/scripts/tests/handoff-followups-runtime.test.sh", "rebuild-orchestrator-index.sh"),
-    ("core/scripts/tests/handoff-followups-runtime.test.sh", "rebuild-threads-index.sh"),
-    # Isolation suite writes a reindex helper stub and is invoked from
-    # handoff-post-company-scope.test.sh, which pr-checks already runs with
-    # the pinned CLI install. The analyzer only sees direct workflow commands.
-    ("core/scripts/tests/handoff-thread-isolation.test.sh", "qmd-reindex-bg.sh"),
     # US-044: the former shell job runner, kept as a test fixture. It runs only
     # from hq-job-run, hq-job-run-approval-mode, personal-job-oncalendar,
     # outpost-job-failure-alerts and hq-job-alerts tests, which pr-checks runs

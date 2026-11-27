@@ -3,7 +3,7 @@ name: handoff
 description: Preserve session state for a follow-up agent with handoff files and commits.
 model: sonnet
 effort: low
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash .claude/skills/_shared/journal.sh:*), Bash(hq core handoff open-steps:*), Bash(hq core handoff run:*), Bash(bash core/scripts/handoff-run.sh:*), Bash(hq core handoff archive-decision:*), Bash, AskUserQuestion, Task, Agent, Skill
+allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(bash:*), Bash(jq:*), Bash(date:*), Bash(mkdir:*), Bash(cat:*), Bash(rm:*), Bash(.claude/skills/_shared/journal.sh:*), Bash(bash .claude/skills/_shared/journal.sh:*), Bash(source core/scripts/lib/hq-cli-floor.sh:*), Bash(hq_cli_floor_check:*), Bash(hq core handoff open-steps:*), Bash(hq core handoff run:*), Bash(hq core handoff archive-decision:*), Bash, AskUserQuestion, Task, Agent, Skill
 ---
 
 # Fresh Session Continuity
@@ -15,6 +15,25 @@ Write a thread file + `handoff.json` with minimal foreground token cost. Keep sh
 **User's message (optional):** $ARGUMENTS
 
 ## Process
+
+### 0. Check the installed hq-cli version
+
+Requires hq-cli 5.345.263 or newer. That release is the first build whose
+native `hq core handoff run` accepts `--company`, `--deficiencies-json`, and
+`--learnings-json-file`, publishes the continuity pointer natively without a
+live-root bash script, scopes the knowledge step to the bound company only,
+skips local-only companies in `handoff post` (`company.yaml` `cloud: false` and
+`companies/manifest.yaml` `cloud_uid`), and generates thread ids from the local
+clock. Check the installed version before running Step 1 or closing the session
+journal:
+
+```bash
+source core/scripts/lib/hq-cli-floor.sh && hq_cli_floor_check handoff 5.345.263
+```
+
+If the check fails, stop immediately before making any changes or closing the
+journal. Upgrade hq-cli to 5.345.263 or newer with
+`npm install -g @indigoai-us/hq-cli@latest`, then retry.
 
 ### 1. Write the session changeset (personal/core knowledge commits use it)
 
@@ -99,8 +118,6 @@ Pass the resolved project directory that owns this session's journal. The helper
 
 ### 3. Run `hq core handoff run` (synchronous, one tool call)
 
-Call it through `bash core/scripts/handoff-run.sh`, which takes the same arguments. The wrapper runs `hq core handoff run` with every argument first and passes its output and exit code through. hq-cli 5.345.231 rejects `--company` and `--deficiencies-json` with `Unknown arg` before any thread is written, and dropping them is not an option there: its finalize would derive the owner company from the touched paths and store no deficiencies. When the CLI exits without writing a thread, the wrapper finishes the same steps with the `core/scripts` helpers, which accept both flags, and adds `cli_fallback` (the CLI's exit code and first error line) to the JSON. Report `cli_fallback` in Step 6 when it is present.
-
 `hq core handoff run` runs the mechanical part of the handoff in one process, in this order, and stops at the first step that fails:
 
 1. the scoped personal/core knowledge commit for the Step 1 changeset;
@@ -114,7 +131,7 @@ Its own options: `--files-touched-json-file <path>` (required; used by both the 
 Finalize handles everything that must be durable before session end:
 - Receives the same explicit session changeset used by the knowledge commit helper (Step 1)
 - Writes thread file + `handoff.json` + `workspace/threads/{thread}.changeset.json`
-- Regenerates thread INDEX + recent.md + orchestrator INDEX via dedicated bash scripts (`rebuild-threads-index.sh`, `rebuild-orchestrator-index.sh`) — zero Claude context
+- Regenerates thread INDEX + recent.md + orchestrator INDEX — zero Claude context
 - Commits HQ via explicit paths: thread/index files plus the validated `--files-touched-json` paths (never `git add -A`)
 - Classifies noisy HQ root status via `hq core hq-status-summary` so baseline local files do not become accidental handoff scope
 - Schedules ownership-aware qmd reindex via `qmd-reindex-bg.sh` (shared with post): agent boxes hard-skip (`skipped-agent`, zero qmd mutation — managed timer/post-sync own freshness); laptops use one non-blocking single-flight cleanup→update→embed
@@ -125,7 +142,7 @@ Reuse the `{changeset_file}` prepared in Step 1 and pass its literal path — ne
 
 ```bash
 rc=0
-bash core/scripts/handoff-run.sh \
+hq core handoff run \
   --learnings-file "{learnings_file path from Step 2}" \
   --company "{co}" \
   --title "Handoff: {one-line title}" \
@@ -169,7 +186,7 @@ The inline `--files-touched-json '[...]'` flag still works for small changesets 
 
 ```json
 [
-  "core/scripts/handoff-finalize.sh",
+  "core/scripts/hq-session.sh",
   {"path":"docs/architecture.md","reason":"updated diagram for new flow"},
   {"path":"old/file.md","deleted":true,"reason":"removed obsolete file"}
 ]

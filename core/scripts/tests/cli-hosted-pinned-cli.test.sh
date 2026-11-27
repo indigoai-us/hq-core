@@ -18,10 +18,10 @@ fail() {
 pass() { printf 'PASS: %s\n' "$1"; }
 
 ACTUAL_CORE_FLOOR="$(awk -F '[:\"]' '$1 == "requiresHqCli" { gsub(/[[:space:]]/, "", $3); print $3 }' "$ROOT/core/core.yaml")"
-if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.234" ]; then
-  pass 'core CLI floor includes native delegation and the deploy commands used by core skills'
+if [ "$ACTUAL_CORE_FLOOR" = ">=5.345.263" ]; then
+  pass 'core CLI floor includes native handoff, delegation, and the deploy commands used by core skills'
 else
-  fail "core CLI floor must be >=5.345.234 for native delegation and pickup. It also includes the deploy commands and upload --manifest-org required at 5.345.232. Got $ACTUAL_CORE_FLOOR"
+  fail "core CLI floor must be >=5.345.263 for native handoff and delegation after script deletion. Got $ACTUAL_CORE_FLOOR"
 fi
 POLICY_MIN_CLI="$(awk '
   /^  - path: core\/scripts\/read-policy-frontmatter\.sh$/ { found=1; next }
@@ -344,13 +344,12 @@ entries:
 YAML
   cp "$GUARD" "$tree/core/scripts/check-cli-hosted.sh"
   cp "$GENERATOR" "$tree/core/scripts/generate-forwarders.sh"
-  cp "$INSTALLER" "$tree/core/scripts/ci/install-pinned-hq-cli.sh"
-  bash "$GENERATOR" --manifest "$tree/core/scripts/cli-hosted.yaml" --output-root "$tree" >/dev/null
-  cat > "$tree/core/scripts/handoff-post.sh" <<SH
+  cat > "$tree/core/scripts/ci/install-pinned-hq-cli.sh" <<SH
 #!/usr/bin/env bash
 if hq core $call --session-files-file "\$FILES_TOUCHED_FILE"; then :; fi
 SH
-  chmod +x "$tree/core/scripts/handoff-post.sh"
+  chmod +x "$tree/core/scripts/ci/install-pinned-hq-cli.sh"
+  bash "$GENERATOR" --manifest "$tree/core/scripts/cli-hosted.yaml" --output-root "$tree" >/dev/null
   git -C "$tree" init -q
   git -C "$tree" add -A
 }
@@ -453,7 +452,7 @@ TREE="$TMP/guard-allowlisted-call"
 make_guard_root "$TREE" unsupported-command
 write_catalog "$CATALOG"
 expect_guard_failure "$TREE" 5.276.0 "$CATALOG" 0 \
-  'core/scripts/handoff-post.sh: hq core unsupported-command is missing from hq core commands' \
+  'core/scripts/ci/install-pinned-hq-cli.sh: hq core unsupported-command is missing from hq core commands' \
   'negative control: an allow-listed source calling an unlisted CLI command fails'
 
 TREE="$TMP/guard-old-cli"

@@ -124,6 +124,11 @@ assert_equal "$FLOOR_RC" "127" "old CLI floor"
 assert_contains "$FLOOR_OUTPUT" 'floor-test.sh: this script needs hq-cli >= 5.269.0 (found 5.268.9)' "old CLI message"
 assert_contains "$FLOOR_OUTPUT" 'npm install -g @indigoai-us/hq-cli@latest' "old CLI upgrade command"
 
+capture_floor "handoff" "$required"
+assert_equal "$FLOOR_RC" "127" "old CLI floor (skill caller)"
+assert_contains "$FLOOR_OUTPUT" 'handoff: this skill needs hq-cli >= 5.269.0 (found 5.268.9)' "old CLI skill message"
+assert_contains "$FLOOR_OUTPUT" 'npm install -g @indigoai-us/hq-cli@latest' "old CLI skill upgrade command"
+
 mkdir -p "$TMP/no-hq"
 PATH="$TMP/no-hq:/usr/bin:/bin"
 export PATH
@@ -131,6 +136,11 @@ capture_floor "floor-test.sh" "$required"
 assert_equal "$FLOOR_RC" "127" "missing CLI floor"
 assert_contains "$FLOOR_OUTPUT" "floor-test.sh: requires the hq CLI — this script's implementation now ships with it." "missing CLI message"
 assert_contains "$FLOOR_OUTPUT" 'Install it with: npm install -g @indigoai-us/hq-cli' "missing CLI install command"
+
+capture_floor "handoff" "$required"
+assert_equal "$FLOOR_RC" "127" "missing CLI floor (skill caller)"
+assert_contains "$FLOOR_OUTPUT" "handoff: requires the hq CLI — this skill's implementation now ships with it." "missing CLI skill message"
+assert_contains "$FLOOR_OUTPUT" 'Install it with: npm install -g @indigoai-us/hq-cli' "missing CLI skill install command"
 
 PATH="$TMP/current/path:/usr/bin:/bin"
 export PATH

@@ -22,6 +22,13 @@
 #   SessionStart                         -> bind personal (context), exit 0
 #   anything else                        -> exit 0
 #
+# Daemon declines PreToolUse without a verdict (error code hq_root_unreadable,
+# an internal EPERM fs error on a path under this HQ root when macOS denies the
+# launchd daemon a privacy-protected folder, or anywhere_disabled when the live
+# HQ Anywhere flag is off): run the HQ root's mandatory-scope-authorizer.sh in
+# this process and use its verdict, then inject-policy-on-trigger.sh for the
+# policy context, as hqd would have.
+#
 # Usage: sh hqd-hook-shim.sh [Event] [--runtime claude|codex]
 #   Event defaults to the payload's hook_event_name.
 # Env:   HQ_HQD_SOCKET (socket path), HQ_REGISTRY_DIR (parent of daemon/),
@@ -178,8 +185,8 @@ fi
 
 # shellcheck disable=SC2016 # the perl program is single-quoted on purpose
 out=$(printf '%s' "$payload" | HQD_SHIM_EVENT="$event" HQD_SHIM_RUNTIME="$runtime" \
-  HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" HQD_SHIM_BACKOFF_MS="$backoff" \
-  HQD_SHIM_DEADLINE_MS="$deadline" LC_ALL=C perl -e '
+  HQD_SHIM_DIR="$SHIM_DIR" HQD_SHIM_SOCKET="$sock" HQD_SHIM_BUDGET_MS="$budget" \
+  HQD_SHIM_BACKOFF_MS="$backoff" HQD_SHIM_DEADLINE_MS="$deadline" LC_ALL=C perl -e '
 # Started marker, flushed at once: the shell tells a perl that never ran this
 # program (broken binary, exec failure) from one that died mid-request.
 BEGIN { $| = 1; print q{@@hqd-shim-started@@}; $| = 0; }
@@ -399,10 +406,81 @@ elsif ($fail) { unreachable(30); }
 my $r = eval { $json->decode($line) };
 unreachable(30) unless ref $r eq "HASH";
 
+# Resolve $p to a canonical path even when the leaf does not exist yet (for
+# example a temp file hqd could not create), by resolving the longest existing
+# ancestor and re-attaching the remaining segments.
+sub resolve_existing_path {
+  my ($p) = @_;
+  my $real = eval { require Cwd; Cwd::abs_path($p) };
+  return $real if defined $real && length $real;
+  my @tail;
+  my $cur = $p;
+  while ($cur ne "/" && length $cur) {
+    $cur =~ m{\A(.*)/([^/]+)\z} or last;
+    my ($parent, $leaf) = ($1 eq "" ? "/" : $1, $2);
+    unshift @tail, $leaf;
+    $cur = $parent;
+    my $anc = eval { require Cwd; Cwd::abs_path($cur) };
+    if (defined $anc && length $anc) {
+      return ($anc eq "/" ? "" : $anc) . "/" . join("/", @tail);
+    }
+  }
+  return undef;
+}
+
+# True when hqd returned a raw "internal" EPERM fs error on a path under this
+# HQ root (two levels above this script, never from HQ_ROOT/CLAUDE_PROJECT_DIR).
+# An EPERM on an unrelated path (such as a daemon state dir) or on a
+# non-internal error code stays on the normal fail-closed error branch.
+sub eperm_in_hq_root {
+  my ($err) = @_;
+  return 0 unless ref $err eq "HASH" && ($err->{code} // "") eq "internal";
+  my $m = $err->{message};
+  return 0 unless defined $m && !ref $m;
+  return 0 unless $m =~ m{\AEPERM:\s*operation not permitted,\s*(?:open|read|readdir|scandir|opendir|stat|lstat|access|realpath|mkdir|rename|unlink)\s+\x27(/[^\x27\r\n]+)\x27\z}i;
+  my $raw_path = $1;
+  return 0 if $raw_path =~ m{(?:^|/)\.\.(?:/|$)};
+  my $path = absolute_path($raw_path, "/");
+  my $dir = $ENV{HQD_SHIM_DIR} // "";
+  return 0 unless length $dir;
+  my $base = $dir =~ m{^/} ? "/" : eval { require Cwd; Cwd::getcwd() };
+  return 0 unless defined $base && length $base;
+  my $logical_root = absolute_path("$dir/../..", $base);
+  my $real_root = eval { require Cwd; Cwd::abs_path($logical_root) };
+  my $real_path = resolve_existing_path($path);
+  if (defined $real_root && length $real_root && defined $real_path && length $real_path) {
+    return 0 if $real_root eq "/";
+    return ($real_path eq $real_root || index($real_path, "$real_root/") == 0) ? 1 : 0;
+  }
+  return 0 if $logical_root eq "/";
+  return ($path eq $logical_root || index($path, "$logical_root/") == 0) ? 1 : 0;
+}
+
 if (!$r->{ok}) {
   my $msg = ref $r->{error} eq "HASH" ? ($r->{error}{message} // "error") : "error";
+  my $code = ref $r->{error} eq "HASH" ? ($r->{error}{code} // "") : "";
+  # hqd declined to answer, for one of two reasons:
+  # - hq_root_unreadable, or an internal EPERM fs error on a path under this
+  #   HQ root: hqd could not read the HQ folder. On macOS this is a privacy
+  #   (TCC) refusal: hqd runs under launchd and has no consent for ~/Documents,
+  #   ~/Desktop or iCloud Drive, while this hook process inherits the consent
+  #   of the host app.
+  # - anywhere_disabled: the live HQ Anywhere flag is off while the flag cache
+  #   of this shim still says on.
+  # Neither is a verdict on the tool call, so sh runs the scope authorizer in
+  # this process instead: exit 40 when the call may touch a company path (fail
+  # closed if no authorizer is found), 41 otherwise. A flag-off answer to any
+  # other event is quiet, as a local flag-off is.
+  if ($code eq "anywhere_disabled" && $event ne "PreToolUse") { exit 0; }
+  if ($event eq "PreToolUse"
+      && ($code eq "hq_root_unreadable" || $code eq "anywhere_disabled"
+          || eperm_in_hq_root($r->{error}))) {
+    $msg =~ s/[\r\n]+/ /g;
+    print $msg;
+    exit(company_write() ? 40 : 41);
+  }
   if ($event eq "PreToolUse" && company_write()) {
-    print STDERR "HQ policy check failed ($msg); refusing a write to a companies/ path\n";
+    print STDERR "HQ policy check failed ($msg); refusing a tool call that may touch a companies/ path\n";
     exit 2;
   }
   print STDERR "HQ daemon: $op failed: $msg\n";
@@ -422,7 +500,7 @@ if ($event eq "SessionStart") {
   }
   if ($decision ne "allow") {
     if (company_write()) {
-      print STDERR "HQ policy check failed (invalid decision); refusing a write to a companies/ path\n";
+      print STDERR "HQ policy check failed (invalid decision); refusing a tool call that may touch a companies/ path\n";
       exit 2;
     }
     print STDERR "HQ daemon: policy.check returned an invalid decision\n";
@@ -444,12 +522,98 @@ if [ "$rc" = 76 ] || { [ "$client_started" = 0 ] && [ "$rc" != 142 ]; }; then
   no_perl_fallback
 fi
 
+# hqd declined to check this call (see the !ok branch above). Run the hook
+# scripts hqd would have run (scope authorizer, then policy trigger) from the
+# HQ root this shim belongs to, in this process, with the original payload:
+# they read the caller's own session binding, which this process can open.
+#
+# local_hook <script>: run one hook script the way hqd runs it. cwd, HQ_ROOT
+# and CLAUDE_PROJECT_DIR are the HQ root; BASH_ENV is cleared. HQ_HOOK_* is
+# removed (the scripts trust it over the payload, so a value exported by the
+# caller must not decide the check), and so are the scope and path-fold knobs
+# that relax the check, which hqd never carries.
+local_hook() {
+  printf '%s' "$payload" | (
+    CDPATH='' cd -P -- "$hq_root" || exit 1
+    for name in $(env | sed -n 's/^\([Hh][Qq]_[Hh][Oo][Oo][Kk]_[A-Za-z0-9_]*\)=.*/\1/p'); do
+      unset "$name"
+    done
+    unset HQ_SCOPE_FOLD_COPY HQ_PATH_FOLD_V HQ_PATH_FOLD_OUT HQ_PATH_FOLD_VOLUME_JQ HQ_PATH_FOLD_LIB_LOADED
+    HQ_ROOT="$hq_root" CLAUDE_PROJECT_DIR="$hq_root" BASH_ENV=/dev/null exec bash "$1"
+  )
+}
+# hook_json <deny|context>: read hook stdout. deny: print the reason and exit 3
+# when it is a JSON block verdict (decision "block" or permissionDecision
+# "deny"), as hqd treats it. context: print the PreToolUse additionalContext
+# JSON for the runtime (plain text counts as context, as in hqd).
+hook_json() {
+  LC_ALL=C perl -MJSON::PP -e '
+my $mode = shift;
+my $text = do { local $/; <STDIN> } // "";
+$text =~ s/^\s+|\s+$//g;
+my $p = eval { JSON::PP->new->decode($text) };
+if ($mode eq "deny") {
+  exit 0 unless ref $p eq "HASH";
+  my $h = ref $p->{hookSpecificOutput} eq "HASH" ? $p->{hookSpecificOutput} : {};
+  if (($p->{decision} // "") eq "block") { print $p->{reason} // "blocked"; exit 3; }
+  if (($h->{permissionDecision} // "") eq "deny") { print $h->{permissionDecisionReason} // "denied"; exit 3; }
+  exit 0;
+}
+my $ctx = $text;
+if (ref $p eq "HASH") {
+  my $h = ref $p->{hookSpecificOutput} eq "HASH" ? $p->{hookSpecificOutput} : {};
+  $ctx = $h->{additionalContext} // $p->{additionalContext} // "";
+}
+exit 0 unless defined $ctx && !ref $ctx && length $ctx;
+print JSON::PP->new->canonical->encode({ hookSpecificOutput => { hookEventName => "PreToolUse", additionalContext => $ctx } });
+' "$1"
+}
+local_scope_check() {
+  hq_root=$(CDPATH='' cd -P -- "$SHIM_DIR/../.." 2>/dev/null && pwd -P) || hq_root=''
+  authorizer="$hq_root/.claude/hooks/mandatory-scope-authorizer.sh"
+  if [ -z "$hq_root" ] || [ ! -f "$authorizer" ]; then
+    # No authorizer beside the shim (for example a plugin install): answer as
+    # for an unreachable daemon.
+    [ "${HQ_HQD_SHIM_REPORT_UNREACHABLE:-0}" != 1 ] || exit 75
+    if [ "$rc" = 40 ]; then
+      printf 'HQ daemon could not check this call (%s) and no local scope check was found; refusing a tool call that may touch a companies/ path. Run hq daemon status.\n' "$out" >&2
+      exit 2
+    fi
+    printf 'HQ daemon could not check this call (%s). Run hq daemon status.\n' "$out" >&2
+    exit 0
+  fi
+  auth_out=$(local_hook "$authorizer")
+  auth_rc=$?
+  if [ "$auth_rc" -eq 2 ]; then exit 2; fi
+  if [ "$auth_rc" -ne 0 ]; then
+    printf 'HQ scope check exited %s; failing closed (HQ daemon could not check this call: %s)\n' "$auth_rc" "$out" >&2
+    exit 2
+  fi
+  # Skip hook_json's perl launch when stdout has no JSON object or context, so
+  # a fallback outage does not add two extra perl starts per PreToolUse call.
+  case "$auth_out" in
+    *'{'*)
+      if deny=$(printf '%s' "$auth_out" | hook_json deny); then :; else
+        printf '%s\n' "${deny:-blocked by scope authorizer}" >&2
+        exit 2
+      fi ;;
+  esac
+  trigger="$hq_root/.claude/hooks/inject-policy-on-trigger.sh"
+  if [ -f "$trigger" ] && trig_out=$(local_hook "$trigger"); then
+    case "$trig_out" in
+      *[![:space:]]*) printf '%s' "$trig_out" | hook_json context ;;
+    esac
+  fi
+  exit 0
+}
+
 case "$rc" in
   0)
     [ -n "$out" ] && printf '%s\n' "$out"
     exit 0 ;;
   2) exit 2 ;;
   75) exit 75 ;;
+  40|41) local_scope_check ;;
   10|11|12)
     printf '%s\n' "$CONNECT_FAIL" >&2
     [ "$rc" = 11 ] && printf '%s\n' "$SESSION_FALLBACK"

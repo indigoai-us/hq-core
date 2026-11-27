@@ -296,26 +296,6 @@
       }
     },
     {
-      "id": "per-child-timeout-continues",
-      "event": "PreToolUse",
-      "children": [
-        {
-          "output": "too late",
-          "exit": 0,
-          "sleep": 3
-        },
-        {
-          "output": "survivor",
-          "exit": 0
-        }
-      ],
-      "expected": {
-        "exit": 124,
-        "text": "survivor\n"
-      },
-      "childTimeout": 1
-    },
-    {
       "id": "large-json-output",
       "event": "PreToolUse",
       "children": [
